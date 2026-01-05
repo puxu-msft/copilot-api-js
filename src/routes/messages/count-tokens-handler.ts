@@ -41,9 +41,11 @@ export async function handleCountTokens(c: Context) {
       }
       if (!mcpToolExist) {
         if (anthropicPayload.model.startsWith("claude")) {
-          // https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview#pricing
+          // Base token overhead for tool use capability
+          // See: https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview#pricing
           tokenCount.input = tokenCount.input + 346
         } else if (anthropicPayload.model.startsWith("grok")) {
+          // Estimated base token overhead for Grok tool use (empirically determined)
           tokenCount.input = tokenCount.input + 480
         }
       }
@@ -51,8 +53,11 @@ export async function handleCountTokens(c: Context) {
 
     let finalTokenCount = tokenCount.input + tokenCount.output
     if (anthropicPayload.model.startsWith("claude")) {
+      // Apply 15% buffer for Claude models to account for tokenization differences
+      // between the GPT tokenizer used here and Claude's actual tokenizer
       finalTokenCount = Math.round(finalTokenCount * 1.15)
     } else if (anthropicPayload.model.startsWith("grok")) {
+      // Apply 3% buffer for Grok models (smaller difference from GPT tokenizer)
       finalTokenCount = Math.round(finalTokenCount * 1.03)
     }
 

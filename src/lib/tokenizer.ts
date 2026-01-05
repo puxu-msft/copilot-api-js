@@ -53,6 +53,8 @@ const calculateContentPartsTokens = (
   let tokens = 0
   for (const part of contentParts) {
     if (part.type === "image_url") {
+      // Image URLs incur ~85 tokens overhead for the image processing metadata
+      // This is an approximation based on OpenAI's image token calculation
       tokens += encoder.encode(part.image_url.url).length + 85
     } else if (part.text) {
       tokens += encoder.encode(part.text).length
@@ -69,7 +71,10 @@ const calculateMessageTokens = (
   encoder: Encoder,
   constants: ReturnType<typeof getModelConstants>,
 ): number => {
+  // Each message incurs 3 tokens overhead for role/metadata framing
+  // Based on OpenAI's token counting methodology
   const tokensPerMessage = 3
+  // Additional token when a "name" field is present
   const tokensPerName = 1
   let tokens = tokensPerMessage
   for (const [key, value] of Object.entries(message)) {
@@ -111,7 +116,7 @@ const calculateTokens = (
   for (const message of messages) {
     numTokens += calculateMessageTokens(message, encoder, constants)
   }
-  // every reply is primed with <|start|>assistant<|message|>
+  // every reply is primed with <|start|>assistant<|message|> (3 tokens)
   numTokens += 3
   return numTokens
 }
@@ -147,7 +152,14 @@ export const getTokenizerFromModel = (model: Model): string => {
 }
 
 /**
- * Get model-specific constants for token calculation
+ * Get model-specific constants for token calculation.
+ * These values are empirically determined based on OpenAI's function calling token overhead.
+ * - funcInit: Tokens for initializing a function definition
+ * - propInit: Tokens for initializing the properties section
+ * - propKey: Tokens per property key
+ * - enumInit: Token adjustment when enum is present (negative because type info is replaced)
+ * - enumItem: Tokens per enum value
+ * - funcEnd: Tokens for closing the function definition
  */
 const getModelConstants = (model: Model) => {
   return model.id === "gpt-3.5-turbo" || model.id === "gpt-4" ?
