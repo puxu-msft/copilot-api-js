@@ -36,7 +36,7 @@ bun run knip
 
 ### Entry Points
 
-- `src/main.ts` - CLI entry point using citty, defines subcommands: `start`, `auth`, `check-usage`, `debug`
+- `src/main.ts` - CLI entry point using citty, defines subcommands: `start`, `auth`, `logout`, `check-usage`, `debug`
 - `src/start.ts` - Main server startup logic, handles authentication flow, model caching, and launches Hono server via srvx
 - `src/server.ts` - Hono app configuration, registers all routes
 
@@ -55,7 +55,8 @@ bun run knip
 - `lib/state.ts` - Global mutable state (tokens, config, rate limiting)
 - `lib/token.ts` - GitHub OAuth device flow and Copilot token management with auto-refresh
 - `lib/api-config.ts` - Copilot API URLs and headers (emulates VSCode extension)
-- `lib/rate-limit.ts` - Request throttling
+- `lib/queue.ts` - Request queue for rate limiting (queues requests instead of rejecting)
+- `lib/rate-limit.ts` - Legacy rate limit checking (deprecated, use queue.ts)
 - `lib/approval.ts` - Manual request approval flow
 - `lib/tokenizer.ts` - Token counting for Anthropic `/v1/messages/count_tokens` endpoint
 - `lib/error.ts` - HTTP error handling utilities
@@ -84,6 +85,7 @@ The project uses `~/` as an alias for `./src/` (configured in tsconfig.json).
 | `/usage` | Copilot quota/usage stats |
 | `/token` | Current Copilot token |
 | `/health` | Health check for container orchestration |
+| `/api/event_logging/batch` | Anthropic SDK telemetry (returns 200 OK) |
 
 ## Anthropic API Compatibility
 
