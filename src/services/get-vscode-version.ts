@@ -1,5 +1,12 @@
 const FALLBACK = "1.104.3"
 
+// GitHub API endpoint for latest VSCode release
+const GITHUB_API_URL = "https://api.github.com/repos/microsoft/vscode/releases/latest"
+
+interface GitHubRelease {
+  tag_name: string
+}
+
 export async function getVSCodeVersion() {
   const controller = new AbortController()
   const timeout = setTimeout(() => {
@@ -7,19 +14,23 @@ export async function getVSCodeVersion() {
   }, 5000)
 
   try {
-    const response = await fetch(
-      "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=visual-studio-code-bin",
-      {
-        signal: controller.signal,
+    const response = await fetch(GITHUB_API_URL, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "copilot-api",
       },
-    )
+    })
 
-    const pkgbuild = await response.text()
-    const pkgverRegex = /pkgver=([0-9.]+)/
-    const match = pkgbuild.match(pkgverRegex)
+    if (!response.ok) {
+      return FALLBACK
+    }
 
-    if (match) {
-      return match[1]
+    const release = (await response.json()) as GitHubRelease
+    // tag_name is in format "1.107.1"
+    const version = release.tag_name
+    if (version && /^\d+\.\d+\.\d+$/.test(version)) {
+      return version
     }
 
     return FALLBACK
