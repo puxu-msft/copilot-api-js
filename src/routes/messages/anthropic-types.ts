@@ -42,7 +42,8 @@ export interface AnthropicImageBlock {
 export interface AnthropicToolResultBlock {
   type: "tool_result"
   tool_use_id: string
-  content: string
+  // Content can be a string or an array of content blocks (text/image)
+  content: string | Array<AnthropicTextBlock | AnthropicImageBlock>
   is_error?: boolean
 }
 
