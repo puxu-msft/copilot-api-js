@@ -4,11 +4,21 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 import consola from "consola"
 
 export class HTTPError extends Error {
-  response: Response
+  status: number
+  responseText: string
 
-  constructor(message: string, response: Response) {
+  constructor(message: string, status: number, responseText: string) {
     super(message)
-    this.response = response
+    this.status = status
+    this.responseText = responseText
+  }
+
+  static async fromResponse(
+    message: string,
+    response: Response,
+  ): Promise<HTTPError> {
+    const text = await response.text()
+    return new HTTPError(message, response.status, text)
   }
 }
 
@@ -16,22 +26,21 @@ export async function forwardError(c: Context, error: unknown) {
   consola.error("Error occurred:", error)
 
   if (error instanceof HTTPError) {
-    const errorText = await error.response.text()
     let errorJson: unknown
     try {
-      errorJson = JSON.parse(errorText)
+      errorJson = JSON.parse(error.responseText)
     } catch {
-      errorJson = errorText
+      errorJson = error.responseText
     }
     consola.error("HTTP error:", errorJson)
     return c.json(
       {
         error: {
-          message: errorText,
+          message: error.responseText,
           type: "error",
         },
       },
-      error.response.status as ContentfulStatusCode,
+      error.status as ContentfulStatusCode,
     )
   }
 

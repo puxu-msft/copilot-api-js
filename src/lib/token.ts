@@ -80,7 +80,7 @@ export async function setupGitHubToken(
     await logUser()
   } catch (error) {
     if (error instanceof HTTPError) {
-      consola.error("Failed to get GitHub token:", await error.response.json())
+      consola.error("Failed to get GitHub token:", error.responseText)
       throw error
     }
 

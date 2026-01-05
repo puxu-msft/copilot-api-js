@@ -30,7 +30,8 @@ export async function checkRateLimit(state: State) {
     )
     throw new HTTPError(
       "Rate limit exceeded",
-      Response.json({ message: "Rate limit exceeded" }, { status: 429 }),
+      429,
+      JSON.stringify({ message: "Rate limit exceeded" }),
     )
   }
 
