@@ -23,7 +23,12 @@ export function translateChunkToAnthropicEvents(
 ): Array<AnthropicStreamEventData> {
   const events: Array<AnthropicStreamEventData> = []
 
+  // Skip chunks with empty choices (e.g., first chunk with prompt_filter_results)
   if (chunk.choices.length === 0) {
+    // Store model for later if available (some chunks have model but empty choices)
+    if (chunk.model && !state.model) {
+      state.model = chunk.model
+    }
     return events
   }
 
@@ -31,14 +36,16 @@ export function translateChunkToAnthropicEvents(
   const { delta } = choice
 
   if (!state.messageStartSent) {
+    // Use model from current chunk, or from stored state (from earlier empty chunk)
+    const model = chunk.model || state.model || "unknown"
     events.push({
       type: "message_start",
       message: {
-        id: chunk.id,
+        id: chunk.id || `msg_${Date.now()}`,
         type: "message",
         role: "assistant",
         content: [],
-        model: chunk.model,
+        model,
         stop_reason: null,
         stop_sequence: null,
         usage: {

@@ -197,6 +197,7 @@ export interface AnthropicStreamState {
   messageStartSent: boolean
   contentBlockIndex: number
   contentBlockOpen: boolean
+  model?: string // Stores model from early chunks for later use
   toolCalls: {
     [openAIToolIndex: number]: {
       id: string
