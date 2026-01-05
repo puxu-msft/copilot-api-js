@@ -16,6 +16,7 @@ import { server } from "./server"
 
 interface RunServerOptions {
   port: number
+  host?: string
   verbose: boolean
   accountType: string
   manual: boolean
@@ -64,7 +65,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
   )
 
-  const serverUrl = `http://localhost:${options.port}`
+  const displayHost = options.host ?? "localhost"
+  const serverUrl = `http://${displayHost}:${options.port}`
 
   if (options.claudeCode) {
     invariant(state.models, "Models should be loaded by now")
@@ -117,6 +119,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   serve({
     fetch: server.fetch as ServerHandler,
     port: options.port,
+    hostname: options.host,
   })
 }
 
@@ -131,6 +134,12 @@ export const start = defineCommand({
       type: "string",
       default: "4141",
       description: "Port to listen on",
+    },
+    host: {
+      alias: "H",
+      type: "string",
+      description:
+        "Host/interface to bind to (e.g., 127.0.0.1 for localhost only, 0.0.0.0 for all interfaces)",
     },
     verbose: {
       alias: "v",
@@ -193,6 +202,7 @@ export const start = defineCommand({
 
     return runServer({
       port: Number.parseInt(args.port, 10),
+      host: args.host,
       verbose: args.verbose,
       accountType: args["account-type"],
       manual: args.manual,
