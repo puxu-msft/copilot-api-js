@@ -34,7 +34,7 @@
     "typecheck": "tsc"
   },
   "simple-git-hooks": {
-    "pre-commit": "bunx lint-staged"
+    "pre-commit": "bun x lint-staged"
   },
   "lint-staged": {
     "*": "bun run lint --fix"
