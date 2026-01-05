@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 
 import { defineCommand, runMain } from "citty"
+import consola from "consola"
 
 import { auth } from "./auth"
 import { checkUsage } from "./check-usage"
 import { debug } from "./debug"
 import { start } from "./start"
+
+// Configure consola to show timestamps in log output
+consola.options.formatOptions.date = true
 
 const main = defineCommand({
   meta: {
