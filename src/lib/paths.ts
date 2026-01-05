@@ -19,6 +19,12 @@ export async function ensurePaths(): Promise<void> {
 async function ensureFile(filePath: string): Promise<void> {
   try {
     await fs.access(filePath, fs.constants.W_OK)
+    // File exists, ensure it has secure permissions (owner read/write only)
+    const stats = await fs.stat(filePath)
+    const currentMode = stats.mode & 0o777
+    if (currentMode !== 0o600) {
+      await fs.chmod(filePath, 0o600)
+    }
   } catch {
     await fs.writeFile(filePath, "")
     await fs.chmod(filePath, 0o600)
