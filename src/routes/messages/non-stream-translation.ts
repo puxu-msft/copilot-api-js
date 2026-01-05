@@ -26,17 +26,64 @@ import {
 } from "./anthropic-types"
 import { mapOpenAIStopReasonToAnthropic } from "./utils"
 
+// Helper function to fix message sequences by adding missing tool responses
+// This prevents "tool_use ids were found without tool_result blocks" errors
+function fixMessageSequence(messages: Array<Message>): Array<Message> {
+  const fixedMessages: Array<Message> = []
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]
+    fixedMessages.push(message)
+
+    if (
+      message.role === "assistant"
+      && message.tool_calls
+      && message.tool_calls.length > 0
+    ) {
+      // Find which tool calls already have responses
+      const foundToolResponses = new Set<string>()
+
+      // Look ahead to see what tool responses exist
+      let j = i + 1
+      while (j < messages.length && messages[j].role === "tool") {
+        const toolMessage = messages[j]
+        if (toolMessage.tool_call_id) {
+          foundToolResponses.add(toolMessage.tool_call_id)
+        }
+        j++
+      }
+
+      // Add placeholder responses for missing tool calls
+      for (const toolCall of message.tool_calls) {
+        if (!foundToolResponses.has(toolCall.id)) {
+          consola.debug(`Adding placeholder tool_result for ${toolCall.id}`)
+          fixedMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: "Tool execution was interrupted or failed.",
+          })
+        }
+      }
+    }
+  }
+
+  return fixedMessages
+}
+
 // Payload translation
 
 export function translateToOpenAI(
   payload: AnthropicMessagesPayload,
 ): ChatCompletionsPayload {
+  const messages = translateAnthropicMessagesToOpenAI(
+    payload.messages,
+    payload.system,
+  )
+
   return {
     model: translateModelName(payload.model),
-    messages: translateAnthropicMessagesToOpenAI(
-      payload.messages,
-      payload.system,
-    ),
+    // Fix message sequence to ensure all tool_use blocks have corresponding tool_result
+    messages: fixMessageSequence(messages),
     max_tokens: payload.max_tokens,
     stop: payload.stop_sequences,
     stream: payload.stream,
