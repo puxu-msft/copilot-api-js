@@ -57,11 +57,16 @@ bun run knip
 - `lib/api-config.ts` - Copilot API URLs and headers (emulates VSCode extension)
 - `lib/rate-limit.ts` - Request throttling
 - `lib/approval.ts` - Manual request approval flow
+- `lib/tokenizer.ts` - Token counting for Anthropic `/v1/messages/count_tokens` endpoint
+- `lib/error.ts` - HTTP error handling utilities
+- `lib/paths.ts` - File system paths for token storage
+- `lib/proxy.ts` - HTTP proxy configuration support
 
 ### Services
 
 - `services/github/` - GitHub API interactions (auth, device code, user info, usage stats)
 - `services/copilot/` - Copilot API calls (chat completions, embeddings, models)
+- `services/get-vscode-version.ts` - Fetches latest VSCode version from GitHub API for API headers
 
 ### Path Aliases
 
@@ -73,10 +78,28 @@ The project uses `~/` as an alias for `./src/` (configured in tsconfig.json).
 |----------|---------|
 | `/v1/chat/completions` | OpenAI-compatible chat |
 | `/v1/messages` | Anthropic-compatible messages |
+| `/v1/messages/count_tokens` | Anthropic-compatible token counting |
 | `/v1/models` | List available models |
 | `/v1/embeddings` | Text embeddings |
 | `/usage` | Copilot quota/usage stats |
 | `/token` | Current Copilot token |
+| `/health` | Health check for container orchestration |
+
+## Anthropic API Compatibility
+
+The `/v1/messages` endpoint translates between Anthropic and OpenAI formats. Some Anthropic features have limited or no support due to Copilot API constraints:
+
+| Feature | Support | Notes |
+|---------|---------|-------|
+| Prompt Caching | Partial | Read-only; `cache_read_input_tokens` is reported from Copilot's `cached_tokens`. Cannot set `cache_control` to mark cacheable content. |
+| Extended Thinking | Not supported | `thinking` parameter is ignored. Thinking blocks in history are converted to plain text. |
+| Batch Processing | Not supported | No `/v1/messages/batches` endpoint; Copilot API lacks batch support. |
+
+### Model Name Translation
+
+The translation layer maps Anthropic model names to Copilot-compatible formats:
+- Short aliases: `opus` → `claude-opus-4.5`, `sonnet` → `claude-sonnet-4.5`, `haiku` → `claude-haiku-4.5`
+- Versioned names: `claude-sonnet-4-20250514` → `claude-sonnet-4`, `claude-opus-4-5-20250101` → `claude-opus-4.5`
 
 ## Key Configuration
 
