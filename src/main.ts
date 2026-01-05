@@ -6,6 +6,7 @@ import consola from "consola"
 import { auth } from "./auth"
 import { checkUsage } from "./check-usage"
 import { debug } from "./debug"
+import { logout } from "./logout"
 import { start } from "./start"
 
 // Configure consola to show timestamps in log output
@@ -17,7 +18,7 @@ const main = defineCommand({
     description:
       "A wrapper around GitHub Copilot API to make it OpenAI compatible, making it usable for other tools.",
   },
-  subCommands: { auth, start, "check-usage": checkUsage, debug },
+  subCommands: { auth, logout, start, "check-usage": checkUsage, debug },
 })
 
 await runMain(main)
