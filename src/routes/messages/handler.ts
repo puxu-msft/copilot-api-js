@@ -4,7 +4,7 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import { checkRateLimit } from "~/lib/rate-limit"
+import { executeWithRateLimit } from "~/lib/queue"
 import { state } from "~/lib/state"
 import {
   createChatCompletions,
@@ -20,11 +20,12 @@ import {
   translateToAnthropic,
   translateToOpenAI,
 } from "./non-stream-translation"
-import { translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from "./stream-translation"
+import {
+  translateChunkToAnthropicEvents,
+  translateErrorToAnthropicErrorEvent,
+} from "./stream-translation"
 
 export async function handleCompletion(c: Context) {
-  await checkRateLimit(state)
-
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
@@ -38,7 +39,10 @@ export async function handleCompletion(c: Context) {
     await awaitApproval()
   }
 
-  const response = await createChatCompletions(openAIPayload)
+  // Use queue-based rate limiting
+  const response = await executeWithRateLimit(state, () =>
+    createChatCompletions(openAIPayload),
+  )
 
   if (isNonStreaming(response)) {
     consola.debug(
@@ -77,7 +81,11 @@ export async function handleCompletion(c: Context) {
         try {
           chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
         } catch (parseError) {
-          consola.error("Failed to parse stream chunk:", parseError, rawEvent.data)
+          consola.error(
+            "Failed to parse stream chunk:",
+            parseError,
+            rawEvent.data,
+          )
           continue
         }
 
