@@ -10,8 +10,8 @@ export const embeddingRoutes = new Hono()
 
 embeddingRoutes.post("/", async (c) => {
   try {
-    const paylod = await c.req.json<EmbeddingRequest>()
-    const response = await createEmbeddings(paylod)
+    const payload = await c.req.json<EmbeddingRequest>()
+    const response = await createEmbeddings(payload)
 
     return c.json(response)
   } catch (error) {
