@@ -50,29 +50,47 @@ export function translateToOpenAI(
 
 function translateModelName(model: string): string {
   // Handle short model name aliases (e.g., "opus", "sonnet", "haiku")
+  // Maps to the latest available version in Copilot
   const shortNameMap: Record<string, string> = {
-    opus: "claude-opus-4",
-    sonnet: "claude-sonnet-4",
-    haiku: "claude-haiku-3.5",
+    opus: "claude-opus-4.5",
+    sonnet: "claude-sonnet-4.5",
+    haiku: "claude-haiku-4.5",
   }
 
   if (shortNameMap[model]) {
     return shortNameMap[model]
   }
 
-  // Subagent requests use a specific model number which Copilot doesn't support
-  // Strip version suffixes like -20250514 from model names
-  if (model.startsWith("claude-sonnet-4-")) {
-    return "claude-sonnet-4"
-  } else if (model.startsWith("claude-opus-4-")) {
-    return "claude-opus-4"
-  } else if (model.startsWith("claude-haiku-")) {
-    // Handle haiku models: claude-haiku-3-5-20241022 -> claude-haiku-3.5
-    const match = model.match(/^claude-haiku-(\d+)-(\d+)/)
-    if (match) {
-      return `claude-haiku-${match[1]}.${match[2]}`
-    }
+  // Handle versioned model names from Anthropic API (e.g., claude-sonnet-4-20250514)
+  // Strip date suffixes and convert to Copilot-compatible format
+
+  // claude-sonnet-4-5-YYYYMMDD -> claude-sonnet-4.5
+  if (model.match(/^claude-sonnet-4-5-\d+$/)) {
+    return "claude-sonnet-4.5"
   }
+  // claude-sonnet-4-YYYYMMDD -> claude-sonnet-4
+  if (model.match(/^claude-sonnet-4-\d+$/)) {
+    return "claude-sonnet-4"
+  }
+
+  // claude-opus-4-5-YYYYMMDD -> claude-opus-4.5
+  if (model.match(/^claude-opus-4-5-\d+$/)) {
+    return "claude-opus-4.5"
+  }
+  // claude-opus-4-YYYYMMDD -> claude-opus-4.5 (default to latest)
+  if (model.match(/^claude-opus-4-\d+$/)) {
+    return "claude-opus-4.5"
+  }
+
+  // claude-haiku-4-5-YYYYMMDD -> claude-haiku-4.5
+  if (model.match(/^claude-haiku-4-5-\d+$/)) {
+    return "claude-haiku-4.5"
+  }
+  // claude-haiku-3-5-YYYYMMDD -> claude-haiku-4.5 (upgrade to latest available)
+  if (model.match(/^claude-haiku-3-5-\d+$/)) {
+    return "claude-haiku-4.5"
+  }
+
   return model
 }
 
