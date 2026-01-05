@@ -319,6 +319,23 @@ function translateAnthropicToolChoiceToOpenAI(
 export function translateToAnthropic(
   response: ChatCompletionResponse,
 ): AnthropicResponse {
+  // Handle edge case of empty choices array
+  if (response.choices.length === 0) {
+    return {
+      id: response.id,
+      type: "message",
+      role: "assistant",
+      model: response.model,
+      content: [],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: response.usage?.prompt_tokens ?? 0,
+        output_tokens: response.usage?.completion_tokens ?? 0,
+      },
+    }
+  }
+
   // Merge content from all choices
   const allTextBlocks: Array<AnthropicTextBlock> = []
   const allToolUseBlocks: Array<AnthropicToolUseBlock> = []
