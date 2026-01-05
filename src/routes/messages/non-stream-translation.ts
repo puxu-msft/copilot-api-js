@@ -8,6 +8,8 @@ import {
   type ToolCall,
 } from "~/services/copilot/create-chat-completions"
 
+import consola from "consola"
+
 import {
   type AnthropicAssistantContentBlock,
   type AnthropicAssistantMessage,
@@ -348,10 +350,21 @@ function getAnthropicToolUseBlocks(
   if (!toolCalls) {
     return []
   }
-  return toolCalls.map((toolCall) => ({
-    type: "tool_use",
-    id: toolCall.id,
-    name: toolCall.function.name,
-    input: JSON.parse(toolCall.function.arguments) as Record<string, unknown>,
-  }))
+  return toolCalls.map((toolCall) => {
+    let input: Record<string, unknown> = {}
+    try {
+      input = JSON.parse(toolCall.function.arguments) as Record<string, unknown>
+    } catch (error) {
+      consola.warn(
+        `Failed to parse tool call arguments for ${toolCall.function.name}:`,
+        error,
+      )
+    }
+    return {
+      type: "tool_use",
+      id: toolCall.id,
+      name: toolCall.function.name,
+      input,
+    }
+  })
 }
