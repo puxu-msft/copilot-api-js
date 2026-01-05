@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { logger } from "hono/logger"
 
+import { state } from "./lib/state"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
 import { messageRoutes } from "./routes/messages/route"
@@ -15,6 +16,22 @@ server.use(logger())
 server.use(cors())
 
 server.get("/", (c) => c.text("Server running"))
+
+// Health check endpoint for container orchestration (Docker, Kubernetes)
+server.get("/health", (c) => {
+  const healthy = Boolean(state.copilotToken && state.githubToken)
+  return c.json(
+    {
+      status: healthy ? "healthy" : "unhealthy",
+      checks: {
+        copilotToken: Boolean(state.copilotToken),
+        githubToken: Boolean(state.githubToken),
+        models: Boolean(state.models),
+      },
+    },
+    healthy ? 200 : 503,
+  )
+})
 
 server.route("/chat/completions", completionRoutes)
 server.route("/models", modelRoutes)
