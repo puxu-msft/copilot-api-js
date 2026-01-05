@@ -49,11 +49,29 @@ export function translateToOpenAI(
 }
 
 function translateModelName(model: string): string {
+  // Handle short model name aliases (e.g., "opus", "sonnet", "haiku")
+  const shortNameMap: Record<string, string> = {
+    opus: "claude-opus-4",
+    sonnet: "claude-sonnet-4",
+    haiku: "claude-haiku-3.5",
+  }
+
+  if (shortNameMap[model]) {
+    return shortNameMap[model]
+  }
+
   // Subagent requests use a specific model number which Copilot doesn't support
+  // Strip version suffixes like -20250514 from model names
   if (model.startsWith("claude-sonnet-4-")) {
-    return model.replace(/^claude-sonnet-4-.*/, "claude-sonnet-4")
-  } else if (model.startsWith("claude-opus-")) {
-    return model.replace(/^claude-opus-4-.*/, "claude-opus-4")
+    return "claude-sonnet-4"
+  } else if (model.startsWith("claude-opus-4-")) {
+    return "claude-opus-4"
+  } else if (model.startsWith("claude-haiku-")) {
+    // Handle haiku models: claude-haiku-3-5-20241022 -> claude-haiku-3.5
+    const match = model.match(/^claude-haiku-(\d+)-(\d+)/)
+    if (match) {
+      return `claude-haiku-${match[1]}.${match[2]}`
+    }
   }
   return model
 }
