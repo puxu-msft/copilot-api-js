@@ -17,7 +17,10 @@ export async function pollAccessToken(
   const sleepDuration = (deviceCode.interval + 1) * 1000
   consola.debug(`Polling access token with interval of ${sleepDuration}ms`)
 
-  while (true) {
+  // Calculate expiration time based on expires_in from device code response
+  const expiresAt = Date.now() + deviceCode.expires_in * 1000
+
+  while (Date.now() < expiresAt) {
     const response = await fetch(
       `${GITHUB_BASE_URL}/login/oauth/access_token`,
       {
@@ -49,6 +52,10 @@ export async function pollAccessToken(
       await sleep(sleepDuration)
     }
   }
+
+  throw new Error(
+    "Device code expired. Please run the authentication flow again.",
+  )
 }
 
 interface AccessTokenResponse {
