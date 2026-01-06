@@ -6,6 +6,7 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
+import { initHistory } from "./lib/history"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
@@ -26,6 +27,8 @@ interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+  history: boolean
+  historyLimit: number
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -47,6 +50,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
+
+  // Initialize history recording if enabled
+  initHistory(options.history, options.historyLimit)
+  if (options.history) {
+    consola.info(`History recording enabled (max ${options.historyLimit} entries)`)
+  }
 
   await ensurePaths()
   await cacheVSCodeVersion()
@@ -113,7 +122,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   consola.box(
-    `🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage`,
+    `🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage${options.history ? `\n📜 History UI: ${serverUrl}/history` : ""}`,
   )
 
   serve({
@@ -193,6 +202,16 @@ export const start = defineCommand({
       default: false,
       description: "Initialize proxy from environment variables",
     },
+    history: {
+      type: "boolean",
+      default: false,
+      description: "Enable request history recording and Web UI at /history",
+    },
+    "history-limit": {
+      type: "string",
+      default: "1000",
+      description: "Maximum number of history entries to keep in memory",
+    },
   },
   run({ args }) {
     const rateLimitRaw = args["rate-limit"]
@@ -212,6 +231,8 @@ export const start = defineCommand({
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
+      history: args.history,
+      historyLimit: Number.parseInt(args["history-limit"], 10),
     })
   },
 })

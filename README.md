@@ -17,6 +17,7 @@ This fork includes the following enhancements over the upstream project:
 - **`/v1/event_logging/batch` endpoint**: Compatibility endpoint for Anthropic SDK's event logging (returns OK without processing)
 - **`logout` command**: Remove stored GitHub token with `copilot-api logout`
 - **Tool name length handling**: Automatically truncates long tool names (>64 chars) to comply with OpenAI's limit, with hash-based suffix to avoid collisions. Original names are restored in responses.
+- **Request History UI**: Optional built-in Web UI (`--history`) to view, search, filter, and export all API requests/responses. Access at `/history` when enabled.
 
 ### Bug Fixes
 
@@ -82,6 +83,8 @@ copilot-api start
 | `--show-token` | Show tokens on fetch/refresh | false |
 | `--manual` | Manual request approval mode | false |
 | `--proxy-env` | Use proxy from environment | false |
+| `--history` | Enable request history UI at `/history` | false |
+| `--history-limit` | Max history entries in memory | 1000 |
 
 ## API Endpoints
 
@@ -107,6 +110,8 @@ copilot-api start
 |----------|--------|-------------|
 | `/usage` | GET | Copilot usage stats |
 | `/token` | GET | Current Copilot token |
+| `/history` | GET | Request history Web UI (requires `--history`) |
+| `/history/api/*` | GET/DELETE | History API endpoints |
 
 ## Using with Claude Code
 

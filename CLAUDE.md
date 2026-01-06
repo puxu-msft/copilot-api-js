@@ -57,6 +57,7 @@ bun run knip
 - `lib/api-config.ts` - Copilot API URLs and headers (emulates VSCode extension)
 - `lib/queue.ts` - Request queue for rate limiting (queues requests instead of rejecting)
 - `lib/rate-limit.ts` - Legacy rate limit checking (deprecated, use queue.ts)
+- `lib/history.ts` - Request/response history recording and querying
 - `lib/approval.ts` - Manual request approval flow
 - `lib/tokenizer.ts` - Token counting for Anthropic `/v1/messages/count_tokens` endpoint
 - `lib/error.ts` - HTTP error handling utilities
@@ -86,6 +87,8 @@ The project uses `~/` as an alias for `./src/` (configured in tsconfig.json).
 | `/token` | Current Copilot token |
 | `/health` | Health check for container orchestration |
 | `/api/event_logging/batch` | Anthropic SDK telemetry (returns 200 OK) |
+| `/history` | Request history Web UI (requires `--history` flag) |
+| `/history/api/*` | History query API endpoints |
 
 ## Anthropic API Compatibility
 
