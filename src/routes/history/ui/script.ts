@@ -96,16 +96,20 @@ async function loadSessions() {
     for (const s of data.sessions) {
       const isActive = currentSessionId === s.id;
       const shortId = s.id.slice(0, 8);
+      const preview = s.preview ? escapeHtml(s.preview.slice(0, 60)) + (s.preview.length > 60 ? '...' : '') : '';
+      const toolCount = s.toolsUsed ? s.toolsUsed.length : 0;
       html += \`
         <div class="session-item\${isActive ? ' active' : ''}" onclick="selectSession('\${s.id}')">
           <div class="session-meta">
             <span>\${s.models[0] || 'Unknown'}</span>
             <span class="session-time">\${formatDate(s.startTime)}</span>
           </div>
+          \${preview ? '<div class="session-preview">' + preview + '</div>' : ''}
           <div class="session-stats">
             <span style="color:var(--text-dim);font-family:monospace;font-size:10px;">\${shortId}</span>
             <span>\${s.requestCount} req</span>
             <span>\${formatNumber(s.totalInputTokens + s.totalOutputTokens)} tok</span>
+            \${toolCount > 0 ? '<span class="badge tool">' + toolCount + ' tools</span>' : ''}
             <span class="badge \${s.endpoint}">\${s.endpoint}</span>
           </div>
         </div>

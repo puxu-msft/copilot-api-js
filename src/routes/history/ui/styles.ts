@@ -99,6 +99,14 @@ body {
 .session-meta { display: flex; justify-content: space-between; margin-bottom: 4px; }
 .session-time { color: var(--text-muted); font-size: 11px; }
 .session-stats { display: flex; gap: 8px; font-size: 11px; color: var(--text-dim); }
+.session-preview {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 4px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Buttons */
 button {
@@ -175,6 +183,7 @@ input::placeholder { color: var(--text-dim); }
 .badge.anthropic { background: rgba(163, 113, 247, 0.15); color: var(--purple); }
 .badge.openai { background: rgba(210, 153, 34, 0.15); color: var(--warning); }
 .badge.stream { background: rgba(57, 197, 207, 0.15); color: var(--cyan); }
+.badge.tool { background: rgba(88, 166, 255, 0.15); color: var(--primary); }
 
 /* Detail panel */
 .detail-panel {
