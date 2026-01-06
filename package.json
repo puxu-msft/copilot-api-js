@@ -1,19 +1,20 @@
 {
-  "name": "copilot-api",
+  "name": "@hsupu/copilot-api",
   "version": "0.7.0",
   "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code!",
   "keywords": [
     "proxy",
     "github-copilot",
-    "openai-compatible"
+    "openai-compatible",
+    "anthropic-compatible"
   ],
-  "homepage": "https://github.com/ericc-ch/copilot-api",
-  "bugs": "https://github.com/ericc-ch/copilot-api/issues",
+  "homepage": "https://github.com/puxu-msft/copilot-api-js",
+  "bugs": "https://github.com/puxu-msft/copilot-api-js/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ericc-ch/copilot-api.git"
+    "url": "git+https://github.com/puxu-msft/copilot-api-js.git"
   },
-  "author": "Erick Christian <erickchristian48@gmail.com>",
+  "author": "hsupu",
   "type": "module",
   "bin": {
     "copilot-api": "./dist/main.js"
@@ -22,14 +23,14 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown",
+    "build": "npx tsdown",
     "dev": "bun run --watch ./src/main.ts",
     "knip": "knip-bun",
     "lint": "eslint --cache",
     "lint:all": "eslint --cache .",
-    "prepack": "bun run build",
-    "prepare": "simple-git-hooks",
-    "release": "bumpp && bun publish --access public",
+    "prepack": "npm run build",
+    "prepare": "npm run build && (command -v bun >/dev/null 2>&1 && simple-git-hooks || true)",
+    "release": "bumpp && npm publish --access public",
     "start": "NODE_ENV=production bun run ./src/main.ts",
     "typecheck": "tsc"
   },

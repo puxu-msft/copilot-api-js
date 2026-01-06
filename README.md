@@ -31,15 +31,22 @@ This fork includes the following enhancements over the upstream project:
 
 ## Quick Start
 
-### Install from GitHub
-
-You can run this fork directly from GitHub without cloning:
+### Install from npm (Recommended)
 
 ```sh
-# Run directly (recommended)
-npx github:puxu-msft/copilot-api-js start
+# Run directly with npx
+npx @hsupu/copilot-api start
 
 # Or install globally
+npm install -g @hsupu/copilot-api
+copilot-api start
+```
+
+### Install from GitHub
+
+You can also install directly from GitHub (requires build step):
+
+```sh
 npm install -g github:puxu-msft/copilot-api-js
 copilot-api start
 ```
