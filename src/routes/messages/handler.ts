@@ -17,6 +17,7 @@ import {
   type AnthropicStreamState,
 } from "./anthropic-types"
 import {
+  type ToolNameMapping,
   translateToAnthropic,
   translateToOpenAI,
 } from "./non-stream-translation"
@@ -29,7 +30,8 @@ export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
-  const openAIPayload = translateToOpenAI(anthropicPayload)
+  const { payload: openAIPayload, toolNameMapping } =
+    translateToOpenAI(anthropicPayload)
   consola.debug(
     "Translated OpenAI request payload:",
     JSON.stringify(openAIPayload),
@@ -49,7 +51,7 @@ export async function handleCompletion(c: Context) {
       "Non-streaming response from Copilot:",
       JSON.stringify(response).slice(-400),
     )
-    const anthropicResponse = translateToAnthropic(response)
+    const anthropicResponse = translateToAnthropic(response, toolNameMapping)
     consola.debug(
       "Translated Anthropic response:",
       JSON.stringify(anthropicResponse),
@@ -89,7 +91,11 @@ export async function handleCompletion(c: Context) {
           continue
         }
 
-        const events = translateChunkToAnthropicEvents(chunk, streamState)
+        const events = translateChunkToAnthropicEvents(
+          chunk,
+          streamState,
+          toolNameMapping,
+        )
 
         for (const event of events) {
           consola.debug("Translated Anthropic event:", JSON.stringify(event))

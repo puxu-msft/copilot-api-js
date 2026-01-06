@@ -26,6 +26,16 @@ import {
 } from "./anthropic-types"
 import { mapOpenAIStopReasonToAnthropic } from "./utils"
 
+// OpenAI limits function names to 64 characters
+const OPENAI_TOOL_NAME_LIMIT = 64
+
+// Mapping from truncated tool names to original names
+// This is used to restore original names in responses
+export interface ToolNameMapping {
+  truncatedToOriginal: Map<string, string>
+  originalToTruncated: Map<string, string>
+}
+
 // Helper function to fix message sequences by adding missing tool responses
 // This prevents "tool_use ids were found without tool_result blocks" errors
 function fixMessageSequence(messages: Array<Message>): Array<Message> {
@@ -72,26 +82,44 @@ function fixMessageSequence(messages: Array<Message>): Array<Message> {
 
 // Payload translation
 
+export interface TranslationResult {
+  payload: ChatCompletionsPayload
+  toolNameMapping: ToolNameMapping
+}
+
 export function translateToOpenAI(
   payload: AnthropicMessagesPayload,
-): ChatCompletionsPayload {
+): TranslationResult {
+  // Create tool name mapping for this request
+  const toolNameMapping: ToolNameMapping = {
+    truncatedToOriginal: new Map(),
+    originalToTruncated: new Map(),
+  }
+
   const messages = translateAnthropicMessagesToOpenAI(
     payload.messages,
     payload.system,
+    toolNameMapping,
   )
 
   return {
-    model: translateModelName(payload.model),
-    // Fix message sequence to ensure all tool_use blocks have corresponding tool_result
-    messages: fixMessageSequence(messages),
-    max_tokens: payload.max_tokens,
-    stop: payload.stop_sequences,
-    stream: payload.stream,
-    temperature: payload.temperature,
-    top_p: payload.top_p,
-    user: payload.metadata?.user_id,
-    tools: translateAnthropicToolsToOpenAI(payload.tools),
-    tool_choice: translateAnthropicToolChoiceToOpenAI(payload.tool_choice),
+    payload: {
+      model: translateModelName(payload.model),
+      // Fix message sequence to ensure all tool_use blocks have corresponding tool_result
+      messages: fixMessageSequence(messages),
+      max_tokens: payload.max_tokens,
+      stop: payload.stop_sequences,
+      stream: payload.stream,
+      temperature: payload.temperature,
+      top_p: payload.top_p,
+      user: payload.metadata?.user_id,
+      tools: translateAnthropicToolsToOpenAI(payload.tools, toolNameMapping),
+      tool_choice: translateAnthropicToolChoiceToOpenAI(
+        payload.tool_choice,
+        toolNameMapping,
+      ),
+    },
+    toolNameMapping,
   }
 }
 
@@ -144,13 +172,14 @@ function translateModelName(model: string): string {
 function translateAnthropicMessagesToOpenAI(
   anthropicMessages: Array<AnthropicMessage>,
   system: string | Array<AnthropicTextBlock> | undefined,
+  toolNameMapping: ToolNameMapping,
 ): Array<Message> {
   const systemMessages = handleSystemPrompt(system)
 
   const otherMessages = anthropicMessages.flatMap((message) =>
     message.role === "user" ?
       handleUserMessage(message)
-    : handleAssistantMessage(message),
+    : handleAssistantMessage(message, toolNameMapping),
   )
 
   return [...systemMessages, ...otherMessages]
@@ -210,6 +239,7 @@ function handleUserMessage(message: AnthropicUserMessage): Array<Message> {
 
 function handleAssistantMessage(
   message: AnthropicAssistantMessage,
+  toolNameMapping: ToolNameMapping,
 ): Array<Message> {
   if (!Array.isArray(message.content)) {
     return [
@@ -247,7 +277,7 @@ function handleAssistantMessage(
             id: toolUse.id,
             type: "function",
             function: {
-              name: toolUse.name,
+              name: getTruncatedToolName(toolUse.name, toolNameMapping),
               arguments: JSON.stringify(toolUse.input),
             },
           })),
@@ -313,8 +343,51 @@ function mapContent(
   return contentParts
 }
 
+// Truncate tool name to fit OpenAI's 64-character limit
+// Uses consistent truncation with hash suffix to avoid collisions
+function getTruncatedToolName(
+  originalName: string,
+  toolNameMapping: ToolNameMapping,
+): string {
+  // If already within limit, return as-is
+  if (originalName.length <= OPENAI_TOOL_NAME_LIMIT) {
+    return originalName
+  }
+
+  // Check if we've already truncated this name
+  const existingTruncated = toolNameMapping.originalToTruncated.get(originalName)
+  if (existingTruncated) {
+    return existingTruncated
+  }
+
+  // Create a simple hash suffix from the original name
+  // Use last 8 chars of a simple hash to ensure uniqueness
+  let hash = 0
+  for (let i = 0; i < originalName.length; i++) {
+    const char = originalName.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash // Convert to 32bit integer
+  }
+  const hashSuffix = Math.abs(hash).toString(36).slice(0, 8)
+
+  // Truncate: leave room for "_" + 8-char hash = 9 chars
+  const truncatedName =
+    originalName.slice(0, OPENAI_TOOL_NAME_LIMIT - 9) + "_" + hashSuffix
+
+  // Store mapping in both directions
+  toolNameMapping.truncatedToOriginal.set(truncatedName, originalName)
+  toolNameMapping.originalToTruncated.set(originalName, truncatedName)
+
+  consola.debug(
+    `Truncated tool name: "${originalName}" -> "${truncatedName}"`,
+  )
+
+  return truncatedName
+}
+
 function translateAnthropicToolsToOpenAI(
   anthropicTools: Array<AnthropicTool> | undefined,
+  toolNameMapping: ToolNameMapping,
 ): Array<Tool> | undefined {
   if (!anthropicTools) {
     return undefined
@@ -322,7 +395,7 @@ function translateAnthropicToolsToOpenAI(
   return anthropicTools.map((tool) => ({
     type: "function",
     function: {
-      name: tool.name,
+      name: getTruncatedToolName(tool.name, toolNameMapping),
       description: tool.description,
       parameters: tool.input_schema,
     },
@@ -331,6 +404,7 @@ function translateAnthropicToolsToOpenAI(
 
 function translateAnthropicToolChoiceToOpenAI(
   anthropicToolChoice: AnthropicMessagesPayload["tool_choice"],
+  toolNameMapping: ToolNameMapping,
 ): ChatCompletionsPayload["tool_choice"] {
   if (!anthropicToolChoice) {
     return undefined
@@ -347,7 +421,12 @@ function translateAnthropicToolChoiceToOpenAI(
       if (anthropicToolChoice.name) {
         return {
           type: "function",
-          function: { name: anthropicToolChoice.name },
+          function: {
+            name: getTruncatedToolName(
+              anthropicToolChoice.name,
+              toolNameMapping,
+            ),
+          },
         }
       }
       return undefined
@@ -365,6 +444,7 @@ function translateAnthropicToolChoiceToOpenAI(
 
 export function translateToAnthropic(
   response: ChatCompletionResponse,
+  toolNameMapping?: ToolNameMapping,
 ): AnthropicResponse {
   // Handle edge case of empty choices array
   if (response.choices.length === 0) {
@@ -393,7 +473,10 @@ export function translateToAnthropic(
   // Process all choices to extract text and tool use blocks
   for (const choice of response.choices) {
     const textBlocks = getAnthropicTextBlocks(choice.message.content)
-    const toolUseBlocks = getAnthropicToolUseBlocks(choice.message.tool_calls)
+    const toolUseBlocks = getAnthropicToolUseBlocks(
+      choice.message.tool_calls,
+      toolNameMapping,
+    )
 
     allTextBlocks.push(...textBlocks)
     allToolUseBlocks.push(...toolUseBlocks)
@@ -446,6 +529,7 @@ function getAnthropicTextBlocks(
 
 function getAnthropicToolUseBlocks(
   toolCalls: Array<ToolCall> | undefined,
+  toolNameMapping?: ToolNameMapping,
 ): Array<AnthropicToolUseBlock> {
   if (!toolCalls) {
     return []
@@ -460,10 +544,16 @@ function getAnthropicToolUseBlocks(
         error,
       )
     }
+
+    // Restore original tool name if it was truncated
+    const originalName =
+      toolNameMapping?.truncatedToOriginal.get(toolCall.function.name)
+      ?? toolCall.function.name
+
     return {
       type: "tool_use",
       id: toolCall.id,
-      name: toolCall.function.name,
+      name: originalName,
       input,
     }
   })
