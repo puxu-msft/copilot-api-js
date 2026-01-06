@@ -112,3 +112,7 @@ Account types affect the Copilot API base URL:
 - `individual` → `api.githubcopilot.com`
 - `business` → `api.business.githubcopilot.com`
 - `enterprise` → `api.enterprise.githubcopilot.com`
+
+## Syncing with Upstream
+
+本地仓库来自开源项目 https://github.com/ericc-ch/copilot-api ，你也应该检查在线的 issues、PR，分析他们描述的问题是否真实存在、他们修复的问题是否值得合并。为了实现这个，你可以使用 gh 命令。
