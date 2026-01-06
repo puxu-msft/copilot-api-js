@@ -139,20 +139,6 @@ Or use the interactive setup:
 bun run start --claude-code
 ```
 
-## Docker
-
-```sh
-# Build
-docker build -t copilot-api .
-
-# Run with persistent token storage
-mkdir -p ./copilot-data
-docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api
-
-# Run with token from environment
-docker run -p 4141:4141 -e GH_TOKEN=your_token copilot-api
-```
-
 ## Upstream Project
 
 For the original project documentation, features, and updates, see: [ericc-ch/copilot-api](https://github.com/ericc-ch/copilot-api)
