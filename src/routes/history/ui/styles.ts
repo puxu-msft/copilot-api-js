@@ -99,14 +99,6 @@ body {
 .session-meta { display: flex; justify-content: space-between; margin-bottom: 4px; }
 .session-time { color: var(--text-muted); font-size: 11px; }
 .session-stats { display: flex; gap: 8px; font-size: 11px; color: var(--text-dim); }
-.session-preview {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin: 4px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 /* Buttons */
 button {
@@ -168,6 +160,14 @@ input::placeholder { color: var(--text-dim); }
 .entry-model { font-weight: 500; flex: 1; }
 .entry-tokens { font-size: 11px; color: var(--text-dim); }
 .entry-duration { font-size: 11px; color: var(--text-dim); min-width: 50px; text-align: right; }
+.entry-preview {
+  padding: 0 16px 8px 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Badges */
 .badge {

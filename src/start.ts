@@ -54,7 +54,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Initialize history recording if enabled
   initHistory(options.history, options.historyLimit)
   if (options.history) {
-    consola.info(`History recording enabled (max ${options.historyLimit} entries)`)
+    const limitText =
+      options.historyLimit === 0 ? "unlimited" : `max ${options.historyLimit}`
+    consola.info(`History recording enabled (${limitText} entries)`)
   }
 
   await ensurePaths()
@@ -210,7 +212,8 @@ export const start = defineCommand({
     "history-limit": {
       type: "string",
       default: "1000",
-      description: "Maximum number of history entries to keep in memory",
+      description:
+        "Maximum number of history entries to keep in memory (0 = unlimited)",
     },
   },
   run({ args }) {

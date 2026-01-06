@@ -96,7 +96,6 @@ async function loadSessions() {
     for (const s of data.sessions) {
       const isActive = currentSessionId === s.id;
       const shortId = s.id.slice(0, 8);
-      const preview = s.preview ? escapeHtml(s.preview.slice(0, 60)) + (s.preview.length > 60 ? '...' : '') : '';
       const toolCount = s.toolsUsed ? s.toolsUsed.length : 0;
       html += \`
         <div class="session-item\${isActive ? ' active' : ''}" onclick="selectSession('\${s.id}')">
@@ -104,7 +103,6 @@ async function loadSessions() {
             <span>\${s.models[0] || 'Unknown'}</span>
             <span class="session-time">\${formatDate(s.startTime)}</span>
           </div>
-          \${preview ? '<div class="session-preview">' + preview + '</div>' : ''}
           <div class="session-stats">
             <span style="color:var(--text-dim);font-family:monospace;font-size:10px;">\${shortId}</span>
             <span>\${s.requestCount} req</span>
@@ -168,6 +166,17 @@ async function loadEntries() {
       const tokens = e.response ? formatNumber(e.response.usage.input_tokens) + '/' + formatNumber(e.response.usage.output_tokens) : '-';
       const shortId = e.id.slice(0, 8);
 
+      // Get last user message preview
+      let lastUserMsg = '';
+      for (let i = e.request.messages.length - 1; i >= 0; i--) {
+        const msg = e.request.messages[i];
+        if (msg.role === 'user') {
+          lastUserMsg = getContentText(msg.content).slice(0, 80);
+          if (lastUserMsg.length === 80) lastUserMsg += '...';
+          break;
+        }
+      }
+
       html += \`
         <div class="entry-item\${isSelected ? ' selected' : ''}" onclick="showDetail('\${e.id}')">
           <div class="entry-header">
@@ -180,6 +189,7 @@ async function loadEntries() {
             <span class="entry-tokens">\${tokens}</span>
             <span class="entry-duration">\${formatDuration(e.durationMs)}</span>
           </div>
+          \${lastUserMsg ? '<div class="entry-preview">' + escapeHtml(lastUserMsg) + '</div>' : ''}
         </div>
       \`;
     }

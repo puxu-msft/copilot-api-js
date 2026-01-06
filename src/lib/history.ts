@@ -72,7 +72,6 @@ export interface Session {
   totalOutputTokens: number
   models: Array<string>
   endpoint: "anthropic" | "openai"
-  preview?: string // First user message preview (first 100 chars)
   toolsUsed?: Array<string> // Tool names used in this session
 }
 
@@ -185,21 +184,6 @@ export interface RecordRequestParams {
   system?: string
 }
 
-// Extract text content from a message for preview
-function getMessagePreview(msg: MessageContent, maxLen: number = 100): string {
-  if (typeof msg.content === "string") {
-    return msg.content.slice(0, maxLen)
-  }
-  if (Array.isArray(msg.content)) {
-    for (const block of msg.content) {
-      if (block.type === "text" && block.text) {
-        return block.text.slice(0, maxLen)
-      }
-    }
-  }
-  return ""
-}
-
 export function recordRequest(
   endpoint: "anthropic" | "openai",
   request: RecordRequestParams,
@@ -237,14 +221,6 @@ export function recordRequest(
     session.models.push(request.model)
   }
 
-  // Set session preview from first user message (only on first request)
-  if (!session.preview) {
-    const userMsg = request.messages.find((m) => m.role === "user")
-    if (userMsg) {
-      session.preview = getMessagePreview(userMsg, 100)
-    }
-  }
-
   // Track tools used
   if (request.tools && request.tools.length > 0) {
     if (!session.toolsUsed) {
@@ -257,8 +233,11 @@ export function recordRequest(
     }
   }
 
-  // Enforce max entries limit (FIFO)
-  while (historyState.entries.length > historyState.maxEntries) {
+  // Enforce max entries limit (FIFO), skip if maxEntries is 0 (unlimited)
+  while (
+    historyState.maxEntries > 0
+    && historyState.entries.length > historyState.maxEntries
+  ) {
     const removed = historyState.entries.shift()
     // Clean up empty sessions
     if (removed) {
