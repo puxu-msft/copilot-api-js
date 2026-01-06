@@ -5,7 +5,7 @@ import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
 import {
-  isHistoryEnabled,
+  type MessageContent,
   recordRequest,
   recordResponse,
 } from "~/lib/history"
@@ -22,7 +22,6 @@ import {
   type AnthropicStreamState,
 } from "./anthropic-types"
 import {
-  type ToolNameMapping,
   translateToAnthropic,
   translateToOpenAI,
 } from "./non-stream-translation"
@@ -36,14 +35,18 @@ export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
-  // Record request to history
+  // Record request to history with full message content
   const historyId = recordRequest("anthropic", {
     model: anthropicPayload.model,
-    messageCount: anthropicPayload.messages.length,
+    messages: convertAnthropicMessages(anthropicPayload.messages),
     stream: anthropicPayload.stream ?? false,
-    hasTools: Boolean(anthropicPayload.tools?.length),
-    toolCount: anthropicPayload.tools?.length,
+    tools: anthropicPayload.tools?.map((t) => ({
+      name: t.name,
+      description: t.description,
+    })),
     max_tokens: anthropicPayload.max_tokens,
+    temperature: anthropicPayload.temperature,
+    system: extractSystemPrompt(anthropicPayload.system),
   })
 
   const { payload: openAIPayload, toolNameMapping } =
@@ -74,7 +77,7 @@ export async function handleCompletion(c: Context) {
         JSON.stringify(anthropicResponse),
       )
 
-      // Record response to history
+      // Record response to history with full content
       recordResponse(
         historyId,
         {
@@ -82,8 +85,24 @@ export async function handleCompletion(c: Context) {
           model: anthropicResponse.model,
           usage: anthropicResponse.usage,
           stop_reason: anthropicResponse.stop_reason ?? undefined,
-          contentSummary: extractContentSummary(anthropicResponse.content),
-          toolCalls: extractToolCalls(anthropicResponse.content),
+          content: {
+            role: "assistant",
+            content: anthropicResponse.content.map((block) => {
+              if (block.type === "text") {
+                return { type: "text", text: block.text }
+              }
+              if (block.type === "tool_use") {
+                return {
+                  type: "tool_use",
+                  id: block.id,
+                  name: block.name,
+                  input: JSON.stringify(block.input),
+                }
+              }
+              return { type: block.type }
+            }),
+          },
+          toolCalls: extractToolCallsFromContent(anthropicResponse.content),
         },
         Date.now() - startTime,
       )
@@ -106,7 +125,13 @@ export async function handleCompletion(c: Context) {
       let streamOutputTokens = 0
       let streamStopReason = ""
       let streamContent = ""
-      const streamToolCalls: string[] = []
+      const streamToolCalls: Array<{
+        id: string
+        name: string
+        input: string
+      }> = []
+      let currentToolCall: { id: string; name: string; input: string } | null =
+        null
 
       try {
         for await (const rawEvent of response) {
@@ -146,22 +171,47 @@ export async function handleCompletion(c: Context) {
             consola.debug("Translated Anthropic event:", JSON.stringify(event))
 
             // Capture data for history
-            if (event.type === "content_block_delta") {
-              if ("text" in event.delta) {
-                streamContent += event.delta.text
+            switch (event.type) {
+              case "content_block_delta": {
+                if ("text" in event.delta) {
+                  streamContent += event.delta.text
+                } else if ("partial_json" in event.delta && currentToolCall) {
+                  currentToolCall.input += event.delta.partial_json
+                }
+
+                break
               }
-            } else if (event.type === "content_block_start") {
-              if (event.content_block.type === "tool_use") {
-                streamToolCalls.push(event.content_block.name)
+              case "content_block_start": {
+                if (event.content_block.type === "tool_use") {
+                  currentToolCall = {
+                    id: event.content_block.id,
+                    name: event.content_block.name,
+                    input: "",
+                  }
+                }
+
+                break
               }
-            } else if (event.type === "message_delta") {
-              if (event.delta.stop_reason) {
-                streamStopReason = event.delta.stop_reason
+              case "content_block_stop": {
+                if (currentToolCall) {
+                  streamToolCalls.push(currentToolCall)
+                  currentToolCall = null
+                }
+
+                break
               }
-              if (event.usage) {
-                streamInputTokens = event.usage.input_tokens ?? 0
-                streamOutputTokens = event.usage.output_tokens
+              case "message_delta": {
+                if (event.delta.stop_reason) {
+                  streamStopReason = event.delta.stop_reason
+                }
+                if (event.usage) {
+                  streamInputTokens = event.usage.input_tokens ?? 0
+                  streamOutputTokens = event.usage.output_tokens
+                }
+
+                break
               }
+              // No default
             }
 
             await stream.writeSSE({
@@ -171,7 +221,18 @@ export async function handleCompletion(c: Context) {
           }
         }
 
-        // Record streaming response to history
+        // Record streaming response to history with full content
+        const contentBlocks: Array<{ type: string; text?: string }> = []
+        if (streamContent) {
+          contentBlocks.push({ type: "text", text: streamContent })
+        }
+        for (const tc of streamToolCalls) {
+          contentBlocks.push({
+            type: "tool_use",
+            ...tc,
+          })
+        }
+
         recordResponse(
           historyId,
           {
@@ -182,8 +243,18 @@ export async function handleCompletion(c: Context) {
               output_tokens: streamOutputTokens,
             },
             stop_reason: streamStopReason || undefined,
-            contentSummary: streamContent.slice(0, 200),
-            toolCalls: streamToolCalls.length > 0 ? streamToolCalls : undefined,
+            content:
+              contentBlocks.length > 0 ?
+                { role: "assistant", content: contentBlocks }
+              : null,
+            toolCalls:
+              streamToolCalls.length > 0 ?
+                streamToolCalls.map((tc) => ({
+                  id: tc.id,
+                  name: tc.name,
+                  input: tc.input,
+                }))
+              : undefined,
           },
           Date.now() - startTime,
         )
@@ -198,7 +269,7 @@ export async function handleCompletion(c: Context) {
             model: streamModel || anthropicPayload.model,
             usage: { input_tokens: 0, output_tokens: 0 },
             error: error instanceof Error ? error.message : "Stream error",
-            contentSummary: "",
+            content: null,
           },
           Date.now() - startTime,
         )
@@ -219,7 +290,7 @@ export async function handleCompletion(c: Context) {
         model: anthropicPayload.model,
         usage: { input_tokens: 0, output_tokens: 0 },
         error: error instanceof Error ? error.message : "Unknown error",
-        contentSummary: "",
+        content: null,
       },
       Date.now() - startTime,
     )
@@ -227,32 +298,77 @@ export async function handleCompletion(c: Context) {
   }
 }
 
-function extractContentSummary(content: unknown[]): string {
-  for (const block of content) {
-    if (
-      typeof block === "object"
-      && block !== null
-      && "type" in block
-      && block.type === "text"
-      && "text" in block
-    ) {
-      return String(block.text).slice(0, 200)
+// Convert Anthropic messages to history MessageContent format
+function convertAnthropicMessages(
+  messages: AnthropicMessagesPayload["messages"],
+): Array<MessageContent> {
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") {
+      return { role: msg.role, content: msg.content }
     }
-  }
-  return ""
+
+    // Convert content blocks
+    const content = msg.content.map((block) => {
+      if (block.type === "text") {
+        return { type: "text", text: block.text }
+      }
+      if (block.type === "tool_use") {
+        return {
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: JSON.stringify(block.input),
+        }
+      }
+      if (block.type === "tool_result") {
+        const resultContent =
+          typeof block.content === "string" ?
+            block.content
+          : block.content
+              .map((c) => (c.type === "text" ? c.text : `[${c.type}]`))
+              .join("\n")
+        return {
+          type: "tool_result",
+          tool_use_id: block.tool_use_id,
+          content: resultContent,
+        }
+      }
+      return { type: block.type }
+    })
+
+    return { role: msg.role, content }
+  })
 }
 
-function extractToolCalls(content: unknown[]): string[] | undefined {
-  const tools: string[] = []
+// Extract system prompt from Anthropic format
+function extractSystemPrompt(
+  system: AnthropicMessagesPayload["system"],
+): string | undefined {
+  if (!system) return undefined
+  if (typeof system === "string") return system
+  return system.map((block) => block.text).join("\n")
+}
+
+// Extract tool calls from response content
+function extractToolCallsFromContent(
+  content: Array<unknown>,
+): Array<{ id: string; name: string; input: string }> | undefined {
+  const tools: Array<{ id: string; name: string; input: string }> = []
   for (const block of content) {
     if (
       typeof block === "object"
       && block !== null
       && "type" in block
       && block.type === "tool_use"
+      && "id" in block
       && "name" in block
+      && "input" in block
     ) {
-      tools.push(String(block.name))
+      tools.push({
+        id: String(block.id),
+        name: String(block.name),
+        input: JSON.stringify(block.input),
+      })
     }
   }
   return tools.length > 0 ? tools : undefined

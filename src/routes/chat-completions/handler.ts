@@ -4,7 +4,11 @@ import consola from "consola"
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import { recordRequest, recordResponse } from "~/lib/history"
+import {
+  type MessageContent,
+  recordRequest,
+  recordResponse,
+} from "~/lib/history"
 import { executeWithRateLimit } from "~/lib/queue"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
@@ -21,14 +25,17 @@ export async function handleCompletion(c: Context) {
   let payload = await c.req.json<ChatCompletionsPayload>()
   consola.debug("Request payload:", JSON.stringify(payload).slice(-400))
 
-  // Record request to history
+  // Record request to history with full messages
   const historyId = recordRequest("openai", {
     model: payload.model,
-    messageCount: payload.messages.length,
+    messages: convertOpenAIMessages(payload.messages),
     stream: payload.stream ?? false,
-    hasTools: Boolean(payload.tools?.length),
-    toolCount: payload.tools?.length ?? undefined,
+    tools: payload.tools?.map((t) => ({
+      name: t.function.name,
+      description: t.function.description,
+    })),
     max_tokens: payload.max_tokens ?? undefined,
+    temperature: payload.temperature ?? undefined,
   })
 
   // Find the selected model
@@ -67,7 +74,7 @@ export async function handleCompletion(c: Context) {
     if (isNonStreaming(response)) {
       consola.debug("Non-streaming response:", JSON.stringify(response))
 
-      // Record response to history
+      // Record response to history with full content
       const choice = response.choices[0]
       recordResponse(
         historyId,
@@ -79,11 +86,29 @@ export async function handleCompletion(c: Context) {
             output_tokens: response.usage?.completion_tokens ?? 0,
           },
           stop_reason: choice?.finish_reason ?? undefined,
-          contentSummary:
-            typeof choice?.message?.content === "string"
-              ? choice.message.content.slice(0, 200)
-              : "",
-          toolCalls: choice?.message?.tool_calls?.map((tc) => tc.function.name),
+          content:
+            choice?.message ?
+              {
+                role: choice.message.role,
+                content:
+                  typeof choice.message.content === "string" ?
+                    choice.message.content
+                  : JSON.stringify(choice.message.content),
+                tool_calls: choice.message.tool_calls?.map((tc) => ({
+                  id: tc.id,
+                  type: tc.type,
+                  function: {
+                    name: tc.function.name,
+                    arguments: tc.function.arguments,
+                  },
+                })),
+              }
+            : null,
+          toolCalls: choice?.message?.tool_calls?.map((tc) => ({
+            id: tc.id,
+            name: tc.function.name,
+            input: tc.function.arguments,
+          })),
         },
         Date.now() - startTime,
       )
@@ -99,7 +124,15 @@ export async function handleCompletion(c: Context) {
       let streamOutputTokens = 0
       let streamFinishReason = ""
       let streamContent = ""
-      const streamToolCalls: string[] = []
+      const streamToolCalls: Array<{
+        id: string
+        name: string
+        arguments: string
+      }> = []
+      const toolCallAccumulators: Map<
+        number,
+        { id: string; name: string; arguments: string }
+      > = new Map()
 
       try {
         for await (const chunk of response) {
@@ -122,8 +155,20 @@ export async function handleCompletion(c: Context) {
               }
               if (choice?.delta?.tool_calls) {
                 for (const tc of choice.delta.tool_calls) {
-                  if (tc.function?.name) {
-                    streamToolCalls.push(tc.function.name)
+                  const idx = tc.index
+                  if (!toolCallAccumulators.has(idx)) {
+                    toolCallAccumulators.set(idx, {
+                      id: tc.id || "",
+                      name: tc.function?.name || "",
+                      arguments: "",
+                    })
+                  }
+                  const acc = toolCallAccumulators.get(idx)
+                  if (acc) {
+                    if (tc.id) acc.id = tc.id
+                    if (tc.function?.name) acc.name = tc.function.name
+                    if (tc.function?.arguments)
+                      acc.arguments += tc.function.arguments
                   }
                 }
               }
@@ -138,7 +183,25 @@ export async function handleCompletion(c: Context) {
           await stream.writeSSE(chunk as SSEMessage)
         }
 
-        // Record streaming response to history
+        // Collect accumulated tool calls
+        for (const tc of toolCallAccumulators.values()) {
+          if (tc.id && tc.name) {
+            streamToolCalls.push({
+              id: tc.id,
+              name: tc.name,
+              arguments: tc.arguments,
+            })
+          }
+        }
+
+        // Build content for history
+        const toolCallsForContent = streamToolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function" as const,
+          function: { name: tc.name, arguments: tc.arguments },
+        }))
+
+        // Record streaming response to history with full content
         recordResponse(
           historyId,
           {
@@ -149,8 +212,22 @@ export async function handleCompletion(c: Context) {
               output_tokens: streamOutputTokens,
             },
             stop_reason: streamFinishReason || undefined,
-            contentSummary: streamContent.slice(0, 200),
-            toolCalls: streamToolCalls.length > 0 ? streamToolCalls : undefined,
+            content: {
+              role: "assistant",
+              content: streamContent || undefined,
+              tool_calls:
+                toolCallsForContent.length > 0 ?
+                  toolCallsForContent
+                : undefined,
+            },
+            toolCalls:
+              streamToolCalls.length > 0 ?
+                streamToolCalls.map((tc) => ({
+                  id: tc.id,
+                  name: tc.name,
+                  input: tc.arguments,
+                }))
+              : undefined,
           },
           Date.now() - startTime,
         )
@@ -163,7 +240,7 @@ export async function handleCompletion(c: Context) {
             model: streamModel || payload.model,
             usage: { input_tokens: 0, output_tokens: 0 },
             error: error instanceof Error ? error.message : "Stream error",
-            contentSummary: "",
+            content: null,
           },
           Date.now() - startTime,
         )
@@ -179,7 +256,7 @@ export async function handleCompletion(c: Context) {
         model: payload.model,
         usage: { input_tokens: 0, output_tokens: 0 },
         error: error instanceof Error ? error.message : "Unknown error",
-        contentSummary: "",
+        content: null,
       },
       Date.now() - startTime,
     )
@@ -190,3 +267,42 @@ export async function handleCompletion(c: Context) {
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createChatCompletions>>,
 ): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
+
+// Convert OpenAI messages to history MessageContent format
+function convertOpenAIMessages(
+  messages: ChatCompletionsPayload["messages"],
+): Array<MessageContent> {
+  return messages.map((msg) => {
+    const result: MessageContent = {
+      role: msg.role,
+      content:
+        typeof msg.content === "string" ?
+          msg.content
+        : JSON.stringify(msg.content),
+    }
+
+    // Handle tool calls in assistant messages
+    if ("tool_calls" in msg && msg.tool_calls) {
+      result.tool_calls = msg.tool_calls.map((tc) => ({
+        id: tc.id,
+        type: tc.type,
+        function: {
+          name: tc.function.name,
+          arguments: tc.function.arguments,
+        },
+      }))
+    }
+
+    // Handle tool result messages
+    if ("tool_call_id" in msg && msg.tool_call_id) {
+      result.tool_call_id = msg.tool_call_id
+    }
+
+    // Handle function name
+    if ("name" in msg && msg.name) {
+      result.name = msg.name
+    }
+
+    return result
+  })
+}

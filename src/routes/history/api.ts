@@ -2,9 +2,13 @@ import type { Context } from "hono"
 
 import {
   clearHistory,
+  deleteSession,
   exportHistory,
   getEntry,
   getHistory,
+  getSession,
+  getSessionEntries,
+  getSessions,
   getStats,
   isHistoryEnabled,
   type QueryOptions,
@@ -25,6 +29,7 @@ export function handleGetEntries(c: Context) {
     from: query.from ? Number.parseInt(query.from, 10) : undefined,
     to: query.to ? Number.parseInt(query.to, 10) : undefined,
     search: query.search || undefined,
+    sessionId: query.sessionId || undefined,
   }
 
   const result = getHistory(options)
@@ -81,4 +86,50 @@ export function handleExport(c: Context) {
   }
 
   return c.body(data)
+}
+
+// Session management endpoints
+export function handleGetSessions(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+
+  const result = getSessions()
+  return c.json(result)
+}
+
+export function handleGetSession(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+
+  const id = c.req.param("id")
+  const session = getSession(id)
+
+  if (!session) {
+    return c.json({ error: "Session not found" }, 404)
+  }
+
+  // Include entries in the session response
+  const entries = getSessionEntries(id)
+
+  return c.json({
+    ...session,
+    entries,
+  })
+}
+
+export function handleDeleteSession(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+
+  const id = c.req.param("id")
+  const success = deleteSession(id)
+
+  if (!success) {
+    return c.json({ error: "Session not found" }, 404)
+  }
+
+  return c.json({ success: true, message: "Session deleted" })
 }
