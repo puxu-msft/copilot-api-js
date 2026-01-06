@@ -1,7 +1,6 @@
 name: Release
 
 permissions:
-  id-token: write
   contents: write
 
 on:
@@ -21,6 +20,55 @@ jobs:
         with:
           bun-version: latest
 
-      - run: bunx changelogithub
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build
+        run: bun run build
+
+      - name: Create release archive
+        run: |
+          # Create a tarball of the dist directory and package.json for npm install
+          tar -czvf copilot-api-${{ github.ref_name }}.tar.gz dist package.json
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s" $PREV_TAG..HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s" -20)
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: copilot-api-${{ github.ref_name }}.tar.gz
+          body: |
+            ## Changes
+
+            ${{ steps.changelog.outputs.changelog }}
+
+            ## Installation
+
+            Download the tarball and extract it:
+            ```sh
+            tar -xzvf copilot-api-${{ github.ref_name }}.tar.gz
+            node dist/main.js start
+            ```
+
+            Or run from source:
+            ```sh
+            git clone https://github.com/${{ github.repository }}.git
+            cd copilot-api
+            bun install
+            bun run start
+            ```
+          generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
