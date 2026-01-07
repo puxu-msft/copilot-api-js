@@ -70,8 +70,8 @@ describe("Anthropic to OpenAI translation logic", () => {
       max_tokens: 0,
     }
 
-    const openAIPayload = translateToOpenAI(anthropicPayload)
-    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+    const result = translateToOpenAI(anthropicPayload)
+    expect(isValidChatCompletionRequest(result.payload)).toBe(true)
   })
 
   test("should translate comprehensive Anthropic payload to valid OpenAI payload", () => {
@@ -99,8 +99,8 @@ describe("Anthropic to OpenAI translation logic", () => {
       ],
       tool_choice: { type: "auto" },
     }
-    const openAIPayload = translateToOpenAI(anthropicPayload)
-    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+    const result = translateToOpenAI(anthropicPayload)
+    expect(isValidChatCompletionRequest(result.payload)).toBe(true)
   })
 
   test("should handle missing fields gracefully", () => {
@@ -109,8 +109,8 @@ describe("Anthropic to OpenAI translation logic", () => {
       messages: [{ role: "user", content: "Hello!" }],
       max_tokens: 0,
     }
-    const openAIPayload = translateToOpenAI(anthropicPayload)
-    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+    const result = translateToOpenAI(anthropicPayload)
+    expect(isValidChatCompletionRequest(result.payload)).toBe(true)
   })
 
   test("should handle invalid types in Anthropic payload", () => {
@@ -120,9 +120,9 @@ describe("Anthropic to OpenAI translation logic", () => {
       temperature: "hot", // Should be a number
     }
     // @ts-expect-error intended to be invalid
-    const openAIPayload = translateToOpenAI(anthropicPayload)
+    const result = translateToOpenAI(anthropicPayload)
     // Should fail validation
-    expect(isValidChatCompletionRequest(openAIPayload)).toBe(false)
+    expect(isValidChatCompletionRequest(result.payload)).toBe(false)
   })
 
   test("should handle thinking blocks in assistant messages", () => {
@@ -143,11 +143,11 @@ describe("Anthropic to OpenAI translation logic", () => {
       ],
       max_tokens: 100,
     }
-    const openAIPayload = translateToOpenAI(anthropicPayload)
-    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+    const result = translateToOpenAI(anthropicPayload)
+    expect(isValidChatCompletionRequest(result.payload)).toBe(true)
 
     // Check that thinking content is combined with text content
-    const assistantMessage = openAIPayload.messages.find(
+    const assistantMessage = result.payload.messages.find(
       (m) => m.role === "assistant",
     )
     expect(assistantMessage?.content).toContain(
@@ -181,11 +181,11 @@ describe("Anthropic to OpenAI translation logic", () => {
       ],
       max_tokens: 100,
     }
-    const openAIPayload = translateToOpenAI(anthropicPayload)
-    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+    const result = translateToOpenAI(anthropicPayload)
+    expect(isValidChatCompletionRequest(result.payload)).toBe(true)
 
     // Check that thinking content is included in the message content
-    const assistantMessage = openAIPayload.messages.find(
+    const assistantMessage = result.payload.messages.find(
       (m) => m.role === "assistant",
     )
     expect(assistantMessage?.content).toContain(
