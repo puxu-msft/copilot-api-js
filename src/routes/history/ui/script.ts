@@ -41,6 +41,48 @@ function getContentText(content) {
   return JSON.stringify(content, null, 2);
 }
 
+// Extract real user text, skipping system tags like <system-reminder>, <ide_opened_file>, etc.
+function extractRealUserText(content) {
+  if (!content) return '';
+  let text = '';
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter(c => c.type === 'text' && c.text)
+      .map(c => c.text)
+      .join('\\n');
+  }
+  if (!text) return '';
+
+  // Remove system tags and their content
+  const systemTags = [
+    'system-reminder',
+    'ide_opened_file',
+    'ide_selection',
+    'ide_visible_files',
+    'ide_diagnostics',
+    'ide_cursor_position',
+    'user-prompt-submit-hook',
+    'antml:function_calls',
+    'antml:invoke',
+    'antml:parameter'
+  ];
+
+  let cleaned = text;
+  for (const tag of systemTags) {
+    // Remove <tag>...</tag> blocks (including multiline)
+    const regex = new RegExp('<' + tag + '[^>]*>[\\\\s\\\\S]*?</' + tag + '>', 'gi');
+    cleaned = cleaned.replace(regex, '');
+    // Remove self-closing <tag ... /> or <tag ...>content without closing
+    const selfClosingRegex = new RegExp('<' + tag + '[^>]*/>', 'gi');
+    cleaned = cleaned.replace(selfClosingRegex, '');
+  }
+
+  // Trim whitespace and return
+  return cleaned.trim();
+}
+
 function formatContentForDisplay(content) {
   if (!content) return { summary: '', raw: 'null' };
   if (typeof content === 'string') return { summary: content, raw: JSON.stringify(content) };
@@ -166,14 +208,54 @@ async function loadEntries() {
       const tokens = e.response ? formatNumber(e.response.usage.input_tokens) + '/' + formatNumber(e.response.usage.output_tokens) : '-';
       const shortId = e.id.slice(0, 8);
 
-      // Get last user message preview
+      // Get preview: prefer last user text, but if last message is tool_result, show that
       let lastUserMsg = '';
-      for (let i = e.request.messages.length - 1; i >= 0; i--) {
-        const msg = e.request.messages[i];
-        if (msg.role === 'user') {
-          lastUserMsg = getContentText(msg.content).slice(0, 80);
-          if (lastUserMsg.length === 80) lastUserMsg += '...';
-          break;
+      const lastMsg = e.request.messages[e.request.messages.length - 1];
+
+      // Check if last message is tool_result (user sending tool results back)
+      if (lastMsg && lastMsg.role === 'user') {
+        const content = lastMsg.content;
+        if (Array.isArray(content) && content.length > 0 && content[0].type === 'tool_result') {
+          // Show tool_result info instead of searching for user text
+          const toolResults = content.filter(c => c.type === 'tool_result');
+          if (toolResults.length === 1) {
+            lastUserMsg = '[tool_result: ' + (toolResults[0].tool_use_id || '').slice(0, 8) + ']';
+          } else {
+            lastUserMsg = '[' + toolResults.length + ' tool_results]';
+          }
+        } else {
+          // Regular user message, extract real text
+          const realText = extractRealUserText(lastMsg.content);
+          if (realText.length > 0) {
+            lastUserMsg = realText.slice(0, 80);
+            if (realText.length > 80) lastUserMsg += '...';
+          }
+        }
+      } else if (lastMsg && lastMsg.role === 'assistant') {
+        // Last message is assistant - show text content if available, otherwise show tool_use
+        const content = lastMsg.content;
+        if (Array.isArray(content)) {
+          // First try to get text content
+          const textParts = content.filter(c => c.type === 'text' && c.text).map(c => c.text);
+          if (textParts.length > 0) {
+            const text = textParts.join('\\n').trim();
+            if (text.length > 0) {
+              lastUserMsg = text.slice(0, 80);
+              if (text.length > 80) lastUserMsg += '...';
+            }
+          }
+          // If no text, show tool_use info
+          if (!lastUserMsg) {
+            const toolUses = content.filter(c => c.type === 'tool_use');
+            if (toolUses.length === 1) {
+              lastUserMsg = '[tool_use: ' + toolUses[0].name + ']';
+            } else if (toolUses.length > 1) {
+              lastUserMsg = '[' + toolUses.length + ' tool_uses]';
+            }
+          }
+        } else if (typeof content === 'string' && content.trim()) {
+          lastUserMsg = content.slice(0, 80);
+          if (content.length > 80) lastUserMsg += '...';
         }
       }
 
