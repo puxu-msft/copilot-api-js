@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Core Principles (HIGHEST PRIORITY)
 
-**NEVER take shortcuts or use workarounds.** Always use the correct solution:
+**Always use the best, most complete solution.** Never take shortcuts or workarounds:
+- Always think deeply and choose the optimal approach
 - If code violates lint rules, refactor the code properly
 - Fix the root cause, not the symptom
+- Prefer robust, maintainable solutions over quick hacks
 
 ## Project Overview
 
