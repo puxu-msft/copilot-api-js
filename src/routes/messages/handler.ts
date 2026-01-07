@@ -49,12 +49,16 @@ interface ResponseContext {
 }
 
 export async function handleCompletion(c: Context) {
-  const startTime = Date.now()
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
-  // Update TUI tracker with model info
+  // Get tracking ID and use tracker's startTime for consistent timing
   const trackingId = c.get("trackingId") as string | undefined
+  const trackedRequest =
+    trackingId ? requestTracker.getRequest(trackingId) : undefined
+  const startTime = trackedRequest?.startTime ?? Date.now()
+
+  // Update TUI tracker with model info
   updateTrackerModel(trackingId, anthropicPayload.model)
 
   // Record request to history with full message content
