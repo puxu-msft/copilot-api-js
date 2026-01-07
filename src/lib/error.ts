@@ -89,7 +89,7 @@ export async function forwardError(c: Context, error: unknown) {
           tokenInfo.current,
           tokenInfo.limit,
         )
-        consola.info("Returning formatted token limit error:", formattedError)
+        consola.debug("Returning formatted token limit error:", formattedError)
         return c.json(formattedError, 400 as ContentfulStatusCode)
       }
     }

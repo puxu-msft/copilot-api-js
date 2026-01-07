@@ -148,7 +148,7 @@ async function buildFinalPayload(
 
   try {
     const check = await checkNeedsCompaction(payload, model)
-    consola.info(
+    consola.debug(
       `Auto-compact check: ${check.currentTokens} tokens, limit ${check.limit}, needed: ${check.needed}`,
     )
     if (!check.needed) {

@@ -130,7 +130,7 @@ async function buildFinalPayload(
 
   try {
     const check = await checkNeedsCompaction(payload, model)
-    consola.info(
+    consola.debug(
       `Auto-compact check: ${check.currentTokens} tokens, limit ${check.limit}, needed: ${check.needed}`,
     )
     if (!check.needed) {
@@ -162,12 +162,12 @@ async function logTokenCount(
         payload,
         selectedModel as Parameters<typeof getTokenCount>[1],
       )
-      consola.info("Current token count:", tokenCount)
+      consola.debug("Current token count:", tokenCount)
     } else {
-      consola.warn("No model selected, skipping token count calculation")
+      consola.debug("No model selected, skipping token count calculation")
     }
   } catch (error) {
-    consola.warn("Failed to calculate token count:", error)
+    consola.debug("Failed to calculate token count:", error)
   }
 }
 
