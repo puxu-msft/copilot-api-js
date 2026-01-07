@@ -1,8 +1,8 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { logger } from "hono/logger"
 
 import { state } from "./lib/state"
+import { tuiLogger } from "./lib/tui"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
 import { eventLoggingRoutes } from "./routes/event-logging/route"
@@ -14,7 +14,7 @@ import { usageRoute } from "./routes/usage/route"
 
 export const server = new Hono()
 
-server.use(logger())
+server.use(tuiLogger())
 server.use(cors())
 
 server.get("/", (c) => c.text("Server running"))
