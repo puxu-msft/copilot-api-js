@@ -12,6 +12,7 @@ import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
 import { setupCopilotToken, setupGitHubToken } from "./lib/token"
+import { initTui, type TuiMode } from "./lib/tui"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { server } from "./server"
 
@@ -29,6 +30,7 @@ interface RunServerOptions {
   proxyEnv: boolean
   history: boolean
   historyLimit: number
+  tui: TuiMode
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -58,6 +60,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       options.historyLimit === 0 ? "unlimited" : `max ${options.historyLimit}`
     consola.info(`History recording enabled (${limitText} entries)`)
   }
+
+  // Initialize TUI for request logging
+  initTui({ enabled: true, mode: options.tui })
 
   await ensurePaths()
   await cacheVSCodeVersion()
@@ -215,6 +220,12 @@ export const start = defineCommand({
       description:
         "Maximum number of history entries to keep in memory (0 = unlimited)",
     },
+    tui: {
+      type: "string",
+      default: "console",
+      description:
+        "TUI mode: 'console' for simple log output, 'fullscreen' for interactive terminal UI with tabs",
+    },
   },
   run({ args }) {
     const rateLimitRaw = args["rate-limit"]
@@ -236,6 +247,7 @@ export const start = defineCommand({
       proxyEnv: args["proxy-env"],
       history: args.history,
       historyLimit: Number.parseInt(args["history-limit"], 10),
+      tui: args.tui as TuiMode,
     })
   },
 })
