@@ -1,7 +1,8 @@
 const FALLBACK = "1.104.3"
 
 // GitHub API endpoint for latest VSCode release
-const GITHUB_API_URL = "https://api.github.com/repos/microsoft/vscode/releases/latest"
+const GITHUB_API_URL =
+  "https://api.github.com/repos/microsoft/vscode/releases/latest"
 
 interface GitHubRelease {
   tag_name: string

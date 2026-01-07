@@ -53,7 +53,7 @@ export function generateEnvScript(
   switch (shell) {
     case "powershell": {
       commandBlock = filteredEnvVars
-        .map(([key, value]) => `$env:${key} = "${value.replace(/"/g, '`"')}"`)
+        .map(([key, value]) => `$env:${key} = "${value.replaceAll('"', '`"')}"`)
         .join("; ")
       break
     }
@@ -65,14 +65,19 @@ export function generateEnvScript(
     }
     case "fish": {
       commandBlock = filteredEnvVars
-        .map(([key, value]) => `set -gx ${key} "${value.replace(/"/g, '\\"')}"`)
+        .map(
+          ([key, value]) =>
+            `set -gx ${key} "${value.replaceAll('"', String.raw`\"`)}"`,
+        )
         .join("; ")
       break
     }
     default: {
       // bash, zsh, sh
       const assignments = filteredEnvVars
-        .map(([key, value]) => `${key}="${value.replace(/"/g, '\\"')}"`)
+        .map(
+          ([key, value]) => `${key}="${value.replaceAll('"', String.raw`\"`)}"`,
+        )
         .join(" ")
       commandBlock = filteredEnvVars.length > 0 ? `export ${assignments}` : ""
       break
