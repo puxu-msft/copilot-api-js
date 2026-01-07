@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Core Principles (HIGHEST PRIORITY)
+
+**NEVER take shortcuts or use workarounds.** Always use the correct solution:
+- If code violates lint rules, refactor the code properly
+- Fix the root cause, not the symptom
+
 ## Project Overview
 
 A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI and Anthropic compatible endpoints. This allows tools like Claude Code to use GitHub Copilot as their backend.
