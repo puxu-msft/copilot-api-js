@@ -7,6 +7,13 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
+interface StartRequestOptions {
+  method: string
+  path: string
+  model: string
+  isHistoryAccess?: boolean
+}
+
 class RequestTracker {
   private requests: Map<string, TrackedRequest> = new Map()
   private renderer: TuiRenderer | null = null
@@ -34,15 +41,16 @@ class RequestTracker {
    * Start tracking a new request
    * Returns the tracking ID
    */
-  startRequest(method: string, path: string, model: string): string {
+  startRequest(options: StartRequestOptions): string {
     const id = generateId()
     const request: TrackedRequest = {
       id,
-      method,
-      path,
-      model,
+      method: options.method,
+      path: options.path,
+      model: options.model,
       startTime: Date.now(),
       status: "executing",
+      isHistoryAccess: options.isHistoryAccess,
     }
 
     this.requests.set(id, request)

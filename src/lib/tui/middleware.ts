@@ -17,8 +17,16 @@ export function tuiLogger(): MiddlewareHandler {
     const method = c.req.method
     const path = c.req.path
 
+    // Detect /history API access for gray display
+    const isHistoryAccess = path.startsWith("/history")
+
     // Start tracking with empty model (will be updated by handler if available)
-    const trackingId = requestTracker.startRequest(method, path, "")
+    const trackingId = requestTracker.startRequest({
+      method,
+      path,
+      model: "",
+      isHistoryAccess,
+    })
 
     // Store tracking ID in context for handlers to update
     c.set("trackingId", trackingId)

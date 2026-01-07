@@ -12,6 +12,7 @@
         "gpt-tokenizer": "^3.0.1",
         "hono": "^4.9.9",
         "ink": "^6.6.0",
+        "picocolors": "^1.1.1",
         "proxy-from-env": "^1.1.0",
         "react": "^19.2.3",
         "srvx": "^0.8.9",

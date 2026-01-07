@@ -20,6 +20,8 @@ export interface TrackedRequest {
   outputTokens?: number
   error?: string
   queuePosition?: number
+  /** Whether this is a /history API access (displayed in gray) */
+  isHistoryAccess?: boolean
 }
 
 export interface RequestUpdate {
