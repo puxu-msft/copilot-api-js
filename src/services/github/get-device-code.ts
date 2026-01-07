@@ -16,7 +16,8 @@ export async function getDeviceCode(): Promise<DeviceCodeResponse> {
     }),
   })
 
-  if (!response.ok) throw await HTTPError.fromResponse("Failed to get device code", response)
+  if (!response.ok)
+    throw await HTTPError.fromResponse("Failed to get device code", response)
 
   return (await response.json()) as DeviceCodeResponse
 }

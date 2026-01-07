@@ -83,6 +83,36 @@ function extractRealUserText(content) {
   return cleaned.trim();
 }
 
+// Get preview text from assistant message content
+function getAssistantPreview(content) {
+  if (!content) return '';
+  if (typeof content === 'string') {
+    const text = content.trim();
+    if (text.length > 0) {
+      return text.length > 80 ? text.slice(0, 80) + '...' : text;
+    }
+    return '';
+  }
+  if (Array.isArray(content)) {
+    // First try to get text content
+    const textParts = content.filter(c => c.type === 'text' && c.text).map(c => c.text);
+    if (textParts.length > 0) {
+      const text = textParts.join('\\n').trim();
+      if (text.length > 0) {
+        return text.length > 80 ? text.slice(0, 80) + '...' : text;
+      }
+    }
+    // If no text, show tool_use info
+    const toolUses = content.filter(c => c.type === 'tool_use');
+    if (toolUses.length === 1) {
+      return '[tool_use: ' + toolUses[0].name + ']';
+    } else if (toolUses.length > 1) {
+      return '[' + toolUses.length + ' tool_uses]';
+    }
+  }
+  return '';
+}
+
 function formatContentForDisplay(content) {
   if (!content) return { summary: '', raw: 'null' };
   if (typeof content === 'string') return { summary: content, raw: JSON.stringify(content) };
@@ -208,20 +238,24 @@ async function loadEntries() {
       const tokens = e.response ? formatNumber(e.response.usage.input_tokens) + '/' + formatNumber(e.response.usage.output_tokens) : '-';
       const shortId = e.id.slice(0, 8);
 
-      // Get preview: prefer last user text, but if last message is tool_result, show that
+      // Get preview: show meaningful context about the request
       let lastUserMsg = '';
-      const lastMsg = e.request.messages[e.request.messages.length - 1];
+      const messages = e.request.messages;
+      const lastMsg = messages[messages.length - 1];
 
-      // Check if last message is tool_result (user sending tool results back)
+      // If last message is tool_result, look at the previous assistant message for context
       if (lastMsg && lastMsg.role === 'user') {
         const content = lastMsg.content;
         if (Array.isArray(content) && content.length > 0 && content[0].type === 'tool_result') {
-          // Show tool_result info instead of searching for user text
-          const toolResults = content.filter(c => c.type === 'tool_result');
-          if (toolResults.length === 1) {
-            lastUserMsg = '[tool_result: ' + (toolResults[0].tool_use_id || '').slice(0, 8) + ']';
-          } else {
-            lastUserMsg = '[' + toolResults.length + ' tool_results]';
+          // This is a tool_result response - look for previous assistant message
+          const prevMsg = messages.length >= 2 ? messages[messages.length - 2] : null;
+          if (prevMsg && prevMsg.role === 'assistant') {
+            lastUserMsg = getAssistantPreview(prevMsg.content);
+          }
+          // If no meaningful preview from assistant, show tool_result count
+          if (!lastUserMsg) {
+            const toolResults = content.filter(c => c.type === 'tool_result');
+            lastUserMsg = '[' + toolResults.length + ' tool_result' + (toolResults.length > 1 ? 's' : '') + ']';
           }
         } else {
           // Regular user message, extract real text
@@ -232,31 +266,7 @@ async function loadEntries() {
           }
         }
       } else if (lastMsg && lastMsg.role === 'assistant') {
-        // Last message is assistant - show text content if available, otherwise show tool_use
-        const content = lastMsg.content;
-        if (Array.isArray(content)) {
-          // First try to get text content
-          const textParts = content.filter(c => c.type === 'text' && c.text).map(c => c.text);
-          if (textParts.length > 0) {
-            const text = textParts.join('\\n').trim();
-            if (text.length > 0) {
-              lastUserMsg = text.slice(0, 80);
-              if (text.length > 80) lastUserMsg += '...';
-            }
-          }
-          // If no text, show tool_use info
-          if (!lastUserMsg) {
-            const toolUses = content.filter(c => c.type === 'tool_use');
-            if (toolUses.length === 1) {
-              lastUserMsg = '[tool_use: ' + toolUses[0].name + ']';
-            } else if (toolUses.length > 1) {
-              lastUserMsg = '[' + toolUses.length + ' tool_uses]';
-            }
-          }
-        } else if (typeof content === 'string' && content.trim()) {
-          lastUserMsg = content.slice(0, 80);
-          if (content.length > 80) lastUserMsg += '...';
-        }
+        lastUserMsg = getAssistantPreview(lastMsg.content);
       }
 
       html += \`
@@ -331,7 +341,7 @@ async function showDetail(id) {
             <div class="info-item"><div class="info-label">Duration</div><div class="info-value">\${formatDuration(entry.durationMs)}</div></div>
             <div class="info-item"><div class="info-label">Stop Reason</div><div class="info-value">\${entry.response.stop_reason || '-'}</div></div>
           </div>
-          \${entry.response.error ? '<div style="color:var(--error);margin-top:8px;">Error: ' + entry.response.error + '</div>' : ''}
+          \${entry.response.error ? '<div class="error-detail"><div class="error-label">Error Details</div><pre class="error-content">' + escapeHtml(entry.response.error) + '</pre></div>' : ''}
         </div>
       \`;
     }

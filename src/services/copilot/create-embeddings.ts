@@ -11,7 +11,8 @@ export const createEmbeddings = async (payload: EmbeddingRequest) => {
     body: JSON.stringify(payload),
   })
 
-  if (!response.ok) throw await HTTPError.fromResponse("Failed to create embeddings", response)
+  if (!response.ok)
+    throw await HTTPError.fromResponse("Failed to create embeddings", response)
 
   return (await response.json()) as EmbeddingResponse
 }

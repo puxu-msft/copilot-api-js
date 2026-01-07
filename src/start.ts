@@ -31,6 +31,7 @@ interface RunServerOptions {
   history: boolean
   historyLimit: number
   tui: TuiMode
+  autoCompact: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -52,6 +53,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
+  state.autoCompact = options.autoCompact
+
+  if (options.autoCompact) {
+    consola.info(
+      "Auto-compact enabled: will compress context when exceeding token limits",
+    )
+  }
 
   // Initialize history recording if enabled
   initHistory(options.history, options.historyLimit)
@@ -226,6 +234,12 @@ export const start = defineCommand({
       description:
         "TUI mode: 'console' for simple log output, 'fullscreen' for interactive terminal UI with tabs",
     },
+    "auto-compact": {
+      type: "boolean",
+      default: false,
+      description:
+        "Automatically compress conversation history when exceeding model token limits",
+    },
   },
   run({ args }) {
     const rateLimitRaw = args["rate-limit"]
@@ -248,6 +262,7 @@ export const start = defineCommand({
       history: args.history,
       historyLimit: Number.parseInt(args["history-limit"], 10),
       tui: args.tui as TuiMode,
+      autoCompact: args["auto-compact"],
     })
   },
 })

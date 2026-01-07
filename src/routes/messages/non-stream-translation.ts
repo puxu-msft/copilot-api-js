@@ -1,3 +1,5 @@
+import consola from "consola"
+
 import {
   type ChatCompletionResponse,
   type ChatCompletionsPayload,
@@ -7,8 +9,6 @@ import {
   type Tool,
   type ToolCall,
 } from "~/services/copilot/create-chat-completions"
-
-import consola from "consola"
 
 import {
   type AnthropicAssistantContentBlock,
@@ -140,29 +140,29 @@ function translateModelName(model: string): string {
   // Strip date suffixes and convert to Copilot-compatible format
 
   // claude-sonnet-4-5-YYYYMMDD -> claude-sonnet-4.5
-  if (model.match(/^claude-sonnet-4-5-\d+$/)) {
+  if (/^claude-sonnet-4-5-\d+$/.test(model)) {
     return "claude-sonnet-4.5"
   }
   // claude-sonnet-4-YYYYMMDD -> claude-sonnet-4
-  if (model.match(/^claude-sonnet-4-\d+$/)) {
+  if (/^claude-sonnet-4-\d+$/.test(model)) {
     return "claude-sonnet-4"
   }
 
   // claude-opus-4-5-YYYYMMDD -> claude-opus-4.5
-  if (model.match(/^claude-opus-4-5-\d+$/)) {
+  if (/^claude-opus-4-5-\d+$/.test(model)) {
     return "claude-opus-4.5"
   }
   // claude-opus-4-YYYYMMDD -> claude-opus-4.5 (default to latest)
-  if (model.match(/^claude-opus-4-\d+$/)) {
+  if (/^claude-opus-4-\d+$/.test(model)) {
     return "claude-opus-4.5"
   }
 
   // claude-haiku-4-5-YYYYMMDD -> claude-haiku-4.5
-  if (model.match(/^claude-haiku-4-5-\d+$/)) {
+  if (/^claude-haiku-4-5-\d+$/.test(model)) {
     return "claude-haiku-4.5"
   }
   // claude-haiku-3-5-YYYYMMDD -> claude-haiku-4.5 (upgrade to latest available)
-  if (model.match(/^claude-haiku-3-5-\d+$/)) {
+  if (/^claude-haiku-3-5-\d+$/.test(model)) {
     return "claude-haiku-4.5"
   }
 
@@ -355,7 +355,8 @@ function getTruncatedToolName(
   }
 
   // Check if we've already truncated this name
-  const existingTruncated = toolNameMapping.originalToTruncated.get(originalName)
+  const existingTruncated =
+    toolNameMapping.originalToTruncated.get(originalName)
   if (existingTruncated) {
     return existingTruncated
   }
@@ -364,8 +365,8 @@ function getTruncatedToolName(
   // Use last 8 chars of a simple hash to ensure uniqueness
   let hash = 0
   for (let i = 0; i < originalName.length; i++) {
-    const char = originalName.charCodeAt(i)
-    hash = ((hash << 5) - hash) + char
+    const char = originalName.codePointAt(i) ?? 0
+    hash = (hash << 5) - hash + char
     hash = hash & hash // Convert to 32bit integer
   }
   const hashSuffix = Math.abs(hash).toString(36).slice(0, 8)
@@ -378,9 +379,7 @@ function getTruncatedToolName(
   toolNameMapping.truncatedToOriginal.set(truncatedName, originalName)
   toolNameMapping.originalToTruncated.set(originalName, truncatedName)
 
-  consola.debug(
-    `Truncated tool name: "${originalName}" -> "${truncatedName}"`,
-  )
+  consola.debug(`Truncated tool name: "${originalName}" -> "${truncatedName}"`)
 
   return truncatedName
 }
@@ -442,25 +441,44 @@ function translateAnthropicToolChoiceToOpenAI(
 
 // Response translation
 
+/** Create empty response for edge case of no choices */
+function createEmptyResponse(
+  response: ChatCompletionResponse,
+): AnthropicResponse {
+  return {
+    id: response.id,
+    type: "message",
+    role: "assistant",
+    model: response.model,
+    content: [],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: response.usage?.prompt_tokens ?? 0,
+      output_tokens: response.usage?.completion_tokens ?? 0,
+    },
+  }
+}
+
+/** Build usage object from response */
+function buildUsageObject(response: ChatCompletionResponse) {
+  const cachedTokens = response.usage?.prompt_tokens_details?.cached_tokens
+  return {
+    input_tokens: (response.usage?.prompt_tokens ?? 0) - (cachedTokens ?? 0),
+    output_tokens: response.usage?.completion_tokens ?? 0,
+    ...(cachedTokens !== undefined && {
+      cache_read_input_tokens: cachedTokens,
+    }),
+  }
+}
+
 export function translateToAnthropic(
   response: ChatCompletionResponse,
   toolNameMapping?: ToolNameMapping,
 ): AnthropicResponse {
   // Handle edge case of empty choices array
   if (response.choices.length === 0) {
-    return {
-      id: response.id,
-      type: "message",
-      role: "assistant",
-      model: response.model,
-      content: [],
-      stop_reason: "end_turn",
-      stop_sequence: null,
-      usage: {
-        input_tokens: response.usage?.prompt_tokens ?? 0,
-        output_tokens: response.usage?.completion_tokens ?? 0,
-      },
-    }
+    return createEmptyResponse(response)
   }
 
   // Merge content from all choices
@@ -497,17 +515,7 @@ export function translateToAnthropic(
     content: [...allTextBlocks, ...allToolUseBlocks],
     stop_reason: mapOpenAIStopReasonToAnthropic(stopReason),
     stop_sequence: null,
-    usage: {
-      input_tokens:
-        (response.usage?.prompt_tokens ?? 0)
-        - (response.usage?.prompt_tokens_details?.cached_tokens ?? 0),
-      output_tokens: response.usage?.completion_tokens ?? 0,
-      ...(response.usage?.prompt_tokens_details?.cached_tokens
-        !== undefined && {
-        cache_read_input_tokens:
-          response.usage.prompt_tokens_details.cached_tokens,
-      }),
-    },
+    usage: buildUsageObject(response),
   }
 }
 

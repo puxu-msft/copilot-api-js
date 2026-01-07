@@ -21,6 +21,22 @@ modelRoutes.get("/", async (c) => {
       created_at: new Date(0).toISOString(), // No date available from source
       owned_by: model.vendor,
       display_name: model.name,
+      // Include capabilities for clients that need token limit info
+      capabilities: {
+        family: model.capabilities.family,
+        type: model.capabilities.type,
+        tokenizer: model.capabilities.tokenizer,
+        limits: {
+          max_context_window_tokens:
+            model.capabilities.limits.max_context_window_tokens,
+          max_output_tokens: model.capabilities.limits.max_output_tokens,
+          max_prompt_tokens: model.capabilities.limits.max_prompt_tokens,
+        },
+        supports: {
+          tool_calls: model.capabilities.supports.tool_calls,
+          parallel_tool_calls: model.capabilities.supports.parallel_tool_calls,
+        },
+      },
     }))
 
     return c.json({
