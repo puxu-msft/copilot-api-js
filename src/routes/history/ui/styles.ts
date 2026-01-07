@@ -279,6 +279,32 @@ input::placeholder { color: var(--text-dim); }
 .info-label { font-size: 11px; color: var(--text-muted); }
 .info-value { font-weight: 500; }
 
+/* Error detail display */
+.error-detail {
+  margin-top: 12px;
+  padding: 12px;
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  border-radius: 6px;
+}
+.error-label {
+  font-size: 11px;
+  color: var(--error);
+  font-weight: 600;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+.error-content {
+  margin: 0;
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  color: var(--error);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
 /* Empty state */
 .empty-state {
   text-align: center;
