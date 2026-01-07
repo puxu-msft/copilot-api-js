@@ -27,9 +27,11 @@ class RequestQueue {
       })
 
       if (this.queue.length > 1) {
-        const waitTime = Math.ceil((this.queue.length - 1) * rateLimitSeconds)
-        consola.info(
-          `Request queued. Position: ${this.queue.length}, estimated wait: ${waitTime}s`,
+        const position = this.queue.length
+        const waitTime = Math.ceil((position - 1) * rateLimitSeconds)
+        const log = waitTime > 10 ? consola.warn : consola.info
+        log(
+          `Rate limit: request queued (position ${position}, ~${waitTime}s wait)`,
         )
       }
 
@@ -48,7 +50,9 @@ class RequestQueue {
 
       if (this.lastRequestTime > 0 && elapsedMs < requiredMs) {
         const waitMs = requiredMs - elapsedMs
-        consola.debug(`Rate limit: waiting ${Math.ceil(waitMs / 1000)}s`)
+        const waitSec = Math.ceil(waitMs / 1000)
+        const log = waitSec > 10 ? consola.warn : consola.info
+        log(`Rate limit: waiting ${waitSec}s before next request...`)
         await new Promise((resolve) => setTimeout(resolve, waitMs))
       }
 
