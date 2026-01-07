@@ -6,6 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI and Anthropic compatible endpoints. This allows tools like Claude Code to use GitHub Copilot as their backend.
 
+## Design Principles
+
+### Console Output Design
+
+- **Use fixed-width ASCII prefixes** for log alignment, not emoji/icons (e.g., `[....]`, `[<-->]`, `[ OK ]`, `[FAIL]`)
+- **Only show relevant info**: Non-model requests (like `/health`) should not display model name, tokens, or "unknown"
+- **Streaming indicator**: Show `streaming...` status for long-running requests with `[<-->]` prefix
+
+### History UI Design
+
+- **Show actual request content**: If the last message is `tool_result`, display `[tool_result: id]` instead of searching backwards for user text
+- **Prefer text over tool_use**: For assistant messages with both text and tool_use, show the text content first; only show `[tool_use: ToolName]` if there's no text
+- **Filter system tags**: Remove `<system-reminder>`, `<ide_opened_file>`, and other system tags from preview text
+
+### General Principles
+
+- **Minimize noise**: Don't display redundant or unavailable information
+- **Consistent formatting**: Use fixed-width columns for alignment in console output
+- **Informative previews**: History previews should reflect the actual nature of the request
+
 ## Development Commands
 
 ```sh
@@ -58,6 +78,13 @@ bun run knip
 - `lib/queue.ts` - Request queue for rate limiting (queues requests instead of rejecting)
 - `lib/rate-limit.ts` - Legacy rate limit checking (deprecated, use queue.ts)
 - `lib/history.ts` - Request/response history recording and querying
+- `lib/tui/` - Terminal UI module for request logging (replaces hono/logger)
+  - `types.ts` - Type definitions for request tracking (`TrackedRequest`, `TuiRenderer`)
+  - `tracker.ts` - Singleton request state manager
+  - `console-renderer.ts` - Console output with ASCII prefixes (`[....]`, `[<-->]`, `[ OK ]`, `[FAIL]`)
+  - `fullscreen-renderer.tsx` - Fullscreen TUI with tabs (Active/Completed/Errors) using Ink
+  - `middleware.ts` - Hono middleware for automatic request tracking
+  - `index.ts` - TUI initialization with mode selection (`console` or `fullscreen`)
 - `lib/approval.ts` - Manual request approval flow
 - `lib/tokenizer.ts` - Token counting for Anthropic `/v1/messages/count_tokens` endpoint
 - `lib/error.ts` - HTTP error handling utilities
@@ -73,6 +100,23 @@ bun run knip
 ### Path Aliases
 
 The project uses `~/` as an alias for `./src/` (configured in tsconfig.json).
+
+## Code Style
+
+This project uses `@echristian/eslint-config` with strict formatting rules:
+
+- **No semicolons** - The prettier config has `semi: false`
+- **No trailing commas in single-line** - But required in multi-line
+- **Ternary operator position** - `experimentalOperatorPosition: "start"` (operator at start of line)
+- Use `eslint --fix` to auto-format code (do NOT use `prettier --write` directly as it uses different defaults)
+
+Key linting rules:
+- `max-lines-per-function: 100` - Functions should be under 100 lines
+- `max-params: 3` - Functions should have at most 3 parameters
+- `complexity: 16` - Maximum cyclomatic complexity
+- `Array<T>` syntax preferred over `T[]`
+- `Number.parseInt()` instead of `parseInt()`
+- `!== -1` instead of `>= 0` for index checks
 
 ## API Endpoints
 
