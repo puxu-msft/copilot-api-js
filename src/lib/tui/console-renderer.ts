@@ -9,6 +9,13 @@ import type { RequestUpdate, TrackedRequest, TuiRenderer } from "./types"
 // ANSI escape codes for cursor control
 const CLEAR_LINE = "\x1b[2K\r"
 
+function formatTime(date: Date = new Date()): string {
+  const h = String(date.getHours()).padStart(2, "0")
+  const m = String(date.getMinutes()).padStart(2, "0")
+  const s = String(date.getSeconds()).padStart(2, "0")
+  return `${h}:${m}:${s}`
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
@@ -111,12 +118,13 @@ export class ConsoleRenderer implements TuiRenderer {
     this.activeRequests.set(request.id, request)
 
     if (this.showActive) {
+      const time = formatTime()
       const modelInfo = request.model ? ` ${request.model}` : ""
       const queueInfo =
         request.queuePosition !== undefined && request.queuePosition > 0 ?
           ` [q#${request.queuePosition}]`
         : ""
-      const message = `[....] ${request.method} ${request.path}${modelInfo}${queueInfo}`
+      const message = `${time} [....] ${request.method} ${request.path}${modelInfo}${queueInfo}`
       this.printLog(message, request.isHistoryAccess)
     }
   }
@@ -130,8 +138,9 @@ export class ConsoleRenderer implements TuiRenderer {
 
     // Show streaming status
     if (this.showActive && update.status === "streaming") {
+      const time = formatTime()
       const modelInfo = request.model ? ` ${request.model}` : ""
-      const message = `[<-->] ${request.method} ${request.path}${modelInfo} streaming...`
+      const message = `${time} [<-->] ${request.method} ${request.path}${modelInfo} streaming...`
       this.printLog(message, request.isHistoryAccess)
     }
   }
@@ -139,6 +148,7 @@ export class ConsoleRenderer implements TuiRenderer {
   onRequestComplete(request: TrackedRequest): void {
     this.activeRequests.delete(request.id)
 
+    const time = formatTime()
     const status = request.statusCode ?? 0
     const duration = formatDuration(request.durationMs ?? 0)
     const tokens =
@@ -150,7 +160,7 @@ export class ConsoleRenderer implements TuiRenderer {
     const isError = request.status === "error" || status >= 400
     const prefix = isError ? "[FAIL]" : "[ OK ]"
     const tokensPart = tokens ? ` ${tokens}` : ""
-    let content = `${prefix} ${request.method} ${request.path} ${status} ${duration}${tokensPart}${modelInfo}`
+    let content = `${time} ${prefix} ${request.method} ${request.path} ${status} ${duration}${tokensPart}${modelInfo}`
 
     if (isError) {
       const errorInfo = request.error ? `: ${request.error}` : ""
