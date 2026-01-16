@@ -6,6 +6,8 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
+import type { Model } from "./services/copilot/get-models"
+
 import { initHistory } from "./lib/history"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
@@ -15,6 +17,26 @@ import { setupCopilotToken, setupGitHubToken } from "./lib/token"
 import { initTui, type TuiMode } from "./lib/tui"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { server } from "./server"
+
+function formatModelInfo(model: Model): string {
+  const limits = model.capabilities.limits
+  const contextK =
+    limits.max_prompt_tokens ?
+      `${Math.round(limits.max_prompt_tokens / 1000)}k`
+    : "?"
+  const outputK =
+    limits.max_output_tokens ?
+      `${Math.round(limits.max_output_tokens / 1000)}k`
+    : "?"
+  const features = [
+    model.capabilities.supports.tool_calls && "tools",
+    model.preview && "preview",
+  ]
+    .filter(Boolean)
+    .join(", ")
+  const featureStr = features ? ` (${features})` : ""
+  return `  - ${model.id.padEnd(28)} context: ${contextK.padStart(5)}, output: ${outputK.padStart(4)}${featureStr}`
+}
 
 interface RunServerOptions {
   port: number
@@ -86,7 +108,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await cacheModels()
 
   consola.info(
-    `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
+    `Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`,
   )
 
   const displayHost = options.host ?? "localhost"
