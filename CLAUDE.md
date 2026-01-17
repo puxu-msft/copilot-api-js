@@ -109,7 +109,7 @@ The project uses `~/` as an alias for `./src/` (configured in tsconfig.json).
 
 ## Code Style
 
-This project uses `@echristian/eslint-config` with strict formatting rules:
+This project uses `@echristian/eslint-config` with formatting rules:
 
 - **No semicolons** - The prettier config has `semi: false`
 - **No trailing commas in single-line** - But required in multi-line
@@ -117,9 +117,6 @@ This project uses `@echristian/eslint-config` with strict formatting rules:
 - Use `eslint --fix` to auto-format code (do NOT use `prettier --write` directly as it uses different defaults)
 
 Key linting rules:
-- `max-lines-per-function: 100` - Functions should be under 100 lines
-- `max-params: 3` - Functions should have at most 3 parameters
-- `complexity: 16` - Maximum cyclomatic complexity
 - `Array<T>` syntax preferred over `T[]`
 - `Number.parseInt()` instead of `parseInt()`
 - `!== -1` instead of `>= 0` for index checks

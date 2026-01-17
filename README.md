@@ -91,6 +91,7 @@ copilot-api start
 | `logout` | Remove stored GitHub token |
 | `check-usage` | Show Copilot usage and quota |
 | `debug` | Display diagnostic information |
+| `patch-claude` | Patch Claude Code's context window limit |
 
 ### Start Command Options
 
@@ -110,6 +111,15 @@ copilot-api start
 | `--history` | Enable request history UI at `/history` | false |
 | `--history-limit` | Max history entries in memory | 1000 |
 | `--auto-compact` | Auto-compress context when exceeding limits | false |
+
+### Patch-Claude Command Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--limit`, `-l` | Context window limit in tokens | 128000 |
+| `--restore`, `-r` | Restore original 200k limit | false |
+| `--path`, `-p` | Path to Claude Code cli.js | auto-detect |
+| `--status`, `-s` | Show current patch status | false |
 
 ## API Endpoints
 
