@@ -178,7 +178,7 @@ function handleNonStreamingResponse(
 ) {
   consola.debug("Non-streaming response:", JSON.stringify(originalResponse))
 
-  // Append compaction marker if auto-compact was performed
+  // Prepend compaction marker if auto-compact was performed
   let response = originalResponse
   if (ctx.compactResult?.wasCompacted && response.choices[0]?.message.content) {
     const marker = createCompactionMarker(ctx.compactResult)
@@ -190,7 +190,7 @@ function handleNonStreamingResponse(
             ...choice,
             message: {
               ...choice.message,
-              content: (choice.message.content ?? "") + marker,
+              content: marker + (choice.message.content ?? ""),
             },
           }
         : choice,
@@ -290,20 +290,14 @@ async function handleStreamingResponse(opts: StreamingOptions) {
   const acc = createStreamAccumulator()
 
   try {
-    for await (const chunk of response) {
-      consola.debug("Streaming chunk:", JSON.stringify(chunk))
-      parseStreamChunk(chunk, acc)
-      await stream.writeSSE(chunk as SSEMessage)
-    }
-
-    // Append compaction marker as final chunk if auto-compact was performed
+    // Prepend compaction marker as first chunk if auto-compact was performed
     if (ctx.compactResult?.wasCompacted) {
       const marker = createCompactionMarker(ctx.compactResult)
       const markerChunk: ChatCompletionChunk = {
         id: `compact-marker-${Date.now()}`,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: acc.model || payload.model,
+        model: payload.model,
         choices: [
           {
             index: 0,
@@ -318,6 +312,12 @@ async function handleStreamingResponse(opts: StreamingOptions) {
         event: "message",
       })
       acc.content += marker
+    }
+
+    for await (const chunk of response) {
+      consola.debug("Streaming chunk:", JSON.stringify(chunk))
+      parseStreamChunk(chunk, acc)
+      await stream.writeSSE(chunk as SSEMessage)
     }
 
     recordStreamSuccess(acc, payload.model, ctx)

@@ -155,10 +155,10 @@ function handleNonStreamingResponse(opts: NonStreamingOptions) {
     JSON.stringify(anthropicResponse),
   )
 
-  // Append compaction marker if auto-compact was performed
+  // Prepend compaction marker if auto-compact was performed
   if (ctx.compactResult?.wasCompacted) {
     const marker = createCompactionMarker(ctx.compactResult)
-    anthropicResponse = appendMarkerToAnthropicResponse(
+    anthropicResponse = prependMarkerToAnthropicResponse(
       anthropicResponse,
       marker,
     )
@@ -204,26 +204,26 @@ function handleNonStreamingResponse(opts: NonStreamingOptions) {
   return c.json(anthropicResponse)
 }
 
-// Append marker to Anthropic response content
-function appendMarkerToAnthropicResponse(
+// Prepend marker to Anthropic response content (at the beginning)
+function prependMarkerToAnthropicResponse(
   response: ReturnType<typeof translateToAnthropic>,
   marker: string,
 ): ReturnType<typeof translateToAnthropic> {
-  // Find last text block and append, or add new text block
+  // Find first text block and prepend, or add new text block at start
   const content = [...response.content]
-  const lastTextIndex = content.findLastIndex((block) => block.type === "text")
+  const firstTextIndex = content.findIndex((block) => block.type === "text")
 
-  if (lastTextIndex !== -1) {
-    const textBlock = content[lastTextIndex]
+  if (firstTextIndex !== -1) {
+    const textBlock = content[firstTextIndex]
     if (textBlock.type === "text") {
-      content[lastTextIndex] = {
+      content[firstTextIndex] = {
         ...textBlock,
-        text: textBlock.text + marker,
+        text: marker + textBlock.text,
       }
     }
   } else {
-    // No text block found, add one
-    content.push({ type: "text", text: marker })
+    // No text block found, add one at the beginning
+    content.unshift({ type: "text", text: marker })
   }
 
   return { ...response, content }
@@ -273,6 +273,13 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
   const acc = createAnthropicStreamAccumulator()
 
   try {
+    // Prepend compaction marker as first content block if auto-compact was performed
+    if (ctx.compactResult?.wasCompacted) {
+      const marker = createCompactionMarker(ctx.compactResult)
+      await sendCompactionMarkerEvent(stream, streamState, marker)
+      acc.content += marker
+    }
+
     await processStreamChunks({
       stream,
       response,
@@ -280,13 +287,6 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
       streamState,
       acc,
     })
-
-    // Append compaction marker as final content block if auto-compact was performed
-    if (ctx.compactResult?.wasCompacted) {
-      const marker = createCompactionMarker(ctx.compactResult)
-      await sendCompactionMarkerEvent(stream, streamState, marker)
-      acc.content += marker
-    }
 
     recordStreamingResponse(acc, anthropicPayload.model, ctx)
     completeTracking(
