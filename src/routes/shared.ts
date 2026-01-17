@@ -12,7 +12,11 @@ import type {
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 
-import { autoCompact, checkNeedsCompaction } from "~/lib/auto-compact"
+import {
+  autoCompact,
+  checkNeedsCompaction,
+  onRequestTooLarge,
+} from "~/lib/auto-compact"
 import { recordResponse } from "~/lib/history"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
@@ -176,6 +180,7 @@ export async function buildFinalPayload(
 
 /**
  * Log helpful debugging information when a 413 error occurs.
+ * Also adjusts the dynamic byte limit for future requests.
  */
 export async function logPayloadSizeInfo(
   payload: ChatCompletionsPayload,
@@ -184,6 +189,9 @@ export async function logPayloadSizeInfo(
   const messageCount = payload.messages.length
   const bodySize = JSON.stringify(payload).length
   const bodySizeKB = Math.round(bodySize / 1024)
+
+  // Adjust the dynamic byte limit for future requests
+  onRequestTooLarge(bodySize)
 
   // Count images and large messages
   let imageCount = 0

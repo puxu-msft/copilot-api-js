@@ -15,14 +15,41 @@ export interface AutoCompactConfig {
   targetTokens: number
   /** Safety margin percentage to account for token counting differences (default: 2) */
   safetyMarginPercent: number
-  /** Maximum request body size in bytes (default: 500KB to stay within typical limits) */
+  /** Maximum request body size in bytes (default: 1MB, auto-adjusts on 413 errors) */
   maxRequestBodyBytes: number
 }
 
 const DEFAULT_CONFIG: AutoCompactConfig = {
   targetTokens: 120000, // Target 120k to stay safely within 128k limit
   safetyMarginPercent: 2, // Small margin for token counting differences
-  maxRequestBodyBytes: 500 * 1024, // 500KB limit for request body
+  maxRequestBodyBytes: 500 * 1024, // 500KB initial limit (585KB known to fail), will auto-adjust on 413
+}
+
+/**
+ * Dynamic byte limit that adjusts based on 413 errors.
+ * Starts at 500KB and can be adjusted when 413 errors are encountered.
+ */
+let dynamicByteLimitOverride: number | null = null
+
+/**
+ * Called when a 413 error is encountered with a specific payload size.
+ * Adjusts the dynamic byte limit to 90% of the failing size.
+ */
+export function onRequestTooLarge(failingBytes: number): void {
+  // Set limit to 90% of the failing size, with a minimum of 100KB
+  const newLimit = Math.max(Math.floor(failingBytes * 0.9), 100 * 1024)
+  dynamicByteLimitOverride = newLimit
+  consola.info(
+    `[Auto-compact] Adjusted byte limit: ${Math.round(failingBytes / 1024)}KB failed, `
+      + `new limit: ${Math.round(newLimit / 1024)}KB`,
+  )
+}
+
+/**
+ * Get the current effective byte limit.
+ */
+export function getEffectiveByteLimitBytes(): number {
+  return dynamicByteLimitOverride ?? DEFAULT_CONFIG.maxRequestBodyBytes
 }
 
 /** Result of auto-compact operation */
@@ -62,9 +89,9 @@ export async function checkNeedsCompaction(
   // Apply safety margin to trigger compaction earlier
   const tokenLimit = Math.floor(rawLimit * (1 - cfg.safetyMarginPercent / 100))
 
-  // Calculate request body size
+  // Calculate request body size - use dynamic limit if available
   const currentBytes = JSON.stringify(payload).length
-  const byteLimit = cfg.maxRequestBodyBytes
+  const byteLimit = dynamicByteLimitOverride ?? cfg.maxRequestBodyBytes
 
   const exceedsTokens = currentTokens > tokenLimit
   const exceedsBytes = currentBytes > byteLimit
@@ -284,7 +311,7 @@ export async function autoCompact(
   const rawLimit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
   const tokenLimit = Math.floor(rawLimit * (1 - cfg.safetyMarginPercent / 100))
   const originalBytes = JSON.stringify(payload).length
-  const byteLimit = cfg.maxRequestBodyBytes
+  const byteLimit = dynamicByteLimitOverride ?? cfg.maxRequestBodyBytes
 
   // If we're under both limits, no compaction needed
   if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
