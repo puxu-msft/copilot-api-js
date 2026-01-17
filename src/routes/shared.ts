@@ -144,15 +144,23 @@ export async function buildFinalPayload(
   try {
     const check = await checkNeedsCompaction(payload, model)
     consola.debug(
-      `Auto-compact check: ${check.currentTokens} tokens, limit ${check.limit}, needed: ${check.needed}`,
+      `Auto-compact check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
+        + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
+        + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
     )
     if (!check.needed) {
       return { finalPayload: payload, compactResult: null }
     }
 
-    consola.info(
-      `Auto-compact triggered: ${check.currentTokens} tokens > ${check.limit} limit`,
-    )
+    let reasonText: string
+    if (check.reason === "both") {
+      reasonText = "tokens and size"
+    } else if (check.reason === "bytes") {
+      reasonText = "size"
+    } else {
+      reasonText = "tokens"
+    }
+    consola.info(`Auto-compact triggered: exceeds ${reasonText} limit`)
     const compactResult = await autoCompact(payload, model)
     return { finalPayload: compactResult.payload, compactResult }
   } catch (error) {

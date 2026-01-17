@@ -15,11 +15,14 @@ export interface AutoCompactConfig {
   targetTokens: number
   /** Safety margin percentage to account for token counting differences (default: 2) */
   safetyMarginPercent: number
+  /** Maximum request body size in bytes (default: 500KB to stay within typical limits) */
+  maxRequestBodyBytes: number
 }
 
 const DEFAULT_CONFIG: AutoCompactConfig = {
   targetTokens: 120000, // Target 120k to stay safely within 128k limit
   safetyMarginPercent: 2, // Small margin for token counting differences
+  maxRequestBodyBytes: 500 * 1024, // 500KB limit for request body
 }
 
 /** Result of auto-compact operation */
@@ -37,24 +40,51 @@ export interface AutoCompactResult {
 }
 
 /**
- * Check if payload needs compaction based on model limits.
+ * Check if payload needs compaction based on model limits OR request body size.
  * Uses a safety margin to account for token counting differences.
  */
 export async function checkNeedsCompaction(
   payload: ChatCompletionsPayload,
   model: Model,
-  safetyMarginPercent = 2,
-): Promise<{ needed: boolean; currentTokens: number; limit: number }> {
+  config: Partial<AutoCompactConfig> = {},
+): Promise<{
+  needed: boolean
+  currentTokens: number
+  tokenLimit: number
+  currentBytes: number
+  byteLimit: number
+  reason?: "tokens" | "bytes" | "both"
+}> {
+  const cfg = { ...DEFAULT_CONFIG, ...config }
   const tokenCount = await getTokenCount(payload, model)
   const currentTokens = tokenCount.input
   const rawLimit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
   // Apply safety margin to trigger compaction earlier
-  const limit = Math.floor(rawLimit * (1 - safetyMarginPercent / 100))
+  const tokenLimit = Math.floor(rawLimit * (1 - cfg.safetyMarginPercent / 100))
+
+  // Calculate request body size
+  const currentBytes = JSON.stringify(payload).length
+  const byteLimit = cfg.maxRequestBodyBytes
+
+  const exceedsTokens = currentTokens > tokenLimit
+  const exceedsBytes = currentBytes > byteLimit
+
+  let reason: "tokens" | "bytes" | "both" | undefined
+  if (exceedsTokens && exceedsBytes) {
+    reason = "both"
+  } else if (exceedsTokens) {
+    reason = "tokens"
+  } else if (exceedsBytes) {
+    reason = "bytes"
+  }
 
   return {
-    needed: currentTokens > limit,
+    needed: exceedsTokens || exceedsBytes,
     currentTokens,
-    limit,
+    tokenLimit,
+    currentBytes,
+    byteLimit,
+    reason,
   }
 }
 
@@ -237,7 +267,7 @@ function createTruncationMarker(removedCount: number): Message {
 }
 
 /**
- * Perform auto-compaction on a payload that exceeds token limits.
+ * Perform auto-compaction on a payload that exceeds token or size limits.
  * This uses simple truncation - no LLM calls required.
  * Uses iterative approach with decreasing target tokens until under limit.
  */
@@ -248,14 +278,16 @@ export async function autoCompact(
 ): Promise<AutoCompactResult> {
   const cfg = { ...DEFAULT_CONFIG, ...config }
 
-  // Check current token count
+  // Check current token count and body size
   const tokenCount = await getTokenCount(payload, model)
   const originalTokens = tokenCount.input
   const rawLimit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
-  const limit = Math.floor(rawLimit * (1 - cfg.safetyMarginPercent / 100))
+  const tokenLimit = Math.floor(rawLimit * (1 - cfg.safetyMarginPercent / 100))
+  const originalBytes = JSON.stringify(payload).length
+  const byteLimit = cfg.maxRequestBodyBytes
 
-  // If we're under the limit, no compaction needed
-  if (originalTokens <= limit) {
+  // If we're under both limits, no compaction needed
+  if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
     return {
       payload,
       wasCompacted: false,
@@ -265,8 +297,20 @@ export async function autoCompact(
     }
   }
 
+  // Determine the reason for compaction
+  const exceedsTokens = originalTokens > tokenLimit
+  const exceedsBytes = originalBytes > byteLimit
+  let reason: string
+  if (exceedsTokens && exceedsBytes) {
+    reason = "tokens and size"
+  } else if (exceedsBytes) {
+    reason = "size"
+  } else {
+    reason = "tokens"
+  }
+
   consola.info(
-    `Auto-compact: ${originalTokens} tokens exceeds limit of ${limit}, truncating...`,
+    `Auto-compact: Exceeds ${reason} limit (${originalTokens} tokens, ${Math.round(originalBytes / 1024)}KB), truncating...`,
   )
 
   // Extract system messages (always preserve them)
@@ -282,7 +326,7 @@ export async function autoCompact(
   // Iteratively try decreasing targets until we fit under the limit
   const MAX_ITERATIONS = 5
   const MIN_TARGET = 20000
-  let currentTarget = Math.min(cfg.targetTokens, limit)
+  let currentTarget = Math.min(cfg.targetTokens, tokenLimit)
   let lastResult: AutoCompactResult | null = null
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
@@ -293,7 +337,7 @@ export async function autoCompact(
       remainingMessages,
       systemTokens,
       targetTokens: currentTarget,
-      limit,
+      limit: tokenLimit,
       originalTokens,
     })
 
@@ -304,17 +348,29 @@ export async function autoCompact(
 
     lastResult = result
 
-    // Check if we're under limit
-    if (result.compactedTokens <= limit) {
+    // Check if we're under BOTH limits (tokens and bytes)
+    const resultBytes = JSON.stringify(result.payload).length
+    const underTokenLimit = result.compactedTokens <= tokenLimit
+    const underByteLimit = resultBytes <= byteLimit
+
+    if (underTokenLimit && underByteLimit) {
       consola.info(
-        `Auto-compact: ${originalTokens} → ${result.compactedTokens} tokens (removed ${result.removedMessageCount} messages)`,
+        `Auto-compact: ${originalTokens} → ${result.compactedTokens} tokens, `
+          + `${Math.round(originalBytes / 1024)}KB → ${Math.round(resultBytes / 1024)}KB `
+          + `(removed ${result.removedMessageCount} messages)`,
       )
       return result
     }
 
     // Still over limit, try more aggressive target
+    const tokenStatus =
+      underTokenLimit ? "OK" : `${result.compactedTokens} > ${tokenLimit}`
+    const byteStatus =
+      underByteLimit ? "OK" : (
+        `${Math.round(resultBytes / 1024)}KB > ${Math.round(byteLimit / 1024)}KB`
+      )
     consola.warn(
-      `Auto-compact: Still over limit (${result.compactedTokens} > ${limit}), trying more aggressive truncation`,
+      `Auto-compact: Still over limit (tokens: ${tokenStatus}, size: ${byteStatus}), trying more aggressive truncation`,
     )
 
     currentTarget = Math.floor(currentTarget * 0.7)
