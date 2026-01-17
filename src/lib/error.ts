@@ -67,11 +67,33 @@ function formatTokenLimitError(current: number, limit: number) {
   }
 }
 
+/** Format Anthropic-compatible error for request too large (413) */
+function formatRequestTooLargeError() {
+  // Return Anthropic-compatible error for 413 Request Entity Too Large
+  // This happens when the HTTP body is too large, separate from token limits
+  return {
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "Request body too large. The HTTP request exceeds the server's size limit. "
+        + "Try reducing the conversation history or removing large content like images.",
+    },
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function forwardError(c: Context, error: unknown) {
   consola.error("Error occurred:", error)
 
   if (error instanceof HTTPError) {
+    // Handle 413 Request Entity Too Large
+    if (error.status === 413) {
+      const formattedError = formatRequestTooLargeError()
+      consola.debug("Returning formatted 413 error:", formattedError)
+      return c.json(formattedError, 413 as ContentfulStatusCode)
+    }
+
     let errorJson: unknown
     try {
       errorJson = JSON.parse(error.responseText)

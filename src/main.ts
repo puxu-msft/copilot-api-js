@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 
 import { defineCommand, runMain } from "citty"
+import consola from "consola"
 
 import { auth } from "./auth"
 import { checkUsage } from "./check-usage"
 import { debug } from "./debug"
 import { logout } from "./logout"
 import { start } from "./start"
+
+// Disable consola's default timestamp - we add our own in console-renderer
+consola.options.formatOptions.date = false
 
 const main = defineCommand({
   meta: {
