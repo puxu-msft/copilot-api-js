@@ -32,26 +32,30 @@ function formatTokens(input?: number, output?: number): string {
   return `${formatNumber(input)}/${formatNumber(output)}`
 }
 
-function formatShortId(id: string): string {
-  // Take last 5 characters for a short, unique identifier
-  return id.slice(-5)
-}
-
 /**
  * Console renderer that shows request lifecycle with apt-get style footer
  *
- * Log format (status prefix first, then timestamp):
- * - Start: [....] HH:MM:SS METHOD /path #id model-name (dim)
- * - Streaming: [<-->] HH:MM:SS METHOD /path #id model-name streaming... (dim)
- * - Complete: [ OK ] HH:MM:SS METHOD /path #id model-name 200 1.2s 1.5K/500 (green)
- * - Error: [FAIL] HH:MM:SS METHOD /path #id model-name 500 1.2s: error message (red)
+ * Log format:
+ * - Start: [....] HH:MM:SS METHOD /path model-name (debug only, dim)
+ * - Streaming: [<-->] HH:MM:SS METHOD /path model-name streaming... (dim)
+ * - Complete: [ OK ] HH:MM:SS METHOD /path model-name 200 1.2s 1.5K/500 (colored)
+ * - Error: [FAIL] HH:MM:SS METHOD /path model-name 500 1.2s: error message (red)
+ *
+ * Color scheme for completed requests:
+ * - Prefix: green (success) / red (error)
+ * - Time: dim
+ * - Method: cyan
+ * - Path: white
+ * - Model: magenta
+ * - Status: green (success) / red (error)
+ * - Duration: yellow
+ * - Tokens: blue
  *
  * Features:
- * - Start and streaming lines are dim (less important)
- * - Success lines are green, error lines are red
+ * - Start lines only shown in debug mode (--verbose)
+ * - Streaming lines are dim (less important)
  * - /history API requests are always dim
- * - Sticky footer shows active request count, updated in-place on the last line
- * - Footer disappears when all requests complete
+ * - Sticky footer shows active request count
  * - Intercepts consola output to properly handle footer
  */
 export class ConsoleRenderer implements TuiRenderer {
@@ -168,57 +172,101 @@ export class ConsoleRenderer implements TuiRenderer {
   }
 
   /**
-   * Print a log line with proper footer handling and coloring
-   * 1. Clear footer if visible
-   * 2. Print log with newline
-   * 3. Re-render footer on new line (no newline after footer)
+   * Format a complete log line with colored parts
    */
-  private printLog(
-    message: string,
-    style: "dim" | "success" | "error" | "normal" = "normal",
-  ): void {
-    this.clearFooterForLog()
+  private formatLogLine(parts: {
+    prefix: string
+    time: string
+    method: string
+    path: string
+    model?: string
+    status?: number
+    duration?: string
+    tokens?: string
+    extra?: string
+    isError?: boolean
+    isDim?: boolean
+  }): string {
+    const {
+      prefix,
+      time,
+      method,
+      path,
+      model,
+      status,
+      duration,
+      tokens,
+      extra,
+      isError,
+      isDim,
+    } = parts
 
-    // Print the log message directly to stdout to avoid recursion
-    let formatted: string
-    switch (style) {
-      case "dim": {
-        formatted = pc.dim(message)
-        break
-      }
-      case "success": {
-        formatted = pc.green(message)
-        break
-      }
-      case "error": {
-        formatted = pc.red(message)
-        break
-      }
-      default: {
-        formatted = message
-      }
+    if (isDim) {
+      // Dim lines: all gray
+      const modelPart = model ? ` ${model}` : ""
+      const extraPart = extra ? ` ${extra}` : ""
+      return pc.dim(
+        `${prefix} ${time} ${method} ${path}${modelPart}${extraPart}`,
+      )
     }
-    process.stdout.write(formatted + "\n")
 
-    // Re-render footer after log (stays on its own line without newline)
+    // Colored lines: each part has its own color
+    const coloredPrefix = isError ? pc.red(prefix) : pc.green(prefix)
+    const coloredTime = pc.dim(time)
+    const coloredMethod = pc.cyan(method)
+    const coloredPath = pc.white(path)
+    const coloredModel = model ? pc.magenta(` ${model}`) : ""
+
+    let result = `${coloredPrefix} ${coloredTime} ${coloredMethod} ${coloredPath}${coloredModel}`
+
+    if (status !== undefined) {
+      const coloredStatus =
+        isError ? pc.red(String(status)) : pc.green(String(status))
+      result += ` ${coloredStatus}`
+    }
+
+    if (duration) {
+      result += ` ${pc.yellow(duration)}`
+    }
+
+    if (tokens) {
+      result += ` ${pc.blue(tokens)}`
+    }
+
+    if (extra) {
+      result += isError ? pc.red(extra) : extra
+    }
+
+    return result
+  }
+
+  /**
+   * Print a log line with proper footer handling
+   */
+  private printLog(message: string): void {
+    this.clearFooterForLog()
+    process.stdout.write(message + "\n")
     this.renderFooter()
   }
 
   onRequestStart(request: TrackedRequest): void {
     this.activeRequests.set(request.id, request)
 
-    if (this.showActive) {
-      const time = formatTime()
-      const shortId = ` #${formatShortId(request.id)}`
-      const modelInfo = request.model ? ` ${request.model}` : ""
-      const queueInfo =
-        request.queuePosition !== undefined && request.queuePosition > 0 ?
-          ` [q#${request.queuePosition}]`
-        : ""
-      // Format: [PREFIX] TIME METHOD PATH #ID MODEL
-      const message = `[....] ${time} ${request.method} ${request.path}${shortId}${modelInfo}${queueInfo}`
-      // Start and streaming lines are dim (less important)
-      this.printLog(message, "dim")
+    // Only show start line in debug mode (consola.level >= 5)
+    if (this.showActive && consola.level >= 5) {
+      const message = this.formatLogLine({
+        prefix: "[....]",
+        time: formatTime(),
+        method: request.method,
+        path: request.path,
+        model: request.model,
+        extra:
+          request.queuePosition !== undefined && request.queuePosition > 0 ?
+            `[q#${request.queuePosition}]`
+          : undefined,
+        isDim: true,
+      })
+      this.printLog(message)
     }
   }
 
@@ -226,55 +274,46 @@ export class ConsoleRenderer implements TuiRenderer {
     const request = this.activeRequests.get(id)
     if (!request) return
 
-    // Apply updates
     Object.assign(request, update)
 
-    // Show streaming status
     if (this.showActive && update.status === "streaming") {
-      const time = formatTime()
-      const shortId = ` #${formatShortId(request.id)}`
-      const modelInfo = request.model ? ` ${request.model}` : ""
-      // Format: [PREFIX] TIME METHOD PATH #ID MODEL streaming...
-      const message = `[<-->] ${time} ${request.method} ${request.path}${shortId}${modelInfo} streaming...`
-      // Streaming lines are dim (less important)
-      this.printLog(message, "dim")
+      const message = this.formatLogLine({
+        prefix: "[<-->]",
+        time: formatTime(),
+        method: request.method,
+        path: request.path,
+        model: request.model,
+        extra: "streaming...",
+        isDim: true,
+      })
+      this.printLog(message)
     }
   }
 
   onRequestComplete(request: TrackedRequest): void {
     this.activeRequests.delete(request.id)
 
-    const time = formatTime()
     const status = request.statusCode ?? 0
-    const duration = formatDuration(request.durationMs ?? 0)
+    const isError = request.status === "error" || status >= 400
     const tokens =
       request.model ?
         formatTokens(request.inputTokens, request.outputTokens)
-      : ""
-    const shortId = ` #${formatShortId(request.id)}`
-    const modelInfo = request.model ? ` ${request.model}` : ""
+      : undefined
 
-    const isError = request.status === "error" || status >= 400
-    const prefix = isError ? "[FAIL]" : "[ OK ]"
-    const tokensPart = tokens ? ` ${tokens}` : ""
-    // Format: [PREFIX] TIME METHOD PATH #ID MODEL STATUS DURATION TOKENS
-    let content = `${prefix} ${time} ${request.method} ${request.path}${shortId}${modelInfo} ${status} ${duration}${tokensPart}`
-
-    if (isError) {
-      const errorInfo = request.error ? `: ${request.error}` : ""
-      content += errorInfo
-    }
-
-    // Success is green, error is red, history access is dim
-    let style: "dim" | "success" | "error"
-    if (request.isHistoryAccess) {
-      style = "dim"
-    } else if (isError) {
-      style = "error"
-    } else {
-      style = "success"
-    }
-    this.printLog(content, style)
+    const message = this.formatLogLine({
+      prefix: isError ? "[FAIL]" : "[ OK ]",
+      time: formatTime(),
+      method: request.method,
+      path: request.path,
+      model: request.model,
+      status,
+      duration: formatDuration(request.durationMs ?? 0),
+      tokens,
+      extra: isError && request.error ? `: ${request.error}` : undefined,
+      isError,
+      isDim: request.isHistoryAccess,
+    })
+    this.printLog(message)
   }
 
   destroy(): void {

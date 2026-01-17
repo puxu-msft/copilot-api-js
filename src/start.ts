@@ -76,6 +76,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.showToken = options.showToken
   state.autoCompact = options.autoCompact
 
+  if (options.rateLimit) {
+    const mode = options.rateLimitWait ? "wait" : "error"
+    consola.info(
+      `Rate limit: ${options.rateLimit}s between requests (${mode} mode)`,
+    )
+  }
+
   if (options.autoCompact) {
     consola.info(
       "Auto-compact enabled: will compress context when exceeding token limits",
@@ -206,14 +213,14 @@ export const start = defineCommand({
     "rate-limit": {
       alias: "r",
       type: "string",
-      description: "Rate limit in seconds between requests",
+      default: "10",
+      description:
+        "Rate limit in seconds between requests (default: 10, use 0 to disable)",
     },
-    wait: {
-      alias: "w",
+    "pass-rate-limit-error": {
       type: "boolean",
       default: false,
-      description:
-        "Wait instead of error when rate limit is hit. Has no effect if rate limit is not set",
+      description: "Return 429 error instead of waiting when rate limit is hit",
     },
     "github-token": {
       alias: "g",
@@ -258,9 +265,10 @@ export const start = defineCommand({
   },
   run({ args }) {
     const rateLimitRaw = args["rate-limit"]
-    const rateLimit =
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      rateLimitRaw === undefined ? undefined : Number.parseInt(rateLimitRaw, 10)
+    // Parse rate limit: 0 means disabled, undefined means use default
+    const rateLimit = Number.parseInt(rateLimitRaw, 10)
+    // rateLimitWait is the opposite of pass-rate-limit-error
+    const rateLimitWait = !args["pass-rate-limit-error"]
 
     return runServer({
       port: Number.parseInt(args.port, 10),
@@ -268,8 +276,8 @@ export const start = defineCommand({
       verbose: args.verbose,
       accountType: args["account-type"],
       manual: args.manual,
-      rateLimit,
-      rateLimitWait: args.wait,
+      rateLimit: rateLimit === 0 ? undefined : rateLimit,
+      rateLimitWait,
       githubToken: args["github-token"],
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
