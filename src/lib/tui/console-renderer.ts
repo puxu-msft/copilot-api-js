@@ -32,17 +32,24 @@ function formatTokens(input?: number, output?: number): string {
   return `${formatNumber(input)}/${formatNumber(output)}`
 }
 
+function formatShortId(id: string): string {
+  // Take last 5 characters for a short, unique identifier
+  return id.slice(-5)
+}
+
 /**
  * Console renderer that shows request lifecycle with apt-get style footer
  *
  * Log format (status prefix first, then timestamp):
- * - Start: [....] HH:MM:SS METHOD /path model-name
- * - Streaming: [<-->] HH:MM:SS METHOD /path model-name streaming...
- * - Complete: [ OK ] HH:MM:SS METHOD /path 200 1.2s 1.5K/500 model-name
- * - Error: [FAIL] HH:MM:SS METHOD /path 500 1.2s model-name: error message
+ * - Start: [....] HH:MM:SS METHOD /path #id model-name (dim)
+ * - Streaming: [<-->] HH:MM:SS METHOD /path #id model-name streaming... (dim)
+ * - Complete: [ OK ] HH:MM:SS METHOD /path #id model-name 200 1.2s 1.5K/500 (green)
+ * - Error: [FAIL] HH:MM:SS METHOD /path #id model-name 500 1.2s: error message (red)
  *
  * Features:
- * - /history API requests are displayed in gray (dim)
+ * - Start and streaming lines are dim (less important)
+ * - Success lines are green, error lines are red
+ * - /history API requests are always dim
  * - Sticky footer shows active request count, updated in-place on the last line
  * - Footer disappears when all requests complete
  * - Intercepts consola output to properly handle footer
@@ -161,20 +168,37 @@ export class ConsoleRenderer implements TuiRenderer {
   }
 
   /**
-   * Print a log line with proper footer handling
+   * Print a log line with proper footer handling and coloring
    * 1. Clear footer if visible
    * 2. Print log with newline
    * 3. Re-render footer on new line (no newline after footer)
    */
-  private printLog(message: string, isGray = false): void {
+  private printLog(
+    message: string,
+    style: "dim" | "success" | "error" | "normal" = "normal",
+  ): void {
     this.clearFooterForLog()
 
     // Print the log message directly to stdout to avoid recursion
-    if (isGray) {
-      process.stdout.write(pc.dim(message) + "\n")
-    } else {
-      process.stdout.write(message + "\n")
+    let formatted: string
+    switch (style) {
+      case "dim": {
+        formatted = pc.dim(message)
+        break
+      }
+      case "success": {
+        formatted = pc.green(message)
+        break
+      }
+      case "error": {
+        formatted = pc.red(message)
+        break
+      }
+      default: {
+        formatted = message
+      }
     }
+    process.stdout.write(formatted + "\n")
 
     // Re-render footer after log (stays on its own line without newline)
     this.renderFooter()
@@ -185,13 +209,16 @@ export class ConsoleRenderer implements TuiRenderer {
 
     if (this.showActive) {
       const time = formatTime()
+      const shortId = ` #${formatShortId(request.id)}`
       const modelInfo = request.model ? ` ${request.model}` : ""
       const queueInfo =
         request.queuePosition !== undefined && request.queuePosition > 0 ?
           ` [q#${request.queuePosition}]`
         : ""
-      const message = `[....] ${time} ${request.method} ${request.path}${modelInfo}${queueInfo}`
-      this.printLog(message, request.isHistoryAccess)
+      // Format: [PREFIX] TIME METHOD PATH #ID MODEL
+      const message = `[....] ${time} ${request.method} ${request.path}${shortId}${modelInfo}${queueInfo}`
+      // Start and streaming lines are dim (less important)
+      this.printLog(message, "dim")
     }
   }
 
@@ -205,9 +232,12 @@ export class ConsoleRenderer implements TuiRenderer {
     // Show streaming status
     if (this.showActive && update.status === "streaming") {
       const time = formatTime()
+      const shortId = ` #${formatShortId(request.id)}`
       const modelInfo = request.model ? ` ${request.model}` : ""
-      const message = `[<-->] ${time} ${request.method} ${request.path}${modelInfo} streaming...`
-      this.printLog(message, request.isHistoryAccess)
+      // Format: [PREFIX] TIME METHOD PATH #ID MODEL streaming...
+      const message = `[<-->] ${time} ${request.method} ${request.path}${shortId}${modelInfo} streaming...`
+      // Streaming lines are dim (less important)
+      this.printLog(message, "dim")
     }
   }
 
@@ -221,19 +251,30 @@ export class ConsoleRenderer implements TuiRenderer {
       request.model ?
         formatTokens(request.inputTokens, request.outputTokens)
       : ""
+    const shortId = ` #${formatShortId(request.id)}`
     const modelInfo = request.model ? ` ${request.model}` : ""
 
     const isError = request.status === "error" || status >= 400
     const prefix = isError ? "[FAIL]" : "[ OK ]"
     const tokensPart = tokens ? ` ${tokens}` : ""
-    let content = `${prefix} ${time} ${request.method} ${request.path} ${status} ${duration}${tokensPart}${modelInfo}`
+    // Format: [PREFIX] TIME METHOD PATH #ID MODEL STATUS DURATION TOKENS
+    let content = `${prefix} ${time} ${request.method} ${request.path}${shortId}${modelInfo} ${status} ${duration}${tokensPart}`
 
     if (isError) {
       const errorInfo = request.error ? `: ${request.error}` : ""
       content += errorInfo
     }
 
-    this.printLog(content, request.isHistoryAccess)
+    // Success is green, error is red, history access is dim
+    let style: "dim" | "success" | "error"
+    if (request.isHistoryAccess) {
+      style = "dim"
+    } else if (isError) {
+      style = "error"
+    } else {
+      style = "success"
+    }
+    this.printLog(content, style)
   }
 
   destroy(): void {

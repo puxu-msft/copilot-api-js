@@ -5,12 +5,12 @@ import { state } from "~/lib/state"
 
 export const tokenRoute = new Hono()
 
-tokenRoute.get("/", async (c) => {
+tokenRoute.get("/", (c) => {
   try {
     return c.json({
       token: state.copilotToken,
     })
   } catch (error) {
-    return await forwardError(c, error)
+    return forwardError(c, error)
   }
 })

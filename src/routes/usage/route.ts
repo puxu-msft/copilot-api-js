@@ -10,6 +10,6 @@ usageRoute.get("/", async (c) => {
     const usage = await getCopilotUsage()
     return c.json(usage)
   } catch (error) {
-    return await forwardError(c, error)
+    return forwardError(c, error)
   }
 })
