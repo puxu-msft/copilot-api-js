@@ -183,6 +183,7 @@ export class ConsoleRenderer implements TuiRenderer {
     status?: number
     duration?: string
     tokens?: string
+    queueWait?: string
     extra?: string
     isError?: boolean
     isDim?: boolean
@@ -196,6 +197,7 @@ export class ConsoleRenderer implements TuiRenderer {
       status,
       duration,
       tokens,
+      queueWait,
       extra,
       isError,
       isDim,
@@ -227,6 +229,10 @@ export class ConsoleRenderer implements TuiRenderer {
 
     if (duration) {
       result += ` ${pc.yellow(duration)}`
+    }
+
+    if (queueWait) {
+      result += ` ${pc.dim(`(queued ${queueWait})`)}`
     }
 
     if (tokens) {
@@ -299,6 +305,11 @@ export class ConsoleRenderer implements TuiRenderer {
       request.model ?
         formatTokens(request.inputTokens, request.outputTokens)
       : undefined
+    // Only show queue wait if it's significant (> 100ms)
+    const queueWait =
+      request.queueWaitMs && request.queueWaitMs > 100 ?
+        formatDuration(request.queueWaitMs)
+      : undefined
 
     const message = this.formatLogLine({
       prefix: isError ? "[FAIL]" : "[ OK ]",
@@ -308,6 +319,7 @@ export class ConsoleRenderer implements TuiRenderer {
       model: request.model,
       status,
       duration: formatDuration(request.durationMs ?? 0),
+      queueWait,
       tokens,
       extra: isError && request.error ? `: ${request.error}` : undefined,
       isError,

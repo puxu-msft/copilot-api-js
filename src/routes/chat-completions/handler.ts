@@ -5,6 +5,7 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import type { Model } from "~/services/copilot/get-models"
 
+import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
 import { createCompactionMarker } from "~/lib/auto-compact"
 import { HTTPError } from "~/lib/error"
@@ -13,7 +14,6 @@ import {
   recordRequest,
   recordResponse,
 } from "~/lib/history"
-import { executeWithRateLimit } from "~/lib/queue"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { requestTracker } from "~/lib/tui"
@@ -123,9 +123,11 @@ async function executeRequest(opts: ExecuteRequestOptions) {
   const { c, payload, selectedModel, ctx, trackingId } = opts
 
   try {
-    const response = await executeWithRateLimit(state, () =>
-      createChatCompletions(payload),
-    )
+    const { result: response, queueWaitMs } =
+      await executeWithAdaptiveRateLimit(() => createChatCompletions(payload))
+
+    // Store queueWaitMs in context for later use
+    ctx.queueWaitMs = queueWaitMs
 
     if (isNonStreaming(response)) {
       return handleNonStreamingResponse(c, response, ctx)
@@ -219,6 +221,7 @@ function handleNonStreamingResponse(
     requestTracker.updateRequest(ctx.trackingId, {
       inputTokens: usage.prompt_tokens,
       outputTokens: usage.completion_tokens,
+      queueWaitMs: ctx.queueWaitMs,
     })
   }
 
@@ -318,7 +321,12 @@ async function handleStreamingResponse(opts: StreamingOptions) {
     }
 
     recordStreamSuccess(acc, payload.model, ctx)
-    completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens)
+    completeTracking(
+      ctx.trackingId,
+      acc.inputTokens,
+      acc.outputTokens,
+      ctx.queueWaitMs,
+    )
   } catch (error) {
     recordStreamError({ acc, fallbackModel: payload.model, ctx, error })
     failTracking(ctx.trackingId, error)

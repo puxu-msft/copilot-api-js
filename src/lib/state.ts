@@ -1,5 +1,7 @@
 import type { ModelsResponse } from "~/services/copilot/get-models"
 
+import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
+
 export interface State {
   githubToken?: string
   copilotToken?: string
@@ -9,12 +11,10 @@ export interface State {
   vsCodeVersion?: string
 
   manualApprove: boolean
-  rateLimitWait: boolean
   showToken: boolean
 
-  // Rate limiting configuration
-  rateLimitSeconds?: number
-  lastRequestTimestamp?: number
+  // Adaptive rate limiting configuration
+  adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
 
   // Auto-compact configuration
   autoCompact: boolean
@@ -23,7 +23,6 @@ export interface State {
 export const state: State = {
   accountType: "individual",
   manualApprove: false,
-  rateLimitWait: false,
   showToken: false,
   autoCompact: false,
 }

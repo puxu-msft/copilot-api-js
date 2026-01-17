@@ -24,6 +24,8 @@ export interface ResponseContext {
   trackingId: string | undefined
   startTime: number
   compactResult?: AutoCompactResult
+  /** Time spent waiting in rate-limit queue (ms) */
+  queueWaitMs?: number
 }
 
 /** Helper to update tracker model */
@@ -69,9 +71,14 @@ export function completeTracking(
   trackingId: string | undefined,
   inputTokens: number,
   outputTokens: number,
+  queueWaitMs?: number,
 ) {
   if (!trackingId) return
-  requestTracker.updateRequest(trackingId, { inputTokens, outputTokens })
+  requestTracker.updateRequest(trackingId, {
+    inputTokens,
+    outputTokens,
+    queueWaitMs,
+  })
   requestTracker.completeRequest(trackingId, 200, { inputTokens, outputTokens })
 }
 

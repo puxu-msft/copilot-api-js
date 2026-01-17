@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+使用中文与用户交流。
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Core Principles (HIGHEST PRIORITY)

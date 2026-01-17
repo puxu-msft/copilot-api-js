@@ -82,6 +82,21 @@ function formatRequestTooLargeError() {
   }
 }
 
+/** Format Anthropic-compatible error for rate limit exceeded (429) */
+function formatRateLimitError(copilotMessage?: string) {
+  // Return Anthropic-compatible error for 429 rate limit
+  // The "rate_limit_error" type is what Anthropic's API returns for rate limiting
+  return {
+    type: "error",
+    error: {
+      type: "rate_limit_error",
+      message:
+        copilotMessage
+        ?? "You have exceeded your rate limit. Please try again later.",
+    },
+  }
+}
+
 export function forwardError(c: Context, error: unknown) {
   consola.error("Error occurred:", error)
 
@@ -113,6 +128,13 @@ export function forwardError(c: Context, error: unknown) {
         consola.debug("Returning formatted token limit error:", formattedError)
         return c.json(formattedError, 400 as ContentfulStatusCode)
       }
+    }
+
+    // Check for rate limit error from Copilot (429 with code "rate_limited")
+    if (error.status === 429 || copilotError.error?.code === "rate_limited") {
+      const formattedError = formatRateLimitError(copilotError.error?.message)
+      consola.debug("Returning formatted rate limit error:", formattedError)
+      return c.json(formattedError, 429 as ContentfulStatusCode)
     }
 
     return c.json(

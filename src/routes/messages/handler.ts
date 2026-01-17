@@ -3,6 +3,7 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
+import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
 import { createCompactionMarker } from "~/lib/auto-compact"
 import { HTTPError } from "~/lib/error"
@@ -11,7 +12,6 @@ import {
   recordRequest,
   recordResponse,
 } from "~/lib/history"
-import { executeWithRateLimit } from "~/lib/queue"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
 import {
@@ -99,9 +99,13 @@ export async function handleCompletion(c: Context) {
   }
 
   try {
-    const response = await executeWithRateLimit(state, () =>
-      createChatCompletions(openAIPayload),
-    )
+    const { result: response, queueWaitMs } =
+      await executeWithAdaptiveRateLimit(() =>
+        createChatCompletions(openAIPayload),
+      )
+
+    // Store queueWaitMs in context for later use
+    ctx.queueWaitMs = queueWaitMs
 
     if (isNonStreaming(response)) {
       return handleNonStreamingResponse({ c, response, toolNameMapping, ctx })
@@ -193,6 +197,7 @@ function handleNonStreamingResponse(opts: NonStreamingOptions) {
     requestTracker.updateRequest(ctx.trackingId, {
       inputTokens: anthropicResponse.usage.input_tokens,
       outputTokens: anthropicResponse.usage.output_tokens,
+      queueWaitMs: ctx.queueWaitMs,
     })
   }
 
@@ -284,7 +289,12 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
     }
 
     recordStreamingResponse(acc, anthropicPayload.model, ctx)
-    completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens)
+    completeTracking(
+      ctx.trackingId,
+      acc.inputTokens,
+      acc.outputTokens,
+      ctx.queueWaitMs,
+    )
   } catch (error) {
     consola.error("Stream error:", error)
     recordStreamError({

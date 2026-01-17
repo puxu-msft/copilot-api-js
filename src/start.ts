@@ -8,6 +8,7 @@ import invariant from "tiny-invariant"
 
 import type { Model } from "./services/copilot/get-models"
 
+import { initAdaptiveRateLimiter } from "./lib/adaptive-rate-limiter"
 import { initHistory } from "./lib/history"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
@@ -44,8 +45,12 @@ interface RunServerOptions {
   verbose: boolean
   accountType: string
   manual: boolean
-  rateLimit?: number
-  rateLimitWait: boolean
+  // Adaptive rate limiting options (disabled if rateLimit is false)
+  rateLimit: boolean
+  retryInterval: number
+  requestInterval: number
+  recoveryTimeout: number
+  consecutiveSuccesses: number
   githubToken?: string
   claudeCode: boolean
   showToken: boolean
@@ -71,16 +76,19 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   state.manualApprove = options.manual
-  state.rateLimitSeconds = options.rateLimit
-  state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
   state.autoCompact = options.autoCompact
 
+  // Initialize adaptive rate limiter (unless disabled)
   if (options.rateLimit) {
-    const mode = options.rateLimitWait ? "wait" : "error"
-    consola.info(
-      `Rate limit: ${options.rateLimit}s between requests (${mode} mode)`,
-    )
+    initAdaptiveRateLimiter({
+      baseRetryIntervalSeconds: options.retryInterval,
+      requestIntervalSeconds: options.requestInterval,
+      recoveryTimeoutMinutes: options.recoveryTimeout,
+      consecutiveSuccessesForRecovery: options.consecutiveSuccesses,
+    })
+  } else {
+    consola.info("Rate limiting disabled")
   }
 
   if (options.autoCompact) {
@@ -210,17 +218,34 @@ export const start = defineCommand({
       default: false,
       description: "Enable manual request approval",
     },
-    "rate-limit": {
-      alias: "r",
+    "no-rate-limit": {
+      type: "boolean",
+      default: false,
+      description: "Disable adaptive rate limiting",
+    },
+    "retry-interval": {
       type: "string",
       default: "10",
       description:
-        "Rate limit in seconds between requests (default: 10, use 0 to disable)",
+        "Seconds to wait before retrying after rate limit error (default: 10)",
     },
-    "pass-rate-limit-error": {
-      type: "boolean",
-      default: false,
-      description: "Return 429 error instead of waiting when rate limit is hit",
+    "request-interval": {
+      type: "string",
+      default: "10",
+      description:
+        "Seconds between requests in rate-limited mode (default: 10)",
+    },
+    "recovery-timeout": {
+      type: "string",
+      default: "10",
+      description:
+        "Minutes before attempting to recover from rate-limited mode (default: 10)",
+    },
+    "consecutive-successes": {
+      type: "string",
+      default: "5",
+      description:
+        "Number of consecutive successes needed to recover from rate-limited mode (default: 5)",
     },
     "github-token": {
       alias: "g",
@@ -245,10 +270,10 @@ export const start = defineCommand({
       default: false,
       description: "Initialize proxy from environment variables",
     },
-    history: {
+    "no-history": {
       type: "boolean",
       default: false,
-      description: "Enable request history recording and Web UI at /history",
+      description: "Disable request history recording and Web UI",
     },
     "history-limit": {
       type: "string",
@@ -264,25 +289,22 @@ export const start = defineCommand({
     },
   },
   run({ args }) {
-    const rateLimitRaw = args["rate-limit"]
-    // Parse rate limit: 0 means disabled, undefined means use default
-    const rateLimit = Number.parseInt(rateLimitRaw, 10)
-    // rateLimitWait is the opposite of pass-rate-limit-error
-    const rateLimitWait = !args["pass-rate-limit-error"]
-
     return runServer({
       port: Number.parseInt(args.port, 10),
       host: args.host,
       verbose: args.verbose,
       accountType: args["account-type"],
       manual: args.manual,
-      rateLimit: rateLimit === 0 ? undefined : rateLimit,
-      rateLimitWait,
+      rateLimit: !args["no-rate-limit"],
+      retryInterval: Number.parseInt(args["retry-interval"], 10),
+      requestInterval: Number.parseInt(args["request-interval"], 10),
+      recoveryTimeout: Number.parseInt(args["recovery-timeout"], 10),
+      consecutiveSuccesses: Number.parseInt(args["consecutive-successes"], 10),
       githubToken: args["github-token"],
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
-      history: args.history,
+      history: !args["no-history"],
       historyLimit: Number.parseInt(args["history-limit"], 10),
       autoCompact: args["auto-compact"],
     })

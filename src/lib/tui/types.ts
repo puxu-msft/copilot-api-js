@@ -20,6 +20,8 @@ export interface TrackedRequest {
   outputTokens?: number
   error?: string
   queuePosition?: number
+  /** Time spent waiting in rate-limit queue (ms) */
+  queueWaitMs?: number
   /** Whether this is a /history API access (displayed in gray) */
   isHistoryAccess?: boolean
 }
@@ -32,6 +34,8 @@ export interface RequestUpdate {
   outputTokens?: number
   error?: string
   queuePosition?: number
+  /** Time spent waiting in rate-limit queue (ms) */
+  queueWaitMs?: number
 }
 
 export interface TuiRenderer {
