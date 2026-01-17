@@ -6,12 +6,8 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 import type { Model } from "~/services/copilot/get-models"
 
 import { awaitApproval } from "~/lib/approval"
-import {
-  autoCompact,
-  checkNeedsCompaction,
-  createCompactionMarker,
-  type AutoCompactResult,
-} from "~/lib/auto-compact"
+import { createCompactionMarker } from "~/lib/auto-compact"
+import { HTTPError } from "~/lib/error"
 import {
   type MessageContent,
   recordRequest,
@@ -29,18 +25,18 @@ import {
   type ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
 
-/** Context for recording responses and tracking */
-interface ResponseContext {
-  historyId: string
-  trackingId: string | undefined
-  startTime: number
-  compactResult?: AutoCompactResult
-}
-
-// Get model's max output tokens, with optional chaining for missing capabilities
-function getModelMaxOutputTokens(model: Model | undefined): number | undefined {
-  return model?.capabilities?.limits?.max_output_tokens
-}
+import {
+  type ResponseContext,
+  buildFinalPayload,
+  completeTracking,
+  failTracking,
+  isNonStreaming,
+  logPayloadSizeInfo,
+  recordErrorResponse,
+  recordStreamError,
+  updateTrackerModel,
+  updateTrackerStatus,
+} from "../shared"
 
 export async function handleCompletion(c: Context) {
   const originalPayload = await c.req.json<ChatCompletionsPayload>()
@@ -91,7 +87,7 @@ export async function handleCompletion(c: Context) {
     isNullish(finalPayload.max_tokens) ?
       {
         ...finalPayload,
-        max_tokens: getModelMaxOutputTokens(selectedModel),
+        max_tokens: selectedModel?.capabilities?.limits?.max_output_tokens,
       }
     : finalPayload
 
@@ -100,6 +96,31 @@ export async function handleCompletion(c: Context) {
   }
 
   if (state.manualApprove) await awaitApproval()
+
+  // Execute request with error handling
+  return executeRequest({
+    c,
+    payload,
+    selectedModel,
+    ctx,
+    trackingId,
+  })
+}
+
+/** Options for executeRequest */
+interface ExecuteRequestOptions {
+  c: Context
+  payload: ChatCompletionsPayload
+  selectedModel: Model | undefined
+  ctx: ResponseContext
+  trackingId: string | undefined
+}
+
+/**
+ * Execute the API call with enhanced error handling for 413 errors.
+ */
+async function executeRequest(opts: ExecuteRequestOptions) {
+  const { c, payload, selectedModel, ctx, trackingId } = opts
 
   try {
     const response = await executeWithRateLimit(state, () =>
@@ -117,48 +138,13 @@ export async function handleCompletion(c: Context) {
       await handleStreamingResponse({ stream, response, payload, ctx })
     })
   } catch (error) {
+    // Handle 413 Request Entity Too Large with helpful debugging info
+    if (error instanceof HTTPError && error.status === 413) {
+      await logPayloadSizeInfo(payload, selectedModel)
+    }
+
     recordErrorResponse(ctx, payload.model, error)
     throw error
-  }
-}
-
-// Build final payload with auto-compact if needed
-async function buildFinalPayload(
-  payload: ChatCompletionsPayload,
-  model: Parameters<typeof checkNeedsCompaction>[1] | undefined,
-): Promise<{
-  finalPayload: ChatCompletionsPayload
-  compactResult: AutoCompactResult | null
-}> {
-  if (!state.autoCompact || !model) {
-    if (state.autoCompact && !model) {
-      consola.warn(
-        `Auto-compact: Model '${payload.model}' not found in cached models, skipping`,
-      )
-    }
-    return { finalPayload: payload, compactResult: null }
-  }
-
-  try {
-    const check = await checkNeedsCompaction(payload, model)
-    consola.debug(
-      `Auto-compact check: ${check.currentTokens} tokens, limit ${check.limit}, needed: ${check.needed}`,
-    )
-    if (!check.needed) {
-      return { finalPayload: payload, compactResult: null }
-    }
-
-    consola.info(
-      `Auto-compact triggered: ${check.currentTokens} tokens > ${check.limit} limit`,
-    )
-    const compactResult = await autoCompact(payload, model)
-    return { finalPayload: compactResult.payload, compactResult }
-  } catch (error) {
-    consola.warn(
-      "Auto-compact failed, proceeding with original payload:",
-      error,
-    )
-    return { finalPayload: payload, compactResult: null }
   }
 }
 
@@ -180,41 +166,6 @@ async function logTokenCount(
   } catch (error) {
     consola.debug("Failed to calculate token count:", error)
   }
-}
-
-// Helper to update tracker model
-function updateTrackerModel(trackingId: string | undefined, model: string) {
-  if (!trackingId) return
-  const request = requestTracker.getRequest(trackingId)
-  if (request) request.model = model
-}
-
-// Helper to update tracker status
-function updateTrackerStatus(
-  trackingId: string | undefined,
-  status: "executing" | "streaming",
-) {
-  if (!trackingId) return
-  requestTracker.updateRequest(trackingId, { status })
-}
-
-// Record error response to history
-function recordErrorResponse(
-  ctx: ResponseContext,
-  model: string,
-  error: unknown,
-) {
-  recordResponse(
-    ctx.historyId,
-    {
-      success: false,
-      model,
-      usage: { input_tokens: 0, output_tokens: 0 },
-      error: error instanceof Error ? error.message : "Unknown error",
-      content: null,
-    },
-    Date.now() - ctx.startTime,
-  )
 }
 
 // Handle non-streaming response
@@ -381,57 +332,42 @@ function parseStreamChunk(chunk: { data?: string }, acc: StreamAccumulator) {
 
   try {
     const parsed = JSON.parse(chunk.data) as ChatCompletionChunk
-    accumulateModel(parsed, acc)
-    accumulateUsage(parsed, acc)
-    accumulateChoice(parsed.choices[0], acc)
+
+    // Accumulate model
+    if (parsed.model && !acc.model) acc.model = parsed.model
+
+    // Accumulate usage
+    if (parsed.usage) {
+      acc.inputTokens = parsed.usage.prompt_tokens
+      acc.outputTokens = parsed.usage.completion_tokens
+    }
+
+    // Accumulate choice
+    const choice = parsed.choices[0] as (typeof parsed.choices)[0] | undefined
+    if (choice) {
+      if (choice.delta.content) acc.content += choice.delta.content
+      if (choice.delta.tool_calls) {
+        for (const tc of choice.delta.tool_calls) {
+          const idx = tc.index
+          if (!acc.toolCallMap.has(idx)) {
+            acc.toolCallMap.set(idx, {
+              id: tc.id ?? "",
+              name: tc.function?.name ?? "",
+              arguments: "",
+            })
+          }
+          const item = acc.toolCallMap.get(idx)
+          if (item) {
+            if (tc.id) item.id = tc.id
+            if (tc.function?.name) item.name = tc.function.name
+            if (tc.function?.arguments) item.arguments += tc.function.arguments
+          }
+        }
+      }
+      if (choice.finish_reason) acc.finishReason = choice.finish_reason
+    }
   } catch {
     // Ignore parse errors
-  }
-}
-
-function accumulateModel(parsed: ChatCompletionChunk, acc: StreamAccumulator) {
-  if (parsed.model && !acc.model) acc.model = parsed.model
-}
-
-function accumulateUsage(parsed: ChatCompletionChunk, acc: StreamAccumulator) {
-  if (parsed.usage) {
-    acc.inputTokens = parsed.usage.prompt_tokens
-    acc.outputTokens = parsed.usage.completion_tokens
-  }
-}
-
-function accumulateChoice(
-  choice: ChatCompletionChunk["choices"][0] | undefined,
-  acc: StreamAccumulator,
-) {
-  if (!choice) return
-  if (choice.delta.content) acc.content += choice.delta.content
-  if (choice.delta.tool_calls) accumulateToolCalls(choice.delta.tool_calls, acc)
-  if (choice.finish_reason) acc.finishReason = choice.finish_reason
-}
-
-function accumulateToolCalls(
-  toolCalls: NonNullable<
-    ChatCompletionChunk["choices"][0]["delta"]
-  >["tool_calls"],
-  acc: StreamAccumulator,
-) {
-  if (!toolCalls) return
-  for (const tc of toolCalls) {
-    const idx = tc.index
-    if (!acc.toolCallMap.has(idx)) {
-      acc.toolCallMap.set(idx, {
-        id: tc.id ?? "",
-        name: tc.function?.name ?? "",
-        arguments: "",
-      })
-    }
-    const item = acc.toolCallMap.get(idx)
-    if (item) {
-      if (tc.id) item.id = tc.id
-      if (tc.function?.name) item.name = tc.function.name
-      if (tc.function?.arguments) item.arguments += tc.function.arguments
-    }
   }
 }
 
@@ -476,51 +412,6 @@ function recordStreamSuccess(
     Date.now() - ctx.startTime,
   )
 }
-
-// Record streaming error
-function recordStreamError(opts: {
-  acc: StreamAccumulator
-  fallbackModel: string
-  ctx: ResponseContext
-  error: unknown
-}) {
-  const { acc, fallbackModel, ctx, error } = opts
-  recordResponse(
-    ctx.historyId,
-    {
-      success: false,
-      model: acc.model || fallbackModel,
-      usage: { input_tokens: 0, output_tokens: 0 },
-      error: error instanceof Error ? error.message : "Stream error",
-      content: null,
-    },
-    Date.now() - ctx.startTime,
-  )
-}
-
-// Complete TUI tracking
-function completeTracking(
-  trackingId: string | undefined,
-  inputTokens: number,
-  outputTokens: number,
-) {
-  if (!trackingId) return
-  requestTracker.updateRequest(trackingId, { inputTokens, outputTokens })
-  requestTracker.completeRequest(trackingId, 200, { inputTokens, outputTokens })
-}
-
-// Fail TUI tracking
-function failTracking(trackingId: string | undefined, error: unknown) {
-  if (!trackingId) return
-  requestTracker.failRequest(
-    trackingId,
-    error instanceof Error ? error.message : "Stream error",
-  )
-}
-
-const isNonStreaming = (
-  response: Awaited<ReturnType<typeof createChatCompletions>>,
-): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
 
 // Convert OpenAI messages to history MessageContent format
 function convertOpenAIMessages(

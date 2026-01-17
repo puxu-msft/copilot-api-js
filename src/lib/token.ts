@@ -15,6 +15,33 @@ const readGithubToken = () => fs.readFile(PATHS.GITHUB_TOKEN_PATH, "utf8")
 const writeGithubToken = (token: string) =>
   fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token)
 
+/**
+ * Refresh the Copilot token with exponential backoff retry.
+ * Returns the new token on success, or null if all retries fail.
+ */
+async function refreshCopilotTokenWithRetry(
+  maxRetries = 3,
+): Promise<string | null> {
+  let lastError: unknown = null
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const { token } = await getCopilotToken()
+      return token
+    } catch (error) {
+      lastError = error
+      const delay = Math.min(1000 * 2 ** attempt, 30000) // Max 30s delay
+      consola.warn(
+        `Token refresh attempt ${attempt + 1}/${maxRetries} failed, retrying in ${delay}ms`,
+      )
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+
+  consola.error("All token refresh attempts failed:", lastError)
+  return null
+}
+
 export const setupCopilotToken = async () => {
   const { token, refresh_in } = await getCopilotToken()
   state.copilotToken = token
@@ -28,20 +55,20 @@ export const setupCopilotToken = async () => {
   const refreshInterval = (refresh_in - 60) * 1000
   setInterval(async () => {
     consola.debug("Refreshing Copilot token")
-    try {
-      const { token } = await getCopilotToken()
-      state.copilotToken = token
+
+    const newToken = await refreshCopilotTokenWithRetry()
+    if (newToken) {
+      state.copilotToken = newToken
       consola.debug("Copilot token refreshed")
       if (state.showToken) {
-        consola.info("Refreshed Copilot token:", token)
+        consola.info("Refreshed Copilot token:", newToken)
       }
-    } catch (error) {
-      // Log error but don't throw - throwing in setInterval crashes the process
+    } else {
+      // Token refresh failed after all retries
       // The existing token will continue to work until it expires
-      // Next refresh attempt will try again
+      // Next scheduled refresh will try again
       consola.error(
-        "Failed to refresh Copilot token (will retry on next interval):",
-        error,
+        "Failed to refresh Copilot token after retries, using existing token",
       )
     }
   }, refreshInterval)

@@ -36,8 +36,15 @@ export interface ToolNameMapping {
   originalToTruncated: Map<string, string>
 }
 
-// Helper function to fix message sequences by adding missing tool responses
-// This prevents "tool_use ids were found without tool_result blocks" errors
+/**
+ * Ensure all tool_use blocks have corresponding tool_result responses.
+ * This handles edge cases where conversation history may be incomplete:
+ * - Session interruptions where tool execution was cut off
+ * - Previous request failures
+ * - Client sending truncated history
+ *
+ * Adding placeholder responses prevents API errors and maintains protocol compliance.
+ */
 function fixMessageSequence(messages: Array<Message>): Array<Message> {
   const fixedMessages: Array<Message> = []
 
@@ -367,7 +374,7 @@ function getTruncatedToolName(
   for (let i = 0; i < originalName.length; i++) {
     const char = originalName.codePointAt(i) ?? 0
     hash = (hash << 5) - hash + char
-    hash = hash & hash // Convert to 32bit integer
+    hash = Math.trunc(hash) // Convert to 32-bit integer
   }
   const hashSuffix = Math.abs(hash).toString(36).slice(0, 8)
 

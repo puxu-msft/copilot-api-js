@@ -3,6 +3,7 @@ import consola from "consola"
 import type {
   ChatCompletionsPayload,
   Message,
+  ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 
@@ -10,15 +11,15 @@ import { getTokenCount } from "~/lib/tokenizer"
 
 /** Configuration for auto-compact behavior */
 export interface AutoCompactConfig {
-  /** Target tokens to preserve at the end (default: 100000 to leave room for output) */
+  /** Target tokens to preserve at the end (default: 120000 to stay within 128k limit) */
   targetTokens: number
-  /** Safety margin percentage to account for token counting differences (default: 10) */
+  /** Safety margin percentage to account for token counting differences (default: 2) */
   safetyMarginPercent: number
 }
 
 const DEFAULT_CONFIG: AutoCompactConfig = {
-  targetTokens: 100000, // Leave ~28k for output on 128k models
-  safetyMarginPercent: 10,
+  targetTokens: 120000, // Target 120k to stay safely within 128k limit
+  safetyMarginPercent: 2, // Small margin for token counting differences
 }
 
 /** Result of auto-compact operation */
@@ -42,7 +43,7 @@ export interface AutoCompactResult {
 export async function checkNeedsCompaction(
   payload: ChatCompletionsPayload,
   model: Model,
-  safetyMarginPercent = 10,
+  safetyMarginPercent = 2,
 ): Promise<{ needed: boolean; currentTokens: number; limit: number }> {
   const tokenCount = await getTokenCount(payload, model)
   const currentTokens = tokenCount.input
@@ -112,6 +113,16 @@ function extractSystemMessages(messages: Array<Message>): {
 }
 
 /**
+ * Extract tool_use ids from assistant messages with tool_calls.
+ */
+function getToolUseIds(message: Message): Array<string> {
+  if (message.role === "assistant" && message.tool_calls) {
+    return message.tool_calls.map((tc: ToolCall) => tc.id)
+  }
+  return []
+}
+
+/**
  * Find messages to keep from the end to stay under target tokens.
  * Returns the starting index of messages to preserve.
  */
@@ -124,7 +135,7 @@ function findPreserveIndex(
 
   let accumulatedTokens = 0
 
-  // Walk backwards from the end
+  // Walk backwards from the end to find initial preserve index
   for (let i = messages.length - 1; i >= 0; i--) {
     const msgTokens = estimateMessageTokens(messages[i])
     if (accumulatedTokens + msgTokens > availableTokens) {
@@ -136,6 +147,73 @@ function findPreserveIndex(
 
   // All messages fit
   return 0
+}
+
+/**
+ * Filter out orphaned tool_result messages that don't have a matching tool_use
+ * in the preserved message list. This prevents API errors when truncation
+ * separates tool_use/tool_result pairs.
+ */
+function filterOrphanedToolResults(messages: Array<Message>): Array<Message> {
+  // First, collect all tool_use IDs in the message list
+  const availableToolUseIds = new Set<string>()
+  for (const msg of messages) {
+    for (const id of getToolUseIds(msg)) {
+      availableToolUseIds.add(id)
+    }
+  }
+
+  // Filter out tool messages whose tool_call_id doesn't have a matching tool_use
+  const filteredMessages: Array<Message> = []
+  let removedCount = 0
+
+  for (const msg of messages) {
+    if (
+      msg.role === "tool"
+      && msg.tool_call_id
+      && !availableToolUseIds.has(msg.tool_call_id)
+    ) {
+      // This tool_result has no matching tool_use, skip it
+      removedCount++
+      continue
+    }
+    filteredMessages.push(msg)
+  }
+
+  if (removedCount > 0) {
+    consola.info(
+      `Auto-compact: Removed ${removedCount} orphaned tool_result message(s) without matching tool_use`,
+    )
+  }
+
+  return filteredMessages
+}
+
+/**
+ * Ensure the message list starts with a user message.
+ * If it starts with assistant or tool messages, skip them until we find a user message.
+ * This is required because OpenAI API expects conversations to start with user messages
+ * (after system messages).
+ */
+function ensureStartsWithUser(messages: Array<Message>): Array<Message> {
+  let startIndex = 0
+
+  // Skip any leading assistant or tool messages
+  while (startIndex < messages.length) {
+    const msg = messages[startIndex]
+    if (msg.role === "user") {
+      break
+    }
+    startIndex++
+  }
+
+  if (startIndex > 0) {
+    consola.info(
+      `Auto-compact: Skipped ${startIndex} leading non-user message(s) to ensure valid sequence`,
+    )
+  }
+
+  return messages.slice(startIndex)
 }
 
 /**
@@ -161,6 +239,7 @@ function createTruncationMarker(removedCount: number): Message {
 /**
  * Perform auto-compaction on a payload that exceeds token limits.
  * This uses simple truncation - no LLM calls required.
+ * Uses iterative approach with decreasing target tokens until under limit.
  */
 export async function autoCompact(
   payload: ChatCompletionsPayload,
@@ -200,13 +279,93 @@ export async function autoCompact(
     `Auto-compact: ${systemMessages.length} system messages (~${systemTokens} tokens)`,
   )
 
-  // Use the smaller of targetTokens or the actual limit
-  const effectiveTarget = Math.min(cfg.targetTokens, limit)
+  // Iteratively try decreasing targets until we fit under the limit
+  const MAX_ITERATIONS = 5
+  const MIN_TARGET = 20000
+  let currentTarget = Math.min(cfg.targetTokens, limit)
+  let lastResult: AutoCompactResult | null = null
+
+  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    const result = await tryCompactWithTarget({
+      payload,
+      model,
+      systemMessages,
+      remainingMessages,
+      systemTokens,
+      targetTokens: currentTarget,
+      limit,
+      originalTokens,
+    })
+
+    if (!result.wasCompacted) {
+      // Could not compact (e.g., all messages filtered out)
+      return result
+    }
+
+    lastResult = result
+
+    // Check if we're under limit
+    if (result.compactedTokens <= limit) {
+      consola.info(
+        `Auto-compact: ${originalTokens} → ${result.compactedTokens} tokens (removed ${result.removedMessageCount} messages)`,
+      )
+      return result
+    }
+
+    // Still over limit, try more aggressive target
+    consola.warn(
+      `Auto-compact: Still over limit (${result.compactedTokens} > ${limit}), trying more aggressive truncation`,
+    )
+
+    currentTarget = Math.floor(currentTarget * 0.7)
+    if (currentTarget < MIN_TARGET) {
+      consola.error("Auto-compact: Cannot reduce further, target too low")
+      return result
+    }
+  }
+
+  // Exhausted iterations, return last result
+  consola.error(
+    `Auto-compact: Exhausted ${MAX_ITERATIONS} iterations, returning best effort`,
+  )
+  return (
+    lastResult ?? {
+      payload,
+      wasCompacted: false,
+      originalTokens,
+      compactedTokens: originalTokens,
+      removedMessageCount: 0,
+    }
+  )
+}
+
+/**
+ * Helper to attempt compaction with a specific target token count.
+ */
+async function tryCompactWithTarget(opts: {
+  payload: ChatCompletionsPayload
+  model: Model
+  systemMessages: Array<Message>
+  remainingMessages: Array<Message>
+  systemTokens: number
+  targetTokens: number
+  limit: number
+  originalTokens: number
+}): Promise<AutoCompactResult> {
+  const {
+    payload,
+    model,
+    systemMessages,
+    remainingMessages,
+    systemTokens,
+    targetTokens,
+    originalTokens,
+  } = opts
 
   // Find where to start preserving messages
   const preserveIndex = findPreserveIndex(
     remainingMessages,
-    effectiveTarget,
+    targetTokens,
     systemTokens,
   )
 
@@ -225,9 +384,32 @@ export async function autoCompact(
   }
 
   const removedMessages = remainingMessages.slice(0, preserveIndex)
-  const preservedMessages = remainingMessages.slice(preserveIndex)
+  let preservedMessages = remainingMessages.slice(preserveIndex)
 
-  consola.info(
+  // Filter out orphaned tool_result messages that don't have matching tool_use
+  preservedMessages = filterOrphanedToolResults(preservedMessages)
+
+  // Ensure the preserved messages start with a user message
+  preservedMessages = ensureStartsWithUser(preservedMessages)
+
+  // After filtering, we may need to filter orphaned tool_results again
+  preservedMessages = filterOrphanedToolResults(preservedMessages)
+
+  // If all messages were filtered out, we can't proceed with compaction
+  if (preservedMessages.length === 0) {
+    consola.warn(
+      "Auto-compact: All messages were filtered out after cleanup, cannot compact",
+    )
+    return {
+      payload,
+      wasCompacted: false,
+      originalTokens,
+      compactedTokens: originalTokens,
+      removedMessageCount: 0,
+    }
+  }
+
+  consola.debug(
     `Auto-compact: Removing ${removedMessages.length} messages, keeping ${preservedMessages.length}`,
   )
 
@@ -242,35 +424,6 @@ export async function autoCompact(
 
   // Verify the new token count
   const newTokenCount = await getTokenCount(newPayload, model)
-
-  consola.info(
-    `Auto-compact: Reduced from ${originalTokens} to ${newTokenCount.input} tokens`,
-  )
-
-  // If still over limit, try more aggressive truncation
-  if (newTokenCount.input > limit) {
-    consola.warn(
-      `Auto-compact: Still over limit (${newTokenCount.input} > ${limit}), trying more aggressive truncation`,
-    )
-
-    // Recursively try with a smaller target
-    const aggressiveTarget = Math.floor(effectiveTarget * 0.7)
-    if (aggressiveTarget < 20000) {
-      consola.error("Auto-compact: Cannot reduce further, target too low")
-      return {
-        payload: newPayload,
-        wasCompacted: true,
-        originalTokens,
-        compactedTokens: newTokenCount.input,
-        removedMessageCount: removedMessages.length,
-      }
-    }
-
-    return autoCompact(payload, model, {
-      ...cfg,
-      targetTokens: aggressiveTarget,
-    })
-  }
 
   return {
     payload: newPayload,

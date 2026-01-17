@@ -2,16 +2,22 @@ import consola from "consola"
 
 import type { State } from "./state"
 
-interface QueuedRequest<T> {
-  execute: () => Promise<T>
-  resolve: (value: T) => void
+/**
+ * A queued request that wraps execute/resolve/reject callbacks.
+ * Uses 'unknown' for the queue storage since we handle multiple different
+ * request types in a single queue. Type safety is maintained at the
+ * enqueue() boundary where T is known.
+ */
+interface QueuedRequest {
+  execute: () => Promise<unknown>
+  resolve: (value: unknown) => void
   reject: (error: unknown) => void
 }
 
 // Simple request queue for rate limiting
 // Instead of rejecting requests, queue them and process sequentially
 class RequestQueue {
-  private queue: Array<QueuedRequest<unknown>> = []
+  private queue: Array<QueuedRequest> = []
   private processing = false
   private lastRequestTime = 0
 
@@ -19,12 +25,15 @@ class RequestQueue {
     execute: () => Promise<T>,
     rateLimitSeconds: number,
   ): Promise<T> {
-    return new Promise((resolve, reject) => {
-      this.queue.push({
-        execute: execute as () => Promise<unknown>,
+    return new Promise<T>((resolve, reject) => {
+      // Store the request with type-erased callbacks
+      // Type safety is ensured because we control both the storage and retrieval
+      const request: QueuedRequest = {
+        execute,
         resolve: resolve as (value: unknown) => void,
         reject,
-      })
+      }
+      this.queue.push(request)
 
       if (this.queue.length > 1) {
         const position = this.queue.length

@@ -4,12 +4,8 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import {
-  autoCompact,
-  checkNeedsCompaction,
-  createCompactionMarker,
-  type AutoCompactResult,
-} from "~/lib/auto-compact"
+import { createCompactionMarker } from "~/lib/auto-compact"
+import { HTTPError } from "~/lib/error"
 import {
   type MessageContent,
   recordRequest,
@@ -22,9 +18,20 @@ import {
   createChatCompletions,
   type ChatCompletionChunk,
   type ChatCompletionResponse,
-  type ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
 
+import {
+  type ResponseContext,
+  buildFinalPayload,
+  completeTracking,
+  failTracking,
+  isNonStreaming,
+  logPayloadSizeInfo,
+  recordErrorResponse,
+  recordStreamError,
+  updateTrackerModel,
+  updateTrackerStatus,
+} from "../shared"
 import {
   type AnthropicMessagesPayload,
   type AnthropicStreamState,
@@ -39,14 +46,6 @@ import {
   translateChunkToAnthropicEvents,
   translateErrorToAnthropicErrorEvent,
 } from "./stream-translation"
-
-/** Context for recording responses and tracking */
-interface ResponseContext {
-  historyId: string
-  trackingId: string | undefined
-  startTime: number
-  compactResult?: AutoCompactResult
-}
 
 export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
@@ -121,84 +120,14 @@ export async function handleCompletion(c: Context) {
       })
     })
   } catch (error) {
+    // Handle 413 Request Entity Too Large with helpful debugging info
+    if (error instanceof HTTPError && error.status === 413) {
+      await logPayloadSizeInfo(openAIPayload, selectedModel)
+    }
+
     recordErrorResponse(ctx, anthropicPayload.model, error)
     throw error
   }
-}
-
-// Helper to update tracker model
-function updateTrackerModel(trackingId: string | undefined, model: string) {
-  if (!trackingId) return
-  const request = requestTracker.getRequest(trackingId)
-  if (request) request.model = model
-}
-
-// Build final payload with auto-compact if needed
-async function buildFinalPayload(
-  payload: ChatCompletionsPayload,
-  model: Parameters<typeof checkNeedsCompaction>[1] | undefined,
-): Promise<{
-  finalPayload: ChatCompletionsPayload
-  compactResult: AutoCompactResult | null
-}> {
-  if (!state.autoCompact || !model) {
-    if (state.autoCompact && !model) {
-      consola.warn(
-        `Auto-compact: Model '${payload.model}' not found in cached models, skipping`,
-      )
-    }
-    return { finalPayload: payload, compactResult: null }
-  }
-
-  try {
-    const check = await checkNeedsCompaction(payload, model)
-    consola.debug(
-      `Auto-compact check: ${check.currentTokens} tokens, limit ${check.limit}, needed: ${check.needed}`,
-    )
-    if (!check.needed) {
-      return { finalPayload: payload, compactResult: null }
-    }
-
-    consola.info(
-      `Auto-compact triggered: ${check.currentTokens} tokens > ${check.limit} limit`,
-    )
-    const compactResult = await autoCompact(payload, model)
-    return { finalPayload: compactResult.payload, compactResult }
-  } catch (error) {
-    consola.warn(
-      "Auto-compact failed, proceeding with original payload:",
-      error,
-    )
-    return { finalPayload: payload, compactResult: null }
-  }
-}
-
-// Helper to update tracker status
-function updateTrackerStatus(
-  trackingId: string | undefined,
-  status: "executing" | "streaming",
-) {
-  if (!trackingId) return
-  requestTracker.updateRequest(trackingId, { status })
-}
-
-// Record error response to history
-function recordErrorResponse(
-  ctx: ResponseContext,
-  model: string,
-  error: unknown,
-) {
-  recordResponse(
-    ctx.historyId,
-    {
-      success: false,
-      model,
-      usage: { input_tokens: 0, output_tokens: 0 },
-      error: error instanceof Error ? error.message : "Unknown error",
-      content: null,
-    },
-    Date.now() - ctx.startTime,
-  )
 }
 
 /** Options for handleNonStreamingResponse */
@@ -358,7 +287,7 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
     completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens)
   } catch (error) {
     consola.error("Stream error:", error)
-    recordStreamingError({
+    recordStreamError({
       acc,
       fallbackModel: anthropicPayload.model,
       ctx,
@@ -591,47 +520,6 @@ function recordStreamingResponse(
   )
 }
 
-// Record streaming error to history
-function recordStreamingError(opts: {
-  acc: AnthropicStreamAccumulator
-  fallbackModel: string
-  ctx: ResponseContext
-  error: unknown
-}) {
-  const { acc, fallbackModel, ctx, error } = opts
-  recordResponse(
-    ctx.historyId,
-    {
-      success: false,
-      model: acc.model || fallbackModel,
-      usage: { input_tokens: 0, output_tokens: 0 },
-      error: error instanceof Error ? error.message : "Stream error",
-      content: null,
-    },
-    Date.now() - ctx.startTime,
-  )
-}
-
-// Complete TUI tracking
-function completeTracking(
-  trackingId: string | undefined,
-  inputTokens: number,
-  outputTokens: number,
-) {
-  if (!trackingId) return
-  requestTracker.updateRequest(trackingId, { inputTokens, outputTokens })
-  requestTracker.completeRequest(trackingId, 200, { inputTokens, outputTokens })
-}
-
-// Fail TUI tracking
-function failTracking(trackingId: string | undefined, error: unknown) {
-  if (!trackingId) return
-  requestTracker.failRequest(
-    trackingId,
-    error instanceof Error ? error.message : "Stream error",
-  )
-}
-
 // Convert Anthropic messages to history MessageContent format
 function convertAnthropicMessages(
   messages: AnthropicMessagesPayload["messages"],
@@ -707,7 +595,3 @@ function extractToolCallsFromContent(
   }
   return tools.length > 0 ? tools : undefined
 }
-
-const isNonStreaming = (
-  response: Awaited<ReturnType<typeof createChatCompletions>>,
-): response is ChatCompletionResponse => Object.hasOwn(response, "choices")

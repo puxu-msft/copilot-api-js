@@ -35,26 +35,92 @@ function formatTokens(input?: number, output?: number): string {
 /**
  * Console renderer that shows request lifecycle with apt-get style footer
  *
- * Log format:
- * - Start: [....] METHOD /path model-name
- * - Streaming: [<-->] METHOD /path model-name streaming...
- * - Complete: [ OK ] METHOD /path 200 1.2s 1.5K/500 model-name
+ * Log format (status prefix first, then timestamp):
+ * - Start: [....] HH:MM:SS METHOD /path model-name
+ * - Streaming: [<-->] HH:MM:SS METHOD /path model-name streaming...
+ * - Complete: [ OK ] HH:MM:SS METHOD /path 200 1.2s 1.5K/500 model-name
+ * - Error: [FAIL] HH:MM:SS METHOD /path 500 1.2s model-name: error message
  *
  * Features:
  * - /history API requests are displayed in gray (dim)
  * - Sticky footer shows active request count, updated in-place on the last line
  * - Footer disappears when all requests complete
+ * - Intercepts consola output to properly handle footer
  */
 export class ConsoleRenderer implements TuiRenderer {
   private activeRequests: Map<string, TrackedRequest> = new Map()
   private showActive: boolean
   private footerVisible = false
   private isTTY: boolean
+  private originalReporters: Array<unknown> = []
 
   constructor(options?: { showActive?: boolean }) {
     this.showActive = options?.showActive ?? true
-
     this.isTTY = process.stdout.isTTY
+
+    // Install consola reporter that coordinates with footer
+    this.installConsolaReporter()
+  }
+
+  /**
+   * Install a custom consola reporter that coordinates with footer
+   */
+  private installConsolaReporter(): void {
+    // Save original reporters
+    this.originalReporters = [...consola.options.reporters]
+
+    // Create a wrapper reporter that handles footer
+    const footerAwareReporter = {
+      log: (logObj: { args: Array<unknown>; type: string }) => {
+        // Clear footer before any consola output
+        this.clearFooterForLog()
+
+        // Format and print the log message
+        const message = logObj.args
+          .map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)))
+          .join(" ")
+
+        // Use appropriate formatting based on log type
+        const prefix = this.getLogPrefix(logObj.type)
+        if (prefix) {
+          process.stdout.write(`${prefix} ${message}\n`)
+        } else {
+          process.stdout.write(`${message}\n`)
+        }
+
+        // Re-render footer after log
+        this.renderFooter()
+      },
+    }
+
+    consola.setReporters([footerAwareReporter])
+  }
+
+  /**
+   * Get log prefix based on log type
+   */
+  private getLogPrefix(type: string): string {
+    switch (type) {
+      case "error":
+      case "fatal": {
+        return pc.red("✖")
+      }
+      case "warn": {
+        return pc.yellow("⚠")
+      }
+      case "info": {
+        return pc.cyan("ℹ")
+      }
+      case "success": {
+        return pc.green("✔")
+      }
+      case "debug": {
+        return pc.gray("●")
+      }
+      default: {
+        return ""
+      }
+    }
   }
 
   /**
@@ -103,11 +169,11 @@ export class ConsoleRenderer implements TuiRenderer {
   private printLog(message: string, isGray = false): void {
     this.clearFooterForLog()
 
-    // Print the log message
+    // Print the log message directly to stdout to avoid recursion
     if (isGray) {
-      consola.log(pc.dim(message))
+      process.stdout.write(pc.dim(message) + "\n")
     } else {
-      consola.log(message)
+      process.stdout.write(message + "\n")
     }
 
     // Re-render footer after log (stays on its own line without newline)
@@ -124,7 +190,7 @@ export class ConsoleRenderer implements TuiRenderer {
         request.queuePosition !== undefined && request.queuePosition > 0 ?
           ` [q#${request.queuePosition}]`
         : ""
-      const message = `${time} [....] ${request.method} ${request.path}${modelInfo}${queueInfo}`
+      const message = `[....] ${time} ${request.method} ${request.path}${modelInfo}${queueInfo}`
       this.printLog(message, request.isHistoryAccess)
     }
   }
@@ -140,7 +206,7 @@ export class ConsoleRenderer implements TuiRenderer {
     if (this.showActive && update.status === "streaming") {
       const time = formatTime()
       const modelInfo = request.model ? ` ${request.model}` : ""
-      const message = `${time} [<-->] ${request.method} ${request.path}${modelInfo} streaming...`
+      const message = `[<-->] ${time} ${request.method} ${request.path}${modelInfo} streaming...`
       this.printLog(message, request.isHistoryAccess)
     }
   }
@@ -160,7 +226,7 @@ export class ConsoleRenderer implements TuiRenderer {
     const isError = request.status === "error" || status >= 400
     const prefix = isError ? "[FAIL]" : "[ OK ]"
     const tokensPart = tokens ? ` ${tokens}` : ""
-    let content = `${time} ${prefix} ${request.method} ${request.path} ${status} ${duration}${tokensPart}${modelInfo}`
+    let content = `${prefix} ${time} ${request.method} ${request.path} ${status} ${duration}${tokensPart}${modelInfo}`
 
     if (isError) {
       const errorInfo = request.error ? `: ${request.error}` : ""
@@ -176,5 +242,12 @@ export class ConsoleRenderer implements TuiRenderer {
       this.footerVisible = false
     }
     this.activeRequests.clear()
+
+    // Restore original reporters
+    if (this.originalReporters.length > 0) {
+      consola.setReporters(
+        this.originalReporters as Parameters<typeof consola.setReporters>[0],
+      )
+    }
   }
 }

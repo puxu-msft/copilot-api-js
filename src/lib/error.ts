@@ -82,8 +82,7 @@ function formatRequestTooLargeError() {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/require-await
-export async function forwardError(c: Context, error: unknown) {
+export function forwardError(c: Context, error: unknown) {
   consola.error("Error occurred:", error)
 
   if (error instanceof HTTPError) {

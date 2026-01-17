@@ -19,6 +19,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI 
 ### Console Output Design
 
 - **Use fixed-width ASCII prefixes** for log alignment, not emoji/icons (e.g., `[....]`, `[<-->]`, `[ OK ]`, `[FAIL]`)
+- **Log format**: `[PREFIX] HH:MM:SS METHOD /path ...` - status prefix comes first, then timestamp
 - **Only show relevant info**: Non-model requests (like `/health`) should not display model name, tokens, or "unknown"
 - **Streaming indicator**: Show `streaming...` status for long-running requests with `[<-->]` prefix
 
@@ -92,10 +93,12 @@ bun run knip
   - `middleware.ts` - Hono middleware for automatic request tracking
   - `index.ts` - TUI initialization
 - `lib/approval.ts` - Manual request approval flow
+- `lib/auto-compact.ts` - Automatic conversation history truncation when exceeding token limits
 - `lib/tokenizer.ts` - Token counting for Anthropic `/v1/messages/count_tokens` endpoint
-- `lib/error.ts` - HTTP error handling utilities
+- `lib/error.ts` - HTTP error handling utilities (includes 413 error debug info)
 - `lib/paths.ts` - File system paths for token storage
 - `lib/proxy.ts` - HTTP proxy configuration support
+- `lib/shell.ts` - Shell command generation for environment setup (e.g., Claude Code launch command)
 
 ### Services
 
@@ -120,6 +123,8 @@ Key linting rules:
 - `Array<T>` syntax preferred over `T[]`
 - `Number.parseInt()` instead of `parseInt()`
 - `!== -1` instead of `>= 0` for index checks
+
+Note: Code structure rules like `max-lines-per-function`, `max-params`, `max-depth`, and `complexity` are disabled to allow for more natural code organization.
 
 ## API Endpoints
 
