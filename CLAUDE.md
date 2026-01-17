@@ -84,15 +84,13 @@ bun run knip
 - `lib/token.ts` - GitHub OAuth device flow and Copilot token management with auto-refresh
 - `lib/api-config.ts` - Copilot API URLs and headers (emulates VSCode extension)
 - `lib/queue.ts` - Request queue for rate limiting (queues requests instead of rejecting)
-- `lib/rate-limit.ts` - Legacy rate limit checking (deprecated, use queue.ts)
 - `lib/history.ts` - Request/response history recording and querying
 - `lib/tui/` - Terminal UI module for request logging (replaces hono/logger)
   - `types.ts` - Type definitions for request tracking (`TrackedRequest`, `TuiRenderer`)
   - `tracker.ts` - Singleton request state manager
-  - `console-renderer.ts` - Console output with ASCII prefixes (`[....]`, `[<-->]`, `[ OK ]`, `[FAIL]`)
-  - `fullscreen-renderer.tsx` - Fullscreen TUI with tabs (Active/Completed/Errors) using Ink
+  - `console-renderer.ts` - Console output with timestamps and ASCII prefixes (`[....]`, `[<-->]`, `[ OK ]`, `[FAIL]`)
   - `middleware.ts` - Hono middleware for automatic request tracking
-  - `index.ts` - TUI initialization with mode selection (`console` or `fullscreen`)
+  - `index.ts` - TUI initialization
 - `lib/approval.ts` - Manual request approval flow
 - `lib/tokenizer.ts` - Token counting for Anthropic `/v1/messages/count_tokens` endpoint
 - `lib/error.ts` - HTTP error handling utilities
