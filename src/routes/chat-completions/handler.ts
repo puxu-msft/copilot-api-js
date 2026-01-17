@@ -3,6 +3,8 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
+import type { Model } from "~/services/copilot/get-models"
+
 import { awaitApproval } from "~/lib/approval"
 import {
   autoCompact,
@@ -33,6 +35,11 @@ interface ResponseContext {
   trackingId: string | undefined
   startTime: number
   compactResult?: AutoCompactResult
+}
+
+// Get model's max output tokens, with optional chaining for missing capabilities
+function getModelMaxOutputTokens(model: Model | undefined): number | undefined {
+  return model?.capabilities?.limits?.max_output_tokens
 }
 
 export async function handleCompletion(c: Context) {
@@ -84,7 +91,7 @@ export async function handleCompletion(c: Context) {
     isNullish(finalPayload.max_tokens) ?
       {
         ...finalPayload,
-        max_tokens: selectedModel?.capabilities.limits.max_output_tokens,
+        max_tokens: getModelMaxOutputTokens(selectedModel),
       }
     : finalPayload
 

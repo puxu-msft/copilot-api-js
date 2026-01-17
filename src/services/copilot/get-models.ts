@@ -32,16 +32,16 @@ interface ModelSupports {
 }
 
 interface ModelCapabilities {
-  family: string
-  limits: ModelLimits
-  object: string
-  supports: ModelSupports
-  tokenizer: string
-  type: string
+  family?: string
+  limits?: ModelLimits
+  object?: string
+  supports?: ModelSupports
+  tokenizer?: string
+  type?: string
 }
 
 export interface Model {
-  capabilities: ModelCapabilities
+  capabilities?: ModelCapabilities
   id: string
   model_picker_enabled: boolean
   name: string

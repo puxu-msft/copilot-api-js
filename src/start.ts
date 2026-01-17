@@ -19,17 +19,17 @@ import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { server } from "./server"
 
 function formatModelInfo(model: Model): string {
-  const limits = model.capabilities.limits
+  const limits = model.capabilities?.limits
   const contextK =
-    limits.max_prompt_tokens ?
+    limits?.max_prompt_tokens ?
       `${Math.round(limits.max_prompt_tokens / 1000)}k`
     : "?"
   const outputK =
-    limits.max_output_tokens ?
+    limits?.max_output_tokens ?
       `${Math.round(limits.max_output_tokens / 1000)}k`
     : "?"
   const features = [
-    model.capabilities.supports.tool_calls && "tools",
+    model.capabilities?.supports?.tool_calls && "tools",
     model.preview && "preview",
   ]
     .filter(Boolean)

@@ -46,7 +46,7 @@ export async function checkNeedsCompaction(
 ): Promise<{ needed: boolean; currentTokens: number; limit: number }> {
   const tokenCount = await getTokenCount(payload, model)
   const currentTokens = tokenCount.input
-  const rawLimit = model.capabilities.limits.max_prompt_tokens ?? 128000
+  const rawLimit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
   // Apply safety margin to trigger compaction earlier
   const limit = Math.floor(rawLimit * (1 - safetyMarginPercent / 100))
 
@@ -172,7 +172,7 @@ export async function autoCompact(
   // Check current token count
   const tokenCount = await getTokenCount(payload, model)
   const originalTokens = tokenCount.input
-  const rawLimit = model.capabilities.limits.max_prompt_tokens ?? 128000
+  const rawLimit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
   const limit = Math.floor(rawLimit * (1 - cfg.safetyMarginPercent / 100))
 
   // If we're under the limit, no compaction needed
