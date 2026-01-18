@@ -24,5 +24,5 @@ export const state: State = {
   accountType: "individual",
   manualApprove: false,
   showToken: false,
-  autoCompact: false,
+  autoCompact: true,
 }

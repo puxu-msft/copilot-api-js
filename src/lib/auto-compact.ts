@@ -1,3 +1,15 @@
+/**
+ * Auto-compact module: Automatically truncates conversation history
+ * when it exceeds token or byte limits.
+ *
+ * Key features:
+ * - Binary search for optimal truncation point
+ * - Considers both token and byte limits
+ * - Preserves system messages
+ * - Filters orphaned tool_result messages
+ * - Dynamic byte limit adjustment on 413 errors
+ */
+
 import consola from "consola"
 
 import type {
@@ -9,89 +21,285 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { getTokenCount } from "~/lib/tokenizer"
 
+// ============================================================================
+// Configuration
+// ============================================================================
+
 /** Configuration for auto-compact behavior */
 export interface AutoCompactConfig {
-  /** Target tokens to preserve at the end (default: 120000 to stay within 128k limit) */
-  targetTokens: number
   /** Safety margin percentage to account for token counting differences (default: 2) */
   safetyMarginPercent: number
-  /** Maximum request body size in bytes (default: 1MB, auto-adjusts on 413 errors) */
+  /** Maximum request body size in bytes (default: 500KB) */
   maxRequestBodyBytes: number
 }
 
 const DEFAULT_CONFIG: AutoCompactConfig = {
-  targetTokens: 120000, // Target 120k to stay safely within 128k limit
-  safetyMarginPercent: 2, // Small margin for token counting differences
-  maxRequestBodyBytes: 500 * 1024, // 500KB initial limit (585KB known to fail), will auto-adjust on 413
+  safetyMarginPercent: 2,
+  maxRequestBodyBytes: 500 * 1024, // 500KB (585KB known to fail)
 }
 
-/**
- * Dynamic byte limit that adjusts based on 413 errors.
- * Starts at 500KB and can be adjusted when 413 errors are encountered.
- */
-let dynamicByteLimitOverride: number | null = null
+// ============================================================================
+// Dynamic Byte Limit
+// ============================================================================
+
+/** Dynamic byte limit that adjusts based on 413 errors */
+let dynamicByteLimit: number | null = null
 
 /**
- * Called when a 413 error is encountered with a specific payload size.
- * Adjusts the dynamic byte limit to 90% of the failing size.
+ * Called when a 413 error occurs. Adjusts the byte limit to 90% of the failing size.
  */
 export function onRequestTooLarge(failingBytes: number): void {
-  // Set limit to 90% of the failing size, with a minimum of 100KB
   const newLimit = Math.max(Math.floor(failingBytes * 0.9), 100 * 1024)
-  dynamicByteLimitOverride = newLimit
+  dynamicByteLimit = newLimit
   consola.info(
-    `[Auto-compact] Adjusted byte limit: ${Math.round(failingBytes / 1024)}KB failed, `
-      + `new limit: ${Math.round(newLimit / 1024)}KB`,
+    `[Auto-compact] Adjusted byte limit: ${Math.round(failingBytes / 1024)}KB failed → ${Math.round(newLimit / 1024)}KB`,
   )
 }
 
-/**
- * Get the current effective byte limit.
- */
+/** Get the current effective byte limit */
 export function getEffectiveByteLimitBytes(): number {
-  return dynamicByteLimitOverride ?? DEFAULT_CONFIG.maxRequestBodyBytes
+  return dynamicByteLimit ?? DEFAULT_CONFIG.maxRequestBodyBytes
 }
+
+// ============================================================================
+// Result Types
+// ============================================================================
 
 /** Result of auto-compact operation */
 export interface AutoCompactResult {
-  /** The compacted payload (or original if no compaction needed) */
   payload: ChatCompletionsPayload
-  /** Whether compaction was performed */
   wasCompacted: boolean
-  /** Original token count */
   originalTokens: number
-  /** Token count after compaction */
   compactedTokens: number
-  /** Number of messages that were removed */
   removedMessageCount: number
 }
 
-/**
- * Check if payload needs compaction based on model limits OR request body size.
- * Uses a safety margin to account for token counting differences.
- */
-export async function checkNeedsCompaction(
-  payload: ChatCompletionsPayload,
-  model: Model,
-  config: Partial<AutoCompactConfig> = {},
-): Promise<{
+/** Result of needs-compaction check */
+export interface CompactionCheckResult {
   needed: boolean
   currentTokens: number
   tokenLimit: number
   currentBytes: number
   byteLimit: number
   reason?: "tokens" | "bytes" | "both"
-}> {
+}
+
+// ============================================================================
+// Limit Calculation
+// ============================================================================
+
+interface Limits {
+  tokenLimit: number
+  byteLimit: number
+}
+
+function calculateLimits(model: Model, config: AutoCompactConfig): Limits {
+  const rawTokenLimit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
+  const tokenLimit = Math.floor(
+    rawTokenLimit * (1 - config.safetyMarginPercent / 100),
+  )
+  const byteLimit = dynamicByteLimit ?? config.maxRequestBodyBytes
+  return { tokenLimit, byteLimit }
+}
+
+// ============================================================================
+// Message Utilities
+// ============================================================================
+
+/** Estimate tokens for a single message (fast approximation) */
+function estimateMessageTokens(msg: Message): number {
+  let charCount = 0
+
+  if (typeof msg.content === "string") {
+    charCount = msg.content.length
+  } else if (Array.isArray(msg.content)) {
+    for (const part of msg.content) {
+      if (part.type === "text") {
+        charCount += part.text.length
+      } else if ("image_url" in part) {
+        // Base64 images are large but compressed in token counting
+        charCount += Math.min(part.image_url.url.length, 10000)
+      }
+    }
+  }
+
+  if (msg.tool_calls) {
+    charCount += JSON.stringify(msg.tool_calls).length
+  }
+
+  // ~4 chars per token + message overhead
+  return Math.ceil(charCount / 4) + 10
+}
+
+/** Get byte size of a message */
+function getMessageBytes(msg: Message): number {
+  return JSON.stringify(msg).length
+}
+
+/** Extract system/developer messages from the beginning */
+function extractSystemMessages(messages: Array<Message>): {
+  systemMessages: Array<Message>
+  conversationMessages: Array<Message>
+} {
+  let splitIndex = 0
+  while (splitIndex < messages.length) {
+    const role = messages[splitIndex].role
+    if (role !== "system" && role !== "developer") break
+    splitIndex++
+  }
+
+  return {
+    systemMessages: messages.slice(0, splitIndex),
+    conversationMessages: messages.slice(splitIndex),
+  }
+}
+
+/** Get tool_use IDs from an assistant message */
+function getToolCallIds(msg: Message): Array<string> {
+  if (msg.role === "assistant" && msg.tool_calls) {
+    return msg.tool_calls.map((tc: ToolCall) => tc.id)
+  }
+  return []
+}
+
+/** Filter orphaned tool_result messages */
+function filterOrphanedToolResults(messages: Array<Message>): Array<Message> {
+  // Collect all available tool_use IDs
+  const toolUseIds = new Set<string>()
+  for (const msg of messages) {
+    for (const id of getToolCallIds(msg)) {
+      toolUseIds.add(id)
+    }
+  }
+
+  // Filter out orphaned tool messages
+  let removedCount = 0
+  const filtered = messages.filter((msg) => {
+    if (
+      msg.role === "tool"
+      && msg.tool_call_id
+      && !toolUseIds.has(msg.tool_call_id)
+    ) {
+      removedCount++
+      return false
+    }
+    return true
+  })
+
+  if (removedCount > 0) {
+    consola.debug(`Auto-compact: Filtered ${removedCount} orphaned tool_result`)
+  }
+
+  return filtered
+}
+
+/** Ensure messages start with a user message */
+function ensureStartsWithUser(messages: Array<Message>): Array<Message> {
+  let startIndex = 0
+  while (startIndex < messages.length && messages[startIndex].role !== "user") {
+    startIndex++
+  }
+
+  if (startIndex > 0) {
+    consola.debug(
+      `Auto-compact: Skipped ${startIndex} leading non-user messages`,
+    )
+  }
+
+  return messages.slice(startIndex)
+}
+
+// ============================================================================
+// Binary Search Algorithm
+// ============================================================================
+
+interface PreserveSearchParams {
+  messages: Array<Message>
+  systemBytes: number
+  systemTokens: number
+  payloadOverhead: number
+  tokenLimit: number
+  byteLimit: number
+}
+
+/**
+ * Find the optimal index from which to preserve messages.
+ * Uses binary search with pre-calculated cumulative sums.
+ * Returns the smallest index where the preserved portion fits within limits.
+ */
+function findOptimalPreserveIndex(params: PreserveSearchParams): number {
+  const {
+    messages,
+    systemBytes,
+    systemTokens,
+    payloadOverhead,
+    tokenLimit,
+    byteLimit,
+  } = params
+
+  if (messages.length === 0) return 0
+
+  // Account for truncation marker (~200 bytes, ~50 tokens)
+  const markerBytes = 200
+  const markerTokens = 50
+
+  // Calculate available budget after system messages, marker, and overhead
+  const availableTokens = tokenLimit - systemTokens - markerTokens
+  // For bytes: payload = overhead + "[" + messages.join(",") + "]"
+  // Each message adds: JSON.stringify(msg) + 1 (comma, except last)
+  const availableBytes = byteLimit - payloadOverhead - systemBytes - markerBytes
+
+  if (availableTokens <= 0 || availableBytes <= 0) {
+    return messages.length // Cannot fit any messages
+  }
+
+  // Pre-calculate cumulative sums from the end
+  // cumulative[i] = sum of all messages from index i to end
+  const n = messages.length
+  const cumTokens: Array<number> = Array.from({ length: n + 1 }, () => 0)
+  const cumBytes: Array<number> = Array.from({ length: n + 1 }, () => 0)
+
+  for (let i = n - 1; i >= 0; i--) {
+    const msg = messages[i]
+    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(msg)
+    // Add 1 for JSON comma separator (conservative estimate)
+    cumBytes[i] = cumBytes[i + 1] + getMessageBytes(msg) + 1
+  }
+
+  // Binary search for the smallest index where both limits are satisfied
+  let left = 0
+  let right = n
+
+  while (left < right) {
+    const mid = (left + right) >>> 1
+    if (cumTokens[mid] <= availableTokens && cumBytes[mid] <= availableBytes) {
+      right = mid // Can keep more messages
+    } else {
+      left = mid + 1 // Need to remove more
+    }
+  }
+
+  return left
+}
+
+// ============================================================================
+// Main API
+// ============================================================================
+
+/**
+ * Check if payload needs compaction based on model limits or byte size.
+ */
+export async function checkNeedsCompaction(
+  payload: ChatCompletionsPayload,
+  model: Model,
+  config: Partial<AutoCompactConfig> = {},
+): Promise<CompactionCheckResult> {
   const cfg = { ...DEFAULT_CONFIG, ...config }
+  const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
+
   const tokenCount = await getTokenCount(payload, model)
   const currentTokens = tokenCount.input
-  const rawLimit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
-  // Apply safety margin to trigger compaction earlier
-  const tokenLimit = Math.floor(rawLimit * (1 - cfg.safetyMarginPercent / 100))
-
-  // Calculate request body size - use dynamic limit if available
   const currentBytes = JSON.stringify(payload).length
-  const byteLimit = dynamicByteLimitOverride ?? cfg.maxRequestBodyBytes
 
   const exceedsTokens = currentTokens > tokenLimit
   const exceedsBytes = currentBytes > byteLimit
@@ -115,188 +323,17 @@ export async function checkNeedsCompaction(
   }
 }
 
-/**
- * Calculate approximate token count for a single message.
- * This is a fast estimation for splitting decisions.
- */
-function estimateMessageTokens(message: Message): number {
-  let text = ""
-  if (typeof message.content === "string") {
-    text = message.content
-  } else if (Array.isArray(message.content)) {
-    for (const part of message.content) {
-      if (part.type === "text") {
-        text += part.text
-      } else if ("image_url" in part) {
-        // Images add significant tokens
-        text += part.image_url.url
-      }
-    }
-  }
-
-  // Add tool calls if present
-  if (message.tool_calls) {
-    text += JSON.stringify(message.tool_calls)
-  }
-
-  // Rough estimation: ~4 characters per token + message overhead
-  return Math.ceil(text.length / 4) + 10
-}
-
-/**
- * Extract system messages from the beginning of the message list.
- */
-function extractSystemMessages(messages: Array<Message>): {
-  systemMessages: Array<Message>
-  remainingMessages: Array<Message>
-} {
-  const systemMessages: Array<Message> = []
-  let i = 0
-
-  while (i < messages.length) {
-    const msg = messages[i]
-    if (msg.role === "system" || msg.role === "developer") {
-      systemMessages.push(msg)
-      i++
-    } else {
-      break
-    }
-  }
-
-  return {
-    systemMessages,
-    remainingMessages: messages.slice(i),
-  }
-}
-
-/**
- * Extract tool_use ids from assistant messages with tool_calls.
- */
-function getToolUseIds(message: Message): Array<string> {
-  if (message.role === "assistant" && message.tool_calls) {
-    return message.tool_calls.map((tc: ToolCall) => tc.id)
-  }
-  return []
-}
-
-/**
- * Find messages to keep from the end to stay under target tokens.
- * Returns the starting index of messages to preserve.
- */
-function findPreserveIndex(
-  messages: Array<Message>,
-  targetTokens: number,
-  systemTokens: number,
-): number {
-  const availableTokens = targetTokens - systemTokens - 500 // Reserve for truncation marker
-
-  let accumulatedTokens = 0
-
-  // Walk backwards from the end to find initial preserve index
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msgTokens = estimateMessageTokens(messages[i])
-    if (accumulatedTokens + msgTokens > availableTokens) {
-      // This message would put us over - start preserving from next message
-      return i + 1
-    }
-    accumulatedTokens += msgTokens
-  }
-
-  // All messages fit
-  return 0
-}
-
-/**
- * Filter out orphaned tool_result messages that don't have a matching tool_use
- * in the preserved message list. This prevents API errors when truncation
- * separates tool_use/tool_result pairs.
- */
-function filterOrphanedToolResults(messages: Array<Message>): Array<Message> {
-  // First, collect all tool_use IDs in the message list
-  const availableToolUseIds = new Set<string>()
-  for (const msg of messages) {
-    for (const id of getToolUseIds(msg)) {
-      availableToolUseIds.add(id)
-    }
-  }
-
-  // Filter out tool messages whose tool_call_id doesn't have a matching tool_use
-  const filteredMessages: Array<Message> = []
-  let removedCount = 0
-
-  for (const msg of messages) {
-    if (
-      msg.role === "tool"
-      && msg.tool_call_id
-      && !availableToolUseIds.has(msg.tool_call_id)
-    ) {
-      // This tool_result has no matching tool_use, skip it
-      removedCount++
-      continue
-    }
-    filteredMessages.push(msg)
-  }
-
-  if (removedCount > 0) {
-    consola.info(
-      `Auto-compact: Removed ${removedCount} orphaned tool_result message(s) without matching tool_use`,
-    )
-  }
-
-  return filteredMessages
-}
-
-/**
- * Ensure the message list starts with a user message.
- * If it starts with assistant or tool messages, skip them until we find a user message.
- * This is required because OpenAI API expects conversations to start with user messages
- * (after system messages).
- */
-function ensureStartsWithUser(messages: Array<Message>): Array<Message> {
-  let startIndex = 0
-
-  // Skip any leading assistant or tool messages
-  while (startIndex < messages.length) {
-    const msg = messages[startIndex]
-    if (msg.role === "user") {
-      break
-    }
-    startIndex++
-  }
-
-  if (startIndex > 0) {
-    consola.info(
-      `Auto-compact: Skipped ${startIndex} leading non-user message(s) to ensure valid sequence`,
-    )
-  }
-
-  return messages.slice(startIndex)
-}
-
-/**
- * Calculate estimated tokens for system messages.
- */
-function estimateSystemTokens(systemMessages: Array<Message>): number {
-  return systemMessages.reduce(
-    (sum, msg) => sum + estimateMessageTokens(msg),
-    0,
-  )
-}
-
-/**
- * Create a truncation marker message.
- */
+/** Create a truncation marker message */
 function createTruncationMarker(removedCount: number): Message {
   return {
     role: "user",
-    content: `[CONTEXT TRUNCATED: ${removedCount} earlier messages were removed to fit context limits. The conversation continues below.]`,
+    content: `[CONTEXT TRUNCATED: ${removedCount} earlier messages removed to fit context limits]`,
   }
 }
 
 /**
- * Perform auto-compaction on a payload that exceeds token or size limits.
- * This uses simple truncation - no LLM calls required.
- * Uses iterative approach with decreasing target tokens until under limit.
+ * Perform auto-compaction on a payload that exceeds limits.
+ * Uses binary search to find the optimal truncation point.
  */
 export async function autoCompact(
   payload: ChatCompletionsPayload,
@@ -304,16 +341,15 @@ export async function autoCompact(
   config: Partial<AutoCompactConfig> = {},
 ): Promise<AutoCompactResult> {
   const cfg = { ...DEFAULT_CONFIG, ...config }
+  const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
 
-  // Check current token count and body size
+  // Measure original size
+  const payloadJson = JSON.stringify(payload)
+  const originalBytes = payloadJson.length
   const tokenCount = await getTokenCount(payload, model)
   const originalTokens = tokenCount.input
-  const rawLimit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
-  const tokenLimit = Math.floor(rawLimit * (1 - cfg.safetyMarginPercent / 100))
-  const originalBytes = JSON.stringify(payload).length
-  const byteLimit = dynamicByteLimitOverride ?? cfg.maxRequestBodyBytes
 
-  // If we're under both limits, no compaction needed
+  // Check if compaction is needed
   if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
     return {
       payload,
@@ -324,7 +360,7 @@ export async function autoCompact(
     }
   }
 
-  // Determine the reason for compaction
+  // Log reason
   const exceedsTokens = originalTokens > tokenLimit
   const exceedsBytes = originalBytes > byteLimit
   let reason: string
@@ -337,126 +373,46 @@ export async function autoCompact(
   }
 
   consola.info(
-    `Auto-compact: Exceeds ${reason} limit (${originalTokens} tokens, ${Math.round(originalBytes / 1024)}KB), truncating...`,
+    `Auto-compact: Exceeds ${reason} limit (${originalTokens} tokens, ${Math.round(originalBytes / 1024)}KB)`,
   )
 
-  // Extract system messages (always preserve them)
-  const { systemMessages, remainingMessages } = extractSystemMessages(
+  // Extract system messages
+  const { systemMessages, conversationMessages } = extractSystemMessages(
     payload.messages,
   )
 
-  const systemTokens = estimateSystemTokens(systemMessages)
+  // Calculate overhead: everything except the messages array content
+  const messagesJson = JSON.stringify(payload.messages)
+  const payloadOverhead = originalBytes - messagesJson.length
+
+  // Calculate system message sizes
+  const systemBytes = systemMessages.reduce(
+    (sum, m) => sum + getMessageBytes(m) + 1,
+    0,
+  )
+  const systemTokens = systemMessages.reduce(
+    (sum, m) => sum + estimateMessageTokens(m),
+    0,
+  )
+
   consola.debug(
-    `Auto-compact: ${systemMessages.length} system messages (~${systemTokens} tokens)`,
+    `Auto-compact: overhead=${Math.round(payloadOverhead / 1024)}KB, `
+      + `system=${systemMessages.length} msgs (${Math.round(systemBytes / 1024)}KB)`,
   )
 
-  // Iteratively try decreasing targets until we fit under the limit
-  const MAX_ITERATIONS = 5
-  const MIN_TARGET = 20000
-  let currentTarget = Math.min(cfg.targetTokens, tokenLimit)
-  let lastResult: AutoCompactResult | null = null
-
-  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-    const result = await tryCompactWithTarget({
-      payload,
-      model,
-      systemMessages,
-      remainingMessages,
-      systemTokens,
-      targetTokens: currentTarget,
-      limit: tokenLimit,
-      originalTokens,
-    })
-
-    if (!result.wasCompacted) {
-      // Could not compact (e.g., all messages filtered out)
-      return result
-    }
-
-    lastResult = result
-
-    // Check if we're under BOTH limits (tokens and bytes)
-    const resultBytes = JSON.stringify(result.payload).length
-    const underTokenLimit = result.compactedTokens <= tokenLimit
-    const underByteLimit = resultBytes <= byteLimit
-
-    if (underTokenLimit && underByteLimit) {
-      consola.info(
-        `Auto-compact: ${originalTokens} → ${result.compactedTokens} tokens, `
-          + `${Math.round(originalBytes / 1024)}KB → ${Math.round(resultBytes / 1024)}KB `
-          + `(removed ${result.removedMessageCount} messages)`,
-      )
-      return result
-    }
-
-    // Still over limit, try more aggressive target
-    const tokenStatus =
-      underTokenLimit ? "OK" : `${result.compactedTokens} > ${tokenLimit}`
-    const byteStatus =
-      underByteLimit ? "OK" : (
-        `${Math.round(resultBytes / 1024)}KB > ${Math.round(byteLimit / 1024)}KB`
-      )
-    consola.warn(
-      `Auto-compact: Still over limit (tokens: ${tokenStatus}, size: ${byteStatus}), trying more aggressive truncation`,
-    )
-
-    currentTarget = Math.floor(currentTarget * 0.7)
-    if (currentTarget < MIN_TARGET) {
-      consola.error("Auto-compact: Cannot reduce further, target too low")
-      return result
-    }
-  }
-
-  // Exhausted iterations, return last result
-  consola.error(
-    `Auto-compact: Exhausted ${MAX_ITERATIONS} iterations, returning best effort`,
-  )
-  return (
-    lastResult ?? {
-      payload,
-      wasCompacted: false,
-      originalTokens,
-      compactedTokens: originalTokens,
-      removedMessageCount: 0,
-    }
-  )
-}
-
-/**
- * Helper to attempt compaction with a specific target token count.
- */
-async function tryCompactWithTarget(opts: {
-  payload: ChatCompletionsPayload
-  model: Model
-  systemMessages: Array<Message>
-  remainingMessages: Array<Message>
-  systemTokens: number
-  targetTokens: number
-  limit: number
-  originalTokens: number
-}): Promise<AutoCompactResult> {
-  const {
-    payload,
-    model,
-    systemMessages,
-    remainingMessages,
+  // Find optimal preserve index
+  const preserveIndex = findOptimalPreserveIndex({
+    messages: conversationMessages,
+    systemBytes,
     systemTokens,
-    targetTokens,
-    originalTokens,
-  } = opts
+    payloadOverhead,
+    tokenLimit,
+    byteLimit,
+  })
 
-  // Find where to start preserving messages
-  const preserveIndex = findPreserveIndex(
-    remainingMessages,
-    targetTokens,
-    systemTokens,
-  )
-
-  // If we need to keep all messages, we can't help
+  // Check if we can compact
   if (preserveIndex === 0) {
-    consola.warn(
-      "Auto-compact: Cannot truncate further without losing all conversation history",
-    )
+    consola.warn("Auto-compact: Cannot truncate, system messages too large")
     return {
       payload,
       wasCompacted: false,
@@ -466,23 +422,8 @@ async function tryCompactWithTarget(opts: {
     }
   }
 
-  const removedMessages = remainingMessages.slice(0, preserveIndex)
-  let preservedMessages = remainingMessages.slice(preserveIndex)
-
-  // Filter out orphaned tool_result messages that don't have matching tool_use
-  preservedMessages = filterOrphanedToolResults(preservedMessages)
-
-  // Ensure the preserved messages start with a user message
-  preservedMessages = ensureStartsWithUser(preservedMessages)
-
-  // After filtering, we may need to filter orphaned tool_results again
-  preservedMessages = filterOrphanedToolResults(preservedMessages)
-
-  // If all messages were filtered out, we can't proceed with compaction
-  if (preservedMessages.length === 0) {
-    consola.warn(
-      "Auto-compact: All messages were filtered out after cleanup, cannot compact",
-    )
+  if (preserveIndex >= conversationMessages.length) {
+    consola.warn("Auto-compact: Would need to remove all messages")
     return {
       payload,
       wasCompacted: false,
@@ -492,33 +433,62 @@ async function tryCompactWithTarget(opts: {
     }
   }
 
-  consola.debug(
-    `Auto-compact: Removing ${removedMessages.length} messages, keeping ${preservedMessages.length}`,
-  )
+  // Build preserved messages
+  let preserved = conversationMessages.slice(preserveIndex)
 
-  // Build the truncation marker
-  const truncationMarker = createTruncationMarker(removedMessages.length)
+  // Clean up the message list
+  preserved = filterOrphanedToolResults(preserved)
+  preserved = ensureStartsWithUser(preserved)
+  preserved = filterOrphanedToolResults(preserved)
+
+  if (preserved.length === 0) {
+    consola.warn("Auto-compact: All messages filtered out after cleanup")
+    return {
+      payload,
+      wasCompacted: false,
+      originalTokens,
+      compactedTokens: originalTokens,
+      removedMessageCount: 0,
+    }
+  }
 
   // Build new payload
+  const removedCount = conversationMessages.length - preserved.length
+  const marker = createTruncationMarker(removedCount)
+
   const newPayload: ChatCompletionsPayload = {
     ...payload,
-    messages: [...systemMessages, truncationMarker, ...preservedMessages],
+    messages: [...systemMessages, marker, ...preserved],
   }
 
-  // Verify the new token count
+  // Verify the result
+  const newBytes = JSON.stringify(newPayload).length
   const newTokenCount = await getTokenCount(newPayload, model)
+
+  consola.info(
+    `Auto-compact: ${originalTokens} → ${newTokenCount.input} tokens, `
+      + `${Math.round(originalBytes / 1024)}KB → ${Math.round(newBytes / 1024)}KB `
+      + `(removed ${removedCount} messages)`,
+  )
+
+  // Warn if still over limit (shouldn't happen with correct algorithm)
+  if (newBytes > byteLimit) {
+    consola.warn(
+      `Auto-compact: Result still over byte limit (${Math.round(newBytes / 1024)}KB > ${Math.round(byteLimit / 1024)}KB)`,
+    )
+  }
 
   return {
     payload: newPayload,
     wasCompacted: true,
     originalTokens,
     compactedTokens: newTokenCount.input,
-    removedMessageCount: removedMessages.length,
+    removedMessageCount: removedCount,
   }
 }
 
 /**
- * Create a marker to append to responses indicating auto-compaction occurred.
+ * Create a marker to prepend to responses indicating auto-compaction occurred.
  */
 export function createCompactionMarker(result: AutoCompactResult): string {
   if (!result.wasCompacted) return ""

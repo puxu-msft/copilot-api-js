@@ -8,6 +8,7 @@ import invariant from "tiny-invariant"
 
 import type { Model } from "./services/copilot/get-models"
 
+import packageJson from "../package.json"
 import { initAdaptiveRateLimiter } from "./lib/adaptive-rate-limiter"
 import { initHistory } from "./lib/history"
 import { ensurePaths } from "./lib/paths"
@@ -61,6 +62,9 @@ interface RunServerOptions {
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
+  // Display version at startup
+  consola.info(`copilot-api v${packageJson.version}`)
+
   if (options.proxyEnv) {
     initProxyFromEnv()
   }
@@ -91,10 +95,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     consola.info("Rate limiting disabled")
   }
 
-  if (options.autoCompact) {
-    consola.info(
-      "Auto-compact enabled: will compress context when exceeding token limits",
-    )
+  if (!options.autoCompact) {
+    consola.info("Auto-compact disabled")
   }
 
   // Initialize history recording if enabled
@@ -281,11 +283,11 @@ export const start = defineCommand({
       description:
         "Maximum number of history entries to keep in memory (0 = unlimited)",
     },
-    "auto-compact": {
+    "no-auto-compact": {
       type: "boolean",
       default: false,
       description:
-        "Automatically compress conversation history when exceeding model token limits",
+        "Disable automatic conversation history compression when exceeding limits",
     },
   },
   run({ args }) {
@@ -306,7 +308,7 @@ export const start = defineCommand({
       proxyEnv: args["proxy-env"],
       history: !args["no-history"],
       historyLimit: Number.parseInt(args["history-limit"], 10),
-      autoCompact: args["auto-compact"],
+      autoCompact: !args["no-auto-compact"],
     })
   },
 })
