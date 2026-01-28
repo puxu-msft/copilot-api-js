@@ -7,7 +7,7 @@ import { auth } from "./auth"
 import { checkUsage } from "./check-usage"
 import { debug } from "./debug"
 import { logout } from "./logout"
-import { patchClaude } from "./patch-claude"
+import { patchClaude } from "./patch-claude-code"
 import { start } from "./start"
 
 // Disable consola's default timestamp - we add our own in console-renderer

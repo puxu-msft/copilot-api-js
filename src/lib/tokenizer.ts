@@ -1,3 +1,5 @@
+import { countTokens as countAnthropicTokens } from "@anthropic-ai/tokenizer"
+
 import type {
   ChatCompletionsPayload,
   ContentPart,
@@ -6,6 +8,10 @@ import type {
   ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
+
+// ============================================================================
+// GPT Encoder Support (for non-Anthropic models)
+// ============================================================================
 
 // Encoder type mapping
 const ENCODING_MAP = {
@@ -325,17 +331,124 @@ export const numTokensForTools = (
   return funcTokenCount
 }
 
+// ============================================================================
+// Anthropic Token Counting (using official tokenizer)
+// ============================================================================
+
 /**
- * Calculate the token count of messages, supporting multiple GPT encoders
+ * Check if a model is an Anthropic model
+ */
+function isAnthropicModel(model: Model): boolean {
+  return model.vendor === "Anthropic"
+}
+
+/**
+ * Convert a message to plain text for Anthropic tokenizer
+ */
+function messageToText(message: Message): string {
+  const parts: Array<string> = []
+
+  // Role prefix
+  parts.push(`${message.role}:`)
+
+  // Content
+  if (typeof message.content === "string") {
+    parts.push(message.content)
+  } else if (Array.isArray(message.content)) {
+    for (const part of message.content) {
+      if ("text" in part && part.text) {
+        parts.push(part.text)
+      } else if (part.type === "image_url") {
+        // Images add ~85 tokens overhead (same as GPT approximation)
+        parts.push("[image]")
+      }
+    }
+  }
+
+  // Tool calls
+  if (message.tool_calls) {
+    for (const tc of message.tool_calls) {
+      parts.push(JSON.stringify(tc))
+    }
+  }
+
+  // Tool call ID (for tool messages)
+  if ("tool_call_id" in message && message.tool_call_id) {
+    parts.push(`tool_call_id:${message.tool_call_id}`)
+  }
+
+  return parts.join("\n")
+}
+
+/**
+ * Convert tools to text for Anthropic tokenizer
+ */
+function toolsToText(tools: Array<Tool>): string {
+  return tools.map((tool) => JSON.stringify(tool)).join("\n")
+}
+
+/**
+ * Calculate token count using Anthropic's official tokenizer
+ */
+function getAnthropicTokenCount(payload: ChatCompletionsPayload): {
+  input: number
+  output: number
+} {
+  const inputMessages = payload.messages.filter(
+    (msg) => msg.role !== "assistant",
+  )
+  const outputMessages = payload.messages.filter(
+    (msg) => msg.role === "assistant",
+  )
+
+  // Convert messages to text and count tokens
+  const inputText = inputMessages.map((msg) => messageToText(msg)).join("\n\n")
+  const outputText = outputMessages
+    .map((msg) => messageToText(msg))
+    .join("\n\n")
+
+  let inputTokens = countAnthropicTokens(inputText)
+  let outputTokens = countAnthropicTokens(outputText)
+
+  // Add tokens for tools
+  if (payload.tools && payload.tools.length > 0) {
+    const toolsText = toolsToText(payload.tools)
+    inputTokens += countAnthropicTokens(toolsText)
+  }
+
+  // Message framing overhead (similar to GPT's 3 tokens per message)
+  inputTokens += inputMessages.length * 3
+  outputTokens += outputMessages.length * 3
+
+  // Reply priming overhead
+  inputTokens += 3
+
+  return {
+    input: inputTokens,
+    output: outputTokens,
+  }
+}
+
+// ============================================================================
+// Main Token Count API
+// ============================================================================
+
+/**
+ * Calculate the token count of messages.
+ * Uses Anthropic's official tokenizer for Anthropic models,
+ * and GPT tokenizers for other models.
  */
 export const getTokenCount = async (
   payload: ChatCompletionsPayload,
   model: Model,
 ): Promise<{ input: number; output: number }> => {
-  // Get tokenizer string
-  const tokenizer = getTokenizerFromModel(model)
+  // Use Anthropic tokenizer for Anthropic models
+  if (isAnthropicModel(model)) {
+    return getAnthropicTokenCount(payload)
+  }
 
-  // Get corresponding encoder module
+  // Use GPT tokenizer for other models
+  const tokenizer = getTokenizerFromModel(model)
   const encoder = await getEncodeChatFunction(tokenizer)
 
   const simplifiedMessages = payload.messages

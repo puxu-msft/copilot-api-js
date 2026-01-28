@@ -4,12 +4,12 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 // Supported Claude Code versions for patching
-// Format: { pattern version -> [min version, max version] }
+// Format: { pattern version -> [min version, max version (null = no upper limit)] }
 const SUPPORTED_VERSIONS = {
   // v2a: function HR(A){...return 200000} pattern (2.0.0-2.1.10)
   v2a: { min: "2.0.0", max: "2.1.10" },
-  // v2b: var BS9=200000 variable pattern (2.1.11+)
-  v2b: { min: "2.1.11", max: "2.1.12" }, // Update max when new versions are verified
+  // v2b: var XXX=200000 variable pattern (2.1.11+, no upper limit)
+  v2b: { min: "2.1.11" },
 }
 
 // Patterns for different Claude Code versions
@@ -20,7 +20,10 @@ const PATTERNS = {
   funcPatched:
     /function HR\(A\)\{if\(A\.includes\("\[1m\]"\)\)return 1e6;return \d+\}/,
   // Variable pattern (v2b: 2.1.11+)
-  variable: /var BS9=(\d+)/,
+  // Variable name changes between versions (BS9, NS9, etc.), so we match any identifier
+  // The pattern matches: var <VARNAME>=200000 where it's followed by comma or appears in a sequence
+  // We look for the 200000 value specifically since that's the context window limit
+  variable: /var ([A-Za-z_$]\w*)=(\d+)(?=,\w+=20000,)/,
 }
 
 /**
@@ -61,11 +64,8 @@ function getPatternTypeForVersion(version: string): PatternType | null {
   ) {
     return "func"
   }
-  // v2b (2.1.11+) uses variable pattern
-  if (
-    compareVersions(version, SUPPORTED_VERSIONS.v2b.min) >= 0
-    && compareVersions(version, SUPPORTED_VERSIONS.v2b.max) <= 0
-  ) {
+  // v2b (2.1.11+) uses variable pattern (no upper limit)
+  if (compareVersions(version, SUPPORTED_VERSIONS.v2b.min) >= 0) {
     return "variable"
   }
   return null
@@ -75,7 +75,7 @@ function getPatternTypeForVersion(version: string): PatternType | null {
  * Get supported version range string for error messages
  */
 function getSupportedRangeString(): string {
-  return `${SUPPORTED_VERSIONS.v2a.min}-${SUPPORTED_VERSIONS.v2a.max}, ${SUPPORTED_VERSIONS.v2b.min}-${SUPPORTED_VERSIONS.v2b.max}`
+  return `${SUPPORTED_VERSIONS.v2a.min}-${SUPPORTED_VERSIONS.v2a.max}, ${SUPPORTED_VERSIONS.v2b.min}+`
 }
 
 /**
@@ -154,9 +154,9 @@ function findInVoltaTools(voltaHome: string): Array<string> {
 }
 
 /**
- * Find Claude Code CLI path by checking common locations
+ * Find all Claude Code CLI paths by checking common locations
  */
-function findClaudeCodePath(): string | null {
+function findAllClaudeCodePaths(): Array<string> {
   const possiblePaths: Array<string> = []
   const home = process.env.HOME || ""
 
@@ -200,28 +200,61 @@ function findClaudeCodePath(): string | null {
     )
   }
 
-  // Return the first existing path
-  return possiblePaths.find((p) => existsSync(p)) ?? null
+  // Return all existing paths (deduplicated)
+  return [...new Set(possiblePaths.filter((p) => existsSync(p)))]
+}
+
+interface InstallationInfo {
+  path: string
+  version: string | null
+  limit: number | null
+}
+
+/**
+ * Get installation info for a CLI path
+ */
+function getInstallationInfo(cliPath: string): InstallationInfo {
+  const version = getClaudeCodeVersion(cliPath)
+  const content = readFileSync(cliPath, "utf8")
+  const limit = getCurrentLimit(content)
+  return { path: cliPath, version, limit }
 }
 
 /**
  * Get current context limit from Claude Code
+ * Returns both the limit value and the variable name (for v2b pattern)
  */
-function getCurrentLimit(content: string): number | null {
+interface LimitInfo {
+  limit: number
+  varName?: string
+}
+
+function getCurrentLimitInfo(content: string): LimitInfo | null {
   // Try variable pattern first (v2b: 2.1.11+)
   const varMatch = content.match(PATTERNS.variable)
   if (varMatch) {
-    return Number.parseInt(varMatch[1], 10)
+    return {
+      limit: Number.parseInt(varMatch[2], 10),
+      varName: varMatch[1],
+    }
   }
 
   // Try function pattern (v2a: 2.0.0-2.1.10)
   const funcMatch = content.match(PATTERNS.funcPatched)
   if (funcMatch) {
     const limitMatch = funcMatch[0].match(/return (\d+)\}$/)
-    return limitMatch ? Number.parseInt(limitMatch[1], 10) : null
+    return limitMatch ? { limit: Number.parseInt(limitMatch[1], 10) } : null
   }
 
   return null
+}
+
+/**
+ * Get current context limit from Claude Code (legacy wrapper)
+ */
+function getCurrentLimit(content: string): number | null {
+  const info = getCurrentLimitInfo(content)
+  return info?.limit ?? null
 }
 
 interface VersionCheckResult {
@@ -259,32 +292,40 @@ function checkVersionSupport(cliPath: string): VersionCheckResult {
   return { supported: true, version, patternType }
 }
 
+type PatchResult = "success" | "already_patched" | "failed"
+
 /**
  * Patch Claude Code to use a different context limit
  */
-function patchClaudeCode(cliPath: string, newLimit: number): boolean {
+function patchClaudeCode(cliPath: string, newLimit: number): PatchResult {
   const content = readFileSync(cliPath, "utf8")
 
   // Check version support
   const versionCheck = checkVersionSupport(cliPath)
   if (!versionCheck.supported) {
     consola.error(versionCheck.error)
-    return false
+    return "failed"
   }
 
   consola.info(`Claude Code version: ${versionCheck.version}`)
 
-  // Check if already patched with the same value
-  const currentLimit = getCurrentLimit(content)
-  if (currentLimit === newLimit) {
-    consola.info(`Already patched with limit ${newLimit}`)
-    return true
+  // Get current limit info (includes variable name for v2b)
+  const limitInfo = getCurrentLimitInfo(content)
+  if (limitInfo?.limit === newLimit) {
+    return "already_patched"
   }
 
   let newContent: string
   if (versionCheck.patternType === "variable") {
-    // v2b (2.1.11+): replace var BS9=NNNN
-    newContent = content.replace(PATTERNS.variable, `var BS9=${newLimit}`)
+    // v2b (2.1.11+): replace var <VARNAME>=NNNN, preserving the variable name
+    if (!limitInfo?.varName) {
+      consola.error("Could not detect variable name for patching")
+      return "failed"
+    }
+    newContent = content.replace(
+      PATTERNS.variable,
+      `var ${limitInfo.varName}=${newLimit}`,
+    )
   } else {
     // v2a (2.0.0-2.1.10): replace function
     const replacement = `function HR(A){if(A.includes("[1m]"))return 1e6;return ${newLimit}}`
@@ -296,7 +337,7 @@ function patchClaudeCode(cliPath: string, newLimit: number): boolean {
   }
 
   writeFileSync(cliPath, newContent)
-  return true
+  return "success"
 }
 
 /**
@@ -314,16 +355,23 @@ function restoreClaudeCode(cliPath: string): boolean {
 
   consola.info(`Claude Code version: ${versionCheck.version}`)
 
-  const currentLimit = getCurrentLimit(content)
-  if (currentLimit === 200000) {
+  const limitInfo = getCurrentLimitInfo(content)
+  if (limitInfo?.limit === 200000) {
     consola.info("Already at original 200000 limit")
     return true
   }
 
   let newContent: string
   if (versionCheck.patternType === "variable") {
-    // v2b (2.1.11+): replace var BS9=NNNN
-    newContent = content.replace(PATTERNS.variable, "var BS9=200000")
+    // v2b (2.1.11+): replace var <VARNAME>=NNNN, preserving the variable name
+    if (!limitInfo?.varName) {
+      consola.error("Could not detect variable name for restoring")
+      return false
+    }
+    newContent = content.replace(
+      PATTERNS.variable,
+      `var ${limitInfo.varName}=200000`,
+    )
   } else {
     // v2a (2.0.0-2.1.10): replace function
     const original =
@@ -343,7 +391,9 @@ function showStatus(cliPath: string, currentLimit: number | null): void {
 
   if (currentLimit === null) {
     consola.warn("Could not detect current limit - CLI may have been updated")
-    consola.info("Look for the BS9 variable or HR function pattern in cli.js")
+    consola.info(
+      "Look for a variable like 'var XXX=200000' followed by ',YYY=20000,' in cli.js",
+    )
   } else if (currentLimit === 200000) {
     consola.info("Status: Original (200k context window)")
   } else {
@@ -384,20 +434,58 @@ export const patchClaude = defineCommand({
       description: "Show current patch status without modifying",
     },
   },
-  run({ args }) {
-    // Find Claude Code path
-    const cliPath = args.path || findClaudeCodePath()
+  async run({ args }) {
+    let cliPath: string
 
-    if (!cliPath) {
-      consola.error("Could not find Claude Code installation")
-      consola.info("Searched in: volta, npm global, bun global")
-      consola.info("Use --path to specify the path to cli.js manually")
-      process.exit(1)
-    }
+    if (args.path) {
+      // User specified path directly
+      cliPath = args.path
+      if (!existsSync(cliPath)) {
+        consola.error(`File not found: ${cliPath}`)
+        process.exit(1)
+      }
+    } else {
+      // Auto-detect installations
+      const installations = findAllClaudeCodePaths()
 
-    if (!existsSync(cliPath)) {
-      consola.error(`File not found: ${cliPath}`)
-      process.exit(1)
+      if (installations.length === 0) {
+        consola.error("Could not find Claude Code installation")
+        consola.info("Searched in: volta, npm global, bun global")
+        consola.info("Use --path to specify the path to cli.js manually")
+        process.exit(1)
+      }
+
+      if (installations.length === 1) {
+        cliPath = installations[0]
+      } else {
+        // Multiple installations found, let user choose
+        consola.info(`Found ${installations.length} Claude Code installations:`)
+        const options = installations.map((path) => {
+          const info = getInstallationInfo(path)
+          let status = "unknown"
+          if (info.limit === 200000) {
+            status = "original"
+          } else if (info.limit) {
+            status = `patched: ${info.limit}`
+          }
+          return {
+            label: `v${info.version ?? "?"} (${status}) - ${path}`,
+            value: path,
+          }
+        })
+
+        const selected = await consola.prompt("Select installation to patch:", {
+          type: "select",
+          options,
+        })
+
+        if (typeof selected === "symbol") {
+          // User cancelled
+          process.exit(0)
+        }
+
+        cliPath = selected
+      }
     }
 
     consola.info(`Claude Code path: ${cliPath}`)
@@ -428,15 +516,19 @@ export const patchClaude = defineCommand({
       process.exit(1)
     }
 
-    if (patchClaudeCode(cliPath, limit)) {
-      consola.success(`Patched context window: 200000 → ${limit}`)
+    const result = patchClaudeCode(cliPath, limit)
+    if (result === "success") {
+      consola.success(
+        `Patched context window: ${currentLimit ?? 200000} → ${limit}`,
+      )
       consola.info(
         "Note: You may need to re-run this after Claude Code updates",
       )
+    } else if (result === "already_patched") {
+      consola.success(`Already patched with limit ${limit}`)
     } else {
       consola.error("Failed to patch - pattern not found")
       consola.info("Claude Code may have been updated to a new version")
-      consola.info("Check the cli.js for the HR function pattern")
       process.exit(1)
     }
   },

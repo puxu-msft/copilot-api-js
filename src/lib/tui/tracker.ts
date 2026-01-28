@@ -18,6 +18,8 @@ class RequestTracker {
   private requests: Map<string, TrackedRequest> = new Map()
   private renderer: TuiRenderer | null = null
   private completedQueue: Array<TrackedRequest> = []
+  private completedTimeouts: Map<string, ReturnType<typeof setTimeout>> =
+    new Map()
   private historySize = 5
   private completedDisplayMs = 2000
 
@@ -109,16 +111,26 @@ class RequestTracker {
 
     // Trim completed queue
     while (this.completedQueue.length > this.historySize) {
-      this.completedQueue.shift()
+      const removed = this.completedQueue.shift()
+      if (removed) {
+        // Clear the timeout for the removed request
+        const timeoutId = this.completedTimeouts.get(removed.id)
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+          this.completedTimeouts.delete(removed.id)
+        }
+      }
     }
 
     // Schedule removal from display after delay
-    setTimeout(() => {
+    const timeoutId = setTimeout(() => {
       const idx = this.completedQueue.indexOf(request)
       if (idx !== -1) {
         this.completedQueue.splice(idx, 1)
       }
+      this.completedTimeouts.delete(id)
     }, this.completedDisplayMs)
+    this.completedTimeouts.set(id, timeoutId)
   }
 
   /**
@@ -164,11 +176,16 @@ class RequestTracker {
   }
 
   /**
-   * Clear all tracked requests
+   * Clear all tracked requests and pending timeouts
    */
   clear(): void {
     this.requests.clear()
     this.completedQueue = []
+    // Clear all pending timeouts
+    for (const timeoutId of this.completedTimeouts.values()) {
+      clearTimeout(timeoutId)
+    }
+    this.completedTimeouts.clear()
   }
 }
 

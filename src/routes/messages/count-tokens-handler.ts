@@ -4,12 +4,15 @@ import consola from "consola"
 
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
+import { type AnthropicMessagesPayload } from "~/types/api/anthropic"
 
-import { type AnthropicMessagesPayload } from "./anthropic-types"
 import { translateToOpenAI } from "./non-stream-translation"
 
 /**
- * Handles token counting for Anthropic messages
+ * Handles token counting for Anthropic messages.
+ *
+ * For Anthropic models (vendor === "Anthropic"), uses the official Anthropic tokenizer.
+ * For other models, uses GPT tokenizers with appropriate buffers.
  */
 export async function handleCountTokens(c: Context) {
   try {
@@ -30,8 +33,12 @@ export async function handleCountTokens(c: Context) {
       })
     }
 
+    // Check if this is an Anthropic model (uses official tokenizer, no buffer needed)
+    const isAnthropicModel = selectedModel.vendor === "Anthropic"
+
     const tokenCount = await getTokenCount(openAIPayload, selectedModel)
 
+    // Add tool use overhead (applies to all models with tools)
     if (anthropicPayload.tools && anthropicPayload.tools.length > 0) {
       let mcpToolExist = false
       if (anthropicBeta?.startsWith("claude-code")) {
@@ -52,16 +59,20 @@ export async function handleCountTokens(c: Context) {
     }
 
     let finalTokenCount = tokenCount.input + tokenCount.output
-    if (anthropicPayload.model.startsWith("claude")) {
-      // Apply 15% buffer for Claude models to account for tokenization differences
-      // between the GPT tokenizer used here and Claude's actual tokenizer
-      finalTokenCount = Math.round(finalTokenCount * 1.15)
-    } else if (anthropicPayload.model.startsWith("grok")) {
-      // Apply 3% buffer for Grok models (smaller difference from GPT tokenizer)
-      finalTokenCount = Math.round(finalTokenCount * 1.03)
+
+    // Apply buffer only for non-Anthropic models (Anthropic uses official tokenizer)
+    if (!isAnthropicModel) {
+      finalTokenCount =
+        anthropicPayload.model.startsWith("grok") ?
+          // Apply 3% buffer for Grok models (smaller difference from GPT tokenizer)
+          Math.round(finalTokenCount * 1.03)
+          // Apply 5% buffer for other models using GPT tokenizer
+        : Math.round(finalTokenCount * 1.05)
     }
 
-    consola.debug("Token count:", finalTokenCount)
+    consola.debug(
+      `Token count: ${finalTokenCount} (${isAnthropicModel ? "Anthropic tokenizer" : "GPT tokenizer"})`,
+    )
 
     return c.json({
       input_tokens: finalTokenCount,

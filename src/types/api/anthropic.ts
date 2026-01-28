@@ -1,4 +1,11 @@
-// Anthropic API Types
+/**
+ * Anthropic API Types
+ * Centralized type definitions for Anthropic message format.
+ */
+
+// ============================================================================
+// Request Types
+// ============================================================================
 
 export interface AnthropicMessagesPayload {
   model: string
@@ -24,6 +31,10 @@ export interface AnthropicMessagesPayload {
   }
   service_tier?: "auto" | "standard_only"
 }
+
+// ============================================================================
+// Content Block Types
+// ============================================================================
 
 export interface AnthropicTextBlock {
   type: "text"
@@ -69,6 +80,10 @@ export type AnthropicAssistantContentBlock =
   | AnthropicToolUseBlock
   | AnthropicThinkingBlock
 
+// ============================================================================
+// Message Types
+// ============================================================================
+
 export interface AnthropicUserMessage {
   role: "user"
   content: string | Array<AnthropicUserContentBlock>
@@ -81,11 +96,21 @@ export interface AnthropicAssistantMessage {
 
 export type AnthropicMessage = AnthropicUserMessage | AnthropicAssistantMessage
 
+// ============================================================================
+// Tool Types
+// ============================================================================
+
 export interface AnthropicTool {
   name: string
   description?: string
-  input_schema: Record<string, unknown>
+  input_schema?: Record<string, unknown>
+  // Server-side tools have a type field like "web_search_20250305"
+  type?: string
 }
+
+// ============================================================================
+// Response Types
+// ============================================================================
 
 export interface AnthropicResponse {
   id: string
@@ -102,18 +127,23 @@ export interface AnthropicResponse {
     | "refusal"
     | null
   stop_sequence: string | null
-  usage: {
-    input_tokens: number
-    output_tokens: number
-    cache_creation_input_tokens?: number
-    cache_read_input_tokens?: number
-    service_tier?: "standard" | "priority" | "batch"
-  }
+  usage: AnthropicUsage
+}
+
+export interface AnthropicUsage {
+  input_tokens: number
+  output_tokens: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
+  service_tier?: "standard" | "priority" | "batch"
 }
 
 export type AnthropicResponseContentBlock = AnthropicAssistantContentBlock
 
-// Anthropic Stream Event Types
+// ============================================================================
+// Stream Event Types
+// ============================================================================
+
 export interface AnthropicMessageStartEvent {
   type: "message_start"
   message: Omit<
@@ -192,7 +222,10 @@ export type AnthropicStreamEventData =
   | AnthropicPingEvent
   | AnthropicErrorEvent
 
-// State for streaming translation
+// ============================================================================
+// Stream State (for translation)
+// ============================================================================
+
 export interface AnthropicStreamState {
   messageStartSent: boolean
   contentBlockIndex: number

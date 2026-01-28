@@ -1,55 +1,34 @@
+/**
+ * Main handler for Anthropic /v1/messages endpoint.
+ * Routes requests to appropriate handlers based on model type.
+ */
+
 import type { Context } from "hono"
 
 import consola from "consola"
-import { streamSSE } from "hono/streaming"
 
-import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
-import { awaitApproval } from "~/lib/approval"
-import { createCompactionMarker } from "~/lib/auto-compact"
-import { HTTPError } from "~/lib/error"
-import {
-  type MessageContent,
-  recordRequest,
-  recordResponse,
-} from "~/lib/history"
-import { state } from "~/lib/state"
+import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
+
+import { recordRequest } from "~/lib/history"
 import { requestTracker } from "~/lib/tui"
-import {
-  createChatCompletions,
-  type ChatCompletionChunk,
-  type ChatCompletionResponse,
-} from "~/services/copilot/create-chat-completions"
+import { supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-messages"
 
-import {
-  type ResponseContext,
-  buildFinalPayload,
-  completeTracking,
-  failTracking,
-  isNonStreaming,
-  logPayloadSizeInfo,
-  recordErrorResponse,
-  recordStreamError,
-  updateTrackerModel,
-  updateTrackerStatus,
-} from "../shared"
-import {
-  type AnthropicMessagesPayload,
-  type AnthropicStreamState,
-  type AnthropicStreamEventData,
-} from "./anthropic-types"
-import {
-  translateToAnthropic,
-  translateToOpenAI,
-  type ToolNameMapping,
-} from "./non-stream-translation"
-import {
-  translateChunkToAnthropicEvents,
-  translateErrorToAnthropicErrorEvent,
-} from "./stream-translation"
+import { type ResponseContext, updateTrackerModel } from "../shared"
+import { handleDirectAnthropicCompletion } from "./direct-anthropic-handler"
+import { convertAnthropicMessages, extractSystemPrompt } from "./message-utils"
+import { handleTranslatedCompletion } from "./translated-handler"
 
 export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
+
+  // Log tool-related information for debugging
+  logToolInfo(anthropicPayload)
+
+  // Determine which path we'll use
+  const useDirectAnthropicApi = supportsDirectAnthropicApi(
+    anthropicPayload.model,
+  )
 
   // Get tracking ID and use tracker's startTime for consistent timing
   const trackingId = c.get("trackingId") as string | undefined
@@ -76,532 +55,42 @@ export async function handleCompletion(c: Context) {
 
   const ctx: ResponseContext = { historyId, trackingId, startTime }
 
-  const { payload: translatedPayload, toolNameMapping } =
-    translateToOpenAI(anthropicPayload)
-  consola.debug(
-    "Translated OpenAI request payload:",
-    JSON.stringify(translatedPayload),
-  )
-
-  // Auto-compact if enabled and needed
-  const selectedModel = state.models?.data.find(
-    (model) => model.id === translatedPayload.model,
-  )
-
-  const { finalPayload: openAIPayload, compactResult } =
-    await buildFinalPayload(translatedPayload, selectedModel)
-  if (compactResult) {
-    ctx.compactResult = compactResult
+  // Route to appropriate handler based on model type
+  if (useDirectAnthropicApi) {
+    return handleDirectAnthropicCompletion(c, anthropicPayload, ctx)
   }
 
-  if (state.manualApprove) {
-    await awaitApproval()
+  // Fallback to OpenAI translation path
+  return handleTranslatedCompletion(c, anthropicPayload, ctx)
+}
+
+/**
+ * Log tool-related information for debugging
+ */
+function logToolInfo(anthropicPayload: AnthropicMessagesPayload) {
+  if (anthropicPayload.tools?.length) {
+    const toolInfo = anthropicPayload.tools.map((t) => ({
+      name: t.name,
+      type: t.type ?? "(custom)",
+    }))
+    consola.debug(`[Tools] Defined tools:`, JSON.stringify(toolInfo))
   }
 
-  try {
-    const { result: response, queueWaitMs } =
-      await executeWithAdaptiveRateLimit(() =>
-        createChatCompletions(openAIPayload),
-      )
-
-    // Store queueWaitMs in context for later use
-    ctx.queueWaitMs = queueWaitMs
-
-    if (isNonStreaming(response)) {
-      return handleNonStreamingResponse({ c, response, toolNameMapping, ctx })
-    }
-
-    consola.debug("Streaming response from Copilot")
-    updateTrackerStatus(trackingId, "streaming")
-
-    return streamSSE(c, async (stream) => {
-      await handleStreamingResponse({
-        stream,
-        response,
-        toolNameMapping,
-        anthropicPayload,
-        ctx,
-      })
-    })
-  } catch (error) {
-    // Handle 413 Request Entity Too Large with helpful debugging info
-    if (error instanceof HTTPError && error.status === 413) {
-      await logPayloadSizeInfo(openAIPayload, selectedModel)
-    }
-
-    recordErrorResponse(ctx, anthropicPayload.model, error)
-    throw error
-  }
-}
-
-/** Options for handleNonStreamingResponse */
-interface NonStreamingOptions {
-  c: Context
-  response: ChatCompletionResponse
-  toolNameMapping: ToolNameMapping
-  ctx: ResponseContext
-}
-
-// Handle non-streaming response
-function handleNonStreamingResponse(opts: NonStreamingOptions) {
-  const { c, response, toolNameMapping, ctx } = opts
-  consola.debug(
-    "Non-streaming response from Copilot:",
-    JSON.stringify(response).slice(-400),
-  )
-  let anthropicResponse = translateToAnthropic(response, toolNameMapping)
-  consola.debug(
-    "Translated Anthropic response:",
-    JSON.stringify(anthropicResponse),
-  )
-
-  // Prepend compaction marker if auto-compact was performed
-  if (ctx.compactResult?.wasCompacted) {
-    const marker = createCompactionMarker(ctx.compactResult)
-    anthropicResponse = prependMarkerToAnthropicResponse(
-      anthropicResponse,
-      marker,
-    )
-  }
-
-  recordResponse(
-    ctx.historyId,
-    {
-      success: true,
-      model: anthropicResponse.model,
-      usage: anthropicResponse.usage,
-      stop_reason: anthropicResponse.stop_reason ?? undefined,
-      content: {
-        role: "assistant",
-        content: anthropicResponse.content.map((block) => {
-          if (block.type === "text") {
-            return { type: "text", text: block.text }
-          }
-          if (block.type === "tool_use") {
-            return {
-              type: "tool_use",
-              id: block.id,
-              name: block.name,
-              input: JSON.stringify(block.input),
-            }
-          }
-          return { type: block.type }
-        }),
-      },
-      toolCalls: extractToolCallsFromContent(anthropicResponse.content),
-    },
-    Date.now() - ctx.startTime,
-  )
-
-  if (ctx.trackingId) {
-    requestTracker.updateRequest(ctx.trackingId, {
-      inputTokens: anthropicResponse.usage.input_tokens,
-      outputTokens: anthropicResponse.usage.output_tokens,
-      queueWaitMs: ctx.queueWaitMs,
-    })
-  }
-
-  return c.json(anthropicResponse)
-}
-
-// Prepend marker to Anthropic response content (at the beginning)
-function prependMarkerToAnthropicResponse(
-  response: ReturnType<typeof translateToAnthropic>,
-  marker: string,
-): ReturnType<typeof translateToAnthropic> {
-  // Find first text block and prepend, or add new text block at start
-  const content = [...response.content]
-  const firstTextIndex = content.findIndex((block) => block.type === "text")
-
-  if (firstTextIndex !== -1) {
-    const textBlock = content[firstTextIndex]
-    if (textBlock.type === "text") {
-      content[firstTextIndex] = {
-        ...textBlock,
-        text: marker + textBlock.text,
-      }
-    }
-  } else {
-    // No text block found, add one at the beginning
-    content.unshift({ type: "text", text: marker })
-  }
-
-  return { ...response, content }
-}
-
-/** Stream accumulator for Anthropic format */
-interface AnthropicStreamAccumulator {
-  model: string
-  inputTokens: number
-  outputTokens: number
-  stopReason: string
-  content: string
-  toolCalls: Array<{ id: string; name: string; input: string }>
-  currentToolCall: { id: string; name: string; input: string } | null
-}
-
-function createAnthropicStreamAccumulator(): AnthropicStreamAccumulator {
-  return {
-    model: "",
-    inputTokens: 0,
-    outputTokens: 0,
-    stopReason: "",
-    content: "",
-    toolCalls: [],
-    currentToolCall: null,
-  }
-}
-
-/** Options for handleStreamingResponse */
-interface StreamHandlerOptions {
-  stream: { writeSSE: (msg: { event: string; data: string }) => Promise<void> }
-  response: AsyncIterable<{ data?: string }>
-  toolNameMapping: ToolNameMapping
-  anthropicPayload: AnthropicMessagesPayload
-  ctx: ResponseContext
-}
-
-// Handle streaming response
-async function handleStreamingResponse(opts: StreamHandlerOptions) {
-  const { stream, response, toolNameMapping, anthropicPayload, ctx } = opts
-  const streamState: AnthropicStreamState = {
-    messageStartSent: false,
-    contentBlockIndex: 0,
-    contentBlockOpen: false,
-    toolCalls: {},
-  }
-  const acc = createAnthropicStreamAccumulator()
-
-  try {
-    // Prepend compaction marker as first content block if auto-compact was performed
-    if (ctx.compactResult?.wasCompacted) {
-      const marker = createCompactionMarker(ctx.compactResult)
-      await sendCompactionMarkerEvent(stream, streamState, marker)
-      acc.content += marker
-    }
-
-    await processStreamChunks({
-      stream,
-      response,
-      toolNameMapping,
-      streamState,
-      acc,
-    })
-
-    recordStreamingResponse(acc, anthropicPayload.model, ctx)
-    completeTracking(
-      ctx.trackingId,
-      acc.inputTokens,
-      acc.outputTokens,
-      ctx.queueWaitMs,
-    )
-  } catch (error) {
-    consola.error("Stream error:", error)
-    recordStreamError({
-      acc,
-      fallbackModel: anthropicPayload.model,
-      ctx,
-      error,
-    })
-    failTracking(ctx.trackingId, error)
-
-    const errorEvent = translateErrorToAnthropicErrorEvent()
-    await stream.writeSSE({
-      event: errorEvent.type,
-      data: JSON.stringify(errorEvent),
-    })
-  }
-}
-
-// Send compaction marker as Anthropic SSE events
-async function sendCompactionMarkerEvent(
-  stream: { writeSSE: (msg: { event: string; data: string }) => Promise<void> },
-  streamState: AnthropicStreamState,
-  marker: string,
-) {
-  // Start a new content block for the marker
-  const blockStartEvent = {
-    type: "content_block_start",
-    index: streamState.contentBlockIndex,
-    content_block: { type: "text", text: "" },
-  }
-  await stream.writeSSE({
-    event: "content_block_start",
-    data: JSON.stringify(blockStartEvent),
-  })
-
-  // Send the marker text as a delta
-  const deltaEvent = {
-    type: "content_block_delta",
-    index: streamState.contentBlockIndex,
-    delta: { type: "text_delta", text: marker },
-  }
-  await stream.writeSSE({
-    event: "content_block_delta",
-    data: JSON.stringify(deltaEvent),
-  })
-
-  // Stop the content block
-  const blockStopEvent = {
-    type: "content_block_stop",
-    index: streamState.contentBlockIndex,
-  }
-  await stream.writeSSE({
-    event: "content_block_stop",
-    data: JSON.stringify(blockStopEvent),
-  })
-
-  streamState.contentBlockIndex++
-}
-
-/** Options for processing stream chunks */
-interface ProcessChunksOptions {
-  stream: { writeSSE: (msg: { event: string; data: string }) => Promise<void> }
-  response: AsyncIterable<{ data?: string }>
-  toolNameMapping: ToolNameMapping
-  streamState: AnthropicStreamState
-  acc: AnthropicStreamAccumulator
-}
-
-// Process all stream chunks
-async function processStreamChunks(opts: ProcessChunksOptions) {
-  const { stream, response, toolNameMapping, streamState, acc } = opts
-  for await (const rawEvent of response) {
-    consola.debug("Copilot raw stream event:", JSON.stringify(rawEvent))
-    if (rawEvent.data === "[DONE]") break
-    if (!rawEvent.data) continue
-
-    let chunk: ChatCompletionChunk
-    try {
-      chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
-    } catch (parseError) {
-      consola.error("Failed to parse stream chunk:", parseError, rawEvent.data)
-      continue
-    }
-
-    if (chunk.model && !acc.model) acc.model = chunk.model
-
-    const events = translateChunkToAnthropicEvents(
-      chunk,
-      streamState,
-      toolNameMapping,
-    )
-
-    for (const event of events) {
-      consola.debug("Translated Anthropic event:", JSON.stringify(event))
-      processAnthropicEvent(event, acc)
-      await stream.writeSSE({
-        event: event.type,
-        data: JSON.stringify(event),
-      })
-    }
-  }
-}
-
-// Process a single Anthropic event for accumulation
-function processAnthropicEvent(
-  event: AnthropicStreamEventData,
-  acc: AnthropicStreamAccumulator,
-) {
-  switch (event.type) {
-    case "content_block_delta": {
-      handleContentBlockDelta(event.delta, acc)
-      break
-    }
-    case "content_block_start": {
-      handleContentBlockStart(event.content_block, acc)
-      break
-    }
-    case "content_block_stop": {
-      handleContentBlockStop(acc)
-      break
-    }
-    case "message_delta": {
-      handleMessageDelta(event.delta, event.usage, acc)
-      break
-    }
-    default: {
-      break
-    }
-  }
-}
-
-// Content block delta types
-type ContentBlockDelta =
-  | { type: "text_delta"; text: string }
-  | { type: "input_json_delta"; partial_json: string }
-  | { type: "thinking_delta"; thinking: string }
-  | { type: "signature_delta"; signature: string }
-
-function handleContentBlockDelta(
-  delta: ContentBlockDelta,
-  acc: AnthropicStreamAccumulator,
-) {
-  if (delta.type === "text_delta") {
-    acc.content += delta.text
-  } else if (delta.type === "input_json_delta" && acc.currentToolCall) {
-    acc.currentToolCall.input += delta.partial_json
-  }
-  // thinking_delta and signature_delta are ignored for accumulation
-}
-
-// Content block types from anthropic-types.ts
-type ContentBlock =
-  | { type: "text"; text: string }
-  | {
-      type: "tool_use"
-      id: string
-      name: string
-      input: Record<string, unknown>
-    }
-  | { type: "thinking"; thinking: string }
-
-function handleContentBlockStart(
-  block: ContentBlock,
-  acc: AnthropicStreamAccumulator,
-) {
-  if (block.type === "tool_use") {
-    acc.currentToolCall = {
-      id: block.id,
-      name: block.name,
-      input: "",
-    }
-  }
-}
-
-function handleContentBlockStop(acc: AnthropicStreamAccumulator) {
-  if (acc.currentToolCall) {
-    acc.toolCalls.push(acc.currentToolCall)
-    acc.currentToolCall = null
-  }
-}
-
-// Message delta types
-interface MessageDelta {
-  stop_reason?: string | null
-  stop_sequence?: string | null
-}
-
-interface MessageUsage {
-  input_tokens?: number
-  output_tokens: number
-  cache_creation_input_tokens?: number
-  cache_read_input_tokens?: number
-}
-
-function handleMessageDelta(
-  delta: MessageDelta,
-  usage: MessageUsage | undefined,
-  acc: AnthropicStreamAccumulator,
-) {
-  if (delta.stop_reason) acc.stopReason = delta.stop_reason
-  if (usage) {
-    acc.inputTokens = usage.input_tokens ?? 0
-    acc.outputTokens = usage.output_tokens
-  }
-}
-
-// Record streaming response to history
-function recordStreamingResponse(
-  acc: AnthropicStreamAccumulator,
-  fallbackModel: string,
-  ctx: ResponseContext,
-) {
-  const contentBlocks: Array<{ type: string; text?: string }> = []
-  if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
-  for (const tc of acc.toolCalls) {
-    contentBlocks.push({ type: "tool_use", ...tc })
-  }
-
-  recordResponse(
-    ctx.historyId,
-    {
-      success: true,
-      model: acc.model || fallbackModel,
-      usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
-      stop_reason: acc.stopReason || undefined,
-      content:
-        contentBlocks.length > 0 ?
-          { role: "assistant", content: contentBlocks }
-        : null,
-      toolCalls: acc.toolCalls.length > 0 ? acc.toolCalls : undefined,
-    },
-    Date.now() - ctx.startTime,
-  )
-}
-
-// Convert Anthropic messages to history MessageContent format
-function convertAnthropicMessages(
-  messages: AnthropicMessagesPayload["messages"],
-): Array<MessageContent> {
-  return messages.map((msg) => {
-    if (typeof msg.content === "string") {
-      return { role: msg.role, content: msg.content }
-    }
-
-    // Convert content blocks
-    const content = msg.content.map((block) => {
-      if (block.type === "text") {
-        return { type: "text", text: block.text }
-      }
-      if (block.type === "tool_use") {
-        return {
-          type: "tool_use",
-          id: block.id,
-          name: block.name,
-          input: JSON.stringify(block.input),
+  // Log tool_use and tool_result in messages for debugging
+  for (const msg of anthropicPayload.messages) {
+    if (typeof msg.content !== "string") {
+      for (const block of msg.content) {
+        if (block.type === "tool_use") {
+          consola.debug(
+            `[Tools] tool_use in message: ${block.name} (id: ${block.id})`,
+          )
+        }
+        if (block.type === "tool_result") {
+          consola.debug(
+            `[Tools] tool_result in message: id=${block.tool_use_id}, is_error=${block.is_error ?? false}`,
+          )
         }
       }
-      if (block.type === "tool_result") {
-        const resultContent =
-          typeof block.content === "string" ?
-            block.content
-          : block.content
-              .map((c) => (c.type === "text" ? c.text : `[${c.type}]`))
-              .join("\n")
-        return {
-          type: "tool_result",
-          tool_use_id: block.tool_use_id,
-          content: resultContent,
-        }
-      }
-      return { type: block.type }
-    })
-
-    return { role: msg.role, content }
-  })
-}
-
-// Extract system prompt from Anthropic format
-function extractSystemPrompt(
-  system: AnthropicMessagesPayload["system"],
-): string | undefined {
-  if (!system) return undefined
-  if (typeof system === "string") return system
-  return system.map((block) => block.text).join("\n")
-}
-
-// Extract tool calls from response content
-function extractToolCallsFromContent(
-  content: Array<unknown>,
-): Array<{ id: string; name: string; input: string }> | undefined {
-  const tools: Array<{ id: string; name: string; input: string }> = []
-  for (const block of content) {
-    if (
-      typeof block === "object"
-      && block !== null
-      && "type" in block
-      && block.type === "tool_use"
-      && "id" in block
-      && "name" in block
-      && "input" in block
-    ) {
-      tools.push({
-        id: String(block.id),
-        name: String(block.name),
-        input: JSON.stringify(block.input),
-      })
     }
   }
-  return tools.length > 0 ? tools : undefined
 }

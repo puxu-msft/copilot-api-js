@@ -6,9 +6,9 @@ import type {
   ChatCompletionResponse,
 } from "~/services/copilot/create-chat-completions"
 
-import { type AnthropicStreamState } from "~/routes/messages/anthropic-types"
 import { translateToAnthropic } from "~/routes/messages/non-stream-translation"
 import { translateChunkToAnthropicEvents } from "~/routes/messages/stream-translation"
+import { type AnthropicStreamState } from "~/types/api/anthropic"
 
 const anthropicUsageSchema = z.object({
   input_tokens: z.number().int(),

@@ -9,7 +9,6 @@ import {
   type Tool,
   type ToolCall,
 } from "~/services/copilot/create-chat-completions"
-
 import {
   type AnthropicAssistantContentBlock,
   type AnthropicAssistantMessage,
@@ -23,8 +22,9 @@ import {
   type AnthropicToolUseBlock,
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
-} from "./anthropic-types"
-import { mapOpenAIStopReasonToAnthropic } from "./utils"
+} from "~/types/api/anthropic"
+
+import { mapOpenAIStopReasonToAnthropic } from "./message-utils"
 
 // OpenAI limits function names to 64 characters
 const OPENAI_TOOL_NAME_LIMIT = 64
@@ -192,6 +192,31 @@ function translateAnthropicMessagesToOpenAI(
   return [...systemMessages, ...otherMessages]
 }
 
+// Reserved keywords that Copilot API rejects in prompts
+// These appear in system prompts from Claude Code (e.g., "x-anthropic-billing-header: cc_version=...")
+// See: https://github.com/ericc-ch/copilot-api/issues/174
+const RESERVED_KEYWORDS = ["x-anthropic-billing-header", "x-anthropic-billing"]
+
+/**
+ * Filter out reserved keywords from system prompt text.
+ * Copilot API rejects requests containing these keywords.
+ * Removes the entire line containing the keyword to keep the prompt clean.
+ */
+function filterReservedKeywords(text: string): string {
+  let filtered = text
+  for (const keyword of RESERVED_KEYWORDS) {
+    if (text.includes(keyword)) {
+      consola.debug(`[Reserved Keyword] Removing line containing "${keyword}"`)
+      // Remove the entire line containing the keyword
+      filtered = filtered
+        .split("\n")
+        .filter((line) => !line.includes(keyword))
+        .join("\n")
+    }
+  }
+  return filtered
+}
+
 function handleSystemPrompt(
   system: string | Array<AnthropicTextBlock> | undefined,
 ): Array<Message> {
@@ -200,10 +225,20 @@ function handleSystemPrompt(
   }
 
   if (typeof system === "string") {
-    return [{ role: "system", content: system }]
+    return [
+      {
+        role: "system",
+        content: filterReservedKeywords(system),
+      },
+    ]
   } else {
     const systemText = system.map((block) => block.text).join("\n\n")
-    return [{ role: "system", content: systemText }]
+    return [
+      {
+        role: "system",
+        content: filterReservedKeywords(systemText),
+      },
+    ]
   }
 }
 
@@ -403,7 +438,7 @@ function translateAnthropicToolsToOpenAI(
     function: {
       name: getTruncatedToolName(tool.name, toolNameMapping),
       description: tool.description,
-      parameters: tool.input_schema,
+      parameters: tool.input_schema ?? {},
     },
   }))
 }

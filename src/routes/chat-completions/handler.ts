@@ -7,7 +7,7 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
-import { createCompactionMarker } from "~/lib/auto-compact"
+import { createTruncationResponseMarker } from "~/lib/auto-truncate-openai"
 import { HTTPError } from "~/lib/error"
 import {
   type MessageContent,
@@ -74,13 +74,13 @@ export async function handleCompletion(c: Context) {
   // Calculate and display token count
   await logTokenCount(originalPayload, selectedModel)
 
-  // Build the final payload with potential auto-compact and max_tokens
-  const { finalPayload, compactResult } = await buildFinalPayload(
+  // Build the final payload with potential auto-truncate and max_tokens
+  const { finalPayload, truncateResult } = await buildFinalPayload(
     originalPayload,
     selectedModel,
   )
-  if (compactResult) {
-    ctx.compactResult = compactResult
+  if (truncateResult) {
+    ctx.truncateResult = truncateResult
   }
 
   const payload =
@@ -178,10 +178,14 @@ function handleNonStreamingResponse(
 ) {
   consola.debug("Non-streaming response:", JSON.stringify(originalResponse))
 
-  // Prepend compaction marker if auto-compact was performed
+  // Prepend truncation marker if auto-truncate was performed (only in verbose mode)
   let response = originalResponse
-  if (ctx.compactResult?.wasCompacted && response.choices[0]?.message.content) {
-    const marker = createCompactionMarker(ctx.compactResult)
+  if (
+    state.verbose
+    && ctx.truncateResult?.wasCompacted
+    && response.choices[0]?.message.content
+  ) {
+    const marker = createTruncationResponseMarker(ctx.truncateResult)
     response = {
       ...response,
       choices: response.choices.map((choice, i) =>
@@ -290,9 +294,9 @@ async function handleStreamingResponse(opts: StreamingOptions) {
   const acc = createStreamAccumulator()
 
   try {
-    // Prepend compaction marker as first chunk if auto-compact was performed
-    if (ctx.compactResult?.wasCompacted) {
-      const marker = createCompactionMarker(ctx.compactResult)
+    // Prepend truncation marker as first chunk if auto-truncate was performed (only in verbose mode)
+    if (state.verbose && ctx.truncateResult?.wasCompacted) {
+      const marker = createTruncationResponseMarker(ctx.truncateResult)
       const markerChunk: ChatCompletionChunk = {
         id: `compact-marker-${Date.now()}`,
         object: "chat.completion.chunk",

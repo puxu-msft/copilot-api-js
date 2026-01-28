@@ -3,22 +3,33 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
+import { onTokenLimitExceeded } from "./auto-truncate-common"
+
 export class HTTPError extends Error {
   status: number
   responseText: string
+  /** Model ID that caused the error (if known) */
+  modelId?: string
 
-  constructor(message: string, status: number, responseText: string) {
+  constructor(
+    message: string,
+    status: number,
+    responseText: string,
+    modelId?: string,
+  ) {
     super(message)
     this.status = status
     this.responseText = responseText
+    this.modelId = modelId
   }
 
   static async fromResponse(
     message: string,
     response: Response,
+    modelId?: string,
   ): Promise<HTTPError> {
     const text = await response.text()
-    return new HTTPError(message, response.status, text)
+    return new HTTPError(message, response.status, text, modelId)
   }
 }
 
@@ -35,16 +46,28 @@ function parseTokenLimitError(message: string): {
   current: number
   limit: number
 } | null {
-  // Match: "prompt token count of 135355 exceeds the limit of 128000"
-  const match = message.match(
+  // Match OpenAI format: "prompt token count of 135355 exceeds the limit of 128000"
+  const openaiMatch = message.match(
     /prompt token count of (\d+) exceeds the limit of (\d+)/,
   )
-  if (match) {
+  if (openaiMatch) {
     return {
-      current: Number.parseInt(match[1], 10),
-      limit: Number.parseInt(match[2], 10),
+      current: Number.parseInt(openaiMatch[1], 10),
+      limit: Number.parseInt(openaiMatch[2], 10),
     }
   }
+
+  // Match Anthropic format: "prompt is too long: 208598 tokens > 200000 maximum"
+  const anthropicMatch = message.match(
+    /prompt is too long: (\d+) tokens > (\d+) maximum/,
+  )
+  if (anthropicMatch) {
+    return {
+      current: Number.parseInt(anthropicMatch[1], 10),
+      limit: Number.parseInt(anthropicMatch[2], 10),
+    }
+  }
+
   return null
 }
 
@@ -55,7 +78,7 @@ function formatTokenLimitError(current: number, limit: number) {
 
   // Return Anthropic-compatible error that clients can recognize and handle
   // The "prompt_too_long" type is what Anthropic's API returns for context limit errors
-  // This should trigger Claude Code's auto-compact behavior
+  // This should trigger Claude Code's auto-truncate behavior
   return {
     type: "error",
     error: {
@@ -97,14 +120,21 @@ function formatRateLimitError(copilotMessage?: string) {
   }
 }
 
-export function forwardError(c: Context, error: unknown) {
-  consola.error("Error occurred:", error)
+/** Anthropic error structure */
+interface AnthropicError {
+  type?: string
+  error?: {
+    type?: string
+    message?: string
+  }
+}
 
+export function forwardError(c: Context, error: unknown) {
   if (error instanceof HTTPError) {
     // Handle 413 Request Entity Too Large
     if (error.status === 413) {
       const formattedError = formatRequestTooLargeError()
-      consola.debug("Returning formatted 413 error:", formattedError)
+      consola.warn(`HTTP 413: Request too large`)
       return c.json(formattedError, 413 as ContentfulStatusCode)
     }
 
@@ -114,18 +144,43 @@ export function forwardError(c: Context, error: unknown) {
     } catch {
       errorJson = error.responseText
     }
-    consola.error("HTTP error:", errorJson)
 
-    // Check for token limit exceeded error from Copilot
+    // Check for token limit exceeded error from Copilot (OpenAI format)
     const copilotError = errorJson as CopilotError
     if (copilotError.error?.code === "model_max_prompt_tokens_exceeded") {
       const tokenInfo = parseTokenLimitError(copilotError.error.message ?? "")
       if (tokenInfo) {
+        // Adjust dynamic token limit for future requests
+        if (error.modelId) {
+          onTokenLimitExceeded(error.modelId, tokenInfo.limit)
+        }
         const formattedError = formatTokenLimitError(
           tokenInfo.current,
           tokenInfo.limit,
         )
-        consola.debug("Returning formatted token limit error:", formattedError)
+        consola.warn(
+          `HTTP ${error.status}: Token limit exceeded (${tokenInfo.current} > ${tokenInfo.limit})`,
+        )
+        return c.json(formattedError, 400 as ContentfulStatusCode)
+      }
+    }
+
+    // Check for token limit exceeded error from Anthropic format
+    const anthropicError = errorJson as AnthropicError
+    if (anthropicError.error?.type === "invalid_request_error") {
+      const tokenInfo = parseTokenLimitError(anthropicError.error.message ?? "")
+      if (tokenInfo) {
+        // Adjust dynamic token limit for future requests
+        if (error.modelId) {
+          onTokenLimitExceeded(error.modelId, tokenInfo.limit)
+        }
+        const formattedError = formatTokenLimitError(
+          tokenInfo.current,
+          tokenInfo.limit,
+        )
+        consola.warn(
+          `HTTP ${error.status}: Token limit exceeded (${tokenInfo.current} > ${tokenInfo.limit})`,
+        )
         return c.json(formattedError, 400 as ContentfulStatusCode)
       }
     }
@@ -133,9 +188,12 @@ export function forwardError(c: Context, error: unknown) {
     // Check for rate limit error from Copilot (429 with code "rate_limited")
     if (error.status === 429 || copilotError.error?.code === "rate_limited") {
       const formattedError = formatRateLimitError(copilotError.error?.message)
-      consola.debug("Returning formatted rate limit error:", formattedError)
+      consola.warn(`HTTP 429: Rate limit exceeded`)
       return c.json(formattedError, 429 as ContentfulStatusCode)
     }
+
+    // Log unhandled HTTP errors
+    consola.error(`HTTP ${error.status}:`, errorJson)
 
     return c.json(
       {
@@ -147,6 +205,9 @@ export function forwardError(c: Context, error: unknown) {
       error.status as ContentfulStatusCode,
     )
   }
+
+  // Non-HTTP errors
+  consola.error("Unexpected error:", error)
 
   return c.json(
     {

@@ -12,17 +12,28 @@ export interface State {
 
   manualApprove: boolean
   showToken: boolean
+  verbose: boolean
 
   // Adaptive rate limiting configuration
   adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
 
-  // Auto-compact configuration
-  autoCompact: boolean
+  // Auto-truncate configuration
+  autoTruncate: boolean
+
+  // Redirect Anthropic requests through OpenAI translation
+  // When true, bypasses direct Anthropic API
+  redirectAnthropic: boolean
+
+  // Rewrite Anthropic server-side tools to custom tool format
+  rewriteAnthropicTools: boolean
 }
 
 export const state: State = {
   accountType: "individual",
   manualApprove: false,
   showToken: false,
-  autoCompact: true,
+  verbose: false,
+  autoTruncate: true,
+  redirectAnthropic: false,
+  rewriteAnthropicTools: true,
 }

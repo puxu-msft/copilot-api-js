@@ -20,16 +20,18 @@ import { initTui } from "./lib/tui"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { server } from "./server"
 
+/** Format limit values as "Xk" or "?" if not available */
+function formatLimit(value?: number): string {
+  return value ? `${Math.round(value / 1000)}k` : "?"
+}
+
 function formatModelInfo(model: Model): string {
   const limits = model.capabilities?.limits
-  const contextK =
-    limits?.max_prompt_tokens ?
-      `${Math.round(limits.max_prompt_tokens / 1000)}k`
-    : "?"
-  const outputK =
-    limits?.max_output_tokens ?
-      `${Math.round(limits.max_output_tokens / 1000)}k`
-    : "?"
+
+  const contextK = formatLimit(limits?.max_context_window_tokens)
+  const promptK = formatLimit(limits?.max_prompt_tokens)
+  const outputK = formatLimit(limits?.max_output_tokens)
+
   const features = [
     model.capabilities?.supports?.tool_calls && "tools",
     model.preview && "preview",
@@ -37,7 +39,18 @@ function formatModelInfo(model: Model): string {
     .filter(Boolean)
     .join(", ")
   const featureStr = features ? ` (${features})` : ""
-  return `  - ${model.id.padEnd(28)} context: ${contextK.padStart(5)}, output: ${outputK.padStart(4)}${featureStr}`
+
+  // Truncate long model names to maintain alignment
+  const modelName =
+    model.id.length > 30 ? `${model.id.slice(0, 27)}...` : model.id.padEnd(30)
+
+  return (
+    `  - ${modelName} `
+    + `ctx:${contextK.padStart(5)} `
+    + `in:${promptK.padStart(5)} `
+    + `out:${outputK.padStart(4)}`
+    + featureStr
+  )
 }
 
 interface RunServerOptions {
@@ -58,7 +71,9 @@ interface RunServerOptions {
   proxyEnv: boolean
   history: boolean
   historyLimit: number
-  autoCompact: boolean
+  autoTruncate: boolean
+  redirectAnthropic: boolean
+  rewriteAnthropicTools: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -72,6 +87,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   if (options.verbose) {
     consola.level = 5
     consola.info("Verbose logging enabled")
+    state.verbose = true
   }
 
   state.accountType = options.accountType
@@ -81,7 +97,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   state.manualApprove = options.manual
   state.showToken = options.showToken
-  state.autoCompact = options.autoCompact
+  state.autoTruncate = options.autoTruncate
+  state.redirectAnthropic = options.redirectAnthropic
+  state.rewriteAnthropicTools = options.rewriteAnthropicTools
 
   // Initialize adaptive rate limiter (unless disabled)
   if (options.rateLimit) {
@@ -95,8 +113,18 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     consola.info("Rate limiting disabled")
   }
 
-  if (!options.autoCompact) {
-    consola.info("Auto-compact disabled")
+  if (!options.autoTruncate) {
+    consola.info("Auto-truncate disabled")
+  }
+
+  if (options.redirectAnthropic) {
+    consola.info("Anthropic API redirect enabled (using OpenAI translation)")
+  }
+
+  if (!options.rewriteAnthropicTools) {
+    consola.info(
+      "Anthropic server-side tools rewrite disabled (passing through unchanged)",
+    )
   }
 
   // Initialize history recording if enabled
@@ -283,11 +311,23 @@ export const start = defineCommand({
       description:
         "Maximum number of history entries to keep in memory (0 = unlimited)",
     },
-    "no-auto-compact": {
+    "no-auto-truncate": {
       type: "boolean",
       default: false,
       description:
-        "Disable automatic conversation history compression when exceeding limits",
+        "Disable automatic conversation history truncation when exceeding limits",
+    },
+    "redirect-anthropic": {
+      type: "boolean",
+      default: false,
+      description:
+        "Redirect Anthropic models through OpenAI translation (instead of direct API)",
+    },
+    "no-rewrite-anthropic-tools": {
+      type: "boolean",
+      default: false,
+      description:
+        "Don't rewrite Anthropic server-side tools (web_search, etc.) to custom tool format",
     },
   },
   run({ args }) {
@@ -308,7 +348,9 @@ export const start = defineCommand({
       proxyEnv: args["proxy-env"],
       history: !args["no-history"],
       historyLimit: Number.parseInt(args["history-limit"], 10),
-      autoCompact: !args["no-auto-compact"],
+      autoTruncate: !args["no-auto-truncate"],
+      redirectAnthropic: args["redirect-anthropic"],
+      rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],
     })
   },
 })

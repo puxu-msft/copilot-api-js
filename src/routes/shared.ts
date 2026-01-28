@@ -5,7 +5,7 @@
 
 import consola from "consola"
 
-import type { AutoCompactResult } from "~/lib/auto-compact"
+import type { AutoTruncateResult } from "~/lib/auto-truncate-openai"
 import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
@@ -13,10 +13,10 @@ import type {
 import type { Model } from "~/services/copilot/get-models"
 
 import {
-  autoCompact,
+  autoTruncate,
   checkNeedsCompaction,
   onRequestTooLarge,
-} from "~/lib/auto-compact"
+} from "~/lib/auto-truncate-openai"
 import { recordResponse } from "~/lib/history"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
@@ -27,7 +27,7 @@ export interface ResponseContext {
   historyId: string
   trackingId: string | undefined
   startTime: number
-  compactResult?: AutoCompactResult
+  truncateResult?: AutoTruncateResult
   /** Time spent waiting in rate-limit queue (ms) */
   queueWaitMs?: number
 }
@@ -128,32 +128,32 @@ export function isNonStreaming(
   return Object.hasOwn(response, "choices")
 }
 
-/** Build final payload with auto-compact if needed */
+/** Build final payload with auto-truncate if needed */
 export async function buildFinalPayload(
   payload: ChatCompletionsPayload,
   model: Parameters<typeof checkNeedsCompaction>[1] | undefined,
 ): Promise<{
   finalPayload: ChatCompletionsPayload
-  compactResult: AutoCompactResult | null
+  truncateResult: AutoTruncateResult | null
 }> {
-  if (!state.autoCompact || !model) {
-    if (state.autoCompact && !model) {
+  if (!state.autoTruncate || !model) {
+    if (state.autoTruncate && !model) {
       consola.warn(
-        `Auto-compact: Model '${payload.model}' not found in cached models, skipping`,
+        `Auto-truncate: Model '${payload.model}' not found in cached models, skipping`,
       )
     }
-    return { finalPayload: payload, compactResult: null }
+    return { finalPayload: payload, truncateResult: null }
   }
 
   try {
     const check = await checkNeedsCompaction(payload, model)
     consola.debug(
-      `Auto-compact check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
+      `Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
         + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
         + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
     )
     if (!check.needed) {
-      return { finalPayload: payload, compactResult: null }
+      return { finalPayload: payload, truncateResult: null }
     }
 
     let reasonText: string
@@ -164,17 +164,17 @@ export async function buildFinalPayload(
     } else {
       reasonText = "tokens"
     }
-    consola.info(`Auto-compact triggered: exceeds ${reasonText} limit`)
-    const compactResult = await autoCompact(payload, model)
-    return { finalPayload: compactResult.payload, compactResult }
+    consola.info(`Auto-truncate triggered: exceeds ${reasonText} limit`)
+    const truncateResult = await autoTruncate(payload, model)
+    return { finalPayload: truncateResult.payload, truncateResult }
   } catch (error) {
-    // Auto-compact is a best-effort optimization; if it fails, proceed with original payload
+    // Auto-truncate is a best-effort optimization; if it fails, proceed with original payload
     // The request may still succeed if we're under the actual limit
     consola.warn(
-      "Auto-compact failed, proceeding with original payload:",
+      "Auto-truncate failed, proceeding with original payload:",
       error instanceof Error ? error.message : error,
     )
-    return { finalPayload: payload, compactResult: null }
+    return { finalPayload: payload, truncateResult: null }
   }
 }
 
@@ -249,9 +249,9 @@ export async function logPayloadSizeInfo(
 
   consola.info("")
   consola.info("  Suggestions:")
-  if (!state.autoCompact) {
+  if (!state.autoTruncate) {
     consola.info(
-      "    • Enable --auto-compact to automatically truncate history",
+      "    • Enable --auto-truncate to automatically truncate history",
     )
   }
   if (imageCount > 0) {

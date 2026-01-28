@@ -13,6 +13,7 @@ export default [
       "max-params": "off",
       "max-depth": "off",
       complexity: "off",
+      "max-lines": "off",
     },
   },
 ]

@@ -95,7 +95,7 @@ bun run knip
   - `middleware.ts` - Hono middleware for automatic request tracking
   - `index.ts` - TUI initialization
 - `lib/approval.ts` - Manual request approval flow
-- `lib/auto-compact.ts` - Automatic conversation history truncation when exceeding token limits
+- `lib/auto-truncate.ts` - Automatic conversation history truncation when exceeding token limits
 - `lib/tokenizer.ts` - Token counting for Anthropic `/v1/messages/count_tokens` endpoint
 - `lib/error.ts` - HTTP error handling utilities (includes 413 error debug info)
 - `lib/paths.ts` - File system paths for token storage

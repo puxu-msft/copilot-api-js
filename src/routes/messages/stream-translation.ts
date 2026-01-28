@@ -1,11 +1,11 @@
 import { type ChatCompletionChunk } from "~/services/copilot/create-chat-completions"
-
 import {
   type AnthropicStreamEventData,
   type AnthropicStreamState,
-} from "./anthropic-types"
+} from "~/types/api/anthropic"
+
+import { mapOpenAIStopReasonToAnthropic } from "./message-utils"
 import { type ToolNameMapping } from "./non-stream-translation"
-import { mapOpenAIStopReasonToAnthropic } from "./utils"
 
 function isToolBlockOpen(state: AnthropicStreamState): boolean {
   if (!state.contentBlockOpen) {

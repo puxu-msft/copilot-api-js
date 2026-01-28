@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test"
 import { z } from "zod"
 
-import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
+import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
 
 import { translateToOpenAI } from "../src/routes/messages/non-stream-translation"
 

@@ -110,7 +110,7 @@ copilot-api start
 | `--proxy-env` | Use proxy from environment | false |
 | `--history` | Enable request history UI at `/history` | false |
 | `--history-limit` | Max history entries in memory | 1000 |
-| `--auto-compact` | Auto-compress context when exceeding limits | false |
+| `--auto-truncate` | Auto-truncate context when exceeding limits | true |
 
 ### Patch-Claude Command Options
 
