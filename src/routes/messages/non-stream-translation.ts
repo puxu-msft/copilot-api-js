@@ -1,5 +1,6 @@
 import consola from "consola"
 
+import { state } from "~/lib/state"
 import {
   type ChatCompletionResponse,
   type ChatCompletionsPayload,
@@ -130,17 +131,62 @@ export function translateToOpenAI(
   }
 }
 
-function translateModelName(model: string): string {
-  // Handle short model name aliases (e.g., "opus", "sonnet", "haiku")
-  // Maps to the latest available version in Copilot
-  const shortNameMap: Record<string, string> = {
-    opus: "claude-opus-4.5",
-    sonnet: "claude-sonnet-4.5",
-    haiku: "claude-haiku-4.5",
+/**
+ * Find the latest available model matching a family prefix.
+ * Searches state.models for models starting with the given prefix
+ * and returns the one with the highest version number.
+ *
+ * @param familyPrefix - e.g., "claude-opus", "claude-sonnet", "claude-haiku"
+ * @param fallback - fallback model ID if no match found
+ */
+function findLatestModel(familyPrefix: string, fallback: string): string {
+  const models = state.models?.data
+  if (!models || models.length === 0) {
+    return fallback
   }
 
-  if (shortNameMap[model]) {
-    return shortNameMap[model]
+  // Find all models matching the family prefix
+  const candidates = models.filter((m) => m.id.startsWith(familyPrefix))
+  if (candidates.length === 0) {
+    return fallback
+  }
+
+  // Sort by version number (higher is better)
+  // Extract version like "4.5" from "claude-opus-4.5"
+  candidates.sort((a, b) => {
+    const versionA = extractVersion(a.id, familyPrefix)
+    const versionB = extractVersion(b.id, familyPrefix)
+    return versionB - versionA // descending
+  })
+
+  return candidates[0].id
+}
+
+/**
+ * Extract numeric version from model ID.
+ * e.g., "claude-opus-4.5" with prefix "claude-opus" -> 4.5
+ */
+function extractVersion(modelId: string, prefix: string): number {
+  const suffix = modelId.slice(prefix.length + 1) // +1 for the hyphen
+  // Handle versions like "4.5", "4", "3.5"
+  const match = suffix.match(/^(\d+(?:\.\d+)?)/)
+  return match ? Number.parseFloat(match[1]) : 0
+}
+
+function translateModelName(model: string): string {
+  // Handle short model name aliases (e.g., "opus", "sonnet", "haiku")
+  // Dynamically finds the latest available version from state.models
+  const aliasMap: Record<string, string> = {
+    opus: "claude-opus",
+    sonnet: "claude-sonnet",
+    haiku: "claude-haiku",
+  }
+
+  if (aliasMap[model]) {
+    const familyPrefix = aliasMap[model]
+    // Find latest version dynamically, with hardcoded fallback
+    const fallback = `${familyPrefix}-4.5`
+    return findLatestModel(familyPrefix, fallback)
   }
 
   // Handle versioned model names from Anthropic API (e.g., claude-sonnet-4-20250514)
@@ -159,18 +205,18 @@ function translateModelName(model: string): string {
   if (/^claude-opus-4-5-\d+$/.test(model)) {
     return "claude-opus-4.5"
   }
-  // claude-opus-4-YYYYMMDD -> claude-opus-4.5 (default to latest)
+  // claude-opus-4-YYYYMMDD -> find latest opus
   if (/^claude-opus-4-\d+$/.test(model)) {
-    return "claude-opus-4.5"
+    return findLatestModel("claude-opus", "claude-opus-4.5")
   }
 
   // claude-haiku-4-5-YYYYMMDD -> claude-haiku-4.5
   if (/^claude-haiku-4-5-\d+$/.test(model)) {
     return "claude-haiku-4.5"
   }
-  // claude-haiku-3-5-YYYYMMDD -> claude-haiku-4.5 (upgrade to latest available)
+  // claude-haiku-3-5-YYYYMMDD -> find latest haiku
   if (/^claude-haiku-3-5-\d+$/.test(model)) {
-    return "claude-haiku-4.5"
+    return findLatestModel("claude-haiku", "claude-haiku-4.5")
   }
 
   return model
