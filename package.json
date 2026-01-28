@@ -32,6 +32,9 @@
     "prepare": "npm run build && (command -v bun >/dev/null 2>&1 && simple-git-hooks || true)",
     "release": "bumpp && npm publish --access public",
     "start": "NODE_ENV=production bun run ./src/main.ts",
+    "test": "bun test tests/*.test.ts",
+    "test:all": "bun test tests/*.test.ts && bun test tests/integration/",
+    "test:integration": "bun test tests/integration/",
     "typecheck": "tsc"
   },
   "simple-git-hooks": {
