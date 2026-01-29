@@ -243,7 +243,12 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
     // Prepend truncation marker as first content block if auto-truncate was performed
     if (ctx.truncateResult?.wasCompacted) {
       const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
-      await sendTruncationMarkerEvent(stream, streamState, marker)
+      await sendTruncationMarkerEvent(
+        stream,
+        streamState,
+        marker,
+        anthropicPayload.model,
+      )
       acc.content += marker
     }
 
@@ -285,7 +290,34 @@ async function sendTruncationMarkerEvent(
   stream: { writeSSE: (msg: { event: string; data: string }) => Promise<void> },
   streamState: AnthropicStreamState,
   marker: string,
+  model: string,
 ) {
+  // Must send message_start before any content blocks
+  if (!streamState.messageStartSent) {
+    // Set flag before await to satisfy require-atomic-updates lint rule
+    streamState.messageStartSent = true
+    const messageStartEvent = {
+      type: "message_start",
+      message: {
+        id: `msg_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: [],
+        model,
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+      },
+    }
+    await stream.writeSSE({
+      event: "message_start",
+      data: JSON.stringify(messageStartEvent),
+    })
+  }
+
   // Start a new content block for the marker
   const blockStartEvent = {
     type: "content_block_start",
