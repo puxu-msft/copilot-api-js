@@ -13,11 +13,14 @@ This fork includes the following enhancements over the upstream project:
 ### New Features
 
 - **`--host` option**: Bind the server to a specific network interface (e.g., `--host 0.0.0.0` for all interfaces, `--host 127.0.0.1` for localhost only)
-- **Queue-based rate limiting**: Requests are queued and processed sequentially with configurable delays, instead of being rejected when rate limited
+- **Adaptive rate limiting**: Smart rate limiting with exponential backoff, auto-recovery, and Retry-After support (replaces queue-based limiting)
+- **Direct Anthropic API**: Claude models use Copilot's native Anthropic endpoint without translation overhead
+- **Smart auto-truncate**: Automatically truncates conversation history when exceeding context limits, with optional tool result compression
 - **`/v1/event_logging/batch` endpoint**: Compatibility endpoint for Anthropic SDK's event logging (returns OK without processing)
 - **`logout` command**: Remove stored GitHub token with `copilot-api logout`
+- **`patch-claude` command**: Patch Claude Code's context window limit to match Copilot's limits
 - **Tool name length handling**: Automatically truncates long tool names (>64 chars) to comply with OpenAI's limit, with hash-based suffix to avoid collisions. Original names are restored in responses.
-- **Request History UI**: Optional built-in Web UI (`--history`) to view, search, filter, and export all API requests/responses. Access at `/history` when enabled.
+- **Request History UI**: Built-in Web UI (enabled by default) to view, search, filter, and export all API requests/responses. Access at `/history`.
 
 ### Bug Fixes
 
@@ -98,19 +101,25 @@ copilot-api start
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--port`, `-p` | Port to listen on | 4141 |
-| `--host` | Host/interface to bind to | (all interfaces) |
+| `--host`, `-H` | Host/interface to bind to | (all interfaces) |
 | `--verbose`, `-v` | Enable verbose logging | false |
 | `--account-type`, `-a` | Account type (individual, business, enterprise) | individual |
-| `--rate-limit`, `-r` | Seconds between requests (uses queue) | none |
-| `--wait`, `-w` | Wait in queue instead of rejecting | false |
+| `--manual` | Manual request approval mode | false |
+| `--no-rate-limit` | Disable adaptive rate limiting | false |
+| `--retry-interval` | Seconds to wait before retrying after rate limit | 10 |
+| `--request-interval` | Seconds between requests in rate-limited mode | 10 |
+| `--recovery-timeout` | Minutes before attempting recovery | 10 |
+| `--consecutive-successes` | Successes needed to exit rate-limited mode | 5 |
 | `--github-token`, `-g` | Provide GitHub token directly | none |
 | `--claude-code`, `-c` | Generate Claude Code launch command | false |
 | `--show-token` | Show tokens on fetch/refresh | false |
-| `--manual` | Manual request approval mode | false |
 | `--proxy-env` | Use proxy from environment | false |
-| `--history` | Enable request history UI at `/history` | false |
+| `--no-history` | Disable request history UI at `/history` | false |
 | `--history-limit` | Max history entries in memory | 1000 |
-| `--auto-truncate` | Auto-truncate context when exceeding limits | true |
+| `--no-auto-truncate` | Disable auto-truncate when exceeding limits | false |
+| `--compress-tool-results` | Compress old tool results before truncating | false |
+| `--redirect-anthropic` | Force Anthropic through OpenAI translation | false |
+| `--no-rewrite-anthropic-tools` | Don't rewrite server-side tools | false |
 
 ### Patch-Claude Command Options
 
@@ -143,9 +152,11 @@ copilot-api start
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/` | GET | Server status |
 | `/usage` | GET | Copilot usage stats |
 | `/token` | GET | Current Copilot token |
-| `/history` | GET | Request history Web UI (requires `--history`) |
+| `/health` | GET | Health check |
+| `/history` | GET | Request history Web UI (enabled by default) |
 | `/history/api/*` | GET/DELETE | History API endpoints |
 
 ## Using with Claude Code

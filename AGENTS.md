@@ -2,18 +2,20 @@
 
 ## Build, Lint, and Test Commands
 
-- **Build:**  
-  `bun run build` (uses tsup)
-- **Dev:**  
+- **Build:**
+  `bun run build` (uses tsdown)
+- **Dev:**
   `bun run dev`
-- **Lint:**  
+- **Lint:**
   `bun run lint` (uses @echristian/eslint-config)
-- **Lint & Fix staged files:**  
-  `bunx lint-staged`
-- **Test all:**  
+- **Lint all files:**
+  `bun run lint:all`
+- **Type check:**
+  `bun run typecheck`
+- **Test all:**
    `bun test`
-- **Test single file:**  
-   `bun test tests/claude-request.test.ts`
+- **Test single file:**
+   `bun test tests/anthropic-request.test.ts`
 - **Start (prod):**  
   `bun run start`
 

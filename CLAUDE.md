@@ -67,27 +67,30 @@ bun run knip
 
 ### Entry Points
 
-- `src/main.ts` - CLI entry point using citty, defines subcommands: `start`, `auth`, `logout`, `check-usage`, `debug`
+- `src/main.ts` - CLI entry point using citty, defines subcommands: `start`, `auth`, `logout`, `check-usage`, `debug`, `patch-claude`
 - `src/start.ts` - Main server startup logic, handles authentication flow, model caching, and launches Hono server via srvx
 - `src/server.ts` - Hono app configuration, registers all routes
+- `src/patch-claude-code.ts` - Claude Code context window patching tool
 
 ### Request Flow
 
 1. Incoming requests hit Hono routes in `src/routes/`
 2. For Anthropic-compatible `/v1/messages` endpoint:
    - `routes/messages/handler.ts` receives Anthropic payload
-   - Translates to OpenAI format via `non-stream-translation.ts`
-   - Calls `services/copilot/create-chat-completions.ts`
-   - Translates response back to Anthropic format (streaming uses `stream-translation.ts`)
+   - Checks if model supports direct Anthropic API via `supportsDirectAnthropicApi()`
+   - **Direct path**: `direct-anthropic-handler.ts` sends to Copilot's native Anthropic endpoint
+   - **Translation path**: `translated-handler.ts` translates to OpenAI format via `non-stream-translation.ts`, calls `services/copilot/create-chat-completions.ts`, then translates response back (streaming uses `stream-translation.ts`)
 3. OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) proxy directly to Copilot API
+4. All requests go through adaptive rate limiting (`executeWithAdaptiveRateLimit`)
+5. Auto-truncate is applied when context exceeds limits (uses `auto-truncate-openai.ts` or `auto-truncate-anthropic.ts`)
 
 ### Key Modules
 
-- `lib/state.ts` - Global mutable state (tokens, config, rate limiting)
+- `lib/state.ts` - Global mutable state (tokens, config, rate limiting, auto-truncate settings)
 - `lib/token.ts` - GitHub OAuth device flow and Copilot token management with auto-refresh
 - `lib/api-config.ts` - Copilot API URLs and headers (emulates VSCode extension)
-- `lib/queue.ts` - Request queue for rate limiting (queues requests instead of rejecting)
-- `lib/history.ts` - Request/response history recording and querying
+- `lib/adaptive-rate-limiter.ts` - Adaptive rate limiting with exponential backoff (3 modes: Normal, Rate-limited, Recovering)
+- `lib/history.ts` - Request/response history recording, querying, and export (JSON/CSV)
 - `lib/tui/` - Terminal UI module for request logging (replaces hono/logger)
   - `types.ts` - Type definitions for request tracking (`TrackedRequest`, `TuiRenderer`)
   - `tracker.ts` - Singleton request state manager
@@ -95,9 +98,11 @@ bun run knip
   - `middleware.ts` - Hono middleware for automatic request tracking
   - `index.ts` - TUI initialization
 - `lib/approval.ts` - Manual request approval flow
-- `lib/auto-truncate.ts` - Automatic conversation history truncation when exceeding token limits
-- `lib/tokenizer.ts` - Token counting for Anthropic `/v1/messages/count_tokens` endpoint
-- `lib/error.ts` - HTTP error handling utilities (includes 413 error debug info)
+- `lib/auto-truncate-common.ts` - Shared auto-truncate configuration and dynamic limit adjustment
+- `lib/auto-truncate-openai.ts` - Auto-truncate for OpenAI format messages (message compression, tool result compression)
+- `lib/auto-truncate-anthropic.ts` - Auto-truncate for Anthropic format messages
+- `lib/tokenizer.ts` - Token counting with multiple tokenizers (GPT: o200k/cl100k/p50k/r50k, Anthropic), image token calculation
+- `lib/error.ts` - HTTP error handling utilities (includes 413/400 error for auto-truncate triggering)
 - `lib/paths.ts` - File system paths for token storage
 - `lib/proxy.ts` - HTTP proxy configuration support
 - `lib/shell.ts` - Shell command generation for environment setup (e.g., Claude Code launch command)
@@ -105,7 +110,11 @@ bun run knip
 ### Services
 
 - `services/github/` - GitHub API interactions (auth, device code, user info, usage stats)
-- `services/copilot/` - Copilot API calls (chat completions, embeddings, models)
+- `services/copilot/` - Copilot API calls:
+  - `create-chat-completions.ts` - OpenAI-compatible chat completions
+  - `create-anthropic-messages.ts` - Direct Anthropic API support with tool rewriting
+  - `get-models.ts` - Model listing with capability detection
+  - `create-embeddings.ts` - Text embeddings
 - `services/get-vscode-version.ts` - Fetches latest VSCode version from GitHub API for API headers
 
 ### Path Aliases
@@ -132,6 +141,7 @@ Note: Code structure rules like `max-lines-per-function`, `max-params`, `max-dep
 
 | Endpoint | Purpose |
 |----------|---------|
+| `/` | Server status |
 | `/v1/chat/completions` | OpenAI-compatible chat |
 | `/v1/messages` | Anthropic-compatible messages |
 | `/v1/messages/count_tokens` | Anthropic-compatible token counting |
@@ -141,18 +151,26 @@ Note: Code structure rules like `max-lines-per-function`, `max-params`, `max-dep
 | `/token` | Current Copilot token |
 | `/health` | Health check for container orchestration |
 | `/api/event_logging/batch` | Anthropic SDK telemetry (returns 200 OK) |
-| `/history` | Request history Web UI (requires `--history` flag) |
-| `/history/api/*` | History query API endpoints |
+| `/history` | Request history Web UI (enabled by default, disable with `--no-history`) |
+| `/history/api/entries` | History query API |
+| `/history/api/sessions` | Session list API |
+| `/history/api/stats` | Statistics API |
+| `/history/api/export` | Export history (JSON/CSV) |
 
 ## Anthropic API Compatibility
 
-The `/v1/messages` endpoint translates between Anthropic and OpenAI formats. Some Anthropic features have limited or no support due to Copilot API constraints:
+The `/v1/messages` endpoint supports two paths:
+1. **Direct path**: For Claude models, requests go directly to Copilot's native Anthropic endpoint
+2. **Translation path**: For other models, translates between Anthropic and OpenAI formats
+
+Some Anthropic features have limited or no support due to Copilot API constraints:
 
 | Feature | Support | Notes |
 |---------|---------|-------|
 | Prompt Caching | Partial | Read-only; `cache_read_input_tokens` is reported from Copilot's `cached_tokens`. Cannot set `cache_control` to mark cacheable content. |
 | Extended Thinking | Not supported | `thinking` parameter is ignored. Thinking blocks in history are converted to plain text. |
 | Batch Processing | Not supported | No `/v1/messages/batches` endpoint; Copilot API lacks batch support. |
+| Server-side Tools | Partial | Tools like `web_search` are rewritten to custom tool format (can be disabled with `--no-rewrite-anthropic-tools`). |
 
 ### Model Name Translation
 
@@ -166,6 +184,18 @@ Account types affect the Copilot API base URL:
 - `individual` → `api.githubcopilot.com`
 - `business` → `api.business.githubcopilot.com`
 - `enterprise` → `api.enterprise.githubcopilot.com`
+
+### State Configuration Options
+
+Key runtime configuration in `lib/state.ts`:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `autoTruncate` | boolean | `true` | Auto-truncate context when exceeding limits |
+| `compressToolResults` | boolean | `false` | Compress old tool_result content before truncating |
+| `redirectAnthropic` | boolean | `false` | Force Anthropic requests through OpenAI translation |
+| `rewriteAnthropicTools` | boolean | `true` | Rewrite server-side tools (web_search) to custom format |
+| `adaptiveRateLimitConfig` | object | - | Rate limiting parameters (retry interval, recovery settings) |
 
 ## Syncing with Upstream
 
