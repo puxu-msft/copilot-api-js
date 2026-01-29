@@ -2,6 +2,7 @@ import type { Context } from "hono"
 
 import consola from "consola"
 
+import { checkNeedsCompactionAnthropic } from "~/lib/auto-truncate-anthropic"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { type AnthropicMessagesPayload } from "~/types/api/anthropic"
@@ -13,6 +14,9 @@ import { translateToOpenAI } from "./non-stream-translation"
  *
  * For Anthropic models (vendor === "Anthropic"), uses the official Anthropic tokenizer.
  * For other models, uses GPT tokenizers with appropriate buffers.
+ *
+ * When auto-truncate is enabled and the request would exceed limits,
+ * returns an inflated token count to trigger Claude Code's auto-compact mechanism.
  */
 export async function handleCountTokens(c: Context) {
   try {
@@ -33,8 +37,34 @@ export async function handleCountTokens(c: Context) {
       })
     }
 
-    // Check if this is an Anthropic model (uses official tokenizer, no buffer needed)
-    const isAnthropicModel = selectedModel.vendor === "Anthropic"
+    // Check if auto-truncate would be triggered
+    // If so, return an inflated token count to encourage Claude Code auto-compact
+    if (state.autoTruncate) {
+      const truncateCheck = await checkNeedsCompactionAnthropic(
+        anthropicPayload,
+        selectedModel,
+      )
+
+      if (truncateCheck.needed) {
+        // Return 95% of context window to signal that context is nearly full
+        const contextWindow =
+          selectedModel.capabilities?.limits?.max_context_window_tokens
+          ?? 200000
+        const inflatedTokens = Math.floor(contextWindow * 0.95)
+
+        consola.debug(
+          `[count_tokens] Would trigger auto-truncate: ${truncateCheck.currentTokens} tokens > ${truncateCheck.tokenLimit}, `
+            + `returning inflated count: ${inflatedTokens}`,
+        )
+
+        return c.json({
+          input_tokens: inflatedTokens,
+        })
+      }
+    }
+
+    // Get tokenizer info from model
+    const tokenizerName = selectedModel.capabilities?.tokenizer ?? "o200k_base"
 
     const tokenCount = await getTokenCount(openAIPayload, selectedModel)
 
@@ -60,8 +90,10 @@ export async function handleCountTokens(c: Context) {
 
     let finalTokenCount = tokenCount.input + tokenCount.output
 
-    // Apply buffer only for non-Anthropic models (Anthropic uses official tokenizer)
-    if (!isAnthropicModel) {
+    // Apply buffer for models that may have tokenizer differences
+    // Note: All models use GPT tokenizers per API info, but API-specific overhead may differ
+    const isAnthropicVendor = selectedModel.vendor === "Anthropic"
+    if (!isAnthropicVendor) {
       finalTokenCount =
         anthropicPayload.model.startsWith("grok") ?
           // Apply 3% buffer for Grok models (smaller difference from GPT tokenizer)
@@ -71,7 +103,7 @@ export async function handleCountTokens(c: Context) {
     }
 
     consola.debug(
-      `Token count: ${finalTokenCount} (${isAnthropicModel ? "Anthropic tokenizer" : "GPT tokenizer"})`,
+      `Token count: ${finalTokenCount} (tokenizer: ${tokenizerName})`,
     )
 
     return c.json({

@@ -72,6 +72,7 @@ interface RunServerOptions {
   history: boolean
   historyLimit: number
   autoTruncate: boolean
+  compressToolResults: boolean
   redirectAnthropic: boolean
   rewriteAnthropicTools: boolean
 }
@@ -98,6 +99,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.manualApprove = options.manual
   state.showToken = options.showToken
   state.autoTruncate = options.autoTruncate
+  state.compressToolResults = options.compressToolResults
   state.redirectAnthropic = options.redirectAnthropic
   state.rewriteAnthropicTools = options.rewriteAnthropicTools
 
@@ -115,6 +117,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   if (!options.autoTruncate) {
     consola.info("Auto-truncate disabled")
+  }
+
+  if (options.compressToolResults) {
+    consola.info("Tool result compression enabled")
   }
 
   if (options.redirectAnthropic) {
@@ -317,6 +323,12 @@ export const start = defineCommand({
       description:
         "Disable automatic conversation history truncation when exceeding limits",
     },
+    "compress-tool-results": {
+      type: "boolean",
+      default: false,
+      description:
+        "Compress old tool_result content before truncating messages (may lose context details)",
+    },
     "redirect-anthropic": {
       type: "boolean",
       default: false,
@@ -349,6 +361,7 @@ export const start = defineCommand({
       history: !args["no-history"],
       historyLimit: Number.parseInt(args["history-limit"], 10),
       autoTruncate: !args["no-auto-truncate"],
+      compressToolResults: args["compress-tool-results"],
       redirectAnthropic: args["redirect-anthropic"],
       rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],
     })

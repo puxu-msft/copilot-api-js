@@ -5,7 +5,7 @@
 
 import consola from "consola"
 
-import type { AutoTruncateResult } from "~/lib/auto-truncate-openai"
+import type { OpenAIAutoTruncateResult } from "~/lib/auto-truncate-openai"
 import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
@@ -13,8 +13,8 @@ import type {
 import type { Model } from "~/services/copilot/get-models"
 
 import {
-  autoTruncate,
-  checkNeedsCompaction,
+  autoTruncateOpenAI,
+  checkNeedsCompactionOpenAI,
   onRequestTooLarge,
 } from "~/lib/auto-truncate-openai"
 import { recordResponse } from "~/lib/history"
@@ -27,7 +27,7 @@ export interface ResponseContext {
   historyId: string
   trackingId: string | undefined
   startTime: number
-  truncateResult?: AutoTruncateResult
+  truncateResult?: OpenAIAutoTruncateResult
   /** Time spent waiting in rate-limit queue (ms) */
   queueWaitMs?: number
 }
@@ -95,6 +95,40 @@ export function failTracking(trackingId: string | undefined, error: unknown) {
   )
 }
 
+/** Minimal truncate result info needed for usage adjustment and markers */
+export interface TruncateResultInfo {
+  wasCompacted: boolean
+  originalTokens?: number
+  compactedTokens?: number
+  removedMessageCount?: number
+}
+
+/**
+ * Create a marker to prepend to responses indicating auto-truncation occurred.
+ * Works with both OpenAI and Anthropic truncate results.
+ */
+export function createTruncationMarker(result: TruncateResultInfo): string {
+  if (!result.wasCompacted) return ""
+
+  const { originalTokens, compactedTokens, removedMessageCount } = result
+
+  if (
+    originalTokens === undefined
+    || compactedTokens === undefined
+    || removedMessageCount === undefined
+  ) {
+    return `\n\n---\n[Auto-truncated: conversation history was reduced to fit context limits]`
+  }
+
+  const reduction = originalTokens - compactedTokens
+  const percentage = Math.round((reduction / originalTokens) * 100)
+
+  return (
+    `\n\n---\n[Auto-truncated: ${removedMessageCount} messages removed, `
+    + `${originalTokens} → ${compactedTokens} tokens (${percentage}% reduction)]`
+  )
+}
+
 /** Base accumulator interface for stream error recording */
 interface BaseStreamAccumulator {
   model: string
@@ -131,10 +165,10 @@ export function isNonStreaming(
 /** Build final payload with auto-truncate if needed */
 export async function buildFinalPayload(
   payload: ChatCompletionsPayload,
-  model: Parameters<typeof checkNeedsCompaction>[1] | undefined,
+  model: Parameters<typeof checkNeedsCompactionOpenAI>[1] | undefined,
 ): Promise<{
   finalPayload: ChatCompletionsPayload
-  truncateResult: AutoTruncateResult | null
+  truncateResult: OpenAIAutoTruncateResult | null
 }> {
   if (!state.autoTruncate || !model) {
     if (state.autoTruncate && !model) {
@@ -146,7 +180,7 @@ export async function buildFinalPayload(
   }
 
   try {
-    const check = await checkNeedsCompaction(payload, model)
+    const check = await checkNeedsCompactionOpenAI(payload, model)
     consola.debug(
       `Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
         + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
@@ -165,7 +199,7 @@ export async function buildFinalPayload(
       reasonText = "tokens"
     }
     consola.info(`Auto-truncate triggered: exceeds ${reasonText} limit`)
-    const truncateResult = await autoTruncate(payload, model)
+    const truncateResult = await autoTruncateOpenAI(payload, model)
     return { finalPayload: truncateResult.payload, truncateResult }
   } catch (error) {
     // Auto-truncate is a best-effort optimization; if it fails, proceed with original payload

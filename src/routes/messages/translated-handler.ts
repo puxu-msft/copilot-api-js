@@ -15,7 +15,7 @@ import type {
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
-import { createTruncationResponseMarker } from "~/lib/auto-truncate-openai"
+import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate-openai"
 import { HTTPError } from "~/lib/error"
 import { recordResponse } from "~/lib/history"
 import { state } from "~/lib/state"
@@ -147,7 +147,7 @@ function handleNonStreamingResponse(opts: NonStreamingOptions) {
 
   // Prepend truncation marker if auto-truncate was performed (only in verbose mode)
   if (state.verbose && ctx.truncateResult?.wasCompacted) {
-    const marker = createTruncationResponseMarker(ctx.truncateResult)
+    const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
     anthropicResponse = prependMarkerToAnthropicResponse(
       anthropicResponse,
       marker,
@@ -242,7 +242,7 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
   try {
     // Prepend truncation marker as first content block if auto-truncate was performed
     if (ctx.truncateResult?.wasCompacted) {
-      const marker = createTruncationResponseMarker(ctx.truncateResult)
+      const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
       await sendTruncationMarkerEvent(stream, streamState, marker)
       acc.content += marker
     }

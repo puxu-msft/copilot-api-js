@@ -15,11 +15,14 @@ export interface AutoTruncateConfig {
   safetyMarginPercent: number
   /** Maximum request body size in bytes (default: 510KB) */
   maxRequestBodyBytes: number
+  /** Percentage of context to preserve uncompressed from the end (default: 0.7 = 70%) */
+  preserveRecentPercent: number
 }
 
 export const DEFAULT_AUTO_TRUNCATE_CONFIG: AutoTruncateConfig = {
   safetyMarginPercent: 2,
   maxRequestBodyBytes: 510 * 1024, // 510KB (585KB known to fail)
+  preserveRecentPercent: 0.7,
 }
 
 // ============================================================================

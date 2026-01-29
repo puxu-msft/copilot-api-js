@@ -7,7 +7,7 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
-import { createTruncationResponseMarker } from "~/lib/auto-truncate-openai"
+import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate-openai"
 import { HTTPError } from "~/lib/error"
 import {
   type MessageContent,
@@ -185,7 +185,7 @@ function handleNonStreamingResponse(
     && ctx.truncateResult?.wasCompacted
     && response.choices[0]?.message.content
   ) {
-    const marker = createTruncationResponseMarker(ctx.truncateResult)
+    const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
     response = {
       ...response,
       choices: response.choices.map((choice, i) =>
@@ -296,7 +296,7 @@ async function handleStreamingResponse(opts: StreamingOptions) {
   try {
     // Prepend truncation marker as first chunk if auto-truncate was performed (only in verbose mode)
     if (state.verbose && ctx.truncateResult?.wasCompacted) {
-      const marker = createTruncationResponseMarker(ctx.truncateResult)
+      const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
       const markerChunk: ChatCompletionChunk = {
         id: `compact-marker-${Date.now()}`,
         object: "chat.completion.chunk",

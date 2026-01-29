@@ -20,6 +20,10 @@ export interface State {
   // Auto-truncate configuration
   autoTruncate: boolean
 
+  // Compress old tool results before truncating messages
+  // When enabled, large tool_result content is compressed to reduce context size
+  compressToolResults: boolean
+
   // Redirect Anthropic requests through OpenAI translation
   // When true, bypasses direct Anthropic API
   redirectAnthropic: boolean
@@ -34,6 +38,7 @@ export const state: State = {
   showToken: false,
   verbose: false,
   autoTruncate: true,
+  compressToolResults: false,
   redirectAnthropic: false,
   rewriteAnthropicTools: true,
 }

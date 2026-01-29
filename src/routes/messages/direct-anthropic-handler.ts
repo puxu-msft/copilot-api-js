@@ -8,6 +8,7 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
+import type { Model } from "~/services/copilot/get-models"
 import type {
   AnthropicMessagesPayload,
   AnthropicStreamEventData,
@@ -16,9 +17,11 @@ import type {
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
 import {
+  type AnthropicAutoTruncateResult,
   autoTruncateAnthropic,
   checkNeedsCompactionAnthropic,
 } from "~/lib/auto-truncate-anthropic"
+import { HTTPError } from "~/lib/error"
 import { recordResponse } from "~/lib/history"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
@@ -30,6 +33,7 @@ import {
 import {
   type ResponseContext,
   completeTracking,
+  createTruncationMarker,
   failTracking,
   recordErrorResponse,
   recordStreamError,
@@ -56,38 +60,46 @@ export async function handleDirectAnthropicCompletion(
     anthropicPayload.model,
   )
 
+  // Find model for auto-truncate and usage adjustment
+  const selectedModel = state.models?.data.find(
+    (m) => m.id === anthropicPayload.model,
+  )
+
   // Apply auto-truncate if enabled
   let effectivePayload = anthropicPayload
-  if (state.autoTruncate) {
-    const model = state.models?.data.find(
-      (m) => m.id === anthropicPayload.model,
-    )
-    if (model) {
-      const check = checkNeedsCompactionAnthropic(anthropicPayload, model)
-      consola.debug(
-        `[Anthropic] Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
-          + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
-          + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
-      )
+  let truncateResult: AnthropicAutoTruncateResult | undefined
 
-      if (check.needed) {
-        try {
-          const result = autoTruncateAnthropic(anthropicPayload, model)
-          if (result.wasCompacted) {
-            effectivePayload = result.payload
-          }
-        } catch (error) {
-          consola.warn(
-            "[Anthropic] Auto-truncate failed, proceeding with original payload:",
-            error instanceof Error ? error.message : error,
-          )
+  if (state.autoTruncate && selectedModel) {
+    const check = await checkNeedsCompactionAnthropic(
+      anthropicPayload,
+      selectedModel,
+    )
+    consola.debug(
+      `[Anthropic] Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
+        + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
+        + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
+    )
+
+    if (check.needed) {
+      try {
+        truncateResult = await autoTruncateAnthropic(
+          anthropicPayload,
+          selectedModel,
+        )
+        if (truncateResult.wasCompacted) {
+          effectivePayload = truncateResult.payload
         }
+      } catch (error) {
+        consola.warn(
+          "[Anthropic] Auto-truncate failed, proceeding with original payload:",
+          error instanceof Error ? error.message : error,
+        )
       }
-    } else {
-      consola.debug(
-        `[Anthropic] Model '${anthropicPayload.model}' not found, skipping auto-truncate`,
-      )
     }
+  } else if (state.autoTruncate && !selectedModel) {
+    consola.debug(
+      `[Anthropic] Model '${anthropicPayload.model}' not found, skipping auto-truncate`,
+    )
   }
 
   if (state.manualApprove) {
@@ -125,10 +137,49 @@ export async function handleDirectAnthropicCompletion(
       c,
       response as AnthropicMessageResponse,
       ctx,
+      truncateResult,
     )
   } catch (error) {
+    // Handle 413 Request Entity Too Large with helpful debugging info
+    if (error instanceof HTTPError && error.status === 413) {
+      logPayloadSizeInfoAnthropic(effectivePayload, selectedModel)
+    }
+
     recordErrorResponse(ctx, anthropicPayload.model, error)
     throw error
+  }
+}
+
+/**
+ * Log payload size info for debugging 413 errors
+ */
+function logPayloadSizeInfoAnthropic(
+  payload: AnthropicMessagesPayload,
+  model: Model | undefined,
+) {
+  const payloadSize = JSON.stringify(payload).length
+  const messageCount = payload.messages.length
+  const toolCount = payload.tools?.length ?? 0
+  const systemSize = payload.system ? JSON.stringify(payload.system).length : 0
+
+  consola.info(
+    `[Anthropic 413] Payload size: ${Math.round(payloadSize / 1024)}KB, `
+      + `messages: ${messageCount}, tools: ${toolCount}, system: ${Math.round(systemSize / 1024)}KB`,
+  )
+
+  if (model?.capabilities?.limits) {
+    const limits = model.capabilities.limits
+    consola.info(
+      `[Anthropic 413] Model limits: context=${limits.max_context_window_tokens}, `
+        + `prompt=${limits.max_prompt_tokens}, output=${limits.max_output_tokens}`,
+    )
+  }
+
+  // Suggest enabling auto-truncate if disabled
+  if (!state.autoTruncate) {
+    consola.info(
+      "[Anthropic 413] Consider enabling --auto-truncate to automatically reduce payload size",
+    )
   }
 }
 
@@ -139,6 +190,7 @@ function handleDirectAnthropicNonStreamingResponse(
   c: Context,
   response: AnthropicMessageResponse,
   ctx: ResponseContext,
+  truncateResult: AnthropicAutoTruncateResult | undefined,
 ) {
   consola.debug(
     "Non-streaming response from Copilot (direct Anthropic):",
@@ -190,7 +242,46 @@ function handleDirectAnthropicNonStreamingResponse(
     })
   }
 
-  return c.json(response)
+  // Add truncation marker to response if verbose mode and truncation occurred
+  let finalResponse = response
+  if (state.verbose && truncateResult?.wasCompacted) {
+    const marker = createTruncationMarker(truncateResult)
+    finalResponse = prependMarkerToAnthropicResponse(response, marker)
+  }
+
+  return c.json(finalResponse)
+}
+
+/**
+ * Prepend marker to Anthropic response content (at the beginning of first text block)
+ */
+function prependMarkerToAnthropicResponse(
+  response: AnthropicMessageResponse & {
+    usage: { input_tokens: number; output_tokens: number }
+  },
+  marker: string,
+): AnthropicMessageResponse & {
+  usage: { input_tokens: number; output_tokens: number }
+} {
+  if (!marker) return response
+
+  const content = [...response.content]
+  const firstTextIndex = content.findIndex((block) => block.type === "text")
+
+  if (firstTextIndex !== -1) {
+    const textBlock = content[firstTextIndex]
+    if (textBlock.type === "text") {
+      content[firstTextIndex] = {
+        ...textBlock,
+        text: marker + textBlock.text,
+      }
+    }
+  } else {
+    // No text block, add one at the start
+    content.unshift({ type: "text" as const, text: marker })
+  }
+
+  return { ...response, content }
 }
 
 /** Options for handleDirectAnthropicStreamingResponse */
