@@ -10,6 +10,8 @@ import consola from "consola"
 import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
 
 import { recordRequest } from "~/lib/history"
+import { sanitizeAnthropicSystem } from "~/lib/security-research-mode"
+import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
 import { supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-messages"
 
@@ -21,6 +23,24 @@ import { handleTranslatedCompletion } from "./translated-handler"
 export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
+
+  // Apply security research mode system prompt enhancement if enabled
+  if (state.securityResearchMode && anthropicPayload.system) {
+    const originalLength =
+      typeof anthropicPayload.system === "string" ?
+        anthropicPayload.system.length
+      : JSON.stringify(anthropicPayload.system).length
+    anthropicPayload.system = sanitizeAnthropicSystem(anthropicPayload.system)
+    const newLength =
+      typeof anthropicPayload.system === "string" ?
+        anthropicPayload.system.length
+      : JSON.stringify(anthropicPayload.system).length
+    if (originalLength !== newLength) {
+      consola.debug(
+        `[SecurityResearch] System prompt enhanced: ${originalLength} -> ${newLength} chars`,
+      )
+    }
+  }
 
   // Log tool-related information for debugging
   logToolInfo(anthropicPayload)

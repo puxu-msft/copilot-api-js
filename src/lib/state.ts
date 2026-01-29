@@ -30,6 +30,10 @@ export interface State {
 
   // Rewrite Anthropic server-side tools to custom tool format
   rewriteAnthropicTools: boolean
+
+  // Security Research Mode: enhance system prompts for security research
+  // Removes overly restrictive content and injects research context
+  securityResearchMode: boolean
 }
 
 export const state: State = {
@@ -41,4 +45,5 @@ export const state: State = {
   compressToolResults: false,
   redirectAnthropic: false,
   rewriteAnthropicTools: true,
+  securityResearchMode: false,
 }

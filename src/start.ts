@@ -75,6 +75,7 @@ interface RunServerOptions {
   compressToolResults: boolean
   redirectAnthropic: boolean
   rewriteAnthropicTools: boolean
+  securityResearchMode: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -102,6 +103,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.compressToolResults = options.compressToolResults
   state.redirectAnthropic = options.redirectAnthropic
   state.rewriteAnthropicTools = options.rewriteAnthropicTools
+  state.securityResearchMode = options.securityResearchMode
 
   // Initialize adaptive rate limiter (unless disabled)
   if (options.rateLimit) {
@@ -130,6 +132,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   if (!options.rewriteAnthropicTools) {
     consola.info(
       "Anthropic server-side tools rewrite disabled (passing through unchanged)",
+    )
+  }
+
+  if (options.securityResearchMode) {
+    consola.info(
+      "🔬 Security Research Mode enabled: System prompts enhanced for security research",
     )
   }
 
@@ -341,6 +349,12 @@ export const start = defineCommand({
       description:
         "Don't rewrite Anthropic server-side tools (web_search, etc.) to custom tool format",
     },
+    "security-research": {
+      type: "boolean",
+      default: false,
+      description:
+        "Enable Security Research Mode: enhance system prompts for penetration testing, CTF, and security education",
+    },
   },
   run({ args }) {
     return runServer({
@@ -364,6 +378,7 @@ export const start = defineCommand({
       compressToolResults: args["compress-tool-results"],
       redirectAnthropic: args["redirect-anthropic"],
       rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],
+      securityResearchMode: args["security-research"],
     })
   },
 })
