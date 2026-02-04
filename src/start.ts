@@ -15,7 +15,7 @@ import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
-import { setupCopilotToken, setupGitHubToken } from "./lib/token"
+import { initTokenManagers } from "./lib/token"
 import { initTui } from "./lib/tui"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { server } from "./server"
@@ -155,14 +155,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await ensurePaths()
   await cacheVSCodeVersion()
 
-  if (options.githubToken) {
-    state.githubToken = options.githubToken
-    consola.info("Using provided GitHub token")
-  } else {
-    await setupGitHubToken()
-  }
+  // Initialize token management system
+  await initTokenManagers({ cliToken: options.githubToken })
 
-  await setupCopilotToken()
   await cacheModels()
 
   consola.info(

@@ -5,7 +5,7 @@ import consola from "consola"
 
 import { PATHS, ensurePaths } from "./lib/paths"
 import { state } from "./lib/state"
-import { setupGitHubToken } from "./lib/token"
+import { DeviceAuthProvider, FileTokenProvider } from "./lib/token"
 
 interface RunAuthOptions {
   verbose: boolean
@@ -21,8 +21,27 @@ export async function runAuth(options: RunAuthOptions): Promise<void> {
   state.showToken = options.showToken
 
   await ensurePaths()
-  await setupGitHubToken({ force: true })
-  consola.success("GitHub token written to", PATHS.GITHUB_TOKEN_PATH)
+
+  // Use DeviceAuthProvider directly for force authentication
+  const deviceAuthProvider = new DeviceAuthProvider()
+  const tokenInfo = await deviceAuthProvider.getToken()
+
+  if (!tokenInfo) {
+    throw new Error("Failed to obtain GitHub token via device authorization")
+  }
+
+  // Validate and show user info
+  const validation = await deviceAuthProvider.validate(tokenInfo.token)
+  if (validation.valid) {
+    consola.info(`Logged in as ${validation.username}`)
+  }
+
+  // File provider will have already saved the token during device auth
+  // But we can verify the file exists
+  const fileProvider = new FileTokenProvider()
+  if (await fileProvider.isAvailable()) {
+    consola.success("GitHub token written to", PATHS.GITHUB_TOKEN_PATH)
+  }
 }
 
 export const auth = defineCommand({

@@ -7,7 +7,7 @@ import os from "node:os"
 
 import { ensurePaths, PATHS } from "./lib/paths"
 import { state } from "./lib/state"
-import { setupGitHubToken } from "./lib/token"
+import { GitHubTokenManager } from "./lib/token"
 import { getModels } from "./services/copilot/get-models"
 import { getCopilotToken } from "./services/github/get-copilot-token"
 import { getCopilotUsage } from "./services/github/get-copilot-usage"
@@ -79,7 +79,11 @@ async function getAccountInfo(): Promise<{
 } | null> {
   try {
     await ensurePaths()
-    await setupGitHubToken()
+
+    // Use GitHubTokenManager to get token
+    const tokenManager = new GitHubTokenManager()
+    const tokenInfo = await tokenManager.getToken()
+    state.githubToken = tokenInfo.token
 
     if (!state.githubToken) return null
 
@@ -203,7 +207,10 @@ const debugModels = defineCommand({
       state.githubToken = args["github-token"]
       consola.info("Using provided GitHub token")
     } else {
-      await setupGitHubToken()
+      // Use GitHubTokenManager to get token
+      const tokenManager = new GitHubTokenManager()
+      const tokenInfo = await tokenManager.getToken()
+      state.githubToken = tokenInfo.token
     }
 
     // Get Copilot token without setting up refresh interval

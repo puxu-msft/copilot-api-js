@@ -2,11 +2,13 @@ import { defineCommand } from "citty"
 import consola from "consola"
 
 import { ensurePaths } from "./lib/paths"
-import { setupGitHubToken } from "./lib/token"
+import { state } from "./lib/state"
+import { GitHubTokenManager } from "./lib/token"
 import {
   getCopilotUsage,
   type QuotaDetail,
 } from "./services/github/get-copilot-usage"
+import { getGitHubUser } from "./services/github/get-user"
 
 export const checkUsage = defineCommand({
   meta: {
@@ -15,7 +17,16 @@ export const checkUsage = defineCommand({
   },
   async run() {
     await ensurePaths()
-    await setupGitHubToken()
+
+    // Use GitHubTokenManager to get token
+    const tokenManager = new GitHubTokenManager()
+    const tokenInfo = await tokenManager.getToken()
+    state.githubToken = tokenInfo.token
+
+    // Show logged in user
+    const user = await getGitHubUser()
+    consola.info(`Logged in as ${user.login}`)
+
     try {
       const usage = await getCopilotUsage()
       const premium = usage.quota_snapshots.premium_interactions
