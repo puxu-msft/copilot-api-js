@@ -20,6 +20,7 @@ import {
   type AnthropicAutoTruncateResult,
   autoTruncateAnthropic,
   checkNeedsCompactionAnthropic,
+  sanitizeAnthropicMessages,
 } from "~/lib/auto-truncate-anthropic"
 import { HTTPError } from "~/lib/error"
 import { recordResponse } from "~/lib/history"
@@ -101,6 +102,15 @@ export async function handleDirectAnthropicCompletion(
       `[Anthropic] Model '${anthropicPayload.model}' not found, skipping auto-truncate`,
     )
   }
+
+  // Always sanitize messages to filter orphaned tool_result/tool_use blocks
+  // This handles cases where:
+  // 1. Auto-truncate is disabled
+  // 2. Auto-truncate didn't need to run (within limits)
+  // 3. Original payload has orphaned blocks from client
+  const { payload: sanitizedPayload } =
+    sanitizeAnthropicMessages(effectivePayload)
+  effectivePayload = sanitizedPayload
 
   if (state.manualApprove) {
     await awaitApproval()

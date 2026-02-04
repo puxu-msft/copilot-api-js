@@ -16,6 +16,7 @@ import {
   autoTruncateOpenAI,
   checkNeedsCompactionOpenAI,
   onRequestTooLarge,
+  sanitizeOpenAIMessages,
 } from "~/lib/auto-truncate-openai"
 import { recordResponse } from "~/lib/history"
 import { state } from "~/lib/state"
@@ -170,46 +171,53 @@ export async function buildFinalPayload(
   finalPayload: ChatCompletionsPayload
   truncateResult: OpenAIAutoTruncateResult | null
 }> {
-  if (!state.autoTruncate || !model) {
-    if (state.autoTruncate && !model) {
+  let workingPayload = payload
+  let truncateResult: OpenAIAutoTruncateResult | null = null
+
+  // Apply auto-truncate if enabled and model is available
+  if (state.autoTruncate && model) {
+    try {
+      const check = await checkNeedsCompactionOpenAI(workingPayload, model)
+      consola.debug(
+        `Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
+          + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
+          + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
+      )
+      if (check.needed) {
+        let reasonText: string
+        if (check.reason === "both") {
+          reasonText = "tokens and size"
+        } else if (check.reason === "bytes") {
+          reasonText = "size"
+        } else {
+          reasonText = "tokens"
+        }
+        consola.info(`Auto-truncate triggered: exceeds ${reasonText} limit`)
+        truncateResult = await autoTruncateOpenAI(workingPayload, model)
+        workingPayload = truncateResult.payload
+      }
+    } catch (error) {
+      // Auto-truncate is a best-effort optimization; if it fails, proceed with original payload
+      // The request may still succeed if we're under the actual limit
       consola.warn(
-        `Auto-truncate: Model '${payload.model}' not found in cached models, skipping`,
+        "Auto-truncate failed, proceeding with original payload:",
+        error instanceof Error ? error.message : error,
       )
     }
-    return { finalPayload: payload, truncateResult: null }
-  }
-
-  try {
-    const check = await checkNeedsCompactionOpenAI(payload, model)
-    consola.debug(
-      `Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
-        + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
-        + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
-    )
-    if (!check.needed) {
-      return { finalPayload: payload, truncateResult: null }
-    }
-
-    let reasonText: string
-    if (check.reason === "both") {
-      reasonText = "tokens and size"
-    } else if (check.reason === "bytes") {
-      reasonText = "size"
-    } else {
-      reasonText = "tokens"
-    }
-    consola.info(`Auto-truncate triggered: exceeds ${reasonText} limit`)
-    const truncateResult = await autoTruncateOpenAI(payload, model)
-    return { finalPayload: truncateResult.payload, truncateResult }
-  } catch (error) {
-    // Auto-truncate is a best-effort optimization; if it fails, proceed with original payload
-    // The request may still succeed if we're under the actual limit
+  } else if (state.autoTruncate && !model) {
     consola.warn(
-      "Auto-truncate failed, proceeding with original payload:",
-      error instanceof Error ? error.message : error,
+      `Auto-truncate: Model '${payload.model}' not found in cached models, skipping`,
     )
-    return { finalPayload: payload, truncateResult: null }
   }
+
+  // Always sanitize messages to filter orphaned tool/tool_result messages
+  // This handles cases where:
+  // 1. Auto-truncate is disabled
+  // 2. Auto-truncate didn't need to run (within limits)
+  // 3. Original payload has orphaned messages from client
+  const { payload: sanitizedPayload } = sanitizeOpenAIMessages(workingPayload)
+
+  return { finalPayload: sanitizedPayload, truncateResult }
 }
 
 /**

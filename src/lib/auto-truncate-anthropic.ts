@@ -162,7 +162,7 @@ function getMessageBytes(msg: AnthropicMessage): number {
 /**
  * Get tool_use IDs from an assistant message.
  */
-function getToolUseIds(msg: AnthropicMessage): Array<string> {
+export function getToolUseIds(msg: AnthropicMessage): Array<string> {
   if (msg.role !== "assistant") return []
   if (typeof msg.content === "string") return []
 
@@ -178,7 +178,7 @@ function getToolUseIds(msg: AnthropicMessage): Array<string> {
 /**
  * Get tool_result IDs from a user message.
  */
-function getToolResultIds(msg: AnthropicMessage): Array<string> {
+export function getToolResultIds(msg: AnthropicMessage): Array<string> {
   if (msg.role !== "user") return []
   if (typeof msg.content === "string") return []
 
@@ -194,7 +194,7 @@ function getToolResultIds(msg: AnthropicMessage): Array<string> {
 /**
  * Filter orphaned tool_result messages (those without matching tool_use).
  */
-function filterOrphanedToolResults(
+export function filterOrphanedToolResults(
   messages: Array<AnthropicMessage>,
 ): Array<AnthropicMessage> {
   // Collect all tool_use IDs
@@ -255,7 +255,7 @@ function filterOrphanedToolResults(
  * Filter orphaned tool_use messages (those without matching tool_result).
  * In Anthropic API, every tool_use must have a corresponding tool_result.
  */
-function filterOrphanedToolUse(
+export function filterOrphanedToolUse(
   messages: Array<AnthropicMessage>,
 ): Array<AnthropicMessage> {
   // Collect all tool_result IDs
@@ -994,4 +994,61 @@ export async function checkNeedsCompactionAnthropic(
     byteLimit,
     reason,
   }
+}
+
+// ============================================================================
+// Message Sanitization
+// ============================================================================
+
+/**
+ * Sanitize Anthropic messages by filtering orphaned tool_result and tool_use blocks.
+ *
+ * This should be called before sending messages to the Anthropic API to ensure
+ * that all tool_result blocks have corresponding tool_use blocks and vice versa.
+ *
+ * Orphaned messages can occur when:
+ * - Client sends malformed message history
+ * - Previous truncation/compaction was interrupted
+ * - Message history was edited externally
+ *
+ * @returns Sanitized payload and count of removed items
+ */
+export function sanitizeAnthropicMessages(payload: AnthropicMessagesPayload): {
+  payload: AnthropicMessagesPayload
+  removedCount: number
+} {
+  let messages = payload.messages
+  const originalCount = messages.length
+
+  // Filter orphaned tool_result and tool_use blocks
+  messages = filterOrphanedToolResults(messages)
+  messages = filterOrphanedToolUse(messages)
+
+  // Count content blocks to detect changes
+  const originalBlocks = countContentBlocks(payload.messages)
+  const newBlocks = countContentBlocks(messages)
+  const removedCount = originalBlocks - newBlocks
+
+  if (removedCount > 0) {
+    consola.info(
+      `[Sanitize:Anthropic] Filtered ${removedCount} orphaned tool blocks `
+        + `(${originalCount} → ${messages.length} messages)`,
+    )
+  }
+
+  return {
+    payload: { ...payload, messages },
+    removedCount,
+  }
+}
+
+/**
+ * Count total content blocks in messages.
+ */
+function countContentBlocks(messages: Array<AnthropicMessage>): number {
+  let count = 0
+  for (const msg of messages) {
+    count += typeof msg.content === "string" ? 1 : msg.content.length
+  }
+  return count
 }

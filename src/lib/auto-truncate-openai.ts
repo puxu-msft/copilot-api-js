@@ -876,3 +876,45 @@ export function createTruncationResponseMarkerOpenAI(
     + `${result.originalTokens} → ${result.compactedTokens} tokens (${percentage}% reduction)]`
   )
 }
+
+// ============================================================================
+// Message Sanitization
+// ============================================================================
+
+/**
+ * Sanitize OpenAI messages by filtering orphaned tool and tool_result messages.
+ *
+ * This should be called before sending messages to the API to ensure
+ * that all tool messages have corresponding tool_calls and vice versa.
+ *
+ * @returns Sanitized payload and count of removed items
+ */
+export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): {
+  payload: ChatCompletionsPayload
+  removedCount: number
+} {
+  const { systemMessages, conversationMessages } = extractSystemMessages(
+    payload.messages,
+  )
+
+  let messages = conversationMessages
+  const originalCount = messages.length
+
+  // Filter orphaned tool_result and tool_use messages
+  messages = filterOrphanedToolResults(messages)
+  messages = filterOrphanedToolUse(messages)
+
+  const removedCount = originalCount - messages.length
+
+  if (removedCount > 0) {
+    consola.info(
+      `[Sanitize:OpenAI] Filtered ${removedCount} orphaned tool messages `
+        + `(${originalCount} → ${messages.length} messages)`,
+    )
+  }
+
+  return {
+    payload: { ...payload, messages: [...systemMessages, ...messages] },
+    removedCount,
+  }
+}
