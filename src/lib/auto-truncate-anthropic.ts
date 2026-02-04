@@ -21,6 +21,11 @@ import type {
   AnthropicUserContentBlock,
 } from "~/types/api/anthropic"
 
+import {
+  ensureAnthropicStartsWithUser,
+  filterAnthropicOrphanedToolResults,
+  filterAnthropicOrphanedToolUse,
+} from "~/lib/message-sanitizer"
 import { state } from "~/lib/state"
 import { countTextTokens } from "~/lib/tokenizer"
 
@@ -31,6 +36,9 @@ import {
   getEffectiveByteLimitBytes,
   getEffectiveTokenLimit,
 } from "./auto-truncate-common"
+
+// Re-export sanitize function for backwards compatibility
+export { sanitizeAnthropicMessages } from "~/lib/message-sanitizer"
 
 // ============================================================================
 // Result Types
@@ -157,176 +165,6 @@ async function countTotalTokens(
 
 function getMessageBytes(msg: AnthropicMessage): number {
   return JSON.stringify(msg).length
-}
-
-/**
- * Get tool_use IDs from an assistant message.
- */
-export function getToolUseIds(msg: AnthropicMessage): Array<string> {
-  if (msg.role !== "assistant") return []
-  if (typeof msg.content === "string") return []
-
-  const ids: Array<string> = []
-  for (const block of msg.content) {
-    if (block.type === "tool_use") {
-      ids.push(block.id)
-    }
-  }
-  return ids
-}
-
-/**
- * Get tool_result IDs from a user message.
- */
-export function getToolResultIds(msg: AnthropicMessage): Array<string> {
-  if (msg.role !== "user") return []
-  if (typeof msg.content === "string") return []
-
-  const ids: Array<string> = []
-  for (const block of msg.content) {
-    if (block.type === "tool_result") {
-      ids.push(block.tool_use_id)
-    }
-  }
-  return ids
-}
-
-/**
- * Filter orphaned tool_result messages (those without matching tool_use).
- */
-export function filterOrphanedToolResults(
-  messages: Array<AnthropicMessage>,
-): Array<AnthropicMessage> {
-  // Collect all tool_use IDs
-  const toolUseIds = new Set<string>()
-  for (const msg of messages) {
-    for (const id of getToolUseIds(msg)) {
-      toolUseIds.add(id)
-    }
-  }
-
-  // Filter messages, removing orphaned tool_results from user messages
-  const result: Array<AnthropicMessage> = []
-  let removedCount = 0
-
-  for (const msg of messages) {
-    if (msg.role === "user" && typeof msg.content !== "string") {
-      const toolResultIds = getToolResultIds(msg)
-      const hasOrphanedToolResult = toolResultIds.some(
-        (id) => !toolUseIds.has(id),
-      )
-
-      if (hasOrphanedToolResult) {
-        // Filter out orphaned tool_result blocks
-        const filteredContent = msg.content.filter((block) => {
-          if (
-            block.type === "tool_result"
-            && !toolUseIds.has(block.tool_use_id)
-          ) {
-            removedCount++
-            return false
-          }
-          return true
-        })
-
-        // If all content was tool_results that got removed, skip the message
-        if (filteredContent.length === 0) {
-          continue
-        }
-
-        result.push({ ...msg, content: filteredContent })
-        continue
-      }
-    }
-
-    result.push(msg)
-  }
-
-  if (removedCount > 0) {
-    consola.debug(
-      `[AutoTruncate:Anthropic] Filtered ${removedCount} orphaned tool_result`,
-    )
-  }
-
-  return result
-}
-
-/**
- * Filter orphaned tool_use messages (those without matching tool_result).
- * In Anthropic API, every tool_use must have a corresponding tool_result.
- */
-export function filterOrphanedToolUse(
-  messages: Array<AnthropicMessage>,
-): Array<AnthropicMessage> {
-  // Collect all tool_result IDs
-  const toolResultIds = new Set<string>()
-  for (const msg of messages) {
-    for (const id of getToolResultIds(msg)) {
-      toolResultIds.add(id)
-    }
-  }
-
-  // Filter messages, removing orphaned tool_use from assistant messages
-  const result: Array<AnthropicMessage> = []
-  let removedCount = 0
-
-  for (const msg of messages) {
-    if (msg.role === "assistant" && typeof msg.content !== "string") {
-      const msgToolUseIds = getToolUseIds(msg)
-      const hasOrphanedToolUse = msgToolUseIds.some(
-        (id) => !toolResultIds.has(id),
-      )
-
-      if (hasOrphanedToolUse) {
-        // Filter out orphaned tool_use blocks
-        const filteredContent = msg.content.filter((block) => {
-          if (block.type === "tool_use" && !toolResultIds.has(block.id)) {
-            removedCount++
-            return false
-          }
-          return true
-        })
-
-        // If all content was tool_use that got removed, skip the message
-        if (filteredContent.length === 0) {
-          continue
-        }
-
-        result.push({ ...msg, content: filteredContent })
-        continue
-      }
-    }
-
-    result.push(msg)
-  }
-
-  if (removedCount > 0) {
-    consola.debug(
-      `[AutoTruncate:Anthropic] Filtered ${removedCount} orphaned tool_use`,
-    )
-  }
-
-  return result
-}
-
-/**
- * Ensure messages start with a user message.
- */
-function ensureStartsWithUser(
-  messages: Array<AnthropicMessage>,
-): Array<AnthropicMessage> {
-  let startIndex = 0
-  while (startIndex < messages.length && messages[startIndex].role !== "user") {
-    startIndex++
-  }
-
-  if (startIndex > 0) {
-    consola.debug(
-      `[AutoTruncate:Anthropic] Skipped ${startIndex} leading non-user messages`,
-    )
-  }
-
-  return messages.slice(startIndex)
 }
 
 // ============================================================================
@@ -837,12 +675,12 @@ export async function autoTruncateAnthropic(
   let preserved = workingMessages.slice(preserveIndex)
 
   // Clean up the message list - filter both orphaned tool_result and tool_use
-  preserved = filterOrphanedToolResults(preserved)
-  preserved = filterOrphanedToolUse(preserved)
-  preserved = ensureStartsWithUser(preserved)
+  preserved = filterAnthropicOrphanedToolResults(preserved)
+  preserved = filterAnthropicOrphanedToolUse(preserved)
+  preserved = ensureAnthropicStartsWithUser(preserved)
   // Run again after ensuring starts with user, in case we skipped messages
-  preserved = filterOrphanedToolResults(preserved)
-  preserved = filterOrphanedToolUse(preserved)
+  preserved = filterAnthropicOrphanedToolResults(preserved)
+  preserved = filterAnthropicOrphanedToolUse(preserved)
 
   if (preserved.length === 0) {
     consola.warn(
@@ -994,61 +832,4 @@ export async function checkNeedsCompactionAnthropic(
     byteLimit,
     reason,
   }
-}
-
-// ============================================================================
-// Message Sanitization
-// ============================================================================
-
-/**
- * Sanitize Anthropic messages by filtering orphaned tool_result and tool_use blocks.
- *
- * This should be called before sending messages to the Anthropic API to ensure
- * that all tool_result blocks have corresponding tool_use blocks and vice versa.
- *
- * Orphaned messages can occur when:
- * - Client sends malformed message history
- * - Previous truncation/compaction was interrupted
- * - Message history was edited externally
- *
- * @returns Sanitized payload and count of removed items
- */
-export function sanitizeAnthropicMessages(payload: AnthropicMessagesPayload): {
-  payload: AnthropicMessagesPayload
-  removedCount: number
-} {
-  let messages = payload.messages
-  const originalCount = messages.length
-
-  // Filter orphaned tool_result and tool_use blocks
-  messages = filterOrphanedToolResults(messages)
-  messages = filterOrphanedToolUse(messages)
-
-  // Count content blocks to detect changes
-  const originalBlocks = countContentBlocks(payload.messages)
-  const newBlocks = countContentBlocks(messages)
-  const removedCount = originalBlocks - newBlocks
-
-  if (removedCount > 0) {
-    consola.info(
-      `[Sanitize:Anthropic] Filtered ${removedCount} orphaned tool blocks `
-        + `(${originalCount} → ${messages.length} messages)`,
-    )
-  }
-
-  return {
-    payload: { ...payload, messages },
-    removedCount,
-  }
-}
-
-/**
- * Count total content blocks in messages.
- */
-function countContentBlocks(messages: Array<AnthropicMessage>): number {
-  let count = 0
-  for (const msg of messages) {
-    count += typeof msg.content === "string" ? 1 : msg.content.length
-  }
-  return count
 }

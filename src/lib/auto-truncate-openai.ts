@@ -16,10 +16,15 @@ import consola from "consola"
 import type {
   ChatCompletionsPayload,
   Message,
-  ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 
+import {
+  ensureOpenAIStartsWithUser,
+  extractOpenAISystemMessages,
+  filterOpenAIOrphanedToolResults,
+  filterOpenAIOrphanedToolUse,
+} from "~/lib/message-sanitizer"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 
@@ -37,6 +42,9 @@ export {
   onRequestTooLarge,
 } from "./auto-truncate-common"
 export type { AutoTruncateConfig } from "./auto-truncate-common"
+
+// Re-export sanitize function for backwards compatibility
+export { sanitizeOpenAIMessages } from "~/lib/message-sanitizer"
 
 // ============================================================================
 // Result Types
@@ -120,135 +128,6 @@ function estimateMessageTokens(msg: Message): number {
 /** Get byte size of a message */
 function getMessageBytes(msg: Message): number {
   return JSON.stringify(msg).length
-}
-
-/** Extract system/developer messages from the beginning */
-function extractSystemMessages(messages: Array<Message>): {
-  systemMessages: Array<Message>
-  conversationMessages: Array<Message>
-} {
-  let splitIndex = 0
-  while (splitIndex < messages.length) {
-    const role = messages[splitIndex].role
-    if (role !== "system" && role !== "developer") break
-    splitIndex++
-  }
-
-  return {
-    systemMessages: messages.slice(0, splitIndex),
-    conversationMessages: messages.slice(splitIndex),
-  }
-}
-
-/** Get tool_use IDs from an assistant message */
-function getToolCallIds(msg: Message): Array<string> {
-  if (msg.role === "assistant" && msg.tool_calls) {
-    return msg.tool_calls.map((tc: ToolCall) => tc.id)
-  }
-  return []
-}
-
-/** Filter orphaned tool_result messages */
-function filterOrphanedToolResults(messages: Array<Message>): Array<Message> {
-  // Collect all available tool_use IDs
-  const toolUseIds = new Set<string>()
-  for (const msg of messages) {
-    for (const id of getToolCallIds(msg)) {
-      toolUseIds.add(id)
-    }
-  }
-
-  // Filter out orphaned tool messages
-  let removedCount = 0
-  const filtered = messages.filter((msg) => {
-    if (
-      msg.role === "tool"
-      && msg.tool_call_id
-      && !toolUseIds.has(msg.tool_call_id)
-    ) {
-      removedCount++
-      return false
-    }
-    return true
-  })
-
-  if (removedCount > 0) {
-    consola.debug(
-      `[AutoTruncate:OpenAI] Filtered ${removedCount} orphaned tool_result`,
-    )
-  }
-
-  return filtered
-}
-
-/** Get tool_result IDs from all tool messages */
-function getToolResultIds(messages: Array<Message>): Set<string> {
-  const ids = new Set<string>()
-  for (const msg of messages) {
-    if (msg.role === "tool" && msg.tool_call_id) {
-      ids.add(msg.tool_call_id)
-    }
-  }
-  return ids
-}
-
-/** Filter orphaned tool_use messages (those without matching tool_result) */
-function filterOrphanedToolUse(messages: Array<Message>): Array<Message> {
-  const toolResultIds = getToolResultIds(messages)
-
-  // Filter out orphaned tool_calls from assistant messages
-  const result: Array<Message> = []
-  let removedCount = 0
-
-  for (const msg of messages) {
-    if (msg.role === "assistant" && msg.tool_calls) {
-      const filteredToolCalls = msg.tool_calls.filter((tc: ToolCall) => {
-        if (!toolResultIds.has(tc.id)) {
-          removedCount++
-          return false
-        }
-        return true
-      })
-
-      // If all tool_calls were removed but there's still content, keep the message
-      if (filteredToolCalls.length === 0) {
-        if (msg.content) {
-          result.push({ ...msg, tool_calls: undefined })
-        }
-        // Skip message entirely if no content and no tool_calls
-        continue
-      }
-
-      result.push({ ...msg, tool_calls: filteredToolCalls })
-      continue
-    }
-
-    result.push(msg)
-  }
-
-  if (removedCount > 0) {
-    consola.debug(
-      `[AutoTruncate:OpenAI] Filtered ${removedCount} orphaned tool_use`,
-    )
-  }
-
-  return result
-}
-
-/** Ensure messages start with a user message */
-function ensureStartsWithUser(messages: Array<Message>): Array<Message> {
-  let startIndex = 0
-  while (startIndex < messages.length && messages[startIndex].role !== "user") {
-    startIndex++
-  }
-
-  if (startIndex > 0) {
-    consola.debug(
-      `[AutoTruncate:OpenAI] Skipped ${startIndex} leading non-user messages`,
-    )
-  }
-
-  return messages.slice(startIndex)
 }
 
 // ============================================================================
@@ -694,7 +573,7 @@ export async function autoTruncateOpenAI(
 
   // Extract system messages from working messages
   const { systemMessages, conversationMessages } =
-    extractSystemMessages(workingMessages)
+    extractOpenAISystemMessages(workingMessages)
 
   // Calculate overhead: everything except the messages array content
   const messagesJson = JSON.stringify(workingMessages)
@@ -758,12 +637,12 @@ export async function autoTruncateOpenAI(
   let preserved = conversationMessages.slice(preserveIndex)
 
   // Clean up the message list - filter both orphaned tool_result and tool_use
-  preserved = filterOrphanedToolResults(preserved)
-  preserved = filterOrphanedToolUse(preserved)
-  preserved = ensureStartsWithUser(preserved)
+  preserved = filterOpenAIOrphanedToolResults(preserved)
+  preserved = filterOpenAIOrphanedToolUse(preserved)
+  preserved = ensureOpenAIStartsWithUser(preserved)
   // Run again after ensuring starts with user, in case we skipped messages
-  preserved = filterOrphanedToolResults(preserved)
-  preserved = filterOrphanedToolUse(preserved)
+  preserved = filterOpenAIOrphanedToolResults(preserved)
+  preserved = filterOpenAIOrphanedToolUse(preserved)
 
   if (preserved.length === 0) {
     consola.warn(
@@ -875,46 +754,4 @@ export function createTruncationResponseMarkerOpenAI(
     `\n\n---\n[Auto-truncated: ${result.removedMessageCount} messages removed, `
     + `${result.originalTokens} → ${result.compactedTokens} tokens (${percentage}% reduction)]`
   )
-}
-
-// ============================================================================
-// Message Sanitization
-// ============================================================================
-
-/**
- * Sanitize OpenAI messages by filtering orphaned tool and tool_result messages.
- *
- * This should be called before sending messages to the API to ensure
- * that all tool messages have corresponding tool_calls and vice versa.
- *
- * @returns Sanitized payload and count of removed items
- */
-export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): {
-  payload: ChatCompletionsPayload
-  removedCount: number
-} {
-  const { systemMessages, conversationMessages } = extractSystemMessages(
-    payload.messages,
-  )
-
-  let messages = conversationMessages
-  const originalCount = messages.length
-
-  // Filter orphaned tool_result and tool_use messages
-  messages = filterOrphanedToolResults(messages)
-  messages = filterOrphanedToolUse(messages)
-
-  const removedCount = originalCount - messages.length
-
-  if (removedCount > 0) {
-    consola.info(
-      `[Sanitize:OpenAI] Filtered ${removedCount} orphaned tool messages `
-        + `(${originalCount} → ${messages.length} messages)`,
-    )
-  }
-
-  return {
-    payload: { ...payload, messages: [...systemMessages, ...messages] },
-    removedCount,
-  }
 }
