@@ -179,11 +179,9 @@ interface RunServerOptions {
 
 export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
-  // Phase 1: Logging Infrastructure
-  // Must be first to ensure all subsequent logs use unified format
+  // Phase 1: Logging and Verbose Mode
+  // Note: initConsolaReporter() is already called in run() before this
   // ===========================================================================
-  initConsolaReporter()
-
   if (options.verbose) {
     consola.level = 5
     state.verbose = true

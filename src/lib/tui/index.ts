@@ -1,6 +1,5 @@
 // TUI module exports
 
-export { ConsoleRenderer } from "./console-renderer"
 export { tuiLogger } from "./middleware"
 export { requestTracker } from "./tracker"
 export type {
@@ -50,13 +49,4 @@ export function initRequestTracker(options?: TuiOptions): void {
       completedDisplayMs: options.completedDisplayMs,
     })
   }
-}
-
-/**
- * Initialize the TUI system (legacy function, calls both init functions)
- * @deprecated Use initConsolaReporter() and initRequestTracker() separately
- */
-export function initTui(options?: TuiOptions): void {
-  initConsolaReporter()
-  initRequestTracker(options)
 }
