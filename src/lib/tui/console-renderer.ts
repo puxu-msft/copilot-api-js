@@ -6,15 +6,10 @@ import pc from "picocolors"
 
 import type { RequestUpdate, TrackedRequest, TuiRenderer } from "./types"
 
+import { formatLogTime as formatTime } from "../logger"
+
 // ANSI escape codes for cursor control
 const CLEAR_LINE = "\x1b[2K\r"
-
-function formatTime(date: Date = new Date()): string {
-  const h = String(date.getHours()).padStart(2, "0")
-  const m = String(date.getMinutes()).padStart(2, "0")
-  const s = String(date.getSeconds()).padStart(2, "0")
-  return `${h}:${m}:${s}`
-}
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`
@@ -108,28 +103,30 @@ export class ConsoleRenderer implements TuiRenderer {
   }
 
   /**
-   * Get log prefix based on log type
+   * Get log prefix based on log type (includes timestamp)
    */
   private getLogPrefix(type: string): string {
+    const time = pc.dim(formatTime())
+
     switch (type) {
       case "error":
       case "fatal": {
-        return pc.red("✖")
+        return `${pc.red("✖")} ${time}`
       }
       case "warn": {
-        return pc.yellow("⚠")
+        return `${pc.yellow("⚠")} ${time}`
       }
       case "info": {
-        return pc.cyan("ℹ")
+        return `${pc.cyan("ℹ")} ${time}`
       }
       case "success": {
-        return pc.green("✔")
+        return `${pc.green("✔")} ${time}`
       }
       case "debug": {
-        return pc.gray("●")
+        return `${pc.gray("●")} ${time}`
       }
       default: {
-        return ""
+        return time
       }
     }
   }

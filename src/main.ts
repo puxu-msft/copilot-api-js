@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 
 import { defineCommand, runMain } from "citty"
-import consola from "consola"
 
 import { auth } from "./auth"
 import { checkUsage } from "./check-usage"
 import { debug } from "./debug"
+import { configureLogger } from "./lib/logger"
 import { logout } from "./logout"
 import { patchClaude } from "./patch-claude-code"
 import { start } from "./start"
 
-// Disable consola's default timestamp - we add our own in console-renderer
-consola.options.formatOptions.date = false
+// Configure consola with timestamps before any logging
+configureLogger()
 
 const main = defineCommand({
   meta: {
