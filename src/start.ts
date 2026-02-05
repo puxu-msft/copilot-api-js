@@ -161,6 +161,9 @@ interface RunServerOptions {
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
+  // Initialize TUI for request logging (must be first to intercept all consola output)
+  initTui({ enabled: true })
+
   // Display version at startup
   consola.info(`copilot-api v${packageJson.version}`)
 
@@ -230,9 +233,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       options.historyLimit === 0 ? "unlimited" : `max ${options.historyLimit}`
     consola.info(`History recording enabled (${limitText} entries)`)
   }
-
-  // Initialize TUI for request logging
-  initTui({ enabled: true })
 
   await ensurePaths()
   await cacheVSCodeVersion()
