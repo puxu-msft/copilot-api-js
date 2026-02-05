@@ -57,6 +57,8 @@ export interface OpenAIAutoTruncateResult {
   originalTokens: number
   compactedTokens: number
   removedMessageCount: number
+  /** Processing time in milliseconds */
+  processingTimeMs: number
 }
 
 /** Result of needs-compaction check */
@@ -493,6 +495,16 @@ export async function autoTruncateOpenAI(
   model: Model,
   config: Partial<AutoTruncateConfig> = {},
 ): Promise<OpenAIAutoTruncateResult> {
+  const startTime = performance.now()
+
+  // Helper to build result with timing
+  const buildResult = (
+    result: Omit<OpenAIAutoTruncateResult, "processingTimeMs">,
+  ): OpenAIAutoTruncateResult => ({
+    ...result,
+    processingTimeMs: Math.round(performance.now() - startTime),
+  })
+
   const cfg = { ...DEFAULT_AUTO_TRUNCATE_CONFIG, ...config }
   const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
 
@@ -504,13 +516,13 @@ export async function autoTruncateOpenAI(
 
   // Check if compaction is needed
   if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
-    return {
+    return buildResult({
       payload,
       wasCompacted: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
-    }
+    })
   }
 
   // Log reason with correct comparison
@@ -545,10 +557,11 @@ export async function autoTruncateOpenAI(
       let reason = "tokens"
       if (exceedsTokens && exceedsBytes) reason = "tokens+size"
       else if (exceedsBytes) reason = "size"
+      const elapsedMs = Math.round(performance.now() - startTime)
       consola.info(
         `[AutoTruncate:OpenAI] ${reason}: ${originalTokens}→${compressedTokenCount.input} tokens, `
           + `${Math.round(originalBytes / 1024)}→${Math.round(compressedBytes / 1024)}KB `
-          + `(compressed ${compressedCount} tool_results)`,
+          + `(compressed ${compressedCount} tool_results) [${elapsedMs}ms]`,
       )
 
       // Add compression notice to system message
@@ -558,13 +571,13 @@ export async function autoTruncateOpenAI(
       )
       const noticeTokenCount = await getTokenCount(noticePayload, model)
 
-      return {
+      return buildResult({
         payload: noticePayload,
         wasCompacted: true,
         originalTokens,
         compactedTokens: noticeTokenCount.input,
         removedMessageCount: 0,
-      }
+      })
     }
   }
 
@@ -613,24 +626,24 @@ export async function autoTruncateOpenAI(
     consola.warn(
       "[AutoTruncate:OpenAI] Cannot truncate, system messages too large",
     )
-    return {
+    return buildResult({
       payload,
       wasCompacted: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
-    }
+    })
   }
 
   if (preserveIndex >= conversationMessages.length) {
     consola.warn("[AutoTruncate:OpenAI] Would need to remove all messages")
-    return {
+    return buildResult({
       payload,
       wasCompacted: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
-    }
+    })
   }
 
   // Build preserved messages
@@ -648,13 +661,13 @@ export async function autoTruncateOpenAI(
     consola.warn(
       "[AutoTruncate:OpenAI] All messages filtered out after cleanup",
     )
-    return {
+    return buildResult({
       payload,
       wasCompacted: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
-    }
+    })
   }
 
   // Calculate removed messages and generate summary
@@ -718,9 +731,10 @@ export async function autoTruncateOpenAI(
     actions.push(`compressed ${compressedCount} tool_results`)
   const actionInfo = actions.length > 0 ? ` (${actions.join(", ")})` : ""
 
+  const elapsedMs = Math.round(performance.now() - startTime)
   consola.info(
     `[AutoTruncate:OpenAI] ${reason}: ${originalTokens}→${newTokenCount.input} tokens, `
-      + `${Math.round(originalBytes / 1024)}→${Math.round(newBytes / 1024)}KB${actionInfo}`,
+      + `${Math.round(originalBytes / 1024)}→${Math.round(newBytes / 1024)}KB${actionInfo} [${elapsedMs}ms]`,
   )
 
   // Warn if still over limit (shouldn't happen with correct algorithm)
@@ -730,13 +744,13 @@ export async function autoTruncateOpenAI(
     )
   }
 
-  return {
+  return buildResult({
     payload: newPayload,
     wasCompacted: true,
     originalTokens,
     compactedTokens: newTokenCount.input,
     removedMessageCount: removedCount,
-  }
+  })
 }
 
 /**

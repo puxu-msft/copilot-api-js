@@ -50,6 +50,8 @@ export interface AnthropicAutoTruncateResult {
   originalTokens: number
   compactedTokens: number
   removedMessageCount: number
+  /** Processing time in milliseconds */
+  processingTimeMs: number
 }
 
 // ============================================================================
@@ -546,6 +548,16 @@ export async function autoTruncateAnthropic(
   model: Model,
   config: Partial<AutoTruncateConfig> = {},
 ): Promise<AnthropicAutoTruncateResult> {
+  const startTime = performance.now()
+
+  // Helper to build result with timing
+  const buildResult = (
+    result: Omit<AnthropicAutoTruncateResult, "processingTimeMs">,
+  ): AnthropicAutoTruncateResult => ({
+    ...result,
+    processingTimeMs: Math.round(performance.now() - startTime),
+  })
+
   const cfg = { ...DEFAULT_AUTO_TRUNCATE_CONFIG, ...config }
   const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
 
@@ -556,13 +568,13 @@ export async function autoTruncateAnthropic(
 
   // Check if compaction is needed
   if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
-    return {
+    return buildResult({
       payload,
       wasCompacted: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
-    }
+    })
   }
 
   // Log reason with correct comparison
@@ -594,10 +606,11 @@ export async function autoTruncateAnthropic(
       let reason = "tokens"
       if (exceedsTokens && exceedsBytes) reason = "tokens+size"
       else if (exceedsBytes) reason = "size"
+      const elapsedMs = Math.round(performance.now() - startTime)
       consola.info(
         `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${compressedTokens} tokens, `
           + `${Math.round(originalBytes / 1024)}→${Math.round(compressedBytes / 1024)}KB `
-          + `(compressed ${compressedCount} tool_results)`,
+          + `(compressed ${compressedCount} tool_results) [${elapsedMs}ms]`,
       )
 
       // Add compression notice to system prompt
@@ -606,13 +619,13 @@ export async function autoTruncateAnthropic(
         compressedCount,
       )
 
-      return {
+      return buildResult({
         payload: noticePayload,
         wasCompacted: true,
         originalTokens,
         compactedTokens: await countTotalTokens(noticePayload, model),
         removedMessageCount: 0,
-      }
+      })
     }
   }
 
@@ -651,24 +664,24 @@ export async function autoTruncateAnthropic(
     consola.warn(
       "[AutoTruncate:Anthropic] Cannot truncate, system messages too large",
     )
-    return {
+    return buildResult({
       payload,
       wasCompacted: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
-    }
+    })
   }
 
   if (preserveIndex >= workingMessages.length) {
     consola.warn("[AutoTruncate:Anthropic] Would need to remove all messages")
-    return {
+    return buildResult({
       payload,
       wasCompacted: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
-    }
+    })
   }
 
   // Build preserved messages from working (compressed) messages
@@ -686,13 +699,13 @@ export async function autoTruncateAnthropic(
     consola.warn(
       "[AutoTruncate:Anthropic] All messages filtered out after cleanup",
     )
-    return {
+    return buildResult({
       payload,
       wasCompacted: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
-    }
+    })
   }
 
   // Calculate removed messages and generate summary
@@ -752,9 +765,10 @@ export async function autoTruncateAnthropic(
     actions.push(`compressed ${compressedCount} tool_results`)
   const actionInfo = actions.length > 0 ? ` (${actions.join(", ")})` : ""
 
+  const elapsedMs = Math.round(performance.now() - startTime)
   consola.info(
     `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${newTokens} tokens, `
-      + `${Math.round(originalBytes / 1024)}→${Math.round(newBytes / 1024)}KB${actionInfo}`,
+      + `${Math.round(originalBytes / 1024)}→${Math.round(newBytes / 1024)}KB${actionInfo} [${elapsedMs}ms]`,
   )
 
   // Warn if still over limit
@@ -765,13 +779,13 @@ export async function autoTruncateAnthropic(
     )
   }
 
-  return {
+  return buildResult({
     payload: newPayload,
     wasCompacted: true,
     originalTokens,
     compactedTokens: newTokens,
     removedMessageCount: removedCount,
-  }
+  })
 }
 
 /**
