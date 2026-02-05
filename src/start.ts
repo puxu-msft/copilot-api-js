@@ -49,7 +49,7 @@ function formatModelInfo(model: Model): string {
   return (
     `  - ${modelName} `
     + `ctx:${contextK.padStart(5)} `
-    + `in:${promptK.padStart(5)} `
+    + `prps:${promptK.padStart(4)} `
     + `out:${outputK.padStart(4)}`
     + featureStr
   )
