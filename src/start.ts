@@ -2,6 +2,7 @@
 
 import { defineCommand } from "citty"
 import consola from "consola"
+import { createHash } from "node:crypto"
 import { existsSync, promises as fsPromises } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -52,6 +53,22 @@ function formatModelInfo(model: Model): string {
     + `out:${outputK.padStart(4)}`
     + featureStr
   )
+}
+
+// Security Research Mode passphrase verification
+// Salt + SHA1 hash of the correct passphrase (not stored in plaintext)
+const SECURITY_RESEARCH_SALT = "copilot-api-security-research:"
+const SECURITY_RESEARCH_HASH = "400d6b268f04b9ae9d9ea9b27a93364c3b24565c"
+
+/**
+ * Verify the Security Research Mode passphrase.
+ * Returns true if the passphrase is correct, false otherwise.
+ */
+function verifySecurityResearchPassphrase(passphrase: string): boolean {
+  const hash = createHash("sha1")
+    .update(SECURITY_RESEARCH_SALT + passphrase)
+    .digest("hex")
+  return hash === SECURITY_RESEARCH_HASH
 }
 
 /**
@@ -157,7 +174,7 @@ interface RunServerOptions {
   compressToolResults: boolean
   redirectAnthropic: boolean
   rewriteAnthropicTools: boolean
-  securityResearchMode: boolean
+  securityResearchPassphrase?: string
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -189,7 +206,19 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.compressToolResults = options.compressToolResults
   state.redirectAnthropic = options.redirectAnthropic
   state.rewriteAnthropicTools = options.rewriteAnthropicTools
-  state.securityResearchMode = options.securityResearchMode
+
+  // Verify Security Research Mode passphrase if provided
+  if (options.securityResearchPassphrase) {
+    if (verifySecurityResearchPassphrase(options.securityResearchPassphrase)) {
+      state.securityResearchMode = true
+      consola.warn(
+        "⚠️  Security Research Mode enabled - use responsibly for authorized testing only",
+      )
+    } else {
+      consola.error("Invalid Security Research Mode passphrase")
+      process.exit(1)
+    }
+  }
 
   // Log non-default configuration
   if (options.verbose) {
@@ -213,11 +242,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   if (!options.rewriteAnthropicTools) {
     consola.info(
       "Anthropic server-side tools rewrite disabled (passing through unchanged)",
-    )
-  }
-  if (options.securityResearchMode) {
-    consola.info(
-      "🔬 Security Research Mode enabled: System prompts enhanced for security research",
     )
   }
 
@@ -465,10 +489,9 @@ export const start = defineCommand({
         "Don't rewrite Anthropic server-side tools (web_search, etc.) to custom tool format",
     },
     "security-research-mode": {
-      type: "boolean",
-      default: false,
+      type: "string",
       description:
-        "Enable Security Research Mode: enhance system prompts for penetration testing, CTF, and security education",
+        "Enable Security Research Mode with passphrase (for authorized penetration testing, CTF, and security education)",
     },
   },
   run({ args }) {
@@ -534,7 +557,7 @@ export const start = defineCommand({
       compressToolResults: args["compress-tool-results"],
       redirectAnthropic: args["redirect-anthropic"],
       rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],
-      securityResearchMode: args["security-research-mode"],
+      securityResearchPassphrase: args["security-research-mode"],
     })
   },
 })
