@@ -13,7 +13,6 @@ export { GitHubTokenProvider } from "./providers/base"
 export { CLITokenProvider } from "./providers/cli"
 export { DeviceAuthProvider } from "./providers/device-auth"
 export { EnvTokenProvider } from "./providers/env"
-
 export { FileTokenProvider } from "./providers/file"
 // Types
 export type {

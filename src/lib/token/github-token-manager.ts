@@ -32,6 +32,8 @@ export class GitHubTokenManager {
     this.onTokenExpired = options.onTokenExpired
 
     // Initialize providers in priority order
+    // Note: GhCliTokenProvider is NOT included because GitHub CLI tokens
+    // are obtained via a different OAuth app and cannot access Copilot internal APIs.
     this.providers = [
       new CLITokenProvider(options.cliToken),
       new EnvTokenProvider(),
