@@ -147,6 +147,8 @@ interface RunServerOptions {
   consecutiveSuccesses: number
   githubToken?: string
   setupClaudeCode: boolean
+  claudeModel?: string
+  claudeSmallModel?: string
   showGitHubToken: boolean
   proxyEnv: boolean
   history: boolean
@@ -249,22 +251,52 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   if (options.setupClaudeCode) {
     invariant(state.models, "Models should be loaded by now")
+    const availableModelIds = state.models.data.map((model) => model.id)
 
-    const selectedModel = await consola.prompt(
-      "Select a model to use with Claude Code",
-      {
-        type: "select",
-        options: state.models.data.map((model) => model.id),
-      },
-    )
+    let selectedModel: string
+    let selectedSmallModel: string
 
-    const selectedSmallModel = await consola.prompt(
-      "Select a small model to use with Claude Code",
-      {
-        type: "select",
-        options: state.models.data.map((model) => model.id),
-      },
-    )
+    // Check if models are provided via CLI arguments
+    if (options.claudeModel && options.claudeSmallModel) {
+      // Validate the provided models exist
+      if (!availableModelIds.includes(options.claudeModel)) {
+        consola.error(
+          `Invalid model: ${options.claudeModel}\nAvailable models: ${availableModelIds.join(", ")}`,
+        )
+        process.exit(1)
+      }
+      if (!availableModelIds.includes(options.claudeSmallModel)) {
+        consola.error(
+          `Invalid small model: ${options.claudeSmallModel}\nAvailable models: ${availableModelIds.join(", ")}`,
+        )
+        process.exit(1)
+      }
+      selectedModel = options.claudeModel
+      selectedSmallModel = options.claudeSmallModel
+    } else if (options.claudeModel || options.claudeSmallModel) {
+      // Only one model provided - error
+      consola.error(
+        "Both --claude-model and --claude-small-model must be provided together, or neither for interactive selection",
+      )
+      process.exit(1)
+    } else {
+      // Interactive selection
+      selectedModel = await consola.prompt(
+        "Select a model to use with Claude Code",
+        {
+          type: "select",
+          options: availableModelIds,
+        },
+      )
+
+      selectedSmallModel = await consola.prompt(
+        "Select a small model to use with Claude Code",
+        {
+          type: "select",
+          options: availableModelIds,
+        },
+      )
+    }
 
     // Setup Claude Code configuration files
     await setupClaudeCodeConfig(serverUrl, selectedModel, selectedSmallModel)
@@ -355,7 +387,17 @@ export const start = defineCommand({
       type: "boolean",
       default: false,
       description:
-        "Generate a command to launch Claude Code with Copilot API config",
+        "Setup Claude Code config files to use Copilot API (interactive model selection)",
+    },
+    "claude-model": {
+      type: "string",
+      description:
+        "Model to use with Claude Code (use with --setup-claude-code, skips interactive selection)",
+    },
+    "claude-small-model": {
+      type: "string",
+      description:
+        "Small/fast model to use with Claude Code (use with --setup-claude-code, skips interactive selection)",
     },
     "show-github-token": {
       type: "boolean",
@@ -431,6 +473,8 @@ export const start = defineCommand({
       "github-token",
       "g",
       "setup-claude-code",
+      "claude-model",
+      "claude-small-model",
       "show-github-token",
       "proxy-env",
       "no-history",
@@ -461,6 +505,8 @@ export const start = defineCommand({
       consecutiveSuccesses: Number.parseInt(args["consecutive-successes"], 10),
       githubToken: args["github-token"],
       setupClaudeCode: args["setup-claude-code"],
+      claudeModel: args["claude-model"],
+      claudeSmallModel: args["claude-small-model"],
       showGitHubToken: args["show-github-token"],
       proxyEnv: args["proxy-env"],
       history: !args["no-history"],
