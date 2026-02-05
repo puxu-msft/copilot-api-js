@@ -16,7 +16,8 @@ export interface State {
   vsCodeVersion?: string
 
   manualApprove: boolean
-  showToken: boolean
+  /** Show GitHub token in logs */
+  showGitHubToken: boolean
   verbose: boolean
 
   // Adaptive rate limiting configuration
@@ -44,7 +45,7 @@ export interface State {
 export const state: State = {
   accountType: "individual",
   manualApprove: false,
-  showToken: false,
+  showGitHubToken: false,
   verbose: false,
   autoTruncate: true,
   compressToolResults: false,

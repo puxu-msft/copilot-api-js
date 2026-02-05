@@ -87,7 +87,7 @@ export async function initTokenManagers(
   }
 
   // Show token if configured
-  if (state.showToken) {
+  if (state.showGitHubToken) {
     consola.info("GitHub token:", tokenInfo.token)
   }
 
@@ -128,41 +128,4 @@ export function getCopilotTokenManager(): CopilotTokenManager | null {
  */
 export function stopTokenRefresh(): void {
   copilotTokenManager?.stopAutoRefresh()
-}
-
-// Re-export for backwards compatibility with old token.ts
-// These can be removed once all consumers are updated
-
-/**
- * @deprecated Use initTokenManagers() instead
- */
-export async function setupGitHubToken(options?: {
-  force?: boolean
-}): Promise<void> {
-  if (options?.force) {
-    // Force re-auth - clear cache and use device auth
-    githubTokenManager?.clearCache()
-  }
-
-  await initTokenManagers()
-}
-
-/**
- * @deprecated Use initTokenManagers() instead
- */
-export async function setupCopilotToken(): Promise<void> {
-  // This is now handled by initTokenManagers
-  if (!copilotTokenManager && githubTokenManager) {
-    copilotTokenManager = new CopilotTokenManager({
-      githubTokenManager,
-    })
-    await copilotTokenManager.initialize()
-  }
-}
-
-/**
- * @deprecated Use stopTokenRefresh() instead
- */
-export function clearCopilotTokenRefresh(): void {
-  stopTokenRefresh()
 }

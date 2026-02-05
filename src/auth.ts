@@ -9,7 +9,7 @@ import { DeviceAuthProvider, FileTokenProvider } from "./lib/token"
 
 interface RunAuthOptions {
   verbose: boolean
-  showToken: boolean
+  showGitHubToken: boolean
 }
 
 export async function runAuth(options: RunAuthOptions): Promise<void> {
@@ -18,7 +18,7 @@ export async function runAuth(options: RunAuthOptions): Promise<void> {
     consola.info("Verbose logging enabled")
   }
 
-  state.showToken = options.showToken
+  state.showGitHubToken = options.showGitHubToken
 
   await ensurePaths()
 
@@ -56,7 +56,7 @@ export const auth = defineCommand({
       default: false,
       description: "Enable verbose logging",
     },
-    "show-token": {
+    "show-github-token": {
       type: "boolean",
       default: false,
       description: "Show GitHub token on auth",
@@ -65,7 +65,7 @@ export const auth = defineCommand({
   run({ args }) {
     return runAuth({
       verbose: args.verbose,
-      showToken: args["show-token"],
+      showGitHubToken: args["show-github-token"],
     })
   },
 })

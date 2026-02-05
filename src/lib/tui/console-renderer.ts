@@ -111,19 +111,19 @@ export class ConsoleRenderer implements TuiRenderer {
     switch (type) {
       case "error":
       case "fatal": {
-        return `${pc.red("✖")} ${time}`
+        return `${pc.red("[ERR ]")} ${time}`
       }
       case "warn": {
-        return `${pc.yellow("⚠")} ${time}`
+        return `${pc.yellow("[WARN]")} ${time}`
       }
       case "info": {
-        return `${pc.cyan("ℹ")} ${time}`
+        return `${pc.cyan("[INFO]")} ${time}`
       }
       case "success": {
-        return `${pc.green("✔")} ${time}`
+        return `${pc.green("[SUCC]")} ${time}`
       }
       case "debug": {
-        return `${pc.gray("●")} ${time}`
+        return `${pc.gray("[DBG ]")} ${time}`
       }
       default: {
         return time

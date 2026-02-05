@@ -55,7 +55,7 @@ export class DeviceAuthProvider extends GitHubTokenProvider {
       await this.fileProvider.saveToken(token)
 
       // Show token if configured
-      if (state.showToken) {
+      if (state.showGitHubToken) {
         consola.info("GitHub token:", token)
       }
 

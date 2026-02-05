@@ -67,7 +67,7 @@ interface RunServerOptions {
   consecutiveSuccesses: number
   githubToken?: string
   claudeCode: boolean
-  showToken: boolean
+  showGitHubToken: boolean
   proxyEnv: boolean
   history: boolean
   historyLimit: number
@@ -98,7 +98,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   state.manualApprove = options.manual
-  state.showToken = options.showToken
+  state.showGitHubToken = options.showGitHubToken
   state.autoTruncate = options.autoTruncate
   state.compressToolResults = options.compressToolResults
   state.redirectAnthropic = options.redirectAnthropic
@@ -299,10 +299,11 @@ export const start = defineCommand({
       description:
         "Generate a command to launch Claude Code with Copilot API config",
     },
-    "show-token": {
+    "show-github-token": {
       type: "boolean",
       default: false,
-      description: "Show GitHub and Copilot tokens on fetch and refresh",
+      description:
+        "Show GitHub token in logs (use --verbose for Copilot token refresh logs)",
     },
     "proxy-env": {
       type: "boolean",
@@ -365,7 +366,7 @@ export const start = defineCommand({
       consecutiveSuccesses: Number.parseInt(args["consecutive-successes"], 10),
       githubToken: args["github-token"],
       claudeCode: args["claude-code"],
-      showToken: args["show-token"],
+      showGitHubToken: args["show-github-token"],
       proxyEnv: args["proxy-env"],
       history: !args["no-history"],
       historyLimit: Number.parseInt(args["history-limit"], 10),

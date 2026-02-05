@@ -48,11 +48,8 @@ export class CopilotTokenManager {
     // Update global state
     state.copilotToken = tokenInfo.token
 
-    // Show token if configured
+    // Show token in verbose mode
     consola.debug("GitHub Copilot Token fetched successfully!")
-    if (state.showToken) {
-      consola.info("Copilot token:", tokenInfo.token)
-    }
 
     // Start automatic refresh
     this.startAutoRefresh(tokenInfo.refreshIn)
@@ -127,10 +124,23 @@ export class CopilotTokenManager {
    * Start automatic token refresh.
    */
   private startAutoRefresh(refreshInSeconds: number): void {
+    // Sanity check: refresh_in should be positive and reasonable
+    let effectiveRefreshIn = refreshInSeconds
+    if (refreshInSeconds <= 0) {
+      consola.warn(
+        `[CopilotToken] Invalid refresh_in=${refreshInSeconds}s, using default 30 minutes`,
+      )
+      effectiveRefreshIn = 1800 // 30 minutes
+    }
+
     // Calculate refresh interval (refresh a bit before expiration)
     const refreshInterval = Math.max(
-      (refreshInSeconds - 60) * 1000,
+      (effectiveRefreshIn - 60) * 1000,
       this.minRefreshIntervalMs,
+    )
+
+    consola.debug(
+      `[CopilotToken] refresh_in=${effectiveRefreshIn}s, scheduling refresh every ${Math.round(refreshInterval / 1000)}s`,
     )
 
     // Clear any existing timer
@@ -143,10 +153,9 @@ export class CopilotTokenManager {
         .then((newToken) => {
           if (newToken) {
             state.copilotToken = newToken.token
-            consola.debug("Copilot token refreshed")
-            if (state.showToken) {
-              consola.info("Refreshed Copilot token:", newToken.token)
-            }
+            consola.debug(
+              `Copilot token refreshed (next refresh_in=${newToken.refreshIn}s)`,
+            )
           } else {
             consola.error(
               "Failed to refresh Copilot token after retries, using existing token",
@@ -176,9 +185,7 @@ export class CopilotTokenManager {
     const tokenInfo = await this.refreshWithRetry()
     if (tokenInfo) {
       state.copilotToken = tokenInfo.token
-      if (state.showToken) {
-        consola.info("Force-refreshed Copilot token:", tokenInfo.token)
-      }
+      consola.debug("Force-refreshed Copilot token")
     }
     return tokenInfo
   }
