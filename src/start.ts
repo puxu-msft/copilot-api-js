@@ -161,27 +161,28 @@ interface RunServerOptions {
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
-  // Initialize TUI for request logging (must be first to intercept all consola output)
+  // ===========================================================================
+  // Phase 1: Core Infrastructure (logging, proxy, verbose mode)
+  // Must be first to ensure all subsequent logs are captured correctly
+  // ===========================================================================
   initTui({ enabled: true })
 
-  // Display version at startup
-  consola.info(`copilot-api v${packageJson.version}`)
+  if (options.verbose) {
+    consola.level = 5
+    state.verbose = true
+  }
 
   if (options.proxyEnv) {
     initProxyFromEnv()
   }
 
-  if (options.verbose) {
-    consola.level = 5
-    consola.info("Verbose logging enabled")
-    state.verbose = true
-  }
+  // ===========================================================================
+  // Phase 2: Version and Configuration Display
+  // ===========================================================================
+  consola.info(`copilot-api v${packageJson.version}`)
 
+  // Set global state from options
   state.accountType = options.accountType
-  if (options.accountType !== "individual") {
-    consola.info(`Using ${options.accountType} plan GitHub account`)
-  }
-
   state.manualApprove = options.manual
   state.showGitHubToken = options.showGitHubToken
   state.autoTruncate = options.autoTruncate
@@ -190,7 +191,39 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.rewriteAnthropicTools = options.rewriteAnthropicTools
   state.securityResearchMode = options.securityResearchMode
 
-  // Initialize adaptive rate limiter (unless disabled)
+  // Log non-default configuration
+  if (options.verbose) {
+    consola.info("Verbose logging enabled")
+  }
+  if (options.accountType !== "individual") {
+    consola.info(`Using ${options.accountType} plan GitHub account`)
+  }
+  if (!options.rateLimit) {
+    consola.info("Rate limiting disabled")
+  }
+  if (!options.autoTruncate) {
+    consola.info("Auto-truncate disabled")
+  }
+  if (options.compressToolResults) {
+    consola.info("Tool result compression enabled")
+  }
+  if (options.redirectAnthropic) {
+    consola.info("Anthropic API redirect enabled (using OpenAI translation)")
+  }
+  if (!options.rewriteAnthropicTools) {
+    consola.info(
+      "Anthropic server-side tools rewrite disabled (passing through unchanged)",
+    )
+  }
+  if (options.securityResearchMode) {
+    consola.info(
+      "🔬 Security Research Mode enabled: System prompts enhanced for security research",
+    )
+  }
+
+  // ===========================================================================
+  // Phase 3: Initialize Internal Services (rate limiter, history)
+  // ===========================================================================
   if (options.rateLimit) {
     initAdaptiveRateLimiter({
       baseRetryIntervalSeconds: options.retryInterval,
@@ -198,35 +231,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       recoveryTimeoutMinutes: options.recoveryTimeout,
       consecutiveSuccessesForRecovery: options.consecutiveSuccesses,
     })
-  } else {
-    consola.info("Rate limiting disabled")
   }
 
-  if (!options.autoTruncate) {
-    consola.info("Auto-truncate disabled")
-  }
-
-  if (options.compressToolResults) {
-    consola.info("Tool result compression enabled")
-  }
-
-  if (options.redirectAnthropic) {
-    consola.info("Anthropic API redirect enabled (using OpenAI translation)")
-  }
-
-  if (!options.rewriteAnthropicTools) {
-    consola.info(
-      "Anthropic server-side tools rewrite disabled (passing through unchanged)",
-    )
-  }
-
-  if (options.securityResearchMode) {
-    consola.info(
-      "🔬 Security Research Mode enabled: System prompts enhanced for security research",
-    )
-  }
-
-  // Initialize history recording if enabled
   initHistory(options.history, options.historyLimit)
   if (options.history) {
     const limitText =
@@ -234,18 +240,25 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     consola.info(`History recording enabled (${limitText} entries)`)
   }
 
+  // ===========================================================================
+  // Phase 4: External Dependencies (filesystem, network)
+  // ===========================================================================
   await ensurePaths()
   await cacheVSCodeVersion()
 
-  // Initialize token management system
+  // Initialize token management and authenticate
   await initTokenManagers({ cliToken: options.githubToken })
 
+  // Fetch available models from Copilot API
   await cacheModels()
 
   consola.info(
     `Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`,
   )
 
+  // ===========================================================================
+  // Phase 5: Optional Setup (Claude Code configuration)
+  // ===========================================================================
   const displayHost = options.host ?? "localhost"
   const serverUrl = `http://${displayHost}:${options.port}`
 
@@ -302,6 +315,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     await setupClaudeCodeConfig(serverUrl, selectedModel, selectedSmallModel)
   }
 
+  // ===========================================================================
+  // Phase 6: Start Server
+  // ===========================================================================
   consola.box(
     `🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage${options.history ? `\n📜 History UI: ${serverUrl}/history` : ""}`,
   )
