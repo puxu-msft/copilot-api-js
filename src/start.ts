@@ -353,6 +353,44 @@ export const start = defineCommand({
     },
   },
   run({ args }) {
+    // Check for unknown arguments
+    const knownArgs = new Set([
+      "_",
+      "port",
+      "p",
+      "host",
+      "H",
+      "verbose",
+      "v",
+      "account-type",
+      "a",
+      "manual",
+      "no-rate-limit",
+      "retry-interval",
+      "request-interval",
+      "recovery-timeout",
+      "consecutive-successes",
+      "github-token",
+      "g",
+      "claude-code",
+      "c",
+      "show-github-token",
+      "proxy-env",
+      "no-history",
+      "history-limit",
+      "no-auto-truncate",
+      "compress-tool-results",
+      "redirect-anthropic",
+      "no-rewrite-anthropic-tools",
+      "security-research-mode",
+    ])
+    const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
+    if (unknownArgs.length > 0) {
+      consola.warn(
+        `Unknown argument(s): ${unknownArgs.map((a) => `--${a}`).join(", ")}`,
+      )
+    }
+
     return runServer({
       port: Number.parseInt(args.port, 10),
       host: args.host,
