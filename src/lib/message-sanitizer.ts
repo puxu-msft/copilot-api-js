@@ -38,13 +38,6 @@ import type {
 // ============================================================================
 
 /**
- * Regex pattern to match <system-reminder>...</system-reminder> tags.
- * Uses non-greedy matching to handle multiple tags.
- */
-const SYSTEM_REMINDER_PATTERN =
-  /<system-reminder>([\s\S]*?)<\/system-reminder>/g
-
-/**
  * Known system-reminder filter types.
  * Each type has a key, description, pattern, and whether it's enabled by default.
  */
@@ -194,18 +187,69 @@ function shouldFilterReminder(content: string): boolean {
 
 /**
  * Remove specific <system-reminder> tags from text content.
- * Only removes reminders that match enabled filter patterns (default: malware/harmful).
- * Other system-reminders are preserved as they may contain useful context.
+ * Only removes reminders that:
+ * 1. Match enabled filter patterns (default: malware/harmful)
+ * 2. Appear at the START or END of content (not embedded in code)
+ * 3. Are separated from main content by newlines (indicating injection points)
+ *
+ * This prevents accidental removal of system-reminder tags that appear
+ * in tool_result content (e.g., when reading source files that contain
+ * these tags as string literals or documentation).
+ *
+ * Claude Code typically injects system-reminders:
+ * - At the end of tool results, separated by newlines
+ * - At the start/end of user messages
  */
 export function removeSystemReminderTags(text: string): string {
-  return text
-    .replaceAll(SYSTEM_REMINDER_PATTERN, (match, content: string) => {
-      if (shouldFilterReminder(content)) {
-        return "" // Remove this reminder
-      }
-      return match // Keep this reminder
-    })
-    .trim()
+  // Pattern to match system-reminder at the START of content
+  // Requires the tag to be at the very beginning or after only whitespace/newlines
+  const startPattern = /^(\s*)<system-reminder>([\s\S]*?)<\/system-reminder>\n*/
+
+  // Pattern to match system-reminder at the END of content
+  // Requires at least one newline before the tag (indicating it's appended, not inline)
+  // OR the entire content is just the system-reminder
+  const endPatternWithNewline =
+    /\n+<system-reminder>([\s\S]*?)<\/system-reminder>\s*$/
+  const endPatternOnly =
+    /^\s*<system-reminder>([\s\S]*?)<\/system-reminder>\s*$/
+
+  let result = text
+
+  // Remove matching tags at the start (may be multiple)
+  let startMatch = result.match(startPattern)
+  while (startMatch) {
+    const [fullMatch, , content] = startMatch
+    if (shouldFilterReminder(content)) {
+      result = result.slice(fullMatch.length)
+    } else {
+      break // Keep this tag and stop processing start tags
+    }
+    startMatch = result.match(startPattern)
+  }
+
+  // Remove matching tags at the end (may be multiple)
+  // First try pattern with newline separator (most common)
+  let endMatch = result.match(endPatternWithNewline)
+  while (endMatch) {
+    const [fullMatch, content] = endMatch
+    if (shouldFilterReminder(content)) {
+      result = result.slice(0, -fullMatch.length)
+    } else {
+      break
+    }
+    endMatch = result.match(endPatternWithNewline)
+  }
+
+  // Also handle case where entire remaining content is just system-reminder
+  const onlyMatch = result.match(endPatternOnly)
+  if (onlyMatch) {
+    const [, content] = onlyMatch
+    if (shouldFilterReminder(content)) {
+      result = ""
+    }
+  }
+
+  return result.trim()
 }
 
 /**
