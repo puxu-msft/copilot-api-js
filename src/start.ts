@@ -49,8 +49,8 @@ function formatModelInfo(model: Model): string {
   return (
     `  - ${modelName} `
     + `ctx:${contextK.padStart(5)} `
-    + `prps:${promptK.padStart(4)} `
-    + `out:${outputK.padStart(4)}`
+    + `prp:${promptK.padStart(5)} `
+    + `out:${outputK.padStart(5)}`
     + featureStr
   )
 }
@@ -495,37 +495,83 @@ export const start = defineCommand({
     },
   },
   run({ args }) {
+    // Initialize logging first so all output uses unified format
+    initConsolaReporter()
+
     // Check for unknown arguments
+    // Known args include both kebab-case (as defined) and camelCase (citty auto-converts)
     const knownArgs = new Set([
       "_",
+      // port
       "port",
       "p",
+      // host
       "host",
       "H",
+      // verbose
       "verbose",
       "v",
+      // account-type
       "account-type",
+      "accountType",
       "a",
+      // manual
       "manual",
+      // no-rate-limit
       "no-rate-limit",
+      "noRateLimit",
+      // retry-interval
       "retry-interval",
+      "retryInterval",
+      // request-interval
       "request-interval",
+      "requestInterval",
+      // recovery-timeout
       "recovery-timeout",
+      "recoveryTimeout",
+      // consecutive-successes
       "consecutive-successes",
+      "consecutiveSuccesses",
+      // github-token
       "github-token",
+      "githubToken",
       "g",
+      // setup-claude-code
       "setup-claude-code",
+      "setupClaudeCode",
+      // claude-model
       "claude-model",
+      "claudeModel",
+      // claude-small-model
       "claude-small-model",
+      "claudeSmallModel",
+      // show-github-token
       "show-github-token",
+      "showGithubToken",
+      // proxy-env
       "proxy-env",
+      "proxyEnv",
+      // no-history
       "no-history",
+      "noHistory",
+      // history-limit
       "history-limit",
+      "historyLimit",
+      // no-auto-truncate
       "no-auto-truncate",
+      "noAutoTruncate",
+      // compress-tool-results
       "compress-tool-results",
+      "compressToolResults",
+      // redirect-anthropic
       "redirect-anthropic",
+      "redirectAnthropic",
+      // no-rewrite-anthropic-tools
       "no-rewrite-anthropic-tools",
+      "noRewriteAnthropicTools",
+      // security-research-mode
       "security-research-mode",
+      "securityResearchMode",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
