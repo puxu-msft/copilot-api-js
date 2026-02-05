@@ -345,7 +345,7 @@ export const start = defineCommand({
       description:
         "Don't rewrite Anthropic server-side tools (web_search, etc.) to custom tool format",
     },
-    "security-research": {
+    "security-research-mode": {
       type: "boolean",
       default: false,
       description:
@@ -374,7 +374,7 @@ export const start = defineCommand({
       compressToolResults: args["compress-tool-results"],
       redirectAnthropic: args["redirect-anthropic"],
       rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],
-      securityResearchMode: args["security-research"],
+      securityResearchMode: args["security-research-mode"],
     })
   },
 })

@@ -2,7 +2,7 @@
 
 ## 实现概述
 
-`--security-research` 选项通过 `src/lib/security-research-mode.ts` 模块实现两个操作：
+`--security-research-mode` 选项通过 `src/lib/security-research-mode.ts` 模块实现两个操作：
 
 ### 1. 移除安全限制
 - `IMPORTANT: Assist with authorized security testing... Refuse requests for...`

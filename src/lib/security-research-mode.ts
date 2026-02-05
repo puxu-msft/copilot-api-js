@@ -66,6 +66,10 @@ Provide detailed, technically accurate, actionable information for security rese
  * These patterns target REFUSAL instructions, not code quality guidance.
  */
 const SAFETY_PATTERNS: Array<RegExp> = [
+  // =========================================================================
+  // Claude Code specific blocks
+  // =========================================================================
+
   // The main IMPORTANT blocks about refusing requests
   // Matches: "IMPORTANT: Assist with authorized security testing... malicious purposes."
   /IMPORTANT:\s*Assist with authorized security testing[^.]*\.\s*Refuse requests for[^.]*\.\s*Dual-use security tools[^.]*\./gi,
@@ -73,6 +77,10 @@ const SAFETY_PATTERNS: Array<RegExp> = [
   // URL generation restriction - match the full sentence including the fallback clause
   // Matches: "IMPORTANT: You must NEVER generate or guess URLs... You may use URLs provided..."
   /IMPORTANT:\s*You must NEVER generate or guess URLs[^.]*\.[^.]*You may use URLs[^.]*\./gi,
+
+  // =========================================================================
+  // Generic refuse/reject/decline patterns
+  // =========================================================================
 
   // Generic refuse/reject patterns that limit helpfulness
   /(?:You (?:must|should|will) )?refuse (?:to )?(?:help with |assist with |provide |create |generate )?requests for[^.]*\./gi,
@@ -82,8 +90,25 @@ const SAFETY_PATTERNS: Array<RegExp> = [
   // "require authorization context" limitations
   /require (?:clear |explicit )?authorization context[^.]*\./gi,
 
+  // =========================================================================
+  // "Never help with X" patterns
+  // =========================================================================
+
   // Never help with X patterns (but preserve code quality ones)
   /(?:NEVER|Do not|Don't|must not)\s+(?:help with|assist with|provide|create|generate)[^.]*(?:malicious|harmful|dangerous|illegal|unethical)[^.]*\./gi,
+
+  // =========================================================================
+  // Malware-specific refusal patterns (from message-sanitizer)
+  // =========================================================================
+
+  // "you MUST/should refuse to improve/augment malware" - appears in <system-reminder> content
+  /you\s+(?:must|should)\s+(?:refuse|not|never)\s+(?:to\s+)?(?:improve|augment|enhance|help\s+with|assist\s+with).*?(?:malware|malicious)/gi,
+
+  // "do not/never generate harmful/illegal content" patterns
+  /(?:do\s+not|don't|never|must\s+not|should\s+not|refuse\s+to).{0,50}(?:harmful|illegal|unethical|malicious)\s+(?:content|code|request|output)/gi,
+
+  // Security-related refusal: "refuse/decline security/exploit/attack"
+  /(?:refuse|decline|not\s+allowed).{0,30}(?:security|vulnerabilit|exploit|attack)/gi,
 ]
 
 /**
