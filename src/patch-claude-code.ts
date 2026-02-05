@@ -3,6 +3,8 @@ import consola from "consola"
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
+import { initConsolaReporter } from "./lib/tui"
+
 // Supported Claude Code versions for patching
 // Format: { pattern version -> [min version, max version (null = no upper limit)] }
 const SUPPORTED_VERSIONS = {
@@ -435,6 +437,7 @@ export const patchClaude = defineCommand({
     },
   },
   async run({ args }) {
+    initConsolaReporter()
     let cliPath: string
 
     if (args.path) {
