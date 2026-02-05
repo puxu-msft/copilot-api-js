@@ -16,14 +16,28 @@ import type { TuiOptions } from "./types"
 import { ConsoleRenderer } from "./console-renderer"
 import { requestTracker } from "./tracker"
 
-/**
- * Initialize the TUI system
- */
-export function initTui(options?: TuiOptions): void {
-  const enabled = options?.enabled ?? process.stdout.isTTY
+// Singleton renderer instance (created once, used for both logging and request tracking)
+let renderer: ConsoleRenderer | null = null
 
-  if (enabled) {
-    const renderer = new ConsoleRenderer()
+/**
+ * Initialize the consola reporter for unified log formatting.
+ * This should be called as early as possible to capture all logs.
+ * Does NOT set up request tracking - call initRequestTracker() for that.
+ *
+ * @param forceEnable - Force enable even if not TTY (useful for consistent log format)
+ */
+export function initConsolaReporter(forceEnable = true): void {
+  if (!renderer && (forceEnable || process.stdout.isTTY)) {
+    renderer = new ConsoleRenderer()
+  }
+}
+
+/**
+ * Initialize request tracking with the TUI renderer.
+ * Should be called after initConsolaReporter() and before handling requests.
+ */
+export function initRequestTracker(options?: TuiOptions): void {
+  if (renderer) {
     requestTracker.setRenderer(renderer)
   }
 
@@ -36,4 +50,13 @@ export function initTui(options?: TuiOptions): void {
       completedDisplayMs: options.completedDisplayMs,
     })
   }
+}
+
+/**
+ * Initialize the TUI system (legacy function, calls both init functions)
+ * @deprecated Use initConsolaReporter() and initRequestTracker() separately
+ */
+export function initTui(options?: TuiOptions): void {
+  initConsolaReporter()
+  initRequestTracker(options)
 }

@@ -17,7 +17,7 @@ import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
-import { initTui } from "./lib/tui"
+import { initConsolaReporter, initRequestTracker } from "./lib/tui"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { server } from "./server"
 
@@ -162,24 +162,24 @@ interface RunServerOptions {
 
 export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
-  // Phase 1: Core Infrastructure (logging, proxy, verbose mode)
-  // Must be first to ensure all subsequent logs are captured correctly
+  // Phase 1: Logging Infrastructure
+  // Must be first to ensure all subsequent logs use unified format
   // ===========================================================================
-  initTui({ enabled: true })
+  initConsolaReporter()
 
   if (options.verbose) {
     consola.level = 5
     state.verbose = true
   }
 
-  if (options.proxyEnv) {
-    initProxyFromEnv()
-  }
-
   // ===========================================================================
   // Phase 2: Version and Configuration Display
   // ===========================================================================
   consola.info(`copilot-api v${packageJson.version}`)
+
+  if (options.proxyEnv) {
+    initProxyFromEnv()
+  }
 
   // Set global state from options
   state.accountType = options.accountType
@@ -318,6 +318,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   // Phase 6: Start Server
   // ===========================================================================
+  // Initialize request tracker now that we're ready to handle requests
+  initRequestTracker()
+
   consola.box(
     `🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage${options.history ? `\n📜 History UI: ${serverUrl}/history` : ""}`,
   )
