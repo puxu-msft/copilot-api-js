@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 import { defineCommand } from "citty"
-import clipboard from "clipboardy"
 import consola from "consola"
+import { existsSync, promises as fsPromises } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
@@ -13,7 +15,6 @@ import { initAdaptiveRateLimiter } from "./lib/adaptive-rate-limiter"
 import { initHistory } from "./lib/history"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
-import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { initTui } from "./lib/tui"
@@ -53,6 +54,85 @@ function formatModelInfo(model: Model): string {
   )
 }
 
+/**
+ * Setup Claude Code configuration files for use with Copilot API.
+ * Creates/updates:
+ * - $HOME/.claude.json - Sets hasCompletedOnboarding: true
+ * - $HOME/.claude/settings.json - Sets env variables for Copilot API
+ */
+async function setupClaudeCodeConfig(
+  serverUrl: string,
+  model: string,
+  smallModel: string,
+): Promise<void> {
+  const home = homedir()
+  const claudeJsonPath = join(home, ".claude.json")
+  const claudeDir = join(home, ".claude")
+  const settingsPath = join(claudeDir, "settings.json")
+
+  // Ensure .claude directory exists
+  if (!existsSync(claudeDir)) {
+    await fsPromises.mkdir(claudeDir, { recursive: true })
+    consola.info(`Created directory: ${claudeDir}`)
+  }
+
+  // Update $HOME/.claude.json
+  let claudeJson: Record<string, unknown> = {}
+  if (existsSync(claudeJsonPath)) {
+    try {
+      const buffer = await fsPromises.readFile(claudeJsonPath)
+      claudeJson = JSON.parse(buffer.toString()) as Record<string, unknown>
+    } catch {
+      consola.warn(`Failed to parse ${claudeJsonPath}, creating new file`)
+    }
+  }
+  claudeJson.hasCompletedOnboarding = true
+  await fsPromises.writeFile(
+    claudeJsonPath,
+    JSON.stringify(claudeJson, null, 2) + "\n",
+  )
+  consola.success(`Updated ${claudeJsonPath}`)
+
+  // Update $HOME/.claude/settings.json
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try {
+      const buffer = await fsPromises.readFile(settingsPath)
+      settings = JSON.parse(buffer.toString()) as Record<string, unknown>
+    } catch {
+      consola.warn(`Failed to parse ${settingsPath}, creating new file`)
+    }
+  }
+
+  // Set env configuration
+  settings.env = {
+    ...(settings.env as Record<string, string> | undefined),
+    ANTHROPIC_BASE_URL: serverUrl,
+    ANTHROPIC_AUTH_TOKEN: "copilot-api",
+    ANTHROPIC_MODEL: model,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+    ANTHROPIC_SMALL_FAST_MODEL: smallModel,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: smallModel,
+    DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    CLAUDE_CODE_ENABLE_TELEMETRY: "0",
+  }
+
+  await fsPromises.writeFile(
+    settingsPath,
+    JSON.stringify(settings, null, 2) + "\n",
+  )
+  consola.success(`Updated ${settingsPath}`)
+
+  consola.box(
+    `Claude Code configured!\n\n`
+      + `Model: ${model}\n`
+      + `Small Model: ${smallModel}\n`
+      + `API URL: ${serverUrl}\n\n`
+      + `Run 'claude' to start Claude Code.`,
+  )
+}
+
 interface RunServerOptions {
   port: number
   host?: string
@@ -66,7 +146,7 @@ interface RunServerOptions {
   recoveryTimeout: number
   consecutiveSuccesses: number
   githubToken?: string
-  claudeCode: boolean
+  setupClaudeCode: boolean
   showGitHubToken: boolean
   proxyEnv: boolean
   history: boolean
@@ -167,7 +247,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const displayHost = options.host ?? "localhost"
   const serverUrl = `http://${displayHost}:${options.port}`
 
-  if (options.claudeCode) {
+  if (options.setupClaudeCode) {
     invariant(state.models, "Models should be loaded by now")
 
     const selectedModel = await consola.prompt(
@@ -186,29 +266,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       },
     )
 
-    const command = generateEnvScript(
-      {
-        ANTHROPIC_BASE_URL: serverUrl,
-        ANTHROPIC_AUTH_TOKEN: "dummy",
-        ANTHROPIC_MODEL: selectedModel,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: selectedModel,
-        ANTHROPIC_SMALL_FAST_MODEL: selectedSmallModel,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: selectedSmallModel,
-        DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      },
-      "claude",
-    )
-
-    try {
-      clipboard.writeSync(command)
-      consola.success("Copied Claude Code command to clipboard!")
-    } catch {
-      consola.warn(
-        "Failed to copy to clipboard. Here is the Claude Code command:",
-      )
-      consola.log(command)
-    }
+    // Setup Claude Code configuration files
+    await setupClaudeCodeConfig(serverUrl, selectedModel, selectedSmallModel)
   }
 
   consola.box(
@@ -292,8 +351,7 @@ export const start = defineCommand({
       description:
         "Provide GitHub token directly (must be generated using the `auth` subcommand)",
     },
-    "claude-code": {
-      alias: "c",
+    "setup-claude-code": {
       type: "boolean",
       default: false,
       description:
@@ -372,8 +430,7 @@ export const start = defineCommand({
       "consecutive-successes",
       "github-token",
       "g",
-      "claude-code",
-      "c",
+      "setup-claude-code",
       "show-github-token",
       "proxy-env",
       "no-history",
@@ -403,7 +460,7 @@ export const start = defineCommand({
       recoveryTimeout: Number.parseInt(args["recovery-timeout"], 10),
       consecutiveSuccesses: Number.parseInt(args["consecutive-successes"], 10),
       githubToken: args["github-token"],
-      claudeCode: args["claude-code"],
+      setupClaudeCode: args["setup-claude-code"],
       showGitHubToken: args["show-github-token"],
       proxyEnv: args["proxy-env"],
       history: !args["no-history"],
