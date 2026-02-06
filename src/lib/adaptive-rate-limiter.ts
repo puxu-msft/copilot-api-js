@@ -143,12 +143,7 @@ export class AdaptiveRateLimiter {
     if ("responseText" in error && typeof error.responseText === "string") {
       try {
         const parsed: unknown = JSON.parse(error.responseText)
-        if (
-          parsed
-          && typeof parsed === "object"
-          && "retry_after" in parsed
-          && typeof parsed.retry_after === "number"
-        ) {
+        if (parsed && typeof parsed === "object" && "retry_after" in parsed && typeof parsed.retry_after === "number") {
           return parsed.retry_after
         }
         // Also check nested error.retry_after
@@ -174,9 +169,7 @@ export class AdaptiveRateLimiter {
   /**
    * Execute in normal mode - full speed
    */
-  private async executeInNormalMode<T>(
-    fn: () => Promise<T>,
-  ): Promise<RateLimitedResult<T>> {
+  private async executeInNormalMode<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
     try {
       const result = await fn()
       return { result, queueWaitMs: 0 }
@@ -194,12 +187,9 @@ export class AdaptiveRateLimiter {
   /**
    * Execute in recovering mode - gradual speedup
    */
-  private async executeInRecoveringMode<T>(
-    fn: () => Promise<T>,
-  ): Promise<RateLimitedResult<T>> {
+  private async executeInRecoveringMode<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
     const startTime = Date.now()
-    const currentInterval =
-      this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
+    const currentInterval = this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
 
     // Wait for the current recovery interval
     if (currentInterval > 0) {
@@ -223,10 +213,9 @@ export class AdaptiveRateLimiter {
       if (this.recoveryStepIndex >= this.config.gradualRecoverySteps.length) {
         this.completeRecovery()
       } else {
-        const nextInterval =
-          this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
+        const nextInterval = this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
         consola.info(
-          `[RateLimiter] Recovery step ${this.recoveryStepIndex}/${this.config.gradualRecoverySteps.length} `
+          `[RateLimiter] Ramp-up step ${this.recoveryStepIndex}/${this.config.gradualRecoverySteps.length} `
             + `(next interval: ${nextInterval}s)`,
         )
       }
@@ -237,9 +226,7 @@ export class AdaptiveRateLimiter {
       const { isRateLimit, retryAfter } = this.isRateLimitError(error)
       if (isRateLimit) {
         // Back to rate-limited mode
-        consola.warn(
-          "[RateLimiter] Hit rate limit during recovery, returning to rate-limited mode",
-        )
+        consola.warn("[RateLimiter] Hit rate limit during ramp-up, returning to rate-limited mode")
         this.enterRateLimitedMode()
         return this.enqueue(fn, retryAfter)
       }
@@ -268,12 +255,8 @@ export class AdaptiveRateLimiter {
    */
   private shouldAttemptRecovery(): boolean {
     // Check consecutive successes
-    if (
-      this.consecutiveSuccesses >= this.config.consecutiveSuccessesForRecovery
-    ) {
-      consola.info(
-        `[RateLimiter] ${this.consecutiveSuccesses} consecutive successes. Starting gradual recovery.`,
-      )
+    if (this.consecutiveSuccesses >= this.config.consecutiveSuccessesForRecovery) {
+      consola.info(`[RateLimiter] ${this.consecutiveSuccesses} consecutive successes. Starting ramp-up.`)
       return true
     }
 
@@ -282,9 +265,7 @@ export class AdaptiveRateLimiter {
       const elapsed = Date.now() - this.rateLimitedAt
       const timeout = this.config.recoveryTimeoutMinutes * 60 * 1000
       if (elapsed >= timeout) {
-        consola.info(
-          `[RateLimiter] ${this.config.recoveryTimeoutMinutes} minutes elapsed. Starting gradual recovery.`,
-        )
+        consola.info(`[RateLimiter] ${this.config.recoveryTimeoutMinutes} minutes elapsed. Starting ramp-up.`)
         return true
       }
     }
@@ -303,7 +284,7 @@ export class AdaptiveRateLimiter {
 
     const firstInterval = this.config.gradualRecoverySteps[0] ?? 0
     consola.info(
-      `[RateLimiter] Starting gradual recovery (${this.config.gradualRecoverySteps.length} steps, `
+      `[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, `
         + `first interval: ${firstInterval}s)`,
     )
   }
@@ -315,16 +296,13 @@ export class AdaptiveRateLimiter {
     this.mode = "normal"
     this.recoveryStepIndex = 0
 
-    consola.success("[RateLimiter] Recovery complete. Full speed enabled.")
+    consola.success("[RateLimiter] Exiting rate-limited mode.")
   }
 
   /**
    * Enqueue a request for later execution
    */
-  private enqueue<T>(
-    fn: () => Promise<T>,
-    retryAfterSeconds?: number,
-  ): Promise<RateLimitedResult<T>> {
+  private enqueue<T>(fn: () => Promise<T>, retryAfterSeconds?: number): Promise<RateLimitedResult<T>> {
     return new Promise<RateLimitedResult<T>>((resolve, reject) => {
       const request: QueuedRequest<unknown> = {
         execute: fn as () => Promise<unknown>,
@@ -339,11 +317,8 @@ export class AdaptiveRateLimiter {
 
       if (this.queue.length > 1) {
         const position = this.queue.length
-        const estimatedWait =
-          (position - 1) * this.config.requestIntervalSeconds
-        consola.info(
-          `[RateLimiter] Request queued (position ${position}, ~${estimatedWait}s wait)`,
-        )
+        const estimatedWait = (position - 1) * this.config.requestIntervalSeconds
+        consola.info(`[RateLimiter] Request queued (position ${position}, ~${estimatedWait}s wait)`)
       }
 
       void this.processQueue()
@@ -355,16 +330,12 @@ export class AdaptiveRateLimiter {
    */
   private calculateRetryInterval(request: QueuedRequest<unknown>): number {
     // Use server-provided Retry-After if available
-    if (
-      request.retryAfterSeconds !== undefined
-      && request.retryAfterSeconds > 0
-    ) {
+    if (request.retryAfterSeconds !== undefined && request.retryAfterSeconds > 0) {
       return request.retryAfterSeconds
     }
 
     // Exponential backoff: base * 2^(retryCount-1), capped at max
-    const backoff =
-      this.config.baseRetryIntervalSeconds * Math.pow(2, request.retryCount)
+    const backoff = this.config.baseRetryIntervalSeconds * Math.pow(2, request.retryCount)
     return Math.min(backoff, this.config.maxRetryIntervalSeconds)
   }
 
@@ -389,9 +360,7 @@ export class AdaptiveRateLimiter {
       const now = Date.now()
       const elapsedMs = now - this.lastRequestTime
       const intervalSeconds =
-        request.retryCount > 0 ?
-          this.calculateRetryInterval(request)
-        : this.config.requestIntervalSeconds
+        request.retryCount > 0 ? this.calculateRetryInterval(request) : this.config.requestIntervalSeconds
       const requiredMs = intervalSeconds * 1000
 
       if (this.lastRequestTime > 0 && elapsedMs < requiredMs) {
@@ -417,7 +386,7 @@ export class AdaptiveRateLimiter {
 
         if (this.mode === "rate-limited") {
           consola.info(
-            `[RateLimiter] Request succeeded (${this.consecutiveSuccesses}/${this.config.consecutiveSuccessesForRecovery} for recovery)`,
+            `[RateLimiter] Request succeeded (${this.consecutiveSuccesses}/${this.config.consecutiveSuccessesForRecovery} for ramp-up)`,
           )
         }
       } catch (error) {
@@ -430,8 +399,7 @@ export class AdaptiveRateLimiter {
           this.rateLimitedAt = Date.now() // Reset timeout
 
           const nextInterval = this.calculateRetryInterval(request)
-          const source =
-            retryAfter ? "server Retry-After" : "exponential backoff"
+          const source = retryAfter ? "server Retry-After" : "exponential backoff"
           consola.warn(
             `[RateLimiter] Request failed with 429 (retry #${request.retryCount}). `
               + `Retrying in ${nextInterval}s (${source})...`,
@@ -478,24 +446,15 @@ let rateLimiterInstance: AdaptiveRateLimiter | null = null
 /**
  * Initialize the adaptive rate limiter with configuration
  */
-export function initAdaptiveRateLimiter(
-  config: Partial<AdaptiveRateLimiterConfig> = {},
-): void {
+export function initAdaptiveRateLimiter(config: Partial<AdaptiveRateLimiterConfig> = {}): void {
   rateLimiterInstance = new AdaptiveRateLimiter(config)
 
-  const baseRetry =
-    config.baseRetryIntervalSeconds ?? DEFAULT_CONFIG.baseRetryIntervalSeconds
-  const maxRetry =
-    config.maxRetryIntervalSeconds ?? DEFAULT_CONFIG.maxRetryIntervalSeconds
-  const interval =
-    config.requestIntervalSeconds ?? DEFAULT_CONFIG.requestIntervalSeconds
-  const recovery =
-    config.recoveryTimeoutMinutes ?? DEFAULT_CONFIG.recoveryTimeoutMinutes
-  const successes =
-    config.consecutiveSuccessesForRecovery
-    ?? DEFAULT_CONFIG.consecutiveSuccessesForRecovery
-  const steps =
-    config.gradualRecoverySteps ?? DEFAULT_CONFIG.gradualRecoverySteps
+  const baseRetry = config.baseRetryIntervalSeconds ?? DEFAULT_CONFIG.baseRetryIntervalSeconds
+  const maxRetry = config.maxRetryIntervalSeconds ?? DEFAULT_CONFIG.maxRetryIntervalSeconds
+  const interval = config.requestIntervalSeconds ?? DEFAULT_CONFIG.requestIntervalSeconds
+  const recovery = config.recoveryTimeoutMinutes ?? DEFAULT_CONFIG.recoveryTimeoutMinutes
+  const successes = config.consecutiveSuccessesForRecovery ?? DEFAULT_CONFIG.consecutiveSuccessesForRecovery
+  const steps = config.gradualRecoverySteps ?? DEFAULT_CONFIG.gradualRecoverySteps
 
   consola.info(
     `[RateLimiter] Initialized (backoff: ${baseRetry}s-${maxRetry}s, `
@@ -516,9 +475,7 @@ export function getAdaptiveRateLimiter(): AdaptiveRateLimiter | null {
  * If rate limiter is not initialized, executes immediately.
  * Returns the result along with queue wait time.
  */
-export async function executeWithAdaptiveRateLimit<T>(
-  fn: () => Promise<T>,
-): Promise<RateLimitedResult<T>> {
+export async function executeWithAdaptiveRateLimit<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
   if (!rateLimiterInstance) {
     const result = await fn()
     return { result, queueWaitMs: 0 }

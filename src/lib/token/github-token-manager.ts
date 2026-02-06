@@ -78,9 +78,7 @@ export class GitHubTokenManager {
       if (this.validateOnInit) {
         const validation = await this.validateToken(tokenInfo.token, provider)
         if (!validation.valid) {
-          consola.warn(
-            `Token from ${provider.name} provider is invalid: ${validation.error}`,
-          )
+          consola.warn(`Token from ${provider.name} provider is invalid: ${validation.error}`)
           continue
         }
         consola.info(`Logged in as ${validation.username}`)
@@ -97,10 +95,7 @@ export class GitHubTokenManager {
   /**
    * Validate a token using a provider's validate method.
    */
-  async validateToken(
-    token: string,
-    provider?: GitHubTokenProvider,
-  ): Promise<TokenValidationResult> {
+  async validateToken(token: string, provider?: GitHubTokenProvider): Promise<TokenValidationResult> {
     const p = provider ?? this.providers[0]
     return p.validate(token)
   }
@@ -118,17 +113,13 @@ export class GitHubTokenManager {
 
     // Check if current token source is refreshable
     if (!this.currentToken.refreshable) {
-      consola.warn(
-        `Current token from ${this.currentToken.source} cannot be refreshed`,
-      )
+      consola.warn(`Current token from ${this.currentToken.source} cannot be refreshed`)
       this.onTokenExpired?.()
       return null
     }
 
     // Find the device auth provider for refresh
-    const deviceAuthProvider = this.providers.find(
-      (p) => p instanceof DeviceAuthProvider,
-    )
+    const deviceAuthProvider = this.providers.find((p) => p instanceof DeviceAuthProvider)
     if (!deviceAuthProvider) {
       consola.warn("No provider supports token refresh")
       this.onTokenExpired?.()
@@ -161,9 +152,7 @@ export class GitHubTokenManager {
     this.currentToken = null
 
     // Clear file-based token
-    const fileProvider = this.providers.find(
-      (p) => p instanceof FileTokenProvider,
-    )
+    const fileProvider = this.providers.find((p) => p instanceof FileTokenProvider)
     if (fileProvider) {
       await fileProvider.clearToken()
     }

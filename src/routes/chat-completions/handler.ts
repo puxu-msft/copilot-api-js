@@ -7,13 +7,9 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
-import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate-openai"
+import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate/openai"
 import { HTTPError } from "~/lib/error"
-import {
-  type MessageContent,
-  recordRequest,
-  recordResponse,
-} from "~/lib/history"
+import { type MessageContent, recordRequest, recordResponse } from "~/lib/history"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { requestTracker } from "~/lib/tui"
@@ -44,8 +40,7 @@ export async function handleCompletion(c: Context) {
 
   // Get tracking ID and use tracker's startTime for consistent timing
   const trackingId = c.get("trackingId") as string | undefined
-  const trackedRequest =
-    trackingId ? requestTracker.getRequest(trackingId) : undefined
+  const trackedRequest = trackingId ? requestTracker.getRequest(trackingId) : undefined
   const startTime = trackedRequest?.startTime ?? Date.now()
 
   // Update TUI tracker with model info
@@ -67,18 +62,13 @@ export async function handleCompletion(c: Context) {
   const ctx: ResponseContext = { historyId, trackingId, startTime }
 
   // Find the selected model
-  const selectedModel = state.models?.data.find(
-    (model) => model.id === originalPayload.model,
-  )
+  const selectedModel = state.models?.data.find((model) => model.id === originalPayload.model)
 
   // Calculate and display token count
   await logTokenCount(originalPayload, selectedModel)
 
   // Build the final payload with potential auto-truncate and max_tokens
-  const { finalPayload, truncateResult } = await buildFinalPayload(
-    originalPayload,
-    selectedModel,
-  )
+  const { finalPayload, truncateResult } = await buildFinalPayload(originalPayload, selectedModel)
   if (truncateResult) {
     ctx.truncateResult = truncateResult
   }
@@ -123,8 +113,7 @@ async function executeRequest(opts: ExecuteRequestOptions) {
   const { c, payload, selectedModel, ctx, trackingId } = opts
 
   try {
-    const { result: response, queueWaitMs } =
-      await executeWithAdaptiveRateLimit(() => createChatCompletions(payload))
+    const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() => createChatCompletions(payload))
 
     // Store queueWaitMs in context for later use
     ctx.queueWaitMs = queueWaitMs
@@ -151,16 +140,10 @@ async function executeRequest(opts: ExecuteRequestOptions) {
 }
 
 // Log token count for debugging
-async function logTokenCount(
-  payload: ChatCompletionsPayload,
-  selectedModel: { id: string } | undefined,
-) {
+async function logTokenCount(payload: ChatCompletionsPayload, selectedModel: { id: string } | undefined) {
   try {
     if (selectedModel) {
-      const tokenCount = await getTokenCount(
-        payload,
-        selectedModel as Parameters<typeof getTokenCount>[1],
-      )
+      const tokenCount = await getTokenCount(payload, selectedModel as Parameters<typeof getTokenCount>[1])
       consola.debug("Current token count:", tokenCount)
     } else {
       consola.debug("No model selected, skipping token count calculation")
@@ -171,20 +154,12 @@ async function logTokenCount(
 }
 
 // Handle non-streaming response
-function handleNonStreamingResponse(
-  c: Context,
-  originalResponse: ChatCompletionResponse,
-  ctx: ResponseContext,
-) {
+function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletionResponse, ctx: ResponseContext) {
   consola.debug("Non-streaming response:", JSON.stringify(originalResponse))
 
   // Prepend truncation marker if auto-truncate was performed (only in verbose mode)
   let response = originalResponse
-  if (
-    state.verbose
-    && ctx.truncateResult?.wasCompacted
-    && response.choices[0]?.message.content
-  ) {
+  if (state.verbose && ctx.truncateResult?.wasCompacted && response.choices[0]?.message.content) {
     const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
     response = {
       ...response,
@@ -237,9 +212,7 @@ function buildResponseContent(choice: ChatCompletionResponse["choices"][0]) {
   return {
     role: choice.message.role,
     content:
-      typeof choice.message.content === "string" ?
-        choice.message.content
-      : JSON.stringify(choice.message.content),
+      typeof choice.message.content === "string" ? choice.message.content : JSON.stringify(choice.message.content),
     tool_calls: choice.message.tool_calls?.map((tc) => ({
       id: tc.id,
       type: tc.type,
@@ -325,12 +298,7 @@ async function handleStreamingResponse(opts: StreamingOptions) {
     }
 
     recordStreamSuccess(acc, payload.model, ctx)
-    completeTracking(
-      ctx.trackingId,
-      acc.inputTokens,
-      acc.outputTokens,
-      ctx.queueWaitMs,
-    )
+    completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens, ctx.queueWaitMs)
   } catch (error) {
     recordStreamError({ acc, fallbackModel: payload.model, ctx, error })
     failTracking(ctx.trackingId, error)
@@ -384,11 +352,7 @@ function parseStreamChunk(chunk: { data?: string }, acc: StreamAccumulator) {
 }
 
 // Record successful streaming response
-function recordStreamSuccess(
-  acc: StreamAccumulator,
-  fallbackModel: string,
-  ctx: ResponseContext,
-) {
+function recordStreamSuccess(acc: StreamAccumulator, fallbackModel: string, ctx: ResponseContext) {
   // Collect tool calls from map
   for (const tc of acc.toolCallMap.values()) {
     if (tc.id && tc.name) acc.toolCalls.push(tc)
@@ -426,16 +390,11 @@ function recordStreamSuccess(
 }
 
 // Convert OpenAI messages to history MessageContent format
-function convertOpenAIMessages(
-  messages: ChatCompletionsPayload["messages"],
-): Array<MessageContent> {
+function convertOpenAIMessages(messages: ChatCompletionsPayload["messages"]): Array<MessageContent> {
   return messages.map((msg) => {
     const result: MessageContent = {
       role: msg.role,
-      content:
-        typeof msg.content === "string" ?
-          msg.content
-        : JSON.stringify(msg.content),
+      content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
     }
 
     // Handle tool calls in assistant messages

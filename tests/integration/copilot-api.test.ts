@@ -9,16 +9,10 @@
 
 import { describe, test, expect, beforeAll } from "bun:test"
 
-import type {
-  AnthropicMessagesPayload,
-  AnthropicResponse,
-} from "~/types/api/anthropic"
+import type { AnthropicMessagesPayload, AnthropicResponse } from "~/types/api/anthropic"
 
 import { state } from "~/lib/state"
-import {
-  createAnthropicMessages,
-  supportsDirectAnthropicApi,
-} from "~/services/copilot/create-anthropic-messages"
+import { createAnthropicMessages, supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-messages"
 import {
   createChatCompletions,
   type ChatCompletionsPayload,
@@ -30,18 +24,14 @@ import { getCopilotToken } from "~/services/github/get-copilot-token"
 import { getGitHubToken, shouldRunIntegrationTests } from "./config"
 
 // Helper to assert non-streaming response
-function assertNonStreamingResponse(
-  response: ChatCompletionResponse | AsyncIterable<unknown>,
-): ChatCompletionResponse {
+function assertNonStreamingResponse(response: ChatCompletionResponse | AsyncIterable<unknown>): ChatCompletionResponse {
   if ("choices" in response) {
     return response
   }
   throw new Error("Expected non-streaming response")
 }
 
-function assertAnthropicResponse(
-  response: AnthropicResponse | AsyncIterable<unknown>,
-): AnthropicResponse {
+function assertAnthropicResponse(response: AnthropicResponse | AsyncIterable<unknown>): AnthropicResponse {
   if ("content" in response) {
     return response
   }
@@ -75,8 +65,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!models?.data) {
       throw new Error(
-        "Failed to fetch models from GitHub Copilot API. "
-          + "Check if your GITHUB_TOKEN has Copilot access.",
+        "Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.",
       )
     }
     state.models = models
@@ -103,10 +92,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
       const claudeModels = models.data.filter((m) => m.id.includes("claude"))
 
       expect(claudeModels.length).toBeGreaterThan(0)
-      console.log(
-        "[Models] Claude models:",
-        claudeModels.map((m) => m.id).join(", "),
-      )
+      console.log("[Models] Claude models:", claudeModels.map((m) => m.id).join(", "))
     })
 
     test("should include GPT models", async () => {
@@ -140,9 +126,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     })
 
     test("should complete chat with Claude model via OpenAI endpoint", async () => {
-      const claudeModel =
-        state.models?.data.find((m) => m.id.includes("claude"))?.id
-        || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
       const payload: ChatCompletionsPayload = {
         model: claudeModel,
@@ -162,10 +146,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
       expect(response.id).toBeDefined()
       expect(response.choices[0].message.content).toBeDefined()
 
-      console.log(
-        `[OpenAI+Claude] Model: ${claudeModel}, Response:`,
-        response.choices[0].message.content,
-      )
+      console.log(`[OpenAI+Claude] Model: ${claudeModel}, Response:`, response.choices[0].message.content)
     })
 
     test("should handle streaming response", async () => {
@@ -210,10 +191,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
       expect(response).toBeDefined()
       expect(response.choices[0].message.content).toBeDefined()
-      console.log(
-        "[OpenAI+System] Response:",
-        response.choices[0].message.content,
-      )
+      console.log("[OpenAI+System] Response:", response.choices[0].message.content)
     })
   })
 
@@ -222,9 +200,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
       // Ensure direct API is enabled
       state.redirectAnthropic = false
 
-      const claudeModel =
-        state.models?.data.find((m) => m.id.includes("claude"))?.id
-        || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
       const supports = supportsDirectAnthropicApi(claudeModel)
       expect(supports).toBe(true)
@@ -236,9 +212,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     })
 
     test("should complete simple message via direct Anthropic API", async () => {
-      const claudeModel =
-        state.models?.data.find((m) => m.id.includes("claude"))?.id
-        || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
       const payload: AnthropicMessagesPayload = {
         model: claudeModel,
@@ -262,23 +236,16 @@ describeWithToken("GitHub Copilot API Integration", () => {
       expect(response.id).toBeDefined()
       expect(response.type).toBe("message")
       expect(response.content).toBeInstanceOf(Array)
-      console.log(
-        "[Anthropic Direct] Response:",
-        JSON.stringify(response.content),
-      )
+      console.log("[Anthropic Direct] Response:", JSON.stringify(response.content))
     })
 
     test("should handle system prompt in direct API", async () => {
-      const claudeModel =
-        state.models?.data.find((m) => m.id.includes("claude"))?.id
-        || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
       const payload: AnthropicMessagesPayload = {
         model: claudeModel,
         system: "You are a helpful coding assistant.",
-        messages: [
-          { role: "user", content: "What language is this: console.log('hi')" },
-        ],
+        messages: [{ role: "user", content: "What language is this: console.log('hi')" }],
         max_tokens: 50,
       }
 
@@ -287,10 +254,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
       expect(response).toBeDefined()
       expect(response.content).toBeInstanceOf(Array)
-      console.log(
-        "[Anthropic+System] Response:",
-        JSON.stringify(response.content),
-      )
+      console.log("[Anthropic+System] Response:", JSON.stringify(response.content))
     })
   })
 
@@ -331,9 +295,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     })
 
     test("should handle Anthropic tool format", async () => {
-      const claudeModel =
-        state.models?.data.find((m) => m.id.includes("claude"))?.id
-        || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
       const payload: AnthropicMessagesPayload = {
         model: claudeModel,
@@ -359,10 +321,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
       expect(response).toBeDefined()
       expect(response.content).toBeInstanceOf(Array)
-      console.log(
-        "[Anthropic+Tools] Response:",
-        JSON.stringify(response.content),
-      )
+      console.log("[Anthropic+Tools] Response:", JSON.stringify(response.content))
     })
   })
 

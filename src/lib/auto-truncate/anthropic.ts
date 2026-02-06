@@ -15,11 +15,7 @@
 import consola from "consola"
 
 import type { Model } from "~/services/copilot/get-models"
-import type {
-  AnthropicMessage,
-  AnthropicMessagesPayload,
-  AnthropicUserContentBlock,
-} from "~/types/api/anthropic"
+import type { AnthropicMessage, AnthropicMessagesPayload, AnthropicUserContentBlock } from "~/types/api/anthropic"
 
 import {
   ensureAnthropicStartsWithUser,
@@ -28,14 +24,18 @@ import {
 } from "~/lib/message-sanitizer"
 import { state } from "~/lib/state"
 import { countTextTokens } from "~/lib/tokenizer"
+import { bytesToKB } from "~/lib/utils"
 
-import type { AutoTruncateConfig } from "./auto-truncate-common"
+import type { AutoTruncateConfig } from "./common"
 
 import {
   DEFAULT_AUTO_TRUNCATE_CONFIG,
+  LARGE_TOOL_RESULT_THRESHOLD,
+  compressCompactedReadResult,
+  compressToolResultContent,
   getEffectiveByteLimitBytes,
   getEffectiveTokenLimit,
-} from "./auto-truncate-common"
+} from "./common"
 
 // Re-export sanitize function for backwards compatibility
 export { sanitizeAnthropicMessages } from "~/lib/message-sanitizer"
@@ -118,10 +118,7 @@ function estimateMessageTokens(msg: AnthropicMessage): number {
 /**
  * Count tokens for an Anthropic message using the model's tokenizer.
  */
-async function countMessageTokens(
-  msg: AnthropicMessage,
-  model: Model,
-): Promise<number> {
+async function countMessageTokens(msg: AnthropicMessage, model: Model): Promise<number> {
   const text = contentToText(msg.content)
   // Add message framing overhead (role + structure)
   return (await countTextTokens(text, model)) + 4
@@ -130,10 +127,7 @@ async function countMessageTokens(
 /**
  * Count tokens for system prompt.
  */
-async function countSystemTokens(
-  system: AnthropicMessagesPayload["system"],
-  model: Model,
-): Promise<number> {
+async function countSystemTokens(system: AnthropicMessagesPayload["system"], model: Model): Promise<number> {
   if (!system) return 0
   if (typeof system === "string") {
     return (await countTextTokens(system, model)) + 4
@@ -145,10 +139,7 @@ async function countSystemTokens(
 /**
  * Count total tokens for the payload using the model's tokenizer.
  */
-async function countTotalTokens(
-  payload: AnthropicMessagesPayload,
-  model: Model,
-): Promise<number> {
+async function countTotalTokens(payload: AnthropicMessagesPayload, model: Model): Promise<number> {
   let total = await countSystemTokens(payload.system, model)
   for (const msg of payload.messages) {
     total += await countMessageTokens(msg, model)
@@ -173,35 +164,10 @@ function getMessageBytes(msg: AnthropicMessage): number {
 // Smart Tool Result Compression
 // ============================================================================
 
-/** Threshold for large tool_result content (bytes) */
-const LARGE_TOOL_RESULT_THRESHOLD = 10000 // 10KB
-
-/** Maximum length for compressed tool_result summary */
-const COMPRESSED_SUMMARY_LENGTH = 500
-
-/**
- * Compress a large tool_result content to a summary.
- * Keeps the first and last portions with a note about truncation.
- */
-function compressToolResultContent(content: string): string {
-  if (content.length <= LARGE_TOOL_RESULT_THRESHOLD) {
-    return content
-  }
-
-  const halfLen = Math.floor(COMPRESSED_SUMMARY_LENGTH / 2)
-  const start = content.slice(0, halfLen)
-  const end = content.slice(-halfLen)
-  const removedChars = content.length - COMPRESSED_SUMMARY_LENGTH
-
-  return `${start}\n\n[... ${removedChars.toLocaleString()} characters omitted for brevity ...]\n\n${end}`
-}
-
 /**
  * Compress a tool_result block in an Anthropic message.
  */
-function compressToolResultBlock(
-  block: AnthropicUserContentBlock,
-): AnthropicUserContentBlock {
+function compressToolResultBlock(block: AnthropicUserContentBlock): AnthropicUserContentBlock {
   if (
     block.type === "tool_result"
     && typeof block.content === "string"
@@ -262,25 +228,26 @@ function smartCompressToolResults(
     return { messages, compressedCount: 0, compressThresholdIndex: n }
   }
 
-  // Compress tool_results in messages before threshold
+  // Compress tool_results and compacted text blocks in messages before threshold
   const result: Array<AnthropicMessage> = []
   let compressedCount = 0
 
   for (const [i, msg] of messages.entries()) {
-    if (
-      i < thresholdIndex
-      && msg.role === "user"
-      && Array.isArray(msg.content)
-    ) {
-      // Check if this message has large tool_results
-      const hasLargeToolResult = msg.content.some(
+    if (i < thresholdIndex && msg.role === "user" && Array.isArray(msg.content)) {
+      // Check if this message has compressible blocks
+      const hasCompressible = msg.content.some(
         (block) =>
-          block.type === "tool_result"
-          && typeof block.content === "string"
-          && block.content.length > LARGE_TOOL_RESULT_THRESHOLD,
+          // Large tool_result blocks
+          (block.type === "tool_result"
+            && typeof block.content === "string"
+            && block.content.length > LARGE_TOOL_RESULT_THRESHOLD)
+          // Compacted text blocks (Read/Grep/etc. tool results in system-reminder tags)
+          || (block.type === "text"
+            && block.text.length > LARGE_TOOL_RESULT_THRESHOLD
+            && compressCompactedReadResult(block.text) !== null),
       )
 
-      if (hasLargeToolResult) {
+      if (hasCompressible) {
         const compressedContent = msg.content.map((block) => {
           if (
             block.type === "tool_result"
@@ -289,6 +256,13 @@ function smartCompressToolResults(
           ) {
             compressedCount++
             return compressToolResultBlock(block)
+          }
+          if (block.type === "text" && block.text.length > LARGE_TOOL_RESULT_THRESHOLD) {
+            const compressed = compressCompactedReadResult(block.text)
+            if (compressed) {
+              compressedCount++
+              return { ...block, text: compressed }
+            }
           }
           return block
         })
@@ -329,9 +303,7 @@ function calculateLimits(model: Model, config: AutoTruncateConfig): Limits {
     ?? model.capabilities?.limits?.max_prompt_tokens
     ?? DEFAULT_CONTEXT_WINDOW
 
-  const tokenLimit = Math.floor(
-    rawTokenLimit * (1 - config.safetyMarginPercent / 100),
-  )
+  const tokenLimit = Math.floor(rawTokenLimit * (1 - config.safetyMarginPercent / 100))
   const byteLimit = getEffectiveByteLimitBytes()
   return { tokenLimit, byteLimit }
 }
@@ -347,6 +319,8 @@ interface PreserveSearchParams {
   payloadOverhead: number
   tokenLimit: number
   byteLimit: number
+  checkTokenLimit: boolean
+  checkByteLimit: boolean
 }
 
 function findOptimalPreserveIndex(params: PreserveSearchParams): number {
@@ -357,6 +331,8 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
     payloadOverhead,
     tokenLimit,
     byteLimit,
+    checkTokenLimit,
+    checkByteLimit,
   } = params
 
   if (messages.length === 0) return 0
@@ -368,7 +344,7 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
   const availableTokens = tokenLimit - systemTokens - markerTokens
   const availableBytes = byteLimit - payloadOverhead - systemBytes - markerBytes
 
-  if (availableTokens <= 0 || availableBytes <= 0) {
+  if ((checkTokenLimit && availableTokens <= 0) || (checkByteLimit && availableBytes <= 0)) {
     return messages.length
   }
 
@@ -383,13 +359,15 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
     cumBytes[i] = cumBytes[i + 1] + getMessageBytes(msg) + 1
   }
 
-  // Binary search for the smallest index where both limits are satisfied
+  // Binary search for the smallest index where enabled limits are satisfied
   let left = 0
   let right = n
 
   while (left < right) {
     const mid = (left + right) >>> 1
-    if (cumTokens[mid] <= availableTokens && cumBytes[mid] <= availableBytes) {
+    const tokensFit = !checkTokenLimit || cumTokens[mid] <= availableTokens
+    const bytesFit = !checkByteLimit || cumBytes[mid] <= availableBytes
+    if (tokensFit && bytesFit) {
       right = mid
     } else {
       left = mid + 1
@@ -407,9 +385,7 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
  * Generate a summary of removed messages for context.
  * Extracts key information like tool calls and topics.
  */
-function generateRemovedMessagesSummary(
-  removedMessages: Array<AnthropicMessage>,
-): string {
+function generateRemovedMessagesSummary(removedMessages: Array<AnthropicMessage>): string {
   const toolCalls: Array<string> = []
   let userMessageCount = 0
   let assistantMessageCount = 0
@@ -438,8 +414,7 @@ function generateRemovedMessagesSummary(
   if (userMessageCount > 0 || assistantMessageCount > 0) {
     const breakdown = []
     if (userMessageCount > 0) breakdown.push(`${userMessageCount} user`)
-    if (assistantMessageCount > 0)
-      breakdown.push(`${assistantMessageCount} assistant`)
+    if (assistantMessageCount > 0) breakdown.push(`${assistantMessageCount} assistant`)
     parts.push(`Messages: ${breakdown.join(", ")}`)
   }
 
@@ -448,9 +423,7 @@ function generateRemovedMessagesSummary(
     // Deduplicate and limit
     const uniqueTools = [...new Set(toolCalls)]
     const displayTools =
-      uniqueTools.length > 5 ?
-        [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`]
-      : uniqueTools
+      uniqueTools.length > 5 ? [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`] : uniqueTools
     parts.push(`Tools used: ${displayTools.join(", ")}`)
   }
 
@@ -461,10 +434,7 @@ function generateRemovedMessagesSummary(
  * Add a compression notice to the system prompt.
  * Informs the model that some tool_result content has been compressed.
  */
-function addCompressionNotice(
-  payload: AnthropicMessagesPayload,
-  compressedCount: number,
-): AnthropicMessagesPayload {
+function addCompressionNotice(payload: AnthropicMessagesPayload, compressedCount: number): AnthropicMessagesPayload {
   const notice =
     `[CONTEXT NOTE]\n`
     + `${compressedCount} large tool_result blocks have been compressed to reduce context size.\n`
@@ -487,11 +457,7 @@ function addCompressionNotice(
 /**
  * Create truncation context to prepend to system prompt.
  */
-function createTruncationSystemContext(
-  removedCount: number,
-  compressedCount: number,
-  summary: string,
-): string {
+function createTruncationSystemContext(removedCount: number, compressedCount: number, summary: string): string {
   let context = `[CONVERSATION CONTEXT]\n`
 
   if (removedCount > 0) {
@@ -516,11 +482,7 @@ function createTruncationSystemContext(
 /**
  * Create a truncation marker message (fallback when no system prompt).
  */
-function createTruncationMarker(
-  removedCount: number,
-  compressedCount: number,
-  summary: string,
-): AnthropicMessage {
+function createTruncationMarker(removedCount: number, compressedCount: number, summary: string): AnthropicMessage {
   const parts: Array<string> = []
 
   if (removedCount > 0) {
@@ -551,9 +513,7 @@ export async function autoTruncateAnthropic(
   const startTime = performance.now()
 
   // Helper to build result with timing
-  const buildResult = (
-    result: Omit<AnthropicAutoTruncateResult, "processingTimeMs">,
-  ): AnthropicAutoTruncateResult => ({
+  const buildResult = (result: Omit<AnthropicAutoTruncateResult, "processingTimeMs">): AnthropicAutoTruncateResult => ({
     ...result,
     processingTimeMs: Math.round(performance.now() - startTime),
   })
@@ -609,15 +569,12 @@ export async function autoTruncateAnthropic(
       const elapsedMs = Math.round(performance.now() - startTime)
       consola.info(
         `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${compressedTokens} tokens, `
-          + `${Math.round(originalBytes / 1024)}→${Math.round(compressedBytes / 1024)}KB `
+          + `${bytesToKB(originalBytes)}→${bytesToKB(compressedBytes)}KB `
           + `(compressed ${compressedCount} tool_results) [${elapsedMs}ms]`,
       )
 
       // Add compression notice to system prompt
-      const noticePayload = addCompressionNotice(
-        compressedPayload,
-        compressedCount,
-      )
+      const noticePayload = addCompressionNotice(compressedPayload, compressedCount)
 
       return buildResult({
         payload: noticePayload,
@@ -645,8 +602,7 @@ export async function autoTruncateAnthropic(
   const payloadOverhead = workingBytes - messagesJson.length
 
   consola.debug(
-    `[AutoTruncate:Anthropic] overhead=${Math.round(payloadOverhead / 1024)}KB, `
-      + `system=${Math.round(systemBytes / 1024)}KB`,
+    `[AutoTruncate:Anthropic] overhead=${bytesToKB(payloadOverhead)}KB, ` + `system=${bytesToKB(systemBytes)}KB`,
   )
 
   // Find optimal preserve index on working messages
@@ -657,13 +613,13 @@ export async function autoTruncateAnthropic(
     payloadOverhead,
     tokenLimit,
     byteLimit,
+    checkTokenLimit: cfg.checkTokenLimit,
+    checkByteLimit: cfg.checkByteLimit,
   })
 
   // Check if we can compact
   if (preserveIndex === 0) {
-    consola.warn(
-      "[AutoTruncate:Anthropic] Cannot truncate, system messages too large",
-    )
+    consola.warn("[AutoTruncate:Anthropic] Cannot truncate, system messages too large")
     return buildResult({
       payload,
       wasCompacted: false,
@@ -696,9 +652,7 @@ export async function autoTruncateAnthropic(
   preserved = filterAnthropicOrphanedToolUse(preserved)
 
   if (preserved.length === 0) {
-    consola.warn(
-      "[AutoTruncate:Anthropic] All messages filtered out after cleanup",
-    )
+    consola.warn("[AutoTruncate:Anthropic] All messages filtered out after cleanup")
     return buildResult({
       payload,
       wasCompacted: false,
@@ -720,27 +674,16 @@ export async function autoTruncateAnthropic(
 
   // Prefer adding context to system prompt (cleaner for the model)
   if (payload.system !== undefined) {
-    const truncationContext = createTruncationSystemContext(
-      removedCount,
-      compressedCount,
-      summary,
-    )
+    const truncationContext = createTruncationSystemContext(removedCount, compressedCount, summary)
     if (typeof payload.system === "string") {
       newSystem = truncationContext + payload.system
     } else if (Array.isArray(payload.system)) {
       // Prepend as first text block
-      newSystem = [
-        { type: "text" as const, text: truncationContext },
-        ...payload.system,
-      ]
+      newSystem = [{ type: "text" as const, text: truncationContext }, ...payload.system]
     }
   } else {
     // No system prompt, use marker message
-    const marker = createTruncationMarker(
-      removedCount,
-      compressedCount,
-      summary,
-    )
+    const marker = createTruncationMarker(removedCount, compressedCount, summary)
     newMessages = [marker, ...preserved]
   }
 
@@ -761,21 +704,19 @@ export async function autoTruncateAnthropic(
 
   const actions: Array<string> = []
   if (removedCount > 0) actions.push(`removed ${removedCount} msgs`)
-  if (compressedCount > 0)
-    actions.push(`compressed ${compressedCount} tool_results`)
+  if (compressedCount > 0) actions.push(`compressed ${compressedCount} tool_results`)
   const actionInfo = actions.length > 0 ? ` (${actions.join(", ")})` : ""
 
   const elapsedMs = Math.round(performance.now() - startTime)
   consola.info(
     `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${newTokens} tokens, `
-      + `${Math.round(originalBytes / 1024)}→${Math.round(newBytes / 1024)}KB${actionInfo} [${elapsedMs}ms]`,
+      + `${bytesToKB(originalBytes)}→${bytesToKB(newBytes)}KB${actionInfo} [${elapsedMs}ms]`,
   )
 
   // Warn if still over limit
   if (newBytes > byteLimit || newTokens > tokenLimit) {
     consola.warn(
-      `[AutoTruncate:Anthropic] Result still over limit `
-        + `(${newTokens} tokens, ${Math.round(newBytes / 1024)}KB)`,
+      `[AutoTruncate:Anthropic] Result still over limit ` + `(${newTokens} tokens, ${bytesToKB(newBytes)}KB)`,
     )
   }
 
@@ -791,9 +732,7 @@ export async function autoTruncateAnthropic(
 /**
  * Create a marker to prepend to responses indicating auto-truncation occurred.
  */
-export function createTruncationResponseMarkerAnthropic(
-  result: AnthropicAutoTruncateResult,
-): string {
+export function createTruncationResponseMarkerAnthropic(result: AnthropicAutoTruncateResult): string {
   if (!result.wasCompacted) return ""
 
   const reduction = result.originalTokens - result.compactedTokens
@@ -826,8 +765,8 @@ export async function checkNeedsCompactionAnthropic(
   const currentTokens = await countTotalTokens(payload, model)
   const currentBytes = JSON.stringify(payload).length
 
-  const exceedsTokens = currentTokens > tokenLimit
-  const exceedsBytes = currentBytes > byteLimit
+  const exceedsTokens = cfg.checkTokenLimit && currentTokens > tokenLimit
+  const exceedsBytes = cfg.checkByteLimit && currentBytes > byteLimit
 
   let reason: "tokens" | "bytes" | "both" | undefined
   if (exceedsTokens && exceedsBytes) {

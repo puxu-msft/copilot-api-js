@@ -7,10 +7,5 @@ export const awaitApproval = async () => {
     type: "confirm",
   })
 
-  if (!response)
-    throw new HTTPError(
-      "Request rejected",
-      403,
-      JSON.stringify({ message: "Request rejected" }),
-    )
+  if (!response) throw new HTTPError("Request rejected", 403, JSON.stringify({ message: "Request rejected" }))
 }

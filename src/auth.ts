@@ -6,7 +6,6 @@ import consola from "consola"
 import { PATHS, ensurePaths } from "./lib/paths"
 import { state } from "./lib/state"
 import { DeviceAuthProvider, FileTokenProvider } from "./lib/token"
-import { initConsolaReporter } from "./lib/tui"
 
 interface RunAuthOptions {
   verbose: boolean
@@ -14,8 +13,6 @@ interface RunAuthOptions {
 }
 
 export async function runAuth(options: RunAuthOptions): Promise<void> {
-  initConsolaReporter()
-
   if (options.verbose) {
     consola.level = 5
     consola.info("Verbose logging enabled")

@@ -1,8 +1,16 @@
 import config from "@echristian/eslint-config"
 
 export default [
+  {
+    ignores: [
+      //
+      "src/routes/history/ui-v2/**",
+      "src/routes/history/ui/**",
+    ],
+  },
   ...config({
     prettier: {
+      printWidth: 120,
       plugins: ["prettier-plugin-packagejson"],
     },
   }),

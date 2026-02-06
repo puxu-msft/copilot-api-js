@@ -116,16 +116,10 @@ const SAFETY_PATTERNS: Array<RegExp> = [
  */
 const SAFETY_REPLACEMENTS: Array<[RegExp, string]> = [
   // Remove "for authorized purposes only" type qualifiers
-  [
-    /\s+for authorized (?:security testing|research|purposes)(?:\s+only)?/gi,
-    "",
-  ],
+  [/\s+for authorized (?:security testing|research|purposes)(?:\s+only)?/gi, ""],
 
   // Remove "with appropriate authorization" clauses
-  [
-    /(?:,\s*)?(?:with|given|assuming)\s+(?:appropriate|proper|clear|explicit)\s+authorization/gi,
-    "",
-  ],
+  [/(?:,\s*)?(?:with|given|assuming)\s+(?:appropriate|proper|clear|explicit)\s+authorization/gi, ""],
 
   // Remove "in authorized contexts" type phrases
   [/\s+in (?:authorized|approved|legitimate)\s+contexts?/gi, ""],

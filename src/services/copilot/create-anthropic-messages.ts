@@ -6,11 +6,7 @@
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
-import type {
-  AnthropicMessagesPayload,
-  AnthropicResponse,
-  AnthropicTool,
-} from "~/types/api/anthropic"
+import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicTool } from "~/types/api/anthropic"
 
 import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
@@ -20,30 +16,17 @@ import { state } from "~/lib/state"
 export type AnthropicMessageResponse = AnthropicResponse
 
 /**
- * Fields that are supported by Copilot's Anthropic API endpoint.
- * Any other fields in the incoming request will be stripped.
+ * Fields known to be rejected by Copilot's Anthropic API endpoint
+ * with "Extra inputs are not permitted".
+ *
+ * We use a blacklist instead of a whitelist so that new Anthropic fields
+ * are forwarded by default — no code change needed when Copilot adds support.
  */
-const COPILOT_SUPPORTED_FIELDS = new Set([
-  "model",
-  "messages",
-  "max_tokens",
-  "system",
-  "metadata",
-  "stop_sequences",
-  "stream",
-  "temperature",
-  "top_p",
-  "top_k",
-  "tools",
-  "tool_choice",
-  "thinking",
-  "service_tier",
-])
+const COPILOT_REJECTED_FIELDS = new Set(["output_config", "inference_geo"])
 
 /**
- * Filter payload to only include fields supported by Copilot's Anthropic API.
- * This prevents errors like "Extra inputs are not permitted" for unsupported
- * fields like `output_config`.
+ * Strip fields known to be rejected by Copilot's Anthropic API endpoint.
+ * Uses a blacklist so new Anthropic fields are forwarded by default.
  *
  * Also converts server-side tools (web_search, etc.) to custom tools.
  */
@@ -51,27 +34,23 @@ function filterPayloadForCopilot(
   payload: AnthropicMessagesPayload & Record<string, unknown>,
 ): AnthropicMessagesPayload {
   const filtered: Record<string, unknown> = {}
-  const unsupportedFields: Array<string> = []
+  const rejectedFields: Array<string> = []
 
   for (const [key, value] of Object.entries(payload)) {
-    if (COPILOT_SUPPORTED_FIELDS.has(key)) {
-      filtered[key] = value
+    if (COPILOT_REJECTED_FIELDS.has(key)) {
+      rejectedFields.push(key)
     } else {
-      unsupportedFields.push(key)
+      filtered[key] = value
     }
   }
 
-  if (unsupportedFields.length > 0) {
-    consola.debug(
-      `[DirectAnthropic] Filtered unsupported fields: ${unsupportedFields.join(", ")}`,
-    )
+  if (rejectedFields.length > 0) {
+    consola.debug(`[DirectAnthropic] Stripped rejected fields: ${rejectedFields.join(", ")}`)
   }
 
   // Convert server-side tools to custom tools
   if (filtered.tools) {
-    filtered.tools = convertServerToolsToCustom(
-      filtered.tools as Array<AnthropicTool>,
-    )
+    filtered.tools = convertServerToolsToCustom(filtered.tools as Array<AnthropicTool>)
   }
 
   return filtered as unknown as AnthropicMessagesPayload
@@ -82,9 +61,7 @@ function filterPayloadForCopilot(
  * According to Anthropic docs, max_tokens must be greater than thinking.budget_tokens.
  * max_tokens = thinking_budget + response_tokens
  */
-function adjustMaxTokensForThinking(
-  payload: AnthropicMessagesPayload,
-): AnthropicMessagesPayload {
+function adjustMaxTokensForThinking(payload: AnthropicMessagesPayload): AnthropicMessagesPayload {
   const thinking = payload.thinking
   if (!thinking) {
     return payload
@@ -120,15 +97,11 @@ function adjustMaxTokensForThinking(
  */
 export async function createAnthropicMessages(
   payload: AnthropicMessagesPayload,
-): Promise<
-  AnthropicMessageResponse | AsyncIterable<{ data?: string; event?: string }>
-> {
+): Promise<AnthropicMessageResponse | AsyncIterable<{ data?: string; event?: string }>> {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
-  // Filter out unsupported fields before sending to Copilot
-  let filteredPayload = filterPayloadForCopilot(
-    payload as AnthropicMessagesPayload & Record<string, unknown>,
-  )
+  // Strip rejected fields before sending to Copilot
+  let filteredPayload = filterPayloadForCopilot(payload as AnthropicMessagesPayload & Record<string, unknown>)
 
   // Adjust max_tokens if thinking is enabled
   filteredPayload = adjustMaxTokensForThinking(filteredPayload)
@@ -140,9 +113,7 @@ export async function createAnthropicMessages(
   })
 
   // Agent/user check for X-Initiator header
-  const isAgentCall = filteredPayload.messages.some(
-    (msg) => msg.role === "assistant",
-  )
+  const isAgentCall = filteredPayload.messages.some((msg) => msg.role === "assistant")
 
   const headers: Record<string, string> = {
     ...copilotHeaders(state, enableVision),
@@ -172,11 +143,7 @@ export async function createAnthropicMessages(
       thinking: filteredPayload.thinking,
       messageCount: filteredPayload.messages.length,
     })
-    throw await HTTPError.fromResponse(
-      "Failed to create Anthropic messages",
-      response,
-      filteredPayload.model,
-    )
+    throw await HTTPError.fromResponse("Failed to create Anthropic messages", response, filteredPayload.model)
   }
 
   if (payload.stream) {
@@ -227,9 +194,7 @@ const SERVER_TOOL_CONFIGS: Record<string, ServerToolConfig> = {
     },
   },
   code_execution: {
-    description:
-      "Execute code in a sandbox. "
-      + "NOTE: This is a client-side tool - the client must execute the code.",
+    description: "Execute code in a sandbox. " + "NOTE: This is a client-side tool - the client must execute the code.",
     input_schema: {
       type: "object",
       properties: {
@@ -241,8 +206,7 @@ const SERVER_TOOL_CONFIGS: Record<string, ServerToolConfig> = {
   },
   computer: {
     description:
-      "Control computer desktop. "
-      + "NOTE: This is a client-side tool - the client must handle computer control.",
+      "Control computer desktop. " + "NOTE: This is a client-side tool - the client must handle computer control.",
     input_schema: {
       type: "object",
       properties: {
@@ -274,9 +238,7 @@ function getServerToolPrefix(tool: AnthropicTool): string | null {
  *
  * Note: Server-side tools are only converted if state.rewriteAnthropicTools is enabled.
  */
-function convertServerToolsToCustom(
-  tools: Array<AnthropicTool> | undefined,
-): Array<AnthropicTool> | undefined {
+function convertServerToolsToCustom(tools: Array<AnthropicTool> | undefined): Array<AnthropicTool> | undefined {
   if (!tools) {
     return undefined
   }
@@ -300,15 +262,12 @@ function convertServerToolsToCustom(
       // Check if this tool should be removed
       if (config.remove) {
         consola.warn(
-          `[DirectAnthropic] Removing unsupported server tool: ${tool.name}. `
-            + `Reason: ${config.removalReason}`,
+          `[DirectAnthropic] Removing unsupported server tool: ${tool.name}. ` + `Reason: ${config.removalReason}`,
         )
         continue // Skip this tool
       }
 
-      consola.debug(
-        `[DirectAnthropic] Converting server tool to custom: ${tool.name} (type: ${tool.type})`,
-      )
+      consola.debug(`[DirectAnthropic] Converting server tool to custom: ${tool.name} (type: ${tool.type})`)
       result.push({
         name: tool.name,
         description: config.description,

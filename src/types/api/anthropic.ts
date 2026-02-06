@@ -26,7 +26,7 @@ export interface AnthropicMessagesPayload {
     name?: string
   }
   thinking?: {
-    type: "enabled"
+    type: "enabled" | "disabled" | "adaptive"
     budget_tokens?: number
   }
   service_tier?: "auto" | "standard_only"
@@ -70,15 +70,9 @@ export interface AnthropicThinkingBlock {
   thinking: string
 }
 
-export type AnthropicUserContentBlock =
-  | AnthropicTextBlock
-  | AnthropicImageBlock
-  | AnthropicToolResultBlock
+export type AnthropicUserContentBlock = AnthropicTextBlock | AnthropicImageBlock | AnthropicToolResultBlock
 
-export type AnthropicAssistantContentBlock =
-  | AnthropicTextBlock
-  | AnthropicToolUseBlock
-  | AnthropicThinkingBlock
+export type AnthropicAssistantContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicThinkingBlock
 
 // ============================================================================
 // Message Types
@@ -118,14 +112,7 @@ export interface AnthropicResponse {
   role: "assistant"
   content: Array<AnthropicAssistantContentBlock>
   model: string
-  stop_reason:
-    | "end_turn"
-    | "max_tokens"
-    | "stop_sequence"
-    | "tool_use"
-    | "pause_turn"
-    | "refusal"
-    | null
+  stop_reason: "end_turn" | "max_tokens" | "stop_sequence" | "tool_use" | "pause_turn" | "refusal" | null
   stop_sequence: string | null
   usage: AnthropicUsage
 }
@@ -146,10 +133,7 @@ export type AnthropicResponseContentBlock = AnthropicAssistantContentBlock
 
 export interface AnthropicMessageStartEvent {
   type: "message_start"
-  message: Omit<
-    AnthropicResponse,
-    "content" | "stop_reason" | "stop_sequence"
-  > & {
+  message: Omit<AnthropicResponse, "content" | "stop_reason" | "stop_sequence"> & {
     content: []
     stop_reason: null
     stop_sequence: null

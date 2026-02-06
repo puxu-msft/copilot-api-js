@@ -1,6 +1,9 @@
+import consola from "consola"
 import { Hono } from "hono"
 import { cors } from "hono/cors"
+import { trimTrailingSlash } from "hono/trailing-slash"
 
+import { forwardError } from "./lib/error"
 import { state } from "./lib/state"
 import { tuiLogger } from "./lib/tui"
 import { completionRoutes } from "./routes/chat-completions/route"
@@ -14,8 +17,23 @@ import { usageRoute } from "./routes/usage/route"
 
 export const server = new Hono()
 
+// Global error handler - catches any unhandled errors from route handlers
+server.onError((error, c) => {
+  // WebSocket errors after upgrade - connection is already upgraded,
+  // cannot send HTTP response; log at debug level since these are normal
+  // (e.g. client disconnect)
+  if (c.req.header("upgrade")?.toLowerCase() === "websocket") {
+    consola.debug("WebSocket error:", error)
+    return c.text("", 500)
+  }
+
+  consola.error("Unhandled route error:", error)
+  return forwardError(c, error)
+})
+
 server.use(tuiLogger())
 server.use(cors())
+server.use(trimTrailingSlash())
 
 server.get("/", (c) => c.text("Server running"))
 

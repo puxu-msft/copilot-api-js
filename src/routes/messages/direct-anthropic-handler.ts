@@ -9,10 +9,7 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import type { Model } from "~/services/copilot/get-models"
-import type {
-  AnthropicMessagesPayload,
-  AnthropicStreamEventData,
-} from "~/types/api/anthropic"
+import type { AnthropicMessage, AnthropicMessagesPayload, AnthropicStreamEventData } from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
@@ -21,15 +18,13 @@ import {
   autoTruncateAnthropic,
   checkNeedsCompactionAnthropic,
   sanitizeAnthropicMessages,
-} from "~/lib/auto-truncate-anthropic"
+} from "~/lib/auto-truncate/anthropic"
 import { HTTPError } from "~/lib/error"
-import { recordResponse } from "~/lib/history"
-import { state } from "~/lib/state"
+import { recordResponse, recordRewrites } from "~/lib/history"
+import { state, isAutoTruncateEnabled } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
-import {
-  createAnthropicMessages,
-  type AnthropicMessageResponse,
-} from "~/services/copilot/create-anthropic-messages"
+import { bytesToKB } from "~/lib/utils"
+import { createAnthropicMessages, type AnthropicMessageResponse } from "~/services/copilot/create-anthropic-messages"
 
 import {
   type ResponseContext,
@@ -40,7 +35,7 @@ import {
   recordStreamError,
   updateTrackerStatus,
 } from "../shared"
-import { extractToolCallsFromAnthropicContent } from "./message-utils"
+import { convertAnthropicMessages, extractToolCallsFromAnthropicContent } from "./message-utils"
 import {
   type AnthropicStreamAccumulator,
   createAnthropicStreamAccumulator,
@@ -56,37 +51,32 @@ export async function handleDirectAnthropicCompletion(
   anthropicPayload: AnthropicMessagesPayload,
   ctx: ResponseContext,
 ) {
-  consola.debug(
-    "Using direct Anthropic API path for model:",
-    anthropicPayload.model,
-  )
+  consola.debug("Using direct Anthropic API path for model:", anthropicPayload.model)
 
   // Find model for auto-truncate and usage adjustment
-  const selectedModel = state.models?.data.find(
-    (m) => m.id === anthropicPayload.model,
-  )
+  const selectedModel = state.models?.data.find((m) => m.id === anthropicPayload.model)
 
   // Apply auto-truncate if enabled
   let effectivePayload = anthropicPayload
   let truncateResult: AnthropicAutoTruncateResult | undefined
 
-  if (state.autoTruncate && selectedModel) {
-    const check = await checkNeedsCompactionAnthropic(
-      anthropicPayload,
-      selectedModel,
-    )
+  if (isAutoTruncateEnabled() && selectedModel) {
+    const check = await checkNeedsCompactionAnthropic(anthropicPayload, selectedModel, {
+      checkTokenLimit: state.autoTruncateByTokens,
+      checkByteLimit: state.autoTruncateByReqsz,
+    })
     consola.debug(
       `[Anthropic] Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
-        + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
+        + `${bytesToKB(check.currentBytes)}KB (limit ${bytesToKB(check.byteLimit)}KB), `
         + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
     )
 
     if (check.needed) {
       try {
-        truncateResult = await autoTruncateAnthropic(
-          anthropicPayload,
-          selectedModel,
-        )
+        truncateResult = await autoTruncateAnthropic(anthropicPayload, selectedModel, {
+          checkTokenLimit: state.autoTruncateByTokens,
+          checkByteLimit: state.autoTruncateByReqsz,
+        })
         if (truncateResult.wasCompacted) {
           effectivePayload = truncateResult.payload
         }
@@ -97,10 +87,8 @@ export async function handleDirectAnthropicCompletion(
         )
       }
     }
-  } else if (state.autoTruncate && !selectedModel) {
-    consola.debug(
-      `[Anthropic] Model '${anthropicPayload.model}' not found, skipping auto-truncate`,
-    )
+  } else if (isAutoTruncateEnabled() && !selectedModel) {
+    consola.debug(`[Anthropic] Model '${anthropicPayload.model}' not found, skipping auto-truncate`)
   }
 
   // Always sanitize messages to filter orphaned tool_result/tool_use blocks
@@ -108,20 +96,52 @@ export async function handleDirectAnthropicCompletion(
   // 1. Auto-truncate is disabled
   // 2. Auto-truncate didn't need to run (within limits)
   // 3. Original payload has orphaned blocks from client
-  const { payload: sanitizedPayload } =
-    sanitizeAnthropicMessages(effectivePayload)
+  const {
+    payload: sanitizedPayload,
+    removedCount: orphanedRemovals,
+    systemReminderRemovals,
+  } = sanitizeAnthropicMessages(effectivePayload)
   effectivePayload = sanitizedPayload
+
+  // Record all rewrites (truncation + sanitization + rewritten content)
+  const hasTruncation = truncateResult?.wasCompacted
+  const hasSanitization = orphanedRemovals > 0 || systemReminderRemovals > 0
+  if (hasTruncation || hasSanitization) {
+    const messageMapping = buildMessageMapping(anthropicPayload.messages, effectivePayload.messages)
+
+    recordRewrites(ctx.historyId, {
+      truncation:
+        hasTruncation && truncateResult ?
+          {
+            removedMessageCount: truncateResult.removedMessageCount,
+            originalTokens: truncateResult.originalTokens,
+            compactedTokens: truncateResult.compactedTokens,
+            processingTimeMs: truncateResult.processingTimeMs,
+          }
+        : undefined,
+      sanitization:
+        hasSanitization ?
+          {
+            removedBlockCount: orphanedRemovals,
+            systemReminderRemovals,
+          }
+        : undefined,
+      rewrittenMessages: convertAnthropicMessages(effectivePayload.messages),
+      rewrittenSystem: typeof effectivePayload.system === "string" ? effectivePayload.system : undefined,
+      messageMapping,
+    })
+  }
 
   if (state.manualApprove) {
     await awaitApproval()
   }
 
   try {
-    const { result: response, queueWaitMs } =
-      await executeWithAdaptiveRateLimit(() =>
-        createAnthropicMessages(effectivePayload),
-      )
+    const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
+      createAnthropicMessages(effectivePayload),
+    )
 
+    // eslint-disable-next-line require-atomic-updates -- ctx is a local object, no race
     ctx.queueWaitMs = queueWaitMs
 
     // Check if response is streaming (AsyncIterable)
@@ -143,12 +163,7 @@ export async function handleDirectAnthropicCompletion(
     }
 
     // Non-streaming response
-    return handleDirectAnthropicNonStreamingResponse(
-      c,
-      response as AnthropicMessageResponse,
-      ctx,
-      truncateResult,
-    )
+    return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, ctx, truncateResult)
   } catch (error) {
     // Handle 413 Request Entity Too Large with helpful debugging info
     if (error instanceof HTTPError && error.status === 413) {
@@ -163,18 +178,15 @@ export async function handleDirectAnthropicCompletion(
 /**
  * Log payload size info for debugging 413 errors
  */
-function logPayloadSizeInfoAnthropic(
-  payload: AnthropicMessagesPayload,
-  model: Model | undefined,
-) {
+function logPayloadSizeInfoAnthropic(payload: AnthropicMessagesPayload, model: Model | undefined) {
   const payloadSize = JSON.stringify(payload).length
   const messageCount = payload.messages.length
   const toolCount = payload.tools?.length ?? 0
   const systemSize = payload.system ? JSON.stringify(payload.system).length : 0
 
   consola.info(
-    `[Anthropic 413] Payload size: ${Math.round(payloadSize / 1024)}KB, `
-      + `messages: ${messageCount}, tools: ${toolCount}, system: ${Math.round(systemSize / 1024)}KB`,
+    `[Anthropic 413] Payload size: ${bytesToKB(payloadSize)}KB, `
+      + `messages: ${messageCount}, tools: ${toolCount}, system: ${bytesToKB(systemSize)}KB`,
   )
 
   if (model?.capabilities?.limits) {
@@ -186,10 +198,8 @@ function logPayloadSizeInfoAnthropic(
   }
 
   // Suggest enabling auto-truncate if disabled
-  if (!state.autoTruncate) {
-    consola.info(
-      "[Anthropic 413] Consider enabling --auto-truncate to automatically reduce payload size",
-    )
+  if (!isAutoTruncateEnabled()) {
+    consola.info("[Anthropic 413] Consider enabling --auto-truncate to automatically reduce payload size")
   }
 }
 
@@ -202,10 +212,7 @@ function handleDirectAnthropicNonStreamingResponse(
   ctx: ResponseContext,
   truncateResult: AnthropicAutoTruncateResult | undefined,
 ) {
-  consola.debug(
-    "Non-streaming response from Copilot (direct Anthropic):",
-    JSON.stringify(response).slice(-400),
-  )
+  consola.debug("Non-streaming response from Copilot (direct Anthropic):", JSON.stringify(response).slice(-400))
 
   recordResponse(
     ctx.historyId,
@@ -305,18 +312,13 @@ interface DirectAnthropicStreamHandlerOptions {
 /**
  * Handle streaming direct Anthropic response (passthrough SSE events)
  */
-async function handleDirectAnthropicStreamingResponse(
-  opts: DirectAnthropicStreamHandlerOptions,
-) {
+async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStreamHandlerOptions) {
   const { stream, response, anthropicPayload, ctx } = opts
   const acc = createAnthropicStreamAccumulator()
 
   try {
     for await (const rawEvent of response) {
-      consola.debug(
-        "Direct Anthropic raw stream event:",
-        JSON.stringify(rawEvent),
-      )
+      consola.debug("Direct Anthropic raw stream event:", JSON.stringify(rawEvent))
 
       // Handle end of stream
       if (rawEvent.data === "[DONE]") break
@@ -326,11 +328,7 @@ async function handleDirectAnthropicStreamingResponse(
       try {
         event = JSON.parse(rawEvent.data) as AnthropicStreamEventData
       } catch (parseError) {
-        consola.error(
-          "Failed to parse Anthropic stream event:",
-          parseError,
-          rawEvent.data,
-        )
+        consola.error("Failed to parse Anthropic stream event:", parseError, rawEvent.data)
         continue
       }
 
@@ -345,12 +343,7 @@ async function handleDirectAnthropicStreamingResponse(
     }
 
     recordStreamingResponse(acc, anthropicPayload.model, ctx)
-    completeTracking(
-      ctx.trackingId,
-      acc.inputTokens,
-      acc.outputTokens,
-      ctx.queueWaitMs,
-    )
+    completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens, ctx.queueWaitMs)
   } catch (error) {
     consola.error("Direct Anthropic stream error:", error)
     recordStreamError({
@@ -370,11 +363,7 @@ async function handleDirectAnthropicStreamingResponse(
 }
 
 // Record streaming response to history
-function recordStreamingResponse(
-  acc: AnthropicStreamAccumulator,
-  fallbackModel: string,
-  ctx: ResponseContext,
-) {
+function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel: string, ctx: ResponseContext) {
   const contentBlocks: Array<{ type: string; text?: string }> = []
   if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
   for (const tc of acc.toolCalls) {
@@ -388,12 +377,69 @@ function recordStreamingResponse(
       model: acc.model || fallbackModel,
       usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
       stop_reason: acc.stopReason || undefined,
-      content:
-        contentBlocks.length > 0 ?
-          { role: "assistant", content: contentBlocks }
-        : null,
+      content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
       toolCalls: acc.toolCalls.length > 0 ? acc.toolCalls : undefined,
     },
     Date.now() - ctx.startTime,
   )
+}
+
+/**
+ * Check if two messages likely correspond to the same original message.
+ * Used by buildMessageMapping to handle cases where sanitization removes
+ * content blocks within a message (changing its shape) or removes entire messages.
+ */
+export function messagesMatch(orig: AnthropicMessage, rewritten: AnthropicMessage): boolean {
+  if (orig.role !== rewritten.role) return false
+
+  // String content: compare prefix
+  if (typeof orig.content === "string" && typeof rewritten.content === "string")
+    return (
+      rewritten.content.startsWith(orig.content.slice(0, 100))
+      || orig.content.startsWith(rewritten.content.slice(0, 100))
+    )
+
+  // Array content: compare first block's type and id
+  const origBlocks = Array.isArray(orig.content) ? orig.content : []
+  const rwBlocks = Array.isArray(rewritten.content) ? rewritten.content : []
+
+  if (origBlocks.length === 0 || rwBlocks.length === 0) return true
+
+  const ob = origBlocks[0]
+  const rb = rwBlocks[0]
+  if (ob.type !== rb.type) return false
+  if (ob.type === "tool_use" && rb.type === "tool_use") return ob.id === rb.id
+  if (ob.type === "tool_result" && rb.type === "tool_result") return ob.tool_use_id === rb.tool_use_id
+  return true
+}
+
+/**
+ * Build messageMapping (rwIdx → origIdx) for the direct Anthropic path.
+ * Uses a two-pointer approach since rewritten messages maintain the same relative
+ * order as originals (all transformations are deletions, never reorderings).
+ */
+export function buildMessageMapping(
+  original: Array<AnthropicMessage>,
+  rewritten: Array<AnthropicMessage>,
+): Array<number> {
+  const mapping: Array<number> = []
+  let origIdx = 0
+
+  for (const element of rewritten) {
+    while (origIdx < original.length) {
+      if (messagesMatch(original[origIdx], element)) {
+        mapping.push(origIdx)
+        origIdx++
+        break
+      }
+      origIdx++
+    }
+  }
+
+  // If matching missed some (shouldn't happen), fill with -1
+  while (mapping.length < rewritten.length) {
+    mapping.push(-1)
+  }
+
+  return mapping
 }

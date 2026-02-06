@@ -7,8 +7,7 @@ export const getModels = async () => {
     headers: copilotHeaders(state),
   })
 
-  if (!response.ok)
-    throw await HTTPError.fromResponse("Failed to get models", response)
+  if (!response.ok) throw await HTTPError.fromResponse("Failed to get models", response)
 
   return (await response.json()) as ModelsResponse
 }
@@ -18,17 +17,23 @@ export interface ModelsResponse {
   object: string
 }
 
+interface VisionLimits {
+  max_prompt_image_size?: number
+  max_prompt_images?: number
+  supported_media_types?: Array<string>
+}
+
 interface ModelLimits {
   max_context_window_tokens?: number
   max_output_tokens?: number
   max_prompt_tokens?: number
+  max_non_streaming_output_tokens?: number
   max_inputs?: number
+  vision?: VisionLimits
 }
 
 interface ModelSupports {
-  tool_calls?: boolean
-  parallel_tool_calls?: boolean
-  dimensions?: boolean
+  [key: string]: boolean | number | undefined
 }
 
 interface ModelCapabilities {
@@ -43,10 +48,12 @@ interface ModelCapabilities {
 export interface Model {
   capabilities?: ModelCapabilities
   id: string
+  model_picker_category?: string
   model_picker_enabled: boolean
   name: string
   object: string
   preview: boolean
+  supported_endpoints?: Array<string>
   vendor: string
   version: string
   policy?: {

@@ -1,8 +1,5 @@
 import { type ChatCompletionChunk } from "~/services/copilot/create-chat-completions"
-import {
-  type AnthropicStreamEventData,
-  type AnthropicStreamState,
-} from "~/types/api/anthropic"
+import { type AnthropicStreamEventData, type AnthropicStreamState } from "~/types/api/anthropic"
 
 import { mapOpenAIStopReasonToAnthropic } from "./message-utils"
 import { type ToolNameMapping } from "./non-stream-translation"
@@ -12,9 +9,7 @@ function isToolBlockOpen(state: AnthropicStreamState): boolean {
     return false
   }
   // Check if the current block index corresponds to any known tool call
-  return Object.values(state.toolCalls).some(
-    (tc) => tc.anthropicBlockIndex === state.contentBlockIndex,
-  )
+  return Object.values(state.toolCalls).some((tc) => tc.anthropicBlockIndex === state.contentBlockIndex)
 }
 
 export function translateChunkToAnthropicEvents(
@@ -50,14 +45,10 @@ export function translateChunkToAnthropicEvents(
         stop_reason: null,
         stop_sequence: null,
         usage: {
-          input_tokens:
-            (chunk.usage?.prompt_tokens ?? 0)
-            - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
+          input_tokens: (chunk.usage?.prompt_tokens ?? 0) - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
           output_tokens: 0, // Will be updated in message_delta when finished
-          ...(chunk.usage?.prompt_tokens_details?.cached_tokens
-            !== undefined && {
-            cache_read_input_tokens:
-              chunk.usage.prompt_tokens_details.cached_tokens,
+          ...(chunk.usage?.prompt_tokens_details?.cached_tokens !== undefined && {
+            cache_read_input_tokens: chunk.usage.prompt_tokens_details.cached_tokens,
           }),
         },
       },
@@ -113,9 +104,7 @@ export function translateChunkToAnthropicEvents(
         }
 
         // Restore original tool name if it was truncated
-        const originalName =
-          toolNameMapping?.truncatedToOriginal.get(toolCall.function.name)
-          ?? toolCall.function.name
+        const originalName = toolNameMapping?.truncatedToOriginal.get(toolCall.function.name) ?? toolCall.function.name
 
         const anthropicBlockIndex = state.contentBlockIndex
         state.toolCalls[toolCall.index] = {
@@ -172,14 +161,10 @@ export function translateChunkToAnthropicEvents(
           stop_sequence: null,
         },
         usage: {
-          input_tokens:
-            (chunk.usage?.prompt_tokens ?? 0)
-            - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
+          input_tokens: (chunk.usage?.prompt_tokens ?? 0) - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
           output_tokens: chunk.usage?.completion_tokens ?? 0,
-          ...(chunk.usage?.prompt_tokens_details?.cached_tokens
-            !== undefined && {
-            cache_read_input_tokens:
-              chunk.usage.prompt_tokens_details.cached_tokens,
+          ...(chunk.usage?.prompt_tokens_details?.cached_tokens !== undefined && {
+            cache_read_input_tokens: chunk.usage.prompt_tokens_details.cached_tokens,
           }),
         },
       },

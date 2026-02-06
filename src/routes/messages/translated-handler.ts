@@ -8,16 +8,14 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import type {
-  AnthropicMessagesPayload,
-  AnthropicStreamState,
-} from "~/types/api/anthropic"
+import type { AnthropicMessagesPayload, AnthropicStreamState } from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
-import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate-openai"
+import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate/openai"
 import { HTTPError } from "~/lib/error"
-import { recordResponse } from "~/lib/history"
+import { recordResponse, recordRewrites } from "~/lib/history"
+import { sanitizeAnthropicMessages } from "~/lib/message-sanitizer"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
 import {
@@ -37,21 +35,15 @@ import {
   recordStreamError,
   updateTrackerStatus,
 } from "../shared"
-import { extractToolCallsFromContent } from "./message-utils"
-import {
-  translateToAnthropic,
-  translateToOpenAI,
-  type ToolNameMapping,
-} from "./non-stream-translation"
+import { buildMessageMapping } from "./direct-anthropic-handler"
+import { convertAnthropicMessages, extractToolCallsFromContent } from "./message-utils"
+import { translateToAnthropic, translateToOpenAI, type ToolNameMapping } from "./non-stream-translation"
 import {
   type AnthropicStreamAccumulator,
   createAnthropicStreamAccumulator,
   processAnthropicEvent,
 } from "./stream-accumulator"
-import {
-  translateChunkToAnthropicEvents,
-  translateErrorToAnthropicErrorEvent,
-} from "./stream-translation"
+import { translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from "./stream-translation"
 
 /**
  * Handle completion using OpenAI translation path (legacy)
@@ -61,35 +53,70 @@ export async function handleTranslatedCompletion(
   anthropicPayload: AnthropicMessagesPayload,
   ctx: ResponseContext,
 ) {
-  const { payload: translatedPayload, toolNameMapping } =
-    translateToOpenAI(anthropicPayload)
-  consola.debug(
-    "Translated OpenAI request payload:",
-    JSON.stringify(translatedPayload),
-  )
+  const { payload: translatedPayload, toolNameMapping } = translateToOpenAI(anthropicPayload)
+  consola.debug("Translated OpenAI request payload:", JSON.stringify(translatedPayload))
 
   // Auto-truncate if enabled and needed
-  const selectedModel = state.models?.data.find(
-    (model) => model.id === translatedPayload.model,
-  )
+  const selectedModel = state.models?.data.find((model) => model.id === translatedPayload.model)
 
-  const { finalPayload: openAIPayload, truncateResult } =
-    await buildFinalPayload(translatedPayload, selectedModel)
+  const {
+    finalPayload: openAIPayload,
+    truncateResult,
+    sanitizeRemovedCount,
+    systemReminderRemovals,
+  } = await buildFinalPayload(translatedPayload, selectedModel)
+
+  // Sanitize the original Anthropic messages to produce rewrittenMessages
+  // in Anthropic format (matching the original payload format for frontend rendering).
+  // The OpenAI sanitization above handles the actual API request payload.
+  const {
+    payload: sanitizedAnthropicPayload,
+    removedCount: anthropicOrphanedRemovals,
+    systemReminderRemovals: anthropicSysRemovals,
+  } = sanitizeAnthropicMessages(anthropicPayload)
+
+  const anthropicMessageMapping = buildMessageMapping(anthropicPayload.messages, sanitizedAnthropicPayload.messages)
+
+  // Always record rewritten messages (in Anthropic format for consistent frontend rendering)
+  const hasTruncation = truncateResult?.wasCompacted
+  const hasSanitization =
+    sanitizeRemovedCount > 0 || systemReminderRemovals > 0 || anthropicOrphanedRemovals > 0 || anthropicSysRemovals > 0
   if (truncateResult) {
     ctx.truncateResult = truncateResult
   }
+  recordRewrites(ctx.historyId, {
+    truncation:
+      hasTruncation ?
+        {
+          removedMessageCount: truncateResult.removedMessageCount,
+          originalTokens: truncateResult.originalTokens,
+          compactedTokens: truncateResult.compactedTokens,
+          processingTimeMs: truncateResult.processingTimeMs,
+        }
+      : undefined,
+    sanitization:
+      hasSanitization ?
+        {
+          removedBlockCount: sanitizeRemovedCount + anthropicOrphanedRemovals,
+          systemReminderRemovals: systemReminderRemovals + anthropicSysRemovals,
+        }
+      : undefined,
+    rewrittenMessages: convertAnthropicMessages(sanitizedAnthropicPayload.messages),
+    rewrittenSystem:
+      typeof sanitizedAnthropicPayload.system === "string" ? sanitizedAnthropicPayload.system : undefined,
+    messageMapping: anthropicMessageMapping,
+  })
 
   if (state.manualApprove) {
     await awaitApproval()
   }
 
   try {
-    const { result: response, queueWaitMs } =
-      await executeWithAdaptiveRateLimit(() =>
-        createChatCompletions(openAIPayload),
-      )
+    const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
+      createChatCompletions(openAIPayload),
+    )
 
-    // Store queueWaitMs in context for later use
+    // eslint-disable-next-line require-atomic-updates -- ctx is a local object, no race
     ctx.queueWaitMs = queueWaitMs
 
     if (isNonStreaming(response)) {
@@ -135,23 +162,14 @@ interface NonStreamingOptions {
 // Handle non-streaming response
 function handleNonStreamingResponse(opts: NonStreamingOptions) {
   const { c, response, toolNameMapping, ctx } = opts
-  consola.debug(
-    "Non-streaming response from Copilot:",
-    JSON.stringify(response).slice(-400),
-  )
+  consola.debug("Non-streaming response from Copilot:", JSON.stringify(response).slice(-400))
   let anthropicResponse = translateToAnthropic(response, toolNameMapping)
-  consola.debug(
-    "Translated Anthropic response:",
-    JSON.stringify(anthropicResponse),
-  )
+  consola.debug("Translated Anthropic response:", JSON.stringify(anthropicResponse))
 
   // Prepend truncation marker if auto-truncate was performed (only in verbose mode)
   if (state.verbose && ctx.truncateResult?.wasCompacted) {
     const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
-    anthropicResponse = prependMarkerToAnthropicResponse(
-      anthropicResponse,
-      marker,
-    )
+    anthropicResponse = prependMarkerToAnthropicResponse(anthropicResponse, marker)
   }
 
   recordResponse(
@@ -199,6 +217,8 @@ function prependMarkerToAnthropicResponse(
   response: ReturnType<typeof translateToAnthropic>,
   marker: string,
 ): ReturnType<typeof translateToAnthropic> {
+  if (!marker) return response
+
   // Find first text block and prepend, or add new text block at start
   const content = [...response.content]
   const firstTextIndex = content.findIndex((block) => block.type === "text")
@@ -243,12 +263,7 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
     // Prepend truncation marker as first content block if auto-truncate was performed
     if (ctx.truncateResult?.wasCompacted) {
       const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
-      await sendTruncationMarkerEvent(
-        stream,
-        streamState,
-        marker,
-        anthropicPayload.model,
-      )
+      await sendTruncationMarkerEvent(stream, streamState, marker, anthropicPayload.model)
       acc.content += marker
     }
 
@@ -261,12 +276,7 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
     })
 
     recordStreamingResponse(acc, anthropicPayload.model, ctx)
-    completeTracking(
-      ctx.trackingId,
-      acc.inputTokens,
-      acc.outputTokens,
-      ctx.queueWaitMs,
-    )
+    completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens, ctx.queueWaitMs)
   } catch (error) {
     consola.error("Stream error:", error)
     recordStreamError({
@@ -380,11 +390,7 @@ async function processStreamChunks(opts: ProcessChunksOptions) {
 
     if (chunk.model && !acc.model) acc.model = chunk.model
 
-    const events = translateChunkToAnthropicEvents(
-      chunk,
-      streamState,
-      toolNameMapping,
-    )
+    const events = translateChunkToAnthropicEvents(chunk, streamState, toolNameMapping)
 
     for (const event of events) {
       consola.debug("Translated Anthropic event:", JSON.stringify(event))
@@ -398,11 +404,7 @@ async function processStreamChunks(opts: ProcessChunksOptions) {
 }
 
 // Record streaming response to history
-function recordStreamingResponse(
-  acc: AnthropicStreamAccumulator,
-  fallbackModel: string,
-  ctx: ResponseContext,
-) {
+function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel: string, ctx: ResponseContext) {
   const contentBlocks: Array<{ type: string; text?: string }> = []
   if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
   for (const tc of acc.toolCalls) {
@@ -416,10 +418,7 @@ function recordStreamingResponse(
       model: acc.model || fallbackModel,
       usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
       stop_reason: acc.stopReason || undefined,
-      content:
-        contentBlocks.length > 0 ?
-          { role: "assistant", content: contentBlocks }
-        : null,
+      content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
       toolCalls: acc.toolCalls.length > 0 ? acc.toolCalls : undefined,
     },
     Date.now() - ctx.startTime,

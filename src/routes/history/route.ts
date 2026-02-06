@@ -1,4 +1,10 @@
+import consola from "consola"
 import { Hono } from "hono"
+import { access, constants } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
+import { join } from "node:path"
+
+import { addClient, removeClient } from "~/lib/history-ws"
 
 import {
   handleDeleteEntries,
@@ -10,6 +16,7 @@ import {
   handleGetSessions,
   handleGetStats,
 } from "./api"
+import { getAsset } from "./assets"
 import { getHistoryUI } from "./ui"
 
 export const historyRoutes = new Hono()
@@ -26,7 +33,95 @@ historyRoutes.get("/api/sessions", handleGetSessions)
 historyRoutes.get("/api/sessions/:id", handleGetSession)
 historyRoutes.delete("/api/sessions/:id", handleDeleteSession)
 
-// Web UI - serve HTML for the root path
+// WebSocket endpoint for real-time updates (Bun only)
+// hono/bun requires the Bun global; dynamic import prevents crash on Node.js
+if (typeof globalThis.Bun !== "undefined") {
+  const { upgradeWebSocket } = await import("hono/bun")
+  historyRoutes.get(
+    "/ws",
+    upgradeWebSocket(() => ({
+      onOpen(_event, ws) {
+        addClient(ws.raw as unknown as WebSocket)
+      },
+      onClose(_event, ws) {
+        removeClient(ws.raw as unknown as WebSocket)
+      },
+      onMessage(_event, _ws) {
+        // Currently we don't process messages from clients
+      },
+      onError(event, ws) {
+        consola.debug("WebSocket error:", event)
+        removeClient(ws.raw as unknown as WebSocket)
+      },
+    })),
+  )
+}
+
+// Static assets for Vue UI v2
+historyRoutes.get("/assets/*", async (c) => {
+  const path = c.req.path.replace("/history", "")
+  const asset = await getAsset(path)
+  if (!asset) {
+    return c.notFound()
+  }
+  return new Response(asset.content, {
+    headers: {
+      "Content-Type": asset.contentType,
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  })
+})
+
+// Static assets for legacy UI v1
+const v1Dir = join(import.meta.dirname, "ui")
+
+function getMimeType(path: string): string {
+  if (path.endsWith(".css")) return "text/css"
+  if (path.endsWith(".js")) return "application/javascript"
+  if (path.endsWith(".html")) return "text/html"
+  return "application/octet-stream"
+}
+
+// v1 root serves index.html directly
+historyRoutes.get("/v1", async (c) => {
+  return c.html(await getHistoryUI())
+})
+
+// v1 static assets (CSS, JS) - no caching for development
+historyRoutes.get("/v1/*", async (c) => {
+  const filePath = c.req.path.replace("/history/v1", "")
+  if (!filePath) return c.notFound()
+  const fullPath = join(v1Dir, filePath)
+  try {
+    await access(fullPath, constants.R_OK)
+  } catch {
+    return c.notFound()
+  }
+  const content = await readFile(fullPath, "utf8")
+  return new Response(content, {
+    headers: {
+      "Content-Type": getMimeType(filePath),
+      "Cache-Control": "no-cache",
+    },
+  })
+})
+
+// v2 root serves Vue app index.html
+historyRoutes.get("/v2", async (c) => {
+  const html = await getAsset("/index.html")
+  if (!html) {
+    return c.notFound()
+  }
+  return c.html(html.content.toString())
+})
+
+historyRoutes.get("/index.html", (c) => {
+  // if (isV2Available()) {
+  //   return c.redirect("/history/v2")
+  // }
+  return c.redirect("/history/v1")
+})
+
 historyRoutes.get("/", (c) => {
-  return c.html(getHistoryUI())
+  return c.redirect("/history/index.html")
 })

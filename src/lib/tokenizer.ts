@@ -50,10 +50,7 @@ const calculateToolCallsTokens = (
 /**
  * Calculate tokens for content parts
  */
-const calculateContentPartsTokens = (
-  contentParts: Array<ContentPart>,
-  encoder: Encoder,
-): number => {
+const calculateContentPartsTokens = (contentParts: Array<ContentPart>, encoder: Encoder): number => {
   let tokens = 0
   for (const part of contentParts) {
     if (part.type === "image_url") {
@@ -89,17 +86,10 @@ const calculateMessageTokens = (
       tokens += tokensPerName
     }
     if (key === "tool_calls") {
-      tokens += calculateToolCallsTokens(
-        value as Array<ToolCall>,
-        encoder,
-        constants,
-      )
+      tokens += calculateToolCallsTokens(value as Array<ToolCall>, encoder, constants)
     }
     if (key === "content" && Array.isArray(value)) {
-      tokens += calculateContentPartsTokens(
-        value as Array<ContentPart>,
-        encoder,
-      )
+      tokens += calculateContentPartsTokens(value as Array<ContentPart>, encoder)
     }
   }
   return tokens
@@ -159,10 +149,7 @@ export const getTokenizerFromModel = (model: Model): string => {
  * Count tokens in a text string using the model's tokenizer.
  * This is a simple wrapper for counting tokens in plain text.
  */
-export const countTextTokens = async (
-  text: string,
-  model: Model,
-): Promise<number> => {
+export const countTextTokens = async (text: string, model: Model): Promise<number> => {
   const tokenizer = getTokenizerFromModel(model)
   const encoder = await getEncodeChatFunction(tokenizer)
   return encoder.encode(text).length
@@ -252,10 +239,7 @@ const calculateParameterTokens = (
   for (const propertyName of Object.keys(param)) {
     if (!excludedKeys.has(propertyName)) {
       const propertyValue = param[propertyName]
-      const propertyText =
-        typeof propertyValue === "string" ? propertyValue : (
-          JSON.stringify(propertyValue)
-        )
+      const propertyText = typeof propertyValue === "string" ? propertyValue : JSON.stringify(propertyValue)
       tokens += encoder.encode(`${propertyName}:${propertyText}`).length
     }
   }
@@ -291,8 +275,7 @@ const calculateParametersTokens = (
         }
       }
     } else {
-      const paramText =
-        typeof value === "string" ? value : JSON.stringify(value)
+      const paramText = typeof value === "string" ? value : JSON.stringify(value)
       tokens += encoder.encode(`${key}:${paramText}`).length
     }
   }
@@ -303,11 +286,7 @@ const calculateParametersTokens = (
 /**
  * Calculate tokens for a single tool
  */
-const calculateToolTokens = (
-  tool: Tool,
-  encoder: Encoder,
-  constants: ReturnType<typeof getModelConstants>,
-): number => {
+const calculateToolTokens = (tool: Tool, encoder: Encoder, constants: ReturnType<typeof getModelConstants>): number => {
   let tokens = constants.funcInit
   const func = tool.function
   const fName = func.name
@@ -360,12 +339,8 @@ export const getTokenCount = async (
   const encoder = await getEncodeChatFunction(tokenizer)
 
   const simplifiedMessages = payload.messages
-  const inputMessages = simplifiedMessages.filter(
-    (msg) => msg.role !== "assistant",
-  )
-  const outputMessages = simplifiedMessages.filter(
-    (msg) => msg.role === "assistant",
-  )
+  const inputMessages = simplifiedMessages.filter((msg) => msg.role !== "assistant")
+  const outputMessages = simplifiedMessages.filter((msg) => msg.role === "assistant")
 
   const constants = getModelConstants(model)
   let inputTokens = calculateTokens(inputMessages, encoder, constants)

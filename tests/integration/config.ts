@@ -46,10 +46,7 @@ export function getGitHubToken(): string | undefined {
 export function shouldRunIntegrationTests(): boolean {
   const token = getGitHubToken()
   if (!token) {
-    console.warn(
-      "[Integration Tests] GITHUB_TOKEN not found. "
-        + "Set it in .env file to run integration tests.",
-    )
+    console.warn("[Integration Tests] GITHUB_TOKEN not found. " + "Set it in .env file to run integration tests.")
     return false
   }
   return true

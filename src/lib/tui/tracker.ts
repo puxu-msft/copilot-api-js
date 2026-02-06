@@ -1,11 +1,8 @@
 // Request tracker - manages request state independently of rendering
 
-import type { RequestUpdate, TrackedRequest, TuiRenderer } from "./types"
+import { generateId } from "~/lib/utils"
 
-// Simple ID generator
-function generateId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-}
+import type { RequestUpdate, TrackedRequest, TuiRenderer } from "./types"
 
 interface StartRequestOptions {
   method: string
@@ -18,8 +15,7 @@ class RequestTracker {
   private requests: Map<string, TrackedRequest> = new Map()
   private renderer: TuiRenderer | null = null
   private completedQueue: Array<TrackedRequest> = []
-  private completedTimeouts: Map<string, ReturnType<typeof setTimeout>> =
-    new Map()
+  private completedTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map()
   private historySize = 5
   private completedDisplayMs = 2000
 
@@ -27,10 +23,7 @@ class RequestTracker {
     this.renderer = renderer
   }
 
-  setOptions(options: {
-    historySize?: number
-    completedDisplayMs?: number
-  }): void {
+  setOptions(options: { historySize?: number; completedDisplayMs?: number }): void {
     if (options.historySize !== undefined) {
       this.historySize = options.historySize
     }
@@ -71,13 +64,10 @@ class RequestTracker {
     if (update.status !== undefined) request.status = update.status
     if (update.statusCode !== undefined) request.statusCode = update.statusCode
     if (update.durationMs !== undefined) request.durationMs = update.durationMs
-    if (update.inputTokens !== undefined)
-      request.inputTokens = update.inputTokens
-    if (update.outputTokens !== undefined)
-      request.outputTokens = update.outputTokens
+    if (update.inputTokens !== undefined) request.inputTokens = update.inputTokens
+    if (update.outputTokens !== undefined) request.outputTokens = update.outputTokens
     if (update.error !== undefined) request.error = update.error
-    if (update.queuePosition !== undefined)
-      request.queuePosition = update.queuePosition
+    if (update.queuePosition !== undefined) request.queuePosition = update.queuePosition
 
     this.renderer?.onRequestUpdate(id, update)
   }
@@ -85,16 +75,13 @@ class RequestTracker {
   /**
    * Mark request as completed
    */
-  completeRequest(
-    id: string,
-    statusCode: number,
-    usage?: { inputTokens: number; outputTokens: number },
-  ): void {
+  completeRequest(id: string, statusCode: number, usage?: { inputTokens: number; outputTokens: number }): void {
     const request = this.requests.get(id)
     if (!request) return
 
     request.status =
-      statusCode >= 200 && statusCode < 400 ? "completed" : "error"
+      // 101 = WebSocket upgrade (Switching Protocols), also a success
+      statusCode === 101 || (statusCode >= 200 && statusCode < 400) ? "completed" : "error"
     request.statusCode = statusCode
     request.durationMs = Date.now() - request.startTime
 

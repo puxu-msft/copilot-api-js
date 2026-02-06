@@ -1,10 +1,7 @@
 import { describe, test, expect } from "bun:test"
 import { z } from "zod"
 
-import type {
-  ChatCompletionChunk,
-  ChatCompletionResponse,
-} from "~/services/copilot/create-chat-completions"
+import type { ChatCompletionChunk, ChatCompletionResponse } from "~/services/copilot/create-chat-completions"
 
 import { translateToAnthropic } from "~/routes/messages/non-stream-translation"
 import { translateChunkToAnthropicEvents } from "~/routes/messages/stream-translation"
@@ -31,12 +28,7 @@ const anthropicMessageResponseSchema = z.object({
   id: z.string(),
   type: z.literal("message"),
   role: z.literal("assistant"),
-  content: z.array(
-    z.union([
-      anthropicContentBlockTextSchema,
-      anthropicContentBlockToolUseSchema,
-    ]),
-  ),
+  content: z.array(z.union([anthropicContentBlockTextSchema, anthropicContentBlockToolUseSchema])),
   model: z.string(),
   stop_reason: z.enum(["end_turn", "max_tokens", "stop_sequence", "tool_use"]),
   stop_sequence: z.string().nullable(),
@@ -101,9 +93,7 @@ describe("OpenAI to Anthropic Non-Streaming Response Translation", () => {
     expect(anthropicResponse.usage.input_tokens).toBe(9)
     expect(anthropicResponse.content[0].type).toBe("text")
     if (anthropicResponse.content[0].type === "text") {
-      expect(anthropicResponse.content[0].text).toBe(
-        "Hello! How can I help you today?",
-      )
+      expect(anthropicResponse.content[0].text).toBe("Hello! How can I help you today?")
     } else {
       throw new Error("Expected text block")
     }
@@ -241,9 +231,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
         object: "chat.completion.chunk",
         created: 1677652288,
         model: "gpt-4o-2024-05-13",
-        choices: [
-          { index: 0, delta: {}, finish_reason: "stop", logprobs: null },
-        ],
+        choices: [{ index: 0, delta: {}, finish_reason: "stop", logprobs: null }],
       },
     ]
 
@@ -253,9 +241,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
       contentBlockOpen: false,
       toolCalls: {},
     }
-    const translatedStream = openAIStream.flatMap((chunk) =>
-      translateChunkToAnthropicEvents(chunk, streamState),
-    )
+    const translatedStream = openAIStream.flatMap((chunk) => translateChunkToAnthropicEvents(chunk, streamState))
 
     for (const event of translatedStream) {
       expect(isValidAnthropicStreamEvent(event)).toBe(true)
@@ -326,9 +312,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
           {
             index: 0,
             delta: {
-              tool_calls: [
-                { index: 0, function: { arguments: 'ation": "Paris"}' } },
-              ],
+              tool_calls: [{ index: 0, function: { arguments: 'ation": "Paris"}' } }],
             },
             finish_reason: null,
             logprobs: null,
@@ -340,9 +324,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
         object: "chat.completion.chunk",
         created: 1677652288,
         model: "gpt-4o-2024-05-13",
-        choices: [
-          { index: 0, delta: {}, finish_reason: "tool_calls", logprobs: null },
-        ],
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls", logprobs: null }],
       },
     ]
 
@@ -353,9 +335,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
       contentBlockOpen: false,
       toolCalls: {},
     }
-    const translatedStream = openAIStream.flatMap((chunk) =>
-      translateChunkToAnthropicEvents(chunk, streamState),
-    )
+    const translatedStream = openAIStream.flatMap((chunk) => translateChunkToAnthropicEvents(chunk, streamState))
 
     // These tests will fail until the stub is implemented
     for (const event of translatedStream) {

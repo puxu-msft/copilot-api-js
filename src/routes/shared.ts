@@ -5,11 +5,8 @@
 
 import consola from "consola"
 
-import type { OpenAIAutoTruncateResult } from "~/lib/auto-truncate-openai"
-import type {
-  ChatCompletionResponse,
-  ChatCompletionsPayload,
-} from "~/services/copilot/create-chat-completions"
+import type { OpenAIAutoTruncateResult } from "~/lib/auto-truncate/openai"
+import type { ChatCompletionResponse, ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 
 import {
@@ -17,11 +14,12 @@ import {
   checkNeedsCompactionOpenAI,
   onRequestTooLarge,
   sanitizeOpenAIMessages,
-} from "~/lib/auto-truncate-openai"
+} from "~/lib/auto-truncate/openai"
 import { recordResponse } from "~/lib/history"
-import { state } from "~/lib/state"
+import { state, isAutoTruncateEnabled } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { requestTracker } from "~/lib/tui"
+import { bytesToKB, getErrorMessage } from "~/lib/utils"
 
 /** Context for recording responses and tracking */
 export interface ResponseContext {
@@ -34,37 +32,27 @@ export interface ResponseContext {
 }
 
 /** Helper to update tracker model */
-export function updateTrackerModel(
-  trackingId: string | undefined,
-  model: string,
-) {
+export function updateTrackerModel(trackingId: string | undefined, model: string) {
   if (!trackingId) return
   const request = requestTracker.getRequest(trackingId)
   if (request) request.model = model
 }
 
 /** Helper to update tracker status */
-export function updateTrackerStatus(
-  trackingId: string | undefined,
-  status: "executing" | "streaming",
-) {
+export function updateTrackerStatus(trackingId: string | undefined, status: "executing" | "streaming") {
   if (!trackingId) return
   requestTracker.updateRequest(trackingId, { status })
 }
 
 /** Record error response to history */
-export function recordErrorResponse(
-  ctx: ResponseContext,
-  model: string,
-  error: unknown,
-) {
+export function recordErrorResponse(ctx: ResponseContext, model: string, error: unknown) {
   recordResponse(
     ctx.historyId,
     {
       success: false,
       model,
       usage: { input_tokens: 0, output_tokens: 0 },
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: getErrorMessage(error),
       content: null,
     },
     Date.now() - ctx.startTime,
@@ -90,10 +78,7 @@ export function completeTracking(
 /** Fail TUI tracking */
 export function failTracking(trackingId: string | undefined, error: unknown) {
   if (!trackingId) return
-  requestTracker.failRequest(
-    trackingId,
-    error instanceof Error ? error.message : "Stream error",
-  )
+  requestTracker.failRequest(trackingId, getErrorMessage(error, "Stream error"))
 }
 
 /** Minimal truncate result info needed for usage adjustment and markers */
@@ -113,11 +98,7 @@ export function createTruncationMarker(result: TruncateResultInfo): string {
 
   const { originalTokens, compactedTokens, removedMessageCount } = result
 
-  if (
-    originalTokens === undefined
-    || compactedTokens === undefined
-    || removedMessageCount === undefined
-  ) {
+  if (originalTokens === undefined || compactedTokens === undefined || removedMessageCount === undefined) {
     return `\n\n---\n[Auto-truncated: conversation history was reduced to fit context limits]`
   }
 
@@ -149,7 +130,7 @@ export function recordStreamError(opts: {
       success: false,
       model: acc.model || fallbackModel,
       usage: { input_tokens: 0, output_tokens: 0 },
-      error: error instanceof Error ? error.message : "Stream error",
+      error: getErrorMessage(error, "Stream error"),
       content: null,
     },
     Date.now() - ctx.startTime,
@@ -170,17 +151,22 @@ export async function buildFinalPayload(
 ): Promise<{
   finalPayload: ChatCompletionsPayload
   truncateResult: OpenAIAutoTruncateResult | null
+  sanitizeRemovedCount: number
+  systemReminderRemovals: number
 }> {
   let workingPayload = payload
   let truncateResult: OpenAIAutoTruncateResult | null = null
 
   // Apply auto-truncate if enabled and model is available
-  if (state.autoTruncate && model) {
+  if (isAutoTruncateEnabled() && model) {
     try {
-      const check = await checkNeedsCompactionOpenAI(workingPayload, model)
+      const check = await checkNeedsCompactionOpenAI(workingPayload, model, {
+        checkTokenLimit: state.autoTruncateByTokens,
+        checkByteLimit: state.autoTruncateByReqsz,
+      })
       consola.debug(
         `Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
-          + `${Math.round(check.currentBytes / 1024)}KB (limit ${Math.round(check.byteLimit / 1024)}KB), `
+          + `${bytesToKB(check.currentBytes)}KB (limit ${bytesToKB(check.byteLimit)}KB), `
           + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
       )
       if (check.needed) {
@@ -193,7 +179,10 @@ export async function buildFinalPayload(
           reasonText = "tokens"
         }
         consola.info(`Auto-truncate triggered: exceeds ${reasonText} limit`)
-        truncateResult = await autoTruncateOpenAI(workingPayload, model)
+        truncateResult = await autoTruncateOpenAI(workingPayload, model, {
+          checkTokenLimit: state.autoTruncateByTokens,
+          checkByteLimit: state.autoTruncateByReqsz,
+        })
         workingPayload = truncateResult.payload
       }
     } catch (error) {
@@ -204,10 +193,8 @@ export async function buildFinalPayload(
         error instanceof Error ? error.message : error,
       )
     }
-  } else if (state.autoTruncate && !model) {
-    consola.warn(
-      `Auto-truncate: Model '${payload.model}' not found in cached models, skipping`,
-    )
+  } else if (isAutoTruncateEnabled() && !model) {
+    consola.warn(`Auto-truncate: Model '${payload.model}' not found in cached models, skipping`)
   }
 
   // Always sanitize messages to filter orphaned tool/tool_result messages
@@ -215,22 +202,28 @@ export async function buildFinalPayload(
   // 1. Auto-truncate is disabled
   // 2. Auto-truncate didn't need to run (within limits)
   // 3. Original payload has orphaned messages from client
-  const { payload: sanitizedPayload } = sanitizeOpenAIMessages(workingPayload)
+  const {
+    payload: sanitizedPayload,
+    removedCount: sanitizeRemovedCount,
+    systemReminderRemovals,
+  } = sanitizeOpenAIMessages(workingPayload)
 
-  return { finalPayload: sanitizedPayload, truncateResult }
+  return {
+    finalPayload: sanitizedPayload,
+    truncateResult,
+    sanitizeRemovedCount,
+    systemReminderRemovals,
+  }
 }
 
 /**
  * Log helpful debugging information when a 413 error occurs.
  * Also adjusts the dynamic byte limit for future requests.
  */
-export async function logPayloadSizeInfo(
-  payload: ChatCompletionsPayload,
-  model: Model | undefined,
-) {
+export async function logPayloadSizeInfo(payload: ChatCompletionsPayload, model: Model | undefined) {
   const messageCount = payload.messages.length
   const bodySize = JSON.stringify(payload).length
-  const bodySizeKB = Math.round(bodySize / 1024)
+  const bodySizeKB = bytesToKB(bodySize)
 
   // Adjust the dynamic byte limit for future requests
   onRequestTooLarge(bodySize)
@@ -252,10 +245,7 @@ export async function logPayloadSizeInfo(
       }
     }
 
-    const msgSize =
-      typeof msg.content === "string" ?
-        msg.content.length
-      : JSON.stringify(msg.content).length
+    const msgSize = typeof msg.content === "string" ? msg.content.length : JSON.stringify(msg.content).length
     if (msgSize > 50000) largeMessages++
   }
 
@@ -264,25 +254,21 @@ export async function logPayloadSizeInfo(
   consola.info("│           413 Request Entity Too Large                  │")
   consola.info("╰─────────────────────────────────────────────────────────╯")
   consola.info("")
-  consola.info(
-    `  Request body size: ${bodySizeKB} KB (${bodySize.toLocaleString()} bytes)`,
-  )
+  consola.info(`  Request body size: ${bodySizeKB} KB (${bodySize.toLocaleString()} bytes)`)
   consola.info(`  Message count: ${messageCount}`)
 
   if (model) {
     try {
       const tokenCount = await getTokenCount(payload, model)
       const limit = model.capabilities?.limits?.max_prompt_tokens ?? 128000
-      consola.info(
-        `  Estimated tokens: ${tokenCount.input.toLocaleString()} / ${limit.toLocaleString()}`,
-      )
-    } catch {
-      // Ignore token count errors
+      consola.info(`  Estimated tokens: ${tokenCount.input.toLocaleString()} / ${limit.toLocaleString()}`)
+    } catch (error) {
+      consola.debug("Token count estimation failed:", error)
     }
   }
 
   if (imageCount > 0) {
-    const imageSizeKB = Math.round(totalImageSize / 1024)
+    const imageSizeKB = bytesToKB(totalImageSize)
     consola.info(`  Images: ${imageCount} (${imageSizeKB} KB base64 data)`)
   }
   if (largeMessages > 0) {
@@ -291,10 +277,8 @@ export async function logPayloadSizeInfo(
 
   consola.info("")
   consola.info("  Suggestions:")
-  if (!state.autoTruncate) {
-    consola.info(
-      "    • Enable --auto-truncate to automatically truncate history",
-    )
+  if (!isAutoTruncateEnabled()) {
+    consola.info("    • Enable --auto-truncate to automatically truncate history")
   }
   if (imageCount > 0) {
     consola.info("    • Remove or resize large images in the conversation")

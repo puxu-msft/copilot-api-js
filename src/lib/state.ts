@@ -23,8 +23,10 @@ export interface State {
   // Adaptive rate limiting configuration
   adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
 
-  // Auto-truncate configuration
-  autoTruncate: boolean
+  // Auto-truncate by token limit (model context window)
+  autoTruncateByTokens: boolean
+  // Auto-truncate by request body size (HTTP payload limit)
+  autoTruncateByReqsz: boolean
 
   // Compress old tool results before truncating messages
   // When enabled, large tool_result content is compressed to reduce context size
@@ -47,9 +49,15 @@ export const state: State = {
   manualApprove: false,
   showGitHubToken: false,
   verbose: false,
-  autoTruncate: true,
+  autoTruncateByTokens: true,
+  autoTruncateByReqsz: false,
   compressToolResults: false,
   redirectAnthropic: false,
   rewriteAnthropicTools: true,
   securityResearchMode: false,
+}
+
+/** Check if any auto-truncate mode is enabled */
+export function isAutoTruncateEnabled(): boolean {
+  return state.autoTruncateByTokens || state.autoTruncateByReqsz
 }

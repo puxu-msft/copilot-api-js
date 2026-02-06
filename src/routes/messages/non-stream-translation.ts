@@ -38,26 +38,22 @@ export interface ToolNameMapping {
 }
 
 /**
- * Ensure all tool_use blocks have corresponding tool_result responses.
- * This handles edge cases where conversation history may be incomplete:
- * - Session interruptions where tool execution was cut off
- * - Previous request failures
- * - Client sending truncated history
- *
- * Adding placeholder responses prevents API errors and maintains protocol compliance.
+ * Ensure all tool_use blocks have corresponding tool_result responses,
+ * while maintaining the originMap in sync with any inserted messages.
  */
-function fixMessageSequence(messages: Array<Message>): Array<Message> {
+function fixMessageSequenceWithOriginMap(
+  messages: Array<Message>,
+  originMap: Array<number>,
+): { messages: Array<Message>; originMap: Array<number> } {
   const fixedMessages: Array<Message> = []
+  const fixedOriginMap: Array<number> = []
 
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i]
     fixedMessages.push(message)
+    fixedOriginMap.push(originMap[i])
 
-    if (
-      message.role === "assistant"
-      && message.tool_calls
-      && message.tool_calls.length > 0
-    ) {
+    if (message.role === "assistant" && message.tool_calls && message.tool_calls.length > 0) {
       // Find which tool calls already have responses
       const foundToolResponses = new Set<string>()
 
@@ -80,12 +76,14 @@ function fixMessageSequence(messages: Array<Message>): Array<Message> {
             tool_call_id: toolCall.id,
             content: "Tool execution was interrupted or failed.",
           })
+          // Injected placeholder — use -1 to indicate no original source
+          fixedOriginMap.push(-1)
         }
       }
     }
   }
 
-  return fixedMessages
+  return { messages: fixedMessages, originMap: fixedOriginMap }
 }
 
 // Payload translation
@@ -93,28 +91,30 @@ function fixMessageSequence(messages: Array<Message>): Array<Message> {
 export interface TranslationResult {
   payload: ChatCompletionsPayload
   toolNameMapping: ToolNameMapping
+  /** Maps each OpenAI message index to its source Anthropic message index (-1 for system/injected) */
+  originMap: Array<number>
 }
 
-export function translateToOpenAI(
-  payload: AnthropicMessagesPayload,
-): TranslationResult {
+export function translateToOpenAI(payload: AnthropicMessagesPayload): TranslationResult {
   // Create tool name mapping for this request
   const toolNameMapping: ToolNameMapping = {
     truncatedToOriginal: new Map(),
     originalToTruncated: new Map(),
   }
 
-  const messages = translateAnthropicMessagesToOpenAI(
+  const { messages, originMap: rawOriginMap } = translateAnthropicMessagesToOpenAI(
     payload.messages,
     payload.system,
     toolNameMapping,
   )
 
+  // fixMessageSequence may insert placeholder tool messages
+  const { messages: fixedMessages, originMap } = fixMessageSequenceWithOriginMap(messages, rawOriginMap)
+
   return {
     payload: {
       model: translateModelName(payload.model),
-      // Fix message sequence to ensure all tool_use blocks have corresponding tool_result
-      messages: fixMessageSequence(messages),
+      messages: fixedMessages,
       max_tokens: payload.max_tokens,
       stop: payload.stop_sequences,
       stream: payload.stream,
@@ -122,71 +122,61 @@ export function translateToOpenAI(
       top_p: payload.top_p,
       user: payload.metadata?.user_id,
       tools: translateAnthropicToolsToOpenAI(payload.tools, toolNameMapping),
-      tool_choice: translateAnthropicToolChoiceToOpenAI(
-        payload.tool_choice,
-        toolNameMapping,
-      ),
+      tool_choice: translateAnthropicToolChoiceToOpenAI(payload.tool_choice, toolNameMapping),
     },
     toolNameMapping,
+    originMap,
   }
+}
+
+// Preferred model order per family, highest priority first.
+// findLatestModel picks the first one that exists in state.models.
+const MODEL_PREFERENCE: Record<string, Array<string>> = {
+  opus: [
+    "claude-opus-4.6",
+    "claude-opus-4.5",
+    "claude-opus-41", // 4.1
+    // "claude-opus-4",
+  ],
+  sonnet: [
+    "claude-sonnet-4.5",
+    "claude-sonnet-4",
+    // "claude-sonnet-3.5",
+  ],
+  haiku: [
+    "claude-haiku-4.5",
+    // "claude-haiku-3.5",
+  ],
 }
 
 /**
- * Find the latest available model matching a family prefix.
- * Searches state.models for models starting with the given prefix
- * and returns the one with the highest version number.
- *
- * @param familyPrefix - e.g., "claude-opus", "claude-sonnet", "claude-haiku"
- * @param fallback - fallback model ID if no match found
+ * Find the best available model for a family by checking the preference list
+ * against actually available models. Returns the first match, or the top
+ * preference as fallback when state.models is unavailable.
  */
-function findLatestModel(familyPrefix: string, fallback: string): string {
-  const models = state.models?.data
-  if (!models || models.length === 0) {
-    return fallback
+function findPreferredModel(family: string): string {
+  const preference = MODEL_PREFERENCE[family]
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive for arbitrary family strings
+  if (!preference) return family
+
+  const availableIds = state.models?.data.map((m) => m.id)
+  if (!availableIds || availableIds.length === 0) {
+    return preference[0]
   }
 
-  // Find all models matching the family prefix
-  const candidates = models.filter((m) => m.id.startsWith(familyPrefix))
-  if (candidates.length === 0) {
-    return fallback
+  for (const candidate of preference) {
+    if (availableIds.includes(candidate)) {
+      return candidate
+    }
   }
 
-  // Sort by version number (higher is better)
-  // Extract version like "4.5" from "claude-opus-4.5"
-  candidates.sort((a, b) => {
-    const versionA = extractVersion(a.id, familyPrefix)
-    const versionB = extractVersion(b.id, familyPrefix)
-    return versionB - versionA // descending
-  })
-
-  return candidates[0].id
+  return preference[0]
 }
 
-/**
- * Extract numeric version from model ID.
- * e.g., "claude-opus-4.5" with prefix "claude-opus" -> 4.5
- */
-function extractVersion(modelId: string, prefix: string): number {
-  const suffix = modelId.slice(prefix.length + 1) // +1 for the hyphen
-  // Handle versions like "4.5", "4", "3.5"
-  const match = suffix.match(/^(\d+(?:\.\d+)?)/)
-  return match ? Number.parseFloat(match[1]) : 0
-}
-
-function translateModelName(model: string): string {
+export function translateModelName(model: string): string {
   // Handle short model name aliases (e.g., "opus", "sonnet", "haiku")
-  // Dynamically finds the latest available version from state.models
-  const aliasMap: Record<string, string> = {
-    opus: "claude-opus",
-    sonnet: "claude-sonnet",
-    haiku: "claude-haiku",
-  }
-
-  if (aliasMap[model]) {
-    const familyPrefix = aliasMap[model]
-    // Find latest version dynamically, with hardcoded fallback
-    const fallback = `${familyPrefix}-4.5`
-    return findLatestModel(familyPrefix, fallback)
+  if (model in MODEL_PREFERENCE) {
+    return findPreferredModel(model)
   }
 
   // Handle versioned model names from Anthropic API (e.g., claude-sonnet-4-20250514)
@@ -205,18 +195,22 @@ function translateModelName(model: string): string {
   if (/^claude-opus-4-5-\d+$/.test(model)) {
     return "claude-opus-4.5"
   }
-  // claude-opus-4-YYYYMMDD -> find latest opus
+  // claude-opus-4-6-YYYYMMDD -> claude-opus-4.6
+  if (/^claude-opus-4-6-\d+$/.test(model)) {
+    return "claude-opus-4.6"
+  }
+  // claude-opus-4-YYYYMMDD -> best available opus
   if (/^claude-opus-4-\d+$/.test(model)) {
-    return findLatestModel("claude-opus", "claude-opus-4.5")
+    return findPreferredModel("opus")
   }
 
   // claude-haiku-4-5-YYYYMMDD -> claude-haiku-4.5
   if (/^claude-haiku-4-5-\d+$/.test(model)) {
     return "claude-haiku-4.5"
   }
-  // claude-haiku-3-5-YYYYMMDD -> find latest haiku
+  // claude-haiku-3-5-YYYYMMDD -> best available haiku
   if (/^claude-haiku-3-5-\d+$/.test(model)) {
-    return findLatestModel("claude-haiku", "claude-haiku-4.5")
+    return findPreferredModel("haiku")
   }
 
   return model
@@ -226,16 +220,21 @@ function translateAnthropicMessagesToOpenAI(
   anthropicMessages: Array<AnthropicMessage>,
   system: string | Array<AnthropicTextBlock> | undefined,
   toolNameMapping: ToolNameMapping,
-): Array<Message> {
+): { messages: Array<Message>; originMap: Array<number> } {
   const systemMessages = handleSystemPrompt(system)
+  const originMap: Array<number> = systemMessages.map(() => -1)
 
-  const otherMessages = anthropicMessages.flatMap((message) =>
-    message.role === "user" ?
-      handleUserMessage(message)
-    : handleAssistantMessage(message, toolNameMapping),
-  )
+  const otherMessages: Array<Message> = []
+  for (const [i, message] of anthropicMessages.entries()) {
+    const translated =
+      message.role === "user" ? handleUserMessage(message) : handleAssistantMessage(message, toolNameMapping)
+    for (const msg of translated) {
+      otherMessages.push(msg)
+      originMap.push(i)
+    }
+  }
 
-  return [...systemMessages, ...otherMessages]
+  return { messages: [...systemMessages, ...otherMessages], originMap }
 }
 
 // Reserved keywords that Copilot API rejects in prompts
@@ -263,9 +262,7 @@ function filterReservedKeywords(text: string): string {
   return filtered
 }
 
-function handleSystemPrompt(
-  system: string | Array<AnthropicTextBlock> | undefined,
-): Array<Message> {
+function handleSystemPrompt(system: string | Array<AnthropicTextBlock> | undefined): Array<Message> {
   if (!system) {
     return []
   }
@@ -293,12 +290,9 @@ function handleUserMessage(message: AnthropicUserMessage): Array<Message> {
 
   if (Array.isArray(message.content)) {
     const toolResultBlocks = message.content.filter(
-      (block): block is AnthropicToolResultBlock =>
-        block.type === "tool_result",
+      (block): block is AnthropicToolResultBlock => block.type === "tool_result",
     )
-    const otherBlocks = message.content.filter(
-      (block) => block.type !== "tool_result",
-    )
+    const otherBlocks = message.content.filter((block) => block.type !== "tool_result")
 
     // Tool results must come first to maintain protocol: tool_use -> tool_result -> user
     for (const block of toolResultBlocks) {
@@ -325,10 +319,7 @@ function handleUserMessage(message: AnthropicUserMessage): Array<Message> {
   return newMessages
 }
 
-function handleAssistantMessage(
-  message: AnthropicAssistantMessage,
-  toolNameMapping: ToolNameMapping,
-): Array<Message> {
+function handleAssistantMessage(message: AnthropicAssistantMessage, toolNameMapping: ToolNameMapping): Array<Message> {
   if (!Array.isArray(message.content)) {
     return [
       {
@@ -338,23 +329,14 @@ function handleAssistantMessage(
     ]
   }
 
-  const toolUseBlocks = message.content.filter(
-    (block): block is AnthropicToolUseBlock => block.type === "tool_use",
-  )
+  const toolUseBlocks = message.content.filter((block): block is AnthropicToolUseBlock => block.type === "tool_use")
 
-  const textBlocks = message.content.filter(
-    (block): block is AnthropicTextBlock => block.type === "text",
-  )
+  const textBlocks = message.content.filter((block): block is AnthropicTextBlock => block.type === "text")
 
-  const thinkingBlocks = message.content.filter(
-    (block): block is AnthropicThinkingBlock => block.type === "thinking",
-  )
+  const thinkingBlocks = message.content.filter((block): block is AnthropicThinkingBlock => block.type === "thinking")
 
   // Combine text and thinking blocks, as OpenAI doesn't have separate thinking blocks
-  const allTextContent = [
-    ...textBlocks.map((b) => b.text),
-    ...thinkingBlocks.map((b) => b.thinking),
-  ].join("\n\n")
+  const allTextContent = [...textBlocks.map((b) => b.text), ...thinkingBlocks.map((b) => b.thinking)].join("\n\n")
 
   return toolUseBlocks.length > 0 ?
       [
@@ -380,9 +362,7 @@ function handleAssistantMessage(
 }
 
 function mapContent(
-  content:
-    | string
-    | Array<AnthropicUserContentBlock | AnthropicAssistantContentBlock>,
+  content: string | Array<AnthropicUserContentBlock | AnthropicAssistantContentBlock>,
 ): string | Array<ContentPart> | null {
   if (typeof content === "string") {
     return content
@@ -433,18 +413,14 @@ function mapContent(
 
 // Truncate tool name to fit OpenAI's 64-character limit
 // Uses consistent truncation with hash suffix to avoid collisions
-function getTruncatedToolName(
-  originalName: string,
-  toolNameMapping: ToolNameMapping,
-): string {
+function getTruncatedToolName(originalName: string, toolNameMapping: ToolNameMapping): string {
   // If already within limit, return as-is
   if (originalName.length <= OPENAI_TOOL_NAME_LIMIT) {
     return originalName
   }
 
   // Check if we've already truncated this name
-  const existingTruncated =
-    toolNameMapping.originalToTruncated.get(originalName)
+  const existingTruncated = toolNameMapping.originalToTruncated.get(originalName)
   if (existingTruncated) {
     return existingTruncated
   }
@@ -460,8 +436,7 @@ function getTruncatedToolName(
   const hashSuffix = Math.abs(hash).toString(36).slice(0, 8)
 
   // Truncate: leave room for "_" + 8-char hash = 9 chars
-  const truncatedName =
-    originalName.slice(0, OPENAI_TOOL_NAME_LIMIT - 9) + "_" + hashSuffix
+  const truncatedName = originalName.slice(0, OPENAI_TOOL_NAME_LIMIT - 9) + "_" + hashSuffix
 
   // Store mapping in both directions
   toolNameMapping.truncatedToOriginal.set(truncatedName, originalName)
@@ -509,10 +484,7 @@ function translateAnthropicToolChoiceToOpenAI(
         return {
           type: "function",
           function: {
-            name: getTruncatedToolName(
-              anthropicToolChoice.name,
-              toolNameMapping,
-            ),
+            name: getTruncatedToolName(anthropicToolChoice.name, toolNameMapping),
           },
         }
       }
@@ -530,9 +502,7 @@ function translateAnthropicToolChoiceToOpenAI(
 // Response translation
 
 /** Create empty response for edge case of no choices */
-function createEmptyResponse(
-  response: ChatCompletionResponse,
-): AnthropicResponse {
+function createEmptyResponse(response: ChatCompletionResponse): AnthropicResponse {
   return {
     id: response.id,
     type: "message",
@@ -572,17 +542,13 @@ export function translateToAnthropic(
   // Merge content from all choices
   const allTextBlocks: Array<AnthropicTextBlock> = []
   const allToolUseBlocks: Array<AnthropicToolUseBlock> = []
-  let stopReason: "stop" | "length" | "tool_calls" | "content_filter" | null =
-    null // default
+  let stopReason: "stop" | "length" | "tool_calls" | "content_filter" | null = null // default
   stopReason = response.choices[0]?.finish_reason ?? stopReason
 
   // Process all choices to extract text and tool use blocks
   for (const choice of response.choices) {
     const textBlocks = getAnthropicTextBlocks(choice.message.content)
-    const toolUseBlocks = getAnthropicToolUseBlocks(
-      choice.message.tool_calls,
-      toolNameMapping,
-    )
+    const toolUseBlocks = getAnthropicToolUseBlocks(choice.message.tool_calls, toolNameMapping)
 
     allTextBlocks.push(...textBlocks)
     allToolUseBlocks.push(...toolUseBlocks)
@@ -607,9 +573,7 @@ export function translateToAnthropic(
   }
 }
 
-function getAnthropicTextBlocks(
-  messageContent: Message["content"],
-): Array<AnthropicTextBlock> {
+function getAnthropicTextBlocks(messageContent: Message["content"]): Array<AnthropicTextBlock> {
   if (typeof messageContent === "string") {
     return [{ type: "text", text: messageContent }]
   }
@@ -635,16 +599,11 @@ function getAnthropicToolUseBlocks(
     try {
       input = JSON.parse(toolCall.function.arguments) as Record<string, unknown>
     } catch (error) {
-      consola.warn(
-        `Failed to parse tool call arguments for ${toolCall.function.name}:`,
-        error,
-      )
+      consola.warn(`Failed to parse tool call arguments for ${toolCall.function.name}:`, error)
     }
 
     // Restore original tool name if it was truncated
-    const originalName =
-      toolNameMapping?.truncatedToOriginal.get(toolCall.function.name)
-      ?? toolCall.function.name
+    const originalName = toolNameMapping?.truncatedToOriginal.get(toolCall.function.name) ?? toolCall.function.name
 
     return {
       type: "tool_use",

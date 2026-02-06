@@ -1,6 +1,6 @@
 {
   "name": "@hsupu/copilot-api",
-  "version": "0.7.15",
+  "version": "0.7.16",
   "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code!",
   "keywords": [
     "proxy",
@@ -23,8 +23,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "npx tsdown",
+    "build": "npm run build:ui && npx tsdown",
+    "build:ui": "cd src/routes/history/ui-v2 && bun install && bun run build",
     "dev": "bun run --watch ./src/main.ts",
+    "dev:ui": "cd src/routes/history/ui-v2 && bun run dev",
     "knip": "knip-bun",
     "lint": "eslint --cache",
     "lint:all": "eslint --cache .",
@@ -45,6 +47,7 @@
   },
   "dependencies": {
     "@anthropic-ai/tokenizer": "^0.0.4",
+    "baseline-browser-mapping": "^2.9.19",
     "citty": "^0.2.0",
     "clipboardy": "^5.1.0",
     "consola": "^3.4.2",

@@ -11,15 +11,13 @@ state.vsCodeVersion = "1.0.0"
 state.accountType = "individual"
 
 // Helper to mock fetch
-const fetchMock = mock(
-  (_url: string, opts: { headers: Record<string, string> }) => {
-    return {
-      ok: true,
-      json: () => ({ id: "123", object: "chat.completion", choices: [] }),
-      headers: opts.headers,
-    }
-  },
-)
+const fetchMock = mock((_url: string, opts: { headers: Record<string, string> }) => {
+  return {
+    ok: true,
+    json: () => ({ id: "123", object: "chat.completion", choices: [] }),
+    headers: opts.headers,
+  }
+})
 // @ts-expect-error - Mock fetch doesn't implement all fetch properties
 ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock
 
@@ -33,9 +31,7 @@ test("sets X-Initiator to agent if tool/assistant present", async () => {
   }
   await createChatCompletions(payload)
   expect(fetchMock).toHaveBeenCalled()
-  const headers = (
-    fetchMock.mock.calls[0][1] as { headers: Record<string, string> }
-  ).headers
+  const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers
   expect(headers["X-Initiator"]).toBe("agent")
 })
 
@@ -49,8 +45,6 @@ test("sets X-Initiator to user if only user present", async () => {
   }
   await createChatCompletions(payload)
   expect(fetchMock).toHaveBeenCalled()
-  const headers = (
-    fetchMock.mock.calls[1][1] as { headers: Record<string, string> }
-  ).headers
+  const headers = (fetchMock.mock.calls[1][1] as { headers: Record<string, string> }).headers
   expect(headers["X-Initiator"]).toBe("user")
 })

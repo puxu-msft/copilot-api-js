@@ -18,6 +18,7 @@ import { supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-
 import { type ResponseContext, updateTrackerModel } from "../shared"
 import { handleDirectAnthropicCompletion } from "./direct-anthropic-handler"
 import { convertAnthropicMessages, extractSystemPrompt } from "./message-utils"
+import { translateModelName } from "./non-stream-translation"
 import { handleTranslatedCompletion } from "./translated-handler"
 
 export async function handleCompletion(c: Context) {
@@ -36,24 +37,27 @@ export async function handleCompletion(c: Context) {
         anthropicPayload.system.length
       : JSON.stringify(anthropicPayload.system).length
     if (originalLength !== newLength) {
-      consola.debug(
-        `[SecurityResearch] System prompt enhanced: ${originalLength} -> ${newLength} chars`,
-      )
+      consola.debug(`[SecurityResearch] System prompt enhanced: ${originalLength} -> ${newLength} chars`)
     }
   }
 
   // Log tool-related information for debugging
   logToolInfo(anthropicPayload)
 
+  // Resolve model name aliases and date-suffixed versions
+  // e.g., "haiku" → "claude-haiku-4.5", "claude-sonnet-4-20250514" → "claude-sonnet-4"
+  const resolvedModel = translateModelName(anthropicPayload.model)
+  if (resolvedModel !== anthropicPayload.model) {
+    consola.debug(`Model name resolved: ${anthropicPayload.model} → ${resolvedModel}`)
+    anthropicPayload.model = resolvedModel
+  }
+
   // Determine which path we'll use
-  const useDirectAnthropicApi = supportsDirectAnthropicApi(
-    anthropicPayload.model,
-  )
+  const useDirectAnthropicApi = supportsDirectAnthropicApi(anthropicPayload.model)
 
   // Get tracking ID and use tracker's startTime for consistent timing
   const trackingId = c.get("trackingId") as string | undefined
-  const trackedRequest =
-    trackingId ? requestTracker.getRequest(trackingId) : undefined
+  const trackedRequest = trackingId ? requestTracker.getRequest(trackingId) : undefined
   const startTime = trackedRequest?.startTime ?? Date.now()
 
   // Update TUI tracker with model info
@@ -101,14 +105,10 @@ function logToolInfo(anthropicPayload: AnthropicMessagesPayload) {
     if (typeof msg.content !== "string") {
       for (const block of msg.content) {
         if (block.type === "tool_use") {
-          consola.debug(
-            `[Tools] tool_use in message: ${block.name} (id: ${block.id})`,
-          )
+          consola.debug(`[Tools] tool_use in message: ${block.name} (id: ${block.id})`)
         }
         if (block.type === "tool_result") {
-          consola.debug(
-            `[Tools] tool_result in message: id=${block.tool_use_id}, is_error=${block.is_error ?? false}`,
-          )
+          consola.debug(`[Tools] tool_result in message: id=${block.tool_use_id}, is_error=${block.is_error ?? false}`)
         }
       }
     }

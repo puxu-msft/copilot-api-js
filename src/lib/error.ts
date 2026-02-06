@@ -3,7 +3,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
-import { onTokenLimitExceeded } from "./auto-truncate-common"
+import { onTokenLimitExceeded } from "./auto-truncate/common"
 
 export class HTTPError extends Error {
   status: number
@@ -11,23 +11,14 @@ export class HTTPError extends Error {
   /** Model ID that caused the error (if known) */
   modelId?: string
 
-  constructor(
-    message: string,
-    status: number,
-    responseText: string,
-    modelId?: string,
-  ) {
+  constructor(message: string, status: number, responseText: string, modelId?: string) {
     super(message)
     this.status = status
     this.responseText = responseText
     this.modelId = modelId
   }
 
-  static async fromResponse(
-    message: string,
-    response: Response,
-    modelId?: string,
-  ): Promise<HTTPError> {
+  static async fromResponse(message: string, response: Response, modelId?: string): Promise<HTTPError> {
     const text = await response.text()
     return new HTTPError(message, response.status, text, modelId)
   }
@@ -47,9 +38,7 @@ function parseTokenLimitError(message: string): {
   limit: number
 } | null {
   // Match OpenAI format: "prompt token count of 135355 exceeds the limit of 128000"
-  const openaiMatch = message.match(
-    /prompt token count of (\d+) exceeds the limit of (\d+)/,
-  )
+  const openaiMatch = message.match(/prompt token count of (\d+) exceeds the limit of (\d+)/)
   if (openaiMatch) {
     return {
       current: Number.parseInt(openaiMatch[1], 10),
@@ -58,9 +47,7 @@ function parseTokenLimitError(message: string): {
   }
 
   // Match Anthropic format: "prompt is too long: 208598 tokens > 200000 maximum"
-  const anthropicMatch = message.match(
-    /prompt is too long: (\d+) tokens > (\d+) maximum/,
-  )
+  const anthropicMatch = message.match(/prompt is too long: (\d+) tokens > (\d+) maximum/)
   if (anthropicMatch) {
     return {
       current: Number.parseInt(anthropicMatch[1], 10),
@@ -84,8 +71,7 @@ function formatTokenLimitError(current: number, limit: number) {
     error: {
       type: "invalid_request_error",
       message:
-        `prompt is too long: ${current} tokens > ${limit} maximum `
-        + `(${excess} tokens over, ${percentage}% excess)`,
+        `prompt is too long: ${current} tokens > ${limit} maximum ` + `(${excess} tokens over, ${percentage}% excess)`,
     },
   }
 }
@@ -113,9 +99,7 @@ function formatRateLimitError(copilotMessage?: string) {
     type: "error",
     error: {
       type: "rate_limit_error",
-      message:
-        copilotMessage
-        ?? "You have exceeded your rate limit. Please try again later.",
+      message: copilotMessage ?? "You have exceeded your rate limit. Please try again later.",
     },
   }
 }
@@ -154,13 +138,8 @@ export function forwardError(c: Context, error: unknown) {
         if (error.modelId) {
           onTokenLimitExceeded(error.modelId, tokenInfo.limit)
         }
-        const formattedError = formatTokenLimitError(
-          tokenInfo.current,
-          tokenInfo.limit,
-        )
-        consola.warn(
-          `HTTP ${error.status}: Token limit exceeded (${tokenInfo.current} > ${tokenInfo.limit})`,
-        )
+        const formattedError = formatTokenLimitError(tokenInfo.current, tokenInfo.limit)
+        consola.warn(`HTTP ${error.status}: Token limit exceeded (${tokenInfo.current} > ${tokenInfo.limit})`)
         return c.json(formattedError, 400 as ContentfulStatusCode)
       }
     }
@@ -174,13 +153,8 @@ export function forwardError(c: Context, error: unknown) {
         if (error.modelId) {
           onTokenLimitExceeded(error.modelId, tokenInfo.limit)
         }
-        const formattedError = formatTokenLimitError(
-          tokenInfo.current,
-          tokenInfo.limit,
-        )
-        consola.warn(
-          `HTTP ${error.status}: Token limit exceeded (${tokenInfo.current} > ${tokenInfo.limit})`,
-        )
+        const formattedError = formatTokenLimitError(tokenInfo.current, tokenInfo.limit)
+        consola.warn(`HTTP ${error.status}: Token limit exceeded (${tokenInfo.current} > ${tokenInfo.limit})`)
         return c.json(formattedError, 400 as ContentfulStatusCode)
       }
     }

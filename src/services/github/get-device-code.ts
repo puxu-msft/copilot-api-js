@@ -1,9 +1,4 @@
-import {
-  GITHUB_APP_SCOPES,
-  GITHUB_BASE_URL,
-  GITHUB_CLIENT_ID,
-  standardHeaders,
-} from "~/lib/api-config"
+import { GITHUB_APP_SCOPES, GITHUB_BASE_URL, GITHUB_CLIENT_ID, standardHeaders } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
 
 export async function getDeviceCode(): Promise<DeviceCodeResponse> {
@@ -16,8 +11,7 @@ export async function getDeviceCode(): Promise<DeviceCodeResponse> {
     }),
   })
 
-  if (!response.ok)
-    throw await HTTPError.fromResponse("Failed to get device code", response)
+  if (!response.ok) throw await HTTPError.fromResponse("Failed to get device code", response)
 
   return (await response.json()) as DeviceCodeResponse
 }

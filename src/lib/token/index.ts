@@ -1,13 +1,7 @@
-export {
-  CopilotTokenManager,
-  type CopilotTokenManagerOptions,
-} from "./copilot-token-manager"
+export { CopilotTokenManager, type CopilotTokenManagerOptions } from "./copilot-token-manager"
 
 // Managers
-export {
-  GitHubTokenManager,
-  type GitHubTokenManagerOptions,
-} from "./github-token-manager"
+export { GitHubTokenManager, type GitHubTokenManagerOptions } from "./github-token-manager"
 // Providers
 export { GitHubTokenProvider } from "./providers/base"
 export { CLITokenProvider } from "./providers/cli"
@@ -15,12 +9,7 @@ export { DeviceAuthProvider } from "./providers/device-auth"
 export { EnvTokenProvider } from "./providers/env"
 export { FileTokenProvider } from "./providers/file"
 // Types
-export type {
-  CopilotTokenInfo,
-  TokenInfo,
-  TokenSource,
-  TokenValidationResult,
-} from "./types"
+export type { CopilotTokenInfo, TokenInfo, TokenSource, TokenValidationResult } from "./types"
 
 import consola from "consola"
 
@@ -43,9 +32,7 @@ export interface InitTokenManagersOptions {
  * Initialize the token management system.
  * This sets up both GitHub and Copilot token managers.
  */
-export async function initTokenManagers(
-  options: InitTokenManagersOptions = {},
-): Promise<{
+export async function initTokenManagers(options: InitTokenManagersOptions = {}): Promise<{
   githubTokenManager: GitHubTokenManager
   copilotTokenManager: CopilotTokenManager
 }> {
@@ -54,9 +41,7 @@ export async function initTokenManagers(
     cliToken: options.cliToken,
     validateOnInit: false, // We'll validate manually to show login info
     onTokenExpired: () => {
-      consola.error(
-        "GitHub token has expired. Please run `copilot-api auth` to re-authenticate.",
-      )
+      consola.error("GitHub token has expired. Please run `copilot-api auth` to re-authenticate.")
     },
   })
 

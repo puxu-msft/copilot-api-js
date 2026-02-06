@@ -6,10 +6,15 @@ import pc from "picocolors"
 
 import type { RequestUpdate, TrackedRequest, TuiRenderer } from "./types"
 
-import { formatLogTime as formatTime } from "../logger"
-
 // ANSI escape codes for cursor control
 const CLEAR_LINE = "\x1b[2K\r"
+
+function formatTime(date: Date = new Date()): string {
+  const h = String(date.getHours()).padStart(2, "0")
+  const m = String(date.getMinutes()).padStart(2, "0")
+  const s = String(date.getSeconds()).padStart(2, "0")
+  return `${h}:${m}:${s}`
+}
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`
@@ -82,9 +87,19 @@ export class ConsoleRenderer implements TuiRenderer {
         this.clearFooterForLog()
 
         // Format and print the log message
+        // Trim trailing whitespace/newlines to prevent blank lines
+        // (e.g. citty's runMain passes "\n" as a separate arg on errors)
         const message = logObj.args
-          .map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)))
+          .map((arg) => {
+            if (typeof arg === "string") return arg
+            // Error objects have non-enumerable properties, JSON.stringify gives "{}"
+            if (arg instanceof Error) {
+              return arg.stack ?? arg.message
+            }
+            return JSON.stringify(arg)
+          })
           .join(" ")
+          .trimEnd()
 
         // Use appropriate formatting based on log type
         const prefix = this.getLogPrefix(logObj.type)
@@ -185,28 +200,13 @@ export class ConsoleRenderer implements TuiRenderer {
     isError?: boolean
     isDim?: boolean
   }): string {
-    const {
-      prefix,
-      time,
-      method,
-      path,
-      model,
-      status,
-      duration,
-      tokens,
-      queueWait,
-      extra,
-      isError,
-      isDim,
-    } = parts
+    const { prefix, time, method, path, model, status, duration, tokens, queueWait, extra, isError, isDim } = parts
 
     if (isDim) {
       // Dim lines: all gray
       const modelPart = model ? ` ${model}` : ""
       const extraPart = extra ? ` ${extra}` : ""
-      return pc.dim(
-        `${prefix} ${time} ${method} ${path}${modelPart}${extraPart}`,
-      )
+      return pc.dim(`${prefix} ${time} ${method} ${path}${modelPart}${extraPart}`)
     }
 
     // Colored lines: each part has its own color
@@ -219,8 +219,7 @@ export class ConsoleRenderer implements TuiRenderer {
     let result = `${coloredPrefix} ${coloredTime} ${coloredMethod} ${coloredPath}${coloredModel}`
 
     if (status !== undefined) {
-      const coloredStatus =
-        isError ? pc.red(String(status)) : pc.green(String(status))
+      const coloredStatus = isError ? pc.red(String(status)) : pc.green(String(status))
       result += ` ${coloredStatus}`
     }
 
@@ -264,9 +263,7 @@ export class ConsoleRenderer implements TuiRenderer {
         path: request.path,
         model: request.model,
         extra:
-          request.queuePosition !== undefined && request.queuePosition > 0 ?
-            `[q#${request.queuePosition}]`
-          : undefined,
+          request.queuePosition !== undefined && request.queuePosition > 0 ? `[q#${request.queuePosition}]` : undefined,
         isDim: true,
       })
       this.printLog(message)
@@ -298,15 +295,9 @@ export class ConsoleRenderer implements TuiRenderer {
 
     const status = request.statusCode ?? 0
     const isError = request.status === "error" || status >= 400
-    const tokens =
-      request.model ?
-        formatTokens(request.inputTokens, request.outputTokens)
-      : undefined
+    const tokens = request.model ? formatTokens(request.inputTokens, request.outputTokens) : undefined
     // Only show queue wait if it's significant (> 100ms)
-    const queueWait =
-      request.queueWaitMs && request.queueWaitMs > 100 ?
-        formatDuration(request.queueWaitMs)
-      : undefined
+    const queueWait = request.queueWaitMs && request.queueWaitMs > 100 ? formatDuration(request.queueWaitMs) : undefined
 
     const message = this.formatLogLine({
       prefix: isError ? "[FAIL]" : "[ OK ]",
@@ -334,9 +325,7 @@ export class ConsoleRenderer implements TuiRenderer {
 
     // Restore original reporters
     if (this.originalReporters.length > 0) {
-      consola.setReporters(
-        this.originalReporters as Parameters<typeof consola.setReporters>[0],
-      )
+      consola.setReporters(this.originalReporters as Parameters<typeof consola.setReporters>[0])
     }
   }
 }

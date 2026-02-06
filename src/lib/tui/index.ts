@@ -2,13 +2,7 @@
 
 export { tuiLogger } from "./middleware"
 export { requestTracker } from "./tracker"
-export type {
-  RequestStatus,
-  RequestUpdate,
-  TrackedRequest,
-  TuiOptions,
-  TuiRenderer,
-} from "./types"
+export type { RequestStatus, RequestUpdate, TrackedRequest, TuiOptions, TuiRenderer } from "./types"
 
 import type { TuiOptions } from "./types"
 
@@ -40,10 +34,7 @@ export function initRequestTracker(options?: TuiOptions): void {
     requestTracker.setRenderer(renderer)
   }
 
-  if (
-    options?.historySize !== undefined
-    || options?.completedDisplayMs !== undefined
-  ) {
+  if (options?.historySize !== undefined || options?.completedDisplayMs !== undefined) {
     requestTracker.setOptions({
       historySize: options.historySize,
       completedDisplayMs: options.completedDisplayMs,

@@ -2,8 +2,8 @@ import type { Context } from "hono"
 
 import consola from "consola"
 
-import { checkNeedsCompactionAnthropic } from "~/lib/auto-truncate-anthropic"
-import { state } from "~/lib/state"
+import { checkNeedsCompactionAnthropic } from "~/lib/auto-truncate/anthropic"
+import { state, isAutoTruncateEnabled } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { type AnthropicMessagesPayload } from "~/types/api/anthropic"
 
@@ -26,9 +26,7 @@ export async function handleCountTokens(c: Context) {
 
     const { payload: openAIPayload } = translateToOpenAI(anthropicPayload)
 
-    const selectedModel = state.models?.data.find(
-      (model) => model.id === anthropicPayload.model,
-    )
+    const selectedModel = state.models?.data.find((model) => model.id === anthropicPayload.model)
 
     if (!selectedModel) {
       consola.warn("Model not found, returning default token count")
@@ -39,17 +37,15 @@ export async function handleCountTokens(c: Context) {
 
     // Check if auto-truncate would be triggered
     // If so, return an inflated token count to encourage Claude Code auto-compact
-    if (state.autoTruncate) {
-      const truncateCheck = await checkNeedsCompactionAnthropic(
-        anthropicPayload,
-        selectedModel,
-      )
+    if (isAutoTruncateEnabled()) {
+      const truncateCheck = await checkNeedsCompactionAnthropic(anthropicPayload, selectedModel, {
+        checkTokenLimit: state.autoTruncateByTokens,
+        checkByteLimit: state.autoTruncateByReqsz,
+      })
 
       if (truncateCheck.needed) {
         // Return 95% of context window to signal that context is nearly full
-        const contextWindow =
-          selectedModel.capabilities?.limits?.max_context_window_tokens
-          ?? 200000
+        const contextWindow = selectedModel.capabilities?.limits?.max_context_window_tokens ?? 200000
         const inflatedTokens = Math.floor(contextWindow * 0.95)
 
         consola.debug(
@@ -72,9 +68,7 @@ export async function handleCountTokens(c: Context) {
     if (anthropicPayload.tools && anthropicPayload.tools.length > 0) {
       let mcpToolExist = false
       if (anthropicBeta?.startsWith("claude-code")) {
-        mcpToolExist = anthropicPayload.tools.some((tool) =>
-          tool.name.startsWith("mcp__"),
-        )
+        mcpToolExist = anthropicPayload.tools.some((tool) => tool.name.startsWith("mcp__"))
       }
       if (!mcpToolExist) {
         if (anthropicPayload.model.startsWith("claude")) {
@@ -102,9 +96,7 @@ export async function handleCountTokens(c: Context) {
         : Math.round(finalTokenCount * 1.05)
     }
 
-    consola.debug(
-      `Token count: ${finalTokenCount} (tokenizer: ${tokenizerName})`,
-    )
+    consola.debug(`Token count: ${finalTokenCount} (tokenizer: ${tokenizerName})`)
 
     return c.json({
       input_tokens: finalTokenCount,

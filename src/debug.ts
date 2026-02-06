@@ -8,7 +8,6 @@ import os from "node:os"
 import { ensurePaths, PATHS } from "./lib/paths"
 import { state } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
-import { initConsolaReporter } from "./lib/tui"
 import { getModels } from "./services/copilot/get-models"
 import { getCopilotToken } from "./services/github/get-copilot-token"
 import { getCopilotUsage } from "./services/github/get-copilot-usage"
@@ -88,10 +87,7 @@ async function getAccountInfo(): Promise<{
 
     if (!state.githubToken) return null
 
-    const [user, copilot] = await Promise.all([
-      getGitHubUser(),
-      getCopilotUsage(),
-    ])
+    const [user, copilot] = await Promise.all([getGitHubUser(), getCopilotUsage()])
 
     return { user, copilot }
   } catch {
@@ -100,10 +96,7 @@ async function getAccountInfo(): Promise<{
 }
 
 async function getDebugInfo(includeAccount: boolean): Promise<DebugInfo> {
-  const [version, tokenExists] = await Promise.all([
-    getPackageVersion(),
-    checkTokenExists(),
-  ])
+  const [version, tokenExists] = await Promise.all([getPackageVersion(), checkTokenExists()])
 
   const info: DebugInfo = {
     version,
@@ -152,7 +145,6 @@ function printDebugInfoJson(info: DebugInfo): void {
 }
 
 export async function runDebug(options: RunDebugOptions): Promise<void> {
-  initConsolaReporter()
   const debugInfo = await getDebugInfo(true)
 
   if (options.json) {
@@ -191,8 +183,7 @@ const debugModels = defineCommand({
       type: "string",
       alias: "a",
       default: "individual",
-      description:
-        "The type of GitHub account (individual, business, enterprise)",
+      description: "The type of GitHub account (individual, business, enterprise)",
     },
     "github-token": {
       type: "string",
@@ -201,7 +192,6 @@ const debugModels = defineCommand({
     },
   },
   async run({ args }) {
-    initConsolaReporter()
     state.accountType = args["account-type"]
 
     await ensurePaths()

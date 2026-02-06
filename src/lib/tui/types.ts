@@ -1,11 +1,6 @@
 // TUI types for request tracking and display
 
-export type RequestStatus =
-  | "queued"
-  | "executing"
-  | "streaming"
-  | "completed"
-  | "error"
+export type RequestStatus = "queued" | "executing" | "streaming" | "completed" | "error"
 
 export interface TrackedRequest {
   id: string

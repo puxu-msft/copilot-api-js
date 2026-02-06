@@ -1,17 +1,25 @@
 // History recording module for API requests/responses
 // Supports full message content, session grouping, and rich querying
 
-// Simple ID generator (no external deps)
-function generateId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 9)
+import { notifyEntryAdded, notifyEntryUpdated } from "./history-ws"
+import { generateId } from "./utils"
+
+// Format timestamp as local ISO-like string (YYYY-MM-DD HH:MM:SS)
+function formatLocalTimestamp(ts: number): string {
+  const d = new Date(ts)
+  const y = d.getFullYear()
+  const mo = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  const h = String(d.getHours()).padStart(2, "0")
+  const m = String(d.getMinutes()).padStart(2, "0")
+  const s = String(d.getSeconds()).padStart(2, "0")
+  return `${y}-${mo}-${day} ${h}:${m}:${s}`
 }
 
 // Message types for full content storage
 export interface MessageContent {
   role: string
-  content:
-    | string
-    | Array<{ type: string; text?: string; [key: string]: unknown }>
+  content: string | Array<{ type: string; text?: string; [key: string]: unknown }>
   tool_calls?: Array<{
     id: string
     type: string
@@ -24,6 +32,37 @@ export interface MessageContent {
 export interface ToolDefinition {
   name: string
   description?: string
+}
+
+export interface TruncationInfo {
+  /** Number of messages removed from the beginning of the conversation */
+  removedMessageCount: number
+  /** Estimated token count before truncation */
+  originalTokens: number
+  /** Estimated token count after truncation */
+  compactedTokens: number
+  /** Processing time in milliseconds */
+  processingTimeMs: number
+}
+
+export interface SanitizationInfo {
+  /** Number of orphaned tool blocks/messages removed */
+  removedBlockCount: number
+  /** Number of system-reminder tags removed */
+  systemReminderRemovals: number
+}
+
+export interface RewriteInfo {
+  /** Auto-truncation metadata */
+  truncation?: TruncationInfo
+  /** Sanitization metadata */
+  sanitization?: SanitizationInfo
+  /** Rewritten messages as actually sent to the API */
+  rewrittenMessages?: Array<MessageContent>
+  /** Rewritten system prompt (if modified) */
+  rewrittenSystem?: string
+  /** Rewritten→original message index mapping: messageMapping[rwIdx] = origIdx */
+  messageMapping?: Array<number>
 }
 
 export interface HistoryEntry {
@@ -59,6 +98,12 @@ export interface HistoryEntry {
       input: string
     }>
   }
+
+  /** Auto-truncation metadata (set when messages were truncated before sending to API) */
+  truncation?: TruncationInfo
+
+  /** All rewrite metadata (truncation + sanitization + rewritten content) */
+  rewrites?: RewriteInfo
 
   durationMs?: number
 }
@@ -128,7 +173,7 @@ export const historyState: HistoryState = {
   entries: [],
   sessions: new Map(),
   currentSessionId: "",
-  maxEntries: 1000,
+  maxEntries: 200,
   sessionTimeoutMs: 30 * 60 * 1000, // 30 minutes
 }
 
@@ -184,10 +229,7 @@ export interface RecordRequestParams {
   system?: string
 }
 
-export function recordRequest(
-  endpoint: "anthropic" | "openai",
-  request: RecordRequestParams,
-): string {
+export function recordRequest(endpoint: "anthropic" | "openai", request: RecordRequestParams): string {
   if (!historyState.enabled) {
     return ""
   }
@@ -234,21 +276,19 @@ export function recordRequest(
   }
 
   // Enforce max entries limit (FIFO), skip if maxEntries is 0 (unlimited)
-  while (
-    historyState.maxEntries > 0
-    && historyState.entries.length > historyState.maxEntries
-  ) {
+  while (historyState.maxEntries > 0 && historyState.entries.length > historyState.maxEntries) {
     const removed = historyState.entries.shift()
     // Clean up empty sessions
     if (removed) {
-      const sessionEntries = historyState.entries.filter(
-        (e) => e.sessionId === removed.sessionId,
-      )
+      const sessionEntries = historyState.entries.filter((e) => e.sessionId === removed.sessionId)
       if (sessionEntries.length === 0) {
         historyState.sessions.delete(removed.sessionId)
       }
     }
   }
+
+  // Notify WebSocket clients
+  notifyEntryAdded(entry)
 
   return entry.id
 }
@@ -271,11 +311,7 @@ export interface RecordResponseParams {
   }>
 }
 
-export function recordResponse(
-  id: string,
-  response: RecordResponseParams,
-  durationMs: number,
-): void {
+export function recordResponse(id: string, response: RecordResponseParams, durationMs: number): void {
   if (!historyState.enabled || !id) {
     return
   }
@@ -292,21 +328,42 @@ export function recordResponse(
       session.totalOutputTokens += response.usage.output_tokens
       session.lastActivity = Date.now()
     }
+
+    // Notify WebSocket clients
+    notifyEntryUpdated(entry)
+  }
+}
+
+export function recordTruncation(id: string, truncation: TruncationInfo): void {
+  if (!historyState.enabled || !id) {
+    return
+  }
+
+  const entry = historyState.entries.find((e) => e.id === id)
+  if (entry) {
+    entry.truncation = truncation
+    notifyEntryUpdated(entry)
+  }
+}
+
+export function recordRewrites(id: string, rewrites: RewriteInfo): void {
+  if (!historyState.enabled || !id) {
+    return
+  }
+
+  const entry = historyState.entries.find((e) => e.id === id)
+  if (entry) {
+    entry.rewrites = rewrites
+    // Also keep truncation for backward compatibility
+    if (rewrites.truncation) {
+      entry.truncation = rewrites.truncation
+    }
+    notifyEntryUpdated(entry)
   }
 }
 
 export function getHistory(options: QueryOptions = {}): HistoryResult {
-  const {
-    page = 1,
-    limit = 50,
-    model,
-    endpoint,
-    success,
-    from,
-    to,
-    search,
-    sessionId,
-  } = options
+  const { page = 1, limit = 50, model, endpoint, success, from, to, search, sessionId } = options
 
   let filtered = [...historyState.entries]
 
@@ -318,9 +375,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
   if (model) {
     const modelLower = model.toLowerCase()
     filtered = filtered.filter(
-      (e) =>
-        e.request.model.toLowerCase().includes(modelLower)
-        || e.response?.model.toLowerCase().includes(modelLower),
+      (e) => e.request.model.toLowerCase().includes(modelLower) || e.response?.model.toLowerCase().includes(modelLower),
     )
   }
 
@@ -349,9 +404,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
           return m.content.toLowerCase().includes(searchLower)
         }
         if (Array.isArray(m.content)) {
-          return m.content.some(
-            (c) => c.text && c.text.toLowerCase().includes(searchLower),
-          )
+          return m.content.some((c) => c.text && c.text.toLowerCase().includes(searchLower))
         }
         return false
       })
@@ -363,9 +416,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
         && e.response.content.content.toLowerCase().includes(searchLower)
 
       // Search in tool names
-      const toolMatch = e.response?.toolCalls?.some((t) =>
-        t.name.toLowerCase().includes(searchLower),
-      )
+      const toolMatch = e.response?.toolCalls?.some((t) => t.name.toLowerCase().includes(searchLower))
 
       // Search in system prompt
       const sysMatch = e.request.system?.toLowerCase().includes(searchLower)
@@ -396,9 +447,7 @@ export function getEntry(id: string): HistoryEntry | undefined {
 }
 
 export function getSessions(): SessionResult {
-  const sessions = Array.from(historyState.sessions.values()).sort(
-    (a, b) => b.lastActivity - a.lastActivity,
-  )
+  const sessions = Array.from(historyState.sessions.values()).sort((a, b) => b.lastActivity - a.lastActivity)
 
   return {
     sessions,
@@ -411,9 +460,7 @@ export function getSession(id: string): Session | undefined {
 }
 
 export function getSessionEntries(sessionId: string): Array<HistoryEntry> {
-  return historyState.entries
-    .filter((e) => e.sessionId === sessionId)
-    .sort((a, b) => a.timestamp - b.timestamp) // Chronological order for sessions
+  return historyState.entries.filter((e) => e.sessionId === sessionId).sort((a, b) => a.timestamp - b.timestamp) // Chronological order for sessions
 }
 
 export function clearHistory(): void {
@@ -427,9 +474,7 @@ export function deleteSession(sessionId: string): boolean {
     return false
   }
 
-  historyState.entries = historyState.entries.filter(
-    (e) => e.sessionId !== sessionId,
-  )
+  historyState.entries = historyState.entries.filter((e) => e.sessionId !== sessionId)
   historyState.sessions.delete(sessionId)
 
   if (historyState.currentSessionId === sessionId) {
@@ -461,8 +506,13 @@ export function getStats(): HistoryStats {
     // Endpoint distribution
     endpointDist[entry.endpoint] = (endpointDist[entry.endpoint] || 0) + 1
 
-    // Hourly activity (last 24 hours)
-    const hour = new Date(entry.timestamp).toISOString().slice(0, 13)
+    // Hourly activity (last 24 hours) - use local time
+    const d = new Date(entry.timestamp)
+    const y = d.getFullYear()
+    const mo = String(d.getMonth() + 1).padStart(2, "0")
+    const day = String(d.getDate()).padStart(2, "0")
+    const h = String(d.getHours()).padStart(2, "0")
+    const hour = `${y}-${mo}-${day}T${h}`
     hourlyActivity[hour] = (hourlyActivity[hour] || 0) + 1
 
     if (entry.response) {
@@ -544,7 +594,7 @@ export function exportHistory(format: "json" | "csv" = "json"): string {
   const rows = historyState.entries.map((e) => [
     e.id,
     e.sessionId,
-    new Date(e.timestamp).toISOString(),
+    formatLocalTimestamp(e.timestamp),
     e.endpoint,
     e.request.model,
     e.request.messages.length,

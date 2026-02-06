@@ -37,8 +37,7 @@ describeWithToken("Model Name Resolution", () => {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!models?.data) {
       throw new Error(
-        "Failed to fetch models from GitHub Copilot API. "
-          + "Check if your GITHUB_TOKEN has Copilot access.",
+        "Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.",
       )
     }
     state.models = models
@@ -186,15 +185,10 @@ describeWithToken("Model Name Resolution", () => {
       const resolvedModel = translated.model
       const isAvailable = models.some((m) => m.id === resolvedModel)
 
-      console.log(
-        `[Dynamic] Resolved opus -> ${resolvedModel}, available: ${isAvailable}`,
-      )
+      console.log(`[Dynamic] Resolved opus -> ${resolvedModel}, available: ${isAvailable}`)
 
       // If we have models loaded, the resolved model should be available
-      if (
-        models.length > 0
-        && claudeModels.some((m) => m.id.includes("opus"))
-      ) {
+      if (models.length > 0 && claudeModels.some((m) => m.id.includes("opus"))) {
         expect(isAvailable).toBe(true)
       }
     })

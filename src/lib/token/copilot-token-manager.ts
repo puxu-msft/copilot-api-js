@@ -87,9 +87,7 @@ export class CopilotTokenManager {
 
         // Check if this is a 401 error - might need to refresh GitHub token
         if (this.isUnauthorizedError(error)) {
-          consola.warn(
-            "Copilot token refresh got 401, trying to refresh GitHub token...",
-          )
+          consola.warn("Copilot token refresh got 401, trying to refresh GitHub token...")
           const newGithubToken = await this.githubTokenManager.refresh()
           if (newGithubToken) {
             // Update state and retry
@@ -99,9 +97,7 @@ export class CopilotTokenManager {
         }
 
         const delay = Math.min(1000 * 2 ** attempt, 30000) // Max 30s delay
-        consola.warn(
-          `Token refresh attempt ${attempt + 1}/${this.maxRetries} failed, retrying in ${delay}ms`,
-        )
+        consola.warn(`Token refresh attempt ${attempt + 1}/${this.maxRetries} failed, retrying in ${delay}ms`)
         await new Promise((resolve) => setTimeout(resolve, delay))
       }
     }
@@ -127,17 +123,12 @@ export class CopilotTokenManager {
     // Sanity check: refresh_in should be positive and reasonable
     let effectiveRefreshIn = refreshInSeconds
     if (refreshInSeconds <= 0) {
-      consola.warn(
-        `[CopilotToken] Invalid refresh_in=${refreshInSeconds}s, using default 30 minutes`,
-      )
+      consola.warn(`[CopilotToken] Invalid refresh_in=${refreshInSeconds}s, using default 30 minutes`)
       effectiveRefreshIn = 1800 // 30 minutes
     }
 
     // Calculate refresh interval (refresh a bit before expiration)
-    const refreshInterval = Math.max(
-      (effectiveRefreshIn - 60) * 1000,
-      this.minRefreshIntervalMs,
-    )
+    const refreshInterval = Math.max((effectiveRefreshIn - 60) * 1000, this.minRefreshIntervalMs)
 
     consola.debug(
       `[CopilotToken] refresh_in=${effectiveRefreshIn}s, scheduling refresh every ${Math.round(refreshInterval / 1000)}s`,
@@ -153,13 +144,9 @@ export class CopilotTokenManager {
         .then((newToken) => {
           if (newToken) {
             state.copilotToken = newToken.token
-            consola.debug(
-              `Copilot token refreshed (next refresh_in=${newToken.refreshIn}s)`,
-            )
+            consola.debug(`Copilot token refreshed (next refresh_in=${newToken.refreshIn}s)`)
           } else {
-            consola.error(
-              "Failed to refresh Copilot token after retries, using existing token",
-            )
+            consola.error("Failed to refresh Copilot token after retries, using existing token")
           }
         })
         .catch((error: unknown) => {

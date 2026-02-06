@@ -29,10 +29,7 @@ export function createAnthropicStreamAccumulator(): AnthropicStreamAccumulator {
 }
 
 // Process a single Anthropic event for accumulation
-export function processAnthropicEvent(
-  event: AnthropicStreamEventData,
-  acc: AnthropicStreamAccumulator,
-) {
+export function processAnthropicEvent(event: AnthropicStreamEventData, acc: AnthropicStreamAccumulator) {
   switch (event.type) {
     case "content_block_delta": {
       handleContentBlockDelta(event.delta, acc)
@@ -63,10 +60,7 @@ type ContentBlockDelta =
   | { type: "thinking_delta"; thinking: string }
   | { type: "signature_delta"; signature: string }
 
-function handleContentBlockDelta(
-  delta: ContentBlockDelta,
-  acc: AnthropicStreamAccumulator,
-) {
+function handleContentBlockDelta(delta: ContentBlockDelta, acc: AnthropicStreamAccumulator) {
   if (delta.type === "text_delta") {
     acc.content += delta.text
   } else if (delta.type === "input_json_delta" && acc.currentToolCall) {
@@ -86,10 +80,7 @@ type ContentBlock =
     }
   | { type: "thinking"; thinking: string }
 
-function handleContentBlockStart(
-  block: ContentBlock,
-  acc: AnthropicStreamAccumulator,
-) {
+function handleContentBlockStart(block: ContentBlock, acc: AnthropicStreamAccumulator) {
   if (block.type === "tool_use") {
     acc.currentToolCall = {
       id: block.id,
@@ -119,11 +110,7 @@ interface MessageUsage {
   cache_read_input_tokens?: number
 }
 
-function handleMessageDelta(
-  delta: MessageDelta,
-  usage: MessageUsage | undefined,
-  acc: AnthropicStreamAccumulator,
-) {
+function handleMessageDelta(delta: MessageDelta, usage: MessageUsage | undefined, acc: AnthropicStreamAccumulator) {
   if (delta.stop_reason) acc.stopReason = delta.stop_reason
   if (usage) {
     acc.inputTokens = usage.input_tokens ?? 0

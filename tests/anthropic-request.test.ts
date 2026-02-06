@@ -7,14 +7,7 @@ import { translateToOpenAI } from "../src/routes/messages/non-stream-translation
 
 // Zod schema for a single message in the chat completion request.
 const messageSchema = z.object({
-  role: z.enum([
-    "system",
-    "user",
-    "assistant",
-    "tool",
-    "function",
-    "developer",
-  ]),
+  role: z.enum(["system", "user", "assistant", "tool", "function", "developer"]),
   content: z.union([z.string(), z.object({}), z.array(z.any())]),
   name: z.string().optional(),
   tool_calls: z.array(z.any()).optional(),
@@ -147,12 +140,8 @@ describe("Anthropic to OpenAI translation logic", () => {
     expect(isValidChatCompletionRequest(result.payload)).toBe(true)
 
     // Check that thinking content is combined with text content
-    const assistantMessage = result.payload.messages.find(
-      (m) => m.role === "assistant",
-    )
-    expect(assistantMessage?.content).toContain(
-      "Let me think about this simple math problem...",
-    )
+    const assistantMessage = result.payload.messages.find((m) => m.role === "assistant")
+    expect(assistantMessage?.content).toContain("Let me think about this simple math problem...")
     expect(assistantMessage?.content).toContain("2+2 equals 4.")
   })
 
@@ -166,8 +155,7 @@ describe("Anthropic to OpenAI translation logic", () => {
           content: [
             {
               type: "thinking",
-              thinking:
-                "I need to call the weather API to get current weather information.",
+              thinking: "I need to call the weather API to get current weather information.",
             },
             { type: "text", text: "I'll check the weather for you." },
             {
@@ -185,15 +173,9 @@ describe("Anthropic to OpenAI translation logic", () => {
     expect(isValidChatCompletionRequest(result.payload)).toBe(true)
 
     // Check that thinking content is included in the message content
-    const assistantMessage = result.payload.messages.find(
-      (m) => m.role === "assistant",
-    )
-    expect(assistantMessage?.content).toContain(
-      "I need to call the weather API",
-    )
-    expect(assistantMessage?.content).toContain(
-      "I'll check the weather for you.",
-    )
+    const assistantMessage = result.payload.messages.find((m) => m.role === "assistant")
+    expect(assistantMessage?.content).toContain("I need to call the weather API")
+    expect(assistantMessage?.content).toContain("I'll check the weather for you.")
     expect(assistantMessage?.tool_calls).toHaveLength(1)
     expect(assistantMessage?.tool_calls?.[0].function.name).toBe("get_weather")
   })

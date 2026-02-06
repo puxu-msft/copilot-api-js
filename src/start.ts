@@ -3,11 +3,7 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 import { createHash } from "node:crypto"
-import { existsSync, promises as fsPromises } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
 import { serve, type ServerHandler } from "srvx"
-import invariant from "tiny-invariant"
 
 import type { Model } from "./services/copilot/get-models"
 
@@ -16,9 +12,10 @@ import { initAdaptiveRateLimiter } from "./lib/adaptive-rate-limiter"
 import { initHistory } from "./lib/history"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
+import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
-import { initConsolaReporter, initRequestTracker } from "./lib/tui"
+import { initRequestTracker } from "./lib/tui"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { server } from "./server"
 
@@ -29,13 +26,20 @@ function formatLimit(value?: number): string {
 
 function formatModelInfo(model: Model): string {
   const limits = model.capabilities?.limits
+  const supports = model.capabilities?.supports
 
   const contextK = formatLimit(limits?.max_context_window_tokens)
   const promptK = formatLimit(limits?.max_prompt_tokens)
   const outputK = formatLimit(limits?.max_output_tokens)
 
   const features = [
-    model.capabilities?.supports?.tool_calls && "tools",
+    // Collect all boolean true capabilities from supports
+    ...Object.entries(supports ?? {})
+      .filter(([, value]) => value === true)
+      .map(([key]) => key.replaceAll("_", "-")),
+    // Infer additional capabilities
+    supports?.max_thinking_budget && "thinking",
+    model.capabilities?.type === "embeddings" && "embeddings",
     model.preview && "preview",
   ]
     .filter(Boolean)
@@ -43,8 +47,7 @@ function formatModelInfo(model: Model): string {
   const featureStr = features ? ` (${features})` : ""
 
   // Truncate long model names to maintain alignment
-  const modelName =
-    model.id.length > 30 ? `${model.id.slice(0, 27)}...` : model.id.padEnd(30)
+  const modelName = model.id.length > 30 ? `${model.id.slice(0, 27)}...` : model.id.padEnd(30)
 
   return (
     `  - ${modelName} `
@@ -71,85 +74,6 @@ function verifySecurityResearchPassphrase(passphrase: string): boolean {
   return hash === SECURITY_RESEARCH_HASH
 }
 
-/**
- * Setup Claude Code configuration files for use with Copilot API.
- * Creates/updates:
- * - $HOME/.claude.json - Sets hasCompletedOnboarding: true
- * - $HOME/.claude/settings.json - Sets env variables for Copilot API
- */
-async function setupClaudeCodeConfig(
-  serverUrl: string,
-  model: string,
-  smallModel: string,
-): Promise<void> {
-  const home = homedir()
-  const claudeJsonPath = join(home, ".claude.json")
-  const claudeDir = join(home, ".claude")
-  const settingsPath = join(claudeDir, "settings.json")
-
-  // Ensure .claude directory exists
-  if (!existsSync(claudeDir)) {
-    await fsPromises.mkdir(claudeDir, { recursive: true })
-    consola.info(`Created directory: ${claudeDir}`)
-  }
-
-  // Update $HOME/.claude.json
-  let claudeJson: Record<string, unknown> = {}
-  if (existsSync(claudeJsonPath)) {
-    try {
-      const buffer = await fsPromises.readFile(claudeJsonPath)
-      claudeJson = JSON.parse(buffer.toString()) as Record<string, unknown>
-    } catch {
-      consola.warn(`Failed to parse ${claudeJsonPath}, creating new file`)
-    }
-  }
-  claudeJson.hasCompletedOnboarding = true
-  await fsPromises.writeFile(
-    claudeJsonPath,
-    JSON.stringify(claudeJson, null, 2) + "\n",
-  )
-  consola.success(`Updated ${claudeJsonPath}`)
-
-  // Update $HOME/.claude/settings.json
-  let settings: Record<string, unknown> = {}
-  if (existsSync(settingsPath)) {
-    try {
-      const buffer = await fsPromises.readFile(settingsPath)
-      settings = JSON.parse(buffer.toString()) as Record<string, unknown>
-    } catch {
-      consola.warn(`Failed to parse ${settingsPath}, creating new file`)
-    }
-  }
-
-  // Set env configuration
-  settings.env = {
-    ...(settings.env as Record<string, string> | undefined),
-    ANTHROPIC_BASE_URL: serverUrl,
-    ANTHROPIC_AUTH_TOKEN: "copilot-api",
-    ANTHROPIC_MODEL: model,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: model,
-    ANTHROPIC_SMALL_FAST_MODEL: smallModel,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: smallModel,
-    DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-    CLAUDE_CODE_ENABLE_TELEMETRY: "0",
-  }
-
-  await fsPromises.writeFile(
-    settingsPath,
-    JSON.stringify(settings, null, 2) + "\n",
-  )
-  consola.success(`Updated ${settingsPath}`)
-
-  consola.box(
-    `Claude Code configured!\n\n`
-      + `Model: ${model}\n`
-      + `Small Model: ${smallModel}\n`
-      + `API URL: ${serverUrl}\n\n`
-      + `Run 'claude' to start Claude Code.`,
-  )
-}
-
 interface RunServerOptions {
   port: number
   host?: string
@@ -163,14 +87,11 @@ interface RunServerOptions {
   recoveryTimeout: number
   consecutiveSuccesses: number
   githubToken?: string
-  setupClaudeCode: boolean
-  claudeModel?: string
-  claudeSmallModel?: string
   showGitHubToken: boolean
   proxyEnv: boolean
-  history: boolean
   historyLimit: number
-  autoTruncate: boolean
+  autoTruncateByTokens: boolean
+  autoTruncateByReqsz: boolean
   compressToolResults: boolean
   redirectAnthropic: boolean
   rewriteAnthropicTools: boolean
@@ -180,7 +101,6 @@ interface RunServerOptions {
 export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   // Phase 1: Logging and Verbose Mode
-  // Note: initConsolaReporter() is already called in run() before this
   // ===========================================================================
   if (options.verbose) {
     consola.level = 5
@@ -200,7 +120,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.accountType = options.accountType
   state.manualApprove = options.manual
   state.showGitHubToken = options.showGitHubToken
-  state.autoTruncate = options.autoTruncate
+  state.autoTruncateByTokens = options.autoTruncateByTokens
+  state.autoTruncateByReqsz = options.autoTruncateByReqsz
   state.compressToolResults = options.compressToolResults
   state.redirectAnthropic = options.redirectAnthropic
   state.rewriteAnthropicTools = options.rewriteAnthropicTools
@@ -209,9 +130,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   if (options.securityResearchPassphrase) {
     if (verifySecurityResearchPassphrase(options.securityResearchPassphrase)) {
       state.securityResearchMode = true
-      consola.warn(
-        "⚠️  Security Research Mode enabled - use responsibly for authorized testing only",
-      )
+      consola.warn("⚠️  Security Research Mode enabled - use responsibly for authorized testing only")
     } else {
       consola.error("Invalid Security Research Mode passphrase")
       process.exit(1)
@@ -228,8 +147,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   if (!options.rateLimit) {
     consola.info("Rate limiting disabled")
   }
-  if (!options.autoTruncate) {
+  if (!options.autoTruncateByTokens && !options.autoTruncateByReqsz) {
     consola.info("Auto-truncate disabled")
+  } else if (options.autoTruncateByReqsz) {
+    consola.info("Auto-truncate by request size enabled")
   }
   if (options.compressToolResults) {
     consola.info("Tool result compression enabled")
@@ -238,9 +159,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     consola.info("Anthropic API redirect enabled (using OpenAI translation)")
   }
   if (!options.rewriteAnthropicTools) {
-    consola.info(
-      "Anthropic server-side tools rewrite disabled (passing through unchanged)",
-    )
+    consola.info("Anthropic server-side tools rewrite disabled (passing through unchanged)")
   }
 
   // ===========================================================================
@@ -255,12 +174,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     })
   }
 
-  initHistory(options.history, options.historyLimit)
-  if (options.history) {
-    const limitText =
-      options.historyLimit === 0 ? "unlimited" : `max ${options.historyLimit}`
-    consola.info(`History recording enabled (${limitText} entries)`)
-  }
+  initHistory(true, options.historyLimit)
+  const limitText = options.historyLimit === 0 ? "unlimited" : `max ${options.historyLimit}`
+  consola.info(`History recording enabled (${limitText} entries)`)
 
   // ===========================================================================
   // Phase 4: External Dependencies (filesystem, network)
@@ -274,84 +190,48 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Fetch available models from Copilot API
   await cacheModels()
 
-  consola.info(
-    `Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`,
-  )
+  consola.info(`Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`)
 
   // ===========================================================================
-  // Phase 5: Optional Setup (Claude Code configuration)
+  // Phase 5: Start Server
   // ===========================================================================
   const displayHost = options.host ?? "localhost"
   const serverUrl = `http://${displayHost}:${options.port}`
 
-  if (options.setupClaudeCode) {
-    invariant(state.models, "Models should be loaded by now")
-    const availableModelIds = state.models.data.map((model) => model.id)
-
-    let selectedModel: string
-    let selectedSmallModel: string
-
-    // Check if models are provided via CLI arguments
-    if (options.claudeModel && options.claudeSmallModel) {
-      // Validate the provided models exist
-      if (!availableModelIds.includes(options.claudeModel)) {
-        consola.error(
-          `Invalid model: ${options.claudeModel}\nAvailable models: ${availableModelIds.join(", ")}`,
-        )
-        process.exit(1)
-      }
-      if (!availableModelIds.includes(options.claudeSmallModel)) {
-        consola.error(
-          `Invalid small model: ${options.claudeSmallModel}\nAvailable models: ${availableModelIds.join(", ")}`,
-        )
-        process.exit(1)
-      }
-      selectedModel = options.claudeModel
-      selectedSmallModel = options.claudeSmallModel
-    } else if (options.claudeModel || options.claudeSmallModel) {
-      // Only one model provided - error
-      consola.error(
-        "Both --claude-model and --claude-small-model must be provided together, or neither for interactive selection",
-      )
-      process.exit(1)
-    } else {
-      // Interactive selection
-      selectedModel = await consola.prompt(
-        "Select a model to use with Claude Code",
-        {
-          type: "select",
-          options: availableModelIds,
-        },
-      )
-
-      selectedSmallModel = await consola.prompt(
-        "Select a small model to use with Claude Code",
-        {
-          type: "select",
-          options: availableModelIds,
-        },
-      )
-    }
-
-    // Setup Claude Code configuration files
-    await setupClaudeCodeConfig(serverUrl, selectedModel, selectedSmallModel)
-  }
-
-  // ===========================================================================
-  // Phase 6: Start Server
-  // ===========================================================================
   // Initialize request tracker now that we're ready to handle requests
   initRequestTracker()
 
   consola.box(
-    `🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage${options.history ? `\n📜 History UI: ${serverUrl}/history` : ""}`,
+    `🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage\n📜 History UI: ${serverUrl}/history`,
   )
 
-  serve({
-    fetch: server.fetch as ServerHandler,
-    port: options.port,
-    hostname: options.host,
-  })
+  let serverInstance
+  try {
+    serverInstance = serve({
+      fetch: server.fetch as ServerHandler,
+      port: options.port,
+      hostname: options.host,
+      reusePort: true,
+      bun: {
+        // Default idleTimeout is 10s, too short for LLM streaming responses
+        idleTimeout: 255, // seconds (Bun max)
+      },
+    })
+  } catch (error) {
+    consola.error(`Failed to start server on port ${options.port}. Is the port already in use?`, error)
+    process.exit(1)
+  }
+
+  // Store server instance and register signal handlers for graceful shutdown.
+  // Order matters: setServerInstance must be called before setupShutdownHandlers
+  // so the handler has access to the server instance when closing.
+  setServerInstance(serverInstance)
+  setupShutdownHandlers()
+
+  // Block until a shutdown signal (SIGINT/SIGTERM) is received.
+  // This prevents runMain() from returning, which would trigger
+  // process.exit(0) in main.ts (needed for one-shot commands).
+  await waitForShutdown()
 }
 
 export const start = defineCommand({
@@ -369,8 +249,7 @@ export const start = defineCommand({
     host: {
       alias: "H",
       type: "string",
-      description:
-        "Host/interface to bind to (e.g., 127.0.0.1 for localhost only, 0.0.0.0 for all interfaces)",
+      description: "Host/interface to bind to (e.g., 127.0.0.1 for localhost only, 0.0.0.0 for all interfaces)",
     },
     verbose: {
       alias: "v",
@@ -397,94 +276,67 @@ export const start = defineCommand({
     "retry-interval": {
       type: "string",
       default: "10",
-      description:
-        "Seconds to wait before retrying after rate limit error (default: 10)",
+      description: "Seconds to wait before retrying after rate limit error (default: 10)",
     },
     "request-interval": {
       type: "string",
       default: "10",
-      description:
-        "Seconds between requests in rate-limited mode (default: 10)",
+      description: "Seconds between requests in rate-limited mode (default: 10)",
     },
     "recovery-timeout": {
       type: "string",
       default: "10",
-      description:
-        "Minutes before attempting to recover from rate-limited mode (default: 10)",
+      description: "Minutes before attempting to recover from rate-limited mode (default: 10)",
     },
     "consecutive-successes": {
       type: "string",
       default: "5",
-      description:
-        "Number of consecutive successes needed to recover from rate-limited mode (default: 5)",
+      description: "Number of consecutive successes needed to recover from rate-limited mode (default: 5)",
     },
     "github-token": {
       alias: "g",
       type: "string",
-      description:
-        "Provide GitHub token directly (must be generated using the `auth` subcommand)",
-    },
-    "setup-claude-code": {
-      type: "boolean",
-      default: false,
-      description:
-        "Setup Claude Code config files to use Copilot API (interactive model selection)",
-    },
-    "claude-model": {
-      type: "string",
-      description:
-        "Model to use with Claude Code (use with --setup-claude-code, skips interactive selection)",
-    },
-    "claude-small-model": {
-      type: "string",
-      description:
-        "Small/fast model to use with Claude Code (use with --setup-claude-code, skips interactive selection)",
+      description: "Provide GitHub token directly (must be generated using the `auth` subcommand)",
     },
     "show-github-token": {
       type: "boolean",
       default: false,
-      description:
-        "Show GitHub token in logs (use --verbose for Copilot token refresh logs)",
+      description: "Show GitHub token in logs (use --verbose for Copilot token refresh logs)",
     },
     "proxy-env": {
       type: "boolean",
       default: false,
       description: "Initialize proxy from environment variables",
     },
-    "no-history": {
-      type: "boolean",
-      default: false,
-      description: "Disable request history recording and Web UI",
-    },
     "history-limit": {
       type: "string",
-      default: "1000",
-      description:
-        "Maximum number of history entries to keep in memory (0 = unlimited)",
+      default: "200",
+      description: "Maximum number of history entries to keep in memory (0 = unlimited)",
     },
     "no-auto-truncate": {
       type: "boolean",
+      default: true,
+      description: "Disable automatic conversation history truncation by token limit (default: disabled)",
+    },
+    "auto-truncate-by-reqsz": {
+      type: "boolean",
       default: false,
-      description:
-        "Disable automatic conversation history truncation when exceeding limits",
+      description: "Enable automatic truncation by request body size (default: disabled)",
     },
     "compress-tool-results": {
       type: "boolean",
       default: false,
-      description:
-        "Compress old tool_result content before truncating messages (may lose context details)",
+      description: "Compress old tool_result content before truncating messages (may lose context details)",
     },
     "redirect-anthropic": {
       type: "boolean",
       default: false,
-      description:
-        "Redirect Anthropic models through OpenAI translation (instead of direct API)",
+      description: "Redirect Anthropic models through OpenAI translation (instead of direct API)",
     },
     "no-rewrite-anthropic-tools": {
       type: "boolean",
       default: false,
-      description:
-        "Don't rewrite Anthropic server-side tools (web_search, etc.) to custom tool format",
+      description: "Don't rewrite Anthropic server-side tools (web_search, etc.) to custom tool format",
     },
     "security-research-mode": {
       type: "string",
@@ -493,9 +345,6 @@ export const start = defineCommand({
     },
   },
   run({ args }) {
-    // Initialize logging first so all output uses unified format
-    initConsolaReporter()
-
     // Check for unknown arguments
     // Known args include both kebab-case (as defined) and camelCase (citty auto-converts)
     const knownArgs = new Set([
@@ -515,9 +364,11 @@ export const start = defineCommand({
       "a",
       // manual
       "manual",
-      // no-rate-limit
+      // no-rate-limit (citty also stores "rate-limit" when parsing --no-rate-limit)
       "no-rate-limit",
       "noRateLimit",
+      "rate-limit",
+      "rateLimit",
       // retry-interval
       "retry-interval",
       "retryInterval",
@@ -534,48 +385,41 @@ export const start = defineCommand({
       "github-token",
       "githubToken",
       "g",
-      // setup-claude-code
-      "setup-claude-code",
-      "setupClaudeCode",
-      // claude-model
-      "claude-model",
-      "claudeModel",
-      // claude-small-model
-      "claude-small-model",
-      "claudeSmallModel",
       // show-github-token
       "show-github-token",
       "showGithubToken",
       // proxy-env
       "proxy-env",
       "proxyEnv",
-      // no-history
-      "no-history",
-      "noHistory",
       // history-limit
       "history-limit",
       "historyLimit",
-      // no-auto-truncate
+      // no-auto-truncate (citty also stores "auto-truncate" when parsing --no-auto-truncate)
       "no-auto-truncate",
       "noAutoTruncate",
+      "auto-truncate",
+      "autoTruncate",
+      // auto-truncate-by-reqsz
+      "auto-truncate-by-reqsz",
+      "autoTruncateByReqsz",
       // compress-tool-results
       "compress-tool-results",
       "compressToolResults",
       // redirect-anthropic
       "redirect-anthropic",
       "redirectAnthropic",
-      // no-rewrite-anthropic-tools
+      // no-rewrite-anthropic-tools (citty also stores "rewrite-anthropic-tools")
       "no-rewrite-anthropic-tools",
       "noRewriteAnthropicTools",
+      "rewrite-anthropic-tools",
+      "rewriteAnthropicTools",
       // security-research-mode
       "security-research-mode",
       "securityResearchMode",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
-      consola.warn(
-        `Unknown argument(s): ${unknownArgs.map((a) => `--${a}`).join(", ")}`,
-      )
+      consola.warn(`Unknown argument(s): ${unknownArgs.map((a) => `--${a}`).join(", ")}`)
     }
 
     return runServer({
@@ -590,14 +434,11 @@ export const start = defineCommand({
       recoveryTimeout: Number.parseInt(args["recovery-timeout"], 10),
       consecutiveSuccesses: Number.parseInt(args["consecutive-successes"], 10),
       githubToken: args["github-token"],
-      setupClaudeCode: args["setup-claude-code"],
-      claudeModel: args["claude-model"],
-      claudeSmallModel: args["claude-small-model"],
       showGitHubToken: args["show-github-token"],
       proxyEnv: args["proxy-env"],
-      history: !args["no-history"],
       historyLimit: Number.parseInt(args["history-limit"], 10),
-      autoTruncate: !args["no-auto-truncate"],
+      autoTruncateByTokens: !args["no-auto-truncate"],
+      autoTruncateByReqsz: !args["no-auto-truncate"] && args["auto-truncate-by-reqsz"],
       compressToolResults: args["compress-tool-results"],
       redirectAnthropic: args["redirect-anthropic"],
       rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],

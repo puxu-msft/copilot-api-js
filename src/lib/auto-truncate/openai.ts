@@ -13,10 +13,7 @@
 
 import consola from "consola"
 
-import type {
-  ChatCompletionsPayload,
-  Message,
-} from "~/services/copilot/create-chat-completions"
+import type { ChatCompletionsPayload, Message } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 
 import {
@@ -27,21 +24,21 @@ import {
 } from "~/lib/message-sanitizer"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
+import { bytesToKB } from "~/lib/utils"
 
-import type { AutoTruncateConfig } from "./auto-truncate-common"
+import type { AutoTruncateConfig } from "./common"
 
 import {
   DEFAULT_AUTO_TRUNCATE_CONFIG,
+  LARGE_TOOL_RESULT_THRESHOLD,
+  compressToolResultContent,
   getEffectiveByteLimitBytes,
   getEffectiveTokenLimit,
-} from "./auto-truncate-common"
+} from "./common"
 
 // Re-export for backwards compatibility
-export {
-  getEffectiveByteLimitBytes,
-  onRequestTooLarge,
-} from "./auto-truncate-common"
-export type { AutoTruncateConfig } from "./auto-truncate-common"
+export { getEffectiveByteLimitBytes, onRequestTooLarge } from "./common"
+export type { AutoTruncateConfig } from "./common"
 
 // Re-export sanitize function for backwards compatibility
 export { sanitizeOpenAIMessages } from "~/lib/message-sanitizer"
@@ -91,9 +88,7 @@ function calculateLimits(model: Model, config: AutoTruncateConfig): Limits {
     ?? model.capabilities?.limits?.max_prompt_tokens
     ?? 128000
 
-  const tokenLimit = Math.floor(
-    rawTokenLimit * (1 - config.safetyMarginPercent / 100),
-  )
+  const tokenLimit = Math.floor(rawTokenLimit * (1 - config.safetyMarginPercent / 100))
   const byteLimit = getEffectiveByteLimitBytes()
   return { tokenLimit, byteLimit }
 }
@@ -135,29 +130,6 @@ function getMessageBytes(msg: Message): number {
 // ============================================================================
 // Smart Tool Result Compression
 // ============================================================================
-
-/** Threshold for large tool message content (bytes) */
-const LARGE_TOOL_RESULT_THRESHOLD = 10000 // 10KB
-
-/** Maximum length for compressed tool_result summary */
-const COMPRESSED_SUMMARY_LENGTH = 500
-
-/**
- * Compress a large tool message content to a summary.
- * Keeps the first and last portions with a note about truncation.
- */
-function compressToolResultContent(content: string): string {
-  if (content.length <= LARGE_TOOL_RESULT_THRESHOLD) {
-    return content
-  }
-
-  const halfLen = Math.floor(COMPRESSED_SUMMARY_LENGTH / 2)
-  const start = content.slice(0, halfLen)
-  const end = content.slice(-halfLen)
-  const removedChars = content.length - COMPRESSED_SUMMARY_LENGTH
-
-  return `${start}\n\n[... ${removedChars.toLocaleString()} characters omitted for brevity ...]\n\n${end}`
-}
 
 /**
  * Smart compression strategy for OpenAI format:
@@ -245,6 +217,8 @@ interface PreserveSearchParams {
   payloadOverhead: number
   tokenLimit: number
   byteLimit: number
+  checkTokenLimit: boolean
+  checkByteLimit: boolean
 }
 
 /**
@@ -260,6 +234,8 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
     payloadOverhead,
     tokenLimit,
     byteLimit,
+    checkTokenLimit,
+    checkByteLimit,
   } = params
 
   if (messages.length === 0) return 0
@@ -274,7 +250,7 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
   // Each message adds: JSON.stringify(msg) + 1 (comma, except last)
   const availableBytes = byteLimit - payloadOverhead - systemBytes - markerBytes
 
-  if (availableTokens <= 0 || availableBytes <= 0) {
+  if ((checkTokenLimit && availableTokens <= 0) || (checkByteLimit && availableBytes <= 0)) {
     return messages.length // Cannot fit any messages
   }
 
@@ -291,13 +267,15 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
     cumBytes[i] = cumBytes[i + 1] + getMessageBytes(msg) + 1
   }
 
-  // Binary search for the smallest index where both limits are satisfied
+  // Binary search for the smallest index where enabled limits are satisfied
   let left = 0
   let right = n
 
   while (left < right) {
     const mid = (left + right) >>> 1
-    if (cumTokens[mid] <= availableTokens && cumBytes[mid] <= availableBytes) {
+    const tokensFit = !checkTokenLimit || cumTokens[mid] <= availableTokens
+    const bytesFit = !checkByteLimit || cumBytes[mid] <= availableBytes
+    if (tokensFit && bytesFit) {
       right = mid // Can keep more messages
     } else {
       left = mid + 1 // Need to remove more
@@ -326,8 +304,8 @@ export async function checkNeedsCompactionOpenAI(
   const currentTokens = tokenCount.input
   const currentBytes = JSON.stringify(payload).length
 
-  const exceedsTokens = currentTokens > tokenLimit
-  const exceedsBytes = currentBytes > byteLimit
+  const exceedsTokens = cfg.checkTokenLimit && currentTokens > tokenLimit
+  const exceedsBytes = cfg.checkByteLimit && currentBytes > byteLimit
 
   let reason: "tokens" | "bytes" | "both" | undefined
   if (exceedsTokens && exceedsBytes) {
@@ -352,9 +330,7 @@ export async function checkNeedsCompactionOpenAI(
  * Generate a summary of removed messages for context.
  * Extracts key information like tool calls and topics.
  */
-function generateRemovedMessagesSummary(
-  removedMessages: Array<Message>,
-): string {
+function generateRemovedMessagesSummary(removedMessages: Array<Message>): string {
   const toolCalls: Array<string> = []
   let userMessageCount = 0
   let assistantMessageCount = 0
@@ -383,8 +359,7 @@ function generateRemovedMessagesSummary(
   if (userMessageCount > 0 || assistantMessageCount > 0) {
     const breakdown = []
     if (userMessageCount > 0) breakdown.push(`${userMessageCount} user`)
-    if (assistantMessageCount > 0)
-      breakdown.push(`${assistantMessageCount} assistant`)
+    if (assistantMessageCount > 0) breakdown.push(`${assistantMessageCount} assistant`)
     parts.push(`Messages: ${breakdown.join(", ")}`)
   }
 
@@ -393,9 +368,7 @@ function generateRemovedMessagesSummary(
     // Deduplicate and limit
     const uniqueTools = [...new Set(toolCalls)]
     const displayTools =
-      uniqueTools.length > 5 ?
-        [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`]
-      : uniqueTools
+      uniqueTools.length > 5 ? [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`] : uniqueTools
     parts.push(`Tools used: ${displayTools.join(", ")}`)
   }
 
@@ -406,10 +379,7 @@ function generateRemovedMessagesSummary(
  * Add a compression notice to the system message.
  * Informs the model that some tool content has been compressed.
  */
-function addCompressionNotice(
-  payload: ChatCompletionsPayload,
-  compressedCount: number,
-): ChatCompletionsPayload {
+function addCompressionNotice(payload: ChatCompletionsPayload, compressedCount: number): ChatCompletionsPayload {
   const notice =
     `\n\n[CONTEXT NOTE]\n`
     + `${compressedCount} large tool results have been compressed to reduce context size.\n`
@@ -435,11 +405,7 @@ function addCompressionNotice(
 /**
  * Create truncation context to append to system messages.
  */
-function createTruncationSystemContext(
-  removedCount: number,
-  compressedCount: number,
-  summary: string,
-): string {
+function createTruncationSystemContext(removedCount: number, compressedCount: number, summary: string): string {
   let context = `\n\n[CONVERSATION CONTEXT]\n`
 
   if (removedCount > 0) {
@@ -462,11 +428,7 @@ function createTruncationSystemContext(
 }
 
 /** Create a truncation marker message (fallback when no system message) */
-function createTruncationMarker(
-  removedCount: number,
-  compressedCount: number,
-  summary: string,
-): Message {
+function createTruncationMarker(removedCount: number, compressedCount: number, summary: string): Message {
   const parts: Array<string> = []
 
   if (removedCount > 0) {
@@ -498,9 +460,7 @@ export async function autoTruncateOpenAI(
   const startTime = performance.now()
 
   // Helper to build result with timing
-  const buildResult = (
-    result: Omit<OpenAIAutoTruncateResult, "processingTimeMs">,
-  ): OpenAIAutoTruncateResult => ({
+  const buildResult = (result: Omit<OpenAIAutoTruncateResult, "processingTimeMs">): OpenAIAutoTruncateResult => ({
     ...result,
     processingTimeMs: Math.round(performance.now() - startTime),
   })
@@ -549,10 +509,7 @@ export async function autoTruncateOpenAI(
     const compressedBytes = JSON.stringify(compressedPayload).length
     const compressedTokenCount = await getTokenCount(compressedPayload, model)
 
-    if (
-      compressedTokenCount.input <= tokenLimit
-      && compressedBytes <= byteLimit
-    ) {
+    if (compressedTokenCount.input <= tokenLimit && compressedBytes <= byteLimit) {
       // Log single line summary
       let reason = "tokens"
       if (exceedsTokens && exceedsBytes) reason = "tokens+size"
@@ -560,15 +517,12 @@ export async function autoTruncateOpenAI(
       const elapsedMs = Math.round(performance.now() - startTime)
       consola.info(
         `[AutoTruncate:OpenAI] ${reason}: ${originalTokens}→${compressedTokenCount.input} tokens, `
-          + `${Math.round(originalBytes / 1024)}→${Math.round(compressedBytes / 1024)}KB `
+          + `${bytesToKB(originalBytes)}→${bytesToKB(compressedBytes)}KB `
           + `(compressed ${compressedCount} tool_results) [${elapsedMs}ms]`,
       )
 
       // Add compression notice to system message
-      const noticePayload = addCompressionNotice(
-        compressedPayload,
-        compressedCount,
-      )
+      const noticePayload = addCompressionNotice(compressedPayload, compressedCount)
       const noticeTokenCount = await getTokenCount(noticePayload, model)
 
       return buildResult({
@@ -585,8 +539,7 @@ export async function autoTruncateOpenAI(
   // Use working messages (compressed if enabled, original otherwise)
 
   // Extract system messages from working messages
-  const { systemMessages, conversationMessages } =
-    extractOpenAISystemMessages(workingMessages)
+  const { systemMessages, conversationMessages } = extractOpenAISystemMessages(workingMessages)
 
   // Calculate overhead: everything except the messages array content
   const messagesJson = JSON.stringify(workingMessages)
@@ -597,18 +550,12 @@ export async function autoTruncateOpenAI(
   const payloadOverhead = workingPayloadSize - messagesJson.length
 
   // Calculate system message sizes
-  const systemBytes = systemMessages.reduce(
-    (sum, m) => sum + getMessageBytes(m) + 1,
-    0,
-  )
-  const systemTokens = systemMessages.reduce(
-    (sum, m) => sum + estimateMessageTokens(m),
-    0,
-  )
+  const systemBytes = systemMessages.reduce((sum, m) => sum + getMessageBytes(m) + 1, 0)
+  const systemTokens = systemMessages.reduce((sum, m) => sum + estimateMessageTokens(m), 0)
 
   consola.debug(
-    `[AutoTruncate:OpenAI] overhead=${Math.round(payloadOverhead / 1024)}KB, `
-      + `system=${systemMessages.length} msgs (${Math.round(systemBytes / 1024)}KB)`,
+    `[AutoTruncate:OpenAI] overhead=${bytesToKB(payloadOverhead)}KB, `
+      + `system=${systemMessages.length} msgs (${bytesToKB(systemBytes)}KB)`,
   )
 
   // Find optimal preserve index
@@ -619,13 +566,13 @@ export async function autoTruncateOpenAI(
     payloadOverhead,
     tokenLimit,
     byteLimit,
+    checkTokenLimit: cfg.checkTokenLimit,
+    checkByteLimit: cfg.checkByteLimit,
   })
 
   // Check if we can compact
   if (preserveIndex === 0) {
-    consola.warn(
-      "[AutoTruncate:OpenAI] Cannot truncate, system messages too large",
-    )
+    consola.warn("[AutoTruncate:OpenAI] Cannot truncate, system messages too large")
     return buildResult({
       payload,
       wasCompacted: false,
@@ -658,9 +605,7 @@ export async function autoTruncateOpenAI(
   preserved = filterOpenAIOrphanedToolUse(preserved)
 
   if (preserved.length === 0) {
-    consola.warn(
-      "[AutoTruncate:OpenAI] All messages filtered out after cleanup",
-    )
+    consola.warn("[AutoTruncate:OpenAI] All messages filtered out after cleanup")
     return buildResult({
       payload,
       wasCompacted: false,
@@ -681,33 +626,19 @@ export async function autoTruncateOpenAI(
 
   // Prefer adding context to last system message (cleaner for the model)
   if (systemMessages.length > 0) {
-    const truncationContext = createTruncationSystemContext(
-      removedCount,
-      compressedCount,
-      summary,
-    )
+    const truncationContext = createTruncationSystemContext(removedCount, compressedCount, summary)
     const lastSystemIdx = systemMessages.length - 1
     const lastSystem = systemMessages[lastSystemIdx]
 
     // Append context to last system message
     const updatedSystem: Message = {
       ...lastSystem,
-      content:
-        typeof lastSystem.content === "string" ?
-          lastSystem.content + truncationContext
-        : lastSystem.content, // Can't append to array content
+      content: typeof lastSystem.content === "string" ? lastSystem.content + truncationContext : lastSystem.content, // Can't append to array content
     }
-    newSystemMessages = [
-      ...systemMessages.slice(0, lastSystemIdx),
-      updatedSystem,
-    ]
+    newSystemMessages = [...systemMessages.slice(0, lastSystemIdx), updatedSystem]
   } else {
     // No system messages, use marker message
-    const marker = createTruncationMarker(
-      removedCount,
-      compressedCount,
-      summary,
-    )
+    const marker = createTruncationMarker(removedCount, compressedCount, summary)
     newMessages = [marker, ...preserved]
   }
 
@@ -727,20 +658,19 @@ export async function autoTruncateOpenAI(
 
   const actions: Array<string> = []
   if (removedCount > 0) actions.push(`removed ${removedCount} msgs`)
-  if (compressedCount > 0)
-    actions.push(`compressed ${compressedCount} tool_results`)
+  if (compressedCount > 0) actions.push(`compressed ${compressedCount} tool_results`)
   const actionInfo = actions.length > 0 ? ` (${actions.join(", ")})` : ""
 
   const elapsedMs = Math.round(performance.now() - startTime)
   consola.info(
     `[AutoTruncate:OpenAI] ${reason}: ${originalTokens}→${newTokenCount.input} tokens, `
-      + `${Math.round(originalBytes / 1024)}→${Math.round(newBytes / 1024)}KB${actionInfo} [${elapsedMs}ms]`,
+      + `${bytesToKB(originalBytes)}→${bytesToKB(newBytes)}KB${actionInfo} [${elapsedMs}ms]`,
   )
 
   // Warn if still over limit (shouldn't happen with correct algorithm)
   if (newBytes > byteLimit) {
     consola.warn(
-      `[AutoTruncate:OpenAI] Result still over byte limit (${Math.round(newBytes / 1024)}KB > ${Math.round(byteLimit / 1024)}KB)`,
+      `[AutoTruncate:OpenAI] Result still over byte limit (${bytesToKB(newBytes)}KB > ${bytesToKB(byteLimit)}KB)`,
     )
   }
 
@@ -756,9 +686,7 @@ export async function autoTruncateOpenAI(
 /**
  * Create a marker to prepend to responses indicating auto-truncation occurred.
  */
-export function createTruncationResponseMarkerOpenAI(
-  result: OpenAIAutoTruncateResult,
-): string {
+export function createTruncationResponseMarkerOpenAI(result: OpenAIAutoTruncateResult): string {
   if (!result.wasCompacted) return ""
 
   const reduction = result.originalTokens - result.compactedTokens

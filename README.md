@@ -18,7 +18,7 @@ This fork includes the following enhancements over the upstream project:
 - **Smart auto-truncate**: Automatically truncates conversation history when exceeding context limits, with optional tool result compression
 - **`/v1/event_logging/batch` endpoint**: Compatibility endpoint for Anthropic SDK's event logging (returns OK without processing)
 - **`logout` command**: Remove stored GitHub token with `copilot-api logout`
-- **`patch-claude` command**: Patch Claude Code's context window limit to match Copilot's limits
+- **`list-claude-code` command**: List all locally installed Claude Code versions
 - **Tool name length handling**: Automatically truncates long tool names (>64 chars) to comply with OpenAI's limit, with hash-based suffix to avoid collisions. Original names are restored in responses.
 - **Request History UI**: Built-in Web UI (enabled by default) to view, search, filter, and export all API requests/responses. Access at `/history`.
 
@@ -94,7 +94,7 @@ copilot-api start
 | `logout` | Remove stored GitHub token |
 | `check-usage` | Show Copilot usage and quota |
 | `debug` | Display diagnostic information |
-| `patch-claude` | Patch Claude Code's context window limit |
+| `list-claude-code` | List all locally installed Claude Code versions |
 
 ### Start Command Options
 
@@ -114,21 +114,11 @@ copilot-api start
 | `--claude-code`, `-c` | Generate Claude Code launch command | false |
 | `--show-token` | Show tokens on fetch/refresh | false |
 | `--proxy-env` | Use proxy from environment | false |
-| `--no-history` | Disable request history UI at `/history` | false |
 | `--history-limit` | Max history entries in memory | 1000 |
 | `--no-auto-truncate` | Disable auto-truncate when exceeding limits | false |
 | `--compress-tool-results` | Compress old tool results before truncating | false |
 | `--redirect-anthropic` | Force Anthropic through OpenAI translation | false |
 | `--no-rewrite-anthropic-tools` | Don't rewrite server-side tools | false |
-
-### Patch-Claude Command Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--limit`, `-l` | Context window limit in tokens | 128000 |
-| `--restore`, `-r` | Restore original 200k limit | false |
-| `--path`, `-p` | Path to Claude Code cli.js | auto-detect |
-| `--status`, `-s` | Show current patch status | false |
 
 ## API Endpoints
 

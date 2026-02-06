@@ -45,9 +45,7 @@ export class DeviceAuthProvider extends GitHubTokenProvider {
       const response = await getDeviceCode()
       consola.debug("Device code response:", response)
 
-      consola.info(
-        `Please enter the code "${response.user_code}" at ${response.verification_uri}`,
-      )
+      consola.info(`Please enter the code "${response.user_code}" at ${response.verification_uri}`)
 
       const token = await pollAccessToken(response)
 

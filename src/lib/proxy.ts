@@ -9,10 +9,7 @@ import { Agent, ProxyAgent, setGlobalDispatcher, type Dispatcher } from "undici"
 class ProxyDispatcher extends Agent {
   private proxies = new Map<string, ProxyAgent>()
 
-  dispatch(
-    options: Dispatcher.DispatchOptions,
-    handler: Dispatcher.DispatchHandler,
-  ): boolean {
+  dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler): boolean {
     try {
       const origin = this.getOriginUrl(options.origin)
       const proxyUrl = this.getProxyUrl(origin)
@@ -23,9 +20,7 @@ class ProxyDispatcher extends Agent {
       }
 
       const agent = this.getOrCreateProxyAgent(proxyUrl)
-      consola.debug(
-        `HTTP proxy route: ${origin.hostname} via ${this.formatProxyLabel(proxyUrl)}`,
-      )
+      consola.debug(`HTTP proxy route: ${origin.hostname} via ${this.formatProxyLabel(proxyUrl)}`)
       return agent.dispatch(options, handler)
     } catch {
       return super.dispatch(options, handler)
@@ -68,10 +63,7 @@ class ProxyDispatcher extends Agent {
   override destroy(err?: Error | null): Promise<void>
   override destroy(callback: () => void): void
   override destroy(err: Error | null, callback: () => void): void
-  override destroy(
-    errOrCallback?: Error | null | (() => void),
-    callback?: () => void,
-  ): Promise<void> | void {
+  override destroy(errOrCallback?: Error | null | (() => void), callback?: () => void): Promise<void> | void {
     // Clean up proxy agents (fire-and-forget, errors are ignored)
     for (const agent of this.proxies.values()) {
       if (typeof errOrCallback === "function") {

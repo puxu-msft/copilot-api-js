@@ -4,15 +4,10 @@
  */
 
 import type { MessageContent } from "~/lib/history"
-import type {
-  AnthropicMessagesPayload,
-  AnthropicResponse,
-} from "~/types/api/anthropic"
+import type { AnthropicMessagesPayload, AnthropicResponse } from "~/types/api/anthropic"
 
 // Convert Anthropic messages to history MessageContent format
-export function convertAnthropicMessages(
-  messages: AnthropicMessagesPayload["messages"],
-): Array<MessageContent> {
+export function convertAnthropicMessages(messages: AnthropicMessagesPayload["messages"]): Array<MessageContent> {
   return messages.map((msg) => {
     if (typeof msg.content === "string") {
       return { role: msg.role, content: msg.content }
@@ -32,12 +27,14 @@ export function convertAnthropicMessages(
         }
       }
       if (block.type === "tool_result") {
-        const resultContent =
-          typeof block.content === "string" ?
-            block.content
-          : block.content
-              .map((c) => (c.type === "text" ? c.text : `[${c.type}]`))
-              .join("\n")
+        let resultContent: string
+        if (typeof block.content === "string") {
+          resultContent = block.content
+        } else if (Array.isArray(block.content)) {
+          resultContent = block.content.map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n")
+        } else {
+          resultContent = ""
+        }
         return {
           type: "tool_result",
           tool_use_id: block.tool_use_id,
@@ -52,9 +49,7 @@ export function convertAnthropicMessages(
 }
 
 // Extract system prompt from Anthropic format
-export function extractSystemPrompt(
-  system: AnthropicMessagesPayload["system"],
-): string | undefined {
+export function extractSystemPrompt(system: AnthropicMessagesPayload["system"]): string | undefined {
   if (!system) return undefined
   if (typeof system === "string") return system
   return system.map((block) => block.text).join("\n")

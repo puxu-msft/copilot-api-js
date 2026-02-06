@@ -108,12 +108,7 @@ export interface ChatCompletionsPayload {
   response_format?: { type: "json_object" } | null
   seed?: number | null
   tools?: Array<Tool> | null
-  tool_choice?:
-    | "none"
-    | "auto"
-    | "required"
-    | { type: "function"; function: { name: string } }
-    | null
+  tool_choice?: "none" | "auto" | "required" | { type: "function"; function: { name: string } } | null
   user?: string | null
 }
 

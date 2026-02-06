@@ -3,6 +3,8 @@
 
 import type { Context, MiddlewareHandler, Next } from "hono"
 
+import { getErrorMessage } from "~/lib/utils"
+
 import { requestTracker } from "./tracker"
 
 /**
@@ -34,6 +36,14 @@ export function tuiLogger(): MiddlewareHandler {
     try {
       await next()
 
+      const status = c.res.status
+
+      // WebSocket upgrade (101 Switching Protocols) - complete immediately
+      if (status === 101) {
+        requestTracker.completeRequest(trackingId, 101)
+        return
+      }
+
       // Check if this is a streaming response (SSE)
       const contentType = c.res.headers.get("content-type") ?? ""
       const isStreaming = contentType.includes("text/event-stream")
@@ -43,9 +53,6 @@ export function tuiLogger(): MiddlewareHandler {
       if (isStreaming) {
         return
       }
-
-      // Complete tracking with response info for non-streaming
-      const status = c.res.status
 
       // Get usage and model from response headers (set by handler if available)
       const inputTokens = c.res.headers.get("x-input-tokens")
@@ -71,10 +78,7 @@ export function tuiLogger(): MiddlewareHandler {
         : undefined,
       )
     } catch (error) {
-      requestTracker.failRequest(
-        trackingId,
-        error instanceof Error ? error.message : "Unknown error",
-      )
+      requestTracker.failRequest(trackingId, getErrorMessage(error))
       throw error
     }
   }

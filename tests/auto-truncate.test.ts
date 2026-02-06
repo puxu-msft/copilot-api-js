@@ -4,14 +4,9 @@ import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-comp
 import type { Model } from "~/services/copilot/get-models"
 import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
 
-import {
-  autoTruncateAnthropic,
-  checkNeedsCompactionAnthropic,
-} from "~/lib/auto-truncate-anthropic"
-import {
-  autoTruncateOpenAI,
-  checkNeedsCompactionOpenAI,
-} from "~/lib/auto-truncate-openai"
+import { autoTruncateAnthropic, checkNeedsCompactionAnthropic } from "~/lib/auto-truncate/anthropic"
+import { compressCompactedReadResult, compressToolResultContent } from "~/lib/auto-truncate/common"
+import { autoTruncateOpenAI, checkNeedsCompactionOpenAI } from "~/lib/auto-truncate/openai"
 
 // Mock model with typical limits
 const mockModel: Model = {
@@ -86,10 +81,7 @@ describe("Auto-Truncate Anthropic", () => {
       messages: [{ role: "user", content: "Hello" }],
     }
 
-    const smallCheck = await checkNeedsCompactionAnthropic(
-      smallPayload,
-      mockModel,
-    )
+    const smallCheck = await checkNeedsCompactionAnthropic(smallPayload, mockModel)
     expect(smallCheck.needed).toBe(false)
 
     // Large payload
@@ -107,10 +99,7 @@ describe("Auto-Truncate Anthropic", () => {
       messages: largeMessages,
     }
 
-    const largeCheck = await checkNeedsCompactionAnthropic(
-      largePayload,
-      mockModel,
-    )
+    const largeCheck = await checkNeedsCompactionAnthropic(largePayload, mockModel, { checkByteLimit: true })
     expect(largeCheck.needed).toBe(true)
     expect(largeCheck.reason).toBeDefined()
   })
@@ -180,11 +169,7 @@ describe("Auto-Truncate Anthropic", () => {
     // Orphaned tool_result should be filtered out
     const hasOrphanedToolResult = result.payload.messages.some((m) => {
       if (Array.isArray(m.content)) {
-        return m.content.some(
-          (block) =>
-            block.type === "tool_result"
-            && block.tool_use_id === "orphan-tool-use-id",
-        )
+        return m.content.some((block) => block.type === "tool_result" && block.tool_use_id === "orphan-tool-use-id")
       }
       return false
     })
@@ -254,15 +239,13 @@ describe("Auto-Truncate OpenAI", () => {
       messages: largeMessages,
     }
 
-    const largeCheck = await checkNeedsCompactionOpenAI(largePayload, mockModel)
+    const largeCheck = await checkNeedsCompactionOpenAI(largePayload, mockModel, { checkByteLimit: true })
     expect(largeCheck.needed).toBe(true)
     expect(largeCheck.reason).toBeDefined()
   })
 
   test("should preserve system messages during truncation", async () => {
-    const messages: ChatCompletionsPayload["messages"] = [
-      { role: "system", content: "You are a helpful assistant." },
-    ]
+    const messages: ChatCompletionsPayload["messages"] = [{ role: "system", content: "You are a helpful assistant." }]
     for (let i = 0; i < 100; i++) {
       messages.push({
         role: i % 2 === 0 ? "user" : "assistant",
@@ -286,9 +269,7 @@ describe("Auto-Truncate OpenAI", () => {
 
   test("should filter orphaned tool results during truncation", async () => {
     // Create a large payload that needs truncation
-    const messages: ChatCompletionsPayload["messages"] = [
-      { role: "user", content: "Hello" },
-    ]
+    const messages: ChatCompletionsPayload["messages"] = [{ role: "user", content: "Hello" }]
 
     // Add many messages to trigger truncation
     for (let i = 0; i < 100; i++) {
@@ -316,9 +297,7 @@ describe("Auto-Truncate OpenAI", () => {
     const result = await autoTruncateOpenAI(payload, mockModel)
 
     // After truncation, orphaned tool results should be filtered
-    const toolMsg = result.payload.messages.find(
-      (m) => m.role === "tool" && m.tool_call_id === "orphan-id",
-    )
+    const toolMsg = result.payload.messages.find((m) => m.role === "tool" && m.tool_call_id === "orphan-id")
     expect(toolMsg).toBeUndefined()
   })
 })
@@ -338,5 +317,124 @@ describe("Tokenizer", () => {
     // Token count should be reasonable (not 0 or extremely high)
     expect(check.currentTokens).toBeGreaterThan(0)
     expect(check.currentTokens).toBeLessThan(100) // "Hello world!" should be < 100 tokens
+  })
+})
+
+describe("compressToolResultContent", () => {
+  test("should not strip <system-reminder> literals embedded in code", () => {
+    // Simulate a tool_result that contains message-sanitizer.ts source code
+    // with literal <system-reminder> strings in regex patterns
+    const codeChunk = [
+      "export function removeSystemReminderTags(text: string): string {",
+      String.raw`  const tagInner = "(?:(?!</system-reminder>)[\\s\\S])*"`,
+      "  const startPattern = new RegExp(",
+      "    `^(\\\\s*)<system-reminder>(\\${tagInner})</system-reminder>\\\\n*`,",
+      "  )",
+      "  let result = text",
+      "  return result",
+      "}",
+    ].join("\n")
+
+    // Make content large enough to trigger compression (>10KB)
+    const largeCode = `${codeChunk}\n${"// padding line\n".repeat(700)}`
+
+    // Append a real system-reminder tag at the end
+    const content = `${largeCode}\n<system-reminder>\nActual reminder content here\n</system-reminder>`
+
+    const result = compressToolResultContent(content)
+
+    // The real trailing tag should be preserved as truncated
+    expect(result).toContain("[Truncated]")
+    expect(result).toContain("Actual reminder content here")
+
+    // Code literals should NOT be treated as system-reminder tags
+    expect(result).not.toContain("[Truncated] const tagInner")
+    expect(result).not.toContain("[Truncated] export function")
+  })
+
+  test("should still compress trailing system-reminder tags normally", () => {
+    const mainContent = "x".repeat(11000) // >10KB
+
+    const content = `${mainContent}\n<system-reminder>\nFirst reminder\n</system-reminder>\n<system-reminder>\nSecond reminder\n</system-reminder>`
+
+    const result = compressToolResultContent(content)
+
+    // Both trailing tags should be preserved as truncated
+    expect(result).toContain("[Truncated] First reminder")
+    expect(result).toContain("[Truncated] Second reminder")
+
+    // Main content should be compressed
+    expect(result).toContain("characters omitted for brevity")
+  })
+
+  test("should not compress content below threshold", () => {
+    const content = "small content\n<system-reminder>\nReminder\n</system-reminder>"
+
+    const result = compressToolResultContent(content)
+
+    // Content below 10KB should be returned as-is
+    expect(result).toBe(content)
+  })
+})
+
+describe("compressCompactedReadResult", () => {
+  test("should compress a compacted Read tool result", () => {
+    const fileContent = String.raw`     1→import { describe } from \"bun:test\"\n     2→import { expect } from \"bun:test\"\n     3→\n     4→describe(\"test\", () => {\n     5→  // lots of test code here\n     6→})\n`
+    const text = `<system-reminder>\nResult of calling the Read tool: "${fileContent}"\n</system-reminder>`
+
+    const result = compressCompactedReadResult(text)
+
+    expect(result).not.toBeNull()
+    expect(result).toContain("[Compressed]")
+    expect(result).toContain("Read tool result")
+    expect(result).toContain("chars)")
+    expect(result).toContain("Preview:")
+    // Should be wrapped in system-reminder tags
+    expect(result).toContain("<system-reminder>")
+    expect(result).toContain("</system-reminder>")
+  })
+
+  test("should return null for non-matching content", () => {
+    // Regular text
+    expect(compressCompactedReadResult("hello world")).toBeNull()
+
+    // System reminder with non-Result content
+    const other = "<system-reminder>\nSome other content\n</system-reminder>"
+    expect(compressCompactedReadResult(other)).toBeNull()
+
+    // Called (not Result) — should not match
+    const called =
+      '<system-reminder>\nCalled the Read tool with the following input: {"file_path":"/some/file.ts"}\n</system-reminder>'
+    expect(compressCompactedReadResult(called)).toBeNull()
+  })
+
+  test("should handle various tool types", () => {
+    const content = "some grep output here"
+    const text = `<system-reminder>\nResult of calling the Grep tool: "${content}"\n</system-reminder>`
+
+    const result = compressCompactedReadResult(text)
+
+    expect(result).not.toBeNull()
+    expect(result).toContain("Grep tool result")
+  })
+
+  test("should preserve first lines as preview", () => {
+    const lines = Array.from({ length: 100 }, (_, i) => `     ${i + 1}→line ${i + 1} content`)
+    const fileContent = lines.join(String.raw`\n`)
+    const text = `<system-reminder>\nResult of calling the Read tool: "${fileContent}"\n</system-reminder>`
+
+    const result = compressCompactedReadResult(text)
+
+    expect(result).not.toBeNull()
+    // Preview should contain early line content
+    expect(result).toContain("line 1 content")
+  })
+
+  test("should return null for text with content after the tag", () => {
+    const text = '<system-reminder>\nResult of calling the Read tool: "content"\n</system-reminder>\nextra content here'
+
+    const result = compressCompactedReadResult(text)
+
+    expect(result).toBeNull()
   })
 })

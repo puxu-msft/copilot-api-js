@@ -4,11 +4,7 @@ import consola from "consola"
 import { ensurePaths } from "./lib/paths"
 import { state } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
-import { initConsolaReporter } from "./lib/tui"
-import {
-  getCopilotUsage,
-  type QuotaDetail,
-} from "./services/github/get-copilot-usage"
+import { getCopilotUsage, type QuotaDetail } from "./services/github/get-copilot-usage"
 import { getGitHubUser } from "./services/github/get-user"
 
 export const checkUsage = defineCommand({
@@ -17,7 +13,6 @@ export const checkUsage = defineCommand({
     description: "Show current GitHub Copilot usage/quota information",
   },
   async run() {
-    initConsolaReporter()
     await ensurePaths()
 
     // Use GitHubTokenManager to get token
@@ -34,8 +29,7 @@ export const checkUsage = defineCommand({
       const premium = usage.quota_snapshots.premium_interactions
       const premiumTotal = premium.entitlement
       const premiumUsed = premiumTotal - premium.remaining
-      const premiumPercentUsed =
-        premiumTotal > 0 ? (premiumUsed / premiumTotal) * 100 : 0
+      const premiumPercentUsed = premiumTotal > 0 ? (premiumUsed / premiumTotal) * 100 : 0
       const premiumPercentRemaining = premium.percent_remaining
 
       // Helper to summarize a quota snapshot
@@ -50,10 +44,7 @@ export const checkUsage = defineCommand({
 
       const premiumLine = `Premium: ${premiumUsed}/${premiumTotal} used (${premiumPercentUsed.toFixed(1)}% used, ${premiumPercentRemaining.toFixed(1)}% remaining)`
       const chatLine = summarizeQuota("Chat", usage.quota_snapshots.chat)
-      const completionsLine = summarizeQuota(
-        "Completions",
-        usage.quota_snapshots.completions,
-      )
+      const completionsLine = summarizeQuota("Completions", usage.quota_snapshots.completions)
 
       consola.box(
         `Copilot Usage (plan: ${usage.copilot_plan})\n`
