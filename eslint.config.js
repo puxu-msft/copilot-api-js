@@ -4,8 +4,9 @@ export default [
   {
     ignores: [
       //
-      "src/routes/history/ui-v2/**",
-      "src/routes/history/ui/**",
+      "src/ui/history-v1/**",
+      "src/ui/history-v2/**",
+      "refs/**",
     ],
   },
   ...config({

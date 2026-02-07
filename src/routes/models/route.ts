@@ -30,7 +30,7 @@ modelRoutes.get("/", async (c) => {
       await cacheModels()
     }
 
-    const models = state.models?.data.map(formatModel)
+    const models = state.models?.data.map((m) => formatModel(m))
 
     return c.json({
       object: "list",

@@ -128,6 +128,13 @@ export type AnthropicAssistantContentBlock =
   | AnthropicServerToolUseBlock
 
 /**
+ * Check if a content block is a regular tool_result block.
+ */
+export function isToolResultBlock(block: { type: string }): block is { type: "tool_result"; tool_use_id: string } {
+  return block.type === "tool_result"
+}
+
+/**
  * Check if a content block is a server tool result (paired with server_tool_use).
  * Matches web_search_tool_result, tool_search_tool_result, and any future server tool result
  * types that have a tool_use_id field but are NOT regular tool_result blocks.
@@ -135,9 +142,7 @@ export type AnthropicAssistantContentBlock =
  * This uses runtime duck-typing because Anthropic can introduce new server tool result types
  * (e.g., tool_search_tool_result) that our static types don't cover yet.
  */
-export function isServerToolResultBlock(
-  block: { type: string },
-): block is { type: string; tool_use_id: string } {
+export function isServerToolResultBlock(block: { type: string }): block is { type: string; tool_use_id: string } {
   return block.type !== "tool_result" && block.type !== "text" && block.type !== "image" && "tool_use_id" in block
 }
 

@@ -56,7 +56,7 @@ describeWithToken("Extended Copilot API Integration", () => {
     state.copilotToken = token
 
     const models = await getModels()
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
     if (!models?.data) {
       throw new Error("Failed to fetch models from GitHub Copilot API.")
     }

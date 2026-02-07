@@ -3,6 +3,7 @@
 
 import type { Context, MiddlewareHandler, Next } from "hono"
 
+import { getIsShuttingDown } from "~/lib/shutdown"
 import { getErrorMessage } from "~/lib/utils"
 
 import { requestTracker } from "./tracker"
@@ -16,6 +17,11 @@ import { requestTracker } from "./tracker"
  */
 export function tuiLogger(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
+    // Reject new requests during shutdown
+    if (getIsShuttingDown()) {
+      return c.json({ type: "error", error: { type: "server_error", message: "Server is shutting down" } }, 503)
+    }
+
     const method = c.req.method
     const path = c.req.path
 

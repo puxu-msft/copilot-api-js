@@ -75,7 +75,7 @@ historyRoutes.get("/assets/*", async (c) => {
 const v1Dir = join(import.meta.dirname, "../../ui/history-v1")
 
 // v1 root serves index.html directly
-historyRoutes.get("/v1", async (c) => {
+historyRoutes.get("/v1", (c) => {
   return c.redirect("/history/v1/index.html")
 })
 

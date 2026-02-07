@@ -16,6 +16,7 @@ import { sanitizeAnthropicSystem } from "~/lib/security-research-mode"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
 import { supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-messages"
+import { isServerToolResultBlock } from "~/types/api/anthropic"
 
 import { type ResponseContext, updateTrackerModel } from "../shared"
 import { handleDirectAnthropicCompletion } from "./direct-anthropic-handler"
@@ -54,10 +55,7 @@ export async function handleCompletion(c: Context) {
 
   // Validate that the model supports the /v1/messages endpoint
   const selectedModel = state.models?.data.find((m) => m.id === anthropicPayload.model)
-  if (
-    selectedModel?.supported_endpoints
-    && !selectedModel.supported_endpoints.includes("/v1/messages")
-  ) {
+  if (selectedModel?.supported_endpoints && !selectedModel.supported_endpoints.includes("/v1/messages")) {
     return c.json(
       {
         type: "error",
@@ -133,20 +131,9 @@ function logToolInfo(anthropicPayload: AnthropicMessagesPayload) {
         if (block.type === "server_tool_use") {
           consola.debug(`[Tools] server_tool_use in message: ${block.name} (id: ${block.id})`)
         }
-        if (block.type === "web_search_tool_result") {
-          consola.debug(`[Tools] web_search_tool_result in message: id=${block.tool_use_id}`)
-        }
-        // Log other server tool results (e.g., tool_search_tool_result)
-        if (
-          block.type !== "tool_result"
-          && block.type !== "tool_use"
-          && block.type !== "server_tool_use"
-          && block.type !== "web_search_tool_result"
-          && block.type !== "text"
-          && block.type !== "image"
-          && "tool_use_id" in block
-        ) {
-          consola.debug(`[Tools] ${block.type} in message: id=${(block as { tool_use_id: string }).tool_use_id}`)
+        // Log all server tool results (web_search_tool_result, tool_search_tool_result, etc.)
+        if (isServerToolResultBlock(block)) {
+          consola.debug(`[Tools] ${block.type} in message: id=${block.tool_use_id}`)
         }
       }
     }

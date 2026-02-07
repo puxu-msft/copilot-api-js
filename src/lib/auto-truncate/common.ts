@@ -30,7 +30,17 @@ export interface AutoTruncateConfig {
   checkTokenLimit: boolean
   /** Whether to enforce byte/request-size limit (default: false) */
   checkByteLimit: boolean
+  /** Explicit token limit override (used in reactive retry — caller has already applied margin) */
+  targetTokenLimit?: number
+  /** Explicit byte limit override (used in reactive retry — caller has already applied margin) */
+  targetByteLimitBytes?: number
 }
+
+/** Maximum number of reactive auto-truncate retries per request */
+export const MAX_AUTO_TRUNCATE_RETRIES = 5
+
+/** Factor to apply to error-reported limit when retrying (90% of limit) */
+export const AUTO_TRUNCATE_RETRY_FACTOR = 0.9
 
 export const DEFAULT_AUTO_TRUNCATE_CONFIG: AutoTruncateConfig = {
   safetyMarginPercent: 2,

@@ -19,8 +19,8 @@ export interface AnthropicStreamAccumulator {
   stopReason: string
   content: string
   thinkingContent: string
-  toolCalls: Array<{ id: string; name: string; input: string }>
-  currentToolCall: { id: string; name: string; input: string } | null
+  toolCalls: Array<{ id: string; name: string; input: string; blockType: "tool_use" | "server_tool_use" }>
+  currentToolCall: { id: string; name: string; input: string; blockType: "tool_use" | "server_tool_use" } | null
   /** Tracks the type of the current content block being streamed */
   currentBlockType: "text" | "thinking" | "tool_use" | "server_tool_use" | null
   /** Copilot-specific: IP code citations collected from stream events */
@@ -146,6 +146,7 @@ function handleContentBlockStart(block: ContentBlock, acc: AnthropicStreamAccumu
       id: block.id,
       name: block.name,
       input: "",
+      blockType: "server_tool_use",
     }
   } else {
     acc.currentBlockType = block.type
@@ -156,6 +157,7 @@ function handleContentBlockStart(block: ContentBlock, acc: AnthropicStreamAccumu
       id: block.id,
       name: block.name,
       input: "",
+      blockType: "tool_use",
     }
   }
 }

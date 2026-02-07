@@ -78,6 +78,14 @@ interface Limits {
 }
 
 function calculateLimits(model: Model, config: AutoTruncateConfig): Limits {
+  // Use explicit target if provided (reactive retry — caller already applied margin)
+  if (config.targetTokenLimit !== undefined || config.targetByteLimitBytes !== undefined) {
+    return {
+      tokenLimit: config.targetTokenLimit ?? model.capabilities?.limits?.max_context_window_tokens ?? 128000,
+      byteLimit: config.targetByteLimitBytes ?? getEffectiveByteLimitBytes(),
+    }
+  }
+
   // Check for dynamic token limit (adjusted based on previous errors)
   const dynamicLimit = getEffectiveTokenLimit(model.id)
 

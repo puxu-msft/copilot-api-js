@@ -128,9 +128,7 @@ const getEncodeChatFunction = async (encoding: string): Promise<Encoder> => {
 
   const supportedEncoding = encoding as SupportedEncoding
   const rawModule =
-    supportedEncoding in ENCODING_MAP
-      ? await ENCODING_MAP[supportedEncoding]()
-      : await ENCODING_MAP.o200k_base()
+    supportedEncoding in ENCODING_MAP ? await ENCODING_MAP[supportedEncoding]() : await ENCODING_MAP.o200k_base()
 
   // Wrap encode to disable special token checks.
   // gpt-tokenizer defaults to disallowedSpecial='all', which throws on

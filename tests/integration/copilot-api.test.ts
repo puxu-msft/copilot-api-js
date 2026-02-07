@@ -62,7 +62,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     // Cache models - getModels returns ModelsResponse which always has data
     // but we add runtime check for robustness
     const models = await getModels()
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
     if (!models?.data) {
       throw new Error(
         "Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.",

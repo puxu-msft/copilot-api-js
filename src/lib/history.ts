@@ -95,7 +95,7 @@ export interface HistoryEntry {
     toolCalls?: Array<{
       id: string
       name: string
-      input: string
+      input: string | Record<string, unknown>
     }>
   }
 
@@ -126,7 +126,6 @@ export interface HistoryState {
   sessions: Map<string, Session>
   currentSessionId: string
   maxEntries: number
-  sessionTimeoutMs: number // New session after this idle time
 }
 
 export interface QueryOptions {
@@ -174,7 +173,6 @@ export const historyState: HistoryState = {
   sessions: new Map(),
   currentSessionId: "",
   maxEntries: 200,
-  sessionTimeoutMs: 30 * 60 * 1000, // 30 minutes
 }
 
 export function initHistory(enabled: boolean, maxEntries: number): void {
@@ -190,19 +188,20 @@ export function isHistoryEnabled(): boolean {
 }
 
 // Get or create current session
+// Currently treats all requests as belonging to one session per server lifetime,
+// since clients don't provide session identifiers yet.
+// TODO: When clients support session headers, use that to group requests.
 function getCurrentSession(endpoint: "anthropic" | "openai"): string {
-  const now = Date.now()
-
-  // Check if current session is still active
   if (historyState.currentSessionId) {
     const session = historyState.sessions.get(historyState.currentSessionId)
-    if (session && now - session.lastActivity < historyState.sessionTimeoutMs) {
-      session.lastActivity = now
+    if (session) {
+      session.lastActivity = Date.now()
       return historyState.currentSessionId
     }
   }
 
-  // Create new session
+  // Create initial session
+  const now = Date.now()
   const sessionId = generateId()
   historyState.currentSessionId = sessionId
   historyState.sessions.set(sessionId, {
@@ -307,7 +306,7 @@ export interface RecordResponseParams {
   toolCalls?: Array<{
     id: string
     name: string
-    input: string
+    input: string | Record<string, unknown>
   }>
 }
 
@@ -398,30 +397,70 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
   if (search) {
     const searchLower = search.toLowerCase()
     filtered = filtered.filter((e) => {
-      // Search in messages
+      // Search in model name
+      if (
+        e.request.model.toLowerCase().includes(searchLower)
+        || (e.response?.model && e.response.model.toLowerCase().includes(searchLower))
+      ) {
+        return true
+      }
+
+      // Search in error message
+      if (e.response?.error && e.response.error.toLowerCase().includes(searchLower)) return true
+
+      // Search in system prompt
+      if (e.request.system?.toLowerCase().includes(searchLower)) return true
+
+      // Search in messages (text, tool_use name/input, tool_result content)
       const msgMatch = e.request.messages.some((m) => {
         if (typeof m.content === "string") {
           return m.content.toLowerCase().includes(searchLower)
         }
         if (Array.isArray(m.content)) {
-          return m.content.some((c) => c.text && c.text.toLowerCase().includes(searchLower))
+          return m.content.some((c) => {
+            if (c.text && c.text.toLowerCase().includes(searchLower)) return true
+            if (c.type === "tool_use") {
+              const name = c.name as string | undefined
+              if (name && name.toLowerCase().includes(searchLower)) return true
+              if (c.input) {
+                const inputStr = typeof c.input === "string" ? c.input : JSON.stringify(c.input)
+                if (inputStr.toLowerCase().includes(searchLower)) return true
+              }
+            }
+            if (c.type === "tool_result" && c.content) {
+              const contentStr = typeof c.content === "string" ? c.content : JSON.stringify(c.content)
+              if (contentStr.toLowerCase().includes(searchLower)) return true
+            }
+            if (c.type === "thinking") {
+              const thinking = c.thinking as string | undefined
+              if (thinking && thinking.toLowerCase().includes(searchLower)) return true
+            }
+            return false
+          })
         }
         return false
       })
+      if (msgMatch) return true
 
-      // Search in response content
-      const respMatch =
-        e.response?.content
-        && typeof e.response.content.content === "string"
-        && e.response.content.content.toLowerCase().includes(searchLower)
+      // Search in response content (both string and array forms)
+      if (e.response?.content) {
+        const rc = e.response.content
+        if (typeof rc.content === "string" && rc.content.toLowerCase().includes(searchLower)) return true
+        if (Array.isArray(rc.content)) {
+          const rcMatch = rc.content.some((c: { type?: string; text?: string; name?: string; thinking?: string }) => {
+            if (c.text && c.text.toLowerCase().includes(searchLower)) return true
+            if (c.type === "tool_use" && c.name && c.name.toLowerCase().includes(searchLower)) return true
+            if (c.type === "thinking" && c.thinking && c.thinking.toLowerCase().includes(searchLower)) return true
+            return false
+          })
+          if (rcMatch) return true
+        }
+      }
 
-      // Search in tool names
-      const toolMatch = e.response?.toolCalls?.some((t) => t.name.toLowerCase().includes(searchLower))
+      // Search in response tool calls
+      if (e.response?.toolCalls?.some((t) => t.name.toLowerCase().includes(searchLower))) return true
 
-      // Search in system prompt
-      const sysMatch = e.request.system?.toLowerCase().includes(searchLower)
-
-      return msgMatch || respMatch || toolMatch || sysMatch
+      return false
     })
   }
 
@@ -538,15 +577,6 @@ export function getStats(): HistoryStats {
     .slice(-24)
     .map(([hour, count]) => ({ hour, count }))
 
-  // Count active sessions (activity within timeout period)
-  const now = Date.now()
-  let activeSessions = 0
-  for (const session of historyState.sessions.values()) {
-    if (now - session.lastActivity < historyState.sessionTimeoutMs) {
-      activeSessions++
-    }
-  }
-
   return {
     totalRequests: entries.length,
     successfulRequests: successCount,
@@ -557,7 +587,7 @@ export function getStats(): HistoryStats {
     modelDistribution: modelDist,
     endpointDistribution: endpointDist,
     recentActivity,
-    activeSessions,
+    activeSessions: historyState.sessions.size,
   }
 }
 

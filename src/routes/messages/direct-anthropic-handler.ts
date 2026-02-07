@@ -22,10 +22,13 @@ import { awaitApproval } from "~/lib/approval"
 import {
   type AnthropicAutoTruncateResult,
   autoTruncateAnthropic,
-  checkNeedsCompactionAnthropic,
   sanitizeAnthropicMessages,
 } from "~/lib/auto-truncate/anthropic"
-import { hasKnownLimits, tryParseAndLearnLimit } from "~/lib/auto-truncate/common"
+import {
+  AUTO_TRUNCATE_RETRY_FACTOR,
+  MAX_AUTO_TRUNCATE_RETRIES,
+  tryParseAndLearnLimit,
+} from "~/lib/auto-truncate/common"
 import { HTTPError } from "~/lib/error"
 import { recordResponse, recordRewrites } from "~/lib/history"
 import { state } from "~/lib/state"
@@ -44,6 +47,16 @@ import {
 } from "../shared"
 import { translateErrorToAnthropicErrorEvent } from "./stream-translation"
 
+/** Parse a JSON string to object, returning the value as-is if already an object */
+function safeParseJson(input: string | Record<string, unknown>): Record<string, unknown> {
+  if (typeof input !== "string") return input
+  try {
+    return JSON.parse(input) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
 /**
  * Handle completion using direct Anthropic API (no translation needed)
  */
@@ -57,76 +70,23 @@ export async function handleDirectAnthropicCompletion(
   // Find model for auto-truncate and usage adjustment
   const selectedModel = state.models?.data.find((m) => m.id === anthropicPayload.model)
 
-  // Apply auto-truncate pre-check only if model has known limits from previous failures
-  let effectivePayload = anthropicPayload
-  let truncateResult: AnthropicAutoTruncateResult | undefined
-
-  if (state.autoTruncate && selectedModel && hasKnownLimits(selectedModel.id)) {
-    const check = await checkNeedsCompactionAnthropic(anthropicPayload, selectedModel, {
-      checkTokenLimit: true,
-      checkByteLimit: true,
-    })
-    consola.debug(
-      `[Anthropic] Auto-truncate pre-check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
-        + `${bytesToKB(check.currentBytes)}KB (limit ${bytesToKB(check.byteLimit)}KB), `
-        + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
-    )
-
-    if (check.needed) {
-      try {
-        truncateResult = await autoTruncateAnthropic(anthropicPayload, selectedModel, {
-          checkTokenLimit: true,
-          checkByteLimit: true,
-        })
-        if (truncateResult.wasCompacted) {
-          effectivePayload = truncateResult.payload
-        }
-      } catch (error) {
-        consola.warn(
-          "[Anthropic] Auto-truncate pre-check failed, proceeding with original payload:",
-          error instanceof Error ? error.message : error,
-        )
-      }
-    }
-  }
-
   // Always sanitize messages to filter orphaned tool_result/tool_use blocks
-  // This handles cases where:
-  // 1. Auto-truncate is disabled
-  // 2. Auto-truncate didn't need to run (within limits)
-  // 3. Original payload has orphaned blocks from client
   const {
-    payload: sanitizedPayload,
-    removedCount: orphanedRemovals,
-    systemReminderRemovals,
-  } = sanitizeAnthropicMessages(effectivePayload)
-  effectivePayload = sanitizedPayload
+    payload: initialSanitized,
+    removedCount: initialOrphanedRemovals,
+    systemReminderRemovals: initialSystemRemovals,
+  } = sanitizeAnthropicMessages(anthropicPayload)
 
-  // Record all rewrites (truncation + sanitization + rewritten content)
-  const hasTruncation = truncateResult?.wasCompacted
-  const hasSanitization = orphanedRemovals > 0 || systemReminderRemovals > 0
-  if (hasTruncation || hasSanitization) {
-    const messageMapping = buildMessageMapping(anthropicPayload.messages, effectivePayload.messages)
-
+  // Record initial sanitization if anything was removed
+  if (initialOrphanedRemovals > 0 || initialSystemRemovals > 0) {
+    const messageMapping = buildMessageMapping(anthropicPayload.messages, initialSanitized.messages)
     recordRewrites(ctx.historyId, {
-      truncation:
-        hasTruncation && truncateResult ?
-          {
-            removedMessageCount: truncateResult.removedMessageCount,
-            originalTokens: truncateResult.originalTokens,
-            compactedTokens: truncateResult.compactedTokens,
-            processingTimeMs: truncateResult.processingTimeMs,
-          }
-        : undefined,
-      sanitization:
-        hasSanitization ?
-          {
-            removedBlockCount: orphanedRemovals,
-            systemReminderRemovals,
-          }
-        : undefined,
-      rewrittenMessages: convertAnthropicMessages(effectivePayload.messages),
-      rewrittenSystem: typeof effectivePayload.system === "string" ? effectivePayload.system : undefined,
+      sanitization: {
+        removedBlockCount: initialOrphanedRemovals,
+        systemReminderRemovals: initialSystemRemovals,
+      },
+      rewrittenMessages: convertAnthropicMessages(initialSanitized.messages),
+      rewrittenSystem: typeof initialSanitized.system === "string" ? initialSanitized.system : undefined,
       messageMapping,
     })
   }
@@ -135,143 +95,161 @@ export async function handleDirectAnthropicCompletion(
     await awaitApproval()
   }
 
-  // Set tracking tags for log display
+  // Set initial tracking tags for log display
   if (ctx.trackingId) {
     const tags: Array<string> = []
-    if (truncateResult?.wasCompacted) tags.push("compact")
-    if (effectivePayload.thinking && effectivePayload.thinking.type !== "disabled")
-      tags.push(`thinking:${effectivePayload.thinking.type}`)
+    if (initialSanitized.thinking && initialSanitized.thinking.type !== "disabled")
+      tags.push(`thinking:${initialSanitized.thinking.type}`)
     if (tags.length > 0) requestTracker.updateRequest(ctx.trackingId, { tags })
   }
 
-  try {
-    const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
-      createAnthropicMessages(effectivePayload),
-    )
+  // Reactive retry loop: send full payload first, then truncate and retry on limit errors
+  let effectivePayload = initialSanitized
+  let truncateResult: AnthropicAutoTruncateResult | undefined
+  let lastError: unknown = null
 
-    // eslint-disable-next-line require-atomic-updates -- ctx is a local object, no race
-    ctx.queueWaitMs = queueWaitMs
+  for (let attempt = 0; attempt <= MAX_AUTO_TRUNCATE_RETRIES; attempt++) {
+    try {
+      const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
+        createAnthropicMessages(effectivePayload),
+      )
 
-    // Check if response is streaming (AsyncIterable)
-    if (Symbol.asyncIterator in (response as object)) {
-      consola.debug("Streaming response from Copilot (direct Anthropic)")
-      updateTrackerStatus(ctx.trackingId, "streaming")
+      // eslint-disable-next-line require-atomic-updates -- ctx is a local object, no race
+      ctx.queueWaitMs = queueWaitMs
 
-      return streamSSE(c, async (stream) => {
-        await handleDirectAnthropicStreamingResponse({
-          stream,
-          response: response as AsyncIterable<{
-            data?: string
-            event?: string
-          }>,
-          anthropicPayload: effectivePayload,
-          ctx,
-        })
-      })
-    }
+      // Check if response is streaming (AsyncIterable)
+      if (Symbol.asyncIterator in (response as object)) {
+        consola.debug("Streaming response from Copilot (direct Anthropic)")
+        updateTrackerStatus(ctx.trackingId, "streaming")
 
-    // Non-streaming response
-    return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, ctx, truncateResult)
-  } catch (error) {
-    // Reactive auto-truncate: on limit errors, learn the limit, truncate, and retry once
-    if (
-      state.autoTruncate
-      && error instanceof HTTPError
-      && selectedModel
-      && !truncateResult?.wasCompacted // don't retry if we already truncated
-    ) {
-      const payloadBytes = JSON.stringify(effectivePayload).length
-      const parsed = tryParseAndLearnLimit(error, selectedModel.id, payloadBytes)
-
-      if (parsed) {
-        consola.info(
-          `[Anthropic] ${parsed.type} error for ${selectedModel.id}, truncating and retrying...`
-            + (parsed.limit ? ` (limit: ${parsed.limit}, current: ${parsed.current})` : ""),
-        )
-
-        try {
-          // Re-truncate from original payload using newly learned limits
-          truncateResult = await autoTruncateAnthropic(anthropicPayload, selectedModel, {
-            checkTokenLimit: true,
-            checkByteLimit: true,
+        return streamSSE(c, async (stream) => {
+          await handleDirectAnthropicStreamingResponse({
+            stream,
+            response: response as AsyncIterable<{
+              data?: string
+              event?: string
+            }>,
+            anthropicPayload: effectivePayload,
+            ctx,
           })
+        })
+      }
 
-          if (truncateResult.wasCompacted) {
-            // Re-sanitize the truncated payload
-            const {
-              payload: retrySanitized,
-              removedCount: retryOrphanedRemovals,
-              systemReminderRemovals: retrySystemRemovals,
-            } = sanitizeAnthropicMessages(truncateResult.payload)
-            // eslint-disable-next-line require-atomic-updates -- effectivePayload is only used by the retry call below
-            effectivePayload = retrySanitized
+      // Non-streaming response
+      return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, ctx, truncateResult)
+    } catch (error) {
+      lastError = error
 
-            // Record rewrites for the retried payload
-            const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, effectivePayload.messages)
-            recordRewrites(ctx.historyId, {
-              truncation: {
-                removedMessageCount: truncateResult.removedMessageCount,
-                originalTokens: truncateResult.originalTokens,
-                compactedTokens: truncateResult.compactedTokens,
-                processingTimeMs: truncateResult.processingTimeMs,
-              },
-              sanitization:
-                retryOrphanedRemovals > 0 || retrySystemRemovals > 0 ?
-                  { removedBlockCount: retryOrphanedRemovals, systemReminderRemovals: retrySystemRemovals }
-                : undefined,
-              rewrittenMessages: convertAnthropicMessages(effectivePayload.messages),
-              rewrittenSystem: typeof effectivePayload.system === "string" ? effectivePayload.system : undefined,
-              messageMapping: retryMessageMapping,
-            })
+      // Check if this is a retryable limit error
+      if (
+        state.autoTruncate
+        && error instanceof HTTPError
+        && selectedModel
+        && attempt < MAX_AUTO_TRUNCATE_RETRIES // Still have retries left
+      ) {
+        const payloadBytes = JSON.stringify(effectivePayload).length
+        const parsed = tryParseAndLearnLimit(error, selectedModel.id, payloadBytes)
 
-            // Update tracking tags
-            if (ctx.trackingId) {
-              requestTracker.updateRequest(ctx.trackingId, { tags: ["compact", "retry"] })
-            }
+        if (parsed) {
+          // Calculate target limits based on error type
+          let targetTokenLimit: number | undefined
+          let targetByteLimitBytes: number | undefined
 
-            const { result: retryResponse, queueWaitMs: retryQueueMs } = await executeWithAdaptiveRateLimit(() =>
-              createAnthropicMessages(effectivePayload),
+          if (parsed.type === "token_limit" && parsed.limit) {
+            targetTokenLimit = Math.floor(parsed.limit * AUTO_TRUNCATE_RETRY_FACTOR)
+            consola.info(
+              `[Anthropic] Attempt ${attempt + 1}/${MAX_AUTO_TRUNCATE_RETRIES + 1}: `
+                + `Token limit error (${parsed.current}>${parsed.limit}), `
+                + `retrying with limit ${targetTokenLimit}...`,
             )
-            // eslint-disable-next-line require-atomic-updates -- ctx is a local object
-            ctx.queueWaitMs = retryQueueMs
-
-            if (Symbol.asyncIterator in (retryResponse as object)) {
-              consola.debug("Streaming response from retry (direct Anthropic)")
-              updateTrackerStatus(ctx.trackingId, "streaming")
-
-              return streamSSE(c, async (stream) => {
-                await handleDirectAnthropicStreamingResponse({
-                  stream,
-                  response: retryResponse as AsyncIterable<{ data?: string; event?: string }>,
-                  anthropicPayload: effectivePayload,
-                  ctx,
-                })
-              })
-            }
-
-            return handleDirectAnthropicNonStreamingResponse(
-              c,
-              retryResponse as AnthropicMessageResponse,
-              ctx,
-              truncateResult,
+          } else if (parsed.type === "body_too_large") {
+            // For 413 errors, use 90% of the current payload size
+            targetByteLimitBytes = Math.floor(payloadBytes * AUTO_TRUNCATE_RETRY_FACTOR)
+            consola.info(
+              `[Anthropic] Attempt ${attempt + 1}/${MAX_AUTO_TRUNCATE_RETRIES + 1}: `
+                + `Body too large (${bytesToKB(payloadBytes)}KB), `
+                + `retrying with limit ${bytesToKB(targetByteLimitBytes)}KB...`,
             )
           }
-        } catch (retryError) {
-          consola.warn("[Anthropic] Auto-truncate retry also failed:", retryError)
-          recordErrorResponse(ctx, anthropicPayload.model, retryError)
-          throw retryError
+
+          try {
+            // Truncate from original payload (not from already-truncated) using target limits
+            truncateResult = await autoTruncateAnthropic(anthropicPayload, selectedModel, {
+              checkTokenLimit: true,
+              checkByteLimit: true,
+              targetTokenLimit,
+              targetByteLimitBytes,
+            })
+
+            if (truncateResult.wasCompacted) {
+              // Re-sanitize the truncated payload
+              const {
+                payload: retrySanitized,
+                removedCount: retryOrphanedRemovals,
+                systemReminderRemovals: retrySystemRemovals,
+              } = sanitizeAnthropicMessages(truncateResult.payload)
+              effectivePayload = retrySanitized // eslint-disable-line require-atomic-updates -- sequential loop, no race
+
+              // Record rewrites for the retried payload
+              const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, effectivePayload.messages)
+              recordRewrites(ctx.historyId, {
+                truncation: {
+                  removedMessageCount: truncateResult.removedMessageCount,
+                  originalTokens: truncateResult.originalTokens,
+                  compactedTokens: truncateResult.compactedTokens,
+                  processingTimeMs: truncateResult.processingTimeMs,
+                },
+                sanitization:
+                  retryOrphanedRemovals > 0 || retrySystemRemovals > 0 ?
+                    { removedBlockCount: retryOrphanedRemovals, systemReminderRemovals: retrySystemRemovals }
+                  : undefined,
+                rewrittenMessages: convertAnthropicMessages(effectivePayload.messages),
+                rewrittenSystem: typeof effectivePayload.system === "string" ? effectivePayload.system : undefined,
+                messageMapping: retryMessageMapping,
+              })
+
+              // Update tracking tags
+              if (ctx.trackingId) {
+                const retryTags = ["compact", `retry-${attempt + 1}`]
+                if (effectivePayload.thinking && effectivePayload.thinking.type !== "disabled")
+                  retryTags.push(`thinking:${effectivePayload.thinking.type}`)
+                requestTracker.updateRequest(ctx.trackingId, { tags: retryTags })
+              }
+
+              // Continue to next iteration to retry
+              continue
+            } else {
+              // Truncation didn't help (shouldn't happen), break out and throw the error
+              break
+            }
+          } catch (truncateError) {
+            consola.warn(
+              `[Anthropic] Auto-truncate failed on attempt ${attempt + 1}:`,
+              truncateError instanceof Error ? truncateError.message : truncateError,
+            )
+            // Break out and throw the original error
+            break
+          }
         }
       }
-    }
 
-    // Not retryable or retry conditions not met
-    if (error instanceof HTTPError && error.status === 413) {
+      // Not retryable or no more retries left, break out
+      break
+    }
+  }
+
+  // If we exit the loop with an error, handle it
+  if (lastError) {
+    if (lastError instanceof HTTPError && lastError.status === 413) {
       logPayloadSizeInfoAnthropic(effectivePayload, selectedModel)
     }
 
-    recordErrorResponse(ctx, anthropicPayload.model, error)
-    throw error
+    recordErrorResponse(ctx, anthropicPayload.model, lastError)
+    throw lastError instanceof Error ? lastError : new Error("Unknown error")
   }
+
+  // Should not reach here (either returned or threw)
+  throw new Error("Unexpected state in retry loop")
 }
 
 /**
@@ -327,7 +305,7 @@ function handleDirectAnthropicNonStreamingResponse(
                 type: "tool_use" as const,
                 id: block.id,
                 name: block.name,
-                input: JSON.stringify(block.input),
+                input: block.input,
               }
             }
             case "thinking": {
@@ -341,7 +319,7 @@ function handleDirectAnthropicNonStreamingResponse(
                 type: "server_tool_use" as const,
                 id: block.id,
                 name: block.name,
-                input: JSON.stringify(block.input),
+                input: block.input,
               }
             }
             default: {
@@ -473,12 +451,29 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
 
 // Record streaming response to history
 function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel: string, ctx: ResponseContext) {
-  const contentBlocks: Array<{ type: string; text?: string; thinking?: string }> = []
+  const contentBlocks: Array<{
+    type: string
+    text?: string
+    thinking?: string
+    id?: string
+    name?: string
+    input?: Record<string, unknown>
+  }> = []
   if (acc.thinkingContent) contentBlocks.push({ type: "thinking", thinking: acc.thinkingContent })
   if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
   for (const tc of acc.toolCalls) {
-    contentBlocks.push({ type: "tool_use", ...tc })
+    contentBlocks.push({
+      type: tc.blockType,
+      id: tc.id,
+      name: tc.name,
+      input: safeParseJson(tc.input),
+    })
   }
+
+  const toolCalls =
+    acc.toolCalls.length > 0 ?
+      acc.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, input: safeParseJson(tc.input) }))
+    : undefined
 
   recordResponse(
     ctx.historyId,
@@ -493,7 +488,7 @@ function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel:
       },
       stop_reason: acc.stopReason || undefined,
       content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
-      toolCalls: acc.toolCalls.length > 0 ? acc.toolCalls : undefined,
+      toolCalls,
     },
     Date.now() - ctx.startTime,
   )

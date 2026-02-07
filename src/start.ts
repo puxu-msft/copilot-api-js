@@ -151,8 +151,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const on = (label: string, detail?: string) =>
     configLines.push(`  ${label}: ON${detail ? ` ${pc.dim(`(${detail})`)}` : ""}`)
   const off = (label: string) => configLines.push(pc.dim(`  ${label}: OFF`))
+  const toggle = (flag: boolean | undefined, label: string, detail?: string) => (flag ? on(label, detail) : off(label))
 
-  options.verbose ? on("Verbose logging") : off("Verbose logging")
+  toggle(options.verbose, "Verbose logging")
   configLines.push(`  Account type: ${options.accountType}`)
 
   if (options.rateLimit) {
@@ -175,14 +176,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     // Only show separately if auto-truncate is off but compress is on (unusual)
     on("Compress tool results")
   }
-  options.redirectAnthropic ? on("Redirect Anthropic", "via OpenAI translation") : off("Redirect Anthropic")
-  options.rewriteAnthropicTools ? on("Rewrite Anthropic tools") : off("Rewrite Anthropic tools")
-  options.redirectCountTokens ? on("Redirect count tokens", "via OpenAI translation") : off("Redirect count tokens")
-  options.manual ? on("Manual approval") : off("Manual approval")
-  options.proxyEnv ? on("Proxy from env") : off("Proxy from env")
-  options.showGitHubToken ? on("Show GitHub token") : off("Show GitHub token")
-  state.securityResearchMode ? on("Security research mode") : off("Security research mode")
-  options.redirectSonnetToOpus ? on("Redirect sonnet to opus") : off("Redirect sonnet to opus")
+  toggle(options.redirectAnthropic, "Redirect Anthropic", "via OpenAI translation")
+  toggle(options.rewriteAnthropicTools, "Rewrite Anthropic tools")
+  toggle(options.redirectCountTokens, "Redirect count tokens", "via OpenAI translation")
+  toggle(options.manual, "Manual approval")
+  toggle(options.proxyEnv, "Proxy from env")
+  toggle(options.showGitHubToken, "Show GitHub token")
+  toggle(state.securityResearchMode, "Security research mode")
+  toggle(options.redirectSonnetToOpus, "Redirect sonnet to opus")
 
   const historyLimitText = options.historyLimit === 0 ? "unlimited" : `max=${options.historyLimit}`
   on("History", historyLimitText)

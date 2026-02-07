@@ -59,10 +59,7 @@ export function modelSupportsContextEditing(modelId: string): boolean {
  */
 export function modelSupportsToolSearch(modelId: string): boolean {
   const normalized = normalizeForMatching(modelId)
-  return (
-    normalized.startsWith("claude-opus-4-5")
-    || normalized.startsWith("claude-opus-4-6")
-  )
+  return normalized.startsWith("claude-opus-4-5") || normalized.startsWith("claude-opus-4-6")
 }
 
 // ============================================================================
@@ -169,8 +166,32 @@ export function buildContextManagement(modelId: string, hasThinking: boolean): C
 // Tool Search / Defer Loading
 // ============================================================================
 
+/**
+ * Claude Code official tool names that must always be present in the tools array.
+ * If any of these are missing from the request, they will be injected as stub definitions.
+ */
+const CLAUDE_CODE_OFFICIAL_TOOLS = [
+  "Task",
+  "TaskOutput",
+  "Bash",
+  "Glob",
+  "Grep",
+  "Read",
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "WebFetch",
+  "TodoWrite",
+  "KillShell",
+  "AskUserQuestion",
+  "Skill",
+  "EnterPlanMode",
+  "ExitPlanMode",
+]
+
 /** Tool names that should NOT be deferred (core tools always available) */
 const NON_DEFERRED_TOOL_NAMES = new Set([
+  // VSCode Copilot Chat original tool names (snake_case)
   "read_file",
   "list_dir",
   "grep_search",
@@ -190,18 +211,44 @@ const NON_DEFERRED_TOOL_NAMES = new Set([
   "runTests",
   "ask_questions",
   "switch_agent",
+  // Claude Code official tool names (PascalCase)
+  ...CLAUDE_CODE_OFFICIAL_TOOLS,
 ])
 
 const TOOL_SEARCH_TOOL_NAME = "tool_search_tool_regex"
 const TOOL_SEARCH_TOOL_TYPE = "tool_search_tool_regex_20251119"
 
 /**
- * Apply tool search and defer_loading to the tools list.
+ * Ensure all Claude Code official tools are present in the tools array.
+ * Injects stub definitions for any missing official tools.
+ */
+export function ensureOfficialTools(tools: Array<AnthropicTool>): Array<AnthropicTool> {
+  const existingNames = new Set(tools.map((t) => t.name))
+  const missing = CLAUDE_CODE_OFFICIAL_TOOLS.filter((name) => !existingNames.has(name))
+
+  if (missing.length === 0) {
+    return tools
+  }
+
+  const result = [...tools]
+  for (const name of missing) {
+    result.push({
+      name,
+      description: `Claude Code ${name} tool`,
+      input_schema: { type: "object" },
+    })
+  }
+
+  return result
+}
+
+/**
+ * Apply tool search to the tools list.
  *
  * From anthropic.ts and messagesApi.ts:
  * - Prepend tool_search_tool_regex tool
  * - Mark non-core tools with defer_loading: true
- * - Core tools keep defer_loading: false (default)
+ * - Core tools (VSCode + Claude Code official) keep defer_loading: false
  */
 export function applyToolSearch(tools: Array<AnthropicTool>, modelId: string): Array<AnthropicTool> {
   if (!modelSupportsToolSearch(modelId) || tools.length === 0) {

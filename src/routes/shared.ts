@@ -9,15 +9,8 @@ import type { OpenAIAutoTruncateResult } from "~/lib/auto-truncate/openai"
 import type { ChatCompletionResponse, ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 
-import { hasKnownLimits } from "~/lib/auto-truncate/common"
-import {
-  autoTruncateOpenAI,
-  checkNeedsCompactionOpenAI,
-  onRequestTooLarge,
-  sanitizeOpenAIMessages,
-} from "~/lib/auto-truncate/openai"
+import { onRequestTooLarge, sanitizeOpenAIMessages } from "~/lib/auto-truncate/openai"
 import { recordResponse } from "~/lib/history"
-import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { requestTracker } from "~/lib/tui"
 import { bytesToKB, getErrorMessage } from "~/lib/utils"
@@ -45,16 +38,43 @@ export function updateTrackerStatus(trackingId: string | undefined, status: "exe
   requestTracker.updateRequest(trackingId, { status })
 }
 
-/** Record error response to history */
+/** Record error response to history, preserving full error details for debugging */
 export function recordErrorResponse(ctx: ResponseContext, model: string, error: unknown) {
+  const errorMessage = getErrorMessage(error)
+
+  // For HTTP errors, preserve the raw API response body as content for debugging
+  let content: { role: string; content: Array<{ type: string; text: string }> } | null = null
+  if (
+    error instanceof Error
+    && "responseText" in error
+    && typeof (error as { responseText: unknown }).responseText === "string"
+  ) {
+    const responseText = (error as { responseText: string }).responseText
+    const status = "status" in error ? (error as { status: number }).status : undefined
+    if (responseText) {
+      let formattedBody: string
+      try {
+        formattedBody = JSON.stringify(JSON.parse(responseText), null, 2)
+      } catch {
+        formattedBody = responseText
+      }
+      content = {
+        role: "assistant",
+        content: [
+          { type: "text", text: `[API Error Response${status ? ` - HTTP ${status}` : ""}]\n\n${formattedBody}` },
+        ],
+      }
+    }
+  }
+
   recordResponse(
     ctx.historyId,
     {
       success: false,
       model,
       usage: { input_tokens: 0, output_tokens: 0 },
-      error: getErrorMessage(error),
-      content: null,
+      error: errorMessage,
+      content,
     },
     Date.now() - ctx.startTime,
   )
@@ -148,71 +168,26 @@ export function isNonStreaming(
   return Object.hasOwn(response, "choices")
 }
 
-/** Build final payload with auto-truncate if needed */
-export async function buildFinalPayload(
+/** Build final payload with sanitization (no pre-truncation — truncation is now reactive) */
+export function buildFinalPayload(
   payload: ChatCompletionsPayload,
-  model: Parameters<typeof checkNeedsCompactionOpenAI>[1] | undefined,
-): Promise<{
+  _model: Model | undefined,
+): {
   finalPayload: ChatCompletionsPayload
   truncateResult: OpenAIAutoTruncateResult | null
   sanitizeRemovedCount: number
   systemReminderRemovals: number
-}> {
-  let workingPayload = payload
-  let truncateResult: OpenAIAutoTruncateResult | null = null
-
-  // Apply auto-truncate pre-check only if model has known limits from previous failures
-  if (state.autoTruncate && model && hasKnownLimits(model.id)) {
-    try {
-      const check = await checkNeedsCompactionOpenAI(workingPayload, model, {
-        checkTokenLimit: true,
-        checkByteLimit: true,
-      })
-      consola.debug(
-        `Auto-truncate pre-check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
-          + `${bytesToKB(check.currentBytes)}KB (limit ${bytesToKB(check.byteLimit)}KB), `
-          + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
-      )
-      if (check.needed) {
-        let reasonText: string
-        if (check.reason === "both") {
-          reasonText = "tokens and size"
-        } else if (check.reason === "bytes") {
-          reasonText = "size"
-        } else {
-          reasonText = "tokens"
-        }
-        consola.info(`Auto-truncate triggered: exceeds ${reasonText} limit`)
-        truncateResult = await autoTruncateOpenAI(workingPayload, model, {
-          checkTokenLimit: true,
-          checkByteLimit: true,
-        })
-        workingPayload = truncateResult.payload
-      }
-    } catch (error) {
-      // Auto-truncate is a best-effort optimization; if it fails, proceed with original payload
-      // The request may still succeed if we're under the actual limit
-      consola.warn(
-        "Auto-truncate pre-check failed, proceeding with original payload:",
-        error instanceof Error ? error.message : error,
-      )
-    }
-  }
-
-  // Always sanitize messages to filter orphaned tool/tool_result messages
-  // This handles cases where:
-  // 1. Auto-truncate is disabled
-  // 2. Auto-truncate didn't need to run (within limits)
-  // 3. Original payload has orphaned messages from client
+} {
+  // Sanitize messages to filter orphaned tool/tool_result messages
   const {
     payload: sanitizedPayload,
     removedCount: sanitizeRemovedCount,
     systemReminderRemovals,
-  } = sanitizeOpenAIMessages(workingPayload)
+  } = sanitizeOpenAIMessages(payload)
 
   return {
     finalPayload: sanitizedPayload,
-    truncateResult,
+    truncateResult: null, // Truncation is now handled reactively in the retry loop
     sanitizeRemovedCount,
     systemReminderRemovals,
   }

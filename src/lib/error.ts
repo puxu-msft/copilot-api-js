@@ -129,7 +129,13 @@ export function forwardError(c: Context, error: unknown) {
     // Handle token limit exceeded (detected by tryParseAndLearnLimit)
     if (limitInfo?.type === "token_limit" && limitInfo.current && limitInfo.limit) {
       const formattedError = formatTokenLimitError(limitInfo.current, limitInfo.limit)
-      consola.warn(`HTTP ${error.status}: Token limit exceeded (${limitInfo.current} > ${limitInfo.limit})`)
+      const excess = limitInfo.current - limitInfo.limit
+      const percentage = Math.round((excess / limitInfo.limit) * 100)
+      consola.warn(
+        `HTTP ${error.status}: Token limit exceeded for ${error.modelId ?? "unknown"} `
+          + `(${limitInfo.current.toLocaleString()} > ${limitInfo.limit.toLocaleString()}, `
+          + `${excess.toLocaleString()} over, ${percentage}% excess)`,
+      )
       return c.json(formattedError, 400 as ContentfulStatusCode)
     }
 

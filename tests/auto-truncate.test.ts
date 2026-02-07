@@ -7,6 +7,7 @@ import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
 import {
   autoTruncateAnthropic,
   checkNeedsCompactionAnthropic,
+  contentToText,
   countTotalInputTokens,
   countTotalTokens,
 } from "~/lib/auto-truncate/anthropic"
@@ -830,5 +831,38 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
       // eslint-disable-next-line require-atomic-updates -- test cleanup, state is synchronous
       state.compressToolResults = origCompress
     }
+  })
+})
+
+describe("contentToText", () => {
+  test("should handle string content", () => {
+    expect(contentToText("hello world")).toBe("hello world")
+  })
+
+  test("should handle server_tool_use blocks", () => {
+    const content = [{ type: "server_tool_use" as const, id: "srv_1", name: "web_search", input: { query: "test" } }]
+    const result = contentToText(content)
+    expect(result).toContain("[server_tool_use: web_search]")
+    expect(result).toContain('"query"')
+  })
+
+  test("should handle web_search_tool_result blocks", () => {
+    const content = [{ type: "web_search_tool_result" as const, tool_use_id: "srv_1", search_results: [] }]
+    const result = contentToText(content as any)
+    expect(result).toBe("[web_search_tool_result]")
+  })
+
+  test("should handle generic server tool result blocks (e.g., tool_search_tool_result)", () => {
+    const content = [{ type: "tool_search_tool_result", tool_use_id: "srv_1", content: [] }] as any
+    const result = contentToText(content)
+    expect(result).toBe("[tool_search_tool_result]")
+  })
+
+  test("should skip image blocks in default case", () => {
+    const content = [
+      { type: "image" as const, source: { type: "base64" as const, media_type: "image/png" as const, data: "abc" } },
+    ]
+    const result = contentToText(content)
+    expect(result).toBe("")
   })
 })

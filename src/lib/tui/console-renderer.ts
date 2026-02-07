@@ -31,7 +31,7 @@ function formatTokens(input?: number, output?: number): string {
   if (input === undefined && output === undefined) return "-"
   if (input !== undefined && output !== undefined) return `${formatNumber(input)}/${formatNumber(output)}`
   if (input !== undefined) return formatNumber(input)
-  return `/${formatNumber(output!)}`
+  return `/${formatNumber(output ?? 0)}`
 }
 
 /**

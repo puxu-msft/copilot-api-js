@@ -15,6 +15,7 @@ import type {
   AnthropicUserContentBlock,
   AnthropicUserMessage,
 } from "~/types/api/anthropic"
+
 import { isServerToolResultBlock } from "~/types/api/anthropic"
 
 import { removeSystemReminderTags } from "./system-reminder"
@@ -258,6 +259,23 @@ function filterEmptySystemTextBlocks(system: AnthropicMessagesPayload["system"])
 // ============================================================================
 
 /**
+ * Parse a potentially stringified JSON input into a proper object.
+ * Handles double-serialized strings (e.g., "\"{ ... }\"") by parsing iteratively.
+ */
+function parseStringifiedInput(input: unknown): Record<string, unknown> {
+  if (typeof input !== "string") return input as Record<string, unknown>
+  try {
+    let parsed: unknown = input
+    while (typeof parsed === "string") {
+      parsed = JSON.parse(parsed)
+    }
+    return (typeof parsed === "object" && parsed !== null ? parsed : {}) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+/**
  * Process all tool-related operations in a single pass:
  * 1. Fix tool_use name casing
  * 2. Filter orphaned tool_result blocks
@@ -301,7 +319,7 @@ function processToolBlocks(
           toolResultIds.add(block.tool_use_id)
         }
       }
-    } else if (msg.role === "user") {
+    } else {
       for (const block of msg.content) {
         if (block.type === "tool_result" && block.tool_use_id) {
           toolResultIds.add(block.tool_use_id)
@@ -317,6 +335,8 @@ function processToolBlocks(
   let fixedNameCount = 0
   let orphanedToolUseCount = 0
   let orphanedToolResultCount = 0
+  // Track tool_use IDs that were filtered (orphaned) so their tool_results are also filtered
+  const filteredToolUseIds = new Set<string>()
 
   for (const msg of messages) {
     if (typeof msg.content === "string") {
@@ -333,14 +353,25 @@ function processToolBlocks(
           // Check if orphaned (no corresponding tool_result)
           if (!toolResultIds.has(block.id)) {
             orphanedToolUseCount++
+            filteredToolUseIds.add(block.id)
             continue // Skip orphaned tool_use
           }
 
-          // Fix tool name casing if needed
+          // Apply fixes: name casing and input deserialization
           const correctName = nameMap.get(block.name.toLowerCase())
-          if (correctName && correctName !== block.name) {
-            fixedNameCount++
-            newContent.push({ ...block, name: correctName })
+          const needsNameFix = correctName !== undefined && correctName !== block.name
+          const needsInputFix = typeof block.input === "string"
+
+          if (needsNameFix || needsInputFix) {
+            const fixed = { ...block } as typeof block
+            if (needsNameFix) {
+              fixedNameCount++
+              ;(fixed as { name: string }).name = correctName
+            }
+            if (needsInputFix) {
+              ;(fixed as { input: Record<string, unknown> }).input = parseStringifiedInput(block.input)
+            }
+            newContent.push(fixed)
           } else {
             newContent.push(block)
           }
@@ -348,34 +379,24 @@ function processToolBlocks(
           // Check if orphaned (no corresponding web_search_tool_result)
           if (!toolResultIds.has(block.id)) {
             orphanedToolUseCount++
+            filteredToolUseIds.add(block.id)
             continue // Skip orphaned server_tool_use
           }
           // Ensure input is an object (clients may send it as a JSON string from stream accumulation)
           if (typeof block.input === "string") {
-            try {
-              // Handle potentially double-serialized JSON strings (e.g., "\"{ ... }\"")
-              let parsed: unknown = block.input
-              while (typeof parsed === "string") {
-                parsed = JSON.parse(parsed)
-              }
-              newContent.push({
-                ...block,
-                input: (typeof parsed === "object" && parsed !== null ? parsed : {}) as Record<string, unknown>,
-              })
-            } catch {
-              newContent.push({ ...block, input: {} })
-            }
+            newContent.push({ ...block, input: parseStringifiedInput(block.input) })
           } else {
             newContent.push(block)
           }
         } else {
           // For server tool results in assistant messages (e.g., tool_search_tool_result),
           // check if their corresponding server_tool_use is still present
-          if (isServerToolResultBlock(block)) {
-            if (!toolUseIds.has(block.tool_use_id)) {
-              orphanedToolResultCount++
-              continue // Skip orphaned server tool result
-            }
+          if (
+            isServerToolResultBlock(block)
+            && (!toolUseIds.has(block.tool_use_id) || filteredToolUseIds.has(block.tool_use_id))
+          ) {
+            orphanedToolResultCount++
+            continue // Skip orphaned server tool result
           }
           newContent.push(block as AnthropicAssistantContentBlock)
         }
@@ -385,24 +406,27 @@ function processToolBlocks(
       if (newContent.length === 0) continue
 
       result.push({ ...msg, content: newContent })
-    } else if (msg.role === "user") {
+    } else {
       // Process user messages: filter orphaned tool_result/web_search_tool_result
       const newContent: Array<AnthropicUserContentBlock> = []
 
       for (const block of msg.content) {
         if (block.type === "tool_result") {
-          // Check if orphaned (no corresponding tool_use)
-          if (!toolUseIds.has(block.tool_use_id)) {
+          // Check if orphaned (no corresponding tool_use) or tool_use was filtered
+          if (!toolUseIds.has(block.tool_use_id) || filteredToolUseIds.has(block.tool_use_id)) {
             orphanedToolResultCount++
             continue // Skip orphaned tool_result
           }
         } else if (isServerToolResultBlock(block)) {
-          // Check if orphaned (no corresponding server_tool_use)
-          if (!toolUseIds.has(block.tool_use_id)) {
+          // Check if orphaned (no corresponding server_tool_use) or server_tool_use was filtered
+          if (!toolUseIds.has(block.tool_use_id) || filteredToolUseIds.has(block.tool_use_id)) {
             orphanedToolResultCount++
             continue // Skip orphaned server tool result
           }
-        } else if (block.type !== "text" && block.type !== "image") {
+        } else if (
+          (block as unknown as Record<string, unknown>).type !== "text"
+          && (block as unknown as Record<string, unknown>).type !== "image"
+        ) {
           // Unknown block type without tool_use_id (e.g., corrupted server tool result
           // from older history where tool_use_id was lost during conversion).
           // Filter it out to prevent API errors.
@@ -416,9 +440,6 @@ function processToolBlocks(
       if (newContent.length === 0) continue
 
       result.push({ ...msg, content: newContent })
-    } else {
-      // Pass through other message types unchanged
-      result.push(msg)
     }
   }
 
@@ -474,14 +495,7 @@ export function sanitizeAnthropicMessages(payload: AnthropicMessagesPayload): {
   messages = toolResult.messages
 
   if (toolResult.fixedNameCount > 0) {
-    consola.info(`[Sanitizer:Anthropic] Fixed ${toolResult.fixedNameCount} tool name casing mismatches`)
-  }
-
-  const totalOrphaned = toolResult.orphanedToolUseCount + toolResult.orphanedToolResultCount
-  if (totalOrphaned > 0) {
-    consola.debug(
-      `[Sanitizer:Anthropic] Filtered ${toolResult.orphanedToolUseCount} orphaned tool_use, ${toolResult.orphanedToolResultCount} orphaned tool_result`
-    )
+    consola.debug(`[Sanitizer:Anthropic] Fixed ${toolResult.fixedNameCount} tool name casing mismatches`)
   }
 
   // Final safety net: remove any remaining empty/whitespace-only text blocks
@@ -493,7 +507,16 @@ export function sanitizeAnthropicMessages(payload: AnthropicMessagesPayload): {
   const removedCount = originalBlocks - newBlocks
 
   if (removedCount > 0) {
-    consola.info(`[Sanitizer:Anthropic] Filtered ${removedCount} orphaned tool blocks`)
+    const emptyTextCount = removedCount - toolResult.orphanedToolUseCount - toolResult.orphanedToolResultCount
+    // Only log if there are meaningful removals (not just empty text blocks)
+    if (toolResult.orphanedToolUseCount > 0 || toolResult.orphanedToolResultCount > 0) {
+      const parts: Array<string> = []
+      if (toolResult.orphanedToolUseCount > 0) parts.push(`${toolResult.orphanedToolUseCount} orphaned tool_use`)
+      if (toolResult.orphanedToolResultCount > 0)
+        parts.push(`${toolResult.orphanedToolResultCount} orphaned tool_result`)
+      if (emptyTextCount > 0) parts.push(`${emptyTextCount} empty text blocks`)
+      consola.info(`[Sanitizer:Anthropic] Removed ${removedCount} content blocks (${parts.join(", ")})`)
+    }
   }
 
   return {

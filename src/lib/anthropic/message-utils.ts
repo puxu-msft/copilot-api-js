@@ -5,6 +5,7 @@
 
 import type { MessageContent } from "~/lib/history"
 import type { AnthropicMessagesPayload, AnthropicResponse } from "~/types/api/anthropic"
+
 import { isServerToolResultBlock } from "~/types/api/anthropic"
 
 // Convert Anthropic messages to history MessageContent format
@@ -24,7 +25,7 @@ export function convertAnthropicMessages(messages: AnthropicMessagesPayload["mes
           type: "tool_use",
           id: block.id,
           name: block.name,
-          input: JSON.stringify(block.input),
+          input: block.input,
         }
       }
       if (block.type === "tool_result") {
@@ -47,8 +48,17 @@ export function convertAnthropicMessages(messages: AnthropicMessagesPayload["mes
           type: "server_tool_use",
           id: block.id,
           name: block.name,
-          input: JSON.stringify(block.input),
+          input: block.input,
         }
+      }
+      if (block.type === "thinking") {
+        return {
+          type: "thinking",
+          thinking: (block as { thinking?: string }).thinking ?? "",
+        }
+      }
+      if (block.type === "redacted_thinking") {
+        return { type: "redacted_thinking" }
       }
       if (block.type === "web_search_tool_result") {
         return {
@@ -80,8 +90,8 @@ export function extractSystemPrompt(system: AnthropicMessagesPayload["system"]):
 // Extract tool calls from response content (untyped version)
 export function extractToolCallsFromContent(
   content: Array<unknown>,
-): Array<{ id: string; name: string; input: string }> | undefined {
-  const tools: Array<{ id: string; name: string; input: string }> = []
+): Array<{ id: string; name: string; input: string | Record<string, unknown> }> | undefined {
+  const tools: Array<{ id: string; name: string; input: string | Record<string, unknown> }> = []
   for (const block of content) {
     if (
       typeof block === "object"
@@ -95,7 +105,7 @@ export function extractToolCallsFromContent(
       tools.push({
         id: String(block.id),
         name: String(block.name),
-        input: JSON.stringify(block.input),
+        input: block.input as string | Record<string, unknown>,
       })
     }
   }
@@ -105,14 +115,14 @@ export function extractToolCallsFromContent(
 // Extract tool calls from Anthropic content blocks (typed version)
 export function extractToolCallsFromAnthropicContent(
   content: AnthropicResponse["content"],
-): Array<{ id: string; name: string; input: string }> | undefined {
-  const tools: Array<{ id: string; name: string; input: string }> = []
+): Array<{ id: string; name: string; input: string | Record<string, unknown> }> | undefined {
+  const tools: Array<{ id: string; name: string; input: string | Record<string, unknown> }> = []
   for (const block of content) {
     if (block.type === "tool_use") {
       tools.push({
         id: block.id,
         name: block.name,
-        input: JSON.stringify(block.input),
+        input: block.input as string | Record<string, unknown>,
       })
     }
   }

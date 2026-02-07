@@ -1,12 +1,23 @@
-import { ref, onMounted, onUnmounted } from 'vue'
-import type { Ref } from 'vue'
-import type { HistoryEntry, HistoryResult, HistoryStats, QueryOptions, Session, SessionResult, WSMessage } from '@/types'
-import * as api from '@/api'
+import type { Ref } from "vue"
+
+import { ref, onMounted, onUnmounted } from "vue"
+
+import type {
+  HistoryEntry,
+  HistoryResult,
+  HistoryStats,
+  QueryOptions,
+  Session,
+  SessionResult,
+  WSMessage,
+} from "@/types"
+
+import * as api from "@/api"
 
 // Store for history data
 export function useHistoryStore() {
-  const entries: Ref<HistoryEntry[]> = ref([])
-  const sessions: Ref<Session[]> = ref([])
+  const entries: Ref<Array<HistoryEntry>> = ref([])
+  const sessions: Ref<Array<Session>> = ref([])
   const stats: Ref<HistoryStats | null> = ref(null)
   const selectedEntry: Ref<HistoryEntry | null> = ref(null)
   const selectedSessionId: Ref<string | null> = ref(null)
@@ -19,7 +30,7 @@ export function useHistoryStore() {
   const total = ref(0)
   const limit = ref(20)
 
-  const searchQuery = ref('')
+  const searchQuery = ref("")
   const filterEndpoint: Ref<string | null> = ref(null)
   const filterSuccess: Ref<boolean | null> = ref(null)
 
@@ -36,35 +47,35 @@ export function useHistoryStore() {
     ws = api.createWebSocket()
     if (!ws) return
 
-    ws.onopen = () => {
+    ws.addEventListener("open", () => {
       // Reset backoff on successful connection
       wsReconnectDelay = 1000
-    }
+    })
 
     ws.onmessage = (event) => {
       try {
         const message: WSMessage = JSON.parse(event.data)
         handleWSMessage(message)
       } catch (e) {
-        console.error('Failed to parse WebSocket message:', e)
+        console.error("Failed to parse WebSocket message:", e)
       }
     }
 
-    ws.onclose = () => {
+    ws.addEventListener("close", () => {
       if (wsUnmounted) return
       // Reconnect with exponential backoff
       wsReconnectTimer = setTimeout(connectWebSocket, wsReconnectDelay)
       wsReconnectDelay = Math.min(wsReconnectDelay * 2, WS_MAX_RECONNECT_DELAY)
-    }
+    })
 
     ws.onerror = (e) => {
-      console.error('WebSocket error:', e)
+      console.error("WebSocket error:", e)
     }
   }
 
   const handleWSMessage = (message: WSMessage) => {
     switch (message.type) {
-      case 'entry_added':
+      case "entry_added": {
         // Add new entry to the beginning if on first page
         if (page.value === 1) {
           const newEntry = message.data as HistoryEntry
@@ -75,9 +86,10 @@ export function useHistoryStore() {
           }
         }
         break
-      case 'entry_updated':
+      }
+      case "entry_updated": {
         const updatedEntry = message.data as HistoryEntry
-        const index = entries.value.findIndex(e => e.id === updatedEntry.id)
+        const index = entries.value.findIndex((e) => e.id === updatedEntry.id)
         if (index !== -1) {
           entries.value[index] = updatedEntry
         }
@@ -85,9 +97,11 @@ export function useHistoryStore() {
           selectedEntry.value = updatedEntry
         }
         break
-      case 'stats_updated':
+      }
+      case "stats_updated": {
         stats.value = message.data as HistoryStats
         break
+      }
     }
   }
 
@@ -104,7 +118,7 @@ export function useHistoryStore() {
     try {
       const options: QueryOptions = {
         page: page.value,
-        limit: limit.value
+        limit: limit.value,
       }
       if (selectedSessionId.value) options.sessionId = selectedSessionId.value
       if (filterEndpoint.value) options.endpoint = filterEndpoint.value
@@ -116,7 +130,7 @@ export function useHistoryStore() {
       total.value = result.total
       totalPages.value = result.totalPages
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch entries'
+      error.value = e instanceof Error ? e.message : "Failed to fetch entries"
     } finally {
       loading.value = false
     }
@@ -127,7 +141,7 @@ export function useHistoryStore() {
       const result: SessionResult = await api.fetchSessions()
       sessions.value = result.sessions
     } catch (e) {
-      console.error('Failed to fetch sessions:', e)
+      console.error("Failed to fetch sessions:", e)
     }
   }
 
@@ -135,7 +149,7 @@ export function useHistoryStore() {
     try {
       stats.value = await api.fetchStats()
     } catch (e) {
-      console.error('Failed to fetch stats:', e)
+      console.error("Failed to fetch stats:", e)
     }
   }
 
@@ -143,7 +157,7 @@ export function useHistoryStore() {
     try {
       selectedEntry.value = await api.fetchEntry(id)
     } catch (e) {
-      console.error('Failed to fetch entry:', e)
+      console.error("Failed to fetch entry:", e)
     }
   }
 
@@ -151,7 +165,7 @@ export function useHistoryStore() {
     selectedEntry.value = null
   }
 
-  const selectAdjacentEntry = async (direction: 'next' | 'prev') => {
+  const selectAdjacentEntry = async (direction: "next" | "prev") => {
     if (entries.value.length === 0) return
     const currentId = selectedEntry.value?.id
     if (!currentId) {
@@ -159,10 +173,14 @@ export function useHistoryStore() {
       await selectEntry(entries.value[0].id)
       return
     }
-    const currentIndex = entries.value.findIndex(e => e.id === currentId)
-    const nextIndex = direction === 'next'
-      ? (currentIndex < entries.value.length - 1 ? currentIndex + 1 : 0)
-      : (currentIndex > 0 ? currentIndex - 1 : entries.value.length - 1)
+    const currentIndex = entries.value.findIndex((e) => e.id === currentId)
+    const nextIndex =
+      direction === "next" ?
+        currentIndex < entries.value.length - 1 ?
+          currentIndex + 1
+        : 0
+      : currentIndex > 0 ? currentIndex - 1
+      : entries.value.length - 1
     await selectEntry(entries.value[nextIndex].id)
   }
 
@@ -176,7 +194,7 @@ export function useHistoryStore() {
       await fetchStats()
       await fetchSessions()
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to clear history'
+      error.value = e instanceof Error ? e.message : "Failed to clear history"
     }
   }
 
@@ -265,6 +283,6 @@ export function useHistoryStore() {
     setSessionFilter,
     setEndpointFilter,
     setSuccessFilter,
-    setSearch
+    setSearch,
   }
 }

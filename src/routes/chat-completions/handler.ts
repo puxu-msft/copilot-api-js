@@ -57,10 +57,7 @@ export async function handleCompletion(c: Context) {
   // Find the selected model and validate endpoint support before recording
   const selectedModel = state.models?.data.find((model) => model.id === originalPayload.model)
 
-  if (
-    selectedModel?.supported_endpoints
-    && !selectedModel.supported_endpoints.includes("/chat/completions")
-  ) {
+  if (selectedModel?.supported_endpoints && !selectedModel.supported_endpoints.includes("/chat/completions")) {
     return c.json(
       {
         error: {
@@ -95,7 +92,7 @@ export async function handleCompletion(c: Context) {
   await logTokenCount(originalPayload, selectedModel)
 
   // Build the final payload with potential auto-truncate and max_tokens
-  const { finalPayload, truncateResult } = await buildFinalPayload(originalPayload, selectedModel)
+  const { finalPayload, truncateResult } = buildFinalPayload(originalPayload, selectedModel)
   if (truncateResult) {
     ctx.truncateResult = truncateResult
   }

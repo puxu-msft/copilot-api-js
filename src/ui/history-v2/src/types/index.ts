@@ -13,8 +13,8 @@ export interface SanitizationInfo {
 export interface RewriteInfo {
   truncation?: TruncationInfo
   sanitization?: SanitizationInfo
-  rewrittenMessages?: Message[]
-  rewrittenSystem?: string | SystemBlock[]
+  rewrittenMessages?: Array<Message>
+  rewrittenSystem?: string | Array<SystemBlock>
 }
 
 // History entry types
@@ -22,7 +22,7 @@ export interface HistoryEntry {
   id: string
   timestamp: number
   sessionId: string
-  endpoint: 'anthropic' | 'openai'
+  endpoint: "anthropic" | "openai"
   durationMs?: number
   request: RequestData
   response?: ResponseData
@@ -35,37 +35,37 @@ export interface RequestData {
   stream?: boolean
   max_tokens?: number
   temperature?: number
-  system?: string | SystemBlock[]
-  messages: Message[]
-  tools?: ToolDefinition[]
+  system?: string | Array<SystemBlock>
+  messages: Array<Message>
+  tools?: Array<ToolDefinition>
 }
 
 export interface SystemBlock {
-  type: 'text'
+  type: "text"
   text: string
   cache_control?: { type: string }
 }
 
 export interface Message {
-  role: 'user' | 'assistant' | 'system'
-  content: string | ContentBlock[]
+  role: "user" | "assistant" | "system"
+  content: string | Array<ContentBlock>
 }
 
 export interface ContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result' | 'image' | 'thinking' | 'redacted_thinking'
+  type: "text" | "tool_use" | "tool_result" | "image" | "thinking" | "redacted_thinking"
   text?: string
   thinking?: string
   id?: string
   name?: string
   input?: Record<string, unknown>
   tool_use_id?: string
-  content?: string | ContentBlock[]
+  content?: string | Array<ContentBlock>
   source?: ImageSource
   is_error?: boolean
 }
 
 export interface ImageSource {
-  type: 'base64'
+  type: "base64"
   media_type: string
   data: string
 }
@@ -79,11 +79,11 @@ export interface ToolDefinition {
 export interface ResponseData {
   success: boolean
   model?: string
-  content?: ContentBlock[]
+  content?: Array<ContentBlock>
   stop_reason?: string
   error?: string
   usage?: UsageData
-  toolCalls?: ToolCall[]
+  toolCalls?: Array<ToolCall>
 }
 
 export interface UsageData {
@@ -110,14 +110,14 @@ export interface Session {
   requestCount: number
   totalInputTokens: number
   totalOutputTokens: number
-  models: string[]
+  models: Array<string>
   endpoint?: string
-  toolsUsed?: string[]
+  toolsUsed?: Array<string>
 }
 
 // API response types
 export interface HistoryResult {
-  entries: HistoryEntry[]
+  entries: Array<HistoryEntry>
   total: number
   page: number
   limit: number
@@ -125,7 +125,7 @@ export interface HistoryResult {
 }
 
 export interface SessionResult {
-  sessions: Session[]
+  sessions: Array<Session>
   total: number
 }
 
@@ -139,7 +139,7 @@ export interface HistoryStats {
   modelDistribution: Record<string, number>
   endpointDistribution: Record<string, number>
   activeSessions: number
-  recentActivity: number[]
+  recentActivity: Array<number>
 }
 
 // Query options
@@ -157,21 +157,21 @@ export interface QueryOptions {
 
 // WebSocket message types
 export interface WSMessage {
-  type: 'entry_added' | 'entry_updated' | 'stats_updated' | 'session_updated'
+  type: "entry_added" | "entry_updated" | "stats_updated" | "session_updated"
   data: unknown
 }
 
 export interface WSEntryAddedMessage extends WSMessage {
-  type: 'entry_added'
+  type: "entry_added"
   data: HistoryEntry
 }
 
 export interface WSEntryUpdatedMessage extends WSMessage {
-  type: 'entry_updated'
+  type: "entry_updated"
   data: HistoryEntry
 }
 
 export interface WSStatsUpdatedMessage extends WSMessage {
-  type: 'stats_updated'
+  type: "stats_updated"
   data: HistoryStats
 }

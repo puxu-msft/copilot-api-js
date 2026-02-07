@@ -61,10 +61,10 @@ export async function handleCountTokens(c: Context) {
         const contextWindow = selectedModel.capabilities?.limits?.max_context_window_tokens ?? 200000
         const inflatedTokens = Math.floor(contextWindow * 0.95)
 
-        consola.debug(
-          `[count_tokens] Would trigger auto-truncate: `
-            + `${truncateCheck.currentTokens} tokens > ${truncateCheck.tokenLimit}, `
-            + `returning inflated count: ${inflatedTokens}`,
+        consola.info(
+          `[count_tokens] Prompt too long: `
+            + `${truncateCheck.currentTokens} tokens > ${truncateCheck.tokenLimit} limit, `
+            + `returning inflated count ${inflatedTokens} to trigger client-side compaction`,
         )
 
         if (trackingId) {

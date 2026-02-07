@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
 
+import type { Message } from "~/services/copilot/create-chat-completions"
 import type { AnthropicMessage, AnthropicMessagesPayload } from "~/types/api/anthropic"
 
+import { convertAnthropicMessages } from "~/lib/anthropic/message-utils"
 import {
   ensureAnthropicStartsWithUser,
   filterAnthropicOrphanedToolResults,
@@ -9,7 +11,6 @@ import {
   getAnthropicToolResultIds,
   getAnthropicToolUseIds,
 } from "~/lib/message-sanitizer/orphan-filter-anthropic"
-import { sanitizeAnthropicMessages } from "~/lib/message-sanitizer/sanitize-anthropic"
 import {
   ensureOpenAIStartsWithUser,
   extractOpenAISystemMessages,
@@ -18,13 +19,12 @@ import {
   getOpenAIToolCallIds,
   getOpenAIToolResultIds,
 } from "~/lib/message-sanitizer/orphan-filter-openai"
+import { sanitizeAnthropicMessages } from "~/lib/message-sanitizer/sanitize-anthropic"
 import {
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,
 } from "~/lib/message-sanitizer/system-reminder"
-
-import type { Message } from "~/services/copilot/create-chat-completions"
 
 // =============================================================================
 // system-reminder.ts
@@ -92,8 +92,7 @@ describe("System Reminder Tags", () => {
 
   describe("removeSystemReminderTags", () => {
     test("should remove malware reminder tags", () => {
-      const malwareContent =
-        "Whenever you read a file, you should consider whether it would be considered malware."
+      const malwareContent = "Whenever you read a file, you should consider whether it would be considered malware."
       const text = `code here\n<system-reminder>\n${malwareContent}\n</system-reminder>`
 
       const result = removeSystemReminderTags(text)
@@ -108,7 +107,7 @@ describe("System Reminder Tags", () => {
     })
 
     test("should preserve tags embedded in code", () => {
-      const codeContent = 'const regex = /<system-reminder>/g'
+      const codeContent = "const regex = /<system-reminder>/g"
       const result = removeSystemReminderTags(codeContent)
       expect(result).toBe(codeContent)
     })
@@ -268,6 +267,284 @@ describe("Anthropic Orphan Filter", () => {
     })
   })
 
+  // =========================================================================
+  // Server Tool Use/Result (inline in assistant messages)
+  // =========================================================================
+
+  describe("server tool use/result in assistant messages", () => {
+    test("should preserve paired server_tool_use and server tool result in same assistant message", () => {
+      const messages: Array<AnthropicMessage> = [
+        { role: "user", content: "hello" },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Let me search" },
+            { type: "server_tool_use", id: "srv_1", name: "tool_search_tool_regex", input: { pattern: "test" } },
+            // Simulating a tool_search_tool_result as runtime unknown block type
+          ] as any,
+        },
+      ]
+      // Add server tool result block at runtime (bypasses TS type union)
+      const assistantContent = messages[1].content as Array<any>
+      assistantContent.push({ type: "tool_search_tool_result", tool_use_id: "srv_1", content: [] })
+
+      const resultToolResults = filterAnthropicOrphanedToolResults(messages)
+      // server_tool_use is present, so tool_search_tool_result should be kept
+      const assistantMsg = resultToolResults[1]
+      expect(typeof assistantMsg.content).not.toBe("string")
+      if (typeof assistantMsg.content !== "string") {
+        expect(assistantMsg.content).toHaveLength(3)
+      }
+
+      const resultToolUse = filterAnthropicOrphanedToolUse(resultToolResults)
+      // server_tool_use has a matching result (tool_search_tool_result), so both should survive
+      const assistantMsg2 = resultToolUse[1]
+      if (typeof assistantMsg2.content !== "string") {
+        expect(assistantMsg2.content).toHaveLength(3)
+      }
+    })
+
+    test("should keep paired server_tool_use and inline result (not orphaned)", () => {
+      // server_tool_use with matching inline tool_search_tool_result → NOT orphaned
+      // Both should survive since they form a complete pair
+      const messages: Array<AnthropicMessage> = [
+        { role: "user", content: "hello" },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "response" },
+            { type: "server_tool_use", id: "srv_paired", name: "tool_search", input: {} },
+          ] as any,
+        },
+      ]
+      const assistantContent = messages[1].content as Array<any>
+      assistantContent.push({ type: "tool_search_tool_result", tool_use_id: "srv_paired", content: [] })
+
+      const result = filterAnthropicOrphanedToolUse(messages)
+      const assistantMsg = result[1]
+      if (typeof assistantMsg.content !== "string") {
+        // All three blocks should remain: text + server_tool_use + tool_search_tool_result
+        expect(assistantMsg.content).toHaveLength(3)
+      }
+    })
+
+    test("should remove orphaned server_tool_use without inline result", () => {
+      // server_tool_use with NO matching tool_result anywhere → orphaned
+      const messages: Array<AnthropicMessage> = [
+        { role: "user", content: "hello" },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "response" },
+            { type: "server_tool_use", id: "srv_orphan", name: "tool_search", input: {} },
+          ] as any,
+        },
+      ]
+
+      const result = filterAnthropicOrphanedToolUse(messages)
+      const assistantMsg = result[1]
+      if (typeof assistantMsg.content !== "string") {
+        // Only text block should remain; server_tool_use removed (no matching result)
+        expect(assistantMsg.content).toHaveLength(1)
+        expect(assistantMsg.content[0].type).toBe("text")
+      }
+    })
+
+    test("should remove orphaned server tool result when server_tool_use is missing", () => {
+      // tool_search_tool_result with NO matching server_tool_use → orphaned
+      const messages: Array<AnthropicMessage> = [
+        { role: "user", content: "hello" },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "response" }] as any,
+        },
+      ]
+      const assistantContent = messages[1].content as Array<any>
+      assistantContent.push({ type: "tool_search_tool_result", tool_use_id: "srv_missing", content: [] })
+
+      // filterAnthropicOrphanedToolUse should remove the orphaned server tool result
+      const result = filterAnthropicOrphanedToolUse(messages)
+      const assistantMsg = result[1]
+      if (typeof assistantMsg.content !== "string") {
+        expect(assistantMsg.content).toHaveLength(1)
+        expect(assistantMsg.content[0].type).toBe("text")
+      }
+    })
+
+    test("should remove corrupted blocks (no tool_use_id) from user messages", () => {
+      // Sanitize should handle corrupted blocks in user messages
+      const payload: AnthropicMessagesPayload = {
+        model: "claude-sonnet-4",
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "hello" },
+              // Corrupted block: missing tool_use_id
+              { type: "tool_search_tool_result" } as any,
+            ],
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "response" }],
+          },
+        ],
+      }
+
+      const result = sanitizeAnthropicMessages(payload)
+      const userMsg = result.payload.messages[0]
+      if (typeof userMsg.content !== "string") {
+        // Corrupted block should be filtered, only text remains
+        expect(userMsg.content).toHaveLength(1)
+        expect(userMsg.content[0].type).toBe("text")
+      }
+    })
+
+    test("sanitizeAnthropicMessages should preserve server_tool_use with inline result", () => {
+      const payload: AnthropicMessagesPayload = {
+        model: "claude-sonnet-4",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Searching..." },
+              { type: "server_tool_use", id: "srv_1", name: "tool_search_tool_regex", input: { pattern: "test" } },
+              // Runtime unknown type
+              { type: "tool_search_tool_result", tool_use_id: "srv_1", content: [] } as any,
+              { type: "tool_use", id: "tu_1", name: "Read", input: { file: "test.ts" } },
+            ],
+          },
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "tu_1", content: "file contents" }],
+          },
+        ],
+      }
+
+      const result = sanitizeAnthropicMessages(payload)
+      const assistantMsg = result.payload.messages[1]
+      if (typeof assistantMsg.content !== "string") {
+        // All 4 blocks should survive: text, server_tool_use, tool_search_tool_result, tool_use
+        expect(assistantMsg.content).toHaveLength(4)
+        const types = assistantMsg.content.map((b: any) => b.type)
+        expect(types).toContain("server_tool_use")
+        expect(types).toContain("tool_search_tool_result")
+        expect(types).toContain("tool_use")
+      }
+      expect(result.removedCount).toBe(0)
+    })
+
+    test("sanitizeAnthropicMessages should fix double-serialized server_tool_use input", () => {
+      const payload: AnthropicMessagesPayload = {
+        model: "claude-sonnet-4",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "server_tool_use",
+                id: "srv_1",
+                name: "tool_search",
+                // Double-serialized: string wrapping a string wrapping JSON
+                input: String.raw`"{\"pattern\": \"test\"}"` as any,
+              },
+              { type: "tool_search_tool_result", tool_use_id: "srv_1", content: [] } as any,
+            ],
+          },
+        ],
+      }
+
+      const result = sanitizeAnthropicMessages(payload)
+      const assistantMsg = result.payload.messages[1]
+      if (typeof assistantMsg.content !== "string") {
+        const serverToolUse = assistantMsg.content.find((b: any) => b.type === "server_tool_use") as any
+        expect(serverToolUse).toBeDefined()
+        // Input should be parsed to an object, not a string
+        expect(typeof serverToolUse.input).toBe("object")
+        expect(serverToolUse.input.pattern).toBe("test")
+      }
+    })
+
+    test("sanitizeAnthropicMessages should keep tool_use referencing tools not in current request", () => {
+      const payload: AnthropicMessagesPayload = {
+        model: "claude-sonnet-4",
+        max_tokens: 1024,
+        tools: [{ name: "Read", input_schema: { type: "object" as const, properties: {} } }],
+        messages: [
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Let me use some tools" },
+              // "Task" tool is NOT in the current tools list but should be kept
+              { type: "tool_use", id: "tu_1", name: "Task", input: { prompt: "do something" } },
+              // "Read" tool IS in the tools list
+              { type: "tool_use", id: "tu_2", name: "Read", input: { file: "test.ts" } },
+            ],
+          },
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "tu_1", content: "task result" },
+              { type: "tool_result", tool_use_id: "tu_2", content: "file contents" },
+            ],
+          },
+        ],
+      }
+
+      const result = sanitizeAnthropicMessages(payload)
+      const assistantMsg = result.payload.messages[1]
+      if (typeof assistantMsg.content !== "string") {
+        // Both tool_use blocks should be kept (unavailable tools are not filtered)
+        expect(assistantMsg.content).toHaveLength(3)
+        expect(assistantMsg.content[0].type).toBe("text")
+        expect(assistantMsg.content[1].type).toBe("tool_use")
+        expect((assistantMsg.content[1] as any).name).toBe("Task")
+        expect(assistantMsg.content[2].type).toBe("tool_use")
+        expect((assistantMsg.content[2] as any).name).toBe("Read")
+      }
+
+      const userMsg = result.payload.messages[2]
+      if (typeof userMsg.content !== "string") {
+        // Both tool_results should be kept
+        expect(userMsg.content).toHaveLength(2)
+      }
+    })
+
+    test("sanitizeAnthropicMessages should keep tool_use when no tools list is provided", () => {
+      // When tools list is undefined/empty, all tool names should pass through
+      const payload: AnthropicMessagesPayload = {
+        model: "claude-sonnet-4",
+        max_tokens: 1024,
+        // No tools array
+        messages: [
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "tu_1", name: "AnyTool", input: {} }],
+          },
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "tu_1", content: "result" }],
+          },
+        ],
+      }
+
+      const result = sanitizeAnthropicMessages(payload)
+      const assistantMsg = result.payload.messages[1]
+      if (typeof assistantMsg.content !== "string") {
+        expect(assistantMsg.content).toHaveLength(1)
+        expect((assistantMsg.content[0] as any).name).toBe("AnyTool")
+      }
+      expect(result.removedCount).toBe(0)
+    })
+  })
+
   describe("ensureAnthropicStartsWithUser", () => {
     test("should skip leading assistant messages", () => {
       const messages: Array<AnthropicMessage> = [
@@ -365,9 +642,7 @@ describe("OpenAI Orphan Filter", () => {
         {
           role: "assistant",
           content: "thinking",
-          tool_calls: [
-            { id: "tc_orphan", type: "function", function: { name: "test", arguments: "{}" } },
-          ],
+          tool_calls: [{ id: "tc_orphan", type: "function", function: { name: "test", arguments: "{}" } }],
         },
       ]
 
@@ -386,9 +661,7 @@ describe("OpenAI Orphan Filter", () => {
         {
           role: "assistant",
           content: null,
-          tool_calls: [
-            { id: "tc_orphan", type: "function", function: { name: "test", arguments: "{}" } },
-          ],
+          tool_calls: [{ id: "tc_orphan", type: "function", function: { name: "test", arguments: "{}" } }],
         },
       ]
 
@@ -454,10 +727,7 @@ describe("OpenAI Orphan Filter", () => {
 // =============================================================================
 
 describe("Tool Name Case Correction", () => {
-  function makePayload(
-    messages: Array<AnthropicMessage>,
-    tools?: Array<{ name: string }>,
-  ): AnthropicMessagesPayload {
+  function makePayload(messages: Array<AnthropicMessage>, tools?: Array<{ name: string }>): AnthropicMessagesPayload {
     return {
       model: "claude-sonnet-4",
       messages,
@@ -687,10 +957,7 @@ describe("Tool Name Case Correction", () => {
 // =============================================================================
 
 describe("Server Tool Use Support", () => {
-  function makePayload(
-    messages: Array<AnthropicMessage>,
-    tools?: Array<{ name: string }>,
-  ): AnthropicMessagesPayload {
+  function makePayload(messages: Array<AnthropicMessage>, tools?: Array<{ name: string }>): AnthropicMessagesPayload {
     return {
       model: "claude-sonnet-4",
       messages,
@@ -775,9 +1042,7 @@ describe("Server Tool Use Support", () => {
         { role: "user", content: "hello" },
         {
           role: "assistant",
-          content: [
-            { type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "test" } },
-          ],
+          content: [{ type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "test" } }],
         },
         {
           role: "user",
@@ -830,9 +1095,7 @@ describe("Server Tool Use Support", () => {
         { role: "user", content: "hello" },
         {
           role: "assistant",
-          content: [
-            { type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "test" } },
-          ],
+          content: [{ type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "test" } }],
         },
         {
           role: "user",
@@ -864,9 +1127,7 @@ describe("Server Tool Use Support", () => {
         { role: "user", content: "search for AI news" },
         {
           role: "assistant",
-          content: [
-            { type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "AI news" } },
-          ],
+          content: [{ type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "AI news" } }],
         },
         {
           role: "user",
@@ -1014,9 +1275,7 @@ describe("Server Tool Use Support", () => {
         { role: "user", content: "search" },
         {
           role: "assistant",
-          content: [
-            { type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "test query" } },
-          ],
+          content: [{ type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "test query" } }],
         },
         {
           role: "user",
@@ -1145,5 +1404,140 @@ describe("Server Tool Use Support", () => {
         }
       }
     })
+
+    test("should fix tool_use.input from string to object", () => {
+      // Claude Code subagents may send tool_use with input as JSON string
+      // instead of a parsed object. The sanitizer must fix this.
+      const payload = makePayload([
+        { role: "user", content: "do something" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_1",
+              name: "Bash",
+              input: '{"command":"ls -la","description":"List files"}' as unknown as Record<string, unknown>,
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "tu_1", content: "file1.ts\nfile2.ts" }],
+        },
+      ])
+
+      const result = sanitizeAnthropicMessages(payload)
+      const assistantMsg = result.payload.messages[1]
+      if (typeof assistantMsg.content !== "string") {
+        const toolUse = assistantMsg.content.find((b) => b.type === "tool_use")
+        expect(toolUse).toBeDefined()
+        if (toolUse && "input" in toolUse) {
+          expect(typeof toolUse.input).toBe("object")
+          expect(toolUse.input).toEqual({ command: "ls -la", description: "List files" })
+        }
+      }
+    })
+
+    test("should handle invalid JSON string in tool_use.input gracefully", () => {
+      const payload = makePayload([
+        { role: "user", content: "do something" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_1",
+              name: "Bash",
+              input: "not valid json" as unknown as Record<string, unknown>,
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "tu_1", content: "error" }],
+        },
+      ])
+
+      const result = sanitizeAnthropicMessages(payload)
+      const assistantMsg = result.payload.messages[1]
+      if (typeof assistantMsg.content !== "string") {
+        const toolUse = assistantMsg.content.find((b) => b.type === "tool_use")
+        expect(toolUse).toBeDefined()
+        if (toolUse && "input" in toolUse) {
+          expect(typeof toolUse.input).toBe("object")
+          expect(toolUse.input).toEqual({})
+        }
+      }
+    })
+  })
+})
+
+// =============================================================================
+// convertAnthropicMessages — server tool handling
+// =============================================================================
+
+describe("convertAnthropicMessages", () => {
+  test("should preserve server_tool_use with id, name, and serialized input", () => {
+    const messages: Array<AnthropicMessage> = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: [{ type: "server_tool_use", id: "srv_1", name: "web_search", input: { query: "test" } }],
+      },
+    ]
+
+    const result = convertAnthropicMessages(messages)
+    const block = (result[1].content as Array<any>)[0]
+    expect(block.type).toBe("server_tool_use")
+    expect(block.id).toBe("srv_1")
+    expect(block.name).toBe("web_search")
+    expect(block.input).toEqual({ query: "test" })
+  })
+
+  test("should preserve web_search_tool_result with tool_use_id", () => {
+    const messages: Array<AnthropicMessage> = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: [{ type: "web_search_tool_result", tool_use_id: "srv_1", search_results: [] }] as any,
+      },
+    ]
+
+    const result = convertAnthropicMessages(messages)
+    const block = (result[1].content as Array<any>)[0]
+    expect(block.type).toBe("web_search_tool_result")
+    expect(block.tool_use_id).toBe("srv_1")
+  })
+
+  test("should preserve generic server tool result (e.g., tool_search_tool_result) with tool_use_id", () => {
+    const messages: Array<AnthropicMessage> = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_search_tool_result", tool_use_id: "srv_2", content: [] }] as any,
+      },
+    ]
+
+    const result = convertAnthropicMessages(messages)
+    const block = (result[1].content as Array<any>)[0]
+    expect(block.type).toBe("tool_search_tool_result")
+    expect(block.tool_use_id).toBe("srv_2")
+  })
+
+  test("should not add tool_use_id to blocks without it", () => {
+    const messages: Array<AnthropicMessage> = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "response" }],
+      },
+    ]
+
+    const result = convertAnthropicMessages(messages)
+    const block = (result[1].content as Array<any>)[0]
+    expect(block.type).toBe("text")
+    expect(block.text).toBe("response")
+    expect("tool_use_id" in block).toBe(false)
   })
 })

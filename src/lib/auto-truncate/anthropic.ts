@@ -117,8 +117,10 @@ export function contentToText(content: AnthropicMessage["content"], options?: { 
       }
       default: {
         // Handle generic server tool results (e.g., tool_search_tool_result)
-        if ("tool_use_id" in block && block.type !== "image") {
-          parts.push(`[${block.type}]`)
+        // Cast to Record to bypass type narrowing — API may return unknown block types
+        const genericBlock = block as unknown as Record<string, unknown>
+        if ("tool_use_id" in genericBlock && genericBlock.type !== "image") {
+          parts.push(`[${String(genericBlock.type)}]`)
           break
         }
         // Images and other binary content are not counted as text tokens
@@ -402,6 +404,15 @@ interface Limits {
 const DEFAULT_CONTEXT_WINDOW = 200000
 
 function calculateLimits(model: Model, config: AutoTruncateConfig): Limits {
+  // Use explicit target if provided (reactive retry — caller already applied margin)
+  if (config.targetTokenLimit !== undefined || config.targetByteLimitBytes !== undefined) {
+    return {
+      tokenLimit:
+        config.targetTokenLimit ?? model.capabilities?.limits?.max_context_window_tokens ?? DEFAULT_CONTEXT_WINDOW,
+      byteLimit: config.targetByteLimitBytes ?? getEffectiveByteLimitBytes(),
+    }
+  }
+
   // Check for dynamic token limit (adjusted based on previous errors)
   const dynamicLimit = getEffectiveTokenLimit(model.id)
 

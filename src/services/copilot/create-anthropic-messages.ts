@@ -8,7 +8,12 @@ import { events } from "fetch-event-stream"
 
 import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicTool } from "~/types/api/anthropic"
 
-import { applyToolSearch, buildAnthropicBetaHeaders, buildContextManagement } from "~/lib/anthropic/features"
+import {
+  applyToolSearch,
+  buildAnthropicBetaHeaders,
+  buildContextManagement,
+  ensureOfficialTools,
+} from "~/lib/anthropic/features"
 import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
@@ -52,6 +57,18 @@ function filterPayloadForCopilot(
   // Convert server-side tools to custom tools
   if (filtered.tools) {
     filtered.tools = convertServerToolsToCustom(filtered.tools as Array<AnthropicTool>)
+  }
+
+  // Ensure all tools have input_schema (required by Anthropic API).
+  // Some clients (e.g., Claude Code subagents) send tool definitions with only
+  // name and description, omitting input_schema. The API rejects these with 400.
+  if (filtered.tools) {
+    filtered.tools = (filtered.tools as Array<AnthropicTool>).map((tool) => {
+      if (!tool.input_schema) {
+        return { ...tool, input_schema: { type: "object" } }
+      }
+      return tool
+    })
   }
 
   return filtered as unknown as AnthropicMessagesPayload
@@ -134,6 +151,11 @@ export async function createAnthropicMessages(
       payloadRecord.context_management = contextManagement
       consola.debug("[DirectAnthropic] Added context_management:", JSON.stringify(contextManagement))
     }
+  }
+
+  // Ensure all Claude Code official tools are present
+  if (filteredPayload.tools && filteredPayload.tools.length > 0) {
+    payloadRecord.tools = ensureOfficialTools(filteredPayload.tools)
   }
 
   // Apply tool search for supported models

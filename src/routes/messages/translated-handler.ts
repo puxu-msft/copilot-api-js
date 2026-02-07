@@ -18,7 +18,11 @@ import {
   processAnthropicEvent,
 } from "~/lib/anthropic/stream-accumulator"
 import { awaitApproval } from "~/lib/approval"
-import { tryParseAndLearnLimit } from "~/lib/auto-truncate/common"
+import {
+  AUTO_TRUNCATE_RETRY_FACTOR,
+  MAX_AUTO_TRUNCATE_RETRIES,
+  tryParseAndLearnLimit,
+} from "~/lib/auto-truncate/common"
 import {
   autoTruncateOpenAI,
   createTruncationResponseMarkerOpenAI,
@@ -29,6 +33,7 @@ import { recordResponse, recordRewrites } from "~/lib/history"
 import { sanitizeAnthropicMessages } from "~/lib/message-sanitizer"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
+import { bytesToKB } from "~/lib/utils"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -50,6 +55,16 @@ import { buildMessageMapping } from "./direct-anthropic-handler"
 import { translateToAnthropic, translateToOpenAI, type ToolNameMapping } from "./non-stream-translation"
 import { translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from "./stream-translation"
 
+/** Parse a JSON string to object, returning the value as-is if already an object */
+function safeParseJson(input: string | Record<string, unknown>): Record<string, unknown> {
+  if (typeof input !== "string") return input
+  try {
+    return JSON.parse(input) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
 /**
  * Handle completion using OpenAI translation path (legacy)
  */
@@ -61,19 +76,17 @@ export async function handleTranslatedCompletion(
   const { payload: translatedPayload, toolNameMapping } = translateToOpenAI(anthropicPayload)
   consola.debug("Translated OpenAI request payload:", JSON.stringify(translatedPayload))
 
-  // Auto-truncate if enabled and needed
   const selectedModel = state.models?.data.find((model) => model.id === translatedPayload.model)
 
+  // Sanitize (no pre-truncation — truncation is now reactive)
   const {
-    finalPayload: openAIPayload,
-    truncateResult,
+    finalPayload: initialOpenAIPayload,
     sanitizeRemovedCount,
     systemReminderRemovals,
-  } = await buildFinalPayload(translatedPayload, selectedModel)
+  } = buildFinalPayload(translatedPayload, selectedModel)
 
   // Sanitize the original Anthropic messages to produce rewrittenMessages
   // in Anthropic format (matching the original payload format for frontend rendering).
-  // The OpenAI sanitization above handles the actual API request payload.
   const {
     payload: sanitizedAnthropicPayload,
     removedCount: anthropicOrphanedRemovals,
@@ -82,156 +95,154 @@ export async function handleTranslatedCompletion(
 
   const anthropicMessageMapping = buildMessageMapping(anthropicPayload.messages, sanitizedAnthropicPayload.messages)
 
-  // Always record rewritten messages (in Anthropic format for consistent frontend rendering)
-  const hasTruncation = truncateResult?.wasCompacted
+  // Record initial sanitization rewrites
   const hasSanitization =
     sanitizeRemovedCount > 0 || systemReminderRemovals > 0 || anthropicOrphanedRemovals > 0 || anthropicSysRemovals > 0
-  if (truncateResult) {
-    ctx.truncateResult = truncateResult
+  if (hasSanitization) {
+    recordRewrites(ctx.historyId, {
+      sanitization: {
+        removedBlockCount: sanitizeRemovedCount + anthropicOrphanedRemovals,
+        systemReminderRemovals: systemReminderRemovals + anthropicSysRemovals,
+      },
+      rewrittenMessages: convertAnthropicMessages(sanitizedAnthropicPayload.messages),
+      rewrittenSystem:
+        typeof sanitizedAnthropicPayload.system === "string" ? sanitizedAnthropicPayload.system : undefined,
+      messageMapping: anthropicMessageMapping,
+    })
   }
-  recordRewrites(ctx.historyId, {
-    truncation:
-      hasTruncation ?
-        {
-          removedMessageCount: truncateResult.removedMessageCount,
-          originalTokens: truncateResult.originalTokens,
-          compactedTokens: truncateResult.compactedTokens,
-          processingTimeMs: truncateResult.processingTimeMs,
-        }
-      : undefined,
-    sanitization:
-      hasSanitization ?
-        {
-          removedBlockCount: sanitizeRemovedCount + anthropicOrphanedRemovals,
-          systemReminderRemovals: systemReminderRemovals + anthropicSysRemovals,
-        }
-      : undefined,
-    rewrittenMessages: convertAnthropicMessages(sanitizedAnthropicPayload.messages),
-    rewrittenSystem:
-      typeof sanitizedAnthropicPayload.system === "string" ? sanitizedAnthropicPayload.system : undefined,
-    messageMapping: anthropicMessageMapping,
-  })
 
   if (state.manualApprove) {
     await awaitApproval()
   }
 
-  // Set tracking tags for log display
+  // Set initial tracking tags for log display
   if (ctx.trackingId) {
     const tags: Array<string> = []
-    if (truncateResult?.wasCompacted) tags.push("compact")
     if (anthropicPayload.thinking && anthropicPayload.thinking.type !== "disabled")
       tags.push(`thinking:${anthropicPayload.thinking.type}`)
     if (tags.length > 0) requestTracker.updateRequest(ctx.trackingId, { tags })
   }
 
-  try {
-    const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
-      createChatCompletions(openAIPayload),
-    )
+  // Reactive retry loop: send full payload first, then truncate and retry on limit errors
+  let effectivePayload = initialOpenAIPayload
+  let lastError: unknown = null
 
-    // eslint-disable-next-line require-atomic-updates -- ctx is a local object, no race
-    ctx.queueWaitMs = queueWaitMs
+  for (let attempt = 0; attempt <= MAX_AUTO_TRUNCATE_RETRIES; attempt++) {
+    try {
+      const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
+        createChatCompletions(effectivePayload),
+      )
 
-    if (isNonStreaming(response)) {
-      return handleNonStreamingResponse({
-        c,
-        response,
-        toolNameMapping,
-        ctx,
+      // eslint-disable-next-line require-atomic-updates -- ctx is a local object, no race
+      ctx.queueWaitMs = queueWaitMs
+
+      if (isNonStreaming(response)) {
+        return handleNonStreamingResponse({
+          c,
+          response,
+          toolNameMapping,
+          ctx,
+        })
+      }
+
+      consola.debug("Streaming response from Copilot")
+      updateTrackerStatus(ctx.trackingId, "streaming")
+
+      return streamSSE(c, async (stream) => {
+        await handleStreamingResponse({
+          stream,
+          response,
+          toolNameMapping,
+          anthropicPayload,
+          ctx,
+        })
       })
-    }
+    } catch (error) {
+      lastError = error
 
-    consola.debug("Streaming response from Copilot")
-    updateTrackerStatus(ctx.trackingId, "streaming")
+      // Check if this is a retryable limit error
+      if (state.autoTruncate && error instanceof HTTPError && selectedModel && attempt < MAX_AUTO_TRUNCATE_RETRIES) {
+        const payloadBytes = JSON.stringify(effectivePayload).length
+        const parsed = tryParseAndLearnLimit(error, selectedModel.id, payloadBytes)
 
-    return streamSSE(c, async (stream) => {
-      await handleStreamingResponse({
-        stream,
-        response,
-        toolNameMapping,
-        anthropicPayload,
-        ctx,
-      })
-    })
-  } catch (error) {
-    // Reactive auto-truncate: on limit errors, learn the limit, truncate, and retry once
-    if (
-      state.autoTruncate
-      && error instanceof HTTPError
-      && selectedModel
-      && !truncateResult?.wasCompacted // don't retry if we already truncated
-    ) {
-      const payloadBytes = JSON.stringify(openAIPayload).length
-      const parsed = tryParseAndLearnLimit(error, selectedModel.id, payloadBytes)
+        if (parsed) {
+          // Calculate target limits based on error type
+          let targetTokenLimit: number | undefined
+          let targetByteLimitBytes: number | undefined
 
-      if (parsed) {
-        consola.info(
-          `[Translated] ${parsed.type} error for ${selectedModel.id}, truncating and retrying...`
-            + (parsed.limit ? ` (limit: ${parsed.limit}, current: ${parsed.current})` : ""),
-        )
-
-        try {
-          // Re-truncate the OpenAI payload using newly learned limits
-          const retryTruncateResult = await autoTruncateOpenAI(translatedPayload, selectedModel, {
-            checkTokenLimit: true,
-            checkByteLimit: true,
-          })
-
-          if (retryTruncateResult.wasCompacted) {
-            const { payload: retrySanitized } = sanitizeOpenAIMessages(retryTruncateResult.payload)
-            // eslint-disable-next-line require-atomic-updates -- ctx is a local object
-            ctx.truncateResult = retryTruncateResult
-
-            // Update tracking tags
-            if (ctx.trackingId) {
-              requestTracker.updateRequest(ctx.trackingId, { tags: ["compact", "retry"] })
-            }
-
-            const { result: retryResponse, queueWaitMs: retryQueueMs } = await executeWithAdaptiveRateLimit(() =>
-              createChatCompletions(retrySanitized),
+          if (parsed.type === "token_limit" && parsed.limit) {
+            targetTokenLimit = Math.floor(parsed.limit * AUTO_TRUNCATE_RETRY_FACTOR)
+            consola.info(
+              `[Translated] Attempt ${attempt + 1}/${MAX_AUTO_TRUNCATE_RETRIES + 1}: `
+                + `Token limit error (${parsed.current}>${parsed.limit}), `
+                + `retrying with limit ${targetTokenLimit}...`,
             )
-            // eslint-disable-next-line require-atomic-updates -- ctx is a local object
-            ctx.queueWaitMs = retryQueueMs
-
-            if (isNonStreaming(retryResponse)) {
-              return handleNonStreamingResponse({
-                c,
-                response: retryResponse,
-                toolNameMapping,
-                ctx,
-              })
-            }
-
-            consola.debug("Streaming response from retry (translated)")
-            updateTrackerStatus(ctx.trackingId, "streaming")
-
-            return streamSSE(c, async (stream) => {
-              await handleStreamingResponse({
-                stream,
-                response: retryResponse,
-                toolNameMapping,
-                anthropicPayload,
-                ctx,
-              })
-            })
+          } else if (parsed.type === "body_too_large") {
+            targetByteLimitBytes = Math.floor(payloadBytes * AUTO_TRUNCATE_RETRY_FACTOR)
+            consola.info(
+              `[Translated] Attempt ${attempt + 1}/${MAX_AUTO_TRUNCATE_RETRIES + 1}: `
+                + `Body too large (${bytesToKB(payloadBytes)}KB), `
+                + `retrying with limit ${bytesToKB(targetByteLimitBytes)}KB...`,
+            )
           }
-        } catch (retryError) {
-          consola.warn("[Translated] Auto-truncate retry also failed:", retryError)
-          recordErrorResponse(ctx, anthropicPayload.model, retryError)
-          throw retryError
+
+          try {
+            // Truncate from original translated payload using target limits
+            const retryTruncateResult = await autoTruncateOpenAI(translatedPayload, selectedModel, {
+              checkTokenLimit: true,
+              checkByteLimit: true,
+              targetTokenLimit,
+              targetByteLimitBytes,
+            })
+
+            if (retryTruncateResult.wasCompacted) {
+              const { payload: retrySanitized } = sanitizeOpenAIMessages(retryTruncateResult.payload)
+              effectivePayload = retrySanitized // eslint-disable-line require-atomic-updates -- sequential loop, no race
+
+              // eslint-disable-next-line require-atomic-updates -- ctx is a local object
+              ctx.truncateResult = retryTruncateResult
+
+              // Update tracking tags
+              if (ctx.trackingId) {
+                const retryTags = ["compact", `retry-${attempt + 1}`]
+                if (anthropicPayload.thinking && anthropicPayload.thinking.type !== "disabled")
+                  retryTags.push(`thinking:${anthropicPayload.thinking.type}`)
+                requestTracker.updateRequest(ctx.trackingId, { tags: retryTags })
+              }
+
+              // Continue to next iteration to retry
+              continue
+            } else {
+              // Truncation didn't help, break out
+              break
+            }
+          } catch (truncateError) {
+            consola.warn(
+              `[Translated] Auto-truncate failed on attempt ${attempt + 1}:`,
+              truncateError instanceof Error ? truncateError.message : truncateError,
+            )
+            break
+          }
         }
       }
-    }
 
-    // Not retryable or retry conditions not met
-    if (error instanceof HTTPError && error.status === 413) {
-      await logPayloadSizeInfo(openAIPayload, selectedModel)
+      // Not retryable or no more retries left
+      break
     }
-
-    recordErrorResponse(ctx, anthropicPayload.model, error)
-    throw error
   }
+
+  // If we exit the loop with an error, handle it
+  if (lastError) {
+    if (lastError instanceof HTTPError && lastError.status === 413) {
+      await logPayloadSizeInfo(effectivePayload, selectedModel)
+    }
+
+    recordErrorResponse(ctx, anthropicPayload.model, lastError)
+    throw lastError instanceof Error ? lastError : new Error("Unknown error")
+  }
+
+  // Should not reach here
+  throw new Error("Unexpected state in retry loop")
 }
 
 /** Options for handleNonStreamingResponse */
@@ -273,7 +284,7 @@ function handleNonStreamingResponse(opts: NonStreamingOptions) {
               type: "tool_use",
               id: block.id,
               name: block.name,
-              input: JSON.stringify(block.input),
+              input: block.input,
             }
           }
           return { type: block.type }
@@ -488,12 +499,29 @@ async function processStreamChunks(opts: ProcessChunksOptions) {
 
 // Record streaming response to history
 function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel: string, ctx: ResponseContext) {
-  const contentBlocks: Array<{ type: string; text?: string; thinking?: string }> = []
+  const contentBlocks: Array<{
+    type: string
+    text?: string
+    thinking?: string
+    id?: string
+    name?: string
+    input?: Record<string, unknown>
+  }> = []
   if (acc.thinkingContent) contentBlocks.push({ type: "thinking", thinking: acc.thinkingContent })
   if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
   for (const tc of acc.toolCalls) {
-    contentBlocks.push({ type: "tool_use", ...tc })
+    contentBlocks.push({
+      type: tc.blockType,
+      id: tc.id,
+      name: tc.name,
+      input: safeParseJson(tc.input),
+    })
   }
+
+  const toolCalls =
+    acc.toolCalls.length > 0 ?
+      acc.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, input: safeParseJson(tc.input) }))
+    : undefined
 
   recordResponse(
     ctx.historyId,
@@ -508,7 +536,7 @@ function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel:
       },
       stop_reason: acc.stopReason || undefined,
       content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
-      toolCalls: acc.toolCalls.length > 0 ? acc.toolCalls : undefined,
+      toolCalls,
     },
     Date.now() - ctx.startTime,
   )
