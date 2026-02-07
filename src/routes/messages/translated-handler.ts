@@ -11,8 +11,19 @@ import { streamSSE } from "hono/streaming"
 import type { AnthropicMessagesPayload, AnthropicStreamState } from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
+import { convertAnthropicMessages, extractToolCallsFromContent } from "~/lib/anthropic/message-utils"
+import {
+  type AnthropicStreamAccumulator,
+  createAnthropicStreamAccumulator,
+  processAnthropicEvent,
+} from "~/lib/anthropic/stream-accumulator"
 import { awaitApproval } from "~/lib/approval"
-import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate/openai"
+import { tryParseAndLearnLimit } from "~/lib/auto-truncate/common"
+import {
+  autoTruncateOpenAI,
+  createTruncationResponseMarkerOpenAI,
+  sanitizeOpenAIMessages,
+} from "~/lib/auto-truncate/openai"
 import { HTTPError } from "~/lib/error"
 import { recordResponse, recordRewrites } from "~/lib/history"
 import { sanitizeAnthropicMessages } from "~/lib/message-sanitizer"
@@ -36,13 +47,7 @@ import {
   updateTrackerStatus,
 } from "../shared"
 import { buildMessageMapping } from "./direct-anthropic-handler"
-import { convertAnthropicMessages, extractToolCallsFromContent } from "./message-utils"
 import { translateToAnthropic, translateToOpenAI, type ToolNameMapping } from "./non-stream-translation"
-import {
-  type AnthropicStreamAccumulator,
-  createAnthropicStreamAccumulator,
-  processAnthropicEvent,
-} from "./stream-accumulator"
 import { translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from "./stream-translation"
 
 /**
@@ -111,6 +116,15 @@ export async function handleTranslatedCompletion(
     await awaitApproval()
   }
 
+  // Set tracking tags for log display
+  if (ctx.trackingId) {
+    const tags: Array<string> = []
+    if (truncateResult?.wasCompacted) tags.push("compact")
+    if (anthropicPayload.thinking && anthropicPayload.thinking.type !== "disabled")
+      tags.push(`thinking:${anthropicPayload.thinking.type}`)
+    if (tags.length > 0) requestTracker.updateRequest(ctx.trackingId, { tags })
+  }
+
   try {
     const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
       createChatCompletions(openAIPayload),
@@ -141,7 +155,76 @@ export async function handleTranslatedCompletion(
       })
     })
   } catch (error) {
-    // Handle 413 Request Entity Too Large with helpful debugging info
+    // Reactive auto-truncate: on limit errors, learn the limit, truncate, and retry once
+    if (
+      state.autoTruncate
+      && error instanceof HTTPError
+      && selectedModel
+      && !truncateResult?.wasCompacted // don't retry if we already truncated
+    ) {
+      const payloadBytes = JSON.stringify(openAIPayload).length
+      const parsed = tryParseAndLearnLimit(error, selectedModel.id, payloadBytes)
+
+      if (parsed) {
+        consola.info(
+          `[Translated] ${parsed.type} error for ${selectedModel.id}, truncating and retrying...`
+            + (parsed.limit ? ` (limit: ${parsed.limit}, current: ${parsed.current})` : ""),
+        )
+
+        try {
+          // Re-truncate the OpenAI payload using newly learned limits
+          const retryTruncateResult = await autoTruncateOpenAI(translatedPayload, selectedModel, {
+            checkTokenLimit: true,
+            checkByteLimit: true,
+          })
+
+          if (retryTruncateResult.wasCompacted) {
+            const { payload: retrySanitized } = sanitizeOpenAIMessages(retryTruncateResult.payload)
+            // eslint-disable-next-line require-atomic-updates -- ctx is a local object
+            ctx.truncateResult = retryTruncateResult
+
+            // Update tracking tags
+            if (ctx.trackingId) {
+              requestTracker.updateRequest(ctx.trackingId, { tags: ["compact", "retry"] })
+            }
+
+            const { result: retryResponse, queueWaitMs: retryQueueMs } = await executeWithAdaptiveRateLimit(() =>
+              createChatCompletions(retrySanitized),
+            )
+            // eslint-disable-next-line require-atomic-updates -- ctx is a local object
+            ctx.queueWaitMs = retryQueueMs
+
+            if (isNonStreaming(retryResponse)) {
+              return handleNonStreamingResponse({
+                c,
+                response: retryResponse,
+                toolNameMapping,
+                ctx,
+              })
+            }
+
+            consola.debug("Streaming response from retry (translated)")
+            updateTrackerStatus(ctx.trackingId, "streaming")
+
+            return streamSSE(c, async (stream) => {
+              await handleStreamingResponse({
+                stream,
+                response: retryResponse,
+                toolNameMapping,
+                anthropicPayload,
+                ctx,
+              })
+            })
+          }
+        } catch (retryError) {
+          consola.warn("[Translated] Auto-truncate retry also failed:", retryError)
+          recordErrorResponse(ctx, anthropicPayload.model, retryError)
+          throw retryError
+        }
+      }
+    }
+
+    // Not retryable or retry conditions not met
     if (error instanceof HTTPError && error.status === 413) {
       await logPayloadSizeInfo(openAIPayload, selectedModel)
     }
@@ -278,7 +361,7 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
     recordStreamingResponse(acc, anthropicPayload.model, ctx)
     completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens, ctx.queueWaitMs)
   } catch (error) {
-    consola.error("Stream error:", error)
+    consola.error(`[TranslatedHandler] Stream error for model "${anthropicPayload.model}":`, error)
     recordStreamError({
       acc,
       fallbackModel: anthropicPayload.model,
@@ -405,7 +488,8 @@ async function processStreamChunks(opts: ProcessChunksOptions) {
 
 // Record streaming response to history
 function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel: string, ctx: ResponseContext) {
-  const contentBlocks: Array<{ type: string; text?: string }> = []
+  const contentBlocks: Array<{ type: string; text?: string; thinking?: string }> = []
+  if (acc.thinkingContent) contentBlocks.push({ type: "thinking", thinking: acc.thinkingContent })
   if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
   for (const tc of acc.toolCalls) {
     contentBlocks.push({ type: "tool_use", ...tc })
@@ -416,7 +500,12 @@ function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel:
     {
       success: true,
       model: acc.model || fallbackModel,
-      usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
+      usage: {
+        input_tokens: acc.inputTokens,
+        output_tokens: acc.outputTokens,
+        ...(acc.cacheReadTokens > 0 && { cache_read_input_tokens: acc.cacheReadTokens }),
+        ...(acc.cacheCreationTokens > 0 && { cache_creation_input_tokens: acc.cacheCreationTokens }),
+      },
       stop_reason: acc.stopReason || undefined,
       content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
       toolCalls: acc.toolCalls.length > 0 ? acc.toolCalls : undefined,

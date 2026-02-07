@@ -4,7 +4,7 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 
-const htmlPath = join(import.meta.dirname, "ui/index.html")
+const htmlPath = join(import.meta.dirname, "../../ui/history-v1/index.html")
 
 export async function getHistoryUI(): Promise<string> {
   return readFile(htmlPath, "utf8")

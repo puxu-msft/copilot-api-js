@@ -533,6 +533,48 @@ export async function autoTruncateOpenAI(
         removedMessageCount: 0,
       })
     }
+
+    // Step 1.5: Compress ALL tool messages (including recent ones)
+    // If compressing only old tool messages wasn't enough, try compressing all of them
+    // before resorting to message removal
+    const allCompression = smartCompressToolResults(
+      workingMessages,
+      tokenLimit,
+      byteLimit,
+      0.0, // preservePercent=0 means compress all messages
+    )
+    if (allCompression.compressedCount > 0) {
+      workingMessages = allCompression.messages
+      compressedCount += allCompression.compressedCount
+
+      // Check if compressing all was enough
+      const allCompressedPayload = { ...payload, messages: workingMessages }
+      const allCompressedBytes = JSON.stringify(allCompressedPayload).length
+      const allCompressedTokenCount = await getTokenCount(allCompressedPayload, model)
+
+      if (allCompressedTokenCount.input <= tokenLimit && allCompressedBytes <= byteLimit) {
+        let reason = "tokens"
+        if (exceedsTokens && exceedsBytes) reason = "tokens+size"
+        else if (exceedsBytes) reason = "size"
+        const elapsedMs = Math.round(performance.now() - startTime)
+        consola.info(
+          `[AutoTruncate:OpenAI] ${reason}: ${originalTokens}→${allCompressedTokenCount.input} tokens, `
+            + `${bytesToKB(originalBytes)}→${bytesToKB(allCompressedBytes)}KB `
+            + `(compressed ${compressedCount} tool_results, including recent) [${elapsedMs}ms]`,
+        )
+
+        const noticePayload = addCompressionNotice(allCompressedPayload, compressedCount)
+        const noticeTokenCount = await getTokenCount(noticePayload, model)
+
+        return buildResult({
+          payload: noticePayload,
+          wasCompacted: true,
+          originalTokens,
+          compactedTokens: noticeTokenCount.input,
+          removedMessageCount: 0,
+        })
+      }
+    }
   }
 
   // Step 2: Compression wasn't enough (or disabled), proceed with message removal
@@ -571,17 +613,6 @@ export async function autoTruncateOpenAI(
   })
 
   // Check if we can compact
-  if (preserveIndex === 0) {
-    consola.warn("[AutoTruncate:OpenAI] Cannot truncate, system messages too large")
-    return buildResult({
-      payload,
-      wasCompacted: false,
-      originalTokens,
-      compactedTokens: originalTokens,
-      removedMessageCount: 0,
-    })
-  }
-
   if (preserveIndex >= conversationMessages.length) {
     consola.warn("[AutoTruncate:OpenAI] Would need to remove all messages")
     return buildResult({

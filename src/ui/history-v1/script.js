@@ -553,6 +553,8 @@ function renderDetail() {
 
   // Build tool result map for aggregation
   const toolResultMap = {};
+  // Build tool_use_id → tool name map for tool_result headers
+  const toolUseNameMap = {};
   if (aggregateTools) {
     const messages = currentEntry.request?.messages || [];
     for (const msg of messages) {
@@ -560,6 +562,20 @@ function renderDetail() {
         for (const block of msg.content) {
           if (block.type === 'tool_result' && block.tool_use_id) {
             toolResultMap[block.tool_use_id] = block;
+          }
+          if (block.type === 'tool_use' && block.id) {
+            toolUseNameMap[block.id] = block.name || '';
+          }
+        }
+      }
+    }
+  } else {
+    const messages = currentEntry.request?.messages || [];
+    for (const msg of messages) {
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === 'tool_use' && block.id) {
+            toolUseNameMap[block.id] = block.name || '';
           }
         }
       }
@@ -634,7 +650,7 @@ function renderDetail() {
       // Determine if content was actually rewritten by comparing text
       const isRewritten = rewrittenMsg != null && !messagesContentEqual(msg, rewrittenMsg);
 
-      html += renderMessage(msg, filterType, aggregateTools, toolResultMap, isTruncated, isRewritten, rewrittenMsg);
+      html += renderMessage(msg, filterType, aggregateTools, toolResultMap, toolUseNameMap, isTruncated, isRewritten, rewrittenMsg);
       // Insert truncation divider after the last removed message
       if (isTruncated && i === removedCount - 1) {
         const pct = Math.round((1 - truncation.compactedTokens / truncation.originalTokens) * 100);
@@ -672,7 +688,7 @@ function renderDetail() {
     if (responseContent && (!filterRole || filterRole === 'assistant')) {
       // response.content is a message object { role, content }, extract the inner content
       const msgContent = responseContent.content ?? responseContent;
-      html += renderMessage({ role: 'assistant', content: msgContent }, filterType, false, null);
+      html += renderMessage({ role: 'assistant', content: msgContent }, filterType, false, null, toolUseNameMap);
     }
 
     // Error message
@@ -858,7 +874,7 @@ function messagesContentEqual(msgA, msgB) {
   return extractMessageText(msgA) === extractMessageText(msgB);
 }
 
-function renderMessageContent(content, filterType, aggregateTools, toolResultMap) {
+function renderMessageContent(content, filterType, aggregateTools, toolResultMap, toolUseNameMap) {
   let html = '';
   if (typeof content === 'string') {
     if (!filterType || filterType === 'text') {
@@ -875,7 +891,7 @@ function renderMessageContent(content, filterType, aggregateTools, toolResultMap
       } else if (block.type === 'tool_use') {
         html += renderToolUseBlock(block, aggregateTools, toolResultMap);
       } else if (block.type === 'tool_result') {
-        html += renderToolResultBlock(block);
+        html += renderToolResultBlock(block, toolUseNameMap);
       } else if (block.type === 'image' || block.type === 'image_url') {
         html += renderImageBlock(block);
       } else if (block.type === 'thinking') {
@@ -968,7 +984,7 @@ function switchRewriteView(msgId, mode) {
   updateExpandButtons();
 }
 
-function renderMessage(msg, filterType, aggregateTools, toolResultMap, isTruncated, isRewritten, rewrittenMsg) {
+function renderMessage(msg, filterType, aggregateTools, toolResultMap, toolUseNameMap, isTruncated, isRewritten, rewrittenMsg) {
   const role = msg.role || 'unknown';
   const content = msg.content;
 
@@ -1010,11 +1026,11 @@ function renderMessage(msg, filterType, aggregateTools, toolResultMap, isTruncat
   if (isRewritten && !isTruncated && rewrittenMsg) {
     // Three switchable body containers
     html += '<div class="message-body message-body-original">';
-    html += renderMessageContent(content, filterType, aggregateTools, toolResultMap);
+    html += renderMessageContent(content, filterType, aggregateTools, toolResultMap, toolUseNameMap);
     html += '</div>';
 
     html += '<div class="message-body message-body-rewritten" style="display:none">';
-    html += renderMessageContent(rewrittenMsg.content, filterType, aggregateTools, toolResultMap);
+    html += renderMessageContent(rewrittenMsg.content, filterType, aggregateTools, toolResultMap, toolUseNameMap);
     html += '</div>';
 
     html += '<div class="message-body message-body-diff body-collapsed" style="display:none">';
@@ -1024,7 +1040,7 @@ function renderMessage(msg, filterType, aggregateTools, toolResultMap, isTruncat
   } else {
     // Standard single body
     html += '<div class="message-body">';
-    html += renderMessageContent(content, filterType, aggregateTools, toolResultMap);
+    html += renderMessageContent(content, filterType, aggregateTools, toolResultMap, toolUseNameMap);
     html += '</div>';
   }
 
@@ -1105,16 +1121,20 @@ function renderToolUseBlock(block, aggregateTools, toolResultMap) {
   return html;
 }
 
-function renderToolResultBlock(block) {
+function renderToolResultBlock(block, toolUseNameMap) {
   const blockRawIdx = registerRawData(block);
   const content = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
-  const summary = escapeHtml('for ' + (block.tool_use_id || ''));
+  const toolName = toolUseNameMap && block.tool_use_id ? toolUseNameMap[block.tool_use_id] : '';
+  const summary = escapeHtml('for ' + (toolName || block.tool_use_id || ''));
 
   let html = '<div class="content-block" id="result-' + block.tool_use_id + '">';
   html += '<div class="content-block-header">';
   html += '<div class="content-block-header-left">';
   html += '<span class="collapse-icon" onclick="toggleContentBlock(\'result-' + block.tool_use_id + '\')">\u25BE</span>';
   html += '<span class="content-type tool_result">TOOL RESULT</span>';
+  if (toolName) {
+    html += '<span class="tool-name">' + escapeHtml(toolName) + '</span>';
+  }
   html += '<span class="tool-id">for ' + escapeHtml(block.tool_use_id) + '</span>';
   html += '<span class="collapsed-summary" style="display:none">' + summary + '</span>';
   html += '</div>';

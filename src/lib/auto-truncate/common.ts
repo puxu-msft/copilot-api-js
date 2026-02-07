@@ -5,6 +5,7 @@
 
 import consola from "consola"
 
+import { HTTPError, parseTokenLimitError } from "~/lib/error"
 import {
   CLOSE_TAG,
   extractLeadingSystemReminderTags,
@@ -102,6 +103,86 @@ export function getEffectiveTokenLimit(modelId: string): number | null {
 export function resetAllLimitsForTesting(): void {
   dynamicByteLimit = null
   dynamicTokenLimits.clear()
+}
+
+// ============================================================================
+// Reactive Auto-Truncate Helpers
+// ============================================================================
+
+/**
+ * Check whether a model has known limits from previous failures.
+ * Used to decide whether to pre-check requests before sending.
+ */
+export function hasKnownLimits(modelId: string): boolean {
+  return dynamicTokenLimits.has(modelId) || dynamicByteLimit !== null
+}
+
+/** Copilot error structure for JSON parsing */
+interface CopilotErrorBody {
+  error?: {
+    message?: string
+    code?: string
+    type?: string
+  }
+}
+
+/** Result from tryParseAndLearnLimit */
+export interface LimitErrorInfo {
+  type: "token_limit" | "body_too_large"
+  /** The reported limit (tokens or bytes) */
+  limit?: number
+  /** The current usage that exceeded the limit */
+  current?: number
+}
+
+/**
+ * Parse an HTTPError to detect token limit or body size errors,
+ * and record the learned limit for future pre-checks.
+ *
+ * Returns error info if the error is a retryable limit error, null otherwise.
+ */
+export function tryParseAndLearnLimit(error: HTTPError, modelId: string, payloadBytes?: number): LimitErrorInfo | null {
+  // 413 → body too large
+  if (error.status === 413) {
+    if (payloadBytes) {
+      onRequestTooLarge(payloadBytes)
+    }
+    return { type: "body_too_large" }
+  }
+
+  // 400 → try to parse token limit
+  if (error.status === 400) {
+    let errorJson: CopilotErrorBody | undefined
+    try {
+      errorJson = JSON.parse(error.responseText) as CopilotErrorBody
+    } catch {
+      return null
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- errorJson.error may be undefined at runtime
+    if (!errorJson?.error?.message) return null
+
+    // Check OpenAI format (code: "model_max_prompt_tokens_exceeded")
+    // or Anthropic format (type: "invalid_request_error")
+    const isTokenError =
+      errorJson.error.code === "model_max_prompt_tokens_exceeded" || errorJson.error.type === "invalid_request_error"
+
+    if (!isTokenError) return null
+
+    const tokenInfo = parseTokenLimitError(errorJson.error.message)
+    if (!tokenInfo) return null
+
+    // Record the learned limit
+    onTokenLimitExceeded(modelId, tokenInfo.limit)
+
+    return {
+      type: "token_limit",
+      limit: tokenInfo.limit,
+      current: tokenInfo.current,
+    }
+  }
+
+  return null
 }
 
 // ============================================================================

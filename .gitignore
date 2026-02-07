@@ -14,5 +14,7 @@ node_modules/
 dist/
 
 /.env
-/AVAILABLE_MODELS.json
+/refs/agent-maestro
+/refs/ghc-api-py
+/refs/vscode-copilot-chat
 /*.txt

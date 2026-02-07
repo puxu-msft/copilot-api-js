@@ -19,6 +19,8 @@ export const createEmbeddings = async (payload: EmbeddingRequest) => {
 export interface EmbeddingRequest {
   input: string | Array<string>
   model: string
+  encoding_format?: "float" | "base64"
+  dimensions?: number
 }
 
 export interface Embedding {

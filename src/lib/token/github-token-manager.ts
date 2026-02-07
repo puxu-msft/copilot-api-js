@@ -121,7 +121,7 @@ export class GitHubTokenManager {
     // Find the device auth provider for refresh
     const deviceAuthProvider = this.providers.find((p) => p instanceof DeviceAuthProvider)
     if (!deviceAuthProvider) {
-      consola.warn("No provider supports token refresh")
+      consola.warn("[GitHubToken] No provider supports token refresh, triggering re-authentication")
       this.onTokenExpired?.()
       return null
     }
@@ -132,7 +132,7 @@ export class GitHubTokenManager {
       return newToken
     }
 
-    consola.error("Failed to refresh token")
+    consola.error("[GitHubToken] Failed to refresh token via DeviceAuthProvider")
     this.onTokenExpired?.()
     return null
   }

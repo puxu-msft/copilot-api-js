@@ -2,109 +2,111 @@ import type { Context } from "hono"
 
 import consola from "consola"
 
-import { checkNeedsCompactionAnthropic } from "~/lib/auto-truncate/anthropic"
-import { state, isAutoTruncateEnabled } from "~/lib/state"
+import { checkNeedsCompactionAnthropic, countTotalInputTokens } from "~/lib/auto-truncate/anthropic"
+import { hasKnownLimits } from "~/lib/auto-truncate/common"
+import { translateModelName } from "~/lib/model-resolver"
+import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
+import { requestTracker } from "~/lib/tui"
 import { type AnthropicMessagesPayload } from "~/types/api/anthropic"
 
 import { translateToOpenAI } from "./non-stream-translation"
 
 /**
- * Handles token counting for Anthropic messages.
+ * Handles token counting for Anthropic /v1/messages/count_tokens endpoint.
  *
- * For Anthropic models (vendor === "Anthropic"), uses the official Anthropic tokenizer.
- * For other models, uses GPT tokenizers with appropriate buffers.
+ * Default: counts tokens directly on the Anthropic payload using native
+ * counting functions. This avoids OpenAI translation overhead and potential
+ * format conversion inaccuracies (tool_use/tool_result blocks being merged).
  *
- * When auto-truncate is enabled and the request would exceed limits,
- * returns an inflated token count to trigger Claude Code's auto-compact mechanism.
+ * With --redirect-count-tokens: translates to OpenAI format first, then
+ * counts using OpenAI token counting logic.
+ *
+ * Per Anthropic docs:
+ * - Returns { input_tokens: N } where N is the total input tokens
+ * - Thinking blocks from previous assistant turns don't count as input tokens
+ * - The count is an estimate
  */
 export async function handleCountTokens(c: Context) {
-  try {
-    const anthropicBeta = c.req.header("anthropic-beta")
+  const trackingId = c.get("trackingId") as string | undefined
 
+  try {
     const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
 
-    const { payload: openAIPayload } = translateToOpenAI(anthropicPayload)
+    // Resolve model name aliases and date-suffixed versions
+    anthropicPayload.model = translateModelName(anthropicPayload.model)
+
+    // Update tracker with model name
+    if (trackingId) {
+      const request = requestTracker.getRequest(trackingId)
+      if (request) request.model = anthropicPayload.model
+    }
 
     const selectedModel = state.models?.data.find((model) => model.id === anthropicPayload.model)
 
     if (!selectedModel) {
-      consola.warn("Model not found, returning default token count")
-      return c.json({
-        input_tokens: 1,
-      })
+      consola.warn(`[count_tokens] Model "${anthropicPayload.model}" not found, returning input_tokens=1`)
+      return c.json({ input_tokens: 1 })
     }
 
-    // Check if auto-truncate would be triggered
+    // Check if auto-truncate would be triggered (only for models with known limits)
     // If so, return an inflated token count to encourage Claude Code auto-compact
-    if (isAutoTruncateEnabled()) {
+    if (state.autoTruncate && hasKnownLimits(selectedModel.id)) {
       const truncateCheck = await checkNeedsCompactionAnthropic(anthropicPayload, selectedModel, {
-        checkTokenLimit: state.autoTruncateByTokens,
-        checkByteLimit: state.autoTruncateByReqsz,
+        checkTokenLimit: true,
+        checkByteLimit: true,
       })
 
       if (truncateCheck.needed) {
-        // Return 95% of context window to signal that context is nearly full
         const contextWindow = selectedModel.capabilities?.limits?.max_context_window_tokens ?? 200000
         const inflatedTokens = Math.floor(contextWindow * 0.95)
 
         consola.debug(
-          `[count_tokens] Would trigger auto-truncate: ${truncateCheck.currentTokens} tokens > ${truncateCheck.tokenLimit}, `
+          `[count_tokens] Would trigger auto-truncate: `
+            + `${truncateCheck.currentTokens} tokens > ${truncateCheck.tokenLimit}, `
             + `returning inflated count: ${inflatedTokens}`,
         )
 
-        return c.json({
-          input_tokens: inflatedTokens,
-        })
-      }
-    }
-
-    // Get tokenizer info from model
-    const tokenizerName = selectedModel.capabilities?.tokenizer ?? "o200k_base"
-
-    const tokenCount = await getTokenCount(openAIPayload, selectedModel)
-
-    // Add tool use overhead (applies to all models with tools)
-    if (anthropicPayload.tools && anthropicPayload.tools.length > 0) {
-      let mcpToolExist = false
-      if (anthropicBeta?.startsWith("claude-code")) {
-        mcpToolExist = anthropicPayload.tools.some((tool) => tool.name.startsWith("mcp__"))
-      }
-      if (!mcpToolExist) {
-        if (anthropicPayload.model.startsWith("claude")) {
-          // Base token overhead for tool use capability
-          // See: https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview#pricing
-          tokenCount.input = tokenCount.input + 346
-        } else if (anthropicPayload.model.startsWith("grok")) {
-          // Estimated base token overhead for Grok tool use (empirically determined)
-          tokenCount.input = tokenCount.input + 480
+        if (trackingId) {
+          requestTracker.updateRequest(trackingId, { inputTokens: inflatedTokens })
         }
+
+        return c.json({ input_tokens: inflatedTokens })
       }
     }
 
-    let finalTokenCount = tokenCount.input + tokenCount.output
+    // Count tokens using the appropriate method
+    let inputTokens: number
 
-    // Apply buffer for models that may have tokenizer differences
-    // Note: All models use GPT tokenizers per API info, but API-specific overhead may differ
-    const isAnthropicVendor = selectedModel.vendor === "Anthropic"
-    if (!isAnthropicVendor) {
-      finalTokenCount =
-        anthropicPayload.model.startsWith("grok") ?
-          // Apply 3% buffer for Grok models (smaller difference from GPT tokenizer)
-          Math.round(finalTokenCount * 1.03)
-          // Apply 5% buffer for other models using GPT tokenizer
-        : Math.round(finalTokenCount * 1.05)
+    if (state.redirectCountTokens) {
+      // Legacy: translate to OpenAI format, then count
+      const { payload: openAIPayload } = translateToOpenAI(anthropicPayload)
+      const tokenCount = await getTokenCount(openAIPayload, selectedModel)
+      inputTokens = tokenCount.input + tokenCount.output
+
+      consola.debug(
+        `[count_tokens] ${inputTokens} tokens (via OpenAI translation) `
+          + `(input: ${tokenCount.input}, output: ${tokenCount.output}, `
+          + `tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`,
+      )
+    } else {
+      // Default: count directly on Anthropic payload
+      // Excludes thinking blocks from assistant messages per Anthropic spec
+      inputTokens = await countTotalInputTokens(anthropicPayload, selectedModel)
+
+      consola.debug(
+        `[count_tokens] ${inputTokens} tokens (native Anthropic) `
+          + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`,
+      )
     }
 
-    consola.debug(`Token count: ${finalTokenCount} (tokenizer: ${tokenizerName})`)
+    if (trackingId) {
+      requestTracker.updateRequest(trackingId, { inputTokens })
+    }
 
-    return c.json({
-      input_tokens: finalTokenCount,
-    })
+    return c.json({ input_tokens: inputTokens })
   } catch (error) {
-    consola.error("Error counting tokens:", error)
-    return c.json({
-      input_tokens: 1,
-    })
+    consola.error("[count_tokens] Error counting tokens:", error)
+    return c.json({ input_tokens: 1 })
   }
 }

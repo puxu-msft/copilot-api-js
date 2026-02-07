@@ -8,6 +8,7 @@ import { events } from "fetch-event-stream"
 
 import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicTool } from "~/types/api/anthropic"
 
+import { applyToolSearch, buildAnthropicBetaHeaders, buildContextManagement } from "~/lib/anthropic/features"
 import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
@@ -63,7 +64,7 @@ function filterPayloadForCopilot(
  */
 function adjustMaxTokensForThinking(payload: AnthropicMessagesPayload): AnthropicMessagesPayload {
   const thinking = payload.thinking
-  if (!thinking) {
+  if (!thinking || thinking.type === "disabled") {
     return payload
   }
 
@@ -120,6 +121,30 @@ export async function createAnthropicMessages(
     "X-Initiator": isAgentCall ? "agent" : "user",
     // Anthropic API version header
     "anthropic-version": "2023-06-01",
+    // Anthropic beta headers based on model capabilities
+    ...buildAnthropicBetaHeaders(filteredPayload.model),
+  }
+
+  // Add context_management if model supports it and payload doesn't already have one
+  const payloadRecord = filteredPayload as AnthropicMessagesPayload & Record<string, unknown>
+  if (!payloadRecord.context_management) {
+    const hasThinking = Boolean(filteredPayload.thinking && filteredPayload.thinking.type !== "disabled")
+    const contextManagement = buildContextManagement(filteredPayload.model, hasThinking)
+    if (contextManagement) {
+      payloadRecord.context_management = contextManagement
+      consola.debug("[DirectAnthropic] Added context_management:", JSON.stringify(contextManagement))
+    }
+  }
+
+  // Apply tool search for supported models
+  if (filteredPayload.tools && filteredPayload.tools.length > 0) {
+    const toolsWithSearch = applyToolSearch(filteredPayload.tools, filteredPayload.model)
+    if (toolsWithSearch !== filteredPayload.tools) {
+      payloadRecord.tools = toolsWithSearch
+      consola.debug(
+        `[DirectAnthropic] Applied tool search: ${toolsWithSearch.length} tools (was ${filteredPayload.tools.length})`,
+      )
+    }
   }
 
   consola.debug("Sending direct Anthropic request to Copilot /v1/messages")

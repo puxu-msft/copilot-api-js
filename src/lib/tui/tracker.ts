@@ -68,6 +68,12 @@ class RequestTracker {
     if (update.outputTokens !== undefined) request.outputTokens = update.outputTokens
     if (update.error !== undefined) request.error = update.error
     if (update.queuePosition !== undefined) request.queuePosition = update.queuePosition
+    if (update.tags) {
+      request.tags ??= []
+      for (const tag of update.tags) {
+        if (!request.tags.includes(tag)) request.tags.push(tag)
+      }
+    }
 
     this.renderer?.onRequestUpdate(id, update)
   }
@@ -133,12 +139,31 @@ class RequestTracker {
 
     this.renderer?.onRequestComplete(request)
 
+    // Move to completed queue
     this.requests.delete(id)
     this.completedQueue.push(request)
 
+    // Trim completed queue (same cleanup as completeRequest)
     while (this.completedQueue.length > this.historySize) {
-      this.completedQueue.shift()
+      const removed = this.completedQueue.shift()
+      if (removed) {
+        const timeoutId = this.completedTimeouts.get(removed.id)
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+          this.completedTimeouts.delete(removed.id)
+        }
+      }
     }
+
+    // Schedule removal from display after delay
+    const timeoutId = setTimeout(() => {
+      const idx = this.completedQueue.indexOf(request)
+      if (idx !== -1) {
+        this.completedQueue.splice(idx, 1)
+      }
+      this.completedTimeouts.delete(id)
+    }, this.completedDisplayMs)
+    this.completedTimeouts.set(id, timeoutId)
   }
 
   /**

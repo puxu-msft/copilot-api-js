@@ -84,7 +84,7 @@ interface SetupClaudeCodeOptions {
   host?: string
   model?: string
   smallModel?: string
-  accountType: string
+  accountType: "individual" | "business" | "enterprise"
   githubToken?: string
   verbose: boolean
 }
@@ -194,7 +194,7 @@ export const setupClaudeCode = defineCommand({
       host: args.host,
       model: args.model,
       smallModel: args["small-model"],
-      accountType: args["account-type"],
+      accountType: args["account-type"] as "individual" | "business" | "enterprise",
       githubToken: args["github-token"],
       verbose: args.verbose,
     })

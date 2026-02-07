@@ -5,6 +5,7 @@
 
 import type { MessageContent } from "~/lib/history"
 import type { AnthropicMessagesPayload, AnthropicResponse } from "~/types/api/anthropic"
+import { isServerToolResultBlock } from "~/types/api/anthropic"
 
 // Convert Anthropic messages to history MessageContent format
 export function convertAnthropicMessages(messages: AnthropicMessagesPayload["messages"]): Array<MessageContent> {
@@ -39,6 +40,27 @@ export function convertAnthropicMessages(messages: AnthropicMessagesPayload["mes
           type: "tool_result",
           tool_use_id: block.tool_use_id,
           content: resultContent,
+        }
+      }
+      if (block.type === "server_tool_use") {
+        return {
+          type: "server_tool_use",
+          id: block.id,
+          name: block.name,
+          input: JSON.stringify(block.input),
+        }
+      }
+      if (block.type === "web_search_tool_result") {
+        return {
+          type: "web_search_tool_result",
+          tool_use_id: block.tool_use_id,
+        }
+      }
+      // Handle generic server tool results (e.g., tool_search_tool_result)
+      if (isServerToolResultBlock(block)) {
+        return {
+          type: block.type,
+          tool_use_id: block.tool_use_id,
         }
       }
       return { type: block.type }

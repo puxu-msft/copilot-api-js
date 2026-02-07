@@ -3,6 +3,7 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 import { createHash } from "node:crypto"
+import pc from "picocolors"
 import { serve, type ServerHandler } from "srvx"
 
 import type { Model } from "./services/copilot/get-models"
@@ -47,7 +48,7 @@ function formatModelInfo(model: Model): string {
   const featureStr = features ? ` (${features})` : ""
 
   // Truncate long model names to maintain alignment
-  const modelName = model.id.length > 30 ? `${model.id.slice(0, 27)}...` : model.id.padEnd(30)
+  const modelName = model.id.length > 25 ? `${model.id.slice(0, 22)}...` : model.id.padEnd(25)
 
   return (
     `  - ${modelName} `
@@ -56,6 +57,12 @@ function formatModelInfo(model: Model): string {
     + `out:${outputK.padStart(5)}`
     + featureStr
   )
+}
+
+/** Parse an integer from a string, returning a default if the result is NaN. */
+function parseIntOrDefault(value: string, defaultValue: number): number {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : defaultValue
 }
 
 // Security Research Mode passphrase verification
@@ -78,7 +85,7 @@ interface RunServerOptions {
   port: number
   host?: string
   verbose: boolean
-  accountType: string
+  accountType: "individual" | "business" | "enterprise"
   manual: boolean
   // Adaptive rate limiting options (disabled if rateLimit is false)
   rateLimit: boolean
@@ -90,12 +97,13 @@ interface RunServerOptions {
   showGitHubToken: boolean
   proxyEnv: boolean
   historyLimit: number
-  autoTruncateByTokens: boolean
-  autoTruncateByReqsz: boolean
+  autoTruncate: boolean
   compressToolResults: boolean
   redirectAnthropic: boolean
   rewriteAnthropicTools: boolean
+  redirectCountTokens: boolean
   securityResearchPassphrase?: string
+  redirectSonnetToOpus: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -120,11 +128,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.accountType = options.accountType
   state.manualApprove = options.manual
   state.showGitHubToken = options.showGitHubToken
-  state.autoTruncateByTokens = options.autoTruncateByTokens
-  state.autoTruncateByReqsz = options.autoTruncateByReqsz
+  state.autoTruncate = options.autoTruncate
   state.compressToolResults = options.compressToolResults
   state.redirectAnthropic = options.redirectAnthropic
   state.rewriteAnthropicTools = options.rewriteAnthropicTools
+  state.redirectCountTokens = options.redirectCountTokens
+  state.redirectSonnetToOpus = options.redirectSonnetToOpus
 
   // Verify Security Research Mode passphrase if provided
   if (options.securityResearchPassphrase) {
@@ -137,30 +146,48 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     }
   }
 
-  // Log non-default configuration
-  if (options.verbose) {
-    consola.info("Verbose logging enabled")
+  // Log configuration status for all features
+  const configLines: Array<string> = []
+  const on = (label: string, detail?: string) =>
+    configLines.push(`  ${label}: ON${detail ? ` ${pc.dim(`(${detail})`)}` : ""}`)
+  const off = (label: string) => configLines.push(pc.dim(`  ${label}: OFF`))
+
+  options.verbose ? on("Verbose logging") : off("Verbose logging")
+  configLines.push(`  Account type: ${options.accountType}`)
+
+  if (options.rateLimit) {
+    on(
+      "Rate limiter",
+      `retry=${options.retryInterval}s interval=${options.requestInterval}s recovery=${options.recoveryTimeout}m successes=${options.consecutiveSuccesses}`,
+    )
+  } else {
+    off("Rate limiter")
   }
-  if (options.accountType !== "individual") {
-    consola.info(`Using ${options.accountType} plan GitHub account`)
+
+  if (options.autoTruncate) {
+    const detail = options.compressToolResults ? "reactive, compress" : "reactive"
+    on("Auto-truncate", detail)
+  } else {
+    off("Auto-truncate")
   }
-  if (!options.rateLimit) {
-    consola.info("Rate limiting disabled")
+
+  if (options.compressToolResults && !options.autoTruncate) {
+    // Only show separately if auto-truncate is off but compress is on (unusual)
+    on("Compress tool results")
   }
-  if (!options.autoTruncateByTokens && !options.autoTruncateByReqsz) {
-    consola.info("Auto-truncate disabled")
-  } else if (options.autoTruncateByReqsz) {
-    consola.info("Auto-truncate by request size enabled")
-  }
-  if (options.compressToolResults) {
-    consola.info("Tool result compression enabled")
-  }
-  if (options.redirectAnthropic) {
-    consola.info("Anthropic API redirect enabled (using OpenAI translation)")
-  }
-  if (!options.rewriteAnthropicTools) {
-    consola.info("Anthropic server-side tools rewrite disabled (passing through unchanged)")
-  }
+  options.redirectAnthropic ? on("Redirect Anthropic", "via OpenAI translation") : off("Redirect Anthropic")
+  options.rewriteAnthropicTools ? on("Rewrite Anthropic tools") : off("Rewrite Anthropic tools")
+  options.redirectCountTokens ? on("Redirect count tokens", "via OpenAI translation") : off("Redirect count tokens")
+  options.manual ? on("Manual approval") : off("Manual approval")
+  options.proxyEnv ? on("Proxy from env") : off("Proxy from env")
+  options.showGitHubToken ? on("Show GitHub token") : off("Show GitHub token")
+  state.securityResearchMode ? on("Security research mode") : off("Security research mode")
+  options.redirectSonnetToOpus ? on("Redirect sonnet to opus") : off("Redirect sonnet to opus")
+
+  const historyLimitText = options.historyLimit === 0 ? "unlimited" : `max=${options.historyLimit}`
+  on("History", historyLimitText)
+
+  consola.info(`Configuration:\n${configLines.join("\n")}`)
 
   // ===========================================================================
   // Phase 3: Initialize Internal Services (rate limiter, history)
@@ -175,20 +202,27 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   initHistory(true, options.historyLimit)
-  const limitText = options.historyLimit === 0 ? "unlimited" : `max ${options.historyLimit}`
-  consola.info(`History recording enabled (${limitText} entries)`)
 
   // ===========================================================================
   // Phase 4: External Dependencies (filesystem, network)
   // ===========================================================================
   await ensurePaths()
-  await cacheVSCodeVersion()
+
+  try {
+    await cacheVSCodeVersion()
+  } catch (error) {
+    consola.warn("Failed to fetch VSCode version, using default:", error instanceof Error ? error.message : error)
+  }
 
   // Initialize token management and authenticate
   await initTokenManagers({ cliToken: options.githubToken })
 
   // Fetch available models from Copilot API
-  await cacheModels()
+  try {
+    await cacheModels()
+  } catch (error) {
+    consola.warn("Failed to fetch models from Copilot API:", error instanceof Error ? error.message : error)
+  }
 
   consola.info(`Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`)
 
@@ -202,7 +236,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   initRequestTracker()
 
   consola.box(
-    `🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage\n📜 History UI: ${serverUrl}/history`,
+    `Web UI:\n🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage\n📜 History UI:   ${serverUrl}/history`,
   )
 
   let serverInstance
@@ -315,18 +349,14 @@ export const start = defineCommand({
     },
     "no-auto-truncate": {
       type: "boolean",
-      default: true,
-      description: "Disable automatic conversation history truncation by token limit (default: disabled)",
+      default: false,
+      description:
+        "Disable reactive auto-truncate (enabled by default: retries with truncated payload on limit errors)",
     },
-    "auto-truncate-by-reqsz": {
+    "no-compress-tool-results": {
       type: "boolean",
       default: false,
-      description: "Enable automatic truncation by request body size (default: disabled)",
-    },
-    "compress-tool-results": {
-      type: "boolean",
-      default: false,
-      description: "Compress old tool_result content before truncating messages (may lose context details)",
+      description: "Disable compressing old tool_result content during auto-truncate",
     },
     "redirect-anthropic": {
       type: "boolean",
@@ -338,10 +368,20 @@ export const start = defineCommand({
       default: false,
       description: "Don't rewrite Anthropic server-side tools (web_search, etc.) to custom tool format",
     },
+    "redirect-count-tokens": {
+      type: "boolean",
+      default: false,
+      description: "Redirect count_tokens through OpenAI translation (instead of native Anthropic counting)",
+    },
     "security-research-mode": {
       type: "string",
       description:
         "Enable Security Research Mode with passphrase (for authorized penetration testing, CTF, and security education)",
+    },
+    "redirect-sonnet-to-opus": {
+      type: "boolean",
+      default: false,
+      description: "Redirect sonnet model requests to best available opus model",
     },
   },
   run({ args }) {
@@ -399,10 +439,9 @@ export const start = defineCommand({
       "noAutoTruncate",
       "auto-truncate",
       "autoTruncate",
-      // auto-truncate-by-reqsz
-      "auto-truncate-by-reqsz",
-      "autoTruncateByReqsz",
-      // compress-tool-results
+      // no-compress-tool-results (citty also stores "compress-tool-results")
+      "no-compress-tool-results",
+      "noCompressToolResults",
       "compress-tool-results",
       "compressToolResults",
       // redirect-anthropic
@@ -413,9 +452,15 @@ export const start = defineCommand({
       "noRewriteAnthropicTools",
       "rewrite-anthropic-tools",
       "rewriteAnthropicTools",
+      // redirect-count-tokens
+      "redirect-count-tokens",
+      "redirectCountTokens",
       // security-research-mode
       "security-research-mode",
       "securityResearchMode",
+      // redirect-sonnet-to-opus
+      "redirect-sonnet-to-opus",
+      "redirectSonnetToOpus",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
@@ -423,26 +468,27 @@ export const start = defineCommand({
     }
 
     return runServer({
-      port: Number.parseInt(args.port, 10),
+      port: parseIntOrDefault(args.port, 4141),
       host: args.host,
       verbose: args.verbose,
-      accountType: args["account-type"],
+      accountType: args["account-type"] as "individual" | "business" | "enterprise",
       manual: args.manual,
       rateLimit: !args["no-rate-limit"],
-      retryInterval: Number.parseInt(args["retry-interval"], 10),
-      requestInterval: Number.parseInt(args["request-interval"], 10),
-      recoveryTimeout: Number.parseInt(args["recovery-timeout"], 10),
-      consecutiveSuccesses: Number.parseInt(args["consecutive-successes"], 10),
+      retryInterval: parseIntOrDefault(args["retry-interval"], 10),
+      requestInterval: parseIntOrDefault(args["request-interval"], 10),
+      recoveryTimeout: parseIntOrDefault(args["recovery-timeout"], 10),
+      consecutiveSuccesses: parseIntOrDefault(args["consecutive-successes"], 5),
       githubToken: args["github-token"],
       showGitHubToken: args["show-github-token"],
       proxyEnv: args["proxy-env"],
-      historyLimit: Number.parseInt(args["history-limit"], 10),
-      autoTruncateByTokens: !args["no-auto-truncate"],
-      autoTruncateByReqsz: !args["no-auto-truncate"] && args["auto-truncate-by-reqsz"],
-      compressToolResults: args["compress-tool-results"],
+      historyLimit: parseIntOrDefault(args["history-limit"], 200),
+      autoTruncate: !args["no-auto-truncate"],
+      compressToolResults: !args["no-compress-tool-results"],
       redirectAnthropic: args["redirect-anthropic"],
       rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],
+      redirectCountTokens: args["redirect-count-tokens"],
       securityResearchPassphrase: args["security-research-mode"],
+      redirectSonnetToOpus: args["redirect-sonnet-to-opus"],
     })
   },
 })

@@ -11,6 +11,7 @@
 import consola from "consola"
 
 import type { AnthropicMessage } from "~/types/api/anthropic"
+import { isServerToolResultBlock } from "~/types/api/anthropic"
 
 /**
  * Get tool_use IDs from an Anthropic assistant message.
@@ -21,7 +22,7 @@ export function getAnthropicToolUseIds(msg: AnthropicMessage): Array<string> {
 
   const ids: Array<string> = []
   for (const block of msg.content) {
-    if (block.type === "tool_use") {
+    if (block.type === "tool_use" || block.type === "server_tool_use") {
       ids.push(block.id)
     }
   }
@@ -29,15 +30,18 @@ export function getAnthropicToolUseIds(msg: AnthropicMessage): Array<string> {
 }
 
 /**
- * Get tool_result IDs from an Anthropic user message.
+ * Get tool_result IDs from an Anthropic message.
+ * Checks both user messages (regular tool_result) and assistant messages
+ * (server tool results like tool_search_tool_result which appear inline).
  */
 export function getAnthropicToolResultIds(msg: AnthropicMessage): Array<string> {
-  if (msg.role !== "user") return []
   if (typeof msg.content === "string") return []
 
   const ids: Array<string> = []
   for (const block of msg.content) {
-    if (block.type === "tool_result") {
+    if (block.type === "tool_result" && "tool_use_id" in block) {
+      ids.push((block as { tool_use_id: string }).tool_use_id)
+    } else if (isServerToolResultBlock(block)) {
       ids.push(block.tool_use_id)
     }
   }
@@ -69,6 +73,10 @@ export function filterAnthropicOrphanedToolResults(messages: Array<AnthropicMess
         // Filter out orphaned tool_result blocks
         const filteredContent = msg.content.filter((block) => {
           if (block.type === "tool_result" && !toolUseIds.has(block.tool_use_id)) {
+            removedCount++
+            return false
+          }
+          if (isServerToolResultBlock(block) && !toolUseIds.has(block.tool_use_id)) {
             removedCount++
             return false
           }
@@ -120,6 +128,10 @@ export function filterAnthropicOrphanedToolUse(messages: Array<AnthropicMessage>
         // Filter out orphaned tool_use blocks
         const filteredContent = msg.content.filter((block) => {
           if (block.type === "tool_use" && !toolResultIds.has(block.id)) {
+            removedCount++
+            return false
+          }
+          if (block.type === "server_tool_use" && !toolResultIds.has(block.id)) {
             removedCount++
             return false
           }

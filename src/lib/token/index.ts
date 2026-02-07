@@ -51,6 +51,7 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   state.tokenInfo = tokenInfo
 
   // Log token source
+  const isExplicitToken = tokenInfo.source === "cli" || tokenInfo.source === "env"
   switch (tokenInfo.source) {
     case "cli": {
       consola.info("Using provided GitHub token (from CLI)")
@@ -76,8 +77,21 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   }
 
   // Validate and show user info
-  const user = await getGitHubUser()
-  consola.info(`Logged in as ${user.login}`)
+  // If the token was explicitly provided (CLI or env), give a clear error and abort on failure
+  try {
+    const user = await getGitHubUser()
+    consola.info(`Logged in as ${user.login}`)
+  } catch (error) {
+    if (isExplicitToken) {
+      const source = tokenInfo.source === "cli" ? "--github-token" : "environment variable"
+      consola.error(
+        `The GitHub token provided via ${source} is invalid or expired.`,
+        error instanceof Error ? error.message : error,
+      )
+      process.exit(1)
+    }
+    throw error
+  }
 
   // Create Copilot token manager
   copilotTokenManager = new CopilotTokenManager({
@@ -85,9 +99,22 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   })
 
   // Initialize Copilot token
-  const copilotTokenInfo = await copilotTokenManager.initialize()
-  // eslint-disable-next-line require-atomic-updates -- Sequential assignment after await
-  state.copilotTokenInfo = copilotTokenInfo
+  // If the token was explicitly provided and Copilot rejects it, abort with clear error
+  try {
+    const copilotTokenInfo = await copilotTokenManager.initialize()
+    // eslint-disable-next-line require-atomic-updates -- Sequential assignment after await
+    state.copilotTokenInfo = copilotTokenInfo
+  } catch (error) {
+    if (isExplicitToken) {
+      const source = tokenInfo.source === "cli" ? "--github-token" : "environment variable"
+      consola.error(
+        `The GitHub token provided via ${source} does not have Copilot access.`,
+        error instanceof Error ? error.message : error,
+      )
+      process.exit(1)
+    }
+    throw error
+  }
 
   return { githubTokenManager, copilotTokenManager }
 }

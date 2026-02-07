@@ -52,7 +52,7 @@ export interface Message {
 }
 
 export interface ContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result' | 'image' | 'thinking'
+  type: 'text' | 'tool_use' | 'tool_result' | 'image' | 'thinking' | 'redacted_thinking'
   text?: string
   thinking?: string
   id?: string

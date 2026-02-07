@@ -23,6 +23,7 @@
     }
   },
   "exclude": [
-    "src/routes/history/ui-v2"
+    "src/ui/history-v2",
+    "refs"
   ]
 }

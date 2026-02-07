@@ -139,9 +139,9 @@ describe("Anthropic to OpenAI translation logic", () => {
     const result = translateToOpenAI(anthropicPayload)
     expect(isValidChatCompletionRequest(result.payload)).toBe(true)
 
-    // Check that thinking content is combined with text content
+    // Thinking blocks should be stripped (not leaked to OpenAI models)
     const assistantMessage = result.payload.messages.find((m) => m.role === "assistant")
-    expect(assistantMessage?.content).toContain("Let me think about this simple math problem...")
+    expect(assistantMessage?.content).not.toContain("Let me think about this simple math problem...")
     expect(assistantMessage?.content).toContain("2+2 equals 4.")
   })
 
@@ -172,9 +172,9 @@ describe("Anthropic to OpenAI translation logic", () => {
     const result = translateToOpenAI(anthropicPayload)
     expect(isValidChatCompletionRequest(result.payload)).toBe(true)
 
-    // Check that thinking content is included in the message content
+    // Thinking blocks should be stripped (not leaked to OpenAI models)
     const assistantMessage = result.payload.messages.find((m) => m.role === "assistant")
-    expect(assistantMessage?.content).toContain("I need to call the weather API")
+    expect(assistantMessage?.content).not.toContain("I need to call the weather API")
     expect(assistantMessage?.content).toContain("I'll check the weather for you.")
     expect(assistantMessage?.tool_calls).toHaveLength(1)
     expect(assistantMessage?.tool_calls?.[0].function.name).toBe("get_weather")

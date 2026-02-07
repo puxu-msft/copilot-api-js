@@ -192,7 +192,7 @@ const debugModels = defineCommand({
     },
   },
   async run({ args }) {
-    state.accountType = args["account-type"]
+    state.accountType = args["account-type"] as "individual" | "business" | "enterprise"
 
     await ensurePaths()
 

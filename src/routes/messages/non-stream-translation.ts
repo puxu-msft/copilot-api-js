@@ -1,6 +1,7 @@
 import consola from "consola"
 
-import { state } from "~/lib/state"
+import { mapOpenAIStopReasonToAnthropic } from "~/lib/anthropic/message-utils"
+import { translateModelName } from "~/lib/model-resolver"
 import {
   type ChatCompletionResponse,
   type ChatCompletionsPayload,
@@ -17,15 +18,12 @@ import {
   type AnthropicMessagesPayload,
   type AnthropicResponse,
   type AnthropicTextBlock,
-  type AnthropicThinkingBlock,
   type AnthropicTool,
   type AnthropicToolResultBlock,
   type AnthropicToolUseBlock,
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "~/types/api/anthropic"
-
-import { mapOpenAIStopReasonToAnthropic } from "./message-utils"
 
 // OpenAI limits function names to 64 characters
 const OPENAI_TOOL_NAME_LIMIT = 64
@@ -127,93 +125,6 @@ export function translateToOpenAI(payload: AnthropicMessagesPayload): Translatio
     toolNameMapping,
     originMap,
   }
-}
-
-// Preferred model order per family, highest priority first.
-// findLatestModel picks the first one that exists in state.models.
-const MODEL_PREFERENCE: Record<string, Array<string>> = {
-  opus: [
-    "claude-opus-4.6",
-    "claude-opus-4.5",
-    "claude-opus-41", // 4.1
-    // "claude-opus-4",
-  ],
-  sonnet: [
-    "claude-sonnet-4.5",
-    "claude-sonnet-4",
-    // "claude-sonnet-3.5",
-  ],
-  haiku: [
-    "claude-haiku-4.5",
-    // "claude-haiku-3.5",
-  ],
-}
-
-/**
- * Find the best available model for a family by checking the preference list
- * against actually available models. Returns the first match, or the top
- * preference as fallback when state.models is unavailable.
- */
-function findPreferredModel(family: string): string {
-  const preference = MODEL_PREFERENCE[family]
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive for arbitrary family strings
-  if (!preference) return family
-
-  const availableIds = state.models?.data.map((m) => m.id)
-  if (!availableIds || availableIds.length === 0) {
-    return preference[0]
-  }
-
-  for (const candidate of preference) {
-    if (availableIds.includes(candidate)) {
-      return candidate
-    }
-  }
-
-  return preference[0]
-}
-
-export function translateModelName(model: string): string {
-  // Handle short model name aliases (e.g., "opus", "sonnet", "haiku")
-  if (model in MODEL_PREFERENCE) {
-    return findPreferredModel(model)
-  }
-
-  // Handle versioned model names from Anthropic API (e.g., claude-sonnet-4-20250514)
-  // Strip date suffixes and convert to Copilot-compatible format
-
-  // claude-sonnet-4-5-YYYYMMDD -> claude-sonnet-4.5
-  if (/^claude-sonnet-4-5-\d+$/.test(model)) {
-    return "claude-sonnet-4.5"
-  }
-  // claude-sonnet-4-YYYYMMDD -> claude-sonnet-4
-  if (/^claude-sonnet-4-\d+$/.test(model)) {
-    return "claude-sonnet-4"
-  }
-
-  // claude-opus-4-5-YYYYMMDD -> claude-opus-4.5
-  if (/^claude-opus-4-5-\d+$/.test(model)) {
-    return "claude-opus-4.5"
-  }
-  // claude-opus-4-6-YYYYMMDD -> claude-opus-4.6
-  if (/^claude-opus-4-6-\d+$/.test(model)) {
-    return "claude-opus-4.6"
-  }
-  // claude-opus-4-YYYYMMDD -> best available opus
-  if (/^claude-opus-4-\d+$/.test(model)) {
-    return findPreferredModel("opus")
-  }
-
-  // claude-haiku-4-5-YYYYMMDD -> claude-haiku-4.5
-  if (/^claude-haiku-4-5-\d+$/.test(model)) {
-    return "claude-haiku-4.5"
-  }
-  // claude-haiku-3-5-YYYYMMDD -> best available haiku
-  if (/^claude-haiku-3-5-\d+$/.test(model)) {
-    return findPreferredModel("haiku")
-  }
-
-  return model
 }
 
 function translateAnthropicMessagesToOpenAI(
@@ -333,10 +244,10 @@ function handleAssistantMessage(message: AnthropicAssistantMessage, toolNameMapp
 
   const textBlocks = message.content.filter((block): block is AnthropicTextBlock => block.type === "text")
 
-  const thinkingBlocks = message.content.filter((block): block is AnthropicThinkingBlock => block.type === "thinking")
-
-  // Combine text and thinking blocks, as OpenAI doesn't have separate thinking blocks
-  const allTextContent = [...textBlocks.map((b) => b.text), ...thinkingBlocks.map((b) => b.thinking)].join("\n\n")
+  // Strip thinking/redacted_thinking blocks — OpenAI models don't understand them,
+  // and they're not meant to be sent as regular text content.
+  // Previous Anthropic thinking content is internal to the model and should not leak.
+  const allTextContent = textBlocks.map((b) => b.text).join("\n\n")
 
   return toolUseBlocks.length > 0 ?
       [
@@ -374,11 +285,8 @@ function mapContent(
   const hasImage = content.some((block) => block.type === "image")
   if (!hasImage) {
     return content
-      .filter(
-        (block): block is AnthropicTextBlock | AnthropicThinkingBlock =>
-          block.type === "text" || block.type === "thinking",
-      )
-      .map((block) => (block.type === "text" ? block.text : block.thinking))
+      .filter((block): block is AnthropicTextBlock => block.type === "text")
+      .map((block) => block.text)
       .join("\n\n")
   }
 
@@ -387,11 +295,6 @@ function mapContent(
     switch (block.type) {
       case "text": {
         contentParts.push({ type: "text", text: block.text })
-
-        break
-      }
-      case "thinking": {
-        contentParts.push({ type: "text", text: block.thinking })
 
         break
       }
@@ -405,6 +308,7 @@ function mapContent(
 
         break
       }
+      // thinking/redacted_thinking blocks are stripped (not relevant for OpenAI models)
       // No default
     }
   }

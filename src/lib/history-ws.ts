@@ -54,6 +54,9 @@ function broadcast(message: WSMessage): void {
     try {
       if (client.readyState === WebSocket.OPEN) {
         client.send(data)
+      } else {
+        // Remove clients that are no longer open (CLOSING, CLOSED)
+        clients.delete(client)
       }
     } catch (error) {
       consola.debug("WebSocket send failed, removing client:", error)

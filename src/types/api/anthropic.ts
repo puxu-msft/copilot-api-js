@@ -36,9 +36,15 @@ export interface AnthropicMessagesPayload {
 // Content Block Types
 // ============================================================================
 
+/** Cache control for prompt caching (read-only: we report cached_tokens but can't set cacheability) */
+export interface AnthropicCacheControl {
+  type: "ephemeral"
+}
+
 export interface AnthropicTextBlock {
   type: "text"
   text: string
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicImageBlock {
@@ -48,6 +54,7 @@ export interface AnthropicImageBlock {
     media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
     data: string
   }
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicToolResultBlock {
@@ -56,6 +63,7 @@ export interface AnthropicToolResultBlock {
   // Content can be a string or an array of content blocks (text/image)
   content: string | Array<AnthropicTextBlock | AnthropicImageBlock>
   is_error?: boolean
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicToolUseBlock {
@@ -63,16 +71,75 @@ export interface AnthropicToolUseBlock {
   id: string
   name: string
   input: Record<string, unknown>
+  cache_control?: AnthropicCacheControl
 }
 
 export interface AnthropicThinkingBlock {
   type: "thinking"
   thinking: string
+  /** Signature for verifying thinking block integrity when sent back in subsequent turns */
+  signature?: string
 }
 
-export type AnthropicUserContentBlock = AnthropicTextBlock | AnthropicImageBlock | AnthropicToolResultBlock
+export interface AnthropicRedactedThinkingBlock {
+  type: "redacted_thinking"
+  data: string
+}
 
-export type AnthropicAssistantContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicThinkingBlock
+/** Server-side tool use block (e.g., web_search). Returned by API when server tools are invoked. */
+export interface AnthropicServerToolUseBlock {
+  type: "server_tool_use"
+  id: string
+  name: string
+  input: Record<string, unknown>
+  cache_control?: AnthropicCacheControl
+}
+
+/** Web search tool result block. Paired with server_tool_use in user messages. */
+export interface AnthropicWebSearchToolResultBlock {
+  type: "web_search_tool_result"
+  tool_use_id: string
+  content:
+    | Array<{
+        type: "web_search_result"
+        url: string
+        title: string
+        encrypted_content: string
+        page_age?: string
+      }>
+    | {
+        type: "web_search_tool_result_error"
+        error_code: string
+      }
+  cache_control?: AnthropicCacheControl
+}
+
+export type AnthropicUserContentBlock =
+  | AnthropicTextBlock
+  | AnthropicImageBlock
+  | AnthropicToolResultBlock
+  | AnthropicWebSearchToolResultBlock
+
+export type AnthropicAssistantContentBlock =
+  | AnthropicTextBlock
+  | AnthropicToolUseBlock
+  | AnthropicThinkingBlock
+  | AnthropicRedactedThinkingBlock
+  | AnthropicServerToolUseBlock
+
+/**
+ * Check if a content block is a server tool result (paired with server_tool_use).
+ * Matches web_search_tool_result, tool_search_tool_result, and any future server tool result
+ * types that have a tool_use_id field but are NOT regular tool_result blocks.
+ *
+ * This uses runtime duck-typing because Anthropic can introduce new server tool result types
+ * (e.g., tool_search_tool_result) that our static types don't cover yet.
+ */
+export function isServerToolResultBlock(
+  block: { type: string },
+): block is { type: string; tool_use_id: string } {
+  return block.type !== "tool_result" && block.type !== "text" && block.type !== "image" && "tool_use_id" in block
+}
 
 // ============================================================================
 // Message Types
@@ -100,6 +167,8 @@ export interface AnthropicTool {
   input_schema?: Record<string, unknown>
   // Server-side tools have a type field like "web_search_20250305"
   type?: string
+  // Tool search: defer loading for non-core tools (only loaded when model needs them)
+  defer_loading?: boolean
 }
 
 // ============================================================================
@@ -128,6 +197,24 @@ export interface AnthropicUsage {
 export type AnthropicResponseContentBlock = AnthropicAssistantContentBlock
 
 // ============================================================================
+// Copilot-Specific Types
+// ============================================================================
+
+/** IP Code Citations from Copilot API */
+export interface AnthropicIPCodeCitation {
+  start_index: number
+  end_index: number
+  license: string
+  url: string
+  repository: string
+}
+
+/** Copilot-specific annotations attached to SSE content block deltas */
+export interface AnthropicCopilotAnnotations {
+  IPCodeCitations?: Array<AnthropicIPCodeCitation>
+}
+
+// ============================================================================
 // Stream Event Types
 // ============================================================================
 
@@ -148,7 +235,9 @@ export interface AnthropicContentBlockStartEvent {
     | (Omit<AnthropicToolUseBlock, "input"> & {
         input: Record<string, unknown>
       })
-    | { type: "thinking"; thinking: string }
+    | { type: "thinking"; thinking: string; signature?: string }
+    | { type: "redacted_thinking"; data: string }
+    | { type: "server_tool_use"; id: string; name: string }
 }
 
 export interface AnthropicContentBlockDeltaEvent {
@@ -159,6 +248,8 @@ export interface AnthropicContentBlockDeltaEvent {
     | { type: "input_json_delta"; partial_json: string }
     | { type: "thinking_delta"; thinking: string }
     | { type: "signature_delta"; signature: string }
+  /** Copilot-specific: IP code citations attached to content deltas */
+  copilot_annotations?: AnthropicCopilotAnnotations
 }
 
 export interface AnthropicContentBlockStopEvent {
@@ -177,6 +268,13 @@ export interface AnthropicMessageDeltaEvent {
     output_tokens: number
     cache_creation_input_tokens?: number
     cache_read_input_tokens?: number
+  }
+  /** Server-side context management response (edits applied, tokens saved) */
+  context_management?: {
+    edits_applied?: Array<{
+      type: string
+      [key: string]: unknown
+    }>
   }
 }
 

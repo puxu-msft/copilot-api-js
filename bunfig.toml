@@ -4,3 +4,6 @@ registry = { url = "https://registry.npmjs.org", token = "$NPM_TOKEN" }
 [publish]
 registry = "https://registry.npmjs.org"
 token = "$NPM_TOKEN"
+
+[test]
+root = "./tests"

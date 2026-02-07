@@ -15,6 +15,7 @@ export interface ChatCompletionChunk {
   choices: Array<StreamingChoice>
   system_fingerprint?: string
   usage?: ChatCompletionUsage
+  service_tier?: string | null
 }
 
 export interface ChatCompletionUsage {
@@ -64,14 +65,8 @@ export interface ChatCompletionResponse {
   model: string
   choices: Array<NonStreamingChoice>
   system_fingerprint?: string
-  usage?: {
-    prompt_tokens: number
-    completion_tokens: number
-    total_tokens: number
-    prompt_tokens_details?: {
-      cached_tokens: number
-    }
-  }
+  usage?: ChatCompletionUsage
+  service_tier?: string | null
 }
 
 export interface ResponseMessage {
@@ -91,6 +86,29 @@ export interface NonStreamingChoice {
 // Payload Types
 // ============================================================================
 
+/** JSON Schema response format for structured outputs */
+export interface JsonSchemaResponseFormat {
+  type: "json_schema"
+  json_schema: {
+    name: string
+    description?: string
+    schema: Record<string, unknown>
+    strict?: boolean
+  }
+}
+
+/** Simple JSON object response format */
+export interface JsonObjectResponseFormat {
+  type: "json_object"
+}
+
+/** Text response format (default) */
+export interface TextResponseFormat {
+  type: "text"
+}
+
+export type ResponseFormat = JsonObjectResponseFormat | JsonSchemaResponseFormat | TextResponseFormat
+
 export interface ChatCompletionsPayload {
   messages: Array<Message>
   model: string
@@ -105,11 +123,15 @@ export interface ChatCompletionsPayload {
   presence_penalty?: number | null
   logit_bias?: Record<string, number> | null
   logprobs?: boolean | null
-  response_format?: { type: "json_object" } | null
+  top_logprobs?: number | null
+  response_format?: ResponseFormat | null
   seed?: number | null
   tools?: Array<Tool> | null
   tool_choice?: "none" | "auto" | "required" | { type: "function"; function: { name: string } } | null
+  parallel_tool_calls?: boolean | null
   user?: string | null
+  service_tier?: string | null
+  stream_options?: { include_usage?: boolean } | null
 }
 
 // ============================================================================
@@ -122,6 +144,7 @@ export interface Tool {
     name: string
     description?: string
     parameters: Record<string, unknown>
+    strict?: boolean
   }
 }
 

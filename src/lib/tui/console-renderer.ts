@@ -28,8 +28,10 @@ function formatNumber(n: number): string {
 }
 
 function formatTokens(input?: number, output?: number): string {
-  if (input === undefined || output === undefined) return "-"
-  return `${formatNumber(input)}/${formatNumber(output)}`
+  if (input === undefined && output === undefined) return "-"
+  if (input !== undefined && output !== undefined) return `${formatNumber(input)}/${formatNumber(output)}`
+  if (input !== undefined) return formatNumber(input)
+  return `/${formatNumber(output!)}`
 }
 
 /**
@@ -299,6 +301,11 @@ export class ConsoleRenderer implements TuiRenderer {
     // Only show queue wait if it's significant (> 100ms)
     const queueWait = request.queueWaitMs && request.queueWaitMs > 100 ? formatDuration(request.queueWaitMs) : undefined
 
+    // Build extra text from tags and error
+    const tagStr = request.tags?.length ? ` (${request.tags.join(", ")})` : ""
+    const errorStr = isError && request.error ? `: ${request.error}` : ""
+    const extra = tagStr + errorStr || undefined
+
     const message = this.formatLogLine({
       prefix: isError ? "[FAIL]" : "[ OK ]",
       time: formatTime(),
@@ -309,7 +316,7 @@ export class ConsoleRenderer implements TuiRenderer {
       duration: formatDuration(request.durationMs ?? 0),
       queueWait,
       tokens,
-      extra: isError && request.error ? `: ${request.error}` : undefined,
+      extra,
       isError,
       isDim: request.isHistoryAccess,
     })

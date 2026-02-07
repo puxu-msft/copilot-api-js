@@ -7,11 +7,18 @@ export const standardHeaders = () => ({
   accept: "application/json",
 })
 
-const COPILOT_VERSION = "0.26.7"
+const COPILOT_VERSION = "0.38.0"
 const EDITOR_PLUGIN_VERSION = `copilot-chat/${COPILOT_VERSION}`
 const USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`
 
-const API_VERSION = "2025-04-01"
+const API_VERSION = "2025-05-01"
+
+/**
+ * Session-level interaction ID.
+ * Used to correlate all requests within a single server session.
+ * Unlike x-request-id (per-request UUID), this stays constant for the server lifetime.
+ */
+const INTERACTION_ID = randomUUID()
 
 export const copilotBaseUrl = (state: State) =>
   state.accountType === "individual" ?
@@ -28,6 +35,7 @@ export const copilotHeaders = (state: State, vision: boolean = false) => {
     "openai-intent": "conversation-panel",
     "x-github-api-version": API_VERSION,
     "x-request-id": randomUUID(),
+    "X-Interaction-Id": INTERACTION_ID,
     "x-vscode-user-agent-library-version": "electron-fetch",
   }
 

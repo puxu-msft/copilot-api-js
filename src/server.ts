@@ -27,7 +27,7 @@ server.onError((error, c) => {
     return c.text("", 500)
   }
 
-  consola.error("Unhandled route error:", error)
+  consola.error(`Unhandled route error in ${c.req.method} ${c.req.path}:`, error)
   return forwardError(c, error)
 })
 

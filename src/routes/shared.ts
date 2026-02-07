@@ -9,6 +9,7 @@ import type { OpenAIAutoTruncateResult } from "~/lib/auto-truncate/openai"
 import type { ChatCompletionResponse, ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 
+import { hasKnownLimits } from "~/lib/auto-truncate/common"
 import {
   autoTruncateOpenAI,
   checkNeedsCompactionOpenAI,
@@ -16,7 +17,7 @@ import {
   sanitizeOpenAIMessages,
 } from "~/lib/auto-truncate/openai"
 import { recordResponse } from "~/lib/history"
-import { state, isAutoTruncateEnabled } from "~/lib/state"
+import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { requestTracker } from "~/lib/tui"
 import { bytesToKB, getErrorMessage } from "~/lib/utils"
@@ -114,9 +115,12 @@ export function createTruncationMarker(result: TruncateResultInfo): string {
 /** Base accumulator interface for stream error recording */
 interface BaseStreamAccumulator {
   model: string
+  inputTokens: number
+  outputTokens: number
+  content: string
 }
 
-/** Record streaming error to history (works with any accumulator type) */
+/** Record streaming error to history, preserving any data accumulated before the error */
 export function recordStreamError(opts: {
   acc: BaseStreamAccumulator
   fallbackModel: string
@@ -129,9 +133,9 @@ export function recordStreamError(opts: {
     {
       success: false,
       model: acc.model || fallbackModel,
-      usage: { input_tokens: 0, output_tokens: 0 },
+      usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
       error: getErrorMessage(error, "Stream error"),
-      content: null,
+      content: acc.content ? { role: "assistant", content: [{ type: "text", text: acc.content }] } : null,
     },
     Date.now() - ctx.startTime,
   )
@@ -157,15 +161,15 @@ export async function buildFinalPayload(
   let workingPayload = payload
   let truncateResult: OpenAIAutoTruncateResult | null = null
 
-  // Apply auto-truncate if enabled and model is available
-  if (isAutoTruncateEnabled() && model) {
+  // Apply auto-truncate pre-check only if model has known limits from previous failures
+  if (state.autoTruncate && model && hasKnownLimits(model.id)) {
     try {
       const check = await checkNeedsCompactionOpenAI(workingPayload, model, {
-        checkTokenLimit: state.autoTruncateByTokens,
-        checkByteLimit: state.autoTruncateByReqsz,
+        checkTokenLimit: true,
+        checkByteLimit: true,
       })
       consola.debug(
-        `Auto-truncate check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
+        `Auto-truncate pre-check: ${check.currentTokens} tokens (limit ${check.tokenLimit}), `
           + `${bytesToKB(check.currentBytes)}KB (limit ${bytesToKB(check.byteLimit)}KB), `
           + `needed: ${check.needed}${check.reason ? ` (${check.reason})` : ""}`,
       )
@@ -180,8 +184,8 @@ export async function buildFinalPayload(
         }
         consola.info(`Auto-truncate triggered: exceeds ${reasonText} limit`)
         truncateResult = await autoTruncateOpenAI(workingPayload, model, {
-          checkTokenLimit: state.autoTruncateByTokens,
-          checkByteLimit: state.autoTruncateByReqsz,
+          checkTokenLimit: true,
+          checkByteLimit: true,
         })
         workingPayload = truncateResult.payload
       }
@@ -189,12 +193,10 @@ export async function buildFinalPayload(
       // Auto-truncate is a best-effort optimization; if it fails, proceed with original payload
       // The request may still succeed if we're under the actual limit
       consola.warn(
-        "Auto-truncate failed, proceeding with original payload:",
+        "Auto-truncate pre-check failed, proceeding with original payload:",
         error instanceof Error ? error.message : error,
       )
     }
-  } else if (isAutoTruncateEnabled() && !model) {
-    consola.warn(`Auto-truncate: Model '${payload.model}' not found in cached models, skipping`)
   }
 
   // Always sanitize messages to filter orphaned tool/tool_result messages
@@ -277,9 +279,6 @@ export async function logPayloadSizeInfo(payload: ChatCompletionsPayload, model:
 
   consola.info("")
   consola.info("  Suggestions:")
-  if (!isAutoTruncateEnabled()) {
-    consola.info("    • Enable --auto-truncate to automatically truncate history")
-  }
   if (imageCount > 0) {
     consola.info("    • Remove or resize large images in the conversation")
   }

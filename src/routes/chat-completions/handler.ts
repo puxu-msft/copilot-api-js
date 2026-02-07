@@ -10,6 +10,7 @@ import { awaitApproval } from "~/lib/approval"
 import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate/openai"
 import { HTTPError } from "~/lib/error"
 import { type MessageContent, recordRequest, recordResponse } from "~/lib/history"
+import { translateModelName } from "~/lib/model-resolver"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { requestTracker } from "~/lib/tui"
@@ -38,6 +39,13 @@ export async function handleCompletion(c: Context) {
   const originalPayload = await c.req.json<ChatCompletionsPayload>()
   consola.debug("Request payload:", JSON.stringify(originalPayload).slice(-400))
 
+  // Resolve model name aliases and date-suffixed versions
+  const resolvedModel = translateModelName(originalPayload.model)
+  if (resolvedModel !== originalPayload.model) {
+    consola.debug(`Model name resolved: ${originalPayload.model} → ${resolvedModel}`)
+    originalPayload.model = resolvedModel
+  }
+
   // Get tracking ID and use tracker's startTime for consistent timing
   const trackingId = c.get("trackingId") as string | undefined
   const trackedRequest = trackingId ? requestTracker.getRequest(trackingId) : undefined
@@ -45,6 +53,28 @@ export async function handleCompletion(c: Context) {
 
   // Update TUI tracker with model info
   updateTrackerModel(trackingId, originalPayload.model)
+
+  // Find the selected model and validate endpoint support before recording
+  const selectedModel = state.models?.data.find((model) => model.id === originalPayload.model)
+
+  if (
+    selectedModel?.supported_endpoints
+    && !selectedModel.supported_endpoints.includes("/chat/completions")
+  ) {
+    return c.json(
+      {
+        error: {
+          message:
+            `Model '${originalPayload.model}' does not support the /chat/completions endpoint. `
+            + `Supported endpoints: ${selectedModel.supported_endpoints.join(", ")}`,
+          type: "invalid_request_error",
+          param: "model",
+          code: "model_not_supported",
+        },
+      },
+      400,
+    )
+  }
 
   // Record request to history with full messages
   const historyId = recordRequest("openai", {
@@ -61,9 +91,6 @@ export async function handleCompletion(c: Context) {
 
   const ctx: ResponseContext = { historyId, trackingId, startTime }
 
-  // Find the selected model
-  const selectedModel = state.models?.data.find((model) => model.id === originalPayload.model)
-
   // Calculate and display token count
   await logTokenCount(originalPayload, selectedModel)
 
@@ -71,6 +98,11 @@ export async function handleCompletion(c: Context) {
   const { finalPayload, truncateResult } = await buildFinalPayload(originalPayload, selectedModel)
   if (truncateResult) {
     ctx.truncateResult = truncateResult
+  }
+
+  // Set compact tag for log display
+  if (truncateResult?.wasCompacted && trackingId) {
+    requestTracker.updateRequest(trackingId, { tags: ["compact"] })
   }
 
   const payload =
@@ -188,6 +220,9 @@ function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletion
       usage: {
         input_tokens: usage?.prompt_tokens ?? 0,
         output_tokens: usage?.completion_tokens ?? 0,
+        ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && {
+          cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens,
+        }),
       },
       stop_reason: choice.finish_reason,
       content: buildResponseContent(choice),
@@ -235,6 +270,7 @@ interface StreamAccumulator {
   model: string
   inputTokens: number
   outputTokens: number
+  cachedTokens: number
   finishReason: string
   content: string
   toolCalls: Array<{ id: string; name: string; arguments: string }>
@@ -246,6 +282,7 @@ function createStreamAccumulator(): StreamAccumulator {
     model: "",
     inputTokens: 0,
     outputTokens: 0,
+    cachedTokens: 0,
     finishReason: "",
     content: "",
     toolCalls: [],
@@ -320,6 +357,9 @@ function parseStreamChunk(chunk: { data?: string }, acc: StreamAccumulator) {
     if (parsed.usage) {
       acc.inputTokens = parsed.usage.prompt_tokens
       acc.outputTokens = parsed.usage.completion_tokens
+      if (parsed.usage.prompt_tokens_details?.cached_tokens !== undefined) {
+        acc.cachedTokens = parsed.usage.prompt_tokens_details.cached_tokens
+      }
     }
 
     // Accumulate choice
@@ -369,7 +409,11 @@ function recordStreamSuccess(acc: StreamAccumulator, fallbackModel: string, ctx:
     {
       success: true,
       model: acc.model || fallbackModel,
-      usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
+      usage: {
+        input_tokens: acc.inputTokens,
+        output_tokens: acc.outputTokens,
+        ...(acc.cachedTokens > 0 && { cache_read_input_tokens: acc.cachedTokens }),
+      },
       stop_reason: acc.finishReason || undefined,
       content: {
         role: "assistant",

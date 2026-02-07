@@ -1,12 +1,26 @@
-import { describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test } from "bun:test"
 
 import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
 
-import { autoTruncateAnthropic, checkNeedsCompactionAnthropic } from "~/lib/auto-truncate/anthropic"
-import { compressCompactedReadResult, compressToolResultContent } from "~/lib/auto-truncate/common"
+import {
+  autoTruncateAnthropic,
+  checkNeedsCompactionAnthropic,
+  countTotalInputTokens,
+  countTotalTokens,
+} from "~/lib/auto-truncate/anthropic"
+import {
+  compressCompactedReadResult,
+  compressToolResultContent,
+  getEffectiveTokenLimit,
+  hasKnownLimits,
+  resetAllLimitsForTesting,
+  tryParseAndLearnLimit,
+} from "~/lib/auto-truncate/common"
 import { autoTruncateOpenAI, checkNeedsCompactionOpenAI } from "~/lib/auto-truncate/openai"
+import { HTTPError } from "~/lib/error"
+import { state } from "~/lib/state"
 
 // Mock model with typical limits
 const mockModel: Model = {
@@ -436,5 +450,385 @@ describe("compressCompactedReadResult", () => {
     const result = compressCompactedReadResult(text)
 
     expect(result).toBeNull()
+  })
+})
+
+describe("Anthropic Token Counting", () => {
+  test("countTotalInputTokens should exclude thinking from assistant messages", async () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4",
+      max_tokens: 1024,
+      messages: [
+        { role: "user", content: "Hello" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking:
+                "Let me think about this carefully and at great length with lots of words to increase token count significantly.",
+            },
+            { type: "text", text: "Hi!" },
+          ],
+        },
+        { role: "user", content: "How are you?" },
+      ],
+    }
+
+    const inputTokens = await countTotalInputTokens(payload, mockModel)
+    const totalTokens = await countTotalTokens(payload, mockModel)
+
+    // Input tokens should be less because thinking is excluded from assistant messages
+    expect(inputTokens).toBeLessThan(totalTokens)
+    expect(inputTokens).toBeGreaterThan(0)
+    expect(totalTokens).toBeGreaterThan(0)
+  })
+
+  test("should handle special tokens without crashing", async () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: "Content with <|im_start|>system<|im_end|> and <|endoftext|> tokens",
+        },
+      ],
+    }
+
+    const tokens = await countTotalInputTokens(payload, mockModel)
+    expect(tokens).toBeGreaterThan(0)
+  })
+
+  test("countTotalInputTokens should count tools", async () => {
+    const payloadWithTools: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "Hello" }],
+      tools: [
+        {
+          name: "read_file",
+          description: "Read a file from disk",
+          input_schema: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path" },
+            },
+          },
+        },
+      ],
+    }
+
+    const payloadWithoutTools: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "Hello" }],
+    }
+
+    const withTools = await countTotalInputTokens(payloadWithTools, mockModel)
+    const withoutTools = await countTotalInputTokens(payloadWithoutTools, mockModel)
+
+    expect(withTools).toBeGreaterThan(withoutTools)
+  })
+
+  test("countTotalInputTokens should count system prompt", async () => {
+    const payloadWithSystem: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4",
+      max_tokens: 1024,
+      system: "You are a helpful assistant with extensive knowledge.",
+      messages: [{ role: "user", content: "Hello" }],
+    }
+
+    const payloadWithoutSystem: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "Hello" }],
+    }
+
+    const withSystem = await countTotalInputTokens(payloadWithSystem, mockModel)
+    const withoutSystem = await countTotalInputTokens(payloadWithoutSystem, mockModel)
+
+    expect(withSystem).toBeGreaterThan(withoutSystem)
+  })
+})
+
+// =============================================================================
+// Tests for reactive auto-truncate helpers (new in refactoring)
+// =============================================================================
+
+describe("tryParseAndLearnLimit", () => {
+  beforeEach(() => {
+    resetAllLimitsForTesting()
+  })
+
+  test("should detect OpenAI format token limit error", () => {
+    const error = new HTTPError(
+      "Token limit",
+      400,
+      JSON.stringify({
+        error: {
+          code: "model_max_prompt_tokens_exceeded",
+          message: "prompt token count of 135355 exceeds the limit of 128000",
+        },
+      }),
+      "claude-sonnet-4",
+    )
+
+    const result = tryParseAndLearnLimit(error, "claude-sonnet-4")
+
+    expect(result).not.toBeNull()
+    expect(result?.type).toBe("token_limit")
+    expect(result?.limit).toBe(128000)
+    expect(result?.current).toBe(135355)
+
+    // Should have learned the limit
+    expect(hasKnownLimits("claude-sonnet-4")).toBe(true)
+    const effectiveLimit = getEffectiveTokenLimit("claude-sonnet-4")
+    expect(effectiveLimit).not.toBeNull()
+    // Dynamic limit = 95% of 128000
+    expect(effectiveLimit).toBeLessThan(128000)
+  })
+
+  test("should detect Anthropic format token limit error", () => {
+    const error = new HTTPError(
+      "Token limit",
+      400,
+      JSON.stringify({
+        error: {
+          type: "invalid_request_error",
+          message: "prompt is too long: 208598 tokens > 200000 maximum",
+        },
+      }),
+      "claude-sonnet-4",
+    )
+
+    const result = tryParseAndLearnLimit(error, "claude-sonnet-4")
+
+    expect(result).not.toBeNull()
+    expect(result?.type).toBe("token_limit")
+    expect(result?.limit).toBe(200000)
+    expect(result?.current).toBe(208598)
+  })
+
+  test("should detect 413 body too large error", () => {
+    const error = new HTTPError("Request Entity Too Large", 413, "Payload too large")
+
+    const result = tryParseAndLearnLimit(error, "claude-sonnet-4", 2_000_000)
+
+    expect(result).not.toBeNull()
+    expect(result?.type).toBe("body_too_large")
+    // 413 learns a byte limit
+    expect(hasKnownLimits("claude-sonnet-4")).toBe(true)
+  })
+
+  test("should return null for non-limit errors", () => {
+    // 500 Internal Server Error
+    const error500 = new HTTPError("Server error", 500, "Internal error")
+    expect(tryParseAndLearnLimit(error500, "claude-sonnet-4")).toBeNull()
+
+    // 429 Rate limit
+    const error429 = new HTTPError("Rate limited", 429, '{"error":{"code":"rate_limited"}}')
+    expect(tryParseAndLearnLimit(error429, "claude-sonnet-4")).toBeNull()
+
+    // 400 but not a token limit error
+    const error400Other = new HTTPError(
+      "Bad request",
+      400,
+      JSON.stringify({
+        error: {
+          code: "invalid_api_key",
+          message: "Invalid API key",
+        },
+      }),
+    )
+    expect(tryParseAndLearnLimit(error400Other, "claude-sonnet-4")).toBeNull()
+  })
+
+  test("should return null for 400 with unparseable body", () => {
+    const error = new HTTPError("Bad request", 400, "not valid json")
+    expect(tryParseAndLearnLimit(error, "claude-sonnet-4")).toBeNull()
+  })
+
+  test("should return null for 400 with invalid_request_error but non-token message", () => {
+    const error = new HTTPError(
+      "Bad request",
+      400,
+      JSON.stringify({
+        error: {
+          type: "invalid_request_error",
+          message: "messages: field required",
+        },
+      }),
+    )
+    // type matches but message doesn't match token limit pattern
+    expect(tryParseAndLearnLimit(error, "claude-sonnet-4")).toBeNull()
+  })
+})
+
+describe("hasKnownLimits", () => {
+  beforeEach(() => {
+    resetAllLimitsForTesting()
+  })
+
+  test("should return false initially", () => {
+    expect(hasKnownLimits("claude-sonnet-4")).toBe(false)
+    expect(hasKnownLimits("gpt-4o")).toBe(false)
+  })
+
+  test("should return true after learning token limit", () => {
+    const error = new HTTPError(
+      "Token limit",
+      400,
+      JSON.stringify({
+        error: {
+          code: "model_max_prompt_tokens_exceeded",
+          message: "prompt token count of 135355 exceeds the limit of 128000",
+        },
+      }),
+    )
+    tryParseAndLearnLimit(error, "claude-sonnet-4")
+
+    expect(hasKnownLimits("claude-sonnet-4")).toBe(true)
+    // Different model should still be false
+    expect(hasKnownLimits("gpt-4o")).toBe(false)
+  })
+
+  test("should return true after learning byte limit (applies globally)", () => {
+    const error = new HTTPError("Request Entity Too Large", 413, "Payload too large")
+    tryParseAndLearnLimit(error, "gpt-4o", 2_000_000)
+
+    // Byte limit is global, so all models have known limits
+    expect(hasKnownLimits("gpt-4o")).toBe(true)
+    expect(hasKnownLimits("claude-sonnet-4")).toBe(true)
+  })
+})
+
+describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
+  // Model with a very low token limit to force compression
+  const tinyModel: Model = {
+    id: "tiny-model",
+    name: "Tiny Model",
+    vendor: "Test",
+    object: "model",
+    preview: false,
+    model_picker_enabled: true,
+    version: "tiny-model",
+    capabilities: {
+      tokenizer: "o200k_base",
+      limits: {
+        max_prompt_tokens: 500,
+        max_output_tokens: 100,
+        max_context_window_tokens: 600,
+      },
+    },
+  }
+
+  // Helper to create a large tool_result content (> 10KB threshold)
+  const largeToolContent = "x".repeat(15000)
+
+  test("Anthropic: should compress recent tool_results when old compression isn't enough", async () => {
+    // Ensure compress is enabled
+    const origCompress = state.compressToolResults
+    state.compressToolResults = true
+
+    try {
+      // Build payload with tool_use/tool_result pairs spread across old and recent positions
+      const messages: AnthropicMessagesPayload["messages"] = [
+        { role: "user", content: "Start task" },
+        // Old message pair
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "old-tool-1", name: "read", input: {} }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "old-tool-1", content: largeToolContent }],
+        },
+        // Recent message pair (near end)
+        { role: "assistant", content: "middle text " + "y".repeat(2000) },
+        { role: "user", content: "continue " + "z".repeat(2000) },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "recent-tool-1", name: "read", input: {} }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "recent-tool-1", content: largeToolContent }],
+        },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "Thanks" },
+      ]
+
+      const payload: AnthropicMessagesPayload = {
+        model: "tiny-model",
+        max_tokens: 100,
+        messages,
+      }
+
+      const result = await autoTruncateAnthropic(payload, tinyModel)
+
+      expect(result.wasCompacted).toBe(true)
+      // Verify that tool_results have been compressed (content shortened)
+      for (const msg of result.payload.messages) {
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === "tool_result" && typeof block.content === "string") {
+              // Compressed tool_results should be much shorter than original 15KB
+              expect(block.content.length).toBeLessThan(5000)
+            }
+          }
+        }
+      }
+    } finally {
+      // eslint-disable-next-line require-atomic-updates -- test cleanup, state is synchronous
+      state.compressToolResults = origCompress
+    }
+  })
+
+  test("OpenAI: should compress recent tool messages when old compression isn't enough", async () => {
+    const origCompress = state.compressToolResults
+    state.compressToolResults = true
+
+    try {
+      const messages: ChatCompletionsPayload["messages"] = [
+        { role: "user", content: "Start task" },
+        // Old tool message
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "old-tool-1", type: "function", function: { name: "read", arguments: "{}" } }],
+        },
+        { role: "tool", tool_call_id: "old-tool-1", content: largeToolContent },
+        // Recent messages
+        { role: "assistant", content: "middle " + "y".repeat(2000) },
+        { role: "user", content: "continue " + "z".repeat(2000) },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "recent-tool-1", type: "function", function: { name: "read", arguments: "{}" } }],
+        },
+        { role: "tool", tool_call_id: "recent-tool-1", content: largeToolContent },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "Thanks" },
+      ]
+
+      const payload: ChatCompletionsPayload = {
+        model: "tiny-model",
+        messages,
+      }
+
+      const result = await autoTruncateOpenAI(payload, tinyModel)
+
+      expect(result.wasCompacted).toBe(true)
+      // Verify tool messages got compressed
+      for (const msg of result.payload.messages) {
+        if (msg.role === "tool" && typeof msg.content === "string") {
+          expect(msg.content.length).toBeLessThan(5000)
+        }
+      }
+    } finally {
+      // eslint-disable-next-line require-atomic-updates -- test cleanup, state is synchronous
+      state.compressToolResults = origCompress
+    }
   })
 })

@@ -11,7 +11,7 @@ export interface State {
   tokenInfo?: TokenInfo
   copilotTokenInfo?: CopilotTokenInfo
 
-  accountType: string
+  accountType: "individual" | "business" | "enterprise"
   models?: ModelsResponse
   vsCodeVersion?: string
 
@@ -23,10 +23,9 @@ export interface State {
   // Adaptive rate limiting configuration
   adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
 
-  // Auto-truncate by token limit (model context window)
-  autoTruncateByTokens: boolean
-  // Auto-truncate by request body size (HTTP payload limit)
-  autoTruncateByReqsz: boolean
+  // Auto-truncate: reactively truncate on limit errors and pre-check for known limits
+  // Enabled by default; use --no-auto-truncate to disable
+  autoTruncate: boolean
 
   // Compress old tool results before truncating messages
   // When enabled, large tool_result content is compressed to reduce context size
@@ -39,9 +38,16 @@ export interface State {
   // Rewrite Anthropic server-side tools to custom tool format
   rewriteAnthropicTools: boolean
 
+  // Redirect count_tokens through OpenAI translation
+  // When false (default), counts tokens directly on Anthropic payload
+  redirectCountTokens: boolean
+
   // Security Research Mode: enhance system prompts for security research
   // Removes overly restrictive content and injects research context
   securityResearchMode: boolean
+
+  // Redirect sonnet model requests to best available opus model
+  redirectSonnetToOpus: boolean
 }
 
 export const state: State = {
@@ -49,15 +55,11 @@ export const state: State = {
   manualApprove: false,
   showGitHubToken: false,
   verbose: false,
-  autoTruncateByTokens: true,
-  autoTruncateByReqsz: false,
-  compressToolResults: false,
+  autoTruncate: true,
+  compressToolResults: true,
   redirectAnthropic: false,
   rewriteAnthropicTools: true,
+  redirectCountTokens: false,
   securityResearchMode: false,
-}
-
-/** Check if any auto-truncate mode is enabled */
-export function isAutoTruncateEnabled(): boolean {
-  return state.autoTruncateByTokens || state.autoTruncateByReqsz
+  redirectSonnetToOpus: false,
 }

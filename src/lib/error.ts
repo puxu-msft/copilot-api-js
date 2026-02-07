@@ -3,7 +3,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
-import { onTokenLimitExceeded } from "./auto-truncate/common"
+import { tryParseAndLearnLimit } from "./auto-truncate/common"
 
 export class HTTPError extends Error {
   status: number
@@ -33,7 +33,7 @@ interface CopilotError {
 }
 
 /** Parse token limit info from error message */
-function parseTokenLimitError(message: string): {
+export function parseTokenLimitError(message: string): {
   current: number
   limit: number
 } | null {
@@ -115,11 +115,22 @@ interface AnthropicError {
 
 export function forwardError(c: Context, error: unknown) {
   if (error instanceof HTTPError) {
+    // Try to detect and learn from token limit / body size errors
+    // This also records the limit for future auto-truncate pre-checks
+    const limitInfo = tryParseAndLearnLimit(error, error.modelId ?? "unknown")
+
     // Handle 413 Request Entity Too Large
     if (error.status === 413) {
       const formattedError = formatRequestTooLargeError()
       consola.warn(`HTTP 413: Request too large`)
       return c.json(formattedError, 413 as ContentfulStatusCode)
+    }
+
+    // Handle token limit exceeded (detected by tryParseAndLearnLimit)
+    if (limitInfo?.type === "token_limit" && limitInfo.current && limitInfo.limit) {
+      const formattedError = formatTokenLimitError(limitInfo.current, limitInfo.limit)
+      consola.warn(`HTTP ${error.status}: Token limit exceeded (${limitInfo.current} > ${limitInfo.limit})`)
+      return c.json(formattedError, 400 as ContentfulStatusCode)
     }
 
     let errorJson: unknown
@@ -129,39 +140,19 @@ export function forwardError(c: Context, error: unknown) {
       errorJson = error.responseText
     }
 
-    // Check for token limit exceeded error from Copilot (OpenAI format)
-    const copilotError = errorJson as CopilotError
-    if (copilotError.error?.code === "model_max_prompt_tokens_exceeded") {
-      const tokenInfo = parseTokenLimitError(copilotError.error.message ?? "")
-      if (tokenInfo) {
-        // Adjust dynamic token limit for future requests
-        if (error.modelId) {
-          onTokenLimitExceeded(error.modelId, tokenInfo.limit)
-        }
-        const formattedError = formatTokenLimitError(tokenInfo.current, tokenInfo.limit)
-        consola.warn(`HTTP ${error.status}: Token limit exceeded (${tokenInfo.current} > ${tokenInfo.limit})`)
-        return c.json(formattedError, 400 as ContentfulStatusCode)
-      }
-    }
+    // Only attempt structured error detection on parsed JSON objects
+    if (typeof errorJson === "object" && errorJson !== null) {
+      const errorObj = errorJson as CopilotError & AnthropicError
 
-    // Check for token limit exceeded error from Anthropic format
-    const anthropicError = errorJson as AnthropicError
-    if (anthropicError.error?.type === "invalid_request_error") {
-      const tokenInfo = parseTokenLimitError(anthropicError.error.message ?? "")
-      if (tokenInfo) {
-        // Adjust dynamic token limit for future requests
-        if (error.modelId) {
-          onTokenLimitExceeded(error.modelId, tokenInfo.limit)
-        }
-        const formattedError = formatTokenLimitError(tokenInfo.current, tokenInfo.limit)
-        consola.warn(`HTTP ${error.status}: Token limit exceeded (${tokenInfo.current} > ${tokenInfo.limit})`)
-        return c.json(formattedError, 400 as ContentfulStatusCode)
+      // Check for rate limit error from Copilot (429 with code "rate_limited")
+      if (error.status === 429 || errorObj.error?.code === "rate_limited") {
+        const formattedError = formatRateLimitError(errorObj.error?.message)
+        consola.warn(`HTTP 429: Rate limit exceeded`)
+        return c.json(formattedError, 429 as ContentfulStatusCode)
       }
-    }
-
-    // Check for rate limit error from Copilot (429 with code "rate_limited")
-    if (error.status === 429 || copilotError.error?.code === "rate_limited") {
-      const formattedError = formatRateLimitError(copilotError.error?.message)
+    } else if (error.status === 429) {
+      // Rate limit with non-JSON response
+      const formattedError = formatRateLimitError()
       consola.warn(`HTTP 429: Rate limit exceeded`)
       return c.json(formattedError, 429 as ContentfulStatusCode)
     }
@@ -181,7 +172,7 @@ export function forwardError(c: Context, error: unknown) {
   }
 
   // Non-HTTP errors
-  consola.error("Unexpected error:", error)
+  consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, error)
 
   return c.json(
     {

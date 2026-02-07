@@ -127,15 +127,20 @@ const getEncodeChatFunction = async (encoding: string): Promise<Encoder> => {
   }
 
   const supportedEncoding = encoding as SupportedEncoding
-  if (!(supportedEncoding in ENCODING_MAP)) {
-    const fallbackModule = (await ENCODING_MAP.o200k_base()) as Encoder
-    encodingCache.set(encoding, fallbackModule)
-    return fallbackModule
+  const rawModule =
+    supportedEncoding in ENCODING_MAP
+      ? await ENCODING_MAP[supportedEncoding]()
+      : await ENCODING_MAP.o200k_base()
+
+  // Wrap encode to disable special token checks.
+  // gpt-tokenizer defaults to disallowedSpecial='all', which throws on
+  // tokens like <|im_start|> that appear in tool_result content.
+  const encoder: Encoder = {
+    encode: (text: string) => rawModule.encode(text, { disallowedSpecial: new Set() }),
   }
 
-  const encodingModule = (await ENCODING_MAP[supportedEncoding]()) as Encoder
-  encodingCache.set(encoding, encodingModule)
-  return encodingModule
+  encodingCache.set(encoding, encoder)
+  return encoder
 }
 
 /**

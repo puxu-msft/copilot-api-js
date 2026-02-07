@@ -15,7 +15,12 @@
 import consola from "consola"
 
 import type { Model } from "~/services/copilot/get-models"
-import type { AnthropicMessage, AnthropicMessagesPayload, AnthropicUserContentBlock } from "~/types/api/anthropic"
+import type {
+  AnthropicAssistantContentBlock,
+  AnthropicMessage,
+  AnthropicMessagesPayload,
+  AnthropicUserContentBlock,
+} from "~/types/api/anthropic"
 
 import {
   ensureAnthropicStartsWithUser,
@@ -60,12 +65,14 @@ export interface AnthropicAutoTruncateResult {
 
 /**
  * Convert Anthropic message content to text for token counting.
+ * @param options.includeThinking Whether to include thinking blocks (default: true)
  */
-function contentToText(content: AnthropicMessage["content"]): string {
+export function contentToText(content: AnthropicMessage["content"], options?: { includeThinking?: boolean }): string {
   if (typeof content === "string") {
     return content
   }
 
+  const includeThinking = options?.includeThinking ?? true
   const parts: Array<string> = []
   for (const block of content) {
     switch (block.type) {
@@ -91,10 +98,29 @@ function contentToText(content: AnthropicMessage["content"]): string {
         break
       }
       case "thinking": {
-        parts.push(block.thinking)
+        if (includeThinking) {
+          parts.push(block.thinking)
+        }
+        break
+      }
+      case "redacted_thinking": {
+        // Redacted thinking blocks have opaque data, not text — skip for token counting
+        break
+      }
+      case "server_tool_use": {
+        parts.push(`[server_tool_use: ${block.name}]`, JSON.stringify(block.input))
+        break
+      }
+      case "web_search_tool_result": {
+        parts.push(`[web_search_tool_result]`)
         break
       }
       default: {
+        // Handle generic server tool results (e.g., tool_search_tool_result)
+        if ("tool_use_id" in block && block.type !== "image") {
+          parts.push(`[${block.type}]`)
+          break
+        }
         // Images and other binary content are not counted as text tokens
         break
       }
@@ -118,8 +144,12 @@ function estimateMessageTokens(msg: AnthropicMessage): number {
 /**
  * Count tokens for an Anthropic message using the model's tokenizer.
  */
-async function countMessageTokens(msg: AnthropicMessage, model: Model): Promise<number> {
-  const text = contentToText(msg.content)
+export async function countMessageTokens(
+  msg: AnthropicMessage,
+  model: Model,
+  options?: { includeThinking?: boolean },
+): Promise<number> {
+  const text = contentToText(msg.content, options)
   // Add message framing overhead (role + structure)
   return (await countTextTokens(text, model)) + 4
 }
@@ -127,7 +157,7 @@ async function countMessageTokens(msg: AnthropicMessage, model: Model): Promise<
 /**
  * Count tokens for system prompt.
  */
-async function countSystemTokens(system: AnthropicMessagesPayload["system"], model: Model): Promise<number> {
+export async function countSystemTokens(system: AnthropicMessagesPayload["system"], model: Model): Promise<number> {
   if (!system) return 0
   if (typeof system === "string") {
     return (await countTextTokens(system, model)) + 4
@@ -138,11 +168,40 @@ async function countSystemTokens(system: AnthropicMessagesPayload["system"], mod
 
 /**
  * Count total tokens for the payload using the model's tokenizer.
+ * Includes thinking blocks — used by auto-truncate decisions.
  */
-async function countTotalTokens(payload: AnthropicMessagesPayload, model: Model): Promise<number> {
+export async function countTotalTokens(payload: AnthropicMessagesPayload, model: Model): Promise<number> {
   let total = await countSystemTokens(payload.system, model)
   for (const msg of payload.messages) {
     total += await countMessageTokens(msg, model)
+  }
+  // Add overhead for tools
+  if (payload.tools) {
+    const toolsText = JSON.stringify(payload.tools)
+    total += await countTextTokens(toolsText, model)
+  }
+  return total
+}
+
+/**
+ * Count total input tokens for the payload, excluding thinking blocks
+ * from assistant messages per Anthropic token counting spec.
+ *
+ * Per Anthropic docs: "Thinking blocks from previous assistant turns are
+ * ignored (don't count toward input tokens)."
+ *
+ * This function is designed for the /v1/messages/count_tokens endpoint.
+ * For auto-truncate decisions, use countTotalTokens instead (which includes
+ * thinking blocks since they affect actual payload size).
+ */
+export async function countTotalInputTokens(payload: AnthropicMessagesPayload, model: Model): Promise<number> {
+  let total = await countSystemTokens(payload.system, model)
+  for (const msg of payload.messages) {
+    // Exclude thinking blocks from assistant messages
+    const skipThinking = msg.role === "assistant"
+    total += await countMessageTokens(msg, model, {
+      includeThinking: !skipThinking,
+    })
   }
   // Add overhead for tools
   if (payload.tools) {
@@ -158,6 +217,56 @@ async function countTotalTokens(payload: AnthropicMessagesPayload, model: Model)
 
 function getMessageBytes(msg: AnthropicMessage): number {
   return JSON.stringify(msg).length
+}
+
+// ============================================================================
+// Thinking Block Stripping
+// ============================================================================
+
+/**
+ * Strip thinking/redacted_thinking blocks from old assistant messages.
+ *
+ * Per Anthropic docs, thinking blocks from previous turns don't count toward
+ * input tokens (for billing), but they DO consume space in the request body.
+ * Stripping them from older messages frees up context for actual content.
+ *
+ * @param messages - The message array to process
+ * @param preserveRecentCount - Number of recent messages to preserve (keep thinking in recent messages)
+ * @returns Object with stripped messages and count of removed blocks
+ */
+function stripThinkingBlocks(
+  messages: Array<AnthropicMessage>,
+  preserveRecentCount: number,
+): { messages: Array<AnthropicMessage>; strippedCount: number } {
+  const n = messages.length
+  const stripBefore = Math.max(0, n - preserveRecentCount)
+  let strippedCount = 0
+
+  const result = messages.map((msg, i) => {
+    if (i >= stripBefore || msg.role !== "assistant" || !Array.isArray(msg.content)) {
+      return msg
+    }
+
+    const hasThinking = msg.content.some((block) => block.type === "thinking" || block.type === "redacted_thinking")
+    if (!hasThinking) return msg
+
+    const filtered = msg.content.filter((block): block is AnthropicAssistantContentBlock => {
+      if (block.type === "thinking" || block.type === "redacted_thinking") {
+        strippedCount++
+        return false
+      }
+      return true
+    })
+
+    // If all content was thinking blocks, replace with empty text to preserve message structure
+    if (filtered.length === 0) {
+      return { ...msg, content: [{ type: "text" as const, text: "" }] }
+    }
+
+    return { ...msg, content: filtered }
+  })
+
+  return { messages: result, strippedCount }
 }
 
 // ============================================================================
@@ -403,6 +512,9 @@ function generateRemovedMessagesSummary(removedMessages: Array<AnthropicMessage>
         if (block.type === "tool_use") {
           toolCalls.push(block.name)
         }
+        if (block.type === "server_tool_use") {
+          toolCalls.push(block.name)
+        }
       }
     }
   }
@@ -541,14 +653,46 @@ export async function autoTruncateAnthropic(
   const exceedsTokens = originalTokens > tokenLimit
   const exceedsBytes = originalBytes > byteLimit
 
-  // Step 1: Smart compress old tool_results (if enabled)
+  // Step 1: Strip thinking blocks from old assistant messages
+  // These don't count as input tokens per Anthropic docs, but they consume request body space.
+  // Preserve thinking in the last 4 messages (2 exchanges) for context continuity.
+  const { messages: thinkingStripped, strippedCount: thinkingStrippedCount } = stripThinkingBlocks(payload.messages, 4)
+  let workingMessages = thinkingStripped
+
+  // Check if stripping alone was enough
+  if (thinkingStrippedCount > 0) {
+    const strippedPayload = { ...payload, messages: workingMessages }
+    const strippedBytes = JSON.stringify(strippedPayload).length
+    const strippedTokens = await countTotalTokens(strippedPayload, model)
+
+    if (strippedTokens <= tokenLimit && strippedBytes <= byteLimit) {
+      let reason = "tokens"
+      if (exceedsTokens && exceedsBytes) reason = "tokens+size"
+      else if (exceedsBytes) reason = "size"
+      const elapsedMs = Math.round(performance.now() - startTime)
+      consola.info(
+        `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${strippedTokens} tokens, `
+          + `${bytesToKB(originalBytes)}→${bytesToKB(strippedBytes)}KB `
+          + `(stripped ${thinkingStrippedCount} thinking blocks) [${elapsedMs}ms]`,
+      )
+
+      return buildResult({
+        payload: strippedPayload,
+        wasCompacted: true,
+        originalTokens,
+        compactedTokens: strippedTokens,
+        removedMessageCount: 0,
+      })
+    }
+  }
+
+  // Step 2: Smart compress old tool_results (if enabled)
   // Compress tool_results in messages that are beyond the preserve threshold
-  let workingMessages = payload.messages
   let compressedCount = 0
 
   if (state.compressToolResults) {
     const compressionResult = smartCompressToolResults(
-      payload.messages,
+      workingMessages,
       tokenLimit,
       byteLimit,
       cfg.preserveRecentPercent,
@@ -584,9 +728,50 @@ export async function autoTruncateAnthropic(
         removedMessageCount: 0,
       })
     }
+
+    // Step 2.5: Compress ALL tool_results (including recent ones)
+    // If compressing only old tool_results wasn't enough, try compressing all of them
+    // before resorting to message removal
+    const allCompression = smartCompressToolResults(
+      workingMessages,
+      tokenLimit,
+      byteLimit,
+      0.0, // preservePercent=0 means compress all messages
+    )
+    if (allCompression.compressedCount > 0) {
+      workingMessages = allCompression.messages
+      compressedCount += allCompression.compressedCount
+
+      // Check if compressing all was enough
+      const allCompressedPayload = { ...payload, messages: workingMessages }
+      const allCompressedBytes = JSON.stringify(allCompressedPayload).length
+      const allCompressedTokens = await countTotalTokens(allCompressedPayload, model)
+
+      if (allCompressedTokens <= tokenLimit && allCompressedBytes <= byteLimit) {
+        let reason = "tokens"
+        if (exceedsTokens && exceedsBytes) reason = "tokens+size"
+        else if (exceedsBytes) reason = "size"
+        const elapsedMs = Math.round(performance.now() - startTime)
+        consola.info(
+          `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${allCompressedTokens} tokens, `
+            + `${bytesToKB(originalBytes)}→${bytesToKB(allCompressedBytes)}KB `
+            + `(compressed ${compressedCount} tool_results, including recent) [${elapsedMs}ms]`,
+        )
+
+        const noticePayload = addCompressionNotice(allCompressedPayload, compressedCount)
+
+        return buildResult({
+          payload: noticePayload,
+          wasCompacted: true,
+          originalTokens,
+          compactedTokens: await countTotalTokens(noticePayload, model),
+          removedMessageCount: 0,
+        })
+      }
+    }
   }
 
-  // Step 2: Compression wasn't enough (or disabled), proceed with message removal
+  // Step 3: Compression wasn't enough (or disabled), proceed with message removal
   // Use working messages (compressed if enabled, original otherwise)
 
   // Calculate system message size (Anthropic has separate system field)
@@ -618,17 +803,6 @@ export async function autoTruncateAnthropic(
   })
 
   // Check if we can compact
-  if (preserveIndex === 0) {
-    consola.warn("[AutoTruncate:Anthropic] Cannot truncate, system messages too large")
-    return buildResult({
-      payload,
-      wasCompacted: false,
-      originalTokens,
-      compactedTokens: originalTokens,
-      removedMessageCount: 0,
-    })
-  }
-
   if (preserveIndex >= workingMessages.length) {
     consola.warn("[AutoTruncate:Anthropic] Would need to remove all messages")
     return buildResult({
@@ -704,6 +878,7 @@ export async function autoTruncateAnthropic(
 
   const actions: Array<string> = []
   if (removedCount > 0) actions.push(`removed ${removedCount} msgs`)
+  if (thinkingStrippedCount > 0) actions.push(`stripped ${thinkingStrippedCount} thinking blocks`)
   if (compressedCount > 0) actions.push(`compressed ${compressedCount} tool_results`)
   const actionInfo = actions.length > 0 ? ` (${actions.join(", ")})` : ""
 

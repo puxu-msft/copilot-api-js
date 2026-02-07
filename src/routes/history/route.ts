@@ -2,7 +2,7 @@ import consola from "consola"
 import { Hono } from "hono"
 import { access, constants } from "node:fs/promises"
 import { readFile } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
 import { addClient, removeClient } from "~/lib/history-ws"
 
@@ -16,8 +16,7 @@ import {
   handleGetSessions,
   handleGetStats,
 } from "./api"
-import { getAsset } from "./assets"
-import { getHistoryUI } from "./ui"
+import { getAsset, getMimeType } from "./assets"
 
 export const historyRoutes = new Hono()
 
@@ -73,25 +72,20 @@ historyRoutes.get("/assets/*", async (c) => {
 })
 
 // Static assets for legacy UI v1
-const v1Dir = join(import.meta.dirname, "ui")
-
-function getMimeType(path: string): string {
-  if (path.endsWith(".css")) return "text/css"
-  if (path.endsWith(".js")) return "application/javascript"
-  if (path.endsWith(".html")) return "text/html"
-  return "application/octet-stream"
-}
+const v1Dir = join(import.meta.dirname, "../../ui/history-v1")
 
 // v1 root serves index.html directly
 historyRoutes.get("/v1", async (c) => {
-  return c.html(await getHistoryUI())
+  return c.redirect("/history/v1/index.html")
 })
 
 // v1 static assets (CSS, JS) - no caching for development
 historyRoutes.get("/v1/*", async (c) => {
   const filePath = c.req.path.replace("/history/v1", "")
   if (!filePath) return c.notFound()
-  const fullPath = join(v1Dir, filePath)
+  const fullPath = resolve(join(v1Dir, filePath))
+  // Prevent path traversal
+  if (!fullPath.startsWith(v1Dir)) return c.notFound()
   try {
     await access(fullPath, constants.R_OK)
   } catch {
@@ -115,13 +109,13 @@ historyRoutes.get("/v2", async (c) => {
   return c.html(html.content.toString())
 })
 
-historyRoutes.get("/index.html", (c) => {
+historyRoutes.get("/", (c) => {
   // if (isV2Available()) {
   //   return c.redirect("/history/v2")
   // }
   return c.redirect("/history/v1")
 })
 
-historyRoutes.get("/", (c) => {
-  return c.redirect("/history/index.html")
+historyRoutes.get("/index.html", (c) => {
+  return c.redirect("/history/")
 })

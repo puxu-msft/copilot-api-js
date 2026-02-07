@@ -4,9 +4,9 @@
 import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { access, constants } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
-const distPath = join(import.meta.dirname, "ui-v2/dist")
+const distPath = join(import.meta.dirname, "../../ui/history-v2/dist")
 
 // Check if dist exists at startup (sync is fine for one-time init)
 const isBuilt = existsSync(distPath)
@@ -14,7 +14,7 @@ const isBuilt = existsSync(distPath)
 // Cache loaded assets
 const assetCache = new Map<string, { content: Buffer; contentType: string }>()
 
-function getMimeType(path: string): string {
+export function getMimeType(path: string): string {
   if (path.endsWith(".html")) return "text/html"
   if (path.endsWith(".js")) return "application/javascript"
   if (path.endsWith(".css")) return "text/css"
@@ -41,7 +41,9 @@ export async function getAsset(path: string): Promise<{ content: Buffer; content
   }
 
   // Load from disk
-  const fullPath = join(distPath, assetPath)
+  const fullPath = resolve(join(distPath, assetPath))
+  // Prevent path traversal
+  if (!fullPath.startsWith(distPath)) return null
   try {
     await access(fullPath, constants.R_OK)
     const content = await readFile(fullPath)

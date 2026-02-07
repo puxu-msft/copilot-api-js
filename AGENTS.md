@@ -1,8 +1,8 @@
 # AGENTS.md
 
-重要：使用中文与用户交流。
-重要：使用中文与用户交流。
-重要：使用中文与用户交流。
+重要：使用中文与用户交流、回答和展示思考。
+重要：使用中文与用户交流、回答和展示思考。
+重要：使用中文与用户交流、回答和展示思考。
 
 ## Rules
 
@@ -53,7 +53,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI 
 
 ### Entry Points
 
-- `src/main.ts` - CLI entry point (citty), subcommands: `start`, `auth`, `logout`, `check-usage`, `debug`, `list-claude-code`
+- `src/main.ts` - CLI entry point (citty), subcommands: `start`, `auth`, `logout`, `check-usage`, `debug`, `list-claude-code`, `setup-claude-code`
 - `src/start.ts` - Server startup: authentication, model caching, launches Hono server via srvx
 - `src/server.ts` - Hono app configuration, registers all routes
 
@@ -62,22 +62,23 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI 
 1. Incoming requests hit Hono routes in `src/routes/`
 2. For Anthropic-compatible `/v1/messages` endpoint:
    - **Direct path**: Claude models go to Copilot's native Anthropic endpoint (`direct-anthropic-handler.ts`)
-   - **Translation path**: Other models are translated Anthropic → OpenAI → Copilot → OpenAI → Anthropic (`translated-handler.ts`)
+   - **Translation path**: Other models are translated Anthropic -> OpenAI -> Copilot -> OpenAI -> Anthropic (`translated-handler.ts`)
 3. OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) proxy directly to Copilot API
 4. All requests go through adaptive rate limiting (`executeWithAdaptiveRateLimit`)
-5. Auto-truncate is applied when context exceeds token or byte limits
+5. Auto-truncate can be enabled to compact context when it exceeds token or byte limits
 
 ### Key Modules
 
 - `lib/state.ts` - Global mutable state (tokens, config, rate limiting, auto-truncate settings)
-- `lib/token.ts` - GitHub OAuth device flow and Copilot token management with auto-refresh
+- `lib/token/` - GitHub OAuth device flow and Copilot token management with auto-refresh
 - `lib/api-config.ts` - Copilot API URLs and headers (emulates VSCode extension)
 - `lib/adaptive-rate-limiter.ts` - Adaptive rate limiting with exponential backoff (3 modes: Normal, Rate-limited, Recovering)
-- `lib/history.ts` - Request/response history recording, querying, and export (JSON/CSV)
-- `lib/tui/` - Terminal UI for request logging (replaces hono/logger), console output with ASCII prefixes
+- `lib/history.ts` + `lib/history-ws.ts` - Request/response history recording, querying, export (JSON/CSV), and WebSocket live updates
+- `lib/tui/` - Terminal UI for request logging, console output with ASCII prefixes
 - `lib/auto-truncate/` - Auto-truncate: `common.ts` (shared config, dynamic limits), `openai.ts` / `anthropic.ts` (format-specific)
-- `lib/tokenizer.ts` - Token counting (GPT and Anthropic tokenizers), image token calculation
-- `lib/message-sanitizer.ts` - Sanitizes system-reminder tags from messages before sending to API
+- `lib/tokenizer.ts` - Token counting via GPT tokenizers, image token calculation
+- `lib/message-sanitizer/` - Modular message sanitization: system-reminder tag removal, orphan tool block filtering for both regular (`tool_use`/`tool_result`) and server-side (`server_tool_use`/`*_tool_result`) blocks, double-serialized input repair, corrupted block cleanup (separate implementations for Anthropic and OpenAI formats)
+- `lib/shutdown.ts` - Graceful shutdown with connection draining
 
 ### Services
 
@@ -105,6 +106,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI 
 - **Minimize noise**: Don't display redundant or unavailable information
 - **Consistent formatting**: Use fixed-width columns for alignment in console output
 - **Informative previews**: History previews should reflect the actual nature of the request
+- **Informative logs**: All log messages should include enough context (module tag, model name, specific values) to be actionable
 
 ## API Endpoints
 
@@ -117,7 +119,9 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI 
 | `/v1/embeddings` | Text embeddings |
 | `/usage` | Copilot quota/usage stats |
 | `/health` | Health check |
-| `/history` | Request history Web UI |
+| `/token` | Current Copilot token info |
+| `/history` | Request history Web UI (v1 and v2) |
+| `/history/ws` | WebSocket for real-time history updates |
 | `/history/api/entries` | History query API |
 | `/history/api/sessions` | Session list API |
 | `/history/api/stats` | Statistics API |
@@ -126,8 +130,8 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI 
 ## Anthropic API Compatibility
 
 Two paths:
-- **Direct** (Claude models → Copilot's native Anthropic endpoint)
-- **Translation** (other models → OpenAI format conversion).
+- **Direct** (Claude models -> Copilot's native Anthropic endpoint)
+- **Translation** (other models -> OpenAI format conversion).
 
 Some Anthropic features have limited or no support due to Copilot API constraints:
 
@@ -136,24 +140,32 @@ Some Anthropic features have limited or no support due to Copilot API constraint
 | Prompt Caching | Partial | Read-only; `cache_read_input_tokens` is reported from Copilot's `cached_tokens`. Cannot set `cache_control` to mark cacheable content. |
 | Batch Processing | Not supported | Copilot API lacks batch support. |
 | Extended Thinking | Partial | `thinking` parameter is forwarded to Copilot API; whether the backend generates thinking blocks depends on Copilot. |
-| Server-side Tools | Partial | Tools like `web_search` are rewritten to custom tool format (disable with `--no-rewrite-anthropic-tools`). |
+| Server-side Tools | Partial | All server tool types (e.g., `web_search`, `tool_search`) are supported. Tools are rewritten to custom format (disable with `--no-rewrite-anthropic-tools`). The sanitizer handles all `server_tool_use`/`*_tool_result` pairs generically via duck-typing (`isServerToolResultBlock`). |
 
-Model name translation: short aliases (`opus` → `claude-opus-4.5`), versioned names (`claude-sonnet-4-20250514` → `claude-sonnet-4`).
+### Model Name Translation
+
+The system translates model names sent by clients to match available Copilot models:
+
+- **Short aliases**: `opus` -> best available opus, `sonnet` -> best available sonnet, `haiku` -> best available haiku
+- **Hyphenated versions**: `claude-opus-4-6` -> `claude-opus-4.6`, `claude-sonnet-4-5` -> `claude-sonnet-4.5`
+- **Date-suffixed versions**: `claude-sonnet-4-5-20250514` -> `claude-sonnet-4.5`, `claude-opus-4-20250514` -> best available opus
+- **Direct names**: `claude-sonnet-4`, `gpt-4` etc. pass through unchanged
+
+Each model family has a preference list (`MODEL_PREFERENCE` in `non-stream-translation.ts`). When using short aliases, the first available model from the preference list is selected.
 
 ## Key Configuration
 
 Account types affect the Copilot API base URL:
-- `individual` → `api.githubcopilot.com`
-- `business` → `api.business.githubcopilot.com`
-- `enterprise` → `api.enterprise.githubcopilot.com`
+- `individual` -> `api.githubcopilot.com`
+- `business` -> `api.business.githubcopilot.com`
+- `enterprise` -> `api.enterprise.githubcopilot.com`
 
 Key runtime options in `lib/state.ts`:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `autoTruncateByTokens` | boolean | `true` | Auto-truncate when exceeding token limit |
-| `autoTruncateByReqsz` | boolean | `false` | Auto-truncate when exceeding request body size limit |
-| `compressToolResults` | boolean | `false` | Compress old tool_result content before truncating |
+| `autoTruncate` | boolean | `true` | Reactive auto-truncate: retries with truncated payload on limit errors, pre-checks for models with known limits |
+| `compressToolResults` | boolean | `true` | Compress old tool_result content before truncating messages |
 | `redirectAnthropic` | boolean | `false` | Force Anthropic requests through OpenAI translation |
 | `rewriteAnthropicTools` | boolean | `true` | Rewrite server-side tools (web_search) to custom format |
 

@@ -1,7 +1,7 @@
+import { mapOpenAIStopReasonToAnthropic } from "~/lib/anthropic/message-utils"
 import { type ChatCompletionChunk } from "~/services/copilot/create-chat-completions"
 import { type AnthropicStreamEventData, type AnthropicStreamState } from "~/types/api/anthropic"
 
-import { mapOpenAIStopReasonToAnthropic } from "./message-utils"
 import { type ToolNameMapping } from "./non-stream-translation"
 
 function isToolBlockOpen(state: AnthropicStreamState): boolean {

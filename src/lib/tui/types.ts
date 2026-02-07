@@ -19,6 +19,8 @@ export interface TrackedRequest {
   queueWaitMs?: number
   /** Whether this is a /history API access (displayed in gray) */
   isHistoryAccess?: boolean
+  /** Feature tags for display, e.g. ["compact", "thinking"] */
+  tags?: Array<string>
 }
 
 export interface RequestUpdate {
@@ -31,6 +33,8 @@ export interface RequestUpdate {
   queuePosition?: number
   /** Time spent waiting in rate-limit queue (ms) */
   queueWaitMs?: number
+  /** Feature tags to append (additive, not replacement) */
+  tags?: Array<string>
 }
 
 export interface TuiRenderer {

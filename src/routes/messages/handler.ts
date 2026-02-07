@@ -9,7 +9,9 @@ import consola from "consola"
 
 import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
 
+import { convertAnthropicMessages, extractSystemPrompt } from "~/lib/anthropic/message-utils"
 import { recordRequest } from "~/lib/history"
+import { translateModelName } from "~/lib/model-resolver"
 import { sanitizeAnthropicSystem } from "~/lib/security-research-mode"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
@@ -17,8 +19,6 @@ import { supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-
 
 import { type ResponseContext, updateTrackerModel } from "../shared"
 import { handleDirectAnthropicCompletion } from "./direct-anthropic-handler"
-import { convertAnthropicMessages, extractSystemPrompt } from "./message-utils"
-import { translateModelName } from "./non-stream-translation"
 import { handleTranslatedCompletion } from "./translated-handler"
 
 export async function handleCompletion(c: Context) {
@@ -50,6 +50,26 @@ export async function handleCompletion(c: Context) {
   if (resolvedModel !== anthropicPayload.model) {
     consola.debug(`Model name resolved: ${anthropicPayload.model} → ${resolvedModel}`)
     anthropicPayload.model = resolvedModel
+  }
+
+  // Validate that the model supports the /v1/messages endpoint
+  const selectedModel = state.models?.data.find((m) => m.id === anthropicPayload.model)
+  if (
+    selectedModel?.supported_endpoints
+    && !selectedModel.supported_endpoints.includes("/v1/messages")
+  ) {
+    return c.json(
+      {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message:
+            `Model '${anthropicPayload.model}' does not support the /v1/messages endpoint. `
+            + `Supported endpoints: ${selectedModel.supported_endpoints.join(", ")}`,
+        },
+      },
+      400,
+    )
   }
 
   // Determine which path we'll use
@@ -109,6 +129,24 @@ function logToolInfo(anthropicPayload: AnthropicMessagesPayload) {
         }
         if (block.type === "tool_result") {
           consola.debug(`[Tools] tool_result in message: id=${block.tool_use_id}, is_error=${block.is_error ?? false}`)
+        }
+        if (block.type === "server_tool_use") {
+          consola.debug(`[Tools] server_tool_use in message: ${block.name} (id: ${block.id})`)
+        }
+        if (block.type === "web_search_tool_result") {
+          consola.debug(`[Tools] web_search_tool_result in message: id=${block.tool_use_id}`)
+        }
+        // Log other server tool results (e.g., tool_search_tool_result)
+        if (
+          block.type !== "tool_result"
+          && block.type !== "tool_use"
+          && block.type !== "server_tool_use"
+          && block.type !== "web_search_tool_result"
+          && block.type !== "text"
+          && block.type !== "image"
+          && "tool_use_id" in block
+        ) {
+          consola.debug(`[Tools] ${block.type} in message: id=${(block as { tool_use_id: string }).tool_use_id}`)
         }
       }
     }
