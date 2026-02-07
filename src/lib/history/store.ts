@@ -1,8 +1,8 @@
 // History recording module for API requests/responses
 // Supports full message content, session grouping, and rich querying
 
-import { notifyEntryAdded, notifyEntryUpdated } from "./history-ws"
-import { generateId } from "./utils"
+import { generateId } from "../utils"
+import { notifyEntryAdded, notifyEntryUpdated } from "./ws"
 
 // Format timestamp as local ISO-like string (YYYY-MM-DD HH:MM:SS)
 function formatLocalTimestamp(ts: number): string {

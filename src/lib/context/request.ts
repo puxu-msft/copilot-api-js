@@ -1,0 +1,480 @@
+/**
+ * RequestContext — Complete active representation of a request
+ *
+ * Holds all data from request entry to completion. Independent of the history
+ * system — history is a consumer of RequestContext through events.
+ * Each retry creates a new Attempt in the attempts array.
+ */
+
+import type { ApiError } from "~/lib/error"
+import type { Model } from "~/services/copilot/get-models"
+
+import { getErrorMessage } from "~/lib/utils"
+
+// ─── Request State Machine ───
+
+export type RequestState =
+  | "pending" // Just created, not yet started
+  | "sanitizing" // Sanitizing messages
+  | "executing" // Executing API call
+  | "retrying" // Retrying (429 wait or 413 truncation)
+  | "streaming" // Streaming response in progress
+  | "completed" // Successfully completed
+  | "failed" // Failed
+
+// ─── Three-Part Data Model ───
+
+/** 1. Original request: client's raw payload (one per request, immutable) */
+export interface OriginalRequest {
+  model: string
+  messages: Array<unknown>
+  stream: boolean
+  tools?: Array<unknown>
+  system?: string
+  payload: unknown
+}
+
+/** 2. Effective request: what's sent to upstream API (per attempt, may differ) */
+export interface EffectiveRequest {
+  model: string
+  resolvedModel: Model | undefined
+  messages: Array<unknown>
+  payload: unknown
+  format: "anthropic" | "openai"
+}
+
+/** 3. Response data: upstream API response (per attempt) */
+export interface ResponseData {
+  success: boolean
+  model: string
+  usage: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+  }
+  content: unknown
+  stop_reason?: string
+  toolCalls?: Array<unknown>
+  error?: string
+}
+
+// ─── Attempt ───
+
+/** A single API call attempt (each retry produces a new Attempt) */
+export interface Attempt {
+  index: number
+  effectiveRequest: EffectiveRequest
+  response: ResponseData | null
+  error: ApiError | null
+  /** Strategy that triggered this retry (undefined for first attempt) */
+  strategy?: string
+  sanitization?: SanitizationState
+  truncation?: TruncationState
+  /** Wait time before this retry (rate-limit) */
+  waitMs?: number
+  startTime: number
+  durationMs: number
+}
+
+// ─── Pipeline Processing State ───
+
+export interface SanitizationState {
+  removedCount: number
+  systemReminderRemovals: number
+}
+
+export interface TruncationState {
+  wasCompacted: boolean
+  originalTokens: number
+  compactedTokens: number
+  removedMessageCount: number
+  processingTimeMs: number
+}
+
+export interface TranslationState {
+  direction: "anthropic-to-openai" | "openai-to-anthropic"
+  toolNameMapping?: unknown
+  originMap?: Array<number>
+}
+
+export interface RewriteMapping {
+  originalMessages: Array<unknown>
+  rewrittenMessages: Array<unknown>
+  messageMapping: Array<number>
+}
+
+// ─── History Entry Data ───
+
+/** Serialized form of a completed request (decoupled from history store) */
+export interface HistoryEntryData {
+  id: string
+  endpoint: "anthropic" | "openai"
+  timestamp: number
+  durationMs: number
+  sessionId?: string
+  request: {
+    model: string
+    messages: Array<unknown>
+    stream: boolean
+    tools?: Array<unknown>
+    system?: string
+    max_tokens?: number
+    temperature?: number
+  }
+  response?: ResponseData
+  truncation?: TruncationState
+  rewrites?: {
+    sanitization?: SanitizationState
+    truncation?: TruncationState
+    rewrittenMessages?: Array<unknown>
+    rewrittenSystem?: string
+    messageMapping?: Array<number>
+  }
+  attempts?: Array<{
+    index: number
+    strategy?: string
+    durationMs: number
+    error?: string
+    truncation?: TruncationState
+  }>
+}
+
+// ─── Stream Accumulator Result ───
+
+/** Data extracted from a stream accumulator for completeFromStream */
+export interface StreamAccumulatorResult {
+  model: string
+  content: string
+  thinkingContent: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  stopReason: string
+  toolCalls: Array<{
+    id: string
+    name: string
+    input: unknown
+    blockType: string
+  }>
+}
+
+// ─── RequestContext Event ───
+
+export interface RequestContextEventData {
+  type: string
+  context: RequestContext
+  previousState?: RequestState
+  field?: string
+  meta?: Record<string, unknown>
+  entry?: HistoryEntryData
+}
+
+export type RequestContextEventCallback = (event: RequestContextEventData) => void
+
+// ─── RequestContext Interface ───
+
+export interface RequestContext {
+  // --- Identity + State ---
+  readonly id: string
+  readonly trackingId: string | undefined
+  readonly startTime: number
+  readonly endpoint: "anthropic" | "openai"
+  readonly state: RequestState
+  readonly durationMs: number
+
+  // --- Top-level Data ---
+  readonly originalRequest: OriginalRequest | null
+  readonly response: ResponseData | null
+  readonly translation: TranslationState | null
+  readonly rewrites: RewriteMapping | null
+
+  // --- Attempts ---
+  readonly attempts: ReadonlyArray<Attempt>
+  readonly currentAttempt: Attempt | null
+  readonly queueWaitMs: number
+
+  // --- Mutation Methods ---
+  setOriginalRequest(req: OriginalRequest): void
+  setTranslation(info: TranslationState): void
+  setRewrites(info: RewriteMapping): void
+  beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationState }): void
+  setAttemptSanitization(info: SanitizationState): void
+  setAttemptEffectiveRequest(req: EffectiveRequest): void
+  setAttemptResponse(response: ResponseData): void
+  setAttemptError(error: ApiError): void
+  addQueueWaitMs(ms: number): void
+  transition(newState: RequestState, meta?: Record<string, unknown>): void
+  complete(response: ResponseData): void
+  completeFromStream(acc: StreamAccumulatorResult): void
+  fail(model: string, error: unknown): void
+  toHistoryEntry(): HistoryEntryData
+}
+
+// ─── Implementation ───
+
+let idCounter = 0
+
+export function createRequestContext(opts: {
+  endpoint: "anthropic" | "openai"
+  trackingId?: string
+  onEvent: RequestContextEventCallback
+}): RequestContext {
+  const id = `req_${Date.now()}_${++idCounter}`
+  const startTime = Date.now()
+  const onEvent = opts.onEvent
+
+  // Mutable internal state
+  let _state: RequestState = "pending"
+  let _originalRequest: OriginalRequest | null = null
+  let _response: ResponseData | null = null
+  let _translation: TranslationState | null = null
+  let _rewrites: RewriteMapping | null = null
+  let _queueWaitMs = 0
+  const _attempts: Array<Attempt> = []
+
+  function emit(event: RequestContextEventData) {
+    try {
+      onEvent(event)
+    } catch {
+      // Swallow event handler errors
+    }
+  }
+
+  const ctx: RequestContext = {
+    id,
+    trackingId: opts.trackingId,
+    startTime,
+    endpoint: opts.endpoint,
+
+    get state() {
+      return _state
+    },
+    get durationMs() {
+      return Date.now() - startTime
+    },
+    get originalRequest() {
+      return _originalRequest
+    },
+    get response() {
+      return _response
+    },
+    get translation() {
+      return _translation
+    },
+    get rewrites() {
+      return _rewrites
+    },
+    get attempts() {
+      return _attempts
+    },
+    get currentAttempt() {
+      return _attempts.at(-1) ?? null
+    },
+    get queueWaitMs() {
+      return _queueWaitMs
+    },
+
+    setOriginalRequest(req: OriginalRequest) {
+      _originalRequest = req
+      emit({ type: "updated", context: ctx, field: "originalRequest" })
+    },
+
+    setTranslation(info: TranslationState) {
+      _translation = info
+      emit({ type: "updated", context: ctx, field: "translation" })
+    },
+
+    setRewrites(info: RewriteMapping) {
+      _rewrites = info
+      emit({ type: "updated", context: ctx, field: "rewrites" })
+    },
+
+    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationState }) {
+      const attempt: Attempt = {
+        index: _attempts.length,
+        effectiveRequest: null as unknown as EffectiveRequest, // Set later via setAttemptEffectiveRequest
+        response: null,
+        error: null,
+        strategy: attemptOpts.strategy,
+        truncation: attemptOpts.truncation,
+        waitMs: attemptOpts.waitMs,
+        startTime: Date.now(),
+        durationMs: 0,
+      }
+      _attempts.push(attempt)
+      emit({ type: "updated", context: ctx, field: "attempts" })
+    },
+
+    setAttemptSanitization(info: SanitizationState) {
+      const attempt = ctx.currentAttempt
+      if (attempt) {
+        attempt.sanitization = info
+      }
+    },
+
+    setAttemptEffectiveRequest(req: EffectiveRequest) {
+      const attempt = ctx.currentAttempt
+      if (attempt) {
+        attempt.effectiveRequest = req
+      }
+    },
+
+    setAttemptResponse(response: ResponseData) {
+      const attempt = ctx.currentAttempt
+      if (attempt) {
+        attempt.response = response
+        attempt.durationMs = Date.now() - attempt.startTime
+      }
+    },
+
+    setAttemptError(error: ApiError) {
+      const attempt = ctx.currentAttempt
+      if (attempt) {
+        attempt.error = error
+        attempt.durationMs = Date.now() - attempt.startTime
+      }
+    },
+
+    addQueueWaitMs(ms: number) {
+      _queueWaitMs += ms
+    },
+
+    transition(newState: RequestState, meta?: Record<string, unknown>) {
+      const previousState = _state
+      _state = newState
+      emit({ type: "state_changed", context: ctx, previousState, meta })
+    },
+
+    complete(response: ResponseData) {
+      _response = response
+      ctx.setAttemptResponse(response)
+      _state = "completed"
+      const entry = ctx.toHistoryEntry()
+      emit({ type: "completed", context: ctx, entry })
+    },
+
+    completeFromStream(acc: StreamAccumulatorResult) {
+      const contentBlocks: Array<unknown> = []
+      if (acc.thinkingContent) contentBlocks.push({ type: "thinking", thinking: acc.thinkingContent })
+      if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
+      for (const tc of acc.toolCalls) {
+        contentBlocks.push({
+          type: tc.blockType,
+          id: tc.id,
+          name: tc.name,
+          input: tc.input,
+        })
+      }
+
+      const toolCalls =
+        acc.toolCalls.length > 0 ?
+          acc.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, input: tc.input }))
+        : undefined
+
+      const response: ResponseData = {
+        success: true,
+        model: acc.model,
+        usage: {
+          input_tokens: acc.inputTokens,
+          output_tokens: acc.outputTokens,
+          ...(acc.cacheReadTokens > 0 && { cache_read_input_tokens: acc.cacheReadTokens }),
+          ...(acc.cacheCreationTokens > 0 && { cache_creation_input_tokens: acc.cacheCreationTokens }),
+        },
+        content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
+        stop_reason: acc.stopReason || undefined,
+        toolCalls,
+      }
+
+      ctx.complete(response)
+    },
+
+    fail(model: string, error: unknown) {
+      const errorMessage = getErrorMessage(error)
+      _response = {
+        success: false,
+        model,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        error: errorMessage,
+        content: null,
+      }
+
+      // Preserve HTTP error response body for debugging
+      if (
+        error instanceof Error
+        && "responseText" in error
+        && typeof (error as { responseText: unknown }).responseText === "string"
+      ) {
+        const responseText = (error as { responseText: string }).responseText
+        const status = "status" in error ? (error as { status: number }).status : undefined
+        if (responseText) {
+          let formattedBody: string
+          try {
+            formattedBody = JSON.stringify(JSON.parse(responseText), null, 2)
+          } catch {
+            formattedBody = responseText
+          }
+          _response.content = {
+            role: "assistant",
+            content: [
+              { type: "text", text: `[API Error Response${status ? ` - HTTP ${status}` : ""}]\n\n${formattedBody}` },
+            ],
+          }
+        }
+      }
+
+      _state = "failed"
+      const entry = ctx.toHistoryEntry()
+      emit({ type: "failed", context: ctx, entry })
+    },
+
+    toHistoryEntry(): HistoryEntryData {
+      const entry: HistoryEntryData = {
+        id,
+        endpoint: opts.endpoint,
+        timestamp: startTime,
+        durationMs: Date.now() - startTime,
+        request: {
+          model: _originalRequest?.model ?? "",
+          messages: _originalRequest?.messages ?? [],
+          stream: _originalRequest?.stream ?? true,
+          tools: _originalRequest?.tools,
+          system: _originalRequest?.system,
+        },
+      }
+
+      if (_response) {
+        entry.response = _response
+      }
+
+      // Find truncation from the last attempt that had one
+      const lastTruncation = [..._attempts].reverse().find((a) => a.truncation)?.truncation
+      if (lastTruncation) {
+        entry.truncation = lastTruncation
+      }
+
+      if (_rewrites) {
+        entry.rewrites = {
+          rewrittenMessages: _rewrites.rewrittenMessages,
+          messageMapping: _rewrites.messageMapping,
+        }
+      }
+
+      // Include attempt summary
+      if (_attempts.length > 1) {
+        entry.attempts = _attempts.map((a) => ({
+          index: a.index,
+          strategy: a.strategy,
+          durationMs: a.durationMs,
+          error: a.error?.message,
+          truncation: a.truncation,
+        }))
+      }
+
+      return entry
+    },
+  }
+
+  return ctx
+}

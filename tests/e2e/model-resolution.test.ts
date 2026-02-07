@@ -14,9 +14,9 @@ import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
 import { getModels } from "~/services/copilot/get-models"
 import { getCopilotToken } from "~/services/github/get-copilot-token"
 
-import { getGitHubToken, shouldRunIntegrationTests } from "./config"
+import { getE2EMode, getGitHubToken } from "./config"
 
-const describeWithToken = shouldRunIntegrationTests() ? describe : describe.skip
+const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 
 describeWithToken("Model Name Resolution", () => {
   beforeAll(async () => {

@@ -1,4 +1,4 @@
-import { GITHUB_API_BASE_URL, githubHeaders } from "~/lib/api-config"
+import { GITHUB_API_BASE_URL, githubHeaders } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 

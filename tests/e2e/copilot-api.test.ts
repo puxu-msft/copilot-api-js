@@ -21,7 +21,7 @@ import {
 import { getModels } from "~/services/copilot/get-models"
 import { getCopilotToken } from "~/services/github/get-copilot-token"
 
-import { getGitHubToken, shouldRunIntegrationTests } from "./config"
+import { getE2EMode, getGitHubToken } from "./config"
 
 // Helper to assert non-streaming response
 function assertNonStreamingResponse(response: ChatCompletionResponse | AsyncIterable<unknown>): ChatCompletionResponse {
@@ -39,7 +39,7 @@ function assertAnthropicResponse(response: AnthropicResponse | AsyncIterable<unk
 }
 
 // Skip all tests if no token available
-const describeWithToken = shouldRunIntegrationTests() ? describe : describe.skip
+const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 
 describeWithToken("GitHub Copilot API Integration", () => {
   beforeAll(async () => {

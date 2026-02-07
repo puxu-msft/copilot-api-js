@@ -9,7 +9,7 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import type { Model } from "~/services/copilot/get-models"
-import type { AnthropicMessage, AnthropicMessagesPayload, AnthropicStreamEventData } from "~/types/api/anthropic"
+import type { AnthropicMessagesPayload, AnthropicStreamEventData } from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { convertAnthropicMessages, extractToolCallsFromAnthropicContent } from "~/lib/anthropic/message-utils"
@@ -24,17 +24,15 @@ import {
   autoTruncateAnthropic,
   sanitizeAnthropicMessages,
 } from "~/lib/auto-truncate/anthropic"
-import {
-  AUTO_TRUNCATE_RETRY_FACTOR,
-  MAX_AUTO_TRUNCATE_RETRIES,
-  tryParseAndLearnLimit,
-} from "~/lib/auto-truncate/common"
-import { HTTPError } from "~/lib/error"
+import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
 import { recordResponse, recordRewrites } from "~/lib/history"
 import { state } from "~/lib/state"
+import { buildMessageMapping } from "~/lib/translation/message-mapping"
 import { requestTracker } from "~/lib/tui"
 import { bytesToKB } from "~/lib/utils"
 import { createAnthropicMessages, type AnthropicMessageResponse } from "~/services/copilot/create-anthropic-messages"
+
+import type { FormatAdapter } from "../shared/pipeline"
 
 import {
   type ResponseContext,
@@ -45,6 +43,8 @@ import {
   recordStreamError,
   updateTrackerStatus,
 } from "../shared"
+import { executeRequestPipeline } from "../shared/pipeline"
+import { createAutoTruncateStrategy, type TruncateResult } from "../shared/strategies/auto-truncate"
 import { translateErrorToAnthropicErrorEvent } from "./stream-translation"
 
 /** Parse a JSON string to object, returning the value as-is if already an object */
@@ -103,153 +103,108 @@ export async function handleDirectAnthropicCompletion(
     if (tags.length > 0) requestTracker.updateRequest(ctx.trackingId, { tags })
   }
 
-  // Reactive retry loop: send full payload first, then truncate and retry on limit errors
-  let effectivePayload = initialSanitized
+  // Build adapter and strategy for the pipeline
+  const adapter: FormatAdapter<AnthropicMessagesPayload> = {
+    format: "anthropic",
+    sanitize: (p) => sanitizeAnthropicMessages(p),
+    execute: (p) => executeWithAdaptiveRateLimit(() => createAnthropicMessages(p)),
+    logPayloadSize: (p) => logPayloadSizeInfoAnthropic(p, selectedModel),
+  }
+
+  const strategies = [
+    createAutoTruncateStrategy<AnthropicMessagesPayload>({
+      truncate: (p, model, opts) =>
+        autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<AnthropicMessagesPayload>>,
+      resanitize: (p) => sanitizeAnthropicMessages(p),
+      isEnabled: () => state.autoTruncate,
+      label: "Anthropic",
+    }),
+  ]
+
+  // Track truncation result for non-streaming response marker
   let truncateResult: AnthropicAutoTruncateResult | undefined
-  let lastError: unknown = null
 
-  for (let attempt = 0; attempt <= MAX_AUTO_TRUNCATE_RETRIES; attempt++) {
-    try {
-      const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
-        createAnthropicMessages(effectivePayload),
-      )
-
-      // eslint-disable-next-line require-atomic-updates -- ctx is a local object, no race
-      ctx.queueWaitMs = queueWaitMs
-
-      // Check if response is streaming (AsyncIterable)
-      if (Symbol.asyncIterator in (response as object)) {
-        consola.debug("Streaming response from Copilot (direct Anthropic)")
-        updateTrackerStatus(ctx.trackingId, "streaming")
-
-        return streamSSE(c, async (stream) => {
-          await handleDirectAnthropicStreamingResponse({
-            stream,
-            response: response as AsyncIterable<{
-              data?: string
-              event?: string
-            }>,
-            anthropicPayload: effectivePayload,
-            ctx,
-          })
-        })
-      }
-
-      // Non-streaming response
-      return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, ctx, truncateResult)
-    } catch (error) {
-      lastError = error
-
-      // Check if this is a retryable limit error
-      if (
-        state.autoTruncate
-        && error instanceof HTTPError
-        && selectedModel
-        && attempt < MAX_AUTO_TRUNCATE_RETRIES // Still have retries left
-      ) {
-        const payloadBytes = JSON.stringify(effectivePayload).length
-        const parsed = tryParseAndLearnLimit(error, selectedModel.id, payloadBytes)
-
-        if (parsed) {
-          // Calculate target limits based on error type
-          let targetTokenLimit: number | undefined
-          let targetByteLimitBytes: number | undefined
-
-          if (parsed.type === "token_limit" && parsed.limit) {
-            targetTokenLimit = Math.floor(parsed.limit * AUTO_TRUNCATE_RETRY_FACTOR)
-            consola.info(
-              `[Anthropic] Attempt ${attempt + 1}/${MAX_AUTO_TRUNCATE_RETRIES + 1}: `
-                + `Token limit error (${parsed.current}>${parsed.limit}), `
-                + `retrying with limit ${targetTokenLimit}...`,
-            )
-          } else if (parsed.type === "body_too_large") {
-            // For 413 errors, use 90% of the current payload size
-            targetByteLimitBytes = Math.floor(payloadBytes * AUTO_TRUNCATE_RETRY_FACTOR)
-            consola.info(
-              `[Anthropic] Attempt ${attempt + 1}/${MAX_AUTO_TRUNCATE_RETRIES + 1}: `
-                + `Body too large (${bytesToKB(payloadBytes)}KB), `
-                + `retrying with limit ${bytesToKB(targetByteLimitBytes)}KB...`,
-            )
-          }
-
-          try {
-            // Truncate from original payload (not from already-truncated) using target limits
-            truncateResult = await autoTruncateAnthropic(anthropicPayload, selectedModel, {
-              checkTokenLimit: true,
-              checkByteLimit: true,
-              targetTokenLimit,
-              targetByteLimitBytes,
-            })
-
-            if (truncateResult.wasCompacted) {
-              // Re-sanitize the truncated payload
-              const {
-                payload: retrySanitized,
-                removedCount: retryOrphanedRemovals,
-                systemReminderRemovals: retrySystemRemovals,
-              } = sanitizeAnthropicMessages(truncateResult.payload)
-              effectivePayload = retrySanitized // eslint-disable-line require-atomic-updates -- sequential loop, no race
-
-              // Record rewrites for the retried payload
-              const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, effectivePayload.messages)
-              recordRewrites(ctx.historyId, {
-                truncation: {
-                  removedMessageCount: truncateResult.removedMessageCount,
-                  originalTokens: truncateResult.originalTokens,
-                  compactedTokens: truncateResult.compactedTokens,
-                  processingTimeMs: truncateResult.processingTimeMs,
-                },
-                sanitization:
-                  retryOrphanedRemovals > 0 || retrySystemRemovals > 0 ?
-                    { removedBlockCount: retryOrphanedRemovals, systemReminderRemovals: retrySystemRemovals }
-                  : undefined,
-                rewrittenMessages: convertAnthropicMessages(effectivePayload.messages),
-                rewrittenSystem: typeof effectivePayload.system === "string" ? effectivePayload.system : undefined,
-                messageMapping: retryMessageMapping,
-              })
-
-              // Update tracking tags
-              if (ctx.trackingId) {
-                const retryTags = ["compact", `retry-${attempt + 1}`]
-                if (effectivePayload.thinking && effectivePayload.thinking.type !== "disabled")
-                  retryTags.push(`thinking:${effectivePayload.thinking.type}`)
-                requestTracker.updateRequest(ctx.trackingId, { tags: retryTags })
-              }
-
-              // Continue to next iteration to retry
-              continue
-            } else {
-              // Truncation didn't help (shouldn't happen), break out and throw the error
-              break
-            }
-          } catch (truncateError) {
-            consola.warn(
-              `[Anthropic] Auto-truncate failed on attempt ${attempt + 1}:`,
-              truncateError instanceof Error ? truncateError.message : truncateError,
-            )
-            // Break out and throw the original error
-            break
-          }
+  try {
+    const result = await executeRequestPipeline({
+      adapter,
+      strategies,
+      payload: initialSanitized,
+      originalPayload: anthropicPayload,
+      model: selectedModel,
+      maxRetries: MAX_AUTO_TRUNCATE_RETRIES,
+      onRetry: (_attempt, _strategyName, newPayload, meta) => {
+        // Capture truncation result for response marker
+        const retryTruncateResult = meta?.truncateResult as AnthropicAutoTruncateResult | undefined
+        if (retryTruncateResult) {
+          truncateResult = retryTruncateResult
         }
-      }
 
-      // Not retryable or no more retries left, break out
-      break
+        // Record rewrites for the retried payload
+        const retrySanitization = meta?.sanitization as
+          | { removedCount: number; systemReminderRemovals: number }
+          | undefined
+        const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, newPayload.messages)
+        recordRewrites(ctx.historyId, {
+          truncation:
+            retryTruncateResult ?
+              {
+                removedMessageCount: retryTruncateResult.removedMessageCount,
+                originalTokens: retryTruncateResult.originalTokens,
+                compactedTokens: retryTruncateResult.compactedTokens,
+                processingTimeMs: retryTruncateResult.processingTimeMs,
+              }
+            : undefined,
+          sanitization:
+            retrySanitization && (retrySanitization.removedCount > 0 || retrySanitization.systemReminderRemovals > 0) ?
+              {
+                removedBlockCount: retrySanitization.removedCount,
+                systemReminderRemovals: retrySanitization.systemReminderRemovals,
+              }
+            : undefined,
+          rewrittenMessages: convertAnthropicMessages(newPayload.messages),
+          rewrittenSystem: typeof newPayload.system === "string" ? newPayload.system : undefined,
+          messageMapping: retryMessageMapping,
+        })
+
+        // Update tracking tags
+        if (ctx.trackingId) {
+          const retryAttempt = (meta?.attempt as number | undefined) ?? 1
+          const retryTags = ["compact", `retry-${retryAttempt}`]
+          if (newPayload.thinking && newPayload.thinking.type !== "disabled")
+            retryTags.push(`thinking:${newPayload.thinking.type}`)
+          requestTracker.updateRequest(ctx.trackingId, { tags: retryTags })
+        }
+      },
+    })
+
+    ctx.queueWaitMs = result.queueWaitMs
+    const response = result.response
+    const effectivePayload = result.effectivePayload as AnthropicMessagesPayload
+
+    // Check if response is streaming (AsyncIterable)
+    if (Symbol.asyncIterator in (response as object)) {
+      consola.debug("Streaming response from Copilot (direct Anthropic)")
+      updateTrackerStatus(ctx.trackingId, "streaming")
+
+      return streamSSE(c, async (stream) => {
+        await handleDirectAnthropicStreamingResponse({
+          stream,
+          response: response as AsyncIterable<{
+            data?: string
+            event?: string
+          }>,
+          anthropicPayload: effectivePayload,
+          ctx,
+        })
+      })
     }
+
+    // Non-streaming response
+    return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, ctx, truncateResult)
+  } catch (error) {
+    recordErrorResponse(ctx, anthropicPayload.model, error)
+    throw error
   }
-
-  // If we exit the loop with an error, handle it
-  if (lastError) {
-    if (lastError instanceof HTTPError && lastError.status === 413) {
-      logPayloadSizeInfoAnthropic(effectivePayload, selectedModel)
-    }
-
-    recordErrorResponse(ctx, anthropicPayload.model, lastError)
-    throw lastError instanceof Error ? lastError : new Error("Unknown error")
-  }
-
-  // Should not reach here (either returned or threw)
-  throw new Error("Unexpected state in retry loop")
 }
 
 /**
@@ -494,62 +449,5 @@ function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel:
   )
 }
 
-/**
- * Check if two messages likely correspond to the same original message.
- * Used by buildMessageMapping to handle cases where sanitization removes
- * content blocks within a message (changing its shape) or removes entire messages.
- */
-export function messagesMatch(orig: AnthropicMessage, rewritten: AnthropicMessage): boolean {
-  if (orig.role !== rewritten.role) return false
-
-  // String content: compare prefix
-  if (typeof orig.content === "string" && typeof rewritten.content === "string")
-    return (
-      rewritten.content.startsWith(orig.content.slice(0, 100))
-      || orig.content.startsWith(rewritten.content.slice(0, 100))
-    )
-
-  // Array content: compare first block's type and id
-  const origBlocks = Array.isArray(orig.content) ? orig.content : []
-  const rwBlocks = Array.isArray(rewritten.content) ? rewritten.content : []
-
-  if (origBlocks.length === 0 || rwBlocks.length === 0) return true
-
-  const ob = origBlocks[0]
-  const rb = rwBlocks[0]
-  if (ob.type !== rb.type) return false
-  if (ob.type === "tool_use" && rb.type === "tool_use") return ob.id === rb.id
-  if (ob.type === "tool_result" && rb.type === "tool_result") return ob.tool_use_id === rb.tool_use_id
-  return true
-}
-
-/**
- * Build messageMapping (rwIdx → origIdx) for the direct Anthropic path.
- * Uses a two-pointer approach since rewritten messages maintain the same relative
- * order as originals (all transformations are deletions, never reorderings).
- */
-export function buildMessageMapping(
-  original: Array<AnthropicMessage>,
-  rewritten: Array<AnthropicMessage>,
-): Array<number> {
-  const mapping: Array<number> = []
-  let origIdx = 0
-
-  for (const element of rewritten) {
-    while (origIdx < original.length) {
-      if (messagesMatch(original[origIdx], element)) {
-        mapping.push(origIdx)
-        origIdx++
-        break
-      }
-      origIdx++
-    }
-  }
-
-  // If matching missed some (shouldn't happen), fill with -1
-  while (mapping.length < rewritten.length) {
-    mapping.push(-1)
-  }
-
-  return mapping
-}
+// Re-exported from lib/translation for backward compatibility
+export { buildMessageMapping, messagesMatch } from "~/lib/translation/message-mapping"

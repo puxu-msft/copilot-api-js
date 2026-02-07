@@ -5,7 +5,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import invariant from "tiny-invariant"
 
-import { ensurePaths } from "./lib/paths"
+import { ensurePaths } from "./lib/config/paths"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"

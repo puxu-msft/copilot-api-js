@@ -11,9 +11,9 @@ import { describe, test, expect, beforeAll } from "bun:test"
 
 import type { AnthropicMessagesPayload, AnthropicResponse } from "~/types/api/anthropic"
 
-import { translateModelName } from "~/lib/model-resolver"
+import { translateModelName } from "~/lib/models/resolver"
+import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
-import { getTokenCount } from "~/lib/tokenizer"
 import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
 import { createAnthropicMessages } from "~/services/copilot/create-anthropic-messages"
 import {
@@ -25,7 +25,7 @@ import { createEmbeddings } from "~/services/copilot/create-embeddings"
 import { getModels, type Model } from "~/services/copilot/get-models"
 import { getCopilotToken } from "~/services/github/get-copilot-token"
 
-import { getGitHubToken, shouldRunIntegrationTests } from "./config"
+import { getE2EMode, getGitHubToken } from "./config"
 
 function assertNonStreamingResponse(response: ChatCompletionResponse | AsyncIterable<unknown>): ChatCompletionResponse {
   if ("choices" in response) return response
@@ -37,7 +37,7 @@ function assertAnthropicResponse(response: AnthropicResponse | AsyncIterable<unk
   throw new Error("Expected non-streaming Anthropic response")
 }
 
-const describeWithToken = shouldRunIntegrationTests() ? describe : describe.skip
+const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 
 describeWithToken("Extended Copilot API Integration", () => {
   let claudeModel: string

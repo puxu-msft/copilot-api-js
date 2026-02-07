@@ -3,7 +3,7 @@ import { z } from "zod"
 
 import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
 
-import { translateToOpenAI } from "../src/routes/messages/non-stream-translation"
+import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
 
 // Zod schema for a single message in the chat completion request.
 const messageSchema = z.object({

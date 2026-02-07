@@ -27,8 +27,8 @@ import {
   filterAnthropicOrphanedToolResults,
   filterAnthropicOrphanedToolUse,
 } from "~/lib/message-sanitizer"
+import { countTextTokens } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
-import { countTextTokens } from "~/lib/tokenizer"
 import { bytesToKB } from "~/lib/utils"
 
 import type { AutoTruncateConfig } from "./common"

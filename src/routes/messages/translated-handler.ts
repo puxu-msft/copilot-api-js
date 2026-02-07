@@ -18,27 +18,24 @@ import {
   processAnthropicEvent,
 } from "~/lib/anthropic/stream-accumulator"
 import { awaitApproval } from "~/lib/approval"
-import {
-  AUTO_TRUNCATE_RETRY_FACTOR,
-  MAX_AUTO_TRUNCATE_RETRIES,
-  tryParseAndLearnLimit,
-} from "~/lib/auto-truncate/common"
+import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
 import {
   autoTruncateOpenAI,
   createTruncationResponseMarkerOpenAI,
   sanitizeOpenAIMessages,
 } from "~/lib/auto-truncate/openai"
-import { HTTPError } from "~/lib/error"
 import { recordResponse, recordRewrites } from "~/lib/history"
 import { sanitizeAnthropicMessages } from "~/lib/message-sanitizer"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
-import { bytesToKB } from "~/lib/utils"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
   type ChatCompletionResponse,
+  type ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
+
+import type { FormatAdapter } from "../shared/pipeline"
 
 import {
   type ResponseContext,
@@ -51,6 +48,8 @@ import {
   recordStreamError,
   updateTrackerStatus,
 } from "../shared"
+import { executeRequestPipeline } from "../shared/pipeline"
+import { createAutoTruncateStrategy, type TruncateResult } from "../shared/strategies/auto-truncate"
 import { buildMessageMapping } from "./direct-anthropic-handler"
 import { translateToAnthropic, translateToOpenAI, type ToolNameMapping } from "./non-stream-translation"
 import { translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from "./stream-translation"
@@ -123,126 +122,79 @@ export async function handleTranslatedCompletion(
     if (tags.length > 0) requestTracker.updateRequest(ctx.trackingId, { tags })
   }
 
-  // Reactive retry loop: send full payload first, then truncate and retry on limit errors
-  let effectivePayload = initialOpenAIPayload
-  let lastError: unknown = null
+  // Build adapter and strategy for the pipeline
+  const adapter: FormatAdapter<ChatCompletionsPayload> = {
+    format: "openai",
+    sanitize: (p) => sanitizeOpenAIMessages(p),
+    execute: (p) => executeWithAdaptiveRateLimit(() => createChatCompletions(p)),
+    logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
+  }
 
-  for (let attempt = 0; attempt <= MAX_AUTO_TRUNCATE_RETRIES; attempt++) {
-    try {
-      const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
-        createChatCompletions(effectivePayload),
-      )
+  const strategies = [
+    createAutoTruncateStrategy<ChatCompletionsPayload>({
+      truncate: (p, model, opts) =>
+        autoTruncateOpenAI(p, model, opts) as Promise<TruncateResult<ChatCompletionsPayload>>,
+      resanitize: (p) => sanitizeOpenAIMessages(p),
+      isEnabled: () => state.autoTruncate,
+      label: "Translated",
+    }),
+  ]
 
-      // eslint-disable-next-line require-atomic-updates -- ctx is a local object, no race
-      ctx.queueWaitMs = queueWaitMs
-
-      if (isNonStreaming(response)) {
-        return handleNonStreamingResponse({
-          c,
-          response,
-          toolNameMapping,
-          ctx,
-        })
-      }
-
-      consola.debug("Streaming response from Copilot")
-      updateTrackerStatus(ctx.trackingId, "streaming")
-
-      return streamSSE(c, async (stream) => {
-        await handleStreamingResponse({
-          stream,
-          response,
-          toolNameMapping,
-          anthropicPayload,
-          ctx,
-        })
-      })
-    } catch (error) {
-      lastError = error
-
-      // Check if this is a retryable limit error
-      if (state.autoTruncate && error instanceof HTTPError && selectedModel && attempt < MAX_AUTO_TRUNCATE_RETRIES) {
-        const payloadBytes = JSON.stringify(effectivePayload).length
-        const parsed = tryParseAndLearnLimit(error, selectedModel.id, payloadBytes)
-
-        if (parsed) {
-          // Calculate target limits based on error type
-          let targetTokenLimit: number | undefined
-          let targetByteLimitBytes: number | undefined
-
-          if (parsed.type === "token_limit" && parsed.limit) {
-            targetTokenLimit = Math.floor(parsed.limit * AUTO_TRUNCATE_RETRY_FACTOR)
-            consola.info(
-              `[Translated] Attempt ${attempt + 1}/${MAX_AUTO_TRUNCATE_RETRIES + 1}: `
-                + `Token limit error (${parsed.current}>${parsed.limit}), `
-                + `retrying with limit ${targetTokenLimit}...`,
-            )
-          } else if (parsed.type === "body_too_large") {
-            targetByteLimitBytes = Math.floor(payloadBytes * AUTO_TRUNCATE_RETRY_FACTOR)
-            consola.info(
-              `[Translated] Attempt ${attempt + 1}/${MAX_AUTO_TRUNCATE_RETRIES + 1}: `
-                + `Body too large (${bytesToKB(payloadBytes)}KB), `
-                + `retrying with limit ${bytesToKB(targetByteLimitBytes)}KB...`,
-            )
-          }
-
-          try {
-            // Truncate from original translated payload using target limits
-            const retryTruncateResult = await autoTruncateOpenAI(translatedPayload, selectedModel, {
-              checkTokenLimit: true,
-              checkByteLimit: true,
-              targetTokenLimit,
-              targetByteLimitBytes,
-            })
-
-            if (retryTruncateResult.wasCompacted) {
-              const { payload: retrySanitized } = sanitizeOpenAIMessages(retryTruncateResult.payload)
-              effectivePayload = retrySanitized // eslint-disable-line require-atomic-updates -- sequential loop, no race
-
-              // eslint-disable-next-line require-atomic-updates -- ctx is a local object
-              ctx.truncateResult = retryTruncateResult
-
-              // Update tracking tags
-              if (ctx.trackingId) {
-                const retryTags = ["compact", `retry-${attempt + 1}`]
-                if (anthropicPayload.thinking && anthropicPayload.thinking.type !== "disabled")
-                  retryTags.push(`thinking:${anthropicPayload.thinking.type}`)
-                requestTracker.updateRequest(ctx.trackingId, { tags: retryTags })
-              }
-
-              // Continue to next iteration to retry
-              continue
-            } else {
-              // Truncation didn't help, break out
-              break
-            }
-          } catch (truncateError) {
-            consola.warn(
-              `[Translated] Auto-truncate failed on attempt ${attempt + 1}:`,
-              truncateError instanceof Error ? truncateError.message : truncateError,
-            )
-            break
-          }
+  try {
+    const result = await executeRequestPipeline({
+      adapter,
+      strategies,
+      payload: initialOpenAIPayload,
+      originalPayload: translatedPayload,
+      model: selectedModel,
+      maxRetries: MAX_AUTO_TRUNCATE_RETRIES,
+      onRetry: (attempt, _strategyName, _newPayload, meta) => {
+        // Capture truncation result for response marker
+        const retryTruncateResult = meta?.truncateResult as
+          | { wasCompacted: boolean; payload: ChatCompletionsPayload }
+          | undefined
+        if (retryTruncateResult) {
+          ctx.truncateResult = retryTruncateResult as ResponseContext["truncateResult"]
         }
-      }
 
-      // Not retryable or no more retries left
-      break
+        // Update tracking tags
+        if (ctx.trackingId) {
+          const retryTags = ["compact", `retry-${attempt + 1}`]
+          if (anthropicPayload.thinking && anthropicPayload.thinking.type !== "disabled")
+            retryTags.push(`thinking:${anthropicPayload.thinking.type}`)
+          requestTracker.updateRequest(ctx.trackingId, { tags: retryTags })
+        }
+      },
+    })
+
+    ctx.queueWaitMs = result.queueWaitMs
+    const response = result.response
+
+    if (isNonStreaming(response as ChatCompletionResponse | AsyncIterable<unknown>)) {
+      return handleNonStreamingResponse({
+        c,
+        response: response as ChatCompletionResponse,
+        toolNameMapping,
+        ctx,
+      })
     }
+
+    consola.debug("Streaming response from Copilot")
+    updateTrackerStatus(ctx.trackingId, "streaming")
+
+    return streamSSE(c, async (stream) => {
+      await handleStreamingResponse({
+        stream,
+        response: response as AsyncIterable<{ data?: string }>,
+        toolNameMapping,
+        anthropicPayload,
+        ctx,
+      })
+    })
+  } catch (error) {
+    recordErrorResponse(ctx, anthropicPayload.model, error)
+    throw error
   }
-
-  // If we exit the loop with an error, handle it
-  if (lastError) {
-    if (lastError instanceof HTTPError && lastError.status === 413) {
-      await logPayloadSizeInfo(effectivePayload, selectedModel)
-    }
-
-    recordErrorResponse(ctx, anthropicPayload.model, lastError)
-    throw lastError instanceof Error ? lastError : new Error("Unknown error")
-  }
-
-  // Should not reach here
-  throw new Error("Unexpected state in retry loop")
 }
 
 /** Options for handleNonStreamingResponse */

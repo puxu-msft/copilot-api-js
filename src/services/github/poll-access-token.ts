@@ -1,6 +1,6 @@
 import consola from "consola"
 
-import { GITHUB_BASE_URL, GITHUB_CLIENT_ID, standardHeaders } from "~/lib/api-config"
+import { GITHUB_BASE_URL, GITHUB_CLIENT_ID, standardHeaders } from "~/lib/config/api"
 import { sleep } from "~/lib/utils"
 
 import type { DeviceCodeResponse } from "./get-device-code"

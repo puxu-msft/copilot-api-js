@@ -14,7 +14,7 @@ import {
   buildContextManagement,
   ensureOfficialTools,
 } from "~/lib/anthropic/features"
-import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
+import { copilotBaseUrl, copilotHeaders } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 

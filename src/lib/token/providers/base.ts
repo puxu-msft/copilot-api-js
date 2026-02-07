@@ -60,7 +60,6 @@ export abstract class GitHubTokenProvider {
       }
     } finally {
       // Restore original token
-      // eslint-disable-next-line require-atomic-updates -- Intentional: restore saved value
       state.githubToken = originalToken
     }
   }

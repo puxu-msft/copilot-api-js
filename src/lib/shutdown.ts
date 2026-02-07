@@ -7,7 +7,7 @@ import consola from "consola"
 
 import type { TrackedRequest } from "./tui"
 
-import { closeAllClients, getClientCount } from "./history-ws"
+import { closeAllClients, getClientCount } from "./history"
 import { stopTokenRefresh } from "./token"
 import { requestTracker } from "./tui"
 

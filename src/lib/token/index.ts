@@ -102,7 +102,6 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   // If the token was explicitly provided and Copilot rejects it, abort with clear error
   try {
     const copilotTokenInfo = await copilotTokenManager.initialize()
-    // eslint-disable-next-line require-atomic-updates -- Sequential assignment after await
     state.copilotTokenInfo = copilotTokenInfo
   } catch (error) {
     if (isExplicitToken) {

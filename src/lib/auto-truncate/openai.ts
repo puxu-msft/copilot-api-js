@@ -22,8 +22,8 @@ import {
   filterOpenAIOrphanedToolResults,
   filterOpenAIOrphanedToolUse,
 } from "~/lib/message-sanitizer"
+import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
-import { getTokenCount } from "~/lib/tokenizer"
 import { bytesToKB } from "~/lib/utils"
 
 import type { AutoTruncateConfig } from "./common"

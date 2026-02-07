@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import type { Model } from "~/services/copilot/get-models"
 
-import { getModelFamily, normalizeForMatching, resolveModelName, translateModelName } from "~/lib/model-resolver"
+import { getModelFamily, normalizeForMatching, resolveModelName, translateModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
 
 function mockModel(id: string): Model {

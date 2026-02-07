@@ -4,121 +4,182 @@
 > This is a fork of [ericc-ch/copilot-api](https://github.com/ericc-ch/copilot-api) with additional improvements and bug fixes.
 
 > [!WARNING]
-> This is a reverse-engineered proxy of GitHub Copilot API. It is not supported by GitHub, and may break unexpectedly. Use at your own risk.
+> This is a reverse proxy for the GitHub Copilot API. It is not officially supported by GitHub and may break at any time. Use at your own risk.
 
-## Fork Improvements
-
-This fork includes the following enhancements over the upstream project:
-
-### New Features
-
-- **`--host` option**: Bind the server to a specific network interface (e.g., `--host 0.0.0.0` for all interfaces, `--host 127.0.0.1` for localhost only)
-- **Adaptive rate limiting**: Smart rate limiting with exponential backoff, auto-recovery, and Retry-After support (replaces queue-based limiting)
-- **Direct Anthropic API**: Claude models use Copilot's native Anthropic endpoint without translation overhead
-- **Smart auto-truncate**: Automatically truncates conversation history when exceeding context limits, with optional tool result compression
-- **`/v1/event_logging/batch` endpoint**: Compatibility endpoint for Anthropic SDK's event logging (returns OK without processing)
-- **`logout` command**: Remove stored GitHub token with `copilot-api logout`
-- **`list-claude-code` command**: List all locally installed Claude Code versions
-- **Tool name length handling**: Automatically truncates long tool names (>64 chars) to comply with OpenAI's limit, with hash-based suffix to avoid collisions. Original names are restored in responses.
-- **Request History UI**: Built-in Web UI (enabled by default) to view, search, filter, and export all API requests/responses. Access at `/history`.
-
-### Bug Fixes
-
-- **Fixed missing `model` field in streaming**: The first streaming chunk from Copilot API sometimes has an empty `choices` array but contains the model name. We now store this for use in subsequent events.
-- **Auto-fix message sequence errors**: When tool calls are interrupted (e.g., by user cancel), the API now automatically adds placeholder `tool_result` blocks to maintain valid message sequences
-- **Fixed `bunx` symlink issue**: Changed pre-commit hook to use `bun x` instead of `bunx` for better compatibility
-
-### Documentation
-
-- Added [CLAUDE.md](./CLAUDE.md) with project architecture documentation
+A reverse proxy that exposes GitHub Copilot API as OpenAI and Anthropic compatible API endpoints. Works with Claude Code and other tools that speak OpenAI or Anthropic protocols.
 
 ## Quick Start
 
 ### Install from npm (Recommended)
 
 ```sh
-# Run directly with npx
-npx @hsupu/copilot-api start
-
-# Or install globally
-npm install -g @hsupu/copilot-api
-copilot-api start
+# Run directly
+npx -y @hsupu/copilot-api start
 ```
 
-### Install from GitHub
-
-You can also install directly from GitHub (requires build step):
+### Run from Source
 
 ```sh
-npm install -g github:puxu-msft/copilot-api-js
-copilot-api start
-```
-
-### Running from Source
-
-```sh
-# Clone the repository
 git clone https://github.com/puxu-msft/copilot-api-js.git
 cd copilot-api-js
-
-# Install dependencies
 bun install
-
-# Development mode (with hot reload)
-bun run dev
-
-# Production mode
-bun run start
-
-# Build for distribution
-bun run build
+bun run dev      # Development mode with hot reload
+bun run start    # Production mode
+bun run build    # Build for distribution
 ```
 
-### After Building
+## Using with Claude Code
+
+Run the interactive setup command:
 
 ```sh
-# Run the built version locally
-npx .
-
-# Or link globally
-bun link
-copilot-api start
+copilot-api setup-claude-code
 ```
 
-## Command Reference
+Or manually create `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_MODEL": "opus",
+    "ANTHROPIC_SMALL_FAST_MODEL": "haiku",
+    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  }
+}
+```
+
+## Features
+
+### Dual API Compatibility
+
+Exposes both OpenAI and Anthropic compatible endpoints through a single proxy:
+
+- **Direct Anthropic path** — Uses Copilot API's anthropic endpoint
+- **Translated path** — Translates to OpenAI format and uses Copilot's OpenAI-compatible endpoint
+
+### Adaptive Rate Limiting
+
+Intelligent rate limiting with exponential backoff, replacing the upstream queue-based approach. Operates in three modes:
+
+- **Normal** — Requests pass through freely
+- **Rate-limited** — Queues requests with configurable intervals after hitting limits
+- **Recovering** — Gradually resumes normal operation after consecutive successes
+
+Learns from Copilot API's `Retry-After` headers for optimal retry timing.
+
+### Auto-Truncate
+
+Automatically handles context length limits (enabled by default):
+
+- **Reactive** — Retries failed requests with a truncated payload when hitting token or byte limits
+- **Proactive** — Pre-checks requests against known model limits before sending
+- **Dynamic limit learning** — Adjusts limits based on actual API error responses
+- **Tool result compression** — Compresses old `tool_result` content before truncating messages, preserving more conversation context
+- Up to 5 retry attempts per request with 2% safety margin
+
+### Message Sanitization
+
+Cleans up messages before forwarding to the API:
+
+- Filters orphaned `tool_use` / `tool_result` blocks (unpaired due to interrupted tool calls or truncation)
+- Handles server-side tools (`server_tool_use` / `*_tool_result`) that appear inline in assistant messages
+- Fixes double-serialized tool inputs from stream accumulation
+- Removes corrupted blocks from older history data
+- Fixes tool name casing mismatches
+- Removes empty text content blocks
+- Strips `<system-reminder>` tags from message content
+
+### Model Name Translation
+
+Translates client-sent model names to matching Copilot models:
+
+| Input | Resolved To |
+|-------|-------------|
+| `opus`, `sonnet`, `haiku` | Best available model in that family |
+| `claude-opus-4-6` | `claude-opus-4.6` |
+| `claude-sonnet-4-5-20250514` | `claude-sonnet-4.5` |
+| `claude-sonnet-4`, `gpt-4` | Passed through directly |
+
+Each model family has a priority list. Short aliases resolve to the first available model.
+
+### Server-Side Tools
+
+Supports Anthropic server-side tools (e.g., `web_search`, `tool_search`). These tools are executed by the API backend, with both `server_tool_use` and result blocks appearing inline in assistant messages. Tool definitions can optionally be rewritten to a custom format (configurable via `--no-rewrite-anthropic-tools`).
+
+### Request History UI
+
+Built-in web interface for inspecting API requests and responses. Access at `http://localhost:4141/history`.
+
+- Real-time updates via WebSocket
+- Filter by model, endpoint, status, and time range
+- Full-text search across request/response content
+- Export as JSON or CSV
+- Session tracking and statistics
+
+### Additional Features
+
+- **Sonnet → Opus redirection** — Optionally redirect sonnet model requests to the best available opus model
+- **Security research mode** — Passphrase-protected mode for authorized penetration testing, CTF competitions, and security education
+- **Tool name truncation** — Automatically truncates tool names exceeding 64 characters (OpenAI limit) with hash suffixes, restoring original names in responses
+- **Health checks** — Container-ready health endpoint at `/health`
+- **Graceful shutdown** — Connection draining on shutdown signals
+- **Proxy support** — HTTP/HTTPS proxy via environment variables
+
+## Commands
 
 | Command | Description |
 |---------|-------------|
-| `start` | Start the API server (handles auth if needed) |
+| `start` | Start the API server (authenticates automatically if needed) |
 | `auth` | Run GitHub authentication flow only |
 | `logout` | Remove stored GitHub token |
-| `check-usage` | Show Copilot usage and quota |
-| `debug` | Display diagnostic information |
+| `check-usage` | Show Copilot usage and quota information |
+| `debug info` | Display diagnostic information |
+| `debug models` | Fetch and display raw model data from Copilot API |
 | `list-claude-code` | List all locally installed Claude Code versions |
+| `setup-claude-code` | Interactively configure Claude Code to use this proxy |
 
-### Start Command Options
+### `start` Options
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--port`, `-p` | Port to listen on | 4141 |
-| `--host`, `-H` | Host/interface to bind to | (all interfaces) |
-| `--verbose`, `-v` | Enable verbose logging | false |
-| `--account-type`, `-a` | Account type (individual, business, enterprise) | individual |
-| `--manual` | Manual request approval mode | false |
-| `--no-rate-limit` | Disable adaptive rate limiting | false |
-| `--retry-interval` | Seconds to wait before retrying after rate limit | 10 |
-| `--request-interval` | Seconds between requests in rate-limited mode | 10 |
-| `--recovery-timeout` | Minutes before attempting recovery | 10 |
-| `--consecutive-successes` | Successes needed to exit rate-limited mode | 5 |
-| `--github-token`, `-g` | Provide GitHub token directly | none |
-| `--claude-code`, `-c` | Generate Claude Code launch command | false |
-| `--show-token` | Show tokens on fetch/refresh | false |
-| `--proxy-env` | Use proxy from environment | false |
-| `--history-limit` | Max history entries in memory | 1000 |
-| `--no-auto-truncate` | Disable auto-truncate when exceeding limits | false |
-| `--compress-tool-results` | Compress old tool results before truncating | false |
-| `--redirect-anthropic` | Force Anthropic through OpenAI translation | false |
-| `--no-rewrite-anthropic-tools` | Don't rewrite server-side tools | false |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--port`, `-p` | 4141 | Port to listen on |
+| `--host`, `-H` | (all interfaces) | Host/interface to bind to |
+| `--verbose`, `-v` | false | Enable verbose logging |
+| `--account-type`, `-a` | individual | Account type: `individual`, `business`, or `enterprise` |
+| `--manual` | false | Manual request approval mode |
+| `--github-token`, `-g` | | Provide GitHub token directly |
+| `--proxy-env` | false | Use proxy from environment variables |
+| `--history-limit` | 200 | Max history entries in memory (0 = unlimited) |
+
+**Rate Limiting:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--no-rate-limit` | false | Disable adaptive rate limiting |
+| `--retry-interval` | 10 | Seconds to wait before retrying after rate limit |
+| `--request-interval` | 10 | Seconds between requests in rate-limited mode |
+| `--recovery-timeout` | 10 | Minutes before attempting recovery |
+| `--consecutive-successes` | 5 | Consecutive successes needed to exit rate-limited mode |
+
+**Auto-Truncate:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--no-auto-truncate` | false | Disable auto-truncation on context limit errors |
+| `--no-compress-tool-results` | false | Disable tool result compression during truncation |
+
+**Anthropic-Specific:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--redirect-anthropic` | false | Force Anthropic requests through OpenAI translation |
+| `--no-rewrite-anthropic-tools` | false | Don't rewrite server-side tools to custom format |
+| `--redirect-count-tokens` | false | Route count_tokens through OpenAI translation |
+| `--redirect-sonnet-to-opus` | false | Redirect sonnet requests to best available opus |
+| `--security-research-mode` | | Enable security research mode with passphrase |
 
 ## API Endpoints
 
@@ -128,7 +189,10 @@ copilot-api start
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completions |
 | `/v1/models` | GET | List available models |
+| `/v1/models/:model` | GET | Get specific model details |
 | `/v1/embeddings` | POST | Text embeddings |
+
+All endpoints also work without the `/v1` prefix.
 
 ### Anthropic Compatible
 
@@ -136,45 +200,32 @@ copilot-api start
 |----------|--------|-------------|
 | `/v1/messages` | POST | Messages API |
 | `/v1/messages/count_tokens` | POST | Token counting |
-| `/v1/event_logging/batch` | POST | Event logging (no-op) |
+| `/api/event_logging/batch` | POST | Event logging (no-op, returns OK) |
 
 ### Utility
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Server status |
-| `/usage` | GET | Copilot usage stats |
-| `/token` | GET | Current Copilot token |
-| `/health` | GET | Health check |
-| `/history` | GET | Request history Web UI (enabled by default) |
-| `/history/api/*` | GET/DELETE | History API endpoints |
+| `/health` | GET | Health check (200 healthy, 503 unhealthy) |
+| `/usage` | GET | Copilot usage and quota statistics |
+| `/token` | GET | Current Copilot token information |
+| `/history` | GET | Request history web UI |
+| `/history/ws` | WebSocket | Real-time history updates |
+| `/history/api/entries` | GET | Query history entries |
+| `/history/api/stats` | GET | Usage statistics |
+| `/history/api/export` | GET | Export history (JSON/CSV) |
+| `/history/api/sessions` | GET | List sessions |
 
-## Using with Claude Code
+## Account Types
 
-Create `.claude/settings.json` in your project:
+The account type determines the Copilot API base URL:
 
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4141",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "gpt-4.1",
-    "ANTHROPIC_SMALL_FAST_MODEL": "gpt-4.1",
-    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
-  },
-  "permissions": {
-    "deny": ["WebSearch"]
-  }
-}
-```
+| Type | API Base URL |
+|------|-------------|
+| `individual` | `api.githubcopilot.com` |
+| `business` | `api.business.githubcopilot.com` |
+| `enterprise` | `api.enterprise.githubcopilot.com` |
 
-Or use the interactive setup:
+## License
 
-```sh
-bun run start --claude-code
-```
-
-## Upstream Project
-
-For the original project documentation, features, and updates, see: [ericc-ch/copilot-api](https://github.com/ericc-ch/copilot-api)
+[MIT](LICENSE)

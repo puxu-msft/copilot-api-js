@@ -781,7 +781,6 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
         }
       }
     } finally {
-      // eslint-disable-next-line require-atomic-updates -- test cleanup, state is synchronous
       state.compressToolResults = origCompress
     }
   })
@@ -828,7 +827,6 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
         }
       }
     } finally {
-      // eslint-disable-next-line require-atomic-updates -- test cleanup, state is synchronous
       state.compressToolResults = origCompress
     }
   })

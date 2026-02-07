@@ -4,7 +4,7 @@ import { access, constants } from "node:fs/promises"
 import { readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { addClient, removeClient } from "~/lib/history-ws"
+import { addClient, removeClient } from "~/lib/history"
 
 import {
   handleDeleteEntries,

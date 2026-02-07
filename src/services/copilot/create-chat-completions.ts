@@ -1,7 +1,7 @@
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
-import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
+import { copilotHeaders, copilotBaseUrl } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 

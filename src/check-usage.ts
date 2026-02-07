@@ -1,7 +1,7 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 
-import { ensurePaths } from "./lib/paths"
+import { ensurePaths } from "./lib/config/paths"
 import { state } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
 import { getCopilotUsage, type QuotaDetail } from "./services/github/get-copilot-usage"

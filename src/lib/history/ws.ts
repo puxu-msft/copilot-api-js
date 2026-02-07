@@ -3,7 +3,7 @@
 
 import consola from "consola"
 
-import type { HistoryEntry, HistoryStats } from "./history"
+import type { HistoryEntry, HistoryStats } from "./store"
 
 export type WSMessageType = "entry_added" | "entry_updated" | "stats_updated" | "connected"
 

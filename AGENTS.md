@@ -1,10 +1,10 @@
 # AGENTS.md
 
-重要：使用中文与用户交流、回答和展示思考。
-重要：使用中文与用户交流、回答和展示思考。
-重要：使用中文与用户交流、回答和展示思考。
+## 规则
 
-## Rules
+重要：使用中文对话回答和展示思考过程。
+重要：使用中文对话回答和展示思考过程。
+重要：使用中文对话回答和展示思考过程。
 
 - **Always use the best, most complete solution.**
   Never take shortcuts or use workaround approaches. Always think deeply and choose the optimal implementation.
@@ -12,163 +12,85 @@
   - **Prefer robust, maintainable solutions.** Even if a quick hack would work, choose the approach that is correct, complete, and future-proof.
   - **Lint serves readability, not the other way around.** If a lint rule doesn't improve readability, disable it rather than contorting the code to satisfy it.
 
-- **Never start the server.**
-  Do not run `bun run dev`, `bun run start`, or any command that starts the server. If you need to verify server behavior, ask the user to start it. You may run non-server commands like `bun run typecheck`, `bun run lint:all`, `bun test`, etc.
+- **始终使用最优、最完整的方案。**
+  不走捷径，不用绕行方案。深入思考，选择最优实现。
+  - **修复根本原因，而非表面症状。** 调查问题本质并修复底层机制，不要添加 workaround 或硬编码回退值。
+  - **优选健壮、可维护的方案。** 即使 quick hack 能解决问题，也要选择正确、完整、经得起时间检验的方案。
+  - **Lint 服务于可读性，而非反过来。** 如果某条 lint 规则无益于可读性，应禁用它，而非扭曲代码来满足它。
 
-- **Never kill running project processes.**
-  Do not use `kill`, `pkill`, `killall`, or similar commands to terminate a running instance of this project. If you need to restart, ask the user to do it manually.
+- **禁止启动服务器。**
+  不要运行 `bun run dev`、`bun run start` 或任何会启动服务器的命令。如需验证服务器行为，请让用户来启动。可以运行 `bun run typecheck`、`bun run lint:all`、`bun test` 等非服务器命令。
 
-- **Never auto-stage or unstage git changes.**
-  Do not run `git add`, `git reset`, `git restore --staged`, or any command that modifies the git staging area unless the user explicitly asks you to commit. Leave all staging decisions to the user.
+- **禁止杀死运行中的项目进程。**
+  不要使用 `kill`、`pkill`、`killall` 或类似命令终止本项目的运行实例。如需重启，请让用户手动操作。
 
-## Commands
+- **禁止自动暂存或取消暂存 git 变更。**
+  除非用户明确要求提交，否则不要运行 `git add`、`git reset`、`git restore --staged` 或任何修改 git 暂存区的命令。所有暂存决策交给用户。
+
+## 项目概述
+
+GitHub Copilot API 的逆向代理，将其暴露为 OpenAI 和 Anthropic 兼容端点。使得 Claude Code 等工具可以使用 GitHub Copilot 作为后端。
+
+## 常用命令
 
 ```sh
-bun install              # Install dependencies
-bun run dev              # Development mode (hot reload)
-bun run start            # Production mode
-bun run build            # Build for distribution (tsdown)
-bun run typecheck        # Type checking
-bun run lint             # Lint staged files
-bun run lint:all         # Lint all files
-bun run knip             # Find unused exports/dependencies
-bun test                 # Run all tests
-bun test tests/foo.test.ts  # Run single test file
+bun install              # 安装依赖
+bun run dev              # 开发模式（热重载）
+bun run start            # 生产模式
+bun run build            # 构建发布版（tsdown）
+bun run typecheck        # 类型检查
+bun run lint             # Lint 暂存文件
+bun run lint:all         # Lint 所有文件
+bun run knip             # 查找未使用的导出/依赖
+bun test                 # 运行所有测试
+bun test tests/foo.test.ts  # 运行单个测试文件
 ```
 
-## Code Style
+## API 端点
 
-- Uses `@echristian/eslint-config` with Prettier. Run `eslint --fix` to auto-format (do NOT use `prettier --write` directly).
-- No semicolons. Ternary operator at start of line.
-- Strict TypeScript (`strict: true`). Avoid `any`.
-- ESNext modules, no CommonJS. Path alias `~/*` maps to `src/*`.
-- Tests: Bun's built-in test runner. Place tests in `tests/`, name as `*.test.ts`.
-- Error handling: Use explicit error classes (see `src/lib/error.ts`). Avoid silent failures.
+| 端点 | 用途 |
+|------|------|
+| `/v1/chat/completions` | OpenAI 兼容 chat |
+| `/v1/messages` | Anthropic 兼容 messages |
+| `/v1/messages/count_tokens` | Anthropic 兼容 token 计数 |
+| `/v1/models` | 列出可用模型 |
+| `/v1/embeddings` | 文本嵌入 |
+| `/api/event_logging/batch` | Event logging（空操作） |
+| `/usage` | Copilot 配额/用量统计 |
+| `/health` | 健康检查 |
+| `/token` | 当前 Copilot token 信息 |
+| `/history` | 请求历史 Web UI（v1 和 v2） |
+| `/history/ws` | WebSocket 实时历史更新 |
+| `/history/api/entries` | 历史查询 API |
+| `/history/api/sessions` | 会话列表 API |
+| `/history/api/stats` | 统计 API |
+| `/history/api/export` | 导出历史（JSON/CSV） |
 
-## Project Overview
+## 代码风格
 
-A reverse-engineered proxy for the GitHub Copilot API that exposes it as OpenAI and Anthropic compatible endpoints. This allows tools like Claude Code to use GitHub Copilot as their backend.
+- 使用 `@echristian/eslint-config` + Prettier。运行 `eslint --fix` 自动格式化（不要直接使用 `prettier --write`）。
+- 不使用分号。三元运算符放在行首。
+- 严格 TypeScript（`strict: true`）。避免 `any`。
+- ESNext 模块，不用 CommonJS。路径别名 `~/*` 映射到 `src/*`。
+- 测试：使用 Bun 内置测试运行器。测试文件放在 `tests/` 目录，命名为 `*.test.ts`。
+- 错误处理：使用显式错误类（参见 `src/lib/error.ts`）。避免静默失败。
 
-## Architecture
+## 关键配置
 
-### Entry Points
-
-- `src/main.ts` - CLI entry point (citty), subcommands: `start`, `auth`, `logout`, `check-usage`, `debug`, `list-claude-code`, `setup-claude-code`
-- `src/start.ts` - Server startup: authentication, model caching, launches Hono server via srvx
-- `src/server.ts` - Hono app configuration, registers all routes
-
-### Request Flow
-
-1. Incoming requests hit Hono routes in `src/routes/`
-2. For Anthropic-compatible `/v1/messages` endpoint:
-   - **Direct path**: Claude models go to Copilot's native Anthropic endpoint (`direct-anthropic-handler.ts`)
-   - **Translation path**: Other models are translated Anthropic -> OpenAI -> Copilot -> OpenAI -> Anthropic (`translated-handler.ts`)
-3. OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) proxy directly to Copilot API
-4. All requests go through adaptive rate limiting (`executeWithAdaptiveRateLimit`)
-5. Auto-truncate can be enabled to compact context when it exceeds token or byte limits
-
-### Key Modules
-
-- `lib/state.ts` - Global mutable state (tokens, config, rate limiting, auto-truncate settings)
-- `lib/token/` - GitHub OAuth device flow and Copilot token management with auto-refresh
-- `lib/api-config.ts` - Copilot API URLs and headers (emulates VSCode extension)
-- `lib/adaptive-rate-limiter.ts` - Adaptive rate limiting with exponential backoff (3 modes: Normal, Rate-limited, Recovering)
-- `lib/history.ts` + `lib/history-ws.ts` - Request/response history recording, querying, export (JSON/CSV), and WebSocket live updates
-- `lib/tui/` - Terminal UI for request logging, console output with ASCII prefixes
-- `lib/auto-truncate/` - Auto-truncate: `common.ts` (shared config, dynamic limits), `openai.ts` / `anthropic.ts` (format-specific)
-- `lib/tokenizer.ts` - Token counting via GPT tokenizers, image token calculation
-- `lib/message-sanitizer/` - Modular message sanitization: system-reminder tag removal, orphan tool block filtering for both regular (`tool_use`/`tool_result`) and server-side (`server_tool_use`/`*_tool_result`) blocks, double-serialized input repair, corrupted block cleanup (separate implementations for Anthropic and OpenAI formats)
-- `lib/shutdown.ts` - Graceful shutdown with connection draining
-
-### Services
-
-- `services/github/` - GitHub API interactions (auth, device code, user info, usage stats)
-- `services/copilot/` - Copilot API calls (chat completions, Anthropic messages, models, embeddings)
-- `services/get-vscode-version.ts` - Fetches latest VSCode version for API headers
-
-## Design Principles
-
-### Console Output
-
-- **Use fixed-width ASCII prefixes** for log alignment, not emoji/icons (e.g., `[....]`, `[<-->]`, `[ OK ]`, `[FAIL]`)
-- **Log format**: `[PREFIX] HH:MM:SS METHOD /path ...` - status prefix comes first, then timestamp
-- **Only show relevant info**: Non-model requests (like `/health`) should not display model name, tokens, or "unknown"
-- **Streaming indicator**: Show `streaming...` status for long-running requests with `[<-->]` prefix
-
-### History Web UI
-
-- **Show actual request content**: If the last message is `tool_result`, display `[tool_result: id]` instead of searching backwards for user text
-- **Prefer text over tool_use**: For assistant messages with both text and tool_use, show the text content first; only show `[tool_use: ToolName]` if there's no text
-- **Filter system tags**: Remove `<system-reminder>`, `<ide_opened_file>`, and other system tags from preview text
-
-### General Principles
-
-- **Minimize noise**: Don't display redundant or unavailable information
-- **Consistent formatting**: Use fixed-width columns for alignment in console output
-- **Informative previews**: History previews should reflect the actual nature of the request
-- **Informative logs**: All log messages should include enough context (module tag, model name, specific values) to be actionable
-
-## API Endpoints
-
-| Endpoint | Purpose |
-|----------|---------|
-| `/v1/chat/completions` | OpenAI-compatible chat |
-| `/v1/messages` | Anthropic-compatible messages |
-| `/v1/messages/count_tokens` | Anthropic-compatible token counting |
-| `/v1/models` | List available models |
-| `/v1/embeddings` | Text embeddings |
-| `/usage` | Copilot quota/usage stats |
-| `/health` | Health check |
-| `/token` | Current Copilot token info |
-| `/history` | Request history Web UI (v1 and v2) |
-| `/history/ws` | WebSocket for real-time history updates |
-| `/history/api/entries` | History query API |
-| `/history/api/sessions` | Session list API |
-| `/history/api/stats` | Statistics API |
-| `/history/api/export` | Export history (JSON/CSV) |
-
-## Anthropic API Compatibility
-
-Two paths:
-- **Direct** (Claude models -> Copilot's native Anthropic endpoint)
-- **Translation** (other models -> OpenAI format conversion).
-
-Some Anthropic features have limited or no support due to Copilot API constraints:
-
-| Feature | Support | Notes |
-|---------|---------|-------|
-| Prompt Caching | Partial | Read-only; `cache_read_input_tokens` is reported from Copilot's `cached_tokens`. Cannot set `cache_control` to mark cacheable content. |
-| Batch Processing | Not supported | Copilot API lacks batch support. |
-| Extended Thinking | Partial | `thinking` parameter is forwarded to Copilot API; whether the backend generates thinking blocks depends on Copilot. |
-| Server-side Tools | Partial | All server tool types (e.g., `web_search`, `tool_search`) are supported. Tools are rewritten to custom format (disable with `--no-rewrite-anthropic-tools`). The sanitizer handles all `server_tool_use`/`*_tool_result` pairs generically via duck-typing (`isServerToolResultBlock`). |
-
-### Model Name Translation
-
-The system translates model names sent by clients to match available Copilot models:
-
-- **Short aliases**: `opus` -> best available opus, `sonnet` -> best available sonnet, `haiku` -> best available haiku
-- **Hyphenated versions**: `claude-opus-4-6` -> `claude-opus-4.6`, `claude-sonnet-4-5` -> `claude-sonnet-4.5`
-- **Date-suffixed versions**: `claude-sonnet-4-5-20250514` -> `claude-sonnet-4.5`, `claude-opus-4-20250514` -> best available opus
-- **Direct names**: `claude-sonnet-4`, `gpt-4` etc. pass through unchanged
-
-Each model family has a preference list (`MODEL_PREFERENCE` in `non-stream-translation.ts`). When using short aliases, the first available model from the preference list is selected.
-
-## Key Configuration
-
-Account types affect the Copilot API base URL:
+账户类型影响 Copilot API base URL：
 - `individual` -> `api.githubcopilot.com`
 - `business` -> `api.business.githubcopilot.com`
 - `enterprise` -> `api.enterprise.githubcopilot.com`
 
-Key runtime options in `lib/state.ts`:
+`lib/state.ts` 中的关键运行时选项：
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `autoTruncate` | boolean | `true` | Reactive auto-truncate: retries with truncated payload on limit errors, pre-checks for models with known limits |
-| `compressToolResults` | boolean | `true` | Compress old tool_result content before truncating messages |
-| `redirectAnthropic` | boolean | `false` | Force Anthropic requests through OpenAI translation |
-| `rewriteAnthropicTools` | boolean | `true` | Rewrite server-side tools (web_search) to custom format |
+| 选项 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `autoTruncate` | boolean | `true` | 响应式自动截断：限制错误时用截断的 payload 重试，对已知限制的模型进行预检查 |
+| `compressToolResults` | boolean | `true` | 截断消息前先压缩旧的 tool_result 内容 |
+| `redirectAnthropic` | boolean | `false` | 强制 Anthropic 请求走 OpenAI 转换 |
+| `rewriteAnthropicTools` | boolean | `true` | 将服务端工具（web_search）重写为自定义格式 |
 
-## Syncing with Upstream
+## 架构设计
 
-本地仓库来自开源项目 https://github.com/ericc-ch/copilot-api ，你也应该检查在线的 issues、PR，分析他们描述的问题是否真实存在、他们修复的问题是否值得合并。为了实现这个，你可以使用 gh 命令。
+@DESIGN.md

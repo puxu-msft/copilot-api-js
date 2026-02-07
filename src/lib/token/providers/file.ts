@@ -1,6 +1,6 @@
 import fs from "node:fs/promises"
 
-import { PATHS } from "~/lib/paths"
+import { PATHS } from "~/lib/config/paths"
 
 import type { TokenInfo } from "../types"
 

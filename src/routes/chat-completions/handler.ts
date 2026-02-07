@@ -7,12 +7,16 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
-import { createTruncationResponseMarkerOpenAI } from "~/lib/auto-truncate/openai"
-import { HTTPError } from "~/lib/error"
+import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
+import {
+  autoTruncateOpenAI,
+  createTruncationResponseMarkerOpenAI,
+  sanitizeOpenAIMessages,
+} from "~/lib/auto-truncate/openai"
 import { type MessageContent, recordRequest, recordResponse } from "~/lib/history"
-import { translateModelName } from "~/lib/model-resolver"
+import { translateModelName } from "~/lib/models/resolver"
+import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
-import { getTokenCount } from "~/lib/tokenizer"
 import { requestTracker } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
 import {
@@ -21,6 +25,8 @@ import {
   type ChatCompletionResponse,
   type ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
+
+import type { FormatAdapter } from "../shared/pipeline"
 
 import {
   type ResponseContext,
@@ -34,6 +40,8 @@ import {
   updateTrackerModel,
   updateTrackerStatus,
 } from "../shared"
+import { executeRequestPipeline } from "../shared/pipeline"
+import { createAutoTruncateStrategy, type TruncateResult } from "../shared/strategies/auto-truncate"
 
 export async function handleCompletion(c: Context) {
   const originalPayload = await c.req.json<ChatCompletionsPayload>()
@@ -91,7 +99,7 @@ export async function handleCompletion(c: Context) {
   // Calculate and display token count
   await logTokenCount(originalPayload, selectedModel)
 
-  // Build the final payload with potential auto-truncate and max_tokens
+  // Build the final payload with sanitization (no pre-truncation — truncation is reactive)
   const { finalPayload, truncateResult } = buildFinalPayload(originalPayload, selectedModel)
   if (truncateResult) {
     ctx.truncateResult = truncateResult
@@ -116,10 +124,11 @@ export async function handleCompletion(c: Context) {
 
   if (state.manualApprove) await awaitApproval()
 
-  // Execute request with error handling
+  // Execute request with reactive retry pipeline
   return executeRequest({
     c,
     payload,
+    originalPayload,
     selectedModel,
     ctx,
     trackingId,
@@ -130,39 +139,78 @@ export async function handleCompletion(c: Context) {
 interface ExecuteRequestOptions {
   c: Context
   payload: ChatCompletionsPayload
+  originalPayload: ChatCompletionsPayload
   selectedModel: Model | undefined
   ctx: ResponseContext
   trackingId: string | undefined
 }
 
 /**
- * Execute the API call with enhanced error handling for 413 errors.
+ * Execute the API call with reactive retry pipeline.
+ * Handles 413 and token limit errors with auto-truncation.
  */
 async function executeRequest(opts: ExecuteRequestOptions) {
-  const { c, payload, selectedModel, ctx, trackingId } = opts
+  const { c, payload, originalPayload, selectedModel, ctx, trackingId } = opts
+
+  // Build adapter and strategy for the pipeline
+  const adapter: FormatAdapter<ChatCompletionsPayload> = {
+    format: "openai",
+    sanitize: (p) => sanitizeOpenAIMessages(p),
+    execute: (p) => executeWithAdaptiveRateLimit(() => createChatCompletions(p)),
+    logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
+  }
+
+  const strategies = [
+    createAutoTruncateStrategy<ChatCompletionsPayload>({
+      truncate: (p, model, truncOpts) =>
+        autoTruncateOpenAI(p, model, truncOpts) as Promise<TruncateResult<ChatCompletionsPayload>>,
+      resanitize: (p) => sanitizeOpenAIMessages(p),
+      isEnabled: () => state.autoTruncate,
+      label: "Completions",
+    }),
+  ]
 
   try {
-    const { result: response, queueWaitMs } = await executeWithAdaptiveRateLimit(() => createChatCompletions(payload))
+    const result = await executeRequestPipeline({
+      adapter,
+      strategies,
+      payload,
+      originalPayload,
+      model: selectedModel,
+      maxRetries: MAX_AUTO_TRUNCATE_RETRIES,
+      onRetry: (attempt, _strategyName, _newPayload, meta) => {
+        // Capture truncation result for response marker
+        const retryTruncateResult = meta?.truncateResult as ResponseContext["truncateResult"]
+        if (retryTruncateResult) {
+          ctx.truncateResult = retryTruncateResult
+        }
 
-    // Store queueWaitMs in context for later use
-    ctx.queueWaitMs = queueWaitMs
+        // Update tracking tags
+        if (trackingId) {
+          requestTracker.updateRequest(trackingId, { tags: ["compact", `retry-${attempt + 1}`] })
+        }
+      },
+    })
 
-    if (isNonStreaming(response)) {
-      return handleNonStreamingResponse(c, response, ctx)
+    ctx.queueWaitMs = result.queueWaitMs
+    const response = result.response
+
+    if (isNonStreaming(response as ChatCompletionResponse | AsyncIterable<unknown>)) {
+      return handleNonStreamingResponse(c, response as ChatCompletionResponse, ctx)
     }
 
     consola.debug("Streaming response")
     updateTrackerStatus(trackingId, "streaming")
 
     return streamSSE(c, async (stream) => {
-      await handleStreamingResponse({ stream, response, payload, ctx })
+      await handleStreamingResponse({
+        stream,
+        response: response as AsyncIterable<{ data?: string; event?: string }>,
+        payload,
+        ctx,
+      })
     })
   } catch (error) {
-    // Handle 413 Request Entity Too Large with helpful debugging info
-    if (error instanceof HTTPError && error.status === 413) {
-      await logPayloadSizeInfo(payload, selectedModel)
-    }
-
     recordErrorResponse(ctx, payload.model, error)
     throw error
   }

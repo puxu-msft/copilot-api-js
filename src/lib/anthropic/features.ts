@@ -9,7 +9,7 @@
 
 import type { AnthropicTool } from "~/types/api/anthropic"
 
-import { normalizeForMatching } from "~/lib/model-resolver"
+import { normalizeForMatching } from "~/lib/models/resolver"
 
 // ============================================================================
 // Model Feature Detection

@@ -1,4 +1,4 @@
-import { GITHUB_APP_SCOPES, GITHUB_BASE_URL, GITHUB_CLIENT_ID, standardHeaders } from "~/lib/api-config"
+import { GITHUB_APP_SCOPES, GITHUB_BASE_URL, GITHUB_CLIENT_ID, standardHeaders } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 
 export async function getDeviceCode(): Promise<DeviceCodeResponse> {

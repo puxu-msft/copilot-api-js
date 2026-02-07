@@ -4,9 +4,9 @@ import consola from "consola"
 
 import { checkNeedsCompactionAnthropic, countTotalInputTokens } from "~/lib/auto-truncate/anthropic"
 import { hasKnownLimits } from "~/lib/auto-truncate/common"
-import { translateModelName } from "~/lib/model-resolver"
+import { translateModelName } from "~/lib/models/resolver"
+import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
-import { getTokenCount } from "~/lib/tokenizer"
 import { requestTracker } from "~/lib/tui"
 import { type AnthropicMessagesPayload } from "~/types/api/anthropic"
 

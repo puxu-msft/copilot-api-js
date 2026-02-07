@@ -190,3 +190,214 @@ export function forwardError(c: Context, error: unknown) {
     500,
   )
 }
+
+// ─── Error Classification System ───
+
+/** Structured error types for pipeline retry decisions */
+export type ApiErrorType =
+  | "rate_limited" // 429
+  | "payload_too_large" // 413
+  | "token_limit" // 200/400 but body contains token limit error
+  | "content_filtered" // Content filtering
+  | "auth_expired" // Token expired
+  | "network_error" // Connection failure
+  | "server_error" // 5xx
+  | "bad_request" // 400 (non-token-limit)
+
+/** Classified API error with structured metadata */
+export interface ApiError {
+  type: ApiErrorType
+  status: number
+  message: string
+  /** Retry-After seconds (rate_limited) */
+  retryAfter?: number
+  /** Token limit from error response (token_limit) */
+  tokenLimit?: number
+  /** Current token count from error response (token_limit) */
+  tokenCurrent?: number
+  /** Original error object */
+  raw: unknown
+}
+
+/**
+ * Classify a raw error into a structured ApiError.
+ * Used by the pipeline to route errors to appropriate RetryStrategies.
+ */
+export function classifyError(error: unknown): ApiError {
+  if (error instanceof HTTPError) {
+    return classifyHTTPError(error)
+  }
+
+  // Network errors (fetch failures, timeouts, etc.)
+  if (error instanceof TypeError && error.message.includes("fetch")) {
+    return {
+      type: "network_error",
+      status: 0,
+      message: error.message,
+      raw: error,
+    }
+  }
+
+  // Generic Error
+  if (error instanceof Error) {
+    return {
+      type: "bad_request",
+      status: 0,
+      message: error.message,
+      raw: error,
+    }
+  }
+
+  return {
+    type: "bad_request",
+    status: 0,
+    message: String(error),
+    raw: error,
+  }
+}
+
+function classifyHTTPError(error: HTTPError): ApiError {
+  const { status, responseText, message } = error
+
+  // 429 Rate Limited
+  if (status === 429) {
+    const retryAfter = extractRetryAfterFromBody(responseText)
+    return {
+      type: "rate_limited",
+      status,
+      message,
+      retryAfter,
+      raw: error,
+    }
+  }
+
+  // 413 Payload Too Large
+  if (status === 413) {
+    return {
+      type: "payload_too_large",
+      status,
+      message,
+      raw: error,
+    }
+  }
+
+  // 5xx Server Errors
+  if (status >= 500) {
+    return {
+      type: "server_error",
+      status,
+      message,
+      raw: error,
+    }
+  }
+
+  // 401/403 Auth Errors
+  if (status === 401 || status === 403) {
+    return {
+      type: "auth_expired",
+      status,
+      message,
+      raw: error,
+    }
+  }
+
+  // 400 — check for token limit error in response body
+  if (status === 400) {
+    const tokenLimit = tryExtractTokenLimit(responseText)
+    if (tokenLimit) {
+      return {
+        type: "token_limit",
+        status,
+        message,
+        tokenLimit: tokenLimit.limit,
+        tokenCurrent: tokenLimit.current,
+        raw: error,
+      }
+    }
+
+    // Check for rate_limited code in body (some APIs return 400 for rate limits)
+    if (isRateLimitedInBody(responseText)) {
+      const retryAfter = extractRetryAfterFromBody(responseText)
+      return {
+        type: "rate_limited",
+        status,
+        message,
+        retryAfter,
+        raw: error,
+      }
+    }
+  }
+
+  // Default: bad_request
+  return {
+    type: "bad_request",
+    status,
+    message,
+    raw: error,
+  }
+}
+
+/** Extract retry_after from JSON response body */
+function extractRetryAfterFromBody(responseText: string): number | undefined {
+  try {
+    const parsed: unknown = JSON.parse(responseText)
+    if (parsed && typeof parsed === "object") {
+      // Top-level retry_after
+      if ("retry_after" in parsed && typeof (parsed as Record<string, unknown>).retry_after === "number") {
+        return (parsed as { retry_after: number }).retry_after
+      }
+      // Nested error.retry_after
+      if ("error" in parsed) {
+        const err = (parsed as { error: unknown }).error
+        if (
+          err
+          && typeof err === "object"
+          && "retry_after" in err
+          && typeof (err as Record<string, unknown>).retry_after === "number"
+        ) {
+          return (err as { retry_after: number }).retry_after
+        }
+      }
+    }
+  } catch {
+    // Not JSON
+  }
+  return undefined
+}
+
+/** Check if response body contains rate_limited code */
+function isRateLimitedInBody(responseText: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(responseText)
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const err = (parsed as { error: unknown }).error
+      if (err && typeof err === "object" && "code" in err) {
+        return (err as { code: unknown }).code === "rate_limited"
+      }
+    }
+  } catch {
+    // Not JSON
+  }
+  return false
+}
+
+/** Try to extract token limit info from response body */
+function tryExtractTokenLimit(responseText: string): { current: number; limit: number } | null {
+  try {
+    const parsed: unknown = JSON.parse(responseText)
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const err = (parsed as { error: unknown }).error
+      if (
+        err
+        && typeof err === "object"
+        && "message" in err
+        && typeof (err as Record<string, unknown>).message === "string"
+      ) {
+        return parseTokenLimitError((err as { message: string }).message)
+      }
+    }
+  } catch {
+    // Not JSON
+  }
+  return null
+}

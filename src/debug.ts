@@ -5,7 +5,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 
-import { ensurePaths, PATHS } from "./lib/paths"
+import { ensurePaths, PATHS } from "./lib/config/paths"
 import { state } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
 import { getModels } from "./services/copilot/get-models"

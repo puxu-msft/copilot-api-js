@@ -4,7 +4,7 @@ import { defineCommand } from "citty"
 import consola from "consola"
 import fs from "node:fs/promises"
 
-import { PATHS } from "./lib/paths"
+import { PATHS } from "./lib/config/paths"
 
 export async function runLogout(): Promise<void> {
   try {

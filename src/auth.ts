@@ -3,7 +3,7 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 
-import { PATHS, ensurePaths } from "./lib/paths"
+import { PATHS, ensurePaths } from "./lib/config/paths"
 import { state } from "./lib/state"
 import { DeviceAuthProvider, FileTokenProvider } from "./lib/token"
 

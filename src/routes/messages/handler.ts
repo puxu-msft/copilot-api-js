@@ -11,7 +11,7 @@ import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
 
 import { convertAnthropicMessages, extractSystemPrompt } from "~/lib/anthropic/message-utils"
 import { recordRequest } from "~/lib/history"
-import { translateModelName } from "~/lib/model-resolver"
+import { translateModelName } from "~/lib/models/resolver"
 import { sanitizeAnthropicSystem } from "~/lib/security-research-mode"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"

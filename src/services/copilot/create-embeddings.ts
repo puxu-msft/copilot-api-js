@@ -1,4 +1,4 @@
-import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
+import { copilotHeaders, copilotBaseUrl } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
