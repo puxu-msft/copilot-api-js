@@ -8,7 +8,8 @@ import type { OpenAIAutoTruncateResult } from "~/lib/auto-truncate/openai"
 import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 
-import { onRequestTooLarge, sanitizeOpenAIMessages } from "~/lib/auto-truncate/openai"
+import { onRequestTooLarge } from "~/lib/auto-truncate/openai"
+import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { bytesToKB } from "~/lib/utils"
 

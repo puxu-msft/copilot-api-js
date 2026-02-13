@@ -15,7 +15,7 @@ import {
   filterOpenAIOrphanedToolUse,
   getOpenAIToolCallIds,
   getOpenAIToolResultIds,
-} from "~/lib/message-sanitizer/orphan-filter-openai"
+} from "~/lib/openai/orphan-filter"
 
 // ─── getOpenAIToolCallIds ───
 

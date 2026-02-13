@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { sanitizeOpenAIMessages } from "~/lib/message-sanitizer/sanitize-openai"
+import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 
 describe("sanitizeOpenAIMessages", () => {
   test("returns unchanged payload when no orphans", () => {

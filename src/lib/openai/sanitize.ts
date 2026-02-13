@@ -13,8 +13,8 @@ import {
   extractOpenAISystemMessages,
   filterOpenAIOrphanedToolResults,
   filterOpenAIOrphanedToolUse,
-} from "./orphan-filter-openai"
-import { removeSystemReminderTags } from "./system-reminder"
+} from "./orphan-filter"
+import { removeSystemReminderTags } from "~/lib/system-reminder"
 
 // ============================================================================
 // Message Content Sanitization

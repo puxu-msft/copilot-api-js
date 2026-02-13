@@ -11,7 +11,7 @@ import {
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
   OPEN_TAG,
-} from "~/lib/message-sanitizer/system-reminder"
+} from "~/lib/system-reminder"
 import { bytesToKB } from "~/lib/utils"
 
 // ============================================================================

@@ -22,10 +22,10 @@ import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
 import {
   autoTruncateOpenAI,
   createTruncationResponseMarkerOpenAI,
-  sanitizeOpenAIMessages,
 } from "~/lib/auto-truncate/openai"
 import { recordResponse, recordRewrites } from "~/lib/history"
-import { sanitizeAnthropicMessages } from "~/lib/message-sanitizer"
+import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
+import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { state } from "~/lib/state"
 import { requestTracker } from "~/lib/tui"
 import {

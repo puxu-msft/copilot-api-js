@@ -18,7 +18,7 @@ import type {
 
 import { isServerToolResultBlock } from "~/types/api/anthropic"
 
-import { removeSystemReminderTags } from "./system-reminder"
+import { removeSystemReminderTags } from "~/lib/system-reminder"
 
 // ============================================================================
 // Tool Result Content Sanitization

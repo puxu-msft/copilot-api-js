@@ -22,9 +22,9 @@ import { awaitApproval } from "~/lib/approval"
 import {
   type AnthropicAutoTruncateResult,
   autoTruncateAnthropic,
-  sanitizeAnthropicMessages,
 } from "~/lib/auto-truncate/anthropic"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
+import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { recordResponse, recordRewrites } from "~/lib/history"
 import { state } from "~/lib/state"
 import { buildMessageMapping } from "~/lib/translation/message-mapping"

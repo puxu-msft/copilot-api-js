@@ -21,7 +21,7 @@ import {
   extractOpenAISystemMessages,
   filterOpenAIOrphanedToolResults,
   filterOpenAIOrphanedToolUse,
-} from "~/lib/message-sanitizer"
+} from "~/lib/openai/orphan-filter"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
@@ -39,9 +39,6 @@ import {
 // Re-export for backwards compatibility
 export { getEffectiveByteLimitBytes, onRequestTooLarge } from "./common"
 export type { AutoTruncateConfig } from "./common"
-
-// Re-export sanitize function for backwards compatibility
-export { sanitizeOpenAIMessages } from "~/lib/message-sanitizer"
 
 // ============================================================================
 // Result Types

@@ -10,7 +10,7 @@ import {
   filterAnthropicOrphanedToolUse,
   getAnthropicToolResultIds,
   getAnthropicToolUseIds,
-} from "~/lib/message-sanitizer/orphan-filter-anthropic"
+} from "~/lib/anthropic/orphan-filter"
 import {
   ensureOpenAIStartsWithUser,
   extractOpenAISystemMessages,
@@ -18,13 +18,13 @@ import {
   filterOpenAIOrphanedToolUse,
   getOpenAIToolCallIds,
   getOpenAIToolResultIds,
-} from "~/lib/message-sanitizer/orphan-filter-openai"
-import { sanitizeAnthropicMessages } from "~/lib/message-sanitizer/sanitize-anthropic"
+} from "~/lib/openai/orphan-filter"
+import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import {
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,
-} from "~/lib/message-sanitizer/system-reminder"
+} from "~/lib/system-reminder"
 
 // =============================================================================
 // system-reminder.ts

@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { sanitizeOpenAIMessages } from "~/lib/message-sanitizer/sanitize-openai"
+import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 
 describe("sanitize → translate round-trip", () => {
   test("sanitized payload preserves valid tool call chains", () => {

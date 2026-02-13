@@ -11,8 +11,8 @@ import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
 import {
   autoTruncateOpenAI,
   createTruncationResponseMarkerOpenAI,
-  sanitizeOpenAIMessages,
 } from "~/lib/auto-truncate/openai"
+import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { type MessageContent, recordRequest, recordResponse } from "~/lib/history"
 import { translateModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"

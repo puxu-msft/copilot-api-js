@@ -26,7 +26,7 @@ import {
   ensureAnthropicStartsWithUser,
   filterAnthropicOrphanedToolResults,
   filterAnthropicOrphanedToolUse,
-} from "~/lib/message-sanitizer"
+} from "~/lib/anthropic/orphan-filter"
 import { countTextTokens } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
@@ -41,9 +41,6 @@ import {
   getEffectiveByteLimitBytes,
   getEffectiveTokenLimit,
 } from "./common"
-
-// Re-export sanitize function for backwards compatibility
-export { sanitizeAnthropicMessages } from "~/lib/message-sanitizer"
 
 // ============================================================================
 // Result Types

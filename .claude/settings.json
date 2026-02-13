@@ -22,6 +22,7 @@
       "mcp__plugin_serena_serena__find_file",
       "mcp__plugin_serena_serena__find_symbol",
       "mcp__plugin_serena_serena__get_symbols_overview",
+      "mcp__plugin_serena_serena__initial_instructions",
       "mcp__plugin_serena_serena__insert_before_symbol",
       "mcp__plugin_serena_serena__list_dir",
       "mcp__plugin_serena_serena__list_memories",
@@ -35,6 +36,10 @@
       "Read",
       "WebFetch",
       "WebSearch"
+    ],
+    "deny": [
+      "Bash(git stash push)",
+      "Bash(git stash pop)"
     ]
   }
 }
