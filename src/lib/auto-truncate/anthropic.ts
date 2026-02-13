@@ -16,10 +16,10 @@ import consola from "consola"
 
 import type { Model } from "~/services/copilot/get-models"
 import type {
-  AnthropicAssistantContentBlock,
-  AnthropicMessage,
-  AnthropicMessagesPayload,
-  AnthropicUserContentBlock,
+  ContentBlock,
+  MessageParam,
+  MessagesPayload,
+  ContentBlockParam,
 } from "~/types/api/anthropic"
 
 import {
@@ -47,8 +47,8 @@ import {
 // ============================================================================
 
 export interface AnthropicAutoTruncateResult {
-  payload: AnthropicMessagesPayload
-  wasCompacted: boolean
+  payload: MessagesPayload
+  wasTruncated: boolean
   originalTokens: number
   compactedTokens: number
   removedMessageCount: number
@@ -64,7 +64,7 @@ export interface AnthropicAutoTruncateResult {
  * Convert Anthropic message content to text for token counting.
  * @param options.includeThinking Whether to include thinking blocks (default: true)
  */
-export function contentToText(content: AnthropicMessage["content"], options?: { includeThinking?: boolean }): string {
+export function contentToText(content: MessageParam["content"], options?: { includeThinking?: boolean }): string {
   if (typeof content === "string") {
     return content
   }
@@ -134,7 +134,7 @@ export function contentToText(content: AnthropicMessage["content"], options?: { 
  * Uses ~4 chars per token approximation for internal calculations.
  * The final result is verified with the accurate tokenizer.
  */
-function estimateMessageTokens(msg: AnthropicMessage): number {
+function estimateMessageTokens(msg: MessageParam): number {
   const text = contentToText(msg.content)
   // ~4 chars per token + message framing overhead
   return Math.ceil(text.length / 4) + 4
@@ -144,7 +144,7 @@ function estimateMessageTokens(msg: AnthropicMessage): number {
  * Count tokens for an Anthropic message using the model's tokenizer.
  */
 export async function countMessageTokens(
-  msg: AnthropicMessage,
+  msg: MessageParam,
   model: Model,
   options?: { includeThinking?: boolean },
 ): Promise<number> {
@@ -156,7 +156,7 @@ export async function countMessageTokens(
 /**
  * Count tokens for system prompt.
  */
-export async function countSystemTokens(system: AnthropicMessagesPayload["system"], model: Model): Promise<number> {
+export async function countSystemTokens(system: MessagesPayload["system"], model: Model): Promise<number> {
   if (!system) return 0
   if (typeof system === "string") {
     return (await countTextTokens(system, model)) + 4
@@ -169,7 +169,7 @@ export async function countSystemTokens(system: AnthropicMessagesPayload["system
  * Count total tokens for the payload using the model's tokenizer.
  * Includes thinking blocks — used by auto-truncate decisions.
  */
-export async function countTotalTokens(payload: AnthropicMessagesPayload, model: Model): Promise<number> {
+export async function countTotalTokens(payload: MessagesPayload, model: Model): Promise<number> {
   let total = await countSystemTokens(payload.system, model)
   for (const msg of payload.messages) {
     total += await countMessageTokens(msg, model)
@@ -193,7 +193,7 @@ export async function countTotalTokens(payload: AnthropicMessagesPayload, model:
  * For auto-truncate decisions, use countTotalTokens instead (which includes
  * thinking blocks since they affect actual payload size).
  */
-export async function countTotalInputTokens(payload: AnthropicMessagesPayload, model: Model): Promise<number> {
+export async function countTotalInputTokens(payload: MessagesPayload, model: Model): Promise<number> {
   let total = await countSystemTokens(payload.system, model)
   for (const msg of payload.messages) {
     // Exclude thinking blocks from assistant messages
@@ -214,7 +214,7 @@ export async function countTotalInputTokens(payload: AnthropicMessagesPayload, m
 // Message Utilities
 // ============================================================================
 
-function getMessageBytes(msg: AnthropicMessage): number {
+function getMessageBytes(msg: MessageParam): number {
   return JSON.stringify(msg).length
 }
 
@@ -234,9 +234,9 @@ function getMessageBytes(msg: AnthropicMessage): number {
  * @returns Object with stripped messages and count of removed blocks
  */
 function stripThinkingBlocks(
-  messages: Array<AnthropicMessage>,
+  messages: Array<MessageParam>,
   preserveRecentCount: number,
-): { messages: Array<AnthropicMessage>; strippedCount: number } {
+): { messages: Array<MessageParam>; strippedCount: number } {
   const n = messages.length
   const stripBefore = Math.max(0, n - preserveRecentCount)
   let strippedCount = 0
@@ -249,7 +249,7 @@ function stripThinkingBlocks(
     const hasThinking = msg.content.some((block) => block.type === "thinking" || block.type === "redacted_thinking")
     if (!hasThinking) return msg
 
-    const filtered = msg.content.filter((block): block is AnthropicAssistantContentBlock => {
+    const filtered = msg.content.filter((block): block is ContentBlock => {
       if (block.type === "thinking" || block.type === "redacted_thinking") {
         strippedCount++
         return false
@@ -275,7 +275,7 @@ function stripThinkingBlocks(
 /**
  * Compress a tool_result block in an Anthropic message.
  */
-function compressToolResultBlock(block: AnthropicUserContentBlock): AnthropicUserContentBlock {
+function compressToolResultBlock(block: ContentBlockParam): ContentBlockParam {
   if (
     block.type === "tool_result"
     && typeof block.content === "string"
@@ -298,12 +298,12 @@ function compressToolResultBlock(block: AnthropicUserContentBlock): AnthropicUse
  * @param preservePercent - Percentage of context to preserve uncompressed (0.0-1.0)
  */
 function smartCompressToolResults(
-  messages: Array<AnthropicMessage>,
+  messages: Array<MessageParam>,
   tokenLimit: number,
   byteLimit: number,
   preservePercent: number,
 ): {
-  messages: Array<AnthropicMessage>
+  messages: Array<MessageParam>
   compressedCount: number
   compressThresholdIndex: number
 } {
@@ -337,7 +337,7 @@ function smartCompressToolResults(
   }
 
   // Compress tool_results and compacted text blocks in messages before threshold
-  const result: Array<AnthropicMessage> = []
+  const result: Array<MessageParam> = []
   let compressedCount = 0
 
   for (const [i, msg] of messages.entries()) {
@@ -430,7 +430,7 @@ function calculateLimits(model: Model, config: AutoTruncateConfig): Limits {
 // ============================================================================
 
 interface PreserveSearchParams {
-  messages: Array<AnthropicMessage>
+  messages: Array<MessageParam>
   systemBytes: number
   systemTokens: number
   payloadOverhead: number
@@ -502,7 +502,7 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
  * Generate a summary of removed messages for context.
  * Extracts key information like tool calls and topics.
  */
-function generateRemovedMessagesSummary(removedMessages: Array<AnthropicMessage>): string {
+function generateRemovedMessagesSummary(removedMessages: Array<MessageParam>): string {
   const toolCalls: Array<string> = []
   let userMessageCount = 0
   let assistantMessageCount = 0
@@ -554,7 +554,7 @@ function generateRemovedMessagesSummary(removedMessages: Array<AnthropicMessage>
  * Add a compression notice to the system prompt.
  * Informs the model that some tool_result content has been compressed.
  */
-function addCompressionNotice(payload: AnthropicMessagesPayload, compressedCount: number): AnthropicMessagesPayload {
+function addCompressionNotice(payload: MessagesPayload, compressedCount: number): MessagesPayload {
   const notice =
     `[CONTEXT NOTE]\n`
     + `${compressedCount} large tool_result blocks have been compressed to reduce context size.\n`
@@ -562,7 +562,7 @@ function addCompressionNotice(payload: AnthropicMessagesPayload, compressedCount
     + `If you need the full content, you can re-read the file or re-run the tool.\n`
     + `[END NOTE]\n\n`
 
-  let newSystem: AnthropicMessagesPayload["system"]
+  let newSystem: MessagesPayload["system"]
   if (typeof payload.system === "string") {
     newSystem = notice + payload.system
   } else if (Array.isArray(payload.system)) {
@@ -602,7 +602,7 @@ function createTruncationSystemContext(removedCount: number, compressedCount: nu
 /**
  * Create a truncation marker message (fallback when no system prompt).
  */
-function createTruncationMarker(removedCount: number, compressedCount: number, summary: string): AnthropicMessage {
+function createTruncationMarker(removedCount: number, compressedCount: number, summary: string): MessageParam {
   const parts: Array<string> = []
 
   if (removedCount > 0) {
@@ -626,7 +626,7 @@ function createTruncationMarker(removedCount: number, compressedCount: number, s
  * Perform auto-truncation on an Anthropic payload that exceeds limits.
  */
 export async function autoTruncateAnthropic(
-  payload: AnthropicMessagesPayload,
+  payload: MessagesPayload,
   model: Model,
   config: Partial<AutoTruncateConfig> = {},
 ): Promise<AnthropicAutoTruncateResult> {
@@ -650,7 +650,7 @@ export async function autoTruncateAnthropic(
   if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
     return buildResult({
       payload,
-      wasCompacted: false,
+      wasTruncated: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
@@ -686,7 +686,7 @@ export async function autoTruncateAnthropic(
 
       return buildResult({
         payload: strippedPayload,
-        wasCompacted: true,
+        wasTruncated: true,
         originalTokens,
         compactedTokens: strippedTokens,
         removedMessageCount: 0,
@@ -730,7 +730,7 @@ export async function autoTruncateAnthropic(
 
       return buildResult({
         payload: noticePayload,
-        wasCompacted: true,
+        wasTruncated: true,
         originalTokens,
         compactedTokens: await countTotalTokens(noticePayload, model),
         removedMessageCount: 0,
@@ -770,7 +770,7 @@ export async function autoTruncateAnthropic(
 
         return buildResult({
           payload: noticePayload,
-          wasCompacted: true,
+          wasTruncated: true,
           originalTokens,
           compactedTokens: await countTotalTokens(noticePayload, model),
           removedMessageCount: 0,
@@ -815,7 +815,7 @@ export async function autoTruncateAnthropic(
     consola.warn("[AutoTruncate:Anthropic] Would need to remove all messages")
     return buildResult({
       payload,
-      wasCompacted: false,
+      wasTruncated: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
@@ -837,7 +837,7 @@ export async function autoTruncateAnthropic(
     consola.warn("[AutoTruncate:Anthropic] All messages filtered out after cleanup")
     return buildResult({
       payload,
-      wasCompacted: false,
+      wasTruncated: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
@@ -869,7 +869,7 @@ export async function autoTruncateAnthropic(
     newMessages = [marker, ...preserved]
   }
 
-  const newPayload: AnthropicMessagesPayload = {
+  const newPayload: MessagesPayload = {
     ...payload,
     system: newSystem,
     messages: newMessages,
@@ -905,7 +905,7 @@ export async function autoTruncateAnthropic(
 
   return buildResult({
     payload: newPayload,
-    wasCompacted: true,
+    wasTruncated: true,
     originalTokens,
     compactedTokens: newTokens,
     removedMessageCount: removedCount,
@@ -916,7 +916,7 @@ export async function autoTruncateAnthropic(
  * Create a marker to prepend to responses indicating auto-truncation occurred.
  */
 export function createTruncationResponseMarkerAnthropic(result: AnthropicAutoTruncateResult): string {
-  if (!result.wasCompacted) return ""
+  if (!result.wasTruncated) return ""
 
   const reduction = result.originalTokens - result.compactedTokens
   const percentage = Math.round((reduction / result.originalTokens) * 100)
@@ -931,7 +931,7 @@ export function createTruncationResponseMarkerAnthropic(result: AnthropicAutoTru
  * Check if payload needs compaction.
  */
 export async function checkNeedsCompactionAnthropic(
-  payload: AnthropicMessagesPayload,
+  payload: MessagesPayload,
   model: Model,
   config: Partial<AutoTruncateConfig> = {},
 ): Promise<{

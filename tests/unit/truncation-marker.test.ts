@@ -10,13 +10,13 @@ import { describe, expect, test } from "bun:test"
 import { type TruncateResultInfo, createTruncationMarker } from "~/routes/shared"
 
 describe("createTruncationMarker", () => {
-  test("returns empty string when wasCompacted is false", () => {
-    const result: TruncateResultInfo = { wasCompacted: false }
+  test("returns empty string when wasTruncated is false", () => {
+    const result: TruncateResultInfo = { wasTruncated: false }
     expect(createTruncationMarker(result)).toBe("")
   })
 
   test("returns generic marker when details are missing", () => {
-    const result: TruncateResultInfo = { wasCompacted: true }
+    const result: TruncateResultInfo = { wasTruncated: true }
     const marker = createTruncationMarker(result)
     expect(marker).toContain("Auto-truncated")
     expect(marker).toContain("---")
@@ -24,7 +24,7 @@ describe("createTruncationMarker", () => {
 
   test("returns detailed marker with all fields", () => {
     const result: TruncateResultInfo = {
-      wasCompacted: true,
+      wasTruncated: true,
       originalTokens: 10000,
       compactedTokens: 5000,
       removedMessageCount: 3,
@@ -38,7 +38,7 @@ describe("createTruncationMarker", () => {
 
   test("calculates reduction percentage correctly", () => {
     const result: TruncateResultInfo = {
-      wasCompacted: true,
+      wasTruncated: true,
       originalTokens: 200,
       compactedTokens: 150,
       removedMessageCount: 1,
@@ -50,7 +50,7 @@ describe("createTruncationMarker", () => {
 
   test("marker starts with newlines and separator", () => {
     const result: TruncateResultInfo = {
-      wasCompacted: true,
+      wasTruncated: true,
       originalTokens: 100,
       compactedTokens: 50,
       removedMessageCount: 2,

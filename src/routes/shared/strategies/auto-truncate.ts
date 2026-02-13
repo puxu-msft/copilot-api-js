@@ -18,7 +18,7 @@ import type { RetryAction, RetryContext, RetryStrategy, SanitizeResult } from ".
 
 /** Result from a truncation operation */
 export interface TruncateResult<TPayload> {
-  wasCompacted: boolean
+  wasTruncated: boolean
   payload: TPayload
   removedMessageCount: number
   originalTokens: number
@@ -109,7 +109,7 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
         targetByteLimitBytes,
       })
 
-      if (!truncateResult.wasCompacted) {
+      if (!truncateResult.wasTruncated) {
         // Truncation didn't help
         return { action: "abort", error }
       }

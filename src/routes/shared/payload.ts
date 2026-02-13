@@ -4,39 +4,13 @@
 
 import consola from "consola"
 
-import type { OpenAIAutoTruncateResult } from "~/lib/auto-truncate/openai"
 import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { onRequestTooLarge } from "~/lib/auto-truncate/openai"
-import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { bytesToKB } from "~/lib/utils"
-
-/** Build final payload with sanitization (no pre-truncation — truncation is now reactive) */
-export function buildFinalPayload(
-  payload: ChatCompletionsPayload,
-  _model: Model | undefined,
-): {
-  finalPayload: ChatCompletionsPayload
-  truncateResult: OpenAIAutoTruncateResult | null
-  sanitizeRemovedCount: number
-  systemReminderRemovals: number
-} {
-  // Sanitize messages to filter orphaned tool/tool_result messages
-  const {
-    payload: sanitizedPayload,
-    removedCount: sanitizeRemovedCount,
-    systemReminderRemovals,
-  } = sanitizeOpenAIMessages(payload)
-
-  return {
-    finalPayload: sanitizedPayload,
-    truncateResult: null, // Truncation is now handled reactively in the retry loop
-    sanitizeRemovedCount,
-    systemReminderRemovals,
-  }
-}
 
 /**
  * Log helpful debugging information when a 413 error occurs.
@@ -105,4 +79,25 @@ export async function logPayloadSizeInfo(payload: ChatCompletionsPayload, model:
   consola.info("    • Start a new conversation with /clear or /reset")
   consola.info("    • Reduce conversation history by deleting old messages")
   consola.info("")
+}
+
+/** Log payload size info for Anthropic format when a 413 error occurs */
+export function logPayloadSizeInfoAnthropic(payload: MessagesPayload, model: Model | undefined) {
+  const payloadSize = JSON.stringify(payload).length
+  const messageCount = payload.messages.length
+  const toolCount = payload.tools?.length ?? 0
+  const systemSize = payload.system ? JSON.stringify(payload.system).length : 0
+
+  consola.info(
+    `[Anthropic 413] Payload size: ${bytesToKB(payloadSize)}KB, `
+      + `messages: ${messageCount}, tools: ${toolCount}, system: ${bytesToKB(systemSize)}KB`,
+  )
+
+  if (model?.capabilities?.limits) {
+    const limits = model.capabilities.limits
+    consola.info(
+      `[Anthropic 413] Model limits: context=${limits.max_context_window_tokens}, `
+        + `prompt=${limits.max_prompt_tokens}, output=${limits.max_output_tokens}`,
+    )
+  }
 }

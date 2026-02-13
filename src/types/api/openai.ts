@@ -1,62 +1,31 @@
 /**
  * OpenAI API Types
- * Centralized type definitions for OpenAI/Copilot message format.
+ *
+ * Streaming types are imported from the official `openai` SDK package to stay
+ * in sync with upstream. Non-streaming and request types remain our own
+ * definitions since:
+ * - We're a proxy that mutates messages without discriminated union narrowing
+ * - The SDK's union tool types (FunctionTool | CustomTool) add unnecessary narrowing
+ * - The SDK's ChatCompletion.Choice.message uses SDK-internal ToolCall unions
  */
 
-// ============================================================================
-// Streaming Types
-// ============================================================================
-
-export interface ChatCompletionChunk {
-  id: string
-  object: "chat.completion.chunk"
-  created: number
-  model: string
-  choices: Array<StreamingChoice>
-  system_fingerprint?: string
-  usage?: ChatCompletionUsage
-  service_tier?: string | null
-}
-
-export interface ChatCompletionUsage {
-  prompt_tokens: number
-  completion_tokens: number
-  total_tokens: number
-  prompt_tokens_details?: {
-    cached_tokens: number
-  }
-  completion_tokens_details?: {
-    accepted_prediction_tokens: number
-    rejected_prediction_tokens: number
-  }
-}
-
-export interface StreamingDelta {
-  content?: string | null
-  role?: "user" | "assistant" | "system" | "tool"
-  tool_calls?: Array<{
-    index: number
-    id?: string
-    type?: "function"
-    function?: {
-      name?: string
-      arguments?: string
-    }
-  }>
-}
-
-export interface StreamingChoice {
-  index: number
-  delta: StreamingDelta
-  finish_reason: FinishReason | null
-  logprobs: object | null
-}
-
-export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter"
+import type { ChatCompletionChunk as SdkChatCompletionChunk } from "openai/resources/chat/completions"
+import type { CompletionUsage } from "openai/resources/completions"
 
 // ============================================================================
-// Non-Streaming Types
+// Streaming Types (from SDK — we consume these as-is from upstream)
 // ============================================================================
+
+export type ChatCompletionChunk = SdkChatCompletionChunk
+export type StreamingChoice = SdkChatCompletionChunk.Choice
+export type StreamingDelta = SdkChatCompletionChunk.Choice.Delta
+export type ChatCompletionUsage = CompletionUsage
+
+// ============================================================================
+// Non-Streaming Response Types (our own)
+// ============================================================================
+
+export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter" | "function_call"
 
 export interface ChatCompletionResponse {
   id: string
@@ -64,50 +33,75 @@ export interface ChatCompletionResponse {
   created: number
   model: string
   choices: Array<NonStreamingChoice>
-  system_fingerprint?: string
   usage?: ChatCompletionUsage
+  system_fingerprint?: string
   service_tier?: string | null
+}
+
+export interface NonStreamingChoice {
+  index: number
+  message: ResponseMessage
+  finish_reason: FinishReason | null
+  logprobs?: object | null
 }
 
 export interface ResponseMessage {
   role: "assistant"
   content: string | null
   tool_calls?: Array<ToolCall>
-}
-
-export interface NonStreamingChoice {
-  index: number
-  message: ResponseMessage
-  logprobs: object | null
-  finish_reason: FinishReason
+  refusal?: string | null
 }
 
 // ============================================================================
-// Payload Types
+// Request Types (our own)
+//
+// We use a single Message interface rather than the SDK's discriminated union
+// (ChatCompletionMessageParam). As a proxy, we mutate messages across
+// sanitizers, truncators, and translators without narrowing by role.
 // ============================================================================
 
-/** JSON Schema response format for structured outputs */
-export interface JsonSchemaResponseFormat {
-  type: "json_schema"
-  json_schema: {
+export interface Message {
+  role: "user" | "assistant" | "system" | "tool" | "developer"
+  content: string | Array<ContentPart> | null
+
+  name?: string
+  tool_calls?: Array<ToolCall>
+  tool_call_id?: string
+}
+
+export type ContentPart = TextPart | ImagePart
+
+export interface TextPart {
+  type: "text"
+  text: string
+}
+
+export interface ImagePart {
+  type: "image_url"
+  image_url: {
+    url: string
+    detail?: "low" | "high" | "auto"
+  }
+}
+
+export interface Tool {
+  type: "function"
+  function: {
     name: string
     description?: string
-    schema: Record<string, unknown>
+    parameters?: Record<string, unknown>
     strict?: boolean
   }
 }
 
-/** Simple JSON object response format */
-export interface JsonObjectResponseFormat {
-  type: "json_object"
+export interface ToolCall {
+  id: string
+  type: "function"
+  function: {
+    name: string
+    arguments: string
+  }
 }
-
-/** Text response format (default) */
-export interface TextResponseFormat {
-  type: "text"
-}
-
-export type ResponseFormat = JsonObjectResponseFormat | JsonSchemaResponseFormat | TextResponseFormat
 
 export interface ChatCompletionsPayload {
   messages: Array<Message>
@@ -134,53 +128,25 @@ export interface ChatCompletionsPayload {
   stream_options?: { include_usage?: boolean } | null
 }
 
-// ============================================================================
-// Tool Types
-// ============================================================================
-
-export interface Tool {
-  type: "function"
-  function: {
+/** JSON Schema response format for structured outputs */
+export interface JsonSchemaResponseFormat {
+  type: "json_schema"
+  json_schema: {
     name: string
     description?: string
-    parameters: Record<string, unknown>
+    schema: Record<string, unknown>
     strict?: boolean
   }
 }
 
-export interface ToolCall {
-  id: string
-  type: "function"
-  function: {
-    name: string
-    arguments: string
-  }
+/** Simple JSON object response format */
+export interface JsonObjectResponseFormat {
+  type: "json_object"
 }
 
-// ============================================================================
-// Message Types
-// ============================================================================
-
-export interface Message {
-  role: "user" | "assistant" | "system" | "tool" | "developer"
-  content: string | Array<ContentPart> | null
-
-  name?: string
-  tool_calls?: Array<ToolCall>
-  tool_call_id?: string
-}
-
-export type ContentPart = TextPart | ImagePart
-
-export interface TextPart {
+/** Text response format (default) */
+export interface TextResponseFormat {
   type: "text"
-  text: string
 }
 
-export interface ImagePart {
-  type: "image_url"
-  image_url: {
-    url: string
-    detail?: "low" | "high" | "auto"
-  }
-}
+export type ResponseFormat = JsonObjectResponseFormat | JsonSchemaResponseFormat | TextResponseFormat

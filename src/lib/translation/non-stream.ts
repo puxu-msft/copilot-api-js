@@ -1,6 +1,5 @@
 import consola from "consola"
 
-import { mapOpenAIStopReasonToAnthropic } from "~/lib/anthropic/message-utils"
 import { translateModelName } from "~/lib/models/resolver"
 import {
   type ChatCompletionResponse,
@@ -8,28 +7,45 @@ import {
   type ContentPart,
   type Message,
   type TextPart,
-  type Tool,
+  type Tool as OpenAITool,
   type ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import {
-  type AnthropicAssistantContentBlock,
-  type AnthropicAssistantMessage,
-  type AnthropicMessage,
-  type AnthropicMessagesPayload,
-  type AnthropicResponse,
-  type AnthropicTextBlock,
-  type AnthropicTool,
-  type AnthropicToolResultBlock,
-  type AnthropicToolUseBlock,
-  type AnthropicUserContentBlock,
-  type AnthropicUserMessage,
+  type ContentBlock,
+  type AssistantMessage,
+  type MessageParam,
+  type MessagesPayload,
+  type Message as AnthropicResponse,
+  type TextBlockParam,
+  type Tool as AnthropicTool,
+  type ToolResultBlockParam,
+  type ToolUseBlock,
+  type ContentBlockParam,
+  type UserMessage,
+  type TextBlock,
 } from "~/types/api/anthropic"
+
+/** Map OpenAI finish_reason to Anthropic stop_reason */
+export function mapOpenAIStopReasonToAnthropic(
+  finishReason: string | null,
+): AnthropicResponse["stop_reason"] {
+  if (!finishReason) return null
+  const stopReasonMap = {
+    stop: "end_turn",
+    length: "max_tokens",
+    tool_calls: "tool_use",
+    content_filter: "end_turn",
+  } as const
+  return stopReasonMap[finishReason as keyof typeof stopReasonMap]
+}
 
 // OpenAI limits function names to 64 characters
 const OPENAI_TOOL_NAME_LIMIT = 64
 
-// Mapping from truncated tool names to original names
-// This is used to restore original names in responses
+/**
+ * Mapping from truncated tool names to original names.
+ * Used to restore original names in responses.
+ */
 export interface ToolNameMapping {
   truncatedToOriginal: Map<string, string>
   originalToTruncated: Map<string, string>
@@ -93,7 +109,7 @@ export interface TranslationResult {
   originMap: Array<number>
 }
 
-export function translateToOpenAI(payload: AnthropicMessagesPayload): TranslationResult {
+export function translateToOpenAI(payload: MessagesPayload): TranslationResult {
   // Create tool name mapping for this request
   const toolNameMapping: ToolNameMapping = {
     truncatedToOriginal: new Map(),
@@ -128,8 +144,8 @@ export function translateToOpenAI(payload: AnthropicMessagesPayload): Translatio
 }
 
 function translateAnthropicMessagesToOpenAI(
-  anthropicMessages: Array<AnthropicMessage>,
-  system: string | Array<AnthropicTextBlock> | undefined,
+  anthropicMessages: Array<MessageParam>,
+  system: string | Array<TextBlockParam> | undefined,
   toolNameMapping: ToolNameMapping,
 ): { messages: Array<Message>; originMap: Array<number> } {
   const systemMessages = handleSystemPrompt(system)
@@ -138,7 +154,9 @@ function translateAnthropicMessagesToOpenAI(
   const otherMessages: Array<Message> = []
   for (const [i, message] of anthropicMessages.entries()) {
     const translated =
-      message.role === "user" ? handleUserMessage(message) : handleAssistantMessage(message, toolNameMapping)
+      message.role === "user"
+        ? handleUserMessage(message as UserMessage)
+        : handleAssistantMessage(message as AssistantMessage, toolNameMapping)
     for (const msg of translated) {
       otherMessages.push(msg)
       originMap.push(i)
@@ -173,7 +191,7 @@ function filterReservedKeywords(text: string): string {
   return filtered
 }
 
-function handleSystemPrompt(system: string | Array<AnthropicTextBlock> | undefined): Array<Message> {
+function handleSystemPrompt(system: string | Array<TextBlockParam> | undefined): Array<Message> {
   if (!system) {
     return []
   }
@@ -185,23 +203,34 @@ function handleSystemPrompt(system: string | Array<AnthropicTextBlock> | undefin
         content: filterReservedKeywords(system),
       },
     ]
-  } else {
-    const systemText = system.map((block) => block.text).join("\n\n")
-    return [
-      {
-        role: "system",
-        content: filterReservedKeywords(systemText),
-      },
-    ]
   }
+
+  // Preserve structured TextBlockParam[] as Array<TextPart>
+  const parts = system
+    .map((block) => ({
+      type: "text" as const,
+      text: filterReservedKeywords(block.text),
+    }))
+    .filter((part) => part.text.length > 0)
+
+  if (parts.length === 0) {
+    return []
+  }
+
+  return [
+    {
+      role: "system",
+      content: parts,
+    },
+  ]
 }
 
-function handleUserMessage(message: AnthropicUserMessage): Array<Message> {
+function handleUserMessage(message: UserMessage): Array<Message> {
   const newMessages: Array<Message> = []
 
   if (Array.isArray(message.content)) {
     const toolResultBlocks = message.content.filter(
-      (block): block is AnthropicToolResultBlock => block.type === "tool_result",
+      (block): block is ToolResultBlockParam => block.type === "tool_result",
     )
     const otherBlocks = message.content.filter((block) => block.type !== "tool_result")
 
@@ -210,7 +239,7 @@ function handleUserMessage(message: AnthropicUserMessage): Array<Message> {
       newMessages.push({
         role: "tool",
         tool_call_id: block.tool_use_id,
-        content: mapContent(block.content),
+        content: mapContent(block.content ?? ""),
       })
     }
 
@@ -230,7 +259,7 @@ function handleUserMessage(message: AnthropicUserMessage): Array<Message> {
   return newMessages
 }
 
-function handleAssistantMessage(message: AnthropicAssistantMessage, toolNameMapping: ToolNameMapping): Array<Message> {
+function handleAssistantMessage(message: AssistantMessage, toolNameMapping: ToolNameMapping): Array<Message> {
   if (!Array.isArray(message.content)) {
     return [
       {
@@ -240,9 +269,9 @@ function handleAssistantMessage(message: AnthropicAssistantMessage, toolNameMapp
     ]
   }
 
-  const toolUseBlocks = message.content.filter((block): block is AnthropicToolUseBlock => block.type === "tool_use")
+  const toolUseBlocks = message.content.filter((block): block is ToolUseBlock => block.type === "tool_use")
 
-  const textBlocks = message.content.filter((block): block is AnthropicTextBlock => block.type === "text")
+  const textBlocks = message.content.filter((block): block is TextBlock => block.type === "text")
 
   // Strip thinking/redacted_thinking blocks — OpenAI models don't understand them,
   // and they're not meant to be sent as regular text content.
@@ -273,7 +302,7 @@ function handleAssistantMessage(message: AnthropicAssistantMessage, toolNameMapp
 }
 
 function mapContent(
-  content: string | Array<AnthropicUserContentBlock | AnthropicAssistantContentBlock>,
+  content: string | Array<ContentBlockParam | ContentBlock>,
 ): string | Array<ContentPart> | null {
   if (typeof content === "string") {
     return content
@@ -285,7 +314,7 @@ function mapContent(
   const hasImage = content.some((block) => block.type === "image")
   if (!hasImage) {
     return content
-      .filter((block): block is AnthropicTextBlock => block.type === "text")
+      .filter((block): block is TextBlockParam => block.type === "text")
       .map((block) => block.text)
       .join("\n\n")
   }
@@ -299,12 +328,21 @@ function mapContent(
         break
       }
       case "image": {
-        contentParts.push({
-          type: "image_url",
-          image_url: {
-            url: `data:${block.source.media_type};base64,${block.source.data}`,
-          },
-        })
+        if (block.source.type === "base64") {
+          contentParts.push({
+            type: "image_url",
+            image_url: {
+              url: `data:${block.source.media_type};base64,${block.source.data}`,
+            },
+          })
+        } else if (block.source.type === "url") {
+          contentParts.push({
+            type: "image_url",
+            image_url: {
+              url: block.source.url,
+            },
+          })
+        }
 
         break
       }
@@ -315,8 +353,10 @@ function mapContent(
   return contentParts
 }
 
-// Truncate tool name to fit OpenAI's 64-character limit
-// Uses consistent truncation with hash suffix to avoid collisions
+/**
+ * Truncate tool name to fit OpenAI's 64-character limit.
+ * Uses hash suffix for readability + collision detection for correctness.
+ */
 function getTruncatedToolName(originalName: string, toolNameMapping: ToolNameMapping): string {
   // If already within limit, return as-is
   if (originalName.length <= OPENAI_TOOL_NAME_LIMIT) {
@@ -329,8 +369,7 @@ function getTruncatedToolName(originalName: string, toolNameMapping: ToolNameMap
     return existingTruncated
   }
 
-  // Create a simple hash suffix from the original name
-  // Use last 8 chars of a simple hash to ensure uniqueness
+  // Create a hash suffix from the original name (djb2 variant)
   let hash = 0
   for (let i = 0; i < originalName.length; i++) {
     const char = originalName.codePointAt(i) ?? 0
@@ -340,7 +379,17 @@ function getTruncatedToolName(originalName: string, toolNameMapping: ToolNameMap
   const hashSuffix = Math.abs(hash).toString(36).slice(0, 8)
 
   // Truncate: leave room for "_" + 8-char hash = 9 chars
-  const truncatedName = originalName.slice(0, OPENAI_TOOL_NAME_LIMIT - 9) + "_" + hashSuffix
+  let truncatedName = originalName.slice(0, OPENAI_TOOL_NAME_LIMIT - 9) + "_" + hashSuffix
+
+  // Collision detection: if this truncated name already maps to a different original name,
+  // append a counter until we find an unused name
+  let counter = 2
+  while (toolNameMapping.truncatedToOriginal.has(truncatedName) &&
+         toolNameMapping.truncatedToOriginal.get(truncatedName) !== originalName) {
+    const suffix = `_${hashSuffix}${counter}`
+    truncatedName = originalName.slice(0, OPENAI_TOOL_NAME_LIMIT - suffix.length) + suffix
+    counter++
+  }
 
   // Store mapping in both directions
   toolNameMapping.truncatedToOriginal.set(truncatedName, originalName)
@@ -354,7 +403,7 @@ function getTruncatedToolName(originalName: string, toolNameMapping: ToolNameMap
 function translateAnthropicToolsToOpenAI(
   anthropicTools: Array<AnthropicTool> | undefined,
   toolNameMapping: ToolNameMapping,
-): Array<Tool> | undefined {
+): Array<OpenAITool> | undefined {
   if (!anthropicTools) {
     return undefined
   }
@@ -369,7 +418,7 @@ function translateAnthropicToolsToOpenAI(
 }
 
 function translateAnthropicToolChoiceToOpenAI(
-  anthropicToolChoice: AnthropicMessagesPayload["tool_choice"],
+  anthropicToolChoice: MessagesPayload["tool_choice"],
   toolNameMapping: ToolNameMapping,
 ): ChatCompletionsPayload["tool_choice"] {
   if (!anthropicToolChoice) {
@@ -407,6 +456,8 @@ function translateAnthropicToolChoiceToOpenAI(
 
 /** Create empty response for edge case of no choices */
 function createEmptyResponse(response: ChatCompletionResponse): AnthropicResponse {
+  // Cast: synthetic response — model is string (not SDK Model literal union),
+  // usage is partial (SDK Usage has many additional fields)
   return {
     id: response.id,
     type: "message",
@@ -419,7 +470,7 @@ function createEmptyResponse(response: ChatCompletionResponse): AnthropicRespons
       input_tokens: response.usage?.prompt_tokens ?? 0,
       output_tokens: response.usage?.completion_tokens ?? 0,
     },
-  }
+  } as unknown as AnthropicResponse
 }
 
 /** Build usage object from response */
@@ -444,27 +495,32 @@ export function translateToAnthropic(
   }
 
   // Merge content from all choices
-  const allTextBlocks: Array<AnthropicTextBlock> = []
-  const allToolUseBlocks: Array<AnthropicToolUseBlock> = []
+  const allTextBlocks: Array<TextBlockParam> = []
+  const allToolUseBlocks: Array<ToolUseBlock> = []
   let stopReason: "stop" | "length" | "tool_calls" | "content_filter" | null = null // default
-  stopReason = response.choices[0]?.finish_reason ?? stopReason
+  const firstFinish = response.choices[0]?.finish_reason
+  if (firstFinish && firstFinish !== "function_call") stopReason = firstFinish
 
   // Process all choices to extract text and tool use blocks
   for (const choice of response.choices) {
-    const textBlocks = getAnthropicTextBlocks(choice.message.content)
-    const toolUseBlocks = getAnthropicToolUseBlocks(choice.message.tool_calls, toolNameMapping)
+    const textBlocks = getTextBlockParams(choice.message.content)
+    const toolUseBlocks = getToolUseBlocks(choice.message.tool_calls, toolNameMapping)
 
     allTextBlocks.push(...textBlocks)
     allToolUseBlocks.push(...toolUseBlocks)
 
     // Use the finish_reason from the first choice, or prioritize tool_calls
     if (choice.finish_reason === "tool_calls" || stopReason === "stop") {
-      stopReason = choice.finish_reason
+      if (choice.finish_reason && choice.finish_reason !== "function_call") {
+        stopReason = choice.finish_reason
+      }
     }
   }
 
   // Note: GitHub Copilot doesn't generate thinking blocks, so we don't include them in responses
 
+  // Cast: synthetic response — model is string (not SDK Model literal), content
+  // contains TextBlockParam (not TextBlock with required citations), usage is partial
   return {
     id: response.id,
     type: "message",
@@ -474,10 +530,10 @@ export function translateToAnthropic(
     stop_reason: mapOpenAIStopReasonToAnthropic(stopReason),
     stop_sequence: null,
     usage: buildUsageObject(response),
-  }
+  } as unknown as AnthropicResponse
 }
 
-function getAnthropicTextBlocks(messageContent: Message["content"]): Array<AnthropicTextBlock> {
+function getTextBlockParams(messageContent: Message["content"]): Array<TextBlockParam> {
   if (typeof messageContent === "string") {
     return [{ type: "text", text: messageContent }]
   }
@@ -491,10 +547,10 @@ function getAnthropicTextBlocks(messageContent: Message["content"]): Array<Anthr
   return []
 }
 
-function getAnthropicToolUseBlocks(
+function getToolUseBlocks(
   toolCalls: Array<ToolCall> | undefined,
   toolNameMapping?: ToolNameMapping,
-): Array<AnthropicToolUseBlock> {
+): Array<ToolUseBlock> {
   if (!toolCalls) {
     return []
   }

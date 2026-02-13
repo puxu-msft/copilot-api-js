@@ -1,21 +1,26 @@
-// WebSocket support for History API
-// Enables real-time updates when new requests are recorded
+/**
+ * WebSocket support for History API.
+ * Enables real-time updates when new requests are recorded.
+ */
 
 import consola from "consola"
 
 import type { HistoryEntry, HistoryStats } from "./store"
 
+/** Discriminated union of WebSocket message types */
 export type WSMessageType = "entry_added" | "entry_updated" | "stats_updated" | "connected"
 
+/** A WebSocket message sent to connected clients */
 export interface WSMessage {
   type: WSMessageType
   data: unknown
   timestamp: number
 }
 
-// Track connected WebSocket clients
+/** Track connected WebSocket clients */
 const clients = new Set<WebSocket>()
 
+/** Register a new WebSocket client and send connection confirmation */
 export function addClient(ws: WebSocket): void {
   clients.add(ws)
 
@@ -28,10 +33,12 @@ export function addClient(ws: WebSocket): void {
   ws.send(JSON.stringify(msg))
 }
 
+/** Unregister a WebSocket client */
 export function removeClient(ws: WebSocket): void {
   clients.delete(ws)
 }
 
+/** Get the number of currently connected WebSocket clients */
 export function getClientCount(): number {
   return clients.size
 }
@@ -65,7 +72,7 @@ function broadcast(message: WSMessage): void {
   }
 }
 
-// Called when a new entry is recorded
+/** Called when a new entry is recorded */
 export function notifyEntryAdded(entry: HistoryEntry): void {
   if (clients.size === 0) return
 
@@ -76,7 +83,7 @@ export function notifyEntryAdded(entry: HistoryEntry): void {
   })
 }
 
-// Called when an entry is updated (e.g., response received)
+/** Called when an entry is updated (e.g., response received) */
 export function notifyEntryUpdated(entry: HistoryEntry): void {
   if (clients.size === 0) return
 
@@ -87,7 +94,7 @@ export function notifyEntryUpdated(entry: HistoryEntry): void {
   })
 }
 
-// Called when stats change
+/** Called when stats change */
 export function notifyStatsUpdated(stats: HistoryStats): void {
   if (clients.size === 0) return
 

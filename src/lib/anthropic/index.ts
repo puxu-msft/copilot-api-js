@@ -1,5 +1,4 @@
 export * from "./features"
-export * from "./message-utils"
 export * from "./orphan-filter"
 export * from "./sanitize"
 export * from "./stream-accumulator"

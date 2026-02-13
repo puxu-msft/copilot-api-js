@@ -38,6 +38,7 @@
       "WebSearch"
     ],
     "deny": [
+      "Bash(git stash)",
       "Bash(git stash push)",
       "Bash(git stash pop)"
     ]

@@ -9,12 +9,12 @@
 
 import { describe, test, expect, beforeAll } from "bun:test"
 
-import type { AnthropicMessagesPayload, AnthropicResponse } from "~/types/api/anthropic"
+import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
 
 import { translateModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
-import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
+import { translateToOpenAI } from "~/lib/translation/non-stream"
 import { createAnthropicMessages } from "~/services/copilot/create-anthropic-messages"
 import {
   createChatCompletions,
@@ -96,7 +96,7 @@ describeWithToken("Extended Copilot API Integration", () => {
     })
 
     test("should handle multi-turn Anthropic conversation", async () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: claudeModel,
         messages: [
           { role: "user", content: "My favorite color is blue. Remember this." },
@@ -169,7 +169,7 @@ describeWithToken("Extended Copilot API Integration", () => {
 
   describe("Token Counting", () => {
     test("should count tokens for simple messages", async () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: claudeModel,
         messages: [{ role: "user", content: "Hello, world!" }],
         max_tokens: 100,
@@ -187,13 +187,13 @@ describeWithToken("Extended Copilot API Integration", () => {
     })
 
     test("should count more tokens for longer messages", async () => {
-      const shortPayload: AnthropicMessagesPayload = {
+      const shortPayload: MessagesPayload = {
         model: claudeModel,
         messages: [{ role: "user", content: "Hi" }],
         max_tokens: 100,
       }
 
-      const longPayload: AnthropicMessagesPayload = {
+      const longPayload: MessagesPayload = {
         model: claudeModel,
         messages: [
           {
@@ -260,7 +260,7 @@ describeWithToken("Extended Copilot API Integration", () => {
 
   describe("Anthropic Streaming", () => {
     test("should handle streaming response from Claude", async () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: claudeModel,
         messages: [{ role: "user", content: "Count from 1 to 3, separated by commas." }],
         max_tokens: 30,

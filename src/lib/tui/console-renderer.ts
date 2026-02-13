@@ -1,10 +1,12 @@
-// Console renderer - simple single-line output for each completed request
-// Replaces Hono's default logger with cleaner, more informative output
+/**
+ * Console renderer - simple single-line output for each completed request.
+ * Replaces Hono's default logger with cleaner, more informative output.
+ */
 
 import consola from "consola"
 import pc from "picocolors"
 
-import type { RequestUpdate, TrackedRequest, TuiRenderer } from "./types"
+import type { RequestUpdate, TuiLogEntry, TuiRenderer } from "./types"
 
 // ANSI escape codes for cursor control
 const CLEAR_LINE = "\x1b[2K\r"
@@ -27,11 +29,19 @@ function formatNumber(n: number): string {
   return String(n)
 }
 
-function formatTokens(input?: number, output?: number): string {
+function formatBytes(n: number): string {
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)}MB`
+  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`
+  return `${n}B`
+}
+
+function formatTokens(input?: number, output?: number, cacheRead?: number, cacheCreation?: number): string {
   if (input === undefined && output === undefined) return "-"
-  if (input !== undefined && output !== undefined) return `${formatNumber(input)}/${formatNumber(output)}`
-  if (input !== undefined) return formatNumber(input)
-  return `/${formatNumber(output ?? 0)}`
+  let result = formatNumber(input ?? 0)
+  if (cacheRead) result += `+${formatNumber(cacheRead)}`
+  if (cacheCreation) result += `+${formatNumber(cacheCreation)}`
+  result += `/${formatNumber(output ?? 0)}`
+  return result
 }
 
 /**
@@ -40,18 +50,18 @@ function formatTokens(input?: number, output?: number): string {
  * Log format:
  * - Start: [....] HH:MM:SS METHOD /path model-name (debug only, dim)
  * - Streaming: [<-->] HH:MM:SS METHOD /path model-name streaming... (dim)
- * - Complete: [ OK ] HH:MM:SS METHOD /path model-name 200 1.2s 1.5K/500 (colored)
- * - Error: [FAIL] HH:MM:SS METHOD /path model-name 500 1.2s: error message (red)
+ * - Complete: [ OK ] HH:MM:SS 200 POST /path model-name (3x) 1.2s 12.3KB 1.5K/500 (colored)
+ * - Error: [FAIL] HH:MM:SS 500 POST /path model-name (3x) 1.2s: error message (red)
  *
  * Color scheme for completed requests:
  * - Prefix: green (success) / red (error)
  * - Time: dim
- * - Method: cyan
+ * - Method: white
  * - Path: white
  * - Model: magenta
  * - Status: green (success) / red (error)
  * - Duration: yellow
- * - Tokens: blue
+ * - Tokens: cyan (req/res info)
  *
  * Features:
  * - Start lines only shown in debug mode (--verbose)
@@ -61,7 +71,7 @@ function formatTokens(input?: number, output?: number): string {
  * - Intercepts consola output to properly handle footer
  */
 export class ConsoleRenderer implements TuiRenderer {
-  private activeRequests: Map<string, TrackedRequest> = new Map()
+  private activeRequests: Map<string, TuiLogEntry> = new Map()
   private showActive: boolean
   private footerVisible = false
   private isTTY: boolean
@@ -187,6 +197,8 @@ export class ConsoleRenderer implements TuiRenderer {
 
   /**
    * Format a complete log line with colored parts
+   *
+   * Format: [xxxx] HH:mm:ss <status> <method> <path> <model> (<multiplier>x) <duration> <reqSize>/<respSize> <inTokens>/<outTokens>
    */
   private formatLogLine(parts: {
     prefix: string
@@ -194,18 +206,28 @@ export class ConsoleRenderer implements TuiRenderer {
     method: string
     path: string
     model?: string
+    multiplier?: number
     status?: number
     duration?: string
-    tokens?: string
+    requestBodySize?: number
+    inputTokens?: number
+    outputTokens?: number
+    cacheReadInputTokens?: number
+    cacheCreationInputTokens?: number
     queueWait?: string
     extra?: string
     isError?: boolean
     isDim?: boolean
   }): string {
-    const { prefix, time, method, path, model, status, duration, tokens, queueWait, extra, isError, isDim } = parts
+    const {
+      prefix, time, method, path, model, multiplier,
+      status, duration, requestBodySize,
+      inputTokens, outputTokens,
+      cacheReadInputTokens, cacheCreationInputTokens,
+      queueWait, extra, isError, isDim,
+    } = parts
 
     if (isDim) {
-      // Dim lines: all gray
       const modelPart = model ? ` ${model}` : ""
       const extraPart = extra ? ` ${extra}` : ""
       return pc.dim(`${prefix} ${time} ${method} ${path}${modelPart}${extraPart}`)
@@ -214,34 +236,31 @@ export class ConsoleRenderer implements TuiRenderer {
     // Colored lines: each part has its own color
     const coloredPrefix = isError ? pc.red(prefix) : pc.green(prefix)
     const coloredTime = pc.dim(time)
-    const coloredMethod = pc.cyan(method)
+    const coloredStatus = status !== undefined
+      ? (isError ? pc.red(String(status)) : pc.green(String(status)))
+      : ""
+    const coloredMethod = pc.white(method)
     const coloredPath = pc.white(path)
     const coloredModel = model ? pc.magenta(` ${model}`) : ""
+    const coloredMultiplier = multiplier != null ? pc.dim(` (${multiplier}x)`) : ""
+    const coloredDuration = duration ? ` ${pc.yellow(duration)}` : ""
+    const coloredQueueWait = queueWait ? ` ${pc.dim(`(queued ${queueWait})`)}` : ""
 
-    let result = `${coloredPrefix} ${coloredTime} ${coloredMethod} ${coloredPath}${coloredModel}`
-
-    if (status !== undefined) {
-      const coloredStatus = isError ? pc.red(String(status)) : pc.green(String(status))
-      result += ` ${coloredStatus}`
+    // req-size
+    let sizeInfo = ""
+    if (model && requestBodySize !== undefined) {
+      sizeInfo = ` ${pc.dim(formatBytes(requestBodySize))}`
     }
 
-    if (duration) {
-      result += ` ${pc.yellow(duration)}`
+    // in-tokens/out-tokens (with cache breakdown)
+    let tokenInfo = ""
+    if (model && (inputTokens !== undefined || outputTokens !== undefined)) {
+      tokenInfo = ` ${pc.cyan(formatTokens(inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens))}`
     }
 
-    if (queueWait) {
-      result += ` ${pc.dim(`(queued ${queueWait})`)}`
-    }
+    const extraPart = extra ? (isError ? pc.red(extra) : extra) : ""
 
-    if (tokens) {
-      result += ` ${pc.blue(tokens)}`
-    }
-
-    if (extra) {
-      result += isError ? pc.red(extra) : extra
-    }
-
-    return result
+    return `${coloredPrefix} ${coloredTime} ${coloredStatus} ${coloredMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}`
   }
 
   /**
@@ -253,7 +272,7 @@ export class ConsoleRenderer implements TuiRenderer {
     this.renderFooter()
   }
 
-  onRequestStart(request: TrackedRequest): void {
+  onRequestStart(request: TuiLogEntry): void {
     this.activeRequests.set(request.id, request)
 
     // Only show start line in debug mode (consola.level >= 5)
@@ -292,17 +311,18 @@ export class ConsoleRenderer implements TuiRenderer {
     }
   }
 
-  onRequestComplete(request: TrackedRequest): void {
+  onRequestComplete(request: TuiLogEntry): void {
     this.activeRequests.delete(request.id)
 
     const status = request.statusCode ?? 0
     const isError = request.status === "error" || status >= 400
-    const tokens = request.model ? formatTokens(request.inputTokens, request.outputTokens) : undefined
+
     // Only show queue wait if it's significant (> 100ms)
     const queueWait = request.queueWaitMs && request.queueWaitMs > 100 ? formatDuration(request.queueWaitMs) : undefined
 
     // Build extra text from tags and error
-    const tagStr = request.tags?.length ? ` (${request.tags.join(", ")})` : ""
+    // Tags are only shown for successful requests (not useful in error lines)
+    const tagStr = !isError && request.tags?.length ? ` (${request.tags.join(", ")})` : ""
     const errorStr = isError && request.error ? `: ${request.error}` : ""
     const extra = tagStr + errorStr || undefined
 
@@ -312,10 +332,15 @@ export class ConsoleRenderer implements TuiRenderer {
       method: request.method,
       path: request.path,
       model: request.model,
+      multiplier: request.multiplier,
       status,
       duration: formatDuration(request.durationMs ?? 0),
       queueWait,
-      tokens,
+      requestBodySize: request.requestBodySize,
+      inputTokens: request.inputTokens,
+      outputTokens: request.outputTokens,
+      cacheReadInputTokens: request.cacheReadInputTokens,
+      cacheCreationInputTokens: request.cacheCreationInputTokens,
       extra,
       isError,
       isDim: request.isHistoryAccess,

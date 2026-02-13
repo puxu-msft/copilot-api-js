@@ -46,6 +46,11 @@ interface ModelCapabilities {
 }
 
 export interface Model {
+  billing?: {
+    is_premium?: boolean
+    multiplier?: number
+    restricted_to?: Array<string>
+  }
   capabilities?: ModelCapabilities
   id: string
   model_picker_category?: string

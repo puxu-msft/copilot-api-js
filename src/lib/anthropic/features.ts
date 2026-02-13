@@ -7,7 +7,7 @@
  * - anthropic.ts: buildContextManagement, nonDeferredToolNames
  */
 
-import type { AnthropicTool } from "~/types/api/anthropic"
+import type { Tool } from "~/types/api/anthropic"
 
 import { normalizeForMatching } from "~/lib/models/resolver"
 
@@ -222,7 +222,7 @@ const TOOL_SEARCH_TOOL_TYPE = "tool_search_tool_regex_20251119"
  * Ensure all Claude Code official tools are present in the tools array.
  * Injects stub definitions for any missing official tools.
  */
-export function ensureOfficialTools(tools: Array<AnthropicTool>): Array<AnthropicTool> {
+export function ensureOfficialTools(tools: Array<Tool>): Array<Tool> {
   const existingNames = new Set(tools.map((t) => t.name))
   const missing = CLAUDE_CODE_OFFICIAL_TOOLS.filter((name) => !existingNames.has(name))
 
@@ -250,12 +250,12 @@ export function ensureOfficialTools(tools: Array<AnthropicTool>): Array<Anthropi
  * - Mark non-core tools with defer_loading: true
  * - Core tools (VSCode + Claude Code official) keep defer_loading: false
  */
-export function applyToolSearch(tools: Array<AnthropicTool>, modelId: string): Array<AnthropicTool> {
+export function applyToolSearch(tools: Array<Tool>, modelId: string): Array<Tool> {
   if (!modelSupportsToolSearch(modelId) || tools.length === 0) {
     return tools
   }
 
-  const result: Array<AnthropicTool> = []
+  const result: Array<Tool> = []
 
   // 1. Add tool_search_tool_regex at the beginning
   result.push({

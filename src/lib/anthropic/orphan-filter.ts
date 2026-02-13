@@ -13,14 +13,14 @@
 
 import consola from "consola"
 
-import type { AnthropicMessage } from "~/types/api/anthropic"
+import type { MessageParam } from "~/types/api/anthropic"
 
 import { isServerToolResultBlock, isToolResultBlock } from "~/types/api/anthropic"
 
 /**
  * Get tool_use IDs from an Anthropic assistant message.
  */
-export function getAnthropicToolUseIds(msg: AnthropicMessage): Array<string> {
+export function getAnthropicToolUseIds(msg: MessageParam): Array<string> {
   if (msg.role !== "assistant") return []
   if (typeof msg.content === "string") return []
 
@@ -38,7 +38,7 @@ export function getAnthropicToolUseIds(msg: AnthropicMessage): Array<string> {
  * Checks both user messages (regular tool_result) and assistant messages
  * (server tool results like tool_search_tool_result which appear inline).
  */
-export function getAnthropicToolResultIds(msg: AnthropicMessage): Array<string> {
+export function getAnthropicToolResultIds(msg: MessageParam): Array<string> {
   if (typeof msg.content === "string") return []
 
   const ids: Array<string> = []
@@ -57,7 +57,7 @@ export function getAnthropicToolResultIds(msg: AnthropicMessage): Array<string> 
  * Handles both user messages (tool_result, web_search_tool_result) and
  * assistant messages (server tool results like tool_search_tool_result).
  */
-export function filterAnthropicOrphanedToolResults(messages: Array<AnthropicMessage>): Array<AnthropicMessage> {
+export function filterAnthropicOrphanedToolResults(messages: Array<MessageParam>): Array<MessageParam> {
   // Collect all tool_use IDs
   const toolUseIds = new Set<string>()
   for (const msg of messages) {
@@ -67,7 +67,7 @@ export function filterAnthropicOrphanedToolResults(messages: Array<AnthropicMess
   }
 
   // Filter messages, removing orphaned tool_results
-  const result: Array<AnthropicMessage> = []
+  const result: Array<MessageParam> = []
   let removedToolResult = 0
   let removedServerToolResult = 0
 
@@ -98,7 +98,7 @@ export function filterAnthropicOrphanedToolResults(messages: Array<AnthropicMess
         continue
       }
 
-      result.push({ ...msg, content: filteredContent } as AnthropicMessage)
+      result.push({ ...msg, content: filteredContent } as MessageParam)
       continue
     }
 
@@ -121,7 +121,7 @@ export function filterAnthropicOrphanedToolResults(messages: Array<AnthropicMess
  * Also filters orphaned server tool results in the same assistant message
  * when their corresponding server_tool_use has been removed.
  */
-export function filterAnthropicOrphanedToolUse(messages: Array<AnthropicMessage>): Array<AnthropicMessage> {
+export function filterAnthropicOrphanedToolUse(messages: Array<MessageParam>): Array<MessageParam> {
   // Collect all tool_result IDs
   const toolResultIds = new Set<string>()
   for (const msg of messages) {
@@ -139,7 +139,7 @@ export function filterAnthropicOrphanedToolUse(messages: Array<AnthropicMessage>
   }
 
   // Filter messages, removing orphaned tool_use from assistant messages
-  const result: Array<AnthropicMessage> = []
+  const result: Array<MessageParam> = []
   let removedToolUse = 0
   let removedServerToolUse = 0
   let removedServerToolResult = 0
@@ -188,7 +188,7 @@ export function filterAnthropicOrphanedToolUse(messages: Array<AnthropicMessage>
           continue
         }
 
-        result.push({ ...msg, content: filteredContent } as AnthropicMessage)
+        result.push({ ...msg, content: filteredContent } as MessageParam)
         continue
       }
     }
@@ -211,7 +211,7 @@ export function filterAnthropicOrphanedToolUse(messages: Array<AnthropicMessage>
 /**
  * Ensure Anthropic messages start with a user message.
  */
-export function ensureAnthropicStartsWithUser(messages: Array<AnthropicMessage>): Array<AnthropicMessage> {
+export function ensureAnthropicStartsWithUser(messages: Array<MessageParam>): Array<MessageParam> {
   let startIndex = 0
   while (startIndex < messages.length && messages[startIndex].role !== "user") {
     startIndex++

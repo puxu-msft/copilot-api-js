@@ -1,12 +1,14 @@
-// Custom Hono logger middleware that integrates with TUI request tracker
-// Replaces the default hono/logger for cleaner, more informative output
+/**
+ * Custom Hono logger middleware that integrates with TUI request tracker.
+ * Replaces the default hono/logger for cleaner, more informative output.
+ */
 
 import type { Context, MiddlewareHandler, Next } from "hono"
 
 import { getIsShuttingDown } from "~/lib/shutdown"
 import { getErrorMessage } from "~/lib/utils"
 
-import { requestTracker } from "./tracker"
+import { tuiLogger } from "./tracker"
 
 /**
  * Custom logger middleware that tracks requests through the TUI system
@@ -15,7 +17,7 @@ import { requestTracker } from "./tracker"
  * For streaming responses (SSE), the handler is responsible for calling
  * completeRequest after the stream finishes.
  */
-export function tuiLogger(): MiddlewareHandler {
+export function tuiMiddleware(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     // Reject new requests during shutdown
     if (getIsShuttingDown()) {
@@ -25,19 +27,24 @@ export function tuiLogger(): MiddlewareHandler {
     const method = c.req.method
     const path = c.req.path
 
+    // Capture request body size from Content-Length header
+    const contentLength = c.req.header("content-length")
+    const requestBodySize = contentLength ? Number.parseInt(contentLength, 10) : undefined
+
     // Detect /history API access for gray display
     const isHistoryAccess = path.startsWith("/history")
 
     // Start tracking with empty model (will be updated by handler if available)
-    const trackingId = requestTracker.startRequest({
+    const tuiLogId = tuiLogger.startRequest({
       method,
       path,
       model: "",
       isHistoryAccess,
+      requestBodySize,
     })
 
     // Store tracking ID in context for handlers to update
-    c.set("trackingId", trackingId)
+    c.set("tuiLogId", tuiLogId)
 
     try {
       await next()
@@ -46,13 +53,13 @@ export function tuiLogger(): MiddlewareHandler {
 
       // WebSocket upgrade (101 Switching Protocols) - complete immediately
       if (status === 101) {
-        requestTracker.completeRequest(trackingId, 101)
+        tuiLogger.completeRequest(tuiLogId, 101)
         return
       }
 
       // Check if this is a streaming response (SSE)
-      const contentType = c.res.headers.get("content-type") ?? ""
-      const isStreaming = contentType.includes("text/event-stream")
+      const contentType = c.res.headers.get("content-type")
+      const isStreaming = contentType?.includes("text/event-stream") ?? false
 
       // For streaming responses, the handler will call completeRequest
       // after the stream finishes with the actual token counts
@@ -67,14 +74,11 @@ export function tuiLogger(): MiddlewareHandler {
 
       // Update model if available
       if (model) {
-        const request = requestTracker.getRequest(trackingId)
-        if (request) {
-          request.model = model
-        }
+        tuiLogger.updateRequest(tuiLogId, { model })
       }
 
-      requestTracker.completeRequest(
-        trackingId,
+      tuiLogger.completeRequest(
+        tuiLogId,
         status,
         inputTokens && outputTokens ?
           {
@@ -84,7 +88,7 @@ export function tuiLogger(): MiddlewareHandler {
         : undefined,
       )
     } catch (error) {
-      requestTracker.failRequest(trackingId, getErrorMessage(error))
+      tuiLogger.failRequest(tuiLogId, getErrorMessage(error))
       throw error
     }
   }

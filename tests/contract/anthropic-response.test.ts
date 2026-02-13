@@ -3,9 +3,9 @@ import { z } from "zod"
 
 import type { ChatCompletionChunk, ChatCompletionResponse } from "~/services/copilot/create-chat-completions"
 
-import { translateToAnthropic } from "~/routes/messages/non-stream-translation"
-import { translateChunkToAnthropicEvents } from "~/routes/messages/stream-translation"
-import { type AnthropicStreamState } from "~/types/api/anthropic"
+import { translateToAnthropic } from "~/lib/translation/non-stream"
+import { translateChunkToAnthropicEvents } from "~/lib/translation/stream"
+import { type StreamState } from "~/lib/translation/stream"
 
 const anthropicUsageSchema = z.object({
   input_tokens: z.number().int(),
@@ -235,7 +235,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
       },
     ]
 
-    const streamState: AnthropicStreamState = {
+    const streamState: StreamState = {
       messageStartSent: false,
       contentBlockIndex: 0,
       contentBlockOpen: false,
@@ -329,7 +329,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
     ]
 
     // Streaming translation requires state
-    const streamState: AnthropicStreamState = {
+    const streamState: StreamState = {
       messageStartSent: false,
       contentBlockIndex: 0,
       contentBlockOpen: false,

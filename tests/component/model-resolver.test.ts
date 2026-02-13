@@ -131,7 +131,12 @@ describe("resolveModelName with redirect", () => {
   beforeEach(() => {
     state.models = {
       object: "list",
-      data: [mockModel("claude-opus-4.6"), mockModel("claude-sonnet-4.5"), mockModel("claude-sonnet-4")],
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.6-fast"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-sonnet-4"),
+      ],
     }
   })
 
@@ -158,5 +163,60 @@ describe("resolveModelName with redirect", () => {
   test("should not redirect non-sonnet models", () => {
     const result = resolveModelName("opus", { redirectSonnetToOpus: true })
     expect(result).toBe("claude-opus-4.6")
+  })
+
+  test("should redirect sonnet-fast to opus-fast when redirect enabled", () => {
+    const result = resolveModelName("claude-sonnet-4-5-fast", { redirectSonnetToOpus: true })
+    expect(result).toBe("claude-opus-4.6-fast")
+  })
+})
+
+describe("Modifier suffix handling (-fast)", () => {
+  beforeEach(() => {
+    state.models = {
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.6-fast"),
+        mockModel("claude-opus-4.5"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-sonnet-4"),
+        mockModel("claude-haiku-4.5"),
+      ],
+    }
+  })
+
+  afterEach(() => {
+    state.models = undefined
+  })
+
+  test("should pass through direct -fast model names", () => {
+    expect(translateModelName("claude-opus-4.6-fast")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should resolve hyphenated -fast model names", () => {
+    // Claude Code sends hyphens instead of dots
+    expect(translateModelName("claude-opus-4-6-fast")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should resolve short alias with -fast suffix", () => {
+    // opus-fast → best opus + -fast
+    expect(translateModelName("opus-fast")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should fall back to base model when -fast variant is unavailable", () => {
+    // No claude-sonnet-4.5-fast in available models
+    expect(translateModelName("sonnet-fast")).toBe("claude-sonnet-4.5")
+    expect(translateModelName("claude-sonnet-4-5-fast")).toBe("claude-sonnet-4.5")
+  })
+
+  test("should handle date suffix with -fast modifier", () => {
+    expect(translateModelName("claude-opus-4-6-20250514-fast")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should not strip -fast from non-Claude models", () => {
+    // Non-Claude model ending in -fast: suffix is extracted but re-attached
+    // Since "gpt-4-fast" is not available, falls back to "gpt-4"
+    expect(translateModelName("gpt-4-fast")).toBe("gpt-4")
   })
 })

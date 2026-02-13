@@ -5,7 +5,7 @@ import { trimTrailingSlash } from "hono/trailing-slash"
 
 import { forwardError } from "./lib/error"
 import { state } from "./lib/state"
-import { tuiLogger } from "./lib/tui"
+import { tuiMiddleware } from "./lib/tui"
 import { registerRoutes } from "./routes"
 
 export const server = new Hono()
@@ -24,7 +24,7 @@ server.onError((error, c) => {
   return forwardError(c, error)
 })
 
-server.use(tuiLogger())
+server.use(tuiMiddleware())
 server.use(cors())
 server.use(trimTrailingSlash())
 

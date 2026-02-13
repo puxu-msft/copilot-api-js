@@ -1,20 +1,22 @@
-// Request tracker - manages request state independently of rendering
+/** TUI logger - manages request log entries independently of rendering */
 
 import { generateId } from "~/lib/utils"
+import { state } from "~/lib/state"
 
-import type { RequestUpdate, TrackedRequest, TuiRenderer } from "./types"
+import type { RequestUpdate, TuiLogEntry, TuiRenderer } from "./types"
 
 interface StartRequestOptions {
   method: string
   path: string
-  model: string
+  model?: string
   isHistoryAccess?: boolean
+  requestBodySize?: number
 }
 
-class RequestTracker {
-  private requests: Map<string, TrackedRequest> = new Map()
+export class TuiLogger {
+  private entries: Map<string, TuiLogEntry> = new Map()
   private renderer: TuiRenderer | null = null
-  private completedQueue: Array<TrackedRequest> = []
+  private completedQueue: Array<TuiLogEntry> = []
   private completedTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map()
   private historySize = 5
   private completedDisplayMs = 2000
@@ -34,11 +36,11 @@ class RequestTracker {
 
   /**
    * Start tracking a new request
-   * Returns the tracking ID
+   * Returns the log entry ID
    */
   startRequest(options: StartRequestOptions): string {
     const id = generateId()
-    const request: TrackedRequest = {
+    const entry: TuiLogEntry = {
       id,
       method: options.method,
       path: options.path,
@@ -46,10 +48,11 @@ class RequestTracker {
       startTime: Date.now(),
       status: "executing",
       isHistoryAccess: options.isHistoryAccess,
+      requestBodySize: options.requestBodySize,
     }
 
-    this.requests.set(id, request)
-    this.renderer?.onRequestStart(request)
+    this.entries.set(id, entry)
+    this.renderer?.onRequestStart(entry)
 
     return id
   }
@@ -58,20 +61,29 @@ class RequestTracker {
    * Update request status
    */
   updateRequest(id: string, update: RequestUpdate): void {
-    const request = this.requests.get(id)
-    if (!request) return
+    const entry = this.entries.get(id)
+    if (!entry) return
 
-    if (update.status !== undefined) request.status = update.status
-    if (update.statusCode !== undefined) request.statusCode = update.statusCode
-    if (update.durationMs !== undefined) request.durationMs = update.durationMs
-    if (update.inputTokens !== undefined) request.inputTokens = update.inputTokens
-    if (update.outputTokens !== undefined) request.outputTokens = update.outputTokens
-    if (update.error !== undefined) request.error = update.error
-    if (update.queuePosition !== undefined) request.queuePosition = update.queuePosition
+    if (update.model !== undefined) {
+      entry.model = update.model
+      const multiplier = state.models?.data.find((m) => m.id === update.model)?.billing?.multiplier
+      if (multiplier != null) entry.multiplier = multiplier
+    }
+    if (update.status !== undefined) entry.status = update.status
+    if (update.statusCode !== undefined) entry.statusCode = update.statusCode
+    if (update.durationMs !== undefined) entry.durationMs = update.durationMs
+    if (update.inputTokens !== undefined) entry.inputTokens = update.inputTokens
+    if (update.outputTokens !== undefined) entry.outputTokens = update.outputTokens
+    if (update.cacheReadInputTokens !== undefined) entry.cacheReadInputTokens = update.cacheReadInputTokens
+    if (update.cacheCreationInputTokens !== undefined) entry.cacheCreationInputTokens = update.cacheCreationInputTokens
+    if (update.estimatedTokens !== undefined) entry.estimatedTokens = update.estimatedTokens
+    if (update.error !== undefined) entry.error = update.error
+    if (update.queuePosition !== undefined) entry.queuePosition = update.queuePosition
+    if (update.queueWaitMs !== undefined) entry.queueWaitMs = update.queueWaitMs
     if (update.tags) {
-      request.tags ??= []
+      entry.tags ??= []
       for (const tag of update.tags) {
-        if (!request.tags.includes(tag)) request.tags.push(tag)
+        if (!entry.tags.includes(tag)) entry.tags.push(tag)
       }
     }
 
@@ -82,31 +94,31 @@ class RequestTracker {
    * Mark request as completed
    */
   completeRequest(id: string, statusCode: number, usage?: { inputTokens: number; outputTokens: number }): void {
-    const request = this.requests.get(id)
-    if (!request) return
+    const entry = this.entries.get(id)
+    if (!entry) return
 
-    request.status =
+    entry.status =
       // 101 = WebSocket upgrade (Switching Protocols), also a success
       statusCode === 101 || (statusCode >= 200 && statusCode < 400) ? "completed" : "error"
-    request.statusCode = statusCode
-    request.durationMs = Date.now() - request.startTime
+    entry.statusCode = statusCode
+    entry.durationMs = Date.now() - entry.startTime
 
     if (usage) {
-      request.inputTokens = usage.inputTokens
-      request.outputTokens = usage.outputTokens
+      entry.inputTokens = usage.inputTokens
+      entry.outputTokens = usage.outputTokens
     }
 
-    this.renderer?.onRequestComplete(request)
+    this.renderer?.onRequestComplete(entry)
 
     // Move to completed queue
-    this.requests.delete(id)
-    this.completedQueue.push(request)
+    this.entries.delete(id)
+    this.completedQueue.push(entry)
 
     // Trim completed queue
     while (this.completedQueue.length > this.historySize) {
       const removed = this.completedQueue.shift()
       if (removed) {
-        // Clear the timeout for the removed request
+        // Clear the timeout for the removed entry
         const timeoutId = this.completedTimeouts.get(removed.id)
         if (timeoutId) {
           clearTimeout(timeoutId)
@@ -117,7 +129,7 @@ class RequestTracker {
 
     // Schedule removal from display after delay
     const timeoutId = setTimeout(() => {
-      const idx = this.completedQueue.indexOf(request)
+      const idx = this.completedQueue.indexOf(entry)
       if (idx !== -1) {
         this.completedQueue.splice(idx, 1)
       }
@@ -130,18 +142,18 @@ class RequestTracker {
    * Mark request as failed with error
    */
   failRequest(id: string, error: string): void {
-    const request = this.requests.get(id)
-    if (!request) return
+    const entry = this.entries.get(id)
+    if (!entry) return
 
-    request.status = "error"
-    request.error = error
-    request.durationMs = Date.now() - request.startTime
+    entry.status = "error"
+    entry.error = error
+    entry.durationMs = Date.now() - entry.startTime
 
-    this.renderer?.onRequestComplete(request)
+    this.renderer?.onRequestComplete(entry)
 
     // Move to completed queue
-    this.requests.delete(id)
-    this.completedQueue.push(request)
+    this.entries.delete(id)
+    this.completedQueue.push(entry)
 
     // Trim completed queue (same cleanup as completeRequest)
     while (this.completedQueue.length > this.historySize) {
@@ -157,7 +169,7 @@ class RequestTracker {
 
     // Schedule removal from display after delay
     const timeoutId = setTimeout(() => {
-      const idx = this.completedQueue.indexOf(request)
+      const idx = this.completedQueue.indexOf(entry)
       if (idx !== -1) {
         this.completedQueue.splice(idx, 1)
       }
@@ -167,31 +179,31 @@ class RequestTracker {
   }
 
   /**
-   * Get all active requests
+   * Get all active entries
    */
-  getActiveRequests(): Array<TrackedRequest> {
-    return Array.from(this.requests.values())
+  getActiveRequests(): Array<TuiLogEntry> {
+    return Array.from(this.entries.values())
   }
 
   /**
-   * Get recently completed requests
+   * Get recently completed entries
    */
-  getCompletedRequests(): Array<TrackedRequest> {
+  getCompletedRequests(): Array<TuiLogEntry> {
     return [...this.completedQueue]
   }
 
   /**
-   * Get request by ID
+   * Get entry by ID
    */
-  getRequest(id: string): TrackedRequest | undefined {
-    return this.requests.get(id)
+  getRequest(id: string): TuiLogEntry | undefined {
+    return this.entries.get(id)
   }
 
   /**
-   * Clear all tracked requests and pending timeouts
+   * Clear all entries and pending timeouts
    */
   clear(): void {
-    this.requests.clear()
+    this.entries.clear()
     this.completedQueue = []
     // Clear all pending timeouts
     for (const timeoutId of this.completedTimeouts.values()) {
@@ -199,7 +211,17 @@ class RequestTracker {
     }
     this.completedTimeouts.clear()
   }
+
+  /**
+   * Destroy the logger and its renderer.
+   * Called during graceful shutdown to clean up terminal state (e.g. footer).
+   */
+  destroy(): void {
+    this.clear()
+    this.renderer?.destroy()
+    this.renderer = null
+  }
 }
 
-// Singleton instance
-export const requestTracker = new RequestTracker()
+/** Singleton instance */
+export const tuiLogger = new TuiLogger()

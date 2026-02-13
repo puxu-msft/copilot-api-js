@@ -1,12 +1,15 @@
+/** Fallback VSCode version when GitHub API is unavailable */
 const FALLBACK = "1.104.3"
 
-// GitHub API endpoint for latest VSCode release
+/** GitHub API endpoint for latest VSCode release */
 const GITHUB_API_URL = "https://api.github.com/repos/microsoft/vscode/releases/latest"
 
+/** GitHub release response shape */
 interface GitHubRelease {
   tag_name: string
 }
 
+/** Fetch the latest VSCode version from GitHub releases, falling back to a hardcoded version */
 export async function getVSCodeVersion() {
   const controller = new AbortController()
   const timeout = setTimeout(() => {

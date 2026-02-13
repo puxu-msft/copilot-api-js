@@ -9,7 +9,7 @@
 
 import { describe, test, expect, beforeAll } from "bun:test"
 
-import type { AnthropicMessagesPayload, AnthropicResponse } from "~/types/api/anthropic"
+import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
 
 import { state } from "~/lib/state"
 import { createAnthropicMessages, supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-messages"
@@ -214,7 +214,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     test("should complete simple message via direct Anthropic API", async () => {
       const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: claudeModel,
         messages: [
           {
@@ -242,7 +242,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     test("should handle system prompt in direct API", async () => {
       const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: claudeModel,
         system: "You are a helpful coding assistant.",
         messages: [{ role: "user", content: "What language is this: console.log('hi')" }],
@@ -297,7 +297,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     test("should handle Anthropic tool format", async () => {
       const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: claudeModel,
         messages: [{ role: "user", content: "What's the weather in Paris?" }],
         tools: [

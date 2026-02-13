@@ -4,7 +4,7 @@
  */
 
 // Payload
-export { buildFinalPayload, logPayloadSizeInfo } from "./payload"
+export { logPayloadSizeInfo, logPayloadSizeInfoAnthropic } from "./payload"
 // Pipeline
 export type {
   FormatAdapter,
@@ -17,8 +17,10 @@ export type {
 } from "./pipeline"
 
 export { executeRequestPipeline } from "./pipeline"
+// Recording
+export { buildAnthropicStreamResult } from "./recording"
 // Response
-export { isNonStreaming, safeParseJson } from "./response"
+export { isNonStreaming, prependMarkerToResponse, safeParseJson } from "./response"
 
 // Strategies
 export type { TruncateOptions, TruncateResult } from "./strategies/auto-truncate"
@@ -26,13 +28,10 @@ export type { TruncateOptions, TruncateResult } from "./strategies/auto-truncate
 export { createAutoTruncateStrategy } from "./strategies/auto-truncate"
 
 // Tracking
-export type { ResponseContext } from "./tracking"
+export type { RequestResult, ResponseContext } from "./tracking"
 export {
-  completeTracking,
-  failTracking,
-  recordErrorResponse,
-  recordStreamError,
-  updateTrackerModel,
+  extractErrorContent,
+  finalizeRequest,
   updateTrackerStatus,
 } from "./tracking"
 

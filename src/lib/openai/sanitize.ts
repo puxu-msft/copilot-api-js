@@ -24,8 +24,8 @@ import { removeSystemReminderTags } from "~/lib/system-reminder"
  * Remove system-reminder tags from OpenAI message content.
  * Handles both string content and array of content parts.
  *
- * NOTE: Restrictive statement filtering for system prompts is handled by
- * security-research-mode.ts when --security-research-mode is enabled.
+ * NOTE: System prompt overrides are handled by
+ * system-prompt-manager.ts via config.yaml.
  */
 function sanitizeOpenAIMessageContent(msg: Message): Message {
   if (typeof msg.content === "string") {

@@ -11,7 +11,7 @@ import type { Model } from "~/services/copilot/get-models"
 // GPT Encoder Support
 // ============================================================================
 
-// Encoder type mapping
+/** Encoder type mapping */
 const ENCODING_MAP = {
   o200k_base: () => import("gpt-tokenizer/encoding/o200k_base"),
   cl100k_base: () => import("gpt-tokenizer/encoding/cl100k_base"),
@@ -22,12 +22,12 @@ const ENCODING_MAP = {
 
 type SupportedEncoding = keyof typeof ENCODING_MAP
 
-// Define encoder interface
+/** Encoder interface for tokenization */
 interface Encoder {
   encode: (text: string) => Array<number>
 }
 
-// Cache loaded encoders to avoid repeated imports
+/** Cache loaded encoders to avoid repeated imports */
 const encodingCache = new Map<string, Encoder>()
 
 /**

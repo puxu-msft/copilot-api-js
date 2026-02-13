@@ -88,7 +88,7 @@ export function handleExport(c: Context) {
   return c.body(data)
 }
 
-// Session management endpoints
+/** Session management endpoints */
 export function handleGetSessions(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)

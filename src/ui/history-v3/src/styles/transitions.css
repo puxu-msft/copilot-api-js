@@ -1,0 +1,58 @@
+/* Vue transition classes */
+
+/* Fade */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--transition-normal);
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Slide down */
+.slide-down-enter-active,
+.slide-down-leave-active {
+  transition: all var(--transition-normal);
+}
+.slide-down-enter-from,
+.slide-down-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* Slide up (for toasts) */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: all 0.3s ease;
+}
+.slide-up-enter-from {
+  opacity: 0;
+  transform: translateY(16px);
+}
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* Collapse */
+.collapse-enter-active,
+.collapse-leave-active {
+  transition: all var(--transition-normal);
+  overflow: hidden;
+}
+.collapse-enter-from,
+.collapse-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+/* Highlight flash for jump targets */
+@keyframes highlight-flash {
+  0%, 100% { border-color: var(--border); }
+  25%, 75% { border-color: var(--primary); }
+  50% { border-color: var(--primary); box-shadow: 0 0 8px rgba(88, 166, 255, 0.3); }
+}
+.highlight-flash {
+  animation: highlight-flash 1s ease;
+}

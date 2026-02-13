@@ -1,7 +1,8 @@
 import type { Context } from "hono"
 
 import consola from "consola"
-import { streamSSE, type SSEMessage } from "hono/streaming"
+import type { ServerSentEventMessage } from "fetch-event-stream"
+import { SSEStreamingApi, streamSSE } from "hono/streaming"
 
 import type { Model } from "~/services/copilot/get-models"
 
@@ -13,11 +14,12 @@ import {
   createTruncationResponseMarkerOpenAI,
 } from "~/lib/auto-truncate/openai"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
-import { type MessageContent, recordRequest, recordResponse } from "~/lib/history"
+import { type MessageContent, recordRequest } from "~/lib/history"
 import { translateModelName } from "~/lib/models/resolver"
-import { getTokenCount } from "~/lib/models/tokenizer"
+import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { requestTracker } from "~/lib/tui"
+import { processOpenAIMessages } from "~/lib/system-prompt-manager"
+import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
 import {
   createChatCompletions,
@@ -26,26 +28,27 @@ import {
   type ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
 
+import {
+  createOpenAIStreamAccumulator,
+  accumulateOpenAIStreamEvent,
+} from "~/lib/openai/stream-accumulator"
+
 import type { FormatAdapter } from "../shared/pipeline"
 
 import {
   type ResponseContext,
-  buildFinalPayload,
-  completeTracking,
-  failTracking,
+  extractErrorContent,
+  finalizeRequest,
   isNonStreaming,
   logPayloadSizeInfo,
-  recordErrorResponse,
-  recordStreamError,
-  updateTrackerModel,
   updateTrackerStatus,
 } from "../shared"
 import { executeRequestPipeline } from "../shared/pipeline"
+import { buildOpenAIStreamResult } from "../shared/recording"
 import { createAutoTruncateStrategy, type TruncateResult } from "../shared/strategies/auto-truncate"
 
 export async function handleCompletion(c: Context) {
   const originalPayload = await c.req.json<ChatCompletionsPayload>()
-  consola.debug("Request payload:", JSON.stringify(originalPayload).slice(-400))
 
   // Resolve model name aliases and date-suffixed versions
   const resolvedModel = translateModelName(originalPayload.model)
@@ -54,17 +57,8 @@ export async function handleCompletion(c: Context) {
     originalPayload.model = resolvedModel
   }
 
-  // Get tracking ID and use tracker's startTime for consistent timing
-  const trackingId = c.get("trackingId") as string | undefined
-  const trackedRequest = trackingId ? requestTracker.getRequest(trackingId) : undefined
-  const startTime = trackedRequest?.startTime ?? Date.now()
-
-  // Update TUI tracker with model info
-  updateTrackerModel(trackingId, originalPayload.model)
-
   // Find the selected model and validate endpoint support before recording
   const selectedModel = state.models?.data.find((model) => model.id === originalPayload.model)
-
   if (selectedModel?.supported_endpoints && !selectedModel.supported_endpoints.includes("/chat/completions")) {
     return c.json(
       {
@@ -81,10 +75,13 @@ export async function handleCompletion(c: Context) {
     )
   }
 
+  // System prompt collection + config-based overrides (always active)
+  originalPayload.messages = await processOpenAIMessages(originalPayload.messages)
+
   // Record request to history with full messages
   const historyId = recordRequest("openai", {
     model: originalPayload.model,
-    messages: convertOpenAIMessages(originalPayload.messages),
+    messages: originalPayload.messages as unknown as MessageContent[],
     stream: originalPayload.stream ?? false,
     tools: originalPayload.tools?.map((t) => ({
       name: t.function.name,
@@ -94,32 +91,29 @@ export async function handleCompletion(c: Context) {
     temperature: originalPayload.temperature ?? undefined,
   })
 
-  const ctx: ResponseContext = { historyId, trackingId, startTime }
+  // Get tracking ID and use tracker's startTime for consistent timing
+  const tuiLogId = c.get("tuiLogId") as string | undefined
 
-  // Calculate and display token count
-  await logTokenCount(originalPayload, selectedModel)
+  // Update TUI tracker with model info
+  if (tuiLogId) tuiLogger.updateRequest(tuiLogId, { model: originalPayload.model })
 
-  // Build the final payload with sanitization (no pre-truncation — truncation is reactive)
-  const { finalPayload, truncateResult } = buildFinalPayload(originalPayload, selectedModel)
-  if (truncateResult) {
-    ctx.truncateResult = truncateResult
-  }
+  const trackedRequest = tuiLogId ? tuiLogger.getRequest(tuiLogId) : undefined
+  const startTime = trackedRequest?.startTime ?? Date.now()
+  const ctx: ResponseContext = { historyId, tuiLogId, startTime }
 
-  // Set compact tag for log display
-  if (truncateResult?.wasCompacted && trackingId) {
-    requestTracker.updateRequest(trackingId, { tags: ["compact"] })
-  }
+  // Sanitize messages (filter orphaned tool blocks, system-reminders)
+  const { payload: sanitizedPayload } = sanitizeOpenAIMessages(originalPayload)
 
-  const payload =
-    isNullish(finalPayload.max_tokens) ?
+  const finalPayload =
+    isNullish(sanitizedPayload.max_tokens) ?
       {
-        ...finalPayload,
+        ...sanitizedPayload,
         max_tokens: selectedModel?.capabilities?.limits?.max_output_tokens,
       }
-    : finalPayload
+    : sanitizedPayload
 
   if (isNullish(originalPayload.max_tokens)) {
-    consola.debug("Set max_tokens to:", JSON.stringify(payload.max_tokens))
+    consola.debug("Set max_tokens to:", JSON.stringify(finalPayload.max_tokens))
   }
 
   if (state.manualApprove) await awaitApproval()
@@ -127,11 +121,11 @@ export async function handleCompletion(c: Context) {
   // Execute request with reactive retry pipeline
   return executeRequest({
     c,
-    payload,
+    payload: finalPayload,
     originalPayload,
     selectedModel,
     ctx,
-    trackingId,
+    tuiLogId,
   })
 }
 
@@ -142,7 +136,7 @@ interface ExecuteRequestOptions {
   originalPayload: ChatCompletionsPayload
   selectedModel: Model | undefined
   ctx: ResponseContext
-  trackingId: string | undefined
+  tuiLogId: string | undefined
 }
 
 /**
@@ -150,7 +144,7 @@ interface ExecuteRequestOptions {
  * Handles 413 and token limit errors with auto-truncation.
  */
 async function executeRequest(opts: ExecuteRequestOptions) {
-  const { c, payload, originalPayload, selectedModel, ctx, trackingId } = opts
+  const { c, payload, originalPayload, selectedModel, ctx, tuiLogId } = opts
 
   // Build adapter and strategy for the pipeline
   const adapter: FormatAdapter<ChatCompletionsPayload> = {
@@ -186,8 +180,8 @@ async function executeRequest(opts: ExecuteRequestOptions) {
         }
 
         // Update tracking tags
-        if (trackingId) {
-          requestTracker.updateRequest(trackingId, { tags: ["compact", `retry-${attempt + 1}`] })
+        if (tuiLogId) {
+          tuiLogger.updateRequest(tuiLogId, { tags: ["truncated", `retry-${attempt + 1}`] })
         }
       },
     })
@@ -200,43 +194,34 @@ async function executeRequest(opts: ExecuteRequestOptions) {
     }
 
     consola.debug("Streaming response")
-    updateTrackerStatus(trackingId, "streaming")
+    updateTrackerStatus(tuiLogId, "streaming")
 
     return streamSSE(c, async (stream) => {
       await handleStreamingResponse({
         stream,
-        response: response as AsyncIterable<{ data?: string; event?: string }>,
+        response: response as AsyncIterable<ServerSentEventMessage>,
         payload,
         ctx,
       })
     })
   } catch (error) {
-    recordErrorResponse(ctx, payload.model, error)
+    finalizeRequest(ctx, {
+      success: false,
+      model: payload.model,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      error: error instanceof Error ? error.message : String(error),
+      content: extractErrorContent(error),
+      durationMs: Date.now() - ctx.startTime,
+    })
     throw error
-  }
-}
-
-// Log token count for debugging
-async function logTokenCount(payload: ChatCompletionsPayload, selectedModel: { id: string } | undefined) {
-  try {
-    if (selectedModel) {
-      const tokenCount = await getTokenCount(payload, selectedModel as Parameters<typeof getTokenCount>[1])
-      consola.debug("Current token count:", tokenCount)
-    } else {
-      consola.debug("No model selected, skipping token count calculation")
-    }
-  } catch (error) {
-    consola.debug("Failed to calculate token count:", error)
   }
 }
 
 // Handle non-streaming response
 function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletionResponse, ctx: ResponseContext) {
-  consola.debug("Non-streaming response:", JSON.stringify(originalResponse))
-
   // Prepend truncation marker if auto-truncate was performed (only in verbose mode)
   let response = originalResponse
-  if (state.verbose && ctx.truncateResult?.wasCompacted && response.choices[0]?.message.content) {
+  if (state.verbose && ctx.truncateResult?.wasTruncated && response.choices[0]?.message.content) {
     const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
     response = {
       ...response,
@@ -246,7 +231,7 @@ function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletion
             ...choice,
             message: {
               ...choice.message,
-              content: marker + (choice.message.content ?? ""),
+              content: marker + choice.message.content,
             },
           }
         : choice,
@@ -257,88 +242,29 @@ function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletion
   const choice = response.choices[0]
   const usage = response.usage
 
-  recordResponse(
-    ctx.historyId,
-    {
-      success: true,
-      model: response.model,
-      usage: {
-        input_tokens: usage?.prompt_tokens ?? 0,
-        output_tokens: usage?.completion_tokens ?? 0,
-        ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && {
-          cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens,
-        }),
-      },
-      stop_reason: choice.finish_reason,
-      content: buildResponseContent(choice),
-      toolCalls: extractToolCalls(choice),
+  finalizeRequest(ctx, {
+    success: true,
+    model: response.model,
+    usage: {
+      input_tokens: usage?.prompt_tokens ?? 0,
+      output_tokens: usage?.completion_tokens ?? 0,
+      ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && {
+        cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens,
+      }),
     },
-    Date.now() - ctx.startTime,
-  )
-
-  if (ctx.trackingId && usage) {
-    requestTracker.updateRequest(ctx.trackingId, {
-      inputTokens: usage.prompt_tokens,
-      outputTokens: usage.completion_tokens,
-      queueWaitMs: ctx.queueWaitMs,
-    })
-  }
+    stop_reason: choice.finish_reason ?? undefined,
+    content: choice.message,
+    durationMs: Date.now() - ctx.startTime,
+    queueWaitMs: ctx.queueWaitMs,
+  })
 
   return c.json(response)
 }
 
-// Build response content for history
-function buildResponseContent(choice: ChatCompletionResponse["choices"][0]) {
-  return {
-    role: choice.message.role,
-    content:
-      typeof choice.message.content === "string" ? choice.message.content : JSON.stringify(choice.message.content),
-    tool_calls: choice.message.tool_calls?.map((tc) => ({
-      id: tc.id,
-      type: tc.type,
-      function: { name: tc.function.name, arguments: tc.function.arguments },
-    })),
-  }
-}
-
-// Extract tool calls for history
-function extractToolCalls(choice: ChatCompletionResponse["choices"][0]) {
-  return choice.message.tool_calls?.map((tc) => ({
-    id: tc.id,
-    name: tc.function.name,
-    input: tc.function.arguments,
-  }))
-}
-
-/** Stream accumulator for collecting streaming response data */
-interface StreamAccumulator {
-  model: string
-  inputTokens: number
-  outputTokens: number
-  cachedTokens: number
-  finishReason: string
-  content: string
-  toolCalls: Array<{ id: string; name: string; arguments: string }>
-  toolCallMap: Map<number, { id: string; name: string; arguments: string }>
-}
-
-function createStreamAccumulator(): StreamAccumulator {
-  return {
-    model: "",
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedTokens: 0,
-    finishReason: "",
-    content: "",
-    toolCalls: [],
-    toolCallMap: new Map(),
-  }
-}
-
 /** Options for handleStreamingResponse */
 interface StreamingOptions {
-  stream: { writeSSE: (msg: SSEMessage) => Promise<void> }
-  response: AsyncIterable<{ data?: string; event?: string }>
+  stream: SSEStreamingApi
+  response: AsyncIterable<ServerSentEventMessage>
   payload: ChatCompletionsPayload
   ctx: ResponseContext
 }
@@ -346,14 +272,14 @@ interface StreamingOptions {
 // Handle streaming response
 async function handleStreamingResponse(opts: StreamingOptions) {
   const { stream, response, payload, ctx } = opts
-  const acc = createStreamAccumulator()
+  const acc = createOpenAIStreamAccumulator()
 
   try {
     // Prepend truncation marker as first chunk if auto-truncate was performed (only in verbose mode)
-    if (state.verbose && ctx.truncateResult?.wasCompacted) {
+    if (state.verbose && ctx.truncateResult?.wasTruncated) {
       const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
       const markerChunk: ChatCompletionChunk = {
-        id: `compact-marker-${Date.now()}`,
+        id: `truncation-marker-${Date.now()}`,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model: payload.model,
@@ -373,141 +299,40 @@ async function handleStreamingResponse(opts: StreamingOptions) {
       acc.content += marker
     }
 
-    for await (const chunk of response) {
-      consola.debug("Streaming chunk:", JSON.stringify(chunk))
-      parseStreamChunk(chunk, acc)
-      await stream.writeSSE(chunk as SSEMessage)
-    }
+    for await (const rawEvent of response) {
+      // Check shutdown abort signal — break out of stream gracefully
+      if (getShutdownSignal()?.aborted) break
 
-    recordStreamSuccess(acc, payload.model, ctx)
-    completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens, ctx.queueWaitMs)
-  } catch (error) {
-    recordStreamError({ acc, fallbackModel: payload.model, ctx, error })
-    failTracking(ctx.trackingId, error)
-    throw error
-  }
-}
-
-// Parse a single stream chunk and accumulate data
-function parseStreamChunk(chunk: { data?: string }, acc: StreamAccumulator) {
-  if (!chunk.data || chunk.data === "[DONE]") return
-
-  try {
-    const parsed = JSON.parse(chunk.data) as ChatCompletionChunk
-
-    // Accumulate model
-    if (parsed.model && !acc.model) acc.model = parsed.model
-
-    // Accumulate usage
-    if (parsed.usage) {
-      acc.inputTokens = parsed.usage.prompt_tokens
-      acc.outputTokens = parsed.usage.completion_tokens
-      if (parsed.usage.prompt_tokens_details?.cached_tokens !== undefined) {
-        acc.cachedTokens = parsed.usage.prompt_tokens_details.cached_tokens
-      }
-    }
-
-    // Accumulate choice
-    const choice = parsed.choices[0] as (typeof parsed.choices)[0] | undefined
-    if (choice) {
-      if (choice.delta.content) acc.content += choice.delta.content
-      if (choice.delta.tool_calls) {
-        for (const tc of choice.delta.tool_calls) {
-          const idx = tc.index
-          if (!acc.toolCallMap.has(idx)) {
-            acc.toolCallMap.set(idx, {
-              id: tc.id ?? "",
-              name: tc.function?.name ?? "",
-              arguments: "",
-            })
-          }
-          const item = acc.toolCallMap.get(idx)
-          if (item) {
-            if (tc.id) item.id = tc.id
-            if (tc.function?.name) item.name = tc.function.name
-            if (tc.function?.arguments) item.arguments += tc.function.arguments
-          }
+      // Parse and accumulate for history/tracking (skip [DONE] and empty data)
+      if (rawEvent.data && rawEvent.data !== "[DONE]") {
+        try {
+          const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+          accumulateOpenAIStreamEvent(chunk, acc)
+        } catch {
+          // Ignore parse errors
         }
       }
-      if (choice.finish_reason) acc.finishReason = choice.finish_reason
+
+      // Forward every event to client — proxy preserves upstream data
+      await stream.writeSSE({
+        data: rawEvent.data ?? "",
+        event: rawEvent.event,
+        id: String(rawEvent.id),
+        retry: rawEvent.retry,
+      })
     }
-  } catch {
-    // Ignore parse errors
+
+    const result = buildOpenAIStreamResult(acc, payload.model, ctx)
+    finalizeRequest(ctx, result)
+  } catch (error) {
+    finalizeRequest(ctx, {
+      success: false,
+      model: acc.model || payload.model,
+      usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
+      error: error instanceof Error ? error.message : String(error),
+      content: acc.content ? { role: "assistant", content: acc.content } : null,
+      durationMs: Date.now() - ctx.startTime,
+    })
+    throw error
   }
-}
-
-// Record successful streaming response
-function recordStreamSuccess(acc: StreamAccumulator, fallbackModel: string, ctx: ResponseContext) {
-  // Collect tool calls from map
-  for (const tc of acc.toolCallMap.values()) {
-    if (tc.id && tc.name) acc.toolCalls.push(tc)
-  }
-
-  const toolCalls = acc.toolCalls.map((tc) => ({
-    id: tc.id,
-    type: "function" as const,
-    function: { name: tc.name, arguments: tc.arguments },
-  }))
-
-  recordResponse(
-    ctx.historyId,
-    {
-      success: true,
-      model: acc.model || fallbackModel,
-      usage: {
-        input_tokens: acc.inputTokens,
-        output_tokens: acc.outputTokens,
-        ...(acc.cachedTokens > 0 && { cache_read_input_tokens: acc.cachedTokens }),
-      },
-      stop_reason: acc.finishReason || undefined,
-      content: {
-        role: "assistant",
-        content: acc.content,
-        tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-      },
-      toolCalls:
-        acc.toolCalls.length > 0 ?
-          acc.toolCalls.map((tc) => ({
-            id: tc.id,
-            name: tc.name,
-            input: tc.arguments,
-          }))
-        : undefined,
-    },
-    Date.now() - ctx.startTime,
-  )
-}
-
-// Convert OpenAI messages to history MessageContent format
-function convertOpenAIMessages(messages: ChatCompletionsPayload["messages"]): Array<MessageContent> {
-  return messages.map((msg) => {
-    const result: MessageContent = {
-      role: msg.role,
-      content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
-    }
-
-    // Handle tool calls in assistant messages
-    if ("tool_calls" in msg && msg.tool_calls) {
-      result.tool_calls = msg.tool_calls.map((tc) => ({
-        id: tc.id,
-        type: tc.type,
-        function: {
-          name: tc.function.name,
-          arguments: tc.function.arguments,
-        },
-      }))
-    }
-
-    // Handle tool result messages
-    if ("tool_call_id" in msg && msg.tool_call_id) {
-      result.tool_call_id = msg.tool_call_id
-    }
-
-    // Handle function name
-    if ("name" in msg && msg.name) {
-      result.name = msg.name
-    }
-
-    return result
-  })
 }

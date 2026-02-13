@@ -8,12 +8,12 @@
 import consola from "consola"
 
 import type {
-  AnthropicAssistantContentBlock,
-  AnthropicAssistantMessage,
-  AnthropicMessage,
-  AnthropicMessagesPayload,
-  AnthropicUserContentBlock,
-  AnthropicUserMessage,
+  ContentBlock,
+  AssistantMessage,
+  MessageParam,
+  MessagesPayload,
+  ContentBlockParam,
+  UserMessage,
 } from "~/types/api/anthropic"
 
 import { isServerToolResultBlock } from "~/types/api/anthropic"
@@ -75,7 +75,7 @@ function sanitizeToolResultContent(
 /**
  * Remove system-reminder tags from Anthropic message content.
  */
-function sanitizeAnthropicMessageContent(msg: AnthropicMessage): AnthropicMessage {
+function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
   if (typeof msg.content === "string") {
     const sanitized = removeSystemReminderTags(msg.content)
     if (sanitized !== msg.content) {
@@ -86,7 +86,7 @@ function sanitizeAnthropicMessageContent(msg: AnthropicMessage): AnthropicMessag
   }
   if (msg.role === "user") {
     const result = msg.content.reduce<{
-      blocks: Array<AnthropicUserContentBlock>
+      blocks: Array<ContentBlockParam>
       modified: boolean
     }>(
       (acc, block) => {
@@ -102,12 +102,14 @@ function sanitizeAnthropicMessageContent(msg: AnthropicMessage): AnthropicMessag
         }
         // Handle tool_result blocks
         if (block.type === "tool_result" && block.content) {
-          const sanitizedResult = sanitizeToolResultContent(block.content)
+          const sanitizedResult = sanitizeToolResultContent(
+            block.content as Parameters<typeof sanitizeToolResultContent>[0],
+          )
           if (sanitizedResult.modified) {
             acc.blocks.push({
               ...block,
               content: sanitizedResult.content,
-            } as AnthropicUserContentBlock)
+            } as ContentBlockParam)
             acc.modified = true
             return acc
           }
@@ -118,14 +120,14 @@ function sanitizeAnthropicMessageContent(msg: AnthropicMessage): AnthropicMessag
       { blocks: [], modified: false },
     )
     if (result.modified) {
-      return { role: "user", content: result.blocks } as AnthropicUserMessage
+      return { role: "user", content: result.blocks } as UserMessage
     }
     return msg
   }
 
   // Assistant message
   const result = msg.content.reduce<{
-    blocks: Array<AnthropicAssistantContentBlock>
+    blocks: Array<ContentBlock>
     modified: boolean
   }>(
     (acc, block) => {
@@ -133,13 +135,13 @@ function sanitizeAnthropicMessageContent(msg: AnthropicMessage): AnthropicMessag
         const sanitized = removeSystemReminderTags(block.text)
         if (sanitized !== block.text) {
           if (sanitized) {
-            acc.blocks.push({ ...block, text: sanitized })
+            acc.blocks.push({ ...block, text: sanitized } as ContentBlock)
           }
           acc.modified = true
           return acc
         }
       }
-      acc.blocks.push(block)
+      acc.blocks.push(block as ContentBlock)
       return acc
     },
     { blocks: [], modified: false },
@@ -148,7 +150,7 @@ function sanitizeAnthropicMessageContent(msg: AnthropicMessage): AnthropicMessag
     return {
       role: "assistant",
       content: result.blocks,
-    } as AnthropicAssistantMessage
+    } as AssistantMessage
   }
   return msg
 }
@@ -156,13 +158,13 @@ function sanitizeAnthropicMessageContent(msg: AnthropicMessage): AnthropicMessag
 /**
  * Remove system-reminder tags from all Anthropic messages.
  */
-export function removeAnthropicSystemReminders(messages: Array<AnthropicMessage>): {
-  messages: Array<AnthropicMessage>
+export function removeAnthropicSystemReminders(messages: Array<MessageParam>): {
+  messages: Array<MessageParam>
   modifiedCount: number
 } {
   let modifiedCount = 0
   const result = messages.map((msg) => {
-    const sanitized = sanitizeAnthropicMessageContent(msg)
+    const sanitized = sanitizeMessageParamContent(msg)
     if (sanitized !== msg) modifiedCount++
     return sanitized
   })
@@ -178,7 +180,7 @@ export function removeAnthropicSystemReminders(messages: Array<AnthropicMessage>
  * Only removes system-reminder tags here.
  *
  * NOTE: Restrictive statement filtering is handled separately by:
- * - security-research-mode.ts (when --security-research is enabled)
+ * - system-prompt-manager.ts (via config.yaml overrides)
  * This avoids duplicate processing of the system prompt.
  */
 function sanitizeAnthropicSystemPrompt(system: string | Array<{ type: "text"; text: string }> | undefined): {
@@ -230,7 +232,7 @@ function sanitizeAnthropicSystemPrompt(system: string | Array<{ type: "text"; te
  * (original input, sanitization, truncation, etc.).
  * Anthropic API rejects text blocks with empty text: "text content blocks must be non-empty"
  */
-function filterEmptyAnthropicTextBlocks(messages: Array<AnthropicMessage>): Array<AnthropicMessage> {
+function filterEmptyAnthropicTextBlocks(messages: Array<MessageParam>): Array<MessageParam> {
   return messages.map((msg) => {
     if (typeof msg.content === "string") return msg
 
@@ -242,14 +244,14 @@ function filterEmptyAnthropicTextBlocks(messages: Array<AnthropicMessage>): Arra
     })
 
     if (filtered.length === msg.content.length) return msg
-    return { ...msg, content: filtered } as AnthropicMessage
+    return { ...msg, content: filtered } as MessageParam
   })
 }
 
 /**
  * Final pass: remove any empty/whitespace-only text blocks from Anthropic system prompt.
  */
-function filterEmptySystemTextBlocks(system: AnthropicMessagesPayload["system"]): AnthropicMessagesPayload["system"] {
+function filterEmptySystemTextBlocks(system: MessagesPayload["system"]): MessagesPayload["system"] {
   if (!system || typeof system === "string") return system
   return system.filter((block) => block.text.trim() !== "")
 }
@@ -285,10 +287,10 @@ function parseStringifiedInput(input: unknown): Record<string, unknown> {
  * into two passes through the messages array for better performance.
  */
 function processToolBlocks(
-  messages: Array<AnthropicMessage>,
+  messages: Array<MessageParam>,
   tools: Array<{ name: string }> | undefined,
 ): {
-  messages: Array<AnthropicMessage>
+  messages: Array<MessageParam>
   fixedNameCount: number
   orphanedToolUseCount: number
   orphanedToolResultCount: number
@@ -331,7 +333,7 @@ function processToolBlocks(
   }
 
   // Pass 2: Process messages - fix names and filter orphans
-  const result: Array<AnthropicMessage> = []
+  const result: Array<MessageParam> = []
   let fixedNameCount = 0
   let orphanedToolUseCount = 0
   let orphanedToolResultCount = 0
@@ -346,7 +348,7 @@ function processToolBlocks(
 
     if (msg.role === "assistant") {
       // Process assistant messages: fix tool names and filter orphaned tool_use/server_tool_use
-      const newContent: Array<AnthropicAssistantContentBlock> = []
+      const newContent: Array<ContentBlock> = []
 
       for (const block of msg.content) {
         if (block.type === "tool_use") {
@@ -398,7 +400,7 @@ function processToolBlocks(
             orphanedToolResultCount++
             continue // Skip orphaned server tool result
           }
-          newContent.push(block as AnthropicAssistantContentBlock)
+          newContent.push(block as ContentBlock)
         }
       }
 
@@ -408,7 +410,7 @@ function processToolBlocks(
       result.push({ ...msg, content: newContent })
     } else {
       // Process user messages: filter orphaned tool_result/web_search_tool_result
-      const newContent: Array<AnthropicUserContentBlock> = []
+      const newContent: Array<ContentBlockParam> = []
 
       for (const block of msg.content) {
         if (block.type === "tool_result") {
@@ -458,7 +460,7 @@ function processToolBlocks(
 /**
  * Count total content blocks in Anthropic messages.
  */
-function countAnthropicContentBlocks(messages: Array<AnthropicMessage>): number {
+function countAnthropicContentBlocks(messages: Array<MessageParam>): number {
   let count = 0
   for (const msg of messages) {
     count += typeof msg.content === "string" ? 1 : msg.content.length
@@ -471,8 +473,8 @@ function countAnthropicContentBlocks(messages: Array<AnthropicMessage>): number 
  *
  * @returns Sanitized payload and count of removed items
  */
-export function sanitizeAnthropicMessages(payload: AnthropicMessagesPayload): {
-  payload: AnthropicMessagesPayload
+export function sanitizeAnthropicMessages(payload: MessagesPayload): {
+  payload: MessagesPayload
   removedCount: number
   systemReminderRemovals: number
 } {

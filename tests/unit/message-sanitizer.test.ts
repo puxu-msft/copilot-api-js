@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test"
 
 import type { Message } from "~/services/copilot/create-chat-completions"
-import type { AnthropicMessage, AnthropicMessagesPayload } from "~/types/api/anthropic"
+import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
 
-import { convertAnthropicMessages } from "~/lib/anthropic/message-utils"
 import {
   ensureAnthropicStartsWithUser,
   filterAnthropicOrphanedToolResults,
@@ -127,7 +126,7 @@ describe("System Reminder Tags", () => {
 describe("Anthropic Orphan Filter", () => {
   describe("getAnthropicToolUseIds", () => {
     test("should extract tool_use IDs from assistant message", () => {
-      const msg: AnthropicMessage = {
+      const msg: MessageParam = {
         role: "assistant",
         content: [
           { type: "tool_use", id: "tu_1", name: "test", input: {} },
@@ -139,19 +138,19 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("should return empty for user messages", () => {
-      const msg: AnthropicMessage = { role: "user", content: "hello" }
+      const msg: MessageParam = { role: "user", content: "hello" }
       expect(getAnthropicToolUseIds(msg)).toEqual([])
     })
 
     test("should return empty for string content", () => {
-      const msg: AnthropicMessage = { role: "assistant", content: "just text" }
+      const msg: MessageParam = { role: "assistant", content: "just text" }
       expect(getAnthropicToolUseIds(msg)).toEqual([])
     })
   })
 
   describe("getAnthropicToolResultIds", () => {
     test("should extract tool_result IDs from user message", () => {
-      const msg: AnthropicMessage = {
+      const msg: MessageParam = {
         role: "user",
         content: [
           { type: "tool_result", tool_use_id: "tu_1", content: "result" },
@@ -162,7 +161,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("should return empty for assistant messages", () => {
-      const msg: AnthropicMessage = {
+      const msg: MessageParam = {
         role: "assistant",
         content: [{ type: "text", text: "hi" }],
       }
@@ -172,7 +171,7 @@ describe("Anthropic Orphan Filter", () => {
 
   describe("filterAnthropicOrphanedToolResults", () => {
     test("should remove orphaned tool_result blocks", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -200,7 +199,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("should skip entire message if all tool_results are orphaned", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "user",
@@ -213,7 +212,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("should not modify messages without orphaned blocks", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -232,7 +231,7 @@ describe("Anthropic Orphan Filter", () => {
 
   describe("filterAnthropicOrphanedToolUse", () => {
     test("should remove orphaned tool_use blocks", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -254,7 +253,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("should skip assistant message if all content is orphaned tool_use", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -273,7 +272,7 @@ describe("Anthropic Orphan Filter", () => {
 
   describe("server tool use/result in assistant messages", () => {
     test("should preserve paired server_tool_use and server tool result in same assistant message", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -307,7 +306,7 @@ describe("Anthropic Orphan Filter", () => {
     test("should keep paired server_tool_use and inline result (not orphaned)", () => {
       // server_tool_use with matching inline tool_search_tool_result → NOT orphaned
       // Both should survive since they form a complete pair
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -330,7 +329,7 @@ describe("Anthropic Orphan Filter", () => {
 
     test("should remove orphaned server_tool_use without inline result", () => {
       // server_tool_use with NO matching tool_result anywhere → orphaned
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -352,7 +351,7 @@ describe("Anthropic Orphan Filter", () => {
 
     test("should remove orphaned server tool result when server_tool_use is missing", () => {
       // tool_search_tool_result with NO matching server_tool_use → orphaned
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -373,7 +372,7 @@ describe("Anthropic Orphan Filter", () => {
 
     test("should remove corrupted blocks (no tool_use_id) from user messages", () => {
       // Sanitize should handle corrupted blocks in user messages
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-sonnet-4",
         max_tokens: 1024,
         messages: [
@@ -402,7 +401,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("sanitizeAnthropicMessages should preserve server_tool_use with inline result", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-sonnet-4",
         max_tokens: 1024,
         messages: [
@@ -438,7 +437,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("sanitizeAnthropicMessages should fix double-serialized server_tool_use input", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-sonnet-4",
         max_tokens: 1024,
         messages: [
@@ -471,7 +470,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("sanitizeAnthropicMessages should keep tool_use referencing tools not in current request", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-sonnet-4",
         max_tokens: 1024,
         tools: [{ name: "Read", input_schema: { type: "object" as const, properties: {} } }],
@@ -518,7 +517,7 @@ describe("Anthropic Orphan Filter", () => {
 
     test("sanitizeAnthropicMessages should keep tool_use when no tools list is provided", () => {
       // When tools list is undefined/empty, all tool names should pass through
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-sonnet-4",
         max_tokens: 1024,
         // No tools array
@@ -547,7 +546,7 @@ describe("Anthropic Orphan Filter", () => {
 
   describe("ensureAnthropicStartsWithUser", () => {
     test("should skip leading assistant messages", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "assistant", content: "skipped" },
         { role: "user", content: "first user" },
         { role: "assistant", content: "response" },
@@ -559,7 +558,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("should return all messages if already starts with user", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         { role: "assistant", content: "hi" },
       ]
@@ -569,7 +568,7 @@ describe("Anthropic Orphan Filter", () => {
     })
 
     test("should return empty array if no user messages", () => {
-      const messages: Array<AnthropicMessage> = [{ role: "assistant", content: "hi" }]
+      const messages: Array<MessageParam> = [{ role: "assistant", content: "hi" }]
 
       const result = ensureAnthropicStartsWithUser(messages)
       expect(result).toHaveLength(0)
@@ -727,7 +726,7 @@ describe("OpenAI Orphan Filter", () => {
 // =============================================================================
 
 describe("Tool Name Case Correction", () => {
-  function makePayload(messages: Array<AnthropicMessage>, tools?: Array<{ name: string }>): AnthropicMessagesPayload {
+  function makePayload(messages: Array<MessageParam>, tools?: Array<{ name: string }>): MessagesPayload {
     return {
       model: "claude-sonnet-4",
       messages,
@@ -957,7 +956,7 @@ describe("Tool Name Case Correction", () => {
 // =============================================================================
 
 describe("Server Tool Use Support", () => {
-  function makePayload(messages: Array<AnthropicMessage>, tools?: Array<{ name: string }>): AnthropicMessagesPayload {
+  function makePayload(messages: Array<MessageParam>, tools?: Array<{ name: string }>): MessagesPayload {
     return {
       model: "claude-sonnet-4",
       messages,
@@ -968,7 +967,7 @@ describe("Server Tool Use Support", () => {
 
   describe("getAnthropicToolUseIds", () => {
     test("should extract server_tool_use IDs from assistant message", () => {
-      const msg: AnthropicMessage = {
+      const msg: MessageParam = {
         role: "assistant",
         content: [
           { type: "server_tool_use", id: "stu_1", name: "web_search", input: { query: "test" } },
@@ -985,7 +984,7 @@ describe("Server Tool Use Support", () => {
 
   describe("getAnthropicToolResultIds", () => {
     test("should extract web_search_tool_result IDs from user message", () => {
-      const msg: AnthropicMessage = {
+      const msg: MessageParam = {
         role: "user",
         content: [
           {
@@ -1012,7 +1011,7 @@ describe("Server Tool Use Support", () => {
 
   describe("filterAnthropicOrphanedToolResults", () => {
     test("should remove orphaned web_search_tool_result blocks", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "user",
@@ -1038,7 +1037,7 @@ describe("Server Tool Use Support", () => {
     })
 
     test("should preserve matched server_tool_use / web_search_tool_result pair", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -1070,7 +1069,7 @@ describe("Server Tool Use Support", () => {
 
   describe("filterAnthropicOrphanedToolUse", () => {
     test("should remove orphaned server_tool_use blocks", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -1091,7 +1090,7 @@ describe("Server Tool Use Support", () => {
     })
 
     test("should preserve matched server_tool_use with web_search_tool_result", () => {
-      const messages: Array<AnthropicMessage> = [
+      const messages: Array<MessageParam> = [
         { role: "user", content: "hello" },
         {
           role: "assistant",
@@ -1473,71 +1472,3 @@ describe("Server Tool Use Support", () => {
   })
 })
 
-// =============================================================================
-// convertAnthropicMessages — server tool handling
-// =============================================================================
-
-describe("convertAnthropicMessages", () => {
-  test("should preserve server_tool_use with id, name, and serialized input", () => {
-    const messages: Array<AnthropicMessage> = [
-      { role: "user", content: "hello" },
-      {
-        role: "assistant",
-        content: [{ type: "server_tool_use", id: "srv_1", name: "web_search", input: { query: "test" } }],
-      },
-    ]
-
-    const result = convertAnthropicMessages(messages)
-    const block = (result[1].content as Array<any>)[0]
-    expect(block.type).toBe("server_tool_use")
-    expect(block.id).toBe("srv_1")
-    expect(block.name).toBe("web_search")
-    expect(block.input).toEqual({ query: "test" })
-  })
-
-  test("should preserve web_search_tool_result with tool_use_id", () => {
-    const messages: Array<AnthropicMessage> = [
-      { role: "user", content: "hello" },
-      {
-        role: "assistant",
-        content: [{ type: "web_search_tool_result", tool_use_id: "srv_1", search_results: [] }] as any,
-      },
-    ]
-
-    const result = convertAnthropicMessages(messages)
-    const block = (result[1].content as Array<any>)[0]
-    expect(block.type).toBe("web_search_tool_result")
-    expect(block.tool_use_id).toBe("srv_1")
-  })
-
-  test("should preserve generic server tool result (e.g., tool_search_tool_result) with tool_use_id", () => {
-    const messages: Array<AnthropicMessage> = [
-      { role: "user", content: "hello" },
-      {
-        role: "assistant",
-        content: [{ type: "tool_search_tool_result", tool_use_id: "srv_2", content: [] }] as any,
-      },
-    ]
-
-    const result = convertAnthropicMessages(messages)
-    const block = (result[1].content as Array<any>)[0]
-    expect(block.type).toBe("tool_search_tool_result")
-    expect(block.tool_use_id).toBe("srv_2")
-  })
-
-  test("should not add tool_use_id to blocks without it", () => {
-    const messages: Array<AnthropicMessage> = [
-      { role: "user", content: "hello" },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "response" }],
-      },
-    ]
-
-    const result = convertAnthropicMessages(messages)
-    const block = (result[1].content as Array<any>)[0]
-    expect(block.type).toBe("text")
-    expect(block.text).toBe("response")
-    expect("tool_use_id" in block).toBe(false)
-  })
-})

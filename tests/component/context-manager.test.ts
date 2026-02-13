@@ -13,7 +13,7 @@ import { createRequestContextManager } from "~/lib/context/manager"
 describe("createRequestContextManager", () => {
   test("create() returns RequestContext and tracks it", () => {
     const manager = createRequestContextManager()
-    const ctx = manager.create({ endpoint: "anthropic", trackingId: "t1" })
+    const ctx = manager.create({ endpoint: "anthropic", tuiLogId: "t1" })
 
     expect(ctx.id).toMatch(/^req_/)
     expect(ctx.endpoint).toBe("anthropic")

@@ -5,14 +5,14 @@
  * rewritten messages correspond to which original messages.
  */
 
-import type { AnthropicMessage } from "~/types/api/anthropic"
+import type { MessageParam } from "~/types/api/anthropic"
 
 /**
  * Check if two messages likely correspond to the same original message.
  * Used by buildMessageMapping to handle cases where sanitization removes
  * content blocks within a message (changing its shape) or removes entire messages.
  */
-export function messagesMatch(orig: AnthropicMessage, rewritten: AnthropicMessage): boolean {
+export function messagesMatch(orig: MessageParam, rewritten: MessageParam): boolean {
   if (orig.role !== rewritten.role) return false
 
   // String content: compare prefix
@@ -42,8 +42,8 @@ export function messagesMatch(orig: AnthropicMessage, rewritten: AnthropicMessag
  * order as originals (all transformations are deletions, never reorderings).
  */
 export function buildMessageMapping(
-  original: Array<AnthropicMessage>,
-  rewritten: Array<AnthropicMessage>,
+  original: Array<MessageParam>,
+  rewritten: Array<MessageParam>,
 ): Array<number> {
   const mapping: Array<number> = []
   let origIdx = 0

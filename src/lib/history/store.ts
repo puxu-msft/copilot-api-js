@@ -1,5 +1,7 @@
-// History recording module for API requests/responses
-// Supports full message content, session grouping, and rich querying
+/**
+ * History recording module for API requests/responses.
+ * Supports full message content, session grouping, and rich querying.
+ */
 
 import { generateId } from "../utils"
 import { notifyEntryAdded, notifyEntryUpdated } from "./ws"
@@ -16,10 +18,11 @@ function formatLocalTimestamp(ts: number): string {
   return `${y}-${mo}-${day} ${h}:${m}:${s}`
 }
 
-// Message types for full content storage
+/** Message types for full content storage */
 export interface MessageContent {
   role: string
-  content: string | Array<{ type: string; text?: string; [key: string]: unknown }>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  content: string | Array<any> | null
   tool_calls?: Array<{
     id: string
     type: string
@@ -72,13 +75,14 @@ export interface HistoryEntry {
   endpoint: "anthropic" | "openai"
 
   request: {
-    model: string
-    messages: Array<MessageContent> // Full message history
-    stream: boolean
+    model?: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    messages?: Array<MessageContent> // Full message history
+    stream?: boolean
     tools?: Array<ToolDefinition>
     max_tokens?: number
     temperature?: number
-    system?: string // System prompt (for Anthropic)
+    system?: string | Array<{ type: "text"; text: string; cache_control?: { type: string } | null }>
   }
 
   response?: {
@@ -92,11 +96,6 @@ export interface HistoryEntry {
     stop_reason?: string
     error?: string
     content: MessageContent | null // Full response content
-    toolCalls?: Array<{
-      id: string
-      name: string
-      input: string | Record<string, unknown>
-    }>
   }
 
   /** Auto-truncation metadata (set when messages were truncated before sending to API) */
@@ -166,7 +165,7 @@ export interface HistoryStats {
   activeSessions: number
 }
 
-// Global history state
+/** Global history state */
 export const historyState: HistoryState = {
   enabled: false,
   entries: [],
@@ -187,10 +186,12 @@ export function isHistoryEnabled(): boolean {
   return historyState.enabled
 }
 
-// Get or create current session
-// Currently treats all requests as belonging to one session per server lifetime,
-// since clients don't provide session identifiers yet.
-// TODO: When clients support session headers, use that to group requests.
+/**
+ * Get or create current session.
+ * Currently treats all requests as belonging to one session per server lifetime,
+ * since clients don't provide session identifiers yet.
+ * TODO: When clients support session headers, use that to group requests.
+ */
 function getCurrentSession(endpoint: "anthropic" | "openai"): string {
   if (historyState.currentSessionId) {
     const session = historyState.sessions.get(historyState.currentSessionId)
@@ -225,7 +226,7 @@ export interface RecordRequestParams {
   tools?: Array<ToolDefinition>
   max_tokens?: number
   temperature?: number
-  system?: string
+  system?: string | Array<{ type: "text"; text: string; cache_control?: { type: string } | null }>
 }
 
 export function recordRequest(endpoint: "anthropic" | "openai", request: RecordRequestParams): string {
@@ -303,11 +304,6 @@ export interface RecordResponseParams {
   stop_reason?: string
   error?: string
   content: MessageContent | null
-  toolCalls?: Array<{
-    id: string
-    name: string
-    input: string | Record<string, unknown>
-  }>
 }
 
 export function recordResponse(id: string, response: RecordResponseParams, durationMs: number): void {
@@ -374,7 +370,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
   if (model) {
     const modelLower = model.toLowerCase()
     filtered = filtered.filter(
-      (e) => e.request.model.toLowerCase().includes(modelLower) || e.response?.model.toLowerCase().includes(modelLower),
+      (e) => e.request.model?.toLowerCase().includes(modelLower) || e.response?.model.toLowerCase().includes(modelLower),
     )
   }
 
@@ -399,7 +395,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
     filtered = filtered.filter((e) => {
       // Search in model name
       if (
-        e.request.model.toLowerCase().includes(searchLower)
+        e.request.model?.toLowerCase().includes(searchLower)
         || (e.response?.model && e.response.model.toLowerCase().includes(searchLower))
       ) {
         return true
@@ -409,10 +405,16 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
       if (e.response?.error && e.response.error.toLowerCase().includes(searchLower)) return true
 
       // Search in system prompt
-      if (e.request.system?.toLowerCase().includes(searchLower)) return true
+      if (e.request.system) {
+        if (typeof e.request.system === "string") {
+          if (e.request.system.toLowerCase().includes(searchLower)) return true
+        } else {
+          if (e.request.system.some((b) => b.text.toLowerCase().includes(searchLower))) return true
+        }
+      }
 
       // Search in messages (text, tool_use name/input, tool_result content)
-      const msgMatch = e.request.messages.some((m) => {
+      const msgMatch = e.request.messages?.some((m) => {
         if (typeof m.content === "string") {
           return m.content.toLowerCase().includes(searchLower)
         }
@@ -456,9 +458,6 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
           if (rcMatch) return true
         }
       }
-
-      // Search in response tool calls
-      if (e.response?.toolCalls?.some((t) => t.name.toLowerCase().includes(searchLower))) return true
 
       return false
     })
@@ -539,7 +538,7 @@ export function getStats(): HistoryStats {
 
   for (const entry of entries) {
     // Model distribution
-    const model = entry.response?.model || entry.request.model
+    const model = entry.response?.model || entry.request.model || "unknown"
     modelDist[model] = (modelDist[model] || 0) + 1
 
     // Endpoint distribution
@@ -555,11 +554,12 @@ export function getStats(): HistoryStats {
     hourlyActivity[hour] = (hourlyActivity[hour] || 0) + 1
 
     if (entry.response) {
-      if (entry.response.success) {
+      if (entry.response.success === true) {
         successCount++
-      } else {
+      } else if (entry.response.success === false) {
         failCount++
       }
+      // When success is undefined (e.g. streaming in progress), neither count is incremented
 
       totalInput += entry.response.usage.input_tokens
       totalOutput += entry.response.usage.output_tokens
@@ -627,15 +627,15 @@ export function exportHistory(format: "json" | "csv" = "json"): string {
     formatLocalTimestamp(e.timestamp),
     e.endpoint,
     e.request.model,
-    e.request.messages.length,
+    e.request.messages?.length,
     e.request.stream,
-    e.response?.success ?? "",
-    e.response?.model ?? "",
-    e.response?.usage.input_tokens ?? "",
-    e.response?.usage.output_tokens ?? "",
-    e.durationMs ?? "",
-    e.response?.stop_reason ?? "",
-    e.response?.error ?? "",
+    e.response?.success,
+    e.response?.model,
+    e.response?.usage.input_tokens,
+    e.response?.usage.output_tokens,
+    e.durationMs,
+    e.response?.stop_reason,
+    e.response?.error,
   ])
 
   return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n")

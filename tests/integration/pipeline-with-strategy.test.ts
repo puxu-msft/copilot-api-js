@@ -30,7 +30,7 @@ function realAutoTruncateStrategy() {
       // Simple truncation: remove first message
       if (payload.messages.length <= 1) {
         return {
-          wasCompacted: false,
+          wasTruncated: false,
           payload,
           removedMessageCount: 0,
           originalTokens: 100,
@@ -39,7 +39,7 @@ function realAutoTruncateStrategy() {
         }
       }
       return {
-        wasCompacted: true,
+        wasTruncated: true,
         payload: { messages: payload.messages.slice(1) },
         removedMessageCount: 1,
         originalTokens: payload.messages.length * 100,

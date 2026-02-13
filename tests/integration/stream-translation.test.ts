@@ -13,15 +13,15 @@
 
 import { describe, expect, test } from "bun:test"
 
-import type { AnthropicStreamState } from "~/types/api/anthropic"
+import type { StreamState } from "~/lib/translation/stream"
 import type { ChatCompletionChunk } from "~/types/api/openai"
 
 import {
   translateChunkToAnthropicEvents,
   translateErrorToAnthropicErrorEvent,
-} from "~/routes/messages/stream-translation"
+} from "~/lib/translation/stream"
 
-function createFreshState(): AnthropicStreamState {
+function createFreshState(): StreamState {
   return {
     messageStartSent: false,
     contentBlockIndex: 0,

@@ -8,14 +8,12 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import type { AnthropicMessagesPayload, AnthropicStreamState } from "~/types/api/anthropic"
+import type { MessagesPayload } from "~/types/api/anthropic"
+import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
-import { convertAnthropicMessages, extractToolCallsFromContent } from "~/lib/anthropic/message-utils"
 import {
-  type AnthropicStreamAccumulator,
   createAnthropicStreamAccumulator,
-  processAnthropicEvent,
 } from "~/lib/anthropic/stream-accumulator"
 import { awaitApproval } from "~/lib/approval"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
@@ -23,14 +21,25 @@ import {
   autoTruncateOpenAI,
   createTruncationResponseMarkerOpenAI,
 } from "~/lib/auto-truncate/openai"
-import { recordResponse, recordRewrites } from "~/lib/history"
+import { recordRewrites, type MessageContent } from "~/lib/history"
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { state } from "~/lib/state"
-import { requestTracker } from "~/lib/tui"
+import { buildMessageMapping } from "~/lib/translation/message-mapping"
+import {
+  translateToAnthropic,
+  translateToOpenAI,
+  type ToolNameMapping,
+} from "~/lib/translation/non-stream"
+import {
+  type StreamState,
+  translateErrorToAnthropicErrorEvent,
+  processTranslatedStream,
+  sendTruncationMarkerEvents,
+} from "~/lib/translation/stream"
+import { tuiLogger } from "~/lib/tui"
 import {
   createChatCompletions,
-  type ChatCompletionChunk,
   type ChatCompletionResponse,
   type ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
@@ -39,50 +48,33 @@ import type { FormatAdapter } from "../shared/pipeline"
 
 import {
   type ResponseContext,
-  buildFinalPayload,
-  completeTracking,
-  failTracking,
+  extractErrorContent,
+  finalizeRequest,
   isNonStreaming,
   logPayloadSizeInfo,
-  recordErrorResponse,
-  recordStreamError,
   updateTrackerStatus,
 } from "../shared"
+import { buildAnthropicStreamResult } from "../shared/recording"
+import { prependMarkerToResponse } from "../shared/response"
 import { executeRequestPipeline } from "../shared/pipeline"
 import { createAutoTruncateStrategy, type TruncateResult } from "../shared/strategies/auto-truncate"
-import { buildMessageMapping } from "./direct-anthropic-handler"
-import { translateToAnthropic, translateToOpenAI, type ToolNameMapping } from "./non-stream-translation"
-import { translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from "./stream-translation"
 
-/** Parse a JSON string to object, returning the value as-is if already an object */
-function safeParseJson(input: string | Record<string, unknown>): Record<string, unknown> {
-  if (typeof input !== "string") return input
-  try {
-    return JSON.parse(input) as Record<string, unknown>
-  } catch {
-    return {}
-  }
-}
-
-/**
- * Handle completion using OpenAI translation path (legacy)
- */
+// Handle completion using OpenAI translation path (legacy)
 export async function handleTranslatedCompletion(
   c: Context,
-  anthropicPayload: AnthropicMessagesPayload,
+  anthropicPayload: MessagesPayload,
   ctx: ResponseContext,
 ) {
   const { payload: translatedPayload, toolNameMapping } = translateToOpenAI(anthropicPayload)
-  consola.debug("Translated OpenAI request payload:", JSON.stringify(translatedPayload))
 
   const selectedModel = state.models?.data.find((model) => model.id === translatedPayload.model)
 
-  // Sanitize (no pre-truncation — truncation is now reactive)
+  // Sanitize OpenAI messages (filter orphaned tool blocks, system-reminders)
   const {
-    finalPayload: initialOpenAIPayload,
-    sanitizeRemovedCount,
+    payload: initialOpenAIPayload,
+    removedCount: sanitizeRemovedCount,
     systemReminderRemovals,
-  } = buildFinalPayload(translatedPayload, selectedModel)
+  } = sanitizeOpenAIMessages(translatedPayload)
 
   // Sanitize the original Anthropic messages to produce rewrittenMessages
   // in Anthropic format (matching the original payload format for frontend rendering).
@@ -103,7 +95,7 @@ export async function handleTranslatedCompletion(
         removedBlockCount: sanitizeRemovedCount + anthropicOrphanedRemovals,
         systemReminderRemovals: systemReminderRemovals + anthropicSysRemovals,
       },
-      rewrittenMessages: convertAnthropicMessages(sanitizedAnthropicPayload.messages),
+      rewrittenMessages: sanitizedAnthropicPayload.messages as unknown as MessageContent[],
       rewrittenSystem:
         typeof sanitizedAnthropicPayload.system === "string" ? sanitizedAnthropicPayload.system : undefined,
       messageMapping: anthropicMessageMapping,
@@ -115,11 +107,11 @@ export async function handleTranslatedCompletion(
   }
 
   // Set initial tracking tags for log display
-  if (ctx.trackingId) {
+  if (ctx.tuiLogId) {
     const tags: Array<string> = []
     if (anthropicPayload.thinking && anthropicPayload.thinking.type !== "disabled")
       tags.push(`thinking:${anthropicPayload.thinking.type}`)
-    if (tags.length > 0) requestTracker.updateRequest(ctx.trackingId, { tags })
+    if (tags.length > 0) tuiLogger.updateRequest(ctx.tuiLogId, { tags })
   }
 
   // Build adapter and strategy for the pipeline
@@ -151,18 +143,18 @@ export async function handleTranslatedCompletion(
       onRetry: (attempt, _strategyName, _newPayload, meta) => {
         // Capture truncation result for response marker
         const retryTruncateResult = meta?.truncateResult as
-          | { wasCompacted: boolean; payload: ChatCompletionsPayload }
+          | { wasTruncated: boolean; payload: ChatCompletionsPayload }
           | undefined
         if (retryTruncateResult) {
           ctx.truncateResult = retryTruncateResult as ResponseContext["truncateResult"]
         }
 
         // Update tracking tags
-        if (ctx.trackingId) {
-          const retryTags = ["compact", `retry-${attempt + 1}`]
+        if (ctx.tuiLogId) {
+          const retryTags = ["truncated", `retry-${attempt + 1}`]
           if (anthropicPayload.thinking && anthropicPayload.thinking.type !== "disabled")
             retryTags.push(`thinking:${anthropicPayload.thinking.type}`)
-          requestTracker.updateRequest(ctx.trackingId, { tags: retryTags })
+          tuiLogger.updateRequest(ctx.tuiLogId, { tags: retryTags })
         }
       },
     })
@@ -180,24 +172,31 @@ export async function handleTranslatedCompletion(
     }
 
     consola.debug("Streaming response from Copilot")
-    updateTrackerStatus(ctx.trackingId, "streaming")
+    updateTrackerStatus(ctx.tuiLogId, "streaming")
 
     return streamSSE(c, async (stream) => {
       await handleStreamingResponse({
         stream,
-        response: response as AsyncIterable<{ data?: string }>,
+        response: response as AsyncIterable<ServerSentEventMessage>,
         toolNameMapping,
         anthropicPayload,
         ctx,
       })
     })
   } catch (error) {
-    recordErrorResponse(ctx, anthropicPayload.model, error)
+    finalizeRequest(ctx, {
+      success: false,
+      model: anthropicPayload.model,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      error: error instanceof Error ? error.message : String(error),
+      content: extractErrorContent(error),
+      durationMs: Date.now() - ctx.startTime,
+    })
     throw error
   }
 }
 
-/** Options for handleNonStreamingResponse */
+// Options for handleNonStreamingResponse
 interface NonStreamingOptions {
   c: Context
   response: ChatCompletionResponse
@@ -208,96 +207,40 @@ interface NonStreamingOptions {
 // Handle non-streaming response
 function handleNonStreamingResponse(opts: NonStreamingOptions) {
   const { c, response, toolNameMapping, ctx } = opts
-  consola.debug("Non-streaming response from Copilot:", JSON.stringify(response).slice(-400))
   let anthropicResponse = translateToAnthropic(response, toolNameMapping)
-  consola.debug("Translated Anthropic response:", JSON.stringify(anthropicResponse))
 
   // Prepend truncation marker if auto-truncate was performed (only in verbose mode)
-  if (state.verbose && ctx.truncateResult?.wasCompacted) {
+  if (state.verbose && ctx.truncateResult?.wasTruncated) {
     const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
-    anthropicResponse = prependMarkerToAnthropicResponse(anthropicResponse, marker)
+    anthropicResponse = prependMarkerToResponse(anthropicResponse, marker)
   }
 
-  recordResponse(
-    ctx.historyId,
-    {
-      success: true,
-      model: anthropicResponse.model,
-      usage: anthropicResponse.usage,
-      stop_reason: anthropicResponse.stop_reason ?? undefined,
-      content: {
-        role: "assistant",
-        content: anthropicResponse.content.map((block) => {
-          if (block.type === "text") {
-            return { type: "text", text: block.text }
-          }
-          if (block.type === "tool_use") {
-            return {
-              type: "tool_use",
-              id: block.id,
-              name: block.name,
-              input: block.input,
-            }
-          }
-          return { type: block.type }
-        }),
-      },
-      toolCalls: extractToolCallsFromContent(anthropicResponse.content),
-    },
-    Date.now() - ctx.startTime,
-  )
-
-  if (ctx.trackingId) {
-    requestTracker.updateRequest(ctx.trackingId, {
-      inputTokens: anthropicResponse.usage.input_tokens,
-      outputTokens: anthropicResponse.usage.output_tokens,
-      queueWaitMs: ctx.queueWaitMs,
-    })
-  }
+  finalizeRequest(ctx, {
+    success: true,
+    model: anthropicResponse.model,
+    usage: anthropicResponse.usage,
+    stop_reason: anthropicResponse.stop_reason ?? undefined,
+    content: { role: "assistant", content: anthropicResponse.content },
+    durationMs: Date.now() - ctx.startTime,
+    queueWaitMs: ctx.queueWaitMs,
+  })
 
   return c.json(anthropicResponse)
 }
 
-// Prepend marker to Anthropic response content (at the beginning)
-function prependMarkerToAnthropicResponse(
-  response: ReturnType<typeof translateToAnthropic>,
-  marker: string,
-): ReturnType<typeof translateToAnthropic> {
-  if (!marker) return response
-
-  // Find first text block and prepend, or add new text block at start
-  const content = [...response.content]
-  const firstTextIndex = content.findIndex((block) => block.type === "text")
-
-  if (firstTextIndex !== -1) {
-    const textBlock = content[firstTextIndex]
-    if (textBlock.type === "text") {
-      content[firstTextIndex] = {
-        ...textBlock,
-        text: marker + textBlock.text,
-      }
-    }
-  } else {
-    // No text block found, add one at the beginning
-    content.unshift({ type: "text", text: marker })
-  }
-
-  return { ...response, content }
-}
-
-/** Options for handleStreamingResponse */
+// Options for handleStreamingResponse
 interface StreamHandlerOptions {
   stream: { writeSSE: (msg: { event: string; data: string }) => Promise<void> }
-  response: AsyncIterable<{ data?: string }>
+  response: AsyncIterable<ServerSentEventMessage>
   toolNameMapping: ToolNameMapping
-  anthropicPayload: AnthropicMessagesPayload
+  anthropicPayload: MessagesPayload
   ctx: ResponseContext
 }
 
 // Handle streaming response
 async function handleStreamingResponse(opts: StreamHandlerOptions) {
   const { stream, response, toolNameMapping, anthropicPayload, ctx } = opts
-  const streamState: AnthropicStreamState = {
+  const streamState: StreamState = {
     messageStartSent: false,
     contentBlockIndex: 0,
     contentBlockOpen: false,
@@ -307,31 +250,31 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
 
   try {
     // Prepend truncation marker as first content block if auto-truncate was performed
-    if (ctx.truncateResult?.wasCompacted) {
+    if (ctx.truncateResult?.wasTruncated) {
       const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
-      await sendTruncationMarkerEvent(stream, streamState, marker, anthropicPayload.model)
+      await sendTruncationMarkerEvents(stream, streamState, marker, anthropicPayload.model)
       acc.content += marker
     }
 
-    await processStreamChunks({
-      stream,
-      response,
-      toolNameMapping,
-      streamState,
-      acc,
-    })
+    for await (const event of processTranslatedStream(response, streamState, toolNameMapping, acc)) {
+      await stream.writeSSE({
+        event: event.type,
+        data: JSON.stringify(event),
+      })
+    }
 
-    recordStreamingResponse(acc, anthropicPayload.model, ctx)
-    completeTracking(ctx.trackingId, acc.inputTokens, acc.outputTokens, ctx.queueWaitMs)
+    const result = buildAnthropicStreamResult(acc, anthropicPayload.model, ctx)
+    finalizeRequest(ctx, result)
   } catch (error) {
     consola.error(`[TranslatedHandler] Stream error for model "${anthropicPayload.model}":`, error)
-    recordStreamError({
-      acc,
-      fallbackModel: anthropicPayload.model,
-      ctx,
-      error,
+    finalizeRequest(ctx, {
+      success: false,
+      model: acc.model || anthropicPayload.model,
+      usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
+      error: error instanceof Error ? error.message : String(error),
+      content: acc.content ? { role: "assistant", content: [{ type: "text", text: acc.content }] } : null,
+      durationMs: Date.now() - ctx.startTime,
     })
-    failTracking(ctx.trackingId, error)
 
     const errorEvent = translateErrorToAnthropicErrorEvent()
     await stream.writeSSE({
@@ -339,157 +282,4 @@ async function handleStreamingResponse(opts: StreamHandlerOptions) {
       data: JSON.stringify(errorEvent),
     })
   }
-}
-
-// Send truncation marker as Anthropic SSE events
-async function sendTruncationMarkerEvent(
-  stream: { writeSSE: (msg: { event: string; data: string }) => Promise<void> },
-  streamState: AnthropicStreamState,
-  marker: string,
-  model: string,
-) {
-  // Must send message_start before any content blocks
-  if (!streamState.messageStartSent) {
-    // Set flag before await to satisfy require-atomic-updates lint rule
-    streamState.messageStartSent = true
-    const messageStartEvent = {
-      type: "message_start",
-      message: {
-        id: `msg_${Date.now()}`,
-        type: "message",
-        role: "assistant",
-        content: [],
-        model,
-        stop_reason: null,
-        stop_sequence: null,
-        usage: {
-          input_tokens: 0,
-          output_tokens: 0,
-        },
-      },
-    }
-    await stream.writeSSE({
-      event: "message_start",
-      data: JSON.stringify(messageStartEvent),
-    })
-  }
-
-  // Start a new content block for the marker
-  const blockStartEvent = {
-    type: "content_block_start",
-    index: streamState.contentBlockIndex,
-    content_block: { type: "text", text: "" },
-  }
-  await stream.writeSSE({
-    event: "content_block_start",
-    data: JSON.stringify(blockStartEvent),
-  })
-
-  // Send the marker text as a delta
-  const deltaEvent = {
-    type: "content_block_delta",
-    index: streamState.contentBlockIndex,
-    delta: { type: "text_delta", text: marker },
-  }
-  await stream.writeSSE({
-    event: "content_block_delta",
-    data: JSON.stringify(deltaEvent),
-  })
-
-  // Stop the content block
-  const blockStopEvent = {
-    type: "content_block_stop",
-    index: streamState.contentBlockIndex,
-  }
-  await stream.writeSSE({
-    event: "content_block_stop",
-    data: JSON.stringify(blockStopEvent),
-  })
-
-  streamState.contentBlockIndex++
-}
-
-/** Options for processing stream chunks */
-interface ProcessChunksOptions {
-  stream: { writeSSE: (msg: { event: string; data: string }) => Promise<void> }
-  response: AsyncIterable<{ data?: string }>
-  toolNameMapping: ToolNameMapping
-  streamState: AnthropicStreamState
-  acc: AnthropicStreamAccumulator
-}
-
-// Process all stream chunks
-async function processStreamChunks(opts: ProcessChunksOptions) {
-  const { stream, response, toolNameMapping, streamState, acc } = opts
-  for await (const rawEvent of response) {
-    consola.debug("Copilot raw stream event:", JSON.stringify(rawEvent))
-    if (rawEvent.data === "[DONE]") break
-    if (!rawEvent.data) continue
-
-    let chunk: ChatCompletionChunk
-    try {
-      chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
-    } catch (parseError) {
-      consola.error("Failed to parse stream chunk:", parseError, rawEvent.data)
-      continue
-    }
-
-    if (chunk.model && !acc.model) acc.model = chunk.model
-
-    const events = translateChunkToAnthropicEvents(chunk, streamState, toolNameMapping)
-
-    for (const event of events) {
-      consola.debug("Translated Anthropic event:", JSON.stringify(event))
-      processAnthropicEvent(event, acc)
-      await stream.writeSSE({
-        event: event.type,
-        data: JSON.stringify(event),
-      })
-    }
-  }
-}
-
-// Record streaming response to history
-function recordStreamingResponse(acc: AnthropicStreamAccumulator, fallbackModel: string, ctx: ResponseContext) {
-  const contentBlocks: Array<{
-    type: string
-    text?: string
-    thinking?: string
-    id?: string
-    name?: string
-    input?: Record<string, unknown>
-  }> = []
-  if (acc.thinkingContent) contentBlocks.push({ type: "thinking", thinking: acc.thinkingContent })
-  if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
-  for (const tc of acc.toolCalls) {
-    contentBlocks.push({
-      type: tc.blockType,
-      id: tc.id,
-      name: tc.name,
-      input: safeParseJson(tc.input),
-    })
-  }
-
-  const toolCalls =
-    acc.toolCalls.length > 0 ?
-      acc.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, input: safeParseJson(tc.input) }))
-    : undefined
-
-  recordResponse(
-    ctx.historyId,
-    {
-      success: true,
-      model: acc.model || fallbackModel,
-      usage: {
-        input_tokens: acc.inputTokens,
-        output_tokens: acc.outputTokens,
-        ...(acc.cacheReadTokens > 0 && { cache_read_input_tokens: acc.cacheReadTokens }),
-        ...(acc.cacheCreationTokens > 0 && { cache_creation_input_tokens: acc.cacheCreationTokens }),
-      },
-      stop_reason: acc.stopReason || undefined,
-      content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
-      toolCalls,
-    },
-    Date.now() - ctx.startTime,
-  )
 }

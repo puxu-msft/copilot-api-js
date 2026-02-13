@@ -1,7 +1,9 @@
 import consola from "consola"
 import { Hono } from "hono"
+import type { UpgradeWebSocket } from "hono/ws"
 import { access, constants } from "node:fs/promises"
 import { readFile } from "node:fs/promises"
+import type { Server as NodeHttpServer } from "node:http"
 import { join, resolve } from "node:path"
 
 import { addClient, removeClient } from "~/lib/history"
@@ -16,29 +18,53 @@ import {
   handleGetSessions,
   handleGetStats,
 } from "./api"
-import { getAsset, getMimeType } from "./assets"
+import { getMimeType } from "./assets"
 
 export const historyRoutes = new Hono()
 
-// API endpoints
+/** API endpoints */
 historyRoutes.get("/api/entries", handleGetEntries)
 historyRoutes.get("/api/entries/:id", handleGetEntry)
 historyRoutes.delete("/api/entries", handleDeleteEntries)
 historyRoutes.get("/api/stats", handleGetStats)
 historyRoutes.get("/api/export", handleExport)
 
-// Session endpoints
+/** Session endpoints */
 historyRoutes.get("/api/sessions", handleGetSessions)
 historyRoutes.get("/api/sessions/:id", handleGetSession)
 historyRoutes.delete("/api/sessions/:id", handleDeleteSession)
 
-// WebSocket endpoint for real-time updates (Bun only)
-// hono/bun requires the Bun global; dynamic import prevents crash on Node.js
-if (typeof globalThis.Bun !== "undefined") {
-  const { upgradeWebSocket } = await import("hono/bun")
+/**
+ * Initialize WebSocket support for history real-time updates.
+ * Registers the /ws route on historyRoutes using the appropriate WebSocket
+ * adapter for the current runtime (hono/bun for Bun, @hono/node-ws for Node.js).
+ *
+ * @param rootApp - The root Hono app instance (needed by @hono/node-ws to match upgrade requests)
+ * @returns An `injectWebSocket` function that must be called with the Node.js HTTP server
+ * after the server is created. Returns `undefined` under Bun (no injection needed).
+ */
+export async function initHistoryWebSocket(
+  rootApp: Hono,
+): Promise<((server: NodeHttpServer) => void) | undefined> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let upgradeWs: UpgradeWebSocket<any>
+  let injectFn: ((server: NodeHttpServer) => void) | undefined
+
+  if (typeof globalThis.Bun !== "undefined") {
+    // Bun runtime: use hono/bun adapter
+    const { upgradeWebSocket } = await import("hono/bun")
+    upgradeWs = upgradeWebSocket
+  } else {
+    // Node.js runtime: use @hono/node-ws adapter
+    const { createNodeWebSocket } = await import("@hono/node-ws")
+    const nodeWs = createNodeWebSocket({ app: rootApp })
+    upgradeWs = nodeWs.upgradeWebSocket
+    injectFn = (server: NodeHttpServer) => nodeWs.injectWebSocket(server)
+  }
+
   historyRoutes.get(
     "/ws",
-    upgradeWebSocket(() => ({
+    upgradeWs(() => ({
       onOpen(_event, ws) {
         addClient(ws.raw as unknown as WebSocket)
       },
@@ -54,32 +80,19 @@ if (typeof globalThis.Bun !== "undefined") {
       },
     })),
   )
+
+  return injectFn
 }
 
-// Static assets for Vue UI v2
-historyRoutes.get("/assets/*", async (c) => {
-  const path = c.req.path.replace("/history", "")
-  const asset = await getAsset(path)
-  if (!asset) {
-    return c.notFound()
-  }
-  return new Response(asset.content, {
-    headers: {
-      "Content-Type": asset.contentType,
-      "Cache-Control": "public, max-age=31536000, immutable",
-    },
-  })
-})
-
-// Static assets for legacy UI v1
+/** Static assets for legacy UI v1 */
 const v1Dir = join(import.meta.dirname, "../../ui/history-v1")
 
-// v1 root serves index.html directly
+/** v1 root serves index.html directly */
 historyRoutes.get("/v1", (c) => {
   return c.redirect("/history/v1/index.html")
 })
 
-// v1 static assets (CSS, JS) - no caching for development
+/** v1 static assets (CSS, JS) - no caching for development */
 historyRoutes.get("/v1/*", async (c) => {
   const filePath = c.req.path.replace("/history/v1", "")
   if (!filePath) return c.notFound()
@@ -100,19 +113,39 @@ historyRoutes.get("/v1/*", async (c) => {
   })
 })
 
-// v2 root serves Vue app index.html
-historyRoutes.get("/v2", async (c) => {
-  const html = await getAsset("/index.html")
-  if (!html) {
+/** Static assets and routes for Vue UI v3 */
+const v3Dir = join(import.meta.dirname, "../../ui/history-v3/dist")
+
+historyRoutes.get("/v3", async (c) => {
+  try {
+    await access(join(v3Dir, "index.html"), constants.R_OK)
+    const content = await readFile(join(v3Dir, "index.html"), "utf8")
+    return c.html(content)
+  } catch {
     return c.notFound()
   }
-  return c.html(html.content.toString())
+})
+
+historyRoutes.get("/v3/assets/*", async (c) => {
+  const filePath = c.req.path.replace("/history/v3", "")
+  if (!filePath) return c.notFound()
+  const fullPath = resolve(join(v3Dir, filePath))
+  if (!fullPath.startsWith(v3Dir)) return c.notFound()
+  try {
+    await access(fullPath, constants.R_OK)
+    const content = await readFile(fullPath)
+    return new Response(content, {
+      headers: {
+        "Content-Type": getMimeType(filePath),
+        "Cache-Control": "public, max-age=31536000, immutable",
+      },
+    })
+  } catch {
+    return c.notFound()
+  }
 })
 
 historyRoutes.get("/", (c) => {
-  // if (isV2Available()) {
-  //   return c.redirect("/history/v2")
-  // }
   return c.redirect("/history/v1")
 })
 

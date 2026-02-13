@@ -23,7 +23,8 @@
     }
   },
   "exclude": [
-    "src/ui/history-v2",
+    "archive",
+    "src/ui/history-v3",
     "refs"
   ]
 }

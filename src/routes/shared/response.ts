@@ -20,3 +20,30 @@ export function safeParseJson(input: string | Record<string, unknown>): Record<s
     return {}
   }
 }
+
+/** Prepend a marker string to the first text content block of an Anthropic-format response */
+export function prependMarkerToResponse<T extends { content: Array<{ type: string; text?: string }> }>(
+  response: T,
+  marker: string,
+): T {
+  if (!marker) return response
+
+  // Find first text block and prepend, or add new text block at start
+  const content = [...response.content]
+  const firstTextIndex = content.findIndex((block) => block.type === "text")
+
+  if (firstTextIndex !== -1) {
+    const textBlock = content[firstTextIndex]
+    if (textBlock.type === "text") {
+      content[firstTextIndex] = {
+        ...textBlock,
+        text: marker + (textBlock.text ?? ""),
+      }
+    }
+  } else {
+    // No text block found, add one at the beginning
+    content.unshift({ type: "text", text: marker } as (typeof content)[number])
+  }
+
+  return { ...response, content }
+}

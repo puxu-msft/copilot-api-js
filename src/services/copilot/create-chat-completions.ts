@@ -1,11 +1,12 @@
 import consola from "consola"
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import { events } from "fetch-event-stream"
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
-// Re-export types from centralized location
+/** Re-export types from centralized location */
 export type {
   ChatCompletionChunk,
   ChatCompletionResponse,
@@ -20,7 +21,9 @@ export type {
 
 import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai"
 
-export const createChatCompletions = async (payload: ChatCompletionsPayload) => {
+export const createChatCompletions = async (
+  payload: ChatCompletionsPayload,
+): Promise<ChatCompletionResponse | AsyncGenerator<ServerSentEventMessage>> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
   const enableVision = payload.messages.some(

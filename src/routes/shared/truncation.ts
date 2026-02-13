@@ -4,7 +4,7 @@
 
 /** Minimal truncate result info needed for usage adjustment and markers */
 export interface TruncateResultInfo {
-  wasCompacted: boolean
+  wasTruncated: boolean
   originalTokens?: number
   compactedTokens?: number
   removedMessageCount?: number
@@ -15,7 +15,7 @@ export interface TruncateResultInfo {
  * Works with both OpenAI and Anthropic truncate results.
  */
 export function createTruncationMarker(result: TruncateResultInfo): string {
-  if (!result.wasCompacted) return ""
+  if (!result.wasTruncated) return ""
 
   const { originalTokens, compactedTokens, removedMessageCount } = result
 

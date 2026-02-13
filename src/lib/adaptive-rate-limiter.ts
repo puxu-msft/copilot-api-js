@@ -418,6 +418,21 @@ export class AdaptiveRateLimiter {
     // until recovery conditions are met on next request
   }
 
+  /**
+   * Reject all queued requests immediately.
+   * Called during shutdown Phase 1 to drain the queue so queued requests
+   * don't waste drain time. Returns the number of rejected requests.
+   */
+  rejectQueued(): number {
+    const count = this.queue.length
+    while (this.queue.length > 0) {
+      const request = this.queue.shift()!
+      request.reject(new Error("Server shutting down"))
+    }
+    this.processing = false
+    return count
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
@@ -440,7 +455,7 @@ export class AdaptiveRateLimiter {
   }
 }
 
-// Singleton instance
+/** Singleton instance */
 let rateLimiterInstance: AdaptiveRateLimiter | null = null
 
 /**

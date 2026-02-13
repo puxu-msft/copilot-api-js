@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test"
 
 import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
-import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 import {
   autoTruncateAnthropic,
@@ -49,7 +49,7 @@ function createLargeMessage(size: number): string {
 
 describe("Auto-Truncate Anthropic", () => {
   test("should not truncate small payload", async () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: [
@@ -60,14 +60,14 @@ describe("Auto-Truncate Anthropic", () => {
 
     const result = await autoTruncateAnthropic(payload, mockModel)
 
-    expect(result.wasCompacted).toBe(false)
+    expect(result.wasTruncated).toBe(false)
     expect(result.removedMessageCount).toBe(0)
     expect(result.payload.messages.length).toBe(2)
   })
 
   test("should truncate large payload", async () => {
     // Create a payload that exceeds token limit
-    const messages: AnthropicMessagesPayload["messages"] = []
+    const messages: MessagesPayload["messages"] = []
     for (let i = 0; i < 100; i++) {
       messages.push({
         role: i % 2 === 0 ? "user" : "assistant",
@@ -75,7 +75,7 @@ describe("Auto-Truncate Anthropic", () => {
       })
     }
 
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages,
@@ -83,14 +83,14 @@ describe("Auto-Truncate Anthropic", () => {
 
     const result = await autoTruncateAnthropic(payload, mockModel)
 
-    expect(result.wasCompacted).toBe(true)
+    expect(result.wasTruncated).toBe(true)
     expect(result.removedMessageCount).toBeGreaterThan(0)
     expect(result.payload.messages.length).toBeLessThan(100)
     expect(result.compactedTokens).toBeLessThan(result.originalTokens)
   })
 
   test("checkNeedsCompactionAnthropic should detect when compaction is needed", async () => {
-    const smallPayload: AnthropicMessagesPayload = {
+    const smallPayload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: [{ role: "user", content: "Hello" }],
@@ -100,7 +100,7 @@ describe("Auto-Truncate Anthropic", () => {
     expect(smallCheck.needed).toBe(false)
 
     // Large payload
-    const largeMessages: AnthropicMessagesPayload["messages"] = []
+    const largeMessages: MessagesPayload["messages"] = []
     for (let i = 0; i < 200; i++) {
       largeMessages.push({
         role: i % 2 === 0 ? "user" : "assistant",
@@ -108,7 +108,7 @@ describe("Auto-Truncate Anthropic", () => {
       })
     }
 
-    const largePayload: AnthropicMessagesPayload = {
+    const largePayload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: largeMessages,
@@ -120,7 +120,7 @@ describe("Auto-Truncate Anthropic", () => {
   })
 
   test("should preserve system prompt during truncation", async () => {
-    const messages: AnthropicMessagesPayload["messages"] = []
+    const messages: MessagesPayload["messages"] = []
     for (let i = 0; i < 100; i++) {
       messages.push({
         role: i % 2 === 0 ? "user" : "assistant",
@@ -128,7 +128,7 @@ describe("Auto-Truncate Anthropic", () => {
       })
     }
 
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       system: "You are a helpful assistant.",
@@ -137,7 +137,7 @@ describe("Auto-Truncate Anthropic", () => {
 
     const result = await autoTruncateAnthropic(payload, mockModel)
 
-    expect(result.wasCompacted).toBe(true)
+    expect(result.wasTruncated).toBe(true)
     // System prompt should be preserved (possibly with truncation context prepended)
     expect(result.payload.system).toBeDefined()
     if (typeof result.payload.system === "string") {
@@ -146,7 +146,7 @@ describe("Auto-Truncate Anthropic", () => {
   })
 
   test("should filter orphaned tool_results during truncation", async () => {
-    const messages: AnthropicMessagesPayload["messages"] = []
+    const messages: MessagesPayload["messages"] = []
     for (let i = 0; i < 100; i++) {
       messages.push({
         role: i % 2 === 0 ? "user" : "assistant",
@@ -172,7 +172,7 @@ describe("Auto-Truncate Anthropic", () => {
       },
     )
 
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages,
@@ -180,7 +180,7 @@ describe("Auto-Truncate Anthropic", () => {
 
     const result = await autoTruncateAnthropic(payload, mockModel)
 
-    expect(result.wasCompacted).toBe(true)
+    expect(result.wasTruncated).toBe(true)
     // Orphaned tool_result should be filtered out
     const hasOrphanedToolResult = result.payload.messages.some((m) => {
       if (Array.isArray(m.content)) {
@@ -204,7 +204,7 @@ describe("Auto-Truncate OpenAI", () => {
 
     const result = await autoTruncateOpenAI(payload, mockModel)
 
-    expect(result.wasCompacted).toBe(false)
+    expect(result.wasTruncated).toBe(false)
     expect(result.removedMessageCount).toBe(0)
     expect(result.payload.messages.length).toBe(2)
   })
@@ -225,7 +225,7 @@ describe("Auto-Truncate OpenAI", () => {
 
     const result = await autoTruncateOpenAI(payload, mockModel)
 
-    expect(result.wasCompacted).toBe(true)
+    expect(result.wasTruncated).toBe(true)
     expect(result.removedMessageCount).toBeGreaterThan(0)
     expect(result.payload.messages.length).toBeLessThan(100)
     expect(result.compactedTokens).toBeLessThan(result.originalTokens)
@@ -275,7 +275,7 @@ describe("Auto-Truncate OpenAI", () => {
 
     const result = await autoTruncateOpenAI(payload, mockModel)
 
-    expect(result.wasCompacted).toBe(true)
+    expect(result.wasTruncated).toBe(true)
     // System message should be preserved
     const systemMsg = result.payload.messages.find((m) => m.role === "system")
     expect(systemMsg).toBeDefined()
@@ -321,7 +321,7 @@ describe("Tokenizer", () => {
   test("should use GPT tokenizer for all models", async () => {
     // This is implicitly tested by the auto-truncate tests
     // The tokenizer is used internally and should produce consistent results
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: [{ role: "user", content: "Hello world!" }],
@@ -456,7 +456,7 @@ describe("compressCompactedReadResult", () => {
 
 describe("Anthropic Token Counting", () => {
   test("countTotalInputTokens should exclude thinking from assistant messages", async () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: [
@@ -468,6 +468,7 @@ describe("Anthropic Token Counting", () => {
               type: "thinking",
               thinking:
                 "Let me think about this carefully and at great length with lots of words to increase token count significantly.",
+              signature: "sig_placeholder",
             },
             { type: "text", text: "Hi!" },
           ],
@@ -486,7 +487,7 @@ describe("Anthropic Token Counting", () => {
   })
 
   test("should handle special tokens without crashing", async () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: [
@@ -502,7 +503,7 @@ describe("Anthropic Token Counting", () => {
   })
 
   test("countTotalInputTokens should count tools", async () => {
-    const payloadWithTools: AnthropicMessagesPayload = {
+    const payloadWithTools: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: [{ role: "user", content: "Hello" }],
@@ -520,7 +521,7 @@ describe("Anthropic Token Counting", () => {
       ],
     }
 
-    const payloadWithoutTools: AnthropicMessagesPayload = {
+    const payloadWithoutTools: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: [{ role: "user", content: "Hello" }],
@@ -533,14 +534,14 @@ describe("Anthropic Token Counting", () => {
   })
 
   test("countTotalInputTokens should count system prompt", async () => {
-    const payloadWithSystem: AnthropicMessagesPayload = {
+    const payloadWithSystem: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       system: "You are a helpful assistant with extensive knowledge.",
       messages: [{ role: "user", content: "Hello" }],
     }
 
-    const payloadWithoutSystem: AnthropicMessagesPayload = {
+    const payloadWithoutSystem: MessagesPayload = {
       model: "claude-sonnet-4",
       max_tokens: 1024,
       messages: [{ role: "user", content: "Hello" }],
@@ -734,7 +735,7 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
 
     try {
       // Build payload with tool_use/tool_result pairs spread across old and recent positions
-      const messages: AnthropicMessagesPayload["messages"] = [
+      const messages: MessagesPayload["messages"] = [
         { role: "user", content: "Start task" },
         // Old message pair
         {
@@ -760,7 +761,7 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
         { role: "user", content: "Thanks" },
       ]
 
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "tiny-model",
         max_tokens: 100,
         messages,
@@ -768,7 +769,7 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
 
       const result = await autoTruncateAnthropic(payload, tinyModel)
 
-      expect(result.wasCompacted).toBe(true)
+      expect(result.wasTruncated).toBe(true)
       // Verify that tool_results have been compressed (content shortened)
       for (const msg of result.payload.messages) {
         if (Array.isArray(msg.content)) {
@@ -819,7 +820,7 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
 
       const result = await autoTruncateOpenAI(payload, tinyModel)
 
-      expect(result.wasCompacted).toBe(true)
+      expect(result.wasTruncated).toBe(true)
       // Verify tool messages got compressed
       for (const msg of result.payload.messages) {
         if (msg.role === "tool" && typeof msg.content === "string") {
@@ -838,7 +839,7 @@ describe("contentToText", () => {
   })
 
   test("should handle server_tool_use blocks", () => {
-    const content = [{ type: "server_tool_use" as const, id: "srv_1", name: "web_search", input: { query: "test" } }]
+    const content = [{ type: "server_tool_use" as const, id: "srv_1", name: "web_search" as const, input: { query: "test" } }]
     const result = contentToText(content)
     expect(result).toContain("[server_tool_use: web_search]")
     expect(result).toContain('"query"')

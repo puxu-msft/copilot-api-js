@@ -12,10 +12,10 @@
 
 import { describe, expect, test } from "bun:test"
 
-import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
+import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionResponse } from "~/types/api/openai"
 
-import { type ToolNameMapping, translateToAnthropic, translateToOpenAI } from "~/routes/messages/non-stream-translation"
+import { type ToolNameMapping, translateToAnthropic, translateToOpenAI } from "~/lib/translation/non-stream"
 
 /** Create a ChatCompletionResponse with required fields */
 function mkResponse(partial: {
@@ -51,7 +51,7 @@ function mkResponse(partial: {
 
 describe("translateToOpenAI: basic messages", () => {
   test("translates simple user message", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hello" }],
       max_tokens: 1024,
@@ -68,7 +68,7 @@ describe("translateToOpenAI: basic messages", () => {
   })
 
   test("translates string system prompt to system message", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 1024,
@@ -82,8 +82,8 @@ describe("translateToOpenAI: basic messages", () => {
     expect(sysMsg!.content).toBe("You are a helpful assistant")
   })
 
-  test("translates array system prompt to single system message", () => {
-    const payload: AnthropicMessagesPayload = {
+  test("translates array system prompt preserving structured parts", () => {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 1024,
@@ -97,12 +97,15 @@ describe("translateToOpenAI: basic messages", () => {
     const result = translateToOpenAI(payload)
     const sysMsg = result.payload.messages.find((m) => m.role === "system")
     expect(sysMsg).toBeDefined()
-    expect(sysMsg!.content).toContain("Part 1")
-    expect(sysMsg!.content).toContain("Part 2")
+    expect(Array.isArray(sysMsg!.content)).toBe(true)
+    const parts = sysMsg!.content as Array<{ type: string; text: string }>
+    expect(parts).toHaveLength(2)
+    expect(parts[0]).toEqual({ type: "text", text: "Part 1" })
+    expect(parts[1]).toEqual({ type: "text", text: "Part 2" })
   })
 
   test("handles assistant message with string content", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [
         { role: "user", content: "Hello" },
@@ -124,7 +127,7 @@ describe("translateToOpenAI: basic messages", () => {
 
 describe("translateToOpenAI: tool messages", () => {
   test("translates tool_use blocks to tool_calls", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [
         { role: "user", content: "Search for files" },
@@ -155,7 +158,7 @@ describe("translateToOpenAI: tool messages", () => {
   })
 
   test("translates tool_result blocks to tool messages", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [
         { role: "user", content: "Search" },
@@ -180,7 +183,7 @@ describe("translateToOpenAI: tool messages", () => {
   })
 
   test("adds placeholder for missing tool_result", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [
         { role: "user", content: "Search" },
@@ -207,7 +210,7 @@ describe("translateToOpenAI: tool messages", () => {
 describe("translateToOpenAI: tool name truncation", () => {
   test("truncates tool names exceeding 64 characters", () => {
     const longName = "a".repeat(70)
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 1024,
@@ -228,7 +231,7 @@ describe("translateToOpenAI: tool name truncation", () => {
 
   test("does not truncate names within 64 characters", () => {
     const shortName = "short_tool"
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 1024,
@@ -245,8 +248,8 @@ describe("translateToOpenAI: tool name truncation", () => {
 // ─── translateToOpenAI: reserved keywords ───
 
 describe("translateToOpenAI: reserved keyword filtering", () => {
-  test("filters x-anthropic-billing-header from system prompt", () => {
-    const payload: AnthropicMessagesPayload = {
+  test("filters x-anthropic-billing-header from string system prompt", () => {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 1024,
@@ -261,13 +264,55 @@ describe("translateToOpenAI: reserved keyword filtering", () => {
     expect(sysMsg!.content).toContain("You are helpful")
     expect(sysMsg!.content).toContain("Be concise")
   })
+
+  test("filters x-anthropic-billing-header from TextBlockParam[] system prompt", () => {
+    const payload: MessagesPayload = {
+      model: "claude-sonnet-4-20250514",
+      messages: [{ role: "user", content: "Hi" }],
+      max_tokens: 1024,
+      stream: true,
+      system: [
+        { type: "text", text: "You are helpful." },
+        { type: "text", text: "x-anthropic-billing-header: cc_version=1" },
+        { type: "text", text: "Be concise." },
+      ],
+    }
+
+    const result = translateToOpenAI(payload)
+    const sysMsg = result.payload.messages.find((m) => m.role === "system")
+    expect(sysMsg).toBeDefined()
+    // Should preserve as Array<TextPart>
+    expect(Array.isArray(sysMsg!.content)).toBe(true)
+    const parts = sysMsg!.content as Array<{ type: string; text: string }>
+    // The block containing the keyword should be filtered out entirely
+    expect(parts).toHaveLength(2)
+    expect(parts.every((p) => !p.text.includes("x-anthropic-billing"))).toBe(true)
+    expect(parts[0].text).toBe("You are helpful.")
+    expect(parts[1].text).toBe("Be concise.")
+  })
+
+  test("returns empty array when all TextBlockParam blocks are filtered", () => {
+    const payload: MessagesPayload = {
+      model: "claude-sonnet-4-20250514",
+      messages: [{ role: "user", content: "Hi" }],
+      max_tokens: 1024,
+      stream: true,
+      system: [
+        { type: "text", text: "x-anthropic-billing-header: cc_version=1" },
+      ],
+    }
+
+    const result = translateToOpenAI(payload)
+    const sysMsg = result.payload.messages.find((m) => m.role === "system")
+    expect(sysMsg).toBeUndefined()
+  })
 })
 
 // ─── translateToOpenAI: origin map ───
 
 describe("translateToOpenAI: origin map", () => {
   test("maps each OpenAI message to source Anthropic message index", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [
         { role: "user", content: "Hello" },
@@ -288,7 +333,7 @@ describe("translateToOpenAI: origin map", () => {
   })
 
   test("system message maps to -1", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hello" }],
       max_tokens: 1024,
@@ -306,7 +351,7 @@ describe("translateToOpenAI: origin map", () => {
 
 describe("translateToOpenAI: payload fields", () => {
   test("maps max_tokens, temperature, top_p, stream", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 4096,
@@ -323,7 +368,7 @@ describe("translateToOpenAI: payload fields", () => {
   })
 
   test("maps stop_sequences to stop", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 1024,
@@ -337,7 +382,7 @@ describe("translateToOpenAI: payload fields", () => {
 
   test("maps tool_choice auto/any/none", () => {
     // "auto"
-    const autoPayload: AnthropicMessagesPayload = {
+    const autoPayload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 1024,
@@ -361,14 +406,14 @@ describe("translateToOpenAI: payload fields", () => {
 
 describe("translateToOpenAI: thinking blocks", () => {
   test("strips thinking blocks from assistant messages", () => {
-    const payload: AnthropicMessagesPayload = {
+    const payload: MessagesPayload = {
       model: "claude-sonnet-4-20250514",
       messages: [
         { role: "user", content: "Think about this" },
         {
           role: "assistant",
           content: [
-            { type: "thinking", thinking: "Let me think..." },
+            { type: "thinking", thinking: "Let me think...", signature: "sig_placeholder" },
             { type: "text", text: "Here is my answer" },
           ],
         },

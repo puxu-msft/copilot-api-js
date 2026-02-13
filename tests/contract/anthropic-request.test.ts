@@ -1,9 +1,9 @@
 import { describe, test, expect } from "bun:test"
 import { z } from "zod"
 
-import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
+import { translateToOpenAI } from "~/lib/translation/non-stream"
 
 // Zod schema for a single message in the chat completion request.
 const messageSchema = z.object({
@@ -57,7 +57,7 @@ function isValidChatCompletionRequest(payload: unknown): boolean {
 
 describe("Anthropic to OpenAI translation logic", () => {
   test("should translate minimal Anthropic payload to valid OpenAI payload", () => {
-    const anthropicPayload: AnthropicMessagesPayload = {
+    const anthropicPayload: MessagesPayload = {
       model: "gpt-4o",
       messages: [{ role: "user", content: "Hello!" }],
       max_tokens: 0,
@@ -68,7 +68,7 @@ describe("Anthropic to OpenAI translation logic", () => {
   })
 
   test("should translate comprehensive Anthropic payload to valid OpenAI payload", () => {
-    const anthropicPayload: AnthropicMessagesPayload = {
+    const anthropicPayload: MessagesPayload = {
       model: "gpt-4o",
       system: "You are a helpful assistant.",
       messages: [
@@ -97,7 +97,7 @@ describe("Anthropic to OpenAI translation logic", () => {
   })
 
   test("should handle missing fields gracefully", () => {
-    const anthropicPayload: AnthropicMessagesPayload = {
+    const anthropicPayload: MessagesPayload = {
       model: "gpt-4o",
       messages: [{ role: "user", content: "Hello!" }],
       max_tokens: 0,
@@ -119,7 +119,7 @@ describe("Anthropic to OpenAI translation logic", () => {
   })
 
   test("should handle thinking blocks in assistant messages", () => {
-    const anthropicPayload: AnthropicMessagesPayload = {
+    const anthropicPayload: MessagesPayload = {
       model: "claude-3-5-sonnet-20241022",
       messages: [
         { role: "user", content: "What is 2+2?" },
@@ -129,6 +129,7 @@ describe("Anthropic to OpenAI translation logic", () => {
             {
               type: "thinking",
               thinking: "Let me think about this simple math problem...",
+              signature: "sig_placeholder",
             },
             { type: "text", text: "2+2 equals 4." },
           ],
@@ -146,7 +147,7 @@ describe("Anthropic to OpenAI translation logic", () => {
   })
 
   test("should handle thinking blocks with tool calls", () => {
-    const anthropicPayload: AnthropicMessagesPayload = {
+    const anthropicPayload: MessagesPayload = {
       model: "claude-3-5-sonnet-20241022",
       messages: [
         { role: "user", content: "What's the weather?" },
@@ -156,6 +157,7 @@ describe("Anthropic to OpenAI translation logic", () => {
             {
               type: "thinking",
               thinking: "I need to call the weather API to get current weather information.",
+              signature: "sig_placeholder",
             },
             { type: "text", text: "I'll check the weather for you." },
             {

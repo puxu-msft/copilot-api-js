@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { buildMessageMapping, messagesMatch } from "~/routes/messages/direct-anthropic-handler"
+import { buildMessageMapping, messagesMatch } from "~/lib/translation/message-mapping"
 
 // ─── buildMessageMapping ───
 

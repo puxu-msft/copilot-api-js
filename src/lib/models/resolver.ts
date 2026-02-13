@@ -104,27 +104,65 @@ export interface ResolveModelOptions {
   redirectSonnetToOpus?: boolean
 }
 
+/** Known model modifier suffixes (e.g., "-fast" for fast output mode). */
+const KNOWN_MODIFIERS = ["-fast"]
+
+/**
+ * Extract known modifier suffix from a model name.
+ * e.g. "claude-opus-4-6-fast" → { base: "claude-opus-4-6", suffix: "-fast" }
+ */
+function extractModifierSuffix(model: string): { base: string; suffix: string } {
+  const lower = model.toLowerCase()
+  for (const modifier of KNOWN_MODIFIERS) {
+    if (lower.endsWith(modifier)) {
+      return { base: model.slice(0, -modifier.length), suffix: modifier }
+    }
+  }
+  return { base: model, suffix: "" }
+}
+
 /**
  * Resolve a model name to its canonical form.
  *
  * Handles:
- * 1. Short aliases: "opus" → best available opus
- * 2. Hyphenated versions: "claude-opus-4-6" → "claude-opus-4.6"
- * 3. Date suffixes: "claude-opus-4-20250514" → best opus
- * 4. Sonnet → Opus redirect (when enabled)
+ * 1. Modifier suffixes: "claude-opus-4-6-fast" → "claude-opus-4.6-fast"
+ * 2. Short aliases: "opus" → best available opus
+ * 3. Hyphenated versions: "claude-opus-4-6" → "claude-opus-4.6"
+ * 4. Date suffixes: "claude-opus-4-20250514" → best opus
+ * 5. Sonnet → Opus redirect (when enabled)
  */
 export function resolveModelName(model: string, options?: ResolveModelOptions): string {
-  const resolved = model
+  // Extract modifier suffix (e.g., "-fast") before resolution
+  const { base, suffix } = extractModifierSuffix(model)
 
+  // Resolve the base model name
+  const resolvedBase = resolveBase(base, options)
+
+  // Re-attach suffix and validate availability
+  if (suffix) {
+    const withSuffix = resolvedBase + suffix
+    const availableIds = state.models?.data.map((m) => m.id)
+    if (!availableIds || availableIds.length === 0 || availableIds.includes(withSuffix)) {
+      return withSuffix
+    }
+    // Suffixed variant not available, fall back to base
+    return resolvedBase
+  }
+
+  return resolvedBase
+}
+
+/** Resolve a base model name (without modifier suffix) to its canonical form. */
+function resolveBase(model: string, options?: ResolveModelOptions): string {
   // 1. Short alias: "opus" → best opus
-  if (resolved in MODEL_PREFERENCE) {
-    return applyRedirect(findPreferredModel(resolved), options)
+  if (model in MODEL_PREFERENCE) {
+    return applyRedirect(findPreferredModel(model), options)
   }
 
   // 2. Hyphenated: claude-opus-4-6 or claude-opus-4-6-20250514 → claude-opus-4.6
   // Pattern: claude-{family}-{major}-{minor}[-YYYYMMDD]
   // Minor version is 1-2 digits; date suffix is 8+ digits
-  const versionedMatch = resolved.match(/^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})(?:-\d{8,})?$/)
+  const versionedMatch = model.match(/^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})(?:-\d{8,})?$/)
   if (versionedMatch) {
     const dotModel = `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}`
     const availableIds = state.models?.data.map((m) => m.id)
@@ -134,7 +172,7 @@ export function resolveModelName(model: string, options?: ResolveModelOptions): 
   }
 
   // 3. Date-only suffix: claude-{family}-{major}-YYYYMMDD → base model or best family
-  const dateOnlyMatch = resolved.match(/^(claude-(opus|sonnet|haiku)-\d+)-\d{8,}$/)
+  const dateOnlyMatch = model.match(/^(claude-(opus|sonnet|haiku)-\d+)-\d{8,}$/)
   if (dateOnlyMatch) {
     const baseModel = dateOnlyMatch[1]
     const family = dateOnlyMatch[2]
@@ -145,7 +183,7 @@ export function resolveModelName(model: string, options?: ResolveModelOptions): 
     return applyRedirect(findPreferredModel(family), options)
   }
 
-  return applyRedirect(resolved, options)
+  return applyRedirect(model, options)
 }
 
 /** Apply sonnet → opus redirect if enabled. */

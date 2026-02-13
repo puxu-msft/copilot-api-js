@@ -1,10 +1,27 @@
-import { mapOpenAIStopReasonToAnthropic } from "~/lib/anthropic/message-utils"
+import consola from "consola"
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import { mapOpenAIStopReasonToAnthropic } from "~/lib/translation/non-stream"
 import { type ChatCompletionChunk } from "~/services/copilot/create-chat-completions"
-import { type AnthropicStreamEventData, type AnthropicStreamState } from "~/types/api/anthropic"
+import type { StreamEvent, RawMessageStartEvent } from "~/types/api/anthropic"
+
+import { getShutdownSignal } from "~/lib/shutdown"
+import {
+  type AnthropicStreamAccumulator,
+  accumulateAnthropicStreamEvent,
+} from "~/lib/anthropic/stream-accumulator"
+
+export interface StreamState {
+  messageStartSent: boolean
+  contentBlockIndex: number
+  contentBlockOpen: boolean
+  toolCalls: Record<number, { id: string; name: string; anthropicBlockIndex: number }>
+  model?: string
+}
 
 import { type ToolNameMapping } from "./non-stream"
 
-function isToolBlockOpen(state: AnthropicStreamState): boolean {
+function isToolBlockOpen(state: StreamState): boolean {
   if (!state.contentBlockOpen) {
     return false
   }
@@ -14,10 +31,10 @@ function isToolBlockOpen(state: AnthropicStreamState): boolean {
 
 export function translateChunkToAnthropicEvents(
   chunk: ChatCompletionChunk,
-  state: AnthropicStreamState,
+  state: StreamState,
   toolNameMapping?: ToolNameMapping,
-): Array<AnthropicStreamEventData> {
-  const events: Array<AnthropicStreamEventData> = []
+): Array<StreamEvent> {
+  const events: Array<StreamEvent> = []
 
   // Skip chunks with empty choices (e.g., first chunk with prompt_filter_results)
   if (chunk.choices.length === 0) {
@@ -34,6 +51,8 @@ export function translateChunkToAnthropicEvents(
   if (!state.messageStartSent) {
     // Use model from current chunk, or from stored state (from earlier empty chunk)
     const model = chunk.model || state.model || "unknown"
+    // Cast: synthetic message_start — we construct a partial Message object
+    // (model is string, usage is partial) that gets JSON-serialized for SSE
     events.push({
       type: "message_start",
       message: {
@@ -52,7 +71,7 @@ export function translateChunkToAnthropicEvents(
           }),
         },
       },
-    })
+    } as unknown as RawMessageStartEvent)
     state.messageStartSent = true
   }
 
@@ -68,6 +87,7 @@ export function translateChunkToAnthropicEvents(
     }
 
     if (!state.contentBlockOpen) {
+      // Cast: synthetic TextBlock — citations field omitted for translated streams
       events.push({
         type: "content_block_start",
         index: state.contentBlockIndex,
@@ -75,7 +95,7 @@ export function translateChunkToAnthropicEvents(
           type: "text",
           text: "",
         },
-      })
+      } as StreamEvent)
       state.contentBlockOpen = true
     }
 
@@ -153,6 +173,7 @@ export function translateChunkToAnthropicEvents(
       state.contentBlockOpen = false
     }
 
+    // Cast: synthetic message_delta — partial Usage for translated streams
     events.push(
       {
         type: "message_delta",
@@ -167,7 +188,7 @@ export function translateChunkToAnthropicEvents(
             cache_read_input_tokens: chunk.usage.prompt_tokens_details.cached_tokens,
           }),
         },
-      },
+      } as StreamEvent,
       {
         type: "message_stop",
       },
@@ -177,12 +198,126 @@ export function translateChunkToAnthropicEvents(
   return events
 }
 
-export function translateErrorToAnthropicErrorEvent(): AnthropicStreamEventData {
+export function translateErrorToAnthropicErrorEvent(): StreamEvent {
   return {
     type: "error",
     error: {
       type: "api_error",
       message: "An unexpected error occurred during streaming.",
     },
+  }
+}
+
+/** SSE writer interface — decoupled from Hono's SSEStreamingApi */
+export interface SSEWriter {
+  writeSSE: (msg: { event: string; data: string }) => Promise<void>
+}
+
+/** Send truncation marker as Anthropic SSE events */
+export async function sendTruncationMarkerEvents(
+  stream: SSEWriter,
+  streamState: StreamState,
+  marker: string,
+  model: string,
+) {
+  // Must send message_start before any content blocks
+  if (!streamState.messageStartSent) {
+    // Set flag before await to satisfy require-atomic-updates lint rule
+    streamState.messageStartSent = true
+    const messageStartEvent = {
+      type: "message_start",
+      message: {
+        id: `msg_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: [],
+        model,
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+      },
+    }
+    await stream.writeSSE({
+      event: "message_start",
+      data: JSON.stringify(messageStartEvent),
+    })
+  }
+
+  // Start a new content block for the marker
+  const blockStartEvent = {
+    type: "content_block_start",
+    index: streamState.contentBlockIndex,
+    content_block: { type: "text", text: "" },
+  }
+  await stream.writeSSE({
+    event: "content_block_start",
+    data: JSON.stringify(blockStartEvent),
+  })
+
+  // Send the marker text as a delta
+  const deltaEvent = {
+    type: "content_block_delta",
+    index: streamState.contentBlockIndex,
+    delta: { type: "text_delta", text: marker },
+  }
+  await stream.writeSSE({
+    event: "content_block_delta",
+    data: JSON.stringify(deltaEvent),
+  })
+
+  // Stop the content block
+  const blockStopEvent = {
+    type: "content_block_stop",
+    index: streamState.contentBlockIndex,
+  }
+  await stream.writeSSE({
+    event: "content_block_stop",
+    data: JSON.stringify(blockStopEvent),
+  })
+
+  streamState.contentBlockIndex++
+}
+
+/**
+ * Process OpenAI SSE stream: parse chunks, translate to Anthropic events, accumulate.
+ * Yields each translated event for the caller to forward to the client.
+ */
+export async function* processTranslatedStream(
+  response: AsyncIterable<ServerSentEventMessage>,
+  streamState: StreamState,
+  toolNameMapping: ToolNameMapping | undefined,
+  acc: AnthropicStreamAccumulator,
+): AsyncGenerator<StreamEvent> {
+  for await (const rawEvent of response) {
+    // Check shutdown abort signal — break out of stream gracefully
+    if (getShutdownSignal()?.aborted) break
+
+    if (!rawEvent.data) {
+      consola.debug("SSE event with no data (keepalive):", rawEvent.event ?? "(no event type)")
+      continue
+    }
+    // [DONE] is not part of the SSE spec — it's an OpenAI convention.
+    // Copilot's gateway injects it at the end of all streams, including Anthropic.
+    if (rawEvent.data === "[DONE]") break
+
+    let chunk: ChatCompletionChunk
+    try {
+      chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+    } catch (parseError) {
+      consola.error("Failed to parse stream chunk:", parseError, rawEvent.data)
+      continue
+    }
+
+    if (chunk.model && !acc.model) acc.model = chunk.model
+
+    const events = translateChunkToAnthropicEvents(chunk, streamState, toolNameMapping)
+
+    for (const event of events) {
+      accumulateAnthropicStreamEvent(event, acc)
+      yield event
+    }
   }
 }

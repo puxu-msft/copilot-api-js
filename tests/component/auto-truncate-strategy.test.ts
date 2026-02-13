@@ -27,7 +27,7 @@ function makeStrategy(overrides?: {
 
   const truncate = mock(
     async (_p: TestPayload, _m: any, _o: TruncateOptions): Promise<TruncateResult<TestPayload>> => ({
-      wasCompacted: true,
+      wasTruncated: true,
       payload: defaultPayload,
       removedMessageCount: 2,
       originalTokens: 10000,
@@ -156,9 +156,9 @@ describe("createAutoTruncateStrategy - handle", () => {
     expect(truncate.mock.calls[0][0]).toBe(original)
   })
 
-  test("aborts when truncation returns wasCompacted=false", async () => {
+  test("aborts when truncation returns wasTruncated=false", async () => {
     const { strategy } = makeStrategy({
-      truncateResult: { wasCompacted: false },
+      truncateResult: { wasTruncated: false },
     })
     const result = await strategy.handle(make413Error(), { messages: [] }, makeContext())
     expect(result.action).toBe("abort")
@@ -177,7 +177,7 @@ describe("createAutoTruncateStrategy - handle", () => {
     expect(result.action).toBe("retry")
     if (result.action === "retry") {
       expect((result as any).meta!.truncateResult).toBeDefined()
-      expect((result as any).meta!.truncateResult.wasCompacted).toBe(true)
+      expect((result as any).meta!.truncateResult.wasTruncated).toBe(true)
     }
   })
 

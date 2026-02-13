@@ -3,30 +3,71 @@
  * Handles accumulating stream events for history recording and tracking.
  */
 
+import consola from "consola"
+
 import type {
-  AnthropicCopilotAnnotations,
-  AnthropicMessageStartEvent,
-  AnthropicStreamEventData,
+  CopilotAnnotations,
+  StreamEvent,
+  RawMessageStartEvent,
 } from "~/types/api/anthropic"
 
-/** Stream accumulator for Anthropic format */
-export interface AnthropicStreamAccumulator {
+// ============================================================================
+// Accumulated content block types
+// ============================================================================
+
+/**
+ * A single content block accumulated from the stream, preserving original order.
+ * Known block types have typed variants; unknown types are stored via
+ * AccumulatedGenericBlock with all original fields preserved.
+ */
+export type AccumulatedContentBlock =
+  | { type: "text"; text: string }
+  | { type: "thinking"; thinking: string; signature?: string }
+  | { type: "redacted_thinking"; data: string }
+  | { type: "tool_use"; id: string; name: string; input: string }
+  | { type: "server_tool_use"; id: string; name: string; input: string }
+  | { type: "web_search_tool_result"; tool_use_id: string; content: unknown }
+  | AccumulatedGenericBlock
+
+/**
+ * Generic block for unknown/future content block types.
+ * Branded with `_generic` to distinguish from known types in discriminated unions.
+ */
+export interface AccumulatedGenericBlock {
+  type: string
+  _generic: true
+  [key: string]: unknown
+}
+
+// ============================================================================
+// Base accumulator interface (shared with OpenAI accumulator)
+// ============================================================================
+
+/** Minimal accumulator contract for tracking and error recording */
+export interface BaseStreamAccumulator {
   model: string
   inputTokens: number
   outputTokens: number
+  /** Plain text content for error recording fallback */
+  content: string
+}
+
+// ============================================================================
+// Anthropic stream accumulator
+// ============================================================================
+
+/** Stream accumulator for Anthropic format */
+export interface AnthropicStreamAccumulator extends BaseStreamAccumulator {
   cacheReadTokens: number
   cacheCreationTokens: number
   stopReason: string
-  content: string
-  thinkingContent: string
-  toolCalls: Array<{ id: string; name: string; input: string; blockType: "tool_use" | "server_tool_use" }>
-  currentToolCall: { id: string; name: string; input: string; blockType: "tool_use" | "server_tool_use" } | null
-  /** Tracks the type of the current content block being streamed */
-  currentBlockType: "text" | "thinking" | "tool_use" | "server_tool_use" | null
+  /** Content blocks in stream order, indexed by the event's `index` field. */
+  contentBlocks: AccumulatedContentBlock[]
   /** Copilot-specific: IP code citations collected from stream events */
-  copilotAnnotations: Array<AnthropicCopilotAnnotations>
+  copilotAnnotations: Array<CopilotAnnotations>
 }
 
+/** Create a fresh Anthropic stream accumulator */
 export function createAnthropicStreamAccumulator(): AnthropicStreamAccumulator {
   return {
     model: "",
@@ -36,38 +77,40 @@ export function createAnthropicStreamAccumulator(): AnthropicStreamAccumulator {
     cacheCreationTokens: 0,
     stopReason: "",
     content: "",
-    thinkingContent: "",
-    toolCalls: [],
-    currentToolCall: null,
-    currentBlockType: null,
+    contentBlocks: [],
     copilotAnnotations: [],
   }
 }
 
-// Process a single Anthropic event for accumulation
-export function processAnthropicEvent(event: AnthropicStreamEventData, acc: AnthropicStreamAccumulator) {
+// ============================================================================
+// Event processing
+// ============================================================================
+
+/** Accumulate a single Anthropic stream event into the accumulator */
+export function accumulateAnthropicStreamEvent(event: StreamEvent, acc: AnthropicStreamAccumulator) {
   switch (event.type) {
     case "message_start": {
       handleMessageStart(event.message, acc)
       break
     }
-    case "content_block_delta": {
-      handleContentBlockDelta(event.delta, acc, event.copilot_annotations)
+    case "content_block_start": {
+      handleContentBlockStart(event.index, event.content_block as AccContentBlock, acc)
       break
     }
-    case "content_block_start": {
-      handleContentBlockStart(event.content_block, acc)
+    case "content_block_delta": {
+      handleContentBlockDelta(event.index, event.delta as AccDelta, acc, event.copilot_annotations)
       break
     }
     case "content_block_stop": {
-      handleContentBlockStop(acc)
+      // Nothing to do — block is already stored by index, no state to clear
       break
     }
     case "message_delta": {
-      handleMessageDelta(event.delta, event.usage, acc)
+      handleMessageDelta(event.delta as MessageDelta, event.usage as MessageDeltaUsage, acc)
       break
     }
     default: {
+      consola.warn(`[stream-accumulator] Unknown event type: ${(event as { type: string }).type}`)
       break
     }
   }
@@ -81,7 +124,7 @@ export function processAnthropicEvent(event: AnthropicStreamEventData, acc: Anth
  * Handle message_start event.
  * This is where input_tokens, model, and cache stats are first reported.
  */
-function handleMessageStart(message: AnthropicMessageStartEvent["message"], acc: AnthropicStreamAccumulator) {
+function handleMessageStart(message: RawMessageStartEvent["message"], acc: AnthropicStreamAccumulator) {
   if (message.model) acc.model = message.model
   acc.inputTokens = message.usage.input_tokens
   acc.outputTokens = message.usage.output_tokens
@@ -97,35 +140,15 @@ function handleMessageStart(message: AnthropicMessageStartEvent["message"], acc:
 // content_block handlers
 // ============================================================================
 
-// Content block delta types
-type ContentBlockDelta =
+/** Content block delta types (local — looser than SDK's RawContentBlockDelta for proxy use) */
+type AccDelta =
   | { type: "text_delta"; text: string }
   | { type: "input_json_delta"; partial_json: string }
   | { type: "thinking_delta"; thinking: string }
   | { type: "signature_delta"; signature: string }
 
-function handleContentBlockDelta(
-  delta: ContentBlockDelta,
-  acc: AnthropicStreamAccumulator,
-  copilotAnnotations?: AnthropicCopilotAnnotations,
-) {
-  if (delta.type === "text_delta") {
-    acc.content += delta.text
-  } else if (delta.type === "thinking_delta") {
-    acc.thinkingContent += delta.thinking
-  } else if (delta.type === "input_json_delta" && acc.currentToolCall) {
-    acc.currentToolCall.input += delta.partial_json
-  }
-  // signature_delta is not accumulated (it's part of the thinking block integrity, not content)
-
-  // Collect Copilot-specific IP code citations
-  if (copilotAnnotations?.IPCodeCitations?.length) {
-    acc.copilotAnnotations.push(copilotAnnotations)
-  }
-}
-
-// Content block types
-type ContentBlock =
+/** Content block start types (local — looser than SDK's ContentBlock for proxy use) */
+type AccContentBlock =
   | { type: "text"; text: string }
   | {
       type: "tool_use"
@@ -136,38 +159,96 @@ type ContentBlock =
   | { type: "thinking"; thinking: string; signature?: string }
   | { type: "redacted_thinking"; data: string }
   | { type: "server_tool_use"; id: string; name: string }
+  | { type: "web_search_tool_result"; tool_use_id: string; content: unknown }
 
-function handleContentBlockStart(block: ContentBlock, acc: AnthropicStreamAccumulator) {
-  if (block.type === "redacted_thinking") {
-    acc.currentBlockType = null
-  } else if (block.type === "server_tool_use") {
-    acc.currentBlockType = "server_tool_use"
-    acc.currentToolCall = {
-      id: block.id,
-      name: block.name,
-      input: "",
-      blockType: "server_tool_use",
+function handleContentBlockStart(index: number, block: AccContentBlock, acc: AnthropicStreamAccumulator) {
+  let newBlock: AccumulatedContentBlock
+
+  switch (block.type) {
+    case "text":
+      newBlock = { type: "text", text: "" }
+      break
+    case "thinking":
+      newBlock = { type: "thinking", thinking: "", signature: undefined }
+      break
+    case "redacted_thinking":
+      // Complete at block_start, no subsequent deltas
+      newBlock = { type: "redacted_thinking", data: block.data }
+      break
+    case "tool_use":
+      newBlock = { type: "tool_use", id: block.id, name: block.name, input: "" }
+      break
+    case "server_tool_use":
+      newBlock = { type: "server_tool_use", id: block.id, name: block.name, input: "" }
+      break
+    case "web_search_tool_result":
+      // Complete at block_start, no subsequent deltas
+      newBlock = {
+        type: "web_search_tool_result",
+        tool_use_id: block.tool_use_id,
+        content: block.content,
+      }
+      break
+    default: {
+      // Unknown block type — store all fields as-is for forward compatibility.
+      // Cast needed because TypeScript narrows to `never` after exhaustive cases,
+      // but runtime data from the API may contain types not yet in our definitions.
+      const unknownBlock = block as unknown as Record<string, unknown>
+      consola.warn(`[stream-accumulator] Unknown content block type: ${unknownBlock.type}`)
+      newBlock = { ...unknownBlock, _generic: true } as AccumulatedGenericBlock
+      break
     }
-  } else {
-    acc.currentBlockType = block.type
   }
 
-  if (block.type === "tool_use") {
-    acc.currentToolCall = {
-      id: block.id,
-      name: block.name,
-      input: "",
-      blockType: "tool_use",
-    }
-  }
+  acc.contentBlocks[index] = newBlock
 }
 
-function handleContentBlockStop(acc: AnthropicStreamAccumulator) {
-  if (acc.currentToolCall) {
-    acc.toolCalls.push(acc.currentToolCall)
-    acc.currentToolCall = null
+function handleContentBlockDelta(
+  index: number,
+  delta: AccDelta,
+  acc: AnthropicStreamAccumulator,
+  copilotAnnotations?: CopilotAnnotations,
+) {
+  const block = acc.contentBlocks[index]
+  if (!block) return
+
+  switch (delta.type) {
+    case "text_delta": {
+      const b = block as { text: string }
+      b.text += delta.text
+      acc.content += delta.text // Sync BaseStreamAccumulator.content for error fallback
+      break
+    }
+    case "thinking_delta": {
+      const b = block as { thinking: string }
+      b.thinking += delta.thinking
+      break
+    }
+    case "input_json_delta": {
+      const b = block as { input: string }
+      b.input += delta.partial_json
+      break
+    }
+    case "signature_delta": {
+      // signature_delta is part of the thinking block integrity, it's not accumulated actually (it, not content)
+      const b = block as { signature?: string }
+      if (b.signature) {
+        consola.error(
+          "[stream-accumulator] Received unexpected signature_delta for a block that already has a signature. Overwriting existing signature.",
+        )
+      }
+      b.signature = delta.signature
+      break
+    }
+    default:
+      consola.warn(`[stream-accumulator] Unknown delta type: ${(delta as { type: string }).type}`)
+      break
   }
-  acc.currentBlockType = null
+
+  // Collect Copilot-specific IP code citations
+  if (copilotAnnotations?.ip_code_citations?.length) {
+    acc.copilotAnnotations.push(copilotAnnotations)
+  }
 }
 
 // ============================================================================
@@ -213,4 +294,29 @@ function handleMessageDelta(
       acc.cacheCreationTokens = usage.cache_creation_input_tokens
     }
   }
+}
+
+// ============================================================================
+// Convenience extractors
+// ============================================================================
+
+/** Get concatenated text content from all text blocks */
+export function getTextContent(acc: AnthropicStreamAccumulator): string {
+  return acc.contentBlocks
+    .filter((b): b is AccumulatedContentBlock & { type: "text" } => b.type === "text")
+    .map((b) => b.text)
+    .join("")
+}
+
+/** Get concatenated thinking content from all thinking blocks */
+export function getThinkingContent(acc: AnthropicStreamAccumulator): string {
+  return acc.contentBlocks
+    .filter((b): b is AccumulatedContentBlock & { type: "thinking" } => b.type === "thinking")
+    .map((b) => b.thinking)
+    .join("")
+}
+
+/** Get count of redacted_thinking blocks */
+export function getRedactedThinkingCount(acc: AnthropicStreamAccumulator): number {
+  return acc.contentBlocks.filter((b) => b.type === "redacted_thinking").length
 }

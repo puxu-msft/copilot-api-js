@@ -31,7 +31,7 @@ export type RequestContextEvent =
 
 export interface RequestContextManager {
   /** Create and register a new active request context */
-  create(opts: { endpoint: "anthropic" | "openai"; trackingId?: string }): RequestContext
+  create(opts: { endpoint: "anthropic" | "openai"; tuiLogId?: string }): RequestContext
 
   /** Get an active request by ID */
   get(id: string): RequestContext | undefined
@@ -122,7 +122,7 @@ export function createRequestContextManager(): RequestContextManager {
     create(opts) {
       const ctx = createRequestContext({
         endpoint: opts.endpoint,
-        trackingId: opts.trackingId,
+        tuiLogId: opts.tuiLogId,
         onEvent: handleContextEvent,
       })
       activeContexts.set(ctx.id, ctx)

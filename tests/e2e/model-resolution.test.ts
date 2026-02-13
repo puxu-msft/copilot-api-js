@@ -7,10 +7,10 @@
 
 import { describe, test, expect, beforeAll } from "bun:test"
 
-import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { state } from "~/lib/state"
-import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
+import { translateToOpenAI } from "~/lib/translation/non-stream"
 import { getModels } from "~/services/copilot/get-models"
 import { getCopilotToken } from "~/services/github/get-copilot-token"
 
@@ -53,7 +53,7 @@ describeWithToken("Model Name Resolution", () => {
 
   describe("Short aliases", () => {
     test("should resolve 'opus' to latest opus model", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "opus",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,
@@ -67,7 +67,7 @@ describeWithToken("Model Name Resolution", () => {
     })
 
     test("should resolve 'sonnet' to latest sonnet model", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "sonnet",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,
@@ -81,7 +81,7 @@ describeWithToken("Model Name Resolution", () => {
     })
 
     test("should resolve 'haiku' to latest haiku model", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "haiku",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,
@@ -97,7 +97,7 @@ describeWithToken("Model Name Resolution", () => {
 
   describe("Versioned model names", () => {
     test("should strip date suffix from claude-sonnet-4-20250514", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,
@@ -112,7 +112,7 @@ describeWithToken("Model Name Resolution", () => {
     })
 
     test("should convert claude-sonnet-4-5-20250514 to claude-sonnet-4.5", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-sonnet-4-5-20250514",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,
@@ -125,7 +125,7 @@ describeWithToken("Model Name Resolution", () => {
     })
 
     test("should convert claude-opus-4-5-20250101 to claude-opus-4.5", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-opus-4-5-20250101",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,
@@ -138,7 +138,7 @@ describeWithToken("Model Name Resolution", () => {
     })
 
     test("should pass through already-correct model names unchanged", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "claude-sonnet-4.5",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,
@@ -150,7 +150,7 @@ describeWithToken("Model Name Resolution", () => {
     })
 
     test("should pass through GPT model names unchanged", () => {
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "gpt-4o",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,
@@ -173,7 +173,7 @@ describeWithToken("Model Name Resolution", () => {
         claudeModels.map((m) => m.id),
       )
 
-      const payload: AnthropicMessagesPayload = {
+      const payload: MessagesPayload = {
         model: "opus",
         messages: [{ role: "user", content: "test" }],
         max_tokens: 10,

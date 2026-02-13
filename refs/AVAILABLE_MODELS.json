@@ -1,6 +1,75 @@
 {
   "data": [
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 9,
+        "restricted_to": [
+          "pro_plus",
+          "enterprise"
+        ]
+      },
+      "capabilities": {
+        "family": "claude-opus-4.6-fast",
+        "limits": {
+          "max_context_window_tokens": 200000,
+          "max_non_streaming_output_tokens": 16000,
+          "max_output_tokens": 64000,
+          "max_prompt_tokens": 128000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "adaptive_thinking": true,
+          "max_thinking_budget": 32000,
+          "min_thinking_budget": 1024,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "claude-opus-4.6-fast",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "name": "Claude Opus 4.6 (fast mode)",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest Claude Opus 4.6 fast model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.6 fast](https://gh.io/copilot-claude-opus)."
+      },
+      "preview": true,
+      "supported_endpoints": [
+        "/v1/messages",
+        "/chat/completions"
+      ],
+      "vendor": "Anthropic",
+      "version": "claude-opus-4.6-fast"
+    },
+    {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 3,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "claude-opus-4.6",
         "limits": {
@@ -33,6 +102,8 @@
         "type": "chat"
       },
       "id": "claude-opus-4.6",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "Claude Opus 4.6",
@@ -50,6 +121,16 @@
       "version": "claude-opus-4.6"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-5.2-codex",
         "limits": {
@@ -79,6 +160,8 @@
         "type": "chat"
       },
       "id": "gpt-5.2-codex",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "GPT-5.2-Codex",
@@ -95,6 +178,10 @@
       "version": "gpt-5.2-codex"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-5-mini",
         "limits": {
@@ -124,6 +211,8 @@
         "type": "chat"
       },
       "id": "gpt-5-mini",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "lightweight",
       "model_picker_enabled": true,
       "name": "GPT-5 mini",
@@ -141,6 +230,17 @@
       "version": "gpt-5-mini"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-5",
         "limits": {
@@ -170,6 +270,8 @@
         "type": "chat"
       },
       "id": "gpt-5",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "GPT-5",
@@ -187,6 +289,10 @@
       "version": "gpt-5"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4o-mini",
         "limits": {
@@ -204,6 +310,8 @@
         "type": "chat"
       },
       "id": "gpt-4o-mini-2024-07-18",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT-4o mini",
       "object": "model",
@@ -212,6 +320,10 @@
       "version": "gpt-4o-mini-2024-07-18"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4o",
         "limits": {
@@ -240,6 +352,8 @@
         "type": "chat"
       },
       "id": "gpt-4o-2024-11-20",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT-4o",
       "object": "model",
@@ -248,6 +362,10 @@
       "version": "gpt-4o-2024-11-20"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4o",
         "limits": {
@@ -265,6 +383,8 @@
         "type": "chat"
       },
       "id": "gpt-4o-2024-08-06",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT-4o",
       "object": "model",
@@ -273,6 +393,17 @@
       "version": "gpt-4o-2024-08-06"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-5.1",
         "limits": {
@@ -302,6 +433,8 @@
         "type": "chat"
       },
       "id": "gpt-5.1",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "GPT-5.1",
@@ -319,6 +452,17 @@
       "version": "gpt-5.1"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-5.1-codex",
         "limits": {
@@ -348,6 +492,8 @@
         "type": "chat"
       },
       "id": "gpt-5.1-codex",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "GPT-5.1-Codex",
@@ -364,6 +510,17 @@
       "version": "gpt-5.1-codex"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 0.33,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-5.1-codex-mini",
         "limits": {
@@ -393,6 +550,8 @@
         "type": "chat"
       },
       "id": "gpt-5.1-codex-mini",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "GPT-5.1-Codex-Mini",
@@ -409,6 +568,17 @@
       "version": "gpt-5.1-codex-mini"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-5.1-codex-max",
         "limits": {
@@ -438,6 +608,8 @@
         "type": "chat"
       },
       "id": "gpt-5.1-codex-max",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "GPT-5.1-Codex-Max",
@@ -454,6 +626,17 @@
       "version": "gpt-5.1-codex-max"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-5-codex",
         "limits": {
@@ -483,6 +666,8 @@
         "type": "chat"
       },
       "id": "gpt-5-codex",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "GPT-5-Codex (Preview)",
@@ -499,6 +684,10 @@
       "version": "gpt-5-codex"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "text-embedding-3-small",
         "limits": {
@@ -512,6 +701,8 @@
         "type": "embeddings"
       },
       "id": "text-embedding-3-small",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "Embedding V3 small",
       "object": "model",
@@ -520,6 +711,10 @@
       "version": "text-embedding-3-small"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "text-embedding-3-small",
         "object": "model_capabilities",
@@ -530,6 +725,8 @@
         "type": "embeddings"
       },
       "id": "text-embedding-3-small-inference",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "Embedding V3 small (Inference)",
       "object": "model",
@@ -538,6 +735,17 @@
       "version": "text-embedding-3-small"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "claude-sonnet-4",
         "limits": {
@@ -567,6 +775,8 @@
         "type": "chat"
       },
       "id": "claude-sonnet-4",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "Claude Sonnet 4",
@@ -584,6 +794,17 @@
       "version": "claude-sonnet-4"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "claude-sonnet-4.5",
         "limits": {
@@ -614,6 +835,8 @@
         "type": "chat"
       },
       "id": "claude-sonnet-4.5",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "Claude Sonnet 4.5",
@@ -631,6 +854,17 @@
       "version": "claude-sonnet-4.5"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 3,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "claude-opus-4.5",
         "limits": {
@@ -661,6 +895,8 @@
         "type": "chat"
       },
       "id": "claude-opus-4.5",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "Claude Opus 4.5",
@@ -678,6 +914,15 @@
       "version": "claude-opus-4.5"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 10,
+        "restricted_to": [
+          "pro_plus",
+          "max",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "claude-opus-4.1",
         "limits": {
@@ -705,6 +950,8 @@
         "type": "chat"
       },
       "id": "claude-opus-41",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "Claude Opus 4.1",
@@ -722,6 +969,10 @@
       "version": "claude-opus-41"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 0.33
+      },
       "capabilities": {
         "family": "claude-haiku-4.5",
         "limits": {
@@ -752,6 +1003,8 @@
         "type": "chat"
       },
       "id": "claude-haiku-4.5",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "Claude Haiku 4.5",
@@ -769,6 +1022,17 @@
       "version": "claude-haiku-4.5"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gemini-3-pro",
         "limits": {
@@ -800,6 +1064,8 @@
         "type": "chat"
       },
       "id": "gemini-3-pro-preview",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "Gemini 3 Pro (Preview)",
@@ -813,6 +1079,17 @@
       "version": "gemini-3-pro-preview"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 0.33,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gemini-3-flash",
         "limits": {
@@ -844,6 +1121,8 @@
         "type": "chat"
       },
       "id": "gemini-3-flash-preview",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "lightweight",
       "model_picker_enabled": true,
       "name": "Gemini 3 Flash (Preview)",
@@ -857,6 +1136,17 @@
       "version": "gemini-3-flash-preview"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gemini-2.5-pro",
         "limits": {
@@ -888,6 +1178,8 @@
         "type": "chat"
       },
       "id": "gemini-2.5-pro",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "Gemini 2.5 Pro",
@@ -901,6 +1193,10 @@
       "version": "gemini-2.5-pro"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4.1",
         "limits": {
@@ -930,6 +1226,8 @@
         "type": "chat"
       },
       "id": "gpt-4.1-2025-04-14",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT-4.1",
       "object": "model",
@@ -942,6 +1240,17 @@
       "version": "gpt-4.1-2025-04-14"
     },
     {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-5.2",
         "limits": {
@@ -971,6 +1280,8 @@
         "type": "chat"
       },
       "id": "gpt-5.2",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "GPT-5.2",
@@ -988,6 +1299,10 @@
       "version": "gpt-5.2"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4.1",
         "object": "model_capabilities",
@@ -998,6 +1313,8 @@
         "type": "completion"
       },
       "id": "gpt-41-copilot",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "GPT-4.1 Copilot",
@@ -1007,6 +1324,10 @@
       "version": "gpt-41-copilot"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-3.5-turbo",
         "limits": {
@@ -1023,6 +1344,8 @@
         "type": "chat"
       },
       "id": "gpt-3.5-turbo-0613",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT 3.5 Turbo",
       "object": "model",
@@ -1031,6 +1354,10 @@
       "version": "gpt-3.5-turbo-0613"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4",
         "limits": {
@@ -1047,6 +1374,8 @@
         "type": "chat"
       },
       "id": "gpt-4",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT 4",
       "object": "model",
@@ -1055,6 +1384,10 @@
       "version": "gpt-4-0613"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4",
         "limits": {
@@ -1071,6 +1404,8 @@
         "type": "chat"
       },
       "id": "gpt-4-0613",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT 4",
       "object": "model",
@@ -1079,6 +1414,10 @@
       "version": "gpt-4-0613"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4-turbo",
         "limits": {
@@ -1096,6 +1435,8 @@
         "type": "chat"
       },
       "id": "gpt-4-0125-preview",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT 4 Turbo",
       "object": "model",
@@ -1104,6 +1445,10 @@
       "version": "gpt-4-0125-preview"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4o",
         "limits": {
@@ -1132,6 +1477,8 @@
         "type": "chat"
       },
       "id": "gpt-4o-2024-05-13",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT-4o",
       "object": "model",
@@ -1140,6 +1487,10 @@
       "version": "gpt-4o-2024-05-13"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4o",
         "limits": {
@@ -1157,6 +1508,8 @@
         "type": "chat"
       },
       "id": "gpt-4-o-preview",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT-4o",
       "object": "model",
@@ -1165,6 +1518,10 @@
       "version": "gpt-4o-2024-05-13"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4.1",
         "limits": {
@@ -1194,6 +1551,8 @@
         "type": "chat"
       },
       "id": "gpt-4.1",
+      "is_chat_default": true,
+      "is_chat_fallback": true,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "GPT-4.1",
@@ -1207,6 +1566,17 @@
       "version": "gpt-4.1-2025-04-14"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0,
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "max",
+          "business",
+          "enterprise"
+        ]
+      },
       "capabilities": {
         "family": "gpt-3.5-turbo",
         "limits": {
@@ -1223,6 +1593,8 @@
         "type": "chat"
       },
       "id": "gpt-3.5-turbo",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT 3.5 Turbo",
       "object": "model",
@@ -1231,6 +1603,10 @@
       "version": "gpt-3.5-turbo-0613"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4o-mini",
         "limits": {
@@ -1248,6 +1624,8 @@
         "type": "chat"
       },
       "id": "gpt-4o-mini",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT-4o mini",
       "object": "model",
@@ -1256,6 +1634,10 @@
       "version": "gpt-4o-mini-2024-07-18"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4",
         "limits": {
@@ -1272,6 +1654,8 @@
         "type": "chat"
       },
       "id": "gpt-4",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT 4",
       "object": "model",
@@ -1280,6 +1664,10 @@
       "version": "gpt-4-0613"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4o",
         "limits": {
@@ -1308,6 +1696,8 @@
         "type": "chat"
       },
       "id": "gpt-4o",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
       "model_picker_enabled": true,
       "name": "GPT-4o",
@@ -1317,6 +1707,10 @@
       "version": "gpt-4o-2024-11-20"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "gpt-4o",
         "limits": {
@@ -1334,6 +1728,8 @@
         "type": "chat"
       },
       "id": "gpt-4-o-preview",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "GPT-4o",
       "object": "model",
@@ -1342,6 +1738,10 @@
       "version": "gpt-4o-2024-05-13"
     },
     {
+      "billing": {
+        "is_premium": false,
+        "multiplier": 0
+      },
       "capabilities": {
         "family": "text-embedding-ada-002",
         "limits": {
@@ -1353,6 +1753,8 @@
         "type": "embeddings"
       },
       "id": "text-embedding-ada-002",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_enabled": false,
       "name": "Embedding V2 Ada",
       "object": "model",

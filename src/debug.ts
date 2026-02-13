@@ -154,7 +154,7 @@ export async function runDebug(options: RunDebugOptions): Promise<void> {
   }
 }
 
-// Subcommand: debug info (default behavior)
+/** Subcommand: debug info (default behavior) */
 const debugInfo = defineCommand({
   meta: {
     name: "info",
@@ -172,7 +172,7 @@ const debugInfo = defineCommand({
   },
 })
 
-// Subcommand: debug models
+/** Subcommand: debug models */
 const debugModels = defineCommand({
   meta: {
     name: "models",
@@ -210,7 +210,6 @@ const debugModels = defineCommand({
     const { token } = await getCopilotToken()
     state.copilotToken = token
 
-    consola.info("Fetching models from Copilot API...")
     const models = await getModels()
 
     console.log(JSON.stringify(models, null, 2))

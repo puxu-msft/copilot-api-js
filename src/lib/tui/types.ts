@@ -1,34 +1,51 @@
-// TUI types for request tracking and display
+/** TUI types for request tracking and display */
 
 export type RequestStatus = "queued" | "executing" | "streaming" | "completed" | "error"
 
-export interface TrackedRequest {
+export interface TuiLogEntry {
   id: string
   method: string
   path: string
   model?: string
+  /** Billing multiplier for the model (e.g. 3 for opus, 0.33 for haiku) */
+  multiplier?: number
   startTime: number
   status: RequestStatus
   statusCode?: number
   durationMs?: number
   inputTokens?: number
   outputTokens?: number
+  /** Cache read input tokens (prompt cache hits) */
+  cacheReadInputTokens?: number
+  /** Cache creation input tokens (prompt cache writes) */
+  cacheCreationInputTokens?: number
+  /** HTTP request body size in bytes */
+  requestBodySize?: number
+  /** Internally estimated input token count (before sending to model) */
+  estimatedTokens?: number
   error?: string
   queuePosition?: number
   /** Time spent waiting in rate-limit queue (ms) */
   queueWaitMs?: number
   /** Whether this is a /history API access (displayed in gray) */
   isHistoryAccess?: boolean
-  /** Feature tags for display, e.g. ["compact", "thinking"] */
+  /** Feature tags for display, e.g. ["truncated", "thinking"] */
   tags?: Array<string>
 }
 
 export interface RequestUpdate {
+  model?: string
   status?: RequestStatus
   statusCode?: number
   durationMs?: number
   inputTokens?: number
   outputTokens?: number
+  /** Cache read input tokens (prompt cache hits) */
+  cacheReadInputTokens?: number
+  /** Cache creation input tokens (prompt cache writes) */
+  cacheCreationInputTokens?: number
+  /** Internally estimated input token count (before sending to model) */
+  estimatedTokens?: number
   error?: string
   queuePosition?: number
   /** Time spent waiting in rate-limit queue (ms) */
@@ -39,13 +56,13 @@ export interface RequestUpdate {
 
 export interface TuiRenderer {
   /** Called when a new request starts */
-  onRequestStart(request: TrackedRequest): void
+  onRequestStart(entry: TuiLogEntry): void
 
   /** Called when request status updates */
   onRequestUpdate(id: string, update: RequestUpdate): void
 
   /** Called when request completes (success or error) */
-  onRequestComplete(request: TrackedRequest): void
+  onRequestComplete(entry: TuiLogEntry): void
 
   /** Cleanup renderer resources */
   destroy(): void

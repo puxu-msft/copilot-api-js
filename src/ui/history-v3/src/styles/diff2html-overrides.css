@@ -1,0 +1,88 @@
+/* diff2html dark theme overrides */
+.d2h-wrapper {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.d2h-file-wrapper {
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+  margin-bottom: var(--spacing-sm);
+  background: var(--bg-secondary);
+}
+
+.d2h-file-header {
+  display: none;
+}
+
+.d2h-diff-table {
+  font-size: var(--font-size-sm);
+}
+
+.d2h-code-line-ctn {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.d2h-code-side-line {
+  background: var(--bg-secondary);
+}
+
+.d2h-code-line-prefix {
+  color: var(--text-dim);
+}
+
+/* Added lines */
+.d2h-ins {
+  background: var(--success-muted) !important;
+  border-color: var(--success) !important;
+}
+.d2h-ins .d2h-code-line-ctn {
+  background: var(--success-muted) !important;
+}
+.d2h-code-side-line.d2h-ins {
+  background: var(--success-muted) !important;
+}
+
+/* Removed lines */
+.d2h-del {
+  background: var(--error-muted) !important;
+  border-color: var(--error) !important;
+}
+.d2h-del .d2h-code-line-ctn {
+  background: var(--error-muted) !important;
+}
+.d2h-code-side-line.d2h-del {
+  background: var(--error-muted) !important;
+}
+
+/* Changed inline highlights */
+.d2h-ins .d2h-code-line-ctn ins {
+  background: rgba(63, 185, 80, 0.3);
+  text-decoration: none;
+}
+.d2h-del .d2h-code-line-ctn del {
+  background: rgba(248, 81, 73, 0.3);
+  text-decoration: none;
+}
+
+/* Line numbers */
+.d2h-code-linenumber {
+  background: var(--bg-tertiary);
+  color: var(--text-dim);
+  border-right: 1px solid var(--border);
+}
+
+/* Side-by-side separator */
+.d2h-code-side-linenumber {
+  background: var(--bg-tertiary);
+  color: var(--text-dim);
+  border-right: 1px solid var(--border);
+}
+
+/* Info/hunk header */
+.d2h-info {
+  background: var(--primary-muted);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}

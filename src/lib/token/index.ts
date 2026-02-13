@@ -19,7 +19,7 @@ import { getGitHubUser } from "~/services/github/get-user"
 import { CopilotTokenManager } from "./copilot-token-manager"
 import { GitHubTokenManager } from "./github-token-manager"
 
-// Global manager instances
+/** Global manager instances */
 let githubTokenManager: GitHubTokenManager | null = null
 let copilotTokenManager: CopilotTokenManager | null = null
 

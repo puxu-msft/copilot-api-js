@@ -64,7 +64,7 @@ export interface ResponseData {
 /** A single API call attempt (each retry produces a new Attempt) */
 export interface Attempt {
   index: number
-  effectiveRequest: EffectiveRequest
+  effectiveRequest: EffectiveRequest | null
   response: ResponseData | null
   error: ApiError | null
   /** Strategy that triggered this retry (undefined for first attempt) */
@@ -85,7 +85,7 @@ export interface SanitizationState {
 }
 
 export interface TruncationState {
-  wasCompacted: boolean
+  wasTruncated: boolean
   originalTokens: number
   compactedTokens: number
   removedMessageCount: number
@@ -114,9 +114,9 @@ export interface HistoryEntryData {
   durationMs: number
   sessionId?: string
   request: {
-    model: string
-    messages: Array<unknown>
-    stream: boolean
+    model?: string
+    messages?: Array<unknown>
+    stream?: boolean
     tools?: Array<unknown>
     system?: string
     max_tokens?: number
@@ -146,17 +146,20 @@ export interface HistoryEntryData {
 export interface StreamAccumulatorResult {
   model: string
   content: string
-  thinkingContent: string
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
   stopReason: string
-  toolCalls: Array<{
-    id: string
-    name: string
-    input: unknown
-    blockType: string
+  contentBlocks: Array<{
+    type: string
+    text?: string
+    thinking?: string
+    id?: string
+    name?: string
+    input?: unknown
+    tool_use_id?: string
+    content?: unknown
   }>
 }
 
@@ -178,7 +181,7 @@ export type RequestContextEventCallback = (event: RequestContextEventData) => vo
 export interface RequestContext {
   // --- Identity + State ---
   readonly id: string
-  readonly trackingId: string | undefined
+  readonly tuiLogId: string | undefined
   readonly startTime: number
   readonly endpoint: "anthropic" | "openai"
   readonly state: RequestState
@@ -218,7 +221,7 @@ let idCounter = 0
 
 export function createRequestContext(opts: {
   endpoint: "anthropic" | "openai"
-  trackingId?: string
+  tuiLogId?: string
   onEvent: RequestContextEventCallback
 }): RequestContext {
   const id = `req_${Date.now()}_${++idCounter}`
@@ -244,7 +247,7 @@ export function createRequestContext(opts: {
 
   const ctx: RequestContext = {
     id,
-    trackingId: opts.trackingId,
+    tuiLogId: opts.tuiLogId,
     startTime,
     endpoint: opts.endpoint,
 
@@ -294,7 +297,7 @@ export function createRequestContext(opts: {
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationState }) {
       const attempt: Attempt = {
         index: _attempts.length,
-        effectiveRequest: null as unknown as EffectiveRequest, // Set later via setAttemptEffectiveRequest
+        effectiveRequest: null, // Set later via setAttemptEffectiveRequest
         response: null,
         error: null,
         strategy: attemptOpts.strategy,
@@ -356,23 +359,6 @@ export function createRequestContext(opts: {
     },
 
     completeFromStream(acc: StreamAccumulatorResult) {
-      const contentBlocks: Array<unknown> = []
-      if (acc.thinkingContent) contentBlocks.push({ type: "thinking", thinking: acc.thinkingContent })
-      if (acc.content) contentBlocks.push({ type: "text", text: acc.content })
-      for (const tc of acc.toolCalls) {
-        contentBlocks.push({
-          type: tc.blockType,
-          id: tc.id,
-          name: tc.name,
-          input: tc.input,
-        })
-      }
-
-      const toolCalls =
-        acc.toolCalls.length > 0 ?
-          acc.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, input: tc.input }))
-        : undefined
-
       const response: ResponseData = {
         success: true,
         model: acc.model,
@@ -382,9 +368,8 @@ export function createRequestContext(opts: {
           ...(acc.cacheReadTokens > 0 && { cache_read_input_tokens: acc.cacheReadTokens }),
           ...(acc.cacheCreationTokens > 0 && { cache_creation_input_tokens: acc.cacheCreationTokens }),
         },
-        content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
+        content: acc.contentBlocks.length > 0 ? { role: "assistant", content: acc.contentBlocks } : null,
         stop_reason: acc.stopReason || undefined,
-        toolCalls,
       }
 
       ctx.complete(response)
@@ -436,9 +421,9 @@ export function createRequestContext(opts: {
         timestamp: startTime,
         durationMs: Date.now() - startTime,
         request: {
-          model: _originalRequest?.model ?? "",
-          messages: _originalRequest?.messages ?? [],
-          stream: _originalRequest?.stream ?? true,
+          model: _originalRequest?.model,
+          messages: _originalRequest?.messages,
+          stream: _originalRequest?.stream,
           tools: _originalRequest?.tools,
           system: _originalRequest?.system,
         },

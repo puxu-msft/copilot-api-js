@@ -7,10 +7,10 @@ import { hasKnownLimits } from "~/lib/auto-truncate/common"
 import { translateModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
-import { requestTracker } from "~/lib/tui"
-import { type AnthropicMessagesPayload } from "~/types/api/anthropic"
+import { tuiLogger } from "~/lib/tui"
+import { type MessagesPayload } from "~/types/api/anthropic"
 
-import { translateToOpenAI } from "./non-stream-translation"
+import { translateToOpenAI } from "~/lib/translation/non-stream"
 
 /**
  * Handles token counting for Anthropic /v1/messages/count_tokens endpoint.
@@ -28,18 +28,17 @@ import { translateToOpenAI } from "./non-stream-translation"
  * - The count is an estimate
  */
 export async function handleCountTokens(c: Context) {
-  const trackingId = c.get("trackingId") as string | undefined
+  const tuiLogId = c.get("tuiLogId") as string | undefined
 
   try {
-    const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+    const anthropicPayload = await c.req.json<MessagesPayload>()
 
     // Resolve model name aliases and date-suffixed versions
     anthropicPayload.model = translateModelName(anthropicPayload.model)
 
     // Update tracker with model name
-    if (trackingId) {
-      const request = requestTracker.getRequest(trackingId)
-      if (request) request.model = anthropicPayload.model
+    if (tuiLogId) {
+      tuiLogger.updateRequest(tuiLogId, { model: anthropicPayload.model })
     }
 
     const selectedModel = state.models?.data.find((model) => model.id === anthropicPayload.model)
@@ -67,8 +66,8 @@ export async function handleCountTokens(c: Context) {
             + `returning inflated count ${inflatedTokens} to trigger client-side compaction`,
         )
 
-        if (trackingId) {
-          requestTracker.updateRequest(trackingId, { inputTokens: inflatedTokens })
+        if (tuiLogId) {
+          tuiLogger.updateRequest(tuiLogId, { inputTokens: inflatedTokens })
         }
 
         return c.json({ input_tokens: inflatedTokens })
@@ -100,8 +99,8 @@ export async function handleCountTokens(c: Context) {
       )
     }
 
-    if (trackingId) {
-      requestTracker.updateRequest(trackingId, { inputTokens })
+    if (tuiLogId) {
+      tuiLogger.updateRequest(tuiLogId, { inputTokens })
     }
 
     return c.json({ input_tokens: inputTokens })

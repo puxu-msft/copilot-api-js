@@ -7,43 +7,20 @@ import type { Context } from "hono"
 
 import consola from "consola"
 
-import type { AnthropicMessagesPayload } from "~/types/api/anthropic"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { convertAnthropicMessages, extractSystemPrompt } from "~/lib/anthropic/message-utils"
-import { recordRequest } from "~/lib/history"
+import { type MessageContent, recordRequest } from "~/lib/history"
 import { translateModelName } from "~/lib/models/resolver"
-import { sanitizeAnthropicSystem } from "~/lib/security-research-mode"
-import { state } from "~/lib/state"
-import { requestTracker } from "~/lib/tui"
+import { processAnthropicSystem } from "~/lib/system-prompt-manager"
+import { tuiLogger } from "~/lib/tui"
 import { supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-messages"
-import { isServerToolResultBlock } from "~/types/api/anthropic"
 
-import { type ResponseContext, updateTrackerModel } from "../shared"
+import { type ResponseContext } from "../shared"
 import { handleDirectAnthropicCompletion } from "./direct-anthropic-handler"
 import { handleTranslatedCompletion } from "./translated-handler"
 
 export async function handleCompletion(c: Context) {
-  const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
-  consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
-
-  // Apply security research mode system prompt enhancement if enabled
-  if (state.securityResearchMode && anthropicPayload.system) {
-    const originalLength =
-      typeof anthropicPayload.system === "string" ?
-        anthropicPayload.system.length
-      : JSON.stringify(anthropicPayload.system).length
-    anthropicPayload.system = sanitizeAnthropicSystem(anthropicPayload.system)
-    const newLength =
-      typeof anthropicPayload.system === "string" ?
-        anthropicPayload.system.length
-      : JSON.stringify(anthropicPayload.system).length
-    if (originalLength !== newLength) {
-      consola.debug(`[SecurityResearch] System prompt enhanced: ${originalLength} -> ${newLength} chars`)
-    }
-  }
-
-  // Log tool-related information for debugging
-  logToolInfo(anthropicPayload)
+  const anthropicPayload = await c.req.json<MessagesPayload>()
 
   // Resolve model name aliases and date-suffixed versions
   // e.g., "haiku" → "claude-haiku-4.5", "claude-sonnet-4-20250514" → "claude-sonnet-4"
@@ -53,38 +30,18 @@ export async function handleCompletion(c: Context) {
     anthropicPayload.model = resolvedModel
   }
 
-  // Validate that the model supports the /v1/messages endpoint
-  const selectedModel = state.models?.data.find((m) => m.id === anthropicPayload.model)
-  if (selectedModel?.supported_endpoints && !selectedModel.supported_endpoints.includes("/v1/messages")) {
-    return c.json(
-      {
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          message:
-            `Model '${anthropicPayload.model}' does not support the /v1/messages endpoint. `
-            + `Supported endpoints: ${selectedModel.supported_endpoints.join(", ")}`,
-        },
-      },
-      400,
-    )
+  // System prompt collection + config-based overrides (always active)
+  if (anthropicPayload.system) {
+    anthropicPayload.system = await processAnthropicSystem(anthropicPayload.system)
   }
 
-  // Determine which path we'll use
-  const useDirectAnthropicApi = supportsDirectAnthropicApi(anthropicPayload.model)
-
-  // Get tracking ID and use tracker's startTime for consistent timing
-  const trackingId = c.get("trackingId") as string | undefined
-  const trackedRequest = trackingId ? requestTracker.getRequest(trackingId) : undefined
-  const startTime = trackedRequest?.startTime ?? Date.now()
-
-  // Update TUI tracker with model info
-  updateTrackerModel(trackingId, anthropicPayload.model)
+  // Log tool-related information for debugging
+  // logToolInfo(anthropicPayload)
 
   // Record request to history with full message content
   const historyId = recordRequest("anthropic", {
     model: anthropicPayload.model,
-    messages: convertAnthropicMessages(anthropicPayload.messages),
+    messages: anthropicPayload.messages as unknown as MessageContent[],
     stream: anthropicPayload.stream ?? false,
     tools: anthropicPayload.tools?.map((t) => ({
       name: t.name,
@@ -92,50 +49,24 @@ export async function handleCompletion(c: Context) {
     })),
     max_tokens: anthropicPayload.max_tokens,
     temperature: anthropicPayload.temperature,
-    system: extractSystemPrompt(anthropicPayload.system),
+    system: anthropicPayload.system,
   })
 
-  const ctx: ResponseContext = { historyId, trackingId, startTime }
+  // Get tracking ID and use tracker's startTime for consistent timing
+  const tuiLogId = c.get("tuiLogId") as string | undefined
 
-  // Route to appropriate handler based on model type
+  // Update TUI tracker with model info
+  if (tuiLogId) tuiLogger.updateRequest(tuiLogId, { model: anthropicPayload.model })
+
+  const tuiLogEntry = tuiLogId ? tuiLogger.getRequest(tuiLogId) : undefined
+  const startTime = tuiLogEntry?.startTime ?? Date.now()
+  const ctx: ResponseContext = { historyId, tuiLogId, startTime }
+
+  // Use direct Anthropic API or fallback to OpenAI translation
+  const useDirectAnthropicApi = supportsDirectAnthropicApi(anthropicPayload.model)
   if (useDirectAnthropicApi) {
     return handleDirectAnthropicCompletion(c, anthropicPayload, ctx)
-  }
-
-  // Fallback to OpenAI translation path
-  return handleTranslatedCompletion(c, anthropicPayload, ctx)
-}
-
-/**
- * Log tool-related information for debugging
- */
-function logToolInfo(anthropicPayload: AnthropicMessagesPayload) {
-  if (anthropicPayload.tools?.length) {
-    const toolInfo = anthropicPayload.tools.map((t) => ({
-      name: t.name,
-      type: t.type ?? "(custom)",
-    }))
-    consola.debug(`[Tools] Defined tools:`, JSON.stringify(toolInfo))
-  }
-
-  // Log tool_use and tool_result in messages for debugging
-  for (const msg of anthropicPayload.messages) {
-    if (typeof msg.content !== "string") {
-      for (const block of msg.content) {
-        if (block.type === "tool_use") {
-          consola.debug(`[Tools] tool_use in message: ${block.name} (id: ${block.id})`)
-        }
-        if (block.type === "tool_result") {
-          consola.debug(`[Tools] tool_result in message: id=${block.tool_use_id}, is_error=${block.is_error ?? false}`)
-        }
-        if (block.type === "server_tool_use") {
-          consola.debug(`[Tools] server_tool_use in message: ${block.name} (id: ${block.id})`)
-        }
-        // Log all server tool results (web_search_tool_result, tool_search_tool_result, etc.)
-        if (isServerToolResultBlock(block)) {
-          consola.debug(`[Tools] ${block.type} in message: id=${block.tool_use_id}`)
-        }
-      }
-    }
+  } else {
+    return handleTranslatedCompletion(c, anthropicPayload, ctx)
   }
 }

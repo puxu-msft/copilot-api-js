@@ -1,0 +1,31 @@
+body {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+code, pre {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+pre {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+::selection {
+  background: var(--primary-muted);
+  color: var(--text);
+}

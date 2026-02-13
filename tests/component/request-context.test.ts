@@ -10,11 +10,11 @@ import type { ApiError } from "~/lib/error"
 
 import { createRequestContext } from "~/lib/context/request"
 
-function makeContext(overrides?: { endpoint?: "anthropic" | "openai"; trackingId?: string }) {
+function makeContext(overrides?: { endpoint?: "anthropic" | "openai"; tuiLogId?: string }) {
   const onEvent = mock(() => {})
   const ctx = createRequestContext({
     endpoint: overrides?.endpoint ?? "anthropic",
-    trackingId: overrides?.trackingId ?? "track-1",
+    tuiLogId: overrides?.tuiLogId ?? "track-1",
     onEvent,
   })
   return { ctx, onEvent }
@@ -41,9 +41,9 @@ describe("createRequestContext - initialization", () => {
     expect(ctx.endpoint).toBe("openai")
   })
 
-  test("stores trackingId", () => {
-    const { ctx } = makeContext({ trackingId: "my-tracking" })
-    expect(ctx.trackingId).toBe("my-tracking")
+  test("stores tuiLogId", () => {
+    const { ctx } = makeContext({ tuiLogId: "my-tracking" })
+    expect(ctx.tuiLogId).toBe("my-tracking")
   })
 
   test("initializes with null data fields and empty attempts", () => {
@@ -182,13 +182,12 @@ describe("createRequestContext - completion", () => {
     ctx.completeFromStream({
       model: "claude-sonnet-4",
       content: "Hello world",
-      thinkingContent: "",
       inputTokens: 100,
       outputTokens: 50,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
       stopReason: "end_turn",
-      toolCalls: [],
+      contentBlocks: [{ type: "text", text: "Hello world" }],
     })
 
     expect(ctx.state).toBe("completed")
@@ -287,7 +286,7 @@ describe("createRequestContext - toHistoryEntry", () => {
     ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
 
     const truncation = {
-      wasCompacted: true,
+      wasTruncated: true,
       originalTokens: 10000,
       compactedTokens: 5000,
       removedMessageCount: 3,

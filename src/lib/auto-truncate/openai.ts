@@ -36,7 +36,7 @@ import {
   getEffectiveTokenLimit,
 } from "./common"
 
-// Re-export for backwards compatibility
+/** Re-export for backwards compatibility */
 export { getEffectiveByteLimitBytes, onRequestTooLarge } from "./common"
 export type { AutoTruncateConfig } from "./common"
 
@@ -47,7 +47,7 @@ export type { AutoTruncateConfig } from "./common"
 /** Result of auto-truncate operation */
 export interface OpenAIAutoTruncateResult {
   payload: ChatCompletionsPayload
-  wasCompacted: boolean
+  wasTruncated: boolean
   originalTokens: number
   compactedTokens: number
   removedMessageCount: number
@@ -483,7 +483,7 @@ export async function autoTruncateOpenAI(
   if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
     return buildResult({
       payload,
-      wasCompacted: false,
+      wasTruncated: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
@@ -532,7 +532,7 @@ export async function autoTruncateOpenAI(
 
       return buildResult({
         payload: noticePayload,
-        wasCompacted: true,
+        wasTruncated: true,
         originalTokens,
         compactedTokens: noticeTokenCount.input,
         removedMessageCount: 0,
@@ -573,7 +573,7 @@ export async function autoTruncateOpenAI(
 
         return buildResult({
           payload: noticePayload,
-          wasCompacted: true,
+          wasTruncated: true,
           originalTokens,
           compactedTokens: noticeTokenCount.input,
           removedMessageCount: 0,
@@ -622,7 +622,7 @@ export async function autoTruncateOpenAI(
     consola.warn("[AutoTruncate:OpenAI] Would need to remove all messages")
     return buildResult({
       payload,
-      wasCompacted: false,
+      wasTruncated: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
@@ -644,7 +644,7 @@ export async function autoTruncateOpenAI(
     consola.warn("[AutoTruncate:OpenAI] All messages filtered out after cleanup")
     return buildResult({
       payload,
-      wasCompacted: false,
+      wasTruncated: false,
       originalTokens,
       compactedTokens: originalTokens,
       removedMessageCount: 0,
@@ -712,7 +712,7 @@ export async function autoTruncateOpenAI(
 
   return buildResult({
     payload: newPayload,
-    wasCompacted: true,
+    wasTruncated: true,
     originalTokens,
     compactedTokens: newTokenCount.input,
     removedMessageCount: removedCount,
@@ -723,7 +723,7 @@ export async function autoTruncateOpenAI(
  * Create a marker to prepend to responses indicating auto-truncation occurred.
  */
 export function createTruncationResponseMarkerOpenAI(result: OpenAIAutoTruncateResult): string {
-  if (!result.wasCompacted) return ""
+  if (!result.wasTruncated) return ""
 
   const reduction = result.originalTokens - result.compactedTokens
   const percentage = Math.round((reduction / result.originalTokens) * 100)

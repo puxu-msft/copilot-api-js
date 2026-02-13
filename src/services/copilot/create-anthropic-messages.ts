@@ -4,9 +4,10 @@
  */
 
 import consola from "consola"
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import { events } from "fetch-event-stream"
 
-import type { AnthropicMessagesPayload, AnthropicResponse, AnthropicTool } from "~/types/api/anthropic"
+import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
 
 import {
   applyToolSearch,
@@ -18,7 +19,7 @@ import { copilotBaseUrl, copilotHeaders } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
-// Re-export the response type for consumers
+/** Re-export the response type for consumers */
 export type AnthropicMessageResponse = AnthropicResponse
 
 /**
@@ -37,8 +38,8 @@ const COPILOT_REJECTED_FIELDS = new Set(["output_config", "inference_geo"])
  * Also converts server-side tools (web_search, etc.) to custom tools.
  */
 function filterPayloadForCopilot(
-  payload: AnthropicMessagesPayload & Record<string, unknown>,
-): AnthropicMessagesPayload {
+  payload: MessagesPayload & Record<string, unknown>,
+): MessagesPayload {
   const filtered: Record<string, unknown> = {}
   const rejectedFields: Array<string> = []
 
@@ -56,14 +57,14 @@ function filterPayloadForCopilot(
 
   // Convert server-side tools to custom tools
   if (filtered.tools) {
-    filtered.tools = convertServerToolsToCustom(filtered.tools as Array<AnthropicTool>)
+    filtered.tools = convertServerToolsToCustom(filtered.tools as Array<Tool>)
   }
 
   // Ensure all tools have input_schema (required by Anthropic API).
   // Some clients (e.g., Claude Code subagents) send tool definitions with only
   // name and description, omitting input_schema. The API rejects these with 400.
   if (filtered.tools) {
-    filtered.tools = (filtered.tools as Array<AnthropicTool>).map((tool) => {
+    filtered.tools = (filtered.tools as Array<Tool>).map((tool) => {
       if (!tool.input_schema) {
         return { ...tool, input_schema: { type: "object" } }
       }
@@ -71,7 +72,7 @@ function filterPayloadForCopilot(
     })
   }
 
-  return filtered as unknown as AnthropicMessagesPayload
+  return filtered as unknown as MessagesPayload
 }
 
 /**
@@ -79,9 +80,9 @@ function filterPayloadForCopilot(
  * According to Anthropic docs, max_tokens must be greater than thinking.budget_tokens.
  * max_tokens = thinking_budget + response_tokens
  */
-function adjustMaxTokensForThinking(payload: AnthropicMessagesPayload): AnthropicMessagesPayload {
+function adjustMaxTokensForThinking(payload: MessagesPayload): MessagesPayload {
   const thinking = payload.thinking
-  if (!thinking || thinking.type === "disabled") {
+  if (!thinking || thinking.type === "disabled" || thinking.type === "adaptive") {
     return payload
   }
 
@@ -114,12 +115,12 @@ function adjustMaxTokensForThinking(payload: AnthropicMessagesPayload): Anthropi
  * This bypasses the OpenAI translation layer for Anthropic models.
  */
 export async function createAnthropicMessages(
-  payload: AnthropicMessagesPayload,
-): Promise<AnthropicMessageResponse | AsyncIterable<{ data?: string; event?: string }>> {
+  payload: MessagesPayload,
+): Promise<AnthropicMessageResponse | AsyncGenerator<ServerSentEventMessage>> {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
   // Strip rejected fields before sending to Copilot
-  let filteredPayload = filterPayloadForCopilot(payload as AnthropicMessagesPayload & Record<string, unknown>)
+  let filteredPayload = filterPayloadForCopilot(payload as MessagesPayload & Record<string, unknown>)
 
   // Adjust max_tokens if thinking is enabled
   filteredPayload = adjustMaxTokensForThinking(filteredPayload)
@@ -143,12 +144,12 @@ export async function createAnthropicMessages(
   }
 
   // Add context_management if model supports it and payload doesn't already have one
-  const payloadRecord = filteredPayload as AnthropicMessagesPayload & Record<string, unknown>
+  const payloadRecord = filteredPayload as MessagesPayload & Record<string, unknown>
   if (!payloadRecord.context_management) {
     const hasThinking = Boolean(filteredPayload.thinking && filteredPayload.thinking.type !== "disabled")
     const contextManagement = buildContextManagement(filteredPayload.model, hasThinking)
     if (contextManagement) {
-      payloadRecord.context_management = contextManagement
+      payloadRecord.context_management = contextManagement as unknown as Record<string, unknown>
       consola.debug("[DirectAnthropic] Added context_management:", JSON.stringify(contextManagement))
     }
   }
@@ -267,7 +268,7 @@ const SERVER_TOOL_CONFIGS: Record<string, ServerToolConfig> = {
 /**
  * Check if a tool is a server-side tool that needs conversion.
  */
-function getServerToolPrefix(tool: AnthropicTool): string | null {
+function getServerToolPrefix(tool: Tool): string | null {
   // Check type field (e.g., "web_search_20250305")
   if (tool.type) {
     for (const prefix of Object.keys(SERVER_TOOL_CONFIGS)) {
@@ -285,12 +286,12 @@ function getServerToolPrefix(tool: AnthropicTool): string | null {
  *
  * Note: Server-side tools are only converted if state.rewriteAnthropicTools is enabled.
  */
-function convertServerToolsToCustom(tools: Array<AnthropicTool> | undefined): Array<AnthropicTool> | undefined {
+function convertServerToolsToCustom(tools: Array<Tool> | undefined): Array<Tool> | undefined {
   if (!tools) {
     return undefined
   }
 
-  const result: Array<AnthropicTool> = []
+  const result: Array<Tool> = []
 
   for (const tool of tools) {
     const serverToolPrefix = getServerToolPrefix(tool)
@@ -340,5 +341,15 @@ export function supportsDirectAnthropicApi(modelId: string): boolean {
   }
 
   const model = state.models?.data.find((m) => m.id === modelId)
-  return model?.vendor === "Anthropic"
+  if  (model?.vendor !== "Anthropic") {
+    return false
+  }
+
+  // Validate that the model supports the /v1/messages endpoint
+  if (model?.supported_endpoints && !model.supported_endpoints.includes("/v1/messages")) {
+    consola.warn(`Model ${modelId} does not support /v1/messages endpoint, cannot use direct Anthropic API`)
+    return false
+  }
+
+  return true
 }

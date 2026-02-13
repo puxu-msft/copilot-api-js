@@ -2,7 +2,6 @@
 
 import { defineCommand } from "citty"
 import consola from "consola"
-import { createHash } from "node:crypto"
 import pc from "picocolors"
 import { serve, type ServerHandler } from "srvx"
 
@@ -16,8 +15,9 @@ import { initHistory } from "./lib/history"
 import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
-import { initRequestTracker } from "./lib/tui"
+import { initTuiLogger } from "./lib/tui"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
+import { initHistoryWebSocket } from "./routes/history/route"
 import { server } from "./server"
 
 /** Format limit values as "Xk" or "?" if not available */
@@ -65,22 +65,6 @@ function parseIntOrDefault(value: string, defaultValue: number): number {
   return Number.isFinite(parsed) ? parsed : defaultValue
 }
 
-// Security Research Mode passphrase verification
-// Salt + SHA1 hash of the correct passphrase (not stored in plaintext)
-const SECURITY_RESEARCH_SALT = "copilot-api-security-research:"
-const SECURITY_RESEARCH_HASH = "400d6b268f04b9ae9d9ea9b27a93364c3b24565c"
-
-/**
- * Verify the Security Research Mode passphrase.
- * Returns true if the passphrase is correct, false otherwise.
- */
-function verifySecurityResearchPassphrase(passphrase: string): boolean {
-  const hash = createHash("sha1")
-    .update(SECURITY_RESEARCH_SALT + passphrase)
-    .digest("hex")
-  return hash === SECURITY_RESEARCH_HASH
-}
-
 interface RunServerOptions {
   port: number
   host?: string
@@ -102,8 +86,9 @@ interface RunServerOptions {
   redirectAnthropic: boolean
   rewriteAnthropicTools: boolean
   redirectCountTokens: boolean
-  securityResearchPassphrase?: string
   redirectSonnetToOpus: boolean
+  historyWebSocket: boolean
+  collectSystemPrompts: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -134,17 +119,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.rewriteAnthropicTools = options.rewriteAnthropicTools
   state.redirectCountTokens = options.redirectCountTokens
   state.redirectSonnetToOpus = options.redirectSonnetToOpus
-
-  // Verify Security Research Mode passphrase if provided
-  if (options.securityResearchPassphrase) {
-    if (verifySecurityResearchPassphrase(options.securityResearchPassphrase)) {
-      state.securityResearchMode = true
-      consola.warn("⚠️  Security Research Mode enabled - use responsibly for authorized testing only")
-    } else {
-      consola.error("Invalid Security Research Mode passphrase")
-      process.exit(1)
-    }
-  }
+  state.historyWebSocket = options.historyWebSocket
+  state.collectSystemPrompts = options.collectSystemPrompts
 
   // Log configuration status for all features
   const configLines: Array<string> = []
@@ -182,8 +158,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   toggle(options.manual, "Manual approval")
   toggle(options.proxyEnv, "Proxy from env")
   toggle(options.showGitHubToken, "Show GitHub token")
-  toggle(state.securityResearchMode, "Security research mode")
   toggle(options.redirectSonnetToOpus, "Redirect sonnet to opus")
+  toggle(options.historyWebSocket, "History WebSocket", "real-time updates")
+  toggle(options.collectSystemPrompts, "Collect system prompts")
 
   const historyLimitText = options.historyLimit === 0 ? "unlimited" : `max=${options.historyLimit}`
   on("History", historyLimitText)
@@ -233,12 +210,28 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const displayHost = options.host ?? "localhost"
   const serverUrl = `http://${displayHost}:${options.port}`
 
-  // Initialize request tracker now that we're ready to handle requests
-  initRequestTracker()
+  // Initialize TUI logger now that we're ready to handle requests
+  initTuiLogger()
+
+  // Initialize history WebSocket support (registers /history/ws route)
+  // Must be called before server starts so routes are ready, but the returned
+  // injectWebSocket function (Node.js only) is called after server creation.
+  let injectWebSocket: ((httpServer: import("node:http").Server) => void) | undefined
+  if (options.historyWebSocket) {
+    injectWebSocket = await initHistoryWebSocket(server)
+  }
 
   consola.box(
     `Web UI:\n🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage\n📜 History UI:   ${serverUrl}/history`,
   )
+
+  // Import hono/bun websocket handler for Bun's WebSocket support.
+  // Bun.serve() requires an explicit `websocket` handler object alongside `fetch`
+  // for WebSocket upgrades to work. Without this, server.upgrade() in
+  // hono/bun's upgradeWebSocket middleware silently fails.
+  const bunWebSocket = typeof globalThis.Bun !== "undefined"
+    ? (await import("hono/bun")).websocket
+    : undefined
 
   let serverInstance
   try {
@@ -247,9 +240,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       port: options.port,
       hostname: options.host,
       reusePort: true,
+      // Disable srvx's built-in graceful shutdown — we have our own
+      // multi-phase shutdown handler (see lib/shutdown.ts) that provides
+      // request draining, abort signaling, and WebSocket cleanup.
+      gracefulShutdown: false,
       bun: {
         // Default idleTimeout is 10s, too short for LLM streaming responses
         idleTimeout: 255, // seconds (Bun max)
+        ...(bunWebSocket && { websocket: bunWebSocket }),
       },
     })
   } catch (error) {
@@ -262,6 +260,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // so the handler has access to the server instance when closing.
   setServerInstance(serverInstance)
   setupShutdownHandlers()
+
+  // Inject WebSocket upgrade handler into Node.js HTTP server (no-op under Bun)
+  if (injectWebSocket) {
+    const nodeServer = serverInstance.node?.server
+    if (nodeServer && "on" in nodeServer) {
+      injectWebSocket(nodeServer as import("node:http").Server)
+    }
+  }
 
   // Block until a shutdown signal (SIGINT/SIGTERM) is received.
   // This prevents runMain() from returning, which would trigger
@@ -374,15 +380,20 @@ export const start = defineCommand({
       default: false,
       description: "Redirect count_tokens through OpenAI translation (instead of native Anthropic counting)",
     },
-    "security-research-mode": {
-      type: "string",
-      description:
-        "Enable Security Research Mode with passphrase (for authorized penetration testing, CTF, and security education)",
-    },
     "redirect-sonnet-to-opus": {
       type: "boolean",
       default: false,
       description: "Redirect sonnet model requests to best available opus model",
+    },
+    "no-history-websocket": {
+      type: "boolean",
+      default: false,
+      description: "Disable WebSocket real-time updates for history UI",
+    },
+    "collect-system-prompts": {
+      type: "boolean",
+      default: false,
+      description: "Collect and save original system prompts to data directory (dedup by MD5)",
     },
   },
   run({ args }) {
@@ -456,12 +467,17 @@ export const start = defineCommand({
       // redirect-count-tokens
       "redirect-count-tokens",
       "redirectCountTokens",
-      // security-research-mode
-      "security-research-mode",
-      "securityResearchMode",
       // redirect-sonnet-to-opus
       "redirect-sonnet-to-opus",
       "redirectSonnetToOpus",
+      // no-history-websocket (citty also stores "history-websocket")
+      "no-history-websocket",
+      "noHistoryWebsocket",
+      "history-websocket",
+      "historyWebsocket",
+      // collect-system-prompts
+      "collect-system-prompts",
+      "collectSystemPrompts",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
@@ -488,8 +504,9 @@ export const start = defineCommand({
       redirectAnthropic: args["redirect-anthropic"],
       rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],
       redirectCountTokens: args["redirect-count-tokens"],
-      securityResearchPassphrase: args["security-research-mode"],
       redirectSonnetToOpus: args["redirect-sonnet-to-opus"],
+      historyWebSocket: !args["no-history-websocket"],
+      collectSystemPrompts: args["collect-system-prompts"],
     })
   },
 })
