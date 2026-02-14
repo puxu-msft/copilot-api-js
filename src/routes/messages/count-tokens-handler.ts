@@ -26,8 +26,10 @@ export async function handleCountTokens(c: Context) {
 
     const { payload: openAIPayload } = translateToOpenAI(anthropicPayload)
 
+    // Use translated model name for lookup since the original name (e.g., "claude-opus-4-6")
+    // may not exist in the model list (the list has "claude-opus-4.6-1m")
     const selectedModel = state.models?.data.find(
-      (model) => model.id === anthropicPayload.model,
+      (model) => model.id === openAIPayload.model,
     )
 
     if (!selectedModel) {
