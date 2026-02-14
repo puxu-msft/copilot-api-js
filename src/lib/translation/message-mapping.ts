@@ -41,10 +41,7 @@ export function messagesMatch(orig: MessageParam, rewritten: MessageParam): bool
  * Uses a two-pointer approach since rewritten messages maintain the same relative
  * order as originals (all transformations are deletions, never reorderings).
  */
-export function buildMessageMapping(
-  original: Array<MessageParam>,
-  rewritten: Array<MessageParam>,
-): Array<number> {
+export function buildMessageMapping(original: Array<MessageParam>, rewritten: Array<MessageParam>): Array<number> {
   const mapping: Array<number> = []
   let origIdx = 0
 

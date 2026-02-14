@@ -3,6 +3,7 @@
  */
 
 import { mock } from "bun:test"
+
 import type { TuiLogEntry } from "~/lib/tui/types"
 
 export function createMockTracker(initialRequests: Array<Partial<TuiLogEntry>> = []) {

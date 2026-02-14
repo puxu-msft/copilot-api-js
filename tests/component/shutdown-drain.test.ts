@@ -12,8 +12,8 @@ import {
   gracefulShutdown,
 } from "~/lib/shutdown"
 
-import { createMockTracker } from "../helpers/mock-tracker"
 import { createMockServer } from "../helpers/mock-server"
+import { createMockTracker } from "../helpers/mock-tracker"
 
 afterEach(() => {
   _resetShutdownState()

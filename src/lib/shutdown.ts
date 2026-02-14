@@ -14,14 +14,13 @@ import type { Server } from "srvx"
 
 import consola from "consola"
 
+import type { AdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import type { TuiLogEntry } from "./tui"
 
-import type { AdaptiveRateLimiter } from "./adaptive-rate-limiter"
-
+import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { closeAllClients, getClientCount } from "./history"
 import { stopTokenRefresh } from "./token"
 import { tuiLogger } from "./tui"
-import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 
 // ============================================================================
 // Configuration constants
@@ -215,7 +214,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     const remaining = tracker.getActiveRequests().length
     consola.info(
       `Phase 3: Sending abort signal to ${remaining} remaining request(s), `
-      + `waiting up to ${ABORT_WAIT_MS / 1000}s...`,
+        + `waiting up to ${ABORT_WAIT_MS / 1000}s...`,
     )
 
     shutdownAbortController.abort()
@@ -266,7 +265,7 @@ export function setupShutdownHandlers(): void {
       consola.warn("Second signal received, forcing immediate exit")
       process.exit(1)
     }
-    gracefulShutdown(signal).catch((error) => {
+    gracefulShutdown(signal).catch((error: unknown) => {
       consola.error("Fatal error during shutdown:", error)
       shutdownResolve?.() // Ensure waitForShutdown resolves even on error
       process.exit(1)

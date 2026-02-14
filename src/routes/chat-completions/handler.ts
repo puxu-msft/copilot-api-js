@@ -1,40 +1,27 @@
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 
 import consola from "consola"
-import type { ServerSentEventMessage } from "fetch-event-stream"
 import { SSEStreamingApi, streamSSE } from "hono/streaming"
 
-import type { Model } from "~/services/copilot/get-models"
+import type { Model } from "~/lib/models/client"
+import type { FormatAdapter } from "~/lib/request/pipeline"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { awaitApproval } from "~/lib/approval"
-import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
-import {
-  autoTruncateOpenAI,
-  createTruncationResponseMarkerOpenAI,
-} from "~/lib/auto-truncate/openai"
-import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
+import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate-common"
+import { processOpenAIMessages } from "~/lib/config/system-prompt"
 import { type MessageContent, recordRequest } from "~/lib/history"
 import { translateModelName } from "~/lib/models/resolver"
-import { getShutdownSignal } from "~/lib/shutdown"
-import { state } from "~/lib/state"
-import { processOpenAIMessages } from "~/lib/system-prompt-manager"
-import { tuiLogger } from "~/lib/tui"
-import { isNullish } from "~/lib/utils"
+import { autoTruncateOpenAI, createTruncationResponseMarkerOpenAI } from "~/lib/openai/auto-truncate"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
   type ChatCompletionResponse,
   type ChatCompletionsPayload,
-} from "~/services/copilot/create-chat-completions"
-
-import {
-  createOpenAIStreamAccumulator,
-  accumulateOpenAIStreamEvent,
-} from "~/lib/openai/stream-accumulator"
-
-import type { FormatAdapter } from "../shared/pipeline"
-
+} from "~/lib/openai/client"
+import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
+import { createOpenAIStreamAccumulator, accumulateOpenAIStreamEvent } from "~/lib/openai/stream-accumulator"
 import {
   type ResponseContext,
   extractErrorContent,
@@ -42,10 +29,14 @@ import {
   isNonStreaming,
   logPayloadSizeInfo,
   updateTrackerStatus,
-} from "../shared"
-import { executeRequestPipeline } from "../shared/pipeline"
-import { buildOpenAIStreamResult } from "../shared/recording"
-import { createAutoTruncateStrategy, type TruncateResult } from "../shared/strategies/auto-truncate"
+} from "~/lib/request"
+import { executeRequestPipeline } from "~/lib/request/pipeline"
+import { buildOpenAIStreamResult } from "~/lib/request/recording"
+import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
+import { getShutdownSignal } from "~/lib/shutdown"
+import { state } from "~/lib/state"
+import { tuiLogger } from "~/lib/tui"
+import { isNullish } from "~/lib/utils"
 
 export async function handleCompletion(c: Context) {
   const originalPayload = await c.req.json<ChatCompletionsPayload>()
@@ -81,7 +72,7 @@ export async function handleCompletion(c: Context) {
   // Record request to history with full messages
   const historyId = recordRequest("openai", {
     model: originalPayload.model,
-    messages: originalPayload.messages as unknown as MessageContent[],
+    messages: originalPayload.messages as unknown as Array<MessageContent>,
     stream: originalPayload.stream ?? false,
     tools: originalPayload.tools?.map((t) => ({
       name: t.function.name,
@@ -223,19 +214,13 @@ function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletion
   let response = originalResponse
   if (state.verbose && ctx.truncateResult?.wasTruncated && response.choices[0]?.message.content) {
     const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
+    const firstChoice = response.choices[0]
     response = {
       ...response,
-      choices: response.choices.map((choice, i) =>
-        i === 0 ?
-          {
-            ...choice,
-            message: {
-              ...choice.message,
-              content: marker + choice.message.content,
-            },
-          }
-        : choice,
-      ),
+      choices: [
+        { ...firstChoice, message: { ...firstChoice.message, content: `${marker}${firstChoice.message.content}` } },
+        ...response.choices.slice(1),
+      ],
     }
   }
 

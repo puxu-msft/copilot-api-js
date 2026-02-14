@@ -2,6 +2,12 @@ import { copilotBaseUrl, copilotHeaders } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
+/** Fetch models from Copilot API and cache in global state */
+export async function cacheModels(): Promise<void> {
+  const models = await getModels()
+  state.models = models
+}
+
 export const getModels = async () => {
   const response = await fetch(`${copilotBaseUrl(state)}/models`, {
     headers: copilotHeaders(state),

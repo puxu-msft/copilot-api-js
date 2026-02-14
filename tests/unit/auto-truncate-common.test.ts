@@ -14,7 +14,7 @@ import {
   getEffectiveTokenLimit,
   resetAllLimitsForTesting,
   tryParseAndLearnLimit,
-} from "~/lib/auto-truncate/common"
+} from "~/lib/auto-truncate-common"
 import { HTTPError } from "~/lib/error"
 
 // ─── Constants ───

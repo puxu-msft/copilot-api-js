@@ -21,7 +21,6 @@ export {
   recordRequest,
   recordResponse,
   recordRewrites,
-  recordTruncation,
 } from "./store"
 
 export type {

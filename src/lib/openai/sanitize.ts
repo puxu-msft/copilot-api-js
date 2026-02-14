@@ -7,14 +7,15 @@
 
 import consola from "consola"
 
-import type { ChatCompletionsPayload, Message } from "~/services/copilot/create-chat-completions"
+import type { ChatCompletionsPayload, Message } from "~/lib/openai/client"
+
+import { removeSystemReminderTags } from "~/lib/sanitize-system-reminder"
 
 import {
   extractOpenAISystemMessages,
   filterOpenAIOrphanedToolResults,
   filterOpenAIOrphanedToolUse,
 } from "./orphan-filter"
-import { removeSystemReminderTags } from "~/lib/system-reminder"
 
 // ============================================================================
 // Message Content Sanitization

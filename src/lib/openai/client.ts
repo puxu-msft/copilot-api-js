@@ -1,5 +1,6 @@
-import consola from "consola"
 import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import consola from "consola"
 import { events } from "fetch-event-stream"
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/config/api"

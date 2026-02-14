@@ -6,8 +6,8 @@
  */
 
 import type { AdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
+import type { ModelsResponse } from "~/lib/models/client"
 import type { State } from "~/lib/state"
-import type { ModelsResponse } from "~/services/copilot/get-models"
 
 export interface GlobalContext {
   /** Adaptive rate limiter (cross-request mode/queue/backoff/recovery state) */

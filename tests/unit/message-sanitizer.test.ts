@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import type { Message } from "~/services/copilot/create-chat-completions"
+import type { Message } from "~/lib/openai/client"
 import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
 
 import {
@@ -9,7 +9,8 @@ import {
   filterAnthropicOrphanedToolUse,
   getAnthropicToolResultIds,
   getAnthropicToolUseIds,
-} from "~/lib/anthropic/orphan-filter"
+} from "~/lib/anthropic/auto-truncate"
+import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import {
   ensureOpenAIStartsWithUser,
   extractOpenAISystemMessages,
@@ -18,12 +19,11 @@ import {
   getOpenAIToolCallIds,
   getOpenAIToolResultIds,
 } from "~/lib/openai/orphan-filter"
-import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import {
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,
-} from "~/lib/system-reminder"
+} from "~/lib/sanitize-system-reminder"
 
 // =============================================================================
 // system-reminder.ts
@@ -1007,6 +1007,31 @@ describe("Server Tool Use Support", () => {
       expect(ids).toContain("tu_1")
       expect(ids).toHaveLength(2)
     })
+
+    test("should extract tool_search_tool_result IDs from assistant message", () => {
+      const msg: MessageParam = {
+        role: "assistant",
+        content: [
+          { type: "text", text: "searching..." },
+          { type: "server_tool_use", id: "srv_1", name: "tool_search_tool_regex", input: { pattern: "test" } },
+          { type: "tool_search_tool_result", tool_use_id: "srv_1", content: [] } as any,
+        ],
+      }
+      const ids = getAnthropicToolResultIds(msg)
+      expect(ids).toContain("srv_1")
+    })
+
+    test("should extract code_execution_tool_result IDs", () => {
+      const msg: MessageParam = {
+        role: "assistant",
+        content: [
+          { type: "server_tool_use", id: "srv_2", name: "code_execution", input: { code: "print(1)" } },
+          { type: "code_execution_tool_result", tool_use_id: "srv_2", content: [] } as any,
+        ],
+      }
+      const ids = getAnthropicToolResultIds(msg)
+      expect(ids).toContain("srv_2")
+    })
   })
 
   describe("filterAnthropicOrphanedToolResults", () => {
@@ -1471,4 +1496,3 @@ describe("Server Tool Use Support", () => {
     })
   })
 })
-

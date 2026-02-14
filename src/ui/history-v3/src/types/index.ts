@@ -1,38 +1,38 @@
 // ═══ Content Blocks ═══
 
 export interface TextContentBlock {
-  type: 'text'
+  type: "text"
   text: string
 }
 
 export interface ThinkingContentBlock {
-  type: 'thinking'
+  type: "thinking"
   thinking: string
 }
 
 export interface RedactedThinkingContentBlock {
-  type: 'redacted_thinking'
+  type: "redacted_thinking"
   data: string
 }
 
 export interface ToolUseContentBlock {
-  type: 'tool_use'
+  type: "tool_use"
   id: string
   name: string
   input: Record<string, unknown>
 }
 
 export interface ToolResultContentBlock {
-  type: 'tool_result'
+  type: "tool_result"
   tool_use_id: string
-  content: string | ContentBlock[]
+  content: string | Array<ContentBlock>
   is_error?: boolean
 }
 
 export interface ImageContentBlock {
-  type: 'image'
+  type: "image"
   source: {
-    type: 'base64'
+    type: "base64"
     media_type: string
     data: string
   }
@@ -58,8 +58,8 @@ export interface SystemBlock {
 // ═══ Messages ═══
 
 export interface MessageContent {
-  role: 'user' | 'assistant' | 'system' | 'tool'
-  content: string | ContentBlock[]
+  role: "user" | "assistant" | "system" | "tool"
+  content: string | Array<ContentBlock>
   tool_calls?: Array<{
     id: string
     type: string
@@ -91,9 +91,9 @@ export interface SanitizationInfo {
 export interface RewriteInfo {
   truncation?: TruncationInfo
   sanitization?: SanitizationInfo
-  rewrittenMessages?: MessageContent[]
-  rewrittenSystem?: string | SystemBlock[]
-  messageMapping?: number[]
+  rewrittenMessages?: Array<MessageContent>
+  rewrittenSystem?: string | Array<SystemBlock>
+  messageMapping?: Array<number>
 }
 
 // ═══ Request / Response ═══
@@ -109,16 +109,16 @@ export interface HistoryEntry {
   id: string
   sessionId: string
   timestamp: number
-  endpoint: 'anthropic' | 'openai'
+  endpoint: "anthropic" | "openai"
 
   request: {
     model: string
-    messages: MessageContent[]
+    messages: Array<MessageContent>
     stream: boolean
-    tools?: ToolDefinition[]
+    tools?: Array<ToolDefinition>
     max_tokens?: number
     temperature?: number
-    system?: string | SystemBlock[]
+    system?: string | Array<SystemBlock>
   }
 
   response?: {
@@ -149,15 +149,15 @@ export interface Session {
   requestCount: number
   totalInputTokens: number
   totalOutputTokens: number
-  models: string[]
+  models: Array<string>
   endpoint?: string
-  toolsUsed?: string[]
+  toolsUsed?: Array<string>
 }
 
 // ═══ API Responses ═══
 
 export interface HistoryResult {
-  entries: HistoryEntry[]
+  entries: Array<HistoryEntry>
   total: number
   page: number
   limit: number
@@ -165,7 +165,7 @@ export interface HistoryResult {
 }
 
 export interface SessionResult {
-  sessions: Session[]
+  sessions: Array<Session>
   total: number
 }
 
@@ -188,7 +188,7 @@ export interface QueryOptions {
   page?: number
   limit?: number
   model?: string
-  endpoint?: 'anthropic' | 'openai'
+  endpoint?: "anthropic" | "openai"
   success?: boolean
   from?: number
   to?: number

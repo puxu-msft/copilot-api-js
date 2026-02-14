@@ -41,7 +41,7 @@ export async function handleCompletion(c: Context) {
   // Record request to history with full message content
   const historyId = recordRequest("anthropic", {
     model: anthropicPayload.model,
-    messages: anthropicPayload.messages as unknown as MessageContent[],
+    messages: anthropicPayload.messages as unknown as Array<MessageContent>,
     stream: anthropicPayload.stream ?? false,
     tools: anthropicPayload.tools?.map((t) => ({
       name: t.name,
@@ -64,9 +64,7 @@ export async function handleCompletion(c: Context) {
 
   // Use direct Anthropic API or fallback to OpenAI translation
   const useDirectAnthropicApi = supportsDirectAnthropicApi(anthropicPayload.model)
-  if (useDirectAnthropicApi) {
-    return handleDirectAnthropicCompletion(c, anthropicPayload, ctx)
-  } else {
-    return handleTranslatedCompletion(c, anthropicPayload, ctx)
-  }
+  return useDirectAnthropicApi ?
+      handleDirectAnthropicCompletion(c, anthropicPayload, ctx)
+    : handleTranslatedCompletion(c, anthropicPayload, ctx)
 }

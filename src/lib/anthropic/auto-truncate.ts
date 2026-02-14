@@ -14,24 +14,16 @@
 
 import consola from "consola"
 
-import type { Model } from "~/services/copilot/get-models"
-import type {
-  ContentBlock,
-  MessageParam,
-  MessagesPayload,
-  ContentBlockParam,
-} from "~/types/api/anthropic"
+import type { Model } from "~/lib/models/client"
+import type { ContentBlock, MessageParam, MessagesPayload, ContentBlockParam } from "~/types/api/anthropic"
 
-import {
-  ensureAnthropicStartsWithUser,
-  filterAnthropicOrphanedToolResults,
-  filterAnthropicOrphanedToolUse,
-} from "~/lib/anthropic/orphan-filter"
+import { processToolBlocks } from "~/lib/anthropic/sanitize"
 import { countTextTokens } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
+import { isServerToolResultBlock, isToolResultBlock } from "~/types/api/anthropic"
 
-import type { AutoTruncateConfig } from "./common"
+import type { AutoTruncateConfig } from "../auto-truncate-common"
 
 import {
   DEFAULT_AUTO_TRUNCATE_CONFIG,
@@ -40,7 +32,171 @@ import {
   compressToolResultContent,
   getEffectiveByteLimitBytes,
   getEffectiveTokenLimit,
-} from "./common"
+} from "../auto-truncate-common"
+
+// ============================================================================
+// Orphan Filtering Utilities (specific to auto-truncate)
+// ============================================================================
+
+/**
+ * Get tool_use IDs from an Anthropic assistant message.
+ */
+export function getAnthropicToolUseIds(msg: MessageParam): Array<string> {
+  if (msg.role !== "assistant") return []
+  if (typeof msg.content === "string") return []
+
+  const ids: Array<string> = []
+  for (const block of msg.content) {
+    if ((block.type === "tool_use" || block.type === "server_tool_use") && block.id) {
+      ids.push(block.id)
+    }
+  }
+  return ids
+}
+
+/**
+ * Get tool_result IDs from an Anthropic message.
+ * Checks both user messages (regular tool_result) and assistant messages
+ * (server tool results like tool_search_tool_result which appear inline).
+ */
+export function getAnthropicToolResultIds(msg: MessageParam): Array<string> {
+  if (typeof msg.content === "string") return []
+
+  const ids: Array<string> = []
+  for (const block of msg.content) {
+    if (isToolResultBlock(block)) {
+      ids.push(block.tool_use_id)
+    } else if (isServerToolResultBlock(block)) {
+      ids.push(block.tool_use_id)
+    }
+  }
+  return ids
+}
+
+/**
+ * Ensure Anthropic messages start with a user message.
+ * Drops leading non-user messages (e.g., orphaned assistant messages after truncation).
+ */
+export function ensureAnthropicStartsWithUser(messages: Array<MessageParam>): Array<MessageParam> {
+  let startIndex = 0
+  while (startIndex < messages.length && messages[startIndex].role !== "user") {
+    startIndex++
+  }
+
+  if (startIndex > 0) {
+    consola.debug(`[AutoTruncate:Anthropic] Skipped ${startIndex} leading non-user messages`)
+  }
+
+  return messages.slice(startIndex)
+}
+
+/**
+ * Filter orphaned tool_result blocks (no matching tool_use).
+ */
+export function filterAnthropicOrphanedToolResults(messages: Array<MessageParam>): Array<MessageParam> {
+  const toolUseIds = new Set<string>()
+  for (const msg of messages) {
+    for (const id of getAnthropicToolUseIds(msg)) {
+      toolUseIds.add(id)
+    }
+  }
+
+  let removed = 0
+  const result: Array<MessageParam> = []
+
+  for (const msg of messages) {
+    if (typeof msg.content === "string") {
+      result.push(msg)
+      continue
+    }
+
+    const filtered = msg.content.filter((block) => {
+      if (isToolResultBlock(block) && !toolUseIds.has(block.tool_use_id)) {
+        removed++
+        return false
+      }
+      if (isServerToolResultBlock(block) && !toolUseIds.has(block.tool_use_id)) {
+        removed++
+        return false
+      }
+      return true
+    })
+
+    if (filtered.length === 0) continue
+    if (filtered.length === msg.content.length) {
+      result.push(msg)
+    } else {
+      result.push({ ...msg, content: filtered } as MessageParam)
+    }
+  }
+
+  if (removed > 0) {
+    consola.debug(`[AutoTruncate:Anthropic] Filtered ${removed} orphaned tool results`)
+  }
+
+  return result
+}
+
+/**
+ * Filter orphaned tool_use blocks (no matching tool_result).
+ */
+export function filterAnthropicOrphanedToolUse(messages: Array<MessageParam>): Array<MessageParam> {
+  const toolResultIds = new Set<string>()
+  for (const msg of messages) {
+    for (const id of getAnthropicToolResultIds(msg)) {
+      toolResultIds.add(id)
+    }
+  }
+
+  const toolUseIds = new Set<string>()
+  for (const msg of messages) {
+    for (const id of getAnthropicToolUseIds(msg)) {
+      toolUseIds.add(id)
+    }
+  }
+
+  let removed = 0
+  const result: Array<MessageParam> = []
+
+  for (const msg of messages) {
+    if (msg.role !== "assistant" || typeof msg.content === "string") {
+      result.push(msg)
+      continue
+    }
+
+    const survivingIds = new Set<string>()
+    for (const block of msg.content) {
+      if ((block.type === "tool_use" || block.type === "server_tool_use") && toolResultIds.has(block.id)) {
+        survivingIds.add(block.id)
+      }
+    }
+
+    const filtered = msg.content.filter((block) => {
+      if ((block.type === "tool_use" || block.type === "server_tool_use") && !toolResultIds.has(block.id)) {
+        removed++
+        return false
+      }
+      if (isServerToolResultBlock(block) && !survivingIds.has(block.tool_use_id)) {
+        removed++
+        return false
+      }
+      return true
+    })
+
+    if (filtered.length === 0) continue
+    if (filtered.length === msg.content.length) {
+      result.push(msg)
+    } else {
+      result.push({ ...msg, content: filtered } as MessageParam)
+    }
+  }
+
+  if (removed > 0) {
+    consola.debug(`[AutoTruncate:Anthropic] Filtered ${removed} orphaned tool blocks`)
+  }
+
+  return result
+}
 
 // ============================================================================
 // Result Types
@@ -825,13 +981,13 @@ export async function autoTruncateAnthropic(
   // Build preserved messages from working (compressed) messages
   let preserved = workingMessages.slice(preserveIndex)
 
-  // Clean up the message list - filter both orphaned tool_result and tool_use
-  preserved = filterAnthropicOrphanedToolResults(preserved)
-  preserved = filterAnthropicOrphanedToolUse(preserved)
-  preserved = ensureAnthropicStartsWithUser(preserved)
-  // Run again after ensuring starts with user, in case we skipped messages
-  preserved = filterAnthropicOrphanedToolResults(preserved)
-  preserved = filterAnthropicOrphanedToolUse(preserved)
+  // Clean up the message list - filter orphaned tool blocks in two passes
+  // (one pass to collect IDs, one to filter), then ensure starts with user
+  let { messages: cleaned } = processToolBlocks(preserved, undefined)
+  cleaned = ensureAnthropicStartsWithUser(cleaned)
+  // Run again after ensuring starts with user, in case skipping leading messages created new orphans
+  ;({ messages: cleaned } = processToolBlocks(cleaned, undefined))
+  preserved = cleaned
 
   if (preserved.length === 0) {
     consola.warn("[AutoTruncate:Anthropic] All messages filtered out after cleanup")

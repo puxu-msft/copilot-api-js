@@ -11,15 +11,11 @@ import { describe, test, expect, beforeAll } from "bun:test"
 
 import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
 
+import { getModels } from "~/lib/models/client"
+import { createChatCompletions, type ChatCompletionsPayload, type ChatCompletionResponse } from "~/lib/openai/client"
 import { state } from "~/lib/state"
+import { getCopilotToken } from "~/lib/token/copilot-client"
 import { createAnthropicMessages, supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-messages"
-import {
-  createChatCompletions,
-  type ChatCompletionsPayload,
-  type ChatCompletionResponse,
-} from "~/services/copilot/create-chat-completions"
-import { getModels } from "~/services/copilot/get-models"
-import { getCopilotToken } from "~/services/github/get-copilot-token"
 
 import { getE2EMode, getGitHubToken } from "./config"
 

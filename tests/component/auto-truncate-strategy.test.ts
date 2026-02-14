@@ -7,12 +7,12 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
-import type { RetryContext, SanitizeResult } from "~/routes/shared/pipeline"
-import type { TruncateOptions, TruncateResult } from "~/routes/shared/strategies/auto-truncate"
+import type { RetryContext, SanitizeResult } from "~/lib/request/pipeline"
+import type { TruncateOptions, TruncateResult } from "~/lib/request/strategies/auto-truncate"
 
-import { resetAllLimitsForTesting } from "~/lib/auto-truncate/common"
+import { resetAllLimitsForTesting } from "~/lib/auto-truncate-common"
 import { HTTPError } from "~/lib/error"
-import { createAutoTruncateStrategy } from "~/routes/shared/strategies/auto-truncate"
+import { createAutoTruncateStrategy } from "~/lib/request/strategies/auto-truncate"
 
 import { mockModel } from "../helpers/factories"
 
@@ -183,13 +183,25 @@ describe("createAutoTruncateStrategy - handle", () => {
 
   test("returns sanitization counts in meta", async () => {
     const { strategy } = makeStrategy({
-      sanitizeResult: { removedCount: 2, systemReminderRemovals: 1 },
+      sanitizeResult: {
+        removedCount: 2,
+        systemReminderRemovals: 1,
+        stats: {
+          totalBlocksRemoved: 2,
+          orphanedToolUseCount: 1,
+          orphanedToolResultCount: 1,
+          fixedNameCount: 0,
+          emptyTextBlocksRemoved: 0,
+          systemReminderRemovals: 1,
+        },
+      },
     })
     const result = await strategy.handle(make413Error(), { messages: [] }, makeContext())
 
     if (result.action === "retry") {
-      expect((result as any).meta!.sanitization.removedCount).toBe(2)
+      expect((result as any).meta!.sanitization.totalBlocksRemoved).toBe(2)
       expect((result as any).meta!.sanitization.systemReminderRemovals).toBe(1)
+      expect((result as any).meta!.sanitization.orphanedToolUseCount).toBe(1)
     }
   })
 

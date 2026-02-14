@@ -5,18 +5,19 @@ import consola from "consola"
 import pc from "picocolors"
 import { serve, type ServerHandler } from "srvx"
 
-import type { Model } from "./services/copilot/get-models"
+import type { Model } from "./lib/models/client"
 
 import packageJson from "../package.json"
 import { initAdaptiveRateLimiter } from "./lib/adaptive-rate-limiter"
+import { cacheVSCodeVersion } from "./lib/config/api"
 import { ensurePaths } from "./lib/config/paths"
 import { initProxyFromEnv } from "./lib/config/proxy"
 import { initHistory } from "./lib/history"
+import { cacheModels } from "./lib/models/client"
 import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { initTuiLogger } from "./lib/tui"
-import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { initHistoryWebSocket } from "./routes/history/route"
 import { server } from "./server"
 
@@ -229,9 +230,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Bun.serve() requires an explicit `websocket` handler object alongside `fetch`
   // for WebSocket upgrades to work. Without this, server.upgrade() in
   // hono/bun's upgradeWebSocket middleware silently fails.
-  const bunWebSocket = typeof globalThis.Bun !== "undefined"
-    ? (await import("hono/bun")).websocket
-    : undefined
+  const bunWebSocket = typeof globalThis.Bun !== "undefined" ? (await import("hono/bun")).websocket : undefined
 
   let serverInstance
   try {

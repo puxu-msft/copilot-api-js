@@ -4,8 +4,10 @@ export default [
   {
     ignores: [
       //
+      "archive/**",
       "src/ui/history-v1/**",
       "src/ui/history-v2/**",
+      "src/ui/history-v3/**",
       "refs/**",
     ],
   },
@@ -27,6 +29,15 @@ export default [
       "require-atomic-updates": "off",
       // Redundant with TypeScript — TS compiler handles unused property detection
       "unicorn/no-unused-properties": "off",
+      // Intentional pattern: helper functions scoped inside their parent function
+      "unicorn/consistent-function-scoping": "off",
+      // API proxy handles dynamic JSON payloads extensively — runtime type guards
+      // add noise without value when upstream types are already defined
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
     },
   },
   {
@@ -47,6 +58,8 @@ export default [
       // bun:test expect().rejects returns a Promise — false positive from TS eslint
       "@typescript-eslint/await-thenable": "off",
       "@typescript-eslint/no-confusing-void-expression": "off",
+      // Catch callbacks in tests often need specific types for assertions
+      "@typescript-eslint/use-unknown-in-catch-callback-variable": "off",
       "unicorn/consistent-function-scoping": "off",
       "unicorn/no-array-callback-reference": "off",
     },

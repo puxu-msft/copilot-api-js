@@ -3,8 +3,7 @@
  * Single entry point for completing requests — distributes to History and TUI.
  */
 
-import type { OpenAIAutoTruncateResult } from "~/lib/auto-truncate/openai"
-
+import type { OpenAIAutoTruncateResult } from "~/lib/openai/auto-truncate"
 
 import { recordResponse, type MessageContent } from "~/lib/history"
 import { tuiLogger } from "~/lib/tui"
@@ -46,7 +45,9 @@ export function updateTrackerStatus(tuiLogId: string | undefined, status: "execu
 }
 
 /** Extract error content from an error object for history recording */
-export function extractErrorContent(error: unknown): { role: string; content: Array<{ type: string; text: string }> } | null {
+export function extractErrorContent(
+  error: unknown,
+): { role: string; content: Array<{ type: string; text: string }> } | null {
   if (
     error instanceof Error
     && "responseText" in error

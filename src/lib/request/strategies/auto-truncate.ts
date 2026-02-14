@@ -8,9 +8,9 @@
 import consola from "consola"
 
 import type { ApiError } from "~/lib/error"
-import type { Model } from "~/services/copilot/get-models"
+import type { Model } from "~/lib/models/client"
 
-import { AUTO_TRUNCATE_RETRY_FACTOR, tryParseAndLearnLimit } from "~/lib/auto-truncate/common"
+import { AUTO_TRUNCATE_RETRY_FACTOR, tryParseAndLearnLimit } from "~/lib/auto-truncate-common"
 import { HTTPError } from "~/lib/error"
 import { bytesToKB } from "~/lib/utils"
 
@@ -122,8 +122,8 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
         payload: sanitizeResult.payload,
         meta: {
           truncateResult,
-          sanitization: {
-            removedCount: sanitizeResult.removedCount,
+          sanitization: sanitizeResult.stats ?? {
+            totalBlocksRemoved: sanitizeResult.removedCount,
             systemReminderRemovals: sanitizeResult.systemReminderRemovals,
           },
           attempt: attempt + 1,

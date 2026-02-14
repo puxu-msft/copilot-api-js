@@ -8,7 +8,7 @@
 import consola from "consola"
 
 import type { ApiError } from "~/lib/error"
-import type { Model } from "~/services/copilot/get-models"
+import type { Model } from "~/lib/models/client"
 
 import { classifyError } from "~/lib/error"
 
@@ -16,8 +16,12 @@ import { classifyError } from "~/lib/error"
 
 export interface SanitizeResult<TPayload> {
   payload: TPayload
+  /** Convenience: total blocks removed (sum of orphans + empty text) */
   removedCount: number
+  /** Convenience: number of system reminder tags removed */
   systemReminderRemovals: number
+  /** Structured breakdown of what was removed/modified — format-specific detail */
+  stats?: Record<string, number>
 }
 
 export interface FormatAdapter<TPayload> {

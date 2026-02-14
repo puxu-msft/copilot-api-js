@@ -4,6 +4,8 @@
 
 import { afterEach, describe, expect, test } from "bun:test"
 
+import type { TuiLogEntry } from "~/lib/tui/types"
+
 import {
   _resetShutdownState,
   formatActiveRequestsSummary,
@@ -11,10 +13,9 @@ import {
   getShutdownSignal,
   gracefulShutdown,
 } from "~/lib/shutdown"
-import type { TuiLogEntry } from "~/lib/tui/types"
 
-import { createMockTracker } from "../helpers/mock-tracker"
 import { createMockServer } from "../helpers/mock-server"
+import { createMockTracker } from "../helpers/mock-tracker"
 
 afterEach(() => {
   _resetShutdownState()

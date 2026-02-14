@@ -1,5 +1,6 @@
-import { computed, type Ref } from 'vue'
-import type { HistoryEntry, MessageContent } from '@/types'
+import { computed, type Ref } from "vue"
+
+import type { HistoryEntry, MessageContent } from "@/types"
 
 export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
   const truncationPoint = computed(() => {
@@ -9,7 +10,7 @@ export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
     if (!removed) return -1
     // truncationPoint is the index after which messages were kept
     // i.e. messages[0..truncationPoint-1] were truncated
-    const mapping = e.rewrites?.messageMapping
+    const mapping = e.rewrites.messageMapping
     if (mapping && mapping.length > 0) {
       // Find first mapped index — messages before this were removed
       return mapping[0]
@@ -32,6 +33,7 @@ export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
     const rewritten = getRewrittenMessage(index)
     if (!rewritten) return false
     const original = e.request.messages[index]
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: array index access
     if (!original) return false
     return JSON.stringify(original.content) !== JSON.stringify(rewritten.content)
   }

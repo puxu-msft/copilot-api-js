@@ -35,6 +35,9 @@ export interface MessageContent {
 export interface ToolDefinition {
   name: string
   description?: string
+  type?: string
+  input_schema?: Record<string, unknown>
+  [key: string]: unknown
 }
 
 export interface TruncationInfo {
@@ -49,8 +52,16 @@ export interface TruncationInfo {
 }
 
 export interface SanitizationInfo {
-  /** Number of orphaned tool blocks/messages removed */
-  removedBlockCount: number
+  /** Total content blocks removed */
+  totalBlocksRemoved: number
+  /** Number of orphaned tool_use blocks removed */
+  orphanedToolUseCount: number
+  /** Number of orphaned tool_result blocks removed */
+  orphanedToolResultCount: number
+  /** Number of tool_use names fixed (casing) */
+  fixedNameCount: number
+  /** Number of empty text blocks removed */
+  emptyTextBlocksRemoved: number
   /** Number of system-reminder tags removed */
   systemReminderRemovals: number
 }
@@ -76,7 +87,6 @@ export interface HistoryEntry {
 
   request: {
     model?: string
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     messages?: Array<MessageContent> // Full message history
     stream?: boolean
     tools?: Array<ToolDefinition>
@@ -97,9 +107,6 @@ export interface HistoryEntry {
     error?: string
     content: MessageContent | null // Full response content
   }
-
-  /** Auto-truncation metadata (set when messages were truncated before sending to API) */
-  truncation?: TruncationInfo
 
   /** All rewrite metadata (truncation + sanitization + rewritten content) */
   rewrites?: RewriteInfo
@@ -329,18 +336,6 @@ export function recordResponse(id: string, response: RecordResponseParams, durat
   }
 }
 
-export function recordTruncation(id: string, truncation: TruncationInfo): void {
-  if (!historyState.enabled || !id) {
-    return
-  }
-
-  const entry = historyState.entries.find((e) => e.id === id)
-  if (entry) {
-    entry.truncation = truncation
-    notifyEntryUpdated(entry)
-  }
-}
-
 export function recordRewrites(id: string, rewrites: RewriteInfo): void {
   if (!historyState.enabled || !id) {
     return
@@ -349,10 +344,6 @@ export function recordRewrites(id: string, rewrites: RewriteInfo): void {
   const entry = historyState.entries.find((e) => e.id === id)
   if (entry) {
     entry.rewrites = rewrites
-    // Also keep truncation for backward compatibility
-    if (rewrites.truncation) {
-      entry.truncation = rewrites.truncation
-    }
     notifyEntryUpdated(entry)
   }
 }
@@ -370,7 +361,8 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
   if (model) {
     const modelLower = model.toLowerCase()
     filtered = filtered.filter(
-      (e) => e.request.model?.toLowerCase().includes(modelLower) || e.response?.model.toLowerCase().includes(modelLower),
+      (e) =>
+        e.request.model?.toLowerCase().includes(modelLower) || e.response?.model.toLowerCase().includes(modelLower),
     )
   }
 
@@ -408,9 +400,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
       if (e.request.system) {
         if (typeof e.request.system === "string") {
           if (e.request.system.toLowerCase().includes(searchLower)) return true
-        } else {
-          if (e.request.system.some((b) => b.text.toLowerCase().includes(searchLower))) return true
-        }
+        } else if (e.request.system.some((b) => b.text.toLowerCase().includes(searchLower))) return true
       }
 
       // Search in messages (text, tool_use name/input, tool_result content)
@@ -554,12 +544,11 @@ export function getStats(): HistoryStats {
     hourlyActivity[hour] = (hourlyActivity[hour] || 0) + 1
 
     if (entry.response) {
-      if (entry.response.success === true) {
+      if (entry.response.success) {
         successCount++
-      } else if (entry.response.success === false) {
+      } else {
         failCount++
       }
-      // When success is undefined (e.g. streaming in progress), neither count is incremented
 
       totalInput += entry.response.usage.input_tokens
       totalOutput += entry.response.usage.output_tokens

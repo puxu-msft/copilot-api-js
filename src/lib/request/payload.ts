@@ -4,11 +4,11 @@
 
 import consola from "consola"
 
-import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
-import type { Model } from "~/services/copilot/get-models"
+import type { Model } from "~/lib/models/client"
+import type { ChatCompletionsPayload } from "~/lib/openai/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { onRequestTooLarge } from "~/lib/auto-truncate/openai"
+import { onRequestTooLarge } from "~/lib/auto-truncate-common"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { bytesToKB } from "~/lib/utils"
 

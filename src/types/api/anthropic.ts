@@ -14,37 +14,37 @@
 // Response content blocks
 export type {
   ContentBlock,
-  TextBlock,
-  ToolUseBlock,
-  ThinkingBlock,
   RedactedThinkingBlock,
   ServerToolUseBlock,
+  TextBlock,
+  ThinkingBlock,
+  ToolUseBlock,
   WebSearchToolResultBlock,
 } from "@anthropic-ai/sdk/resources/messages"
 
 // Request content blocks
 export type {
   ContentBlockParam,
-  TextBlockParam,
   ImageBlockParam,
+  TextBlockParam,
   ToolResultBlockParam,
   ToolUseBlockParam,
 } from "@anthropic-ai/sdk/resources/messages"
 
 // Messages
-export type { MessageParam, Message } from "@anthropic-ai/sdk/resources/messages"
+export type { Message, MessageParam } from "@anthropic-ai/sdk/resources/messages"
 
 // Thinking & cache
-export type { ThinkingConfigParam, CacheControlEphemeral } from "@anthropic-ai/sdk/resources/messages"
+export type { CacheControlEphemeral, ThinkingConfigParam } from "@anthropic-ai/sdk/resources/messages"
 
 // Stream events
 export type {
-  RawMessageStartEvent,
-  RawMessageStopEvent,
+  RawContentBlockDelta,
   RawContentBlockStartEvent,
   RawContentBlockStopEvent,
   RawMessageDeltaEvent,
-  RawContentBlockDelta,
+  RawMessageStartEvent,
+  RawMessageStopEvent,
 } from "@anthropic-ai/sdk/resources/messages"
 
 // Internal-only SDK imports (not re-exported)
@@ -72,14 +72,14 @@ import type {
 export interface MessagesPayload {
   model: string
   max_tokens: number
-  messages: MessageParam[]
-  system?: string | TextBlockParam[]
+  messages: Array<MessageParam>
+  system?: string | Array<TextBlockParam>
   temperature?: number
   top_p?: number
   top_k?: number
-  stop_sequences?: string[]
+  stop_sequences?: Array<string>
   stream?: boolean
-  tools?: Tool[]
+  tools?: Array<Tool>
   tool_choice?: ToolChoice
   thinking?: ThinkingConfigParam
   metadata?: { user_id?: string }
@@ -95,11 +95,7 @@ export interface Tool {
   defer_loading?: boolean
 }
 
-export type ToolChoice =
-  | { type: "auto" }
-  | { type: "any" }
-  | { type: "none" }
-  | { type: "tool"; name: string }
+export type ToolChoice = { type: "auto" } | { type: "any" } | { type: "none" } | { type: "tool"; name: string }
 
 // ============================================================================
 // Message subtypes (narrow role for cast convenience)
@@ -107,12 +103,12 @@ export type ToolChoice =
 
 export interface UserMessage {
   role: "user"
-  content: string | ContentBlockParam[]
+  content: string | Array<ContentBlockParam>
 }
 
 export interface AssistantMessage {
   role: "assistant"
-  content: string | ContentBlock[]
+  content: string | Array<ContentBlock>
 }
 
 // ============================================================================
@@ -129,7 +125,7 @@ export interface CopilotIPCodeCitation {
 
 /** Copilot-specific annotations attached to SSE content block deltas */
 export interface CopilotAnnotations {
-  ip_code_citations?: CopilotIPCodeCitation[]
+  ip_code_citations?: Array<CopilotIPCodeCitation>
 }
 
 /** Content block delta event with Copilot annotations extension */
@@ -162,15 +158,13 @@ export type StreamEvent =
 // ============================================================================
 
 /** Type guard for ToolResultBlockParam */
-export function isToolResultBlock(
-  block: ContentBlockParam,
-): block is ToolResultBlockParam {
+export function isToolResultBlock(block: ContentBlockParam): block is ToolResultBlockParam {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- type guard pattern requires cast
   return (block as ToolResultBlockParam).type === "tool_result"
 }
 
 /** Type guard for WebSearchToolResultBlock */
-export function isServerToolResultBlock(
-  block: ContentBlockParam | ContentBlock,
-): block is WebSearchToolResultBlock {
+export function isServerToolResultBlock(block: ContentBlockParam | ContentBlock): block is WebSearchToolResultBlock {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- type guard pattern requires cast
   return (block as WebSearchToolResultBlock).type === "web_search_tool_result"
 }

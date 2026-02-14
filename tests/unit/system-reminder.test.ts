@@ -15,7 +15,7 @@ import {
   extractTrailingSystemReminderTags,
   getEnabledFilters,
   removeSystemReminderTags,
-} from "~/lib/system-reminder"
+} from "~/lib/sanitize-system-reminder"
 
 // ─── extractTrailingSystemReminderTags ───
 

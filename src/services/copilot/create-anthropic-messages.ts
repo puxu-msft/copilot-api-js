@@ -3,8 +3,9 @@
  * Used when the model vendor is Anthropic and supports /v1/messages endpoint.
  */
 
-import consola from "consola"
 import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import consola from "consola"
 import { events } from "fetch-event-stream"
 
 import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
@@ -37,9 +38,7 @@ const COPILOT_REJECTED_FIELDS = new Set(["output_config", "inference_geo"])
  *
  * Also converts server-side tools (web_search, etc.) to custom tools.
  */
-function filterPayloadForCopilot(
-  payload: MessagesPayload & Record<string, unknown>,
-): MessagesPayload {
+function filterPayloadForCopilot(payload: MessagesPayload & Record<string, unknown>): MessagesPayload {
   const filtered: Record<string, unknown> = {}
   const rejectedFields: Array<string> = []
 
@@ -341,7 +340,7 @@ export function supportsDirectAnthropicApi(modelId: string): boolean {
   }
 
   const model = state.models?.data.find((m) => m.id === modelId)
-  if  (model?.vendor !== "Anthropic") {
+  if (model?.vendor !== "Anthropic") {
     return false
   }
 

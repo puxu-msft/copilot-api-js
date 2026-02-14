@@ -596,7 +596,7 @@ function renderDetail() {
   const filterType = document.querySelector("#filter-type").value
   const aggregateTools = document.querySelector("#toggle-aggregate").checked
   const rewrites = currentEntry.rewrites
-  const truncation = rewrites?.truncation || currentEntry.truncation
+  const truncation = rewrites?.truncation
 
   // Build tool result map for aggregation
   const toolResultMap = {}

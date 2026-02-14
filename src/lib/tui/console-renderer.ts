@@ -220,11 +220,23 @@ export class ConsoleRenderer implements TuiRenderer {
     isDim?: boolean
   }): string {
     const {
-      prefix, time, method, path, model, multiplier,
-      status, duration, requestBodySize,
-      inputTokens, outputTokens,
-      cacheReadInputTokens, cacheCreationInputTokens,
-      queueWait, extra, isError, isDim,
+      prefix,
+      time,
+      method,
+      path,
+      model,
+      multiplier,
+      status,
+      duration,
+      requestBodySize,
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      cacheCreationInputTokens,
+      queueWait,
+      extra,
+      isError,
+      isDim,
     } = parts
 
     if (isDim) {
@@ -236,13 +248,14 @@ export class ConsoleRenderer implements TuiRenderer {
     // Colored lines: each part has its own color
     const coloredPrefix = isError ? pc.red(prefix) : pc.green(prefix)
     const coloredTime = pc.dim(time)
-    const coloredStatus = status !== undefined
-      ? (isError ? pc.red(String(status)) : pc.green(String(status)))
-      : ""
+    let coloredStatus = ""
+    if (status !== undefined) {
+      coloredStatus = isError ? pc.red(String(status)) : pc.green(String(status))
+    }
     const coloredMethod = pc.white(method)
     const coloredPath = pc.white(path)
     const coloredModel = model ? pc.magenta(` ${model}`) : ""
-    const coloredMultiplier = multiplier != null ? pc.dim(` (${multiplier}x)`) : ""
+    const coloredMultiplier = multiplier !== undefined ? pc.dim(` (${multiplier}x)`) : ""
     const coloredDuration = duration ? ` ${pc.yellow(duration)}` : ""
     const coloredQueueWait = queueWait ? ` ${pc.dim(`(queued ${queueWait})`)}` : ""
 
@@ -258,7 +271,10 @@ export class ConsoleRenderer implements TuiRenderer {
       tokenInfo = ` ${pc.cyan(formatTokens(inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens))}`
     }
 
-    const extraPart = extra ? (isError ? pc.red(extra) : extra) : ""
+    let extraPart = ""
+    if (extra) {
+      extraPart = isError ? pc.red(extra) : extra
+    }
 
     return `${coloredPrefix} ${coloredTime} ${coloredStatus} ${coloredMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}`
   }

@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test"
 import { z } from "zod"
 
-import type { ChatCompletionChunk, ChatCompletionResponse } from "~/services/copilot/create-chat-completions"
+import type { ChatCompletionChunk, ChatCompletionResponse } from "~/lib/openai/client"
 
 import { translateToAnthropic } from "~/lib/translation/non-stream"
 import { translateChunkToAnthropicEvents } from "~/lib/translation/stream"

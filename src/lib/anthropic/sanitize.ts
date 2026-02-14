@@ -7,18 +7,55 @@
 
 import consola from "consola"
 
+import type { SanitizeResult } from "~/lib/request/pipeline"
 import type {
   ContentBlock,
   AssistantMessage,
   MessageParam,
   MessagesPayload,
   ContentBlockParam,
+  Tool,
   UserMessage,
 } from "~/types/api/anthropic"
 
+import { removeSystemReminderTags } from "~/lib/sanitize-system-reminder"
+import { state } from "~/lib/state"
 import { isServerToolResultBlock } from "~/types/api/anthropic"
 
-import { removeSystemReminderTags } from "~/lib/system-reminder"
+// ============================================================================
+// Shared: Sanitize text blocks in an array
+// ============================================================================
+
+/**
+ * Remove system-reminder tags from text blocks in an array.
+ * Drops blocks whose text becomes empty after sanitization.
+ * Returns the original array reference if nothing changed (for cheap identity checks).
+ */
+function sanitizeTextBlocksInArray<T extends { type: string }>(
+  blocks: Array<T>,
+  getText: (b: T) => string | undefined,
+  setText: (b: T, text: string) => T,
+): { blocks: Array<T>; modified: boolean } {
+  let modified = false
+  const result: Array<T> = []
+
+  for (const block of blocks) {
+    const text = getText(block)
+    if (text !== undefined) {
+      const sanitized = removeSystemReminderTags(text)
+      if (sanitized !== text) {
+        modified = true
+        if (sanitized) {
+          result.push(setText(block, sanitized))
+        }
+        continue
+      }
+    }
+    result.push(block)
+  }
+
+  return { blocks: modified ? result : blocks, modified }
+}
 
 // ============================================================================
 // Tool Result Content Sanitization
@@ -40,32 +77,12 @@ function sanitizeToolResultContent(
     return { content: sanitized, modified: sanitized !== content }
   }
 
-  // Handle array of content blocks using reduce to track modifications
-  const result = content.reduce<{
-    blocks: typeof content
-    modified: boolean
-  }>(
-    (acc, block) => {
-      if (block.type === "text" && typeof block.text === "string") {
-        const sanitized = removeSystemReminderTags(block.text)
-        if (sanitized !== block.text) {
-          if (sanitized) {
-            acc.blocks.push({ ...block, text: sanitized })
-          }
-          acc.modified = true
-          return acc
-        }
-      }
-      acc.blocks.push(block)
-      return acc
-    },
-    { blocks: [], modified: false },
+  const { blocks, modified } = sanitizeTextBlocksInArray(
+    content,
+    (b) => (b.type === "text" ? b.text : undefined),
+    (b, text) => ({ ...b, text }),
   )
-
-  return {
-    content: result.modified ? result.blocks : content,
-    modified: result.modified,
-  }
+  return { content: modified ? blocks : content, modified }
 }
 
 // ============================================================================
@@ -84,75 +101,43 @@ function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
     }
     return msg
   }
-  if (msg.role === "user") {
-    const result = msg.content.reduce<{
-      blocks: Array<ContentBlockParam>
-      modified: boolean
-    }>(
-      (acc, block) => {
-        if (block.type === "text" && typeof block.text === "string") {
-          const sanitized = removeSystemReminderTags(block.text)
-          if (sanitized !== block.text) {
-            if (sanitized) {
-              acc.blocks.push({ ...block, text: sanitized })
-            }
-            acc.modified = true
-            return acc
-          }
-        }
-        // Handle tool_result blocks
-        if (block.type === "tool_result" && block.content) {
-          const sanitizedResult = sanitizeToolResultContent(
-            block.content as Parameters<typeof sanitizeToolResultContent>[0],
-          )
-          if (sanitizedResult.modified) {
-            acc.blocks.push({
-              ...block,
-              content: sanitizedResult.content,
-            } as ContentBlockParam)
-            acc.modified = true
-            return acc
-          }
-        }
-        acc.blocks.push(block)
-        return acc
-      },
-      { blocks: [], modified: false },
-    )
-    if (result.modified) {
-      return { role: "user", content: result.blocks } as UserMessage
-    }
-    return msg
-  }
 
-  // Assistant message
-  const result = msg.content.reduce<{
-    blocks: Array<ContentBlock>
-    modified: boolean
-  }>(
-    (acc, block) => {
+  if (msg.role === "user") {
+    // User messages: sanitize text blocks + tool_result content
+    let modified = false
+    const blocks: Array<ContentBlockParam> = []
+
+    for (const block of msg.content) {
       if (block.type === "text" && typeof block.text === "string") {
         const sanitized = removeSystemReminderTags(block.text)
         if (sanitized !== block.text) {
-          if (sanitized) {
-            acc.blocks.push({ ...block, text: sanitized } as ContentBlock)
-          }
-          acc.modified = true
-          return acc
+          modified = true
+          if (sanitized) blocks.push({ ...block, text: sanitized })
+          continue
+        }
+      } else if (block.type === "tool_result" && block.content) {
+        const sanitizedResult = sanitizeToolResultContent(
+          block.content as Parameters<typeof sanitizeToolResultContent>[0],
+        )
+        if (sanitizedResult.modified) {
+          modified = true
+          blocks.push({ ...block, content: sanitizedResult.content } as ContentBlockParam)
+          continue
         }
       }
-      acc.blocks.push(block as ContentBlock)
-      return acc
-    },
-    { blocks: [], modified: false },
-  )
-  if (result.modified) {
-    return {
-      role: "assistant",
-      content: result.blocks,
-    } as AssistantMessage
+      blocks.push(block)
+    }
+
+    return modified ? ({ role: "user", content: blocks } as UserMessage) : msg
   }
-  return msg
+
+  // Assistant message: only sanitize text blocks
+  const { blocks, modified } = sanitizeTextBlocksInArray(
+    msg.content,
+    (b) => (b.type === "text" && "text" in b ? (b as { text: string }).text : undefined),
+    (b, text) => ({ ...b, text }) as ContentBlock,
+  )
+  return modified ? ({ role: "assistant", content: blocks } as AssistantMessage) : msg
 }
 
 /**
@@ -196,30 +181,12 @@ function sanitizeAnthropicSystemPrompt(system: string | Array<{ type: "text"; te
     return { system: sanitized, modified: sanitized !== system }
   }
 
-  // Handle array of text blocks
-  const result = system.reduce<{
-    blocks: Array<{ type: "text"; text: string }>
-    modified: boolean
-  }>(
-    (acc, block) => {
-      const sanitized = removeSystemReminderTags(block.text)
-      if (sanitized !== block.text) {
-        if (sanitized) {
-          acc.blocks.push({ ...block, text: sanitized })
-        }
-        acc.modified = true
-        return acc
-      }
-      acc.blocks.push(block)
-      return acc
-    },
-    { blocks: [], modified: false },
+  const { blocks, modified } = sanitizeTextBlocksInArray(
+    system,
+    (b) => b.text,
+    (b, text) => ({ ...b, text }),
   )
-
-  return {
-    system: result.modified ? result.blocks : system,
-    modified: result.modified,
-  }
+  return { system: modified ? blocks : system, modified }
 }
 
 // ============================================================================
@@ -286,7 +253,7 @@ function parseStringifiedInput(input: unknown): Record<string, unknown> {
  * This combines what were previously three separate operations (each with their own iterations)
  * into two passes through the messages array for better performance.
  */
-function processToolBlocks(
+export function processToolBlocks(
   messages: Array<MessageParam>,
   tools: Array<{ name: string }> | undefined,
 ): {
@@ -468,16 +435,24 @@ function countAnthropicContentBlocks(messages: Array<MessageParam>): number {
   return count
 }
 
+export interface SanitizationStats {
+  orphanedToolUseCount: number
+  orphanedToolResultCount: number
+  fixedNameCount: number
+  emptyTextBlocksRemoved: number
+  systemReminderRemovals: number
+  totalBlocksRemoved: number
+}
+
 /**
  * Sanitize Anthropic messages by filtering orphaned tool blocks and system reminders.
  *
- * @returns Sanitized payload and count of removed items
+ * Returns both convenience totals (removedCount, systemReminderRemovals) for backward
+ * compatibility, and structured stats for callers that need detail.
  */
-export function sanitizeAnthropicMessages(payload: MessagesPayload): {
-  payload: MessagesPayload
-  removedCount: number
-  systemReminderRemovals: number
-} {
+export function sanitizeAnthropicMessages(
+  payload: MessagesPayload,
+): SanitizeResult<MessagesPayload> & { stats: SanitizationStats } {
   let messages = payload.messages
   const originalBlocks = countAnthropicContentBlocks(messages)
 
@@ -506,24 +481,141 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): {
   const finalSystem = filterEmptySystemTextBlocks(sanitizedSystem)
 
   const newBlocks = countAnthropicContentBlocks(messages)
-  const removedCount = originalBlocks - newBlocks
+  const totalBlocksRemoved = originalBlocks - newBlocks
+  const emptyTextBlocksRemoved =
+    totalBlocksRemoved - toolResult.orphanedToolUseCount - toolResult.orphanedToolResultCount
 
-  if (removedCount > 0) {
-    const emptyTextCount = removedCount - toolResult.orphanedToolUseCount - toolResult.orphanedToolResultCount
-    // Only log if there are meaningful removals (not just empty text blocks)
-    if (toolResult.orphanedToolUseCount > 0 || toolResult.orphanedToolResultCount > 0) {
-      const parts: Array<string> = []
-      if (toolResult.orphanedToolUseCount > 0) parts.push(`${toolResult.orphanedToolUseCount} orphaned tool_use`)
-      if (toolResult.orphanedToolResultCount > 0)
-        parts.push(`${toolResult.orphanedToolResultCount} orphaned tool_result`)
-      if (emptyTextCount > 0) parts.push(`${emptyTextCount} empty text blocks`)
-      consola.info(`[Sanitizer:Anthropic] Removed ${removedCount} content blocks (${parts.join(", ")})`)
-    }
+  if (totalBlocksRemoved > 0 && (toolResult.orphanedToolUseCount > 0 || toolResult.orphanedToolResultCount > 0)) {
+    const parts: Array<string> = []
+    if (toolResult.orphanedToolUseCount > 0) parts.push(`${toolResult.orphanedToolUseCount} orphaned tool_use`)
+    if (toolResult.orphanedToolResultCount > 0) parts.push(`${toolResult.orphanedToolResultCount} orphaned tool_result`)
+    if (emptyTextBlocksRemoved > 0) parts.push(`${emptyTextBlocksRemoved} empty text blocks`)
+    consola.info(`[Sanitizer:Anthropic] Removed ${totalBlocksRemoved} content blocks (${parts.join(", ")})`)
   }
 
   return {
     payload: { ...payload, system: finalSystem, messages },
-    removedCount,
+    removedCount: totalBlocksRemoved,
     systemReminderRemovals,
+    stats: {
+      orphanedToolUseCount: toolResult.orphanedToolUseCount,
+      orphanedToolResultCount: toolResult.orphanedToolResultCount,
+      fixedNameCount: toolResult.fixedNameCount,
+      emptyTextBlocksRemoved: Math.max(0, emptyTextBlocksRemoved),
+      systemReminderRemovals,
+      totalBlocksRemoved,
+    },
   }
+}
+
+// ============================================================================
+// Server Tool Rewriting
+// ============================================================================
+
+/**
+ * Server-side tool type prefixes that need special handling.
+ * These tools have a special `type` field (e.g., "web_search_20250305")
+ * and are normally executed by Anthropic's servers.
+ */
+interface ServerToolConfig {
+  description: string
+  input_schema: Record<string, unknown>
+  /** If true, this tool will be removed from the request and Claude won't see it */
+  remove?: boolean
+  /** Error message to show if the tool is removed */
+  removalReason?: string
+}
+
+const SERVER_TOOL_CONFIGS: Record<string, ServerToolConfig> = {
+  web_search: {
+    description:
+      "Search the web for current information. "
+      + "Returns web search results that can help answer questions about recent events, "
+      + "current data, or information that may have changed since your knowledge cutoff.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The search query" },
+      },
+      required: ["query"],
+    },
+  },
+  web_fetch: {
+    description:
+      "Fetch content from a URL. "
+      + "NOTE: This is a client-side tool - the client must fetch the URL and return the content.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to fetch" },
+      },
+      required: ["url"],
+    },
+  },
+  code_execution: {
+    description: "Execute code in a sandbox. " + "NOTE: This is a client-side tool - the client must execute the code.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "The code to execute" },
+        language: { type: "string", description: "The programming language" },
+      },
+      required: ["code"],
+    },
+  },
+  computer: {
+    description:
+      "Control computer desktop. " + "NOTE: This is a client-side tool - the client must handle computer control.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "The action to perform" },
+      },
+      required: ["action"],
+    },
+  },
+}
+
+// Match tool.type (e.g., "web_search_20250305") to a server tool config
+function findServerToolConfig(type: string | undefined): ServerToolConfig | null {
+  if (!type) return null
+  for (const [prefix, config] of Object.entries(SERVER_TOOL_CONFIGS)) {
+    if (type.startsWith(prefix)) return config
+  }
+  return null
+}
+
+/**
+ * Convert server-side tools to custom tools, or pass them through unchanged.
+ * Only converts when state.rewriteAnthropicTools is enabled.
+ */
+export function convertServerToolsToCustom(tools: Array<Tool> | undefined): Array<Tool> | undefined {
+  if (!tools) return undefined
+
+  // When rewriting is disabled, pass all tools through unchanged
+  if (!state.rewriteAnthropicTools) return tools
+
+  const result: Array<Tool> = []
+
+  for (const tool of tools) {
+    const config = findServerToolConfig(tool.type)
+    if (!config) {
+      result.push(tool)
+      continue
+    }
+
+    if (config.remove) {
+      consola.warn(`[DirectAnthropic] Removing server tool: ${tool.name}. Reason: ${config.removalReason}`)
+      continue
+    }
+
+    consola.debug(`[DirectAnthropic] Converting server tool to custom: ${tool.name} (type: ${tool.type})`)
+    result.push({
+      name: tool.name,
+      description: config.description,
+      input_schema: config.input_schema,
+    })
+  }
+
+  return result.length > 0 ? result : undefined
 }

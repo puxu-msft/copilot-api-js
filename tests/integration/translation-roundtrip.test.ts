@@ -297,9 +297,7 @@ describe("translateToOpenAI: reserved keyword filtering", () => {
       messages: [{ role: "user", content: "Hi" }],
       max_tokens: 1024,
       stream: true,
-      system: [
-        { type: "text", text: "x-anthropic-billing-header: cc_version=1" },
-      ],
+      system: [{ type: "text", text: "x-anthropic-billing-header: cc_version=1" }],
     }
 
     const result = translateToOpenAI(payload)

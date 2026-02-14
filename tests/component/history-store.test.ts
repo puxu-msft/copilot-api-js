@@ -1,12 +1,11 @@
 /**
  * Characterization tests for history recording
  *
- * Captures current behavior before refactoring:
+ * Captures current behavior:
  * - initHistory enables/disables recording
  * - recordRequest creates entries and returns IDs
  * - recordResponse updates entries with response data
- * - recordTruncation adds truncation metadata
- * - recordRewrites adds rewrite metadata + backward compat truncation
+ * - recordRewrites adds rewrite metadata
  * - getHistory filters, paginates, and sorts entries
  * - clearHistory resets state
  * - getStats computes aggregate statistics
@@ -26,7 +25,6 @@ import {
   recordRequest,
   recordResponse,
   recordRewrites,
-  recordTruncation,
 } from "~/lib/history"
 
 // Reset history state before each test
@@ -262,33 +260,6 @@ describe("recordResponse", () => {
   })
 })
 
-// ─── recordTruncation ───
-
-describe("recordTruncation", () => {
-  test("adds truncation info to entry", () => {
-    const id = recordRequest("anthropic", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "hello" }],
-      stream: true,
-    })
-
-    const truncation = {
-      removedMessageCount: 5,
-      originalTokens: 10000,
-      compactedTokens: 5000,
-      processingTimeMs: 50,
-    }
-
-    recordTruncation(id, truncation)
-
-    const entry = getEntry(id)
-    expect(entry!.truncation).toBeDefined()
-    expect(entry!.truncation!.removedMessageCount).toBe(5)
-    expect(entry!.truncation!.originalTokens).toBe(10000)
-    expect(entry!.truncation!.compactedTokens).toBe(5000)
-  })
-})
-
 // ─── recordRewrites ───
 
 describe("recordRewrites", () => {
@@ -301,7 +272,11 @@ describe("recordRewrites", () => {
 
     recordRewrites(id, {
       sanitization: {
-        removedBlockCount: 2,
+        totalBlocksRemoved: 2,
+        orphanedToolUseCount: 1,
+        orphanedToolResultCount: 1,
+        fixedNameCount: 0,
+        emptyTextBlocksRemoved: 0,
         systemReminderRemovals: 1,
       },
       rewrittenMessages: [{ role: "user", content: "hello" }],
@@ -310,12 +285,12 @@ describe("recordRewrites", () => {
 
     const entry = getEntry(id)
     expect(entry!.rewrites).toBeDefined()
-    expect(entry!.rewrites!.sanitization!.removedBlockCount).toBe(2)
+    expect(entry!.rewrites!.sanitization!.totalBlocksRemoved).toBe(2)
     expect(entry!.rewrites!.rewrittenMessages).toHaveLength(1)
     expect(entry!.rewrites!.messageMapping).toEqual([0])
   })
 
-  test("also sets truncation for backward compatibility", () => {
+  test("stores truncation within rewrites", () => {
     const id = recordRequest("anthropic", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -335,8 +310,7 @@ describe("recordRewrites", () => {
 
     const entry = getEntry(id)
     expect(entry!.rewrites!.truncation).toBeDefined()
-    expect(entry!.truncation).toBeDefined() // Backward compat
-    expect(entry!.truncation!.removedMessageCount).toBe(3)
+    expect(entry!.rewrites!.truncation!.removedMessageCount).toBe(3)
   })
 })
 

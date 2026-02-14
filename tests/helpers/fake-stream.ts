@@ -4,7 +4,7 @@
 
 /** Creates an async iterable that yields chunks with configurable delay and abort support */
 export async function* createFakeStream<T>(
-  chunks: T[],
+  chunks: Array<T>,
   opts?: { delayMs?: number; signal?: AbortSignal },
 ): AsyncGenerator<T> {
   for (const chunk of chunks) {

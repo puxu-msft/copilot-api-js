@@ -1,6 +1,9 @@
+import consola from "consola"
 import { randomUUID } from "node:crypto"
 
 import type { State } from "../state"
+
+import { state } from "../state"
 
 export const standardHeaders = () => ({
   "content-type": "application/json",
@@ -11,7 +14,14 @@ const COPILOT_VERSION = "0.38.0"
 const EDITOR_PLUGIN_VERSION = `copilot-chat/${COPILOT_VERSION}`
 const USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`
 
-const API_VERSION = "2025-05-01"
+/** Copilot Chat API version (for chat/completions requests) */
+const COPILOT_API_VERSION = "2025-05-01"
+
+/** Copilot internal API version (for token & usage endpoints) */
+export const COPILOT_INTERNAL_API_VERSION = "2025-04-01"
+
+/** GitHub public API version (for /user, repos, etc.) */
+const GITHUB_API_VERSION = "2022-11-28"
 
 /**
  * Session-level interaction ID.
@@ -33,7 +43,7 @@ export const copilotHeaders = (state: State, vision: boolean = false) => {
     "editor-plugin-version": EDITOR_PLUGIN_VERSION,
     "user-agent": USER_AGENT,
     "openai-intent": "conversation-panel",
-    "x-github-api-version": API_VERSION,
+    "x-github-api-version": COPILOT_API_VERSION,
     "x-request-id": randomUUID(),
     "X-Interaction-Id": INTERACTION_ID,
     "x-vscode-user-agent-library-version": "electron-fetch",
@@ -51,10 +61,67 @@ export const githubHeaders = (state: State) => ({
   "editor-version": `vscode/${state.vsCodeVersion}`,
   "editor-plugin-version": EDITOR_PLUGIN_VERSION,
   "user-agent": USER_AGENT,
-  "x-github-api-version": API_VERSION,
+  "x-github-api-version": GITHUB_API_VERSION,
   "x-vscode-user-agent-library-version": "electron-fetch",
 })
 
 export const GITHUB_BASE_URL = "https://github.com"
 export const GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 export const GITHUB_APP_SCOPES = ["read:user"].join(" ")
+
+// ============================================================================
+// VSCode version detection
+// ============================================================================
+
+/** Fallback VSCode version when GitHub API is unavailable */
+const VSCODE_VERSION_FALLBACK = "1.104.3"
+
+/** GitHub API endpoint for latest VSCode release */
+const VSCODE_RELEASE_URL = "https://api.github.com/repos/microsoft/vscode/releases/latest"
+
+/** GitHub release response shape */
+interface GitHubRelease {
+  tag_name: string
+}
+
+/** Fetch the latest VSCode version and cache in global state */
+export async function cacheVSCodeVersion(): Promise<void> {
+  const response = await getVSCodeVersion()
+  state.vsCodeVersion = response
+  consola.info(`Using VSCode version: ${response}`)
+}
+
+/** Fetch the latest VSCode version from GitHub releases, falling back to a hardcoded version */
+export async function getVSCodeVersion() {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => {
+    controller.abort()
+  }, 5000)
+
+  try {
+    const response = await fetch(VSCODE_RELEASE_URL, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "copilot-api",
+      },
+    })
+
+    if (!response.ok) {
+      return VSCODE_VERSION_FALLBACK
+    }
+
+    const release = (await response.json()) as GitHubRelease
+    // tag_name is in format "1.107.1"
+    const version = release.tag_name
+    if (version && /^\d+\.\d+\.\d+$/.test(version)) {
+      return version
+    }
+
+    return VSCODE_VERSION_FALLBACK
+  } catch {
+    return VSCODE_VERSION_FALLBACK
+  } finally {
+    clearTimeout(timeout)
+  }
+}

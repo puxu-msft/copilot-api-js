@@ -1,5 +1,6 @@
-import { provide, inject, type Ref, type InjectionKey } from 'vue'
-import type { ContentBlock } from '@/types'
+import { provide, inject, type Ref, type InjectionKey } from "vue"
+
+import type { ContentBlock } from "@/types"
 
 export interface ContentContext {
   searchQuery: Ref<string>
@@ -11,7 +12,7 @@ export interface ContentContext {
   scrollToCall: (toolUseId: string) => void
 }
 
-export const CONTENT_CONTEXT_KEY: InjectionKey<ContentContext> = Symbol('contentContext')
+export const CONTENT_CONTEXT_KEY: InjectionKey<ContentContext> = Symbol("contentContext")
 
 export function provideContentContext(ctx: ContentContext) {
   provide(CONTENT_CONTEXT_KEY, ctx)
@@ -20,7 +21,7 @@ export function provideContentContext(ctx: ContentContext) {
 export function useContentContext(): ContentContext {
   const ctx = inject(CONTENT_CONTEXT_KEY)
   if (!ctx) {
-    throw new Error('useContentContext() called outside of ContentContext provider')
+    throw new Error("useContentContext() called outside of ContentContext provider")
   }
   return ctx
 }

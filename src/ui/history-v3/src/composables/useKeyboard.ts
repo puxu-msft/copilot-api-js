@@ -1,7 +1,7 @@
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted } from "vue"
 
 export interface KeyboardOptions {
-  onNavigate: (direction: 'next' | 'prev') => void
+  onNavigate: (direction: "next" | "prev") => void
   onSearch: () => void
   onEscape: () => void
 }
@@ -9,46 +9,53 @@ export interface KeyboardOptions {
 export function useKeyboard(options: KeyboardOptions) {
   function handleKeydown(e: KeyboardEvent) {
     const target = e.target as HTMLElement
-    const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT'
+    const isInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT"
 
     if (isInput) {
       // Only Escape works in input fields
-      if (e.key === 'Escape') {
-        (target as HTMLInputElement).blur()
+      if (e.key === "Escape") {
+        ;(target as HTMLInputElement).blur()
         options.onEscape()
       }
       return
     }
 
     switch (e.key) {
-      case 'ArrowUp':
-      case 'k':
+      case "ArrowUp":
+      case "k": {
         e.preventDefault()
-        options.onNavigate('prev')
+        options.onNavigate("prev")
         break
-      case 'ArrowDown':
-      case 'j':
+      }
+      case "ArrowDown":
+      case "j": {
         e.preventDefault()
-        options.onNavigate('next')
+        options.onNavigate("next")
         break
-      case '/':
+      }
+      case "/": {
         e.preventDefault()
         options.onSearch()
         break
-      case 'Escape':
+      }
+      case "Escape": {
         // Don't clear selection if a modal is open (BaseModal handles its own Esc)
-        if (!document.querySelector('.modal-overlay')) {
+        if (!document.querySelector(".modal-overlay")) {
           options.onEscape()
         }
         break
+      }
+      default: {
+        break
+      }
     }
   }
 
   onMounted(() => {
-    document.addEventListener('keydown', handleKeydown)
+    document.addEventListener("keydown", handleKeydown)
   })
 
   onUnmounted(() => {
-    document.removeEventListener('keydown', handleKeydown)
+    document.removeEventListener("keydown", handleKeydown)
   })
 }

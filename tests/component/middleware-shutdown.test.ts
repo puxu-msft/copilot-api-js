@@ -8,8 +8,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 
 import { _resetShutdownState, getIsShuttingDown, gracefulShutdown } from "~/lib/shutdown"
 
-import { createMockTracker } from "../helpers/mock-tracker"
 import { createMockServer } from "../helpers/mock-server"
+import { createMockTracker } from "../helpers/mock-tracker"
 
 afterEach(() => {
   _resetShutdownState()

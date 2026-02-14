@@ -7,13 +7,13 @@
 
 import { afterEach, describe, expect, mock, test } from "bun:test"
 
-import type { SanitizeResult } from "~/routes/shared/pipeline"
-import type { TruncateResult } from "~/routes/shared/strategies/auto-truncate"
+import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { TruncateResult } from "~/lib/request/strategies/auto-truncate"
 
-import { resetAllLimitsForTesting } from "~/lib/auto-truncate/common"
+import { resetAllLimitsForTesting } from "~/lib/auto-truncate-common"
 import { HTTPError } from "~/lib/error"
-import { executeRequestPipeline } from "~/routes/shared/pipeline"
-import { createAutoTruncateStrategy } from "~/routes/shared/strategies/auto-truncate"
+import { executeRequestPipeline } from "~/lib/request/pipeline"
+import { createAutoTruncateStrategy } from "~/lib/request/strategies/auto-truncate"
 
 import { mockModel } from "../helpers/factories"
 import { createMockAdapter } from "../helpers/mock-adapter"

@@ -7,11 +7,10 @@
  *   Always active.
  */
 
+import consola from "consola"
 import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
-
-import consola from "consola"
 
 import type { TextBlockParam } from "~/types/api/anthropic"
 import type { ContentPart, Message } from "~/types/api/openai"
@@ -30,7 +29,7 @@ export interface SystemPromptOverride {
 }
 
 export interface SystemPromptConfig {
-  system_prompt_overrides?: SystemPromptOverride[]
+  system_prompt_overrides?: Array<SystemPromptOverride>
   system_prompt_prepend?: string
   system_prompt_append?: string
 }
@@ -55,9 +54,10 @@ export async function loadConfig(): Promise<SystemPromptConfig> {
     if (cachedConfig && stat.mtimeMs === configLastMtimeMs) {
       return cachedConfig
     }
-    const content = await fs.readFile(PATHS.CONFIG_YAML, "utf-8")
+    const content = await fs.readFile(PATHS.CONFIG_YAML, "utf8")
     const { parse } = await import("yaml")
     const parsed = parse(content)
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- yaml.parse returns null for empty files
     cachedConfig = (parsed as SystemPromptConfig) ?? {}
     configLastMtimeMs = stat.mtimeMs
     return cachedConfig
@@ -128,14 +128,13 @@ async function collectSystemPrompt(raw: unknown, format: "anthropic" | "openai",
  * - line: split by newlines, if a trimmed line matches trimmed `from`, replace that line with `to`
  * - regex: apply regex on the entire text with gms flags (multiline: ^$ match line boundaries, dotAll: . matches \n)
  */
-export function applyOverrides(text: string, overrides: SystemPromptOverride[]): string {
+export function applyOverrides(text: string, overrides: Array<SystemPromptOverride>): string {
   let result = text
   for (const override of overrides) {
     if (override.method === "line") {
       const lines = result.split("\n")
-      result = lines
-        .map((line) => (line.trim() === override.from.trim() ? override.to : line))
-        .join("\n")
+      result = lines.map((line) => (line.trim() === override.from.trim() ? override.to : line)).join("\n")
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- explicit match for extensibility
     } else if (override.method === "regex") {
       try {
         const regex = new RegExp(override.from, "gms")
@@ -153,8 +152,8 @@ export function applyOverrides(text: string, overrides: SystemPromptOverride[]):
 // ============================================================================
 
 export async function processAnthropicSystem(
-  system: string | TextBlockParam[] | undefined,
-): Promise<string | TextBlockParam[] | undefined> {
+  system: string | Array<TextBlockParam> | undefined,
+): Promise<string | Array<TextBlockParam> | undefined> {
   if (!system) return system
 
   // Collect (fire-and-forget, only if enabled)
@@ -172,32 +171,25 @@ export async function processAnthropicSystem(
   // Apply overrides per block
   let result = system
   if (overrides?.length) {
-    if (typeof result === "string") {
-      result = applyOverrides(result, overrides)
-    } else {
-      result = result.map((block) => ({
-        ...block,
-        text: applyOverrides(block.text, overrides),
-      }))
-    }
+    result =
+      typeof result === "string" ?
+        applyOverrides(result, overrides)
+      : result.map((block) => ({
+          ...block,
+          text: applyOverrides(block.text, overrides),
+        }))
   }
 
   // Apply prepend
   if (prepend) {
-    if (typeof result === "string") {
-      result = prepend + "\n\n" + result
-    } else {
-      result = [{ type: "text" as const, text: prepend }, ...result]
-    }
+    result =
+      typeof result === "string" ? prepend + "\n\n" + result : [{ type: "text" as const, text: prepend }, ...result]
   }
 
   // Apply append
   if (append) {
-    if (typeof result === "string") {
-      result = result + "\n\n" + append
-    } else {
-      result = [...result, { type: "text" as const, text: append }]
-    }
+    result =
+      typeof result === "string" ? result + "\n\n" + append : [...result, { type: "text" as const, text: append }]
   }
 
   return result
@@ -207,7 +199,7 @@ export async function processAnthropicSystem(
 // Public API: OpenAI
 // ============================================================================
 
-export async function processOpenAIMessages(messages: Message[]): Promise<Message[]> {
+export async function processOpenAIMessages(messages: Array<Message>): Promise<Array<Message>> {
   // Extract system/developer messages
   const systemMessages = messages.filter((m) => m.role === "system" || m.role === "developer")
   if (systemMessages.length === 0) {
@@ -236,8 +228,9 @@ export async function processOpenAIMessages(messages: Message[]): Promise<Messag
   const append = config.system_prompt_append
 
   // Apply overrides to system/developer messages
-  let result = overrides?.length
-    ? messages.map((msg) => {
+  let result =
+    overrides?.length ?
+      messages.map((msg) => {
         if (msg.role !== "system" && msg.role !== "developer") return msg
 
         if (typeof msg.content === "string") {

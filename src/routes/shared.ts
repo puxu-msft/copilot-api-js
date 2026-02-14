@@ -6,11 +6,7 @@ export { isNonStreaming } from "./shared/response"
  * @deprecated Import from ~/routes/shared/ instead.
  */
 export type { RequestResult, ResponseContext } from "./shared/tracking"
-export {
-  extractErrorContent,
-  finalizeRequest,
-  updateTrackerStatus,
-} from "./shared/tracking"
+export { extractErrorContent, finalizeRequest, updateTrackerStatus } from "./shared/tracking"
 
 export type { TruncateResultInfo } from "./shared/truncation"
 

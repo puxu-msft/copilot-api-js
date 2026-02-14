@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 
-import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
-import type { Model } from "~/services/copilot/get-models"
+import type { Model } from "~/lib/models/client"
+import type { ChatCompletionsPayload } from "~/lib/openai/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import {
@@ -10,7 +10,7 @@ import {
   contentToText,
   countTotalInputTokens,
   countTotalTokens,
-} from "~/lib/auto-truncate/anthropic"
+} from "~/lib/anthropic/auto-truncate"
 import {
   compressCompactedReadResult,
   compressToolResultContent,
@@ -18,9 +18,9 @@ import {
   hasKnownLimits,
   resetAllLimitsForTesting,
   tryParseAndLearnLimit,
-} from "~/lib/auto-truncate/common"
-import { autoTruncateOpenAI, checkNeedsCompactionOpenAI } from "~/lib/auto-truncate/openai"
+} from "~/lib/auto-truncate-common"
 import { HTTPError } from "~/lib/error"
+import { autoTruncateOpenAI, checkNeedsCompactionOpenAI } from "~/lib/openai/auto-truncate"
 import { state } from "~/lib/state"
 
 // Mock model with typical limits
@@ -839,7 +839,9 @@ describe("contentToText", () => {
   })
 
   test("should handle server_tool_use blocks", () => {
-    const content = [{ type: "server_tool_use" as const, id: "srv_1", name: "web_search" as const, input: { query: "test" } }]
+    const content = [
+      { type: "server_tool_use" as const, id: "srv_1", name: "web_search" as const, input: { query: "test" } },
+    ]
     const result = contentToText(content)
     expect(result).toContain("[server_tool_use: web_search]")
     expect(result).toContain('"query"')

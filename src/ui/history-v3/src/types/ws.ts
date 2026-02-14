@@ -1,6 +1,6 @@
-import type { HistoryEntry, HistoryStats } from './index'
+import type { HistoryEntry, HistoryStats } from "./index"
 
-export type WSMessageType = 'entry_added' | 'entry_updated' | 'stats_updated' | 'connected'
+export type WSMessageType = "entry_added" | "entry_updated" | "stats_updated" | "connected"
 
 export interface WSMessage {
   type: WSMessageType
@@ -9,16 +9,16 @@ export interface WSMessage {
 }
 
 export interface WSEntryMessage extends WSMessage {
-  type: 'entry_added' | 'entry_updated'
+  type: "entry_added" | "entry_updated"
   data: HistoryEntry
 }
 
 export interface WSStatsMessage extends WSMessage {
-  type: 'stats_updated'
+  type: "stats_updated"
   data: HistoryStats
 }
 
 export interface WSConnectedMessage extends WSMessage {
-  type: 'connected'
+  type: "connected"
   data: { clientCount: number }
 }

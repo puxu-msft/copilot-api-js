@@ -7,9 +7,9 @@
  */
 
 import type { ApiError } from "~/lib/error"
-import type { Model } from "~/services/copilot/get-models"
+import type { Model } from "~/lib/models/client"
 
-import { getErrorMessage } from "~/lib/utils"
+import { getErrorMessage } from "~/lib/error"
 
 // ─── Request State Machine ───
 

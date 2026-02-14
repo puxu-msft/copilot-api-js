@@ -3,49 +3,24 @@
  * Handles requests by translating between Anthropic and OpenAI formats.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
+import type { FormatAdapter } from "~/lib/request/pipeline"
 import type { MessagesPayload } from "~/types/api/anthropic"
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
-import {
-  createAnthropicStreamAccumulator,
-} from "~/lib/anthropic/stream-accumulator"
-import { awaitApproval } from "~/lib/approval"
-import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
-import {
-  autoTruncateOpenAI,
-  createTruncationResponseMarkerOpenAI,
-} from "~/lib/auto-truncate/openai"
-import { recordRewrites, type MessageContent } from "~/lib/history"
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
+import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { awaitApproval } from "~/lib/approval"
+import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate-common"
+import { recordRewrites, type MessageContent } from "~/lib/history"
+import { autoTruncateOpenAI, createTruncationResponseMarkerOpenAI } from "~/lib/openai/auto-truncate"
+import { createChatCompletions, type ChatCompletionResponse, type ChatCompletionsPayload } from "~/lib/openai/client"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
-import { state } from "~/lib/state"
-import { buildMessageMapping } from "~/lib/translation/message-mapping"
-import {
-  translateToAnthropic,
-  translateToOpenAI,
-  type ToolNameMapping,
-} from "~/lib/translation/non-stream"
-import {
-  type StreamState,
-  translateErrorToAnthropicErrorEvent,
-  processTranslatedStream,
-  sendTruncationMarkerEvents,
-} from "~/lib/translation/stream"
-import { tuiLogger } from "~/lib/tui"
-import {
-  createChatCompletions,
-  type ChatCompletionResponse,
-  type ChatCompletionsPayload,
-} from "~/services/copilot/create-chat-completions"
-
-import type { FormatAdapter } from "../shared/pipeline"
-
 import {
   type ResponseContext,
   extractErrorContent,
@@ -53,18 +28,24 @@ import {
   isNonStreaming,
   logPayloadSizeInfo,
   updateTrackerStatus,
-} from "../shared"
-import { buildAnthropicStreamResult } from "../shared/recording"
-import { prependMarkerToResponse } from "../shared/response"
-import { executeRequestPipeline } from "../shared/pipeline"
-import { createAutoTruncateStrategy, type TruncateResult } from "../shared/strategies/auto-truncate"
+} from "~/lib/request"
+import { executeRequestPipeline } from "~/lib/request/pipeline"
+import { buildAnthropicStreamResult } from "~/lib/request/recording"
+import { prependMarkerToResponse } from "~/lib/request/response"
+import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
+import { state } from "~/lib/state"
+import { buildMessageMapping } from "~/lib/translation/message-mapping"
+import { translateToAnthropic, translateToOpenAI, type ToolNameMapping } from "~/lib/translation/non-stream"
+import {
+  type StreamState,
+  translateErrorToAnthropicErrorEvent,
+  processTranslatedStream,
+  sendTruncationMarkerEvents,
+} from "~/lib/translation/stream"
+import { tuiLogger } from "~/lib/tui"
 
 // Handle completion using OpenAI translation path (legacy)
-export async function handleTranslatedCompletion(
-  c: Context,
-  anthropicPayload: MessagesPayload,
-  ctx: ResponseContext,
-) {
+export async function handleTranslatedCompletion(c: Context, anthropicPayload: MessagesPayload, ctx: ResponseContext) {
   const { payload: translatedPayload, toolNameMapping } = translateToOpenAI(anthropicPayload)
 
   const selectedModel = state.models?.data.find((model) => model.id === translatedPayload.model)
@@ -78,24 +59,28 @@ export async function handleTranslatedCompletion(
 
   // Sanitize the original Anthropic messages to produce rewrittenMessages
   // in Anthropic format (matching the original payload format for frontend rendering).
-  const {
-    payload: sanitizedAnthropicPayload,
-    removedCount: anthropicOrphanedRemovals,
-    systemReminderRemovals: anthropicSysRemovals,
-  } = sanitizeAnthropicMessages(anthropicPayload)
+  const { payload: sanitizedAnthropicPayload, stats: anthropicSanitizationStats } =
+    sanitizeAnthropicMessages(anthropicPayload)
 
   const anthropicMessageMapping = buildMessageMapping(anthropicPayload.messages, sanitizedAnthropicPayload.messages)
 
   // Record initial sanitization rewrites
   const hasSanitization =
-    sanitizeRemovedCount > 0 || systemReminderRemovals > 0 || anthropicOrphanedRemovals > 0 || anthropicSysRemovals > 0
+    sanitizeRemovedCount > 0
+    || systemReminderRemovals > 0
+    || anthropicSanitizationStats.totalBlocksRemoved > 0
+    || anthropicSanitizationStats.systemReminderRemovals > 0
   if (hasSanitization) {
     recordRewrites(ctx.historyId, {
       sanitization: {
-        removedBlockCount: sanitizeRemovedCount + anthropicOrphanedRemovals,
-        systemReminderRemovals: systemReminderRemovals + anthropicSysRemovals,
+        totalBlocksRemoved: sanitizeRemovedCount + anthropicSanitizationStats.totalBlocksRemoved,
+        orphanedToolUseCount: anthropicSanitizationStats.orphanedToolUseCount,
+        orphanedToolResultCount: anthropicSanitizationStats.orphanedToolResultCount,
+        fixedNameCount: anthropicSanitizationStats.fixedNameCount,
+        emptyTextBlocksRemoved: anthropicSanitizationStats.emptyTextBlocksRemoved,
+        systemReminderRemovals: systemReminderRemovals + anthropicSanitizationStats.systemReminderRemovals,
       },
-      rewrittenMessages: sanitizedAnthropicPayload.messages as unknown as MessageContent[],
+      rewrittenMessages: sanitizedAnthropicPayload.messages as unknown as Array<MessageContent>,
       rewrittenSystem:
         typeof sanitizedAnthropicPayload.system === "string" ? sanitizedAnthropicPayload.system : undefined,
       messageMapping: anthropicMessageMapping,

@@ -2,15 +2,14 @@ import type { Context } from "hono"
 
 import consola from "consola"
 
-import { checkNeedsCompactionAnthropic, countTotalInputTokens } from "~/lib/auto-truncate/anthropic"
-import { hasKnownLimits } from "~/lib/auto-truncate/common"
+import { checkNeedsCompactionAnthropic, countTotalInputTokens } from "~/lib/anthropic/auto-truncate"
+import { hasKnownLimits } from "~/lib/auto-truncate-common"
 import { translateModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
+import { translateToOpenAI } from "~/lib/translation/non-stream"
 import { tuiLogger } from "~/lib/tui"
 import { type MessagesPayload } from "~/types/api/anthropic"
-
-import { translateToOpenAI } from "~/lib/translation/non-stream"
 
 /**
  * Handles token counting for Anthropic /v1/messages/count_tokens endpoint.

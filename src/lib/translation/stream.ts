@@ -1,15 +1,13 @@
-import consola from "consola"
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import { mapOpenAIStopReasonToAnthropic } from "~/lib/translation/non-stream"
-import { type ChatCompletionChunk } from "~/services/copilot/create-chat-completions"
+import consola from "consola"
+
 import type { StreamEvent, RawMessageStartEvent } from "~/types/api/anthropic"
 
+import { type AnthropicStreamAccumulator, accumulateAnthropicStreamEvent } from "~/lib/anthropic/stream-accumulator"
 import { getShutdownSignal } from "~/lib/shutdown"
-import {
-  type AnthropicStreamAccumulator,
-  accumulateAnthropicStreamEvent,
-} from "~/lib/anthropic/stream-accumulator"
+import { mapOpenAIStopReasonToAnthropic } from "~/lib/translation/non-stream"
+import { type ChatCompletionChunk } from "~/services/copilot/create-chat-completions"
 
 export interface StreamState {
   messageStartSent: boolean

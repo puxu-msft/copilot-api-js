@@ -426,7 +426,8 @@ export class AdaptiveRateLimiter {
   rejectQueued(): number {
     const count = this.queue.length
     while (this.queue.length > 0) {
-      const request = this.queue.shift()!
+      const request = this.queue.shift()
+      if (!request) break
       request.reject(new Error("Server shutting down"))
     }
     this.processing = false

@@ -297,12 +297,9 @@ const calculateToolTokens = (tool: Tool, encoder: Encoder, constants: ReturnType
   if (fDesc.endsWith(".")) {
     fDesc = fDesc.slice(0, -1)
   }
-  const line = fName + ":" + fDesc
+  const line = `${fName}:${fDesc}`
   tokens += encoder.encode(line).length
-  if (
-    typeof func.parameters === "object" // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    && func.parameters !== null
-  ) {
+  if (typeof func.parameters === "object" && func.parameters !== null) {
     tokens += calculateParametersTokens(func.parameters, encoder, constants)
   }
   return tokens

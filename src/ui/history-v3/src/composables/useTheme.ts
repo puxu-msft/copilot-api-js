@@ -1,4 +1,4 @@
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from "vue"
 
 export function useTheme() {
   const isDark = ref(true)
@@ -12,13 +12,13 @@ export function useTheme() {
   }
 
   onMounted(() => {
-    mql = window.matchMedia('(prefers-color-scheme: dark)')
+    mql = globalThis.matchMedia("(prefers-color-scheme: dark)")
     isDark.value = mql.matches
-    mql.addEventListener('change', update)
+    mql.addEventListener("change", update)
   })
 
   onUnmounted(() => {
-    mql?.removeEventListener('change', update)
+    mql?.removeEventListener("change", update)
   })
 
   return { isDark }

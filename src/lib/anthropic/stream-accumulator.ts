@@ -5,11 +5,7 @@
 
 import consola from "consola"
 
-import type {
-  CopilotAnnotations,
-  StreamEvent,
-  RawMessageStartEvent,
-} from "~/types/api/anthropic"
+import type { CopilotAnnotations, StreamEvent, RawMessageStartEvent } from "~/types/api/anthropic"
 
 // ============================================================================
 // Accumulated content block types
@@ -62,7 +58,7 @@ export interface AnthropicStreamAccumulator extends BaseStreamAccumulator {
   cacheCreationTokens: number
   stopReason: string
   /** Content blocks in stream order, indexed by the event's `index` field. */
-  contentBlocks: AccumulatedContentBlock[]
+  contentBlocks: Array<AccumulatedContentBlock>
   /** Copilot-specific: IP code citations collected from stream events */
   copilotAnnotations: Array<CopilotAnnotations>
 }
@@ -165,23 +161,28 @@ function handleContentBlockStart(index: number, block: AccContentBlock, acc: Ant
   let newBlock: AccumulatedContentBlock
 
   switch (block.type) {
-    case "text":
+    case "text": {
       newBlock = { type: "text", text: "" }
       break
-    case "thinking":
+    }
+    case "thinking": {
       newBlock = { type: "thinking", thinking: "", signature: undefined }
       break
-    case "redacted_thinking":
+    }
+    case "redacted_thinking": {
       // Complete at block_start, no subsequent deltas
       newBlock = { type: "redacted_thinking", data: block.data }
       break
-    case "tool_use":
+    }
+    case "tool_use": {
       newBlock = { type: "tool_use", id: block.id, name: block.name, input: "" }
       break
-    case "server_tool_use":
+    }
+    case "server_tool_use": {
       newBlock = { type: "server_tool_use", id: block.id, name: block.name, input: "" }
       break
-    case "web_search_tool_result":
+    }
+    case "web_search_tool_result": {
       // Complete at block_start, no subsequent deltas
       newBlock = {
         type: "web_search_tool_result",
@@ -189,12 +190,13 @@ function handleContentBlockStart(index: number, block: AccContentBlock, acc: Ant
         content: block.content,
       }
       break
+    }
     default: {
       // Unknown block type — store all fields as-is for forward compatibility.
       // Cast needed because TypeScript narrows to `never` after exhaustive cases,
       // but runtime data from the API may contain types not yet in our definitions.
       const unknownBlock = block as unknown as Record<string, unknown>
-      consola.warn(`[stream-accumulator] Unknown content block type: ${unknownBlock.type}`)
+      consola.warn(`[stream-accumulator] Unknown content block type: ${String(unknownBlock.type)}`)
       newBlock = { ...unknownBlock, _generic: true } as AccumulatedGenericBlock
       break
     }
@@ -210,6 +212,7 @@ function handleContentBlockDelta(
   copilotAnnotations?: CopilotAnnotations,
 ) {
   const block = acc.contentBlocks[index]
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: index from untrusted SSE data
   if (!block) return
 
   switch (delta.type) {
@@ -240,9 +243,10 @@ function handleContentBlockDelta(
       b.signature = delta.signature
       break
     }
-    default:
+    default: {
       consola.warn(`[stream-accumulator] Unknown delta type: ${(delta as { type: string }).type}`)
       break
+    }
   }
 
   // Collect Copilot-specific IP code citations

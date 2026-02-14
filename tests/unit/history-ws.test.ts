@@ -7,6 +7,8 @@
 
 import { afterEach, describe, expect, mock, test } from "bun:test"
 
+import type { HistoryEntry, HistoryStats } from "~/lib/history/store"
+
 import {
   addClient,
   closeAllClients,
@@ -16,7 +18,6 @@ import {
   notifyStatsUpdated,
   removeClient,
 } from "~/lib/history/ws"
-import type { HistoryEntry, HistoryStats } from "~/lib/history/store"
 
 // ─── Mock WebSocket ───
 
@@ -48,7 +49,7 @@ function createMockWebSocket(readyState: number = WebSocket.OPEN): WebSocket {
 // Helper to parse sent messages
 function getSentMessages(ws: WebSocket): Array<{ type: string; data: unknown; timestamp: number }> {
   const sendMock = ws.send as ReturnType<typeof mock>
-  return sendMock.mock.calls.map((call: unknown[]) => JSON.parse(call[0] as string))
+  return sendMock.mock.calls.map((call: Array<unknown>) => JSON.parse(call[0] as string))
 }
 
 // Minimal mock entry for testing
@@ -348,7 +349,7 @@ describe("message format", () => {
 
 describe("concurrent operations", () => {
   test("handles rapid add/remove cycles", () => {
-    const clients: WebSocket[] = []
+    const clients: Array<WebSocket> = []
     for (let i = 0; i < 10; i++) {
       const ws = createMockWebSocket()
       addClient(ws)
@@ -366,7 +367,7 @@ describe("concurrent operations", () => {
     notifyEntryAdded(createMockEntry())
     for (let i = 1; i < 10; i += 2) {
       const msgs = getSentMessages(clients[i])
-      expect(msgs[msgs.length - 1].type).toBe("entry_added")
+      expect(msgs.at(-1).type).toBe("entry_added")
     }
   })
 })

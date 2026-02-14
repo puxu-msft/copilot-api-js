@@ -2,13 +2,15 @@
  * Integration tests for history WebSocket notifications.
  *
  * Verifies the real data flow: store operations (recordRequest, recordResponse,
- * recordTruncation, recordRewrites) trigger WebSocket broadcasts to connected clients.
+ * recordRewrites) trigger WebSocket broadcasts to connected clients.
  *
  * Uses mock WebSocket clients to capture broadcast messages without needing
  * a real HTTP server or WebSocket upgrade.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+
+import type { RecordRequestParams, RecordResponseParams, RewriteInfo, WSMessage } from "~/lib/history"
 
 import {
   addClient,
@@ -19,14 +21,6 @@ import {
   recordRequest,
   recordResponse,
   recordRewrites,
-  recordTruncation,
-} from "~/lib/history"
-import type {
-  RecordRequestParams,
-  RecordResponseParams,
-  RewriteInfo,
-  TruncationInfo,
-  WSMessage,
 } from "~/lib/history"
 
 // ─── Helpers ───
@@ -55,14 +49,14 @@ function createMockWebSocket(): WebSocket {
   } as unknown as WebSocket
 }
 
-function getSentMessages(ws: WebSocket): WSMessage[] {
+function getSentMessages(ws: WebSocket): Array<WSMessage> {
   const sendMock = ws.send as ReturnType<typeof mock>
-  return sendMock.mock.calls.map((call: unknown[]) => JSON.parse(call[0] as string))
+  return sendMock.mock.calls.map((call: Array<unknown>) => JSON.parse(call[0] as string))
 }
 
 function getLastSentMessage(ws: WebSocket): WSMessage {
   const msgs = getSentMessages(ws)
-  return msgs[msgs.length - 1]
+  return msgs.at(-1)
 }
 
 const sampleRequest: RecordRequestParams = {
@@ -165,8 +159,8 @@ describe("recordRequest triggers WS notification", () => {
     expect(request.max_tokens).toBe(1024)
     expect(request.temperature).toBe(0.7)
     expect(request.system).toBe("Be concise")
-    expect((request.messages as unknown[]).length).toBe(4)
-    expect((request.tools as unknown[]).length).toBe(1)
+    expect((request.messages as Array<unknown>).length).toBe(4)
+    expect((request.tools as Array<unknown>).length).toBe(1)
     expect(entry.endpoint).toBe("openai")
   })
 })
@@ -215,42 +209,23 @@ describe("recordResponse triggers WS notification", () => {
     addClient(ws)
 
     const id = recordRequest("anthropic", sampleRequest)
-    recordResponse(id, {
-      success: false,
-      model: "claude-sonnet-4-20250514",
-      usage: { input_tokens: 10, output_tokens: 0 },
-      error: "Rate limited",
-      content: null,
-    }, 50)
+    recordResponse(
+      id,
+      {
+        success: false,
+        model: "claude-sonnet-4-20250514",
+        usage: { input_tokens: 10, output_tokens: 0 },
+        error: "Rate limited",
+        content: null,
+      },
+      50,
+    )
 
     const msg = getLastSentMessage(ws)
     expect(msg.type).toBe("entry_updated")
     const response = (msg.data as Record<string, unknown>).response as Record<string, unknown>
     expect(response.success).toBe(false)
     expect(response.error).toBe("Rate limited")
-  })
-})
-
-// ─── recordTruncation → entry_updated ───
-
-describe("recordTruncation triggers WS notification", () => {
-  test("connected client receives entry_updated when truncation is recorded", () => {
-    const ws = createMockWebSocket()
-    addClient(ws)
-
-    const id = recordRequest("anthropic", sampleRequest)
-    const truncation: TruncationInfo = {
-      removedMessageCount: 5,
-      originalTokens: 10000,
-      compactedTokens: 5000,
-      processingTimeMs: 12,
-    }
-    recordTruncation(id, truncation)
-
-    const msg = getLastSentMessage(ws)
-    expect(msg.type).toBe("entry_updated")
-    const entry = msg.data as Record<string, unknown>
-    expect(entry.truncation).toEqual(truncation)
   })
 })
 
@@ -270,7 +245,11 @@ describe("recordRewrites triggers WS notification", () => {
         processingTimeMs: 8,
       },
       sanitization: {
-        removedBlockCount: 2,
+        totalBlocksRemoved: 2,
+        orphanedToolUseCount: 1,
+        orphanedToolResultCount: 1,
+        fixedNameCount: 0,
+        emptyTextBlocksRemoved: 0,
         systemReminderRemovals: 1,
       },
       rewrittenMessages: [{ role: "user", content: "Simplified" }],
@@ -285,12 +264,10 @@ describe("recordRewrites triggers WS notification", () => {
       truncation: rewrites.truncation,
       sanitization: rewrites.sanitization,
     })
-    // Backward compat: truncation also set at top level
-    expect(entry.truncation).toEqual(rewrites.truncation)
   })
 })
 
-// ─── Full lifecycle: request → truncation → response ───
+// ─── Full lifecycle: request → rewrites → response ───
 
 describe("full request lifecycle", () => {
   test("client receives all notifications in correct order", () => {
@@ -300,18 +277,20 @@ describe("full request lifecycle", () => {
     // 1. Record request
     const id = recordRequest("anthropic", sampleRequest)
 
-    // 2. Record truncation
-    recordTruncation(id, {
-      removedMessageCount: 2,
-      originalTokens: 5000,
-      compactedTokens: 3000,
-      processingTimeMs: 5,
+    // 2. Record rewrites (with truncation)
+    recordRewrites(id, {
+      truncation: {
+        removedMessageCount: 2,
+        originalTokens: 5000,
+        compactedTokens: 3000,
+        processingTimeMs: 5,
+      },
     })
 
     // 3. Record response
     recordResponse(id, sampleResponse, 300)
 
-    // Messages: connected + entry_added + entry_updated(truncation) + entry_updated(response)
+    // Messages: connected + entry_added + entry_updated(rewrites) + entry_updated(response)
     const msgs = getSentMessages(ws)
     expect(msgs).toHaveLength(4)
     expect(msgs[0].type).toBe("connected")
@@ -319,9 +298,8 @@ describe("full request lifecycle", () => {
     expect(msgs[2].type).toBe("entry_updated")
     expect(msgs[3].type).toBe("entry_updated")
 
-    // Final entry_updated should have both truncation and response
+    // Final entry_updated should have response
     const finalEntry = msgs[3].data as Record<string, unknown>
-    expect(finalEntry.truncation).toBeDefined()
     expect(finalEntry.response).toBeDefined()
     expect(finalEntry.durationMs).toBe(300)
   })
@@ -341,7 +319,7 @@ describe("full request lifecycle", () => {
     expect(msgs).toHaveLength(5)
 
     // Verify each request has its own entry ID
-    const addedIds = msgs.filter(m => m.type === "entry_added").map(m => (m.data as Record<string, unknown>).id)
+    const addedIds = msgs.filter((m) => m.type === "entry_added").map((m) => (m.data as Record<string, unknown>).id)
     expect(addedIds).toEqual([id1, id2])
     expect(addedIds[0]).not.toBe(addedIds[1])
   })

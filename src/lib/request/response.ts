@@ -2,7 +2,7 @@
  * Response utilities for request handlers.
  */
 
-import type { ChatCompletionResponse } from "~/services/copilot/create-chat-completions"
+import type { ChatCompletionResponse } from "~/lib/openai/client"
 
 /** Type guard for non-streaming responses */
 export function isNonStreaming(

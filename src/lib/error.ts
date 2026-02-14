@@ -3,7 +3,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
-import { tryParseAndLearnLimit } from "./auto-truncate/common"
+import { tryParseAndLearnLimit } from "./auto-truncate-common"
 
 export class HTTPError extends Error {
   status: number
@@ -400,4 +400,27 @@ function tryExtractTokenLimit(responseText: string): { current: number; limit: n
     // Not JSON
   }
   return null
+}
+
+/** Extract error message with fallback. For HTTPError, extracts the actual API error response. */
+export function getErrorMessage(error: unknown, fallback = "Unknown error"): string {
+  if (error instanceof Error) {
+    if ("responseText" in error && typeof (error as { responseText: unknown }).responseText === "string") {
+      const responseText = (error as { responseText: string }).responseText
+      const status = "status" in error ? (error as { status: number }).status : undefined
+      try {
+        const parsed = JSON.parse(responseText) as { error?: { message?: string; type?: string } }
+        if (parsed.error?.message) {
+          return status ? `HTTP ${status}: ${parsed.error.message}` : parsed.error.message
+        }
+      } catch {
+        if (responseText.length > 0 && responseText.length < 500) {
+          return status ? `HTTP ${status}: ${responseText}` : responseText
+        }
+      }
+      return status ? `HTTP ${status}: ${error.message}` : error.message
+    }
+    return error.message
+  }
+  return fallback
 }

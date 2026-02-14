@@ -3,17 +3,15 @@
  * Parses SSE events, accumulates for history/tracking, checks shutdown signals.
  */
 
-import consola from "consola"
 import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import consola from "consola"
 
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import { getShutdownSignal } from "~/lib/shutdown"
 
-import {
-  type AnthropicStreamAccumulator,
-  accumulateAnthropicStreamEvent,
-} from "./stream-accumulator"
+import { type AnthropicStreamAccumulator, accumulateAnthropicStreamEvent } from "./stream-accumulator"
 
 /** Processed event from the Anthropic stream */
 export interface ProcessedAnthropicEvent {

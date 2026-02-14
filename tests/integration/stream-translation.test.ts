@@ -16,10 +16,7 @@ import { describe, expect, test } from "bun:test"
 import type { StreamState } from "~/lib/translation/stream"
 import type { ChatCompletionChunk } from "~/types/api/openai"
 
-import {
-  translateChunkToAnthropicEvents,
-  translateErrorToAnthropicErrorEvent,
-} from "~/lib/translation/stream"
+import { translateChunkToAnthropicEvents, translateErrorToAnthropicErrorEvent } from "~/lib/translation/stream"
 
 function createFreshState(): StreamState {
   return {

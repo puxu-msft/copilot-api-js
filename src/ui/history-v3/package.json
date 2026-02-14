@@ -2,22 +2,23 @@
   "name": "history-ui-v3",
   "version": "0.0.1",
   "private": true,
+  "description": "History viewer UI for copilot-api",
   "type": "module",
   "scripts": {
-    "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "dev": "vite",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
-    "vue": "^3.5.13",
-    "vue-json-pretty": "^2.6.0",
     "diff": "^8.0.3",
-    "diff2html": "^3.4.56"
+    "diff2html": "^3.4.56",
+    "vue": "^3.5.13",
+    "vue-json-pretty": "^2.6.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.3",
     "@types/diff": "^7.0.0",
+    "@vitejs/plugin-vue": "^5.2.3",
     "typescript": "~5.6.2",
     "vite": "^6.2.4",
     "vue-tsc": "^2.2.8"

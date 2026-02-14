@@ -5,8 +5,8 @@
 
 import type { Context, MiddlewareHandler, Next } from "hono"
 
+import { getErrorMessage } from "~/lib/error"
 import { getIsShuttingDown } from "~/lib/shutdown"
-import { getErrorMessage } from "~/lib/utils"
 
 import { tuiLogger } from "./tracker"
 

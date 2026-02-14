@@ -1,9 +1,10 @@
+import type { UpgradeWebSocket } from "hono/ws"
+import type { Server as NodeHttpServer } from "node:http"
+
 import consola from "consola"
 import { Hono } from "hono"
-import type { UpgradeWebSocket } from "hono/ws"
 import { access, constants } from "node:fs/promises"
 import { readFile } from "node:fs/promises"
-import type { Server as NodeHttpServer } from "node:http"
 import { join, resolve } from "node:path"
 
 import { addClient, removeClient } from "~/lib/history"
@@ -43,9 +44,7 @@ historyRoutes.delete("/api/sessions/:id", handleDeleteSession)
  * @returns An `injectWebSocket` function that must be called with the Node.js HTTP server
  * after the server is created. Returns `undefined` under Bun (no injection needed).
  */
-export async function initHistoryWebSocket(
-  rootApp: Hono,
-): Promise<((server: NodeHttpServer) => void) | undefined> {
+export async function initHistoryWebSocket(rootApp: Hono): Promise<((server: NodeHttpServer) => void) | undefined> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let upgradeWs: UpgradeWebSocket<any>
   let injectFn: ((server: NodeHttpServer) => void) | undefined

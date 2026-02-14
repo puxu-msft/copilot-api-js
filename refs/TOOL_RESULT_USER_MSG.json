@@ -1,0 +1,15 @@
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "tool_result",
+      "tool_use_id": "toolu_vrtx_01KCyCFp8sKZSU3pbZhng9Bc",
+      "content": "     1→/**\n     2→ * System-reminder tag detection, filtering, and removal.\n     3→ *\n     4→ * Claude Code injects `<system-reminder>` tags into tool results and user\n     5→ * messages. Each tag alw..."
+    },
+    {
+      "type": "tool_result",
+      "tool_use_id": "toolu_vrtx_01VttHLCMRMafBHssDvpZCGu",
+      "content": "1→/**\n     2→ * Common types and configuration for auto-truncate modules.\n     3→ * Shared between OpenAI and Anthropic format handlers.\n     4→ */\n     5→\n     6→import consola from \"consola\"\n     7→..."
+    }
+  ]
+}

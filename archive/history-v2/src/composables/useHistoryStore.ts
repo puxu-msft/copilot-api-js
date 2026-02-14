@@ -52,14 +52,14 @@ export function useHistoryStore() {
       wsReconnectDelay = 1000
     })
 
-    ws.onmessage = (event) => {
+    ws.addEventListener("message", (event) => {
       try {
         const message: WSMessage = JSON.parse(event.data)
         handleWSMessage(message)
       } catch (e) {
         console.error("Failed to parse WebSocket message:", e)
       }
-    }
+    })
 
     ws.addEventListener("close", () => {
       if (wsUnmounted) return
@@ -68,9 +68,9 @@ export function useHistoryStore() {
       wsReconnectDelay = Math.min(wsReconnectDelay * 2, WS_MAX_RECONNECT_DELAY)
     })
 
-    ws.onerror = (e) => {
+    ws.addEventListener("error", (e) => {
       console.error("WebSocket error:", e)
-    }
+    })
   }
 
   const handleWSMessage = (message: WSMessage) => {
@@ -199,48 +199,48 @@ export function useHistoryStore() {
   }
 
   const refresh = () => {
-    fetchEntries()
-    fetchStats()
-    fetchSessions()
+    void fetchEntries()
+    void fetchStats()
+    void fetchSessions()
   }
 
   const setPage = (p: number) => {
     page.value = p
-    fetchEntries()
+    void fetchEntries()
   }
 
   const setSessionFilter = (sessionId: string | null) => {
     selectedSessionId.value = sessionId
     page.value = 1
-    fetchEntries()
+    void fetchEntries()
   }
 
   const setEndpointFilter = (endpoint: string | null) => {
     filterEndpoint.value = endpoint
     page.value = 1
-    fetchEntries()
+    void fetchEntries()
   }
 
   const setSuccessFilter = (success: boolean | null) => {
     filterSuccess.value = success
     page.value = 1
-    fetchEntries()
+    void fetchEntries()
   }
 
   const setSearch = (query: string) => {
     searchQuery.value = query
     page.value = 1
-    fetchEntries()
+    void fetchEntries()
   }
 
   onMounted(async () => {
     await fetchEntries()
     // Auto-select the first (newest) entry if nothing is selected
     if (!selectedEntry.value && entries.value.length > 0) {
-      selectEntry(entries.value[0].id)
+      void selectEntry(entries.value[0].id)
     }
-    fetchStats()
-    fetchSessions()
+    void fetchStats()
+    void fetchSessions()
     connectWebSocket()
   })
 

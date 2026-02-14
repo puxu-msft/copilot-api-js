@@ -18,7 +18,7 @@ export type {
 
 export { executeRequestPipeline } from "./pipeline"
 // Recording
-export { buildAnthropicStreamResult } from "./recording"
+export { buildAnthropicStreamResult, buildOpenAIStreamResult } from "./recording"
 // Response
 export { isNonStreaming, prependMarkerToResponse, safeParseJson } from "./response"
 
@@ -29,11 +29,7 @@ export { createAutoTruncateStrategy } from "./strategies/auto-truncate"
 
 // Tracking
 export type { RequestResult, ResponseContext } from "./tracking"
-export {
-  extractErrorContent,
-  finalizeRequest,
-  updateTrackerStatus,
-} from "./tracking"
+export { extractErrorContent, finalizeRequest, updateTrackerStatus } from "./tracking"
 
 // Truncation
 export type { TruncateResultInfo } from "./truncation"

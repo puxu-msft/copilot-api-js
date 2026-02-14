@@ -10,7 +10,7 @@ import { createFakeStream } from "../helpers/fake-stream"
 describe("abort signal + streaming integration", () => {
   test("stream yields all chunks when not aborted", async () => {
     const chunks = [1, 2, 3, 4, 5]
-    const received: number[] = []
+    const received: Array<number> = []
 
     for await (const chunk of createFakeStream(chunks)) {
       received.push(chunk)
@@ -23,7 +23,7 @@ describe("abort signal + streaming integration", () => {
     const controller = new AbortController()
     controller.abort() // Abort before starting
 
-    const received: number[] = []
+    const received: Array<number> = []
     for await (const chunk of createFakeStream([1, 2, 3], { signal: controller.signal })) {
       received.push(chunk)
     }
@@ -34,7 +34,7 @@ describe("abort signal + streaming integration", () => {
   test("stream stops yielding after abort mid-iteration", async () => {
     const controller = new AbortController()
     const chunks = [1, 2, 3, 4, 5]
-    const received: number[] = []
+    const received: Array<number> = []
 
     for await (const chunk of createFakeStream(chunks, { delayMs: 20, signal: controller.signal })) {
       received.push(chunk)
@@ -71,7 +71,7 @@ describe("abort signal + streaming integration", () => {
       { type: "content_block_delta", data: "chunk3" },
       { type: "content_block_delta", data: "chunk4" },
     ]
-    const processed: string[] = []
+    const processed: Array<string> = []
 
     // Simulate the pattern used in actual handlers:
     // for await (const event of stream) {
@@ -108,7 +108,7 @@ describe("abort signal + streaming integration", () => {
 
   test("abort signal works with synchronous chunks (no delay)", async () => {
     const controller = new AbortController()
-    const received: number[] = []
+    const received: Array<number> = []
 
     for await (const chunk of createFakeStream([1, 2, 3, 4, 5])) {
       if (controller.signal.aborted) break

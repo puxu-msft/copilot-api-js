@@ -9,10 +9,10 @@ import { describe, test, expect, beforeAll } from "bun:test"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 
+import { getModels } from "~/lib/models/client"
 import { state } from "~/lib/state"
+import { getCopilotToken } from "~/lib/token/copilot-client"
 import { translateToOpenAI } from "~/lib/translation/non-stream"
-import { getModels } from "~/services/copilot/get-models"
-import { getCopilotToken } from "~/services/github/get-copilot-token"
 
 import { getE2EMode, getGitHubToken } from "./config"
 

@@ -1,14 +1,17 @@
-import { ref, computed, type Ref, type ComputedRef } from 'vue'
-import { api } from '@/api/http'
-import { WSClient } from '@/api/ws'
-import { useToast } from './useToast'
-import type { HistoryEntry, HistoryStats, Session, ContentBlock } from '@/types'
+import { ref, computed, type Ref, type ComputedRef } from "vue"
+
+import type { HistoryEntry, HistoryStats, Session, ContentBlock } from "@/types"
+
+import { api } from "@/api/http"
+import { WSClient } from "@/api/ws"
+
+import { useToast } from "./useToast"
 
 export interface HistoryStore {
   // Data
-  entries: Ref<HistoryEntry[]>
+  entries: Ref<Array<HistoryEntry>>
   selectedEntry: Ref<HistoryEntry | null>
-  sessions: Ref<Session[]>
+  sessions: Ref<Array<Session>>
   stats: Ref<HistoryStats | null>
 
   // List filters
@@ -42,7 +45,7 @@ export interface HistoryStore {
   fetchStats: () => Promise<void>
   fetchSessions: () => Promise<void>
   selectEntry: (id: string) => Promise<void>
-  selectAdjacentEntry: (direction: 'next' | 'prev') => void
+  selectAdjacentEntry: (direction: "next" | "prev") => void
   clearSelection: () => void
   clearAll: () => Promise<void>
   refresh: () => Promise<void>
@@ -59,13 +62,13 @@ export function useHistoryStore(): HistoryStore {
   const { show: showToast } = useToast()
 
   // ═══ Data ═══
-  const entries = ref<HistoryEntry[]>([])
+  const entries = ref<Array<HistoryEntry>>([])
   const selectedEntry = ref<HistoryEntry | null>(null)
-  const sessions = ref<Session[]>([])
+  const sessions = ref<Array<Session>>([])
   const stats = ref<HistoryStats | null>(null)
 
   // ═══ Filters ═══
-  const searchQuery = ref('')
+  const searchQuery = ref("")
   const filterEndpoint = ref<string | null>(null)
   const filterSuccess = ref<string | null>(null)
   const selectedSessionId = ref<string | null>(null)
@@ -82,16 +85,16 @@ export function useHistoryStore(): HistoryStore {
   const wsConnected = ref(false)
 
   // ═══ Detail State ═══
-  const detailSearch = ref('')
-  const detailFilterRole = ref('')
-  const detailFilterType = ref('')
+  const detailSearch = ref("")
+  const detailFilterRole = ref("")
+  const detailFilterType = ref("")
   const aggregateTools = ref(true)
 
   // ═══ Computed ═══
   const hasSelection = computed(() => selectedEntry.value !== null)
   const selectedIndex = computed(() => {
     if (!selectedEntry.value) return -1
-    return entries.value.findIndex(e => e.id === selectedEntry.value!.id)
+    return entries.value.findIndex((e) => e.id === selectedEntry.value?.id)
   })
 
   // ═══ WebSocket ═══
@@ -106,8 +109,8 @@ export function useHistoryStore(): HistoryStore {
       const result = await api.fetchEntries({
         page: page.value,
         limit,
-        endpoint: filterEndpoint.value as 'anthropic' | 'openai' | undefined,
-        success: filterSuccess.value === null ? undefined : filterSuccess.value === 'true',
+        endpoint: filterEndpoint.value as "anthropic" | "openai" | undefined,
+        success: filterSuccess.value === null ? undefined : filterSuccess.value === "true",
         search: searchQuery.value || undefined,
         sessionId: selectedSessionId.value || undefined,
       })
@@ -120,9 +123,9 @@ export function useHistoryStore(): HistoryStore {
         await selectEntry(entries.value[0].id)
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to load entries'
+      const msg = err instanceof Error ? err.message : "Failed to load entries"
       error.value = msg
-      showToast(msg, 'error')
+      showToast(msg, "error")
     } finally {
       loading.value = false
     }
@@ -150,27 +153,28 @@ export function useHistoryStore(): HistoryStore {
       const entry = await api.fetchEntry(id)
       selectedEntry.value = entry
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to load entry'
-      showToast(msg, 'error')
+      const msg = err instanceof Error ? err.message : "Failed to load entry"
+      showToast(msg, "error")
     }
   }
 
-  function selectAdjacentEntry(direction: 'next' | 'prev'): void {
+  function selectAdjacentEntry(direction: "next" | "prev"): void {
     const idx = selectedIndex.value
     if (entries.value.length === 0) return
 
     let newIdx: number
     if (idx === -1) {
       newIdx = 0
-    } else if (direction === 'next') {
+    } else if (direction === "next") {
       newIdx = Math.min(idx + 1, entries.value.length - 1)
     } else {
       newIdx = Math.max(idx - 1, 0)
     }
 
     const entry = entries.value[newIdx]
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: array bounds
     if (entry) {
-      selectEntry(entry.id)
+      void selectEntry(entry.id)
     }
   }
 
@@ -187,11 +191,11 @@ export function useHistoryStore(): HistoryStore {
       total.value = 0
       totalPages.value = 1
       page.value = 1
-      showToast('History cleared', 'success')
+      showToast("History cleared", "success")
       await fetchStats()
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to clear history'
-      showToast(msg, 'error')
+      const msg = err instanceof Error ? err.message : "Failed to clear history"
+      showToast(msg, "error")
     }
   }
 
@@ -207,31 +211,31 @@ export function useHistoryStore(): HistoryStore {
   function setPage(p: number): void {
     if (p < 1 || p > totalPages.value) return
     page.value = p
-    fetchEntries()
+    void fetchEntries()
   }
 
   function setSessionFilter(id: string | null): void {
     selectedSessionId.value = id
     page.value = 1
-    fetchEntries()
+    void fetchEntries()
   }
 
   function setEndpointFilter(ep: string | null): void {
     filterEndpoint.value = ep
     page.value = 1
-    fetchEntries()
+    void fetchEntries()
   }
 
   function setSuccessFilter(s: string | null): void {
     filterSuccess.value = s
     page.value = 1
-    fetchEntries()
+    void fetchEntries()
   }
 
   function setSearch(q: string): void {
     searchQuery.value = q
     page.value = 1
-    fetchEntries()
+    void fetchEntries()
   }
 
   // ═══ WebSocket Handlers ═══
@@ -251,7 +255,7 @@ export function useHistoryStore(): HistoryStore {
 
   function handleEntryUpdated(entry: HistoryEntry): void {
     // Update in list
-    const idx = entries.value.findIndex(e => e.id === entry.id)
+    const idx = entries.value.findIndex((e) => e.id === entry.id)
     if (idx !== -1) {
       entries.value[idx] = entry
     }
@@ -268,7 +272,7 @@ export function useHistoryStore(): HistoryStore {
   // ═══ Init / Destroy ═══
 
   function init(): void {
-    refresh()
+    void refresh()
 
     wsClient = new WSClient({
       onEntryAdded: handleEntryAdded,
@@ -288,16 +292,41 @@ export function useHistoryStore(): HistoryStore {
   }
 
   return {
-    entries, selectedEntry, sessions, stats,
-    searchQuery, filterEndpoint, filterSuccess, selectedSessionId,
-    page, totalPages, total,
-    loading, error, wsConnected,
-    detailSearch, detailFilterRole, detailFilterType, aggregateTools,
-    hasSelection, selectedIndex,
-    fetchEntries, fetchStats, fetchSessions,
-    selectEntry, selectAdjacentEntry, clearSelection, clearAll,
-    refresh, setPage, setSessionFilter, setEndpointFilter, setSuccessFilter, setSearch,
-    init, destroy,
+    entries,
+    selectedEntry,
+    sessions,
+    stats,
+    searchQuery,
+    filterEndpoint,
+    filterSuccess,
+    selectedSessionId,
+    page,
+    totalPages,
+    total,
+    loading,
+    error,
+    wsConnected,
+    detailSearch,
+    detailFilterRole,
+    detailFilterType,
+    aggregateTools,
+    hasSelection,
+    selectedIndex,
+    fetchEntries,
+    fetchStats,
+    fetchSessions,
+    selectEntry,
+    selectAdjacentEntry,
+    clearSelection,
+    clearAll,
+    refresh,
+    setPage,
+    setSessionFilter,
+    setEndpointFilter,
+    setSuccessFilter,
+    setSearch,
+    init,
+    destroy,
   }
 }
 
@@ -305,47 +334,46 @@ export function useHistoryStore(): HistoryStore {
 
 export function getPreviewText(entry: HistoryEntry): string {
   const messages = entry.request.messages
-  if (messages.length === 0) return ''
+  if (messages.length === 0) return ""
 
   // Get last user message
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
-    if (msg.role === 'user') {
+    if (msg.role === "user") {
       return extractText(msg.content).slice(0, 100)
     }
   }
   // Fallback to last message
-  const last = messages[messages.length - 1]
+  const last = messages.at(-1)
   return extractText(last.content).slice(0, 100)
 }
 
-export function extractText(content: string | ContentBlock[]): string {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
+export function extractText(content: string | Array<ContentBlock>): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
   return content
-    .map(b => {
-      if (b.type === 'text' && 'text' in b) return b.text
-      if (b.type === 'thinking' && 'thinking' in b) return b.thinking
-      if (b.type === 'tool_use' && 'name' in b) return `[Tool: ${b.name}]`
-      if (b.type === 'tool_result') return '[Tool Result]'
-      return ''
+    .map((b) => {
+      if (b.type === "text" && "text" in b) return b.text
+      if (b.type === "thinking" && "thinking" in b) return b.thinking
+      if (b.type === "tool_use" && "name" in b) return `[Tool: ${String(b.name)}]`
+      if (b.type === "tool_result") return "[Tool Result]"
+      return ""
     })
     .filter(Boolean)
-    .join(' ')
+    .join(" ")
 }
 
-export function getStatusClass(entry: HistoryEntry): 'success' | 'error' | 'pending' {
-  if (!entry.response) return 'pending'
-  if (entry.response.success === true) return 'success'
-  if (entry.response.success === false) return 'error'
-  return 'pending'
+export function getStatusClass(entry: HistoryEntry): "success" | "error" | "pending" {
+  if (!entry.response) return "pending"
+  if (entry.response.success) return "success"
+  return "error"
 }
 
 export function getMessageSummary(entry: HistoryEntry): string {
   const msgCount = entry.request.messages.length
-  const toolCount = entry.request.messages.filter(m => {
-    if (typeof m.content === 'string') return false
-    return Array.isArray(m.content) && m.content.some(b => b.type === 'tool_use')
+  const toolCount = entry.request.messages.filter((m) => {
+    if (typeof m.content === "string") return false
+    return Array.isArray(m.content) && m.content.some((b) => b.type === "tool_use")
   }).length
   let summary = `${msgCount} msg`
   if (toolCount > 0) summary += `, ${toolCount} tool`

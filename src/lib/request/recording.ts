@@ -1,10 +1,13 @@
 /** Shared recording utilities for streaming responses */
 
+import consola from "consola"
+
 import type { AnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import type { OpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 
-import { safeParseJson } from "./response"
 import type { RequestResult, ResponseContext } from "./tracking"
+
+import { safeParseJson } from "./response"
 
 /**
  * Build a RequestResult from a completed Anthropic stream accumulator.
@@ -24,26 +27,35 @@ export function buildAnthropicStreamResult(
     }
 
     switch (block.type) {
-      case "text":
+      case "text": {
         return { type: "text" as const, text: block.text }
-      case "thinking":
+      }
+      case "thinking": {
         return { type: "thinking" as const, thinking: block.thinking }
-      case "redacted_thinking":
+      }
+      case "redacted_thinking": {
         return { type: "redacted_thinking" as const }
+      }
       case "tool_use":
-      case "server_tool_use":
+      case "server_tool_use": {
         return {
           type: block.type as string,
           id: block.id,
           name: block.name,
           input: safeParseJson(block.input),
         }
-      case "web_search_tool_result":
+      }
+      case "web_search_tool_result": {
         return {
           type: "web_search_tool_result" as const,
           tool_use_id: block.tool_use_id,
           content: block.content,
         }
+      }
+      default: {
+        consola.warn(`[recording] Unhandled content block type in stream result: ${block.type}`)
+        return { type: block.type as string }
+      }
     }
   })
 
@@ -69,9 +81,9 @@ export function buildOpenAIStreamResult(
   fallbackModel: string,
   ctx: ResponseContext,
 ): RequestResult {
-  // Collect tool calls from map
+  // Collect tool calls from map, joining accumulated argument parts
   for (const tc of acc.toolCallMap.values()) {
-    if (tc.id && tc.name) acc.toolCalls.push(tc)
+    if (tc.id && tc.name) acc.toolCalls.push({ id: tc.id, name: tc.name, arguments: tc.argumentParts.join("") })
   }
 
   const toolCalls = acc.toolCalls.map((tc) => ({

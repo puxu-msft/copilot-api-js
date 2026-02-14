@@ -1,10 +1,10 @@
 import { Hono } from "hono"
 
-import type { Model } from "~/services/copilot/get-models"
+import type { Model } from "~/lib/models/client"
 
 import { forwardError } from "~/lib/error"
+import { cacheModels } from "~/lib/models/client"
 import { state } from "~/lib/state"
-import { cacheModels } from "~/lib/utils"
 
 export const modelRoutes = new Hono()
 

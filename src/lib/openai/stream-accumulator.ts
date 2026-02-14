@@ -4,14 +4,21 @@
  */
 
 import type { BaseStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import type { ChatCompletionChunk } from "~/services/copilot/create-chat-completions"
+import type { ChatCompletionChunk } from "~/lib/openai/client"
+
+/** Internal tool call accumulator using string array to avoid O(n²) concatenation */
+interface ToolCallAccumulator {
+  id: string
+  name: string
+  argumentParts: Array<string>
+}
 
 /** Stream accumulator for OpenAI format */
 export interface OpenAIStreamAccumulator extends BaseStreamAccumulator {
   cachedTokens: number
   finishReason: string
   toolCalls: Array<{ id: string; name: string; arguments: string }>
-  toolCallMap: Map<number, { id: string; name: string; arguments: string }>
+  toolCallMap: Map<number, ToolCallAccumulator>
 }
 
 export function createOpenAIStreamAccumulator(): OpenAIStreamAccumulator {
@@ -29,10 +36,8 @@ export function createOpenAIStreamAccumulator(): OpenAIStreamAccumulator {
 
 /** Accumulate a single parsed OpenAI chunk into the accumulator */
 export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: OpenAIStreamAccumulator) {
-  // Accumulate model
   if (parsed.model && !acc.model) acc.model = parsed.model
 
-  // Accumulate usage
   if (parsed.usage) {
     acc.inputTokens = parsed.usage.prompt_tokens
     acc.outputTokens = parsed.usage.completion_tokens
@@ -41,7 +46,6 @@ export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: Op
     }
   }
 
-  // Accumulate choice
   const choice = parsed.choices[0] as (typeof parsed.choices)[0] | undefined
   if (choice) {
     if (choice.delta.content) acc.content += choice.delta.content
@@ -52,14 +56,14 @@ export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: Op
           acc.toolCallMap.set(idx, {
             id: tc.id ?? "",
             name: tc.function?.name ?? "",
-            arguments: "",
+            argumentParts: [],
           })
         }
         const item = acc.toolCallMap.get(idx)
         if (item) {
           if (tc.id) item.id = tc.id
           if (tc.function?.name) item.name = tc.function.name
-          if (tc.function?.arguments) item.arguments += tc.function.arguments
+          if (tc.function?.arguments) item.argumentParts.push(tc.function.arguments)
         }
       }
     }

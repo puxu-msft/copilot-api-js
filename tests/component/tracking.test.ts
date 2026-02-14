@@ -229,9 +229,12 @@ describe("finalizeRequest", () => {
       durationMs: 100,
     })
 
-    expect(updateSpy).toHaveBeenCalledWith("track-1", expect.objectContaining({
-      cacheReadInputTokens: 80,
-      cacheCreationInputTokens: 20,
-    }))
+    expect(updateSpy).toHaveBeenCalledWith(
+      "track-1",
+      expect.objectContaining({
+        cacheReadInputTokens: 80,
+        cacheCreationInputTokens: 20,
+      }),
+    )
   })
 })

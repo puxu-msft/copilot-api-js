@@ -1,0 +1,65 @@
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "text",
+      "text": "<system-reminder>\nNote: /home/xp/src/copilot-api-js/src/lib/message-sanitizer.ts was read before the last conversation was summarized, but the contents are too large to include. Use Read tool if you n..."
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nCalled the Read tool with the following input: {\"file_path\":\"/home/xp/src/copilot-api-js/tests/auto-truncate.test.ts\"}\n</system-reminder>"
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nResult of calling the Read tool: \"     1→import { describe, expect, test } from \\\"bun:test\\\"\\n     2→\\n     3→import type { ChatCompletionsPayload } from \\\"~/services/copilot/create-..."
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nCalled the Read tool with the following input: {\"file_path\":\"/home/xp/src/copilot-api-js/AGENTS.md\"}\n</system-reminder>"
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nResult of calling the Read tool: \"     1→# AGENTS.md\\n     2→\\n     3→重要：使用中文与用户交流。\\n     4→重要：使用中文与用户交流。\\n     5→重要：使用中文与用户交流。\\n     6→\\n     7→## Rules\\n     8→\\n     9→- **Always ..."
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nCalled the Read tool with the following input: {\"file_path\":\"/home/xp/src/copilot-api-js/src/services/copilot/create-anthropic-messages.ts\"}\n</system-reminder>"
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nResult of calling the Read tool: \"     1→/**\\n     2→ * Direct Anthropic-style message API for Copilot.\\n     3→ * Used when the model vendor is Anthropic and supports /v1/messages e..."
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nCalled the Read tool with the following input: {\"file_path\":\"/home/xp/src/copilot-api-js/src/lib/utils.ts\"}\n</system-reminder>"
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nResult of calling the Read tool: \"     1→import consola from \\\"consola\\\"\\n     2→\\n     3→import { getModels } from \\\"~/services/copilot/get-models\\\"\\n     4→import { getVSCodeVersio..."
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nA plan file exists from plan mode at: /home/xp/.claude/plans/glistening-watching-gray.md\n\nPlan contents:\n\n# 修复 system-reminder 在 History Diff 中被误删的问题\n\n## 问题分析\n\n### 用户报告\n\n在 History V1..."
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nSessionStart:Callback hook success: Success\n</system-reminder>"
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nSessionStart:compact hook success: Success\n</system-reminder>"
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nSessionStart hook additional context: <EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n**Below is the full content of your 'superpowers:using-superpowers' skill - your introduction to us..."
+    },
+    {
+      "type": "text",
+      "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# claudeMd\nCodebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: ..."
+    },
+    {
+      "type": "text",
+      "text": "This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:\nAnalysis:\nLet me chronologically analyze the conversation:\n\n## Section 1: Co..."
+    }
+  ]
+}

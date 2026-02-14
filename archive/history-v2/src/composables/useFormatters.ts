@@ -27,8 +27,8 @@ export function formatNumber(n: number | undefined | null): string {
 
 export function formatDuration(ms: number | undefined | null): string {
   if (!ms) return "-"
-  if (ms < 1000) return ms + "ms"
-  return (ms / 1000).toFixed(1) + "s"
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
 }
 
 export function truncate(text: string, maxLength: number): string {

@@ -47,7 +47,7 @@
     "pre-commit": "bun x lint-staged"
   },
   "lint-staged": {
-    "*": "bun run lint --fix"
+    "*.{ts,js,mjs,cjs}": "bun run lint"
   },
   "dependencies": {
     "@hono/node-ws": "^1.3.0",

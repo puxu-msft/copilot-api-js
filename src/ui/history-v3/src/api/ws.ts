@@ -1,5 +1,5 @@
-import type { HistoryEntry, HistoryStats } from '@/types'
-import type { WSMessage } from '@/types/ws'
+import type { HistoryEntry, HistoryStats } from "@/types"
+import type { WSMessage } from "@/types/ws"
 
 export interface WSClientOptions {
   onEntryAdded: (entry: HistoryEntry) => void
@@ -41,7 +41,7 @@ export class WSClient {
   }
 
   private createConnection(): void {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:"
     const url = `${protocol}//${location.host}/history/ws`
 
     try {
@@ -51,46 +51,53 @@ export class WSClient {
       return
     }
 
-    this.ws.onopen = () => {
+    this.ws.addEventListener("open", () => {
       this.reconnectDelay = 1000
       this.options.onStatusChange(true)
-    }
+    })
 
-    this.ws.onclose = () => {
+    this.ws.addEventListener("close", () => {
       this.options.onStatusChange(false)
       if (!this.intentionalClose) {
         this.scheduleReconnect()
       }
-    }
+    })
 
-    this.ws.onerror = () => {
+    this.ws.addEventListener("error", () => {
       // onclose will fire after this
-    }
+    })
 
-    this.ws.onmessage = (event) => {
+    this.ws.addEventListener("message", (event) => {
       try {
-        const msg = JSON.parse(event.data) as WSMessage
+        const msg = JSON.parse(event.data as string) as WSMessage
         this.handleMessage(msg)
       } catch {
         // Ignore malformed messages
       }
-    }
+    })
   }
 
   private handleMessage(msg: WSMessage): void {
     switch (msg.type) {
-      case 'entry_added':
+      case "entry_added": {
         this.options.onEntryAdded(msg.data as HistoryEntry)
         break
-      case 'entry_updated':
+      }
+      case "entry_updated": {
         this.options.onEntryUpdated(msg.data as HistoryEntry)
         break
-      case 'stats_updated':
+      }
+      case "stats_updated": {
         this.options.onStatsUpdated(msg.data as HistoryStats)
         break
-      case 'connected':
+      }
+      case "connected": {
         this.options.onConnected((msg.data as { clientCount: number }).clientCount)
         break
+      }
+      default: {
+        break
+      }
     }
   }
 

@@ -26,9 +26,7 @@ import {
 } from "~/types/api/anthropic"
 
 /** Map OpenAI finish_reason to Anthropic stop_reason */
-export function mapOpenAIStopReasonToAnthropic(
-  finishReason: string | null,
-): AnthropicResponse["stop_reason"] {
+export function mapOpenAIStopReasonToAnthropic(finishReason: string | null): AnthropicResponse["stop_reason"] {
   if (!finishReason) return null
   const stopReasonMap = {
     stop: "end_turn",
@@ -154,9 +152,9 @@ function translateAnthropicMessagesToOpenAI(
   const otherMessages: Array<Message> = []
   for (const [i, message] of anthropicMessages.entries()) {
     const translated =
-      message.role === "user"
-        ? handleUserMessage(message as UserMessage)
-        : handleAssistantMessage(message as AssistantMessage, toolNameMapping)
+      message.role === "user" ?
+        handleUserMessage(message as UserMessage)
+      : handleAssistantMessage(message as AssistantMessage, toolNameMapping)
     for (const msg of translated) {
       otherMessages.push(msg)
       originMap.push(i)
@@ -301,9 +299,7 @@ function handleAssistantMessage(message: AssistantMessage, toolNameMapping: Tool
       ]
 }
 
-function mapContent(
-  content: string | Array<ContentBlockParam | ContentBlock>,
-): string | Array<ContentPart> | null {
+function mapContent(content: string | Array<ContentBlockParam | ContentBlock>): string | Array<ContentPart> | null {
   if (typeof content === "string") {
     return content
   }
@@ -335,6 +331,7 @@ function mapContent(
               url: `data:${block.source.media_type};base64,${block.source.data}`,
             },
           })
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- explicit match for extensibility
         } else if (block.source.type === "url") {
           contentParts.push({
             type: "image_url",
@@ -384,8 +381,10 @@ function getTruncatedToolName(originalName: string, toolNameMapping: ToolNameMap
   // Collision detection: if this truncated name already maps to a different original name,
   // append a counter until we find an unused name
   let counter = 2
-  while (toolNameMapping.truncatedToOriginal.has(truncatedName) &&
-         toolNameMapping.truncatedToOriginal.get(truncatedName) !== originalName) {
+  while (
+    toolNameMapping.truncatedToOriginal.has(truncatedName)
+    && toolNameMapping.truncatedToOriginal.get(truncatedName) !== originalName
+  ) {
     const suffix = `_${hashSuffix}${counter}`
     truncatedName = originalName.slice(0, OPENAI_TOOL_NAME_LIMIT - suffix.length) + suffix
     counter++
@@ -510,10 +509,12 @@ export function translateToAnthropic(
     allToolUseBlocks.push(...toolUseBlocks)
 
     // Use the finish_reason from the first choice, or prioritize tool_calls
-    if (choice.finish_reason === "tool_calls" || stopReason === "stop") {
-      if (choice.finish_reason && choice.finish_reason !== "function_call") {
-        stopReason = choice.finish_reason
-      }
+    if (
+      (choice.finish_reason === "tool_calls" || stopReason === "stop")
+      && choice.finish_reason
+      && choice.finish_reason !== "function_call"
+    ) {
+      stopReason = choice.finish_reason
     }
   }
 

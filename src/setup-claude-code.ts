@@ -5,10 +5,11 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import invariant from "tiny-invariant"
 
+import { cacheVSCodeVersion } from "./lib/config/api"
 import { ensurePaths } from "./lib/config/paths"
+import { cacheModels } from "./lib/models/client"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
-import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 
 /**
  * Write Claude Code configuration files for use with Copilot API.

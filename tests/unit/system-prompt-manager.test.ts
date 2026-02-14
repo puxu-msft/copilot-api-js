@@ -2,11 +2,10 @@
  * Unit tests for system prompt manager: collection + config-based overrides.
  */
 
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import {
   applyOverrides,
@@ -15,7 +14,7 @@ import {
   processOpenAIMessages,
   resetConfigCache,
   type SystemPromptOverride,
-} from "~/lib/system-prompt-manager"
+} from "~/lib/config/system-prompt"
 import { state } from "~/lib/state"
 
 // ============================================================================
@@ -48,113 +47,89 @@ describe("applyOverrides", () => {
   // --- line method ---
 
   test("line: replaces a matching line", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "Hello world", to: "Goodbye world", method: "line" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "Hello world", to: "Goodbye world", method: "line" }]
     expect(applyOverrides("Hello world", overrides)).toBe("Goodbye world")
   })
 
   test("line: matches with leading/trailing whitespace on line", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "Hello world", to: "Goodbye", method: "line" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "Hello world", to: "Goodbye", method: "line" }]
     expect(applyOverrides("  Hello world  ", overrides)).toBe("Goodbye")
   })
 
   test("line: no match leaves line unchanged", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "Hello world", to: "Goodbye", method: "line" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "Hello world", to: "Goodbye", method: "line" }]
     expect(applyOverrides("Different text", overrides)).toBe("Different text")
   })
 
   test("line: only matching lines replaced in multiline text", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "line2", to: "REPLACED", method: "line" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "line2", to: "REPLACED", method: "line" }]
     expect(applyOverrides("line1\nline2\nline3", overrides)).toBe("line1\nREPLACED\nline3")
   })
 
   test("line: multiline from does not match (per-line granularity)", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "line1\nline2", to: "REPLACED", method: "line" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "line1\nline2", to: "REPLACED", method: "line" }]
     expect(applyOverrides("line1\nline2", overrides)).toBe("line1\nline2")
   })
 
   test("line: replaces each independently matching line", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "match", to: "HIT", method: "line" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "match", to: "HIT", method: "line" }]
     expect(applyOverrides("match\nno\nmatch", overrides)).toBe("HIT\nno\nHIT")
   })
 
   // --- regex method (full text, gms flags) ---
 
   test("regex: single replacement", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "foo", to: "bar", method: "regex" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "foo", to: "bar", method: "regex" }]
     expect(applyOverrides("hello foo end", overrides)).toBe("hello bar end")
   })
 
   test("regex: global replacement (g flag)", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "foo", to: "bar", method: "regex" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "foo", to: "bar", method: "regex" }]
     expect(applyOverrides("foo and foo", overrides)).toBe("bar and bar")
   })
 
   test("regex: matches across lines (full text)", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "target", to: "HIT", method: "regex" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "target", to: "HIT", method: "regex" }]
     const input = "no match here\nhas target word\nalso target here"
     expect(applyOverrides(input, overrides)).toBe("no match here\nhas HIT word\nalso HIT here")
   })
 
   test("regex: dotAll flag allows . to match newlines", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "<tag>.*?</tag>", to: "", method: "regex" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "<tag>.*?</tag>", to: "", method: "regex" }]
     const input = "before <tag>\nmultiline\ncontent\n</tag> after"
     expect(applyOverrides(input, overrides)).toBe("before  after")
   })
 
   test("regex: ^ and $ match line boundaries (m flag)", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "^remove this line$", to: "", method: "regex" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "^remove this line$", to: "", method: "regex" }]
     const input = "keep this\nremove this line\nkeep this too"
     expect(applyOverrides(input, overrides)).toBe("keep this\n\nkeep this too")
   })
 
   test("regex: ^$ line matching with capture groups", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "^(IMPORTANT:[^\\n]*)$", to: "[$1]", method: "regex" },
+    const overrides: Array<SystemPromptOverride> = [
+      { from: String.raw`^(IMPORTANT:[^\n]*)$`, to: "[$1]", method: "regex" },
     ]
     const input = "normal line\nIMPORTANT: do something\nanother line"
     expect(applyOverrides(input, overrides)).toBe("normal line\n[IMPORTANT: do something]\nanother line")
   })
 
   test("regex: capture group placeholders $1 $2", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "(\\w+) is (\\w+)", to: "$2 is $1", method: "regex" },
+    const overrides: Array<SystemPromptOverride> = [
+      { from: String.raw`(\w+) is (\w+)`, to: "$2 is $1", method: "regex" },
     ]
     expect(applyOverrides("cat is big", overrides)).toBe("big is cat")
   })
 
   test("regex: invalid regex silently skips", () => {
-    const overrides: SystemPromptOverride[] = [
-      { from: "[invalid(", to: "replacement", method: "regex" },
-    ]
+    const overrides: Array<SystemPromptOverride> = [{ from: "[invalid(", to: "replacement", method: "regex" }]
     expect(applyOverrides("original text", overrides)).toBe("original text")
   })
 
   // --- mixed ---
 
   test("multiple rules applied in order", () => {
-    const overrides: SystemPromptOverride[] = [
+    const overrides: Array<SystemPromptOverride> = [
       { from: "aaa", to: "bbb", method: "regex" },
       { from: "bbb", to: "ccc", method: "regex" },
     ]
@@ -162,7 +137,7 @@ describe("applyOverrides", () => {
   })
 
   test("line and regex rules can be mixed", () => {
-    const overrides: SystemPromptOverride[] = [
+    const overrides: Array<SystemPromptOverride> = [
       { from: "exact line", to: "REPLACED", method: "line" },
       { from: "partial", to: "MATCHED", method: "regex" },
     ]
@@ -276,7 +251,7 @@ describe("collectSystemPrompt", () => {
     const promptFiles = files.filter((f) => f.startsWith("system_prompts_"))
     expect(promptFiles).toHaveLength(1)
 
-    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFiles[0]), "utf-8"))
+    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFiles[0])))
     expect(content.format).toBe("anthropic")
     expect(content.hash).toBeDefined()
     expect(content.timestamp).toBeDefined()
@@ -320,7 +295,7 @@ describe("collectSystemPrompt", () => {
 
     const files = await fs.readdir(PATHS.APP_DIR)
     const promptFile = files.find((f) => f.startsWith("system_prompts_"))!
-    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFile), "utf-8"))
+    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFile)))
     expect(content.format).toBe("anthropic")
     expect(content.raw).toEqual(blocks)
   })
@@ -337,7 +312,7 @@ describe("collectSystemPrompt", () => {
 
     const files = await fs.readdir(PATHS.APP_DIR)
     const promptFile = files.find((f) => f.startsWith("system_prompts_"))!
-    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFile), "utf-8"))
+    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFile)))
     expect(content.format).toBe("openai")
     expect(content.raw).toEqual([{ role: "system", content: "system msg" }])
   })
@@ -400,9 +375,7 @@ describe("processAnthropicSystem", () => {
     method: regex
 `,
     )
-    const blocks = [
-      { type: "text" as const, text: "old content", cache_control: { type: "ephemeral" as const } },
-    ]
+    const blocks = [{ type: "text" as const, text: "old content", cache_control: { type: "ephemeral" as const } }]
     const result = (await processAnthropicSystem(blocks)) as typeof blocks
     expect(result[0].text).toBe("new content")
     expect(result[0].cache_control).toEqual({ type: "ephemeral" })

@@ -3,46 +3,39 @@
  * Handles requests using the native Anthropic API without OpenAI translation.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 
 import consola from "consola"
 import { SSEStreamingApi, streamSSE } from "hono/streaming"
 
+import type { FormatAdapter } from "~/lib/request/pipeline"
 import type { MessagesPayload } from "~/types/api/anthropic"
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
-import {
-  createAnthropicStreamAccumulator,
-} from "~/lib/anthropic/stream-accumulator"
+import { type AnthropicAutoTruncateResult, autoTruncateAnthropic } from "~/lib/anthropic/auto-truncate"
+import { createAnthropicMessages, type AnthropicMessageResponse } from "~/lib/anthropic/client"
+import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
+import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { processAnthropicStream } from "~/lib/anthropic/stream-processor"
 import { awaitApproval } from "~/lib/approval"
-import {
-  type AnthropicAutoTruncateResult,
-  autoTruncateAnthropic,
-} from "~/lib/auto-truncate/anthropic"
-import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate/common"
-import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
+import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate-common"
 import { recordRewrites, type MessageContent } from "~/lib/history"
-import { state } from "~/lib/state"
-import { buildMessageMapping } from "~/lib/translation/message-mapping"
-import { tuiLogger } from "~/lib/tui"
-import { createAnthropicMessages, type AnthropicMessageResponse } from "~/services/copilot/create-anthropic-messages"
-
-import type { FormatAdapter } from "../shared/pipeline"
-
 import {
   type ResponseContext,
   createTruncationMarker,
   extractErrorContent,
   finalizeRequest,
   updateTrackerStatus,
-} from "../shared"
-import { logPayloadSizeInfoAnthropic } from "../shared/payload"
-import { buildAnthropicStreamResult } from "../shared/recording"
-import { prependMarkerToResponse } from "../shared/response"
-import { executeRequestPipeline } from "../shared/pipeline"
-import { createAutoTruncateStrategy, type TruncateResult } from "../shared/strategies/auto-truncate"
+} from "~/lib/request"
+import { logPayloadSizeInfoAnthropic } from "~/lib/request/payload"
+import { executeRequestPipeline } from "~/lib/request/pipeline"
+import { buildAnthropicStreamResult } from "~/lib/request/recording"
+import { prependMarkerToResponse } from "~/lib/request/response"
+import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
+import { state } from "~/lib/state"
+import { buildMessageMapping } from "~/lib/translation/message-mapping"
+import { tuiLogger } from "~/lib/tui"
 
 // Handle completion using direct Anthropic API (no translation needed)
 export async function handleDirectAnthropicCompletion(
@@ -70,7 +63,7 @@ export async function handleDirectAnthropicCompletion(
         removedBlockCount: initialOrphanedRemovals,
         systemReminderRemovals: initialSystemRemovals,
       },
-      rewrittenMessages: initialSanitized.messages as unknown as MessageContent[],
+      rewrittenMessages: initialSanitized.messages as unknown as Array<MessageContent>,
       rewrittenSystem: typeof initialSanitized.system === "string" ? initialSanitized.system : undefined,
       messageMapping,
     })
@@ -98,8 +91,7 @@ export async function handleDirectAnthropicCompletion(
 
   const strategies = [
     createAutoTruncateStrategy<MessagesPayload>({
-      truncate: (p, model, opts) =>
-        autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,
+      truncate: (p, model, opts) => autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,
       resanitize: (p) => sanitizeAnthropicMessages(p),
       isEnabled: () => state.autoTruncate,
       label: "Anthropic",
@@ -146,7 +138,7 @@ export async function handleDirectAnthropicCompletion(
                 systemReminderRemovals: retrySanitization.systemReminderRemovals,
               }
             : undefined,
-          rewrittenMessages: newPayload.messages as unknown as MessageContent[],
+          rewrittenMessages: newPayload.messages as unknown as Array<MessageContent>,
           rewrittenSystem: typeof newPayload.system === "string" ? newPayload.system : undefined,
           messageMapping: retryMessageMapping,
         })
@@ -203,7 +195,6 @@ function handleDirectAnthropicNonStreamingResponse(
   ctx: ResponseContext,
   truncateResult: AnthropicAutoTruncateResult | undefined,
 ) {
-
   finalizeRequest(ctx, {
     success: true,
     model: response.model,
