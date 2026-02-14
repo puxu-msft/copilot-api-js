@@ -201,6 +201,11 @@ function translateModelName(model: string): string {
     return "claude-sonnet-4"
   }
 
+  // claude-opus-4-6 -> claude-opus-4.6-1m (Claude CLI sends 4-6 for 4.6 1M context)
+  if (/^claude-opus-4-6$/.test(model)) {
+    return "claude-opus-4.6-1m"
+  }
+
   // claude-opus-4-5-YYYYMMDD -> claude-opus-4.5
   if (/^claude-opus-4-5-\d+$/.test(model)) {
     return "claude-opus-4.5"
