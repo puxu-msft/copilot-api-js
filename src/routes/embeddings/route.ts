@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 
 import { forwardError } from "~/lib/error"
-import { createEmbeddings, type EmbeddingRequest } from "~/services/copilot/create-embeddings"
+import { createEmbeddings, type EmbeddingRequest } from "~/lib/openai/embeddings"
 
 export const embeddingRoutes = new Hono()
 

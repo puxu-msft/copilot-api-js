@@ -11,6 +11,7 @@ import { describe, test, expect, beforeAll } from "bun:test"
 
 import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
 
+import { createAnthropicMessages } from "~/lib/anthropic/client"
 import { getModels, type Model } from "~/lib/models/client"
 import { translateModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
@@ -19,7 +20,6 @@ import { createEmbeddings } from "~/lib/openai/embeddings"
 import { state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 import { translateToOpenAI } from "~/lib/translation/non-stream"
-import { createAnthropicMessages } from "~/services/copilot/create-anthropic-messages"
 
 import { getE2EMode, getGitHubToken } from "./config"
 

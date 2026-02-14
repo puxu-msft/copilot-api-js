@@ -56,7 +56,7 @@ function getSentMessages(ws: WebSocket): Array<WSMessage> {
 
 function getLastSentMessage(ws: WebSocket): WSMessage {
   const msgs = getSentMessages(ws)
-  return msgs.at(-1)
+  return msgs.at(-1)!
 }
 
 const sampleRequest: RecordRequestParams = {

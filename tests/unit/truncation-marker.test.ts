@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { type TruncateResultInfo, createTruncationMarker } from "~/routes/shared"
+import { type TruncateResultInfo, createTruncationMarker } from "~/lib/request/truncation"
 
 describe("createTruncationMarker", () => {
   test("returns empty string when wasTruncated is false", () => {

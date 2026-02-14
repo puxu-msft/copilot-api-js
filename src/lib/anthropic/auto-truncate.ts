@@ -17,7 +17,6 @@ import consola from "consola"
 import type { Model } from "~/lib/models/client"
 import type { ContentBlock, MessageParam, MessagesPayload, ContentBlockParam } from "~/types/api/anthropic"
 
-import { processToolBlocks } from "~/lib/anthropic/sanitize"
 import { countTextTokens } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
@@ -33,6 +32,7 @@ import {
   getEffectiveByteLimitBytes,
   getEffectiveTokenLimit,
 } from "../auto-truncate-common"
+import { processToolBlocks } from "./sanitize"
 
 // ============================================================================
 // Orphan Filtering Utilities (specific to auto-truncate)
@@ -322,20 +322,38 @@ export async function countSystemTokens(system: MessagesPayload["system"], model
 }
 
 /**
- * Count total tokens for the payload using the model's tokenizer.
- * Includes thinking blocks — used by auto-truncate decisions.
+ * Count tokens for just the messages array.
+ * Used internally to avoid re-counting system/tools tokens that don't change.
  */
-export async function countTotalTokens(payload: MessagesPayload, model: Model): Promise<number> {
-  let total = await countSystemTokens(payload.system, model)
-  for (const msg of payload.messages) {
+async function countMessagesTokens(messages: Array<MessageParam>, model: Model): Promise<number> {
+  let total = 0
+  for (const msg of messages) {
     total += await countMessageTokens(msg, model)
   }
-  // Add overhead for tools
+  return total
+}
+
+/**
+ * Count tokens for system + tools (the parts that don't change during truncation).
+ * Returns the combined fixed overhead token count.
+ */
+async function countFixedTokens(payload: MessagesPayload, model: Model): Promise<number> {
+  let total = await countSystemTokens(payload.system, model)
   if (payload.tools) {
     const toolsText = JSON.stringify(payload.tools)
     total += await countTextTokens(toolsText, model)
   }
   return total
+}
+
+/**
+ * Count total tokens for the payload using the model's tokenizer.
+ * Includes thinking blocks — used by auto-truncate decisions.
+ */
+export async function countTotalTokens(payload: MessagesPayload, model: Model): Promise<number> {
+  const fixed = await countFixedTokens(payload, model)
+  const msgs = await countMessagesTokens(payload.messages, model)
+  return fixed + msgs
 }
 
 /**
@@ -370,8 +388,14 @@ export async function countTotalInputTokens(payload: MessagesPayload, model: Mod
 // Message Utilities
 // ============================================================================
 
+/** Get byte size of a message (memoized to avoid redundant JSON.stringify) */
+const messageBytesCache = new WeakMap<object, number>()
 function getMessageBytes(msg: MessageParam): number {
-  return JSON.stringify(msg).length
+  let cached = messageBytesCache.get(msg)
+  if (cached !== undefined) return cached
+  cached = JSON.stringify(msg).length
+  messageBytesCache.set(msg, cached)
+  return cached
 }
 
 // ============================================================================
@@ -498,38 +522,30 @@ function smartCompressToolResults(
 
   for (const [i, msg] of messages.entries()) {
     if (i < thresholdIndex && msg.role === "user" && Array.isArray(msg.content)) {
-      // Check if this message has compressible blocks
-      const hasCompressible = msg.content.some(
-        (block) =>
-          // Large tool_result blocks
-          (block.type === "tool_result"
-            && typeof block.content === "string"
-            && block.content.length > LARGE_TOOL_RESULT_THRESHOLD)
-          // Compacted text blocks (Read/Grep/etc. tool results in system-reminder tags)
-          || (block.type === "text"
-            && block.text.length > LARGE_TOOL_RESULT_THRESHOLD
-            && compressCompactedReadResult(block.text) !== null),
-      )
-
-      if (hasCompressible) {
-        const compressedContent = msg.content.map((block) => {
-          if (
-            block.type === "tool_result"
-            && typeof block.content === "string"
-            && block.content.length > LARGE_TOOL_RESULT_THRESHOLD
-          ) {
+      // Directly attempt compression on each block, avoiding a separate `some` pre-check
+      let hadCompression = false
+      const compressedContent = msg.content.map((block) => {
+        if (
+          block.type === "tool_result"
+          && typeof block.content === "string"
+          && block.content.length > LARGE_TOOL_RESULT_THRESHOLD
+        ) {
+          compressedCount++
+          hadCompression = true
+          return compressToolResultBlock(block)
+        }
+        if (block.type === "text" && block.text.length > LARGE_TOOL_RESULT_THRESHOLD) {
+          const compressed = compressCompactedReadResult(block.text)
+          if (compressed) {
             compressedCount++
-            return compressToolResultBlock(block)
+            hadCompression = true
+            return { ...block, text: compressed }
           }
-          if (block.type === "text" && block.text.length > LARGE_TOOL_RESULT_THRESHOLD) {
-            const compressed = compressCompactedReadResult(block.text)
-            if (compressed) {
-              compressedCount++
-              return { ...block, text: compressed }
-            }
-          }
-          return block
-        })
+        }
+        return block
+      })
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- hadCompression set in synchronous .map() callback
+      if (hadCompression) {
         result.push({ ...msg, content: compressedContent })
         continue
       }
@@ -797,10 +813,13 @@ export async function autoTruncateAnthropic(
   const cfg = { ...DEFAULT_AUTO_TRUNCATE_CONFIG, ...config }
   const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
 
+  // Compute fixed overhead tokens (system + tools) once — these don't change during truncation
+  const fixedTokens = await countFixedTokens(payload, model)
+
   // Measure original size
-  const payloadJson = JSON.stringify(payload)
-  const originalBytes = payloadJson.length
-  const originalTokens = await countTotalTokens(payload, model)
+  const originalBytes = JSON.stringify(payload).length
+  const originalMsgTokens = await countMessagesTokens(payload.messages, model)
+  const originalTokens = fixedTokens + originalMsgTokens
 
   // Check if compaction is needed
   if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
@@ -827,7 +846,8 @@ export async function autoTruncateAnthropic(
   if (thinkingStrippedCount > 0) {
     const strippedPayload = { ...payload, messages: workingMessages }
     const strippedBytes = JSON.stringify(strippedPayload).length
-    const strippedTokens = await countTotalTokens(strippedPayload, model)
+    const strippedMsgTokens = await countMessagesTokens(workingMessages, model)
+    const strippedTokens = fixedTokens + strippedMsgTokens
 
     if (strippedTokens <= tokenLimit && strippedBytes <= byteLimit) {
       let reason = "tokens"
@@ -867,7 +887,8 @@ export async function autoTruncateAnthropic(
     // Check if compression alone was enough
     const compressedPayload = { ...payload, messages: workingMessages }
     const compressedBytes = JSON.stringify(compressedPayload).length
-    const compressedTokens = await countTotalTokens(compressedPayload, model)
+    const compressedMsgTokens = await countMessagesTokens(workingMessages, model)
+    const compressedTokens = fixedTokens + compressedMsgTokens
 
     if (compressedTokens <= tokenLimit && compressedBytes <= byteLimit) {
       // Log single line summary
@@ -884,11 +905,13 @@ export async function autoTruncateAnthropic(
       // Add compression notice to system prompt
       const noticePayload = addCompressionNotice(compressedPayload, compressedCount)
 
+      // Estimate notice token overhead instead of full recount
+      const noticeTokenOverhead = Math.ceil(150 / 4) + 4 // ~150 chars in notice text
       return buildResult({
         payload: noticePayload,
         wasTruncated: true,
         originalTokens,
-        compactedTokens: await countTotalTokens(noticePayload, model),
+        compactedTokens: compressedTokens + noticeTokenOverhead,
         removedMessageCount: 0,
       })
     }
@@ -909,7 +932,8 @@ export async function autoTruncateAnthropic(
       // Check if compressing all was enough
       const allCompressedPayload = { ...payload, messages: workingMessages }
       const allCompressedBytes = JSON.stringify(allCompressedPayload).length
-      const allCompressedTokens = await countTotalTokens(allCompressedPayload, model)
+      const allCompressedMsgTokens = await countMessagesTokens(workingMessages, model)
+      const allCompressedTokens = fixedTokens + allCompressedMsgTokens
 
       if (allCompressedTokens <= tokenLimit && allCompressedBytes <= byteLimit) {
         let reason = "tokens"
@@ -924,11 +948,13 @@ export async function autoTruncateAnthropic(
 
         const noticePayload = addCompressionNotice(allCompressedPayload, compressedCount)
 
+        // Estimate notice token overhead instead of full recount
+        const noticeTokenOverhead = Math.ceil(150 / 4) + 4
         return buildResult({
           payload: noticePayload,
           wasTruncated: true,
           originalTokens,
-          compactedTokens: await countTotalTokens(noticePayload, model),
+          compactedTokens: allCompressedTokens + noticeTokenOverhead,
           removedMessageCount: 0,
         })
       }
@@ -942,13 +968,10 @@ export async function autoTruncateAnthropic(
   const systemBytes = payload.system ? JSON.stringify(payload.system).length : 0
   const systemTokens = await countSystemTokens(payload.system, model)
 
-  // Calculate overhead (use compressed messages size)
-  const messagesJson = JSON.stringify(workingMessages)
-  const workingBytes = JSON.stringify({
-    ...payload,
-    messages: workingMessages,
-  }).length
-  const payloadOverhead = workingBytes - messagesJson.length
+  // Calculate overhead: total payload bytes minus messages JSON minus system JSON
+  const messagesBytes = workingMessages.reduce((sum, msg) => sum + getMessageBytes(msg) + 1, 0) + 2 // brackets + commas
+  const workingBytes = JSON.stringify({ ...payload, messages: workingMessages }).length
+  const payloadOverhead = workingBytes - messagesBytes - systemBytes
 
   consola.debug(
     `[AutoTruncate:Anthropic] overhead=${bytesToKB(payloadOverhead)}KB, ` + `system=${bytesToKB(systemBytes)}KB`,
@@ -1031,9 +1054,13 @@ export async function autoTruncateAnthropic(
     messages: newMessages,
   }
 
-  // Verify the result
+  // Verify the result — only count messages (reuse cached fixed tokens)
   const newBytes = JSON.stringify(newPayload).length
-  const newTokens = await countTotalTokens(newPayload, model)
+  const newMsgTokens = await countMessagesTokens(newMessages, model)
+  // Re-count system tokens if system was modified (truncation context added)
+  const newSystemTokens = newSystem !== payload.system ? await countSystemTokens(newSystem, model) : systemTokens
+  const toolsTokens = fixedTokens - (await countSystemTokens(payload.system, model))
+  const newTokens = newSystemTokens + toolsTokens + newMsgTokens
 
   // Log single line summary
   let reason = "tokens"

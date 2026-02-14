@@ -9,7 +9,7 @@ import {
   type TextPart,
   type Tool as OpenAITool,
   type ToolCall,
-} from "~/services/copilot/create-chat-completions"
+} from "~/lib/openai/client"
 import {
   type ContentBlock,
   type AssistantMessage,

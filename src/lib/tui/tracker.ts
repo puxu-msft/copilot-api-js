@@ -67,7 +67,7 @@ export class TuiLogger {
     if (update.model !== undefined) {
       entry.model = update.model
       const multiplier = state.models?.data.find((m) => m.id === update.model)?.billing?.multiplier
-      if (multiplier !== null && multiplier !== undefined) entry.multiplier = multiplier
+      if (multiplier !== undefined) entry.multiplier = multiplier
     }
     if (update.status !== undefined) entry.status = update.status
     if (update.statusCode !== undefined) entry.statusCode = update.statusCode

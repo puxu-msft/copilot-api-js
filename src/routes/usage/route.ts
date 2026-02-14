@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 
 import { forwardError } from "~/lib/error"
-import { getCopilotUsage } from "~/services/github/get-copilot-usage"
+import { getCopilotUsage } from "~/lib/token/copilot-client"
 
 export const usageRoute = new Hono()
 

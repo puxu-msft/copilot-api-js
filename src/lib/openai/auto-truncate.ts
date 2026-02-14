@@ -14,19 +14,13 @@
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
-import type { ChatCompletionsPayload, Message } from "~/lib/openai/client"
 
 import { getTokenCount } from "~/lib/models/tokenizer"
-import {
-  ensureOpenAIStartsWithUser,
-  extractOpenAISystemMessages,
-  filterOpenAIOrphanedToolResults,
-  filterOpenAIOrphanedToolUse,
-} from "~/lib/openai/orphan-filter"
 import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
 
 import type { AutoTruncateConfig } from "../auto-truncate-common"
+import type { ChatCompletionsPayload, Message } from "./client"
 
 import {
   DEFAULT_AUTO_TRUNCATE_CONFIG,
@@ -35,6 +29,12 @@ import {
   getEffectiveByteLimitBytes,
   getEffectiveTokenLimit,
 } from "../auto-truncate-common"
+import {
+  ensureOpenAIStartsWithUser,
+  extractOpenAISystemMessages,
+  filterOpenAIOrphanedToolResults,
+  filterOpenAIOrphanedToolUse,
+} from "./orphan-filter"
 
 // ============================================================================
 // Result Types
@@ -534,7 +534,8 @@ async function tryCompressToolResults(
     )
 
     const noticePayload = addCompressionNotice(compressedPayload, compressedCount)
-    const noticeTokenCount = await getTokenCount(noticePayload, ctx.model)
+    // Estimate notice token overhead instead of full recount (~150 chars / 4 + framing)
+    const noticeTokenOverhead = Math.ceil(150 / 4) + 10
 
     return {
       workingMessages,
@@ -543,7 +544,7 @@ async function tryCompressToolResults(
         payload: noticePayload,
         wasTruncated: true,
         originalTokens: ctx.originalTokens,
-        compactedTokens: noticeTokenCount.input,
+        compactedTokens: compressedTokenCount.input + noticeTokenOverhead,
         removedMessageCount: 0,
       }),
     }
@@ -575,7 +576,8 @@ async function tryCompressToolResults(
       )
 
       const noticePayload = addCompressionNotice(allCompressedPayload, compressedCount)
-      const noticeTokenCount = await getTokenCount(noticePayload, ctx.model)
+      // Estimate notice token overhead instead of full recount
+      const noticeTokenOverhead = Math.ceil(150 / 4) + 10
 
       return {
         workingMessages,
@@ -584,7 +586,7 @@ async function tryCompressToolResults(
           payload: noticePayload,
           wasTruncated: true,
           originalTokens: ctx.originalTokens,
-          compactedTokens: noticeTokenCount.input,
+          compactedTokens: allCompressedTokenCount.input + noticeTokenOverhead,
           removedMessageCount: 0,
         }),
       }
@@ -606,19 +608,19 @@ async function truncateByMessageRemoval(
   // Extract system messages from working messages
   const { systemMessages, conversationMessages } = extractOpenAISystemMessages(workingMessages)
 
-  // Calculate overhead: everything except the messages array content
-  const messagesJson = JSON.stringify(workingMessages)
+  // Calculate overhead using cached message bytes instead of full JSON.stringify
+  // messagesBytes = sum of each message's JSON + 1 comma per message + 2 brackets
+
+  const messagesBytes = workingMessages.reduce((sum, m) => sum + getMessageBytes(m) + 1, 0) + 1 // brackets + commas
   const workingPayloadSize = JSON.stringify({
     ...ctx.payload,
     messages: workingMessages,
   }).length
-  const payloadOverhead = workingPayloadSize - messagesJson.length
+  const payloadOverhead = workingPayloadSize - messagesBytes
 
   // Calculate system message sizes
-  /* eslint-disable @typescript-eslint/restrict-plus-operands -- numeric reduce, ESLint misreads Message operand */
   const systemBytes = systemMessages.reduce((sum, m) => sum + getMessageBytes(m) + 1, 0)
   const systemTokens = systemMessages.reduce((sum, m) => sum + estimateMessageTokens(m), 0)
-  /* eslint-enable @typescript-eslint/restrict-plus-operands */
 
   consola.debug(
     `[AutoTruncate:OpenAI] overhead=${bytesToKB(payloadOverhead)}KB, `
@@ -682,7 +684,7 @@ async function truncateByMessageRemoval(
     // Append context to last system message
     const updatedSystem: Message = {
       ...lastSystem,
-      // eslint-disable-next-line @typescript-eslint/restrict-plus-operands -- string concat, ESLint misreads Message type
+
       content: typeof lastSystem.content === "string" ? lastSystem.content + truncationContext : lastSystem.content, // Can't append to array content
     }
     newSystemMessages = [...systemMessages.slice(0, lastSystemIdx), updatedSystem]

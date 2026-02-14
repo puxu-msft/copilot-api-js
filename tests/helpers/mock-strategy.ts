@@ -5,7 +5,7 @@
 import { mock } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
-import type { RetryAction, RetryContext, RetryStrategy } from "~/routes/shared/pipeline"
+import type { RetryAction, RetryContext, RetryStrategy } from "~/lib/request/pipeline"
 
 /**
  * Create a mock RetryStrategy with controllable behavior.

@@ -53,8 +53,9 @@ export function buildAnthropicStreamResult(
         }
       }
       default: {
-        consola.warn(`[recording] Unhandled content block type in stream result: ${block.type}`)
-        return { type: block.type as string }
+        const unknown = block as { type: string }
+        consola.warn(`[recording] Unhandled content block type in stream result: ${unknown.type}`)
+        return { type: unknown.type }
       }
     }
   })

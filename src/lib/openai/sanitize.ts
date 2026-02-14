@@ -7,9 +7,9 @@
 
 import consola from "consola"
 
-import type { ChatCompletionsPayload, Message } from "~/lib/openai/client"
-
 import { removeSystemReminderTags } from "~/lib/sanitize-system-reminder"
+
+import type { ChatCompletionsPayload, Message } from "./client"
 
 import {
   extractOpenAISystemMessages,

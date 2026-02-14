@@ -6,12 +6,12 @@
 
 import { describe, expect, spyOn, test } from "bun:test"
 
-import type { ResponseContext } from "~/routes/shared/tracking"
+import type { ResponseContext } from "~/lib/request/tracking"
 
 import { HTTPError } from "~/lib/error"
 import * as history from "~/lib/history"
+import { extractErrorContent, finalizeRequest } from "~/lib/request/tracking"
 import * as tui from "~/lib/tui"
-import { extractErrorContent, finalizeRequest } from "~/routes/shared/tracking"
 
 // Mock recordResponse and tuiLogger to avoid side effects
 const recordResponseSpy = spyOn(history, "recordResponse").mockImplementation(() => {})

@@ -11,11 +11,12 @@ import { describe, test, expect, beforeAll } from "bun:test"
 
 import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
 
+import { createAnthropicMessages } from "~/lib/anthropic/client"
+import { supportsDirectAnthropicApi } from "~/lib/anthropic/handlers"
 import { getModels } from "~/lib/models/client"
 import { createChatCompletions, type ChatCompletionsPayload, type ChatCompletionResponse } from "~/lib/openai/client"
 import { state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
-import { createAnthropicMessages, supportsDirectAnthropicApi } from "~/services/copilot/create-anthropic-messages"
 
 import { getE2EMode, getGitHubToken } from "./config"
 
@@ -198,12 +199,12 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
       const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
-      const supports = supportsDirectAnthropicApi(claudeModel)
+      const supports = supportsDirectAnthropicApi(claudeModel).supported
       expect(supports).toBe(true)
     })
 
     test("should NOT support direct API for GPT models", () => {
-      const supports = supportsDirectAnthropicApi("gpt-4o")
+      const supports = supportsDirectAnthropicApi("gpt-4o").supported
       expect(supports).toBe(false)
     })
 

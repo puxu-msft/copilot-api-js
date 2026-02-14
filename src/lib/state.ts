@@ -1,4 +1,4 @@
-import type { ModelsResponse } from "~/services/copilot/get-models"
+import type { ModelsResponse } from "~/lib/models/client"
 
 import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
 import type { CopilotTokenInfo, TokenInfo } from "./token/types"

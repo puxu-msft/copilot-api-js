@@ -1,10 +1,11 @@
 import consola from "consola"
 
 import { state } from "~/lib/state"
-import { getCopilotToken } from "~/services/github/get-copilot-token"
 
 import type { GitHubTokenManager } from "./github-token-manager"
 import type { CopilotTokenInfo } from "./types"
+
+import { getCopilotToken } from "./copilot-client"
 
 export interface CopilotTokenManagerOptions {
   /** GitHub token manager instance */

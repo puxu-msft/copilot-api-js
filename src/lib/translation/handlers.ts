@@ -34,15 +34,16 @@ import { buildAnthropicStreamResult } from "~/lib/request/recording"
 import { prependMarkerToResponse } from "~/lib/request/response"
 import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
 import { state } from "~/lib/state"
-import { buildMessageMapping } from "~/lib/translation/message-mapping"
-import { translateToAnthropic, translateToOpenAI, type ToolNameMapping } from "~/lib/translation/non-stream"
+import { tuiLogger } from "~/lib/tui"
+
+import { buildMessageMapping } from "./message-mapping"
+import { translateToAnthropic, translateToOpenAI, type ToolNameMapping } from "./non-stream"
 import {
   type StreamState,
   translateErrorToAnthropicErrorEvent,
   processTranslatedStream,
   sendTruncationMarkerEvents,
-} from "~/lib/translation/stream"
-import { tuiLogger } from "~/lib/tui"
+} from "./stream"
 
 // Handle completion using OpenAI translation path (legacy)
 export async function handleTranslatedCompletion(c: Context, anthropicPayload: MessagesPayload, ctx: ResponseContext) {

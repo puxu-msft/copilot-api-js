@@ -14,7 +14,7 @@ export type { CopilotTokenInfo, TokenInfo, TokenSource, TokenValidationResult } 
 import consola from "consola"
 
 import { state } from "~/lib/state"
-import { getGitHubUser } from "~/services/github/get-user"
+import { getGitHubUser } from "~/lib/token/github-client"
 
 import { CopilotTokenManager } from "./copilot-token-manager"
 import { GitHubTokenManager } from "./github-token-manager"

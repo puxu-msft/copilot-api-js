@@ -251,7 +251,7 @@ describe("collectSystemPrompt", () => {
     const promptFiles = files.filter((f) => f.startsWith("system_prompts_"))
     expect(promptFiles).toHaveLength(1)
 
-    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFiles[0])))
+    const content = JSON.parse((await fs.readFile(path.join(PATHS.APP_DIR, promptFiles[0]))).toString())
     expect(content.format).toBe("anthropic")
     expect(content.hash).toBeDefined()
     expect(content.timestamp).toBeDefined()
@@ -295,7 +295,7 @@ describe("collectSystemPrompt", () => {
 
     const files = await fs.readdir(PATHS.APP_DIR)
     const promptFile = files.find((f) => f.startsWith("system_prompts_"))!
-    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFile)))
+    const content = JSON.parse((await fs.readFile(path.join(PATHS.APP_DIR, promptFile))).toString())
     expect(content.format).toBe("anthropic")
     expect(content.raw).toEqual(blocks)
   })
@@ -312,7 +312,7 @@ describe("collectSystemPrompt", () => {
 
     const files = await fs.readdir(PATHS.APP_DIR)
     const promptFile = files.find((f) => f.startsWith("system_prompts_"))!
-    const content = JSON.parse(await fs.readFile(path.join(PATHS.APP_DIR, promptFile)))
+    const content = JSON.parse((await fs.readFile(path.join(PATHS.APP_DIR, promptFile))).toString())
     expect(content.format).toBe("openai")
     expect(content.raw).toEqual([{ role: "system", content: "system msg" }])
   })

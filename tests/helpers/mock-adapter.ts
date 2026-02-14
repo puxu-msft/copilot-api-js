@@ -4,7 +4,7 @@
 
 import { mock } from "bun:test"
 
-import type { FormatAdapter, SanitizeResult } from "~/routes/shared/pipeline"
+import type { FormatAdapter, SanitizeResult } from "~/lib/request/pipeline"
 
 /**
  * Create a mock FormatAdapter with controllable behavior.

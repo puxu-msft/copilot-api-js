@@ -7,7 +7,7 @@
 
 import consola from "consola"
 
-import type { Message, ToolCall } from "~/services/copilot/create-chat-completions"
+import type { Message, ToolCall } from "./client"
 
 /**
  * Get tool_call IDs from an OpenAI assistant message.

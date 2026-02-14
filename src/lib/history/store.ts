@@ -181,12 +181,20 @@ export const historyState: HistoryState = {
   maxEntries: 200,
 }
 
+/** O(1) lookup index for entries by ID */
+const entryIndex = new Map<string, HistoryEntry>()
+
+/** Track entry count per session to avoid O(n) filter during FIFO eviction */
+const sessionEntryCount = new Map<string, number>()
+
 export function initHistory(enabled: boolean, maxEntries: number): void {
   historyState.enabled = enabled
   historyState.maxEntries = maxEntries
   historyState.entries = []
   historyState.sessions = new Map()
   historyState.currentSessionId = enabled ? generateId() : ""
+  entryIndex.clear()
+  sessionEntryCount.clear()
 }
 
 export function isHistoryEnabled(): boolean {
@@ -264,7 +272,9 @@ export function recordRequest(endpoint: "anthropic" | "openai", request: RecordR
   }
 
   historyState.entries.push(entry)
+  entryIndex.set(entry.id, entry)
   session.requestCount++
+  sessionEntryCount.set(sessionId, (sessionEntryCount.get(sessionId) ?? 0) + 1)
 
   if (!session.models.includes(request.model)) {
     session.models.push(request.model)
@@ -285,11 +295,15 @@ export function recordRequest(endpoint: "anthropic" | "openai", request: RecordR
   // Enforce max entries limit (FIFO), skip if maxEntries is 0 (unlimited)
   while (historyState.maxEntries > 0 && historyState.entries.length > historyState.maxEntries) {
     const removed = historyState.entries.shift()
-    // Clean up empty sessions
+    // Clean up empty sessions using tracked count
     if (removed) {
-      const sessionEntries = historyState.entries.filter((e) => e.sessionId === removed.sessionId)
-      if (sessionEntries.length === 0) {
+      entryIndex.delete(removed.id)
+      const count = (sessionEntryCount.get(removed.sessionId) ?? 1) - 1
+      if (count <= 0) {
+        sessionEntryCount.delete(removed.sessionId)
         historyState.sessions.delete(removed.sessionId)
+      } else {
+        sessionEntryCount.set(removed.sessionId, count)
       }
     }
   }
@@ -318,7 +332,7 @@ export function recordResponse(id: string, response: RecordResponseParams, durat
     return
   }
 
-  const entry = historyState.entries.find((e) => e.id === id)
+  const entry = entryIndex.get(id) ?? historyState.entries.find((e) => e.id === id)
   if (entry) {
     entry.response = response
     entry.durationMs = durationMs
@@ -341,7 +355,7 @@ export function recordRewrites(id: string, rewrites: RewriteInfo): void {
     return
   }
 
-  const entry = historyState.entries.find((e) => e.id === id)
+  const entry = entryIndex.get(id) ?? historyState.entries.find((e) => e.id === id)
   if (entry) {
     entry.rewrites = rewrites
     notifyEntryUpdated(entry)
@@ -471,7 +485,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
 }
 
 export function getEntry(id: string): HistoryEntry | undefined {
-  return historyState.entries.find((e) => e.id === id)
+  return entryIndex.get(id) ?? historyState.entries.find((e) => e.id === id)
 }
 
 export function getSessions(): SessionResult {
@@ -495,6 +509,8 @@ export function clearHistory(): void {
   historyState.entries = []
   historyState.sessions = new Map()
   historyState.currentSessionId = generateId()
+  entryIndex.clear()
+  sessionEntryCount.clear()
 }
 
 export function deleteSession(sessionId: string): boolean {
@@ -502,8 +518,17 @@ export function deleteSession(sessionId: string): boolean {
     return false
   }
 
-  historyState.entries = historyState.entries.filter((e) => e.sessionId !== sessionId)
+  const remaining: Array<HistoryEntry> = []
+  for (const e of historyState.entries) {
+    if (e.sessionId === sessionId) {
+      entryIndex.delete(e.id)
+    } else {
+      remaining.push(e)
+    }
+  }
+  historyState.entries = remaining
   historyState.sessions.delete(sessionId)
+  sessionEntryCount.delete(sessionId)
 
   if (historyState.currentSessionId === sessionId) {
     historyState.currentSessionId = generateId()

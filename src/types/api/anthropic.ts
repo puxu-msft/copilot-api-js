@@ -163,8 +163,13 @@ export function isToolResultBlock(block: ContentBlockParam): block is ToolResult
   return (block as ToolResultBlockParam).type === "tool_result"
 }
 
-/** Type guard for WebSearchToolResultBlock */
+/** Type guard for server-side tool result blocks (web_search, tool_search, code_execution, etc.) */
 export function isServerToolResultBlock(block: ContentBlockParam | ContentBlock): block is WebSearchToolResultBlock {
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- type guard pattern requires cast
-  return (block as WebSearchToolResultBlock).type === "web_search_tool_result"
+  // Cast to string to allow matching beyond the SDK's narrow literal type union.
+  // Server tool results include: web_search_tool_result, tool_search_tool_result,
+  // code_execution_tool_result, etc. They all end with "_tool_result" and carry a tool_use_id.
+  // Exclude plain "tool_result" which is the standard user-side tool result.
+  const type = (block as unknown as Record<string, unknown>).type as string | undefined
+  if (!type) return false
+  return type !== "tool_result" && type.endsWith("_tool_result") && "tool_use_id" in block
 }

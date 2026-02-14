@@ -4,8 +4,8 @@ import consola from "consola"
 import { ensurePaths } from "./lib/config/paths"
 import { state } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
-import { getCopilotUsage, type QuotaDetail } from "./services/github/get-copilot-usage"
-import { getGitHubUser } from "./services/github/get-user"
+import { getCopilotUsage, type QuotaDetail } from "./lib/token/copilot-client"
+import { getGitHubUser } from "./lib/token/github-client"
 
 export const checkUsage = defineCommand({
   meta: {

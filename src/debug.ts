@@ -6,12 +6,11 @@ import fs from "node:fs/promises"
 import os from "node:os"
 
 import { ensurePaths, PATHS } from "./lib/config/paths"
+import { getModels } from "./lib/models/client"
 import { state } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
-import { getModels } from "./services/copilot/get-models"
-import { getCopilotToken } from "./services/github/get-copilot-token"
-import { getCopilotUsage } from "./services/github/get-copilot-usage"
-import { getGitHubUser } from "./services/github/get-user"
+import { getCopilotToken, getCopilotUsage } from "./lib/token/copilot-client"
+import { getGitHubUser } from "./lib/token/github-client"
 
 interface DebugInfo {
   version: string

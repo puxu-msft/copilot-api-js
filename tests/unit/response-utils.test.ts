@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test"
 
 import type { ChatCompletionResponse } from "~/types/api/openai"
 
-import { isNonStreaming } from "~/routes/shared"
+import { isNonStreaming } from "~/lib/request/response"
 
 describe("isNonStreaming", () => {
   test("returns true for response with choices property", () => {

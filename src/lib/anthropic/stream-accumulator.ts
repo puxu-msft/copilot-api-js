@@ -61,6 +61,8 @@ export interface AnthropicStreamAccumulator extends BaseStreamAccumulator {
   contentBlocks: Array<AccumulatedContentBlock>
   /** Copilot-specific: IP code citations collected from stream events */
   copilotAnnotations: Array<CopilotAnnotations>
+  /** Error received from stream, if any */
+  streamError?: { type: string; message: string }
 }
 
 /** Create a fresh Anthropic stream accumulator */
@@ -103,6 +105,22 @@ export function accumulateAnthropicStreamEvent(event: StreamEvent, acc: Anthropi
     }
     case "message_delta": {
       handleMessageDelta(event.delta as MessageDelta, event.usage as MessageDeltaUsage, acc)
+      break
+    }
+    case "message_stop": {
+      // Nothing to do — stop_reason is provided in message_delta, no state to clear
+      break
+    }
+    case "ping": {
+      // No accumulation needed for ping events, but could track last ping time if desired
+      break
+    }
+    case "error": {
+      const err = (event as { error?: { type?: string; message?: string } }).error
+      acc.streamError = {
+        type: err?.type ?? "unknown_error",
+        message: err?.message ?? "Unknown stream error",
+      }
       break
     }
     default: {

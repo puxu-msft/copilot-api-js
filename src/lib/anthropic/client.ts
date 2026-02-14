@@ -13,15 +13,11 @@ import { events } from "fetch-event-stream"
 
 import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
 
-import {
-  modelSupportsContextEditing,
-  modelSupportsInterleavedThinking,
-  modelSupportsToolSearch,
-} from "~/lib/anthropic/features"
 import { copilotBaseUrl, copilotHeaders } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
+import { modelSupportsContextEditing, modelSupportsInterleavedThinking, modelSupportsToolSearch } from "./features"
 import { convertServerToolsToCustom } from "./sanitize"
 
 /** Re-export the response type for consumers */

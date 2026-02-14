@@ -8,10 +8,10 @@
 import { describe, expect, mock, test } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
-import type { RetryStrategy } from "~/routes/shared/pipeline"
+import type { RetryStrategy } from "~/lib/request/pipeline"
 
 import { HTTPError } from "~/lib/error"
-import { executeRequestPipeline } from "~/routes/shared/pipeline"
+import { executeRequestPipeline } from "~/lib/request/pipeline"
 
 import { createMockAdapter } from "../helpers/mock-adapter"
 import { createMockStrategy, createRetryStrategy, createTypedStrategy } from "../helpers/mock-strategy"

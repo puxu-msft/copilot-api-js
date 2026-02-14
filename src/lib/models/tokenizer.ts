@@ -1,11 +1,6 @@
-import type {
-  ChatCompletionsPayload,
-  ContentPart,
-  Message,
-  Tool,
-  ToolCall,
-} from "~/services/copilot/create-chat-completions"
-import type { Model } from "~/services/copilot/get-models"
+import type { ChatCompletionsPayload, ContentPart, Message, Tool, ToolCall } from "~/lib/openai/client"
+
+import type { Model } from "./client"
 
 // ============================================================================
 // GPT Encoder Support
@@ -299,6 +294,7 @@ const calculateToolTokens = (tool: Tool, encoder: Encoder, constants: ReturnType
   }
   const line = `${fName}:${fDesc}`
   tokens += encoder.encode(line).length
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- typeof null === "object" in JavaScript
   if (typeof func.parameters === "object" && func.parameters !== null) {
     tokens += calculateParametersTokens(func.parameters, encoder, constants)
   }

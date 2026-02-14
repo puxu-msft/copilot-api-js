@@ -13,7 +13,6 @@ import { SSEStreamingApi, streamSSE } from "hono/streaming"
 import type { MessagesPayload, StreamEvent } from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
-import { createAnthropicMessages, type AnthropicMessageResponse } from "~/lib/anthropic/client"
 import { awaitApproval } from "~/lib/approval"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate-common"
 import { processAnthropicSystem } from "~/lib/config/system-prompt"
@@ -37,6 +36,7 @@ import { tuiLogger } from "~/lib/tui"
 
 import { handleTranslatedCompletion } from "../translation/handlers"
 import { type AnthropicAutoTruncateResult, autoTruncateAnthropic } from "./auto-truncate"
+import { createAnthropicMessages, type AnthropicMessageResponse } from "./client"
 import { sanitizeAnthropicMessages, type SanitizationStats } from "./sanitize"
 import {
   type AnthropicStreamAccumulator,
@@ -69,7 +69,7 @@ export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision 
   }
 
   // Validate that the model supports the /v1/messages endpoint
-  if (model?.supported_endpoints && !model.supported_endpoints.includes("/v1/messages")) {
+  if (model.supported_endpoints && !model.supported_endpoints.includes("/v1/messages")) {
     return { supported: false, reason: "model does not support /v1/messages endpoint" }
   }
 

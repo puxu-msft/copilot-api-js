@@ -1,5 +1,5 @@
 import { state } from "~/lib/state"
-import { getGitHubUser } from "~/services/github/get-user"
+import { getGitHubUser } from "~/lib/token/github-client"
 
 import type { TokenInfo, TokenValidationResult } from "../types"
 

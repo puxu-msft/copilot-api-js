@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import type { EmbeddingRequest } from "~/services/copilot/create-embeddings"
+import type { EmbeddingRequest } from "~/lib/openai/embeddings"
 
 describe("EmbeddingRequest type", () => {
   test("should accept encoding_format: float", () => {

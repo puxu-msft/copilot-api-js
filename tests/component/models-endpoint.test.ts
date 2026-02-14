@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
-import type { Model } from "~/services/copilot/get-models"
+import type { Model } from "~/lib/models/client"
 
 import { state } from "~/lib/state"
 

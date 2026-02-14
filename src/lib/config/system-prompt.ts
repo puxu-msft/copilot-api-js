@@ -15,8 +15,9 @@ import path from "node:path"
 import type { TextBlockParam } from "~/types/api/anthropic"
 import type { ContentPart, Message } from "~/types/api/openai"
 
-import { PATHS } from "~/lib/config/paths"
 import { state } from "~/lib/state"
+
+import { PATHS } from "./paths"
 
 // ============================================================================
 // Types

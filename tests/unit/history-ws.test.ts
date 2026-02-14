@@ -367,7 +367,7 @@ describe("concurrent operations", () => {
     notifyEntryAdded(createMockEntry())
     for (let i = 1; i < 10; i += 2) {
       const msgs = getSentMessages(clients[i])
-      expect(msgs.at(-1).type).toBe("entry_added")
+      expect(msgs.at(-1)!.type).toBe("entry_added")
     }
   })
 })
