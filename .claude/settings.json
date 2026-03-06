@@ -34,6 +34,8 @@
       "mcp__plugin_serena_serena__think_about_whether_you_are_done",
       "mcp__plugin_serena_serena__write_memory",
       "Read",
+      "Read(//home/xp/src/copilot-api-js/**)",
+      "Read(//home/xp/src/ghc-api-proxy-py/**)",
       "WebFetch",
       "WebSearch"
     ],

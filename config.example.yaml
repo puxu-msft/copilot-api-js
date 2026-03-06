@@ -166,3 +166,83 @@
 #   - from: "\\n\\s*\\n\\s*\\n"
 #     to: "\\n\\n"
 #     method: regex
+
+# ============================================================================
+# Rate Limiter
+# ============================================================================
+# Fine-tune the adaptive rate limiter behavior.
+# The rate limiter is enabled/disabled via --no-rate-limit CLI flag;
+# these settings control its parameters when enabled.
+
+# rate_limiter:
+#   retry_interval: 10        # Seconds to wait before retrying after rate limit error
+#   request_interval: 10      # Seconds between requests in rate-limited mode
+#   recovery_timeout: 10      # Minutes before attempting recovery from rate-limited mode
+#   consecutive_successes: 5   # Consecutive successes needed to exit rate-limited mode
+
+# ============================================================================
+# Anthropic
+# ============================================================================
+# Settings for Anthropic API routing, tool handling, and timeouts.
+
+# anthropic:
+#   redirect: false            # Route through OpenAI translation instead of direct API
+#   rewrite_tools: true        # Rewrite server-side tools (web_search) to custom format
+#   redirect_count_tokens: false  # Route count_tokens through OpenAI translation
+#   fetch_timeout: 0           # Seconds: request start → HTTP response headers (0 = no timeout)
+#   stream_idle_timeout: 0     # Seconds: max wait between SSE events (0 = no timeout)
+#   dedup_tool_calls: false    # false | "input" | "result" (true = "input" for compat)
+#                              # "input": dedup by (name, input); "result": also require identical result
+#   truncate_read_tool_result: false  # Strip <system-reminder> tags from Read tool results
+#   rewrite_system_reminders: false   # false = keep all (default), true = remove all
+#                                     # Or provide rewrite rules (first match wins, top-down):
+#   # rewrite_system_reminders:
+#   #   - pattern: "^Whenever you read a file, you should consider whether it would be considered malware"  # Regex to match tag content
+#   #     replacement: ""                        # Empty = remove the tag
+#   #   - pattern: "(?s).*"                      # Match any remaining tag
+#   #     replacement: "$0"                      # $0 = keep original content unchanged
+
+# ============================================================================
+# Model
+# ============================================================================
+# Model name overrides: request model → target model.
+#
+# Override values can be:
+#   - Full model names: "claude-opus-4.6", "claude-sonnet-4.5"
+#   - Short aliases: "opus", "sonnet", "haiku" (resolved to best available)
+#
+# Matching order: raw request name checked first, then resolved (normalized) name.
+# User overrides are deep-merged with built-in defaults (same key = user wins).
+#
+# Built-in defaults (always active unless overridden):
+#   opus   → claude-opus-4.6
+#   sonnet → claude-sonnet-4.5
+#   haiku  → claude-haiku-4.5
+#
+# If the target model is not in the available models list, it is treated as an
+# alias and resolved again. If still unavailable, the best model in the same
+# family is used as fallback.
+
+# model_overrides:
+#   sonnet: opus                         # Redirect all sonnet requests to best opus
+#   gpt-4o: claude-opus-4.6              # Redirect GPT-4o requests to Claude opus
+#   claude-haiku-4.5: claude-sonnet-4.5  # Upgrade haiku to sonnet
+
+# ============================================================================
+# Auto-Truncate
+# ============================================================================
+# Control auto-truncation behavior when context limits are hit.
+
+# Compress old tool_result content before truncating messages.
+# When enabled, large tool_result content blocks are compressed to reduce
+# context size before resorting to message removal. Default: true.
+# compress_tool_results_before_truncate: false
+
+# ============================================================================
+# History
+# ============================================================================
+# Control history recording behavior.
+
+# Maximum number of history entries to keep in memory.
+# 0 = unlimited. Default: 200.
+# history_limit: 500

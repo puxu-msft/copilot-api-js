@@ -2,13 +2,11 @@
  * Unified model name resolution and normalization.
  *
  * Consolidates model name handling from:
- * - non-stream-translation.ts: MODEL_PREFERENCE, findPreferredModel, translateModelName
+ * - non-stream-translation.ts: MODEL_PREFERENCE, findPreferredModel, resolveModelName
  * - anthropic/features.ts: normalizeModelId (renamed to normalizeForMatching)
  */
 
-import consola from "consola"
-
-import { state } from "~/lib/state"
+import { DEFAULT_MODEL_OVERRIDES, state } from "~/lib/state"
 
 // ============================================================================
 // Types
@@ -100,12 +98,8 @@ export function findPreferredModel(family: string): string {
   return preference[0]
 }
 
-export interface ResolveModelOptions {
-  redirectSonnetToOpus?: boolean
-}
-
-/** Known model modifier suffixes (e.g., "-fast" for fast output mode). */
-const KNOWN_MODIFIERS = ["-fast"]
+/** Known model modifier suffixes (e.g., "-fast" for fast output mode, "-1m" for 1M context). */
+const KNOWN_MODIFIERS = ["-fast", "-1m"]
 
 /**
  * Extract known modifier suffix from a model name.
@@ -122,21 +116,121 @@ function extractModifierSuffix(model: string): { base: string; suffix: string } 
 }
 
 /**
- * Resolve a model name to its canonical form.
+ * Normalize bracket notation to hyphen suffix.
+ * Claude Code CLI sends model keys like "opus[1m]" or "claude-opus-4.6[1m]".
+ * This converts them to the standard hyphen form: "opus-1m", "claude-opus-4.6-1m".
+ */
+function normalizeBracketNotation(model: string): string {
+  const match = model.match(/^(.+)\[([^\]]+)\]$/)
+  if (!match) return model
+  return `${match[1]}-${match[2].toLowerCase()}`
+}
+
+/**
+ * Resolve a model name to its canonical form, then apply overrides.
+ *
+ * Override matching order:
+ * 1. Check the raw (original) model name against state.modelOverrides
+ * 2. Resolve via alias/normalization (resolveModelNameCore)
+ * 3. If resolved name differs from raw, check resolved name against overrides
+ * 4. Check if the model's family (opus/sonnet/haiku) has an override
+ *
+ * This is the main entry point for route handlers.
+ */
+export function resolveModelName(model: string): string {
+  // 0. Normalize bracket notation: "opus[1m]" → "opus-1m"
+  model = normalizeBracketNotation(model)
+
+  // 1. Check raw model name against overrides first
+  const rawOverride = state.modelOverrides[model]
+  if (rawOverride) {
+    return resolveOverrideTarget(model, rawOverride)
+  }
+
+  // 2. Normal alias/normalization resolution
+  const resolved = resolveModelNameCore(model)
+
+  // 3. If resolved name is different, check it against overrides too
+  if (resolved !== model) {
+    const resolvedOverride = state.modelOverrides[resolved]
+    if (resolvedOverride) {
+      return resolveOverrideTarget(resolved, resolvedOverride)
+    }
+  }
+
+  // 4. Check if the model's family has a user-customized override
+  //    Only applies when the family override differs from the built-in default
+  //    (default overrides are just alias mappings, not redirections)
+  //    e.g., user sets opus → claude-opus-4.6-1m, then claude-opus-4-6 should also redirect
+  const family = getModelFamily(resolved)
+  if (family) {
+    const familyOverride = state.modelOverrides[family]
+    if (familyOverride && familyOverride !== DEFAULT_MODEL_OVERRIDES[family]) {
+      const familyResolved = resolveOverrideTarget(family, familyOverride)
+      if (familyResolved !== resolved) {
+        return familyResolved
+      }
+    }
+  }
+
+  return resolved
+}
+
+/**
+ * Resolve override target: if target is directly available, use it;
+ * otherwise check for chained overrides, then treat as alias.
+ * If still unavailable, fall back to the best available model in the same family.
+ *
+ * Uses `seen` set to prevent circular override chains.
+ */
+function resolveOverrideTarget(source: string, target: string, seen?: Set<string>): string {
+  const availableIds = state.models?.data.map((m) => m.id)
+  if (!availableIds || availableIds.length === 0 || availableIds.includes(target)) {
+    return target
+  }
+
+  // Check if target itself has an override (chained overrides: sonnet → opus → claude-opus-4.6-1m)
+  const visited = seen ?? new Set([source])
+  const targetOverride = state.modelOverrides[target]
+  if (targetOverride && !visited.has(target)) {
+    visited.add(target)
+    return resolveOverrideTarget(target, targetOverride, visited)
+  }
+
+  // Target not directly available — might be an alias, resolve it
+  const resolved = resolveModelNameCore(target)
+  if (resolved !== target) {
+    return resolved
+  }
+
+  // Still not resolved — check if target belongs to a known family and find best available
+  const family = getModelFamily(target)
+  if (family) {
+    const preferred = findPreferredModel(family)
+    if (preferred !== target) {
+      return preferred
+    }
+  }
+
+  // Can't resolve further — use target as-is
+  return target
+}
+
+/**
+ * Core model name resolution (without overrides).
  *
  * Handles:
  * 1. Modifier suffixes: "claude-opus-4-6-fast" → "claude-opus-4.6-fast"
  * 2. Short aliases: "opus" → best available opus
  * 3. Hyphenated versions: "claude-opus-4-6" → "claude-opus-4.6"
  * 4. Date suffixes: "claude-opus-4-20250514" → best opus
- * 5. Sonnet → Opus redirect (when enabled)
  */
-export function resolveModelName(model: string, options?: ResolveModelOptions): string {
+function resolveModelNameCore(model: string): string {
   // Extract modifier suffix (e.g., "-fast") before resolution
   const { base, suffix } = extractModifierSuffix(model)
 
   // Resolve the base model name
-  const resolvedBase = resolveBase(base, options)
+  const resolvedBase = resolveBase(base)
 
   // Re-attach suffix and validate availability
   if (suffix) {
@@ -153,10 +247,10 @@ export function resolveModelName(model: string, options?: ResolveModelOptions): 
 }
 
 /** Resolve a base model name (without modifier suffix) to its canonical form. */
-function resolveBase(model: string, options?: ResolveModelOptions): string {
+function resolveBase(model: string): string {
   // 1. Short alias: "opus" → best opus
   if (model in MODEL_PREFERENCE) {
-    return applyRedirect(findPreferredModel(model), options)
+    return findPreferredModel(model)
   }
 
   // 2. Hyphenated: claude-opus-4-6 or claude-opus-4-6-20250514 → claude-opus-4.6
@@ -167,7 +261,7 @@ function resolveBase(model: string, options?: ResolveModelOptions): string {
     const dotModel = `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}`
     const availableIds = state.models?.data.map((m) => m.id)
     if (!availableIds || availableIds.length === 0 || availableIds.includes(dotModel)) {
-      return applyRedirect(dotModel, options)
+      return dotModel
     }
   }
 
@@ -178,30 +272,10 @@ function resolveBase(model: string, options?: ResolveModelOptions): string {
     const family = dateOnlyMatch[2]
     const availableIds = state.models?.data.map((m) => m.id)
     if (availableIds?.includes(baseModel)) {
-      return applyRedirect(baseModel, options)
+      return baseModel
     }
-    return applyRedirect(findPreferredModel(family), options)
+    return findPreferredModel(family)
   }
 
-  return applyRedirect(model, options)
-}
-
-/** Apply sonnet → opus redirect if enabled. */
-function applyRedirect(model: string, options?: ResolveModelOptions): string {
-  if (options?.redirectSonnetToOpus && isSonnetModel(model)) {
-    const opus = findPreferredModel("opus")
-    consola.info(`[Model] Redirecting ${model} → ${opus} (redirect-sonnet-to-opus)`)
-    return opus
-  }
   return model
-}
-
-/**
- * Convenience wrapper that reads redirect flags from global state.
- * This is the main entry point for route handlers.
- */
-export function translateModelName(model: string): string {
-  return resolveModelName(model, {
-    redirectSonnetToOpus: state.redirectSonnetToOpus,
-  })
 }

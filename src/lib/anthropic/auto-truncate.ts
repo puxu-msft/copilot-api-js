@@ -22,7 +22,7 @@ import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
 import { isServerToolResultBlock, isToolResultBlock } from "~/types/api/anthropic"
 
-import type { AutoTruncateConfig } from "../auto-truncate-common"
+import type { AutoTruncateConfig } from "../auto-truncate"
 
 import {
   DEFAULT_AUTO_TRUNCATE_CONFIG,
@@ -31,7 +31,7 @@ import {
   compressToolResultContent,
   getEffectiveByteLimitBytes,
   getEffectiveTokenLimit,
-} from "../auto-truncate-common"
+} from "../auto-truncate"
 import { processToolBlocks } from "./sanitize"
 
 // ============================================================================
@@ -874,7 +874,7 @@ export async function autoTruncateAnthropic(
   // Compress tool_results in messages that are beyond the preserve threshold
   let compressedCount = 0
 
-  if (state.compressToolResults) {
+  if (state.compressToolResultsBeforeTruncate) {
     const compressionResult = smartCompressToolResults(
       workingMessages,
       tokenLimit,

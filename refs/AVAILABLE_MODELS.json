@@ -3,6 +3,68 @@
     {
       "billing": {
         "is_premium": true,
+        "multiplier": 6,
+        "restricted_to": [
+          "pro",
+          "edu",
+          "pro_plus",
+          "business",
+          "enterprise"
+        ]
+      },
+      "capabilities": {
+        "family": "claude-opus-4.6-1m",
+        "limits": {
+          "max_context_window_tokens": 1000000,
+          "max_non_streaming_output_tokens": 16000,
+          "max_output_tokens": 64000,
+          "max_prompt_tokens": 936000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "adaptive_thinking": true,
+          "max_thinking_budget": 32000,
+          "min_thinking_budget": 1024,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "claude-opus-4.6-1m",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "name": "Claude Opus 4.6 (1M context)",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest Claude Opus 4.6 (1M context) model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.6 (1M context)](https://gh.io/copilot-claude-opus)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/v1/messages",
+        "/chat/completions"
+      ],
+      "vendor": "Anthropic",
+      "version": "claude-opus-4.6-1m"
+    },
+    {
+      "billing": {
+        "is_premium": true,
         "multiplier": 9,
         "restricted_to": [
           "pro_plus",
@@ -65,6 +127,7 @@
         "multiplier": 3,
         "restricted_to": [
           "pro",
+          "edu",
           "pro_plus",
           "business",
           "enterprise"
@@ -126,6 +189,7 @@
         "multiplier": 1,
         "restricted_to": [
           "pro",
+          "edu",
           "pro_plus",
           "business",
           "enterprise"
@@ -176,6 +240,64 @@
       ],
       "vendor": "OpenAI",
       "version": "gpt-5.2-codex"
+    },
+    {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro",
+          "edu",
+          "pro_plus",
+          "business",
+          "enterprise"
+        ]
+      },
+      "capabilities": {
+        "family": "gpt-5.3-codex",
+        "limits": {
+          "max_context_window_tokens": 400000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 272000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-5.3-codex",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "name": "GPT-5.3-Codex",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest GPT-5.3-Codex model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.3-Codex](https://gh.io/copilot-openai)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-5.3-codex"
     },
     {
       "billing": {
@@ -238,7 +360,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -401,7 +524,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -460,7 +584,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -518,7 +643,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -576,7 +702,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -634,7 +761,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -743,7 +871,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -769,7 +898,8 @@
           "parallel_tool_calls": true,
           "streaming": true,
           "tool_calls": true,
-          "vision": true
+          "vision": true,
+          "web_search": true
         },
         "tokenizer": "o200k_base",
         "type": "chat"
@@ -802,7 +932,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -829,7 +960,8 @@
           "parallel_tool_calls": true,
           "streaming": true,
           "tool_calls": true,
-          "vision": true
+          "vision": true,
+          "web_search": true
         },
         "tokenizer": "o200k_base",
         "type": "chat"
@@ -862,7 +994,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -889,7 +1022,8 @@
           "parallel_tool_calls": true,
           "streaming": true,
           "tool_calls": true,
-          "vision": true
+          "vision": true,
+          "web_search": true
         },
         "tokenizer": "o200k_base",
         "type": "chat"
@@ -944,7 +1078,8 @@
           "max_thinking_budget": 32000,
           "min_thinking_budget": 1024,
           "streaming": true,
-          "vision": true
+          "vision": true,
+          "web_search": true
         },
         "tokenizer": "o200k_base",
         "type": "chat"
@@ -997,7 +1132,8 @@
           "parallel_tool_calls": true,
           "streaming": true,
           "tool_calls": true,
-          "vision": true
+          "vision": true,
+          "web_search": true
         },
         "tokenizer": "o200k_base",
         "type": "chat"
@@ -1030,7 +1166,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -1087,7 +1224,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -1144,7 +1282,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -1248,7 +1387,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {
@@ -1574,7 +1714,8 @@
           "pro_plus",
           "max",
           "business",
-          "enterprise"
+          "enterprise",
+          "edu"
         ]
       },
       "capabilities": {

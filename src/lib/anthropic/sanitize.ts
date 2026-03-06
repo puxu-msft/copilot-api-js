@@ -203,6 +203,18 @@ function filterEmptyAnthropicTextBlocks(messages: Array<MessageParam>): Array<Me
   return messages.map((msg) => {
     if (typeof msg.content === "string") return msg
 
+    // Never modify assistant messages that contain thinking/redacted_thinking blocks.
+    // The API validates thinking block signatures against the original response —
+    // even removing an adjacent empty text block causes the content array to change,
+    // which can trigger "thinking blocks cannot be modified" errors after
+    // context_management truncation changes which message becomes the "latest".
+    if (
+      msg.role === "assistant"
+      && msg.content.some((b) => b.type === "thinking" || b.type === "redacted_thinking")
+    ) {
+      return msg
+    }
+
     const filtered = msg.content.filter((block) => {
       if (block.type === "text" && "text" in block) {
         return block.text.trim() !== ""
@@ -314,8 +326,14 @@ export function processToolBlocks(
     }
 
     if (msg.role === "assistant") {
-      // Process assistant messages: fix tool names and filter orphaned tool_use/server_tool_use
+      // Process assistant messages: fix tool names and filter orphaned tool_use/server_tool_use.
+      // IMPORTANT: Only create a new message object when content is actually modified.
+      // Assistant messages may contain thinking/redacted_thinking blocks with signatures
+      // that the API validates. Creating a new object (even with identical content) can
+      // trigger "thinking blocks cannot be modified" errors after context_management
+      // truncation changes which message the API considers the "latest assistant message".
       const newContent: Array<ContentBlock> = []
+      let modified = false
 
       for (const block of msg.content) {
         if (block.type === "tool_use") {
@@ -323,6 +341,7 @@ export function processToolBlocks(
           if (!toolResultIds.has(block.id)) {
             orphanedToolUseCount++
             filteredToolUseIds.add(block.id)
+            modified = true
             continue // Skip orphaned tool_use
           }
 
@@ -332,6 +351,7 @@ export function processToolBlocks(
           const needsInputFix = typeof block.input === "string"
 
           if (needsNameFix || needsInputFix) {
+            modified = true
             const fixed = { ...block } as typeof block
             if (needsNameFix) {
               fixedNameCount++
@@ -349,10 +369,12 @@ export function processToolBlocks(
           if (!toolResultIds.has(block.id)) {
             orphanedToolUseCount++
             filteredToolUseIds.add(block.id)
+            modified = true
             continue // Skip orphaned server_tool_use
           }
           // Ensure input is an object (clients may send it as a JSON string from stream accumulation)
           if (typeof block.input === "string") {
+            modified = true
             newContent.push({ ...block, input: parseStringifiedInput(block.input) })
           } else {
             newContent.push(block)
@@ -365,6 +387,7 @@ export function processToolBlocks(
             && (!toolUseIds.has(block.tool_use_id) || filteredToolUseIds.has(block.tool_use_id))
           ) {
             orphanedToolResultCount++
+            modified = true
             continue // Skip orphaned server tool result
           }
           newContent.push(block as ContentBlock)
@@ -374,7 +397,9 @@ export function processToolBlocks(
       // Skip message if all content was removed
       if (newContent.length === 0) continue
 
-      result.push({ ...msg, content: newContent })
+      // Preserve original message object when no modifications were made — this is
+      // critical for messages with thinking blocks whose signatures must not change
+      result.push(modified ? { ...msg, content: newContent } : msg)
     } else {
       // Process user messages: filter orphaned tool_result/web_search_tool_result
       const newContent: Array<ContentBlockParam> = []

@@ -11,7 +11,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
-import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
+import type { MessageParam, MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
 
 import { copilotBaseUrl, copilotHeaders } from "~/lib/config/api"
 import { HTTPError } from "~/lib/error"
@@ -254,6 +254,33 @@ function ensureInputSchema(tool: Tool): Tool {
 }
 
 /**
+ * Collect tool names referenced in message history via tool_use blocks.
+ *
+ * When tool_search is enabled, deferred tools must be "loaded" via
+ * tool_search_tool_regex before they can be called. But in multi-turn
+ * conversations, message history may already contain tool_use blocks
+ * referencing tools that were loaded in earlier turns. If we mark those
+ * tools as deferred again, the API rejects the request because the
+ * historical tool_use references a tool that isn't "loaded" in this turn.
+ *
+ * By collecting all tool names from history, we ensure those tools remain
+ * non-deferred (immediately available) — preserving the tool_use/tool_result
+ * pairing that the API requires.
+ */
+function collectHistoryToolNames(messages: Array<MessageParam>): Set<string> {
+  const names = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role !== "assistant" || typeof msg.content === "string") continue
+    for (const block of msg.content) {
+      if (block.type === "tool_use") {
+        names.add(block.name)
+      }
+    }
+  }
+  return names
+}
+
+/**
  * Process tools through the full pipeline:
  * 1. Inject missing Claude Code official tool stubs
  * 2. If model supports tool search: prepend search tool, mark non-core as deferred
@@ -261,9 +288,13 @@ function ensureInputSchema(tool: Tool): Tool {
  *
  * Returns a new array — never mutates the input.
  */
-function processToolPipeline(tools: Array<Tool>, modelId: string): Array<Tool> {
+function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Array<MessageParam>): Array<Tool> {
   const existingNames = new Set(tools.map((t) => t.name))
   const toolSearchEnabled = modelSupportsToolSearch(modelId)
+
+  // Collect tool names already referenced in message history — these must
+  // stay non-deferred to avoid "Tool reference not found" errors
+  const historyToolNames = toolSearchEnabled ? collectHistoryToolNames(messages) : undefined
 
   const result: Array<Tool> = []
 
@@ -281,11 +312,16 @@ function processToolPipeline(tools: Array<Tool>, modelId: string): Array<Tool> {
     // Tools with a `type` field are API-defined (tool_search, memory, web_search) —
     // schema is managed server-side, don't touch input_schema
     const normalized = tool.type ? tool : ensureInputSchema(tool)
-    result.push(
-      toolSearchEnabled && !NON_DEFERRED_TOOL_NAMES.has(tool.name) ?
-        { ...normalized, defer_loading: true }
-      : normalized,
-    )
+
+    // Respect explicit defer_loading: false from retry strategies (deferred-tool-retry
+    // sets this when a tool was rejected as "not found in available tools")
+    const shouldDefer =
+      toolSearchEnabled
+      && tool.defer_loading !== false
+      && !NON_DEFERRED_TOOL_NAMES.has(tool.name)
+      && !historyToolNames?.has(tool.name)
+
+    result.push(shouldDefer ? { ...normalized, defer_loading: true } : normalized)
   }
 
   // Inject stubs for any missing Claude Code official tools
@@ -298,6 +334,25 @@ function processToolPipeline(tools: Array<Tool>, modelId: string): Array<Tool> {
       }
       // Official tools are always non-deferred, no defer_loading needed
       result.push(stub)
+    }
+  }
+
+  // Inject minimal stubs for tools referenced in message history but missing
+  // from the tools array. This happens when MCP tools were available in earlier
+  // turns but not included in the current request. Without these stubs, the API
+  // rejects the request because the historical tool_use references a tool that
+  // doesn't exist in the tools list at all.
+  if (historyToolNames) {
+    const allResultNames = new Set(result.map((t) => t.name))
+    for (const name of historyToolNames) {
+      if (!allResultNames.has(name)) {
+        consola.debug(`[ToolPipeline] Injecting stub for history-referenced tool: ${name}`)
+        result.push({
+          name,
+          description: `Stub for tool referenced in conversation history`,
+          input_schema: EMPTY_INPUT_SCHEMA,
+        })
+      }
     }
   }
 
@@ -354,15 +409,22 @@ export async function createAnthropicMessages(
 
   // Process tools through pipeline
   if (tools && tools.length > 0) {
-    wire.tools = processToolPipeline(tools, model)
+    wire.tools = processToolPipeline(tools, model, messages)
   }
 
   consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
+
+  // Apply fetch timeout if configured (connection + response headers)
+  const fetchSignal =
+    state.anthropicFetchTimeout > 0 ?
+      AbortSignal.timeout(state.anthropicFetchTimeout * 1000)
+    : undefined
 
   const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
     method: "POST",
     headers,
     body: JSON.stringify(wire),
+    signal: fetchSignal,
   })
 
   if (!response.ok) {
