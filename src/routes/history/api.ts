@@ -5,12 +5,13 @@ import {
   deleteSession,
   exportHistory,
   getEntry,
-  getHistory,
+  getHistorySummaries,
   getSession,
   getSessionEntries,
   getSessions,
   getStats,
   isHistoryEnabled,
+  type EndpointType,
   type QueryOptions,
 } from "~/lib/history"
 
@@ -24,7 +25,7 @@ export function handleGetEntries(c: Context) {
     page: query.page ? Number.parseInt(query.page, 10) : undefined,
     limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
     model: query.model || undefined,
-    endpoint: query.endpoint as "anthropic" | "openai" | undefined,
+    endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,
     from: query.from ? Number.parseInt(query.from, 10) : undefined,
     to: query.to ? Number.parseInt(query.to, 10) : undefined,
@@ -32,7 +33,7 @@ export function handleGetEntries(c: Context) {
     sessionId: query.sessionId || undefined,
   }
 
-  const result = getHistory(options)
+  const result = getHistorySummaries(options)
   return c.json(result)
 }
 
@@ -110,12 +111,16 @@ export function handleGetSession(c: Context) {
     return c.json({ error: "Session not found" }, 404)
   }
 
-  // Include entries in the session response
-  const entries = getSessionEntries(id)
+  // Include paginated entries in the session response
+  const query = c.req.query()
+  const result = getSessionEntries(id, {
+    page: query.page ? Number.parseInt(query.page, 10) : undefined,
+    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+  })
 
   return c.json({
     ...session,
-    entries,
+    ...result,
   })
 }
 

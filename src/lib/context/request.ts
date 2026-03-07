@@ -7,9 +7,11 @@
  */
 
 import type { ApiError } from "~/lib/error"
+import type { EndpointType, PreprocessInfo, RewriteInfo, SanitizationInfo, SseEventRecord } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 
 import { getErrorMessage } from "~/lib/error"
+import { normalizeModelId } from "~/lib/models/resolver"
 
 // ─── Request State Machine ───
 
@@ -30,7 +32,7 @@ export interface OriginalRequest {
   messages: Array<unknown>
   stream: boolean
   tools?: Array<unknown>
-  system?: string
+  system?: unknown
   payload: unknown
 }
 
@@ -40,7 +42,7 @@ export interface EffectiveRequest {
   resolvedModel: Model | undefined
   messages: Array<unknown>
   payload: unknown
-  format: "anthropic" | "openai"
+  format: EndpointType
 }
 
 /** 3. Response data: upstream API response (per attempt) */
@@ -52,11 +54,16 @@ export interface ResponseData {
     output_tokens: number
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
+    output_tokens_details?: { reasoning_tokens: number }
   }
   content: unknown
   stop_reason?: string
   toolCalls?: Array<unknown>
   error?: string
+  /** HTTP status code from upstream (only on error) */
+  status?: number
+  /** Raw response body from upstream (only on error, for post-mortem debugging) */
+  responseText?: string
 }
 
 // ─── Attempt ───
@@ -82,6 +89,10 @@ export interface Attempt {
 export interface SanitizationState {
   removedCount: number
   systemReminderRemovals: number
+  orphanedToolUseCount?: number
+  orphanedToolResultCount?: number
+  fixedNameCount?: number
+  emptyTextBlocksRemoved?: number
 }
 
 export interface TruncationState {
@@ -92,24 +103,12 @@ export interface TruncationState {
   processingTimeMs: number
 }
 
-export interface TranslationState {
-  direction: "anthropic-to-openai" | "openai-to-anthropic"
-  toolNameMapping?: unknown
-  originMap?: Array<number>
-}
-
-export interface RewriteMapping {
-  originalMessages: Array<unknown>
-  rewrittenMessages: Array<unknown>
-  messageMapping: Array<number>
-}
-
 // ─── History Entry Data ───
 
 /** Serialized form of a completed request (decoupled from history store) */
 export interface HistoryEntryData {
   id: string
-  endpoint: "anthropic" | "openai"
+  endpoint: EndpointType
   timestamp: number
   durationMs: number
   sessionId?: string
@@ -118,19 +117,14 @@ export interface HistoryEntryData {
     messages?: Array<unknown>
     stream?: boolean
     tools?: Array<unknown>
-    system?: string
+    system?: unknown
     max_tokens?: number
     temperature?: number
   }
   response?: ResponseData
   truncation?: TruncationState
-  rewrites?: {
-    sanitization?: SanitizationState
-    truncation?: TruncationState
-    rewrittenMessages?: Array<unknown>
-    rewrittenSystem?: string
-    messageMapping?: Array<number>
-  }
+  rewrites?: RewriteInfo
+  sseEvents?: Array<SseEventRecord>
   attempts?: Array<{
     index: number
     strategy?: string
@@ -183,15 +177,17 @@ export interface RequestContext {
   readonly id: string
   readonly tuiLogId: string | undefined
   readonly startTime: number
-  readonly endpoint: "anthropic" | "openai"
+  readonly endpoint: EndpointType
   readonly state: RequestState
   readonly durationMs: number
+  /** Whether this context has been settled (completed or failed). Handler code can check this to detect reaper force-fail. */
+  readonly settled: boolean
 
   // --- Top-level Data ---
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
-  readonly translation: TranslationState | null
-  readonly rewrites: RewriteMapping | null
+  readonly rewrites: RewriteInfo | null
+  readonly preprocessInfo: PreprocessInfo | null
 
   // --- Attempts ---
   readonly attempts: ReadonlyArray<Attempt>
@@ -200,8 +196,10 @@ export interface RequestContext {
 
   // --- Mutation Methods ---
   setOriginalRequest(req: OriginalRequest): void
-  setTranslation(info: TranslationState): void
-  setRewrites(info: RewriteMapping): void
+  setPreprocessInfo(info: PreprocessInfo): void
+  addSanitizationInfo(info: SanitizationInfo): void
+  setRewrites(info: RewriteInfo): void
+  setSseEvents(events: Array<SseEventRecord>): void
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationState }): void
   setAttemptSanitization(info: SanitizationState): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
@@ -220,7 +218,7 @@ export interface RequestContext {
 let idCounter = 0
 
 export function createRequestContext(opts: {
-  endpoint: "anthropic" | "openai"
+  endpoint: EndpointType
   tuiLogId?: string
   onEvent: RequestContextEventCallback
 }): RequestContext {
@@ -232,10 +230,14 @@ export function createRequestContext(opts: {
   let _state: RequestState = "pending"
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
-  let _translation: TranslationState | null = null
-  let _rewrites: RewriteMapping | null = null
+  let _rewrites: RewriteInfo | null = null
+  let _preprocessInfo: PreprocessInfo | null = null
+  let _sseEvents: Array<SseEventRecord> | null = null
+  const _sanitizationHistory: Array<SanitizationInfo> = []
   let _queueWaitMs = 0
   const _attempts: Array<Attempt> = []
+  /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
+  let settled = false
 
   function emit(event: RequestContextEventData) {
     try {
@@ -257,17 +259,20 @@ export function createRequestContext(opts: {
     get durationMs() {
       return Date.now() - startTime
     },
+    get settled() {
+      return settled
+    },
     get originalRequest() {
       return _originalRequest
     },
     get response() {
       return _response
     },
-    get translation() {
-      return _translation
-    },
     get rewrites() {
       return _rewrites
+    },
+    get preprocessInfo() {
+      return _preprocessInfo
     },
     get attempts() {
       return _attempts
@@ -284,14 +289,25 @@ export function createRequestContext(opts: {
       emit({ type: "updated", context: ctx, field: "originalRequest" })
     },
 
-    setTranslation(info: TranslationState) {
-      _translation = info
-      emit({ type: "updated", context: ctx, field: "translation" })
+    setPreprocessInfo(info: PreprocessInfo) {
+      _preprocessInfo = info
     },
 
-    setRewrites(info: RewriteMapping) {
-      _rewrites = info
+    addSanitizationInfo(info: SanitizationInfo) {
+      _sanitizationHistory.push(info)
+    },
+
+    setRewrites(info: RewriteInfo) {
+      _rewrites = {
+        ...(_preprocessInfo && { preprocessing: _preprocessInfo }),
+        ...(_sanitizationHistory.length > 0 && { sanitization: _sanitizationHistory }),
+        ...info,
+      }
       emit({ type: "updated", context: ctx, field: "rewrites" })
+    },
+
+    setSseEvents(events: Array<SseEventRecord>) {
+      _sseEvents = events.length > 0 ? events : null
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationState }) {
@@ -351,6 +367,12 @@ export function createRequestContext(opts: {
     },
 
     complete(response: ResponseData) {
+      if (settled) return
+      settled = true
+
+      // Normalize response model to canonical dot-version form
+      // (API may return "claude-opus-4-6" instead of "claude-opus-4.6")
+      if (response.model) response.model = normalizeModelId(response.model)
       _response = response
       ctx.setAttemptResponse(response)
       _state = "completed"
@@ -376,37 +398,31 @@ export function createRequestContext(opts: {
     },
 
     fail(model: string, error: unknown) {
-      const errorMessage = getErrorMessage(error)
+      if (settled) return
+      settled = true
+
+      const errorMsg = getErrorMessage(error)
       _response = {
         success: false,
-        model,
+        model: normalizeModelId(model),
         usage: { input_tokens: 0, output_tokens: 0 },
-        error: errorMessage,
+        error: errorMsg,
         content: null,
       }
 
-      // Preserve HTTP error response body for debugging
+      // Preserve upstream HTTP error details as structured fields
       if (
         error instanceof Error
         && "responseText" in error
         && typeof (error as { responseText: unknown }).responseText === "string"
       ) {
         const responseText = (error as { responseText: string }).responseText
-        const status = "status" in error ? (error as { status: number }).status : undefined
         if (responseText) {
-          let formattedBody: string
-          try {
-            formattedBody = JSON.stringify(JSON.parse(responseText), null, 2)
-          } catch {
-            formattedBody = responseText
-          }
-          _response.content = {
-            role: "assistant",
-            content: [
-              { type: "text", text: `[API Error Response${status ? ` - HTTP ${status}` : ""}]\n\n${formattedBody}` },
-            ],
-          }
+          _response.responseText = responseText
         }
+      }
+      if (error instanceof Error && "status" in error && typeof (error as { status: unknown }).status === "number") {
+        _response.status = (error as { status: number }).status
       }
 
       _state = "failed"
@@ -434,16 +450,17 @@ export function createRequestContext(opts: {
       }
 
       // Find truncation from the last attempt that had one
-      const lastTruncation = [..._attempts].reverse().find((a) => a.truncation)?.truncation
+      const lastTruncation = _attempts.findLast((a) => a.truncation)?.truncation
       if (lastTruncation) {
         entry.truncation = lastTruncation
       }
 
       if (_rewrites) {
-        entry.rewrites = {
-          rewrittenMessages: _rewrites.rewrittenMessages,
-          messageMapping: _rewrites.messageMapping,
-        }
+        entry.rewrites = _rewrites
+      }
+
+      if (_sseEvents) {
+        entry.sseEvents = _sseEvents
       }
 
       // Include attempt summary

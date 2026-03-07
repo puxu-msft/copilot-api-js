@@ -17,6 +17,7 @@ const icons: Record<string, string> = {
   copy: '<rect x="128" y="128" width="336" height="336" rx="57" ry="57"/><path d="M383.5 128l.5-24a56.16 56.16 0 00-56-56H112a64.19 64.19 0 00-64 64v216a56.16 56.16 0 0056 56h24" stroke-linecap="round"/>',
   code: '<path d="M160 368L32 256l128-112"/><path d="M352 368l128-112-128-112"/><path d="M304 96l-96 320"/>',
   'chevron-down': '<polyline points="112 184 256 328 400 184"/>',
+  'chevron-up': '<polyline points="112 328 256 184 400 328"/>',
   'chevron-right': '<polyline points="184 112 328 256 184 400"/>',
 }
 

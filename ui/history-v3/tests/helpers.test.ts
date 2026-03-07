@@ -14,7 +14,7 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     id: "test-1",
     sessionId: "session-1",
     timestamp: Date.now(),
-    endpoint: "anthropic",
+    endpoint: "anthropic-messages",
     request: {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hello" }],
@@ -86,6 +86,75 @@ describe("getPreviewText", () => {
     })
     expect(getPreviewText(entry)).toBe("Just an assistant")
   })
+
+  test("skips OpenAI tool response messages (role=tool) to find user message", () => {
+    const entry = makeEntry({
+      endpoint: "openai-chat-completions",
+      request: {
+        model: "gpt-4o",
+        messages: [
+          { role: "user", content: "Calculate something" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_1", type: "function", function: { name: "calc", arguments: "{}" } }],
+          },
+          { role: "tool", content: "42", tool_call_id: "call_1" },
+        ],
+        stream: false,
+      },
+    })
+    expect(getPreviewText(entry)).toBe("Calculate something")
+  })
+
+  test("shows tool_call name when only assistant tool_calls exist", () => {
+    const entry = makeEntry({
+      endpoint: "openai-chat-completions",
+      request: {
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_1", type: "function", function: { name: "web_search", arguments: "{}" } }],
+          },
+        ],
+        stream: false,
+      },
+    })
+    const preview = getPreviewText(entry)
+    expect(preview).toContain("tool_call")
+    expect(preview).toContain("web_search")
+  })
+
+  test("shows tool_result when last message is role=tool", () => {
+    const entry = makeEntry({
+      endpoint: "openai-chat-completions",
+      request: {
+        model: "gpt-4o",
+        messages: [{ role: "tool", content: "result", tool_call_id: "call_1" }],
+        stream: false,
+      },
+    })
+    const preview = getPreviewText(entry)
+    expect(preview).toContain("tool_result")
+    expect(preview).toContain("call_1")
+  })
+
+  test("skips Anthropic user messages with only tool_result blocks", () => {
+    const entry = makeEntry({
+      request: {
+        model: "test",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "Original question" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "file data" }] },
+        ],
+        stream: false,
+      },
+    })
+    expect(getPreviewText(entry)).toBe("Original question")
+  })
 })
 
 // ═══ getMessageSummary ═══
@@ -115,6 +184,45 @@ describe("getMessageSummary", () => {
   test("handles empty messages array", () => {
     const entry = makeEntry({ request: { model: "test", messages: [], stream: false } })
     expect(getMessageSummary(entry)).toBe("0 msg")
+  })
+
+  test("counts OpenAI-style tool_calls", () => {
+    const entry = makeEntry({
+      endpoint: "openai-chat-completions",
+      request: {
+        model: "gpt-4o",
+        messages: [
+          { role: "user", content: "search for cats" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_1", type: "function", function: { name: "search", arguments: "{}" } }],
+          },
+          { role: "tool", content: "cats found", tool_call_id: "call_1" },
+        ],
+        stream: false,
+      },
+    })
+    expect(getMessageSummary(entry)).toBe("3 msg, 1 tool")
+  })
+
+  test("counts both Anthropic tool_use and OpenAI tool_calls in mixed conversations", () => {
+    const entry = makeEntry({
+      request: {
+        model: "test",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "assistant", content: [{ type: "tool_use", id: "1", name: "Read", input: {} }] },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_2", type: "function", function: { name: "Write", arguments: "{}" } }],
+          },
+        ],
+        stream: false,
+      },
+    })
+    expect(getMessageSummary(entry)).toBe("3 msg, 2 tool")
   })
 })
 

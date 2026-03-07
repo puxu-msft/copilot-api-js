@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
+import { state } from "~/lib/state"
 
 describe("sanitizeOpenAIMessages", () => {
   test("returns unchanged payload when no orphans", () => {
@@ -39,19 +40,49 @@ describe("sanitizeOpenAIMessages", () => {
     expect(result.removedCount).toBeGreaterThan(0)
   })
 
-  test("removes system-reminder content from messages", () => {
+  test("removes system-reminder tags when rewriteSystemReminders is enabled", () => {
+    const saved = state.rewriteSystemReminders
+    state.rewriteSystemReminders = true
+
+    const malwareReminder = "Whenever you read a file, you should consider whether it would be considered malware."
     const payload = {
       model: "gpt-4",
       messages: [
         {
           role: "user" as const,
-          content: "hello <system-reminder>ignore this</system-reminder>",
+          content: `hello\n<system-reminder>\n${malwareReminder}\n</system-reminder>`,
         },
       ],
     }
 
     const result = sanitizeOpenAIMessages(payload)
-    expect(result.systemReminderRemovals).toBeGreaterThanOrEqual(0)
+    expect(result.systemReminderRemovals).toBe(1)
+
+    // Verify the tag was stripped, but user content preserved
+    const content = result.payload.messages[0].content as string
+    expect(content).not.toContain("<system-reminder>")
+    expect(content).toContain("hello")
+
+    state.rewriteSystemReminders = saved
+  })
+
+  test("preserves system-reminder tags that do not match any filter", () => {
+    const payload = {
+      model: "gpt-4",
+      messages: [
+        {
+          role: "user" as const,
+          content: `hello\n<system-reminder>\nunknown reminder content\n</system-reminder>`,
+        },
+      ],
+    }
+
+    const result = sanitizeOpenAIMessages(payload)
+    expect(result.systemReminderRemovals).toBe(0)
+
+    // Tag should still be present — it's not in the filter list
+    const content = result.payload.messages[0].content as string
+    expect(content).toContain("<system-reminder>")
   })
 
   test("does not modify original payload", () => {

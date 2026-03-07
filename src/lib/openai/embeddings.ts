@@ -1,5 +1,6 @@
-import { copilotHeaders, copilotBaseUrl } from "~/lib/config/api"
+import { copilotHeaders, copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
+import { createFetchSignal } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 
 export const createEmbeddings = async (payload: EmbeddingRequest) => {
@@ -15,6 +16,7 @@ export const createEmbeddings = async (payload: EmbeddingRequest) => {
     method: "POST",
     headers: copilotHeaders(state),
     body: JSON.stringify(normalizedPayload),
+    signal: createFetchSignal(),
   })
 
   if (!response.ok) throw await HTTPError.fromResponse("Failed to create embeddings", response)

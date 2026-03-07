@@ -7,13 +7,15 @@
 import { describe, expect, mock, test } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
+import type { EndpointType } from "~/lib/history/store"
 
 import { createRequestContext } from "~/lib/context/request"
+import { HTTPError } from "~/lib/error"
 
-function makeContext(overrides?: { endpoint?: "anthropic" | "openai"; tuiLogId?: string }) {
+function makeContext(overrides?: { endpoint?: EndpointType; tuiLogId?: string }) {
   const onEvent = mock(() => {})
   const ctx = createRequestContext({
-    endpoint: overrides?.endpoint ?? "anthropic",
+    endpoint: overrides?.endpoint ?? "anthropic-messages",
     tuiLogId: overrides?.tuiLogId ?? "track-1",
     onEvent,
   })
@@ -37,8 +39,8 @@ describe("createRequestContext - initialization", () => {
   })
 
   test("stores endpoint type", () => {
-    const { ctx } = makeContext({ endpoint: "openai" })
-    expect(ctx.endpoint).toBe("openai")
+    const { ctx } = makeContext({ endpoint: "openai-chat-completions" })
+    expect(ctx.endpoint).toBe("openai-chat-completions")
   })
 
   test("stores tuiLogId", () => {
@@ -50,11 +52,11 @@ describe("createRequestContext - initialization", () => {
     const { ctx } = makeContext()
     expect(ctx.originalRequest).toBeNull()
     expect(ctx.response).toBeNull()
-    expect(ctx.translation).toBeNull()
     expect(ctx.rewrites).toBeNull()
     expect(ctx.attempts).toHaveLength(0)
     expect(ctx.currentAttempt).toBeNull()
     expect(ctx.queueWaitMs).toBe(0)
+    expect(ctx.settled).toBe(false)
   })
 
   test("computes durationMs from startTime", () => {
@@ -127,7 +129,7 @@ describe("createRequestContext - attempt lifecycle", () => {
       resolvedModel: undefined,
       messages: [{ role: "user", content: "hi" }],
       payload: {},
-      format: "anthropic" as const,
+      format: "anthropic-messages" as const,
     }
     ctx.setAttemptEffectiveRequest(effectiveReq)
 
@@ -235,22 +237,14 @@ describe("createRequestContext - data setters", () => {
     expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("originalRequest")
   })
 
-  test("setTranslation stores and emits", () => {
-    const { ctx, onEvent } = makeContext()
-    ctx.setTranslation({ direction: "openai-to-anthropic" })
-    expect(ctx.translation).toEqual({ direction: "openai-to-anthropic" })
-    expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("translation")
-  })
-
   test("setRewrites stores and emits", () => {
     const { ctx, onEvent } = makeContext()
     const rewrite = {
-      originalMessages: [{ role: "user", content: "hi" }],
       rewrittenMessages: [{ role: "user", content: "hello" }],
       messageMapping: [0],
     }
     ctx.setRewrites(rewrite)
-    expect(ctx.rewrites).toBe(rewrite)
+    expect(ctx.rewrites).toEqual(rewrite)
     expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("rewrites")
   })
 })
@@ -259,7 +253,7 @@ describe("createRequestContext - data setters", () => {
 
 describe("createRequestContext - toHistoryEntry", () => {
   test("serializes core fields", () => {
-    const { ctx } = makeContext({ endpoint: "anthropic" })
+    const { ctx } = makeContext({ endpoint: "anthropic-messages" })
     ctx.setOriginalRequest({
       model: "claude-sonnet-4",
       messages: [{ role: "user", content: "hi" }],
@@ -276,7 +270,7 @@ describe("createRequestContext - toHistoryEntry", () => {
 
     const entry = ctx.toHistoryEntry()
     expect(entry.id).toBe(ctx.id)
-    expect(entry.endpoint).toBe("anthropic")
+    expect(entry.endpoint).toBe("anthropic-messages")
     expect(entry.request.model).toBe("claude-sonnet-4")
     expect(entry.response!.success).toBe(true)
   })
@@ -326,7 +320,6 @@ describe("createRequestContext - toHistoryEntry", () => {
     const { ctx } = makeContext()
     ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
     ctx.setRewrites({
-      originalMessages: [{ role: "user", content: "hi" }],
       rewrittenMessages: [{ role: "user", content: "hello" }],
       messageMapping: [0],
     })
@@ -341,5 +334,137 @@ describe("createRequestContext - toHistoryEntry", () => {
     const entry = ctx.toHistoryEntry()
     expect(entry.rewrites).toBeDefined()
     expect(entry.rewrites!.messageMapping).toEqual([0])
+  })
+})
+
+// ─── Settled guard (idempotent completion) ───
+
+describe("createRequestContext - settled guard", () => {
+  test("settled becomes true after complete()", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    expect(ctx.settled).toBe(false)
+    ctx.complete({
+      success: true,
+      model: "m",
+      usage: { input_tokens: 1, output_tokens: 1 },
+      content: "ok",
+    })
+    expect(ctx.settled).toBe(true)
+  })
+
+  test("settled becomes true after fail()", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    expect(ctx.settled).toBe(false)
+    ctx.fail("m", new Error("err"))
+    expect(ctx.settled).toBe(true)
+  })
+
+  test("fail() with HTTPError preserves status and responseText", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    const httpError = new HTTPError("Token limit", 400, '{"error":"prompt too long"}', "claude-sonnet-4")
+    ctx.fail("claude-sonnet-4", httpError)
+
+    expect(ctx.response!.status).toBe(400)
+    expect(ctx.response!.responseText).toBe('{"error":"prompt too long"}')
+    expect(ctx.response!.error).toContain("Token limit")
+    expect(ctx.response!.success).toBe(false)
+  })
+
+  test("fail() with generic Error has no status or responseText", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.fail("m", new Error("connection reset"))
+
+    expect(ctx.response!.status).toBeUndefined()
+    expect(ctx.response!.responseText).toBeUndefined()
+    expect(ctx.response!.error).toBe("connection reset")
+  })
+
+  test("double complete() only fires event once", () => {
+    const { ctx, onEvent } = makeContext()
+    ctx.beginAttempt({})
+
+    const response = {
+      success: true,
+      model: "claude-sonnet-4",
+      usage: { input_tokens: 100, output_tokens: 50 },
+      content: "Hello!",
+    }
+    ctx.complete(response)
+    const eventsAfterFirst = onEvent.mock.calls.length
+
+    ctx.complete(response) // second call — should be no-op
+    expect(onEvent.mock.calls.length).toBe(eventsAfterFirst)
+    expect(ctx.state).toBe("completed")
+  })
+
+  test("double fail() only fires event once", () => {
+    const { ctx, onEvent } = makeContext()
+    ctx.beginAttempt({})
+
+    ctx.fail("claude-sonnet-4", new Error("err1"))
+    const eventsAfterFirst = onEvent.mock.calls.length
+
+    ctx.fail("claude-sonnet-4", new Error("err2")) // second call — should be no-op
+    expect(onEvent.mock.calls.length).toBe(eventsAfterFirst)
+    expect(ctx.state).toBe("failed")
+  })
+
+  test("fail() after complete() is no-op", () => {
+    const { ctx, onEvent } = makeContext()
+    ctx.beginAttempt({})
+
+    ctx.complete({
+      success: true,
+      model: "m",
+      usage: { input_tokens: 1, output_tokens: 1 },
+      content: "ok",
+    })
+    const eventsAfterComplete = onEvent.mock.calls.length
+
+    ctx.fail("m", new Error("too late"))
+    expect(onEvent.mock.calls.length).toBe(eventsAfterComplete)
+    expect(ctx.state).toBe("completed")
+  })
+
+  test("complete() after fail() is no-op", () => {
+    const { ctx, onEvent } = makeContext()
+    ctx.beginAttempt({})
+
+    ctx.fail("m", new Error("failed"))
+    const eventsAfterFail = onEvent.mock.calls.length
+
+    ctx.complete({
+      success: true,
+      model: "m",
+      usage: { input_tokens: 1, output_tokens: 1 },
+      content: "ok",
+    })
+    expect(onEvent.mock.calls.length).toBe(eventsAfterFail)
+    expect(ctx.state).toBe("failed")
+  })
+
+  test("completeFromStream() after fail() is no-op (via settled guard)", () => {
+    const { ctx, onEvent } = makeContext()
+    ctx.beginAttempt({})
+
+    ctx.fail("m", new Error("failed"))
+    const eventsAfterFail = onEvent.mock.calls.length
+
+    ctx.completeFromStream({
+      model: "m",
+      content: "hello",
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      stopReason: "end_turn",
+      contentBlocks: [],
+    })
+    expect(onEvent.mock.calls.length).toBe(eventsAfterFail)
+    expect(ctx.state).toBe("failed")
   })
 })

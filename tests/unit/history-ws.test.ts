@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, mock, test } from "bun:test"
 
-import type { HistoryEntry, HistoryStats } from "~/lib/history/store"
+import type { EntrySummary, HistoryStats } from "~/lib/history/store"
 
 import {
   addClient,
@@ -52,20 +52,20 @@ function getSentMessages(ws: WebSocket): Array<{ type: string; data: unknown; ti
   return sendMock.mock.calls.map((call: Array<unknown>) => JSON.parse(call[0] as string))
 }
 
-// Minimal mock entry for testing
-function createMockEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
+// Minimal mock summary for testing
+function createMockSummary(overrides: Partial<EntrySummary> = {}): EntrySummary {
   return {
     id: "test-entry-1",
     sessionId: "test-session-1",
     timestamp: Date.now(),
-    endpoint: "anthropic",
-    request: {
-      model: "claude-3-opus",
-      messages: [],
-      stream: false,
-    },
+    endpoint: "anthropic-messages",
+    requestModel: "claude-3-opus",
+    stream: false,
+    messageCount: 0,
+    previewText: "",
+    searchText: "",
     ...overrides,
-  } as HistoryEntry
+  }
 }
 
 function createMockStats(overrides: Partial<HistoryStats> = {}): HistoryStats {
@@ -206,8 +206,8 @@ describe("notifyEntryAdded", () => {
     addClient(ws1)
     addClient(ws2)
 
-    const entry = createMockEntry()
-    notifyEntryAdded(entry)
+    const summary = createMockSummary()
+    notifyEntryAdded(summary)
 
     // Each client received connected + entry_added = 2 messages
     const msgs1 = getSentMessages(ws1)
@@ -215,12 +215,12 @@ describe("notifyEntryAdded", () => {
     expect(msgs1).toHaveLength(2)
     expect(msgs2).toHaveLength(2)
     expect(msgs1[1].type).toBe("entry_added")
-    expect(msgs1[1].data).toEqual(entry)
+    expect(msgs1[1].data).toEqual(summary)
     expect(msgs2[1].type).toBe("entry_added")
   })
 
   test("does not send when no clients connected", () => {
-    const entry = createMockEntry()
+    const entry = createMockSummary()
     // Should not throw
     expect(() => notifyEntryAdded(entry)).not.toThrow()
   })
@@ -233,7 +233,7 @@ describe("notifyEntryAdded", () => {
     addClient(closedWs)
     expect(getClientCount()).toBe(2)
 
-    const entry = createMockEntry()
+    const entry = createMockSummary()
     notifyEntryAdded(entry)
 
     // closedWs should be removed during broadcast
@@ -259,7 +259,7 @@ describe("notifyEntryAdded", () => {
     addClient(goodWs)
     addClient(badWs)
 
-    const entry = createMockEntry()
+    const entry = createMockSummary()
     notifyEntryAdded(entry)
 
     // badWs should be removed
@@ -274,16 +274,16 @@ describe("notifyEntryUpdated", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const entry = createMockEntry({ id: "updated-entry" })
-    notifyEntryUpdated(entry)
+    const summary = createMockSummary({ id: "updated-entry" })
+    notifyEntryUpdated(summary)
 
     const msgs = getSentMessages(ws)
     expect(msgs[1].type).toBe("entry_updated")
-    expect((msgs[1].data as HistoryEntry).id).toBe("updated-entry")
+    expect((msgs[1].data as EntrySummary).id).toBe("updated-entry")
   })
 
   test("does not send when no clients connected", () => {
-    expect(() => notifyEntryUpdated(createMockEntry())).not.toThrow()
+    expect(() => notifyEntryUpdated(createMockSummary())).not.toThrow()
   })
 })
 
@@ -315,9 +315,9 @@ describe("message format", () => {
     const before = Date.now()
     addClient(ws)
 
-    const entry = createMockEntry()
-    notifyEntryAdded(entry)
-    notifyEntryUpdated(entry)
+    const summary = createMockSummary()
+    notifyEntryAdded(summary)
+    notifyEntryUpdated(summary)
 
     const stats = createMockStats()
     notifyStatsUpdated(stats)
@@ -364,7 +364,7 @@ describe("concurrent operations", () => {
     expect(getClientCount()).toBe(5)
 
     // Broadcast should only reach remaining 5
-    notifyEntryAdded(createMockEntry())
+    notifyEntryAdded(createMockSummary())
     for (let i = 1; i < 10; i += 2) {
       const msgs = getSentMessages(clients[i])
       expect(msgs.at(-1)!.type).toBe("entry_added")

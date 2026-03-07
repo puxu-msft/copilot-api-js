@@ -68,7 +68,7 @@ const filteredBlocks = computed(() => {
         :redacted="true"
       />
       <ImageBlock
-        v-else-if="isImageBlock(block)"
+        v-else-if="isImageBlock(block) && block.source.type === 'base64'"
         :media-type="block.source.media_type"
         :data="block.source.data"
       />

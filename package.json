@@ -1,7 +1,7 @@
 {
   "name": "@hsupu/copilot-api",
-  "version": "0.7.17",
-  "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code!",
+  "version": "0.7.18-beta.3",
+  "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server.",
   "keywords": [
     "proxy",
     "github-copilot",
@@ -20,13 +20,16 @@
     "copilot-api": "dist/main.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "ui/history-v1",
+    "ui/history-v3/dist",
+    "config.example.yaml"
   ],
   "scripts": {
     "build": "npm run build:ui && npx tsdown",
-    "build:ui": "cd src/ui/history-v2 && bun install && bun run build && cd ../history-v3 && bun install && bun run build",
+    "build:ui": "cd ui/history-v3 && bun install && bun run build",
     "dev": "bun run --watch ./src/main.ts",
-    "dev:ui": "cd src/ui/history-v3 && bun run dev",
+    "dev:ui": "cd ui/history-v3 && bun run dev",
     "knip": "knip-bun",
     "lint": "eslint --cache",
     "lint:all": "eslint --cache .",
@@ -41,6 +44,7 @@
     "test:contract": "bun test tests/contract/",
     "test:e2e": "bun test tests/e2e/",
     "test:integration": "bun test tests/integration/",
+    "test:ui": "cd ui/history-v3 && bun test tests/",
     "typecheck": "tsc"
   },
   "simple-git-hooks": {
@@ -51,31 +55,33 @@
   },
   "dependencies": {
     "@hono/node-ws": "^1.3.0",
-    "citty": "^0.2.0",
+    "citty": "^0.2.1",
     "consola": "^3.4.2",
     "fetch-event-stream": "^0.1.6",
     "gpt-tokenizer": "^3.4.0",
-    "hono": "^4.11.8",
+    "hono": "^4.12.3",
     "picocolors": "^1.1.1",
-    "proxy-from-env": "^1.1.0",
-    "srvx": "^0.11.2",
+    "proxy-from-env": "^2.0.0",
+    "socks": "^2.8.7",
+    "srvx": "^0.11.8",
     "tiny-invariant": "^1.3.3",
-    "undici": "^7.21.0",
+    "undici": "^7.22.0",
     "yaml": "^2.8.2"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.74.0",
+    "@anthropic-ai/sdk": "^0.78.0",
     "@echristian/eslint-config": "^0.0.54",
-    "@types/bun": "^1.3.8",
+    "@types/bun": "^1.3.9",
     "@types/proxy-from-env": "^1.0.4",
     "bumpp": "^10.4.1",
-    "eslint": "^9.39.2",
-    "knip": "^5.83.1",
+    "eslint": "^9.39.3",
+    "knip": "^5.85.0",
     "lint-staged": "^16.2.7",
-    "openai": "^6.19.0",
+    "openai": "^6.25.0",
     "prettier-plugin-packagejson": "^3.0.0",
     "simple-git-hooks": "^2.13.1",
     "tsdown": "^0.20.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vue": "^3.5.29"
   }
 }

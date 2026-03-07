@@ -13,6 +13,13 @@ interface StartRequestOptions {
   requestBodySize?: number
 }
 
+/** Outcome passed to finishRequest to mark a request as completed or failed */
+export interface RequestOutcome {
+  statusCode?: number
+  error?: string
+  usage?: { inputTokens: number; outputTokens: number }
+}
+
 export class TuiLogger {
   private entries: Map<string, TuiLogEntry> = new Map()
   private renderer: TuiRenderer | null = null
@@ -66,9 +73,10 @@ export class TuiLogger {
 
     if (update.model !== undefined) {
       entry.model = update.model
-      const multiplier = state.models?.data.find((m) => m.id === update.model)?.billing?.multiplier
+      const multiplier = state.modelIndex.get(update.model)?.billing?.multiplier
       if (multiplier !== undefined) entry.multiplier = multiplier
     }
+    if (update.clientModel !== undefined) entry.clientModel = update.clientModel
     if (update.status !== undefined) entry.status = update.status
     if (update.statusCode !== undefined) entry.statusCode = update.statusCode
     if (update.durationMs !== undefined) entry.durationMs = update.durationMs
@@ -80,6 +88,9 @@ export class TuiLogger {
     if (update.error !== undefined) entry.error = update.error
     if (update.queuePosition !== undefined) entry.queuePosition = update.queuePosition
     if (update.queueWaitMs !== undefined) entry.queueWaitMs = update.queueWaitMs
+    if (update.streamBytesIn !== undefined) entry.streamBytesIn = update.streamBytesIn
+    if (update.streamEventsIn !== undefined) entry.streamEventsIn = update.streamEventsIn
+    if (update.streamBlockType !== undefined) entry.streamBlockType = update.streamBlockType
     if (update.tags) {
       entry.tags ??= []
       for (const tag of update.tags) {
@@ -91,71 +102,51 @@ export class TuiLogger {
   }
 
   /**
-   * Mark request as completed
+   * Mark a request as finished (completed or failed).
+   *
+   * Determines final status from the outcome:
+   * - `error` present → "error"
+   * - `statusCode` in success range (101, 2xx, 3xx) → "completed"
+   * - `statusCode` outside success range → "error"
+   * - Neither → "completed" (e.g. streaming success with no HTTP status)
+   *
+   * Safe to call multiple times for the same ID — second call is a no-op.
+   * This eliminates the dual-path race between middleware and context consumer.
    */
-  completeRequest(id: string, statusCode: number, usage?: { inputTokens: number; outputTokens: number }): void {
+  finishRequest(id: string, outcome: RequestOutcome): void {
     const entry = this.entries.get(id)
     if (!entry) return
 
-    entry.status =
-      // 101 = WebSocket upgrade (Switching Protocols), also a success
-      statusCode === 101 || (statusCode >= 200 && statusCode < 400) ? "completed" : "error"
-    entry.statusCode = statusCode
+    // Determine final status
+    if (outcome.error) {
+      entry.status = "error"
+      entry.error = outcome.error
+    } else if (outcome.statusCode !== undefined) {
+      const sc = outcome.statusCode
+      entry.status = sc === 101 || (sc >= 200 && sc < 400) ? "completed" : "error"
+    } else {
+      entry.status = "completed"
+    }
+
+    if (outcome.statusCode !== undefined) entry.statusCode = outcome.statusCode
+    if (outcome.usage) {
+      entry.inputTokens = outcome.usage.inputTokens
+      entry.outputTokens = outcome.usage.outputTokens
+    }
     entry.durationMs = Date.now() - entry.startTime
 
-    if (usage) {
-      entry.inputTokens = usage.inputTokens
-      entry.outputTokens = usage.outputTokens
-    }
-
     this.renderer?.onRequestComplete(entry)
-
-    // Move to completed queue
-    this.entries.delete(id)
-    this.completedQueue.push(entry)
-
-    // Trim completed queue
-    while (this.completedQueue.length > this.historySize) {
-      const removed = this.completedQueue.shift()
-      if (removed) {
-        // Clear the timeout for the removed entry
-        const timeoutId = this.completedTimeouts.get(removed.id)
-        if (timeoutId) {
-          clearTimeout(timeoutId)
-          this.completedTimeouts.delete(removed.id)
-        }
-      }
-    }
-
-    // Schedule removal from display after delay
-    const timeoutId = setTimeout(() => {
-      const idx = this.completedQueue.indexOf(entry)
-      if (idx !== -1) {
-        this.completedQueue.splice(idx, 1)
-      }
-      this.completedTimeouts.delete(id)
-    }, this.completedDisplayMs)
-    this.completedTimeouts.set(id, timeoutId)
+    this.moveToCompleted(id, entry)
   }
 
-  /**
-   * Mark request as failed with error
-   */
-  failRequest(id: string, error: string): void {
-    const entry = this.entries.get(id)
-    if (!entry) return
+  // ─── Completed queue management ───
 
-    entry.status = "error"
-    entry.error = error
-    entry.durationMs = Date.now() - entry.startTime
-
-    this.renderer?.onRequestComplete(entry)
-
-    // Move to completed queue
+  /** Move entry from active to completed queue with auto-cleanup */
+  private moveToCompleted(id: string, entry: TuiLogEntry): void {
     this.entries.delete(id)
     this.completedQueue.push(entry)
 
-    // Trim completed queue (same cleanup as completeRequest)
+    // Trim queue to max history size
     while (this.completedQueue.length > this.historySize) {
       const removed = this.completedQueue.shift()
       if (removed) {
@@ -177,6 +168,8 @@ export class TuiLogger {
     }, this.completedDisplayMs)
     this.completedTimeouts.set(id, timeoutId)
   }
+
+  // ─── Queries ───
 
   /**
    * Get all active entries
@@ -193,7 +186,7 @@ export class TuiLogger {
   }
 
   /**
-   * Get entry by ID
+   * Get entry by ID (only active/in-flight entries)
    */
   getRequest(id: string): TuiLogEntry | undefined {
     return this.entries.get(id)

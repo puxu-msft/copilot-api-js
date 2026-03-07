@@ -3,9 +3,9 @@ import { Hono } from "hono"
 import { forwardError } from "~/lib/error"
 import { state } from "~/lib/state"
 
-export const tokenRoute = new Hono()
+export const tokenRoutes = new Hono()
 
-tokenRoute.get("/", (c) => {
+tokenRoutes.get("/", (c) => {
   try {
     return c.json({
       token: state.copilotToken,

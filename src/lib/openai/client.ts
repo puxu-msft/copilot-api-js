@@ -3,24 +3,12 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
-import { copilotHeaders, copilotBaseUrl } from "~/lib/config/api"
+import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
+
+import { copilotHeaders, copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
+import { createFetchSignal } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
-
-/** Re-export types from centralized location */
-export type {
-  ChatCompletionChunk,
-  ChatCompletionResponse,
-  ChatCompletionsPayload,
-  ContentPart,
-  ImagePart,
-  Message,
-  TextPart,
-  Tool,
-  ToolCall,
-} from "~/types/api/openai"
-
-import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
@@ -41,10 +29,14 @@ export const createChatCompletions = async (
     "X-Initiator": isAgentCall ? "agent" : "user",
   }
 
+  // Apply fetch timeout if configured (connection + response headers)
+  const fetchSignal = createFetchSignal()
+
   const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+    signal: fetchSignal,
   })
 
   if (!response.ok) {

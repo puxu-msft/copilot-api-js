@@ -1,6 +1,6 @@
 <script setup lang="ts">
 withDefaults(defineProps<{
-  color?: 'default' | 'primary' | 'success' | 'error' | 'warning' | 'purple' | 'cyan' | 'pink'
+  color?: 'default' | 'primary' | 'success' | 'error' | 'warning' | 'purple' | 'cyan' | 'pink' | 'green'
 }>(), {
   color: 'default',
 })
@@ -55,5 +55,9 @@ withDefaults(defineProps<{
 .badge-pink {
   background: var(--pink-muted);
   color: var(--pink);
+}
+.badge-green {
+  background: var(--success-muted);
+  color: var(--success);
 }
 </style>

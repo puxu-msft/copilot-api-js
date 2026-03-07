@@ -1,0 +1,23 @@
+{
+  "content": [
+    {
+      "text": "The current weather in Tokyo is sunny with a temperature of 22\u00b0C (about 72\u00b0F). It's a pleasant day there!",
+      "type": "text"
+    }
+  ],
+  "context_management": {
+    "applied_edits": []
+  },
+  "id": "msg_bdrk_01MAzZLJrvW1PzbR7uZAMYS9",
+  "model": "claude-sonnet-4-20250514",
+  "role": "assistant",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "type": "message",
+  "usage": {
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "input_tokens": 1153,
+    "output_tokens": 32
+  }
+}

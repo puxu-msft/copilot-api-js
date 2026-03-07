@@ -1,0 +1,57 @@
+{
+  "created_at": 1772431900,
+  "id": "58XPMljBssGeG1u1OQ4GCpu1o0lkmgaZySyFLcrxEJUXeZvwdnMgExwgucBOjZO5FfpaCJ1LavIBt6kcfEoBIq883zzON+tf8trcsO/feXN1OJgNIgfDT2QEYJ4ygBfm37y2iGGU7RnBdaqjLe9BId9I4pvws52ua1X7oLLLv07L/ghDObkm2M84RizrTN8W+SnbngnHtweALh4MFYl+vjxidOBoHalSCyyyR5nkkAwBYHPX7PvsXHnesXgLZ56m9FBbvtBGpPxzop0PBJAgybpppc3GaoMsX134PdH4htZZT0OlmSnSpC+03JY1Y6Cl1r70AHpQN2/oM8WS4uMg2UdFWG+S7nbZZezMy0GHCOw+WmMmI1M6HBrGpMDeKGmPJFwwHUJ6XZpmBIqFhF5sv6Pm",
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": 100,
+  "model": "gpt-5.1-2025-11-13",
+  "object": "response",
+  "output": [
+    {
+      "content": [
+        {
+          "annotations": [],
+          "logprobs": [],
+          "text": "Hello there, friend",
+          "type": "output_text"
+        }
+      ],
+      "id": "ut6PgClu0p38xYy+m2p0BKnT5CVGqooggvv88k7CrBqW0JWJ6c2Bmhl13a/VaIJRGWXr/ZwUbAe5RSkree0InaS3geA3mVKQjfixy5+wwEJPNsEG68gfhMNsvBHvL3gYjaYpM73R4xIomX5K1yO4+5xQn1kYAyZwu76Qkn+Qtb5fsA68TY7swnx+X2Hv0ZSi901rXte/8W9xBU9f8qwDrFcPSunbac52R41hO/SVLsXbz20Ax0KWjxxpuvhFq7NIpp1fsSEMQQlXFWJLl5p4TCe5VGnHmoVSpbjKXpWE6I6dDwx5Nr1rHr18Qv98JdK8ilvF8R0dISwKIp/8ay7EFSKpz2ONAdNqeRIZ+LcXe9z8xia75zO9F4XzM3YdXk69BC+AT/PSDyhkM9yfAOUUSsg=",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+    }
+  ],
+  "output_text": null,
+  "parallel_tool_calls": true,
+  "previous_response_id": null,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "safety_identifier": "3781518121e62bf610879c3b729443324e7de10fa2bef4ea2898679b73da75fe",
+  "service_tier": "priority",
+  "status": "completed",
+  "temperature": 1,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tools": [],
+  "top_p": 1,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 14,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 14,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 28
+  }
+}

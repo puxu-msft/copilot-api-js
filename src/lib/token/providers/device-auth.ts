@@ -62,7 +62,12 @@ export class DeviceAuthProvider extends GitHubTokenProvider {
         refreshable: true,
       }
     } catch (error) {
+      // Node.js undici wraps the real error in TypeError.cause — surface it for diagnostics
+      const cause = error instanceof TypeError && error.cause ? error.cause : undefined
       consola.error("Device authorization failed:", error)
+      if (cause) {
+        consola.error("Caused by:", cause)
+      }
       return null
     }
   }

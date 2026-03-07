@@ -6,7 +6,7 @@ import { forwardError } from "~/lib/error"
 import { cacheModels } from "~/lib/models/client"
 import { state } from "~/lib/state"
 
-export const modelRoutes = new Hono()
+export const modelsRoutes = new Hono()
 
 const EPOCH_ISO = new Date(0).toISOString()
 
@@ -23,7 +23,7 @@ function formatModel(model: Model) {
   }
 }
 
-modelRoutes.get("/", async (c) => {
+modelsRoutes.get("/", async (c) => {
   try {
     if (!state.models) {
       // This should be handled by startup logic, but as a fallback.
@@ -42,14 +42,14 @@ modelRoutes.get("/", async (c) => {
   }
 })
 
-modelRoutes.get("/:model", async (c) => {
+modelsRoutes.get("/:model", async (c) => {
   try {
     if (!state.models) {
       await cacheModels()
     }
 
     const modelId = c.req.param("model")
-    const model = state.models?.data.find((m) => m.id === modelId)
+    const model = state.modelIndex.get(modelId)
 
     if (!model) {
       return c.json(

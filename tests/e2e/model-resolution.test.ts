@@ -7,12 +7,10 @@
 
 import { describe, test, expect, beforeAll } from "bun:test"
 
-import type { MessagesPayload } from "~/types/api/anthropic"
-
 import { getModels } from "~/lib/models/client"
-import { state } from "~/lib/state"
+import { resolveModelName } from "~/lib/models/resolver"
+import { rebuildModelIndex, state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
-import { translateToOpenAI } from "~/lib/translation/non-stream"
 
 import { getE2EMode, getGitHubToken } from "./config"
 
@@ -41,6 +39,7 @@ describeWithToken("Model Name Resolution", () => {
       )
     }
     state.models = models
+    rebuildModelIndex()
 
     console.log(
       "[Setup] Available Claude models:",
@@ -53,112 +52,64 @@ describeWithToken("Model Name Resolution", () => {
 
   describe("Short aliases", () => {
     test("should resolve 'opus' to latest opus model", () => {
-      const payload: MessagesPayload = {
-        model: "opus",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
+      const resolved = resolveModelName("opus")
 
-      const { payload: translated } = translateToOpenAI(payload)
-
-      expect(translated.model).toContain("claude")
-      expect(translated.model).toContain("opus")
-      console.log("[Alias] opus ->", translated.model)
+      expect(resolved).toContain("claude")
+      expect(resolved).toContain("opus")
+      console.log("[Alias] opus ->", resolved)
     })
 
     test("should resolve 'sonnet' to latest sonnet model", () => {
-      const payload: MessagesPayload = {
-        model: "sonnet",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
+      const resolved = resolveModelName("sonnet")
 
-      const { payload: translated } = translateToOpenAI(payload)
-
-      expect(translated.model).toContain("claude")
-      expect(translated.model).toContain("sonnet")
-      console.log("[Alias] sonnet ->", translated.model)
+      expect(resolved).toContain("claude")
+      expect(resolved).toContain("sonnet")
+      console.log("[Alias] sonnet ->", resolved)
     })
 
     test("should resolve 'haiku' to latest haiku model", () => {
-      const payload: MessagesPayload = {
-        model: "haiku",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
+      const resolved = resolveModelName("haiku")
 
-      const { payload: translated } = translateToOpenAI(payload)
-
-      expect(translated.model).toContain("claude")
-      expect(translated.model).toContain("haiku")
-      console.log("[Alias] haiku ->", translated.model)
+      expect(resolved).toContain("claude")
+      expect(resolved).toContain("haiku")
+      console.log("[Alias] haiku ->", resolved)
     })
   })
 
   describe("Versioned model names", () => {
     test("should strip date suffix from claude-sonnet-4-20250514", () => {
-      const payload: MessagesPayload = {
-        model: "claude-sonnet-4-20250514",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
-
-      const { payload: translated } = translateToOpenAI(payload)
+      const resolved = resolveModelName("claude-sonnet-4-20250514")
 
       // Should be claude-sonnet-4 (no date suffix)
-      expect(translated.model).not.toMatch(/\d{8}$/)
-      expect(translated.model).toContain("claude-sonnet")
-      console.log("[Versioned] claude-sonnet-4-20250514 ->", translated.model)
+      expect(resolved).not.toMatch(/\d{8}$/)
+      expect(resolved).toContain("claude-sonnet")
+      console.log("[Versioned] claude-sonnet-4-20250514 ->", resolved)
     })
 
     test("should convert claude-sonnet-4-5-20250514 to claude-sonnet-4.5", () => {
-      const payload: MessagesPayload = {
-        model: "claude-sonnet-4-5-20250514",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
+      const resolved = resolveModelName("claude-sonnet-4-5-20250514")
 
-      const { payload: translated } = translateToOpenAI(payload)
-
-      expect(translated.model).toBe("claude-sonnet-4.5")
-      console.log("[Versioned] claude-sonnet-4-5-20250514 ->", translated.model)
+      expect(resolved).toBe("claude-sonnet-4.5")
+      console.log("[Versioned] claude-sonnet-4-5-20250514 ->", resolved)
     })
 
     test("should convert claude-opus-4-5-20250101 to claude-opus-4.5", () => {
-      const payload: MessagesPayload = {
-        model: "claude-opus-4-5-20250101",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
+      const resolved = resolveModelName("claude-opus-4-5-20250101")
 
-      const { payload: translated } = translateToOpenAI(payload)
-
-      expect(translated.model).toBe("claude-opus-4.5")
-      console.log("[Versioned] claude-opus-4-5-20250101 ->", translated.model)
+      expect(resolved).toBe("claude-opus-4.5")
+      console.log("[Versioned] claude-opus-4-5-20250101 ->", resolved)
     })
 
     test("should pass through already-correct model names unchanged", () => {
-      const payload: MessagesPayload = {
-        model: "claude-sonnet-4.5",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
+      const resolved = resolveModelName("claude-sonnet-4.5")
 
-      const { payload: translated } = translateToOpenAI(payload)
-
-      expect(translated.model).toBe("claude-sonnet-4.5")
+      expect(resolved).toBe("claude-sonnet-4.5")
     })
 
     test("should pass through GPT model names unchanged", () => {
-      const payload: MessagesPayload = {
-        model: "gpt-4o",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
+      const resolved = resolveModelName("gpt-4o")
 
-      const { payload: translated } = translateToOpenAI(payload)
-
-      expect(translated.model).toBe("gpt-4o")
+      expect(resolved).toBe("gpt-4o")
     })
   })
 
@@ -173,19 +124,12 @@ describeWithToken("Model Name Resolution", () => {
         claudeModels.map((m) => m.id),
       )
 
-      const payload: MessagesPayload = {
-        model: "opus",
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 10,
-      }
-
-      const { payload: translated } = translateToOpenAI(payload)
+      const resolved = resolveModelName("opus")
 
       // The resolved model should be in the available models list
-      const resolvedModel = translated.model
-      const isAvailable = models.some((m) => m.id === resolvedModel)
+      const isAvailable = models.some((m) => m.id === resolved)
 
-      console.log(`[Dynamic] Resolved opus -> ${resolvedModel}, available: ${isAvailable}`)
+      console.log(`[Dynamic] Resolved opus -> ${resolved}, available: ${isAvailable}`)
 
       // If we have models loaded, the resolved model should be available
       if (models.length > 0 && claudeModels.some((m) => m.id.includes("opus"))) {

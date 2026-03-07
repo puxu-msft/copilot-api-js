@@ -7,7 +7,7 @@ import type {
   ChatCompletionUsage,
   JsonSchemaResponseFormat,
   Tool,
-} from "~/types/api/openai"
+} from "~/types/api/openai-chat-completions"
 
 describe("OpenAI Type Definitions", () => {
   describe("ChatCompletionsPayload new fields", () => {

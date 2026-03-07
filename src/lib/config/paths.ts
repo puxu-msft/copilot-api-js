@@ -10,6 +10,8 @@ export const PATHS = {
   APP_DIR,
   GITHUB_TOKEN_PATH,
   CONFIG_YAML: path.join(APP_DIR, "config.yaml"),
+  LEARNED_LIMITS: path.join(APP_DIR, "learned-limits.json"),
+  ERROR_DIR: path.join(APP_DIR, "errmsgs"),
 }
 
 export async function ensurePaths(): Promise<void> {

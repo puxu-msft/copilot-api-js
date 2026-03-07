@@ -2,8 +2,18 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 
-import { getModelFamily, normalizeForMatching, resolveModelName, translateModelName } from "~/lib/models/resolver"
-import { state } from "~/lib/state"
+import { getModelFamily, normalizeForMatching, resolveModelName } from "~/lib/models/resolver"
+import { DEFAULT_MODEL_OVERRIDES, rebuildModelIndex, state } from "~/lib/state"
+
+// Save original state for restoration after each test
+const originalModels = state.models
+const originalModelOverrides = { ...state.modelOverrides }
+
+afterEach(() => {
+  state.models = originalModels
+  rebuildModelIndex()
+  state.modelOverrides = { ...originalModelOverrides }
+})
 
 function mockModel(id: string): Model {
   return {
@@ -17,9 +27,15 @@ function mockModel(id: string): Model {
   }
 }
 
+/** Set state.models and rebuild indexes for testing */
+function setModels(models: typeof state.models): void {
+  state.models = models
+  rebuildModelIndex()
+}
+
 describe("Model Name Translation", () => {
   beforeEach(() => {
-    state.models = {
+    setModels({
       object: "list",
       data: [
         mockModel("claude-opus-4.6"),
@@ -29,76 +45,72 @@ describe("Model Name Translation", () => {
         mockModel("claude-haiku-4.5"),
         mockModel("claude-haiku-3.5"),
       ],
-    }
-  })
-
-  afterEach(() => {
-    state.models = undefined
+    })
   })
 
   test("should map 'opus' to highest-priority available opus model", () => {
-    expect(translateModelName("opus")).toBe("claude-opus-4.6")
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6")
   })
 
   test("should map 'sonnet' to highest-priority available sonnet model", () => {
-    expect(translateModelName("sonnet")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5")
   })
 
   test("should map 'haiku' to highest-priority available haiku model", () => {
-    expect(translateModelName("haiku")).toBe("claude-haiku-4.5")
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4.5")
   })
 
   test("should fall back to next preference when top choice is unavailable", () => {
-    state.models = {
+    setModels({
       object: "list",
       data: [mockModel("claude-opus-41"), mockModel("claude-sonnet-4")],
-    }
+    })
 
     // opus: 4.6 unavailable, 4.5 unavailable, falls to claude-opus-41
-    expect(translateModelName("opus")).toBe("claude-opus-41")
+    expect(resolveModelName("opus")).toBe("claude-opus-41")
     // sonnet: 4.5 unavailable, falls to claude-sonnet-4
-    expect(translateModelName("sonnet")).toBe("claude-sonnet-4")
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4")
     // haiku: 4.5 unavailable, falls back to top preference (default)
-    expect(translateModelName("haiku")).toBe("claude-haiku-4.5")
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4.5")
   })
 
   test("should use top preference when state.models is empty", () => {
-    state.models = { object: "list", data: [] }
-    expect(translateModelName("opus")).toBe("claude-opus-4.6")
-    expect(translateModelName("sonnet")).toBe("claude-sonnet-4.5")
-    expect(translateModelName("haiku")).toBe("claude-haiku-4.5")
+    setModels({ object: "list", data: [] })
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6")
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.6")
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4.5")
   })
 
   test("should handle versioned model names with date suffixes", () => {
-    expect(translateModelName("claude-sonnet-4-5-20250514")).toBe("claude-sonnet-4.5")
-    expect(translateModelName("claude-sonnet-4-20250514")).toBe("claude-sonnet-4")
-    expect(translateModelName("claude-opus-4-5-20250514")).toBe("claude-opus-4.5")
-    expect(translateModelName("claude-opus-4-6-20250514")).toBe("claude-opus-4.6")
-    expect(translateModelName("claude-opus-4-20250514")).toBe("claude-opus-4.6") // claude-opus-4 not available, best opus
-    expect(translateModelName("claude-haiku-4-5-20250514")).toBe("claude-haiku-4.5")
-    expect(translateModelName("claude-haiku-3-5-20250514")).toBe("claude-haiku-3.5")
+    expect(resolveModelName("claude-sonnet-4-5-20250514")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4-20250514")).toBe("claude-sonnet-4")
+    expect(resolveModelName("claude-opus-4-5-20250514")).toBe("claude-opus-4.5")
+    expect(resolveModelName("claude-opus-4-6-20250514")).toBe("claude-opus-4.6")
+    expect(resolveModelName("claude-opus-4-20250514")).toBe("claude-opus-4.6") // claude-opus-4 not available, best opus
+    expect(resolveModelName("claude-haiku-4-5-20250514")).toBe("claude-haiku-4.5")
+    expect(resolveModelName("claude-haiku-3-5-20250514")).toBe("claude-haiku-3.5")
   })
 
   test("should handle hyphenated model names without date suffix", () => {
     // These are sent by Claude Code (e.g., claude-opus-4-6 instead of claude-opus-4.6)
-    expect(translateModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
-    expect(translateModelName("claude-opus-4-5")).toBe("claude-opus-4.5")
-    expect(translateModelName("claude-sonnet-4-5")).toBe("claude-sonnet-4.5")
-    expect(translateModelName("claude-haiku-4-5")).toBe("claude-haiku-4.5")
-    expect(translateModelName("claude-haiku-3-5")).toBe("claude-haiku-3.5")
+    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
+    expect(resolveModelName("claude-opus-4-5")).toBe("claude-opus-4.5")
+    expect(resolveModelName("claude-sonnet-4-5")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-haiku-4-5")).toBe("claude-haiku-4.5")
+    expect(resolveModelName("claude-haiku-3-5")).toBe("claude-haiku-3.5")
   })
 
   test("should pass through direct model names without translation", () => {
-    expect(translateModelName("claude-opus-4.6")).toBe("claude-opus-4.6")
-    expect(translateModelName("claude-sonnet-4")).toBe("claude-sonnet-4")
-    expect(translateModelName("gpt-4")).toBe("gpt-4")
-    expect(translateModelName("custom-model")).toBe("custom-model")
+    expect(resolveModelName("claude-opus-4.6")).toBe("claude-opus-4.6")
+    expect(resolveModelName("claude-sonnet-4")).toBe("claude-sonnet-4")
+    expect(resolveModelName("gpt-4")).toBe("gpt-4")
+    expect(resolveModelName("custom-model")).toBe("custom-model")
   })
 
   test("should use top preference when state.models is undefined", () => {
-    state.models = undefined
-    expect(translateModelName("opus")).toBe("claude-opus-4.6")
-    expect(translateModelName("sonnet")).toBe("claude-sonnet-4.5")
+    setModels(undefined)
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6")
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.6")
   })
 })
 
@@ -127,53 +139,231 @@ describe("getModelFamily", () => {
   })
 })
 
-describe("resolveModelName with redirect", () => {
+describe("model overrides", () => {
   beforeEach(() => {
-    state.models = {
+    setModels({
       object: "list",
       data: [
         mockModel("claude-opus-4.6"),
         mockModel("claude-opus-4.6-fast"),
         mockModel("claude-sonnet-4.5"),
         mockModel("claude-sonnet-4"),
+        mockModel("claude-haiku-4.5"),
       ],
-    }
+    })
   })
+
+  test("should override exact model name to available target", () => {
+    state.modelOverrides = { "claude-sonnet-4.5": "claude-opus-4.6" }
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
+  })
+
+  test("should override short alias to specific model", () => {
+    state.modelOverrides = { sonnet: "claude-opus-4.6" }
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.6")
+  })
+
+  test("should resolve override target as alias when not directly available", () => {
+    // Target "opus" is not in available models, but resolves as short alias
+    state.modelOverrides = { sonnet: "opus" }
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.6")
+  })
+
+  test("should fall back to family preference when override target is unavailable", () => {
+    // Target claude-opus-4.6 is not available, fall back to best opus
+    setModels({
+      object: "list",
+      data: [mockModel("claude-opus-4.5"), mockModel("claude-sonnet-4.5")],
+    })
+    state.modelOverrides = { sonnet: "claude-opus-4.6" }
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.5")
+  })
+
+  test("should match resolved model name when raw name has no override", () => {
+    // "claude-sonnet-4-5" resolves to "claude-sonnet-4.5", then check override
+    state.modelOverrides = { "claude-sonnet-4.5": "claude-opus-4.6" }
+    expect(resolveModelName("claude-sonnet-4-5")).toBe("claude-opus-4.6")
+  })
+
+  test("should not apply override to non-matching models", () => {
+    state.modelOverrides = { sonnet: "claude-opus-4.6" }
+    expect(resolveModelName("claude-opus-4.6")).toBe("claude-opus-4.6")
+    expect(resolveModelName("gpt-4")).toBe("gpt-4")
+  })
+
+  test("should pass through when no overrides configured", () => {
+    state.modelOverrides = {}
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5") // still resolves via internal alias
+  })
+
+  test("should handle override to unknown model as passthrough", () => {
+    state.modelOverrides = { sonnet: "my-custom-model" }
+    // my-custom-model is not available and not a known family — passed through
+    expect(resolveModelName("sonnet")).toBe("my-custom-model")
+  })
+
+  test("default overrides map short aliases to top preferences", () => {
+    // Verify DEFAULT_MODEL_OVERRIDES is applied correctly
+    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES }
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6")
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4.5")
+  })
+
+  test("should follow chained overrides (sonnet → opus → specific model)", () => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.6-1m"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-haiku-4.5"),
+      ],
+    })
+    state.modelOverrides = { opus: "claude-opus-4.6-1m", sonnet: "opus" }
+    // sonnet → opus (override) → claude-opus-4.6-1m (chained override)
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.6-1m")
+    // opus → claude-opus-4.6-1m (direct override)
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should apply family override to full model names (claude-opus-4-6 → family override)", () => {
+    setModels({
+      object: "list",
+      data: [mockModel("claude-opus-4.6"), mockModel("claude-opus-4.6-1m"), mockModel("claude-sonnet-4.5")],
+    })
+    state.modelOverrides = { opus: "claude-opus-4.6-1m" }
+    // claude-opus-4-6 normalizes to claude-opus-4.6, then family override applies
+    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6-1m")
+    // claude-opus-4.6 directly also gets family override
+    expect(resolveModelName("claude-opus-4.6")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should not apply family override when resolved model matches override target", () => {
+    // Default overrides: opus → claude-opus-4.6
+    // claude-opus-4-6 normalizes to claude-opus-4.6, which is the same as the override target
+    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES }
+    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
+  })
+
+  test("should handle circular override chains gracefully", () => {
+    state.modelOverrides = { sonnet: "opus", opus: "sonnet" }
+    // Should not infinite loop — falls back to alias resolution
+    const result = resolveModelName("sonnet")
+    expect(result).toBeDefined()
+  })
+
+  test("user overrides merge with defaults", () => {
+    // Simulate deep merge: user overrides sonnet, keeps default opus/haiku
+    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES, sonnet: "claude-opus-4.6" }
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.6") // user override
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6") // default preserved
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4.5") // default preserved
+  })
+})
+
+describe("family override: propagates to all family members as last-resort fallback", () => {
+  // Simulate the user's real available models list
+  const realModels = {
+    object: "list" as const,
+    data: [
+      mockModel("claude-opus-4.6"),
+      mockModel("claude-opus-4.6-1m"),
+      mockModel("claude-opus-4.5"),
+      mockModel("claude-sonnet-4.6"),
+      mockModel("claude-sonnet-4.5"),
+      mockModel("claude-sonnet-4"),
+      mockModel("claude-haiku-4.5"),
+    ],
+  }
+
+  const overrides: Record<string, string> = {
+    opus: "claude-opus-4.6-1m", // same-family: propagates to all opus models
+    sonnet: "opus", // cross-family: also propagates to all sonnet models
+    haiku: "claude-sonnet-4.6", // cross-family: also propagates to all haiku models
+  }
 
   afterEach(() => {
-    state.models = undefined
-    state.redirectSonnetToOpus = false
+    setModels(undefined)
+    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES }
   })
 
-  test("should redirect sonnet to opus when enabled", () => {
-    const result = resolveModelName("sonnet", { redirectSonnetToOpus: true })
-    expect(result).toBe("claude-opus-4.6")
+  // Same-family override (opus → opus-1m) propagates to all opus models
+  const opusTestCases = [
+    { input: "opus", expected: "claude-opus-4.6-1m" },
+    { input: "claude-opus-4-6", expected: "claude-opus-4.6-1m" },
+    { input: "claude-opus-4.6", expected: "claude-opus-4.6-1m" },
+    { input: "claude-opus-4-5", expected: "claude-opus-4.6-1m" },
+    { input: "claude-opus-4.5", expected: "claude-opus-4.6-1m" },
+    { input: "claude-opus-4-6-20250514", expected: "claude-opus-4.6-1m" },
+    { input: "claude-opus-4-5-20250514", expected: "claude-opus-4.6-1m" },
+  ]
+  for (const { input, expected } of opusTestCases) {
+    test(`same-family propagation: ${input} → ${expected}`, () => {
+      setModels(realModels)
+      state.modelOverrides = { ...overrides }
+      expect(resolveModelName(input)).toBe(expected)
+    })
+  }
+
+  // Cross-family override: also propagates to family members (step 4 fallback)
+  test("cross-family: sonnet → opus propagates to all sonnet family members", () => {
+    setModels(realModels)
+    state.modelOverrides = { ...overrides }
+    // Short alias is redirected (step 1)
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.6-1m")
+    // Specific sonnet models are also redirected (step 4 fallback)
+    expect(resolveModelName("claude-sonnet-4")).toBe("claude-opus-4.6-1m")
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6-1m")
+    expect(resolveModelName("claude-sonnet-4-5")).toBe("claude-opus-4.6-1m")
+    expect(resolveModelName("claude-sonnet-4.6")).toBe("claude-opus-4.6-1m")
   })
 
-  test("should redirect resolved sonnet model to opus", () => {
-    const result = resolveModelName("claude-sonnet-4-5", { redirectSonnetToOpus: true })
-    expect(result).toBe("claude-opus-4.6")
+  test("cross-family: haiku → claude-sonnet-4.6 propagates to all haiku family members", () => {
+    setModels(realModels)
+    state.modelOverrides = { ...overrides }
+    // Short alias is redirected (step 1)
+    expect(resolveModelName("haiku")).toBe("claude-sonnet-4.6")
+    // Specific haiku models are also redirected (step 4 fallback)
+    expect(resolveModelName("claude-haiku-4.5")).toBe("claude-sonnet-4.6")
+    expect(resolveModelName("claude-haiku-4-5")).toBe("claude-sonnet-4.6")
   })
 
-  test("should not redirect when option is false", () => {
-    const result = resolveModelName("sonnet", { redirectSonnetToOpus: false })
-    expect(result).toBe("claude-sonnet-4.5")
+  test("direct override takes precedence over family override", () => {
+    setModels(realModels)
+    // sonnet → opus (family), but claude-sonnet-4.5 has its own direct override
+    state.modelOverrides = {
+      ...overrides,
+      "claude-sonnet-4.5": "claude-haiku-4.5",
+    }
+    // Direct override wins (step 1/3), not family override
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-haiku-4.5")
+    // Other sonnet models still fall through to family override (step 4)
+    expect(resolveModelName("claude-sonnet-4")).toBe("claude-opus-4.6-1m")
   })
 
-  test("should not redirect non-sonnet models", () => {
-    const result = resolveModelName("opus", { redirectSonnetToOpus: true })
-    expect(result).toBe("claude-opus-4.6")
+  test("within-family override: sonnet → claude-sonnet-4.5 propagates to all sonnet", () => {
+    setModels(realModels)
+    state.modelOverrides = { sonnet: "claude-sonnet-4.5" }
+    // Same family, non-default override → propagates
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4.6")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4-5")).toBe("claude-sonnet-4.5")
   })
 
-  test("should redirect sonnet-fast to opus-fast when redirect enabled", () => {
-    const result = resolveModelName("claude-sonnet-4-5-fast", { redirectSonnetToOpus: true })
-    expect(result).toBe("claude-opus-4.6-fast")
+  test("non-Claude models pass through unchanged", () => {
+    setModels(realModels)
+    state.modelOverrides = { ...overrides }
+    expect(resolveModelName("gpt-4")).toBe("gpt-4")
+    expect(resolveModelName("custom-model")).toBe("custom-model")
   })
 })
 
 describe("Modifier suffix handling (-fast)", () => {
   beforeEach(() => {
-    state.models = {
+    setModels({
       object: "list",
       data: [
         mockModel("claude-opus-4.6"),
@@ -183,40 +373,89 @@ describe("Modifier suffix handling (-fast)", () => {
         mockModel("claude-sonnet-4"),
         mockModel("claude-haiku-4.5"),
       ],
-    }
-  })
-
-  afterEach(() => {
-    state.models = undefined
+    })
   })
 
   test("should pass through direct -fast model names", () => {
-    expect(translateModelName("claude-opus-4.6-fast")).toBe("claude-opus-4.6-fast")
+    expect(resolveModelName("claude-opus-4.6-fast")).toBe("claude-opus-4.6-fast")
   })
 
   test("should resolve hyphenated -fast model names", () => {
     // Claude Code sends hyphens instead of dots
-    expect(translateModelName("claude-opus-4-6-fast")).toBe("claude-opus-4.6-fast")
+    expect(resolveModelName("claude-opus-4-6-fast")).toBe("claude-opus-4.6-fast")
   })
 
   test("should resolve short alias with -fast suffix", () => {
     // opus-fast → best opus + -fast
-    expect(translateModelName("opus-fast")).toBe("claude-opus-4.6-fast")
+    expect(resolveModelName("opus-fast")).toBe("claude-opus-4.6-fast")
   })
 
   test("should fall back to base model when -fast variant is unavailable", () => {
     // No claude-sonnet-4.5-fast in available models
-    expect(translateModelName("sonnet-fast")).toBe("claude-sonnet-4.5")
-    expect(translateModelName("claude-sonnet-4-5-fast")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("sonnet-fast")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4-5-fast")).toBe("claude-sonnet-4.5")
   })
 
   test("should handle date suffix with -fast modifier", () => {
-    expect(translateModelName("claude-opus-4-6-20250514-fast")).toBe("claude-opus-4.6-fast")
+    expect(resolveModelName("claude-opus-4-6-20250514-fast")).toBe("claude-opus-4.6-fast")
   })
 
   test("should not strip -fast from non-Claude models", () => {
     // Non-Claude model ending in -fast: suffix is extracted but re-attached
     // Since "gpt-4-fast" is not available, falls back to "gpt-4"
-    expect(translateModelName("gpt-4-fast")).toBe("gpt-4")
+    expect(resolveModelName("gpt-4-fast")).toBe("gpt-4")
+  })
+})
+
+describe("Bracket notation handling [1m]", () => {
+  beforeEach(() => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.6-1m"),
+        mockModel("claude-opus-4.6-fast"),
+        mockModel("claude-opus-4.5"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-sonnet-4"),
+        mockModel("claude-haiku-4.5"),
+      ],
+    })
+  })
+
+  test("should resolve short alias with bracket notation", () => {
+    // opus[1m] → opus-1m → claude-opus-4.6-1m
+    expect(resolveModelName("opus[1m]")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should resolve full model name with bracket notation", () => {
+    // claude-opus-4.6[1m] → claude-opus-4.6-1m
+    expect(resolveModelName("claude-opus-4.6[1m]")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should resolve hyphenated model name with bracket notation", () => {
+    // claude-opus-4-6[1m] → claude-opus-4-6-1m → claude-opus-4.6-1m
+    expect(resolveModelName("claude-opus-4-6[1m]")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should handle case-insensitive bracket content", () => {
+    expect(resolveModelName("opus[1M]")).toBe("claude-opus-4.6-1m")
+    expect(resolveModelName("claude-opus-4.6[1M]")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should fall back to base model when bracket variant is unavailable", () => {
+    // No claude-sonnet-4.5-1m available
+    expect(resolveModelName("sonnet[1m]")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4-5[1m]")).toBe("claude-sonnet-4.5")
+  })
+
+  test("should resolve bracket [fast] notation", () => {
+    expect(resolveModelName("opus[fast]")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should handle date-suffixed model with bracket notation", () => {
+    // claude-opus-4-6-20250514[1m] → claude-opus-4-6-20250514-1m
+    // extractModifierSuffix strips -1m → resolveBase handles date suffix → re-attach -1m
+    expect(resolveModelName("claude-opus-4-6-20250514[1m]")).toBe("claude-opus-4.6-1m")
   })
 })

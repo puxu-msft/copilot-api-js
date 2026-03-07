@@ -17,6 +17,7 @@ import {
   executeWithAdaptiveRateLimit,
   getAdaptiveRateLimiter,
   initAdaptiveRateLimiter,
+  resetAdaptiveRateLimiter,
 } from "~/lib/adaptive-rate-limiter"
 
 // ─── isRateLimitError ───
@@ -179,17 +180,17 @@ describe("AdaptiveRateLimiter configuration", () => {
 // ─── Singleton functions ───
 
 describe("Singleton rate limiter functions", () => {
+  beforeEach(() => {
+    resetAdaptiveRateLimiter()
+  })
+
   afterEach(() => {
-    // Reset singleton by re-initializing (there's no destroy method)
-    // We can't truly reset, but we can verify the API
+    resetAdaptiveRateLimiter()
   })
 
   test("getAdaptiveRateLimiter returns null before initialization", () => {
-    // Note: This test may be affected by other tests that call initAdaptiveRateLimiter
-    // It's primarily documenting the expected behavior
     const limiter = getAdaptiveRateLimiter()
-    // Can be null or an instance depending on test order
-    expect(limiter === null || limiter instanceof AdaptiveRateLimiter).toBe(true)
+    expect(limiter).toBeNull()
   })
 
   test("initAdaptiveRateLimiter creates instance", () => {
@@ -198,11 +199,20 @@ describe("Singleton rate limiter functions", () => {
     expect(limiter).toBeInstanceOf(AdaptiveRateLimiter)
   })
 
-  test("executeWithAdaptiveRateLimit works without initialized limiter", async () => {
-    // When no limiter is initialized, it should execute directly
-    // Note: depends on singleton state from other tests
+  test("executeWithAdaptiveRateLimit executes directly without initialized limiter", async () => {
     const result = await executeWithAdaptiveRateLimit(async () => "direct")
     expect(result.result).toBe("direct")
+    expect(result.queueWaitMs).toBe(0)
+  })
+
+  test("executeWithAdaptiveRateLimit uses limiter when initialized", async () => {
+    initAdaptiveRateLimiter({
+      baseRetryIntervalSeconds: 0.01,
+      requestIntervalSeconds: 0.01,
+    })
+    const result = await executeWithAdaptiveRateLimit(async () => "via-limiter")
+    expect(result.result).toBe("via-limiter")
+    // When going through the limiter in normal mode, queueWaitMs is still 0
     expect(result.queueWaitMs).toBe(0)
   })
 })
@@ -311,5 +321,42 @@ describe("AdaptiveRateLimiter non-429 errors", () => {
     })
 
     await expect(promise1).rejects.toThrow("Server error")
+  })
+})
+
+// ─── Sleep cancellation (shutdown) ───
+
+describe("AdaptiveRateLimiter sleep cancellation", () => {
+  test("rejectQueued cancels pending sleep immediately", async () => {
+    const limiter = new AdaptiveRateLimiter({
+      baseRetryIntervalSeconds: 60, // 60s sleep — would block without cancellation
+      requestIntervalSeconds: 60,
+      consecutiveSuccessesForRecovery: 1,
+      gradualRecoverySteps: [0],
+    })
+
+    let callCount = 0
+    const promise = limiter.execute(async () => {
+      callCount++
+      if (callCount === 1) {
+        throw { status: 429, message: "Rate limited" } // eslint-disable-line @typescript-eslint/only-throw-error -- simulating API error
+      }
+      return "ok"
+    })
+
+    // Wait for rate-limited mode to kick in and sleep to start
+    await Bun.sleep(50)
+
+    // rejectQueued should cancel the 60s sleep immediately
+    const startMs = Date.now()
+    limiter.rejectQueued()
+
+    // The promise should settle quickly (not wait 60s)
+    const result = await promise
+    const elapsed = Date.now() - startMs
+
+    // Key assertion: should not wait 60s for the sleep to finish
+    expect(elapsed).toBeLessThan(2000)
+    expect(result).toEqual({ result: "ok", queueWaitMs: 0 })
   })
 })

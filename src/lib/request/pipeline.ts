@@ -1,13 +1,15 @@
 /**
  * Request execution pipeline with pluggable retry strategies.
  *
- * Unifies the retry loop pattern shared by direct-anthropic-handler,
- * translated-handler, and (soon) completions handler.
+ * Unifies the retry loop pattern shared by all API handlers:
+ * messages, chat-completions, and responses.
  */
 
 import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type { ApiError } from "~/lib/error"
+import type { EndpointType } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 
 import { classifyError } from "~/lib/error"
@@ -25,7 +27,7 @@ export interface SanitizeResult<TPayload> {
 }
 
 export interface FormatAdapter<TPayload> {
-  readonly format: string
+  readonly format: EndpointType
   sanitize(payload: TPayload): SanitizeResult<TPayload>
   /** Execute API call — raw execution without rate limiting wrapper */
   execute(payload: TPayload): Promise<{ result: unknown; queueWaitMs: number }>
@@ -69,6 +71,8 @@ export interface PipelineOptions<TPayload> {
   originalPayload: TPayload
   model: Model | undefined
   maxRetries?: number
+  /** Optional request context for lifecycle tracking */
+  requestContext?: RequestContext
   /** Called before each attempt (for tracking tags, etc.) */
   onBeforeAttempt?: (attempt: number, payload: TPayload) => void
   /** Called after successful truncation retry (for recording rewrites, etc.) */
@@ -86,7 +90,7 @@ export interface PipelineOptions<TPayload> {
  *    - abort or no strategy → throw error
  */
 export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPayload>): Promise<PipelineResult> {
-  const { adapter, strategies, originalPayload, model, maxRetries = 3, onBeforeAttempt, onRetry } = opts
+  const { adapter, strategies, originalPayload, model, maxRetries = 3, requestContext, onBeforeAttempt, onRetry } = opts
 
   let effectivePayload = opts.payload
   let lastError: unknown = null
@@ -94,10 +98,13 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     onBeforeAttempt?.(attempt, effectivePayload)
+    requestContext?.beginAttempt({ strategy: attempt > 0 ? "retry" : undefined })
+    requestContext?.transition("executing")
 
     try {
       const { result: response, queueWaitMs } = await adapter.execute(effectivePayload)
       totalQueueWaitMs += queueWaitMs
+      requestContext?.addQueueWaitMs(queueWaitMs)
 
       return {
         response,
@@ -108,11 +115,12 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
     } catch (error) {
       lastError = error
 
+      // Classify and record the error on the current attempt (always, including final attempt)
+      const apiError = classifyError(error)
+      requestContext?.setAttemptError(apiError)
+
       // Don't retry if we've exhausted attempts
       if (attempt >= maxRetries) break
-
-      // Classify the error
-      const apiError = classifyError(error)
 
       // Find first strategy that can handle this error
       let handled = false
@@ -136,6 +144,7 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
 
             if (action.waitMs && action.waitMs > 0) {
               totalQueueWaitMs += action.waitMs
+              requestContext?.addQueueWaitMs(action.waitMs)
             }
 
             effectivePayload = action.payload

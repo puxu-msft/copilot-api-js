@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
-import type { Message } from "~/lib/openai/client"
 import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
+import type { Message } from "~/types/api/openai-chat-completions"
 
 import {
   ensureAnthropicStartsWithUser,
@@ -90,18 +90,18 @@ describe("System Reminder Tags", () => {
   })
 
   describe("removeSystemReminderTags", () => {
-    test("should remove malware reminder tags", () => {
+    test("should preserve all tags by default (rewriteSystemReminders=false)", () => {
       const malwareContent = "Whenever you read a file, you should consider whether it would be considered malware."
       const text = `code here\n<system-reminder>\n${malwareContent}\n</system-reminder>`
 
       const result = removeSystemReminderTags(text)
-      expect(result).toBe("code here")
+      // Default state.rewriteSystemReminders is false — all tags are preserved
+      expect(result).toBe(text)
     })
 
-    test("should preserve non-matching tags", () => {
+    test("should preserve other tags by default too", () => {
       const text = "content\n<system-reminder>\nSome other reminder\n</system-reminder>"
       const result = removeSystemReminderTags(text)
-      // Non-malware tags should be preserved
       expect(result).toBe(text)
     })
 
@@ -436,7 +436,8 @@ describe("Anthropic Orphan Filter", () => {
       expect(result.removedCount).toBe(0)
     })
 
-    test("sanitizeAnthropicMessages should fix double-serialized server_tool_use input", () => {
+    test("sanitizeAnthropicMessages should fix double-serialized server_tool_use input (non-final assistant)", () => {
+      // When the assistant message is NOT the last message, input deserialization should work
       const payload: MessagesPayload = {
         model: "claude-sonnet-4",
         max_tokens: 1024,
@@ -455,6 +456,8 @@ describe("Anthropic Orphan Filter", () => {
               { type: "tool_search_tool_result", tool_use_id: "srv_1", content: [] } as any,
             ],
           },
+          // Add a user message after so the assistant message is not the final one
+          { role: "user", content: "continue" },
         ],
       }
 
@@ -873,7 +876,7 @@ describe("Tool Name Case Correction", () => {
     }
   })
 
-  test("should filter orphaned tool_use blocks", () => {
+  test("should filter orphaned tool_use blocks (non-final assistant)", () => {
     const payload = makePayload(
       [
         { role: "user", content: "hello" },
@@ -884,6 +887,8 @@ describe("Tool Name Case Correction", () => {
             { type: "tool_use", id: "orphan_tu", name: "Bash", input: {} },
           ],
         },
+        // Add user message so the assistant is not the final message
+        { role: "user", content: "continue" },
       ],
       [{ name: "Bash" }],
     )
@@ -897,7 +902,35 @@ describe("Tool Name Case Correction", () => {
     }
   })
 
-  test("should skip entire message if all tool_use blocks are orphaned", () => {
+  test("should preserve original message object when no modifications are needed", () => {
+    // When no tool_use blocks are orphaned and no name/input fixes are needed,
+    // the original message object should be returned as-is. This is critical for
+    // messages with thinking blocks whose signatures the API validates.
+    const assistantMsg = {
+      role: "assistant" as const,
+      content: [
+        { type: "text" as const, text: "Here is the result." },
+        { type: "tool_use" as const, id: "tu_1", name: "Bash", input: { command: "ls" } },
+      ],
+    }
+    const payload = makePayload(
+      [
+        { role: "user", content: "hello" },
+        assistantMsg,
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "tu_1", content: "file.txt" }],
+        },
+      ],
+      [{ name: "Bash" }],
+    )
+
+    const result = sanitizeAnthropicMessages(payload)
+    // The assistant message should be the exact same object reference
+    expect(result.payload.messages[1]).toBe(assistantMsg)
+  })
+
+  test("should skip entire message if all tool_use blocks are orphaned (non-final assistant)", () => {
     const payload = makePayload(
       [
         { role: "user", content: "hello" },
@@ -905,13 +938,16 @@ describe("Tool Name Case Correction", () => {
           role: "assistant",
           content: [{ type: "tool_use", id: "orphan_tu", name: "Bash", input: {} }],
         },
+        // Add user message so the assistant is not the final message
+        { role: "user", content: "continue" },
       ],
       [{ name: "Bash" }],
     )
 
     const result = sanitizeAnthropicMessages(payload)
     // The assistant message with only orphaned tool_use should be removed entirely
-    expect(result.payload.messages).toHaveLength(1)
+    // Messages should be: user "hello", user "continue" (assistant removed)
+    expect(result.payload.messages).toHaveLength(2)
     expect(result.payload.messages[0].role).toBe("user")
   })
 
@@ -1191,7 +1227,7 @@ describe("Server Tool Use Support", () => {
       }
     })
 
-    test("should filter orphaned server_tool_use without matching web_search_tool_result", () => {
+    test("should filter orphaned server_tool_use without matching web_search_tool_result (non-final assistant)", () => {
       const payload = makePayload([
         { role: "user", content: "hello" },
         {
@@ -1201,6 +1237,8 @@ describe("Server Tool Use Support", () => {
             { type: "server_tool_use", id: "orphan_stu", name: "web_search", input: { query: "test" } },
           ],
         },
+        // Add user message so the assistant is not the final message
+        { role: "user", content: "continue" },
       ])
 
       const result = sanitizeAnthropicMessages(payload)

@@ -108,7 +108,7 @@ export interface UserMessage {
 
 export interface AssistantMessage {
   role: "assistant"
-  content: string | Array<ContentBlock>
+  content: string | Array<ContentBlockParam>
 }
 
 // ============================================================================

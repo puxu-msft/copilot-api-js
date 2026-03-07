@@ -5,24 +5,25 @@
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
-import type { ChatCompletionsPayload } from "~/lib/openai/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
+import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { onRequestTooLarge } from "~/lib/auto-truncate-common"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { bytesToKB } from "~/lib/utils"
 
 /**
  * Log helpful debugging information when a 413 error occurs.
- * Also adjusts the dynamic byte limit for future requests.
+ *
+ * @param precomputedBytes - Optional pre-computed payload byte size to avoid redundant JSON.stringify
  */
-export async function logPayloadSizeInfo(payload: ChatCompletionsPayload, model: Model | undefined) {
+export async function logPayloadSizeInfo(
+  payload: ChatCompletionsPayload,
+  model: Model | undefined,
+  precomputedBytes?: number,
+) {
   const messageCount = payload.messages.length
-  const bodySize = JSON.stringify(payload).length
+  const bodySize = precomputedBytes ?? JSON.stringify(payload).length
   const bodySizeKB = bytesToKB(bodySize)
-
-  // Adjust the dynamic byte limit for future requests
-  onRequestTooLarge(bodySize)
 
   // Count images and large messages
   let imageCount = 0

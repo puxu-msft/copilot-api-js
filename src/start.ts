@@ -9,16 +9,23 @@ import type { Model } from "./lib/models/client"
 
 import packageJson from "../package.json"
 import { initAdaptiveRateLimiter } from "./lib/adaptive-rate-limiter"
-import { cacheVSCodeVersion } from "./lib/config/api"
+import { loadPersistedLimits } from "./lib/auto-truncate"
+import { applyConfigToState } from "./lib/config/config"
 import { ensurePaths } from "./lib/config/paths"
-import { initProxyFromEnv } from "./lib/config/proxy"
+import { registerContextConsumers } from "./lib/context/consumers"
+import { initRequestContextManager } from "./lib/context/manager"
+import { cacheVSCodeVersion } from "./lib/copilot-api"
 import { initHistory } from "./lib/history"
 import { cacheModels } from "./lib/models/client"
+import { getEffectiveEndpoints } from "./lib/models/endpoint"
+import { resolveModelName } from "./lib/models/resolver"
+import { formatProxyDisplay, initProxy } from "./lib/proxy"
 import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { initTuiLogger } from "./lib/tui"
 import { initHistoryWebSocket } from "./routes/history/route"
+import { initResponsesWebSocket } from "./routes/responses/ws"
 import { server } from "./server"
 
 /** Format limit values as "Xk" or "?" if not available */
@@ -26,6 +33,14 @@ function formatLimit(value?: number): string {
   return value ? `${Math.round(value / 1000)}k` : "?"
 }
 
+/**
+ * Format a model as 3 lines: main info, features, and supported endpoints.
+ *
+ * Example output:
+ *   - claude-opus-4.6-1m (Anthropic)               ctx:1000k prp: 936k out:  64k
+ *       features:  adaptive-thinking, thinking, streaming, vision, tool-calls
+ *       endpoints: /v1/messages, /chat/completions
+ */
 function formatModelInfo(model: Model): string {
   const limits = model.capabilities?.limits
   const supports = model.capabilities?.supports
@@ -34,30 +49,36 @@ function formatModelInfo(model: Model): string {
   const promptK = formatLimit(limits?.max_prompt_tokens)
   const outputK = formatLimit(limits?.max_output_tokens)
 
+  // Main line: model id (vendor) + token limits
+  const label = `${model.id} (${model.vendor})`
+  const padded = label.length > 45 ? `${label.slice(0, 42)}...` : label.padEnd(45)
+  const mainLine =
+    `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
+
+  // Features line: boolean capabilities + inferred features
   const features = [
-    // Collect all boolean true capabilities from supports
     ...Object.entries(supports ?? {})
       .filter(([, value]) => value === true)
       .map(([key]) => key.replaceAll("_", "-")),
-    // Infer additional capabilities
     supports?.max_thinking_budget && "thinking",
     model.capabilities?.type === "embeddings" && "embeddings",
     model.preview && "preview",
   ]
     .filter(Boolean)
     .join(", ")
-  const featureStr = features ? ` (${features})` : ""
+  const featLine = features ? pc.dim(`      features:  ${features}`) : ""
 
-  // Truncate long model names to maintain alignment
-  const modelName = model.id.length > 25 ? `${model.id.slice(0, 22)}...` : model.id.padEnd(25)
+  // Endpoints line: from supported_endpoints or inferred from capabilities.type
+  const endpoints = formatEndpoints(getEffectiveEndpoints(model))
+  const endpLine = pc.dim(`      endpoints: ${endpoints}`)
 
-  return (
-    `  - ${modelName} `
-    + `ctx:${contextK.padStart(5)} `
-    + `prp:${promptK.padStart(5)} `
-    + `out:${outputK.padStart(5)}`
-    + featureStr
-  )
+  return [mainLine, featLine, endpLine].filter(Boolean).join("\n")
+}
+
+/** Format endpoint paths for display */
+function formatEndpoints(endpoints?: Array<string>): string {
+  if (!endpoints || endpoints.length === 0) return "(unknown)"
+  return endpoints.join(", ")
 }
 
 /** Parse an integer from a string, returning a default if the result is NaN. */
@@ -71,25 +92,14 @@ interface RunServerOptions {
   host?: string
   verbose: boolean
   accountType: "individual" | "business" | "enterprise"
-  manual: boolean
-  // Adaptive rate limiting options (disabled if rateLimit is false)
+  // Adaptive rate limiting (disabled if rateLimit is false)
   rateLimit: boolean
-  retryInterval: number
-  requestInterval: number
-  recoveryTimeout: number
-  consecutiveSuccesses: number
   githubToken?: string
   showGitHubToken: boolean
-  proxyEnv: boolean
-  historyLimit: number
+  /** Explicit proxy URL (CLI --proxy). Takes precedence over config.yaml and env vars. */
+  proxy?: string
+  httpProxyFromEnv: boolean
   autoTruncate: boolean
-  compressToolResults: boolean
-  redirectAnthropic: boolean
-  rewriteAnthropicTools: boolean
-  redirectCountTokens: boolean
-  redirectSonnetToOpus: boolean
-  historyWebSocket: boolean
-  collectSystemPrompts: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -106,65 +116,124 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   consola.info(`copilot-api v${packageJson.version}`)
 
-  if (options.proxyEnv) {
-    initProxyFromEnv()
-  }
-
-  // Set global state from options
+  // Set global state from CLI options
   state.accountType = options.accountType
-  state.manualApprove = options.manual
   state.showGitHubToken = options.showGitHubToken
   state.autoTruncate = options.autoTruncate
-  state.compressToolResults = options.compressToolResults
-  state.redirectAnthropic = options.redirectAnthropic
-  state.rewriteAnthropicTools = options.rewriteAnthropicTools
-  state.redirectCountTokens = options.redirectCountTokens
-  state.redirectSonnetToOpus = options.redirectSonnetToOpus
-  state.historyWebSocket = options.historyWebSocket
-  state.collectSystemPrompts = options.collectSystemPrompts
+
+  // ===========================================================================
+  // Phase 2.5: Load config.yaml and apply runtime settings
+  // ===========================================================================
+  // ensurePaths must run first so the config directory exists
+  await ensurePaths()
+
+  const config = await applyConfigToState()
+
+  // ===========================================================================
+  // Phase 2.6: Initialize proxy (must be before any network requests)
+  // ===========================================================================
+  // Priority: CLI --proxy > config.yaml proxy > env vars (--http-proxy-from-env)
+  const proxyUrl = options.proxy ?? config.proxy
+  initProxy({ url: proxyUrl, fromEnv: !proxyUrl && options.httpProxyFromEnv })
 
   // Log configuration status for all features
+  // Source labels: --flag for CLI options, [key] for config.yaml options
   const configLines: Array<string> = []
-  const on = (label: string, detail?: string) =>
-    configLines.push(`  ${label}: ON${detail ? ` ${pc.dim(`(${detail})`)}` : ""}`)
-  const off = (label: string) => configLines.push(pc.dim(`  ${label}: OFF`))
-  const toggle = (flag: boolean | undefined, label: string, detail?: string) => (flag ? on(label, detail) : off(label))
+  const on = (source: string, label: string, detail?: string) =>
+    configLines.push(`  ${pc.dim(source)} ${label}: ON${detail ? ` ${pc.dim(`(${detail})`)}` : ""}`)
+  const off = (source: string, label: string) => configLines.push(pc.dim(`  ${source} ${label}: OFF`))
+  const toggle = (flag: boolean | undefined, source: string, label: string, detail?: string) =>
+    flag ? on(source, label, detail) : off(source, label)
 
-  toggle(options.verbose, "Verbose logging")
-  configLines.push(`  Account type: ${options.accountType}`)
+  toggle(options.verbose, "--verbose", "Verbose logging")
+  configLines.push(`  ${pc.dim("--account-type")} Account type: ${options.accountType}`)
+
+  // Rate limiter: merge CLI flag (enable/disable) with config.yaml sub-parameters
+  const rlConfig = config.rate_limiter
+  const rlRetryInterval = rlConfig?.retry_interval ?? 10
+  const rlRequestInterval = rlConfig?.request_interval ?? 10
+  const rlRecoveryTimeout = rlConfig?.recovery_timeout ?? 10
+  const rlConsecutiveSuccesses = rlConfig?.consecutive_successes ?? 5
 
   if (options.rateLimit) {
     on(
+      "--rate-limit",
       "Rate limiter",
-      `retry=${options.retryInterval}s interval=${options.requestInterval}s recovery=${options.recoveryTimeout}m successes=${options.consecutiveSuccesses}`,
+      `retry=${rlRetryInterval}s interval=${rlRequestInterval}s recovery=${rlRecoveryTimeout}m successes=${rlConsecutiveSuccesses}`,
     )
   } else {
-    off("Rate limiter")
+    off("--rate-limit", "Rate limiter")
   }
 
   if (options.autoTruncate) {
-    const detail = options.compressToolResults ? "reactive, compress" : "reactive"
-    on("Auto-truncate", detail)
+    const detail = state.compressToolResultsBeforeTruncate ? "reactive, compress" : "reactive"
+    on("--auto-truncate", "Auto-truncate", detail)
   } else {
-    off("Auto-truncate")
+    off("--auto-truncate", "Auto-truncate")
   }
 
-  if (options.compressToolResults && !options.autoTruncate) {
+  if (state.compressToolResultsBeforeTruncate && !options.autoTruncate) {
     // Only show separately if auto-truncate is off but compress is on (unusual)
-    on("Compress tool results")
+    on("[compress_tool_results_before_truncate]", "Compress tool results")
   }
-  toggle(options.redirectAnthropic, "Redirect Anthropic", "via OpenAI translation")
-  toggle(options.rewriteAnthropicTools, "Rewrite Anthropic tools")
-  toggle(options.redirectCountTokens, "Redirect count tokens", "via OpenAI translation")
-  toggle(options.manual, "Manual approval")
-  toggle(options.proxyEnv, "Proxy from env")
-  toggle(options.showGitHubToken, "Show GitHub token")
-  toggle(options.redirectSonnetToOpus, "Redirect sonnet to opus")
-  toggle(options.historyWebSocket, "History WebSocket", "real-time updates")
-  toggle(options.collectSystemPrompts, "Collect system prompts")
+  toggle(state.convertServerToolsToCustom, "[anthropic.convert_server_tools_to_custom]", "Convert server tools")
+  if (proxyUrl) {
+    on(options.proxy ? "--proxy" : "[proxy]", "Proxy", formatProxyDisplay(proxyUrl))
+  } else if (options.httpProxyFromEnv) {
+    on("--http-proxy-from-env", "Proxy", "from env")
+  } else {
+    off("--http-proxy-from-env", "Proxy")
+  }
+  toggle(options.showGitHubToken, "--show-github-token", "Show GitHub token")
+  const overrideEntries = Object.entries(state.modelOverrides)
+  if (overrideEntries.length > 0) {
+    on("[model_overrides]", "Model overrides")
+  } else {
+    off("[model_overrides]", "Model overrides")
+  }
+  if (state.dedupToolCalls) {
+    on("[anthropic.dedup_tool_calls]", "Dedup tool calls", `mode: ${state.dedupToolCalls}`)
+  } else {
+    off("[anthropic.dedup_tool_calls]", "Dedup tool calls")
+  }
+  toggle(state.truncateReadToolResult, "[anthropic.truncate_read_tool_result]", "Truncate Read tool result")
+  if (state.rewriteSystemReminders === true) {
+    on("[anthropic.rewrite_system_reminders]", "Rewrite system reminders", "remove all")
+  } else if (state.rewriteSystemReminders === false) {
+    off("[anthropic.rewrite_system_reminders]", "Rewrite system reminders")
+  } else {
+    on(
+      "[anthropic.rewrite_system_reminders]",
+      "Rewrite system reminders",
+      `${state.rewriteSystemReminders.length} rules`,
+    )
+  }
 
-  const historyLimitText = options.historyLimit === 0 ? "unlimited" : `max=${options.historyLimit}`
-  on("History", historyLimitText)
+  // Show timeout settings (always show since streamIdleTimeout defaults to 300)
+  {
+    const parts: Array<string> = []
+    if (state.fetchTimeout > 0) parts.push(`fetch=${state.fetchTimeout}s`)
+    parts.push(`stream-idle=${state.streamIdleTimeout}s`)
+    if (state.staleRequestMaxAge > 0) parts.push(`stale-reaper=${state.staleRequestMaxAge}s`)
+    on("[timeouts]", "Timeouts", parts.join(", "))
+  }
+
+  const historyLimitText = state.historyLimit === 0 ? "unlimited" : `max=${state.historyLimit}`
+  on("[history_limit]", "History", historyLimitText)
+
+  // Shutdown timing
+  on("[shutdown]", "Shutdown", `graceful=${state.shutdownGracefulWait}s, abort=${state.shutdownAbortWait}s`)
+
+  // System prompt modifications
+  if (state.systemPromptOverrides.length > 0) {
+    on("[system_prompt_overrides]", "System prompt overrides", `${state.systemPromptOverrides.length} rules`)
+  }
+  if (config.system_prompt_prepend) {
+    on("[system_prompt_prepend]", "System prompt prepend", `${config.system_prompt_prepend.length} chars`)
+  }
+  if (config.system_prompt_append) {
+    on("[system_prompt_append]", "System prompt append", `${config.system_prompt_append.length} chars`)
+  }
 
   consola.info(`Configuration:\n${configLines.join("\n")}`)
 
@@ -173,25 +242,31 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   if (options.rateLimit) {
     initAdaptiveRateLimiter({
-      baseRetryIntervalSeconds: options.retryInterval,
-      requestIntervalSeconds: options.requestInterval,
-      recoveryTimeoutMinutes: options.recoveryTimeout,
-      consecutiveSuccessesForRecovery: options.consecutiveSuccesses,
+      baseRetryIntervalSeconds: rlRetryInterval,
+      requestIntervalSeconds: rlRequestInterval,
+      recoveryTimeoutMinutes: rlRecoveryTimeout,
+      consecutiveSuccessesForRecovery: rlConsecutiveSuccesses,
     })
   }
 
-  initHistory(true, options.historyLimit)
+  initHistory(true, state.historyLimit)
+
+  // Initialize request context manager and register event consumers
+  // Must be after initHistory so history store is ready to receive events
+  const contextManager = initRequestContextManager()
+  registerContextConsumers(contextManager)
+
+  // Start stale request reaper (periodic cleanup of stuck active contexts)
+  contextManager.startReaper()
+
+  // Initialize TUI request tracking (renderer was created in main.ts via initConsolaReporter)
+  initTuiLogger()
 
   // ===========================================================================
-  // Phase 4: External Dependencies (filesystem, network)
+  // Phase 4: External Dependencies (network)
   // ===========================================================================
-  await ensurePaths()
-
-  try {
-    await cacheVSCodeVersion()
-  } catch (error) {
-    consola.warn("Failed to fetch VSCode version, using default:", error instanceof Error ? error.message : error)
-  }
+  // cacheVSCodeVersion is independent network call
+  await cacheVSCodeVersion()
 
   // Initialize token management and authenticate
   await initTokenManagers({ cliToken: options.githubToken })
@@ -205,22 +280,53 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   consola.info(`Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`)
 
+  // Load previously learned auto-truncate limits (calibration + token limits)
+  await loadPersistedLimits()
+
+  // Show resolved model overrides after models are fetched
+  const availableIds = state.models?.data.map((m) => m.id) ?? []
+  const overrideLines = Object.entries(state.modelOverrides)
+    .map(([from, to]) => {
+      const resolved = resolveModelName(from)
+      const colorize = (name: string) => (availableIds.includes(name) ? name : pc.red(name))
+      if (resolved !== to) {
+        return `  - ${from} → ${to} ${pc.dim(`(→ ${colorize(resolved)})`)}`
+      }
+      return `  - ${from} → ${colorize(to)}`
+    })
+    .join("\n")
+  if (overrideLines) {
+    consola.info(`Model overrides:\n${overrideLines}`)
+  }
+
   // ===========================================================================
   // Phase 5: Start Server
   // ===========================================================================
   const displayHost = options.host ?? "localhost"
   const serverUrl = `http://${displayHost}:${options.port}`
 
-  // Initialize TUI logger now that we're ready to handle requests
-  initTuiLogger()
-
-  // Initialize history WebSocket support (registers /history/ws route)
-  // Must be called before server starts so routes are ready, but the returned
-  // injectWebSocket function (Node.js only) is called after server creation.
-  let injectWebSocket: ((httpServer: import("node:http").Server) => void) | undefined
-  if (options.historyWebSocket) {
-    injectWebSocket = await initHistoryWebSocket(server)
+  // Bun + srvx workaround: srvx's bun adapter wraps the fetch handler and
+  // drops the `server` parameter that Bun.serve normally passes as the second
+  // arg to fetch. hono/bun's upgradeWebSocket needs `c.env.server` to call
+  // server.upgrade(). srvx stores the server on `request.runtime.bun.server`,
+  // so we forward it into Hono's env via middleware.
+  // Must be registered BEFORE any WebSocket routes so Hono dispatches it first.
+  if (typeof globalThis.Bun !== "undefined") {
+    server.use("*", async (c, next) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const runtime = (c.req.raw as any).runtime as { bun?: { server?: unknown } } | undefined
+      if (runtime?.bun?.server) {
+        c.env = { server: runtime.bun.server }
+      }
+      await next()
+    })
   }
+
+  // Initialize WebSocket support (registers WS upgrade routes)
+  // Must be called after the Bun server injection middleware above, and before
+  // the srvx serve() call so routes are ready when the server starts.
+  const injectHistoryWs = await initHistoryWebSocket(server)
+  const injectResponsesWs = await initResponsesWebSocket(server)
 
   consola.box(
     `Web UI:\n🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage\n📜 History UI:   ${serverUrl}/history`,
@@ -260,11 +366,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setServerInstance(serverInstance)
   setupShutdownHandlers()
 
-  // Inject WebSocket upgrade handler into Node.js HTTP server (no-op under Bun)
-  if (injectWebSocket) {
+  // Inject WebSocket upgrade handlers into Node.js HTTP server (no-op under Bun)
+  if (injectHistoryWs || injectResponsesWs) {
     const nodeServer = serverInstance.node?.server
     if (nodeServer && "on" in nodeServer) {
-      injectWebSocket(nodeServer as import("node:http").Server)
+      const ns = nodeServer as import("node:http").Server
+      injectHistoryWs?.(ns)
+      injectResponsesWs?.(ns)
     }
   }
 
@@ -303,35 +411,10 @@ export const start = defineCommand({
       default: "individual",
       description: "Account type to use (individual, business, enterprise)",
     },
-    manual: {
+    "rate-limit": {
       type: "boolean",
-      default: false,
-      description: "Enable manual request approval",
-    },
-    "no-rate-limit": {
-      type: "boolean",
-      default: false,
-      description: "Disable adaptive rate limiting",
-    },
-    "retry-interval": {
-      type: "string",
-      default: "10",
-      description: "Seconds to wait before retrying after rate limit error (default: 10)",
-    },
-    "request-interval": {
-      type: "string",
-      default: "10",
-      description: "Seconds between requests in rate-limited mode (default: 10)",
-    },
-    "recovery-timeout": {
-      type: "string",
-      default: "10",
-      description: "Minutes before attempting to recover from rate-limited mode (default: 10)",
-    },
-    "consecutive-successes": {
-      type: "string",
-      default: "5",
-      description: "Number of consecutive successes needed to recover from rate-limited mode (default: 5)",
+      default: true,
+      description: "Adaptive rate limiting (disable with --no-rate-limit)",
     },
     "github-token": {
       alias: "g",
@@ -343,56 +426,21 @@ export const start = defineCommand({
       default: false,
       description: "Show GitHub token in logs (use --verbose for Copilot token refresh logs)",
     },
-    "proxy-env": {
-      type: "boolean",
-      default: false,
-      description: "Initialize proxy from environment variables",
-    },
-    "history-limit": {
+    proxy: {
       type: "string",
-      default: "200",
-      description: "Maximum number of history entries to keep in memory (0 = unlimited)",
-    },
-    "no-auto-truncate": {
-      type: "boolean",
-      default: false,
       description:
-        "Disable reactive auto-truncate (enabled by default: retries with truncated payload on limit errors)",
+        "Proxy URL for all outgoing requests (http://, https://, socks5://, socks5h://). Overrides config.yaml and env vars.",
     },
-    "no-compress-tool-results": {
+    "http-proxy-from-env": {
       type: "boolean",
-      default: false,
-      description: "Disable compressing old tool_result content during auto-truncate",
+      default: true,
+      description: "Use HTTP proxy from environment variables (disable with --no-http-proxy-from-env)",
     },
-    "redirect-anthropic": {
+    "auto-truncate": {
       type: "boolean",
-      default: false,
-      description: "Redirect Anthropic models through OpenAI translation (instead of direct API)",
-    },
-    "no-rewrite-anthropic-tools": {
-      type: "boolean",
-      default: false,
-      description: "Don't rewrite Anthropic server-side tools (web_search, etc.) to custom tool format",
-    },
-    "redirect-count-tokens": {
-      type: "boolean",
-      default: false,
-      description: "Redirect count_tokens through OpenAI translation (instead of native Anthropic counting)",
-    },
-    "redirect-sonnet-to-opus": {
-      type: "boolean",
-      default: false,
-      description: "Redirect sonnet model requests to best available opus model",
-    },
-    "no-history-websocket": {
-      type: "boolean",
-      default: false,
-      description: "Disable WebSocket real-time updates for history UI",
-    },
-    "collect-system-prompts": {
-      type: "boolean",
-      default: false,
-      description: "Collect and save original system prompts to data directory (dedup by MD5)",
+      default: true,
+      description:
+        "Reactive auto-truncate: retries with truncated payload on limit errors (disable with --no-auto-truncate)",
     },
   },
   run({ args }) {
@@ -413,25 +461,9 @@ export const start = defineCommand({
       "account-type",
       "accountType",
       "a",
-      // manual
-      "manual",
-      // no-rate-limit (citty also stores "rate-limit" when parsing --no-rate-limit)
-      "no-rate-limit",
-      "noRateLimit",
+      // rate-limit (citty handles --no-rate-limit via built-in negation)
       "rate-limit",
       "rateLimit",
-      // retry-interval
-      "retry-interval",
-      "retryInterval",
-      // request-interval
-      "request-interval",
-      "requestInterval",
-      // recovery-timeout
-      "recovery-timeout",
-      "recoveryTimeout",
-      // consecutive-successes
-      "consecutive-successes",
-      "consecutiveSuccesses",
       // github-token
       "github-token",
       "githubToken",
@@ -439,44 +471,14 @@ export const start = defineCommand({
       // show-github-token
       "show-github-token",
       "showGithubToken",
-      // proxy-env
-      "proxy-env",
-      "proxyEnv",
-      // history-limit
-      "history-limit",
-      "historyLimit",
-      // no-auto-truncate (citty also stores "auto-truncate" when parsing --no-auto-truncate)
-      "no-auto-truncate",
-      "noAutoTruncate",
+      // proxy
+      "proxy",
+      // http-proxy-from-env (citty handles --no-http-proxy-from-env via built-in negation)
+      "http-proxy-from-env",
+      "httpProxyFromEnv",
+      // auto-truncate (citty handles --no-auto-truncate via built-in negation)
       "auto-truncate",
       "autoTruncate",
-      // no-compress-tool-results (citty also stores "compress-tool-results")
-      "no-compress-tool-results",
-      "noCompressToolResults",
-      "compress-tool-results",
-      "compressToolResults",
-      // redirect-anthropic
-      "redirect-anthropic",
-      "redirectAnthropic",
-      // no-rewrite-anthropic-tools (citty also stores "rewrite-anthropic-tools")
-      "no-rewrite-anthropic-tools",
-      "noRewriteAnthropicTools",
-      "rewrite-anthropic-tools",
-      "rewriteAnthropicTools",
-      // redirect-count-tokens
-      "redirect-count-tokens",
-      "redirectCountTokens",
-      // redirect-sonnet-to-opus
-      "redirect-sonnet-to-opus",
-      "redirectSonnetToOpus",
-      // no-history-websocket (citty also stores "history-websocket")
-      "no-history-websocket",
-      "noHistoryWebsocket",
-      "history-websocket",
-      "historyWebsocket",
-      // collect-system-prompts
-      "collect-system-prompts",
-      "collectSystemPrompts",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
@@ -488,24 +490,12 @@ export const start = defineCommand({
       host: args.host,
       verbose: args.verbose,
       accountType: args["account-type"] as "individual" | "business" | "enterprise",
-      manual: args.manual,
-      rateLimit: !args["no-rate-limit"],
-      retryInterval: parseIntOrDefault(args["retry-interval"], 10),
-      requestInterval: parseIntOrDefault(args["request-interval"], 10),
-      recoveryTimeout: parseIntOrDefault(args["recovery-timeout"], 10),
-      consecutiveSuccesses: parseIntOrDefault(args["consecutive-successes"], 5),
+      rateLimit: args["rate-limit"],
       githubToken: args["github-token"],
       showGitHubToken: args["show-github-token"],
-      proxyEnv: args["proxy-env"],
-      historyLimit: parseIntOrDefault(args["history-limit"], 200),
-      autoTruncate: !args["no-auto-truncate"],
-      compressToolResults: !args["no-compress-tool-results"],
-      redirectAnthropic: args["redirect-anthropic"],
-      rewriteAnthropicTools: !args["no-rewrite-anthropic-tools"],
-      redirectCountTokens: args["redirect-count-tokens"],
-      redirectSonnetToOpus: args["redirect-sonnet-to-opus"],
-      historyWebSocket: !args["no-history-websocket"],
-      collectSystemPrompts: args["collect-system-prompts"],
+      proxy: args.proxy,
+      httpProxyFromEnv: args["http-proxy-from-env"],
+      autoTruncate: args["auto-truncate"],
     })
   },
 })

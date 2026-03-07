@@ -1,8 +1,8 @@
 /**
  * Integration tests for history WebSocket notifications.
  *
- * Verifies the real data flow: store operations (recordRequest, recordResponse,
- * recordRewrites) trigger WebSocket broadcasts to connected clients.
+ * Verifies the real data flow: store operations (insertEntry, updateEntry)
+ * trigger WebSocket broadcasts of EntrySummary to connected clients.
  *
  * Uses mock WebSocket clients to capture broadcast messages without needing
  * a real HTTP server or WebSocket upgrade.
@@ -10,18 +10,20 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
-import type { RecordRequestParams, RecordResponseParams, RewriteInfo, WSMessage } from "~/lib/history"
+import type { EndpointType, EntrySummary, HistoryEntry, RewriteInfo, WSMessage } from "~/lib/history"
 
 import {
   addClient,
   clearHistory,
   closeAllClients,
+  deleteSession,
+  getCurrentSession,
   getClientCount,
   initHistory,
-  recordRequest,
-  recordResponse,
-  recordRewrites,
+  insertEntry,
+  updateEntry,
 } from "~/lib/history"
+import { generateId } from "~/lib/utils"
 
 // ─── Helpers ───
 
@@ -54,23 +56,35 @@ function getSentMessages(ws: WebSocket): Array<WSMessage> {
   return sendMock.mock.calls.map((call: Array<unknown>) => JSON.parse(call[0] as string))
 }
 
-function getLastSentMessage(ws: WebSocket): WSMessage {
+/** Get the last sent message of a specific type */
+function getLastSentMessageOfType(ws: WebSocket, type: string): WSMessage {
   const msgs = getSentMessages(ws)
-  return msgs.at(-1)!
+  return msgs.findLast((m) => m.type === type)!
 }
 
-const sampleRequest: RecordRequestParams = {
-  model: "claude-sonnet-4-20250514",
-  messages: [{ role: "user", content: "Hello" }],
-  stream: false,
-}
-
-const sampleResponse: RecordResponseParams = {
-  success: true,
-  model: "claude-sonnet-4-20250514",
-  usage: { input_tokens: 10, output_tokens: 20 },
-  stop_reason: "end_turn",
-  content: { role: "assistant", content: "Hi there!" },
+/** Helper: create and insert a minimal history entry */
+function createEntry(
+  endpoint: EndpointType,
+  request: Partial<HistoryEntry["request"]> & { model: string },
+): HistoryEntry {
+  const sessionId = getCurrentSession(endpoint)
+  const entry: HistoryEntry = {
+    id: generateId(),
+    sessionId,
+    timestamp: Date.now(),
+    endpoint,
+    request: {
+      model: request.model,
+      messages: request.messages ?? [{ role: "user", content: "Hello" }],
+      stream: request.stream ?? false,
+      tools: request.tools,
+      max_tokens: request.max_tokens,
+      temperature: request.temperature,
+      system: request.system,
+    },
+  }
+  insertEntry(entry)
+  return entry
 }
 
 // ─── Setup / Teardown ───
@@ -84,26 +98,22 @@ afterEach(() => {
   clearHistory()
 })
 
-// ─── recordRequest → entry_added ───
+// ─── insertEntry → entry_added (EntrySummary) ───
 
-describe("recordRequest triggers WS notification", () => {
-  test("connected client receives entry_added when request is recorded", () => {
+describe("insertEntry triggers WS notification", () => {
+  test("connected client receives entry_added with summary when entry is inserted", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const id = recordRequest("anthropic", sampleRequest)
-    expect(id).toBeTruthy()
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
 
-    const msg = getLastSentMessage(ws)
+    const msg = getLastSentMessageOfType(ws, "entry_added")
     expect(msg.type).toBe("entry_added")
-    expect(msg.data).toMatchObject({
-      id,
-      endpoint: "anthropic",
-      request: {
-        model: sampleRequest.model,
-        stream: false,
-      },
-    })
+    const summary = msg.data as EntrySummary
+    expect(summary.id).toBe(entry.id)
+    expect(summary.endpoint).toBe("anthropic-messages")
+    expect(summary.requestModel).toBe("claude-sonnet-4-20250514")
+    expect(summary.stream).toBe(false)
   })
 
   test("multiple clients all receive entry_added", () => {
@@ -114,25 +124,25 @@ describe("recordRequest triggers WS notification", () => {
     addClient(ws2)
     addClient(ws3)
 
-    recordRequest("anthropic", sampleRequest)
+    createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
 
     for (const ws of [ws1, ws2, ws3]) {
-      const msg = getLastSentMessage(ws)
+      const msg = getLastSentMessageOfType(ws, "entry_added")
       expect(msg.type).toBe("entry_added")
     }
   })
 
-  test("no error when recording request with zero clients", () => {
+  test("no error when inserting entry with zero clients", () => {
     expect(getClientCount()).toBe(0)
-    const id = recordRequest("anthropic", sampleRequest)
-    expect(id).toBeTruthy()
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
+    expect(entry.id).toBeTruthy()
   })
 
-  test("entry_added contains full message content", () => {
+  test("entry_added summary contains key fields", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const complexRequest: RecordRequestParams = {
+    createEntry("openai-chat-completions", {
       model: "claude-sonnet-4-20250514",
       messages: [
         { role: "system", content: "You are helpful." },
@@ -145,98 +155,105 @@ describe("recordRequest triggers WS notification", () => {
       max_tokens: 1024,
       temperature: 0.7,
       system: "Be concise",
-    }
+    })
 
-    recordRequest("openai", complexRequest)
-
-    const msg = getLastSentMessage(ws)
+    const msg = getLastSentMessageOfType(ws, "entry_added")
     expect(msg.type).toBe("entry_added")
 
-    const entry = msg.data as Record<string, unknown>
-    const request = entry.request as Record<string, unknown>
-    expect(request.model).toBe("claude-sonnet-4-20250514")
-    expect(request.stream).toBe(true)
-    expect(request.max_tokens).toBe(1024)
-    expect(request.temperature).toBe(0.7)
-    expect(request.system).toBe("Be concise")
-    expect((request.messages as Array<unknown>).length).toBe(4)
-    expect((request.tools as Array<unknown>).length).toBe(1)
-    expect(entry.endpoint).toBe("openai")
+    const summary = msg.data as EntrySummary
+    expect(summary.requestModel).toBe("claude-sonnet-4-20250514")
+    expect(summary.stream).toBe(true)
+    expect(summary.messageCount).toBe(4)
+    expect(summary.endpoint).toBe("openai-chat-completions")
+    // Preview text should be the last user message
+    expect(summary.previewText).toBe("Thanks")
   })
 })
 
-// ─── recordResponse → entry_updated ───
+// ─── updateEntry (response) → entry_updated (EntrySummary) ───
 
-describe("recordResponse triggers WS notification", () => {
-  test("connected client receives entry_updated when response is recorded", () => {
+describe("updateEntry (response) triggers WS notification", () => {
+  test("connected client receives entry_updated summary when response is recorded", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const id = recordRequest("anthropic", sampleRequest)
-    recordResponse(id, sampleResponse, 150)
-
-    const msg = getLastSentMessage(ws)
-    expect(msg.type).toBe("entry_updated")
-    expect(msg.data).toMatchObject({
-      id,
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
+    updateEntry(entry.id, {
       response: {
         success: true,
-        model: sampleResponse.model,
-        usage: sampleResponse.usage,
+        model: "claude-sonnet-4-20250514",
+        usage: { input_tokens: 10, output_tokens: 20 },
         stop_reason: "end_turn",
+        content: { role: "assistant", content: "Hi there!" },
       },
       durationMs: 150,
     })
+
+    const msg = getLastSentMessageOfType(ws, "entry_updated")
+    expect(msg.type).toBe("entry_updated")
+    const summary = msg.data as EntrySummary
+    expect(summary.id).toBe(entry.id)
+    expect(summary.responseSuccess).toBe(true)
+    expect(summary.responseModel).toBe("claude-sonnet-4-20250514")
+    expect(summary.usage).toEqual({ input_tokens: 10, output_tokens: 20 })
+    expect(summary.durationMs).toBe(150)
   })
 
-  test("entry_updated contains both request and response data", () => {
+  test("entry_updated summary contains both request and response metadata", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const id = recordRequest("anthropic", sampleRequest)
-    recordResponse(id, sampleResponse, 200)
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
+    updateEntry(entry.id, {
+      response: {
+        success: true,
+        model: "claude-sonnet-4-20250514",
+        usage: { input_tokens: 10, output_tokens: 20 },
+        content: null,
+      },
+      durationMs: 200,
+    })
 
-    const msg = getLastSentMessage(ws)
-    const entry = msg.data as Record<string, unknown>
-    // Should contain both request and response
-    expect(entry.request).toBeDefined()
-    expect(entry.response).toBeDefined()
-    expect(entry.durationMs).toBe(200)
+    const msg = getLastSentMessageOfType(ws, "entry_updated")
+    const summary = msg.data as EntrySummary
+    // Summary should contain both request and response metadata
+    expect(summary.requestModel).toBe("claude-sonnet-4-20250514")
+    expect(summary.responseSuccess).toBe(true)
+    expect(summary.durationMs).toBe(200)
   })
 
-  test("error response triggers entry_updated", () => {
+  test("error response triggers entry_updated with error info", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const id = recordRequest("anthropic", sampleRequest)
-    recordResponse(
-      id,
-      {
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
+    updateEntry(entry.id, {
+      response: {
         success: false,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 10, output_tokens: 0 },
         error: "Rate limited",
         content: null,
       },
-      50,
-    )
+      durationMs: 50,
+    })
 
-    const msg = getLastSentMessage(ws)
+    const msg = getLastSentMessageOfType(ws, "entry_updated")
     expect(msg.type).toBe("entry_updated")
-    const response = (msg.data as Record<string, unknown>).response as Record<string, unknown>
-    expect(response.success).toBe(false)
-    expect(response.error).toBe("Rate limited")
+    const summary = msg.data as EntrySummary
+    expect(summary.responseSuccess).toBe(false)
+    expect(summary.responseError).toBe("Rate limited")
   })
 })
 
-// ─── recordRewrites → entry_updated ───
+// ─── updateEntry (rewrites) → entry_updated ───
 
-describe("recordRewrites triggers WS notification", () => {
+describe("updateEntry (rewrites) triggers WS notification", () => {
   test("connected client receives entry_updated when rewrites are recorded", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const id = recordRequest("anthropic", sampleRequest)
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     const rewrites: RewriteInfo = {
       truncation: {
         removedMessageCount: 3,
@@ -244,101 +261,140 @@ describe("recordRewrites triggers WS notification", () => {
         compactedTokens: 4000,
         processingTimeMs: 8,
       },
-      sanitization: {
-        totalBlocksRemoved: 2,
-        orphanedToolUseCount: 1,
-        orphanedToolResultCount: 1,
-        fixedNameCount: 0,
-        emptyTextBlocksRemoved: 0,
-        systemReminderRemovals: 1,
-      },
+      sanitization: [
+        {
+          totalBlocksRemoved: 2,
+          orphanedToolUseCount: 1,
+          orphanedToolResultCount: 1,
+          fixedNameCount: 0,
+          emptyTextBlocksRemoved: 0,
+          systemReminderRemovals: 1,
+        },
+      ],
       rewrittenMessages: [{ role: "user", content: "Simplified" }],
       messageMapping: [0],
     }
-    recordRewrites(id, rewrites)
+    updateEntry(entry.id, { rewrites })
 
-    const msg = getLastSentMessage(ws)
+    const msg = getLastSentMessageOfType(ws, "entry_updated")
     expect(msg.type).toBe("entry_updated")
-    const entry = msg.data as Record<string, unknown>
-    expect(entry.rewrites).toMatchObject({
-      truncation: rewrites.truncation,
-      sanitization: rewrites.sanitization,
-    })
+    // Rewrites don't appear in the summary — the update just triggers a summary rebuild
+    const summary = msg.data as EntrySummary
+    expect(summary.id).toBe(entry.id)
   })
 })
 
-// ─── Full lifecycle: request → rewrites → response ───
+// ─── Full lifecycle: insert → rewrites → response ───
 
 describe("full request lifecycle", () => {
   test("client receives all notifications in correct order", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    // 1. Record request
-    const id = recordRequest("anthropic", sampleRequest)
+    // 1. Insert entry
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
 
-    // 2. Record rewrites (with truncation)
-    recordRewrites(id, {
-      truncation: {
-        removedMessageCount: 2,
-        originalTokens: 5000,
-        compactedTokens: 3000,
-        processingTimeMs: 5,
+    // 2. Update with rewrites
+    updateEntry(entry.id, {
+      rewrites: {
+        truncation: {
+          removedMessageCount: 2,
+          originalTokens: 5000,
+          compactedTokens: 3000,
+          processingTimeMs: 5,
+        },
       },
     })
 
-    // 3. Record response
-    recordResponse(id, sampleResponse, 300)
+    // 3. Update with response
+    updateEntry(entry.id, {
+      response: {
+        success: true,
+        model: "claude-sonnet-4-20250514",
+        usage: { input_tokens: 10, output_tokens: 20 },
+        stop_reason: "end_turn",
+        content: { role: "assistant", content: "Hi there!" },
+      },
+      durationMs: 300,
+    })
 
-    // Messages: connected + entry_added + entry_updated(rewrites) + entry_updated(response)
+    // Messages: connected + entry_added + stats + entry_updated(rewrites) + stats + entry_updated(response) + stats
     const msgs = getSentMessages(ws)
-    expect(msgs).toHaveLength(4)
+    expect(msgs).toHaveLength(7)
     expect(msgs[0].type).toBe("connected")
     expect(msgs[1].type).toBe("entry_added")
-    expect(msgs[2].type).toBe("entry_updated")
+    expect(msgs[2].type).toBe("stats_updated")
     expect(msgs[3].type).toBe("entry_updated")
+    expect(msgs[4].type).toBe("stats_updated")
+    expect(msgs[5].type).toBe("entry_updated")
+    expect(msgs[6].type).toBe("stats_updated")
 
-    // Final entry_updated should have response
-    const finalEntry = msgs[3].data as Record<string, unknown>
-    expect(finalEntry.response).toBeDefined()
-    expect(finalEntry.durationMs).toBe(300)
+    // Final entry_updated should have response metadata in summary
+    const finalSummary = msgs[5].data as EntrySummary
+    expect(finalSummary.responseSuccess).toBe(true)
+    expect(finalSummary.durationMs).toBe(300)
   })
 
   test("multiple sequential requests each trigger their own notifications", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const id1 = recordRequest("anthropic", sampleRequest)
-    recordResponse(id1, sampleResponse, 100)
+    const entry1 = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
+    updateEntry(entry1.id, {
+      response: {
+        success: true,
+        model: "claude-sonnet-4-20250514",
+        usage: { input_tokens: 10, output_tokens: 20 },
+        content: null,
+      },
+      durationMs: 100,
+    })
 
-    const id2 = recordRequest("openai", { ...sampleRequest, model: "gpt-4o" })
-    recordResponse(id2, { ...sampleResponse, model: "gpt-4o" }, 200)
+    const entry2 = createEntry("openai-chat-completions", { model: "gpt-4o" })
+    updateEntry(entry2.id, {
+      response: {
+        success: true,
+        model: "gpt-4o",
+        usage: { input_tokens: 10, output_tokens: 20 },
+        content: null,
+      },
+      durationMs: 200,
+    })
 
-    // connected + (entry_added + entry_updated) × 2 = 5
+    // connected + (entry_added + stats + entry_updated + stats) × 2 = 9
     const msgs = getSentMessages(ws)
-    expect(msgs).toHaveLength(5)
+    expect(msgs).toHaveLength(9)
 
     // Verify each request has its own entry ID
-    const addedIds = msgs.filter((m) => m.type === "entry_added").map((m) => (m.data as Record<string, unknown>).id)
-    expect(addedIds).toEqual([id1, id2])
+    const addedIds = msgs.filter((m) => m.type === "entry_added").map((m) => (m.data as EntrySummary).id)
+    expect(addedIds).toEqual([entry1.id, entry2.id])
     expect(addedIds[0]).not.toBe(addedIds[1])
   })
 
   test("client connecting mid-lifecycle only receives subsequent events", () => {
-    // Record request before any client connects
-    const id = recordRequest("anthropic", sampleRequest)
+    // Insert entry before any client connects
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
 
     // Now connect client
     const ws = createMockWebSocket()
     addClient(ws)
 
-    // Record response - client should only see this
-    recordResponse(id, sampleResponse, 100)
+    // Update with response - client should only see this
+    updateEntry(entry.id, {
+      response: {
+        success: true,
+        model: "claude-sonnet-4-20250514",
+        usage: { input_tokens: 10, output_tokens: 20 },
+        content: null,
+      },
+      durationMs: 100,
+    })
 
     const msgs = getSentMessages(ws)
-    expect(msgs).toHaveLength(2) // connected + entry_updated
+    expect(msgs).toHaveLength(3) // connected + entry_updated + stats_updated
     expect(msgs[0].type).toBe("connected")
     expect(msgs[1].type).toBe("entry_updated")
+    expect(msgs[2].type).toBe("stats_updated")
     // Client did NOT receive entry_added (happened before connection)
   })
 
@@ -346,11 +402,19 @@ describe("full request lifecycle", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const id = recordRequest("anthropic", sampleRequest)
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     // Simulate disconnect
     ;(ws as unknown as { readyState: number }).readyState = WebSocket.CLOSED
 
-    recordResponse(id, sampleResponse, 100)
+    updateEntry(entry.id, {
+      response: {
+        success: true,
+        model: "claude-sonnet-4-20250514",
+        usage: { input_tokens: 10, output_tokens: 20 },
+        content: null,
+      },
+      durationMs: 100,
+    })
 
     // After broadcast, the closed client should have been removed
     expect(getClientCount()).toBe(0)
@@ -366,12 +430,63 @@ describe("history disabled", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
-    const id = recordRequest("anthropic", sampleRequest)
-    expect(id).toBe("")
+    // insertEntry does nothing when disabled
+    const sessionId = "fake"
+    const entry: HistoryEntry = {
+      id: generateId(),
+      sessionId,
+      timestamp: Date.now(),
+      endpoint: "anthropic-messages",
+      request: {
+        model: "claude-sonnet-4-20250514",
+        messages: [{ role: "user", content: "Hello" }],
+        stream: false,
+      },
+    }
+    insertEntry(entry)
 
     // Only connected message, no entry_added
     const msgs = getSentMessages(ws)
     expect(msgs).toHaveLength(1)
     expect(msgs[0].type).toBe("connected")
+  })
+})
+
+// ─── clearHistory / deleteSession → WS notifications ───
+
+describe("clearHistory and deleteSession broadcast WS notifications", () => {
+  test("clearHistory broadcasts history_cleared and stats_updated", () => {
+    const ws = createMockWebSocket()
+    addClient(ws)
+
+    createEntry("anthropic-messages", { model: "test" })
+    // Clear sent messages to isolate clearHistory effects
+    ;(ws.send as ReturnType<typeof mock>).mockClear()
+
+    clearHistory()
+
+    const msgs = getSentMessages(ws)
+    const types = msgs.map((m) => m.type)
+    expect(types).toContain("history_cleared")
+    expect(types).toContain("stats_updated")
+  })
+
+  test("deleteSession broadcasts session_deleted and stats_updated", () => {
+    const ws = createMockWebSocket()
+    addClient(ws)
+
+    const entry = createEntry("anthropic-messages", { model: "test" })
+    ;(ws.send as ReturnType<typeof mock>).mockClear()
+
+    deleteSession(entry.sessionId)
+
+    const msgs = getSentMessages(ws)
+    const types = msgs.map((m) => m.type)
+    expect(types).toContain("session_deleted")
+    expect(types).toContain("stats_updated")
+
+    // session_deleted message includes sessionId
+    const sessionMsg = msgs.find((m) => m.type === "session_deleted")!
+    expect((sessionMsg.data as { sessionId: string }).sessionId).toBe(entry.sessionId)
   })
 })

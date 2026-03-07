@@ -1,0 +1,76 @@
+{
+  "created_at": 1772432000,
+  "id": "n7xZSUJ0K4i3gd0nTRGYnOXwvHYl9+WVp5VlwPXPDjM/zlFFfR9R2VntI2UMusOcRq4IXNGdrdFVisTHQ2UmnvVNlBJaUjDbvWyafo1s2PJijoAvJL2u1VbS/rtegOhcF7o478Ucq2St7H8AAh7ZgmI62YDxSXpWeUuew5Y26ZOzYVtBUgTkBKFlaSjBLRjZY2q9qqduyiLdyhVHuMggzhLdNnnWMTmzuplx266SJ5aKN+IVlIgqmI5qfVL7n3dtFyFFuP7C3aYTiHqDDpL7KVDd0uwIVFNS4kzJ/BJQp3g3cTbjSwnYuD/kPKIRKAEuS3FepGI2qjJhQePwg6jS3pXIYt5AboA/ItDXwjG9GBstfQC0FPBD3VLnIacLI8ELzxNBt0kEZnsZAjxWW8cY8KXe",
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": 200,
+  "model": "gpt-5.1-2025-11-13",
+  "object": "response",
+  "output": [
+    {
+      "content": [
+        {
+          "annotations": [],
+          "logprobs": [],
+          "text": "The weather in Tokyo is currently sunny with a temperature of 22\u00b0C.",
+          "type": "output_text"
+        }
+      ],
+      "id": "TnQbtzrRsnlbeeOoW3XTQ1EuMbM2c8D7ym/wUc2WUoHFgJz9N/XQQUOKrAz2aO7KoipjNFiJjhH8L7NT8ef2q6wJsiAheD2dPiR1xoFH0WY9bxggqmX8tkXGI7/F/j5p+PFKtxXIxQ3cv0MwUfFEANOlBg5ka9epGbhZrzlQpcXJblqmRwyecWUd35xMWFTRn9EVY9GQeRs3/U/rckXsPoujoOrd8cZ99JjSR7fIqGhQedXrD6TNPylnyNWqnXr9/+TD3AErnCacA9J1sVHeCe68ZTVBLsRo2lP2zzucbm8bhSgjv3/RpLV/T8FVeQTZ/HOUhH3BGc5D56LkZLw4OZyeHTdfqEVMYbB/BzayDB+LMqSjrnIec8OOh6KgCPcp5xR6bFnHy+PV4u49TYltRjc=",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+    }
+  ],
+  "output_text": null,
+  "parallel_tool_calls": true,
+  "previous_response_id": null,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "safety_identifier": "3781518121e62bf610879c3b729443324e7de10fa2bef4ea2898679b73da75fe",
+  "service_tier": "priority",
+  "status": "completed",
+  "temperature": 1,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "type": "function",
+      "description": "Get the current weather",
+      "name": "get_weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "top_p": 1,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 80,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 19,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 99
+  }
+}

@@ -76,6 +76,21 @@ describe("getErrorMessage", () => {
     const error = new HTTPError("Request failed", 500, longText)
     expect(getErrorMessage(error)).toBe("HTTP 500: Request failed")
   })
+
+  test("includes cause for non-HTTP errors", () => {
+    const cause = new Error("ECONNRESET")
+    const error = new Error("request failed", { cause })
+    expect(getErrorMessage(error)).toBe("request failed (cause: ECONNRESET)")
+  })
+
+  test("strips Bun verbose hint for non-HTTP errors", () => {
+    const error = new Error(
+      "The socket connection was closed unexpectedly. "
+        + "For more information, pass `verbose: true` in the second argument to fetch()",
+    )
+    expect(getErrorMessage(error)).toBe("The socket connection was closed unexpectedly.")
+    expect(getErrorMessage(error)).not.toContain("verbose")
+  })
 })
 
 // ─── isNullish ───

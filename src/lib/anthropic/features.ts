@@ -4,10 +4,8 @@
  * Mirrors VSCode Copilot Chat's feature detection logic from:
  * - anthropic.ts: modelSupportsInterleavedThinking, modelSupportsContextEditing, modelSupportsToolSearch
  * - chatEndpoint.ts: getExtraHeaders (anthropic-beta, capi-beta-1)
- * - anthropic.ts: buildContextManagement, nonDeferredToolNames
+ * - anthropic.ts: buildContextManagement
  */
-
-import type { Tool } from "~/types/api/anthropic"
 
 import { normalizeForMatching } from "~/lib/models/resolver"
 
@@ -160,117 +158,4 @@ export function buildContextManagement(modelId: string, hasThinking: boolean): C
   })
 
   return { edits }
-}
-
-// ============================================================================
-// Tool Search / Defer Loading
-// ============================================================================
-
-/**
- * Claude Code official tool names that must always be present in the tools array.
- * If any of these are missing from the request, they will be injected as stub definitions.
- */
-const CLAUDE_CODE_OFFICIAL_TOOLS = [
-  "Task",
-  "TaskOutput",
-  "Bash",
-  "Glob",
-  "Grep",
-  "Read",
-  "Edit",
-  "Write",
-  "NotebookEdit",
-  "WebFetch",
-  "TodoWrite",
-  "KillShell",
-  "AskUserQuestion",
-  "Skill",
-  "EnterPlanMode",
-  "ExitPlanMode",
-]
-
-/** Tool names that should NOT be deferred (core tools always available) */
-const NON_DEFERRED_TOOL_NAMES = new Set([
-  // VSCode Copilot Chat original tool names (snake_case)
-  "read_file",
-  "list_dir",
-  "grep_search",
-  "semantic_search",
-  "file_search",
-  "replace_string_in_file",
-  "multi_replace_string_in_file",
-  "insert_edit_into_file",
-  "apply_patch",
-  "create_file",
-  "run_in_terminal",
-  "get_terminal_output",
-  "get_errors",
-  "manage_todo_list",
-  "runSubagent",
-  "search_subagent",
-  "runTests",
-  "ask_questions",
-  "switch_agent",
-  // Claude Code official tool names (PascalCase)
-  ...CLAUDE_CODE_OFFICIAL_TOOLS,
-])
-
-const TOOL_SEARCH_TOOL_NAME = "tool_search_tool_regex"
-const TOOL_SEARCH_TOOL_TYPE = "tool_search_tool_regex_20251119"
-
-/**
- * Ensure all Claude Code official tools are present in the tools array.
- * Injects stub definitions for any missing official tools.
- */
-export function ensureOfficialTools(tools: Array<Tool>): Array<Tool> {
-  const existingNames = new Set(tools.map((t) => t.name))
-  const missing = CLAUDE_CODE_OFFICIAL_TOOLS.filter((name) => !existingNames.has(name))
-
-  if (missing.length === 0) {
-    return tools
-  }
-
-  const result = [...tools]
-  for (const name of missing) {
-    result.push({
-      name,
-      description: `Claude Code ${name} tool`,
-      input_schema: { type: "object" },
-    })
-  }
-
-  return result
-}
-
-/**
- * Apply tool search to the tools list.
- *
- * From anthropic.ts and messagesApi.ts:
- * - Prepend tool_search_tool_regex tool
- * - Mark non-core tools with defer_loading: true
- * - Core tools (VSCode + Claude Code official) keep defer_loading: false
- */
-export function applyToolSearch(tools: Array<Tool>, modelId: string): Array<Tool> {
-  if (!modelSupportsToolSearch(modelId) || tools.length === 0) {
-    return tools
-  }
-
-  const result: Array<Tool> = []
-
-  // 1. Add tool_search_tool_regex at the beginning
-  result.push({
-    name: TOOL_SEARCH_TOOL_NAME,
-    type: TOOL_SEARCH_TOOL_TYPE,
-  })
-
-  // 2. Add tools with defer_loading based on whether they're core tools
-  for (const tool of tools) {
-    if (NON_DEFERRED_TOOL_NAMES.has(tool.name)) {
-      result.push(tool) // Core tool: no defer_loading
-    } else {
-      result.push({ ...tool, defer_loading: true })
-    }
-  }
-
-  return result
 }

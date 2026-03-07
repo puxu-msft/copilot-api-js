@@ -1,0 +1,71 @@
+{
+  "created_at": 1772432000,
+  "id": "tomz9iiPr877QgWXfVEb41o5kvbMqmiU6oSM3sGRmYyvtbLf+qYTPnQ9xPJIU4M2kjKyvBNWqNVeE7lMCBeFThBznpijwTzruvroNBuZDo7EkWBa963s7Eou9u2P1gIQ0ZICGA5EVbp74wdhGvrmenHfH5dN4OKoogq9W4POzefUQDEQ4qTJyz8yBG980JZV6/vkGXrLVftCQhmDuslphx8w8ECpfM5Mg/L+kZf8/o4leP2b1v3BNzFgvRXTWZszo+ipkFvybboakVfAgl9DttAYXVfd94fEyApT2TNH29yxgz2H75bZop0MF7Wg+khBM0f3mb7bi0zf00FZCQuxusoWyryfhWQPxbnOIpYXXY+oNJ8GCQak+PzNkDpL06N8+bKBwp4JIUoPD4641hxMHv+s",
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": 200,
+  "model": "gpt-5.1-2025-11-13",
+  "object": "response",
+  "output": [
+    {
+      "arguments": "{\"location\":\"Tokyo\"}",
+      "call_id": "call_IvYLluXXEws7EcemBgX4GzdX",
+      "id": "XOTP6McLQgbHi7JAaubUUNw2HXqxzfkyIj4I/PcuBySiiU5HHuEEi3kBdkq9b0c9FQTkts1OeZu0K6s+VWnV6bFM/jnhncHZJ/RJ9tXKjR65NznJyEEkxFAeehgZ8YRM0nLdP4pU3Cu+h6R5MfMQvh0Qimnx9oFwkhl6UXAo0U1qxvXTJ4wxxBWa+a1bIb+KIk4rsR9jt3dwXFbZ2AL+tzjK4vVuKCozqsMlgbq9E0rr/fcDBnBY2J0aLjKJ7TVWSZFfTjhFVDvV51xNwVWhHAfeuyGr4qyQUK/Tw11akNU4oxJ4GtTc/3DICSgft9GUr7INCEmKFv3ua0VilFeON0FC9TXSEVLa+YDFuIdcvmit8NRAQ61Jlg7bSZgJ/QrR+grhqXDNLMUOAljk2WV/dQ==",
+      "name": "get_weather",
+      "status": "completed",
+      "type": "function_call"
+    }
+  ],
+  "output_text": null,
+  "parallel_tool_calls": true,
+  "previous_response_id": null,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "safety_identifier": "3781518121e62bf610879c3b729443324e7de10fa2bef4ea2898679b73da75fe",
+  "service_tier": "priority",
+  "status": "completed",
+  "temperature": 1,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "type": "function",
+      "description": "Get the current weather in a given location",
+      "name": "get_weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City name"
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "top_p": 1,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 56,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 24,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 80
+  }
+}

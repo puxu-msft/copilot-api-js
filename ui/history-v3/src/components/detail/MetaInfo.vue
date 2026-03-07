@@ -23,7 +23,7 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
     <div class="meta-row">
       <span class="meta-label">Endpoint</span>
       <span class="meta-value">
-        <BaseBadge :color="entry.endpoint === 'anthropic' ? 'purple' : 'cyan'">
+        <BaseBadge :color="entry.endpoint === 'anthropic-messages' ? 'purple' : entry.endpoint === 'openai-responses' ? 'green' : 'cyan'">
           {{ entry.endpoint }}
         </BaseBadge>
       </span>
@@ -95,29 +95,47 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
       </div>
     </div>
 
+    <!-- Preprocessing -->
+    <div v-if="entry.rewrites?.preprocessing && (entry.rewrites.preprocessing.strippedReadTagCount > 0 || entry.rewrites.preprocessing.dedupedToolCallCount > 0)" class="meta-section">
+      <div class="meta-section-title">Preprocessing</div>
+      <div v-if="entry.rewrites.preprocessing.strippedReadTagCount" class="meta-row">
+        <span class="meta-label">Read tag strip</span>
+        <span class="meta-value">{{ entry.rewrites.preprocessing.strippedReadTagCount }} tags</span>
+      </div>
+      <div v-if="entry.rewrites.preprocessing.dedupedToolCallCount" class="meta-row">
+        <span class="meta-label">Dedup tool calls</span>
+        <span class="meta-value">{{ entry.rewrites.preprocessing.dedupedToolCallCount }} pairs</span>
+      </div>
+    </div>
+
     <!-- Sanitization -->
-    <div v-if="entry.rewrites?.sanitization" class="meta-section">
+    <div v-if="entry.rewrites?.sanitization?.length" class="meta-section">
       <div class="meta-section-title">Sanitization</div>
-      <div v-if="entry.rewrites?.sanitization?.totalBlocksRemoved" class="meta-row">
-        <span class="meta-label">Blocks Removed</span>
-        <span class="meta-value">{{ entry.rewrites.sanitization.totalBlocksRemoved }} total</span>
-      </div>
-      <div v-if="entry.rewrites?.sanitization?.orphanedToolUseCount" class="meta-row">
-        <span class="meta-label">Orphan tool_use</span>
-        <span class="meta-value">{{ entry.rewrites.sanitization.orphanedToolUseCount }}</span>
-      </div>
-      <div v-if="entry.rewrites?.sanitization?.orphanedToolResultCount" class="meta-row">
-        <span class="meta-label">Orphan tool_result</span>
-        <span class="meta-value">{{ entry.rewrites.sanitization.orphanedToolResultCount }}</span>
-      </div>
-      <div v-if="entry.rewrites?.sanitization?.emptyTextBlocksRemoved" class="meta-row">
-        <span class="meta-label">Empty text</span>
-        <span class="meta-value">{{ entry.rewrites.sanitization.emptyTextBlocksRemoved }}</span>
-      </div>
-      <div v-if="entry.rewrites?.sanitization?.systemReminderRemovals" class="meta-row">
-        <span class="meta-label">Reminders</span>
-        <span class="meta-value">{{ entry.rewrites.sanitization.systemReminderRemovals }} tags filtered</span>
-      </div>
+      <template v-for="(san, idx) in entry.rewrites.sanitization" :key="idx">
+        <div v-if="entry.rewrites.sanitization.length > 1" class="meta-row">
+          <span class="meta-label meta-label--attempt">Attempt {{ idx + 1 }}</span>
+        </div>
+        <div v-if="san.totalBlocksRemoved" class="meta-row">
+          <span class="meta-label">Blocks Removed</span>
+          <span class="meta-value">{{ san.totalBlocksRemoved }} total</span>
+        </div>
+        <div v-if="san.orphanedToolUseCount" class="meta-row">
+          <span class="meta-label">Orphan tool_use</span>
+          <span class="meta-value">{{ san.orphanedToolUseCount }}</span>
+        </div>
+        <div v-if="san.orphanedToolResultCount" class="meta-row">
+          <span class="meta-label">Orphan tool_result</span>
+          <span class="meta-value">{{ san.orphanedToolResultCount }}</span>
+        </div>
+        <div v-if="san.emptyTextBlocksRemoved" class="meta-row">
+          <span class="meta-label">Empty text</span>
+          <span class="meta-value">{{ san.emptyTextBlocksRemoved }}</span>
+        </div>
+        <div v-if="san.systemReminderRemovals" class="meta-row">
+          <span class="meta-label">Reminders</span>
+          <span class="meta-value">{{ san.systemReminderRemovals }} tags filtered</span>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -141,6 +159,11 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
   color: var(--text-dim);
   min-width: 90px;
   flex-shrink: 0;
+}
+
+.meta-label--attempt {
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .meta-value {

@@ -3,6 +3,7 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { trimTrailingSlash } from "hono/trailing-slash"
 
+import { applyConfigToState } from "./lib/config/config"
 import { forwardError } from "./lib/error"
 import { state } from "./lib/state"
 import { tuiMiddleware } from "./lib/tui"
@@ -22,6 +23,24 @@ server.onError((error, c) => {
 
   consola.error(`Unhandled route error in ${c.req.method} ${c.req.path}:`, error)
   return forwardError(c, error)
+})
+
+// Browser auto-requests (favicon, devtools config) — return 204 silently
+// to avoid [FAIL] 404 noise in TUI logs.
+const browserProbePaths = new Set(["/favicon.ico", "/.well-known/appspecific/com.chrome.devtools.json"])
+
+server.notFound((c) => {
+  if (browserProbePaths.has(c.req.path)) {
+    return c.body(null, 204)
+  }
+  return c.json({ error: "Not Found" }, 404)
+})
+
+// Config hot-reload: re-apply config.yaml settings before each request.
+// loadConfig() is mtime-cached — only costs one stat() syscall when config is unchanged.
+server.use(async (_c, next) => {
+  await applyConfigToState()
+  await next()
 })
 
 server.use(tuiMiddleware())

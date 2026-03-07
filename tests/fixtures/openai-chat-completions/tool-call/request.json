@@ -1,0 +1,24 @@
+{
+  "model": "gpt-4o",
+  "max_tokens": 200,
+  "stream": false,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather in a given location",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": { "type": "string", "description": "City name" }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ],
+  "messages": [
+    { "role": "user", "content": "What is the weather in Tokyo?" }
+  ]
+}

@@ -1,5 +1,5 @@
 /**
- * Unit tests for system prompt manager: collection + config-based overrides.
+ * Unit tests for system prompt manager: config-based overrides.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
@@ -8,34 +8,37 @@ import os from "node:os"
 import path from "node:path"
 
 import {
-  applyOverrides,
+  compileRewriteRules,
   loadConfig,
-  processAnthropicSystem,
-  processOpenAIMessages,
+  resetApplyState,
   resetConfigCache,
-  type SystemPromptOverride,
-} from "~/lib/config/system-prompt"
-import { state } from "~/lib/state"
+  type RewriteRule,
+} from "~/lib/config/config"
+import { applyOverrides, processAnthropicSystem, processOpenAIMessages } from "~/lib/system-prompt"
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
 let tmpDir: string
-let originalCollectSystemPrompts: boolean
+let originalAppDir: string
+let originalConfigYaml: string
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "spm-test-"))
   const pathsMod = await import("~/lib/config/paths")
+  originalAppDir = pathsMod.PATHS.APP_DIR
+  originalConfigYaml = pathsMod.PATHS.CONFIG_YAML
   ;(pathsMod.PATHS as { APP_DIR: string }).APP_DIR = tmpDir
   ;(pathsMod.PATHS as { CONFIG_YAML: string }).CONFIG_YAML = path.join(tmpDir, "config.yaml")
   resetConfigCache()
-  originalCollectSystemPrompts = state.collectSystemPrompts
-  state.collectSystemPrompts = false
+  resetApplyState()
 })
 
 afterEach(async () => {
-  state.collectSystemPrompts = originalCollectSystemPrompts
+  const pathsMod = await import("~/lib/config/paths")
+  ;(pathsMod.PATHS as { APP_DIR: string }).APP_DIR = originalAppDir
+  ;(pathsMod.PATHS as { CONFIG_YAML: string }).CONFIG_YAML = originalConfigYaml
   await fs.rm(tmpDir, { recursive: true, force: true })
 })
 
@@ -43,106 +46,112 @@ afterEach(async () => {
 // applyOverrides
 // ============================================================================
 
+/** Shorthand: compile raw rules for applyOverrides tests */
+const compile = (...raws: Array<RewriteRule>) => compileRewriteRules(raws)
+
 describe("applyOverrides", () => {
   // --- line method ---
 
   test("line: replaces a matching line", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "Hello world", to: "Goodbye world", method: "line" }]
-    expect(applyOverrides("Hello world", overrides)).toBe("Goodbye world")
+    expect(applyOverrides("Hello world", compile({ from: "Hello world", to: "Goodbye world", method: "line" }))).toBe(
+      "Goodbye world",
+    )
   })
 
   test("line: matches with leading/trailing whitespace on line", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "Hello world", to: "Goodbye", method: "line" }]
-    expect(applyOverrides("  Hello world  ", overrides)).toBe("Goodbye")
+    expect(applyOverrides("  Hello world  ", compile({ from: "Hello world", to: "Goodbye", method: "line" }))).toBe(
+      "Goodbye",
+    )
   })
 
   test("line: no match leaves line unchanged", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "Hello world", to: "Goodbye", method: "line" }]
-    expect(applyOverrides("Different text", overrides)).toBe("Different text")
+    expect(applyOverrides("Different text", compile({ from: "Hello world", to: "Goodbye", method: "line" }))).toBe(
+      "Different text",
+    )
   })
 
   test("line: only matching lines replaced in multiline text", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "line2", to: "REPLACED", method: "line" }]
-    expect(applyOverrides("line1\nline2\nline3", overrides)).toBe("line1\nREPLACED\nline3")
+    expect(applyOverrides("line1\nline2\nline3", compile({ from: "line2", to: "REPLACED", method: "line" }))).toBe(
+      "line1\nREPLACED\nline3",
+    )
   })
 
   test("line: multiline from does not match (per-line granularity)", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "line1\nline2", to: "REPLACED", method: "line" }]
-    expect(applyOverrides("line1\nline2", overrides)).toBe("line1\nline2")
+    expect(applyOverrides("line1\nline2", compile({ from: "line1\nline2", to: "REPLACED", method: "line" }))).toBe(
+      "line1\nline2",
+    )
   })
 
   test("line: replaces each independently matching line", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "match", to: "HIT", method: "line" }]
-    expect(applyOverrides("match\nno\nmatch", overrides)).toBe("HIT\nno\nHIT")
+    expect(applyOverrides("match\nno\nmatch", compile({ from: "match", to: "HIT", method: "line" }))).toBe(
+      "HIT\nno\nHIT",
+    )
   })
 
   // --- regex method (full text, gms flags) ---
 
   test("regex: single replacement", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "foo", to: "bar", method: "regex" }]
-    expect(applyOverrides("hello foo end", overrides)).toBe("hello bar end")
+    expect(applyOverrides("hello foo end", compile({ from: "foo", to: "bar", method: "regex" }))).toBe("hello bar end")
   })
 
   test("regex: global replacement (g flag)", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "foo", to: "bar", method: "regex" }]
-    expect(applyOverrides("foo and foo", overrides)).toBe("bar and bar")
+    expect(applyOverrides("foo and foo", compile({ from: "foo", to: "bar", method: "regex" }))).toBe("bar and bar")
   })
 
   test("regex: matches across lines (full text)", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "target", to: "HIT", method: "regex" }]
     const input = "no match here\nhas target word\nalso target here"
-    expect(applyOverrides(input, overrides)).toBe("no match here\nhas HIT word\nalso HIT here")
+    expect(applyOverrides(input, compile({ from: "target", to: "HIT", method: "regex" }))).toBe(
+      "no match here\nhas HIT word\nalso HIT here",
+    )
   })
 
   test("regex: dotAll flag allows . to match newlines", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "<tag>.*?</tag>", to: "", method: "regex" }]
     const input = "before <tag>\nmultiline\ncontent\n</tag> after"
-    expect(applyOverrides(input, overrides)).toBe("before  after")
+    expect(applyOverrides(input, compile({ from: "<tag>.*?</tag>", to: "", method: "regex" }))).toBe("before  after")
   })
 
   test("regex: ^ and $ match line boundaries (m flag)", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "^remove this line$", to: "", method: "regex" }]
     const input = "keep this\nremove this line\nkeep this too"
-    expect(applyOverrides(input, overrides)).toBe("keep this\n\nkeep this too")
+    expect(applyOverrides(input, compile({ from: "^remove this line$", to: "", method: "regex" }))).toBe(
+      "keep this\n\nkeep this too",
+    )
   })
 
   test("regex: ^$ line matching with capture groups", () => {
-    const overrides: Array<SystemPromptOverride> = [
-      { from: String.raw`^(IMPORTANT:[^\n]*)$`, to: "[$1]", method: "regex" },
-    ]
     const input = "normal line\nIMPORTANT: do something\nanother line"
-    expect(applyOverrides(input, overrides)).toBe("normal line\n[IMPORTANT: do something]\nanother line")
+    expect(
+      applyOverrides(input, compile({ from: String.raw`^(IMPORTANT:[^\n]*)$`, to: "[$1]", method: "regex" })),
+    ).toBe("normal line\n[IMPORTANT: do something]\nanother line")
   })
 
   test("regex: capture group placeholders $1 $2", () => {
-    const overrides: Array<SystemPromptOverride> = [
-      { from: String.raw`(\w+) is (\w+)`, to: "$2 is $1", method: "regex" },
-    ]
-    expect(applyOverrides("cat is big", overrides)).toBe("big is cat")
-  })
-
-  test("regex: invalid regex silently skips", () => {
-    const overrides: Array<SystemPromptOverride> = [{ from: "[invalid(", to: "replacement", method: "regex" }]
-    expect(applyOverrides("original text", overrides)).toBe("original text")
+    expect(
+      applyOverrides("cat is big", compile({ from: String.raw`(\w+) is (\w+)`, to: "$2 is $1", method: "regex" })),
+    ).toBe("big is cat")
   })
 
   // --- mixed ---
 
   test("multiple rules applied in order", () => {
-    const overrides: Array<SystemPromptOverride> = [
-      { from: "aaa", to: "bbb", method: "regex" },
-      { from: "bbb", to: "ccc", method: "regex" },
-    ]
-    expect(applyOverrides("aaa", overrides)).toBe("ccc")
+    expect(
+      applyOverrides(
+        "aaa",
+        compile({ from: "aaa", to: "bbb", method: "regex" }, { from: "bbb", to: "ccc", method: "regex" }),
+      ),
+    ).toBe("ccc")
   })
 
   test("line and regex rules can be mixed", () => {
-    const overrides: Array<SystemPromptOverride> = [
-      { from: "exact line", to: "REPLACED", method: "line" },
-      { from: "partial", to: "MATCHED", method: "regex" },
-    ]
     const input = "exact line\nhas partial word"
-    expect(applyOverrides(input, overrides)).toBe("REPLACED\nhas MATCHED word")
+    expect(
+      applyOverrides(
+        input,
+        compile(
+          { from: "exact line", to: "REPLACED", method: "line" },
+          { from: "partial", to: "MATCHED", method: "regex" },
+        ),
+      ),
+    ).toBe("REPLACED\nhas MATCHED word")
   })
 })
 
@@ -222,99 +231,6 @@ describe("loadConfig", () => {
     const config2 = await loadConfig()
     expect(config2.system_prompt_overrides![0].from).toBe("x")
     expect(config1).not.toBe(config2)
-  })
-})
-
-// ============================================================================
-// collectSystemPrompt (opt-in via state.collectSystemPrompts)
-// ============================================================================
-
-describe("collectSystemPrompt", () => {
-  test("does not collect when collectSystemPrompts is false", async () => {
-    const { PATHS } = await import("~/lib/config/paths")
-    state.collectSystemPrompts = false
-    await processAnthropicSystem("test system prompt")
-    await new Promise((r) => setTimeout(r, 100))
-
-    const files = await fs.readdir(PATHS.APP_DIR)
-    const promptFiles = files.filter((f) => f.startsWith("system_prompts_"))
-    expect(promptFiles).toHaveLength(0)
-  })
-
-  test("creates file on first encounter when enabled", async () => {
-    const { PATHS } = await import("~/lib/config/paths")
-    state.collectSystemPrompts = true
-    await processAnthropicSystem("test system prompt")
-    await new Promise((r) => setTimeout(r, 100))
-
-    const files = await fs.readdir(PATHS.APP_DIR)
-    const promptFiles = files.filter((f) => f.startsWith("system_prompts_"))
-    expect(promptFiles).toHaveLength(1)
-
-    const content = JSON.parse((await fs.readFile(path.join(PATHS.APP_DIR, promptFiles[0]))).toString())
-    expect(content.format).toBe("anthropic")
-    expect(content.hash).toBeDefined()
-    expect(content.timestamp).toBeDefined()
-    expect(content.raw).toBe("test system prompt")
-  })
-
-  test("skips writing when file already exists (dedup)", async () => {
-    const { PATHS } = await import("~/lib/config/paths")
-    state.collectSystemPrompts = true
-    await processAnthropicSystem("same prompt")
-    await new Promise((r) => setTimeout(r, 100))
-    await processAnthropicSystem("same prompt")
-    await new Promise((r) => setTimeout(r, 100))
-
-    const files = await fs.readdir(PATHS.APP_DIR)
-    const promptFiles = files.filter((f) => f.startsWith("system_prompts_"))
-    expect(promptFiles).toHaveLength(1)
-  })
-
-  test("creates separate files for different prompts", async () => {
-    const { PATHS } = await import("~/lib/config/paths")
-    state.collectSystemPrompts = true
-    await processAnthropicSystem("prompt A")
-    await processAnthropicSystem("prompt B")
-    await new Promise((r) => setTimeout(r, 100))
-
-    const files = await fs.readdir(PATHS.APP_DIR)
-    const promptFiles = files.filter((f) => f.startsWith("system_prompts_"))
-    expect(promptFiles).toHaveLength(2)
-  })
-
-  test("JSON content has correct format for Anthropic TextBlock[]", async () => {
-    const { PATHS } = await import("~/lib/config/paths")
-    state.collectSystemPrompts = true
-    const blocks = [
-      { type: "text" as const, text: "block one" },
-      { type: "text" as const, text: "block two" },
-    ]
-    await processAnthropicSystem(blocks)
-    await new Promise((r) => setTimeout(r, 100))
-
-    const files = await fs.readdir(PATHS.APP_DIR)
-    const promptFile = files.find((f) => f.startsWith("system_prompts_"))!
-    const content = JSON.parse((await fs.readFile(path.join(PATHS.APP_DIR, promptFile))).toString())
-    expect(content.format).toBe("anthropic")
-    expect(content.raw).toEqual(blocks)
-  })
-
-  test("JSON content has correct format for OpenAI", async () => {
-    const { PATHS } = await import("~/lib/config/paths")
-    state.collectSystemPrompts = true
-    const messages = [
-      { role: "system" as const, content: "system msg" },
-      { role: "user" as const, content: "user msg" },
-    ]
-    await processOpenAIMessages(messages)
-    await new Promise((r) => setTimeout(r, 100))
-
-    const files = await fs.readdir(PATHS.APP_DIR)
-    const promptFile = files.find((f) => f.startsWith("system_prompts_"))!
-    const content = JSON.parse((await fs.readFile(path.join(PATHS.APP_DIR, promptFile))).toString())
-    expect(content.format).toBe("openai")
-    expect(content.raw).toEqual([{ role: "system", content: "system msg" }])
   })
 })
 
@@ -572,5 +488,89 @@ describe("processOpenAIMessages", () => {
     expect(result[0]).toEqual({ role: "system", content: "PREFIX" })
     expect(result[1]).toEqual({ role: "user", content: "hello" })
     expect(result[2]).toEqual({ role: "system", content: "SUFFIX" })
+  })
+})
+
+// ============================================================================
+// Model filtering in applyOverrides
+// ============================================================================
+
+describe("applyOverrides — model filtering", () => {
+  test("rule with matching model pattern is applied", () => {
+    const rules = compile({ from: "foo", to: "bar", model: "opus" })
+    expect(applyOverrides("foo", rules, "claude-opus-4.6")).toBe("bar")
+  })
+
+  test("rule with non-matching model pattern is skipped", () => {
+    const rules = compile({ from: "foo", to: "bar", model: "opus" })
+    expect(applyOverrides("foo", rules, "claude-sonnet-4.5")).toBe("foo")
+  })
+
+  test("rule without model pattern applies to all models", () => {
+    const rules = compile({ from: "foo", to: "bar" })
+    expect(applyOverrides("foo", rules, "claude-opus-4.6")).toBe("bar")
+    expect(applyOverrides("foo", rules, "claude-sonnet-4.5")).toBe("bar")
+  })
+
+  test("rule with model pattern is skipped when no model is passed", () => {
+    const rules = compile({ from: "foo", to: "bar", model: "opus" })
+    expect(applyOverrides("foo", rules)).toBe("foo")
+  })
+
+  test("model pattern matching is case-insensitive", () => {
+    const rules = compile({ from: "foo", to: "bar", model: "OPUS" })
+    expect(applyOverrides("foo", rules, "claude-opus-4.6")).toBe("bar")
+  })
+
+  test("model pattern supports regex anchors", () => {
+    const rules = compile({ from: "foo", to: "bar", model: "^claude-sonnet" })
+    expect(applyOverrides("foo", rules, "claude-sonnet-4.5")).toBe("bar")
+    expect(applyOverrides("foo", rules, "my-claude-sonnet")).toBe("foo")
+  })
+
+  test("mixed rules: model-filtered and universal rules coexist", () => {
+    const rules = compile({ from: "aaa", to: "AAA", model: "opus" }, { from: "bbb", to: "BBB" })
+    // sonnet: only universal rule applies
+    expect(applyOverrides("aaa bbb", rules, "claude-sonnet-4.5")).toBe("aaa BBB")
+    // opus: both rules apply
+    expect(applyOverrides("aaa bbb", rules, "claude-opus-4.6")).toBe("AAA BBB")
+  })
+
+  test("model filter works with line method", () => {
+    const rules = compile({ from: "exact line", to: "REPLACED", method: "line", model: "opus" })
+    expect(applyOverrides("exact line", rules, "claude-opus-4.6")).toBe("REPLACED")
+    expect(applyOverrides("exact line", rules, "claude-sonnet-4.5")).toBe("exact line")
+  })
+})
+
+// ============================================================================
+// compileRewriteRule — model regex compilation
+// ============================================================================
+
+describe("compileRewriteRule — model regex", () => {
+  test("valid model regex is compiled to modelPattern", () => {
+    const rules = compileRewriteRules([{ from: "a", to: "b", model: "opus" }])
+    expect(rules).toHaveLength(1)
+    expect(rules[0].modelPattern).toBeInstanceOf(RegExp)
+    expect(rules[0].modelPattern!.test("claude-opus-4.6")).toBe(true)
+    expect(rules[0].modelPattern!.test("claude-sonnet-4.5")).toBe(false)
+  })
+
+  test("invalid model regex skips the entire rule", () => {
+    const rules = compileRewriteRules([{ from: "a", to: "b", model: "[invalid" }])
+    expect(rules).toHaveLength(0)
+  })
+
+  test("rule without model has no modelPattern", () => {
+    const rules = compileRewriteRules([{ from: "a", to: "b" }])
+    expect(rules).toHaveLength(1)
+    expect(rules[0].modelPattern).toBeUndefined()
+  })
+
+  test("model regex is compiled for line method too", () => {
+    const rules = compileRewriteRules([{ from: "a", to: "b", method: "line", model: "haiku" }])
+    expect(rules).toHaveLength(1)
+    expect(rules[0].modelPattern).toBeInstanceOf(RegExp)
+    expect(rules[0].method).toBe("line")
   })
 })

@@ -1,21 +1,20 @@
 /**
- * Unit tests for system-reminder tag parsing and filtering.
+ * Unit tests for system-reminder tag parsing and rewriting.
  *
  * Tests: extractTrailingSystemReminderTags, extractLeadingSystemReminderTags,
- *        getEnabledFilters, removeSystemReminderTags
+ *        removeSystemReminderTags (with state.rewriteSystemReminders modes)
  */
 
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import {
   CLOSE_TAG,
   OPEN_TAG,
-  configureSystemReminderFilters,
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
-  getEnabledFilters,
   removeSystemReminderTags,
 } from "~/lib/sanitize-system-reminder"
+import { state } from "~/lib/state"
 
 // ─── extractTrailingSystemReminderTags ───
 
@@ -94,57 +93,141 @@ describe("extractLeadingSystemReminderTags", () => {
   })
 })
 
-// ─── getEnabledFilters ───
-
-describe("getEnabledFilters", () => {
-  test("returns default-enabled filters when no keys provided", () => {
-    const filters = getEnabledFilters()
-    expect(filters.length).toBeGreaterThan(0)
-    expect(filters.every((f) => f.defaultEnabled)).toBe(true)
-  })
-
-  test("filters by provided keys", () => {
-    const filters = getEnabledFilters(["malware"])
-    expect(filters).toHaveLength(1)
-    expect(filters[0].key).toBe("malware")
-  })
-
-  test("returns empty for unknown keys", () => {
-    const filters = getEnabledFilters(["nonexistent_key"])
-    expect(filters).toHaveLength(0)
-  })
-})
-
 // ─── removeSystemReminderTags ───
 
 describe("removeSystemReminderTags", () => {
-  afterEach(() => {
-    configureSystemReminderFilters() // reset to defaults
+  let originalRewrite: typeof state.rewriteSystemReminders
+
+  beforeEach(() => {
+    originalRewrite = state.rewriteSystemReminders
   })
 
-  test("removes matching malware reminder from trailing position", () => {
+  afterEach(() => {
+    state.rewriteSystemReminders = originalRewrite
+  })
+
+  // --- mode: true (remove all) ---
+
+  test("mode=true: removes all trailing tags regardless of content", () => {
+    state.rewriteSystemReminders = true
+    const text = `Main content\n${OPEN_TAG}\nSome arbitrary reminder\n${CLOSE_TAG}`
+    const result = removeSystemReminderTags(text)
+    expect(result).toBe("Main content")
+  })
+
+  test("mode=true: removes all leading tags regardless of content", () => {
+    state.rewriteSystemReminders = true
+    const text = `${OPEN_TAG}\nArbitrary content here\n${CLOSE_TAG}\nMain content`
+    const result = removeSystemReminderTags(text)
+    expect(result).toBe("Main content")
+  })
+
+  test("mode=true: removes multiple tags", () => {
+    state.rewriteSystemReminders = true
+    const text = `${OPEN_TAG}\nLeading tag\n${CLOSE_TAG}\nMain content\n${OPEN_TAG}\nTrailing tag\n${CLOSE_TAG}`
+    const result = removeSystemReminderTags(text)
+    expect(result).toBe("Main content")
+  })
+
+  test("mode=true: returns original text when no tags present", () => {
+    state.rewriteSystemReminders = true
+    const text = "Plain text without any system-reminder tags"
+    expect(removeSystemReminderTags(text)).toBe(text)
+  })
+
+  // --- mode: false (keep all, default) ---
+
+  test("mode=false: preserves all tags", () => {
+    state.rewriteSystemReminders = false
+    const malwareContent = "Whenever you read a file, you should consider whether it would be considered malware."
+    const text = `Main content\n${OPEN_TAG}\n${malwareContent}\n${CLOSE_TAG}`
+    const result = removeSystemReminderTags(text)
+    expect(result).toBe(text)
+  })
+
+  test("mode=false: preserves leading and trailing tags", () => {
+    state.rewriteSystemReminders = false
+    const text = `${OPEN_TAG}\nLeading\n${CLOSE_TAG}\nMain\n${OPEN_TAG}\nTrailing\n${CLOSE_TAG}`
+    const result = removeSystemReminderTags(text)
+    expect(result).toBe(text)
+  })
+
+  // --- mode: rules (from + to) ---
+
+  test("mode=rules: removes tags matching a pattern with empty replacement", () => {
+    state.rewriteSystemReminders = [{ from: /^Whenever you read a file/, to: "" }]
     const malwareContent = "Whenever you read a file, you should consider whether it would be considered malware."
     const text = `Main content\n${OPEN_TAG}\n${malwareContent}\n${CLOSE_TAG}`
     const result = removeSystemReminderTags(text)
     expect(result).toBe("Main content")
   })
 
-  test("preserves non-matching reminder tags", () => {
+  test("mode=rules: keeps tags not matching any rule", () => {
+    state.rewriteSystemReminders = [{ from: /^Whenever you read a file/, to: "" }]
     const text = `Main content\n${OPEN_TAG}\nSome other reminder content\n${CLOSE_TAG}`
     const result = removeSystemReminderTags(text)
-    // Should NOT be removed since it doesn't match any filter
+    // Should NOT be removed since it doesn't match the pattern
     expect(result).toBe(text)
   })
 
-  test("returns original text when no tags present", () => {
-    const text = "Plain text without any system-reminder tags"
-    expect(removeSystemReminderTags(text)).toBe(text)
+  test("mode=rules: $0 replacement keeps tag unchanged", () => {
+    state.rewriteSystemReminders = [{ from: /malware/, to: "$0" }]
+    const content = "This mentions malware analysis"
+    const text = `Main content\n${OPEN_TAG}\n${content}\n${CLOSE_TAG}`
+    const result = removeSystemReminderTags(text)
+    // $0 replaces the matched part with itself → result === original → keep
+    expect(result).toBe(text)
   })
 
-  test("removes matching tags from leading position", () => {
-    const malwareContent = "Whenever you read a file, you should consider whether it would be considered malware."
-    const text = `${OPEN_TAG}\n${malwareContent}\n${CLOSE_TAG}\nMain content`
+  test("mode=rules: rewrites tag content with replacement", () => {
+    state.rewriteSystemReminders = [{ from: /^Original (.+)$/, to: "Rewritten $1" }]
+    const text = `Main content\n${OPEN_TAG}\nOriginal reminder text\n${CLOSE_TAG}`
     const result = removeSystemReminderTags(text)
-    expect(result).toBe("Main content")
+    expect(result).toBe(`Main content\n${OPEN_TAG}\nRewritten reminder text\n${CLOSE_TAG}`)
+  })
+
+  test("mode=rules: first matching rule wins (top-down)", () => {
+    state.rewriteSystemReminders = [
+      { from: /malware/, to: "" }, // rule 1: remove malware
+      { from: /.*/, to: "FALLBACK" }, // rule 2: rewrite everything else
+    ]
+    // Tag matching rule 1 should be removed
+    const text1 = `Content\n${OPEN_TAG}\nThis mentions malware analysis\n${CLOSE_TAG}`
+    expect(removeSystemReminderTags(text1)).toBe("Content")
+
+    // Tag matching rule 2 (not rule 1) should be rewritten
+    const text2 = `Content\n${OPEN_TAG}\nSomething unrelated\n${CLOSE_TAG}`
+    expect(removeSystemReminderTags(text2)).toBe(`Content\n${OPEN_TAG}\nFALLBACK\n${CLOSE_TAG}`)
+  })
+
+  test("mode=rules: selectively removes matching tags while preserving others", () => {
+    state.rewriteSystemReminders = [{ from: /^Remove me/, to: "" }]
+    const text =
+      `${OPEN_TAG}\nRemove me please\n${CLOSE_TAG}\n` + `Main content\n` + `${OPEN_TAG}\nKeep me\n${CLOSE_TAG}`
+    const result = removeSystemReminderTags(text)
+    // Leading "Remove me" tag should be removed, trailing "Keep me" should remain
+    expect(result).toBe(`Main content\n${OPEN_TAG}\nKeep me\n${CLOSE_TAG}`)
+  })
+
+  test("mode=rules: empty rules array keeps everything", () => {
+    state.rewriteSystemReminders = []
+    const text = `Main content\n${OPEN_TAG}\nSome reminder\n${CLOSE_TAG}`
+    const result = removeSystemReminderTags(text)
+    expect(result).toBe(text)
+  })
+
+  test("mode=rules: rewrites leading tag content", () => {
+    state.rewriteSystemReminders = [{ from: /^Hello (.+)/, to: "Hi $1" }]
+    const text = `${OPEN_TAG}\nHello world\n${CLOSE_TAG}\nMain content`
+    const result = removeSystemReminderTags(text)
+    expect(result).toBe(`${OPEN_TAG}\nHi world\n${CLOSE_TAG}\nMain content`)
+  })
+
+  test("mode=rules: partial match replaces only matched portion", () => {
+    state.rewriteSystemReminders = [{ from: /secret_token_\w+/, to: "[REDACTED]" }]
+    const content = "Use secret_token_abc123 for auth"
+    const text = `Main\n${OPEN_TAG}\n${content}\n${CLOSE_TAG}`
+    const result = removeSystemReminderTags(text)
+    expect(result).toBe(`Main\n${OPEN_TAG}\nUse [REDACTED] for auth\n${CLOSE_TAG}`)
   })
 })

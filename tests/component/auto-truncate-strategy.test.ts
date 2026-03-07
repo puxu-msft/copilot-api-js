@@ -10,7 +10,7 @@ import type { ApiError } from "~/lib/error"
 import type { RetryContext, SanitizeResult } from "~/lib/request/pipeline"
 import type { TruncateOptions, TruncateResult } from "~/lib/request/strategies/auto-truncate"
 
-import { resetAllLimitsForTesting } from "~/lib/auto-truncate-common"
+import { resetAllLimitsForTesting } from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
 import { createAutoTruncateStrategy } from "~/lib/request/strategies/auto-truncate"
 

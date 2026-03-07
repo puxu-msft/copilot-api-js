@@ -2,24 +2,24 @@ import { afterAll, describe, expect, test } from "bun:test"
 
 import type { Tool } from "~/types/api/anthropic"
 
-import { convertServerToolsToCustom } from "~/lib/anthropic/sanitize"
+import { convertServerToolsToCustom } from "~/lib/anthropic/message-tools"
 import { state } from "~/lib/state"
 
-const originalRewriteAnthropicTools = state.rewriteAnthropicTools
+const originalRewriteAnthropicTools = state.convertServerToolsToCustom
 
 afterAll(() => {
-  state.rewriteAnthropicTools = originalRewriteAnthropicTools
+  state.convertServerToolsToCustom = originalRewriteAnthropicTools
 })
 
 describe("convertServerToolsToCustom", () => {
   describe("when rewriting is disabled", () => {
     test("should return undefined for undefined input", () => {
-      state.rewriteAnthropicTools = false
+      state.convertServerToolsToCustom = false
       expect(convertServerToolsToCustom(undefined)).toBeUndefined()
     })
 
     test("should return the same array reference (no allocation)", () => {
-      state.rewriteAnthropicTools = false
+      state.convertServerToolsToCustom = false
       const tools: Array<Tool> = [
         { name: "web_search", type: "web_search_20250305" },
         { name: "Bash", description: "Run bash", input_schema: { type: "object" } },
@@ -31,7 +31,7 @@ describe("convertServerToolsToCustom", () => {
 
   describe("when rewriting is enabled", () => {
     test("should convert web_search server tool to custom tool", () => {
-      state.rewriteAnthropicTools = true
+      state.convertServerToolsToCustom = true
       const tools: Array<Tool> = [{ name: "web_search", type: "web_search_20250305" }]
       const result = convertServerToolsToCustom(tools)!
       expect(result).toHaveLength(1)
@@ -42,7 +42,7 @@ describe("convertServerToolsToCustom", () => {
     })
 
     test("should convert code_execution server tool", () => {
-      state.rewriteAnthropicTools = true
+      state.convertServerToolsToCustom = true
       const tools: Array<Tool> = [{ name: "code_execution", type: "code_execution_20250522" }]
       const result = convertServerToolsToCustom(tools)!
       expect(result).toHaveLength(1)
@@ -51,7 +51,7 @@ describe("convertServerToolsToCustom", () => {
     })
 
     test("should pass through regular custom tools unchanged", () => {
-      state.rewriteAnthropicTools = true
+      state.convertServerToolsToCustom = true
       const customTool: Tool = {
         name: "Bash",
         description: "Run bash commands",
@@ -64,7 +64,7 @@ describe("convertServerToolsToCustom", () => {
     })
 
     test("should handle mixed server and custom tools", () => {
-      state.rewriteAnthropicTools = true
+      state.convertServerToolsToCustom = true
       const tools: Array<Tool> = [
         { name: "web_search", type: "web_search_20250305" },
         { name: "Bash", description: "Run bash", input_schema: { type: "object" } },
@@ -84,7 +84,7 @@ describe("convertServerToolsToCustom", () => {
     })
 
     test("should return undefined when all tools are removed", () => {
-      state.rewriteAnthropicTools = true
+      state.convertServerToolsToCustom = true
       // Simulate a removable tool by testing with a tool type that doesn't match any config
       // (currently no tools have remove=true, but test the empty result path)
       const tools: Array<Tool> = [{ name: "web_search", type: "web_search_20250305" }]
@@ -95,13 +95,13 @@ describe("convertServerToolsToCustom", () => {
     })
 
     test("should return undefined for empty array", () => {
-      state.rewriteAnthropicTools = true
+      state.convertServerToolsToCustom = true
       const result = convertServerToolsToCustom([])
       expect(result).toBeUndefined()
     })
 
     test("should match tools by type prefix, not exact match", () => {
-      state.rewriteAnthropicTools = true
+      state.convertServerToolsToCustom = true
       // Different date versions should all match the same prefix
       const tools: Array<Tool> = [
         { name: "ws1", type: "web_search_20250101" },

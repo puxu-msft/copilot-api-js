@@ -22,9 +22,8 @@
       "~/*": ["./src/*"]
     }
   },
-  "exclude": [
-    "archive",
-    "src/ui/history-v3",
-    "refs"
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts"
   ]
 }

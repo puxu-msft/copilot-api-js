@@ -18,7 +18,7 @@ export type {
 
 export { executeRequestPipeline } from "./pipeline"
 // Recording
-export { buildAnthropicStreamResult, buildOpenAIStreamResult } from "./recording"
+export { buildAnthropicResponseData, buildOpenAIResponseData, buildResponsesResponseData } from "./recording"
 // Response
 export { isNonStreaming, prependMarkerToResponse, safeParseJson } from "./response"
 
@@ -26,10 +26,6 @@ export { isNonStreaming, prependMarkerToResponse, safeParseJson } from "./respon
 export type { TruncateOptions, TruncateResult } from "./strategies/auto-truncate"
 
 export { createAutoTruncateStrategy } from "./strategies/auto-truncate"
-
-// Tracking
-export type { RequestResult, ResponseContext } from "./tracking"
-export { extractErrorContent, finalizeRequest, updateTrackerStatus } from "./tracking"
 
 // Truncation
 export type { TruncateResultInfo } from "./truncation"

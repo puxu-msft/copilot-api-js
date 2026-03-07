@@ -1,6 +1,6 @@
 import { ref, computed, type Ref, type ComputedRef } from "vue"
 
-import type { HistoryEntry, HistoryStats, Session, ContentBlock, MessageContent, EntrySummary } from "../types"
+import type { HistoryEntry, HistoryStats, Session, ContentBlock, MessageContent, EntrySummary, EndpointType } from "../types"
 
 import { api } from "../api/http"
 import { WSClient } from "../api/ws"
@@ -35,6 +35,10 @@ export interface HistoryStore {
   detailFilterRole: Ref<string>
   detailFilterType: Ref<string>
   aggregateTools: Ref<boolean>
+  /** Global view mode for rewritten content: null = per-message control */
+  detailViewMode: Ref<"original" | "rewritten" | "diff" | null>
+  /** Filter to show only messages that were rewritten */
+  showOnlyRewritten: Ref<boolean>
 
   // Computed
   hasSelection: ComputedRef<boolean>
@@ -89,6 +93,8 @@ export function useHistoryStore(): HistoryStore {
   const detailFilterRole = ref("")
   const detailFilterType = ref("")
   const aggregateTools = ref(true)
+  const detailViewMode = ref<"original" | "rewritten" | "diff" | null>(null)
+  const showOnlyRewritten = ref(false)
 
   // ═══ Computed ═══
   const hasSelection = computed(() => selectedEntry.value !== null)
@@ -109,7 +115,7 @@ export function useHistoryStore(): HistoryStore {
       const result = await api.fetchEntries({
         page: page.value,
         limit,
-        endpoint: filterEndpoint.value as "anthropic" | "openai" | undefined,
+        endpoint: filterEndpoint.value as EndpointType | undefined,
         success: filterSuccess.value === null ? undefined : filterSuccess.value === "true",
         search: searchQuery.value || undefined,
         sessionId: selectedSessionId.value || undefined,
@@ -280,6 +286,8 @@ export function useHistoryStore(): HistoryStore {
       onEntryUpdated: handleEntryUpdated,
       onStatsUpdated: handleStatsUpdated,
       onConnected: () => {},
+      onHistoryCleared: () => void refresh(),
+      onSessionDeleted: () => void refresh(),
       onStatusChange: (connected) => {
         wsConnected.value = connected
       },
@@ -311,6 +319,8 @@ export function useHistoryStore(): HistoryStore {
     detailFilterRole,
     detailFilterType,
     aggregateTools,
+    detailViewMode,
+    showOnlyRewritten,
     hasSelection,
     selectedIndex,
     fetchEntries,
@@ -337,20 +347,38 @@ export function getPreviewText(entry: HistoryEntry): string {
   const messages = entry.request.messages ?? []
   if (messages.length === 0) return ""
 
-  // Get last user message
+  // Walk backwards to find the last user message (skip OpenAI tool responses)
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
-    if (msg.role === "user") {
-      return extractText(msg.content).slice(0, 100)
+    // Skip OpenAI tool response messages
+    if (msg.role === "tool") continue
+    if (msg.role !== "user") continue
+
+    const text = extractText(msg.content)
+    if (text) return text.slice(0, 100)
+
+    // User message with only tool_result blocks — try previous messages
+    if (Array.isArray(msg.content) && msg.content.some((b: ContentBlock) => b.type === "tool_result")) {
+      continue
     }
+    break
   }
-  // Fallback to last message
+
+  // Fallback: if no user message, check for assistant tool_calls or tool responses
   const last = messages.at(-1)
   if (!last) return ""
+  if (last.role === "assistant" && last.tool_calls && last.tool_calls.length > 0) {
+    const names = last.tool_calls.map((tc: { function: { name: string } }) => tc.function.name).join(", ")
+    return `[tool_call: ${names}]`.slice(0, 100)
+  }
+  if (last.role === "tool") {
+    return `[tool_result: ${last.tool_call_id ?? "unknown"}]`.slice(0, 100)
+  }
   return extractText(last.content).slice(0, 100)
 }
 
-export function extractText(content: string | Array<ContentBlock>): string {
+export function extractText(content: string | Array<ContentBlock> | null): string {
+  if (!content) return ""
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
   return content
@@ -382,7 +410,11 @@ export function getStatusClass(entry: HistoryEntry | EntrySummary): "success" | 
 export function getMessageSummary(entry: HistoryEntry): string {
   const messages = entry.request.messages ?? []
   const msgCount = messages.length
+  // Count messages with tool usage (Anthropic tool_use blocks OR OpenAI tool_calls)
   const toolCount = messages.filter((m: MessageContent) => {
+    // OpenAI-style: assistant message with tool_calls array
+    if (m.tool_calls && m.tool_calls.length > 0) return true
+    // Anthropic-style: content array with tool_use blocks
     if (typeof m.content === "string") return false
     return Array.isArray(m.content) && m.content.some((b: ContentBlock) => b.type === "tool_use")
   }).length

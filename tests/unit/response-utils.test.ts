@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test"
 
-import type { ChatCompletionResponse } from "~/types/api/openai"
+import type { ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
 import { isNonStreaming } from "~/lib/request/response"
 

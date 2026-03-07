@@ -72,7 +72,7 @@ onUnmounted(() => {
         <span class="collapse-icon">{{ collapsed ? '▸' : '▾' }}</span>
         <span class="content-type-label" :class="'label-' + labelColor">{{ label }}</span>
         <slot name="header-extra" />
-        <span v-if="collapsed && summary" class="collapsed-summary">{{ summary }}</span>
+        <span v-if="collapsed && summary" class="collapsed-summary" :title="summary">{{ summary }}</span>
       </div>
       <div class="content-block-header-right">
         <button

@@ -10,16 +10,16 @@
 import { describe, test, expect, beforeAll } from "bun:test"
 
 import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
+import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
 import { getModels, type Model } from "~/lib/models/client"
-import { translateModelName } from "~/lib/models/resolver"
+import { resolveModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
-import { createChatCompletions, type ChatCompletionsPayload, type ChatCompletionResponse } from "~/lib/openai/client"
+import { createChatCompletions } from "~/lib/openai/client"
 import { createEmbeddings } from "~/lib/openai/embeddings"
-import { state } from "~/lib/state"
+import { rebuildModelIndex, state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
-import { translateToOpenAI } from "~/lib/translation/non-stream"
 
 import { getE2EMode, getGitHubToken } from "./config"
 
@@ -45,8 +45,7 @@ describeWithToken("Extended Copilot API Integration", () => {
 
     state.githubToken = githubToken
     state.accountType = "individual"
-    state.rewriteAnthropicTools = true
-    state.redirectAnthropic = false
+    state.convertServerToolsToCustom = true
 
     const { token } = await getCopilotToken()
     state.copilotToken = token
@@ -57,6 +56,7 @@ describeWithToken("Extended Copilot API Integration", () => {
       throw new Error("Failed to fetch models from GitHub Copilot API.")
     }
     state.models = models
+    rebuildModelIndex()
 
     claudeModel = models.data.find((m) => m.id.includes("claude-sonnet"))?.id ?? "claude-sonnet-4"
     gptModel = models.data.find((m) => m.id.includes("gpt-4"))?.id ?? "gpt-4o"
@@ -165,17 +165,16 @@ describeWithToken("Extended Copilot API Integration", () => {
 
   describe("Token Counting", () => {
     test("should count tokens for simple messages", async () => {
-      const payload: MessagesPayload = {
+      const payload: ChatCompletionsPayload = {
         model: claudeModel,
         messages: [{ role: "user", content: "Hello, world!" }],
         max_tokens: 100,
       }
 
-      const { payload: openAIPayload } = translateToOpenAI(payload)
       const selectedModel = state.models?.data.find((m) => m.id === claudeModel)
       expect(selectedModel).toBeDefined()
 
-      const tokenCount = await getTokenCount(openAIPayload, selectedModel as Model)
+      const tokenCount = await getTokenCount(payload, selectedModel as Model)
       expect(tokenCount.input).toBeGreaterThan(0)
       expect(tokenCount.input).toBeLessThan(50) // Simple message shouldn't be many tokens
 
@@ -183,13 +182,13 @@ describeWithToken("Extended Copilot API Integration", () => {
     })
 
     test("should count more tokens for longer messages", async () => {
-      const shortPayload: MessagesPayload = {
+      const shortPayload: ChatCompletionsPayload = {
         model: claudeModel,
         messages: [{ role: "user", content: "Hi" }],
         max_tokens: 100,
       }
 
-      const longPayload: MessagesPayload = {
+      const longPayload: ChatCompletionsPayload = {
         model: claudeModel,
         messages: [
           {
@@ -201,12 +200,10 @@ describeWithToken("Extended Copilot API Integration", () => {
         max_tokens: 100,
       }
 
-      const { payload: shortOAI } = translateToOpenAI(shortPayload)
-      const { payload: longOAI } = translateToOpenAI(longPayload)
       const selectedModel = state.models?.data.find((m) => m.id === claudeModel) as Model
 
-      const shortCount = await getTokenCount(shortOAI, selectedModel)
-      const longCount = await getTokenCount(longOAI, selectedModel)
+      const shortCount = await getTokenCount(shortPayload, selectedModel)
+      const longCount = await getTokenCount(longPayload, selectedModel)
 
       expect(longCount.input).toBeGreaterThan(shortCount.input)
       console.log(`[TokenCount] Short: ${shortCount.input}, Long: ${longCount.input}`)
@@ -220,7 +217,7 @@ describeWithToken("Extended Copilot API Integration", () => {
   describe("Model Name Translation (real models)", () => {
     test("should translate hyphenated model names to available models", () => {
       // This tests the actual fix: claude-opus-4-6 -> claude-opus-4.6
-      const resolved = translateModelName("claude-opus-4-6")
+      const resolved = resolveModelName("claude-opus-4-6")
       const availableIds = state.models?.data.map((m) => m.id) ?? []
 
       // Should be translated to dot notation
@@ -238,7 +235,7 @@ describeWithToken("Extended Copilot API Integration", () => {
       const availableIds = state.models?.data.map((m) => m.id) ?? []
 
       for (const alias of ["opus", "sonnet", "haiku"]) {
-        const resolved = translateModelName(alias)
+        const resolved = resolveModelName(alias)
         const hasFamily = availableIds.some((id) => id.includes(alias))
 
         if (hasFamily) {

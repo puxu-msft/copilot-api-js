@@ -1,0 +1,42 @@
+{
+  "model": "gpt-5.1",
+  "max_output_tokens": 200,
+  "stream": false,
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get the current weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ]
+      }
+    }
+  ],
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "What is the weather in Tokyo?"
+    },
+    {
+      "type": "function_call",
+      "id": "fc_1",
+      "call_id": "call_IvYLluXXEws7EcemBgX4GzdX",
+      "name": "get_weather",
+      "arguments": "{\"location\": \"Tokyo\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_IvYLluXXEws7EcemBgX4GzdX",
+      "output": "Sunny, 22\u00b0C"
+    }
+  ]
+}

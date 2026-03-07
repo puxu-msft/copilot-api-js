@@ -1,22 +1,29 @@
 /**
- * Custom Hono logger middleware that integrates with TUI request tracker.
- * Replaces the default hono/logger for cleaner, more informative output.
+ * TUI logger middleware — tracks every HTTP request in the TUI.
+ *
+ * Lifecycle:
+ *   startRequest() → [handler runs] → finishRequest()
+ *
+ * Completion ownership:
+ *   - Streaming API requests (SSE): consumer calls finishRequest asynchronously
+ *     when the stream ends, with correct duration and full usage data.
+ *     Middleware detects SSE content-type and skips finishRequest.
+ *   - Non-streaming API requests: consumer calls finishRequest synchronously
+ *     during await next(). Middleware's subsequent finishRequest is a no-op.
+ *   - Simple routes (/models, /history, etc.): no consumer — middleware calls
+ *     finishRequest after await next() with c.res.status.
+ *   - WebSocket upgrades: middleware calls finishRequest with status 101.
+ *
+ * finishRequest is idempotent — second call for the same ID is a no-op.
  */
 
 import type { Context, MiddlewareHandler, Next } from "hono"
 
-import { getErrorMessage } from "~/lib/error"
+import { getErrorMessage, HTTPError } from "~/lib/error"
 import { getIsShuttingDown } from "~/lib/shutdown"
 
 import { tuiLogger } from "./tracker"
 
-/**
- * Custom logger middleware that tracks requests through the TUI system
- * Shows single-line output: METHOD /path 200 1.2s 1.5K/500 model-name
- *
- * For streaming responses (SSE), the handler is responsible for calling
- * completeRequest after the stream finishes.
- */
 export function tuiMiddleware(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     // Reject new requests during shutdown
@@ -31,64 +38,46 @@ export function tuiMiddleware(): MiddlewareHandler {
     const contentLength = c.req.header("content-length")
     const requestBodySize = contentLength ? Number.parseInt(contentLength, 10) : undefined
 
-    // Detect /history API access for gray display
-    const isHistoryAccess = path.startsWith("/history")
-
-    // Start tracking with empty model (will be updated by handler if available)
     const tuiLogId = tuiLogger.startRequest({
       method,
       path,
       model: "",
-      isHistoryAccess,
+      isHistoryAccess: path.startsWith("/history"),
       requestBodySize,
     })
 
-    // Store tracking ID in context for handlers to update
+    // Store tracking ID in context for handlers/consumers to use
     c.set("tuiLogId", tuiLogId)
+
+    // Detect WebSocket upgrade before calling next() — after the upgrade,
+    // c.res may not have a meaningful status.
+    const isWebSocketUpgrade = c.req.header("upgrade")?.toLowerCase() === "websocket"
 
     try {
       await next()
 
-      const status = c.res.status
-
-      // WebSocket upgrade (101 Switching Protocols) - complete immediately
-      if (status === 101) {
-        tuiLogger.completeRequest(tuiLogId, 101)
+      // WebSocket: treat as 101 regardless of c.res.status
+      // (Bun returns 200, Node.js handles upgrade outside Hono)
+      if (isWebSocketUpgrade) {
+        tuiLogger.finishRequest(tuiLogId, { statusCode: 101 })
         return
       }
 
-      // Check if this is a streaming response (SSE)
+      // Streaming (SSE): the consumer handles completion asynchronously when
+      // the stream finishes — with correct duration and full usage data.
+      // Calling finishRequest here would finish prematurely (before the stream
+      // ends, without usage).
       const contentType = c.res.headers.get("content-type")
-      const isStreaming = contentType?.includes("text/event-stream") ?? false
+      if (contentType?.includes("text/event-stream")) return
 
-      // For streaming responses, the handler will call completeRequest
-      // after the stream finishes with the actual token counts
-      if (isStreaming) {
-        return
-      }
-
-      // Get usage and model from response headers (set by handler if available)
-      const inputTokens = c.res.headers.get("x-input-tokens")
-      const outputTokens = c.res.headers.get("x-output-tokens")
-      const model = c.res.headers.get("x-model")
-
-      // Update model if available
-      if (model) {
-        tuiLogger.updateRequest(tuiLogId, { model })
-      }
-
-      tuiLogger.completeRequest(
-        tuiLogId,
-        status,
-        inputTokens && outputTokens ?
-          {
-            inputTokens: Number.parseInt(inputTokens, 10),
-            outputTokens: Number.parseInt(outputTokens, 10),
-          }
-        : undefined,
-      )
+      // Non-streaming: finish the request with the actual HTTP status.
+      // If a consumer already finished it synchronously during next(), this is a no-op.
+      tuiLogger.finishRequest(tuiLogId, { statusCode: c.res.status })
     } catch (error) {
-      tuiLogger.failRequest(tuiLogId, getErrorMessage(error))
+      tuiLogger.finishRequest(tuiLogId, {
+        error: getErrorMessage(error),
+        statusCode: error instanceof HTTPError ? error.status : undefined,
+      })
       throw error
     }
   }

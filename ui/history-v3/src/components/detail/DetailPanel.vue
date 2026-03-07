@@ -9,6 +9,7 @@ import { provideRawModal } from '@/composables/useRawModal'
 import { provideSharedResizeObserver } from '@/composables/useSharedResizeObserver'
 import DetailToolbar from './DetailToolbar.vue'
 import SectionBlock from './SectionBlock.vue'
+import SseEventsSection from './SseEventsSection.vue'
 import MetaInfo from './MetaInfo.vue'
 import TruncationDivider from './TruncationDivider.vue'
 import SystemMessage from '@/components/message/SystemMessage.vue'
@@ -24,15 +25,23 @@ const entry = computed(() => store.selectedEntry.value)
 const {
   visible: rawModalVisible,
   data: rawModalData,
+  rewrittenData: rawModalRewrittenData,
   title: rawModalTitle,
-  openRawModal,
 } = provideRawModal()
 
 // Plan C: Shared ResizeObserver — single instance for all child components
 provideSharedResizeObserver()
 
 // Rewrite info composable (Plan D: pre-computed maps, O(1) lookups)
-const { truncationPoint, getRewrittenMessage, isMessageRewritten, isMessageTruncated } = useRewriteInfo(entry)
+const {
+  truncationPoint,
+  hasRewrites,
+  rewriteSummary,
+  rewrittenIndexList,
+  getRewrittenMessage,
+  isMessageRewritten,
+  isMessageTruncated,
+} = useRewriteInfo(entry)
 
 // Merged tool maps — single pass over messages
 const toolMaps = computed(() => {
@@ -84,6 +93,10 @@ const filteredMessages = computed(() => {
   if (store.detailFilterRole.value) {
     indexed = indexed.filter(({ msg }) => msg.role === store.detailFilterRole.value)
   }
+  // Show only rewritten messages filter
+  if (store.showOnlyRewritten.value) {
+    indexed = indexed.filter(({ originalIndex }) => isMessageRewritten(originalIndex))
+  }
   return indexed
 })
 
@@ -96,6 +109,19 @@ const responseMessage = computed<MessageContent | null>(() => {
 const requestBadge = computed(() => {
   if (!entry.value) return ''
   return `${(entry.value.request.messages ?? []).length} messages`
+})
+
+/** Rewritten request payload for the Raw modal (original request with rewritten messages/system) */
+const rewrittenRequest = computed(() => {
+  if (!entry.value?.rewrites) return undefined
+  const rw = entry.value.rewrites
+  // Only construct if there are actual rewrites
+  if (!rw.rewrittenMessages && !rw.rewrittenSystem) return undefined
+  return {
+    ...entry.value.request,
+    ...(rw.rewrittenMessages && { messages: rw.rewrittenMessages }),
+    ...(rw.rewrittenSystem !== undefined && { system: rw.rewrittenSystem }),
+  }
 })
 
 function hasMatchingBlockType(msg: MessageContent, filterType: string): boolean {
@@ -153,6 +179,21 @@ watch(entry, (e) => {
     })
   }
 })
+
+/** Export full entry as downloadable JSON file */
+function exportEntry() {
+  if (!entry.value) return
+  const json = JSON.stringify(entry.value, null, 2)
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  // Filename: entry id + model (if available)
+  const model = entry.value.request.model || 'unknown'
+  a.download = `${entry.value.id}_${model}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 </script>
 
 <template>
@@ -165,17 +206,23 @@ watch(entry, (e) => {
 
     <!-- Detail content -->
     <template v-else-if="entry">
-      <DetailToolbar @show-raw="openRawModal(entry, 'Raw — Full Entry')" />
+      <DetailToolbar
+        :has-rewrites="hasRewrites"
+        :rewrite-summary="rewriteSummary"
+        :rewritten-index-list="rewrittenIndexList"
+        @export="exportEntry"
+      />
 
       <div ref="detailBodyRef" class="detail-body">
         <!-- REQUEST Section -->
-        <SectionBlock title="Request" :badge="requestBadge" :raw-data="entry.request" raw-title="Raw — Request">
+        <SectionBlock title="Request" :badge="requestBadge" :raw-data="entry.request" :rewritten-raw-data="rewrittenRequest" raw-title="Raw — Request">
           <!-- System prompt -->
           <SystemMessage
             v-if="entry.request.system"
             :system="entry.request.system"
             :rewritten-system="entry.rewrites?.rewrittenSystem"
             :search-query="store.detailSearch.value"
+            :global-view-mode="store.detailViewMode.value"
           />
 
           <!-- Messages with inline truncation divider -->
@@ -194,6 +241,7 @@ watch(entry, (e) => {
                 :is-truncated="isMessageTruncated(item.originalIndex)"
                 :is-rewritten="isMessageRewritten(item.originalIndex)"
                 :rewritten-message="getRewrittenMessage(item.originalIndex)"
+                :global-view-mode="store.detailViewMode.value"
               />
             </template>
           </div>
@@ -214,6 +262,9 @@ watch(entry, (e) => {
           />
         </SectionBlock>
 
+        <!-- SSE EVENTS Section (only for streaming requests) -->
+        <SseEventsSection v-if="entry.sseEvents?.length" :events="entry.sseEvents" />
+
         <!-- META Section -->
         <SectionBlock title="Meta" :raw-data="entry" raw-title="Raw — Full Entry">
           <MetaInfo :entry="entry" />
@@ -226,6 +277,7 @@ watch(entry, (e) => {
       :visible="rawModalVisible"
       :title="rawModalTitle"
       :data="rawModalData"
+      :rewritten-data="rawModalRewrittenData"
       @update:visible="rawModalVisible = $event"
     />
   </div>

@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { buildMessageMapping, messagesMatch } from "~/lib/translation/message-mapping"
+import { buildMessageMapping, messagesMatch } from "~/lib/anthropic/message-mapping"
 
 // ─── buildMessageMapping ───
 

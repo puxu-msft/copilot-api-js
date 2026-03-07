@@ -21,8 +21,9 @@ watch(localSearch, (val) => {
 })
 
 const endpointOptions = [
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic-messages', label: 'Anthropic Messages' },
+  { value: 'openai-chat-completions', label: 'OpenAI Chat Completions' },
+  { value: 'openai-responses', label: 'OpenAI Responses' },
 ]
 
 const statusOptions = [

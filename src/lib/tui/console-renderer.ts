@@ -8,41 +8,10 @@ import pc from "picocolors"
 
 import type { RequestUpdate, TuiLogEntry, TuiRenderer } from "./types"
 
+import { formatBytes, formatDuration, formatStreamInfo, formatTime, formatTokens } from "./format"
+
 // ANSI escape codes for cursor control
 const CLEAR_LINE = "\x1b[2K\r"
-
-function formatTime(date: Date = new Date()): string {
-  const h = String(date.getHours()).padStart(2, "0")
-  const m = String(date.getMinutes()).padStart(2, "0")
-  const s = String(date.getSeconds()).padStart(2, "0")
-  return `${h}:${m}:${s}`
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
-
-function formatNumber(n: number): string {
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`
-  return String(n)
-}
-
-function formatBytes(n: number): string {
-  if (n >= 1048576) return `${(n / 1048576).toFixed(1)}MB`
-  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`
-  return `${n}B`
-}
-
-function formatTokens(input?: number, output?: number, cacheRead?: number, cacheCreation?: number): string {
-  if (input === undefined && output === undefined) return "-"
-  let result = formatNumber(input ?? 0)
-  if (cacheRead) result += `+${formatNumber(cacheRead)}`
-  if (cacheCreation) result += `+${formatNumber(cacheCreation)}`
-  result += `/${formatNumber(output ?? 0)}`
-  return result
-}
 
 /**
  * Console renderer that shows request lifecycle with apt-get style footer
@@ -50,7 +19,7 @@ function formatTokens(input?: number, output?: number, cacheRead?: number, cache
  * Log format:
  * - Start: [....] HH:MM:SS METHOD /path model-name (debug only, dim)
  * - Streaming: [<-->] HH:MM:SS METHOD /path model-name streaming... (dim)
- * - Complete: [ OK ] HH:MM:SS 200 POST /path model-name (3x) 1.2s 12.3KB 1.5K/500 (colored)
+ * - Complete: [ OK ] HH:MM:SS 200 POST /path model-name (3x) 1.2s ↑12.3KB ↓45.6KB ↑1.5K+300 ↓500 (colored)
  * - Error: [FAIL] HH:MM:SS 500 POST /path model-name (3x) 1.2s: error message (red)
  *
  * Color scheme for completed requests:
@@ -67,7 +36,8 @@ function formatTokens(input?: number, output?: number, cacheRead?: number, cache
  * - Start lines only shown in debug mode (--verbose)
  * - Streaming lines are dim (less important)
  * - /history API requests are always dim
- * - Sticky footer shows active request count
+ * - Sticky footer shows active requests with model and elapsed time
+ * - Footer auto-refreshes every second while requests are in-flight
  * - Intercepts consola output to properly handle footer
  */
 export class ConsoleRenderer implements TuiRenderer {
@@ -76,6 +46,7 @@ export class ConsoleRenderer implements TuiRenderer {
   private footerVisible = false
   private isTTY: boolean
   private originalReporters: Array<unknown> = []
+  private footerTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(options?: { showActive?: boolean }) {
     this.showActive = options?.showActive ?? true
@@ -158,14 +129,37 @@ export class ConsoleRenderer implements TuiRenderer {
     }
   }
 
+  // ─── Footer (active request status line) ───
+
   /**
-   * Get footer text based on active request count
+   * Build footer text showing per-request model and elapsed time.
+   *
+   * Single:  [<-->] POST /v1/messages claude-sonnet-4 3.2s ↓12.3KB 42ev [thinking]
+   * Multi:   [<-->] claude-sonnet-4 5.2s ↓456KB 120ev [thinking] | claude-haiku-3 0.3s
    */
   private getFooterText(): string {
     const activeCount = this.activeRequests.size
     if (activeCount === 0) return ""
-    const plural = activeCount === 1 ? "" : "s"
-    return pc.dim(`[....] ${activeCount} request${plural} in progress...`)
+
+    const now = Date.now()
+
+    if (activeCount === 1) {
+      const req = this.activeRequests.values().next().value
+      if (!req) return "" // should never happen when activeCount === 1
+      const elapsed = formatDuration(now - req.startTime)
+      const model = req.model ? ` ${req.model}` : ""
+      const streamInfo = formatStreamInfo(req)
+      return pc.dim(`[<-->] ${req.method} ${req.path}${model} ${elapsed}${streamInfo}`)
+    }
+
+    // Multiple requests — compact: model elapsed stream-info | model elapsed stream-info
+    const items = Array.from(this.activeRequests.values()).map((req) => {
+      const elapsed = formatDuration(now - req.startTime)
+      const label = req.model || `${req.method} ${req.path}`
+      const streamInfo = formatStreamInfo(req)
+      return `${label} ${elapsed}${streamInfo}`
+    })
+    return pc.dim(`[<-->] ${items.join(" | ")}`)
   }
 
   /**
@@ -195,10 +189,32 @@ export class ConsoleRenderer implements TuiRenderer {
     }
   }
 
+  /** Start periodic footer refresh (every 100ms) to keep elapsed time current */
+  private startFooterTimer(): void {
+    if (this.footerTimer || !this.isTTY) return
+    this.footerTimer = setInterval(() => {
+      if (this.activeRequests.size > 0) {
+        this.renderFooter()
+      } else {
+        this.stopFooterTimer()
+      }
+    }, 100)
+    // Don't prevent process exit
+    this.footerTimer.unref()
+  }
+
+  /** Stop periodic footer refresh */
+  private stopFooterTimer(): void {
+    if (this.footerTimer) {
+      clearInterval(this.footerTimer)
+      this.footerTimer = null
+    }
+  }
+
   /**
    * Format a complete log line with colored parts
    *
-   * Format: [xxxx] HH:mm:ss <status> <method> <path> <model> (<multiplier>x) <duration> <reqSize>/<respSize> <inTokens>/<outTokens>
+   * Format: [xxxx] HH:mm:ss <status> <method> <path> <model> (<multiplier>x) <duration> ↑<reqSize> ↓<respSize> ↑<inTokens>+<cache> ↓<outTokens>
    */
   private formatLogLine(parts: {
     prefix: string
@@ -206,10 +222,13 @@ export class ConsoleRenderer implements TuiRenderer {
     method: string
     path: string
     model?: string
+    /** Original model name from client (shown when different from resolved model) */
+    clientModel?: string
     multiplier?: number
     status?: number
     duration?: string
     requestBodySize?: number
+    responseBodySize?: number
     inputTokens?: number
     outputTokens?: number
     cacheReadInputTokens?: number
@@ -225,10 +244,12 @@ export class ConsoleRenderer implements TuiRenderer {
       method,
       path,
       model,
+      clientModel,
       multiplier,
       status,
       duration,
       requestBodySize,
+      responseBodySize,
       inputTokens,
       outputTokens,
       cacheReadInputTokens,
@@ -248,27 +269,38 @@ export class ConsoleRenderer implements TuiRenderer {
     // Colored lines: each part has its own color
     const coloredPrefix = isError ? pc.red(prefix) : pc.green(prefix)
     const coloredTime = pc.dim(time)
-    let coloredStatus = ""
+    let coloredStatus: string | undefined
     if (status !== undefined) {
       coloredStatus = isError ? pc.red(String(status)) : pc.green(String(status))
     }
     const coloredMethod = pc.white(method)
     const coloredPath = pc.white(path)
-    const coloredModel = model ? pc.magenta(` ${model}`) : ""
+
+    // Show "clientModel → model" when client requested a different model name
+    let coloredModel = ""
+    if (model) {
+      coloredModel =
+        clientModel && clientModel !== model ?
+          ` ${pc.dim(clientModel)} → ${pc.magenta(model)}`
+        : pc.magenta(` ${model}`)
+    }
     const coloredMultiplier = multiplier !== undefined ? pc.dim(` (${multiplier}x)`) : ""
     const coloredDuration = duration ? ` ${pc.yellow(duration)}` : ""
     const coloredQueueWait = queueWait ? ` ${pc.dim(`(queued ${queueWait})`)}` : ""
 
-    // req-size
+    // req/resp body sizes with ↑↓ arrows
     let sizeInfo = ""
-    if (model && requestBodySize !== undefined) {
-      sizeInfo = ` ${pc.dim(formatBytes(requestBodySize))}`
+    if (model) {
+      const reqSize = requestBodySize !== undefined ? `↑${formatBytes(requestBodySize)}` : ""
+      const respSize = responseBodySize !== undefined ? `↓${formatBytes(responseBodySize)}` : ""
+      const parts = [reqSize, respSize].filter(Boolean).join(" ")
+      if (parts) sizeInfo = ` ${pc.dim(parts)}`
     }
 
     // in-tokens/out-tokens (with cache breakdown)
     let tokenInfo = ""
     if (model && (inputTokens !== undefined || outputTokens !== undefined)) {
-      tokenInfo = ` ${pc.cyan(formatTokens(inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens))}`
+      tokenInfo = ` ${formatTokens(inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens)}`
     }
 
     let extraPart = ""
@@ -276,7 +308,9 @@ export class ConsoleRenderer implements TuiRenderer {
       extraPart = isError ? pc.red(extra) : extra
     }
 
-    return `${coloredPrefix} ${coloredTime} ${coloredStatus} ${coloredMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}`
+    const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
+
+    return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}`
   }
 
   /**
@@ -290,6 +324,7 @@ export class ConsoleRenderer implements TuiRenderer {
 
   onRequestStart(request: TuiLogEntry): void {
     this.activeRequests.set(request.id, request)
+    this.startFooterTimer()
 
     // Only show start line in debug mode (consola.level >= 5)
     if (this.showActive && consola.level >= 5) {
@@ -312,33 +347,31 @@ export class ConsoleRenderer implements TuiRenderer {
     if (!request) return
 
     Object.assign(request, update)
-
-    if (this.showActive && update.status === "streaming") {
-      const message = this.formatLogLine({
-        prefix: "[<-->]",
-        time: formatTime(),
-        method: request.method,
-        path: request.path,
-        model: request.model,
-        extra: "streaming...",
-        isDim: true,
-      })
-      this.printLog(message)
-    }
   }
 
   onRequestComplete(request: TuiLogEntry): void {
     this.activeRequests.delete(request.id)
 
-    const status = request.statusCode ?? 0
-    const isError = request.status === "error" || status >= 400
+    // Stop timer when no more active requests
+    if (this.activeRequests.size === 0) {
+      this.stopFooterTimer()
+    }
+
+    // Skip completed log line for history access (only errors are shown)
+    if (request.isHistoryAccess && request.status !== "error") {
+      this.renderFooter()
+      return
+    }
+
+    const status = request.statusCode
+    const isError = request.status === "error" || (status !== undefined && status >= 400)
 
     // Only show queue wait if it's significant (> 100ms)
     const queueWait = request.queueWaitMs && request.queueWaitMs > 100 ? formatDuration(request.queueWaitMs) : undefined
 
     // Build extra text from tags and error
-    // Tags are only shown for successful requests (not useful in error lines)
-    const tagStr = !isError && request.tags?.length ? ` (${request.tags.join(", ")})` : ""
+    // Tags are supplementary metadata — dim the entire group
+    const tagStr = !isError && request.tags?.length ? pc.dim(` (${request.tags.join(", ")})`) : ""
     const errorStr = isError && request.error ? `: ${request.error}` : ""
     const extra = tagStr + errorStr || undefined
 
@@ -348,23 +381,25 @@ export class ConsoleRenderer implements TuiRenderer {
       method: request.method,
       path: request.path,
       model: request.model,
+      clientModel: request.clientModel,
       multiplier: request.multiplier,
       status,
       duration: formatDuration(request.durationMs ?? 0),
       queueWait,
       requestBodySize: request.requestBodySize,
+      responseBodySize: request.streamBytesIn,
       inputTokens: request.inputTokens,
       outputTokens: request.outputTokens,
       cacheReadInputTokens: request.cacheReadInputTokens,
       cacheCreationInputTokens: request.cacheCreationInputTokens,
       extra,
       isError,
-      isDim: request.isHistoryAccess,
     })
     this.printLog(message)
   }
 
   destroy(): void {
+    this.stopFooterTimer()
     if (this.footerVisible && this.isTTY) {
       process.stdout.write(CLEAR_LINE)
       this.footerVisible = false

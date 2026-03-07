@@ -2,6 +2,7 @@
 
 export { tuiMiddleware } from "./middleware"
 export { tuiLogger } from "./tracker"
+export type { RequestOutcome } from "./tracker"
 export type { RequestStatus, RequestUpdate, TuiLogEntry, TuiOptions, TuiRenderer } from "./types"
 
 import type { TuiOptions } from "./types"

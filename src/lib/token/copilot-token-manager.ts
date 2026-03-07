@@ -19,13 +19,19 @@ export interface CopilotTokenManagerOptions {
 /**
  * Manages Copilot token lifecycle including automatic refresh.
  * Depends on GitHubTokenManager for authentication.
+ *
+ * All refresh paths (scheduled + on-demand via 401) go through `refresh()`,
+ * which deduplicates concurrent callers and reschedules the next refresh based
+ * on the server's `refresh_in` value.
  */
 export class CopilotTokenManager {
   private githubTokenManager: GitHubTokenManager
   private currentToken: CopilotTokenInfo | null = null
-  private refreshTimer: ReturnType<typeof setInterval> | null = null
+  private refreshTimeout: ReturnType<typeof setTimeout> | null = null
   private minRefreshIntervalMs: number
   private maxRetries: number
+  /** Shared promise to prevent concurrent refresh attempts */
+  private refreshInFlight: Promise<CopilotTokenInfo | null> | null = null
 
   constructor(options: CopilotTokenManagerOptions) {
     this.githubTokenManager = options.githubTokenManager
@@ -52,8 +58,8 @@ export class CopilotTokenManager {
     // Show token in verbose mode
     consola.debug("GitHub Copilot Token fetched successfully!")
 
-    // Start automatic refresh
-    this.startAutoRefresh(tokenInfo.refreshIn)
+    // Schedule first refresh based on server's refresh_in
+    this.scheduleRefresh(tokenInfo.refreshIn)
 
     return tokenInfo
   }
@@ -62,12 +68,13 @@ export class CopilotTokenManager {
    * Fetch a new Copilot token from the API.
    */
   private async fetchCopilotToken(): Promise<CopilotTokenInfo> {
-    const { token, expires_at, refresh_in } = await getCopilotToken()
+    const response = await getCopilotToken()
 
     const tokenInfo: CopilotTokenInfo = {
-      token,
-      expiresAt: expires_at,
-      refreshIn: refresh_in,
+      token: response.token,
+      expiresAt: response.expires_at,
+      refreshIn: response.refresh_in,
+      raw: response,
     }
 
     this.currentToken = tokenInfo
@@ -75,9 +82,10 @@ export class CopilotTokenManager {
   }
 
   /**
-   * Refresh the Copilot token with exponential backoff retry.
+   * Fetch a new Copilot token with exponential backoff retry.
+   * Pure acquisition logic — does not update global state or reschedule timers.
    */
-  private async refreshWithRetry(): Promise<CopilotTokenInfo | null> {
+  private async fetchTokenWithRetry(): Promise<CopilotTokenInfo | null> {
     let lastError: unknown = null
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
@@ -118,9 +126,13 @@ export class CopilotTokenManager {
   }
 
   /**
-   * Start automatic token refresh.
+   * Schedule the next refresh using setTimeout.
+   *
+   * Uses the server-provided `refresh_in` value each time, adapting to
+   * changing token lifetimes. After each refresh, reschedules based on
+   * the new token's `refresh_in`.
    */
-  private startAutoRefresh(refreshInSeconds: number): void {
+  private scheduleRefresh(refreshInSeconds: number): void {
     // Sanity check: refresh_in should be positive and reasonable
     let effectiveRefreshIn = refreshInSeconds
     if (refreshInSeconds <= 0) {
@@ -128,54 +140,75 @@ export class CopilotTokenManager {
       effectiveRefreshIn = 1800 // 30 minutes
     }
 
-    // Calculate refresh interval (refresh a bit before expiration)
-    const refreshInterval = Math.max((effectiveRefreshIn - 60) * 1000, this.minRefreshIntervalMs)
+    // Calculate delay (refresh a bit before expiration)
+    const delayMs = Math.max((effectiveRefreshIn - 60) * 1000, this.minRefreshIntervalMs)
 
     consola.debug(
-      `[CopilotToken] refresh_in=${effectiveRefreshIn}s, scheduling refresh every ${Math.round(refreshInterval / 1000)}s`,
+      `[CopilotToken] refresh_in=${effectiveRefreshIn}s, scheduling next refresh in ${Math.round(delayMs / 1000)}s`,
     )
 
     // Clear any existing timer
-    this.stopAutoRefresh()
+    this.cancelScheduledRefresh()
 
-    this.refreshTimer = setInterval(() => {
-      consola.debug("Refreshing Copilot token...")
+    this.refreshTimeout = setTimeout(() => {
+      this.refresh().catch((error: unknown) => {
+        consola.error("Unexpected error during scheduled token refresh:", error)
+      })
+    }, delayMs)
+  }
 
-      this.refreshWithRetry()
-        .then((newToken) => {
-          if (newToken) {
-            state.copilotToken = newToken.token
-            consola.debug(`Copilot token refreshed (next refresh_in=${newToken.refreshIn}s)`)
-          } else {
-            consola.error("Failed to refresh Copilot token after retries, using existing token")
-          }
-        })
-        .catch((error: unknown) => {
-          consola.error("Unexpected error during token refresh:", error)
-        })
-    }, refreshInterval)
+  /**
+   * Cancel the currently scheduled refresh.
+   */
+  private cancelScheduledRefresh(): void {
+    if (this.refreshTimeout) {
+      clearTimeout(this.refreshTimeout)
+      this.refreshTimeout = null
+    }
   }
 
   /**
    * Stop automatic token refresh.
+   * Call this during cleanup/shutdown.
    */
   stopAutoRefresh(): void {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer)
-      this.refreshTimer = null
-    }
+    this.cancelScheduledRefresh()
   }
 
   /**
-   * Force an immediate token refresh.
+   * Refresh the Copilot token.
+   *
+   * Single entry point for all refreshes — both scheduled and on-demand
+   * (e.g. after a 401). Concurrent callers share the same in-flight refresh.
+   * On success, updates global state and reschedules the next refresh based
+   * on the new token's `refresh_in`.
    */
-  async forceRefresh(): Promise<CopilotTokenInfo | null> {
-    const tokenInfo = await this.refreshWithRetry()
-    if (tokenInfo) {
-      state.copilotToken = tokenInfo.token
-      consola.debug("Force-refreshed Copilot token")
+  async refresh(): Promise<CopilotTokenInfo | null> {
+    // If a refresh is already in progress, piggyback on it
+    if (this.refreshInFlight) {
+      consola.debug("[CopilotToken] Refresh already in progress, waiting...")
+      return this.refreshInFlight
     }
-    return tokenInfo
+
+    this.refreshInFlight = this.fetchTokenWithRetry()
+      .then((tokenInfo) => {
+        if (tokenInfo) {
+          state.copilotToken = tokenInfo.token
+          // Reschedule based on new token's refresh_in
+          this.scheduleRefresh(tokenInfo.refreshIn)
+          consola.verbose(`[CopilotToken] Token refreshed (next refresh_in=${tokenInfo.refreshIn}s)`)
+        } else {
+          consola.error("[CopilotToken] Token refresh failed, keeping existing token")
+          // Still reschedule with a fallback to avoid stopping the refresh loop entirely
+          this.scheduleRefresh(300) // retry in 5 minutes
+        }
+        return tokenInfo
+      })
+      .finally(() => {
+        this.refreshInFlight = null
+      })
+
+    return this.refreshInFlight
   }
 
   /**

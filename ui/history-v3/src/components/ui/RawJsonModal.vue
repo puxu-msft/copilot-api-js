@@ -10,6 +10,7 @@ const props = defineProps<{
   visible: boolean
   title: string
   data: unknown
+  rewrittenData?: unknown
 }>()
 
 defineEmits<{
@@ -17,6 +18,9 @@ defineEmits<{
 }>()
 
 const { copy } = useCopyToClipboard()
+
+/** Whether to show split Original / Rewritten view */
+const hasSplit = computed(() => props.rewrittenData != null)
 
 const jsonText = computed(() => {
   try {
@@ -26,28 +30,21 @@ const jsonText = computed(() => {
   }
 })
 
-/** Truncate long strings for display (original data preserved for copy) */
-function truncateStrings(data: unknown, maxLen = 500): unknown {
-  if (typeof data === 'string' && data.length > maxLen) {
-    return data.slice(0, maxLen) + `\u2026 (${data.length} chars)`
+const rewrittenJsonText = computed(() => {
+  if (!props.rewrittenData) return ''
+  try {
+    return JSON.stringify(props.rewrittenData, null, 2)
+  } catch {
+    return String(props.rewrittenData)
   }
-  if (Array.isArray(data)) {
-    return data.map(item => truncateStrings(item, maxLen))
-  }
-  if (data && typeof data === 'object') {
-    const result: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
-      result[key] = truncateStrings(value, maxLen)
-    }
-    return result
-  }
-  return data
-}
-
-const displayData = computed(() => truncateStrings(props.data))
+})
 
 function copyJson() {
   copy(jsonText.value)
+}
+
+function copyRewrittenJson() {
+  copy(rewrittenJsonText.value)
 }
 </script>
 
@@ -60,14 +57,60 @@ function copyJson() {
     @update:visible="$emit('update:visible', $event)"
   >
     <template #header-actions>
-      <button class="raw-copy-btn" title="Copy JSON" @click="copyJson">
+      <!-- Single view: one copy button -->
+      <button v-if="!hasSplit" class="raw-copy-btn" title="Copy JSON" @click="copyJson">
         <IconSvg name="copy" :size="12" />
         Copy
       </button>
     </template>
-    <div class="json-viewer">
+
+    <!-- Split view: Original / Rewritten side by side -->
+    <div v-if="hasSplit" class="json-split">
+      <div class="json-pane">
+        <div class="pane-header">
+          <span class="pane-label">Original</span>
+          <button class="raw-copy-btn" title="Copy original JSON" @click="copyJson">
+            <IconSvg name="copy" :size="12" />
+            Copy
+          </button>
+        </div>
+        <div class="json-viewer">
+          <VueJsonPretty
+            :data="(data as any)"
+            :deep="5"
+            :show-line-number="true"
+            :show-icon="true"
+            :show-length="true"
+            :collapsed-on-click-brackets="true"
+          />
+        </div>
+      </div>
+      <div class="pane-divider" />
+      <div class="json-pane">
+        <div class="pane-header">
+          <span class="pane-label pane-label-rewritten">Rewritten</span>
+          <button class="raw-copy-btn" title="Copy rewritten JSON" @click="copyRewrittenJson">
+            <IconSvg name="copy" :size="12" />
+            Copy
+          </button>
+        </div>
+        <div class="json-viewer">
+          <VueJsonPretty
+            :data="(rewrittenData as any)"
+            :deep="5"
+            :show-line-number="true"
+            :show-icon="true"
+            :show-length="true"
+            :collapsed-on-click-brackets="true"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- Single view (no rewrites) -->
+    <div v-else class="json-viewer">
       <VueJsonPretty
-        :data="(displayData as any)"
+        :data="(data as any)"
         :deep="5"
         :show-line-number="true"
         :show-icon="true"
@@ -98,7 +141,57 @@ function copyJson() {
   overflow: auto;
 }
 
-/* Dark theme overrides for vue-json-pretty */
+/* ─── Split view ─── */
+
+.json-split {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+}
+
+.json-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.json-pane .json-viewer {
+  flex: 1;
+  overflow: auto;
+}
+
+.pane-divider {
+  width: 1px;
+  background: var(--border-light);
+  flex-shrink: 0;
+}
+
+.pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+}
+
+.pane-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.pane-label-rewritten {
+  color: var(--warning);
+}
+
+/* ─── Dark theme overrides for vue-json-pretty ─── */
+
 :deep(.vjs-tree) {
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);

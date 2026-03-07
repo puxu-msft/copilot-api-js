@@ -1,8 +1,7 @@
 /**
  * Auto-truncate retry strategy.
  *
- * Handles 413 (body too large) and token limit errors by truncating the
- * message payload and retrying.
+ * Handles token limit errors by truncating the message payload and retrying.
  */
 
 import consola from "consola"
@@ -10,9 +9,8 @@ import consola from "consola"
 import type { ApiError } from "~/lib/error"
 import type { Model } from "~/lib/models/client"
 
-import { AUTO_TRUNCATE_RETRY_FACTOR, tryParseAndLearnLimit } from "~/lib/auto-truncate-common"
+import { AUTO_TRUNCATE_RETRY_FACTOR, tryParseAndLearnLimit } from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
-import { bytesToKB } from "~/lib/utils"
 
 import type { RetryAction, RetryContext, RetryStrategy, SanitizeResult } from "../pipeline"
 
@@ -29,9 +27,7 @@ export interface TruncateResult<TPayload> {
 /** Options passed to the truncation function */
 export interface TruncateOptions {
   checkTokenLimit: boolean
-  checkByteLimit: boolean
   targetTokenLimit?: number
-  targetByteLimitBytes?: number
 }
 
 /**
@@ -74,39 +70,61 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
         return { action: "abort", error }
       }
 
-      const payloadBytes = JSON.stringify(currentPayload).length
-      const parsed = tryParseAndLearnLimit(rawError, model.id, payloadBytes)
+      // Estimate tokens using GPT tokenizer for calibration feedback
+      const payloadJson = JSON.stringify(currentPayload)
+      const estimatedTokens = Math.ceil(payloadJson.length / 4)
+
+      const parsed = tryParseAndLearnLimit(rawError, model.id, true, estimatedTokens)
 
       if (!parsed) {
+        // For 413 errors without parseable limit info, still retry with truncation
+        if (rawError.status === 413) {
+          consola.info(
+            `[${label}] Attempt ${attempt + 1}/${maxRetries + 1}: ` + `413 Body too large, retrying with truncation...`,
+          )
+
+          const truncateResult = await truncate(originalPayload, model, {
+            checkTokenLimit: true,
+          })
+
+          if (!truncateResult.wasTruncated) {
+            return { action: "abort", error }
+          }
+
+          const sanitizeResult = resanitize(truncateResult.payload)
+          return {
+            action: "retry",
+            payload: sanitizeResult.payload,
+            meta: {
+              truncateResult,
+              sanitization: sanitizeResult.stats ?? {
+                totalBlocksRemoved: sanitizeResult.removedCount,
+                systemReminderRemovals: sanitizeResult.systemReminderRemovals,
+              },
+              attempt: attempt + 1,
+            },
+          }
+        }
+
         return { action: "abort", error }
       }
 
-      // Calculate target limits based on error type
+      // Calculate target token limit based on error info
       let targetTokenLimit: number | undefined
-      let targetByteLimitBytes: number | undefined
 
-      if (parsed.type === "token_limit" && parsed.limit) {
+      if (parsed.limit) {
         targetTokenLimit = Math.floor(parsed.limit * AUTO_TRUNCATE_RETRY_FACTOR)
         consola.info(
           `[${label}] Attempt ${attempt + 1}/${maxRetries + 1}: `
             + `Token limit error (${parsed.current}>${parsed.limit}), `
             + `retrying with limit ${targetTokenLimit}...`,
         )
-      } else if (parsed.type === "body_too_large") {
-        targetByteLimitBytes = Math.floor(payloadBytes * AUTO_TRUNCATE_RETRY_FACTOR)
-        consola.info(
-          `[${label}] Attempt ${attempt + 1}/${maxRetries + 1}: `
-            + `Body too large (${bytesToKB(payloadBytes)}KB), `
-            + `retrying with limit ${bytesToKB(targetByteLimitBytes)}KB...`,
-        )
       }
 
       // Truncate from original payload (not from already-truncated)
       const truncateResult = await truncate(originalPayload, model, {
         checkTokenLimit: true,
-        checkByteLimit: true,
         targetTokenLimit,
-        targetByteLimitBytes,
       })
 
       if (!truncateResult.wasTruncated) {

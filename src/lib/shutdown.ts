@@ -3,9 +3,12 @@
  *
  * Coordinates a 4-phase shutdown sequence:
  *   Phase 1 (0s):       Stop accepting new requests, drain rate limiter queue
- *   Phase 2 (0–20s):    Wait for in-flight requests to complete naturally
- *   Phase 3 (20–140s):  Fire abort signal, wait for handlers to wrap up
- *   Phase 4 (140s):     Force-close all connections, clean up
+ *   Phase 2 (0–Ns):     Wait for in-flight requests to complete naturally
+ *   Phase 3 (N–N+Ms):   Fire abort signal, wait for handlers to wrap up
+ *   Phase 4:            Force-close all connections, clean up
+ *
+ * Phase 2/3 timeouts are configurable via state.shutdownGracefulWait and
+ * state.shutdownAbortWait (seconds), set from config.yaml `shutdown` section.
  *
  * Handlers integrate via getShutdownSignal() to detect Phase 3 abort.
  */
@@ -18,7 +21,9 @@ import type { AdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import type { TuiLogEntry } from "./tui"
 
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
+import { getRequestContextManager } from "./context/manager"
 import { closeAllClients, getClientCount } from "./history"
+import { state } from "./state"
 import { stopTokenRefresh } from "./token"
 import { tuiLogger } from "./tui"
 
@@ -26,10 +31,6 @@ import { tuiLogger } from "./tui"
 // Configuration constants
 // ============================================================================
 
-/** Phase 2 timeout: wait for in-flight requests to complete naturally */
-export const GRACEFUL_WAIT_MS = 20_000
-/** Phase 3 timeout: wait after abort signal for handlers to wrap up */
-export const ABORT_WAIT_MS = 120_000
 /** Polling interval during drain */
 export const DRAIN_POLL_INTERVAL_MS = 500
 /** Progress log interval during drain */
@@ -94,6 +95,13 @@ export interface ShutdownDeps {
   stopTokenRefreshFn?: () => void
   closeAllClientsFn?: () => void
   getClientCountFn?: () => number
+  /** Request context manager (for stopping stale reaper during shutdown) */
+  contextManager?: { stopReaper: () => void }
+  /** Timing overrides (for testing — avoids real 20s/120s waits) */
+  gracefulWaitMs?: number
+  abortWaitMs?: number
+  drainPollIntervalMs?: number
+  drainProgressIntervalMs?: number
 }
 
 // ============================================================================
@@ -161,11 +169,27 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
 
+  // Timing (defaults to state values from config, overridable for testing)
+  const gracefulWaitMs = deps?.gracefulWaitMs ?? state.shutdownGracefulWait * 1000
+  const abortWaitMs = deps?.abortWaitMs ?? state.shutdownAbortWait * 1000
+  const drainOpts = {
+    pollIntervalMs: deps?.drainPollIntervalMs ?? DRAIN_POLL_INTERVAL_MS,
+    progressIntervalMs: deps?.drainProgressIntervalMs ?? DRAIN_PROGRESS_INTERVAL_MS,
+  }
+
   // ── Phase 1: Stop accepting new requests ──────────────────────────────
   _isShuttingDown = true
   shutdownAbortController = new AbortController()
 
   consola.info(`Received ${signal}, shutting down gracefully...`)
+
+  // Stop stale context reaper before drain (avoid racing with drain logic)
+  try {
+    const ctxMgr = deps?.contextManager ?? getRequestContextManager()
+    ctxMgr.stopReaper()
+  } catch {
+    // Context manager may not be initialized in tests or early shutdown
+  }
 
   // Stop background services
   stopRefresh()
@@ -184,23 +208,25 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     }
   }
 
-  // Stop listening for new connections (but keep existing ones alive)
+  // Stop listening for new connections (but keep existing ones alive).
+  // Do NOT await — server.close(false) stops accepting new connections immediately,
+  // but the returned promise won't resolve until all existing connections end.
+  // Upgraded WebSocket connections (even after close handshake) keep the HTTP
+  // server open indefinitely, which would block the entire shutdown sequence.
   if (server) {
-    try {
-      await server.close(false)
-      consola.info("Stopped accepting new connections")
-    } catch (error) {
+    server.close(false).catch((error: unknown) => {
       consola.error("Error stopping listener:", error)
-    }
+    })
+    consola.info("Stopped accepting new connections")
   }
 
   // ── Phase 2: Wait for natural completion ──────────────────────────────
   const activeCount = tracker.getActiveRequests().length
   if (activeCount > 0) {
-    consola.info(`Phase 2: Waiting up to ${GRACEFUL_WAIT_MS / 1000}s for ${activeCount} active request(s)...`)
+    consola.info(`Phase 2: Waiting up to ${gracefulWaitMs / 1000}s for ${activeCount} active request(s)...`)
 
     try {
-      const phase2Result = await drainActiveRequests(GRACEFUL_WAIT_MS, tracker)
+      const phase2Result = await drainActiveRequests(gracefulWaitMs, tracker, drainOpts)
       if (phase2Result === "drained") {
         consola.info("All requests completed naturally")
         finalize(tracker)
@@ -214,13 +240,13 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     const remaining = tracker.getActiveRequests().length
     consola.info(
       `Phase 3: Sending abort signal to ${remaining} remaining request(s), `
-        + `waiting up to ${ABORT_WAIT_MS / 1000}s...`,
+        + `waiting up to ${abortWaitMs / 1000}s...`,
     )
 
     shutdownAbortController.abort()
 
     try {
-      const phase3Result = await drainActiveRequests(ABORT_WAIT_MS, tracker)
+      const phase3Result = await drainActiveRequests(abortWaitMs, tracker, drainOpts)
       if (phase3Result === "drained") {
         consola.info("All requests completed after abort signal")
         finalize(tracker)

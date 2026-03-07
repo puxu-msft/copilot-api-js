@@ -1,0 +1,11 @@
+{
+  "model": "gpt-4o",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Say hello in exactly 3 words."
+    }
+  ],
+  "max_tokens": 100,
+  "stream": false
+}

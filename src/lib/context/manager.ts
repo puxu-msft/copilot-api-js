@@ -14,6 +14,12 @@
  *   → manager emits "completed"/"failed" → removes active context
  */
 
+import { consola } from "consola"
+
+import type { EndpointType } from "~/lib/history/store"
+
+import { state } from "~/lib/state"
+
 import type { HistoryEntryData, RequestContext, RequestContextEventData, RequestState } from "./request"
 
 import { createRequestContext } from "./request"
@@ -31,7 +37,7 @@ export type RequestContextEvent =
 
 export interface RequestContextManager {
   /** Create and register a new active request context */
-  create(opts: { endpoint: "anthropic" | "openai"; tuiLogId?: string }): RequestContext
+  create(opts: { endpoint: EndpointType; tuiLogId?: string }): RequestContext
 
   /** Get an active request by ID */
   get(id: string): RequestContext | undefined
@@ -47,13 +53,79 @@ export interface RequestContextManager {
 
   /** Unsubscribe from context events */
   off(event: "change", listener: (event: RequestContextEvent) => void): void
+
+  /** Start periodic cleanup of stale active contexts */
+  startReaper(): void
+
+  /** Stop the reaper (for shutdown/cleanup) */
+  stopReaper(): void
+
+  /** Run a single reaper scan (exposed for testing) */
+  _runReaperOnce(): void
 }
 
 // ─── Implementation ───
 
+// ─── Module-level Singleton ───
+
+let _manager: RequestContextManager | null = null
+
+export function initRequestContextManager(): RequestContextManager {
+  _manager = createRequestContextManager()
+  return _manager
+}
+
+export function getRequestContextManager(): RequestContextManager {
+  if (!_manager) throw new Error("RequestContextManager not initialized — call initRequestContextManager() first")
+  return _manager
+}
+
+// ─── Factory ───
+
 export function createRequestContextManager(): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
   const listeners = new Set<(event: RequestContextEvent) => void>()
+
+  // ─── Stale Request Reaper ───
+
+  const REAPER_INTERVAL_MS = 60_000
+  let reaperTimer: ReturnType<typeof setInterval> | null = null
+
+  /** Single reaper scan — force-fail contexts exceeding maxAge */
+  function runReaperOnce() {
+    const maxAgeMs = state.staleRequestMaxAge * 1000
+    if (maxAgeMs <= 0) return // disabled
+
+    for (const [id, ctx] of activeContexts) {
+      if (ctx.durationMs > maxAgeMs) {
+        consola.warn(
+          `[context] Force-failing stale request ${id}`
+            + ` (endpoint: ${ctx.endpoint}`
+            + `, model: ${ctx.originalRequest?.model ?? "unknown"}`
+            + `, stream: ${ctx.originalRequest?.stream ?? "?"}`
+            + `, state: ${ctx.state}`
+            + `, age: ${Math.round(ctx.durationMs / 1000)}s`
+            + `, max: ${state.staleRequestMaxAge}s)`,
+        )
+        ctx.fail(
+          ctx.originalRequest?.model ?? "unknown",
+          new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`),
+        )
+      }
+    }
+  }
+
+  function startReaper() {
+    if (reaperTimer) return // idempotent
+    reaperTimer = setInterval(runReaperOnce, REAPER_INTERVAL_MS)
+  }
+
+  function stopReaper() {
+    if (reaperTimer) {
+      clearInterval(reaperTimer)
+      reaperTimer = null
+    }
+  }
 
   function emit(event: RequestContextEvent) {
     for (const listener of listeners) {
@@ -149,5 +221,9 @@ export function createRequestContextManager(): RequestContextManager {
     off(_event: "change", listener: (event: RequestContextEvent) => void) {
       listeners.delete(listener)
     },
+
+    startReaper,
+    stopReaper,
+    _runReaperOnce: runReaperOnce,
   }
 }

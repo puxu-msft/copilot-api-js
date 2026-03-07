@@ -1,9 +1,12 @@
 /**
  * Direct Anthropic-style message API for Copilot.
  *
- * Owns the full request lifecycle: wire payload construction, header building,
- * model-aware request enrichment (beta headers, context management, tool pipeline),
+ * Owns the HTTP request lifecycle: wire payload construction, header building,
+ * model-aware request enrichment (beta headers, context management),
  * and HTTP execution against Copilot's /v1/messages endpoint.
+ *
+ * Tool preprocessing lives in ./message-tools.ts and must be called
+ * before createAnthropicMessages().
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -11,14 +14,15 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
-import type { MessageParam, MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
+import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
 
-import { copilotBaseUrl, copilotHeaders } from "~/lib/config/api"
+import { copilotBaseUrl, copilotHeaders } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
+import { createFetchSignal } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 
-import { modelSupportsContextEditing, modelSupportsInterleavedThinking, modelSupportsToolSearch } from "./features"
-import { convertServerToolsToCustom } from "./sanitize"
+import { buildAnthropicBetaHeaders, buildContextManagement } from "./features"
+import { convertServerToolsToCustom } from "./message-tools"
 
 /** Re-export the response type for consumers */
 export type AnthropicMessageResponse = AnthropicResponse
@@ -91,281 +95,12 @@ function adjustThinkingBudget(wire: Record<string, unknown>): void {
 }
 
 // ============================================================================
-// Anthropic Beta Headers
-// ============================================================================
-
-export interface AnthropicBetaHeaders {
-  /** Comma-separated beta feature identifiers */
-  "anthropic-beta"?: string
-  /** Fallback for models without interleaved thinking support */
-  "capi-beta-1"?: string
-}
-
-/**
- * Build anthropic-beta and capi-beta-1 headers based on model capabilities.
- *
- * Logic from chatEndpoint.ts:166-201:
- * - If model supports interleaved thinking → add "interleaved-thinking-2025-05-14"
- * - Otherwise → set "capi-beta-1: true"
- * - If model supports context editing → add "context-management-2025-06-27"
- * - If model supports tool search → add "advanced-tool-use-2025-11-20"
- */
-function buildAnthropicBetaHeaders(modelId: string): AnthropicBetaHeaders {
-  const headers: AnthropicBetaHeaders = {}
-  const betaFeatures: Array<string> = []
-
-  if (modelSupportsInterleavedThinking(modelId)) {
-    betaFeatures.push("interleaved-thinking-2025-05-14")
-  } else {
-    headers["capi-beta-1"] = "true"
-  }
-
-  if (modelSupportsContextEditing(modelId)) {
-    betaFeatures.push("context-management-2025-06-27")
-  }
-
-  if (modelSupportsToolSearch(modelId)) {
-    betaFeatures.push("advanced-tool-use-2025-11-20")
-  }
-
-  if (betaFeatures.length > 0) {
-    headers["anthropic-beta"] = betaFeatures.join(",")
-  }
-
-  return headers
-}
-
-// ============================================================================
-// Context Management
-// ============================================================================
-
-interface ContextManagementEdit {
-  type: string
-  trigger?: { type: string; value: number }
-  keep?: { type: string; value: number }
-  clear_at_least?: { type: string; value: number }
-  exclude_tools?: Array<string>
-  clear_tool_inputs?: boolean
-}
-
-export interface ContextManagement {
-  edits: Array<ContextManagementEdit>
-}
-
-/**
- * Build context_management config for the request body.
- *
- * From anthropic.ts:270-329 (buildContextManagement + getContextManagementFromConfig):
- * - clear_thinking: keep last N thinking turns
- * - clear_tool_uses: triggered by input_tokens threshold, keep last N tool uses
- */
-function buildContextManagement(modelId: string, hasThinking: boolean): ContextManagement | undefined {
-  if (!modelSupportsContextEditing(modelId)) {
-    return undefined
-  }
-
-  // Default config from getContextManagementFromConfig
-  const triggerType = "input_tokens"
-  const triggerValue = 100_000
-  const keepCount = 3
-  const thinkingKeepTurns = 1
-
-  const edits: Array<ContextManagementEdit> = []
-
-  // Add clear_thinking only if thinking is enabled
-  if (hasThinking) {
-    edits.push({
-      type: "clear_thinking_20251015",
-      keep: { type: "thinking_turns", value: Math.max(1, thinkingKeepTurns) },
-    })
-  }
-
-  // Always add clear_tool_uses
-  edits.push({
-    type: "clear_tool_uses_20250919",
-    trigger: { type: triggerType, value: triggerValue },
-    keep: { type: "tool_uses", value: keepCount },
-  })
-
-  return { edits }
-}
-
-// ============================================================================
-// Tool Pipeline
-// ============================================================================
-
-/**
- * Claude Code official tool names that must always be present in the tools array.
- * If any of these are missing from the request, they will be injected as stub definitions.
- */
-const CLAUDE_CODE_OFFICIAL_TOOLS = [
-  "Task",
-  "TaskOutput",
-  "Bash",
-  "Glob",
-  "Grep",
-  "Read",
-  "Edit",
-  "Write",
-  "NotebookEdit",
-  "WebFetch",
-  "TodoWrite",
-  "KillShell",
-  "AskUserQuestion",
-  "Skill",
-  "EnterPlanMode",
-  "ExitPlanMode",
-]
-
-/** Tool names that should NOT be deferred (core tools always available) */
-const NON_DEFERRED_TOOL_NAMES = new Set([
-  // VSCode Copilot Chat original tool names (snake_case)
-  "read_file",
-  "list_dir",
-  "grep_search",
-  "semantic_search",
-  "file_search",
-  "replace_string_in_file",
-  "multi_replace_string_in_file",
-  "insert_edit_into_file",
-  "apply_patch",
-  "create_file",
-  "run_in_terminal",
-  "get_terminal_output",
-  "get_errors",
-  "manage_todo_list",
-  "runSubagent",
-  "search_subagent",
-  "runTests",
-  "ask_questions",
-  "switch_agent",
-  // Claude Code official tool names (PascalCase)
-  ...CLAUDE_CODE_OFFICIAL_TOOLS,
-])
-
-const TOOL_SEARCH_TOOL_NAME = "tool_search_tool_regex"
-const TOOL_SEARCH_TOOL_TYPE = "tool_search_tool_regex_20251119"
-
-const EMPTY_INPUT_SCHEMA = { type: "object", properties: {}, required: [] } as const
-
-/** Ensure a tool has input_schema — required by Anthropic API for custom tools. */
-function ensureInputSchema(tool: Tool): Tool {
-  return tool.input_schema ? tool : { ...tool, input_schema: EMPTY_INPUT_SCHEMA }
-}
-
-/**
- * Collect tool names referenced in message history via tool_use blocks.
- *
- * When tool_search is enabled, deferred tools must be "loaded" via
- * tool_search_tool_regex before they can be called. But in multi-turn
- * conversations, message history may already contain tool_use blocks
- * referencing tools that were loaded in earlier turns. If we mark those
- * tools as deferred again, the API rejects the request because the
- * historical tool_use references a tool that isn't "loaded" in this turn.
- *
- * By collecting all tool names from history, we ensure those tools remain
- * non-deferred (immediately available) — preserving the tool_use/tool_result
- * pairing that the API requires.
- */
-function collectHistoryToolNames(messages: Array<MessageParam>): Set<string> {
-  const names = new Set<string>()
-  for (const msg of messages) {
-    if (msg.role !== "assistant" || typeof msg.content === "string") continue
-    for (const block of msg.content) {
-      if (block.type === "tool_use") {
-        names.add(block.name)
-      }
-    }
-  }
-  return names
-}
-
-/**
- * Process tools through the full pipeline:
- * 1. Inject missing Claude Code official tool stubs
- * 2. If model supports tool search: prepend search tool, mark non-core as deferred
- * 3. Ensure all custom tools have input_schema (skip API-defined typed tools)
- *
- * Returns a new array — never mutates the input.
- */
-function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Array<MessageParam>): Array<Tool> {
-  const existingNames = new Set(tools.map((t) => t.name))
-  const toolSearchEnabled = modelSupportsToolSearch(modelId)
-
-  // Collect tool names already referenced in message history — these must
-  // stay non-deferred to avoid "Tool reference not found" errors
-  const historyToolNames = toolSearchEnabled ? collectHistoryToolNames(messages) : undefined
-
-  const result: Array<Tool> = []
-
-  // Prepend tool_search_tool_regex if model supports it
-  if (toolSearchEnabled) {
-    result.push({
-      name: TOOL_SEARCH_TOOL_NAME,
-      type: TOOL_SEARCH_TOOL_TYPE,
-      defer_loading: false,
-    })
-  }
-
-  // Process existing tools: ensure input_schema, apply defer_loading
-  for (const tool of tools) {
-    // Tools with a `type` field are API-defined (tool_search, memory, web_search) —
-    // schema is managed server-side, don't touch input_schema
-    const normalized = tool.type ? tool : ensureInputSchema(tool)
-
-    // Respect explicit defer_loading: false from retry strategies (deferred-tool-retry
-    // sets this when a tool was rejected as "not found in available tools")
-    const shouldDefer =
-      toolSearchEnabled
-      && tool.defer_loading !== false
-      && !NON_DEFERRED_TOOL_NAMES.has(tool.name)
-      && !historyToolNames?.has(tool.name)
-
-    result.push(shouldDefer ? { ...normalized, defer_loading: true } : normalized)
-  }
-
-  // Inject stubs for any missing Claude Code official tools
-  for (const name of CLAUDE_CODE_OFFICIAL_TOOLS) {
-    if (!existingNames.has(name)) {
-      const stub: Tool = {
-        name,
-        description: `Claude Code ${name} tool`,
-        input_schema: EMPTY_INPUT_SCHEMA,
-      }
-      // Official tools are always non-deferred, no defer_loading needed
-      result.push(stub)
-    }
-  }
-
-  // Inject minimal stubs for tools referenced in message history but missing
-  // from the tools array. This happens when MCP tools were available in earlier
-  // turns but not included in the current request. Without these stubs, the API
-  // rejects the request because the historical tool_use references a tool that
-  // doesn't exist in the tools list at all.
-  if (historyToolNames) {
-    const allResultNames = new Set(result.map((t) => t.name))
-    for (const name of historyToolNames) {
-      if (!allResultNames.has(name)) {
-        consola.debug(`[ToolPipeline] Injecting stub for history-referenced tool: ${name}`)
-        result.push({
-          name,
-          description: `Stub for tool referenced in conversation history`,
-          input_schema: EMPTY_INPUT_SCHEMA,
-        })
-      }
-    }
-  }
-
-  return result
-}
-
-// ============================================================================
 // Main entry point — createAnthropicMessages
 // ============================================================================
 
 /**
  * Create messages using Anthropic-style API directly.
- * This bypasses the OpenAI translation layer for Anthropic models.
+ * Calls Copilot's native Anthropic endpoint for Anthropic-vendor models.
  */
 export async function createAnthropicMessages(
   payload: MessagesPayload,
@@ -407,18 +142,13 @@ export async function createAnthropicMessages(
     }
   }
 
-  // Process tools through pipeline
-  if (tools && tools.length > 0) {
-    wire.tools = processToolPipeline(tools, model, messages)
-  }
+  // Tools should already be preprocessed by preprocessTools() before reaching here.
+  // No further tool processing needed — wire.tools is used as-is.
 
   consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
 
   // Apply fetch timeout if configured (connection + response headers)
-  const fetchSignal =
-    state.anthropicFetchTimeout > 0 ?
-      AbortSignal.timeout(state.anthropicFetchTimeout * 1000)
-    : undefined
+  const fetchSignal = createFetchSignal()
 
   const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
     method: "POST",

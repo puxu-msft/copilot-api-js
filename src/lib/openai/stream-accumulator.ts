@@ -4,8 +4,7 @@
  */
 
 import type { BaseStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-
-import type { ChatCompletionChunk } from "./client"
+import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
 /** Internal tool call accumulator using string array to avoid O(n²) concatenation */
 interface ToolCallAccumulator {

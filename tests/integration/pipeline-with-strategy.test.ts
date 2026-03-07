@@ -7,10 +7,11 @@
 
 import { afterEach, describe, expect, mock, test } from "bun:test"
 
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { FormatAdapter, RetryStrategy, SanitizeResult } from "~/lib/request/pipeline"
 import type { TruncateResult } from "~/lib/request/strategies/auto-truncate"
 
-import { resetAllLimitsForTesting } from "~/lib/auto-truncate-common"
+import { resetAllLimitsForTesting } from "~/lib/auto-truncate"
+import { createRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { createAutoTruncateStrategy } from "~/lib/request/strategies/auto-truncate"
@@ -170,5 +171,164 @@ describe("pipeline with auto-truncate strategy (integration)", () => {
     expect(callCount).toBe(3)
     expect(result.totalRetries).toBe(2)
     expect((result.response as any).done).toBe(true)
+  })
+})
+
+// ─── Pipeline with Responses-format adapter ───
+
+type ResponsesTestPayload = {
+  model: string
+  input: Array<{ type: string; content: string }>
+  stream?: boolean
+}
+
+function createResponsesAdapter(
+  executeFn?: (p: ResponsesTestPayload) => Promise<{ result: unknown; queueWaitMs: number }>,
+): FormatAdapter<ResponsesTestPayload> {
+  return {
+    format: "openai-responses",
+    sanitize: (p) => ({ payload: p, removedCount: 0, systemReminderRemovals: 0 }),
+    execute:
+      executeFn
+      ?? (async (p) => ({
+        result: { id: "resp_1", model: p.model, output: [] },
+        queueWaitMs: 0,
+      })),
+    logPayloadSize: () => {},
+  }
+}
+
+const responsesPayload: ResponsesTestPayload = {
+  model: "gpt-4o",
+  input: [{ type: "message", content: "hello" }],
+}
+
+/** Mock strategy that simulates token refresh behavior on 401 */
+function createMockTokenRefreshStrategy(): RetryStrategy<ResponsesTestPayload> {
+  return {
+    name: "token-refresh",
+    canHandle: (error) => error.status === 401,
+    handle: async (_error, currentPayload) => ({
+      action: "retry" as const,
+      payload: currentPayload,
+    }),
+  }
+}
+
+describe("pipeline with responses-format adapter", () => {
+  test("successful execution without retry", async () => {
+    const adapter = createResponsesAdapter()
+
+    const result = await executeRequestPipeline({
+      adapter,
+      strategies: [],
+      payload: { ...responsesPayload },
+      originalPayload: { ...responsesPayload },
+      model: undefined,
+      maxRetries: 1,
+    })
+
+    expect(result.response).toEqual({ id: "resp_1", model: "gpt-4o", output: [] })
+    expect(result.totalRetries).toBe(0)
+  })
+
+  test("retries once on 401 with token-refresh strategy", async () => {
+    let callCount = 0
+    const adapter = createResponsesAdapter(async (p) => {
+      callCount++
+      if (callCount === 1) {
+        throw new HTTPError("Unauthorized", 401, "")
+      }
+      return { result: { id: "resp_2", model: p.model, output: [] }, queueWaitMs: 0 }
+    })
+
+    const result = await executeRequestPipeline({
+      adapter,
+      strategies: [createMockTokenRefreshStrategy()],
+      payload: { ...responsesPayload },
+      originalPayload: { ...responsesPayload },
+      model: undefined,
+      maxRetries: 1,
+    })
+
+    expect(callCount).toBe(2)
+    expect(result.totalRetries).toBe(1)
+    expect(result.response).toEqual({ id: "resp_2", model: "gpt-4o", output: [] })
+  })
+
+  test("propagates error after exhausting retries", async () => {
+    const executeFn = mock(async () => {
+      throw new HTTPError("Unauthorized", 401, "")
+    })
+    const adapter = createResponsesAdapter(executeFn)
+
+    await expect(
+      executeRequestPipeline({
+        adapter,
+        strategies: [createMockTokenRefreshStrategy()],
+        payload: { ...responsesPayload },
+        originalPayload: { ...responsesPayload },
+        model: undefined,
+        maxRetries: 1,
+      }),
+    ).rejects.toThrow("Unauthorized")
+
+    // 1 initial + 1 retry = 2 calls
+    expect(executeFn).toHaveBeenCalledTimes(2)
+  })
+
+  test("records attempts on requestContext when provided", async () => {
+    let callCount = 0
+    const adapter = createResponsesAdapter(async (p) => {
+      callCount++
+      if (callCount === 1) {
+        throw new HTTPError("Unauthorized", 401, "")
+      }
+      return { result: { id: "resp_3", model: p.model, output: [] }, queueWaitMs: 5 }
+    })
+
+    const manager = createRequestContextManager()
+    const reqCtx = manager.create({ endpoint: "openai-chat-completions" })
+    reqCtx.setOriginalRequest({ model: "gpt-4o", messages: [], stream: false, payload: {} })
+
+    const result = await executeRequestPipeline({
+      adapter,
+      strategies: [createMockTokenRefreshStrategy()],
+      payload: { ...responsesPayload },
+      originalPayload: { ...responsesPayload },
+      model: undefined,
+      maxRetries: 1,
+      requestContext: reqCtx,
+    })
+
+    expect(result.totalRetries).toBe(1)
+
+    // Verify attempts were recorded on the context
+    expect(reqCtx.attempts).toHaveLength(2)
+    expect(reqCtx.attempts[0].error).toBeDefined()
+    expect(reqCtx.attempts[0].error!.status).toBe(401)
+    // Pipeline uses generic "retry" label, not the strategy's name
+    expect(reqCtx.attempts[1].strategy).toBe("retry")
+  })
+
+  test("non-retryable error is not retried", async () => {
+    const executeFn = mock(async () => {
+      throw new HTTPError("Bad Request", 400, JSON.stringify({ error: { message: "invalid field" } }))
+    })
+    const adapter = createResponsesAdapter(executeFn)
+
+    await expect(
+      executeRequestPipeline({
+        adapter,
+        strategies: [createMockTokenRefreshStrategy()],
+        payload: { ...responsesPayload },
+        originalPayload: { ...responsesPayload },
+        model: undefined,
+        maxRetries: 1,
+      }),
+    ).rejects.toThrow("Bad Request")
+
+    // Only 1 call — 400 is not handled by token-refresh (only 401)
+    expect(executeFn).toHaveBeenCalledTimes(1)
   })
 })

@@ -1,57 +1,55 @@
-import { describe, expect, test } from "bun:test"
+/**
+ * Unit tests for writeClaudeCodeConfig
+ *
+ * Tests the real function by mocking homedir() to a temporary directory,
+ * so we verify actual file I/O and merge logic.
+ */
 
-// Patch homedir for writeClaudeCodeConfig by monkey-patching the module
-// Since writeClaudeCodeConfig uses homedir() internally, we test it indirectly
-// by verifying the expected files are created at known paths.
-// For direct unit testing, we verify the function's file output format.
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { existsSync, promises as fsPromises } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+// ─── Mock homedir() to a per-test temp directory ───
+
+let testHome: string
+
+// eslint-disable-next-line @typescript-eslint/no-floating-promises -- mock.module is synchronous in Bun test runtime
+mock.module("node:os", () => ({
+  homedir: () => testHome,
+  tmpdir,
+}))
+
+const { writeClaudeCodeConfig } = await import("~/setup-claude-code")
 
 describe("writeClaudeCodeConfig", () => {
-  test("should create .claude.json with hasCompletedOnboarding", () => {
-    // writeClaudeCodeConfig uses homedir() — we can't easily override it.
-    // Instead, we test the file format expectations by running the function
-    // and checking the actual home directory files.
-    // For CI safety, we skip this test if it would modify real config.
-    // This is better tested as an integration test.
-
-    // Instead, test the data model directly:
-    const claudeJson = { hasCompletedOnboarding: true }
-    const output = JSON.stringify(claudeJson, null, 2) + "\n"
-    const parsed: Record<string, unknown> = JSON.parse(output) as Record<string, unknown>
-    expect(parsed.hasCompletedOnboarding).toBe(true)
+  beforeEach(async () => {
+    testHome = await fsPromises.mkdtemp(join(tmpdir(), "claude-code-test-"))
   })
 
-  test("should merge with existing .claude.json without losing data", () => {
-    const existing = {
-      existingKey: "value",
-      someArray: [1, 2, 3],
+  afterEach(async () => {
+    if (testHome && existsSync(testHome)) {
+      await fsPromises.rm(testHome, { recursive: true })
     }
-
-    // Simulate the merge logic from writeClaudeCodeConfig
-    const merged = { ...existing, hasCompletedOnboarding: true }
-    expect(merged.existingKey).toBe("value")
-    expect(merged.someArray).toEqual([1, 2, 3])
-    expect(merged.hasCompletedOnboarding).toBe(true)
   })
 
-  test("should produce correct settings.json env structure", () => {
-    const serverUrl = "http://localhost:4141"
-    const model = "claude-sonnet-4"
-    const smallModel = "claude-haiku-3.5"
+  test("creates .claude.json with hasCompletedOnboarding", async () => {
+    await writeClaudeCodeConfig("http://localhost:4141", "claude-sonnet-4", "claude-haiku-3.5")
 
-    const settings: Record<string, unknown> = {}
-    settings.env = {
-      ...(settings.env as Record<string, string> | undefined),
-      ANTHROPIC_BASE_URL: serverUrl,
-      ANTHROPIC_AUTH_TOKEN: "copilot-api",
-      ANTHROPIC_MODEL: model,
-      ANTHROPIC_DEFAULT_SONNET_MODEL: model,
-      ANTHROPIC_SMALL_FAST_MODEL: smallModel,
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: smallModel,
-      DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      CLAUDE_CODE_ENABLE_TELEMETRY: "0",
-    }
+    const claudeJsonPath = join(testHome, ".claude.json")
+    expect(existsSync(claudeJsonPath)).toBe(true)
 
+    const content = JSON.parse(await fsPromises.readFile(claudeJsonPath, "utf8")) as Record<string, unknown>
+    expect(content.hasCompletedOnboarding).toBe(true)
+  })
+
+  test("creates .claude/settings.json with correct env variables", async () => {
+    await writeClaudeCodeConfig("http://localhost:4141", "claude-sonnet-4", "claude-haiku-3.5")
+
+    const settingsPath = join(testHome, ".claude", "settings.json")
+    expect(existsSync(settingsPath)).toBe(true)
+
+    const settings = JSON.parse(await fsPromises.readFile(settingsPath, "utf8")) as Record<string, unknown>
     const env = settings.env as Record<string, string>
     expect(env.ANTHROPIC_BASE_URL).toBe("http://localhost:4141")
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("copilot-api")
@@ -64,51 +62,68 @@ describe("writeClaudeCodeConfig", () => {
     expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe("0")
   })
 
-  test("should merge env with existing settings without losing other keys", () => {
-    const existingSettings: Record<string, unknown> = {
-      permissions: { allow: ["Read", "Write"] },
-      env: {
-        CUSTOM_VAR: "keep-me",
-        ANTHROPIC_BASE_URL: "http://old-server:8080",
-      },
-    }
+  test("merges with existing .claude.json without losing data", async () => {
+    // Pre-create .claude.json with existing data
+    const claudeJsonPath = join(testHome, ".claude.json")
+    await fsPromises.writeFile(
+      claudeJsonPath,
+      JSON.stringify({ existingKey: "value", someArray: [1, 2, 3] }, null, 2) + "\n",
+    )
 
-    const serverUrl = "http://localhost:4141"
-    const model = "claude-sonnet-4"
-    const smallModel = "claude-haiku-3.5"
+    await writeClaudeCodeConfig("http://localhost:4141", "claude-sonnet-4", "claude-haiku-3.5")
 
-    // Simulate the merge logic
-    const settings = { ...existingSettings }
-    settings.env = {
-      ...(settings.env as Record<string, string>),
-      ANTHROPIC_BASE_URL: serverUrl,
-      ANTHROPIC_AUTH_TOKEN: "copilot-api",
-      ANTHROPIC_MODEL: model,
-      ANTHROPIC_DEFAULT_SONNET_MODEL: model,
-      ANTHROPIC_SMALL_FAST_MODEL: smallModel,
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: smallModel,
-      DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      CLAUDE_CODE_ENABLE_TELEMETRY: "0",
-    }
-
-    const env = settings.env as Record<string, string>
-    // Existing custom var should be preserved
-    expect(env.CUSTOM_VAR).toBe("keep-me")
-    // Old URL should be overwritten
-    expect(env.ANTHROPIC_BASE_URL).toBe("http://localhost:4141")
-    // Other settings keys should be preserved
-    expect(existingSettings.permissions).toEqual({ allow: ["Read", "Write"] })
+    const content = JSON.parse(await fsPromises.readFile(claudeJsonPath, "utf8")) as Record<string, unknown>
+    expect(content.existingKey).toBe("value")
+    expect(content.someArray).toEqual([1, 2, 3])
+    expect(content.hasCompletedOnboarding).toBe(true)
   })
 
-  test("should construct correct server URL from host and port", () => {
-    // Default: localhost
-    expect(`http://localhost:4141`).toBe("http://localhost:4141")
+  test("merges env with existing settings.json without losing other keys", async () => {
+    // Pre-create settings.json with existing data
+    const claudeDir = join(testHome, ".claude")
+    await fsPromises.mkdir(claudeDir, { recursive: true })
+    const settingsPath = join(claudeDir, "settings.json")
+    await fsPromises.writeFile(
+      settingsPath,
+      JSON.stringify(
+        {
+          permissions: { allow: ["Read", "Write"] },
+          env: { CUSTOM_VAR: "keep-me", ANTHROPIC_BASE_URL: "http://old-server:8080" },
+        },
+        null,
+        2,
+      ) + "\n",
+    )
 
-    // Custom host
-    expect(`http://0.0.0.0:8080`).toBe("http://0.0.0.0:8080")
+    await writeClaudeCodeConfig("http://localhost:4141", "claude-sonnet-4", "claude-haiku-3.5")
 
-    // Custom host with port
-    expect(`http://192.168.1.100:3000`).toBe("http://192.168.1.100:3000")
+    const settings = JSON.parse(await fsPromises.readFile(settingsPath, "utf8")) as Record<string, unknown>
+    const env = settings.env as Record<string, string>
+    // Existing custom var preserved
+    expect(env.CUSTOM_VAR).toBe("keep-me")
+    // Old URL overwritten
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://localhost:4141")
+    // Other settings keys preserved
+    expect(settings.permissions).toEqual({ allow: ["Read", "Write"] })
+  })
+
+  test("creates .claude directory if it does not exist", async () => {
+    const claudeDir = join(testHome, ".claude")
+    expect(existsSync(claudeDir)).toBe(false)
+
+    await writeClaudeCodeConfig("http://localhost:4141", "claude-sonnet-4", "claude-haiku-3.5")
+
+    expect(existsSync(claudeDir)).toBe(true)
+  })
+
+  test("uses provided server URL and model names", async () => {
+    await writeClaudeCodeConfig("http://192.168.1.100:8080", "claude-opus-4.6", "claude-sonnet-4")
+
+    const settingsPath = join(testHome, ".claude", "settings.json")
+    const settings = JSON.parse(await fsPromises.readFile(settingsPath, "utf8")) as Record<string, unknown>
+    const env = settings.env as Record<string, string>
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://192.168.1.100:8080")
+    expect(env.ANTHROPIC_MODEL).toBe("claude-opus-4.6")
+    expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe("claude-sonnet-4")
   })
 })

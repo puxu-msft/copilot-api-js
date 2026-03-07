@@ -3,7 +3,7 @@
  */
 
 import type { Model } from "~/lib/models/client"
-import type { ChatCompletionChunk, ChatCompletionResponse } from "~/types/api/openai"
+import type { ChatCompletionChunk, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
 /**
  * Create a mock Model with sensible defaults.

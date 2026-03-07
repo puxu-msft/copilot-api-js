@@ -3,6 +3,7 @@ import type { Server as NodeHttpServer } from "node:http"
 
 import consola from "consola"
 import { Hono } from "hono"
+import { existsSync } from "node:fs"
 import { access, constants } from "node:fs/promises"
 import { readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
@@ -61,8 +62,11 @@ export async function initHistoryWebSocket(rootApp: Hono): Promise<((server: Nod
     injectFn = (server: NodeHttpServer) => nodeWs.injectWebSocket(server)
   }
 
-  historyRoutes.get(
-    "/ws",
+  // Register on the root app directly — historyRoutes sub-app has already been
+  // mounted via app.route("/history", historyRoutes) at import time, so adding
+  // routes to historyRoutes here won't be visible on the root app.
+  rootApp.get(
+    "/history/ws",
     upgradeWs(() => ({
       onOpen(_event, ws) {
         addClient(ws.raw as unknown as WebSocket)
@@ -83,8 +87,22 @@ export async function initHistoryWebSocket(rootApp: Hono): Promise<((server: Nod
   return injectFn
 }
 
+/**
+ * Resolve a UI directory that exists at runtime.
+ * In dev mode this file lives at src/routes/history/ — 3 levels below project root.
+ * In bundled mode (dist/main.mjs) — 1 level below project root.
+ * We try both and fall back to the first candidate.
+ */
+function resolveUiDir(subpath: string): string {
+  const candidates = [
+    join(import.meta.dirname, "../../..", "ui", subpath), // dev: src/routes/history/ → root
+    join(import.meta.dirname, "..", "ui", subpath), // bundled: dist/ → root
+  ]
+  return candidates.find((c) => existsSync(c)) ?? candidates[0]
+}
+
 /** Static assets for legacy UI v1 */
-const v1Dir = join(import.meta.dirname, "../../ui/history-v1")
+const v1Dir = resolveUiDir("history-v1")
 
 /** v1 root serves index.html directly */
 historyRoutes.get("/v1", (c) => {
@@ -113,7 +131,7 @@ historyRoutes.get("/v1/*", async (c) => {
 })
 
 /** Static assets and routes for Vue UI v3 */
-const v3Dir = join(import.meta.dirname, "../../ui/history-v3/dist")
+const v3Dir = resolveUiDir("history-v3/dist")
 
 historyRoutes.get("/v3", async (c) => {
   try {

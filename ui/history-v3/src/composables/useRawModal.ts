@@ -12,7 +12,7 @@ import { provide, inject, ref, shallowRef, type InjectionKey } from "vue"
 // ─── Public API ───
 
 export interface RawModalAPI {
-  openRawModal: (data: unknown, title: string) => void
+  openRawModal: (data: unknown, title: string, rewrittenData?: unknown) => void
 }
 
 const RAW_MODAL_KEY: InjectionKey<RawModalAPI> = Symbol("rawModal")
@@ -22,17 +22,19 @@ export function provideRawModal() {
   const visible = ref(false)
   // shallowRef: don't deep-observe the data (can be 1MB+ JSON)
   const data = shallowRef<unknown>(null)
+  const rewrittenData = shallowRef<unknown>(null)
   const title = ref("")
 
-  function openRawModal(d: unknown, t: string) {
+  function openRawModal(d: unknown, t: string, rw?: unknown) {
     data.value = d
+    rewrittenData.value = rw ?? null
     title.value = t
     visible.value = true
   }
 
   provide(RAW_MODAL_KEY, { openRawModal })
 
-  return { visible, data, title, openRawModal }
+  return { visible, data, rewrittenData, title, openRawModal }
 }
 
 /** Call in consumer components to open the shared modal */

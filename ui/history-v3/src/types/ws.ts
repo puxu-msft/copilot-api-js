@@ -3,7 +3,7 @@
  *
  * Base types re-exported from backend, discriminated subtypes defined locally.
  */
-import type { HistoryEntry, HistoryStats } from "./index"
+import type { EntrySummary, HistoryStats } from "./index"
 
 export type { WSMessage, WSMessageType } from "~backend/lib/history/ws"
 
@@ -11,7 +11,7 @@ export type { WSMessage, WSMessageType } from "~backend/lib/history/ws"
 
 export interface WSEntryMessage {
   type: "entry_added" | "entry_updated"
-  data: HistoryEntry
+  data: EntrySummary
   timestamp: number
 }
 
@@ -24,5 +24,17 @@ export interface WSStatsMessage {
 export interface WSConnectedMessage {
   type: "connected"
   data: { clientCount: number }
+  timestamp: number
+}
+
+export interface WSHistoryClearedMessage {
+  type: "history_cleared"
+  data: null
+  timestamp: number
+}
+
+export interface WSSessionDeletedMessage {
+  type: "session_deleted"
+  data: { sessionId: string }
   timestamp: number
 }

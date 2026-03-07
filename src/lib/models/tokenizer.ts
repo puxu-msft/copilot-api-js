@@ -1,4 +1,4 @@
-import type { ChatCompletionsPayload, ContentPart, Message, Tool, ToolCall } from "~/lib/openai/client"
+import type { ChatCompletionsPayload, ContentPart, Message, Tool, ToolCall } from "~/types/api/openai-chat-completions"
 
 import type { Model } from "./client"
 

@@ -10,12 +10,13 @@
 import { describe, test, expect, beforeAll } from "bun:test"
 
 import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
+import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/handlers"
 import { getModels } from "~/lib/models/client"
-import { createChatCompletions, type ChatCompletionsPayload, type ChatCompletionResponse } from "~/lib/openai/client"
-import { state } from "~/lib/state"
+import { createChatCompletions } from "~/lib/openai/client"
+import { state, rebuildModelIndex } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
 import { getE2EMode, getGitHubToken } from "./config"
@@ -49,8 +50,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     // Initialize state
     state.githubToken = githubToken
     state.accountType = "individual"
-    state.rewriteAnthropicTools = true
-    state.redirectAnthropic = false
+    state.convertServerToolsToCustom = true
 
     // Get Copilot token
     const { token } = await getCopilotToken()
@@ -66,6 +66,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
       )
     }
     state.models = models
+    rebuildModelIndex()
 
     console.log(`[Setup] Loaded ${models.data.length} models`)
   }, 30000) // 30 second timeout for setup
@@ -194,9 +195,6 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
   describe("Anthropic Direct API", () => {
     test("should detect Claude model as supporting direct API", () => {
-      // Ensure direct API is enabled
-      state.redirectAnthropic = false
-
       const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
 
       const supports = supportsDirectAnthropicApi(claudeModel).supported

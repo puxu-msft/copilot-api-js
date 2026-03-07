@@ -1,0 +1,6 @@
+{
+  "model": "gpt-5.1",
+  "input": "Say hello in exactly 3 words.",
+  "max_output_tokens": 100,
+  "stream": false
+}

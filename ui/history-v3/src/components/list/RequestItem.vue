@@ -26,10 +26,17 @@ const { formatDate, formatNumber, formatDuration } = useFormatters()
     <div class="item-header">
       <StatusDot :status="getStatusClass(entry)" />
       <span class="item-time">{{ formatDate(entry.timestamp) }}</span>
-      <span class="item-model">{{ entry.responseModel || entry.requestModel || '-' }}</span>
+      <a
+        class="item-id"
+        :href="'/history/api/entries/' + entry.id"
+        target="_blank"
+        :title="'/history/api/entries/' + entry.id"
+        @click.stop
+      >{{ entry.id }}</a>
+      <span class="item-model" :title="entry.responseModel || entry.requestModel || undefined">{{ entry.responseModel || entry.requestModel || '-' }}</span>
     </div>
     <div class="item-meta">
-      <BaseBadge :color="entry.endpoint === 'anthropic' ? 'purple' : 'cyan'">
+      <BaseBadge :color="entry.endpoint === 'anthropic-messages' ? 'purple' : entry.endpoint === 'openai-responses' ? 'green' : 'cyan'">
         {{ entry.endpoint }}
       </BaseBadge>
       <BaseBadge v-if="entry.stream" color="primary">stream</BaseBadge>
@@ -41,7 +48,7 @@ const { formatDate, formatNumber, formatDuration } = useFormatters()
         · {{ formatDuration(entry.durationMs) }}
       </span>
     </div>
-    <div class="item-preview">{{ entry.previewText }}</div>
+    <div class="item-preview" :title="entry.previewText || undefined">{{ entry.previewText }}</div>
   </div>
 </template>
 
@@ -74,6 +81,23 @@ const { formatDate, formatNumber, formatDuration } = useFormatters()
   font-size: var(--font-size-xs);
   color: var(--text-muted);
   font-family: var(--font-mono);
+}
+
+.item-id {
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100px;
+  text-decoration: none;
+}
+
+.item-id:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 .item-model {

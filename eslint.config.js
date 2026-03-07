@@ -5,10 +5,10 @@ export default [
     ignores: [
       //
       "archive/**",
-      "src/ui/history-v1/**",
-      "src/ui/history-v2/**",
-      "src/ui/history-v3/**",
+      "ui/**",
       "refs/**",
+      "eslint.config.js",
+      "tsdown.config.ts",
     ],
   },
   ...config({
@@ -31,6 +31,11 @@ export default [
       "unicorn/no-unused-properties": "off",
       // Intentional pattern: helper functions scoped inside their parent function
       "unicorn/consistent-function-scoping": "off",
+      // Conflicts with TypeScript: removing encoding from readFileSync returns Buffer,
+      // breaking JSON.parse(string) and other string consumers
+      "unicorn/prefer-json-parse-buffer": "off",
+      // Ternary is not always more readable than if/else — let developers choose
+      "unicorn/prefer-ternary": "off",
       // API proxy handles dynamic JSON payloads extensively — runtime type guards
       // add noise without value when upstream types are already defined
       "@typescript-eslint/no-unsafe-member-access": "off",

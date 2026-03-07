@@ -1,9 +1,9 @@
 /**
  * Unified model name resolution and normalization.
  *
- * Consolidates model name handling from:
- * - non-stream-translation.ts: MODEL_PREFERENCE, findPreferredModel, resolveModelName
- * - anthropic/features.ts: normalizeModelId (renamed to normalizeForMatching)
+ * Handles short aliases (opus/sonnet/haiku), versioned names with date suffixes,
+ * hyphenated versions (claude-opus-4-6 → claude-opus-4.6), model overrides,
+ * and family-level fallbacks.
  */
 
 import { DEFAULT_MODEL_OVERRIDES, state } from "~/lib/state"
@@ -27,6 +27,7 @@ export const MODEL_PREFERENCE: Record<ModelFamily, Array<string>> = {
     // "claude-opus-4",
   ],
   sonnet: [
+    "claude-sonnet-4.6",
     "claude-sonnet-4.5",
     "claude-sonnet-4",
     // "claude-sonnet-3.5",
@@ -41,6 +42,12 @@ export const MODEL_PREFERENCE: Record<ModelFamily, Array<string>> = {
 // Normalization and Detection
 // ============================================================================
 
+/** Pre-compiled regex: claude-{family}-{major}-{minor}[-YYYYMMDD] */
+const VERSIONED_RE = /^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})(?:-\d{8,})?$/
+
+/** Pre-compiled regex: claude-{family}-{major}-YYYYMMDD (date-only suffix) */
+const DATE_ONLY_RE = /^(claude-(opus|sonnet|haiku)-\d+)-\d{8,}$/
+
 /**
  * Normalize model ID for matching: lowercase and replace dots with dashes.
  * e.g. "claude-sonnet-4.5" → "claude-sonnet-4-5"
@@ -49,6 +56,24 @@ export const MODEL_PREFERENCE: Record<ModelFamily, Array<string>> = {
  */
 export function normalizeForMatching(modelId: string): string {
   return modelId.toLowerCase().replaceAll(".", "-")
+}
+
+/**
+ * Normalize a model ID to canonical dot-version form.
+ * e.g. "claude-opus-4-6" → "claude-opus-4.6", "claude-opus-4-6-1m" → "claude-opus-4.6-1m"
+ *
+ * Handles modifier suffixes (-fast, -1m) and strips date suffixes (-YYYYMMDD).
+ * Non-Claude models or unrecognized patterns are returned as-is.
+ *
+ * Used for normalizing API response model names to match `/models` endpoint IDs.
+ */
+export function normalizeModelId(modelId: string): string {
+  const { base, suffix } = extractModifierSuffix(modelId)
+  const versionedMatch = base.match(VERSIONED_RE)
+  if (versionedMatch) {
+    return `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}${suffix}`
+  }
+  return modelId
 }
 
 /** Extract the model family from a model ID. */
@@ -84,13 +109,12 @@ export function findPreferredModel(family: string): string {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive for arbitrary family strings
   if (!preference) return family
 
-  const availableIds = state.models?.data.map((m) => m.id)
-  if (!availableIds || availableIds.length === 0) {
+  if (state.modelIds.size === 0) {
     return preference[0]
   }
 
   for (const candidate of preference) {
-    if (availableIds.includes(candidate)) {
+    if (state.modelIds.has(candidate)) {
       return candidate
     }
   }
@@ -121,7 +145,7 @@ function extractModifierSuffix(model: string): { base: string; suffix: string } 
  * This converts them to the standard hyphen form: "opus-1m", "claude-opus-4.6-1m".
  */
 function normalizeBracketNotation(model: string): string {
-  const match = model.match(/^(.+)\[([^\]]+)\]$/)
+  const match = model.match(/^([^[]+)\[([^\]]+)\]$/)
   if (!match) return model
   return `${match[1]}-${match[2].toLowerCase()}`
 }
@@ -139,19 +163,19 @@ function normalizeBracketNotation(model: string): string {
  */
 export function resolveModelName(model: string): string {
   // 0. Normalize bracket notation: "opus[1m]" → "opus-1m"
-  model = normalizeBracketNotation(model)
+  const normalized = normalizeBracketNotation(model)
 
   // 1. Check raw model name against overrides first
-  const rawOverride = state.modelOverrides[model]
+  const rawOverride = state.modelOverrides[normalized]
   if (rawOverride) {
-    return resolveOverrideTarget(model, rawOverride)
+    return resolveOverrideTarget(normalized, rawOverride)
   }
 
   // 2. Normal alias/normalization resolution
-  const resolved = resolveModelNameCore(model)
+  const resolved = resolveModelNameCore(normalized)
 
   // 3. If resolved name is different, check it against overrides too
-  if (resolved !== model) {
+  if (resolved !== normalized) {
     const resolvedOverride = state.modelOverrides[resolved]
     if (resolvedOverride) {
       return resolveOverrideTarget(resolved, resolvedOverride)
@@ -159,9 +183,11 @@ export function resolveModelName(model: string): string {
   }
 
   // 4. Check if the model's family has a user-customized override
-  //    Only applies when the family override differs from the built-in default
-  //    (default overrides are just alias mappings, not redirections)
-  //    e.g., user sets opus → claude-opus-4.6-1m, then claude-opus-4-6 should also redirect
+  //    Last-resort fallback: only applies when steps 1-3 didn't match.
+  //    Propagates to ALL family members regardless of target family.
+  //    e.g., opus → claude-opus-4.6-1m: claude-opus-4-6 also redirects
+  //    e.g., sonnet → opus: claude-sonnet-4 also redirects (cross-family)
+  //    Only skipped when override equals the built-in default (pure alias, not redirection).
   const family = getModelFamily(resolved)
   if (family) {
     const familyOverride = state.modelOverrides[family]
@@ -184,8 +210,7 @@ export function resolveModelName(model: string): string {
  * Uses `seen` set to prevent circular override chains.
  */
 function resolveOverrideTarget(source: string, target: string, seen?: Set<string>): string {
-  const availableIds = state.models?.data.map((m) => m.id)
-  if (!availableIds || availableIds.length === 0 || availableIds.includes(target)) {
+  if (state.modelIds.size === 0 || state.modelIds.has(target)) {
     return target
   }
 
@@ -235,8 +260,7 @@ function resolveModelNameCore(model: string): string {
   // Re-attach suffix and validate availability
   if (suffix) {
     const withSuffix = resolvedBase + suffix
-    const availableIds = state.models?.data.map((m) => m.id)
-    if (!availableIds || availableIds.length === 0 || availableIds.includes(withSuffix)) {
+    if (state.modelIds.size === 0 || state.modelIds.has(withSuffix)) {
       return withSuffix
     }
     // Suffixed variant not available, fall back to base
@@ -256,22 +280,20 @@ function resolveBase(model: string): string {
   // 2. Hyphenated: claude-opus-4-6 or claude-opus-4-6-20250514 → claude-opus-4.6
   // Pattern: claude-{family}-{major}-{minor}[-YYYYMMDD]
   // Minor version is 1-2 digits; date suffix is 8+ digits
-  const versionedMatch = model.match(/^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})(?:-\d{8,})?$/)
+  const versionedMatch = model.match(VERSIONED_RE)
   if (versionedMatch) {
     const dotModel = `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}`
-    const availableIds = state.models?.data.map((m) => m.id)
-    if (!availableIds || availableIds.length === 0 || availableIds.includes(dotModel)) {
+    if (state.modelIds.size === 0 || state.modelIds.has(dotModel)) {
       return dotModel
     }
   }
 
   // 3. Date-only suffix: claude-{family}-{major}-YYYYMMDD → base model or best family
-  const dateOnlyMatch = model.match(/^(claude-(opus|sonnet|haiku)-\d+)-\d{8,}$/)
+  const dateOnlyMatch = model.match(DATE_ONLY_RE)
   if (dateOnlyMatch) {
     const baseModel = dateOnlyMatch[1]
     const family = dateOnlyMatch[2]
-    const availableIds = state.models?.data.map((m) => m.id)
-    if (availableIds?.includes(baseModel)) {
+    if (state.modelIds.has(baseModel)) {
       return baseModel
     }
     return findPreferredModel(family)

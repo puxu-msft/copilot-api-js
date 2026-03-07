@@ -10,11 +10,10 @@ import { afterEach, describe, expect, test } from "bun:test"
 import {
   AUTO_TRUNCATE_RETRY_FACTOR,
   MAX_AUTO_TRUNCATE_RETRIES,
-  getEffectiveByteLimitBytes,
-  getEffectiveTokenLimit,
+  getLearnedLimits,
   resetAllLimitsForTesting,
   tryParseAndLearnLimit,
-} from "~/lib/auto-truncate-common"
+} from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
 
 // ─── Constants ───
@@ -34,22 +33,6 @@ describe("auto-truncate constants", () => {
 describe("tryParseAndLearnLimit", () => {
   afterEach(() => {
     resetAllLimitsForTesting()
-  })
-
-  test("detects 413 as body_too_large", () => {
-    const error = new HTTPError("Too large", 413, "")
-    const result = tryParseAndLearnLimit(error, "test-model", 600000)
-    expect(result).not.toBeNull()
-    expect(result!.type).toBe("body_too_large")
-  })
-
-  test("413 adjusts dynamic byte limit", () => {
-    const error = new HTTPError("Too large", 413, "")
-    tryParseAndLearnLimit(error, "test-model", 600000)
-
-    const limit = getEffectiveByteLimitBytes()
-    // Should be 90% of 600000 = 540000
-    expect(limit).toBe(Math.max(Math.floor(600000 * 0.9), 100 * 1024))
   })
 
   test("detects 400 with token limit error (OpenAI format)", () => {
@@ -82,7 +65,7 @@ describe("tryParseAndLearnLimit", () => {
     expect(result!.limit).toBe(200000)
   })
 
-  test("400 with token limit adjusts dynamic token limit", () => {
+  test("400 with token limit learns limit via getLearnedLimits", () => {
     const errorBody = JSON.stringify({
       error: {
         code: "model_max_prompt_tokens_exceeded",
@@ -92,9 +75,9 @@ describe("tryParseAndLearnLimit", () => {
     const error = new HTTPError("Token limit", 400, errorBody)
     tryParseAndLearnLimit(error, "gpt-4o-test")
 
-    const limit = getEffectiveTokenLimit("gpt-4o-test")
-    // Should be 95% of 128000
-    expect(limit).toBe(Math.floor(128000 * 0.95))
+    const limits = getLearnedLimits("gpt-4o-test")
+    expect(limits).toBeDefined()
+    expect(limits!.tokenLimit).toBe(128000)
   })
 
   test("returns null for non-retryable errors (500)", () => {
@@ -123,6 +106,12 @@ describe("tryParseAndLearnLimit", () => {
 
   test("returns null for 429 (rate limit is not a limit error)", () => {
     const error = new HTTPError("Rate limited", 429, '{"error":{"code":"rate_limited"}}')
+    const result = tryParseAndLearnLimit(error, "test-model")
+    expect(result).toBeNull()
+  })
+
+  test("returns null for 413 (not a parseable token limit)", () => {
+    const error = new HTTPError("Too large", 413, "")
     const result = tryParseAndLearnLimit(error, "test-model")
     expect(result).toBeNull()
   })

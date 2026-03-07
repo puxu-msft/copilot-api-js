@@ -8,7 +8,7 @@ import {
   GITHUB_CLIENT_ID,
   githubHeaders,
   standardHeaders,
-} from "~/lib/config/api"
+} from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 import { sleep } from "~/lib/utils"
@@ -30,6 +30,7 @@ export interface GitHubUser {
 export const getGitHubUser = async (): Promise<GitHubUser> => {
   const response = await fetch(`${GITHUB_API_BASE_URL}/user`, {
     headers: githubHeaders(state),
+    signal: AbortSignal.timeout(15_000),
   })
 
   if (!response.ok) throw await HTTPError.fromResponse("Failed to get GitHub user", response)
@@ -57,6 +58,7 @@ export const getDeviceCode = async (): Promise<DeviceCodeResponse> => {
       client_id: GITHUB_CLIENT_ID,
       scope: "read:user",
     }),
+    signal: AbortSignal.timeout(15_000),
   })
 
   if (!response.ok) throw await HTTPError.fromResponse("Failed to get device code", response)
@@ -82,6 +84,7 @@ export async function pollAccessToken(deviceCode: DeviceCodeResponse): Promise<s
         device_code: deviceCode.device_code,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       }),
+      signal: AbortSignal.timeout(15_000),
     })
 
     if (!response.ok) {

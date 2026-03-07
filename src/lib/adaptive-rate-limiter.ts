@@ -76,6 +76,8 @@ export class AdaptiveRateLimiter {
   private lastRequestTime = 0
   /** Current step in gradual recovery (index into gradualRecoverySteps) */
   private recoveryStepIndex = 0
+  /** Abort controller for cancelling pending sleeps during shutdown */
+  private sleepAbortController = new AbortController()
 
   constructor(config: Partial<AdaptiveRateLimiterConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -431,11 +433,29 @@ export class AdaptiveRateLimiter {
       request.reject(new Error("Server shutting down"))
     }
     this.processing = false
+
+    // Cancel any pending sleep (processQueue or executeInRecoveringMode)
+    this.sleepAbortController.abort()
+    this.sleepAbortController = new AbortController()
+
     return count
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms))
+    const signal = this.sleepAbortController.signal
+    if (signal.aborted) return Promise.resolve()
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms)
+      signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer)
+          resolve()
+        },
+        { once: true },
+      )
+    })
   }
 
   /**
@@ -484,6 +504,13 @@ export function initAdaptiveRateLimiter(config: Partial<AdaptiveRateLimiterConfi
  */
 export function getAdaptiveRateLimiter(): AdaptiveRateLimiter | null {
   return rateLimiterInstance
+}
+
+/**
+ * Reset the rate limiter singleton (for testing only).
+ */
+export function resetAdaptiveRateLimiter(): void {
+  rateLimiterInstance = null
 }
 
 /**

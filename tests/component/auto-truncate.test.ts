@@ -1,8 +1,15 @@
+/**
+ * Component tests for auto-truncate functionality.
+ *
+ * Tests: full truncation pipeline for Anthropic & OpenAI formats,
+ * token counting, compression, reactive helpers.
+ */
+
 import { beforeEach, describe, expect, test } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
-import type { ChatCompletionsPayload } from "~/lib/openai/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
+import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import {
   autoTruncateAnthropic,
@@ -14,16 +21,19 @@ import {
 import {
   compressCompactedReadResult,
   compressToolResultContent,
-  getEffectiveTokenLimit,
+  getLearnedLimits,
   hasKnownLimits,
+  onTokenLimitExceeded,
   resetAllLimitsForTesting,
   tryParseAndLearnLimit,
-} from "~/lib/auto-truncate-common"
+} from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
 import { autoTruncateOpenAI, checkNeedsCompactionOpenAI } from "~/lib/openai/auto-truncate"
 import { state } from "~/lib/state"
 
-// Mock model with typical limits
+// Mock model with limits small enough that test payloads exceed them.
+// The GPT tokenizer (o200k_base) tokenizes "x".repeat(10000) as ~1254 tokens,
+// so 100 messages ≈ 125400 tokens. A 50000 limit * 0.98 = 49000 ensures truncation.
 const mockModel: Model = {
   id: "claude-sonnet-4",
   name: "Claude Sonnet 4",
@@ -35,9 +45,9 @@ const mockModel: Model = {
   capabilities: {
     tokenizer: "o200k_base",
     limits: {
-      max_prompt_tokens: 128000,
+      max_prompt_tokens: 50000,
       max_output_tokens: 16000,
-      max_context_window_tokens: 200000,
+      max_context_window_tokens: 50000,
     },
   },
 }
@@ -99,7 +109,9 @@ describe("Auto-Truncate Anthropic", () => {
     const smallCheck = await checkNeedsCompactionAnthropic(smallPayload, mockModel)
     expect(smallCheck.needed).toBe(false)
 
-    // Large payload
+    // Large payload — set learned limits so pre-check actually runs
+    onTokenLimitExceeded("claude-sonnet-4", 50000)
+
     const largeMessages: MessagesPayload["messages"] = []
     for (let i = 0; i < 200; i++) {
       largeMessages.push({
@@ -114,9 +126,11 @@ describe("Auto-Truncate Anthropic", () => {
       messages: largeMessages,
     }
 
-    const largeCheck = await checkNeedsCompactionAnthropic(largePayload, mockModel, { checkByteLimit: true })
+    const largeCheck = await checkNeedsCompactionAnthropic(largePayload, mockModel)
     expect(largeCheck.needed).toBe(true)
     expect(largeCheck.reason).toBeDefined()
+
+    resetAllLimitsForTesting()
   })
 
   test("should preserve system prompt during truncation", async () => {
@@ -240,7 +254,9 @@ describe("Auto-Truncate OpenAI", () => {
     const smallCheck = await checkNeedsCompactionOpenAI(smallPayload, mockModel)
     expect(smallCheck.needed).toBe(false)
 
-    // Large payload
+    // Large payload — set learned limits so pre-check actually runs
+    onTokenLimitExceeded("claude-sonnet-4", 50000)
+
     const largeMessages: ChatCompletionsPayload["messages"] = []
     for (let i = 0; i < 200; i++) {
       largeMessages.push({
@@ -254,9 +270,11 @@ describe("Auto-Truncate OpenAI", () => {
       messages: largeMessages,
     }
 
-    const largeCheck = await checkNeedsCompactionOpenAI(largePayload, mockModel, { checkByteLimit: true })
+    const largeCheck = await checkNeedsCompactionOpenAI(largePayload, mockModel)
     expect(largeCheck.needed).toBe(true)
     expect(largeCheck.reason).toBeDefined()
+
+    resetAllLimitsForTesting()
   })
 
   test("should preserve system messages during truncation", async () => {
@@ -327,7 +345,11 @@ describe("Tokenizer", () => {
       messages: [{ role: "user", content: "Hello world!" }],
     }
 
-    const check = await checkNeedsCompactionAnthropic(payload, mockModel)
+    // Use an explicit targetTokenLimit to ensure the check actually runs
+    // (without learned limits, checkNeedsCompaction returns early)
+    const check = await checkNeedsCompactionAnthropic(payload, mockModel, {
+      targetTokenLimit: 200000,
+    })
 
     // Token count should be reasonable (not 0 or extremely high)
     expect(check.currentTokens).toBeGreaterThan(0)
@@ -585,10 +607,9 @@ describe("tryParseAndLearnLimit", () => {
 
     // Should have learned the limit
     expect(hasKnownLimits("claude-sonnet-4")).toBe(true)
-    const effectiveLimit = getEffectiveTokenLimit("claude-sonnet-4")
-    expect(effectiveLimit).not.toBeNull()
-    // Dynamic limit = 95% of 128000
-    expect(effectiveLimit).toBeLessThan(128000)
+    const learned = getLearnedLimits("claude-sonnet-4")
+    expect(learned).toBeDefined()
+    expect(learned!.tokenLimit).toBe(128000)
   })
 
   test("should detect Anthropic format token limit error", () => {
@@ -610,17 +631,6 @@ describe("tryParseAndLearnLimit", () => {
     expect(result?.type).toBe("token_limit")
     expect(result?.limit).toBe(200000)
     expect(result?.current).toBe(208598)
-  })
-
-  test("should detect 413 body too large error", () => {
-    const error = new HTTPError("Request Entity Too Large", 413, "Payload too large")
-
-    const result = tryParseAndLearnLimit(error, "claude-sonnet-4", 2_000_000)
-
-    expect(result).not.toBeNull()
-    expect(result?.type).toBe("body_too_large")
-    // 413 learns a byte limit
-    expect(hasKnownLimits("claude-sonnet-4")).toBe(true)
   })
 
   test("should return null for non-limit errors", () => {
@@ -665,6 +675,11 @@ describe("tryParseAndLearnLimit", () => {
     // type matches but message doesn't match token limit pattern
     expect(tryParseAndLearnLimit(error, "claude-sonnet-4")).toBeNull()
   })
+
+  test("should return null for 413 (not a token limit error)", () => {
+    const error = new HTTPError("Request Entity Too Large", 413, "Payload too large")
+    expect(tryParseAndLearnLimit(error, "claude-sonnet-4")).toBeNull()
+  })
 })
 
 describe("hasKnownLimits", () => {
@@ -694,15 +709,6 @@ describe("hasKnownLimits", () => {
     // Different model should still be false
     expect(hasKnownLimits("gpt-4o")).toBe(false)
   })
-
-  test("should return true after learning byte limit (applies globally)", () => {
-    const error = new HTTPError("Request Entity Too Large", 413, "Payload too large")
-    tryParseAndLearnLimit(error, "gpt-4o", 2_000_000)
-
-    // Byte limit is global, so all models have known limits
-    expect(hasKnownLimits("gpt-4o")).toBe(true)
-    expect(hasKnownLimits("claude-sonnet-4")).toBe(true)
-  })
 })
 
 describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
@@ -730,8 +736,8 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
 
   test("Anthropic: should compress recent tool_results when old compression isn't enough", async () => {
     // Ensure compress is enabled
-    const origCompress = state.compressToolResults
-    state.compressToolResults = true
+    const origCompress = state.compressToolResultsBeforeTruncate
+    state.compressToolResultsBeforeTruncate = true
 
     try {
       // Build payload with tool_use/tool_result pairs spread across old and recent positions
@@ -782,13 +788,13 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
         }
       }
     } finally {
-      state.compressToolResults = origCompress
+      state.compressToolResultsBeforeTruncate = origCompress
     }
   })
 
   test("OpenAI: should compress recent tool messages when old compression isn't enough", async () => {
-    const origCompress = state.compressToolResults
-    state.compressToolResults = true
+    const origCompress = state.compressToolResultsBeforeTruncate
+    state.compressToolResultsBeforeTruncate = true
 
     try {
       const messages: ChatCompletionsPayload["messages"] = [
@@ -828,7 +834,7 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
         }
       }
     } finally {
-      state.compressToolResults = origCompress
+      state.compressToolResultsBeforeTruncate = origCompress
     }
   })
 })

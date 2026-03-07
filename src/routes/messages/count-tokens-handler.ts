@@ -3,23 +3,16 @@ import type { Context } from "hono"
 import consola from "consola"
 
 import { checkNeedsCompactionAnthropic, countTotalInputTokens } from "~/lib/anthropic/auto-truncate"
-import { hasKnownLimits } from "~/lib/auto-truncate-common"
-import { translateModelName } from "~/lib/models/resolver"
-import { getTokenCount } from "~/lib/models/tokenizer"
+import { hasKnownLimits } from "~/lib/auto-truncate"
+import { resolveModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
-import { translateToOpenAI } from "~/lib/translation/non-stream"
 import { tuiLogger } from "~/lib/tui"
 import { type MessagesPayload } from "~/types/api/anthropic"
 
 /**
  * Handles token counting for Anthropic /v1/messages/count_tokens endpoint.
  *
- * Default: counts tokens directly on the Anthropic payload using native
- * counting functions. This avoids OpenAI translation overhead and potential
- * format conversion inaccuracies (tool_use/tool_result blocks being merged).
- *
- * With --redirect-count-tokens: translates to OpenAI format first, then
- * counts using OpenAI token counting logic.
+ * Counts tokens directly on the Anthropic payload using native counting functions.
  *
  * Per Anthropic docs:
  * - Returns { input_tokens: N } where N is the total input tokens
@@ -33,14 +26,14 @@ export async function handleCountTokens(c: Context) {
     const anthropicPayload = await c.req.json<MessagesPayload>()
 
     // Resolve model name aliases and date-suffixed versions
-    anthropicPayload.model = translateModelName(anthropicPayload.model)
+    anthropicPayload.model = resolveModelName(anthropicPayload.model)
 
     // Update tracker with model name
     if (tuiLogId) {
       tuiLogger.updateRequest(tuiLogId, { model: anthropicPayload.model })
     }
 
-    const selectedModel = state.models?.data.find((model) => model.id === anthropicPayload.model)
+    const selectedModel = state.modelIndex.get(anthropicPayload.model)
 
     if (!selectedModel) {
       consola.warn(`[count_tokens] Model "${anthropicPayload.model}" not found, returning input_tokens=1`)
@@ -52,7 +45,6 @@ export async function handleCountTokens(c: Context) {
     if (state.autoTruncate && hasKnownLimits(selectedModel.id)) {
       const truncateCheck = await checkNeedsCompactionAnthropic(anthropicPayload, selectedModel, {
         checkTokenLimit: true,
-        checkByteLimit: true,
       })
 
       if (truncateCheck.needed) {
@@ -73,30 +65,14 @@ export async function handleCountTokens(c: Context) {
       }
     }
 
-    // Count tokens using the appropriate method
-    let inputTokens: number
+    // Count tokens directly on Anthropic payload
+    // Excludes thinking blocks from assistant messages per Anthropic spec
+    const inputTokens = await countTotalInputTokens(anthropicPayload, selectedModel)
 
-    if (state.redirectCountTokens) {
-      // Legacy: translate to OpenAI format, then count
-      const { payload: openAIPayload } = translateToOpenAI(anthropicPayload)
-      const tokenCount = await getTokenCount(openAIPayload, selectedModel)
-      inputTokens = tokenCount.input + tokenCount.output
-
-      consola.debug(
-        `[count_tokens] ${inputTokens} tokens (via OpenAI translation) `
-          + `(input: ${tokenCount.input}, output: ${tokenCount.output}, `
-          + `tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`,
-      )
-    } else {
-      // Default: count directly on Anthropic payload
-      // Excludes thinking blocks from assistant messages per Anthropic spec
-      inputTokens = await countTotalInputTokens(anthropicPayload, selectedModel)
-
-      consola.debug(
-        `[count_tokens] ${inputTokens} tokens (native Anthropic) `
-          + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`,
-      )
-    }
+    consola.debug(
+      `[count_tokens] ${inputTokens} tokens (native Anthropic) `
+        + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`,
+    )
 
     if (tuiLogId) {
       tuiLogger.updateRequest(tuiLogId, { inputTokens })

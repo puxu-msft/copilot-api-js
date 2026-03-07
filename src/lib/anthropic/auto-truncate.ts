@@ -2,11 +2,11 @@
  * Auto-truncate module for Anthropic-style messages.
  *
  * This module handles automatic truncation of Anthropic message format
- * when it exceeds token or byte limits.
+ * when it exceeds token limits.
  *
  * Key features:
  * - Binary search for optimal truncation point
- * - Considers both token and byte limits
+ * - Token limit enforcement with learned calibration
  * - Preserves system messages
  * - Filters orphaned tool_result and tool_use messages
  * - Smart compression of old tool_result content (e.g., Read tool results)
@@ -27,10 +27,11 @@ import type { AutoTruncateConfig } from "../auto-truncate"
 import {
   DEFAULT_AUTO_TRUNCATE_CONFIG,
   LARGE_TOOL_RESULT_THRESHOLD,
+  calibrate,
   compressCompactedReadResult,
   compressToolResultContent,
-  getEffectiveByteLimitBytes,
-  getEffectiveTokenLimit,
+  computeSafetyMargin,
+  getLearnedLimits,
 } from "../auto-truncate"
 import { processToolBlocks } from "./sanitize"
 
@@ -325,7 +326,7 @@ export async function countSystemTokens(system: MessagesPayload["system"], model
  * Count tokens for just the messages array.
  * Used internally to avoid re-counting system/tools tokens that don't change.
  */
-async function countMessagesTokens(messages: Array<MessageParam>, model: Model): Promise<number> {
+export async function countMessagesTokens(messages: Array<MessageParam>, model: Model): Promise<number> {
   let total = 0
   for (const msg of messages) {
     total += await countMessageTokens(msg, model)
@@ -337,7 +338,7 @@ async function countMessagesTokens(messages: Array<MessageParam>, model: Model):
  * Count tokens for system + tools (the parts that don't change during truncation).
  * Returns the combined fixed overhead token count.
  */
-async function countFixedTokens(payload: MessagesPayload, model: Model): Promise<number> {
+export async function countFixedTokens(payload: MessagesPayload, model: Model): Promise<number> {
   let total = await countSystemTokens(payload.system, model)
   if (payload.tools) {
     const toolsText = JSON.stringify(payload.tools)
@@ -382,20 +383,6 @@ export async function countTotalInputTokens(payload: MessagesPayload, model: Mod
     total += await countTextTokens(toolsText, model)
   }
   return total
-}
-
-// ============================================================================
-// Message Utilities
-// ============================================================================
-
-/** Get byte size of a message (memoized to avoid redundant JSON.stringify) */
-const messageBytesCache = new WeakMap<object, number>()
-function getMessageBytes(msg: MessageParam): number {
-  let cached = messageBytesCache.get(msg)
-  if (cached !== undefined) return cached
-  cached = JSON.stringify(msg).length
-  messageBytesCache.set(msg, cached)
-  return cached
 }
 
 // ============================================================================
@@ -471,7 +458,7 @@ function compressToolResultBlock(block: ContentBlockParam): ContentBlockParam {
 
 /**
  * Smart compression strategy:
- * 1. Calculate tokens/bytes from the end until reaching preservePercent of limit
+ * 1. Calculate tokens from the end until reaching preservePercent of limit
  * 2. Messages before that threshold get their tool_results compressed
  * 3. Returns compressed messages and stats
  *
@@ -480,31 +467,26 @@ function compressToolResultBlock(block: ContentBlockParam): ContentBlockParam {
 function smartCompressToolResults(
   messages: Array<MessageParam>,
   tokenLimit: number,
-  byteLimit: number,
   preservePercent: number,
 ): {
   messages: Array<MessageParam>
   compressedCount: number
   compressThresholdIndex: number
 } {
-  // Calculate cumulative size from the end
+  // Calculate cumulative token size from the end
   const n = messages.length
   const cumTokens: Array<number> = Array.from({ length: n + 1 }, () => 0)
-  const cumBytes: Array<number> = Array.from({ length: n + 1 }, () => 0)
 
   for (let i = n - 1; i >= 0; i--) {
-    const msg = messages[i]
-    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(msg)
-    cumBytes[i] = cumBytes[i + 1] + getMessageBytes(msg) + 1
+    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(messages[i])
   }
 
   // Find the threshold index where we've used the preserve percentage of the limit
   const preserveTokenLimit = Math.floor(tokenLimit * preservePercent)
-  const preserveByteLimit = Math.floor(byteLimit * preservePercent)
 
   let thresholdIndex = n
   for (let i = n - 1; i >= 0; i--) {
-    if (cumTokens[i] > preserveTokenLimit || cumBytes[i] > preserveByteLimit) {
+    if (cumTokens[i] > preserveTokenLimit) {
       thresholdIndex = i + 1
       break
     }
@@ -564,37 +546,34 @@ function smartCompressToolResults(
 // Limit Calculation
 // ============================================================================
 
-interface Limits {
-  tokenLimit: number
-  byteLimit: number
-}
-
-/** Default fallback for when model capabilities are not available */
-const DEFAULT_CONTEXT_WINDOW = 200000
-
-function calculateLimits(model: Model, config: AutoTruncateConfig): Limits {
+/**
+ * Calculate the effective token limit for auto-truncate.
+ * Uses explicit target if provided, otherwise learned limits with calibration,
+ * otherwise model capabilities with safety margin.
+ *
+ * Returns undefined when no limit information is available — the caller
+ * should skip truncation rather than guess with a hardcoded default.
+ */
+function calculateTokenLimit(model: Model, config: AutoTruncateConfig): number | undefined {
   // Use explicit target if provided (reactive retry — caller already applied margin)
-  if (config.targetTokenLimit !== undefined || config.targetByteLimitBytes !== undefined) {
-    return {
-      tokenLimit:
-        config.targetTokenLimit ?? model.capabilities?.limits?.max_context_window_tokens ?? DEFAULT_CONTEXT_WINDOW,
-      byteLimit: config.targetByteLimitBytes ?? getEffectiveByteLimitBytes(),
-    }
+  if (config.targetTokenLimit !== undefined) {
+    return config.targetTokenLimit
   }
 
-  // Check for dynamic token limit (adjusted based on previous errors)
-  const dynamicLimit = getEffectiveTokenLimit(model.id)
+  // Check for learned limits (adjusted based on previous errors)
+  const learned = getLearnedLimits(model.id)
+  if (learned) {
+    const margin = computeSafetyMargin(learned.sampleCount)
+    return Math.floor(learned.tokenLimit * (1 - margin))
+  }
 
-  // Use dynamic limit if available, otherwise use model capabilities
+  // Use model capabilities with static safety margin
   const rawTokenLimit =
-    dynamicLimit
-    ?? model.capabilities?.limits?.max_context_window_tokens
-    ?? model.capabilities?.limits?.max_prompt_tokens
-    ?? DEFAULT_CONTEXT_WINDOW
+    model.capabilities?.limits?.max_context_window_tokens ?? model.capabilities?.limits?.max_prompt_tokens
 
-  const tokenLimit = Math.floor(rawTokenLimit * (1 - config.safetyMarginPercent / 100))
-  const byteLimit = getEffectiveByteLimitBytes()
-  return { tokenLimit, byteLimit }
+  if (rawTokenLimit === undefined) return undefined
+
+  return Math.floor(rawTokenLimit * (1 - config.safetyMarginPercent / 100))
 }
 
 // ============================================================================
@@ -603,60 +582,39 @@ function calculateLimits(model: Model, config: AutoTruncateConfig): Limits {
 
 interface PreserveSearchParams {
   messages: Array<MessageParam>
-  systemBytes: number
   systemTokens: number
-  payloadOverhead: number
   tokenLimit: number
-  byteLimit: number
-  checkTokenLimit: boolean
-  checkByteLimit: boolean
 }
 
 function findOptimalPreserveIndex(params: PreserveSearchParams): number {
-  const {
-    messages,
-    systemBytes,
-    systemTokens,
-    payloadOverhead,
-    tokenLimit,
-    byteLimit,
-    checkTokenLimit,
-    checkByteLimit,
-  } = params
+  const { messages, systemTokens, tokenLimit } = params
 
   if (messages.length === 0) return 0
 
   // Account for truncation marker
-  const markerBytes = 200
   const markerTokens = 50
 
   const availableTokens = tokenLimit - systemTokens - markerTokens
-  const availableBytes = byteLimit - payloadOverhead - systemBytes - markerBytes
 
-  if ((checkTokenLimit && availableTokens <= 0) || (checkByteLimit && availableBytes <= 0)) {
+  if (availableTokens <= 0) {
     return messages.length
   }
 
-  // Pre-calculate cumulative sums from the end
+  // Pre-calculate cumulative token sums from the end
   const n = messages.length
   const cumTokens: Array<number> = Array.from({ length: n + 1 }, () => 0)
-  const cumBytes: Array<number> = Array.from({ length: n + 1 }, () => 0)
 
   for (let i = n - 1; i >= 0; i--) {
-    const msg = messages[i]
-    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(msg)
-    cumBytes[i] = cumBytes[i + 1] + getMessageBytes(msg) + 1
+    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(messages[i])
   }
 
-  // Binary search for the smallest index where enabled limits are satisfied
+  // Binary search for the smallest index where token limit is satisfied
   let left = 0
   let right = n
 
   while (left < right) {
     const mid = (left + right) >>> 1
-    const tokensFit = !checkTokenLimit || cumTokens[mid] <= availableTokens
-    const bytesFit = !checkByteLimit || cumBytes[mid] <= availableBytes
-    if (tokensFit && bytesFit) {
+    if (cumTokens[mid] <= availableTokens) {
       right = mid
     } else {
       left = mid + 1
@@ -811,18 +769,28 @@ export async function autoTruncateAnthropic(
   })
 
   const cfg = { ...DEFAULT_AUTO_TRUNCATE_CONFIG, ...config }
-  const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
+  const tokenLimit = calculateTokenLimit(model, cfg)
+
+  // No limit information available — skip truncation and let the server decide
+  if (tokenLimit === undefined) {
+    return buildResult({
+      payload,
+      wasTruncated: false,
+      originalTokens: 0,
+      compactedTokens: 0,
+      removedMessageCount: 0,
+    })
+  }
 
   // Compute fixed overhead tokens (system + tools) once — these don't change during truncation
   const fixedTokens = await countFixedTokens(payload, model)
 
   // Measure original size
-  const originalBytes = JSON.stringify(payload).length
   const originalMsgTokens = await countMessagesTokens(payload.messages, model)
   const originalTokens = fixedTokens + originalMsgTokens
 
   // Check if compaction is needed
-  if (originalTokens <= tokenLimit && originalBytes <= byteLimit) {
+  if (originalTokens <= tokenLimit) {
     return buildResult({
       payload,
       wasTruncated: false,
@@ -832,10 +800,6 @@ export async function autoTruncateAnthropic(
     })
   }
 
-  // Log reason with correct comparison
-  const exceedsTokens = originalTokens > tokenLimit
-  const exceedsBytes = originalBytes > byteLimit
-
   // Step 1: Strip thinking blocks from old assistant messages
   // These don't count as input tokens per Anthropic docs, but they consume request body space.
   // Preserve thinking in the last 4 messages (2 exchanges) for context continuity.
@@ -844,24 +808,18 @@ export async function autoTruncateAnthropic(
 
   // Check if stripping alone was enough
   if (thinkingStrippedCount > 0) {
-    const strippedPayload = { ...payload, messages: workingMessages }
-    const strippedBytes = JSON.stringify(strippedPayload).length
     const strippedMsgTokens = await countMessagesTokens(workingMessages, model)
     const strippedTokens = fixedTokens + strippedMsgTokens
 
-    if (strippedTokens <= tokenLimit && strippedBytes <= byteLimit) {
-      let reason = "tokens"
-      if (exceedsTokens && exceedsBytes) reason = "tokens+size"
-      else if (exceedsBytes) reason = "size"
+    if (strippedTokens <= tokenLimit) {
       const elapsedMs = Math.round(performance.now() - startTime)
       consola.info(
-        `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${strippedTokens} tokens, `
-          + `${bytesToKB(originalBytes)}→${bytesToKB(strippedBytes)}KB `
+        `[AutoTruncate:Anthropic] tokens: ${originalTokens}→${strippedTokens} `
           + `(stripped ${thinkingStrippedCount} thinking blocks) [${elapsedMs}ms]`,
       )
 
       return buildResult({
-        payload: strippedPayload,
+        payload: { ...payload, messages: workingMessages },
         wasTruncated: true,
         originalTokens,
         compactedTokens: strippedTokens,
@@ -875,34 +833,23 @@ export async function autoTruncateAnthropic(
   let compressedCount = 0
 
   if (state.compressToolResultsBeforeTruncate) {
-    const compressionResult = smartCompressToolResults(
-      workingMessages,
-      tokenLimit,
-      byteLimit,
-      cfg.preserveRecentPercent,
-    )
+    const compressionResult = smartCompressToolResults(workingMessages, tokenLimit, cfg.preserveRecentPercent)
     workingMessages = compressionResult.messages
     compressedCount = compressionResult.compressedCount
 
     // Check if compression alone was enough
-    const compressedPayload = { ...payload, messages: workingMessages }
-    const compressedBytes = JSON.stringify(compressedPayload).length
     const compressedMsgTokens = await countMessagesTokens(workingMessages, model)
     const compressedTokens = fixedTokens + compressedMsgTokens
 
-    if (compressedTokens <= tokenLimit && compressedBytes <= byteLimit) {
-      // Log single line summary
-      let reason = "tokens"
-      if (exceedsTokens && exceedsBytes) reason = "tokens+size"
-      else if (exceedsBytes) reason = "size"
+    if (compressedTokens <= tokenLimit) {
       const elapsedMs = Math.round(performance.now() - startTime)
       consola.info(
-        `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${compressedTokens} tokens, `
-          + `${bytesToKB(originalBytes)}→${bytesToKB(compressedBytes)}KB `
+        `[AutoTruncate:Anthropic] tokens: ${originalTokens}→${compressedTokens} `
           + `(compressed ${compressedCount} tool_results) [${elapsedMs}ms]`,
       )
 
       // Add compression notice to system prompt
+      const compressedPayload = { ...payload, messages: workingMessages }
       const noticePayload = addCompressionNotice(compressedPayload, compressedCount)
 
       // Estimate notice token overhead instead of full recount
@@ -922,7 +869,6 @@ export async function autoTruncateAnthropic(
     const allCompression = smartCompressToolResults(
       workingMessages,
       tokenLimit,
-      byteLimit,
       0.0, // preservePercent=0 means compress all messages
     )
     if (allCompression.compressedCount > 0) {
@@ -930,22 +876,17 @@ export async function autoTruncateAnthropic(
       compressedCount += allCompression.compressedCount
 
       // Check if compressing all was enough
-      const allCompressedPayload = { ...payload, messages: workingMessages }
-      const allCompressedBytes = JSON.stringify(allCompressedPayload).length
       const allCompressedMsgTokens = await countMessagesTokens(workingMessages, model)
       const allCompressedTokens = fixedTokens + allCompressedMsgTokens
 
-      if (allCompressedTokens <= tokenLimit && allCompressedBytes <= byteLimit) {
-        let reason = "tokens"
-        if (exceedsTokens && exceedsBytes) reason = "tokens+size"
-        else if (exceedsBytes) reason = "size"
+      if (allCompressedTokens <= tokenLimit) {
         const elapsedMs = Math.round(performance.now() - startTime)
         consola.info(
-          `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${allCompressedTokens} tokens, `
-            + `${bytesToKB(originalBytes)}→${bytesToKB(allCompressedBytes)}KB `
+          `[AutoTruncate:Anthropic] tokens: ${originalTokens}→${allCompressedTokens} `
             + `(compressed ${compressedCount} tool_results, including recent) [${elapsedMs}ms]`,
         )
 
+        const allCompressedPayload = { ...payload, messages: workingMessages }
         const noticePayload = addCompressionNotice(allCompressedPayload, compressedCount)
 
         // Estimate notice token overhead instead of full recount
@@ -964,29 +905,14 @@ export async function autoTruncateAnthropic(
   // Step 3: Compression wasn't enough (or disabled), proceed with message removal
   // Use working messages (compressed if enabled, original otherwise)
 
-  // Calculate system message size (Anthropic has separate system field)
-  const systemBytes = payload.system ? JSON.stringify(payload.system).length : 0
+  // Calculate system tokens for the binary search
   const systemTokens = await countSystemTokens(payload.system, model)
-
-  // Calculate overhead: total payload bytes minus messages JSON minus system JSON
-  const messagesBytes = workingMessages.reduce((sum, msg) => sum + getMessageBytes(msg) + 1, 0) + 2 // brackets + commas
-  const workingBytes = JSON.stringify({ ...payload, messages: workingMessages }).length
-  const payloadOverhead = workingBytes - messagesBytes - systemBytes
-
-  consola.debug(
-    `[AutoTruncate:Anthropic] overhead=${bytesToKB(payloadOverhead)}KB, ` + `system=${bytesToKB(systemBytes)}KB`,
-  )
 
   // Find optimal preserve index on working messages
   const preserveIndex = findOptimalPreserveIndex({
     messages: workingMessages,
-    systemBytes,
     systemTokens,
-    payloadOverhead,
     tokenLimit,
-    byteLimit,
-    checkTokenLimit: cfg.checkTokenLimit,
-    checkByteLimit: cfg.checkByteLimit,
   })
 
   // Check if we can compact
@@ -1063,10 +989,6 @@ export async function autoTruncateAnthropic(
   const newTokens = newSystemTokens + toolsTokens + newMsgTokens
 
   // Log single line summary
-  let reason = "tokens"
-  if (exceedsTokens && exceedsBytes) reason = "tokens+size"
-  else if (exceedsBytes) reason = "size"
-
   const actions: Array<string> = []
   if (removedCount > 0) actions.push(`removed ${removedCount} msgs`)
   if (thinkingStrippedCount > 0) actions.push(`stripped ${thinkingStrippedCount} thinking blocks`)
@@ -1075,15 +997,13 @@ export async function autoTruncateAnthropic(
 
   const elapsedMs = Math.round(performance.now() - startTime)
   consola.info(
-    `[AutoTruncate:Anthropic] ${reason}: ${originalTokens}→${newTokens} tokens, `
-      + `${bytesToKB(originalBytes)}→${bytesToKB(newBytes)}KB${actionInfo} [${elapsedMs}ms]`,
+    `[AutoTruncate:Anthropic] tokens: ${originalTokens}→${newTokens}, `
+      + `${bytesToKB(newBytes)}KB${actionInfo} [${elapsedMs}ms]`,
   )
 
-  // Warn if still over limit
-  if (newBytes > byteLimit || newTokens > tokenLimit) {
-    consola.warn(
-      `[AutoTruncate:Anthropic] Result still over limit ` + `(${newTokens} tokens, ${bytesToKB(newBytes)}KB)`,
-    )
+  // Warn if still over token limit
+  if (newTokens > tokenLimit) {
+    consola.warn(`[AutoTruncate:Anthropic] Result still over token limit (${newTokens} > ${tokenLimit})`)
   }
 
   return buildResult({
@@ -1111,7 +1031,8 @@ export function createTruncationResponseMarkerAnthropic(result: AnthropicAutoTru
 }
 
 /**
- * Check if payload needs compaction.
+ * Check if payload needs compaction based on learned model limits.
+ * Returns early with `needed: false` when no limits are known for the model.
  */
 export async function checkNeedsCompactionAnthropic(
   payload: MessagesPayload,
@@ -1121,34 +1042,44 @@ export async function checkNeedsCompactionAnthropic(
   needed: boolean
   currentTokens: number
   tokenLimit: number
-  currentBytes: number
-  byteLimit: number
-  reason?: "tokens" | "bytes" | "both"
+  reason?: "tokens"
 }> {
   const cfg = { ...DEFAULT_AUTO_TRUNCATE_CONFIG, ...config }
-  const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
 
-  const currentTokens = await countTotalTokens(payload, model)
-  const currentBytes = JSON.stringify(payload).length
-
-  const exceedsTokens = cfg.checkTokenLimit && currentTokens > tokenLimit
-  const exceedsBytes = cfg.checkByteLimit && currentBytes > byteLimit
-
-  let reason: "tokens" | "bytes" | "both" | undefined
-  if (exceedsTokens && exceedsBytes) {
-    reason = "both"
-  } else if (exceedsTokens) {
-    reason = "tokens"
-  } else if (exceedsBytes) {
-    reason = "bytes"
+  // If no learned limits and no explicit target, skip pre-check
+  // (we don't know the real limit yet — let the server tell us)
+  const learned = getLearnedLimits(model.id)
+  if (!learned && cfg.targetTokenLimit === undefined) {
+    return {
+      needed: false,
+      currentTokens: 0,
+      tokenLimit: 0,
+    }
   }
 
+  const tokenLimit = calculateTokenLimit(model, cfg)
+
+  // Defensive: should not reach here without a resolvable limit (guarded by early return above),
+  // but satisfy the type system
+  if (tokenLimit === undefined) {
+    return {
+      needed: false,
+      currentTokens: 0,
+      tokenLimit: 0,
+    }
+  }
+
+  const rawTokens = await countTotalTokens(payload, model)
+
+  // Apply calibration to adjust the GPT tokenizer estimate
+  const currentTokens = learned && learned.sampleCount > 0 ? calibrate(model.id, rawTokens) : rawTokens
+
+  const exceedsTokens = cfg.checkTokenLimit && currentTokens > tokenLimit
+
   return {
-    needed: exceedsTokens || exceedsBytes,
+    needed: exceedsTokens,
     currentTokens,
     tokenLimit,
-    currentBytes,
-    byteLimit,
-    reason,
+    reason: exceedsTokens ? "tokens" : undefined,
   }
 }

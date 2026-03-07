@@ -4,93 +4,88 @@ import type { Context } from "hono"
 import consola from "consola"
 import { SSEStreamingApi, streamSSE } from "hono/streaming"
 
+import type { RequestContext } from "~/lib/context/request"
+import type { MessageContent } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
+import type {
+  ChatCompletionChunk,
+  ChatCompletionResponse,
+  ChatCompletionsPayload,
+} from "~/types/api/openai-chat-completions"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
-import { awaitApproval } from "~/lib/approval"
-import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate-common"
-import { processOpenAIMessages } from "~/lib/config/system-prompt"
-import { type MessageContent, recordRequest } from "~/lib/history"
-import { translateModelName } from "~/lib/models/resolver"
-import { autoTruncateOpenAI, createTruncationResponseMarkerOpenAI } from "~/lib/openai/auto-truncate"
+import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
+import { getRequestContextManager } from "~/lib/context/manager"
+import { HTTPError } from "~/lib/error"
+import { ENDPOINT, isEndpointSupported } from "~/lib/models/endpoint"
+import { resolveModelName } from "~/lib/models/resolver"
 import {
-  createChatCompletions,
-  type ChatCompletionChunk,
-  type ChatCompletionResponse,
-  type ChatCompletionsPayload,
-} from "~/lib/openai/client"
+  autoTruncateOpenAI,
+  createTruncationResponseMarkerOpenAI,
+  type OpenAIAutoTruncateResult,
+} from "~/lib/openai/auto-truncate"
+import { createChatCompletions } from "~/lib/openai/client"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createOpenAIStreamAccumulator, accumulateOpenAIStreamEvent } from "~/lib/openai/stream-accumulator"
-import {
-  type ResponseContext,
-  extractErrorContent,
-  finalizeRequest,
-  isNonStreaming,
-  logPayloadSizeInfo,
-  updateTrackerStatus,
-} from "~/lib/request"
+import { buildOpenAIResponseData, isNonStreaming, logPayloadSizeInfo } from "~/lib/request"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
-import { buildOpenAIStreamResult } from "~/lib/request/recording"
 import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
+import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
+import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
+import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIteratorNext } from "~/lib/stream"
+import { processOpenAIMessages } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
 
-export async function handleCompletion(c: Context) {
+export async function handleChatCompletion(c: Context) {
   const originalPayload = await c.req.json<ChatCompletionsPayload>()
 
   // Resolve model name aliases and date-suffixed versions
-  const resolvedModel = translateModelName(originalPayload.model)
-  if (resolvedModel !== originalPayload.model) {
-    consola.debug(`Model name resolved: ${originalPayload.model} → ${resolvedModel}`)
+  const clientModel = originalPayload.model
+  const resolvedModel = resolveModelName(clientModel)
+  if (resolvedModel !== clientModel) {
+    consola.debug(`Model name resolved: ${clientModel} → ${resolvedModel}`)
     originalPayload.model = resolvedModel
   }
 
-  // Find the selected model and validate endpoint support before recording
-  const selectedModel = state.models?.data.find((model) => model.id === originalPayload.model)
-  if (selectedModel?.supported_endpoints && !selectedModel.supported_endpoints.includes("/chat/completions")) {
-    return c.json(
-      {
-        error: {
-          message:
-            `Model '${originalPayload.model}' does not support the /chat/completions endpoint. `
-            + `Supported endpoints: ${selectedModel.supported_endpoints.join(", ")}`,
-          type: "invalid_request_error",
-          param: "model",
-          code: "model_not_supported",
-        },
-      },
-      400,
-    )
+  // Find the selected model and validate endpoint support
+  const selectedModel = state.modelIndex.get(originalPayload.model)
+  if (!isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
+    const msg = `Model "${originalPayload.model}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint`
+    throw new HTTPError(msg, 400, msg)
   }
 
   // System prompt collection + config-based overrides (always active)
-  originalPayload.messages = await processOpenAIMessages(originalPayload.messages)
+  originalPayload.messages = await processOpenAIMessages(originalPayload.messages, originalPayload.model)
 
-  // Record request to history with full messages
-  const historyId = recordRequest("openai", {
-    model: originalPayload.model,
+  // Get tracking ID
+  const tuiLogId = c.get("tuiLogId") as string | undefined
+
+  // Create request context — triggers "created" event → history consumer inserts entry
+  const manager = getRequestContextManager()
+  const reqCtx = manager.create({ endpoint: "openai-chat-completions", tuiLogId })
+  reqCtx.setOriginalRequest({
+    // Use client's original model name (before resolution/overrides)
+    model: clientModel,
     messages: originalPayload.messages as unknown as Array<MessageContent>,
     stream: originalPayload.stream ?? false,
     tools: originalPayload.tools?.map((t) => ({
       name: t.function.name,
       description: t.function.description,
     })),
-    max_tokens: originalPayload.max_tokens ?? undefined,
-    temperature: originalPayload.temperature ?? undefined,
+    payload: originalPayload,
   })
 
-  // Get tracking ID and use tracker's startTime for consistent timing
-  const tuiLogId = c.get("tuiLogId") as string | undefined
-
-  // Update TUI tracker with model info
-  if (tuiLogId) tuiLogger.updateRequest(tuiLogId, { model: originalPayload.model })
-
-  const trackedRequest = tuiLogId ? tuiLogger.getRequest(tuiLogId) : undefined
-  const startTime = trackedRequest?.startTime ?? Date.now()
-  const ctx: ResponseContext = { historyId, tuiLogId, startTime }
+  // Update TUI tracker with model info (immediate feedback)
+  if (tuiLogId) {
+    tuiLogger.updateRequest(tuiLogId, {
+      model: originalPayload.model,
+      ...(clientModel !== originalPayload.model && { clientModel }),
+    })
+  }
 
   // Sanitize messages (filter orphaned tool blocks, system-reminders)
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(originalPayload)
@@ -107,16 +102,13 @@ export async function handleCompletion(c: Context) {
     consola.debug("Set max_tokens to:", JSON.stringify(finalPayload.max_tokens))
   }
 
-  if (state.manualApprove) await awaitApproval()
-
   // Execute request with reactive retry pipeline
   return executeRequest({
     c,
     payload: finalPayload,
     originalPayload,
     selectedModel,
-    ctx,
-    tuiLogId,
+    reqCtx,
   })
 }
 
@@ -126,8 +118,7 @@ interface ExecuteRequestOptions {
   payload: ChatCompletionsPayload
   originalPayload: ChatCompletionsPayload
   selectedModel: Model | undefined
-  ctx: ResponseContext
-  tuiLogId: string | undefined
+  reqCtx: RequestContext
 }
 
 /**
@@ -135,17 +126,19 @@ interface ExecuteRequestOptions {
  * Handles 413 and token limit errors with auto-truncation.
  */
 async function executeRequest(opts: ExecuteRequestOptions) {
-  const { c, payload, originalPayload, selectedModel, ctx, tuiLogId } = opts
+  const { c, payload, originalPayload, selectedModel, reqCtx } = opts
 
   // Build adapter and strategy for the pipeline
   const adapter: FormatAdapter<ChatCompletionsPayload> = {
-    format: "openai",
+    format: "openai-chat-completions",
     sanitize: (p) => sanitizeOpenAIMessages(p),
     execute: (p) => executeWithAdaptiveRateLimit(() => createChatCompletions(p)),
     logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
   }
 
   const strategies = [
+    createNetworkRetryStrategy<ChatCompletionsPayload>(),
+    createTokenRefreshStrategy<ChatCompletionsPayload>(),
     createAutoTruncateStrategy<ChatCompletionsPayload>({
       truncate: (p, model, truncOpts) =>
         autoTruncateOpenAI(p, model, truncOpts) as Promise<TruncateResult<ChatCompletionsPayload>>,
@@ -155,6 +148,9 @@ async function executeRequest(opts: ExecuteRequestOptions) {
     }),
   ]
 
+  // Track truncation result for non-streaming response marker
+  let truncateResult: OpenAIAutoTruncateResult | undefined
+
   try {
     const result = await executeRequestPipeline({
       adapter,
@@ -163,57 +159,60 @@ async function executeRequest(opts: ExecuteRequestOptions) {
       originalPayload,
       model: selectedModel,
       maxRetries: MAX_AUTO_TRUNCATE_RETRIES,
+      requestContext: reqCtx,
       onRetry: (attempt, _strategyName, _newPayload, meta) => {
         // Capture truncation result for response marker
-        const retryTruncateResult = meta?.truncateResult as ResponseContext["truncateResult"]
+        const retryTruncateResult = meta?.truncateResult as OpenAIAutoTruncateResult | undefined
         if (retryTruncateResult) {
-          ctx.truncateResult = retryTruncateResult
+          truncateResult = retryTruncateResult
         }
 
         // Update tracking tags
-        if (tuiLogId) {
-          tuiLogger.updateRequest(tuiLogId, { tags: ["truncated", `retry-${attempt + 1}`] })
+        if (reqCtx.tuiLogId) {
+          tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: ["truncated", `retry-${attempt + 1}`] })
         }
       },
     })
 
-    ctx.queueWaitMs = result.queueWaitMs
     const response = result.response
 
     if (isNonStreaming(response as ChatCompletionResponse | AsyncIterable<unknown>)) {
-      return handleNonStreamingResponse(c, response as ChatCompletionResponse, ctx)
+      return handleNonStreamingResponse(c, response as ChatCompletionResponse, reqCtx, truncateResult)
     }
 
     consola.debug("Streaming response")
-    updateTrackerStatus(tuiLogId, "streaming")
+    reqCtx.transition("streaming")
 
     return streamSSE(c, async (stream) => {
+      const clientAbort = new AbortController()
+      stream.onAbort(() => clientAbort.abort())
+
       await handleStreamingResponse({
         stream,
         response: response as AsyncIterable<ServerSentEventMessage>,
         payload,
-        ctx,
+        reqCtx,
+        truncateResult,
+        clientAbortSignal: clientAbort.signal,
       })
     })
   } catch (error) {
-    finalizeRequest(ctx, {
-      success: false,
-      model: payload.model,
-      usage: { input_tokens: 0, output_tokens: 0 },
-      error: error instanceof Error ? error.message : String(error),
-      content: extractErrorContent(error),
-      durationMs: Date.now() - ctx.startTime,
-    })
+    reqCtx.fail(payload.model, error)
     throw error
   }
 }
 
 // Handle non-streaming response
-function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletionResponse, ctx: ResponseContext) {
+function handleNonStreamingResponse(
+  c: Context,
+  originalResponse: ChatCompletionResponse,
+  reqCtx: RequestContext,
+  truncateResult: OpenAIAutoTruncateResult | undefined,
+) {
   // Prepend truncation marker if auto-truncate was performed (only in verbose mode)
   let response = originalResponse
-  if (state.verbose && ctx.truncateResult?.wasTruncated && response.choices[0]?.message.content) {
-    const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
+  if (state.verbose && truncateResult?.wasTruncated && response.choices[0]?.message.content) {
+    const marker = createTruncationResponseMarkerOpenAI(truncateResult)
     const firstChoice = response.choices[0]
     response = {
       ...response,
@@ -227,7 +226,7 @@ function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletion
   const choice = response.choices[0]
   const usage = response.usage
 
-  finalizeRequest(ctx, {
+  reqCtx.complete({
     success: true,
     model: response.model,
     usage: {
@@ -239,8 +238,6 @@ function handleNonStreamingResponse(c: Context, originalResponse: ChatCompletion
     },
     stop_reason: choice.finish_reason ?? undefined,
     content: choice.message,
-    durationMs: Date.now() - ctx.startTime,
-    queueWaitMs: ctx.queueWaitMs,
   })
 
   return c.json(response)
@@ -251,18 +248,26 @@ interface StreamingOptions {
   stream: SSEStreamingApi
   response: AsyncIterable<ServerSentEventMessage>
   payload: ChatCompletionsPayload
-  ctx: ResponseContext
+  reqCtx: RequestContext
+  truncateResult: OpenAIAutoTruncateResult | undefined
+  /** Abort signal that fires when the downstream client disconnects */
+  clientAbortSignal?: AbortSignal
 }
 
 // Handle streaming response
 async function handleStreamingResponse(opts: StreamingOptions) {
-  const { stream, response, payload, ctx } = opts
+  const { stream, response, payload, reqCtx, truncateResult, clientAbortSignal } = opts
   const acc = createOpenAIStreamAccumulator()
+  const idleTimeoutMs = state.streamIdleTimeout * 1000
+
+  // Streaming metrics for TUI footer
+  let bytesIn = 0
+  let eventsIn = 0
 
   try {
     // Prepend truncation marker as first chunk if auto-truncate was performed (only in verbose mode)
-    if (state.verbose && ctx.truncateResult?.wasTruncated) {
-      const marker = createTruncationResponseMarkerOpenAI(ctx.truncateResult)
+    if (state.verbose && truncateResult?.wasTruncated) {
+      const marker = createTruncationResponseMarkerOpenAI(truncateResult)
       const markerChunk: ChatCompletionChunk = {
         id: `truncation-marker-${Date.now()}`,
         object: "chat.completion.chunk",
@@ -284,9 +289,27 @@ async function handleStreamingResponse(opts: StreamingOptions) {
       acc.content += marker
     }
 
-    for await (const rawEvent of response) {
-      // Check shutdown abort signal — break out of stream gracefully
-      if (getShutdownSignal()?.aborted) break
+    const iterator = response[Symbol.asyncIterator]()
+    const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbortSignal)
+
+    for (;;) {
+      const result = await raceIteratorNext(iterator.next(), { idleTimeoutMs, abortSignal })
+
+      if (result === STREAM_ABORTED) break
+      if (result.done) break
+
+      const rawEvent = result.value
+
+      bytesIn += rawEvent.data?.length ?? 0
+      eventsIn++
+
+      // Update TUI footer with streaming progress
+      if (reqCtx.tuiLogId) {
+        tuiLogger.updateRequest(reqCtx.tuiLogId, {
+          streamBytesIn: bytesIn,
+          streamEventsIn: eventsIn,
+        })
+      }
 
       // Parse and accumulate for history/tracking (skip [DONE] and empty data)
       if (rawEvent.data && rawEvent.data !== "[DONE]") {
@@ -302,22 +325,27 @@ async function handleStreamingResponse(opts: StreamingOptions) {
       await stream.writeSSE({
         data: rawEvent.data ?? "",
         event: rawEvent.event,
-        id: String(rawEvent.id),
+        id: rawEvent.id !== undefined ? String(rawEvent.id) : undefined,
         retry: rawEvent.retry,
       })
     }
 
-    const result = buildOpenAIStreamResult(acc, payload.model, ctx)
-    finalizeRequest(ctx, result)
+    const responseData = buildOpenAIResponseData(acc, payload.model)
+    reqCtx.complete(responseData)
   } catch (error) {
-    finalizeRequest(ctx, {
-      success: false,
-      model: acc.model || payload.model,
-      usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
-      error: error instanceof Error ? error.message : String(error),
-      content: acc.content ? { role: "assistant", content: acc.content } : null,
-      durationMs: Date.now() - ctx.startTime,
+    consola.error("[ChatCompletions] Stream error:", error)
+    reqCtx.fail(acc.model || payload.model, error)
+
+    // Send error to client as final SSE event (consistent with Anthropic path)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    await stream.writeSSE({
+      data: JSON.stringify({
+        error: {
+          message: errorMessage,
+          type: error instanceof StreamIdleTimeoutError ? "timeout_error" : "server_error",
+        },
+      }),
+      event: "error",
     })
-    throw error
   }
 }

@@ -7,6 +7,8 @@ export interface TuiLogEntry {
   method: string
   path: string
   model?: string
+  /** Original model name from client request (before resolution/override) */
+  clientModel?: string
   /** Billing multiplier for the model (e.g. 3 for opus, 0.33 for haiku) */
   multiplier?: number
   startTime: number
@@ -31,10 +33,21 @@ export interface TuiLogEntry {
   isHistoryAccess?: boolean
   /** Feature tags for display, e.g. ["truncated", "thinking"] */
   tags?: Array<string>
+
+  // ─── Streaming metrics (updated in real-time during streaming) ───
+
+  /** Cumulative bytes received from upstream during streaming */
+  streamBytesIn?: number
+  /** Number of SSE events received from upstream during streaming */
+  streamEventsIn?: number
+  /** Current content block type being streamed (e.g. "thinking", "text", "tool_use") */
+  streamBlockType?: string
 }
 
 export interface RequestUpdate {
   model?: string
+  /** Original model name from client request (before resolution/override) */
+  clientModel?: string
   status?: RequestStatus
   statusCode?: number
   durationMs?: number
@@ -52,6 +65,15 @@ export interface RequestUpdate {
   queueWaitMs?: number
   /** Feature tags to append (additive, not replacement) */
   tags?: Array<string>
+
+  // ─── Streaming metrics ───
+
+  /** Cumulative bytes received from upstream during streaming */
+  streamBytesIn?: number
+  /** Number of SSE events received from upstream during streaming */
+  streamEventsIn?: number
+  /** Current content block type being streamed (e.g. "thinking", "text", "tool_use") */
+  streamBlockType?: string
 }
 
 export interface TuiRenderer {

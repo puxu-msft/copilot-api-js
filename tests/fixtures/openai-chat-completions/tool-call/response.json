@@ -1,0 +1,61 @@
+{
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "content_filter_results": {},
+      "message": {
+        "padding": "abcdefghijklmnopqrstuvwxyz",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"location\":\"Tokyo\"}",
+              "name": "get_weather"
+            },
+            "id": "call_xMrquKCGiAdJpthTnrQNbVpq",
+            "type": "function"
+          }
+        ]
+      }
+    }
+  ],
+  "id": "chatcmpl-DEqoxtV6YeiL5d6QdvqUFV5KDoM0n",
+  "usage": {
+    "completion_tokens": 15,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    },
+    "prompt_tokens": 57,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 72
+  },
+  "model": "gpt-4o-2024-11-20",
+  "prompt_filter_results": [
+    {
+      "content_filter_results": {
+        "hate": {
+          "filtered": false,
+          "severity": "safe"
+        },
+        "self_harm": {
+          "filtered": false,
+          "severity": "safe"
+        },
+        "sexual": {
+          "filtered": false,
+          "severity": "safe"
+        },
+        "violence": {
+          "filtered": false,
+          "severity": "safe"
+        }
+      },
+      "prompt_index": 0
+    }
+  ],
+  "system_fingerprint": "fp_569604b1f8"
+}

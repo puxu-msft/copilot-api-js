@@ -8,6 +8,7 @@ const props = withDefaults(defineProps<{
   defaultCollapsed?: boolean
   badge?: string
   rawData?: unknown
+  rewrittenRawData?: unknown
   rawTitle?: string
 }>(), {
   rawTitle: 'Raw',
@@ -22,7 +23,9 @@ function toggle() {
 
 function openRaw(e: Event) {
   e.stopPropagation()
-  if (props.rawData !== undefined) openRawModal(props.rawData, props.rawTitle)
+  if (props.rawData !== undefined) {
+    openRawModal(props.rawData, props.rawTitle, props.rewrittenRawData)
+  }
 }
 </script>
 

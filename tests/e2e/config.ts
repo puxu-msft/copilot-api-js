@@ -8,7 +8,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
 
 // ─── Mode detection ───
 
@@ -54,10 +55,19 @@ function loadEnvFile(): void {
 loadEnvFile()
 
 /**
- * Get GitHub token from environment.
+ * Get GitHub token from environment or from the copilot-api token file.
  */
 export function getGitHubToken(): string | undefined {
-  return process.env.GITHUB_TOKEN
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN
+
+  // Fall back to the token file used by copilot-api itself
+  const tokenPath = join(homedir(), ".local", "share", "copilot-api", "github_token")
+  if (existsSync(tokenPath)) {
+    const token = readFileSync(tokenPath, "utf8").trim()
+    if (token) return token
+  }
+
+  return undefined
 }
 
 /**

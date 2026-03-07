@@ -2,7 +2,7 @@
  * Response utilities for request handlers.
  */
 
-import type { ChatCompletionResponse } from "~/lib/openai/client"
+import type { ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
 /** Type guard for non-streaming responses */
 export function isNonStreaming(

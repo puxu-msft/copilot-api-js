@@ -11,7 +11,7 @@ import type { FormatAdapter, SanitizeResult } from "~/lib/request/pipeline"
  */
 export function createMockAdapter<TPayload>(overrides?: Partial<FormatAdapter<TPayload>>): FormatAdapter<TPayload> {
   return {
-    format: "test",
+    format: "anthropic-messages",
     sanitize: mock(
       (payload: TPayload): SanitizeResult<TPayload> => ({
         payload,

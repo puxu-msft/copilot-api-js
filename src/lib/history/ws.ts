@@ -5,10 +5,16 @@
 
 import consola from "consola"
 
-import type { HistoryEntry, HistoryStats } from "./store"
+import type { EntrySummary, HistoryStats } from "./store"
 
 /** Discriminated union of WebSocket message types */
-export type WSMessageType = "entry_added" | "entry_updated" | "stats_updated" | "connected"
+export type WSMessageType =
+  | "entry_added"
+  | "entry_updated"
+  | "stats_updated"
+  | "history_cleared"
+  | "session_deleted"
+  | "connected"
 
 /** A WebSocket message sent to connected clients */
 export interface WSMessage {
@@ -73,23 +79,23 @@ function broadcast(message: WSMessage): void {
 }
 
 /** Called when a new entry is recorded */
-export function notifyEntryAdded(entry: HistoryEntry): void {
+export function notifyEntryAdded(summary: EntrySummary): void {
   if (clients.size === 0) return
 
   broadcast({
     type: "entry_added",
-    data: entry,
+    data: summary,
     timestamp: Date.now(),
   })
 }
 
 /** Called when an entry is updated (e.g., response received) */
-export function notifyEntryUpdated(entry: HistoryEntry): void {
+export function notifyEntryUpdated(summary: EntrySummary): void {
   if (clients.size === 0) return
 
   broadcast({
     type: "entry_updated",
-    data: entry,
+    data: summary,
     timestamp: Date.now(),
   })
 }
@@ -101,6 +107,28 @@ export function notifyStatsUpdated(stats: HistoryStats): void {
   broadcast({
     type: "stats_updated",
     data: stats,
+    timestamp: Date.now(),
+  })
+}
+
+/** Called when all history is cleared */
+export function notifyHistoryCleared(): void {
+  if (clients.size === 0) return
+
+  broadcast({
+    type: "history_cleared",
+    data: null,
+    timestamp: Date.now(),
+  })
+}
+
+/** Called when a session is deleted */
+export function notifySessionDeleted(sessionId: string): void {
+  if (clients.size === 0) return
+
+  broadcast({
+    type: "session_deleted",
+    data: { sessionId },
     timestamp: Date.now(),
   })
 }

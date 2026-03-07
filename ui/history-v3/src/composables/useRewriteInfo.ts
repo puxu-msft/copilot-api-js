@@ -53,6 +53,37 @@ export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
     return indices
   })
 
+  /** Whether any rewriting occurred (messages or system prompt) */
+  const hasRewrites = computed(() => {
+    const e = entry.value
+    if (!e?.rewrites) return false
+    return rewrittenIndices.value.size > 0 || !!e.rewrites.rewrittenSystem
+  })
+
+  /** Whether the system prompt was rewritten */
+  const isSystemRewritten = computed(() => {
+    const e = entry.value
+    if (!e?.rewrites?.rewrittenSystem) return false
+    const origSystem = e.request.system
+    const rwSystem = e.rewrites.rewrittenSystem
+    if (!origSystem || !rwSystem) return !!rwSystem
+    return JSON.stringify(origSystem) !== JSON.stringify(rwSystem)
+  })
+
+  /** Summary of rewrite statistics */
+  const rewriteSummary = computed(() => {
+    const msgCount = rewrittenIndices.value.size
+    const sysRewritten = isSystemRewritten.value
+    const truncated = truncationPoint.value >= 0
+    const truncatedCount = truncated ? truncationPoint.value : 0
+    return { msgCount, sysRewritten, truncated, truncatedCount }
+  })
+
+  /** Sorted array of rewritten message indices (for navigation) */
+  const rewrittenIndexList = computed(() => {
+    return [...rewrittenIndices.value].sort((a, b) => a - b)
+  })
+
   function getRewrittenMessage(index: number): MessageContent | null {
     return rewrittenMessageMap.value.get(index) ?? null
   }
@@ -67,5 +98,15 @@ export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
     return index < tp
   }
 
-  return { truncationPoint, getRewrittenMessage, isMessageRewritten, isMessageTruncated }
+  return {
+    truncationPoint,
+    hasRewrites,
+    isSystemRewritten,
+    rewriteSummary,
+    rewrittenIndices,
+    rewrittenIndexList,
+    getRewrittenMessage,
+    isMessageRewritten,
+    isMessageTruncated,
+  }
 }

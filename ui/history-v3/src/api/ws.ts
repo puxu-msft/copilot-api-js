@@ -6,6 +6,8 @@ export interface WSClientOptions {
   onEntryUpdated: (summary: EntrySummary) => void
   onStatsUpdated: (stats: HistoryStats) => void
   onConnected: (clientCount: number) => void
+  onHistoryCleared: () => void
+  onSessionDeleted: (sessionId: string) => void
   onStatusChange: (connected: boolean) => void
 }
 
@@ -93,6 +95,14 @@ export class WSClient {
       }
       case "connected": {
         this.options.onConnected((msg.data as { clientCount: number }).clientCount)
+        break
+      }
+      case "history_cleared": {
+        this.options.onHistoryCleared()
+        break
+      }
+      case "session_deleted": {
+        this.options.onSessionDeleted((msg.data as { sessionId: string }).sessionId)
         break
       }
       default: {

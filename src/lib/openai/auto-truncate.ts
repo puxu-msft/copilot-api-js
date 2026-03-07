@@ -1,34 +1,34 @@
 /**
  * Auto-truncate module: Automatically truncates conversation history
- * when it exceeds token or byte limits (OpenAI format).
+ * when it exceeds token limits (OpenAI format).
  *
  * Key features:
  * - Binary search for optimal truncation point
- * - Considers both token and byte limits
+ * - Token limit enforcement with learned calibration
  * - Preserves system messages
  * - Filters orphaned tool_result and tool_use messages
- * - Dynamic byte limit adjustment on 413 errors
  * - Optional smart compression of old tool_result content
  */
 
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
+import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
 
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
 
-import type { AutoTruncateConfig } from "../auto-truncate-common"
-import type { ChatCompletionsPayload, Message } from "./client"
+import type { AutoTruncateConfig } from "../auto-truncate"
 
 import {
   DEFAULT_AUTO_TRUNCATE_CONFIG,
   LARGE_TOOL_RESULT_THRESHOLD,
+  calibrate,
   compressToolResultContent,
-  getEffectiveByteLimitBytes,
-  getEffectiveTokenLimit,
-} from "../auto-truncate-common"
+  computeSafetyMargin,
+  getLearnedLimits,
+} from "../auto-truncate"
 import {
   ensureOpenAIStartsWithUser,
   extractOpenAISystemMessages,
@@ -56,42 +56,41 @@ export interface OpenAICompactionCheckResult {
   needed: boolean
   currentTokens: number
   tokenLimit: number
-  currentBytes: number
-  byteLimit: number
-  reason?: "tokens" | "bytes" | "both"
+  reason?: "tokens"
 }
 
 // ============================================================================
 // Limit Calculation
 // ============================================================================
 
-interface Limits {
-  tokenLimit: number
-  byteLimit: number
-}
-
-function calculateLimits(model: Model, config: AutoTruncateConfig): Limits {
+/**
+ * Calculate the effective token limit for auto-truncate.
+ * Uses explicit target if provided, otherwise learned limits with calibration,
+ * otherwise model capabilities with safety margin.
+ *
+ * Returns undefined when no limit information is available — the caller
+ * should skip truncation rather than guess with a hardcoded default.
+ */
+function calculateTokenLimit(model: Model, config: AutoTruncateConfig): number | undefined {
   // Use explicit target if provided (reactive retry — caller already applied margin)
-  if (config.targetTokenLimit !== undefined || config.targetByteLimitBytes !== undefined) {
-    return {
-      tokenLimit: config.targetTokenLimit ?? model.capabilities?.limits?.max_context_window_tokens ?? 128000,
-      byteLimit: config.targetByteLimitBytes ?? getEffectiveByteLimitBytes(),
-    }
+  if (config.targetTokenLimit !== undefined) {
+    return config.targetTokenLimit
   }
 
-  // Check for dynamic token limit (adjusted based on previous errors)
-  const dynamicLimit = getEffectiveTokenLimit(model.id)
+  // Check for learned limits (adjusted based on previous errors)
+  const learned = getLearnedLimits(model.id)
+  if (learned) {
+    const margin = computeSafetyMargin(learned.sampleCount)
+    return Math.floor(learned.tokenLimit * (1 - margin))
+  }
 
-  // Use dynamic limit if available, otherwise use model capabilities
+  // Use model capabilities with static safety margin
   const rawTokenLimit =
-    dynamicLimit
-    ?? model.capabilities?.limits?.max_context_window_tokens
-    ?? model.capabilities?.limits?.max_prompt_tokens
-    ?? 128000
+    model.capabilities?.limits?.max_context_window_tokens ?? model.capabilities?.limits?.max_prompt_tokens
 
-  const tokenLimit = Math.floor(rawTokenLimit * (1 - config.safetyMarginPercent / 100))
-  const byteLimit = getEffectiveByteLimitBytes()
-  return { tokenLimit, byteLimit }
+  if (rawTokenLimit === undefined) return undefined
+
+  return Math.floor(rawTokenLimit * (1 - config.safetyMarginPercent / 100))
 }
 
 // ============================================================================
@@ -123,26 +122,14 @@ function estimateMessageTokens(msg: Message): number {
   return Math.ceil(charCount / 4) + 10
 }
 
-/** Get byte size of a message (memoized to avoid redundant JSON.stringify) */
-const messageBytesCache = new WeakMap<object, number>()
-function getMessageBytes(msg: Message): number {
-  let cached = messageBytesCache.get(msg)
-  if (cached !== undefined) return cached
-  cached = JSON.stringify(msg).length
-  messageBytesCache.set(msg, cached)
-  return cached
-}
-
-/** Calculate cumulative token and byte sums from the end of the message array */
-function calculateCumulativeSums(messages: Array<Message>): { cumTokens: Array<number>; cumBytes: Array<number> } {
+/** Calculate cumulative token sums from the end of the message array */
+function calculateCumulativeSums(messages: Array<Message>): { cumTokens: Array<number> } {
   const n = messages.length
   const cumTokens = Array.from<number>({ length: n + 1 }).fill(0)
-  const cumBytes = Array.from<number>({ length: n + 1 }).fill(0)
   for (let i = n - 1; i >= 0; i--) {
     cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(messages[i])
-    cumBytes[i] = cumBytes[i + 1] + getMessageBytes(messages[i]) + 1
   }
-  return { cumTokens, cumBytes }
+  return { cumTokens }
 }
 
 /**
@@ -167,7 +154,7 @@ function cleanupMessages(messages: Array<Message>): Array<Message> {
 
 /**
  * Smart compression strategy for OpenAI format:
- * 1. Calculate tokens/bytes from the end until reaching preservePercent of limit
+ * 1. Calculate tokens from the end until reaching preservePercent of limit
  * 2. Messages before that threshold get their tool content compressed
  * 3. Returns compressed messages and stats
  *
@@ -176,24 +163,22 @@ function cleanupMessages(messages: Array<Message>): Array<Message> {
 function smartCompressToolResults(
   messages: Array<Message>,
   tokenLimit: number,
-  byteLimit: number,
   preservePercent: number,
 ): {
   messages: Array<Message>
   compressedCount: number
   compressThresholdIndex: number
 } {
-  // Calculate cumulative size from the end
+  // Calculate cumulative token size from the end
   const n = messages.length
-  const { cumTokens, cumBytes } = calculateCumulativeSums(messages)
+  const { cumTokens } = calculateCumulativeSums(messages)
 
   // Find the threshold index where we've used the preserve percentage of the limit
   const preserveTokenLimit = Math.floor(tokenLimit * preservePercent)
-  const preserveByteLimit = Math.floor(byteLimit * preservePercent)
 
   let thresholdIndex = n
   for (let i = n - 1; i >= 0; i--) {
-    if (cumTokens[i] > preserveTokenLimit || cumBytes[i] > preserveByteLimit) {
+    if (cumTokens[i] > preserveTokenLimit) {
       thresholdIndex = i + 1
       break
     }
@@ -239,13 +224,8 @@ function smartCompressToolResults(
 
 interface PreserveSearchParams {
   messages: Array<Message>
-  systemBytes: number
   systemTokens: number
-  payloadOverhead: number
   tokenLimit: number
-  byteLimit: number
-  checkTokenLimit: boolean
-  checkByteLimit: boolean
 }
 
 /**
@@ -254,46 +234,30 @@ interface PreserveSearchParams {
  * Returns the smallest index where the preserved portion fits within limits.
  */
 function findOptimalPreserveIndex(params: PreserveSearchParams): number {
-  const {
-    messages,
-    systemBytes,
-    systemTokens,
-    payloadOverhead,
-    tokenLimit,
-    byteLimit,
-    checkTokenLimit,
-    checkByteLimit,
-  } = params
+  const { messages, systemTokens, tokenLimit } = params
 
   if (messages.length === 0) return 0
 
-  // Account for truncation marker (~200 bytes, ~50 tokens)
-  const markerBytes = 200
+  // Account for truncation marker (~50 tokens)
   const markerTokens = 50
 
-  // Calculate available budget after system messages, marker, and overhead
   const availableTokens = tokenLimit - systemTokens - markerTokens
-  // For bytes: payload = overhead + "[" + messages.join(",") + "]"
-  // Each message adds: JSON.stringify(msg) + 1 (comma, except last)
-  const availableBytes = byteLimit - payloadOverhead - systemBytes - markerBytes
 
-  if ((checkTokenLimit && availableTokens <= 0) || (checkByteLimit && availableBytes <= 0)) {
+  if (availableTokens <= 0) {
     return messages.length // Cannot fit any messages
   }
 
   // Pre-calculate cumulative sums from the end
   const n = messages.length
-  const { cumTokens, cumBytes } = calculateCumulativeSums(messages)
+  const { cumTokens } = calculateCumulativeSums(messages)
 
-  // Binary search for the smallest index where enabled limits are satisfied
+  // Binary search for the smallest index where token limit is satisfied
   let left = 0
   let right = n
 
   while (left < right) {
     const mid = (left + right) >>> 1
-    const tokensFit = !checkTokenLimit || cumTokens[mid] <= availableTokens
-    const bytesFit = !checkByteLimit || cumBytes[mid] <= availableBytes
-    if (tokensFit && bytesFit) {
+    if (cumTokens[mid] <= availableTokens) {
       right = mid // Can keep more messages
     } else {
       left = mid + 1 // Need to remove more
@@ -308,7 +272,8 @@ function findOptimalPreserveIndex(params: PreserveSearchParams): number {
 // ============================================================================
 
 /**
- * Check if payload needs compaction based on model limits or byte size.
+ * Check if payload needs compaction based on learned model limits.
+ * Returns early with `needed: false` when no limits are known for the model.
  */
 export async function checkNeedsCompactionOpenAI(
   payload: ChatCompletionsPayload,
@@ -316,31 +281,43 @@ export async function checkNeedsCompactionOpenAI(
   config: Partial<AutoTruncateConfig> = {},
 ): Promise<OpenAICompactionCheckResult> {
   const cfg = { ...DEFAULT_AUTO_TRUNCATE_CONFIG, ...config }
-  const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
 
-  const tokenCount = await getTokenCount(payload, model)
-  const currentTokens = tokenCount.input
-  const currentBytes = JSON.stringify(payload).length
-
-  const exceedsTokens = cfg.checkTokenLimit && currentTokens > tokenLimit
-  const exceedsBytes = cfg.checkByteLimit && currentBytes > byteLimit
-
-  let reason: "tokens" | "bytes" | "both" | undefined
-  if (exceedsTokens && exceedsBytes) {
-    reason = "both"
-  } else if (exceedsTokens) {
-    reason = "tokens"
-  } else if (exceedsBytes) {
-    reason = "bytes"
+  // If no learned limits and no explicit target, skip pre-check
+  // (we don't know the real limit yet — let the server tell us)
+  const learned = getLearnedLimits(model.id)
+  if (!learned && cfg.targetTokenLimit === undefined) {
+    return {
+      needed: false,
+      currentTokens: 0,
+      tokenLimit: 0,
+    }
   }
 
+  const tokenLimit = calculateTokenLimit(model, cfg)
+
+  // Defensive: should not reach here without a resolvable limit (guarded by early return above),
+  // but satisfy the type system
+  if (tokenLimit === undefined) {
+    return {
+      needed: false,
+      currentTokens: 0,
+      tokenLimit: 0,
+    }
+  }
+
+  const tokenCount = await getTokenCount(payload, model)
+  const rawTokens = tokenCount.input
+
+  // Apply calibration to adjust the GPT tokenizer estimate
+  const currentTokens = learned && learned.sampleCount > 0 ? calibrate(model.id, rawTokens) : rawTokens
+
+  const exceedsTokens = cfg.checkTokenLimit && currentTokens > tokenLimit
+
   return {
-    needed: exceedsTokens || exceedsBytes,
+    needed: exceedsTokens,
     currentTokens,
     tokenLimit,
-    currentBytes,
-    byteLimit,
-    reason,
+    reason: exceedsTokens ? "tokens" : undefined,
   }
 }
 
@@ -476,11 +453,8 @@ interface TruncationContext {
   model: Model
   cfg: AutoTruncateConfig
   tokenLimit: number
-  byteLimit: number
   originalTokens: number
   originalBytes: number
-  exceedsTokens: boolean
-  exceedsBytes: boolean
   startTime: number
 }
 
@@ -491,12 +465,6 @@ function buildTimedResult(
   return { ...result, processingTimeMs: Math.round(performance.now() - ctx.startTime) }
 }
 
-function getReasonLabel(exceedsTokens: boolean, exceedsBytes: boolean): string {
-  if (exceedsTokens && exceedsBytes) return "tokens+size"
-  if (exceedsBytes) return "size"
-  return "tokens"
-}
-
 /**
  * Step 1: Try compressing tool results to fit within limits.
  * First compresses old tool results, then all if needed.
@@ -505,7 +473,7 @@ function getReasonLabel(exceedsTokens: boolean, exceedsBytes: boolean): string {
 async function tryCompressToolResults(
   ctx: TruncationContext,
 ): Promise<{ workingMessages: Array<Message>; compressedCount: number; earlyResult?: OpenAIAutoTruncateResult }> {
-  if (!state.compressToolResults) {
+  if (!state.compressToolResultsBeforeTruncate) {
     return { workingMessages: ctx.payload.messages, compressedCount: 0 }
   }
 
@@ -513,7 +481,6 @@ async function tryCompressToolResults(
   const compressionResult = smartCompressToolResults(
     ctx.payload.messages,
     ctx.tokenLimit,
-    ctx.byteLimit,
     ctx.cfg.preserveRecentPercent,
   )
   let workingMessages = compressionResult.messages
@@ -524,11 +491,10 @@ async function tryCompressToolResults(
   const compressedBytes = JSON.stringify(compressedPayload).length
   const compressedTokenCount = await getTokenCount(compressedPayload, ctx.model)
 
-  if (compressedTokenCount.input <= ctx.tokenLimit && compressedBytes <= ctx.byteLimit) {
-    const reason = getReasonLabel(ctx.exceedsTokens, ctx.exceedsBytes)
+  if (compressedTokenCount.input <= ctx.tokenLimit) {
     const elapsedMs = Math.round(performance.now() - ctx.startTime)
     consola.info(
-      `[AutoTruncate:OpenAI] ${reason}: ${ctx.originalTokens}→${compressedTokenCount.input} tokens, `
+      `[AutoTruncate:OpenAI] tokens: ${ctx.originalTokens}→${compressedTokenCount.input}, `
         + `${bytesToKB(ctx.originalBytes)}→${bytesToKB(compressedBytes)}KB `
         + `(compressed ${compressedCount} tool_results) [${elapsedMs}ms]`,
     )
@@ -554,7 +520,6 @@ async function tryCompressToolResults(
   const allCompression = smartCompressToolResults(
     workingMessages,
     ctx.tokenLimit,
-    ctx.byteLimit,
     0.0, // preservePercent=0 means compress all messages
   )
   if (allCompression.compressedCount > 0) {
@@ -566,11 +531,10 @@ async function tryCompressToolResults(
     const allCompressedBytes = JSON.stringify(allCompressedPayload).length
     const allCompressedTokenCount = await getTokenCount(allCompressedPayload, ctx.model)
 
-    if (allCompressedTokenCount.input <= ctx.tokenLimit && allCompressedBytes <= ctx.byteLimit) {
-      const reason = getReasonLabel(ctx.exceedsTokens, ctx.exceedsBytes)
+    if (allCompressedTokenCount.input <= ctx.tokenLimit) {
       const elapsedMs = Math.round(performance.now() - ctx.startTime)
       consola.info(
-        `[AutoTruncate:OpenAI] ${reason}: ${ctx.originalTokens}→${allCompressedTokenCount.input} tokens, `
+        `[AutoTruncate:OpenAI] tokens: ${ctx.originalTokens}→${allCompressedTokenCount.input}, `
           + `${bytesToKB(ctx.originalBytes)}→${bytesToKB(allCompressedBytes)}KB `
           + `(compressed ${compressedCount} tool_results, including recent) [${elapsedMs}ms]`,
       )
@@ -608,35 +572,14 @@ async function truncateByMessageRemoval(
   // Extract system messages from working messages
   const { systemMessages, conversationMessages } = extractOpenAISystemMessages(workingMessages)
 
-  // Calculate overhead using cached message bytes instead of full JSON.stringify
-  // messagesBytes = sum of each message's JSON + 1 comma per message + 2 brackets
-
-  const messagesBytes = workingMessages.reduce((sum, m) => sum + getMessageBytes(m) + 1, 0) + 1 // brackets + commas
-  const workingPayloadSize = JSON.stringify({
-    ...ctx.payload,
-    messages: workingMessages,
-  }).length
-  const payloadOverhead = workingPayloadSize - messagesBytes
-
-  // Calculate system message sizes
-  const systemBytes = systemMessages.reduce((sum, m) => sum + getMessageBytes(m) + 1, 0)
+  // Calculate system message token sizes
   const systemTokens = systemMessages.reduce((sum, m) => sum + estimateMessageTokens(m), 0)
-
-  consola.debug(
-    `[AutoTruncate:OpenAI] overhead=${bytesToKB(payloadOverhead)}KB, `
-      + `system=${systemMessages.length} msgs (${bytesToKB(systemBytes)}KB)`,
-  )
 
   // Find optimal preserve index
   const preserveIndex = findOptimalPreserveIndex({
     messages: conversationMessages,
-    systemBytes,
     systemTokens,
-    payloadOverhead,
     tokenLimit: ctx.tokenLimit,
-    byteLimit: ctx.byteLimit,
-    checkTokenLimit: ctx.cfg.checkTokenLimit,
-    checkByteLimit: ctx.cfg.checkByteLimit,
   })
 
   // Check if we can compact
@@ -704,7 +647,6 @@ async function truncateByMessageRemoval(
   const newTokenCount = await getTokenCount(newPayload, ctx.model)
 
   // Log single line summary
-  const reason = getReasonLabel(ctx.exceedsTokens, ctx.exceedsBytes)
   const actions: Array<string> = []
   if (removedCount > 0) actions.push(`removed ${removedCount} msgs`)
   if (compressedCount > 0) actions.push(`compressed ${compressedCount} tool_results`)
@@ -712,15 +654,13 @@ async function truncateByMessageRemoval(
 
   const elapsedMs = Math.round(performance.now() - ctx.startTime)
   consola.info(
-    `[AutoTruncate:OpenAI] ${reason}: ${ctx.originalTokens}→${newTokenCount.input} tokens, `
+    `[AutoTruncate:OpenAI] tokens: ${ctx.originalTokens}→${newTokenCount.input}, `
       + `${bytesToKB(ctx.originalBytes)}→${bytesToKB(newBytes)}KB${actionInfo} [${elapsedMs}ms]`,
   )
 
-  // Warn if still over limit (shouldn't happen with correct algorithm)
-  if (newBytes > ctx.byteLimit) {
-    consola.warn(
-      `[AutoTruncate:OpenAI] Result still over byte limit (${bytesToKB(newBytes)}KB > ${bytesToKB(ctx.byteLimit)}KB)`,
-    )
+  // Warn if still over token limit
+  if (newTokenCount.input > ctx.tokenLimit) {
+    consola.warn(`[AutoTruncate:OpenAI] Result still over token limit (${newTokenCount.input} > ${ctx.tokenLimit})`)
   }
 
   return buildTimedResult(ctx, {
@@ -752,7 +692,19 @@ export async function autoTruncateOpenAI(
 ): Promise<OpenAIAutoTruncateResult> {
   const startTime = performance.now()
   const cfg = { ...DEFAULT_AUTO_TRUNCATE_CONFIG, ...config }
-  const { tokenLimit, byteLimit } = calculateLimits(model, cfg)
+  const tokenLimit = calculateTokenLimit(model, cfg)
+
+  // No limit information available — skip truncation and let the server decide
+  if (tokenLimit === undefined) {
+    return {
+      payload,
+      wasTruncated: false,
+      originalTokens: 0,
+      compactedTokens: 0,
+      removedMessageCount: 0,
+      processingTimeMs: Math.round(performance.now() - startTime),
+    }
+  }
 
   // Measure original size
   const originalBytes = JSON.stringify(payload).length
@@ -763,16 +715,13 @@ export async function autoTruncateOpenAI(
     model,
     cfg,
     tokenLimit,
-    byteLimit,
     originalTokens,
     originalBytes,
-    exceedsTokens: originalTokens > tokenLimit,
-    exceedsBytes: originalBytes > byteLimit,
     startTime,
   }
 
   // Check if compaction is needed
-  if (!ctx.exceedsTokens && !ctx.exceedsBytes) {
+  if (originalTokens <= tokenLimit) {
     return buildTimedResult(ctx, {
       payload,
       wasTruncated: false,

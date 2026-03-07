@@ -1,6 +1,6 @@
 /** Copilot API client — token and usage */
 
-import { COPILOT_INTERNAL_API_VERSION, GITHUB_API_BASE_URL, githubHeaders } from "~/lib/config/api"
+import { COPILOT_INTERNAL_API_VERSION, GITHUB_API_BASE_URL, githubHeaders } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
@@ -8,21 +8,26 @@ import { state } from "~/lib/state"
 // Token
 // ============================================================================
 
-export const getCopilotToken = async () => {
+export const getCopilotToken = async (): Promise<CopilotTokenResponse> => {
   const response = await fetch(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, {
     headers: { ...githubHeaders(state), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
   })
 
   if (!response.ok) throw await HTTPError.fromResponse("Failed to get Copilot token", response)
 
-  return (await response.json()) as GetCopilotTokenResponse
+  return (await response.json()) as CopilotTokenResponse
 }
 
-// Trimmed for the sake of simplicity
-interface GetCopilotTokenResponse {
+/**
+ * Copilot token API response.
+ * Only the fields we actively use are typed; the full response is
+ * preserved as-is in CopilotTokenInfo.raw for future consumers.
+ */
+export interface CopilotTokenResponse {
   expires_at: number
   refresh_in: number
   token: string
+  [key: string]: unknown
 }
 
 // ============================================================================

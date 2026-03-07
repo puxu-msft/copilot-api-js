@@ -1,5 +1,5 @@
 /**
- * System-reminder tag detection, filtering, and removal.
+ * System-reminder tag detection, rewriting, and removal.
  *
  * Claude Code injects `<system-reminder>` tags into tool results and user
  * messages. Each tag always occupies its own line:
@@ -7,9 +7,19 @@
  *
  * This module:
  * - Defines all known system-reminder content types
- * - Provides configurable filtering (which types to remove)
- * - Removes matching tags from the start/end of text content
+ * - Provides configurable rewriting (transform, keep, or remove tags)
+ * - Processes tags at the start/end of text content
+ *
+ * Rewriting is controlled by `state.rewriteSystemReminders`:
+ * - `false` — keep all tags unchanged (default)
+ * - `true`  — remove all tags
+ * - `Array<CompiledRewriteRule>` — rewrite rules evaluated top-down,
+ *   first match wins. If replacement produces the original content, tag is
+ *   kept unchanged. If replacement produces an empty string, tag is removed.
+ *   Otherwise, tag content is replaced with the result.
  */
+
+import { state } from "~/lib/state"
 
 // ============================================================================
 // Tag Constants
@@ -56,9 +66,13 @@ export function extractTrailingSystemReminderTags(text: string): {
   while (true) {
     const currentTagEnd = scanEnd
 
-    // Skip trailing whitespace/newlines
+    // Skip trailing whitespace/newlines (charCode: \n=10, space=32, \t=9, \r=13)
     let end = scanEnd
-    while (end > 0 && "\n \t\r".includes(text[end - 1])) end--
+    while (end > 0) {
+      const c = text.codePointAt(end - 1)
+      if (c !== 10 && c !== 32 && c !== 9 && c !== 13) break
+      end--
+    }
 
     // Must end with </system-reminder>
     if (end < CLOSE_TAG.length) break
@@ -110,9 +124,13 @@ export function extractLeadingSystemReminderTags(text: string): {
   while (true) {
     const currentTagStart = scanStart
 
-    // Skip leading whitespace
+    // Skip leading whitespace (charCode: space=32, \t=9, \r=13)
     let start = scanStart
-    while (start < text.length && " \t\r".includes(text[start])) start++
+    while (start < text.length) {
+      const c = text.codePointAt(start)
+      if (c !== 32 && c !== 9 && c !== 13) break
+      start++
+    }
 
     // Must start with <system-reminder>
     if (start + OPEN_TAG.length > text.length) break
@@ -151,70 +169,56 @@ export function extractLeadingSystemReminderTags(text: string): {
 }
 
 // ============================================================================
-// Filter Definitions
+// Rewrite Configuration
 // ============================================================================
 
 /**
- * A system-reminder filter type.
+ * Determine how to rewrite a system-reminder tag's content.
  *
- * `match` is a plain function using `startsWith` / `includes` instead of
- * RegExp — the content inside system-reminder tags has well-known structure,
- * so string methods are faster and more readable.
- */
-export interface SystemReminderFilter {
-  key: string
-  description: string
-  match: (content: string) => boolean
-  defaultEnabled: boolean
-}
-
-/**
- * All known Claude Code system-reminder types.
+ * Reads from `state.rewriteSystemReminders`:
+ * - `true`  → return `""` (remove all tags)
+ * - `false` → return `null` (keep all tags unchanged)
+ * - `Array<CompiledRewriteRule>` → first matching rule wins (top-down):
+ *   - `to: ""` → return `""` (remove the tag entirely)
+ *   - `to: "$0"` (regex mode) → return `null` (keep unchanged, fast path)
+ *   - Otherwise → apply replacement:
+ *     - regex mode: `content.replace(from, to)` with capture group support
+ *     - line mode: replace exact `from` substring with `to`
+ *     - If result === original → return `null` (keep)
+ *     - Otherwise → return the new content
+ *   - If no rule matches → return `null` (keep)
  *
- * IMPORTANT: These patterns match content INSIDE `<system-reminder>` tags.
- * Content that appears directly in messages should NOT be in this list.
+ * @returns `null` to keep original, `""` to remove, or a new content string
  */
-export const SYSTEM_REMINDER_FILTERS: Array<SystemReminderFilter> = [
-  {
-    key: "malware",
-    description: "Malware analysis reminder",
-    match: (c) => c.startsWith("Whenever you read a file, you should consider whether it would be considered malware."),
-    defaultEnabled: true,
-  },
-]
+function rewriteReminder(content: string): string | null {
+  const rewrite = state.rewriteSystemReminders
+  if (rewrite === true) return ""
+  if (rewrite === false) return null
 
-// ============================================================================
-// Filter Configuration
-// ============================================================================
+  for (const rule of rewrite) {
+    const matched = rule.method === "line" ? content.includes(rule.from as string) : (rule.from as RegExp).test(content)
 
-/**
- * Get the list of currently enabled filters.
- * Can be customized via enabledFilterKeys parameter.
- */
-export function getEnabledFilters(enabledFilterKeys?: Array<string>): Array<SystemReminderFilter> {
-  if (enabledFilterKeys) {
-    return SYSTEM_REMINDER_FILTERS.filter((f) => enabledFilterKeys.includes(f.key))
+    // Reset lastIndex after test() in case of global flag
+    if (rule.method !== "line") (rule.from as RegExp).lastIndex = 0
+
+    if (!matched) continue
+
+    // Empty replacement = remove the entire tag
+    if (rule.to === "") return ""
+
+    // $0 replacement in regex mode = keep tag unchanged (identity)
+    if (rule.method !== "line" && rule.to === "$0") return null
+
+    const result =
+      rule.method === "line" ?
+        content.replaceAll(rule.from as string, rule.to)
+      : content.replace(rule.from as RegExp, rule.to)
+
+    if (result === content) return null // replacement produced no change → keep
+    return result
   }
-  return SYSTEM_REMINDER_FILTERS.filter((f) => f.defaultEnabled)
-}
 
-// Current enabled filters (default: only malware)
-let enabledFilters = getEnabledFilters()
-
-/**
- * Configure which system-reminder filters are enabled.
- * Pass an array of filter keys to enable, or undefined to reset to defaults.
- */
-export function configureSystemReminderFilters(filterKeys?: Array<string>): void {
-  enabledFilters = getEnabledFilters(filterKeys)
-}
-
-/**
- * Check if a system-reminder content should be filtered out.
- * Only removes reminders that match currently enabled filters.
- */
-function shouldFilterReminder(content: string): boolean {
-  return enabledFilters.some((f) => f.match(content))
+  return null // no rule matched → keep
 }
 
 // ============================================================================
@@ -222,14 +226,18 @@ function shouldFilterReminder(content: string): boolean {
 // ============================================================================
 
 /**
- * Remove specific `<system-reminder>` tags from text content.
+ * Rewrite, remove, or keep `<system-reminder>` tags in text content.
  *
- * Only removes reminders that:
- * 1. Match enabled filter patterns (default: malware)
- * 2. Appear at the START or END of content (not embedded in code)
- * 3. Are separated from main content by newlines (indicating injection points)
+ * Only processes reminders that:
+ * 1. Appear at the START or END of content (not embedded in code)
+ * 2. Are separated from main content by newlines (indicating injection points)
  *
- * This prevents accidental removal of system-reminder tags that appear
+ * For each tag, `rewriteReminder(content)` decides the action:
+ * - `null` → keep the tag unchanged
+ * - `""` → remove the tag entirely
+ * - new string → replace the tag's inner content
+ *
+ * This prevents accidental modification of system-reminder tags that appear
  * in tool_result content (e.g., when reading source files that contain
  * these tags as string literals or documentation).
  */
@@ -237,34 +245,50 @@ export function removeSystemReminderTags(text: string): string {
   let result = text
   let modified = false
 
-  // Remove matching tags at the end
+  // Process trailing tags
   const trailing = extractTrailingSystemReminderTags(result)
   if (trailing.tags.length > 0) {
     let tail = ""
     for (const tag of trailing.tags) {
-      if (!shouldFilterReminder(tag.content)) {
+      const rewritten = rewriteReminder(tag.content)
+      if (rewritten === null) {
+        // Keep original
         tail += result.slice(tag.tagStart, tag.tagEnd)
+      } else if (rewritten === "") {
+        // Remove — don't append anything
+        modified = true
+      } else {
+        // Replace content
+        tail += `\n${OPEN_TAG}\n${rewritten}\n${CLOSE_TAG}`
+        modified = true
       }
     }
-    const rebuilt = result.slice(0, trailing.mainContentEnd) + tail
-    if (rebuilt.length < result.length) {
-      result = rebuilt
-      modified = true
+    if (modified) {
+      result = result.slice(0, trailing.mainContentEnd) + tail
     }
   }
 
-  // Remove matching tags at the start
+  // Process leading tags
   const leading = extractLeadingSystemReminderTags(result)
   if (leading.tags.length > 0) {
     let head = ""
+    let leadingModified = false
     for (const tag of leading.tags) {
-      if (!shouldFilterReminder(tag.content)) {
+      const rewritten = rewriteReminder(tag.content)
+      if (rewritten === null) {
+        // Keep original
         head += result.slice(tag.tagStart, tag.tagEnd)
+      } else if (rewritten === "") {
+        // Remove — don't append anything
+        leadingModified = true
+      } else {
+        // Replace content
+        head += `${OPEN_TAG}\n${rewritten}\n${CLOSE_TAG}\n`
+        leadingModified = true
       }
     }
-    const rebuilt = head + result.slice(leading.mainContentStart)
-    if (rebuilt.length < result.length) {
-      result = rebuilt
+    if (leadingModified) {
+      result = head + result.slice(leading.mainContentStart)
       modified = true
     }
   }

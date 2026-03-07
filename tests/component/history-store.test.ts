@@ -3,9 +3,8 @@
  *
  * Captures current behavior:
  * - initHistory enables/disables recording
- * - recordRequest creates entries and returns IDs
- * - recordResponse updates entries with response data
- * - recordRewrites adds rewrite metadata
+ * - insertEntry creates entries with correct fields
+ * - updateEntry updates entries with response/rewrite data
  * - getHistory filters, paginates, and sorts entries
  * - clearHistory resets state
  * - getStats computes aggregate statistics
@@ -14,18 +13,48 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
+import type { EndpointType, HistoryEntry, Session } from "~/lib/history"
+
 import {
   clearHistory,
+  getCurrentSession,
   getEntry,
   getHistory,
+  getSession,
+  getSessionEntries,
   getStats,
   historyState,
   initHistory,
+  insertEntry,
   isHistoryEnabled,
-  recordRequest,
-  recordResponse,
-  recordRewrites,
+  updateEntry,
 } from "~/lib/history"
+import { generateId } from "~/lib/utils"
+
+/** Helper: create and insert a minimal history entry */
+function createEntry(
+  endpoint: EndpointType,
+  request: Partial<HistoryEntry["request"]> & { model: string; messages: HistoryEntry["request"]["messages"] },
+): HistoryEntry {
+  const sessionId = getCurrentSession(endpoint)
+  const entry: HistoryEntry = {
+    id: generateId(),
+    sessionId,
+    timestamp: Date.now(),
+    endpoint,
+    request: {
+      model: request.model,
+      messages: request.messages,
+      stream: request.stream ?? true,
+      tools: request.tools,
+      max_tokens: request.max_tokens,
+      temperature: request.temperature,
+      system: request.system,
+    },
+  }
+  insertEntry(entry)
+  return entry
+}
 
 // Reset history state before each test
 beforeEach(() => {
@@ -56,10 +85,9 @@ describe("initHistory", () => {
 
   test("resets entries and sessions", () => {
     // Add some data first
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "test" }],
-      stream: true,
     })
     expect(historyState.entries.length).toBe(1)
 
@@ -74,33 +102,40 @@ describe("initHistory", () => {
   })
 })
 
-// ─── recordRequest ───
+// ─── insertEntry ───
 
-describe("recordRequest", () => {
-  test("returns non-empty ID when enabled", () => {
-    const id = recordRequest("anthropic", {
+describe("insertEntry", () => {
+  test("inserts entry and makes it retrievable", () => {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
-      stream: true,
     })
 
-    expect(id).toBeTruthy()
-    expect(typeof id).toBe("string")
+    expect(entry.id).toBeTruthy()
+    expect(typeof entry.id).toBe("string")
+    expect(getEntry(entry.id)).toBeDefined()
   })
 
-  test("returns empty string when disabled", () => {
+  test("does not insert when disabled", () => {
     initHistory(false, 100)
-    const id = recordRequest("anthropic", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "hello" }],
-      stream: true,
-    })
-
-    expect(id).toBe("")
+    const sessionId = "test-session"
+    const entry: HistoryEntry = {
+      id: generateId(),
+      sessionId,
+      timestamp: Date.now(),
+      endpoint: "anthropic-messages",
+      request: {
+        model: "claude-sonnet-4-20250514",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+      },
+    }
+    insertEntry(entry)
+    expect(historyState.entries.length).toBe(0)
   })
 
   test("creates entry with correct fields", () => {
-    const id = recordRequest("anthropic", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
       stream: true,
@@ -110,35 +145,32 @@ describe("recordRequest", () => {
       tools: [{ name: "search", description: "Search tool" }],
     })
 
-    const entry = getEntry(id)
-    expect(entry).toBeDefined()
-    expect(entry!.endpoint).toBe("anthropic")
-    expect(entry!.request.model).toBe("claude-sonnet-4-20250514")
-    expect(entry!.request.messages).toHaveLength(1)
-    expect(entry!.request.stream).toBe(true)
-    expect(entry!.request.system).toBe("You are helpful")
-    expect(entry!.request.max_tokens).toBe(1024)
-    expect(entry!.request.temperature).toBe(0.5)
-    expect(entry!.request.tools).toHaveLength(1)
-    expect(entry!.response).toBeUndefined()
+    const stored = getEntry(entry.id)
+    expect(stored).toBeDefined()
+    expect(stored!.endpoint).toBe("anthropic-messages")
+    expect(stored!.request.model).toBe("claude-sonnet-4-20250514")
+    expect(stored!.request.messages).toHaveLength(1)
+    expect(stored!.request.stream).toBe(true)
+    expect(stored!.request.system).toBe("You are helpful")
+    expect(stored!.request.max_tokens).toBe(1024)
+    expect(stored!.request.temperature).toBe(0.5)
+    expect(stored!.request.tools).toHaveLength(1)
+    expect(stored!.response).toBeUndefined()
   })
 
   test("assigns sessionId to entry", () => {
-    const id = recordRequest("anthropic", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "test" }],
-      stream: true,
     })
 
-    const entry = getEntry(id)
-    expect(entry!.sessionId).toBeTruthy()
+    expect(entry.sessionId).toBeTruthy()
   })
 
   test("tracks tools used in session", () => {
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "test" }],
-      stream: true,
       tools: [{ name: "file_search" }, { name: "read_file" }],
     })
 
@@ -149,15 +181,13 @@ describe("recordRequest", () => {
   })
 
   test("increments session request count", () => {
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "1" }],
-      stream: true,
     })
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "2" }],
-      stream: true,
     })
 
     const session = historyState.sessions.get(historyState.currentSessionId)
@@ -165,94 +195,111 @@ describe("recordRequest", () => {
   })
 })
 
-// ─── recordResponse ───
+// ─── updateEntry (response) ───
 
-describe("recordResponse", () => {
+describe("updateEntry (response)", () => {
   test("updates entry with response data", () => {
-    const id = recordRequest("anthropic", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
-      stream: true,
     })
 
-    recordResponse(
-      id,
-      {
+    updateEntry(entry.id, {
+      response: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 100, output_tokens: 50 },
         stop_reason: "end_turn",
         content: { role: "assistant", content: "Hi there" },
       },
-      500,
-    )
+      durationMs: 500,
+    })
 
-    const entry = getEntry(id)
-    expect(entry!.response).toBeDefined()
-    expect(entry!.response!.success).toBe(true)
-    expect(entry!.response!.model).toBe("claude-sonnet-4-20250514")
-    expect(entry!.response!.usage.input_tokens).toBe(100)
-    expect(entry!.response!.usage.output_tokens).toBe(50)
-    expect(entry!.response!.stop_reason).toBe("end_turn")
-    expect(entry!.durationMs).toBe(500)
+    const stored = getEntry(entry.id)
+    expect(stored!.response).toBeDefined()
+    expect(stored!.response!.success).toBe(true)
+    expect(stored!.response!.model).toBe("claude-sonnet-4-20250514")
+    expect(stored!.response!.usage.input_tokens).toBe(100)
+    expect(stored!.response!.usage.output_tokens).toBe(50)
+    expect(stored!.response!.stop_reason).toBe("end_turn")
+    expect(stored!.durationMs).toBe(500)
+  })
+
+  test("preserves cache_creation_input_tokens in usage", () => {
+    const entry = createEntry("anthropic-messages", {
+      model: "claude-sonnet-4-20250514",
+      messages: [{ role: "user", content: "hello" }],
+    })
+
+    updateEntry(entry.id, {
+      response: {
+        success: true,
+        model: "claude-sonnet-4-20250514",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 80,
+          cache_creation_input_tokens: 20,
+        },
+        stop_reason: "end_turn",
+        content: null,
+      },
+    })
+
+    const stored = getEntry(entry.id)
+    expect(stored!.response!.usage.cache_read_input_tokens).toBe(80)
+    expect(stored!.response!.usage.cache_creation_input_tokens).toBe(20)
   })
 
   test("records error response", () => {
-    const id = recordRequest("anthropic", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
-      stream: true,
     })
 
-    recordResponse(
-      id,
-      {
+    updateEntry(entry.id, {
+      response: {
         success: false,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 0, output_tokens: 0 },
         error: "Rate limited",
         content: null,
       },
-      100,
-    )
+      durationMs: 100,
+    })
 
-    const entry = getEntry(id)
-    expect(entry!.response!.success).toBe(false)
-    expect(entry!.response!.error).toBe("Rate limited")
+    const stored = getEntry(entry.id)
+    expect(stored!.response!.success).toBe(false)
+    expect(stored!.response!.error).toBe("Rate limited")
   })
 
   test("does nothing when disabled", () => {
     initHistory(false, 100)
-    recordResponse(
-      "nonexistent",
-      {
+    updateEntry("nonexistent", {
+      response: {
         success: true,
         model: "test",
         usage: { input_tokens: 0, output_tokens: 0 },
         content: null,
       },
-      0,
-    )
+    })
     // Should not throw
   })
 
   test("updates session token stats", () => {
-    const id = recordRequest("anthropic", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
-      stream: true,
     })
 
-    recordResponse(
-      id,
-      {
+    updateEntry(entry.id, {
+      response: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 100, output_tokens: 50 },
         content: null,
       },
-      500,
-    )
+    })
 
     const session = historyState.sessions.get(historyState.currentSessionId)
     expect(session!.totalInputTokens).toBe(100)
@@ -260,57 +307,59 @@ describe("recordResponse", () => {
   })
 })
 
-// ─── recordRewrites ───
+// ─── updateEntry (rewrites) ───
 
-describe("recordRewrites", () => {
+describe("updateEntry (rewrites)", () => {
   test("adds rewrite info to entry", () => {
-    const id = recordRequest("anthropic", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
-      stream: true,
     })
 
-    recordRewrites(id, {
-      sanitization: {
-        totalBlocksRemoved: 2,
-        orphanedToolUseCount: 1,
-        orphanedToolResultCount: 1,
-        fixedNameCount: 0,
-        emptyTextBlocksRemoved: 0,
-        systemReminderRemovals: 1,
+    updateEntry(entry.id, {
+      rewrites: {
+        sanitization: [
+          {
+            totalBlocksRemoved: 2,
+            orphanedToolUseCount: 1,
+            orphanedToolResultCount: 1,
+            fixedNameCount: 0,
+            emptyTextBlocksRemoved: 0,
+            systemReminderRemovals: 1,
+          },
+        ],
+        rewrittenMessages: [{ role: "user", content: "hello" }],
+        messageMapping: [0],
       },
-      rewrittenMessages: [{ role: "user", content: "hello" }],
-      messageMapping: [0],
     })
 
-    const entry = getEntry(id)
-    expect(entry!.rewrites).toBeDefined()
-    expect(entry!.rewrites!.sanitization!.totalBlocksRemoved).toBe(2)
-    expect(entry!.rewrites!.rewrittenMessages).toHaveLength(1)
-    expect(entry!.rewrites!.messageMapping).toEqual([0])
+    const stored = getEntry(entry.id)
+    expect(stored!.rewrites).toBeDefined()
+    expect(stored!.rewrites!.sanitization![0].totalBlocksRemoved).toBe(2)
+    expect(stored!.rewrites!.rewrittenMessages).toHaveLength(1)
+    expect(stored!.rewrites!.messageMapping).toEqual([0])
   })
 
   test("stores truncation within rewrites", () => {
-    const id = recordRequest("anthropic", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
-      stream: true,
     })
 
-    const truncation = {
-      removedMessageCount: 3,
-      originalTokens: 8000,
-      compactedTokens: 4000,
-      processingTimeMs: 30,
-    }
-
-    recordRewrites(id, {
-      truncation,
+    updateEntry(entry.id, {
+      rewrites: {
+        truncation: {
+          removedMessageCount: 3,
+          originalTokens: 8000,
+          compactedTokens: 4000,
+          processingTimeMs: 30,
+        },
+      },
     })
 
-    const entry = getEntry(id)
-    expect(entry!.rewrites!.truncation).toBeDefined()
-    expect(entry!.rewrites!.truncation!.removedMessageCount).toBe(3)
+    const stored = getEntry(entry.id)
+    expect(stored!.rewrites!.truncation).toBeDefined()
+    expect(stored!.rewrites!.truncation!.removedMessageCount).toBe(3)
   })
 })
 
@@ -318,15 +367,13 @@ describe("recordRewrites", () => {
 
 describe("getHistory", () => {
   test("returns entries sorted by timestamp descending", () => {
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "model-a",
       messages: [{ role: "user", content: "first" }],
-      stream: true,
     })
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "model-b",
       messages: [{ role: "user", content: "second" }],
-      stream: true,
     })
 
     const result = getHistory()
@@ -336,10 +383,9 @@ describe("getHistory", () => {
 
   test("paginates results", () => {
     for (let i = 0; i < 5; i++) {
-      recordRequest("anthropic", {
+      createEntry("anthropic-messages", {
         model: "model",
         messages: [{ role: "user", content: `msg-${i}` }],
-        stream: true,
       })
     }
 
@@ -354,15 +400,13 @@ describe("getHistory", () => {
   })
 
   test("filters by model name", () => {
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "a" }],
-      stream: true,
     })
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "gpt-4o",
       messages: [{ role: "user", content: "b" }],
-      stream: true,
     })
 
     const result = getHistory({ model: "claude" })
@@ -371,20 +415,258 @@ describe("getHistory", () => {
   })
 
   test("filters by endpoint", () => {
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "a" }],
-      stream: true,
     })
-    recordRequest("openai", {
+    createEntry("openai-chat-completions", {
       model: "test",
       messages: [{ role: "user", content: "b" }],
-      stream: true,
     })
 
-    const result = getHistory({ endpoint: "openai" })
+    const result = getHistory({ endpoint: "openai-chat-completions" })
     expect(result.total).toBe(1)
-    expect(result.entries[0].endpoint).toBe("openai")
+    expect(result.entries[0].endpoint).toBe("openai-chat-completions")
+  })
+
+  test("search finds OpenAI tool_calls by function name", () => {
+    createEntry("openai-chat-completions", {
+      model: "gpt-4o",
+      messages: [
+        { role: "user", content: "search the web" },
+        {
+          role: "assistant",
+          content: "Let me search for that.",
+          tool_calls: [
+            {
+              id: "call_123",
+              type: "function",
+              function: { name: "web_search", arguments: '{"query":"test"}' },
+            },
+          ],
+        } as any,
+      ],
+    })
+    createEntry("anthropic-messages", {
+      model: "claude-sonnet-4-20250514",
+      messages: [{ role: "user", content: "hello" }],
+    })
+
+    const result = getHistory({ search: "web_search" })
+    expect(result.total).toBe(1)
+    expect(result.entries[0].request.model).toBe("gpt-4o")
+  })
+
+  test("search finds OpenAI tool_calls by function arguments", () => {
+    createEntry("openai-chat-completions", {
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_456",
+              type: "function",
+              function: { name: "calculator", arguments: '{"expression":"2+2"}' },
+            },
+          ],
+        } as any,
+      ],
+    })
+
+    const result = getHistory({ search: "expression" })
+    expect(result.total).toBe(1)
+  })
+
+  test("filters by timestamp range (to)", () => {
+    const now = Date.now()
+    const sessionId = getCurrentSession("anthropic-messages")
+
+    const old: HistoryEntry = {
+      id: generateId(),
+      sessionId,
+      timestamp: now - 10000,
+      endpoint: "anthropic-messages",
+      request: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
+    }
+    insertEntry(old)
+
+    const recent: HistoryEntry = {
+      id: generateId(),
+      sessionId,
+      timestamp: now,
+      endpoint: "anthropic-messages",
+      request: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
+    }
+    insertEntry(recent)
+
+    const result = getHistory({ to: now - 5000 })
+    expect(result.total).toBe(1)
+    expect(result.entries[0].id).toBe(old.id)
+  })
+
+  test("filters by timestamp range (from + to)", () => {
+    const now = Date.now()
+    const sessionId = getCurrentSession("anthropic-messages")
+
+    const old: HistoryEntry = {
+      id: generateId(),
+      sessionId,
+      timestamp: now - 20000,
+      endpoint: "anthropic-messages",
+      request: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
+    }
+    insertEntry(old)
+
+    const mid: HistoryEntry = {
+      id: generateId(),
+      sessionId,
+      timestamp: now - 10000,
+      endpoint: "anthropic-messages",
+      request: { model: "test", messages: [{ role: "user", content: "mid" }], stream: true },
+    }
+    insertEntry(mid)
+
+    const recent: HistoryEntry = {
+      id: generateId(),
+      sessionId,
+      timestamp: now,
+      endpoint: "anthropic-messages",
+      request: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
+    }
+    insertEntry(recent)
+
+    const result = getHistory({ from: now - 15000, to: now - 5000 })
+    expect(result.total).toBe(1)
+    expect(result.entries[0].id).toBe(mid.id)
+  })
+})
+
+// ─── updateEntry: sseEvents ───
+
+describe("updateEntry stores sseEvents", () => {
+  test("sseEvents are persisted via updateEntry", () => {
+    const entry = createEntry("anthropic-messages", { model: "test", messages: [{ role: "user", content: "hi" }] })
+
+    const sseEvents = [
+      { offsetMs: 0, type: "message_start", data: { type: "message_start" } },
+      { offsetMs: 50, type: "content_block_delta", data: { type: "content_block_delta" } },
+      { offsetMs: 100, type: "message_stop", data: { type: "message_stop" } },
+    ]
+
+    updateEntry(entry.id, { sseEvents })
+
+    const updated = getEntry(entry.id)
+    expect(updated?.sseEvents).toEqual(sseEvents)
+    expect(updated?.sseEvents).toHaveLength(3)
+  })
+
+  test("sseEvents can be set alongside response", () => {
+    const entry = createEntry("anthropic-messages", { model: "test", messages: [{ role: "user", content: "hi" }] })
+
+    updateEntry(entry.id, {
+      response: {
+        success: true,
+        model: "test",
+        usage: { input_tokens: 10, output_tokens: 5 },
+        content: null,
+      },
+      sseEvents: [{ offsetMs: 0, type: "message_start", data: {} }],
+      durationMs: 100,
+    })
+
+    const updated = getEntry(entry.id)
+    expect(updated?.response?.success).toBe(true)
+    expect(updated?.sseEvents).toHaveLength(1)
+    expect(updated?.durationMs).toBe(100)
+  })
+})
+
+// ─── Session.endpoints tracking ───
+
+describe("Session.endpoints tracking", () => {
+  test("new session records initial endpoint", () => {
+    const sessionId = getCurrentSession("anthropic-messages")
+    const session = getSession(sessionId) as Session
+    expect(session.endpoints).toEqual(["anthropic-messages"])
+  })
+
+  test("same endpoint is not duplicated", () => {
+    getCurrentSession("anthropic-messages")
+    getCurrentSession("anthropic-messages")
+    getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages")
+
+    const session = getSession(sessionId) as Session
+    expect(session.endpoints).toEqual(["anthropic-messages"])
+  })
+
+  test("different endpoints accumulate", () => {
+    getCurrentSession("anthropic-messages")
+    getCurrentSession("openai-chat-completions")
+    const sessionId = getCurrentSession("openai-responses")
+
+    const session = getSession(sessionId) as Session
+    expect(session.endpoints).toEqual(["anthropic-messages", "openai-chat-completions", "openai-responses"])
+  })
+})
+
+// ─── getSessionEntries pagination ───
+
+describe("getSessionEntries pagination", () => {
+  test("returns paginated results with default limit", () => {
+    const sessionId = getCurrentSession("anthropic-messages")
+
+    for (let i = 0; i < 5; i++) {
+      const entry: HistoryEntry = {
+        id: generateId(),
+        sessionId,
+        timestamp: Date.now() + i,
+        endpoint: "anthropic-messages",
+        request: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
+      }
+      insertEntry(entry)
+    }
+
+    const result = getSessionEntries(sessionId)
+    expect(result.total).toBe(5)
+    expect(result.entries).toHaveLength(5)
+    expect(result.page).toBe(1)
+  })
+
+  test("respects page and limit", () => {
+    const sessionId = getCurrentSession("anthropic-messages")
+
+    for (let i = 0; i < 10; i++) {
+      const entry: HistoryEntry = {
+        id: generateId(),
+        sessionId,
+        timestamp: Date.now() + i,
+        endpoint: "anthropic-messages",
+        request: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
+      }
+      insertEntry(entry)
+    }
+
+    const page1 = getSessionEntries(sessionId, { page: 1, limit: 3 })
+    expect(page1.total).toBe(10)
+    expect(page1.entries).toHaveLength(3)
+    expect(page1.totalPages).toBe(4)
+    expect(page1.page).toBe(1)
+
+    const page2 = getSessionEntries(sessionId, { page: 2, limit: 3 })
+    expect(page2.entries).toHaveLength(3)
+    expect(page2.page).toBe(2)
+
+    // Different entries on different pages
+    expect(page1.entries[0].id).not.toBe(page2.entries[0].id)
+  })
+
+  test("returns empty for non-existent session", () => {
+    const result = getSessionEntries("nonexistent")
+    expect(result.total).toBe(0)
+    expect(result.entries).toHaveLength(0)
   })
 })
 
@@ -392,10 +674,9 @@ describe("getHistory", () => {
 
 describe("clearHistory", () => {
   test("removes all entries and sessions", () => {
-    recordRequest("anthropic", {
+    createEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
-      stream: true,
     })
 
     expect(historyState.entries.length).toBe(1)
@@ -417,22 +698,20 @@ describe("clearHistory", () => {
 
 describe("getStats", () => {
   test("returns aggregate statistics", () => {
-    const id = recordRequest("anthropic", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
-      stream: true,
     })
 
-    recordResponse(
-      id,
-      {
+    updateEntry(entry.id, {
+      response: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 100, output_tokens: 50 },
         content: null,
       },
-      500,
-    )
+      durationMs: 500,
+    })
 
     const stats = getStats()
     expect(stats.totalRequests).toBe(1)
@@ -442,7 +721,7 @@ describe("getStats", () => {
     expect(stats.totalOutputTokens).toBe(50)
     expect(stats.averageDurationMs).toBe(500)
     expect(stats.modelDistribution["claude-sonnet-4-20250514"]).toBe(1)
-    expect(stats.endpointDistribution["anthropic"]).toBe(1)
+    expect(stats.endpointDistribution["anthropic-messages"]).toBe(1)
   })
 })
 
@@ -452,21 +731,20 @@ describe("Max entries enforcement", () => {
   test("removes oldest entries when exceeding maxEntries", () => {
     initHistory(true, 3)
 
-    const ids: Array<string> = []
+    const entries: Array<HistoryEntry> = []
     for (let i = 0; i < 5; i++) {
-      ids.push(
-        recordRequest("anthropic", {
+      entries.push(
+        createEntry("anthropic-messages", {
           model: "test",
           messages: [{ role: "user", content: `msg-${i}` }],
-          stream: true,
         }),
       )
     }
 
     expect(historyState.entries.length).toBe(3)
     // Oldest entries should be removed (FIFO)
-    expect(getEntry(ids[0])).toBeUndefined()
-    expect(getEntry(ids[1])).toBeUndefined()
-    expect(getEntry(ids[2])).toBeDefined()
+    expect(getEntry(entries[0].id)).toBeUndefined()
+    expect(getEntry(entries[1].id)).toBeUndefined()
+    expect(getEntry(entries[2].id)).toBeDefined()
   })
 })

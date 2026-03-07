@@ -1,16 +1,16 @@
-import { test, expect, mock } from "bun:test"
+import { afterAll, afterEach, beforeAll, test, expect, mock } from "bun:test"
 
-import type { ChatCompletionsPayload } from "~/lib/openai/client"
+import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { createChatCompletions } from "~/lib/openai/client"
 import { state } from "~/lib/state"
 
-// Mock state
-state.copilotToken = "test-token"
-state.vsCodeVersion = "1.0.0"
-state.accountType = "individual"
+// Save and mock global state
+const originalFetch = globalThis.fetch
+const originalCopilotToken = state.copilotToken
+const originalVsCodeVersion = state.vsCodeVersion
+const originalAccountType = state.accountType
 
-// Helper to mock fetch
 const fetchMock = mock((_url: string, opts: { headers: Record<string, string> }) => {
   return {
     ok: true,
@@ -18,8 +18,25 @@ const fetchMock = mock((_url: string, opts: { headers: Record<string, string> })
     headers: opts.headers,
   }
 })
-// @ts-expect-error - Mock fetch doesn't implement all fetch properties
-;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock
+
+beforeAll(() => {
+  state.copilotToken = "test-token"
+  state.vsCodeVersion = "1.0.0"
+  state.accountType = "individual"
+  // @ts-expect-error - Mock fetch doesn't implement all fetch properties
+  globalThis.fetch = fetchMock
+})
+
+afterEach(() => {
+  fetchMock.mockClear()
+})
+
+afterAll(() => {
+  globalThis.fetch = originalFetch
+  state.copilotToken = originalCopilotToken
+  state.vsCodeVersion = originalVsCodeVersion
+  state.accountType = originalAccountType
+})
 
 test("sets X-Initiator to agent if tool/assistant present", async () => {
   const payload: ChatCompletionsPayload = {
@@ -30,7 +47,7 @@ test("sets X-Initiator to agent if tool/assistant present", async () => {
     model: "gpt-test",
   }
   await createChatCompletions(payload)
-  expect(fetchMock).toHaveBeenCalled()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
   const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers
   expect(headers["X-Initiator"]).toBe("agent")
 })
@@ -44,7 +61,7 @@ test("sets X-Initiator to user if only user present", async () => {
     model: "gpt-test",
   }
   await createChatCompletions(payload)
-  expect(fetchMock).toHaveBeenCalled()
-  const headers = (fetchMock.mock.calls[1][1] as { headers: Record<string, string> }).headers
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers
   expect(headers["X-Initiator"]).toBe("user")
 })

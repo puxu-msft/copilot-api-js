@@ -7,9 +7,10 @@
 
 import consola from "consola"
 
-import { removeSystemReminderTags } from "~/lib/sanitize-system-reminder"
+import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
 
-import type { ChatCompletionsPayload, Message } from "./client"
+import { removeSystemReminderTags } from "~/lib/sanitize-system-reminder"
 
 import {
   extractOpenAISystemMessages,
@@ -26,7 +27,7 @@ import {
  * Handles both string content and array of content parts.
  *
  * NOTE: System prompt overrides are handled by
- * system-prompt-manager.ts via config.yaml.
+ * system-prompt.ts via config.yaml.
  */
 function sanitizeOpenAIMessageContent(msg: Message): Message {
   if (typeof msg.content === "string") {
@@ -100,11 +101,7 @@ export function removeOpenAISystemReminders(messages: Array<Message>): {
  *
  * @returns Sanitized payload and count of removed items
  */
-export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): {
-  payload: ChatCompletionsPayload
-  removedCount: number
-  systemReminderRemovals: number
-} {
+export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): SanitizeResult<ChatCompletionsPayload> {
   const { systemMessages, conversationMessages } = extractOpenAISystemMessages(payload.messages)
 
   // Remove system-reminder tags from all messages

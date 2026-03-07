@@ -6,6 +6,7 @@
 
 export type {
   ContentBlock,
+  EndpointType,
   EntrySummary,
   HistoryEntry,
   HistoryResult,
@@ -13,6 +14,7 @@ export type {
   ImageContentBlock,
   ImageSource,
   MessageContent,
+  PreprocessInfo,
   QueryOptions,
   RedactedThinkingContentBlock,
   RewriteInfo,
@@ -20,6 +22,7 @@ export type {
   ServerToolUseContentBlock,
   Session,
   SessionResult,
+  SseEventRecord,
   SummaryResult,
   SystemBlock,
   TextContentBlock,

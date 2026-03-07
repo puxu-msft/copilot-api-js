@@ -16,6 +16,8 @@ const props = withDefaults(defineProps<{
   isTruncated?: boolean
   isRewritten?: boolean
   rewrittenMessage?: MessageContent | null
+  /** Global view mode from toolbar — null means per-message control */
+  globalViewMode?: 'original' | 'rewritten' | 'diff' | null
 }>(), {
   isTruncated: false,
   isRewritten: false,
@@ -31,8 +33,26 @@ const bodyRef = ref<HTMLElement>()
 const { openRawModal } = useRawModal()
 const sharedObserver = useSharedResizeObserver()
 
-// Rewrite view mode
-const viewMode = ref<'original' | 'rewritten' | 'diff'>('original')
+// Rewrite view mode: local override or global
+const localViewMode = ref<'original' | 'rewritten' | 'diff' | null>(null)
+
+/** Effective view mode: local override takes priority, then global, then default */
+const viewMode = computed(() => {
+  if (localViewMode.value) return localViewMode.value
+  if (props.globalViewMode && props.isRewritten && props.rewrittenMessage) return props.globalViewMode
+  return 'original'
+})
+
+/** Whether the local mode differs from global (shows reset indicator) */
+const hasLocalOverride = computed(() => localViewMode.value !== null)
+
+function setLocalViewMode(mode: 'original' | 'rewritten' | 'diff') {
+  localViewMode.value = mode
+}
+
+function resetLocalViewMode() {
+  localViewMode.value = null
+}
 
 const roleBadgeColor = computed(() => {
   switch (props.message.role) {
@@ -70,9 +90,9 @@ const rewrittenText = computed(() => props.rewrittenMessage ? extractText(props.
 
 const displayContent = computed(() => {
   if (viewMode.value === 'rewritten' && props.rewrittenMessage) {
-    return props.rewrittenMessage.content
+    return props.rewrittenMessage.content ?? ''
   }
-  return props.message.content
+  return props.message.content ?? ''
 })
 
 /** Full message for OpenAI tool_calls rendering */
@@ -99,7 +119,11 @@ function toggleExpand(event: Event) {
 
 function openRaw(event: Event) {
   event.stopPropagation()
-  openRawModal(props.message, `Raw — ${props.message.role} #${props.index + 1}`)
+  openRawModal(
+    props.message,
+    `Raw — ${props.message.role} #${props.index + 1}`,
+    props.isRewritten ? props.rewrittenMessage : undefined,
+  )
 }
 
 onMounted(() => {
@@ -127,7 +151,9 @@ watch(() => props.message, () => {
     :class="{
       truncated: isTruncated,
       collapsed,
+      'is-rewritten': isRewritten,
     }"
+    :data-msg-index="index"
   >
     <div class="msg-header" @click="collapsed = !collapsed">
       <div class="msg-header-left">
@@ -138,7 +164,7 @@ watch(() => props.message, () => {
         <BaseBadge v-if="isRewritten" color="warning">rewritten</BaseBadge>
         <BaseBadge v-if="isTruncated" color="error">truncated</BaseBadge>
 
-        <span v-if="collapsed && messageSummary" class="collapsed-summary">{{ messageSummary }}</span>
+        <span v-if="collapsed && messageSummary" class="collapsed-summary" :title="messageSummary">{{ messageSummary }}</span>
       </div>
 
       <div class="msg-header-right">
@@ -146,16 +172,22 @@ watch(() => props.message, () => {
         <div v-if="isRewritten && rewrittenMessage" class="view-toggle" @click.stop>
           <button
             :class="{ active: viewMode === 'original' }"
-            @click="viewMode = 'original'"
+            @click="setLocalViewMode('original')"
           >Original</button>
           <button
             :class="{ active: viewMode === 'rewritten' }"
-            @click="viewMode = 'rewritten'"
+            @click="setLocalViewMode('rewritten')"
           >Rewritten</button>
           <button
             :class="{ active: viewMode === 'diff' }"
-            @click="viewMode = 'diff'"
+            @click="setLocalViewMode('diff')"
           >Diff</button>
+          <button
+            v-if="hasLocalOverride"
+            class="reset-btn"
+            title="Reset to global view mode"
+            @click="resetLocalViewMode()"
+          >×</button>
         </div>
 
         <!-- Raw button -->
@@ -288,6 +320,22 @@ watch(() => props.message, () => {
 .view-toggle button.active {
   color: var(--primary);
   background: var(--primary-muted);
+}
+
+.reset-btn {
+  font-size: var(--font-size-sm);
+  padding: 2px 6px;
+  color: var(--text-dim);
+  background: var(--bg-secondary);
+  line-height: 1;
+}
+
+.reset-btn:hover {
+  color: var(--error);
+}
+
+.message-block.is-rewritten {
+  border-left: 2px solid var(--warning);
 }
 
 .action-btn {

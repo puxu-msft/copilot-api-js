@@ -1,0 +1,11 @@
+{
+  "model": "claude-sonnet-4",
+  "max_tokens": 100,
+  "stream": false,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Say hello in exactly 3 words."
+    }
+  ]
+}

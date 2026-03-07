@@ -3,9 +3,9 @@ import { Hono } from "hono"
 import { forwardError } from "~/lib/error"
 import { getCopilotUsage } from "~/lib/token/copilot-client"
 
-export const usageRoute = new Hono()
+export const usageRoutes = new Hono()
 
-usageRoute.get("/", async (c) => {
+usageRoutes.get("/", async (c) => {
   try {
     const usage = await getCopilotUsage()
     return c.json(usage)
