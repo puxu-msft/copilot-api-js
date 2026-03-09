@@ -116,6 +116,17 @@ export interface WebSearchToolResultContentBlock {
   content: unknown
 }
 
+/**
+ * Generic server-side tool result block (tool_search_tool_result,
+ * code_execution_tool_result, etc.). Covers all *_tool_result types
+ * not explicitly typed above.
+ */
+export interface ServerToolResultContentBlock {
+  type: string
+  tool_use_id: string
+  content: unknown
+}
+
 /** Union of all content block types that can appear in messages */
 export type ContentBlock =
   | TextContentBlock
@@ -126,6 +137,7 @@ export type ContentBlock =
   | ServerToolUseContentBlock
   | RedactedThinkingContentBlock
   | WebSearchToolResultContentBlock
+  | ServerToolResultContentBlock
 
 export interface ToolDefinition {
   name: string

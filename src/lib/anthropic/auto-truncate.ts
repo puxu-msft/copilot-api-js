@@ -265,12 +265,8 @@ export function contentToText(content: MessageParam["content"], options?: { incl
         parts.push(`[server_tool_use: ${block.name}]`, JSON.stringify(block.input))
         break
       }
-      case "web_search_tool_result": {
-        parts.push(`[web_search_tool_result]`)
-        break
-      }
       default: {
-        // Handle generic server tool results (e.g., tool_search_tool_result)
+        // Handle generic server tool results (e.g., web_search_tool_result, tool_search_tool_result)
         // Cast to Record to bypass type narrowing — API may return unknown block types
         const genericBlock = block as unknown as Record<string, unknown>
         if ("tool_use_id" in genericBlock && genericBlock.type !== "image") {

@@ -99,6 +99,13 @@ export interface AnthropicConfig {
   /** Strip injected system-reminder tags from Read tool results */
   truncate_read_tool_result?: boolean
   /**
+   * Filter internal tool_search blocks from the response before forwarding to client.
+   * When enabled, server_tool_use (tool_search_tool_regex) and tool_search_tool_result
+   * blocks are stripped from both streaming and non-streaming responses.
+   * Default: false (passthrough).
+   */
+  filter_tool_search_blocks?: boolean
+  /**
    * Rewrite system-reminder tags in messages.
    * - `false` — keep all tags unchanged (default)
    * - `true` — remove all system-reminder tags
@@ -240,6 +247,7 @@ export async function applyConfigToState(): Promise<Config> {
       state.dedupToolCalls = a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls
     }
     if (a.truncate_read_tool_result !== undefined) state.truncateReadToolResult = a.truncate_read_tool_result
+    if (a.filter_tool_search_blocks !== undefined) state.filterToolSearchBlocks = a.filter_tool_search_blocks
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {

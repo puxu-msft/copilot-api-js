@@ -22,12 +22,34 @@ function mapAnthropicContentBlocks(acc: AnthropicStreamAccumulator): Array<unkno
       return rest
     }
 
-    switch (block.type) {
+    // Server tool result blocks (web_search_tool_result, tool_search_tool_result, etc.)
+    // Check before the type switch because _brand blocks have `type: string` which
+    // would overlap with literal type cases.
+    if ("_brand" in block) {
+      return {
+        type: block.type,
+        tool_use_id: block.tool_use_id,
+        content: block.content,
+      }
+    }
+
+    // After the _generic and _brand checks, only known block types remain.
+    // Use a type assertion to narrow — TypeScript can't infer this from the
+    // _brand / _generic guards since they aren't shared discriminant properties.
+    type KnownBlock =
+      | { type: "text"; text: string }
+      | { type: "thinking"; thinking: string; signature?: string }
+      | { type: "redacted_thinking"; data: string }
+      | { type: "tool_use"; id: string; name: string; input: string }
+      | { type: "server_tool_use"; id: string; name: string; input: string }
+    const narrowed = block as KnownBlock
+
+    switch (narrowed.type) {
       case "text": {
-        return { type: "text" as const, text: block.text }
+        return { type: "text" as const, text: narrowed.text }
       }
       case "thinking": {
-        return { type: "thinking" as const, thinking: block.thinking }
+        return { type: "thinking" as const, thinking: narrowed.thinking }
       }
       case "redacted_thinking": {
         return { type: "redacted_thinking" as const }
@@ -35,21 +57,14 @@ function mapAnthropicContentBlocks(acc: AnthropicStreamAccumulator): Array<unkno
       case "tool_use":
       case "server_tool_use": {
         return {
-          type: block.type as string,
-          id: block.id,
-          name: block.name,
-          input: safeParseJson(block.input),
-        }
-      }
-      case "web_search_tool_result": {
-        return {
-          type: "web_search_tool_result" as const,
-          tool_use_id: block.tool_use_id,
-          content: block.content,
+          type: narrowed.type as string,
+          id: narrowed.id,
+          name: narrowed.name,
+          input: safeParseJson(narrowed.input),
         }
       }
       default: {
-        const unknown = block as { type: string }
+        const unknown = narrowed as { type: string }
         consola.warn(`[recording] Unhandled content block type in stream result: ${unknown.type}`)
         return { type: unknown.type }
       }

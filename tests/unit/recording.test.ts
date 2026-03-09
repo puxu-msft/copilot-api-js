@@ -179,6 +179,7 @@ describe("buildAnthropicResponseData", () => {
     const acc = makeAnthropicAcc({
       contentBlocks: [
         {
+          _brand: "server_tool_result" as const,
           type: "web_search_tool_result",
           tool_use_id: "srvtoolu_123",
           content: [{ type: "web_search_result", url: "https://example.com", title: "Test" }],

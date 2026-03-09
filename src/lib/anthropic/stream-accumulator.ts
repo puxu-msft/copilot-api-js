@@ -17,13 +17,54 @@ import type { CopilotAnnotations, StreamEvent, RawMessageStartEvent } from "~/ty
  * AccumulatedGenericBlock with all original fields preserved.
  */
 export type AccumulatedContentBlock =
-  | { type: "text"; text: string }
-  | { type: "thinking"; thinking: string; signature?: string }
-  | { type: "redacted_thinking"; data: string }
-  | { type: "tool_use"; id: string; name: string; input: string }
-  | { type: "server_tool_use"; id: string; name: string; input: string }
-  | { type: "web_search_tool_result"; tool_use_id: string; content: unknown }
+  | AccumulatedTextBlock
+  | AccumulatedThinkingBlock
+  | AccumulatedRedactedThinkingBlock
+  | AccumulatedToolUseBlock
+  | AccumulatedServerToolUseBlock
+  | AccumulatedServerToolResultBlock
   | AccumulatedGenericBlock
+
+export interface AccumulatedTextBlock {
+  type: "text"
+  text: string
+}
+export interface AccumulatedThinkingBlock {
+  type: "thinking"
+  thinking: string
+  signature?: string
+}
+export interface AccumulatedRedactedThinkingBlock {
+  type: "redacted_thinking"
+  data: string
+}
+export interface AccumulatedToolUseBlock {
+  type: "tool_use"
+  id: string
+  name: string
+  input: string
+}
+export interface AccumulatedServerToolUseBlock {
+  type: "server_tool_use"
+  id: string
+  name: string
+  input: string
+}
+
+/**
+ * Server-side tool result block (web_search_tool_result, tool_search_tool_result,
+ * code_execution_tool_result, etc.). Branded with `_serverToolResult` to
+ * distinguish from AccumulatedGenericBlock in type checks.
+ *
+ * Uses `_brand` discriminant to enable TypeScript union narrowing against
+ * known literal-typed block variants.
+ */
+export interface AccumulatedServerToolResultBlock {
+  _brand: "server_tool_result"
+  type: string
+  tool_use_id: string
+  content: unknown
+}
 
 /**
  * Generic block for unknown/future content block types.
@@ -92,7 +133,7 @@ export function accumulateAnthropicStreamEvent(event: StreamEvent, acc: Anthropi
       break
     }
     case "content_block_start": {
-      handleContentBlockStart(event.index, event.content_block as AccContentBlock, acc)
+      handleContentBlockStart(event.index, event.content_block as unknown as AccContentBlock, acc)
       break
     }
     case "content_block_delta": {
@@ -161,19 +202,12 @@ type AccDelta =
   | { type: "thinking_delta"; thinking: string }
   | { type: "signature_delta"; signature: string }
 
-/** Content block start types (local — looser than SDK's ContentBlock for proxy use) */
-type AccContentBlock =
-  | { type: "text"; text: string }
-  | {
-      type: "tool_use"
-      id: string
-      name: string
-      input: Record<string, unknown>
-    }
-  | { type: "thinking"; thinking: string; signature?: string }
-  | { type: "redacted_thinking"; data: string }
-  | { type: "server_tool_use"; id: string; name: string }
-  | { type: "web_search_tool_result"; tool_use_id: string; content: unknown }
+/**
+ * Content block start — accepts any record from the SSE stream.
+ * Known types are narrowed inside handleContentBlockStart; unknown types
+ * are stored via AccumulatedGenericBlock or AccumulatedServerToolResultBlock.
+ */
+type AccContentBlock = Record<string, unknown> & { type: string }
 
 function handleContentBlockStart(index: number, block: AccContentBlock, acc: AnthropicStreamAccumulator) {
   let newBlock: AccumulatedContentBlock
@@ -189,38 +223,43 @@ function handleContentBlockStart(index: number, block: AccContentBlock, acc: Ant
     }
     case "redacted_thinking": {
       // Complete at block_start, no subsequent deltas
-      newBlock = { type: "redacted_thinking", data: block.data }
+      newBlock = { type: "redacted_thinking", data: block.data as string }
       break
     }
     case "tool_use": {
-      newBlock = { type: "tool_use", id: block.id, name: block.name, input: "" }
+      newBlock = { type: "tool_use", id: block.id as string, name: block.name as string, input: "" }
       break
     }
     case "server_tool_use": {
-      newBlock = { type: "server_tool_use", id: block.id, name: block.name, input: "" }
-      break
-    }
-    case "web_search_tool_result": {
-      // Complete at block_start, no subsequent deltas
-      newBlock = {
-        type: "web_search_tool_result",
-        tool_use_id: block.tool_use_id,
-        content: block.content,
-      }
+      newBlock = { type: "server_tool_use", id: block.id as string, name: block.name as string, input: "" }
       break
     }
     default: {
-      // Unknown block type — store all fields as-is for forward compatibility.
-      // Cast needed because TypeScript narrows to `never` after exhaustive cases,
-      // but runtime data from the API may contain types not yet in our definitions.
-      const unknownBlock = block as unknown as Record<string, unknown>
-      consola.warn(`[stream-accumulator] Unknown content block type: ${String(unknownBlock.type)}`)
-      newBlock = { ...unknownBlock, _generic: true } as AccumulatedGenericBlock
+      // Server tool result blocks (web_search_tool_result, tool_search_tool_result,
+      // code_execution_tool_result, etc.) — complete at block_start, no subsequent deltas.
+      if (isServerToolResultType(block.type) && "tool_use_id" in block) {
+        newBlock = {
+          _brand: "server_tool_result",
+          type: block.type,
+          tool_use_id: block.tool_use_id as string,
+          content: block.content,
+        }
+        break
+      }
+
+      // Truly unknown block type — store all fields as-is for forward compatibility.
+      consola.warn(`[stream-accumulator] Unknown content block type: ${block.type}`)
+      newBlock = { ...block, _generic: true } as AccumulatedGenericBlock
       break
     }
   }
 
   acc.contentBlocks[index] = newBlock
+}
+
+/** Check if a block type is a server-side tool result (ends with _tool_result, but not plain tool_result) */
+function isServerToolResultType(type: string): boolean {
+  return type !== "tool_result" && type.endsWith("_tool_result")
 }
 
 function handleContentBlockDelta(
@@ -325,7 +364,7 @@ function handleMessageDelta(
 /** Get concatenated text content from all text blocks */
 export function getTextContent(acc: AnthropicStreamAccumulator): string {
   return acc.contentBlocks
-    .filter((b): b is AccumulatedContentBlock & { type: "text" } => b.type === "text")
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map((b) => b.text)
     .join("")
 }
@@ -333,7 +372,7 @@ export function getTextContent(acc: AnthropicStreamAccumulator): string {
 /** Get concatenated thinking content from all thinking blocks */
 export function getThinkingContent(acc: AnthropicStreamAccumulator): string {
   return acc.contentBlocks
-    .filter((b): b is AccumulatedContentBlock & { type: "thinking" } => b.type === "thinking")
+    .filter((b): b is { type: "thinking"; thinking: string } => b.type === "thinking")
     .map((b) => b.thinking)
     .join("")
 }

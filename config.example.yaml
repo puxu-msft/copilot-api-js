@@ -56,7 +56,7 @@ model_overrides:
 stream_idle_timeout: 300       # Max seconds between SSE events (0 = no timeout).
                                # Applies to all streaming paths (Anthropic, Chat Completions, Responses).
 
-fetch_timeout: 60               # Seconds: request start → HTTP response headers (0 = no timeout).
+fetch_timeout: 300             # Seconds: request start → HTTP response headers (0 = no timeout).
                                # Applies to all upstream API clients.
 
 stale_request_max_age: 600     # Max seconds an active request can live before the stale reaper

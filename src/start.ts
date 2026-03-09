@@ -87,6 +87,8 @@ function parseIntOrDefault(value: string, defaultValue: number): number {
   return Number.isFinite(parsed) ? parsed : defaultValue
 }
 
+const VALID_ACCOUNT_TYPES = ["individual", "business", "enterprise"] as const
+
 interface RunServerOptions {
   port: number
   host?: string
@@ -103,6 +105,14 @@ interface RunServerOptions {
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
+  // ===========================================================================
+  // Phase 0: Validate critical options
+  // ===========================================================================
+  if (!VALID_ACCOUNT_TYPES.includes(options.accountType)) {
+    consola.error(`Invalid account type: "${options.accountType}". Must be one of: ${VALID_ACCOUNT_TYPES.join(", ")}`)
+    process.exit(1)
+  }
+
   // ===========================================================================
   // Phase 1: Logging and Verbose Mode
   // ===========================================================================
@@ -275,7 +285,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   try {
     await cacheModels()
   } catch (error) {
-    consola.warn("Failed to fetch models from Copilot API:", error instanceof Error ? error.message : error)
+    consola.error("Failed to fetch models from Copilot API:", error instanceof Error ? error.message : error)
+    consola.error(
+      `Verify that --account-type "${state.accountType}" is correct. `
+        + `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
+    )
+    process.exit(1)
   }
 
   consola.info(`Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`)

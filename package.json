@@ -1,6 +1,6 @@
 {
   "name": "@hsupu/copilot-api",
-  "version": "0.7.18-beta.3",
+  "version": "0.7.19",
   "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server.",
   "keywords": [
     "proxy",
