@@ -16,6 +16,7 @@ interface ToolCallAccumulator {
 /** Stream accumulator for OpenAI format */
 export interface OpenAIStreamAccumulator extends BaseStreamAccumulator {
   cachedTokens: number
+  reasoningTokens: number
   finishReason: string
   toolCalls: Array<{ id: string; name: string; arguments: string }>
   toolCallMap: Map<number, ToolCallAccumulator>
@@ -27,6 +28,7 @@ export function createOpenAIStreamAccumulator(): OpenAIStreamAccumulator {
     inputTokens: 0,
     outputTokens: 0,
     cachedTokens: 0,
+    reasoningTokens: 0,
     finishReason: "",
     content: "",
     toolCalls: [],
@@ -43,6 +45,9 @@ export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: Op
     acc.outputTokens = parsed.usage.completion_tokens
     if (parsed.usage.prompt_tokens_details?.cached_tokens !== undefined) {
       acc.cachedTokens = parsed.usage.prompt_tokens_details.cached_tokens
+    }
+    if (parsed.usage.completion_tokens_details?.reasoning_tokens !== undefined) {
+      acc.reasoningTokens = parsed.usage.completion_tokens_details.reasoning_tokens
     }
   }
 

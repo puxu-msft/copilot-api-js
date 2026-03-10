@@ -150,7 +150,7 @@ async function handleResponseCreate(ws: WSContext, payload: ResponsesPayload): P
   }
 
   // Build pipeline adapter and strategies (shared with HTTP handler)
-  const adapter = createResponsesAdapter()
+  const adapter = createResponsesAdapter(selectedModel)
   const strategies = createResponsesStrategies()
 
   try {

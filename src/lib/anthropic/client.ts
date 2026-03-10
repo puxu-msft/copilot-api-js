@@ -14,6 +14,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
+import type { Model } from "~/lib/models/client"
 import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
 
 import { copilotBaseUrl, copilotHeaders } from "~/lib/copilot-api"
@@ -104,6 +105,7 @@ function adjustThinkingBudget(wire: Record<string, unknown>): void {
  */
 export async function createAnthropicMessages(
   payload: MessagesPayload,
+  opts?: { resolvedModel?: Model },
 ): Promise<AnthropicMessageResponse | AsyncGenerator<ServerSentEventMessage>> {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
@@ -125,8 +127,15 @@ export async function createAnthropicMessages(
   // Agent/user check for X-Initiator header
   const isAgentCall = messages.some((msg) => msg.role === "assistant")
 
+  // Only set vision header if model supports it (default to true when unknown)
+  const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
+
   const headers: Record<string, string> = {
-    ...copilotHeaders(state, enableVision),
+    ...copilotHeaders(state, {
+      vision: enableVision && modelSupportsVision,
+      modelRequestHeaders: opts?.resolvedModel?.request_headers,
+      intent: isAgentCall ? "conversation-agent" : "conversation-panel",
+    }),
     "X-Initiator": isAgentCall ? "agent" : "user",
     "anthropic-version": "2023-06-01",
     ...buildAnthropicBetaHeaders(model),

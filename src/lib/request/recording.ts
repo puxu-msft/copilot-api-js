@@ -115,6 +115,9 @@ export function buildOpenAIResponseData(acc: OpenAIStreamAccumulator, fallbackMo
     usage: {
       input_tokens: acc.inputTokens,
       output_tokens: acc.outputTokens,
+      ...(acc.reasoningTokens > 0 && {
+        output_tokens_details: { reasoning_tokens: acc.reasoningTokens },
+      }),
       ...(acc.cachedTokens > 0 && { cache_read_input_tokens: acc.cachedTokens }),
     },
     stop_reason: acc.finishReason || undefined,

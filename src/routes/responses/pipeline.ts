@@ -8,6 +8,7 @@
 
 import consola from "consola"
 
+import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
@@ -17,11 +18,11 @@ import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-ret
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 
 /** Create the FormatAdapter for Responses API pipeline execution */
-export function createResponsesAdapter(): FormatAdapter<ResponsesPayload> {
+export function createResponsesAdapter(selectedModel?: Model): FormatAdapter<ResponsesPayload> {
   return {
     format: "openai-responses",
     sanitize: (p) => ({ payload: p, removedCount: 0, systemReminderRemovals: 0 }),
-    execute: (p) => executeWithAdaptiveRateLimit(() => createResponses(p)),
+    execute: (p) => executeWithAdaptiveRateLimit(() => createResponses(p, { resolvedModel: selectedModel })),
     logPayloadSize: (p) => {
       const count = typeof p.input === "string" ? 1 : p.input.length
       consola.debug(`Responses payload: ${count} input item(s), model: ${p.model}`)

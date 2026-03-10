@@ -167,7 +167,7 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
   const adapter: FormatAdapter<MessagesPayload> = {
     format: "anthropic-messages",
     sanitize: (p) => sanitizeAnthropicMessages(preprocessTools(p)),
-    execute: (p) => executeWithAdaptiveRateLimit(() => createAnthropicMessages(p)),
+    execute: (p) => executeWithAdaptiveRateLimit(() => createAnthropicMessages(p, { resolvedModel: selectedModel })),
     logPayloadSize: (p) => logPayloadSizeInfoAnthropic(p, selectedModel),
   }
 

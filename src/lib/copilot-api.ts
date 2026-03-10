@@ -34,7 +34,17 @@ export const copilotBaseUrl = (state: State) =>
   state.accountType === "individual" ?
     "https://api.githubcopilot.com"
   : `https://api.${state.accountType}.githubcopilot.com`
-export const copilotHeaders = (state: State, vision: boolean = false) => {
+
+export interface CopilotHeaderOptions {
+  /** Whether to set the Copilot-Vision-Request header */
+  vision?: boolean
+  /** Model-specific request headers from CAPI to forward upstream */
+  modelRequestHeaders?: Record<string, string>
+  /** OpenAI intent value (default: "conversation-panel") */
+  intent?: string
+}
+
+export const copilotHeaders = (state: State, opts?: CopilotHeaderOptions) => {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${state.copilotToken}`,
     "content-type": standardHeaders()["content-type"],
@@ -42,14 +52,22 @@ export const copilotHeaders = (state: State, vision: boolean = false) => {
     "editor-version": `vscode/${state.vsCodeVersion}`,
     "editor-plugin-version": EDITOR_PLUGIN_VERSION,
     "user-agent": USER_AGENT,
-    "openai-intent": "conversation-panel",
+    "openai-intent": opts?.intent ?? "conversation-panel",
     "x-github-api-version": COPILOT_API_VERSION,
     "x-request-id": randomUUID(),
     "X-Interaction-Id": INTERACTION_ID,
     "x-vscode-user-agent-library-version": "electron-fetch",
   }
 
-  if (vision) headers["copilot-vision-request"] = "true"
+  if (opts?.vision) headers["copilot-vision-request"] = "true"
+
+  // Forward model-specific request headers from CAPI (lowest priority — don't override core headers)
+  if (opts?.modelRequestHeaders) {
+    const coreKeysLower = new Set(Object.keys(headers).map((k) => k.toLowerCase()))
+    for (const [key, value] of Object.entries(opts.modelRequestHeaders)) {
+      if (!coreKeysLower.has(key.toLowerCase())) headers[key] = value
+    }
+  }
 
   return headers
 }

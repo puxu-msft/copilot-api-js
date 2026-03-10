@@ -196,6 +196,35 @@ describe("accumulateOpenAIStreamEvent", () => {
     expect(acc.cachedTokens).toBe(30)
   })
 
+  test("captures reasoning_tokens from completion_tokens_details", () => {
+    const acc = createOpenAIStreamAccumulator()
+    accumulateOpenAIStreamEvent(
+      makeChunk({
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+          completion_tokens_details: { reasoning_tokens: 25 },
+        },
+      }),
+      acc,
+    )
+
+    expect(acc.reasoningTokens).toBe(25)
+  })
+
+  test("defaults reasoning_tokens to 0 when not in usage", () => {
+    const acc = createOpenAIStreamAccumulator()
+    accumulateOpenAIStreamEvent(
+      makeChunk({
+        usage: { prompt_tokens: 50, completion_tokens: 10, total_tokens: 60 },
+      }),
+      acc,
+    )
+
+    expect(acc.reasoningTokens).toBe(0)
+  })
+
   // ── Mixed content ──
 
   test("handles text followed by tool calls in same stream", () => {

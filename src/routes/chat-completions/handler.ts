@@ -132,7 +132,7 @@ async function executeRequest(opts: ExecuteRequestOptions) {
   const adapter: FormatAdapter<ChatCompletionsPayload> = {
     format: "openai-chat-completions",
     sanitize: (p) => sanitizeOpenAIMessages(p),
-    execute: (p) => executeWithAdaptiveRateLimit(() => createChatCompletions(p)),
+    execute: (p) => executeWithAdaptiveRateLimit(() => createChatCompletions(p, { resolvedModel: selectedModel })),
     logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
   }
 

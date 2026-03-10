@@ -32,6 +32,7 @@ function makeOpenAIAcc(overrides: Partial<OpenAIStreamAccumulator> = {}): OpenAI
     content: "Hi there",
     finishReason: "stop",
     cachedTokens: 0,
+    reasoningTokens: 0,
     toolCalls: [],
     toolCallMap: new Map(),
     ...overrides,
@@ -231,6 +232,18 @@ describe("buildOpenAIResponseData", () => {
     const acc = makeOpenAIAcc({ cachedTokens: 0 })
     const result = buildOpenAIResponseData(acc, "fallback")
     expect(result.usage.cache_read_input_tokens).toBeUndefined()
+  })
+
+  test("includes reasoning tokens when present", () => {
+    const acc = makeOpenAIAcc({ reasoningTokens: 42 })
+    const result = buildOpenAIResponseData(acc, "fallback")
+    expect(result.usage.output_tokens_details).toEqual({ reasoning_tokens: 42 })
+  })
+
+  test("omits reasoning tokens when zero", () => {
+    const acc = makeOpenAIAcc({ reasoningTokens: 0 })
+    const result = buildOpenAIResponseData(acc, "fallback")
+    expect(result.usage.output_tokens_details).toBeUndefined()
   })
 
   test("builds tool calls from toolCalls array", () => {

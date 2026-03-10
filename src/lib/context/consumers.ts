@@ -168,6 +168,7 @@ function toHistoryResponse(entryData: HistoryEntryData): HistoryEntry["response"
       output_tokens: r.usage.output_tokens,
       cache_read_input_tokens: r.usage.cache_read_input_tokens,
       cache_creation_input_tokens: r.usage.cache_creation_input_tokens,
+      output_tokens_details: r.usage.output_tokens_details,
     },
     stop_reason: r.stop_reason,
     error: r.error,

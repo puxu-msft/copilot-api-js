@@ -98,9 +98,9 @@ interface ResponsesHandlerOptions {
 async function handleDirectResponses(opts: ResponsesHandlerOptions) {
   const { c, payload, reqCtx } = opts
 
-  const adapter = createResponsesAdapter()
-  const strategies = createResponsesStrategies()
   const selectedModel = state.modelIndex.get(payload.model)
+  const adapter = createResponsesAdapter(selectedModel)
+  const strategies = createResponsesStrategies()
 
   try {
     const pipelineResult = await executeRequestPipeline({

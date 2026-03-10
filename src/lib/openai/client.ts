@@ -3,6 +3,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
+import type { Model } from "~/lib/models/client"
 import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/copilot-api"
@@ -12,6 +13,7 @@ import { state } from "~/lib/state"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
+  opts?: { resolvedModel?: Model },
 ): Promise<ChatCompletionResponse | AsyncGenerator<ServerSentEventMessage>> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
@@ -23,9 +25,16 @@ export const createChatCompletions = async (
   // Determine if any message is from an agent ("assistant" or "tool")
   const isAgentCall = payload.messages.some((msg) => ["assistant", "tool"].includes(msg.role))
 
+  // Only set vision header if model supports it (default to true when unknown)
+  const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
+
   // Build headers and add X-Initiator
   const headers: Record<string, string> = {
-    ...copilotHeaders(state, enableVision),
+    ...copilotHeaders(state, {
+      vision: enableVision && modelSupportsVision,
+      modelRequestHeaders: opts?.resolvedModel?.request_headers,
+      intent: isAgentCall ? "conversation-agent" : "conversation-panel",
+    }),
     "X-Initiator": isAgentCall ? "agent" : "user",
   }
 

@@ -230,8 +230,15 @@ export function forwardError(c: Context, error: unknown) {
       return c.json(formattedError, 429 as ContentfulStatusCode)
     }
 
-    // Log unhandled HTTP errors
-    consola.error(`HTTP ${error.status}:`, errorJson)
+    // Log unhandled HTTP errors — truncate non-JSON response bodies (e.g. HTML error pages)
+    // to avoid flooding the console. Full response is persisted by error-persistence consumer.
+    if (typeof errorJson === "string") {
+      const isHtml = errorJson.trimStart().startsWith("<")
+      const preview = isHtml ? `[HTML ${errorJson.length} bytes]` : truncateForLog(errorJson, 200)
+      consola.error(`HTTP ${error.status}: ${preview}`)
+    } else {
+      consola.error(`HTTP ${error.status}:`, errorJson)
+    }
 
     return c.json(
       {
@@ -630,6 +637,12 @@ export function formatErrorWithCause(error: Error): string {
     msg += ` (cause: ${stripBunVerboseHint(error.cause.message)})`
   }
   return msg
+}
+
+/** Truncate a string for log display, adding ellipsis if truncated */
+function truncateForLog(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text
+  return `${text.slice(0, maxLen)}… (${text.length} bytes total)`
 }
 
 // ─── Error Message Extraction ───

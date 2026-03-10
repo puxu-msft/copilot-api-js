@@ -191,6 +191,34 @@ describe("registerContextConsumers", () => {
       expect(data.durationMs).toBe(1500)
     })
 
+    test("preserves output_tokens_details through toHistoryResponse", () => {
+      manager.emit({
+        type: "completed",
+        context: { id: "req_2", tuiLogId: undefined },
+        entry: {
+          id: "req_2",
+          durationMs: 2000,
+          response: {
+            success: true,
+            model: "claude-sonnet-4",
+            usage: {
+              input_tokens: 200,
+              output_tokens: 100,
+              cache_read_input_tokens: 50,
+              output_tokens_details: { reasoning_tokens: 30 },
+            },
+            stop_reason: "end_turn",
+            content: { role: "assistant", content: "Thinking..." },
+          },
+        },
+      } as unknown as RequestContextEvent)
+
+      expect(updateEntrySpy).toHaveBeenCalledTimes(1)
+      const [, data] = updateEntrySpy.mock.calls[0]
+      expect(data.response.usage.output_tokens_details).toEqual({ reasoning_tokens: 30 })
+      expect(data.response.usage.cache_read_input_tokens).toBe(50)
+    })
+
     test("updates entry on failed event", () => {
       manager.emit({
         type: "failed",

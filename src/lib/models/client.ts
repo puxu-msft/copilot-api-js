@@ -67,6 +67,8 @@ export interface Model {
   name: string
   object: string
   preview: boolean
+  /** Model-specific request headers from CAPI (forwarded to upstream API requests) */
+  request_headers?: Record<string, string>
   supported_endpoints?: Array<string>
   vendor: string
   version: string
