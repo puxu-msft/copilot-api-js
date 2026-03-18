@@ -11,10 +11,10 @@
 
 import type { Hono } from "hono"
 import type { UpgradeWebSocket, WSContext } from "hono/ws"
-import type { Server as NodeHttpServer } from "node:http"
 
 import consola from "consola"
 
+import type { HeadersCapture } from "~/lib/context/request"
 import type { ResponsesPayload, ResponsesStreamEvent } from "~/types/api/openai-responses"
 
 import { getRequestContextManager } from "~/lib/context/manager"
@@ -150,7 +150,8 @@ async function handleResponseCreate(ws: WSContext, payload: ResponsesPayload): P
   }
 
   // Build pipeline adapter and strategies (shared with HTTP handler)
-  const adapter = createResponsesAdapter(selectedModel)
+  const headersCapture: HeadersCapture = {}
+  const adapter = createResponsesAdapter(selectedModel, headersCapture)
   const strategies = createResponsesStrategies()
 
   try {
@@ -163,6 +164,9 @@ async function handleResponseCreate(ws: WSContext, payload: ResponsesPayload): P
       model: selectedModel,
       maxRetries: 1,
     })
+
+    // Capture HTTP headers from the final attempt for history recording
+    reqCtx.setHttpHeaders(headersCapture)
 
     const response = pipelineResult.response
 
@@ -210,6 +214,7 @@ async function handleResponseCreate(ws: WSContext, payload: ResponsesPayload): P
     // Close WebSocket gracefully
     ws.close(1000, "done")
   } catch (error) {
+    reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(resolvedModel, error)
 
     const message = error instanceof Error ? error.message : String(error)
@@ -226,28 +231,14 @@ async function handleResponseCreate(ws: WSContext, payload: ResponsesPayload): P
  * Initialize WebSocket routes for the Responses API.
  *
  * Registers GET /v1/responses and GET /responses on the root Hono app
- * with WebSocket upgrade handling. Follows the same pattern as
- * initHistoryWebSocket in src/routes/history/route.ts.
+ * with WebSocket upgrade handling. Uses the shared WebSocket adapter
+ * to avoid multiple upgrade listeners on the same HTTP server.
  *
- * @returns An inject function for Node.js HTTP server (undefined for Bun)
+ * @param rootApp - The root Hono app instance
+ * @param upgradeWs - Shared WebSocket upgrade function from createWebSocketAdapter
  */
-export async function initResponsesWebSocket(rootApp: Hono): Promise<((server: NodeHttpServer) => void) | undefined> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let upgradeWs: UpgradeWebSocket<any>
-  let injectFn: ((server: NodeHttpServer) => void) | undefined
-
-  if (typeof globalThis.Bun !== "undefined") {
-    const { upgradeWebSocket } = await import("hono/bun")
-    upgradeWs = upgradeWebSocket
-  } else {
-    const { createNodeWebSocket } = await import("@hono/node-ws")
-    const nodeWs = createNodeWebSocket({ app: rootApp })
-    upgradeWs = nodeWs.upgradeWebSocket
-    injectFn = (server: NodeHttpServer) => {
-      nodeWs.injectWebSocket(server)
-    }
-  }
-
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocket<any>): void {
   // Create the WebSocket handler
   const wsHandler = upgradeWs(() => ({
     onOpen(_event: Event, _ws: WSContext) {
@@ -299,6 +290,4 @@ export async function initResponsesWebSocket(rootApp: Hono): Promise<((server: N
   rootApp.get("/responses", wsHandler)
 
   consola.debug("[WS] Responses API WebSocket routes registered")
-
-  return injectFn
 }

@@ -3,11 +3,15 @@
  *
  * Mirrors VSCode Copilot Chat's feature detection logic from:
  * - anthropic.ts: modelSupportsInterleavedThinking, modelSupportsContextEditing, modelSupportsToolSearch
- * - chatEndpoint.ts: getExtraHeaders (anthropic-beta, capi-beta-1)
+ * - chatEndpoint.ts: getExtraHeaders (anthropic-beta headers)
  * - anthropic.ts: buildContextManagement
  */
 
+import type { Model } from "~/lib/models/client"
+import type { ContextEditingMode } from "~/lib/state"
+
 import { normalizeForMatching } from "~/lib/models/resolver"
+import { state } from "~/lib/state"
 
 // ============================================================================
 // Model Feature Detection
@@ -52,6 +56,15 @@ export function modelSupportsContextEditing(modelId: string): boolean {
 }
 
 /**
+ * Check if context editing is enabled for a model.
+ * Requires both model support AND config mode != 'off'.
+ * Mirrors VSCode Copilot Chat's isAnthropicContextEditingEnabled().
+ */
+export function isContextEditingEnabled(modelId: string): boolean {
+  return modelSupportsContextEditing(modelId) && state.contextEditingMode !== "off"
+}
+
+/**
  * Tool search is supported by:
  * - Claude Opus 4.5/4.6
  */
@@ -67,30 +80,47 @@ export function modelSupportsToolSearch(modelId: string): boolean {
 export interface AnthropicBetaHeaders {
   /** Comma-separated beta feature identifiers */
   "anthropic-beta"?: string
-  /** Fallback for models without interleaved thinking support */
-  "capi-beta-1"?: string
 }
 
 /**
- * Build anthropic-beta and capi-beta-1 headers based on model capabilities.
+ * Check if a model supports adaptive thinking (from model metadata).
  *
- * Logic from chatEndpoint.ts:166-201:
- * - If model supports interleaved thinking → add "interleaved-thinking-2025-05-14"
- * - Otherwise → set "capi-beta-1: true"
+ * Models with adaptive thinking (e.g. opus 4.6) use `thinking: { type: 'adaptive' }`
+ * and do NOT need the interleaved-thinking beta header. Models without adaptive
+ * thinking still need the beta header to enable interleaved thinking.
+ *
+ * Uses model metadata `capabilities.supports.adaptive_thinking` field.
+ * Falls back to false when metadata is unavailable, which is safe because
+ * adding the interleaved-thinking beta to an adaptive model is harmless
+ * (the server ignores unknown betas), while omitting it from a non-adaptive
+ * model that needs it would break thinking.
+ */
+function modelHasAdaptiveThinking(resolvedModel?: Model): boolean {
+  return resolvedModel?.capabilities?.supports?.adaptive_thinking === true
+}
+
+/**
+ * Build anthropic-beta headers based on model capabilities.
+ *
+ * Logic from chatEndpoint.ts:getExtraHeaders:
+ * - If model does NOT support adaptive thinking → add "interleaved-thinking-2025-05-14"
  * - If model supports context editing → add "context-management-2025-06-27"
  * - If model supports tool search → add "advanced-tool-use-2025-11-20"
+ *
+ * The resolvedModel parameter provides model metadata for capability-based
+ * decisions. When unavailable, falls back to name-based detection.
  */
-export function buildAnthropicBetaHeaders(modelId: string): AnthropicBetaHeaders {
+export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model): AnthropicBetaHeaders {
   const headers: AnthropicBetaHeaders = {}
   const betaFeatures: Array<string> = []
 
-  if (modelSupportsInterleavedThinking(modelId)) {
+  // Adaptive thinking models (e.g. opus 4.6) don't need the interleaved-thinking beta.
+  // All other models that support interleaved thinking need it explicitly enabled.
+  if (!modelHasAdaptiveThinking(resolvedModel)) {
     betaFeatures.push("interleaved-thinking-2025-05-14")
-  } else {
-    headers["capi-beta-1"] = "true"
   }
 
-  if (modelSupportsContextEditing(modelId)) {
+  if (isContextEditingEnabled(modelId)) {
     betaFeatures.push("context-management-2025-06-27")
   }
 
@@ -128,9 +158,15 @@ export interface ContextManagement {
  * From anthropic.ts:270-329 (buildContextManagement + getContextManagementFromConfig):
  * - clear_thinking: keep last N thinking turns
  * - clear_tool_uses: triggered by input_tokens threshold, keep last N tool uses
+ *
+ * Only builds edits matching the requested mode:
+ * - "off" → undefined (no context management)
+ * - "clear-thinking" → clear_thinking only (if thinking is enabled)
+ * - "clear-tooluse" → clear_tool_uses only
+ * - "clear-both" → both edits
  */
-export function buildContextManagement(modelId: string, hasThinking: boolean): ContextManagement | undefined {
-  if (!modelSupportsContextEditing(modelId)) {
+export function buildContextManagement(mode: ContextEditingMode, hasThinking: boolean): ContextManagement | undefined {
+  if (mode === "off") {
     return undefined
   }
 
@@ -142,20 +178,22 @@ export function buildContextManagement(modelId: string, hasThinking: boolean): C
 
   const edits: Array<ContextManagementEdit> = []
 
-  // Add clear_thinking only if thinking is enabled
-  if (hasThinking) {
+  // Add clear_thinking when mode is "clear-thinking" or "clear-both", and thinking is enabled
+  if ((mode === "clear-thinking" || mode === "clear-both") && hasThinking) {
     edits.push({
       type: "clear_thinking_20251015",
       keep: { type: "thinking_turns", value: Math.max(1, thinkingKeepTurns) },
     })
   }
 
-  // Always add clear_tool_uses
-  edits.push({
-    type: "clear_tool_uses_20250919",
-    trigger: { type: triggerType, value: triggerValue },
-    keep: { type: "tool_uses", value: keepCount },
-  })
+  // Add clear_tool_uses when mode is "clear-tooluse" or "clear-both"
+  if (mode === "clear-tooluse" || mode === "clear-both") {
+    edits.push({
+      type: "clear_tool_uses_20250919",
+      trigger: { type: triggerType, value: triggerValue },
+      keep: { type: "tool_uses", value: keepCount },
+    })
+  }
 
-  return { edits }
+  return edits.length > 0 ? { edits } : undefined
 }

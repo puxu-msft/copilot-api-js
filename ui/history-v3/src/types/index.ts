@@ -17,7 +17,7 @@ export type {
   PreprocessInfo,
   QueryOptions,
   RedactedThinkingContentBlock,
-  RewriteInfo,
+  PipelineInfo,
   SanitizationInfo,
   ServerToolUseContentBlock,
   Session,

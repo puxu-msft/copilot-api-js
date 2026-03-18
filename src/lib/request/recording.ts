@@ -13,63 +13,71 @@ import { safeParseJson } from "./response"
 
 /**
  * Map Anthropic content blocks to history-friendly format.
+ * Filters out empty/whitespace-only text blocks (non-thinking) before mapping.
  */
 function mapAnthropicContentBlocks(acc: AnthropicStreamAccumulator): Array<unknown> {
-  return acc.contentBlocks.map((block) => {
-    // Generic (unknown) blocks are passed through as-is
-    if ("_generic" in block) {
-      const { _generic: _, ...rest } = block
-      return rest
-    }
+  return acc.contentBlocks
+    .filter((block) => {
+      // Keep all non-text blocks (thinking, redacted_thinking, tool_use, etc.)
+      if (block.type !== "text") return true
+      // Filter out empty/whitespace-only text blocks
+      return "text" in block && (block as { text: string }).text.trim() !== ""
+    })
+    .map((block) => {
+      // Generic (unknown) blocks are passed through as-is
+      if ("_generic" in block) {
+        const { _generic: _, ...rest } = block
+        return rest
+      }
 
-    // Server tool result blocks (web_search_tool_result, tool_search_tool_result, etc.)
-    // Check before the type switch because _brand blocks have `type: string` which
-    // would overlap with literal type cases.
-    if ("_brand" in block) {
-      return {
-        type: block.type,
-        tool_use_id: block.tool_use_id,
-        content: block.content,
-      }
-    }
-
-    // After the _generic and _brand checks, only known block types remain.
-    // Use a type assertion to narrow — TypeScript can't infer this from the
-    // _brand / _generic guards since they aren't shared discriminant properties.
-    type KnownBlock =
-      | { type: "text"; text: string }
-      | { type: "thinking"; thinking: string; signature?: string }
-      | { type: "redacted_thinking"; data: string }
-      | { type: "tool_use"; id: string; name: string; input: string }
-      | { type: "server_tool_use"; id: string; name: string; input: string }
-    const narrowed = block as KnownBlock
-
-    switch (narrowed.type) {
-      case "text": {
-        return { type: "text" as const, text: narrowed.text }
-      }
-      case "thinking": {
-        return { type: "thinking" as const, thinking: narrowed.thinking }
-      }
-      case "redacted_thinking": {
-        return { type: "redacted_thinking" as const }
-      }
-      case "tool_use":
-      case "server_tool_use": {
+      // Server tool result blocks (web_search_tool_result, tool_search_tool_result, etc.)
+      // Check before the type switch because _brand blocks have `type: string` which
+      // would overlap with literal type cases.
+      if ("_brand" in block) {
         return {
-          type: narrowed.type as string,
-          id: narrowed.id,
-          name: narrowed.name,
-          input: safeParseJson(narrowed.input),
+          type: block.type,
+          tool_use_id: block.tool_use_id,
+          content: block.content,
         }
       }
-      default: {
-        const unknown = narrowed as { type: string }
-        consola.warn(`[recording] Unhandled content block type in stream result: ${unknown.type}`)
-        return { type: unknown.type }
+
+      // After the _generic and _brand checks, only known block types remain.
+      // Use a type assertion to narrow — TypeScript can't infer this from the
+      // _brand / _generic guards since they aren't shared discriminant properties.
+      type KnownBlock =
+        | { type: "text"; text: string }
+        | { type: "thinking"; thinking: string; signature?: string }
+        | { type: "redacted_thinking"; data: string }
+        | { type: "tool_use"; id: string; name: string; input: string }
+        | { type: "server_tool_use"; id: string; name: string; input: string }
+      const narrowed = block as KnownBlock
+
+      switch (narrowed.type) {
+        case "text": {
+          return { type: "text" as const, text: narrowed.text }
+        }
+        case "thinking": {
+          return { type: "thinking" as const, thinking: narrowed.thinking }
+        }
+        case "redacted_thinking": {
+          return { type: "redacted_thinking" as const }
+        }
+        case "tool_use":
+        case "server_tool_use": {
+          return {
+            type: narrowed.type as string,
+            id: narrowed.id,
+            name: narrowed.name,
+            input: safeParseJson(narrowed.input),
+          }
+        }
+        default: {
+          const unknown = narrowed as { type: string }
+          consola.warn(`[recording] Unhandled content block type in stream result: ${unknown.type}`)
+          return { type: unknown.type }
+        }
       }
-    }
-  })
+    })
 }
 
 /**
@@ -123,7 +131,7 @@ export function buildOpenAIResponseData(acc: OpenAIStreamAccumulator, fallbackMo
     stop_reason: acc.finishReason || undefined,
     content: {
       role: "assistant",
-      content: acc.content,
+      content: acc.rawContent,
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     },
   }

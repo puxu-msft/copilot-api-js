@@ -30,7 +30,7 @@ export function createOpenAIStreamAccumulator(): OpenAIStreamAccumulator {
     cachedTokens: 0,
     reasoningTokens: 0,
     finishReason: "",
-    content: "",
+    rawContent: "",
     toolCalls: [],
     toolCallMap: new Map(),
   }
@@ -53,7 +53,7 @@ export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: Op
 
   const choice = parsed.choices[0] as (typeof parsed.choices)[0] | undefined
   if (choice) {
-    if (choice.delta.content) acc.content += choice.delta.content
+    if (choice.delta.content) acc.rawContent += choice.delta.content
     if (choice.delta.tool_calls) {
       for (const tc of choice.delta.tool_calls) {
         const idx = tc.index

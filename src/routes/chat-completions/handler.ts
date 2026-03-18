@@ -5,6 +5,7 @@ import consola from "consola"
 import { SSEStreamingApi, streamSSE } from "hono/streaming"
 
 import type { RequestContext } from "~/lib/context/request"
+import type { HeadersCapture } from "~/lib/context/request"
 import type { MessageContent } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
@@ -129,10 +130,12 @@ async function executeRequest(opts: ExecuteRequestOptions) {
   const { c, payload, originalPayload, selectedModel, reqCtx } = opts
 
   // Build adapter and strategy for the pipeline
+  const headersCapture: HeadersCapture = {}
   const adapter: FormatAdapter<ChatCompletionsPayload> = {
     format: "openai-chat-completions",
     sanitize: (p) => sanitizeOpenAIMessages(p),
-    execute: (p) => executeWithAdaptiveRateLimit(() => createChatCompletions(p, { resolvedModel: selectedModel })),
+    execute: (p) =>
+      executeWithAdaptiveRateLimit(() => createChatCompletions(p, { resolvedModel: selectedModel, headersCapture })),
     logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
   }
 
@@ -174,6 +177,9 @@ async function executeRequest(opts: ExecuteRequestOptions) {
       },
     })
 
+    // Capture HTTP headers from the final attempt for history recording
+    reqCtx.setHttpHeaders(headersCapture)
+
     const response = result.response
 
     if (isNonStreaming(response as ChatCompletionResponse | AsyncIterable<unknown>)) {
@@ -197,6 +203,7 @@ async function executeRequest(opts: ExecuteRequestOptions) {
       })
     })
   } catch (error) {
+    reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(payload.model, error)
     throw error
   }
@@ -286,7 +293,7 @@ async function handleStreamingResponse(opts: StreamingOptions) {
         data: JSON.stringify(markerChunk),
         event: "message",
       })
-      acc.content += marker
+      acc.rawContent += marker
     }
 
     const iterator = response[Symbol.asyncIterator]()

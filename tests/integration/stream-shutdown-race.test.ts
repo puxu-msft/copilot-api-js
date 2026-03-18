@@ -15,7 +15,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
-import { processAnthropicStream } from "~/lib/anthropic/handlers"
+import { processAnthropicStream } from "~/lib/anthropic/sse"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { state } from "~/lib/state"
 import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIteratorNext } from "~/lib/stream"

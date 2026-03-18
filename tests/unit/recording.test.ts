@@ -14,12 +14,13 @@ function makeAnthropicAcc(overrides: Partial<AnthropicStreamAccumulator> = {}): 
     model: "claude-sonnet-4",
     inputTokens: 100,
     outputTokens: 50,
-    content: "Hello",
+    rawContent: "Hello",
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     stopReason: "end_turn",
     contentBlocks: [],
     copilotAnnotations: [],
+    toolSearchRequests: 0,
     ...overrides,
   }
 }
@@ -29,7 +30,7 @@ function makeOpenAIAcc(overrides: Partial<OpenAIStreamAccumulator> = {}): OpenAI
     model: "gpt-4o",
     inputTokens: 80,
     outputTokens: 30,
-    content: "Hi there",
+    rawContent: "Hi there",
     finishReason: "stop",
     cachedTokens: 0,
     reasoningTokens: 0,
@@ -136,6 +137,46 @@ describe("buildAnthropicResponseData", () => {
     const result = buildAnthropicResponseData(acc, "fallback")
     const content = result.content as { role: string; content: Array<unknown> }
     expect(content.content[0]).toEqual({ type: "redacted_thinking" })
+  })
+
+  test("filters empty text blocks from response content", () => {
+    const acc = makeAnthropicAcc({
+      contentBlocks: [
+        { type: "text", text: "" },
+        { type: "text", text: "Hello" },
+        { type: "text", text: "   " },
+      ],
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    const content = result.content as { role: string; content: Array<unknown> }
+    expect(content.content).toHaveLength(1)
+    expect(content.content[0]).toEqual({ type: "text", text: "Hello" })
+  })
+
+  test("preserves thinking blocks even when adjacent text blocks are empty", () => {
+    const acc = makeAnthropicAcc({
+      contentBlocks: [
+        { type: "thinking", thinking: "reasoning..." },
+        { type: "text", text: "" },
+      ],
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    const content = result.content as { role: string; content: Array<unknown> }
+    expect(content.content).toHaveLength(1)
+    expect(content.content[0]).toEqual({ type: "thinking", thinking: "reasoning..." })
+  })
+
+  test("returns null content when all text blocks are empty", () => {
+    const acc = makeAnthropicAcc({
+      contentBlocks: [
+        { type: "text", text: "" },
+        { type: "text", text: "  \n\t  " },
+      ],
+    })
+    const result = buildAnthropicResponseData(acc, "fallback")
+    expect(result.content).toBeNull()
   })
 
   test("returns null content when no content blocks", () => {

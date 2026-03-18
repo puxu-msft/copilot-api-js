@@ -139,3 +139,12 @@ export function getCopilotTokenManager(): CopilotTokenManager | null {
 export function stopTokenRefresh(): void {
   copilotTokenManager?.stopAutoRefresh()
 }
+
+/**
+ * Proactively ensure the Copilot token is valid.
+ * Triggers a refresh if the token is expired/expiring or the last
+ * background refresh failed. No-op if the manager is not initialized.
+ */
+export async function ensureValidCopilotToken(): Promise<void> {
+  await copilotTokenManager?.ensureValidToken()
+}

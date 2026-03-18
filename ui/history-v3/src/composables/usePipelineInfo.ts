@@ -2,15 +2,15 @@ import { computed, type Ref } from "vue"
 
 import type { HistoryEntry, MessageContent } from "../types"
 
-export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
+export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const truncationPoint = computed(() => {
     const e = entry.value
-    if (!e?.rewrites?.truncation) return -1
-    const removed = e.rewrites.truncation.removedMessageCount
+    if (!e?.pipelineInfo?.truncation) return -1
+    const removed = e.pipelineInfo.truncation.removedMessageCount
     if (!removed) return -1
     // truncationPoint is the index after which messages were kept
     // i.e. messages[0..truncationPoint-1] were truncated
-    const mapping = e.rewrites.messageMapping
+    const mapping = e.pipelineInfo.messageMapping
     if (mapping && mapping.length > 0) {
       // Find first mapped index — messages before this were removed
       return mapping[0]
@@ -22,8 +22,8 @@ export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
   const rewrittenMessageMap = computed(() => {
     const map = new Map<number, MessageContent>()
     const e = entry.value
-    if (!e?.rewrites?.rewrittenMessages || !e.rewrites.messageMapping) return map
-    const { rewrittenMessages, messageMapping } = e.rewrites
+    if (!e?.pipelineInfo?.rewrittenMessages || !e.pipelineInfo.messageMapping) return map
+    const { rewrittenMessages, messageMapping } = e.pipelineInfo
     for (let i = 0; i < messageMapping.length; i++) {
       const originalIdx = messageMapping[i]
       const rewritten = rewrittenMessages[i]
@@ -36,7 +36,7 @@ export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
   const rewrittenIndices = computed(() => {
     const indices = new Set<number>()
     const e = entry.value
-    if (!e?.rewrites?.rewrittenMessages) return indices
+    if (!e?.pipelineInfo?.rewrittenMessages) return indices
     const messages = e.request.messages ?? []
     for (const [idx, rewritten] of rewrittenMessageMap.value) {
       const original = messages[idx]
@@ -56,16 +56,16 @@ export function useRewriteInfo(entry: Ref<HistoryEntry | null>) {
   /** Whether any rewriting occurred (messages or system prompt) */
   const hasRewrites = computed(() => {
     const e = entry.value
-    if (!e?.rewrites) return false
-    return rewrittenIndices.value.size > 0 || !!e.rewrites.rewrittenSystem
+    if (!e?.pipelineInfo) return false
+    return rewrittenIndices.value.size > 0 || !!e.pipelineInfo.rewrittenSystem
   })
 
   /** Whether the system prompt was rewritten */
   const isSystemRewritten = computed(() => {
     const e = entry.value
-    if (!e?.rewrites?.rewrittenSystem) return false
+    if (!e?.pipelineInfo?.rewrittenSystem) return false
     const origSystem = e.request.system
-    const rwSystem = e.rewrites.rewrittenSystem
+    const rwSystem = e.pipelineInfo.rewrittenSystem
     if (!origSystem || !rwSystem) return !!rwSystem
     return JSON.stringify(origSystem) !== JSON.stringify(rwSystem)
   })

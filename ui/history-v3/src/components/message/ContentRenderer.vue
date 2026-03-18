@@ -17,6 +17,7 @@ import ImageBlock from './ImageBlock.vue'
 import ToolUseBlock from './ToolUseBlock.vue'
 import ToolResultBlock from './ToolResultBlock.vue'
 import GenericBlock from './GenericBlock.vue'
+import ErrorBoundary from '@/components/ui/ErrorBoundary.vue'
 
 const props = defineProps<{
   content: string | ContentBlock[]
@@ -54,37 +55,39 @@ const filteredBlocks = computed(() => {
 <template>
   <div class="content-renderer">
     <template v-for="(block, i) in filteredBlocks" :key="i">
-      <TextBlock
-        v-if="isTextBlock(block)"
-        :text="block.text"
-      />
-      <ThinkingBlock
-        v-else-if="isThinkingBlock(block)"
-        :text="block.thinking"
-      />
-      <ThinkingBlock
-        v-else-if="isRedactedThinkingBlock(block)"
-        text=""
-        :redacted="true"
-      />
-      <ImageBlock
-        v-else-if="isImageBlock(block) && block.source.type === 'base64'"
-        :media-type="block.source.media_type"
-        :data="block.source.data"
-      />
-      <ToolUseBlock
-        v-else-if="isToolUseBlock(block)"
-        :block="block"
-      />
-      <ToolResultBlock
-        v-else-if="isToolResultBlock(block)"
-        :block="block"
-        :tool-name="toolUseNameMap[block.tool_use_id]"
-      />
-      <GenericBlock
-        v-else
-        :block="block"
-      />
+      <ErrorBoundary :label="block.type + ' block'">
+        <TextBlock
+          v-if="isTextBlock(block)"
+          :text="block.text"
+        />
+        <ThinkingBlock
+          v-else-if="isThinkingBlock(block)"
+          :text="block.thinking"
+        />
+        <ThinkingBlock
+          v-else-if="isRedactedThinkingBlock(block)"
+          text=""
+          :redacted="true"
+        />
+        <ImageBlock
+          v-else-if="isImageBlock(block) && block.source.type === 'base64'"
+          :media-type="block.source.media_type"
+          :data="block.source.data"
+        />
+        <ToolUseBlock
+          v-else-if="isToolUseBlock(block)"
+          :block="block"
+        />
+        <ToolResultBlock
+          v-else-if="isToolResultBlock(block)"
+          :block="block"
+          :tool-name="toolUseNameMap[block.tool_use_id]"
+        />
+        <GenericBlock
+          v-else
+          :block="block"
+        />
+      </ErrorBoundary>
     </template>
   </div>
 </template>

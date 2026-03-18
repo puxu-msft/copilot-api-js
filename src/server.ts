@@ -6,6 +6,7 @@ import { trimTrailingSlash } from "hono/trailing-slash"
 import { applyConfigToState } from "./lib/config/config"
 import { forwardError } from "./lib/error"
 import { state } from "./lib/state"
+import { ensureValidCopilotToken } from "./lib/token"
 import { tuiMiddleware } from "./lib/tui"
 import { registerRoutes } from "./routes"
 
@@ -38,8 +39,12 @@ server.notFound((c) => {
 
 // Config hot-reload: re-apply config.yaml settings before each request.
 // loadConfig() is mtime-cached — only costs one stat() syscall when config is unchanged.
+// Also proactively ensure the Copilot token is valid — if the last background
+// refresh failed or the token is about to expire, try refreshing now rather than
+// waiting for a 401 from the upstream API.
 server.use(async (_c, next) => {
   await applyConfigToState()
+  await ensureValidCopilotToken()
   await next()
 })
 

@@ -10,15 +10,14 @@ import type { Context } from "hono"
 import consola from "consola"
 import { SSEStreamingApi, streamSSE } from "hono/streaming"
 
-import type { RequestContext } from "~/lib/context/request"
+import type { HeadersCapture, RequestContext } from "~/lib/context/request"
 import type { MessageContent, ToolDefinition } from "~/lib/history"
 import type { SseEventRecord } from "~/lib/history/store"
-import type { MessagesPayload, StreamEvent } from "~/types/api/anthropic"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { type AnthropicAutoTruncateResult, autoTruncateAnthropic } from "~/lib/anthropic/auto-truncate"
 import { createAnthropicMessages, type AnthropicMessageResponse } from "~/lib/anthropic/client"
-import { processAnthropicStream, supportsDirectAnthropicApi } from "~/lib/anthropic/handlers"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { preprocessTools } from "~/lib/anthropic/message-tools"
 import {
@@ -26,6 +25,13 @@ import {
   sanitizeAnthropicMessages,
   type SanitizationStats,
 } from "~/lib/anthropic/sanitize"
+import {
+  createServerToolBlockFilter,
+  filterServerToolBlocksFromResponse,
+  logServerToolBlock,
+  logServerToolBlocks,
+} from "~/lib/anthropic/server-tool-filter"
+import { processAnthropicStream, supportsDirectAnthropicApi } from "~/lib/anthropic/sse"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
@@ -148,7 +154,7 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
     || hasPreprocessing
   ) {
     const messageMapping = buildMessageMapping(anthropicPayload.messages, initialSanitized.messages)
-    reqCtx.setRewrites({
+    reqCtx.setPipelineInfo({
       rewrittenMessages: initialSanitized.messages as unknown as Array<MessageContent>,
       rewrittenSystem: typeof initialSanitized.system === "string" ? initialSanitized.system : undefined,
       messageMapping,
@@ -164,10 +170,12 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
   }
 
   // Build adapter and strategy for the pipeline
+  const headersCapture: HeadersCapture = {}
   const adapter: FormatAdapter<MessagesPayload> = {
     format: "anthropic-messages",
     sanitize: (p) => sanitizeAnthropicMessages(preprocessTools(p)),
-    execute: (p) => executeWithAdaptiveRateLimit(() => createAnthropicMessages(p, { resolvedModel: selectedModel })),
+    execute: (p) =>
+      executeWithAdaptiveRateLimit(() => createAnthropicMessages(p, { resolvedModel: selectedModel, headersCapture })),
     logPayloadSize: (p) => logPayloadSizeInfoAnthropic(p, selectedModel),
   }
 
@@ -208,7 +216,7 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
           reqCtx.addSanitizationInfo(toSanitizationInfo(retrySanitization))
         }
         const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, newPayload.messages)
-        reqCtx.setRewrites({
+        reqCtx.setPipelineInfo({
           truncation:
             retryTruncateResult ?
               {
@@ -233,6 +241,9 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
         }
       },
     })
+
+    // Capture HTTP headers from the final attempt for history recording
+    reqCtx.setHttpHeaders(headersCapture)
 
     const response = result.response
     const effectivePayload = result.effectivePayload as MessagesPayload
@@ -259,6 +270,7 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
     // Non-streaming response
     return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, reqCtx, truncateResult)
   } catch (error) {
+    reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(anthropicPayload.model, error)
     throw error
   }
@@ -296,10 +308,11 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
   let currentBlockType = ""
   let firstEventLogged = false
 
-  // Optional tool_search block filter — when enabled, strips the internal
-  // tool_search_tool_regex server_tool_use + tool_search_tool_result blocks
-  // from the stream before forwarding to client.
-  const toolSearchFilter = state.filterToolSearchBlocks ? createToolSearchBlockFilter() : null
+  // Server tool block filter — always active, matching vscode-copilot-chat behavior.
+  // Server tool blocks (server_tool_use, tool_search_tool_result, etc.) are server-side
+  // artifacts that clients don't expect. The reference implementation (vscode-copilot-chat)
+  // intercepts these unconditionally and never forwards raw blocks to the consumer.
+  const serverToolFilter = createServerToolBlockFilter()
 
   try {
     for await (const { raw: rawEvent, parsed } of processAnthropicStream(response, acc, clientAbortSignal)) {
@@ -327,6 +340,10 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
       if (parsed?.type === "content_block_start") {
         currentBlockType = (parsed.content_block as { type: string }).type
         consola.debug(`[Stream] Block #${parsed.index} start: ${currentBlockType} at +${Date.now() - streamStartMs}ms`)
+
+        // Log server tool information (before filtering, so info is never lost)
+        const block = parsed.content_block as unknown as Record<string, unknown> & { type: string }
+        logServerToolBlock(block)
       } else if (parsed?.type === "content_block_stop") {
         const offset = Date.now() - streamStartMs
         consola.debug(
@@ -352,9 +369,8 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
         }
       }
 
-      // Forward event to client, optionally filtering tool_search blocks
-      const forwardData =
-        toolSearchFilter ? toolSearchFilter.rewriteEvent(parsed, rawEvent.data ?? "") : (rawEvent.data ?? "")
+      // Forward event to client, filtering server tool blocks
+      const forwardData = serverToolFilter.rewriteEvent(parsed, rawEvent.data ?? "")
       if (forwardData === null) continue
 
       await stream.writeSSE({
@@ -366,7 +382,9 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
     }
 
     // Debug: stream completion summary
-    consola.debug(`[Stream] Completed: ↓${bytesIn}B ${eventsIn}ev in ${Date.now() - streamStartMs}ms`)
+    const summaryParts = [`↓${bytesIn}B ${eventsIn}ev in ${Date.now() - streamStartMs}ms`]
+    if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
+    consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
     // Record SSE events for history debugging (must be before complete/fail which calls toHistoryEntry)
     reqCtx.setSseEvents(sseEvents)
@@ -420,10 +438,9 @@ function handleDirectAnthropicNonStreamingResponse(
     finalResponse = prependMarkerToResponse(response, marker)
   }
 
-  // Optionally strip internal tool_search blocks
-  if (state.filterToolSearchBlocks) {
-    finalResponse = filterToolSearchBlocksFromResponse(finalResponse)
-  }
+  // Filter server tool blocks from non-streaming response (always active)
+  logServerToolBlocks(finalResponse.content as unknown as Array<Record<string, unknown> & { type: string }>)
+  finalResponse = filterServerToolBlocksFromResponse(finalResponse)
 
   return c.json(finalResponse)
 }
@@ -442,81 +459,4 @@ function toSanitizationInfo(stats: SanitizationStats) {
     emptyTextBlocksRemoved: stats.emptyTextBlocksRemoved,
     systemReminderRemovals: stats.systemReminderRemovals,
   }
-}
-
-// ============================================================================
-// Tool search block filter (gated by state.filterToolSearchBlocks)
-// ============================================================================
-
-const TOOL_SEARCH_TOOL_NAME = "tool_search_tool_regex"
-const TOOL_SEARCH_RESULT_TYPE = "tool_search_tool_result"
-
-/** Check if a content block is an internal tool_search block */
-function isToolSearchBlock(block: { type: string; name?: string }): boolean {
-  if (block.type === "server_tool_use" && block.name === TOOL_SEARCH_TOOL_NAME) return true
-  if (block.type === TOOL_SEARCH_RESULT_TYPE) return true
-  return false
-}
-
-/**
- * Filters tool_search blocks from the SSE stream before forwarding to the client.
- * Handles index remapping so block indices remain dense/sequential after filtering.
- */
-function createToolSearchBlockFilter() {
-  const filteredIndices = new Set<number>()
-  const clientIndexMap = new Map<number, number>()
-  let nextClientIndex = 0
-
-  function getClientIndex(apiIndex: number): number {
-    let idx = clientIndexMap.get(apiIndex)
-    if (idx === undefined) {
-      idx = nextClientIndex++
-      clientIndexMap.set(apiIndex, idx)
-    }
-    return idx
-  }
-
-  return {
-    /** Returns rewritten data to forward, or null to suppress the event */
-    rewriteEvent(parsed: StreamEvent | undefined, rawData: string): string | null {
-      if (!parsed) return rawData
-
-      if (parsed.type === "content_block_start") {
-        const block = parsed.content_block as { type: string; name?: string }
-        if (isToolSearchBlock(block)) {
-          filteredIndices.add(parsed.index)
-          return null
-        }
-        if (filteredIndices.size === 0) {
-          getClientIndex(parsed.index)
-          return rawData
-        }
-        const clientIndex = getClientIndex(parsed.index)
-        if (clientIndex === parsed.index) return rawData
-        const obj = JSON.parse(rawData) as Record<string, unknown>
-        obj.index = clientIndex
-        return JSON.stringify(obj)
-      }
-
-      if (parsed.type === "content_block_delta" || parsed.type === "content_block_stop") {
-        if (filteredIndices.has(parsed.index)) return null
-        if (filteredIndices.size === 0) return rawData
-        const clientIndex = getClientIndex(parsed.index)
-        if (clientIndex === parsed.index) return rawData
-        const obj = JSON.parse(rawData) as Record<string, unknown>
-        obj.index = clientIndex
-        return JSON.stringify(obj)
-      }
-
-      return rawData
-    },
-  }
-}
-
-/** Filter tool_search blocks from a non-streaming response */
-function filterToolSearchBlocksFromResponse(response: AnthropicMessageResponse): AnthropicMessageResponse {
-  const filtered = response.content.filter((block: { type: string; name?: string }) => !isToolSearchBlock(block))
-
-  if (filtered.length === response.content.length) return response
-  return { ...response, content: filtered }
 }

@@ -7,7 +7,7 @@
  */
 
 import type { ApiError } from "~/lib/error"
-import type { EndpointType, PreprocessInfo, RewriteInfo, SanitizationInfo, SseEventRecord } from "~/lib/history/store"
+import type { EndpointType, PipelineInfo, PreprocessInfo, SanitizationInfo, SseEventRecord } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 
 import { getErrorMessage } from "~/lib/error"
@@ -87,7 +87,7 @@ export interface Attempt {
 // ─── Pipeline Processing State ───
 
 export interface SanitizationState {
-  removedCount: number
+  blocksRemoved: number
   systemReminderRemovals: number
   orphanedToolUseCount?: number
   orphanedToolResultCount?: number
@@ -104,6 +104,12 @@ export interface TruncationState {
 }
 
 // ─── History Entry Data ───
+
+/** Mutable capture object for HTTP headers (filled by client functions after fetch) */
+export interface HeadersCapture {
+  request?: Record<string, string>
+  response?: Record<string, string>
+}
 
 /** Serialized form of a completed request (decoupled from history store) */
 export interface HistoryEntryData {
@@ -123,7 +129,7 @@ export interface HistoryEntryData {
   }
   response?: ResponseData
   truncation?: TruncationState
-  rewrites?: RewriteInfo
+  pipelineInfo?: PipelineInfo
   sseEvents?: Array<SseEventRecord>
   attempts?: Array<{
     index: number
@@ -132,6 +138,11 @@ export interface HistoryEntryData {
     error?: string
     truncation?: TruncationState
   }>
+  /** HTTP headers sent to and received from upstream API */
+  httpHeaders?: {
+    request: Record<string, string>
+    response: Record<string, string>
+  }
 }
 
 // ─── Stream Accumulator Result ───
@@ -186,8 +197,9 @@ export interface RequestContext {
   // --- Top-level Data ---
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
-  readonly rewrites: RewriteInfo | null
+  readonly pipelineInfo: PipelineInfo | null
   readonly preprocessInfo: PreprocessInfo | null
+  readonly httpHeaders: { request: Record<string, string>; response: Record<string, string> } | null
 
   // --- Attempts ---
   readonly attempts: ReadonlyArray<Attempt>
@@ -198,8 +210,9 @@ export interface RequestContext {
   setOriginalRequest(req: OriginalRequest): void
   setPreprocessInfo(info: PreprocessInfo): void
   addSanitizationInfo(info: SanitizationInfo): void
-  setRewrites(info: RewriteInfo): void
+  setPipelineInfo(info: PipelineInfo): void
   setSseEvents(events: Array<SseEventRecord>): void
+  setHttpHeaders(capture: HeadersCapture): void
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationState }): void
   setAttemptSanitization(info: SanitizationState): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
@@ -230,9 +243,10 @@ export function createRequestContext(opts: {
   let _state: RequestState = "pending"
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
-  let _rewrites: RewriteInfo | null = null
+  let _pipelineInfo: PipelineInfo | null = null
   let _preprocessInfo: PreprocessInfo | null = null
   let _sseEvents: Array<SseEventRecord> | null = null
+  let _httpHeaders: { request: Record<string, string>; response: Record<string, string> } | null = null
   const _sanitizationHistory: Array<SanitizationInfo> = []
   let _queueWaitMs = 0
   const _attempts: Array<Attempt> = []
@@ -268,11 +282,14 @@ export function createRequestContext(opts: {
     get response() {
       return _response
     },
-    get rewrites() {
-      return _rewrites
+    get pipelineInfo() {
+      return _pipelineInfo
     },
     get preprocessInfo() {
       return _preprocessInfo
+    },
+    get httpHeaders() {
+      return _httpHeaders
     },
     get attempts() {
       return _attempts
@@ -297,17 +314,23 @@ export function createRequestContext(opts: {
       _sanitizationHistory.push(info)
     },
 
-    setRewrites(info: RewriteInfo) {
-      _rewrites = {
+    setPipelineInfo(info: PipelineInfo) {
+      _pipelineInfo = {
         ...(_preprocessInfo && { preprocessing: _preprocessInfo }),
         ...(_sanitizationHistory.length > 0 && { sanitization: _sanitizationHistory }),
         ...info,
       }
-      emit({ type: "updated", context: ctx, field: "rewrites" })
+      emit({ type: "updated", context: ctx, field: "pipelineInfo" })
     },
 
     setSseEvents(events: Array<SseEventRecord>) {
       _sseEvents = events.length > 0 ? events : null
+    },
+
+    setHttpHeaders(capture: HeadersCapture) {
+      if (capture.request && capture.response) {
+        _httpHeaders = { request: capture.request, response: capture.response }
+      }
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationState }) {
@@ -455,12 +478,16 @@ export function createRequestContext(opts: {
         entry.truncation = lastTruncation
       }
 
-      if (_rewrites) {
-        entry.rewrites = _rewrites
+      if (_pipelineInfo) {
+        entry.pipelineInfo = _pipelineInfo
       }
 
       if (_sseEvents) {
         entry.sseEvents = _sseEvents
+      }
+
+      if (_httpHeaders) {
+        entry.httpHeaders = _httpHeaders
       }
 
       // Include attempt summary

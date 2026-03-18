@@ -45,7 +45,7 @@ describeWithToken("Extended Copilot API Integration", () => {
 
     state.githubToken = githubToken
     state.accountType = "individual"
-    state.convertServerToolsToCustom = true
+    state.stripServerTools = true
 
     const { token } = await getCopilotToken()
     state.copilotToken = token

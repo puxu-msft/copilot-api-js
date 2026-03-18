@@ -20,16 +20,23 @@ export async function ensurePaths(): Promise<void> {
 }
 
 async function ensureFile(filePath: string): Promise<void> {
+  const isWindows = process.platform === "win32"
   try {
     await fs.access(filePath, fs.constants.W_OK)
-    // File exists, ensure it has secure permissions (owner read/write only)
-    const stats = await fs.stat(filePath)
-    const currentMode = stats.mode & 0o777
-    if (currentMode !== 0o600) {
-      await fs.chmod(filePath, 0o600)
+    // File exists — on Unix, ensure secure permissions (owner read/write only).
+    // Windows NTFS doesn't support Unix permission bits; chmod is a no-op and
+    // stat.mode returns a synthetic value (e.g. 0o666), so skip the check entirely.
+    if (!isWindows) {
+      const stats = await fs.stat(filePath)
+      const currentMode = stats.mode & 0o777
+      if (currentMode !== 0o600) {
+        await fs.chmod(filePath, 0o600)
+      }
     }
   } catch {
     await fs.writeFile(filePath, "")
-    await fs.chmod(filePath, 0o600)
+    if (!isWindows) {
+      await fs.chmod(filePath, 0o600)
+    }
   }
 }

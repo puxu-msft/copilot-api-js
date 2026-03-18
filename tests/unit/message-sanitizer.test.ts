@@ -433,7 +433,7 @@ describe("Anthropic Orphan Filter", () => {
         expect(types).toContain("tool_search_tool_result")
         expect(types).toContain("tool_use")
       }
-      expect(result.removedCount).toBe(0)
+      expect(result.blocksRemoved).toBe(0)
     })
 
     test("sanitizeAnthropicMessages should fix double-serialized server_tool_use input (non-final assistant)", () => {
@@ -543,7 +543,7 @@ describe("Anthropic Orphan Filter", () => {
         expect(assistantMsg.content).toHaveLength(1)
         expect((assistantMsg.content[0] as any).name).toBe("AnyTool")
       }
-      expect(result.removedCount).toBe(0)
+      expect(result.blocksRemoved).toBe(0)
     })
   })
 
@@ -868,7 +868,7 @@ describe("Tool Name Case Correction", () => {
     )
 
     const result = sanitizeAnthropicMessages(payload)
-    expect(result.removedCount).toBeGreaterThan(0)
+    expect(result.blocksRemoved).toBeGreaterThan(0)
     const userMsg = result.payload.messages[2]
     if (typeof userMsg.content !== "string") {
       expect(userMsg.content).toHaveLength(1)
@@ -894,7 +894,7 @@ describe("Tool Name Case Correction", () => {
     )
 
     const result = sanitizeAnthropicMessages(payload)
-    expect(result.removedCount).toBeGreaterThan(0)
+    expect(result.blocksRemoved).toBeGreaterThan(0)
     const assistantMsg = result.payload.messages[1]
     if (typeof assistantMsg.content !== "string") {
       expect(assistantMsg.content).toHaveLength(1)
@@ -1213,7 +1213,7 @@ describe("Server Tool Use Support", () => {
       ])
 
       const result = sanitizeAnthropicMessages(payload)
-      expect(result.removedCount).toBe(0)
+      expect(result.blocksRemoved).toBe(0)
       expect(result.payload.messages).toHaveLength(4)
 
       // Verify server_tool_use block is preserved with correct input
@@ -1242,7 +1242,7 @@ describe("Server Tool Use Support", () => {
       ])
 
       const result = sanitizeAnthropicMessages(payload)
-      expect(result.removedCount).toBeGreaterThan(0)
+      expect(result.blocksRemoved).toBeGreaterThan(0)
       const assistantMsg = result.payload.messages[1]
       if (typeof assistantMsg.content !== "string") {
         expect(assistantMsg.content).toHaveLength(1)
@@ -1273,7 +1273,7 @@ describe("Server Tool Use Support", () => {
       ])
 
       const result = sanitizeAnthropicMessages(payload)
-      expect(result.removedCount).toBeGreaterThan(0)
+      expect(result.blocksRemoved).toBeGreaterThan(0)
       // The user message with only orphaned web_search_tool_result should be removed
       expect(result.payload.messages).toHaveLength(1)
       expect(result.payload.messages[0].role).toBe("user")
@@ -1313,7 +1313,7 @@ describe("Server Tool Use Support", () => {
       )
 
       const result = sanitizeAnthropicMessages(payload)
-      expect(result.removedCount).toBe(0)
+      expect(result.blocksRemoved).toBe(0)
       expect(result.payload.messages).toHaveLength(3)
 
       // Verify both types are preserved

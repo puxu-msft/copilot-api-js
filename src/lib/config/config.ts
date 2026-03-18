@@ -9,7 +9,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 
 import { setHistoryMaxEntries } from "~/lib/history"
-import { type CompiledRewriteRule, DEFAULT_MODEL_OVERRIDES, state } from "~/lib/state"
+import { type CompiledRewriteRule, type ContextEditingMode, DEFAULT_MODEL_OVERRIDES, state } from "~/lib/state"
 
 import { PATHS } from "./paths"
 
@@ -87,8 +87,8 @@ export interface RateLimiterConfig {
 
 /** Anthropic-specific configuration section */
 export interface AnthropicConfig {
-  /** Convert server-side tool declarations (web_search, etc.) to custom tool format (default: true) */
-  convert_server_tools_to_custom?: boolean
+  /** Strip server-side tools (web_search, etc.) from requests (default: false) */
+  strip_server_tools?: boolean
   /**
    * Remove duplicate tool_use/tool_result pairs (keep last occurrence).
    * - `false` — disabled (default)
@@ -97,14 +97,7 @@ export interface AnthropicConfig {
    */
   dedup_tool_calls?: boolean | "input" | "result"
   /** Strip injected system-reminder tags from Read tool results */
-  truncate_read_tool_result?: boolean
-  /**
-   * Filter internal tool_search blocks from the response before forwarding to client.
-   * When enabled, server_tool_use (tool_search_tool_regex) and tool_search_tool_result
-   * blocks are stripped from both streaming and non-streaming responses.
-   * Default: false (passthrough).
-   */
-  filter_tool_search_blocks?: boolean
+  strip_read_tool_result_tags?: boolean
   /**
    * Rewrite system-reminder tags in messages.
    * - `false` — keep all tags unchanged (default)
@@ -116,6 +109,20 @@ export interface AnthropicConfig {
    *   - `method`: `"regex"` (default) or `"line"`
    */
   rewrite_system_reminders?: boolean | Array<RewriteRule>
+  /**
+   * Server-side context editing mode.
+   * Controls how Anthropic's context_management trims older context when input grows large.
+   * Requires the `context-management-2025-06-27` beta header (added automatically when not 'off').
+   *
+   * - `"off"` — disabled (default). No context_management sent, no beta header added.
+   * - `"clear-thinking"` — clear old thinking blocks, keeping the last N thinking turns.
+   * - `"clear-tooluse"` — clear old tool_use/tool_result pairs when input_tokens exceed threshold.
+   * - `"clear-both"` — apply both clear-thinking and clear-tooluse edits.
+   *
+   * Mirrors VSCode Copilot Chat's `chat.anthropic.contextEditing.mode` setting.
+   * Only effective for models that support context editing (Haiku 4.5, Sonnet 4/4.5/4.6, Opus 4/4.1/4.5/4.6).
+   */
+  context_editing?: ContextEditingMode
 }
 
 /** Shutdown timing configuration section */
@@ -124,6 +131,25 @@ export interface ShutdownConfig {
   graceful_wait?: number
   /** Phase 3 timeout in seconds: wait after abort signal for handlers to wrap up (default: 120) */
   abort_wait?: number
+}
+
+/** Responses API configuration section */
+export interface ResponsesConfig {
+  /**
+   * Normalize function call IDs: convert `call_` prefix to `fc_` prefix.
+   * Required when clients send conversation history with Chat Completions-format
+   * tool call IDs (`call_xxx`) to the Responses API endpoint (which requires `fc_xxx`).
+   * Default: false.
+   */
+  normalize_call_ids?: boolean
+}
+
+/** History storage configuration section */
+export interface HistoryConfig {
+  /** Maximum number of entries to keep in memory (0 = unlimited, default: 200) */
+  limit?: number
+  /** Minimum entries to keep even under memory pressure (default: 50) */
+  min_entries?: number
 }
 
 /** Application configuration loaded from config.yaml */
@@ -141,12 +167,14 @@ export interface Config {
   system_prompt_append?: string
   rate_limiter?: RateLimiterConfig
   anthropic?: AnthropicConfig
+  /** Responses API configuration */
+  "openai-responses"?: ResponsesConfig
   /** Model name overrides: request model → target model */
   model_overrides?: Record<string, string>
   /** Compress old tool_result content before truncating (default: true) */
   compress_tool_results_before_truncate?: boolean
-  /** Maximum number of history entries to keep in memory (0 = unlimited, default: 200) */
-  history_limit?: number
+  /** History storage configuration */
+  history?: HistoryConfig
   /** Shutdown timing configuration */
   shutdown?: ShutdownConfig
   /** Stream idle timeout in seconds for all paths (default: 300, 0 = no timeout) */
@@ -240,14 +268,13 @@ export async function applyConfigToState(): Promise<Config> {
   // Anthropic settings (scalar: override only when present)
   if (config.anthropic) {
     const a = config.anthropic
-    if (a.convert_server_tools_to_custom !== undefined)
-      state.convertServerToolsToCustom = a.convert_server_tools_to_custom
+    if (a.strip_server_tools !== undefined) state.stripServerTools = a.strip_server_tools
     if (a.dedup_tool_calls !== undefined) {
       // Normalize: true → "input" for backward compatibility, false → false
       state.dedupToolCalls = a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls
     }
-    if (a.truncate_read_tool_result !== undefined) state.truncateReadToolResult = a.truncate_read_tool_result
-    if (a.filter_tool_search_blocks !== undefined) state.filterToolSearchBlocks = a.filter_tool_search_blocks
+    if (a.strip_read_tool_result_tags !== undefined) state.stripReadToolResultTags = a.strip_read_tool_result_tags
+    if (a.context_editing !== undefined) state.contextEditingMode = a.context_editing
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {
@@ -274,9 +301,15 @@ export async function applyConfigToState(): Promise<Config> {
   // Other settings (scalar: override only when present)
   if (config.compress_tool_results_before_truncate !== undefined)
     state.compressToolResultsBeforeTruncate = config.compress_tool_results_before_truncate
-  if (config.history_limit !== undefined) {
-    state.historyLimit = config.history_limit
-    setHistoryMaxEntries(config.history_limit)
+
+  // History settings (nested: override only when present)
+  if (config.history) {
+    const h = config.history
+    if (h.limit !== undefined) {
+      state.historyLimit = h.limit
+      setHistoryMaxEntries(h.limit)
+    }
+    if (h.min_entries !== undefined) state.historyMinEntries = h.min_entries
   }
 
   // Shutdown timing (scalar: override only when present)
@@ -292,6 +325,11 @@ export async function applyConfigToState(): Promise<Config> {
 
   // Stale request reaper max age (scalar: override only when present)
   if (config.stale_request_max_age !== undefined) state.staleRequestMaxAge = config.stale_request_max_age
+
+  // Responses API settings (scalar: override only when present)
+  const responsesConfig = config["openai-responses"]
+  if (responsesConfig && responsesConfig.normalize_call_ids !== undefined)
+    state.normalizeResponsesCallIds = responsesConfig.normalize_call_ids
 
   // Log when config actually changes (skip initial startup load)
   const currentMtime = getConfigMtimeMs()

@@ -1,3 +1,18 @@
+// TODO: Two known technical debts in this module:
+//
+// 1. JSON repeated parsing — The helper functions (extractRetryAfterFromBody,
+//    isUpstreamRateLimited, tryExtractTokenLimit, isRateLimitedInBody) each
+//    independently JSON.parse the same responseText. In the worst case (400
+//    rate_limited through pipeline + forwardError), the same string is parsed
+//    up to 5 times. Performance impact is negligible (error bodies are small),
+//    but the code would be cleaner with a single parse at entry point.
+//
+// 2. forwardError / classifyHTTPError duplication — Both functions independently
+//    classify HTTP errors by status code, but forwardError never calls
+//    classifyError. Adding a new error type requires updating both paths.
+//    Ideally forwardError should call classifyError and format based on the
+//    ApiError result. Trigger: next time a new error type is added.
+
 import type { Context } from "hono"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 

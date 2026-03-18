@@ -98,7 +98,7 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
             meta: {
               truncateResult,
               sanitization: sanitizeResult.stats ?? {
-                totalBlocksRemoved: sanitizeResult.removedCount,
+                totalBlocksRemoved: sanitizeResult.blocksRemoved,
                 systemReminderRemovals: sanitizeResult.systemReminderRemovals,
               },
               attempt: attempt + 1,
@@ -141,7 +141,7 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
         meta: {
           truncateResult,
           sanitization: sanitizeResult.stats ?? {
-            totalBlocksRemoved: sanitizeResult.removedCount,
+            totalBlocksRemoved: sanitizeResult.blocksRemoved,
             systemReminderRemovals: sanitizeResult.systemReminderRemovals,
           },
           attempt: attempt + 1,

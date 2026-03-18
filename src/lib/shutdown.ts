@@ -22,7 +22,7 @@ import type { TuiLogEntry } from "./tui"
 
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { getRequestContextManager } from "./context/manager"
-import { closeAllClients, getClientCount } from "./history"
+import { closeAllClients, getClientCount, stopMemoryPressureMonitor } from "./history"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
 import { tuiLogger } from "./tui"
@@ -193,6 +193,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
   // Stop background services
   stopRefresh()
+  stopMemoryPressureMonitor()
 
   const wsClients = getWsClientCount()
   if (wsClients > 0) {

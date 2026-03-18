@@ -7,6 +7,8 @@ import consola from "consola"
 
 import type { CopilotAnnotations, StreamEvent, RawMessageStartEvent } from "~/types/api/anthropic"
 
+import { isServerToolResultType } from "./server-tool-filter"
+
 // ============================================================================
 // Accumulated content block types
 // ============================================================================
@@ -85,8 +87,8 @@ export interface BaseStreamAccumulator {
   model: string
   inputTokens: number
   outputTokens: number
-  /** Plain text content for error recording fallback */
-  content: string
+  /** Plain text content accumulated from text deltas (error recording fallback) */
+  rawContent: string
 }
 
 // ============================================================================
@@ -104,6 +106,8 @@ export interface AnthropicStreamAccumulator extends BaseStreamAccumulator {
   copilotAnnotations: Array<CopilotAnnotations>
   /** Error received from stream, if any */
   streamError?: { type: string; message: string }
+  /** Server-side tool search request count from usage.server_tool_use */
+  toolSearchRequests: number
 }
 
 /** Create a fresh Anthropic stream accumulator */
@@ -115,9 +119,10 @@ export function createAnthropicStreamAccumulator(): AnthropicStreamAccumulator {
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     stopReason: "",
-    content: "",
+    rawContent: "",
     contentBlocks: [],
     copilotAnnotations: [],
+    toolSearchRequests: 0,
   }
 }
 
@@ -189,6 +194,13 @@ function handleMessageStart(message: RawMessageStartEvent["message"], acc: Anthr
   if (message.usage.cache_creation_input_tokens) {
     acc.cacheCreationTokens = message.usage.cache_creation_input_tokens
   }
+  // Server-side tool search usage
+  const serverToolUse = (message.usage as unknown as Record<string, unknown>).server_tool_use as
+    | { tool_search_requests?: number }
+    | undefined
+  if (serverToolUse?.tool_search_requests) {
+    acc.toolSearchRequests = serverToolUse.tool_search_requests
+  }
 }
 
 // ============================================================================
@@ -257,11 +269,6 @@ function handleContentBlockStart(index: number, block: AccContentBlock, acc: Ant
   acc.contentBlocks[index] = newBlock
 }
 
-/** Check if a block type is a server-side tool result (ends with _tool_result, but not plain tool_result) */
-function isServerToolResultType(type: string): boolean {
-  return type !== "tool_result" && type.endsWith("_tool_result")
-}
-
 function handleContentBlockDelta(
   index: number,
   delta: AccDelta,
@@ -276,7 +283,7 @@ function handleContentBlockDelta(
     case "text_delta": {
       const b = block as { text: string }
       b.text += delta.text
-      acc.content += delta.text // Sync BaseStreamAccumulator.content for error fallback
+      acc.rawContent += delta.text // Sync BaseStreamAccumulator.rawContent for error fallback
       break
     }
     case "thinking_delta": {
@@ -327,6 +334,7 @@ interface MessageDeltaUsage {
   output_tokens: number
   cache_creation_input_tokens?: number
   cache_read_input_tokens?: number
+  server_tool_use?: { tool_search_requests?: number }
 }
 
 /**
@@ -353,6 +361,10 @@ function handleMessageDelta(
     }
     if (usage.cache_creation_input_tokens !== undefined) {
       acc.cacheCreationTokens = usage.cache_creation_input_tokens
+    }
+    // Server-side tool search usage
+    if (usage.server_tool_use?.tool_search_requests) {
+      acc.toolSearchRequests = usage.server_tool_use.tool_search_requests
     }
   }
 }

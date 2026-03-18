@@ -13,7 +13,7 @@ import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/
 import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
-import { supportsDirectAnthropicApi } from "~/lib/anthropic/handlers"
+import { supportsDirectAnthropicApi } from "~/lib/anthropic/sse"
 import { getModels } from "~/lib/models/client"
 import { createChatCompletions } from "~/lib/openai/client"
 import { state, rebuildModelIndex } from "~/lib/state"
@@ -50,7 +50,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     // Initialize state
     state.githubToken = githubToken
     state.accountType = "individual"
-    state.convertServerToolsToCustom = true
+    state.stripServerTools = true
 
     // Get Copilot token
     const { token } = await getCopilotToken()

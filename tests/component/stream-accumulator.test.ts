@@ -21,7 +21,7 @@ describe("createAnthropicStreamAccumulator", () => {
   test("initializes with empty/zero state", () => {
     const acc = createAnthropicStreamAccumulator()
     expect(acc.model).toBe("")
-    expect(acc.content).toBe("")
+    expect(acc.rawContent).toBe("")
     expect(acc.inputTokens).toBe(0)
     expect(acc.outputTokens).toBe(0)
     expect(acc.cacheReadTokens).toBe(0)
@@ -153,8 +153,8 @@ describe("accumulateAnthropicStreamEvent", () => {
 
     const block = acc.contentBlocks[0] as { type: "text"; text: string }
     expect(block.text).toBe("Hello world!")
-    // Also synced to acc.content
-    expect(acc.content).toBe("Hello world!")
+    // Also synced to acc.rawContent
+    expect(acc.rawContent).toBe("Hello world!")
   })
 
   test("processes content_block_delta input_json_delta: accumulates tool input", () => {
@@ -325,7 +325,7 @@ describe("accumulateAnthropicStreamEvent", () => {
 
   test("ignores message_stop events gracefully", () => {
     const acc = createAnthropicStreamAccumulator()
-    acc.content = "preserved"
+    acc.rawContent = "preserved"
 
     accumulateAnthropicStreamEvent(
       {
@@ -334,12 +334,12 @@ describe("accumulateAnthropicStreamEvent", () => {
       acc,
     )
 
-    expect(acc.content).toBe("preserved")
+    expect(acc.rawContent).toBe("preserved")
   })
 
   test("ignores unknown event types gracefully", () => {
     const acc = createAnthropicStreamAccumulator()
-    acc.content = "preserved"
+    acc.rawContent = "preserved"
 
     accumulateAnthropicStreamEvent(
       {
@@ -348,7 +348,7 @@ describe("accumulateAnthropicStreamEvent", () => {
       acc,
     )
 
-    expect(acc.content).toBe("preserved")
+    expect(acc.rawContent).toBe("preserved")
   })
 
   test("collects copilot annotations from deltas", () => {
@@ -468,8 +468,8 @@ describe("content block ordering", () => {
     expect(acc.contentBlocks[1].type).toBe("thinking")
     expect(acc.contentBlocks[2].type).toBe("text")
 
-    // acc.content should have both text blocks
-    expect(acc.content).toBe("Part 1Part 2")
+    // acc.rawContent should have both text blocks
+    expect(acc.rawContent).toBe("Part 1Part 2")
     expect(getTextContent(acc)).toBe("Part 1Part 2")
   })
 })
@@ -587,8 +587,8 @@ describe("convenience extractors", () => {
     accumulateAnthropicStreamEvent({ type: "content_block_stop", index: 1 } as any, acc)
 
     expect(getTextContent(acc)).toBe("Hello world!")
-    // acc.content stays in sync
-    expect(acc.content).toBe(getTextContent(acc))
+    // acc.rawContent stays in sync
+    expect(acc.rawContent).toBe(getTextContent(acc))
   })
 
   test("getThinkingContent returns concatenated thinking from all thinking blocks", () => {
@@ -658,6 +658,6 @@ describe("incomplete stream", () => {
     // Stream interrupted - no content_block_stop
     const block = acc.contentBlocks[0] as { type: "text"; text: string }
     expect(block.text).toBe("partial...")
-    expect(acc.content).toBe("partial...")
+    expect(acc.rawContent).toBe("partial...")
   })
 })

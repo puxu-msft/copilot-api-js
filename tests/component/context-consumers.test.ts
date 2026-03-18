@@ -138,18 +138,18 @@ describe("registerContextConsumers", () => {
       expect(data.request.model).toBe("claude-sonnet-4")
     })
 
-    test("updates rewrites on rewrites field update", () => {
+    test("updates pipelineInfo on pipelineInfo field update", () => {
       const rewrites = { systemPrompt: "modified" }
       manager.emit({
         type: "updated",
-        field: "rewrites",
-        context: { id: "req_1", rewrites },
+        field: "pipelineInfo",
+        context: { id: "req_1", pipelineInfo: rewrites },
       } as unknown as RequestContextEvent)
 
       expect(updateEntrySpy).toHaveBeenCalledTimes(1)
       const [id, data] = updateEntrySpy.mock.calls[0]
       expect(id).toBe("req_1")
-      expect(data.rewrites).toBe(rewrites)
+      expect(data.pipelineInfo).toBe(rewrites)
     })
 
     test("ignores unrelated field updates", () => {

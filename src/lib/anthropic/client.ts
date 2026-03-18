@@ -14,16 +14,17 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
+import type { HeadersCapture } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
 import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
 
 import { copilotBaseUrl, copilotHeaders } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal } from "~/lib/fetch-utils"
+import { createFetchSignal, captureHttpHeaders } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 
-import { buildAnthropicBetaHeaders, buildContextManagement } from "./features"
-import { convertServerToolsToCustom } from "./message-tools"
+import { buildAnthropicBetaHeaders, buildContextManagement, isContextEditingEnabled } from "./features"
+import { stripServerTools } from "./message-tools"
 
 /** Re-export the response type for consumers */
 export type AnthropicMessageResponse = AnthropicResponse
@@ -42,7 +43,7 @@ export type AnthropicMessageResponse = AnthropicResponse
 const COPILOT_REJECTED_FIELDS = new Set(["output_config", "inference_geo"])
 
 /**
- * Build the wire payload: strip rejected fields and convert server tools.
+ * Build the wire payload: strip rejected fields and server tools.
  * Returns a plain record — the wire format may carry fields beyond what
  * MessagesPayload declares (e.g. context_management), so we don't pretend
  * it's a typed struct.
@@ -63,9 +64,9 @@ function buildWirePayload(payload: MessagesPayload): Record<string, unknown> {
     consola.debug(`[DirectAnthropic] Stripped rejected fields: ${rejectedFields.join(", ")}`)
   }
 
-  // Convert server-side tools (web_search, etc.) to custom tool equivalents
+  // Strip server-side tools (web_search, etc.) when configured
   if (wire.tools) {
-    wire.tools = convertServerToolsToCustom(wire.tools as Array<Tool>)
+    wire.tools = stripServerTools(wire.tools as Array<Tool>)
   }
 
   return wire
@@ -105,7 +106,7 @@ function adjustThinkingBudget(wire: Record<string, unknown>): void {
  */
 export async function createAnthropicMessages(
   payload: MessagesPayload,
-  opts?: { resolvedModel?: Model },
+  opts?: { resolvedModel?: Model; headersCapture?: HeadersCapture },
 ): Promise<AnthropicMessageResponse | AsyncGenerator<ServerSentEventMessage>> {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
@@ -138,13 +139,13 @@ export async function createAnthropicMessages(
     }),
     "X-Initiator": isAgentCall ? "agent" : "user",
     "anthropic-version": "2023-06-01",
-    ...buildAnthropicBetaHeaders(model),
+    ...buildAnthropicBetaHeaders(model, opts?.resolvedModel),
   }
 
-  // Add context_management if model supports it and payload doesn't already have one
-  if (!wire.context_management) {
+  // Add context_management if enabled for this model and payload doesn't already have one
+  if (!wire.context_management && isContextEditingEnabled(model)) {
     const hasThinking = Boolean(thinking && thinking.type !== "disabled")
-    const contextManagement = buildContextManagement(model, hasThinking)
+    const contextManagement = buildContextManagement(state.contextEditingMode, hasThinking)
     if (contextManagement) {
       wire.context_management = contextManagement
       consola.debug("[DirectAnthropic] Added context_management:", JSON.stringify(contextManagement))
@@ -165,6 +166,11 @@ export async function createAnthropicMessages(
     body: JSON.stringify(wire),
     signal: fetchSignal,
   })
+
+  // Capture HTTP headers for history (before error check — capture even on failure)
+  if (opts?.headersCapture) {
+    captureHttpHeaders(opts.headersCapture, headers, response)
+  }
 
   if (!response.ok) {
     consola.debug("Request failed:", {

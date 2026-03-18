@@ -4,7 +4,7 @@ import type { HistoryStore } from '@/composables/useHistoryStore'
 import type { ContentBlock, MessageContent } from '@/types'
 import { isToolResultBlock, isToolUseBlock } from '@/utils/typeGuards'
 import { provideContentContext } from '@/composables/useContentContext'
-import { useRewriteInfo } from '@/composables/useRewriteInfo'
+import { usePipelineInfo } from '@/composables/usePipelineInfo'
 import { provideRawModal } from '@/composables/useRawModal'
 import { provideSharedResizeObserver } from '@/composables/useSharedResizeObserver'
 import DetailToolbar from './DetailToolbar.vue'
@@ -15,6 +15,7 @@ import TruncationDivider from './TruncationDivider.vue'
 import SystemMessage from '@/components/message/SystemMessage.vue'
 import MessageBlock from '@/components/message/MessageBlock.vue'
 import RawJsonModal from '@/components/ui/RawJsonModal.vue'
+import ErrorBoundary from '@/components/ui/ErrorBoundary.vue'
 
 const store = inject<HistoryStore>('historyStore')!
 const detailBodyRef = ref<HTMLElement>()
@@ -41,7 +42,7 @@ const {
   getRewrittenMessage,
   isMessageRewritten,
   isMessageTruncated,
-} = useRewriteInfo(entry)
+} = usePipelineInfo(entry)
 
 // Merged tool maps — single pass over messages
 const toolMaps = computed(() => {
@@ -113,8 +114,8 @@ const requestBadge = computed(() => {
 
 /** Rewritten request payload for the Raw modal (original request with rewritten messages/system) */
 const rewrittenRequest = computed(() => {
-  if (!entry.value?.rewrites) return undefined
-  const rw = entry.value.rewrites
+  if (!entry.value?.pipelineInfo) return undefined
+  const rw = entry.value.pipelineInfo
   // Only construct if there are actual rewrites
   if (!rw.rewrittenMessages && !rw.rewrittenSystem) return undefined
   return {
@@ -217,32 +218,36 @@ function exportEntry() {
         <!-- REQUEST Section -->
         <SectionBlock title="Request" :badge="requestBadge" :raw-data="entry.request" :rewritten-raw-data="rewrittenRequest" raw-title="Raw — Request">
           <!-- System prompt -->
-          <SystemMessage
-            v-if="entry.request.system"
-            :system="entry.request.system"
-            :rewritten-system="entry.rewrites?.rewrittenSystem"
-            :search-query="store.detailSearch.value"
-            :global-view-mode="store.detailViewMode.value"
-          />
+          <ErrorBoundary label="System prompt">
+            <SystemMessage
+              v-if="entry.request.system"
+              :system="entry.request.system"
+              :rewritten-system="entry.pipelineInfo?.rewrittenSystem"
+              :search-query="store.detailSearch.value"
+              :global-view-mode="store.detailViewMode.value"
+            />
+          </ErrorBoundary>
 
           <!-- Messages with inline truncation divider -->
           <div class="messages-list">
             <template v-for="item in filteredMessages" :key="item.originalIndex">
               <!-- Truncation divider: render after the last truncated message -->
               <TruncationDivider
-                v-if="entry.rewrites?.truncation && item.originalIndex === truncationPoint"
-                :truncation="entry.rewrites.truncation"
+                v-if="entry.pipelineInfo?.truncation && item.originalIndex === truncationPoint"
+                :truncation="entry.pipelineInfo.truncation"
               />
 
-              <MessageBlock
-                v-show="!store.detailFilterType.value || hasMatchingBlockType(item.msg, store.detailFilterType.value)"
-                :message="item.msg"
-                :index="item.originalIndex"
-                :is-truncated="isMessageTruncated(item.originalIndex)"
-                :is-rewritten="isMessageRewritten(item.originalIndex)"
-                :rewritten-message="getRewrittenMessage(item.originalIndex)"
-                :global-view-mode="store.detailViewMode.value"
-              />
+              <ErrorBoundary :label="'Message #' + item.originalIndex">
+                <MessageBlock
+                  v-show="!store.detailFilterType.value || hasMatchingBlockType(item.msg, store.detailFilterType.value)"
+                  :message="item.msg"
+                  :index="item.originalIndex"
+                  :is-truncated="isMessageTruncated(item.originalIndex)"
+                  :is-rewritten="isMessageRewritten(item.originalIndex)"
+                  :rewritten-message="getRewrittenMessage(item.originalIndex)"
+                  :global-view-mode="store.detailViewMode.value"
+                />
+              </ErrorBoundary>
             </template>
           </div>
         </SectionBlock>
@@ -255,19 +260,55 @@ function exportEntry() {
             <span class="error-text">{{ entry.response.error }}</span>
           </div>
 
-          <MessageBlock
-            v-if="responseMessage"
-            :message="responseMessage"
-            :index="0"
-          />
+          <ErrorBoundary label="Response message">
+            <MessageBlock
+              v-if="responseMessage"
+              :message="responseMessage"
+              :index="0"
+            />
+          </ErrorBoundary>
         </SectionBlock>
 
         <!-- SSE EVENTS Section (only for streaming requests) -->
-        <SseEventsSection v-if="entry.sseEvents?.length" :events="entry.sseEvents" />
+        <ErrorBoundary label="SSE events">
+          <SseEventsSection v-if="entry.sseEvents?.length" :events="entry.sseEvents" />
+        </ErrorBoundary>
+
+        <!-- HTTP HEADERS Section -->
+        <SectionBlock
+          v-if="entry.httpHeaders"
+          title="Headers"
+          :raw-data="entry.httpHeaders"
+          raw-title="Raw — HTTP Headers"
+          default-collapsed
+        >
+          <div class="headers-section">
+            <div class="headers-group">
+              <div class="headers-group-title">Request Headers</div>
+              <div class="headers-grid">
+                <div v-for="(value, key) in entry.httpHeaders.request" :key="'req-' + key" class="header-row">
+                  <span class="header-name">{{ key }}</span>
+                  <span class="header-value">{{ value }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="headers-group">
+              <div class="headers-group-title">Response Headers</div>
+              <div class="headers-grid">
+                <div v-for="(value, key) in entry.httpHeaders.response" :key="'res-' + key" class="header-row">
+                  <span class="header-name">{{ key }}</span>
+                  <span class="header-value">{{ value }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </SectionBlock>
 
         <!-- META Section -->
         <SectionBlock title="Meta" :raw-data="entry" raw-title="Raw — Full Entry">
-          <MetaInfo :entry="entry" />
+          <ErrorBoundary label="Meta info">
+            <MetaInfo :entry="entry" />
+          </ErrorBoundary>
         </SectionBlock>
       </div>
     </template>
@@ -340,5 +381,54 @@ function exportEntry() {
   color: var(--error);
   white-space: pre-wrap;
   word-wrap: break-word;
+}
+
+.headers-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.headers-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.headers-group-title {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding-bottom: var(--spacing-xs);
+  border-bottom: 1px solid var(--border);
+}
+
+.headers-grid {
+  display: flex;
+  flex-direction: column;
+}
+
+.header-row {
+  display: flex;
+  gap: var(--spacing-sm);
+  padding: 2px 0;
+  font-size: var(--font-size-xs);
+  border-bottom: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.1));
+}
+
+.header-name {
+  flex: 0 0 220px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.header-value {
+  flex: 1;
+  color: var(--text);
+  font-family: var(--font-mono);
+  word-break: break-all;
 }
 </style>

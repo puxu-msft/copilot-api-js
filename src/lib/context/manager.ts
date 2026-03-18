@@ -7,7 +7,7 @@
  *
  * Data flow:
  *   Handler creates RequestContext → manager.create() registers + emits "created"
- *   → pipeline processes request, calls ctx.transition()/setRewrites()/etc
+ *   → pipeline processes request, calls ctx.transition()/setPipelineInfo()/etc
  *   → each change → manager emits events
  *   → ws receives events → pushes to browser
  *   → ctx.complete()/fail() → ctx.toHistoryEntry() → store.insert()

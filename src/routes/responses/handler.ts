@@ -10,7 +10,7 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import type { RequestContext } from "~/lib/context/request"
+import type { HeadersCapture, RequestContext } from "~/lib/context/request"
 import type { ResponsesPayload, ResponsesResponse, ResponsesStreamEvent } from "~/types/api/openai-responses"
 
 import { getRequestContextManager } from "~/lib/context/manager"
@@ -99,7 +99,8 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
   const { c, payload, reqCtx } = opts
 
   const selectedModel = state.modelIndex.get(payload.model)
-  const adapter = createResponsesAdapter(selectedModel)
+  const headersCapture: HeadersCapture = {}
+  const adapter = createResponsesAdapter(selectedModel, headersCapture)
   const strategies = createResponsesStrategies()
 
   try {
@@ -112,6 +113,9 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
       maxRetries: 1,
       requestContext: reqCtx,
     })
+
+    // Capture HTTP headers from the final attempt for history recording
+    reqCtx.setHttpHeaders(headersCapture)
 
     const response = pipelineResult.response
     reqCtx.addQueueWaitMs(pipelineResult.queueWaitMs)
@@ -217,6 +221,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
       }
     })
   } catch (error) {
+    reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(payload.model, error)
     throw error
   }

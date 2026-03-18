@@ -595,7 +595,7 @@ function renderDetail() {
   const filterRole = document.querySelector("#filter-role").value
   const filterType = document.querySelector("#filter-type").value
   const aggregateTools = document.querySelector("#toggle-aggregate").checked
-  const rewrites = currentEntry.rewrites
+  const rewrites = currentEntry.pipelineInfo
   const truncation = rewrites?.truncation
 
   // Build tool result map for aggregation

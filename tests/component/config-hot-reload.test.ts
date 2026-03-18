@@ -43,11 +43,11 @@ async function removeConfig(): Promise<void> {
 /** Save and restore original state values */
 function snapshotState() {
   return {
-    convertServerToolsToCustom: state.convertServerToolsToCustom,
+    stripServerTools: state.stripServerTools,
     fetchTimeout: state.fetchTimeout,
     streamIdleTimeout: state.streamIdleTimeout,
     dedupToolCalls: state.dedupToolCalls,
-    truncateReadToolResult: state.truncateReadToolResult,
+    stripReadToolResultTags: state.stripReadToolResultTags,
     rewriteSystemReminders: state.rewriteSystemReminders,
     modelOverrides: { ...state.modelOverrides },
     compressToolResultsBeforeTruncate: state.compressToolResultsBeforeTruncate,
@@ -59,11 +59,11 @@ function snapshotState() {
 }
 
 function restoreState(snapshot: ReturnType<typeof snapshotState>) {
-  state.convertServerToolsToCustom = snapshot.convertServerToolsToCustom
+  state.stripServerTools = snapshot.stripServerTools
   state.fetchTimeout = snapshot.fetchTimeout
   state.streamIdleTimeout = snapshot.streamIdleTimeout
   state.dedupToolCalls = snapshot.dedupToolCalls
-  state.truncateReadToolResult = snapshot.truncateReadToolResult
+  state.stripReadToolResultTags = snapshot.stripReadToolResultTags
   state.rewriteSystemReminders = snapshot.rewriteSystemReminders
   state.modelOverrides = snapshot.modelOverrides
   state.compressToolResultsBeforeTruncate = snapshot.compressToolResultsBeforeTruncate
@@ -103,27 +103,30 @@ describe("applyConfigToState: scalar fields", () => {
   test("applies anthropic scalar fields when present", async () => {
     await writeConfig(`
 anthropic:
-  convert_server_tools_to_custom: false
-  truncate_read_tool_result: true
+  strip_server_tools: false
+  strip_read_tool_result_tags: true
 fetch_timeout: 30
 stream_idle_timeout: 60
 `)
     await applyConfigToState()
 
-    expect(state.convertServerToolsToCustom).toBe(false)
+    expect(state.stripServerTools).toBe(false)
     expect(state.fetchTimeout).toBe(30)
     expect(state.streamIdleTimeout).toBe(60)
-    expect(state.truncateReadToolResult).toBe(true)
+    expect(state.stripReadToolResultTags).toBe(true)
   })
 
   test("leaves state unchanged when config has no anthropic section", async () => {
     state.fetchTimeout = 42
-    await writeConfig("history_limit: 100\n")
+    await writeConfig(`
+history:
+  limit: 100
+`)
     await applyConfigToState()
 
     // Anthropic fields unchanged
     expect(state.fetchTimeout).toBe(42)
-    // history_limit applied
+    // history.limit applied
     expect(state.historyLimit).toBe(100)
   })
 
@@ -289,12 +292,15 @@ describe("applyConfigToState: empty / missing config", () => {
   })
 })
 
-describe("applyConfigToState: history_limit syncs to historyState", () => {
+describe("applyConfigToState: history.limit syncs to historyState", () => {
   test("updates historyState.maxEntries", async () => {
     initHistory(true, 200)
     expect(historyState.maxEntries).toBe(200)
 
-    await writeConfig("history_limit: 50\n")
+    await writeConfig(`
+history:
+  limit: 50
+`)
     await applyConfigToState()
 
     expect(state.historyLimit).toBe(50)

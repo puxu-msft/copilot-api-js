@@ -7,6 +7,7 @@ import "./styles/base.css"
 import "./styles/scrollbar.css"
 import "./styles/transitions.css"
 import "./styles/diff2html-overrides.css"
+import "./styles/json-viewer.css"
 
 const app = createApp(App)
 app.mount("#app")

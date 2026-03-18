@@ -788,7 +788,7 @@ export function preprocessAnthropicMessages(messages: Array<MessageParam>): {
   let dedupedToolCallCount = 0
 
   // Strip injected <system-reminder> tags from Read tool results
-  if (state.truncateReadToolResult) {
+  if (state.stripReadToolResultTags) {
     const strip = stripReadToolResultTags(result)
     result = strip.messages
     strippedReadTagCount = strip.strippedCount
@@ -900,7 +900,7 @@ export function sanitizeAnthropicMessages(
 
   return {
     payload: { ...payload, system: finalSystem, messages },
-    removedCount: totalBlocksRemoved,
+    blocksRemoved: totalBlocksRemoved,
     systemReminderRemovals,
     stats: {
       orphanedToolUseCount: toolResult.orphanedToolUseCount,

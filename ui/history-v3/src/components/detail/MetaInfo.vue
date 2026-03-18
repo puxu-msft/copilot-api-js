@@ -83,36 +83,36 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
     </div>
 
     <!-- Truncation -->
-    <div v-if="entry.rewrites?.truncation" class="meta-section">
+    <div v-if="entry.pipelineInfo?.truncation" class="meta-section">
       <div class="meta-section-title">Truncation</div>
       <div class="meta-row">
         <span class="meta-label">Removed</span>
-        <span class="meta-value">{{ entry.rewrites.truncation.removedMessageCount }} messages</span>
+        <span class="meta-value">{{ entry.pipelineInfo.truncation.removedMessageCount }} messages</span>
       </div>
       <div class="meta-row">
         <span class="meta-label">Tokens</span>
-        <span class="meta-value mono">{{ formatNumber(entry.rewrites.truncation.originalTokens) }} → {{ formatNumber(entry.rewrites.truncation.compactedTokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(entry.pipelineInfo.truncation.originalTokens) }} → {{ formatNumber(entry.pipelineInfo.truncation.compactedTokens) }}</span>
       </div>
     </div>
 
     <!-- Preprocessing -->
-    <div v-if="entry.rewrites?.preprocessing && (entry.rewrites.preprocessing.strippedReadTagCount > 0 || entry.rewrites.preprocessing.dedupedToolCallCount > 0)" class="meta-section">
+    <div v-if="entry.pipelineInfo?.preprocessing && (entry.pipelineInfo.preprocessing.strippedReadTagCount > 0 || entry.pipelineInfo.preprocessing.dedupedToolCallCount > 0)" class="meta-section">
       <div class="meta-section-title">Preprocessing</div>
-      <div v-if="entry.rewrites.preprocessing.strippedReadTagCount" class="meta-row">
+      <div v-if="entry.pipelineInfo.preprocessing.strippedReadTagCount" class="meta-row">
         <span class="meta-label">Read tag strip</span>
-        <span class="meta-value">{{ entry.rewrites.preprocessing.strippedReadTagCount }} tags</span>
+        <span class="meta-value">{{ entry.pipelineInfo.preprocessing.strippedReadTagCount }} tags</span>
       </div>
-      <div v-if="entry.rewrites.preprocessing.dedupedToolCallCount" class="meta-row">
+      <div v-if="entry.pipelineInfo.preprocessing.dedupedToolCallCount" class="meta-row">
         <span class="meta-label">Dedup tool calls</span>
-        <span class="meta-value">{{ entry.rewrites.preprocessing.dedupedToolCallCount }} pairs</span>
+        <span class="meta-value">{{ entry.pipelineInfo.preprocessing.dedupedToolCallCount }} pairs</span>
       </div>
     </div>
 
     <!-- Sanitization -->
-    <div v-if="entry.rewrites?.sanitization?.length" class="meta-section">
+    <div v-if="entry.pipelineInfo?.sanitization?.length" class="meta-section">
       <div class="meta-section-title">Sanitization</div>
-      <template v-for="(san, idx) in entry.rewrites.sanitization" :key="idx">
-        <div v-if="entry.rewrites.sanitization.length > 1" class="meta-row">
+      <template v-for="(san, idx) in entry.pipelineInfo.sanitization" :key="idx">
+        <div v-if="entry.pipelineInfo.sanitization.length > 1" class="meta-row">
           <span class="meta-label meta-label--attempt">Attempt {{ idx + 1 }}</span>
         </div>
         <div v-if="san.totalBlocksRemoved" class="meta-row">

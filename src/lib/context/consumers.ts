@@ -59,8 +59,8 @@ function handleHistoryEvent(event: RequestContextEvent): void {
           },
         })
       }
-      if (event.field === "rewrites" && event.context.rewrites) {
-        updateEntry(event.context.id, { rewrites: event.context.rewrites })
+      if (event.field === "pipelineInfo" && event.context.pipelineInfo) {
+        updateEntry(event.context.id, { pipelineInfo: event.context.pipelineInfo })
       }
       break
     }
@@ -74,6 +74,7 @@ function handleHistoryEvent(event: RequestContextEvent): void {
         response,
         durationMs: entryData.durationMs,
         sseEvents: entryData.sseEvents,
+        httpHeaders: entryData.httpHeaders,
       })
       break
     }

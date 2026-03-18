@@ -21,7 +21,7 @@ describe("sanitizeOpenAIMessages", () => {
 
     const result = sanitizeOpenAIMessages(payload)
     expect(result.payload.messages).toHaveLength(2)
-    expect(result.removedCount).toBe(0)
+    expect(result.blocksRemoved).toBe(0)
   })
 
   test("removes orphaned tool messages", () => {
@@ -37,7 +37,7 @@ describe("sanitizeOpenAIMessages", () => {
     const result = sanitizeOpenAIMessages(payload)
     // orphaned tool removed
     expect(result.payload.messages.length).toBeLessThan(3)
-    expect(result.removedCount).toBeGreaterThan(0)
+    expect(result.blocksRemoved).toBeGreaterThan(0)
   })
 
   test("removes system-reminder tags when rewriteSystemReminders is enabled", () => {
@@ -107,7 +107,7 @@ describe("sanitizeOpenAIMessages", () => {
 
     const result = sanitizeOpenAIMessages(payload)
     expect(result.payload.messages).toHaveLength(0)
-    expect(result.removedCount).toBe(0)
+    expect(result.blocksRemoved).toBe(0)
   })
 
   test("preserves valid tool call chains", () => {
@@ -129,6 +129,6 @@ describe("sanitizeOpenAIMessages", () => {
 
     const result = sanitizeOpenAIMessages(payload)
     expect(result.payload.messages).toHaveLength(4)
-    expect(result.removedCount).toBe(0)
+    expect(result.blocksRemoved).toBe(0)
   })
 })

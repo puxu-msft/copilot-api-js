@@ -1,5 +1,4 @@
 import type { UpgradeWebSocket } from "hono/ws"
-import type { Server as NodeHttpServer } from "node:http"
 
 import consola from "consola"
 import { Hono } from "hono"
@@ -38,30 +37,13 @@ historyRoutes.delete("/api/sessions/:id", handleDeleteSession)
 
 /**
  * Initialize WebSocket support for history real-time updates.
- * Registers the /ws route on historyRoutes using the appropriate WebSocket
- * adapter for the current runtime (hono/bun for Bun, @hono/node-ws for Node.js).
+ * Registers the /history/ws route on the root app using the shared WebSocket adapter.
  *
- * @param rootApp - The root Hono app instance (needed by @hono/node-ws to match upgrade requests)
- * @returns An `injectWebSocket` function that must be called with the Node.js HTTP server
- * after the server is created. Returns `undefined` under Bun (no injection needed).
+ * @param rootApp - The root Hono app instance
+ * @param upgradeWs - Shared WebSocket upgrade function from createWebSocketAdapter
  */
-export async function initHistoryWebSocket(rootApp: Hono): Promise<((server: NodeHttpServer) => void) | undefined> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let upgradeWs: UpgradeWebSocket<any>
-  let injectFn: ((server: NodeHttpServer) => void) | undefined
-
-  if (typeof globalThis.Bun !== "undefined") {
-    // Bun runtime: use hono/bun adapter
-    const { upgradeWebSocket } = await import("hono/bun")
-    upgradeWs = upgradeWebSocket
-  } else {
-    // Node.js runtime: use @hono/node-ws adapter
-    const { createNodeWebSocket } = await import("@hono/node-ws")
-    const nodeWs = createNodeWebSocket({ app: rootApp })
-    upgradeWs = nodeWs.upgradeWebSocket
-    injectFn = (server: NodeHttpServer) => nodeWs.injectWebSocket(server)
-  }
-
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function initHistoryWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocket<any>): void {
   // Register on the root app directly — historyRoutes sub-app has already been
   // mounted via app.route("/history", historyRoutes) at import time, so adding
   // routes to historyRoutes here won't be visible on the root app.
@@ -83,8 +65,6 @@ export async function initHistoryWebSocket(rootApp: Hono): Promise<((server: Nod
       },
     })),
   )
-
-  return injectFn
 }
 
 /**
@@ -163,7 +143,7 @@ historyRoutes.get("/v3/assets/*", async (c) => {
 })
 
 historyRoutes.get("/", (c) => {
-  return c.redirect("/history/v1")
+  return c.redirect("/history/v3")
 })
 
 historyRoutes.get("/index.html", (c) => {

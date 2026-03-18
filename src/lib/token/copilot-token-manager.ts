@@ -1,5 +1,6 @@
 import consola from "consola"
 
+import { formatErrorWithCause } from "~/lib/error"
 import { state } from "~/lib/state"
 
 import type { GitHubTokenManager } from "./github-token-manager"
@@ -32,6 +33,8 @@ export class CopilotTokenManager {
   private maxRetries: number
   /** Shared promise to prevent concurrent refresh attempts */
   private refreshInFlight: Promise<CopilotTokenInfo | null> | null = null
+  /** Set when a refresh attempt fails; cleared on next success */
+  private _refreshNeeded = false
 
   constructor(options: CopilotTokenManagerOptions) {
     this.githubTokenManager = options.githubTokenManager
@@ -106,12 +109,16 @@ export class CopilotTokenManager {
         }
 
         const delay = Math.min(1000 * 2 ** attempt, 30000) // Max 30s delay
-        consola.warn(`Token refresh attempt ${attempt + 1}/${this.maxRetries} failed, retrying in ${delay}ms`)
+        const reason = error instanceof Error ? formatErrorWithCause(error) : String(error)
+        consola.warn(
+          `Token refresh attempt ${attempt + 1}/${this.maxRetries} failed: ${reason}, retrying in ${delay}ms`,
+        )
         await new Promise((resolve) => setTimeout(resolve, delay))
       }
     }
 
-    consola.error("All token refresh attempts failed:", lastError)
+    const reason = lastError instanceof Error ? formatErrorWithCause(lastError) : String(lastError)
+    consola.error(`All token refresh attempts failed: ${reason}`)
     return null
   }
 
@@ -193,11 +200,13 @@ export class CopilotTokenManager {
     this.refreshInFlight = this.fetchTokenWithRetry()
       .then((tokenInfo) => {
         if (tokenInfo) {
+          this._refreshNeeded = false
           state.copilotToken = tokenInfo.token
           // Reschedule based on new token's refresh_in
           this.scheduleRefresh(tokenInfo.refreshIn)
           consola.verbose(`[CopilotToken] Token refreshed (next refresh_in=${tokenInfo.refreshIn}s)`)
         } else {
+          this._refreshNeeded = true
           consola.error("[CopilotToken] Token refresh failed, keeping existing token")
           // Still reschedule with a fallback to avoid stopping the refresh loop entirely
           this.scheduleRefresh(300) // retry in 5 minutes
@@ -209,6 +218,17 @@ export class CopilotTokenManager {
       })
 
     return this.refreshInFlight
+  }
+
+  /**
+   * Proactively ensure the token is valid before sending a request.
+   * Triggers a refresh if the token is expired/expiring or the last
+   * refresh attempt failed. Concurrent callers share the same in-flight
+   * refresh via `refresh()`.
+   */
+  async ensureValidToken(): Promise<void> {
+    if (!this.isExpiredOrExpiring() && !this._refreshNeeded) return
+    await this.refresh()
   }
 
   /**

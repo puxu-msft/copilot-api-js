@@ -3,7 +3,9 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 
+import { applyConfigToState } from "./lib/config/config"
 import { PATHS, ensurePaths } from "./lib/config/paths"
+import { initProxy } from "./lib/proxy"
 import { state } from "./lib/state"
 import { DeviceAuthProvider, FileTokenProvider } from "./lib/token"
 
@@ -21,6 +23,14 @@ export async function runAuth(options: RunAuthOptions): Promise<void> {
   state.showGitHubToken = options.showGitHubToken
 
   await ensurePaths()
+
+  // Load config and initialize proxy before any network requests
+  const config = await applyConfigToState()
+  if (config.proxy) {
+    initProxy({ url: config.proxy, fromEnv: false })
+  } else {
+    initProxy({ url: undefined, fromEnv: true })
+  }
 
   // Use DeviceAuthProvider directly for force authentication
   const deviceAuthProvider = new DeviceAuthProvider()

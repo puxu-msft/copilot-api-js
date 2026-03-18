@@ -11,11 +11,11 @@ import packageJson from "../package.json"
 import { initAdaptiveRateLimiter } from "./lib/adaptive-rate-limiter"
 import { loadPersistedLimits } from "./lib/auto-truncate"
 import { applyConfigToState } from "./lib/config/config"
-import { ensurePaths } from "./lib/config/paths"
+import { PATHS, ensurePaths } from "./lib/config/paths"
 import { registerContextConsumers } from "./lib/context/consumers"
 import { initRequestContextManager } from "./lib/context/manager"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
-import { initHistory } from "./lib/history"
+import { initHistory, startMemoryPressureMonitor } from "./lib/history"
 import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { resolveModelName } from "./lib/models/resolver"
@@ -24,6 +24,7 @@ import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { initTuiLogger } from "./lib/tui"
+import { createWebSocketAdapter } from "./lib/ws"
 import { initHistoryWebSocket } from "./routes/history/route"
 import { initResponsesWebSocket } from "./routes/responses/ws"
 import { server } from "./server"
@@ -136,6 +137,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   // ensurePaths must run first so the config directory exists
   await ensurePaths()
+  consola.info(`Data directory: ${PATHS.APP_DIR}`)
 
   const config = await applyConfigToState()
 
@@ -186,7 +188,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     // Only show separately if auto-truncate is off but compress is on (unusual)
     on("[compress_tool_results_before_truncate]", "Compress tool results")
   }
-  toggle(state.convertServerToolsToCustom, "[anthropic.convert_server_tools_to_custom]", "Convert server tools")
+  toggle(state.stripServerTools, "[anthropic.strip_server_tools]", "Strip server tools")
   if (proxyUrl) {
     on(options.proxy ? "--proxy" : "[proxy]", "Proxy", formatProxyDisplay(proxyUrl))
   } else if (options.httpProxyFromEnv) {
@@ -206,7 +208,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   } else {
     off("[anthropic.dedup_tool_calls]", "Dedup tool calls")
   }
-  toggle(state.truncateReadToolResult, "[anthropic.truncate_read_tool_result]", "Truncate Read tool result")
+  toggle(state.stripReadToolResultTags, "[anthropic.strip_read_tool_result_tags]", "Strip Read tool result tags")
   if (state.rewriteSystemReminders === true) {
     on("[anthropic.rewrite_system_reminders]", "Rewrite system reminders", "remove all")
   } else if (state.rewriteSystemReminders === false) {
@@ -260,6 +262,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   initHistory(true, state.historyLimit)
+  startMemoryPressureMonitor()
 
   // Initialize request context manager and register event consumers
   // Must be after initHistory so history store is ready to receive events
@@ -337,11 +340,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     })
   }
 
-  // Initialize WebSocket support (registers WS upgrade routes)
-  // Must be called after the Bun server injection middleware above, and before
-  // the srvx serve() call so routes are ready when the server starts.
-  const injectHistoryWs = await initHistoryWebSocket(server)
-  const injectResponsesWs = await initResponsesWebSocket(server)
+  // Initialize WebSocket support using a single shared adapter.
+  // A single createNodeWebSocket instance avoids multiple `upgrade` listeners
+  // on the Node HTTP server, which would cause ERR_STREAM_WRITE_AFTER_END
+  // when one handler consumes the socket and the other tries to reject.
+  const wsAdapter = await createWebSocketAdapter(server)
+  initHistoryWebSocket(server, wsAdapter.upgradeWebSocket)
+  initResponsesWebSocket(server, wsAdapter.upgradeWebSocket)
 
   consola.box(
     `Web UI:\n🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage\n📜 History UI:   ${serverUrl}/history`,
@@ -381,13 +386,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setServerInstance(serverInstance)
   setupShutdownHandlers()
 
-  // Inject WebSocket upgrade handlers into Node.js HTTP server (no-op under Bun)
-  if (injectHistoryWs || injectResponsesWs) {
+  // Inject the single shared WebSocket upgrade handler into Node.js HTTP server (no-op under Bun)
+  if (wsAdapter.injectWebSocket) {
     const nodeServer = serverInstance.node?.server
     if (nodeServer && "on" in nodeServer) {
-      const ns = nodeServer as import("node:http").Server
-      injectHistoryWs?.(ns)
-      injectResponsesWs?.(ns)
+      wsAdapter.injectWebSocket(nodeServer as import("node:http").Server)
     }
   }
 

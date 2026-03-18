@@ -29,7 +29,7 @@ describe("sanitize → translate round-trip", () => {
 
     const result = sanitizeOpenAIMessages(payload)
     expect(result.payload.messages).toHaveLength(4)
-    expect(result.removedCount).toBe(0)
+    expect(result.blocksRemoved).toBe(0)
     expect(result.payload.messages[1].tool_calls).toHaveLength(1)
     expect(result.payload.messages[2].tool_call_id).toBe("tc_1")
   })
@@ -50,7 +50,7 @@ describe("sanitize → translate round-trip", () => {
     // The orphaned tool message should be removed
     const toolMessages = result.payload.messages.filter((m: any) => m.role === "tool")
     expect(toolMessages).toHaveLength(0)
-    expect(result.removedCount).toBeGreaterThan(0)
+    expect(result.blocksRemoved).toBeGreaterThan(0)
   })
 
   test("system-reminder tags removed before translation", () => {
@@ -100,7 +100,7 @@ describe("sanitize → translate round-trip", () => {
 
     const result = sanitizeOpenAIMessages(payload)
     expect(result.payload.messages).toHaveLength(8)
-    expect(result.removedCount).toBe(0)
+    expect(result.blocksRemoved).toBe(0)
 
     // Verify tool chains are intact
     const toolMessages = result.payload.messages.filter((m: any) => m.role === "tool")

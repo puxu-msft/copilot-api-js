@@ -128,10 +128,10 @@ export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): Sanitiz
     return { ...msg, content: filtered }
   })
 
-  const removedCount = originalCount - messages.length
+  const blocksRemoved = originalCount - messages.length
 
-  if (removedCount > 0) {
-    consola.info(`[Sanitizer:OpenAI] Filtered ${removedCount} orphaned tool messages`)
+  if (blocksRemoved > 0) {
+    consola.info(`[Sanitizer:OpenAI] Filtered ${blocksRemoved} orphaned tool messages`)
   }
 
   return {
@@ -139,7 +139,7 @@ export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): Sanitiz
       ...payload,
       messages: allMessages,
     },
-    removedCount,
+    blocksRemoved,
     systemReminderRemovals,
   }
 }

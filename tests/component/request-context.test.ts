@@ -52,7 +52,7 @@ describe("createRequestContext - initialization", () => {
     const { ctx } = makeContext()
     expect(ctx.originalRequest).toBeNull()
     expect(ctx.response).toBeNull()
-    expect(ctx.rewrites).toBeNull()
+    expect(ctx.pipelineInfo).toBeNull()
     expect(ctx.attempts).toHaveLength(0)
     expect(ctx.currentAttempt).toBeNull()
     expect(ctx.queueWaitMs).toBe(0)
@@ -113,10 +113,10 @@ describe("createRequestContext - attempt lifecycle", () => {
   test("setAttemptSanitization stores on currentAttempt", () => {
     const { ctx } = makeContext()
     ctx.beginAttempt({})
-    ctx.setAttemptSanitization({ removedCount: 3, systemReminderRemovals: 1 })
+    ctx.setAttemptSanitization({ blocksRemoved: 3, systemReminderRemovals: 1 })
 
     expect(ctx.currentAttempt!.sanitization).toEqual({
-      removedCount: 3,
+      blocksRemoved: 3,
       systemReminderRemovals: 1,
     })
   })
@@ -237,15 +237,15 @@ describe("createRequestContext - data setters", () => {
     expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("originalRequest")
   })
 
-  test("setRewrites stores and emits", () => {
+  test("setPipelineInfo stores and emits", () => {
     const { ctx, onEvent } = makeContext()
     const rewrite = {
       rewrittenMessages: [{ role: "user", content: "hello" }],
       messageMapping: [0],
     }
-    ctx.setRewrites(rewrite)
-    expect(ctx.rewrites).toEqual(rewrite)
-    expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("rewrites")
+    ctx.setPipelineInfo(rewrite)
+    expect(ctx.pipelineInfo).toEqual(rewrite)
+    expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("pipelineInfo")
   })
 })
 
@@ -316,10 +316,10 @@ describe("createRequestContext - toHistoryEntry", () => {
     expect(entry.attempts![1].strategy).toBe("auto-truncate")
   })
 
-  test("includes rewrites when set", () => {
+  test("includes pipelineInfo when set", () => {
     const { ctx } = makeContext()
     ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
-    ctx.setRewrites({
+    ctx.setPipelineInfo({
       rewrittenMessages: [{ role: "user", content: "hello" }],
       messageMapping: [0],
     })
@@ -332,8 +332,8 @@ describe("createRequestContext - toHistoryEntry", () => {
     })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.rewrites).toBeDefined()
-    expect(entry.rewrites!.messageMapping).toEqual([0])
+    expect(entry.pipelineInfo).toBeDefined()
+    expect(entry.pipelineInfo!.messageMapping).toEqual([0])
   })
 })
 

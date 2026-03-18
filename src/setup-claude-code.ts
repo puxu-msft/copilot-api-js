@@ -5,9 +5,11 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import invariant from "tiny-invariant"
 
+import { applyConfigToState } from "./lib/config/config"
 import { ensurePaths } from "./lib/config/paths"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
 import { cacheModels } from "./lib/models/client"
+import { initProxy } from "./lib/proxy"
 import { state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 
@@ -98,8 +100,16 @@ export async function runSetupClaudeCode(options: SetupClaudeCodeOptions): Promi
 
   state.accountType = options.accountType
 
-  // Authenticate and fetch models
+  // Load config and initialize proxy before any network requests
   await ensurePaths()
+  const config = await applyConfigToState()
+  if (config.proxy) {
+    initProxy({ url: config.proxy, fromEnv: false })
+  } else {
+    initProxy({ url: undefined, fromEnv: true })
+  }
+
+  // Authenticate and fetch models
   await cacheVSCodeVersion()
   await initTokenManagers({ cliToken: options.githubToken })
   await cacheModels()

@@ -40,7 +40,7 @@ function makeStrategy(overrides?: {
   const resanitize = mock(
     (payload: TestPayload): SanitizeResult<TestPayload> => ({
       payload,
-      removedCount: 0,
+      blocksRemoved: 0,
       systemReminderRemovals: 0,
       ...overrides?.sanitizeResult,
     }),
@@ -184,7 +184,7 @@ describe("createAutoTruncateStrategy - handle", () => {
   test("returns sanitization counts in meta", async () => {
     const { strategy } = makeStrategy({
       sanitizeResult: {
-        removedCount: 2,
+        blocksRemoved: 2,
         systemReminderRemovals: 1,
         stats: {
           totalBlocksRemoved: 2,

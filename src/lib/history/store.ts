@@ -190,7 +190,7 @@ export interface SseEventRecord {
   data: unknown
 }
 
-export interface RewriteInfo {
+export interface PipelineInfo {
   /** Auto-truncation metadata */
   truncation?: TruncationInfo
   /** Phase 1 preprocessing metadata (idempotent, run once before routing) */
@@ -244,11 +244,17 @@ export interface HistoryEntry {
     content: MessageContent | null // Full response content
   }
 
-  /** All rewrite metadata (truncation + sanitization + rewritten content) */
-  rewrites?: RewriteInfo
+  /** All pipeline processing metadata (truncation + sanitization + rewritten content) */
+  pipelineInfo?: PipelineInfo
 
   /** Filtered SSE events from Anthropic streaming (excludes content_block_delta and ping) */
   sseEvents?: Array<SseEventRecord>
+
+  /** HTTP headers sent to and received from upstream API (Authorization masked) */
+  httpHeaders?: {
+    request: Record<string, string>
+    response: Record<string, string>
+  }
 
   durationMs?: number
 }
@@ -602,6 +608,52 @@ export function getCurrentSession(endpoint: EndpointType): string {
   return sessionId
 }
 
+// ─── Entry eviction ───
+
+/**
+ * Remove the N oldest entries and clean up all indices (entry, summary, session tracking).
+ * Shared by FIFO eviction in insertEntry and memory pressure eviction.
+ */
+function removeOldestEntries(count: number): number {
+  if (count <= 0 || historyState.entries.length === 0) return 0
+
+  const actualCount = Math.min(count, historyState.entries.length)
+  const removed = historyState.entries.splice(0, actualCount)
+  for (const r of removed) {
+    entryIndex.delete(r.id)
+    summaryIndex.delete(r.id)
+    const sessionCount = (sessionEntryCount.get(r.sessionId) ?? 1) - 1
+    if (sessionCount <= 0) {
+      sessionEntryCount.delete(r.sessionId)
+      sessionModelsSet.delete(r.sessionId)
+      sessionToolsSet.delete(r.sessionId)
+      historyState.sessions.delete(r.sessionId)
+    } else {
+      sessionEntryCount.set(r.sessionId, sessionCount)
+    }
+  }
+
+  if (removed.length > 0) {
+    statsDirty = true
+    cachedStats = null
+  }
+
+  return removed.length
+}
+
+/**
+ * Evict the oldest N entries to relieve memory pressure.
+ * Broadcasts stats update to WebSocket clients after eviction.
+ * Returns number of entries actually evicted.
+ */
+export function evictOldestEntries(count: number): number {
+  const evicted = removeOldestEntries(count)
+  if (evicted > 0) {
+    notifyStatsUpdated(getStats())
+  }
+  return evicted
+}
+
 // ─── Context-driven API ───
 
 /**
@@ -651,23 +703,9 @@ export function insertEntry(entry: HistoryEntry): void {
   const summary = toSummary(entry)
   summaryIndex.set(entry.id, summary)
 
-  // FIFO eviction (splice instead of repeated shift for O(1) amortized)
+  // FIFO eviction
   if (historyState.maxEntries > 0 && historyState.entries.length > historyState.maxEntries) {
-    const excess = historyState.entries.length - historyState.maxEntries
-    const removed = historyState.entries.splice(0, excess)
-    for (const r of removed) {
-      entryIndex.delete(r.id)
-      summaryIndex.delete(r.id)
-      const count = (sessionEntryCount.get(r.sessionId) ?? 1) - 1
-      if (count <= 0) {
-        sessionEntryCount.delete(r.sessionId)
-        sessionModelsSet.delete(r.sessionId)
-        sessionToolsSet.delete(r.sessionId)
-        historyState.sessions.delete(r.sessionId)
-      } else {
-        sessionEntryCount.set(r.sessionId, count)
-      }
-    }
+    removeOldestEntries(historyState.entries.length - historyState.maxEntries)
   }
 
   statsDirty = true
@@ -681,7 +719,9 @@ export function insertEntry(entry: HistoryEntry): void {
  */
 export function updateEntry(
   id: string,
-  update: Partial<Pick<HistoryEntry, "request" | "response" | "rewrites" | "sseEvents" | "durationMs">>,
+  update: Partial<
+    Pick<HistoryEntry, "request" | "response" | "pipelineInfo" | "sseEvents" | "httpHeaders" | "durationMs">
+  >,
 ): void {
   if (!historyState.enabled) return
 
@@ -723,14 +763,17 @@ export function updateEntry(
   if (update.response) {
     entry.response = update.response
   }
-  if (update.rewrites) {
-    entry.rewrites = update.rewrites
+  if (update.pipelineInfo) {
+    entry.pipelineInfo = update.pipelineInfo
   }
   if (update.durationMs !== undefined) {
     entry.durationMs = update.durationMs
   }
   if (update.sseEvents) {
     entry.sseEvents = update.sseEvents
+  }
+  if (update.httpHeaders) {
+    entry.httpHeaders = update.httpHeaders
   }
 
   // Update session token stats when response is set

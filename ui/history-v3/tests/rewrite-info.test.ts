@@ -1,5 +1,5 @@
 /**
- * Tests for useRewriteInfo composable — pre-computed rewrite maps.
+ * Tests for usePipelineInfo composable — pre-computed rewrite maps.
  *
  * Covers: truncationPoint, rewrittenMessageMap, rewrittenIndices,
  *         getRewrittenMessage, isMessageRewritten, isMessageTruncated
@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test"
 import { ref } from "vue"
 
 import type { HistoryEntry, MessageContent } from "../src/types"
-import { useRewriteInfo } from "../src/composables/useRewriteInfo"
+import { usePipelineInfo } from "../src/composables/usePipelineInfo"
 
 // ─── Helpers ───
 
@@ -43,69 +43,69 @@ function msg(role: string, content: string): MessageContent {
 describe("truncationPoint", () => {
   test("returns -1 when no rewrites", () => {
     const entry = ref<HistoryEntry | null>(makeEntry())
-    const { truncationPoint } = useRewriteInfo(entry)
+    const { truncationPoint } = usePipelineInfo(entry)
     expect(truncationPoint.value).toBe(-1)
   })
 
   test("returns -1 when rewrites exist but no truncation", () => {
     const entry = ref<HistoryEntry | null>(
-      makeEntry({ rewrites: { rewrittenMessages: [], messageMapping: [] } }),
+      makeEntry({ pipelineInfo: { rewrittenMessages: [], messageMapping: [] } }),
     )
-    const { truncationPoint } = useRewriteInfo(entry)
+    const { truncationPoint } = usePipelineInfo(entry)
     expect(truncationPoint.value).toBe(-1)
   })
 
   test("returns -1 when truncation has zero removedMessageCount", () => {
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        rewrites: {
+        pipelineInfo: {
           truncation: { removedMessageCount: 0, originalTokens: 100, compactedTokens: 100, processingTimeMs: 1 },
         },
       }),
     )
-    const { truncationPoint } = useRewriteInfo(entry)
+    const { truncationPoint } = usePipelineInfo(entry)
     expect(truncationPoint.value).toBe(-1)
   })
 
   test("uses messageMapping[0] as truncation point when available", () => {
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        rewrites: {
+        pipelineInfo: {
           truncation: { removedMessageCount: 3, originalTokens: 5000, compactedTokens: 2000, processingTimeMs: 5 },
           messageMapping: [3, 4, 5], // original indices: messages 3, 4, 5 survived
           rewrittenMessages: [msg("user", "how are you"), msg("assistant", "fine"), msg("user", "ok")],
         },
       }),
     )
-    const { truncationPoint } = useRewriteInfo(entry)
+    const { truncationPoint } = usePipelineInfo(entry)
     expect(truncationPoint.value).toBe(3)
   })
 
   test("falls back to removedMessageCount when no messageMapping", () => {
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        rewrites: {
+        pipelineInfo: {
           truncation: { removedMessageCount: 2, originalTokens: 5000, compactedTokens: 2000, processingTimeMs: 5 },
         },
       }),
     )
-    const { truncationPoint } = useRewriteInfo(entry)
+    const { truncationPoint } = usePipelineInfo(entry)
     expect(truncationPoint.value).toBe(2)
   })
 
   test("returns -1 when entry is null", () => {
     const entry = ref<HistoryEntry | null>(null)
-    const { truncationPoint } = useRewriteInfo(entry)
+    const { truncationPoint } = usePipelineInfo(entry)
     expect(truncationPoint.value).toBe(-1)
   })
 
   test("reacts to entry changes", () => {
     const entry = ref<HistoryEntry | null>(null)
-    const { truncationPoint } = useRewriteInfo(entry)
+    const { truncationPoint } = usePipelineInfo(entry)
     expect(truncationPoint.value).toBe(-1)
 
     entry.value = makeEntry({
-      rewrites: {
+      pipelineInfo: {
         truncation: { removedMessageCount: 5, originalTokens: 5000, compactedTokens: 2000, processingTimeMs: 5 },
       },
     })
@@ -118,7 +118,7 @@ describe("truncationPoint", () => {
 describe("isMessageTruncated", () => {
   test("returns false when no truncation", () => {
     const entry = ref<HistoryEntry | null>(makeEntry())
-    const { isMessageTruncated } = useRewriteInfo(entry)
+    const { isMessageTruncated } = usePipelineInfo(entry)
     expect(isMessageTruncated(0)).toBe(false)
     expect(isMessageTruncated(1)).toBe(false)
   })
@@ -126,12 +126,12 @@ describe("isMessageTruncated", () => {
   test("returns true for indices before truncation point", () => {
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        rewrites: {
+        pipelineInfo: {
           truncation: { removedMessageCount: 2, originalTokens: 5000, compactedTokens: 2000, processingTimeMs: 5 },
         },
       }),
     )
-    const { isMessageTruncated } = useRewriteInfo(entry)
+    const { isMessageTruncated } = usePipelineInfo(entry)
     expect(isMessageTruncated(0)).toBe(true)
     expect(isMessageTruncated(1)).toBe(true)
     expect(isMessageTruncated(2)).toBe(false)
@@ -144,7 +144,7 @@ describe("isMessageTruncated", () => {
 describe("getRewrittenMessage", () => {
   test("returns null when no rewrites", () => {
     const entry = ref<HistoryEntry | null>(makeEntry())
-    const { getRewrittenMessage } = useRewriteInfo(entry)
+    const { getRewrittenMessage } = usePipelineInfo(entry)
     expect(getRewrittenMessage(0)).toBeNull()
     expect(getRewrittenMessage(1)).toBeNull()
   })
@@ -155,13 +155,13 @@ describe("getRewrittenMessage", () => {
 
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        rewrites: {
+        pipelineInfo: {
           messageMapping: [0, 1, 2],
           rewrittenMessages: [rewritten0, msg("assistant", "hi there"), rewritten2],
         },
       }),
     )
-    const { getRewrittenMessage } = useRewriteInfo(entry)
+    const { getRewrittenMessage } = usePipelineInfo(entry)
 
     expect(getRewrittenMessage(0)).toEqual(rewritten0)
     expect(getRewrittenMessage(1)).not.toBeNull()
@@ -186,14 +186,14 @@ describe("getRewrittenMessage", () => {
             msg("user", "e"),
           ],
         },
-        rewrites: {
+        pipelineInfo: {
           messageMapping: [2, 4],
           rewrittenMessages: [rewritten2, rewritten4],
           truncation: { removedMessageCount: 3, originalTokens: 5000, compactedTokens: 2000, processingTimeMs: 5 },
         },
       }),
     )
-    const { getRewrittenMessage } = useRewriteInfo(entry)
+    const { getRewrittenMessage } = usePipelineInfo(entry)
 
     expect(getRewrittenMessage(0)).toBeNull() // truncated
     expect(getRewrittenMessage(1)).toBeNull() // truncated
@@ -205,13 +205,13 @@ describe("getRewrittenMessage", () => {
   test("returns null when messageMapping is missing", () => {
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        rewrites: {
+        pipelineInfo: {
           rewrittenMessages: [msg("user", "something")],
           // no messageMapping
         },
       }),
     )
-    const { getRewrittenMessage } = useRewriteInfo(entry)
+    const { getRewrittenMessage } = usePipelineInfo(entry)
     expect(getRewrittenMessage(0)).toBeNull()
   })
 })
@@ -221,7 +221,7 @@ describe("getRewrittenMessage", () => {
 describe("isMessageRewritten", () => {
   test("returns false when no rewrites", () => {
     const entry = ref<HistoryEntry | null>(makeEntry())
-    const { isMessageRewritten } = useRewriteInfo(entry)
+    const { isMessageRewritten } = usePipelineInfo(entry)
     expect(isMessageRewritten(0)).toBe(false)
   })
 
@@ -240,7 +240,7 @@ describe("isMessageRewritten", () => {
             msg("user", original2),
           ],
         },
-        rewrites: {
+        pipelineInfo: {
           messageMapping: [0, 1, 2],
           rewrittenMessages: [
             msg("user", "MODIFIED hello"),   // changed
@@ -250,7 +250,7 @@ describe("isMessageRewritten", () => {
         },
       }),
     )
-    const { isMessageRewritten } = useRewriteInfo(entry)
+    const { isMessageRewritten } = usePipelineInfo(entry)
 
     expect(isMessageRewritten(0)).toBe(true)  // content changed
     expect(isMessageRewritten(1)).toBe(false)  // same content
@@ -273,13 +273,13 @@ describe("isMessageRewritten", () => {
           model: "test",
           messages: [{ role: "assistant", content: originalContent } as MessageContent],
         },
-        rewrites: {
+        pipelineInfo: {
           messageMapping: [0],
           rewrittenMessages: [{ role: "assistant", content: rewrittenContent } as MessageContent],
         },
       }),
     )
-    const { isMessageRewritten } = useRewriteInfo(entry)
+    const { isMessageRewritten } = usePipelineInfo(entry)
     expect(isMessageRewritten(0)).toBe(true)
   })
 
@@ -294,13 +294,13 @@ describe("isMessageRewritten", () => {
           model: "test",
           messages: [{ role: "user", content: [...content] } as MessageContent],
         },
-        rewrites: {
+        pipelineInfo: {
           messageMapping: [0],
           rewrittenMessages: [{ role: "user", content: [...content] } as MessageContent],
         },
       }),
     )
-    const { isMessageRewritten } = useRewriteInfo(entry)
+    const { isMessageRewritten } = usePipelineInfo(entry)
     expect(isMessageRewritten(0)).toBe(false)
   })
 
@@ -314,13 +314,13 @@ describe("isMessageRewritten", () => {
           model: "test",
           messages: [sharedMsg],
         },
-        rewrites: {
+        pipelineInfo: {
           messageMapping: [0],
           rewrittenMessages: [sharedMsg], // exact same object reference
         },
       }),
     )
-    const { isMessageRewritten } = useRewriteInfo(entry)
+    const { isMessageRewritten } = usePipelineInfo(entry)
     expect(isMessageRewritten(0)).toBe(false) // reference equal → skip JSON.stringify
   })
 
@@ -331,7 +331,7 @@ describe("isMessageRewritten", () => {
           model: "test",
           messages: [msg("user", "only one message")],
         },
-        rewrites: {
+        pipelineInfo: {
           messageMapping: [0, 5], // index 5 doesn't exist in messages
           rewrittenMessages: [
             msg("user", "modified"),
@@ -340,7 +340,7 @@ describe("isMessageRewritten", () => {
         },
       }),
     )
-    const { isMessageRewritten } = useRewriteInfo(entry)
+    const { isMessageRewritten } = usePipelineInfo(entry)
     expect(isMessageRewritten(0)).toBe(true)
     expect(isMessageRewritten(5)).toBe(false) // no original to compare → skipped
   })
@@ -352,7 +352,7 @@ describe("reactivity", () => {
   test("all computeds update when entry changes", () => {
     const entry = ref<HistoryEntry | null>(null)
     const { truncationPoint, getRewrittenMessage, isMessageRewritten, isMessageTruncated } =
-      useRewriteInfo(entry)
+      usePipelineInfo(entry)
 
     // Initially null
     expect(truncationPoint.value).toBe(-1)
@@ -366,7 +366,7 @@ describe("reactivity", () => {
         model: "test",
         messages: [msg("user", "a"), msg("assistant", "b"), msg("user", "c")],
       },
-      rewrites: {
+      pipelineInfo: {
         truncation: { removedMessageCount: 1, originalTokens: 5000, compactedTokens: 2000, processingTimeMs: 5 },
         messageMapping: [1, 2],
         rewrittenMessages: [msg("assistant", "MODIFIED b"), msg("user", "c")],

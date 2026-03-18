@@ -6,7 +6,7 @@
  * - Applies tool_search / defer_loading based on model capabilities
  * - Ensures all custom tools have input_schema
  * - Injects stubs for tools referenced in message history
- * - Converts server-side tools (web_search, etc.) to custom tool equivalents
+ * - Strips server-side tools (web_search, etc.) when configured
  *
  * Must be called BEFORE sanitize — processToolBlocks (in sanitize) uses
  * the tools array to validate tool_use references in messages.
@@ -268,112 +268,58 @@ export function preprocessTools(payload: MessagesPayload): MessagesPayload {
 }
 
 // ============================================================================
-// Server Tool Rewriting
+// Server Tool Stripping
 // ============================================================================
 
 /**
- * Server-side tool type prefixes that need special handling.
- * These tools have a special `type` field (e.g., "web_search_20250305")
- * and are normally executed by Anthropic's servers.
+ * Server tool type prefixes recognized by the Anthropic API.
+ *
+ * Server tools use a `type` field with a dated suffix (e.g., "web_search_20250305")
+ * instead of `input_schema`. These are executed by Anthropic's servers, not by the client.
+ *
+ * Source: @anthropic-ai/sdk ContentBlock / Tool union types.
  */
-interface ServerToolConfig {
-  description: string
-  input_schema: Record<string, unknown>
-  /** If true, this tool will be removed from the request and Claude won't see it */
-  remove?: boolean
-  /** Error message to show if the tool is removed */
-  removalReason?: string
-}
+// prettier-ignore
+const SERVER_TOOL_TYPE_PREFIXES = [
+  "web_search_",
+  "web_fetch_",
+  "code_execution_",
+  "text_editor_",
+  "computer_",
+  "bash_",
+]
 
-const SERVER_TOOL_CONFIGS: Record<string, ServerToolConfig> = {
-  web_search: {
-    description:
-      "Search the web for current information. "
-      + "Returns web search results that can help answer questions about recent events, "
-      + "current data, or information that may have changed since your knowledge cutoff.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "The search query" },
-      },
-      required: ["query"],
-    },
-  },
-  web_fetch: {
-    description:
-      "Fetch content from a URL. "
-      + "NOTE: This is a client-side tool - the client must fetch the URL and return the content.",
-    input_schema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "The URL to fetch" },
-      },
-      required: ["url"],
-    },
-  },
-  code_execution: {
-    description: "Execute code in a sandbox. " + "NOTE: This is a client-side tool - the client must execute the code.",
-    input_schema: {
-      type: "object",
-      properties: {
-        code: { type: "string", description: "The code to execute" },
-        language: { type: "string", description: "The programming language" },
-      },
-      required: ["code"],
-    },
-  },
-  computer: {
-    description:
-      "Control computer desktop. " + "NOTE: This is a client-side tool - the client must handle computer control.",
-    input_schema: {
-      type: "object",
-      properties: {
-        action: { type: "string", description: "The action to perform" },
-      },
-      required: ["action"],
-    },
-  },
-}
-
-// Match tool.type (e.g., "web_search_20250305") to a server tool config
-function findServerToolConfig(type: string | undefined): ServerToolConfig | null {
-  if (!type) return null
-  for (const [prefix, config] of Object.entries(SERVER_TOOL_CONFIGS)) {
-    if (type.startsWith(prefix)) return config
-  }
-  return null
+/** Check if a tool's type field matches a known server tool prefix. */
+function isServerToolType(type: string | undefined): boolean {
+  if (!type) return false
+  return SERVER_TOOL_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix))
 }
 
 /**
- * Convert server-side tools to custom tools, or pass them through unchanged.
- * Only converts when state.convertServerTools is enabled.
+ * Strip server-side tools from the tools array, or pass them through unchanged.
+ *
+ * When state.stripServerTools is enabled, server tools (web_search,
+ * code_execution, etc.) are removed from the request because Copilot's /v1/messages
+ * endpoint may not support executing them server-side. Without this, the tools
+ * would be silently ignored or cause errors.
+ *
+ * When disabled (default), server tools are passed through unchanged — the proxy
+ * transparently forwards them per the Anthropic protocol.
  */
-export function convertServerToolsToCustom(tools: Array<Tool> | undefined): Array<Tool> | undefined {
+export function stripServerTools(tools: Array<Tool> | undefined): Array<Tool> | undefined {
   if (!tools) return undefined
 
-  // When conversion is disabled, pass all tools through unchanged
-  if (!state.convertServerToolsToCustom) return tools
+  // When stripping is disabled, pass all tools through unchanged
+  if (!state.stripServerTools) return tools
 
   const result: Array<Tool> = []
 
   for (const tool of tools) {
-    const config = findServerToolConfig(tool.type)
-    if (!config) {
-      result.push(tool)
+    if (isServerToolType(tool.type)) {
+      consola.warn(`[DirectAnthropic] Stripping server tool: ${tool.name} (type: ${tool.type})`)
       continue
     }
-
-    if (config.remove) {
-      consola.warn(`[DirectAnthropic] Removing server tool: ${tool.name}. Reason: ${config.removalReason}`)
-      continue
-    }
-
-    consola.debug(`[DirectAnthropic] Converting server tool to custom: ${tool.name} (type: ${tool.type})`)
-    result.push({
-      name: tool.name,
-      description: config.description,
-      input_schema: config.input_schema,
-    })
+    result.push(tool)
   }
 
   return result.length > 0 ? result : undefined

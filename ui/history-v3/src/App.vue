@@ -8,6 +8,7 @@ import SplitPane from '@/components/layout/SplitPane.vue'
 import RequestList from '@/components/list/RequestList.vue'
 import DetailPanel from '@/components/detail/DetailPanel.vue'
 import BaseToast from '@/components/ui/BaseToast.vue'
+import ErrorBoundary from '@/components/ui/ErrorBoundary.vue'
 
 const store = useHistoryStore()
 provide('historyStore', store)
@@ -30,10 +31,14 @@ onUnmounted(() => store.destroy())
     <StatsBar />
     <SplitPane>
       <template #left>
-        <RequestList ref="requestListRef" />
+        <ErrorBoundary label="Request list">
+          <RequestList ref="requestListRef" />
+        </ErrorBoundary>
       </template>
       <template #right>
-        <DetailPanel />
+        <ErrorBoundary label="Detail panel">
+          <DetailPanel />
+        </ErrorBoundary>
       </template>
     </SplitPane>
     <BaseToast />

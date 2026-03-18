@@ -8,18 +8,19 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
+import type { HeadersCapture } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
 import type { ResponsesPayload, ResponsesResponse, ResponsesInputItem } from "~/types/api/openai-responses"
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal } from "~/lib/fetch-utils"
+import { createFetchSignal, captureHttpHeaders } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 
 /** Call Copilot /responses endpoint */
 export const createResponses = async (
   payload: ResponsesPayload,
-  opts?: { resolvedModel?: Model },
+  opts?: { resolvedModel?: Model; headersCapture?: HeadersCapture },
 ): Promise<ResponsesResponse | AsyncGenerator<ServerSentEventMessage>> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
@@ -54,6 +55,11 @@ export const createResponses = async (
     body: JSON.stringify(payload),
     signal: fetchSignal,
   })
+
+  // Capture HTTP headers for history (before error check — capture even on failure)
+  if (opts?.headersCapture) {
+    captureHttpHeaders(opts.headersCapture, headers, response)
+  }
 
   if (!response.ok) {
     consola.error("Failed to create responses", response)

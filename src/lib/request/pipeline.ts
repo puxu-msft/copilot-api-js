@@ -19,7 +19,7 @@ import { classifyError } from "~/lib/error"
 export interface SanitizeResult<TPayload> {
   payload: TPayload
   /** Convenience: total blocks removed (sum of orphans + empty text) */
-  removedCount: number
+  blocksRemoved: number
   /** Convenience: number of system reminder tags removed */
   systemReminderRemovals: number
   /** Structured breakdown of what was removed/modified — format-specific detail */

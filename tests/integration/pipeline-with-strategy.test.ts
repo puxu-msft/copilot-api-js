@@ -50,7 +50,7 @@ function realAutoTruncateStrategy() {
     },
     resanitize: (payload): SanitizeResult<TestPayload> => ({
       payload,
-      removedCount: 0,
+      blocksRemoved: 0,
       systemReminderRemovals: 0,
     }),
     isEnabled: () => true,
@@ -187,7 +187,7 @@ function createResponsesAdapter(
 ): FormatAdapter<ResponsesTestPayload> {
   return {
     format: "openai-responses",
-    sanitize: (p) => ({ payload: p, removedCount: 0, systemReminderRemovals: 0 }),
+    sanitize: (p) => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 }),
     execute:
       executeFn
       ?? (async (p) => ({

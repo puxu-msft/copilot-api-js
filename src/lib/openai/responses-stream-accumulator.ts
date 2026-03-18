@@ -34,7 +34,7 @@ export function createResponsesStreamAccumulator(): ResponsesStreamAccumulator {
     model: "",
     inputTokens: 0,
     outputTokens: 0,
-    content: "",
+    rawContent: "",
     status: "",
     responseId: "",
     toolCalls: [],
@@ -48,10 +48,10 @@ export function createResponsesStreamAccumulator(): ResponsesStreamAccumulator {
 /** Get the final accumulated content string */
 export function finalizeResponsesContent(acc: ResponsesStreamAccumulator): string {
   if (acc.contentParts.length > 0) {
-    acc.content = acc.contentParts.join("")
+    acc.rawContent = acc.contentParts.join("")
     acc.contentParts = []
   }
-  return acc.content
+  return acc.rawContent
 }
 
 /** Accumulate a single parsed Responses API event into the accumulator */

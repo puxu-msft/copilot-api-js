@@ -15,7 +15,7 @@ export function createMockAdapter<TPayload>(overrides?: Partial<FormatAdapter<TP
     sanitize: mock(
       (payload: TPayload): SanitizeResult<TPayload> => ({
         payload,
-        removedCount: 0,
+        blocksRemoved: 0,
         systemReminderRemovals: 0,
       }),
     ),

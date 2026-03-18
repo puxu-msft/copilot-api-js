@@ -1,7 +1,9 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 
+import { applyConfigToState } from "./lib/config/config"
 import { ensurePaths } from "./lib/config/paths"
+import { initProxy } from "./lib/proxy"
 import { state } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
 import { getCopilotUsage, type QuotaDetail } from "./lib/token/copilot-client"
@@ -14,6 +16,14 @@ export const checkUsage = defineCommand({
   },
   async run() {
     await ensurePaths()
+
+    // Load config and initialize proxy before any network requests
+    const config = await applyConfigToState()
+    if (config.proxy) {
+      initProxy({ url: config.proxy, fromEnv: false })
+    } else {
+      initProxy({ url: undefined, fromEnv: true })
+    }
 
     // Use GitHubTokenManager to get token
     const tokenManager = new GitHubTokenManager()

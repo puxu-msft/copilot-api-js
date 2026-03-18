@@ -317,7 +317,7 @@ describe("updateEntry (rewrites)", () => {
     })
 
     updateEntry(entry.id, {
-      rewrites: {
+      pipelineInfo: {
         sanitization: [
           {
             totalBlocksRemoved: 2,
@@ -334,20 +334,20 @@ describe("updateEntry (rewrites)", () => {
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.rewrites).toBeDefined()
-    expect(stored!.rewrites!.sanitization![0].totalBlocksRemoved).toBe(2)
-    expect(stored!.rewrites!.rewrittenMessages).toHaveLength(1)
-    expect(stored!.rewrites!.messageMapping).toEqual([0])
+    expect(stored!.pipelineInfo).toBeDefined()
+    expect(stored!.pipelineInfo!.sanitization![0].totalBlocksRemoved).toBe(2)
+    expect(stored!.pipelineInfo!.rewrittenMessages).toHaveLength(1)
+    expect(stored!.pipelineInfo!.messageMapping).toEqual([0])
   })
 
-  test("stores truncation within rewrites", () => {
+  test("stores truncation within pipelineInfo", () => {
     const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
     })
 
     updateEntry(entry.id, {
-      rewrites: {
+      pipelineInfo: {
         truncation: {
           removedMessageCount: 3,
           originalTokens: 8000,
@@ -358,8 +358,8 @@ describe("updateEntry (rewrites)", () => {
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.rewrites!.truncation).toBeDefined()
-    expect(stored!.rewrites!.truncation!.removedMessageCount).toBe(3)
+    expect(stored!.pipelineInfo!.truncation).toBeDefined()
+    expect(stored!.pipelineInfo!.truncation!.removedMessageCount).toBe(3)
   })
 })
 

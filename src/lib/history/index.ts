@@ -4,10 +4,14 @@
  * Re-exports all history-related types and functions.
  */
 
+// Memory pressure monitor
+export { startMemoryPressureMonitor, stopMemoryPressureMonitor } from "./memory-pressure"
+
 // Store (persistence and query)
 export {
   clearHistory,
   deleteSession,
+  evictOldestEntries,
   exportHistory,
   getCurrentSession,
   getEntry,
@@ -37,10 +41,10 @@ export type {
   ImageContentBlock,
   ImageSource,
   MessageContent,
+  PipelineInfo,
   PreprocessInfo,
   QueryOptions,
   RedactedThinkingContentBlock,
-  RewriteInfo,
   SanitizationInfo,
   ServerToolUseContentBlock,
   Session,
@@ -58,7 +62,6 @@ export type {
   UsageData,
   WebSearchToolResultContentBlock,
 } from "./store"
-
 // WebSocket
 export {
   addClient,
@@ -71,4 +74,5 @@ export {
   notifyStatsUpdated,
   removeClient,
 } from "./ws"
+
 export type { WSMessage, WSMessageType } from "./ws"

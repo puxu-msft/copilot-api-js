@@ -11,6 +11,7 @@ import { state } from "~/lib/state"
 export const getCopilotToken = async (): Promise<CopilotTokenResponse> => {
   const response = await fetch(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, {
     headers: { ...githubHeaders(state), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
+    signal: AbortSignal.timeout(15_000),
   })
 
   if (!response.ok) throw await HTTPError.fromResponse("Failed to get Copilot token", response)
@@ -37,6 +38,7 @@ export interface CopilotTokenResponse {
 export const getCopilotUsage = async (): Promise<CopilotUsageResponse> => {
   const response = await fetch(`${GITHUB_API_BASE_URL}/copilot_internal/user`, {
     headers: { ...githubHeaders(state), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
+    signal: AbortSignal.timeout(15_000),
   })
 
   if (!response.ok) {

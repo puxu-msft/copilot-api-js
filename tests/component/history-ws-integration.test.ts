@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
-import type { EndpointType, EntrySummary, HistoryEntry, RewriteInfo, WSMessage } from "~/lib/history"
+import type { EndpointType, EntrySummary, HistoryEntry, PipelineInfo, WSMessage } from "~/lib/history"
 
 import {
   addClient,
@@ -246,15 +246,15 @@ describe("updateEntry (response) triggers WS notification", () => {
   })
 })
 
-// ─── updateEntry (rewrites) → entry_updated ───
+// ─── updateEntry (pipelineInfo) → entry_updated ───
 
-describe("updateEntry (rewrites) triggers WS notification", () => {
-  test("connected client receives entry_updated when rewrites are recorded", () => {
+describe("updateEntry (pipelineInfo) triggers WS notification", () => {
+  test("connected client receives entry_updated when pipelineInfo is recorded", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
-    const rewrites: RewriteInfo = {
+    const pipeInfo: PipelineInfo = {
       truncation: {
         removedMessageCount: 3,
         originalTokens: 8000,
@@ -274,17 +274,17 @@ describe("updateEntry (rewrites) triggers WS notification", () => {
       rewrittenMessages: [{ role: "user", content: "Simplified" }],
       messageMapping: [0],
     }
-    updateEntry(entry.id, { rewrites })
+    updateEntry(entry.id, { pipelineInfo: pipeInfo })
 
     const msg = getLastSentMessageOfType(ws, "entry_updated")
     expect(msg.type).toBe("entry_updated")
-    // Rewrites don't appear in the summary — the update just triggers a summary rebuild
+    // PipelineInfo doesn't appear in the summary — the update just triggers a summary rebuild
     const summary = msg.data as EntrySummary
     expect(summary.id).toBe(entry.id)
   })
 })
 
-// ─── Full lifecycle: insert → rewrites → response ───
+// ─── Full lifecycle: insert → pipelineInfo → response ───
 
 describe("full request lifecycle", () => {
   test("client receives all notifications in correct order", () => {
@@ -294,9 +294,9 @@ describe("full request lifecycle", () => {
     // 1. Insert entry
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
 
-    // 2. Update with rewrites
+    // 2. Update with pipelineInfo
     updateEntry(entry.id, {
-      rewrites: {
+      pipelineInfo: {
         truncation: {
           removedMessageCount: 2,
           originalTokens: 5000,
@@ -318,7 +318,7 @@ describe("full request lifecycle", () => {
       durationMs: 300,
     })
 
-    // Messages: connected + entry_added + stats + entry_updated(rewrites) + stats + entry_updated(response) + stats
+    // Messages: connected + entry_added + stats + entry_updated(pipelineInfo) + stats + entry_updated(response) + stats
     const msgs = getSentMessages(ws)
     expect(msgs).toHaveLength(7)
     expect(msgs[0].type).toBe("connected")

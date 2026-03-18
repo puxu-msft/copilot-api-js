@@ -1,5 +1,5 @@
 /**
- * Anthropic API routing and stream processing utilities.
+ * Anthropic SSE stream processing and API routing.
  *
  * Reusable components shared across route handlers and tests:
  * - API routing decisions (vendor/endpoint validation)

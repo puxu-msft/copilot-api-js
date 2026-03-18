@@ -18,7 +18,7 @@ describe("createResponsesStreamAccumulator", () => {
     expect(acc.outputTokens).toBe(0)
     expect(acc.reasoningTokens).toBe(0)
     expect(acc.cachedInputTokens).toBe(0)
-    expect(acc.content).toBe("")
+    expect(acc.rawContent).toBe("")
     expect(acc.status).toBe("")
     expect(acc.responseId).toBe("")
     expect(acc.toolCalls).toEqual([])
@@ -521,7 +521,7 @@ describe("finalizeResponsesContent", () => {
 
   test("returns existing content when parts are empty", () => {
     const acc = createResponsesStreamAccumulator()
-    acc.content = "Previously set content"
+    acc.rawContent = "Previously set content"
     const result = finalizeResponsesContent(acc)
     expect(result).toBe("Previously set content")
   })

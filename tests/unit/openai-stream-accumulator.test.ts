@@ -74,7 +74,7 @@ function finishChunk(reason: FinishReason | null, index = 0): ChatCompletionChun
 describe("createOpenAIStreamAccumulator", () => {
   test("initializes with empty state", () => {
     const acc = createOpenAIStreamAccumulator()
-    expect(acc.content).toBe("")
+    expect(acc.rawContent).toBe("")
     expect(acc.toolCalls).toEqual([])
     expect(acc.toolCallMap.size).toBe(0)
     expect(acc.finishReason).toBe("")
@@ -92,7 +92,7 @@ describe("accumulateOpenAIStreamEvent", () => {
     const acc = createOpenAIStreamAccumulator()
     accumulateOpenAIStreamEvent(textDelta("Hello"), acc)
     accumulateOpenAIStreamEvent(textDelta(" world"), acc)
-    expect(acc.content).toBe("Hello world")
+    expect(acc.rawContent).toBe("Hello world")
   })
 
   test("captures model from first chunk", () => {
@@ -118,7 +118,7 @@ describe("accumulateOpenAIStreamEvent", () => {
   test("handles empty choices array", () => {
     const acc = createOpenAIStreamAccumulator()
     accumulateOpenAIStreamEvent(makeChunk({ choices: [] }), acc)
-    expect(acc.content).toBe("")
+    expect(acc.rawContent).toBe("")
   })
 
   // ── Tool calls ──
@@ -234,7 +234,7 @@ describe("accumulateOpenAIStreamEvent", () => {
     accumulateOpenAIStreamEvent(toolCallArgsDelta(0, '{"q":"test"}'), acc)
     accumulateOpenAIStreamEvent(finishChunk("tool_calls"), acc)
 
-    expect(acc.content).toBe("Let me check.")
+    expect(acc.rawContent).toBe("Let me check.")
     expect(acc.toolCallMap.size).toBe(1)
     expect(acc.finishReason).toBe("tool_calls")
   })

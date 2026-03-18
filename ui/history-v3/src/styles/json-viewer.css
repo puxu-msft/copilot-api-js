@@ -1,0 +1,52 @@
+/* vue-json-pretty: always dark theme (code-editor style, independent of app theme) */
+
+.vjs-tree {
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  background: #0d1117 !important;
+  color: #e6edf3 !important;
+}
+
+.vjs-tree-node:hover {
+  background: #30363d !important;
+}
+
+.vjs-key {
+  color: #39c5cf !important;
+}
+
+.vjs-value-string {
+  color: #3fb950 !important;
+}
+
+.vjs-value-number {
+  color: #d29922 !important;
+}
+
+.vjs-value-boolean {
+  color: #a371f7 !important;
+}
+
+.vjs-value-null {
+  color: #6e7681 !important;
+}
+
+.vjs-tree__brackets {
+  color: #8b949e !important;
+}
+
+.vjs-tree__brackets:hover {
+  color: #58a6ff !important;
+  cursor: pointer;
+}
+
+.vjs-tree__content.has-line {
+  border-left: 1px solid #21262d !important;
+}
+
+.vjs-tree__indent--line-number {
+  color: #6e7681 !important;
+  border-right: 1px solid #21262d !important;
+  padding-right: 8px !important;
+  margin-right: 4px !important;
+}

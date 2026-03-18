@@ -354,13 +354,13 @@ export function getPreviewText(entry: HistoryEntry): string {
     if (msg.role === "tool") continue
     if (msg.role !== "user") continue
 
-    const text = extractText(msg.content)
-    if (text) return text.slice(0, 100)
-
-    // User message with only tool_result blocks — try previous messages
-    if (Array.isArray(msg.content) && msg.content.some((b: ContentBlock) => b.type === "tool_result")) {
+    // User message with only tool_result blocks — skip to previous messages
+    if (Array.isArray(msg.content) && msg.content.every((b: ContentBlock) => b.type === "tool_result")) {
       continue
     }
+
+    const text = extractText(msg.content)
+    if (text) return text.slice(0, 100)
     break
   }
 

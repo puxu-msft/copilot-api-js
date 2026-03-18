@@ -784,9 +784,9 @@ describe("summary cache consistency", () => {
     })
     expect(getSummary(entry.id)!.requestModel).toBe("claude-sonnet-4-20250514")
 
-    // Update 2: rewrites (summary should still have request data)
+    // Update 2: pipelineInfo (summary should still have request data)
     updateEntry(entry.id, {
-      rewrites: {
+      pipelineInfo: {
         truncation: { removedMessageCount: 1, originalTokens: 5000, compactedTokens: 3000, processingTimeMs: 5 },
       },
     })

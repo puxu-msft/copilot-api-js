@@ -111,4 +111,4 @@ function process() {
 
 ## 项目参考
 
-架构设计详见 @DESIGN.md
+架构设计详见 @docs/DESIGN.md
