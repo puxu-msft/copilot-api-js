@@ -33,7 +33,7 @@ import { STREAM_ABORTED, raceIteratorNext } from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 
-import { createResponsesAdapter, createResponsesStrategies } from "./pipeline"
+import { createResponsesAdapter, createResponsesStrategies, normalizeCallIds } from "./pipeline"
 
 // ============================================================================
 // Constants
@@ -107,7 +107,8 @@ function sendErrorAndClose(ws: WSContext, message: string, code?: string): void 
 // ============================================================================
 
 /** Handle a response.create message over WebSocket */
-async function handleResponseCreate(ws: WSContext, payload: ResponsesPayload): Promise<void> {
+async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload): Promise<void> {
+  let payload = rawPayload
   const requestedModel = payload.model
   const resolvedModel = resolveModelName(requestedModel)
   payload.model = resolvedModel
@@ -121,6 +122,11 @@ async function handleResponseCreate(ws: WSContext, payload: ResponsesPayload): P
 
   // Process system prompt (overrides, prepend, append from config)
   payload.instructions = await processResponsesInstructions(payload.instructions, payload.model)
+
+  // Normalize call IDs before pipeline (call_ → fc_)
+  if (state.normalizeResponsesCallIds) {
+    payload = normalizeCallIds(payload)
+  }
 
   // TUI logging — use "WS" as method indicator
   const tuiLogId = tuiLogger.startRequest({

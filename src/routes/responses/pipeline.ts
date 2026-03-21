@@ -17,7 +17,6 @@ import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { createResponses } from "~/lib/openai/responses-client"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
-import { state } from "~/lib/state"
 
 /** Create the FormatAdapter for Responses API pipeline execution */
 export function createResponsesAdapter(
@@ -26,10 +25,7 @@ export function createResponsesAdapter(
 ): FormatAdapter<ResponsesPayload> {
   return {
     format: "openai-responses",
-    sanitize: (p) => {
-      const payload = state.normalizeResponsesCallIds ? normalizeCallIds(p) : p
-      return { payload, blocksRemoved: 0, systemReminderRemovals: 0 }
-    },
+    sanitize: (p) => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 }),
     execute: (p) =>
       executeWithAdaptiveRateLimit(() => createResponses(p, { resolvedModel: selectedModel, headersCapture })),
     logPayloadSize: (p) => {
@@ -56,7 +52,7 @@ const FC_PREFIX = "fc_"
  * Converts Chat Completions format `call_xxx` IDs to Responses format `fc_xxx` IDs
  * on `function_call` and `function_call_output` items.
  */
-function normalizeCallIds(payload: ResponsesPayload): ResponsesPayload {
+export function normalizeCallIds(payload: ResponsesPayload): ResponsesPayload {
   if (typeof payload.input === "string") return payload
 
   let count = 0

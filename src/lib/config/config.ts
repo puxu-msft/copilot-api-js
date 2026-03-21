@@ -139,7 +139,7 @@ export interface ResponsesConfig {
    * Normalize function call IDs: convert `call_` prefix to `fc_` prefix.
    * Required when clients send conversation history with Chat Completions-format
    * tool call IDs (`call_xxx`) to the Responses API endpoint (which requires `fc_xxx`).
-   * Default: false.
+   * Default: true.
    */
   normalize_call_ids?: boolean
 }

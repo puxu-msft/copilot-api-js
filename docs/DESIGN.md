@@ -136,7 +136,7 @@ ui/
 | `shutdownGracefulWait` | config `shutdown.graceful_wait` | number | `60` | Phase 2 超时秒数：等待活跃请求自然完成 |
 | `shutdownAbortWait` | config `shutdown.abort_wait` | number | `120` | Phase 3 超时秒数：发送 abort signal 后等待处理完成 |
 | `staleRequestMaxAge` | config `stale_request_max_age` | number | `600` | 活跃请求最大存活秒数（0 = 禁用） |
-| `normalizeResponsesCallIds` | config `openai-responses.normalize_call_ids` | boolean | `false` | 将 Responses API input 中的 `call_` 前缀 ID 转换为 `fc_` 前缀 |
+| `normalizeResponsesCallIds` | config `openai-responses.normalize_call_ids` | boolean | `true` | 将 Responses API input 中的 `call_` 前缀 ID 转换为 `fc_` 前缀 |
 
 ## 模块文档
 

@@ -30,13 +30,13 @@ import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIterat
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 
-import { createResponsesAdapter, createResponsesStrategies } from "./pipeline"
+import { createResponsesAdapter, createResponsesStrategies, normalizeCallIds } from "./pipeline"
 
 // Re-export conversion functions (other modules may import from ./handler)
 
 /** Handle an inbound Responses API request */
 export async function handleResponses(c: Context) {
-  const payload = await c.req.json<ResponsesPayload>()
+  let payload = await c.req.json<ResponsesPayload>()
 
   // Resolve model name aliases
   const clientModel = payload.model
@@ -55,6 +55,11 @@ export async function handleResponses(c: Context) {
 
   // Process system prompt (overrides, prepend, append from config)
   payload.instructions = await processResponsesInstructions(payload.instructions, payload.model)
+
+  // Normalize call IDs before pipeline (call_ → fc_)
+  if (state.normalizeResponsesCallIds) {
+    payload = normalizeCallIds(payload)
+  }
 
   // Get tracking ID
   const tuiLogId = c.get("tuiLogId") as string | undefined

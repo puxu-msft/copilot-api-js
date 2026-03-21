@@ -127,7 +127,7 @@ anthropic:
 
 openai-responses:
   # Convert `call_xxx` IDs to `fc_xxx` in input. Required when clients send conversation history with
-  # Chat Completions-format tool call IDs to the Responses API (which requires `fc_` prefix). Default: false.
+  # Chat Completions-format tool call IDs to the Responses API (which requires `fc_` prefix). Default: true.
   normalize_call_ids: true
 
 # ============================================================================

@@ -55,6 +55,8 @@ function snapshotState() {
     historyLimit: state.historyLimit,
     shutdownGracefulWait: state.shutdownGracefulWait,
     shutdownAbortWait: state.shutdownAbortWait,
+    staleRequestMaxAge: state.staleRequestMaxAge,
+    normalizeResponsesCallIds: state.normalizeResponsesCallIds,
   }
 }
 
@@ -71,6 +73,8 @@ function restoreState(snapshot: ReturnType<typeof snapshotState>) {
   state.historyLimit = snapshot.historyLimit
   state.shutdownGracefulWait = snapshot.shutdownGracefulWait
   state.shutdownAbortWait = snapshot.shutdownAbortWait
+  state.staleRequestMaxAge = snapshot.staleRequestMaxAge
+  state.normalizeResponsesCallIds = snapshot.normalizeResponsesCallIds
 }
 
 let originalState: ReturnType<typeof snapshotState>
@@ -174,6 +178,46 @@ shutdown:
 
     expect(state.shutdownGracefulWait).toBe(45)
     expect(state.shutdownAbortWait).toBe(90)
+  })
+
+  test("applies openai-responses.normalize_call_ids", async () => {
+    state.normalizeResponsesCallIds = false
+    await writeConfig(`
+openai-responses:
+  normalize_call_ids: true
+`)
+    await applyConfigToState()
+    expect(state.normalizeResponsesCallIds).toBe(true)
+  })
+
+  test("applies openai-responses.normalize_call_ids: false", async () => {
+    state.normalizeResponsesCallIds = true
+    await writeConfig(`
+openai-responses:
+  normalize_call_ids: false
+`)
+    await applyConfigToState()
+    expect(state.normalizeResponsesCallIds).toBe(false)
+  })
+
+  test("leaves normalizeResponsesCallIds unchanged when config has no openai-responses section", async () => {
+    state.normalizeResponsesCallIds = true
+    await writeConfig("fetch_timeout: 30\n")
+    await applyConfigToState()
+    expect(state.normalizeResponsesCallIds).toBe(true)
+  })
+
+  test("applies stale_request_max_age", async () => {
+    await writeConfig("stale_request_max_age: 300\n")
+    await applyConfigToState()
+    expect(state.staleRequestMaxAge).toBe(300)
+  })
+
+  test("leaves staleRequestMaxAge unchanged when absent", async () => {
+    state.staleRequestMaxAge = 900
+    await writeConfig("fetch_timeout: 30\n")
+    await applyConfigToState()
+    expect(state.staleRequestMaxAge).toBe(900)
   })
 })
 
