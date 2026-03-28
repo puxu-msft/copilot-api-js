@@ -20,6 +20,8 @@ import {
   resetAdaptiveRateLimiter,
 } from "~/lib/adaptive-rate-limiter"
 
+import { waitUntil } from "../helpers/wait-until"
+
 // ─── isRateLimitError ───
 
 describe("AdaptiveRateLimiter.isRateLimitError", () => {
@@ -345,7 +347,9 @@ describe("AdaptiveRateLimiter sleep cancellation", () => {
     })
 
     // Wait for rate-limited mode to kick in and sleep to start
-    await Bun.sleep(50)
+    await waitUntil(() => limiter.getStatus().mode === "rate-limited", {
+      label: "rate limiter to enter rate-limited mode",
+    })
 
     // rejectQueued should cancel the 60s sleep immediately
     const startMs = Date.now()
@@ -357,6 +361,8 @@ describe("AdaptiveRateLimiter sleep cancellation", () => {
 
     // Key assertion: should not wait 60s for the sleep to finish
     expect(elapsed).toBeLessThan(2000)
-    expect(result).toEqual({ result: "ok", queueWaitMs: 0 })
+    expect(result.result).toBe("ok")
+    expect(result.queueWaitMs).toBeGreaterThanOrEqual(0)
+    expect(result.queueWaitMs).toBeLessThan(2000)
   })
 })

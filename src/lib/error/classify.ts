@@ -1,4 +1,5 @@
-import { HTTPError, parseTokenLimitError } from "./http-error"
+import { HTTPError } from "./http-error"
+import { extractRetryAfterFromBody, extractTokenLimitFromResponseText, isUpstreamRateLimited } from "./parsing"
 import { formatErrorWithCause, parseRetryAfterHeader } from "./utils"
 
 /** Structured error types for pipeline retry decisions */
@@ -187,55 +188,6 @@ function classifyHTTPError(error: HTTPError): ApiError {
   }
 }
 
-/** Check if a 503 response body indicates upstream provider rate limiting */
-export function isUpstreamRateLimited(responseText: string): boolean {
-  try {
-    const parsed: unknown = JSON.parse(responseText)
-    if (parsed && typeof parsed === "object" && "error" in parsed) {
-      const err = (parsed as { error: unknown }).error
-      if (err && typeof err === "object") {
-        const errObj = err as Record<string, unknown>
-        if (typeof errObj.code === "string" && errObj.code.includes("rate")) return true
-        if (typeof errObj.message === "string") {
-          const msg = errObj.message.toLowerCase()
-          if (msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("quota")) return true
-        }
-      }
-    }
-  } catch {
-    const lower = responseText.toLowerCase()
-    if (lower.includes("rate limit") || lower.includes("too many requests")) return true
-  }
-  return false
-}
-
-/** Extract retry_after from JSON response body */
-export function extractRetryAfterFromBody(responseText: string): number | undefined {
-  try {
-    const parsed: unknown = JSON.parse(responseText)
-    if (parsed && typeof parsed === "object") {
-      if ("retry_after" in parsed && typeof (parsed as Record<string, unknown>).retry_after === "number") {
-        return (parsed as { retry_after: number }).retry_after
-      }
-
-      if ("error" in parsed) {
-        const err = (parsed as { error: unknown }).error
-        if (
-          err
-          && typeof err === "object"
-          && "retry_after" in err
-          && typeof (err as Record<string, unknown>).retry_after === "number"
-        ) {
-          return (err as { retry_after: number }).retry_after
-        }
-      }
-    }
-  } catch {
-    // Not JSON
-  }
-  return undefined
-}
-
 /** Check if response body contains rate_limited code */
 function isRateLimitedInBody(responseText: string): boolean {
   try {
@@ -254,23 +206,7 @@ function isRateLimitedInBody(responseText: string): boolean {
 
 /** Try to extract token limit info from response body */
 function tryExtractTokenLimit(responseText: string): { current: number; limit: number } | null {
-  try {
-    const parsed: unknown = JSON.parse(responseText)
-    if (parsed && typeof parsed === "object" && "error" in parsed) {
-      const err = (parsed as { error: unknown }).error
-      if (
-        err
-        && typeof err === "object"
-        && "message" in err
-        && typeof (err as Record<string, unknown>).message === "string"
-      ) {
-        return parseTokenLimitError((err as { message: string }).message)
-      }
-    }
-  } catch {
-    // Not JSON
-  }
-  return null
+  return extractTokenLimitFromResponseText(responseText)
 }
 
 /** Known network/socket error message patterns from Bun and Node.js fetch */

@@ -13,7 +13,7 @@ import {
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,
-} from "~/lib/sanitize-system-reminder"
+} from "~/lib/system-prompt"
 import { state, setStateForTests } from "~/lib/state"
 
 // ─── extractTrailingSystemReminderTags ───

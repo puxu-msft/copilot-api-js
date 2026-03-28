@@ -7,13 +7,14 @@ import consola from "consola"
 import fs from "node:fs/promises"
 
 import { PATHS } from "~/lib/config/paths"
-import { HTTPError, parseTokenLimitError } from "~/lib/error"
+import { HTTPError } from "~/lib/error"
+import { parseTokenLimitError } from "~/lib/error/parsing"
 import {
   CLOSE_TAG,
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
   OPEN_TAG,
-} from "~/lib/sanitize-system-reminder"
+} from "~/lib/system-prompt"
 
 // ============================================================================
 // Configuration

@@ -7,114 +7,24 @@
 
 import consola from "consola"
 
-import type { SanitizeResult } from "~/lib/request/pipeline"
 import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
 
-import { removeSystemReminderTags } from "~/lib/sanitize-system-reminder"
 import { state } from "~/lib/state"
 
+import { countAnthropicContentBlocks } from "./sanitize/content-blocks"
 import { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"
 import { stripReadToolResultTags } from "./sanitize/read-tool-result-tags"
+import { finalizeAnthropicSanitization, type SanitizationStats } from "./sanitize/result"
 import { removeAnthropicSystemReminders } from "./sanitize/system-reminders"
+import { sanitizeAnthropicSystemPrompt } from "./sanitize/system-prompt"
 import { processToolBlocks } from "./sanitize/tool-blocks"
-import { hasThinkingSignatureBlocks } from "./thinking-immutability"
 
 export {
   deduplicateToolCalls,
   processToolBlocks,
   removeAnthropicSystemReminders,
+  type SanitizationStats,
   stripReadToolResultTags,
-}
-
-/**
- * Sanitize Anthropic system prompt (can be string or array of text blocks).
- * Only removes system-reminder tags here.
- *
- * NOTE: Restrictive statement filtering is handled separately by:
- * - system-prompt.ts (via config.yaml overrides)
- * This avoids duplicate processing of the system prompt.
- */
-function sanitizeAnthropicSystemPrompt(system: string | Array<{ type: "text"; text: string }> | undefined): {
-  system: typeof system
-  modified: boolean
-} {
-  if (!system) {
-    return { system, modified: false }
-  }
-
-  if (typeof system === "string") {
-    const sanitized = removeSystemReminderTags(system)
-    return { system: sanitized, modified: sanitized !== system }
-  }
-
-  const { blocks, modified } = sanitizeTextBlocksInArray(
-    system,
-    (block) => block.text,
-    (block, text) => ({ ...block, text }),
-  )
-  return { system: modified ? blocks : system, modified }
-}
-
-/**
- * Final pass: remove any empty/whitespace-only text content blocks from Anthropic messages.
- * This is a safety net that catches empty blocks regardless of how they were produced.
- */
-function filterEmptyAnthropicTextBlocks(messages: Array<MessageParam>): Array<MessageParam> {
-  return messages.map((msg) => {
-    if (typeof msg.content === "string") return msg
-
-    if (msg.role === "assistant" && hasThinkingSignatureBlocks(msg)) {
-      return msg
-    }
-
-    const filtered = msg.content.filter((block) => {
-      if (block.type === "text" && "text" in block) {
-        return block.text.trim() !== ""
-      }
-      return true
-    })
-
-    if (filtered.length === msg.content.length) return msg
-    return { ...msg, content: filtered } as MessageParam
-  })
-}
-
-/**
- * Final pass: remove any empty/whitespace-only text blocks from Anthropic system prompt.
- */
-function filterEmptySystemTextBlocks(system: MessagesPayload["system"]): MessagesPayload["system"] {
-  if (!system || typeof system === "string") return system
-  return system.filter((block) => block.text.trim() !== "")
-}
-
-/**
- * Remove system-reminder tags from text blocks in an array.
- * Drops blocks whose text becomes empty after sanitization.
- */
-function sanitizeTextBlocksInArray<T extends { type: string }>(
-  blocks: Array<T>,
-  getText: (block: T) => string | undefined,
-  setText: (block: T, text: string) => T,
-): { blocks: Array<T>; modified: boolean } {
-  let modified = false
-  const result: Array<T> = []
-
-  for (const block of blocks) {
-    const text = getText(block)
-    if (text !== undefined) {
-      const sanitized = removeSystemReminderTags(text)
-      if (sanitized !== text) {
-        modified = true
-        if (sanitized) {
-          result.push(setText(block, sanitized))
-        }
-        continue
-      }
-    }
-    result.push(block)
-  }
-
-  return { blocks: modified ? result : blocks, modified }
 }
 
 /**
@@ -158,33 +68,12 @@ export function preprocessAnthropicMessages(messages: Array<MessageParam>): {
 
   return { messages: result, strippedReadTagCount, dedupedToolCallCount }
 }
-
-/**
- * Count total content blocks in Anthropic messages.
- */
-function countAnthropicContentBlocks(messages: Array<MessageParam>): number {
-  let count = 0
-  for (const msg of messages) {
-    count += typeof msg.content === "string" ? 1 : msg.content.length
-  }
-  return count
-}
-
-export interface SanitizationStats {
-  orphanedToolUseCount: number
-  orphanedToolResultCount: number
-  fixedNameCount: number
-  emptyTextBlocksRemoved: number
-  systemReminderRemovals: number
-  totalBlocksRemoved: number
-}
-
 /**
  * Sanitize Anthropic messages by filtering orphaned tool blocks and system reminders.
  */
 export function sanitizeAnthropicMessages(
   payload: MessagesPayload,
-): SanitizeResult<MessagesPayload> & { stats: SanitizationStats } {
+): ReturnType<typeof finalizeAnthropicSanitization> {
   let messages = payload.messages
   const originalBlocks = countAnthropicContentBlocks(messages)
 
@@ -196,38 +85,5 @@ export function sanitizeAnthropicMessages(
 
   const toolResult = processToolBlocks(messages, payload.tools)
   messages = toolResult.messages
-
-  if (toolResult.fixedNameCount > 0) {
-    consola.debug(`[Sanitizer:Anthropic] Fixed ${toolResult.fixedNameCount} tool name casing mismatches`)
-  }
-
-  messages = filterEmptyAnthropicTextBlocks(messages)
-  const finalSystem = filterEmptySystemTextBlocks(sanitizedSystem)
-
-  const newBlocks = countAnthropicContentBlocks(messages)
-  const totalBlocksRemoved = originalBlocks - newBlocks
-  const emptyTextBlocksRemoved =
-    totalBlocksRemoved - toolResult.orphanedToolUseCount - toolResult.orphanedToolResultCount
-
-  if (totalBlocksRemoved > 0 && (toolResult.orphanedToolUseCount > 0 || toolResult.orphanedToolResultCount > 0)) {
-    const parts: Array<string> = []
-    if (toolResult.orphanedToolUseCount > 0) parts.push(`${toolResult.orphanedToolUseCount} orphaned tool_use`)
-    if (toolResult.orphanedToolResultCount > 0) parts.push(`${toolResult.orphanedToolResultCount} orphaned tool_result`)
-    if (emptyTextBlocksRemoved > 0) parts.push(`${emptyTextBlocksRemoved} empty text blocks`)
-    consola.info(`[Sanitizer:Anthropic] Removed ${totalBlocksRemoved} content blocks (${parts.join(", ")})`)
-  }
-
-  return {
-    payload: { ...payload, system: finalSystem, messages },
-    blocksRemoved: totalBlocksRemoved,
-    systemReminderRemovals,
-    stats: {
-      orphanedToolUseCount: toolResult.orphanedToolUseCount,
-      orphanedToolResultCount: toolResult.orphanedToolResultCount,
-      fixedNameCount: toolResult.fixedNameCount,
-      emptyTextBlocksRemoved: Math.max(0, emptyTextBlocksRemoved),
-      systemReminderRemovals,
-      totalBlocksRemoved,
-    },
-  }
+  return finalizeAnthropicSanitization(payload, messages, sanitizedSystem, originalBlocks, toolResult, systemReminderRemovals)
 }

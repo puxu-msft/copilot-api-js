@@ -32,6 +32,7 @@ export {
 
 export type {
   ContentBlock,
+  CursorResult,
   EndpointType,
   EntrySummary,
   HistoryEntry,
@@ -46,9 +47,11 @@ export type {
   QueryOptions,
   RedactedThinkingContentBlock,
   SanitizationInfo,
+  ServerToolResultContentBlock,
   ServerToolUseContentBlock,
   Session,
   SessionResult,
+  SseEventRecord,
   SummaryResult,
   SystemBlock,
   TextContentBlock,

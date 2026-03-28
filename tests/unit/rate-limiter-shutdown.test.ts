@@ -6,6 +6,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 
 import { AdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
 
+import { waitUntil } from "../helpers/wait-until"
+
 describe("AdaptiveRateLimiter.rejectQueued", () => {
   let limiter: AdaptiveRateLimiter
 
@@ -37,13 +39,17 @@ describe("AdaptiveRateLimiter.rejectQueued", () => {
       .catch((e: Error) => e)
 
     // Wait for the first request to be processed and re-enqueued
-    await new Promise((r) => setTimeout(r, 200))
+    await waitUntil(() => limiter.getStatus().mode === "rate-limited", {
+      label: "rate limiter to enter rate-limited mode",
+    })
 
     // Second call should be queued since we're now rate-limited
     const p2 = limiter.execute(async () => "result2").catch((e: Error) => e)
 
     // Wait for it to enter the queue
-    await new Promise((r) => setTimeout(r, 100))
+    await waitUntil(() => limiter.getStatus().queueLength > 0, {
+      label: "second request to enter queue",
+    })
 
     // Now reject all queued
     const count = limiter.rejectQueued()

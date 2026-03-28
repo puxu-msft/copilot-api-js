@@ -1,4 +1,5 @@
 export { classifyError, type ApiError, type ApiErrorType } from "./classify"
 export { forwardError } from "./forward"
-export { HTTPError, parseTokenLimitError } from "./http-error"
+export { HTTPError } from "./http-error"
+export { parseTokenLimitError } from "./parsing"
 export { formatErrorWithCause, getErrorMessage, parseRetryAfterHeader } from "./utils"

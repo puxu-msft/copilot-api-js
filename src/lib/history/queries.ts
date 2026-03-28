@@ -1,5 +1,4 @@
-import { ensureSearchText } from "./entries"
-import { historyIndexes, historyState } from "./state"
+import { ensureSearchText, historyIndexes, historyState } from "./state"
 import type { CursorResult, EntrySummary, HistoryEntry, HistoryResult, QueryOptions } from "./types"
 
 export function getHistory(options: QueryOptions = {}): HistoryResult {

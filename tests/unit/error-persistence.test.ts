@@ -4,6 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -12,6 +13,8 @@ import type { RequestContextEvent } from "~/lib/context/manager"
 import type { HistoryEntryData } from "~/lib/context/request"
 
 import { handleErrorPersistence } from "~/lib/context/error-persistence"
+
+import { waitUntil } from "../helpers/wait-until"
 
 // ============================================================================
 // Helpers
@@ -65,15 +68,27 @@ function mockFailedEvent(overrides?: Partial<HistoryEntryData>): RequestContextE
   }
 }
 
-/** Wait for async write to complete and return error directory entries */
-async function getErrorDirEntries(): Promise<Array<string>> {
+async function readErrorDirEntries(): Promise<Array<string>> {
   const errmsgsDir = path.join(tmpDir, "errmsgs")
-  await Bun.sleep(50) // Allow fire-and-forget async write to complete
   try {
     return await fs.readdir(errmsgsDir)
   } catch {
     return []
   }
+}
+
+async function waitForErrorDirEntries(count = 1): Promise<Array<string>> {
+  const errmsgsDir = path.join(tmpDir, "errmsgs")
+  await waitUntil(
+    async () => existsSync(errmsgsDir) && (await fs.readdir(errmsgsDir)).length >= count,
+    { label: `error directory to contain at least ${count} entr${count === 1 ? "y" : "ies"}` },
+  )
+  return await readErrorDirEntries()
+}
+
+/** Wait for async write to complete and return error directory entries */
+async function getErrorDirEntries(): Promise<Array<string>> {
+  return waitForErrorDirEntries()
 }
 
 /** Read all files from the first error subdirectory */
@@ -181,7 +196,7 @@ describe("handleErrorPersistence", () => {
     }
     handleErrorPersistence(completedEvent)
 
-    const entries = await getErrorDirEntries()
+    const entries = await readErrorDirEntries()
     expect(entries).toHaveLength(0)
   })
 
@@ -197,8 +212,7 @@ describe("handleErrorPersistence", () => {
     handleErrorPersistence(mockFailedEvent({ id: "ctx-1" }))
     handleErrorPersistence(mockFailedEvent({ id: "ctx-2" }))
 
-    await Bun.sleep(50)
-    const entries = await getErrorDirEntries()
+    const entries = await waitForErrorDirEntries(2)
     expect(entries).toHaveLength(2)
 
     // Each should have its own meta.json with different IDs

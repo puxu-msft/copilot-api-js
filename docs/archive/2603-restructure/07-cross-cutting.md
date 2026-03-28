@@ -1,4 +1,12 @@
-# 07 — 跨领域问题（P2）
+# 07 — 跨领域问题（P2）— 已完成
+
+## 完成状态
+
+| 项目 | 状态 | 结果 |
+|------|------|------|
+| 前后端类型共享注意事项 | ✓ 已确认 | 保持后端 `history` barrel 作为类型单一来源 |
+| Vite proxy 端口配置 | ✓ 已完成 | `ui/history-v3/vite.config.ts` 已支持通过环境变量覆盖后端端口 |
+| `sanitize-system-reminder` shim 清理 | ✓ 已完成 | 消费者已直接改为使用 `~/lib/system-prompt` |
 
 ## 前后端类型共享（非问题，记录注意事项）
 
@@ -13,16 +21,16 @@
 
 ## 问题：Vite proxy 硬编码端口
 
-`ui/history-v3/vite.config.ts` 中 4 个 proxy 规则全部硬编码 `localhost:4141`。
+该问题已处理。`ui/history-v3/vite.config.ts` 不再把后端端口写死在 proxy 中。
 
-建议：
+实际方案：
 
 ```ts
 const backendPort = process.env.COPILOT_API_PORT ?? '4141'
 const backendUrl = `http://localhost:${backendPort}`
 ```
 
-低优先级。4141 是项目默认端口，绝大多数场景不需要改。
+4141 仍是默认值，但现在不再阻塞本地非默认端口调试。
 
 ---
 

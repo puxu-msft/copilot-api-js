@@ -1,6 +1,6 @@
 import type { ContentBlockParam, MessageParam, UserMessage } from "~/types/api/anthropic"
 
-import { extractLeadingSystemReminderTags, extractTrailingSystemReminderTags } from "~/lib/sanitize-system-reminder"
+import { extractLeadingSystemReminderTags, extractTrailingSystemReminderTags } from "~/lib/system-prompt"
 
 /**
  * Strip ALL `<system-reminder>` tags from Read tool results.

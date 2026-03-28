@@ -3,8 +3,6 @@ import { ref, computed, watch, nextTick } from "vue"
 
 import type { ContentBlock, MessageContent } from "@/types"
 
-import MessageBlock from "@/components/message/MessageBlock.vue"
-import SystemMessage from "@/components/message/SystemMessage.vue"
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
 import RawJsonModal from "@/components/ui/RawJsonModal.vue"
 import { provideContentContext } from "@/composables/useContentContext"
@@ -15,12 +13,13 @@ import { provideSharedResizeObserver } from "@/composables/useSharedResizeObserv
 import { isToolResultBlock, isToolUseBlock } from "@/utils/typeGuards"
 
 import AttemptsTimeline from "./AttemptsTimeline.vue"
+import DetailRequestSection from "./DetailRequestSection.vue"
+import DetailResponseSection from "./DetailResponseSection.vue"
 import DetailToolbar from "./DetailToolbar.vue"
 import HeadersSection from "./HeadersSection.vue"
 import MetaInfo from "./MetaInfo.vue"
 import SectionBlock from "./SectionBlock.vue"
 import SseEventsSection from "./SseEventsSection.vue"
-import TruncationDivider from "./TruncationDivider.vue"
 
 const store = useInjectedHistoryStore()
 const detailBodyRef = ref<HTMLElement>()
@@ -229,77 +228,25 @@ function exportEntry() {
         ref="detailBodyRef"
         class="detail-body"
       >
-        <!-- REQUEST Section -->
-        <SectionBlock
-          title="Request"
-          :badge="requestBadge"
-          :raw-data="entry.request"
-          :rewritten-raw-data="rewrittenRequest"
-          raw-title="Raw -- Request"
-        >
-          <!-- System prompt -->
-          <ErrorBoundary label="System prompt">
-            <SystemMessage
-              v-if="entry.request.system"
-              :system="entry.request.system"
-              :rewritten-system="entry.effectiveRequest?.system"
-              :search-query="store.detailSearch.value"
-              :global-view-mode="store.detailViewMode.value"
-            />
-          </ErrorBoundary>
+        <DetailRequestSection
+          :entry="entry"
+          :request-badge="requestBadge"
+          :rewritten-request="rewrittenRequest"
+          :filtered-messages="filteredMessages"
+          :truncation-point="truncationPoint"
+          :search-query="store.detailSearch.value"
+          :detail-filter-type="store.detailFilterType.value"
+          :detail-view-mode="store.detailViewMode.value"
+          :has-matching-block-type="hasMatchingBlockType"
+          :is-message-truncated="isMessageTruncated"
+          :is-message-rewritten="isMessageRewritten"
+          :get-rewritten-message="getRewrittenMessage"
+        />
 
-          <!-- Messages with inline truncation divider -->
-          <div class="messages-list">
-            <template
-              v-for="item in filteredMessages"
-              :key="item.originalIndex"
-            >
-              <!-- Truncation divider: render after the last truncated message -->
-              <TruncationDivider
-                v-if="entry.pipelineInfo?.truncation && item.originalIndex === truncationPoint"
-                :truncation="entry.pipelineInfo.truncation"
-              />
-
-              <ErrorBoundary :label="'Message #' + item.originalIndex">
-                <MessageBlock
-                  v-show="!store.detailFilterType.value || hasMatchingBlockType(item.msg, store.detailFilterType.value)"
-                  :message="item.msg"
-                  :index="item.originalIndex"
-                  :is-truncated="isMessageTruncated(item.originalIndex)"
-                  :is-rewritten="isMessageRewritten(item.originalIndex)"
-                  :rewritten-message="getRewrittenMessage(item.originalIndex)"
-                  :global-view-mode="store.detailViewMode.value"
-                />
-              </ErrorBoundary>
-            </template>
-          </div>
-        </SectionBlock>
-
-        <!-- RESPONSE Section -->
-        <SectionBlock
-          v-if="responseMessage || entry.response?.error"
-          title="Response"
-          :badge="responseMessage ? '1 message' : ''"
-          :raw-data="entry.response"
-          raw-title="Raw -- Response"
-        >
-          <!-- Error block -->
-          <div
-            v-if="entry.response?.error"
-            class="response-error"
-          >
-            <span class="error-label">Error</span>
-            <span class="error-text">{{ entry.response.error }}</span>
-          </div>
-
-          <ErrorBoundary label="Response message">
-            <MessageBlock
-              v-if="responseMessage"
-              :message="responseMessage"
-              :index="0"
-            />
-          </ErrorBoundary>
-        </SectionBlock>
+        <DetailResponseSection
+          :entry="entry"
+          :response-message="responseMessage"
+        />
 
         <!-- SSE EVENTS Section (only for streaming requests) -->
         <ErrorBoundary label="SSE events">
@@ -392,36 +339,6 @@ function exportEntry() {
   flex: 1;
   overflow-y: auto;
   padding: var(--spacing-sm);
-}
-
-.messages-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-sm);
-}
-
-.response-error {
-  background: var(--error-muted);
-  border: 1px solid var(--error);
-  padding: var(--spacing-sm);
-  margin-bottom: var(--spacing-sm);
-  display: flex;
-  align-items: baseline;
-  gap: var(--spacing-sm);
-}
-
-.error-label {
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  color: var(--error);
-  letter-spacing: 0.5px;
-}
-
-.error-text {
-  font-size: var(--font-size-sm);
-  color: var(--error);
-  white-space: pre-wrap;
-  word-wrap: break-word;
 }
 
 .headers-section-wrap {

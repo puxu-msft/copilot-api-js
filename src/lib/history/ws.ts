@@ -12,6 +12,8 @@
  * file is consumed by the frontend `vue-tsc` which doesn't have the `~/*` path alias.
  */
 
+import { getStats } from "./stats"
+
 export type { WSMessage, WSMessageType } from "../ws"
 
 export {
@@ -25,3 +27,9 @@ export {
   notifyStatsUpdated,
   removeClient,
 } from "../ws"
+
+import { notifyStatsUpdated as broadcastStatsUpdated } from "../ws"
+
+export function notifyStatsChanged(): void {
+  broadcastStatsUpdated(getStats())
+}

@@ -1,8 +1,7 @@
 import { generateId } from "../utils"
-import { getStats } from "./stats"
 import { historyIndexes, historyState, invalidateHistoryStats, resetHistoryIndexes } from "./state"
 import type { EntrySummary, HistoryEntry } from "./types"
-import { notifyEntryAdded, notifyEntryUpdated, notifyHistoryCleared, notifyStatsUpdated } from "./ws"
+import { notifyEntryAdded, notifyEntryUpdated, notifyHistoryCleared, notifyStatsChanged } from "./ws"
 
 /** Extract a preview from the last user message (first 100 chars) */
 function extractPreviewText(entry: HistoryEntry): string {
@@ -46,73 +45,6 @@ function extractPreviewText(entry: HistoryEntry): string {
   return ""
 }
 
-function buildSearchText(entry: HistoryEntry): string {
-  const parts: Array<string> = []
-
-  if (entry.request.model) parts.push(entry.request.model)
-  if (entry.response?.model) parts.push(entry.response.model)
-  if (entry.response?.error) parts.push(entry.response.error)
-
-  if (entry.request.system) {
-    if (typeof entry.request.system === "string") {
-      parts.push(entry.request.system.slice(0, 500))
-    } else {
-      for (const block of entry.request.system) {
-        parts.push(block.text.slice(0, 200))
-      }
-    }
-  }
-
-  if (entry.request.messages) {
-    for (const msg of entry.request.messages) {
-      if (typeof msg.content === "string") {
-        parts.push(msg.content.slice(0, 200))
-      } else if (Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block.type === "text" && block.text) {
-            parts.push((block.text as string).slice(0, 200))
-          } else if (block.type === "tool_use") {
-            if (block.name) parts.push(block.name as string)
-            if (block.input) {
-              const inputStr = typeof block.input === "string" ? block.input : JSON.stringify(block.input)
-              parts.push(inputStr.slice(0, 500))
-            }
-          } else if (block.type === "tool_result" && block.content) {
-            const contentStr = typeof block.content === "string" ? block.content : JSON.stringify(block.content)
-            parts.push(contentStr.slice(0, 500))
-          } else if (block.type === "thinking" && block.thinking) {
-            parts.push((block.thinking as string).slice(0, 200))
-          }
-        }
-      }
-
-      if (msg.tool_calls) {
-        for (const toolCall of msg.tool_calls) {
-          if (toolCall.function.name) parts.push(toolCall.function.name)
-          if (toolCall.function.arguments) parts.push(toolCall.function.arguments.slice(0, 500))
-        }
-      }
-    }
-  }
-
-  if (entry.response?.content) {
-    const responseContent = entry.response.content
-    if (typeof responseContent.content === "string") {
-      parts.push(responseContent.content.slice(0, 200))
-    } else if (Array.isArray(responseContent.content)) {
-      for (const block of responseContent.content) {
-        if (block.type === "text" && block.text) {
-          parts.push((block.text as string).slice(0, 200))
-        } else if (block.type === "tool_use" && block.name) {
-          parts.push(block.name as string)
-        }
-      }
-    }
-  }
-
-  return parts.join(" ").toLowerCase()
-}
-
 function toSummary(entry: HistoryEntry): EntrySummary {
   return {
     id: entry.id,
@@ -130,18 +62,6 @@ function toSummary(entry: HistoryEntry): EntrySummary {
     previewText: extractPreviewText(entry),
     searchText: "",
   }
-}
-
-export function ensureSearchText(id: string): string {
-  const summary = historyIndexes.summaryIndex.get(id)
-  if (!summary) return ""
-  if (summary.searchText === "") {
-    const entry = historyIndexes.entryIndex.get(id)
-    if (entry) {
-      summary.searchText = buildSearchText(entry)
-    }
-  }
-  return summary.searchText
 }
 
 function updateSessionMetadata(entry: HistoryEntry): void {
@@ -204,7 +124,7 @@ function removeOldestEntries(count: number): number {
 export function evictOldestEntries(count: number): number {
   const evicted = removeOldestEntries(count)
   if (evicted > 0) {
-    notifyStatsUpdated(getStats())
+    notifyStatsChanged()
   }
   return evicted
 }
@@ -231,7 +151,7 @@ export function insertEntry(entry: HistoryEntry): void {
 
   invalidateHistoryStats()
   notifyEntryAdded(summary)
-  notifyStatsUpdated(getStats())
+  notifyStatsChanged()
 }
 
 export function updateEntry(
@@ -273,7 +193,7 @@ export function updateEntry(
   const summary = toSummary(entry)
   historyIndexes.summaryIndex.set(entry.id, summary)
   notifyEntryUpdated(summary)
-  notifyStatsUpdated(getStats())
+  notifyStatsChanged()
 }
 
 export function clearHistory(): void {
@@ -283,5 +203,5 @@ export function clearHistory(): void {
   resetHistoryIndexes()
   invalidateHistoryStats()
   notifyHistoryCleared()
-  notifyStatsUpdated(getStats())
+  notifyStatsChanged()
 }

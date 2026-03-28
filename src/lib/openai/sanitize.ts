@@ -10,7 +10,7 @@ import consola from "consola"
 import type { SanitizeResult } from "~/lib/request/pipeline"
 import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
 
-import { removeSystemReminderTags } from "~/lib/sanitize-system-reminder"
+import { removeSystemReminderTags } from "~/lib/system-prompt"
 
 import {
   extractOpenAISystemMessages,

@@ -3,10 +3,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
-import { tryParseAndLearnLimit } from "../auto-truncate"
-import { state } from "../state"
-import { isUpstreamRateLimited } from "./classify"
 import { HTTPError } from "./http-error"
+import { extractTokenLimitFromResponseText, isUpstreamRateLimited } from "./parsing"
 import { formatErrorWithCause, parseRetryAfterHeader } from "./utils"
 
 /** Copilot error structure */
@@ -100,7 +98,7 @@ export function forwardError(c: Context, error: unknown) {
   // Error file persistence is handled by the error-persistence consumer
   // (subscribes to "failed" events on RequestContext) — no inline writing here.
   if (error instanceof HTTPError) {
-    const limitInfo = tryParseAndLearnLimit(error, error.modelId ?? "unknown", state.autoTruncate)
+    const limitInfo = error.status === 400 ? extractTokenLimitFromResponseText(error.responseText) : null
 
     if (error.status === 413) {
       const formattedError = formatRequestTooLargeError()
@@ -108,7 +106,7 @@ export function forwardError(c: Context, error: unknown) {
       return c.json(formattedError, 413 as ContentfulStatusCode)
     }
 
-    if (limitInfo?.type === "token_limit" && limitInfo.current && limitInfo.limit) {
+    if (limitInfo?.current && limitInfo.limit) {
       const formattedError = formatTokenLimitError(limitInfo.current, limitInfo.limit)
       const excess = limitInfo.current - limitInfo.limit
       const percentage = Math.round((excess / limitInfo.limit) * 100)

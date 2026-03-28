@@ -6,40 +6,10 @@ import type {
   UserMessage,
 } from "~/types/api/anthropic"
 
-import { removeSystemReminderTags } from "~/lib/sanitize-system-reminder"
+import { removeSystemReminderTags } from "~/lib/system-prompt"
 
+import { sanitizeTextBlocksInArray } from "./text-blocks"
 import { isImmutableThinkingAssistantMessage } from "../thinking-immutability"
-
-/**
- * Remove system-reminder tags from text blocks in an array.
- * Drops blocks whose text becomes empty after sanitization.
- * Returns the original array reference if nothing changed (for cheap identity checks).
- */
-function sanitizeTextBlocksInArray<T extends { type: string }>(
-  blocks: Array<T>,
-  getText: (block: T) => string | undefined,
-  setText: (block: T, text: string) => T,
-): { blocks: Array<T>; modified: boolean } {
-  let modified = false
-  const result: Array<T> = []
-
-  for (const block of blocks) {
-    const text = getText(block)
-    if (text !== undefined) {
-      const sanitized = removeSystemReminderTags(text)
-      if (sanitized !== text) {
-        modified = true
-        if (sanitized) {
-          result.push(setText(block, sanitized))
-        }
-        continue
-      }
-    }
-    result.push(block)
-  }
-
-  return { blocks: modified ? result : blocks, modified }
-}
 
 /**
  * Sanitize tool_result content (can be string or array of text/image blocks).

@@ -11,6 +11,8 @@ import type { RequestContextEvent } from "~/lib/context/manager"
 import { createRequestContextManager } from "~/lib/context/manager"
 import { state, setStateForTests } from "~/lib/state"
 
+import { waitUntil } from "../helpers/wait-until"
+
 describe("createRequestContextManager", () => {
   test("create() returns RequestContext and tracks it", () => {
     const manager = createRequestContextManager()
@@ -185,8 +187,9 @@ describe("stale request reaper", () => {
     expect(manager.activeCount).toBe(1)
     expect(ctx.settled).toBe(false)
 
-    // Wait for context to exceed maxAge
-    await Bun.sleep(60)
+    await waitUntil(() => ctx.durationMs > 50, {
+      label: "context to exceed stale request max age",
+    })
 
     manager._runReaperOnce()
 
@@ -237,8 +240,6 @@ describe("stale request reaper", () => {
       usage: { input_tokens: 1, output_tokens: 1 },
       content: "ok",
     })
-
-    await Bun.sleep(20)
 
     // Reaper should not find it in activeContexts
     manager._runReaperOnce()
