@@ -56,6 +56,9 @@
 原则9：**只在修改了可执行代码时才运行验证。**
   修改 `.md`、`.txt`、`.json`（非 tsconfig/package.json）等不影响编译和运行的文件时，不需要运行 `typecheck`、`test` 等验证命令。只有修改了 `.ts`、`tsconfig.json`、`package.json`、`.yaml` 等会影响编译或运行时行为的文件后才需要验证。
 
+原则10：**不明确的内容不擅自行动，应与用户讨论。**
+  当指令的范围或意图存在歧义时（例如"去掉 X"是否包含 Y），必须先与用户确认，不做超出明确范围的改动。宁可多问一次，也不要因为"顺手"或"看起来相关"而扩大变更范围。
+
 ## 代码风格
 
 - 使用 `@echristian/eslint-config` + Prettier。运行 `eslint --fix` 自动格式化（不要直接使用 `prettier --write`）。
@@ -64,6 +67,7 @@
 - ESNext 模块，不用 CommonJS。
 - 路径别名：后端 `~/*` 映射到 `src/*`，前端 `@/*` 映射到 `src/*`，前端引用后端 `~backend/*` 映射到 `../../src/*`。
 - 测试：使用 Bun 内置测试运行器。后端测试放在 `tests/`，前端测试放在 `ui/history-v3/tests/`。命名为 `*.test.ts`。
+- 前端依赖与脚本由仓库根 `package.json` 统一管理：使用 `npm run build:ui`、`npm run dev:ui`、`npm run typecheck:ui`、`npm run test:ui`。
 - 错误处理：使用显式错误类（参见 `src/lib/error.ts`）。避免静默失败。
 
 ### 注释规范

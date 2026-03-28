@@ -1,75 +1,54 @@
 # 06 — 前端清理（P2）
 
-## 问题 1：双套页面系统
+## 问题 1：双轨页面
 
-### 现状
+5 legacy + 5 Vuetify 页面并存，默认 `/` → `/v/dashboard`。
 
-两套完整的页面并存：
+当前真实行数（legacy 反而更大）：
 
-| Legacy 页面 (`pages/`) | Vuetify 页面 (`pages/vuetify/`) | 路由 |
-|------------------------|--------------------------------|------|
-| `DashboardPage.vue` (358行) | `VDashboardPage.vue` (530行) | `#/dashboard` / `#/v/dashboard` |
-| `HistoryPage.vue` | `VHistoryPage.vue` (241行) | `#/history` / `#/v/history` |
-| `LogsPage.vue` (228行) | `VLogsPage.vue` (174行) | `#/logs` / `#/v/logs` |
-| `ModelsPage.vue` (494行) | `VModelsPage.vue` (389行) | `#/models` / `#/v/models` |
-| `UsagePage.vue` (241行) | `VUsagePage.vue` (246行) | `#/usage` / `#/v/usage` |
-
-默认 `/` redirect 到 `/v/dashboard`。Legacy 页面可访问但不再是主路径。
+| Legacy 页面 | 行数 | Vuetify 页面 | 行数 |
+|-------------|------|-------------|------|
+| `ModelsPage.vue` | **713** | `VModelsPage.vue` | 499 |
+| `DashboardPage.vue` | **561** | `VDashboardPage.vue` | 668 |
+| `UsagePage.vue` | 292 | `VUsagePage.vue` | 278 |
+| `LogsPage.vue` | 242 | `VLogsPage.vue` | 216 |
+| `HistoryPage.vue` | 55 | `VHistoryPage.vue` | 285 |
 
 ### 方案：标记废弃
 
-1. 在 `router.ts` 的 legacy 路由上加 `@deprecated` 注释：
-   ```ts
-   // Legacy routes — @deprecated, use /v/* Vuetify routes
-   ```
-
-2. 在每个 legacy 页面组件的 `<script>` 顶部加注释：
-   ```ts
-   /** @deprecated Use VDashboardPage.vue (/v/dashboard) instead */
-   ```
-
-3. 不删除代码——用户可能需要参考 legacy 实现中的逻辑
+- 路由中加 `@deprecated` 注释
+- 每个 legacy 页面加 `/** @deprecated Use VXxxPage.vue (/v/xxx) instead */`
+- 明确 legacy 页面只做维护，不再接受功能增长
 
 ---
 
-## 问题 2：Vuetify 页面超限
+## 问题 2：Vuetify 页面职责混合
 
-### 现状
+### `VDashboardPage.vue`（668 行）
 
-| 组件 | 行数 | 问题 |
-|------|------|------|
-| `VDashboardPage.vue` | 530 | 多个独立 section（认证、配额、配置）可提取 |
-| `useHistoryStore.ts` | 437 | CLAUDE.md 已指出职责过重 |
-| `DetailPanel.vue` | 429 | 模板 ~200 行，承担全部详情渲染 |
-| `VModelsPage.vue` | 389 | 卡片视图 + Raw 视图 + 过滤逻辑 |
+混合了认证状态展示、配额信息、系统配置等多个独立 section。
 
-### 拆分建议
+**建议拆分为**：布局容器 + `DashboardAuth.vue` + `DashboardQuota.vue`
 
-**`VDashboardPage.vue`（530 → 3 个子组件）**：
+### `VModelsPage.vue`（499 行）
 
-| 目标 | 内容 | 预估行数 |
-|------|------|----------|
-| `VDashboardPage.vue` | 布局容器 + composable 调用 | ~150 |
-| `DashboardAuth.vue` | 认证状态 section | ~150 |
-| `DashboardQuota.vue` | 配额 + 配置 section | ~230 |
+卡片视图 + Raw JSON 视图 + 过滤逻辑。
 
-**`useHistoryStore.ts`（437 → 2-3 个 composable）**：
+**建议拆分为**：布局容器 + `ModelsCardView.vue` + `ModelsRawView.vue`
 
-| 目标 | 内容 | 预估行数 |
-|------|------|----------|
-| `useHistoryStore.ts` | 入口 composable（组合调用） | ~100 |
-| `useHistoryData.ts` | 数据加载、分页、搜索 | ~200 |
-| `useHistoryWS.ts` | WebSocket 连接、实时更新 | ~140 |
+### `useHistoryStore.ts`（444 行）
 
-**`DetailPanel.vue`（429 → 提取子区域）**：
+当前混合了数据加载、分页、WS 连接、搜索/过滤、选择与清空等 UI 动作。
 
-可将请求区域和响应区域各自提取为子组件，减少单文件模板长度。
+**建议拆分为**：`useHistoryData.ts`（加载/分页/搜索）+ `useHistoryWS.ts`（WS 连接/实时更新）
+
+### `DetailPanel.vue`（475 行）
+
+可将请求区域和响应区域各自提取为子组件。
 
 ---
 
 ## 验证
 
 - [ ] Legacy 路由注释不影响功能
-- [ ] 拆分后 `typecheck:ui` 通过
-- [ ] 拆分后 `test:ui` 通过
-- [ ] 浏览器验证 Vuetify 页面渲染正常
+- [ ] 拆分后 `typecheck:ui` + `test:ui` 通过

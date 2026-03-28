@@ -8,7 +8,7 @@
 
 import consola from "consola"
 
-import type { HeadersCapture } from "~/lib/context/request"
+import type { HeadersCapture, WireRequest } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
 import type { ResponsesInputItem, ResponsesPayload } from "~/types/api/openai-responses"
@@ -22,12 +22,26 @@ import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refre
 export function createResponsesAdapter(
   selectedModel?: Model,
   headersCapture?: HeadersCapture,
+  onPrepared?: (request: WireRequest) => void,
 ): FormatAdapter<ResponsesPayload> {
   return {
     format: "openai-responses",
     sanitize: (p) => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 }),
     execute: (p) =>
-      executeWithAdaptiveRateLimit(() => createResponses(p, { resolvedModel: selectedModel, headersCapture })),
+      executeWithAdaptiveRateLimit(() =>
+        createResponses(p, {
+          resolvedModel: selectedModel,
+          headersCapture,
+          onPrepared: ({ wire, headers }) => {
+            onPrepared?.({
+              model: typeof wire.model === "string" ? wire.model : p.model,
+              messages: [],
+              payload: wire,
+              headers,
+              format: "openai-responses",
+            })
+          },
+        })),
     logPayloadSize: (p) => {
       const count = typeof p.input === "string" ? 1 : p.input.length
       consola.debug(`Responses payload: ${count} input item(s), model: ${p.model}`)

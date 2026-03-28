@@ -157,7 +157,9 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
   // Build pipeline adapter and strategies (shared with HTTP handler)
   const headersCapture: HeadersCapture = {}
-  const adapter = createResponsesAdapter(selectedModel, headersCapture)
+  const adapter = createResponsesAdapter(selectedModel, headersCapture, (wireRequest) => {
+    reqCtx.setAttemptWireRequest(wireRequest)
+  })
   const strategies = createResponsesStrategies()
 
   try {
@@ -169,6 +171,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
       originalPayload: payload,
       model: selectedModel,
       maxRetries: 1,
+      requestContext: reqCtx,
     })
 
     // Capture HTTP headers from the final attempt for history recording
@@ -181,10 +184,10 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     const iterator = (response as AsyncIterable<{ data?: string; event?: string }>)[Symbol.asyncIterator]()
     const acc = createResponsesStreamAccumulator()
     const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
-    const shutdownSignal = getShutdownSignal()
     let eventsReceived = 0
 
     while (true) {
+      const shutdownSignal = getShutdownSignal()
       const result = await raceIteratorNext(iterator.next(), {
         idleTimeoutMs,
         abortSignal: shutdownSignal ?? undefined,

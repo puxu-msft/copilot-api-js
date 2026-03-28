@@ -14,23 +14,30 @@ import type { ResponsesPayload, ResponsesResponse, ResponsesInputItem } from "~/
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal, captureHttpHeaders } from "~/lib/fetch-utils"
+import { createFetchSignal, captureHttpHeaders, sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 
-/** Call Copilot /responses endpoint */
-export const createResponses = async (
+import type { PreparedOpenAIRequest } from "./client"
+
+interface CreateResponsesOptions {
+  resolvedModel?: Model
+  headersCapture?: HeadersCapture
+  onPrepared?: (request: PreparedOpenAIRequest<ResponsesPayload>) => void
+}
+
+export function prepareResponsesRequest(
   payload: ResponsesPayload,
-  opts?: { resolvedModel?: Model; headersCapture?: HeadersCapture },
-): Promise<ResponsesResponse | AsyncGenerator<ServerSentEventMessage>> => {
-  if (!state.copilotToken) throw new Error("Copilot token not found")
+  opts?: Pick<CreateResponsesOptions, "resolvedModel">,
+): PreparedOpenAIRequest<ResponsesPayload> {
+  const wire = payload
 
   // Check for vision content in input
-  const enableVision = hasVisionContent(payload.input)
+  const enableVision = hasVisionContent(wire.input)
 
   // Determine if this is an agent call (has assistant or function_call items in history)
   const isAgentCall =
-    Array.isArray(payload.input)
-    && payload.input.some(
+    Array.isArray(wire.input)
+    && wire.input.some(
       (item) => item.role === "assistant" || item.type === "function_call" || item.type === "function_call_output",
     )
 
@@ -46,13 +53,30 @@ export const createResponses = async (
     "X-Initiator": isAgentCall ? "agent" : "user",
   }
 
+  return { wire, headers }
+}
+
+/** Call Copilot /responses endpoint */
+export const createResponses = async (
+  payload: ResponsesPayload,
+  opts?: CreateResponsesOptions,
+): Promise<ResponsesResponse | AsyncGenerator<ServerSentEventMessage>> => {
+  if (!state.copilotToken) throw new Error("Copilot token not found")
+
+  const prepared = prepareResponsesRequest(payload, opts)
+  opts?.onPrepared?.({
+    wire: prepared.wire,
+    headers: sanitizeHeadersForHistory(prepared.headers),
+  })
+  const { wire, headers } = prepared
+
   // Apply fetch timeout if configured (connection + response headers)
   const fetchSignal = createFetchSignal()
 
   const response = await fetch(`${copilotBaseUrl(state)}/responses`, {
     method: "POST",
     headers,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(wire),
     signal: fetchSignal,
   })
 
@@ -63,10 +87,10 @@ export const createResponses = async (
 
   if (!response.ok) {
     consola.error("Failed to create responses", response)
-    throw await HTTPError.fromResponse("Failed to create responses", response, payload.model)
+    throw await HTTPError.fromResponse("Failed to create responses", response, wire.model)
   }
 
-  if (payload.stream) {
+  if (wire.stream) {
     return events(response)
   }
 

@@ -83,7 +83,8 @@ export interface MessagesPayload {
   tool_choice?: ToolChoice
   thinking?: ThinkingConfigParam
   metadata?: { user_id?: string }
-  context_management?: Record<string, unknown>
+  /** `null` is an internal sentinel meaning "do not auto-inject context_management on retry". */
+  context_management?: Record<string, unknown> | null
 }
 
 export interface Tool {

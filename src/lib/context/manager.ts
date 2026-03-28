@@ -20,6 +20,8 @@ import type { EndpointType } from "~/lib/history/store"
 
 import { state } from "~/lib/state"
 
+import { notifyActiveRequestChanged } from "~/lib/ws"
+
 import type { HistoryEntryData, RequestContext, RequestContextEventData, RequestState } from "./request"
 
 import { createRequestContext } from "./request"
@@ -149,6 +151,11 @@ export function createRequestContextManager(): RequestContextManager {
             previousState: rawEvent.previousState,
             meta: rawEvent.meta,
           })
+          notifyActiveRequestChanged({
+            action: "state_changed",
+            request: summarizeContext(context),
+            activeCount: activeContexts.size,
+          })
         }
         break
       }
@@ -171,6 +178,11 @@ export function createRequestContextManager(): RequestContextManager {
           })
         }
         activeContexts.delete(context.id)
+        notifyActiveRequestChanged({
+          action: "completed",
+          requestId: context.id,
+          activeCount: activeContexts.size,
+        })
         break
       }
       case "failed": {
@@ -182,11 +194,32 @@ export function createRequestContextManager(): RequestContextManager {
           })
         }
         activeContexts.delete(context.id)
+        notifyActiveRequestChanged({
+          action: "failed",
+          requestId: context.id,
+          activeCount: activeContexts.size,
+        })
         break
       }
       default: {
         break
       }
+    }
+  }
+
+  /** Build a lightweight summary of a context for WS broadcast */
+  function summarizeContext(ctx: RequestContext) {
+    return {
+      id: ctx.id,
+      endpoint: ctx.endpoint,
+      state: ctx.state,
+      startTime: ctx.startTime,
+      durationMs: ctx.durationMs,
+      model: ctx.originalRequest?.model,
+      stream: ctx.originalRequest?.stream,
+      attemptCount: ctx.attempts.length,
+      currentStrategy: ctx.currentAttempt?.strategy,
+      queueWaitMs: ctx.queueWaitMs,
     }
   }
 
@@ -199,6 +232,11 @@ export function createRequestContextManager(): RequestContextManager {
       })
       activeContexts.set(ctx.id, ctx)
       emit({ type: "created", context: ctx })
+      notifyActiveRequestChanged({
+        action: "created",
+        request: summarizeContext(ctx),
+        activeCount: activeContexts.size,
+      })
       return ctx
     },
 

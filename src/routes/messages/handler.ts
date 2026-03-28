@@ -12,7 +12,7 @@ import { SSEStreamingApi, streamSSE } from "hono/streaming"
 
 import type { HeadersCapture, RequestContext } from "~/lib/context/request"
 import type { MessageContent, ToolDefinition } from "~/lib/history"
-import type { SseEventRecord } from "~/lib/history/store"
+import type { PreprocessInfo, SseEventRecord } from "~/lib/history/store"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
@@ -42,6 +42,7 @@ import { buildAnthropicResponseData, createTruncationMarker, prependMarkerToResp
 import { logPayloadSizeInfoAnthropic } from "~/lib/request/payload"
 import { executeRequestPipeline, type FormatAdapter } from "~/lib/request/pipeline"
 import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
+import { createContextManagementRetryStrategy } from "~/lib/request/strategies/context-management-retry"
 import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferred-tool-retry"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
@@ -114,12 +115,12 @@ export async function handleMessages(c: Context) {
   // Phase 1: One-time preprocessing (idempotent, before routing)
   const preprocessed = preprocessAnthropicMessages(anthropicPayload.messages)
   anthropicPayload.messages = preprocessed.messages
-  reqCtx.setPreprocessInfo({
+  const preprocessInfo = {
     strippedReadTagCount: preprocessed.strippedReadTagCount,
     dedupedToolCallCount: preprocessed.dedupedToolCallCount,
-  })
+  }
 
-  return handleDirectAnthropicCompletion(c, anthropicPayload, reqCtx)
+  return handleDirectAnthropicCompletion(c, anthropicPayload, reqCtx, preprocessInfo)
 }
 
 // ============================================================================
@@ -127,7 +128,7 @@ export async function handleMessages(c: Context) {
 // ============================================================================
 
 // Handle completion using direct Anthropic API (no translation needed)
-async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: MessagesPayload, reqCtx: RequestContext) {
+async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: MessagesPayload, reqCtx: RequestContext, preprocessInfo: PreprocessInfo) {
   consola.debug("Using direct Anthropic API path for model:", anthropicPayload.model)
 
   // Find model for auto-truncate and usage adjustment
@@ -140,13 +141,10 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
 
   // Always sanitize messages to filter orphaned tool_result/tool_use blocks
   const { payload: initialSanitized, stats: sanitizationStats } = sanitizeAnthropicMessages(toolPreprocessed)
-  reqCtx.addSanitizationInfo(toSanitizationInfo(sanitizationStats))
+  const initialSanitizationInfo = toSanitizationInfo(sanitizationStats)
 
   // Record sanitization/preprocessing if anything was modified
-  const hasPreprocessing =
-    reqCtx.preprocessInfo ?
-      reqCtx.preprocessInfo.dedupedToolCallCount > 0 || reqCtx.preprocessInfo.strippedReadTagCount > 0
-    : false
+  const hasPreprocessing = preprocessInfo.dedupedToolCallCount > 0 || preprocessInfo.strippedReadTagCount > 0
   if (
     sanitizationStats.totalBlocksRemoved > 0
     || sanitizationStats.systemReminderRemovals > 0
@@ -155,8 +153,8 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
   ) {
     const messageMapping = buildMessageMapping(anthropicPayload.messages, initialSanitized.messages)
     reqCtx.setPipelineInfo({
-      rewrittenMessages: initialSanitized.messages as unknown as Array<MessageContent>,
-      rewrittenSystem: typeof initialSanitized.system === "string" ? initialSanitized.system : undefined,
+      preprocessing: preprocessInfo,
+      sanitization: [initialSanitizationInfo],
       messageMapping,
     })
   }
@@ -175,13 +173,27 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
     format: "anthropic-messages",
     sanitize: (p) => sanitizeAnthropicMessages(preprocessTools(p)),
     execute: (p) =>
-      executeWithAdaptiveRateLimit(() => createAnthropicMessages(p, { resolvedModel: selectedModel, headersCapture })),
+      executeWithAdaptiveRateLimit(() =>
+        createAnthropicMessages(p, {
+          resolvedModel: selectedModel,
+          headersCapture,
+          onPrepared: ({ wire, headers }) => {
+            reqCtx.setAttemptWireRequest({
+              model: typeof wire.model === "string" ? wire.model : anthropicPayload.model,
+              messages: Array.isArray(wire.messages) ? wire.messages : [],
+              payload: wire,
+              headers,
+              format: "anthropic-messages",
+            })
+          },
+        })),
     logPayloadSize: (p) => logPayloadSizeInfoAnthropic(p, selectedModel),
   }
 
   const strategies = [
     createNetworkRetryStrategy<MessagesPayload>(),
     createTokenRefreshStrategy<MessagesPayload>(),
+    createContextManagementRetryStrategy<MessagesPayload>(),
     createDeferredToolRetryStrategy<MessagesPayload>(),
     createAutoTruncateStrategy<MessagesPayload>({
       truncate: (p, model, opts) => autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,
@@ -212,22 +224,24 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
 
         // Record rewrites for the retried payload
         const retrySanitization = meta?.sanitization as SanitizationStats | undefined
-        if (retrySanitization) {
-          reqCtx.addSanitizationInfo(toSanitizationInfo(retrySanitization))
-        }
+        const allSanitization = [
+          initialSanitizationInfo,
+          ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : []),
+        ]
         const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, newPayload.messages)
         reqCtx.setPipelineInfo({
+          preprocessing: preprocessInfo,
+          sanitization: allSanitization,
           truncation:
             retryTruncateResult ?
               {
+                wasTruncated: true,
                 removedMessageCount: retryTruncateResult.removedMessageCount,
                 originalTokens: retryTruncateResult.originalTokens,
                 compactedTokens: retryTruncateResult.compactedTokens,
                 processingTimeMs: retryTruncateResult.processingTimeMs,
               }
             : undefined,
-          rewrittenMessages: newPayload.messages as unknown as Array<MessageContent>,
-          rewrittenSystem: typeof newPayload.system === "string" ? newPayload.system : undefined,
           messageMapping: retryMessageMapping,
         })
 

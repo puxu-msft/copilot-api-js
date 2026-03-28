@@ -1,0 +1,7 @@
+interface:
+  display_name: "Playwright WSL Edge"
+  short_description: "Drive Windows Edge from WSL via Playwright MCP extension mode."
+  default_prompt: "Use $playwright-wsl-windows-edge to configure or debug Playwright MCP extension mode from WSL to Windows Edge."
+
+policy:
+  allow_implicit_invocation: true

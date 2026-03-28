@@ -22,8 +22,9 @@ export function handleGetEntries(c: Context) {
 
   const query = c.req.query()
   const options: QueryOptions = {
-    page: query.page ? Number.parseInt(query.page, 10) : undefined,
+    cursor: query.cursor || undefined,
     limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+    direction: (query.direction as "older" | "newer") || undefined,
     model: query.model || undefined,
     endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,
@@ -114,7 +115,7 @@ export function handleGetSession(c: Context) {
   // Include paginated entries in the session response
   const query = c.req.query()
   const result = getSessionEntries(id, {
-    page: query.page ? Number.parseInt(query.page, 10) : undefined,
+    cursor: query.cursor || undefined,
     limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
   })
 

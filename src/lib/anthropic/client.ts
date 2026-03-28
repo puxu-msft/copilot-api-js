@@ -20,14 +20,26 @@ import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/type
 
 import { copilotBaseUrl, copilotHeaders } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal, captureHttpHeaders } from "~/lib/fetch-utils"
+import { createFetchSignal, captureHttpHeaders, sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 
+import { isAnthropicFeatureUnsupported } from "./feature-negotiation"
 import { buildAnthropicBetaHeaders, buildContextManagement, isContextEditingEnabled } from "./features"
 import { stripServerTools } from "./message-tools"
 
 /** Re-export the response type for consumers */
 export type AnthropicMessageResponse = AnthropicResponse
+
+export interface PreparedAnthropicRequest {
+  wire: Record<string, unknown>
+  headers: Record<string, string>
+}
+
+interface CreateAnthropicMessagesOptions {
+  resolvedModel?: Model
+  headersCapture?: HeadersCapture
+  onPrepared?: (request: PreparedAnthropicRequest) => void
+}
 
 // ============================================================================
 // Wire payload construction
@@ -106,54 +118,23 @@ function adjustThinkingBudget(wire: Record<string, unknown>): void {
  */
 export async function createAnthropicMessages(
   payload: MessagesPayload,
-  opts?: { resolvedModel?: Model; headersCapture?: HeadersCapture },
+  opts?: CreateAnthropicMessagesOptions,
 ): Promise<AnthropicMessageResponse | AsyncGenerator<ServerSentEventMessage>> {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
-  const wire = buildWirePayload(payload)
-  adjustThinkingBudget(wire)
+  const prepared = prepareAnthropicRequest(payload, opts)
+  opts?.onPrepared?.({
+    wire: prepared.wire,
+    headers: sanitizeHeadersForHistory(prepared.headers),
+  })
+
+  const { wire, headers } = prepared
 
   // Destructure known fields for typed access
   const model = wire.model as string
   const messages = wire.messages as MessagesPayload["messages"]
   const tools = wire.tools as Array<Tool> | undefined
   const thinking = wire.thinking as MessagesPayload["thinking"]
-
-  // Check for vision content
-  const enableVision = messages.some((msg) => {
-    if (typeof msg.content === "string") return false
-    return msg.content.some((block) => block.type === "image")
-  })
-
-  // Agent/user check for X-Initiator header
-  const isAgentCall = messages.some((msg) => msg.role === "assistant")
-
-  // Only set vision header if model supports it (default to true when unknown)
-  const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
-
-  const headers: Record<string, string> = {
-    ...copilotHeaders(state, {
-      vision: enableVision && modelSupportsVision,
-      modelRequestHeaders: opts?.resolvedModel?.request_headers,
-      intent: isAgentCall ? "conversation-agent" : "conversation-panel",
-    }),
-    "X-Initiator": isAgentCall ? "agent" : "user",
-    "anthropic-version": "2023-06-01",
-    ...buildAnthropicBetaHeaders(model, opts?.resolvedModel),
-  }
-
-  // Add context_management if enabled for this model and payload doesn't already have one
-  if (!wire.context_management && isContextEditingEnabled(model)) {
-    const hasThinking = Boolean(thinking && thinking.type !== "disabled")
-    const contextManagement = buildContextManagement(state.contextEditingMode, hasThinking)
-    if (contextManagement) {
-      wire.context_management = contextManagement
-      consola.debug("[DirectAnthropic] Added context_management:", JSON.stringify(contextManagement))
-    }
-  }
-
-  // Tools should already be preprocessed by preprocessTools() before reaching here.
-  // No further tool processing needed — wire.tools is used as-is.
 
   consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
 
@@ -189,4 +170,62 @@ export async function createAnthropicMessages(
   }
 
   return (await response.json()) as AnthropicMessageResponse
+}
+
+export function prepareAnthropicRequest(
+  payload: MessagesPayload,
+  opts?: Pick<CreateAnthropicMessagesOptions, "resolvedModel">,
+): PreparedAnthropicRequest {
+  const wire = buildWirePayload(payload)
+  adjustThinkingBudget(wire)
+
+  // Destructure known fields for typed access
+  const model = wire.model as string
+  const messages = wire.messages as MessagesPayload["messages"]
+  const thinking = wire.thinking as MessagesPayload["thinking"]
+
+  // Check for vision content
+  const enableVision = messages.some((msg) => {
+    if (typeof msg.content === "string") return false
+    return msg.content.some((block) => block.type === "image")
+  })
+
+  // Agent/user check for X-Initiator header
+  const isAgentCall = messages.some((msg) => msg.role === "assistant")
+
+  // Only set vision header if model supports it (default to true when unknown)
+  const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
+  const contextManagementDisabled = wire.context_management === null
+    || isAnthropicFeatureUnsupported(model, "context_management")
+
+  if (contextManagementDisabled) {
+    delete wire.context_management
+  }
+
+  const headers: Record<string, string> = {
+    ...copilotHeaders(state, {
+      vision: enableVision && modelSupportsVision,
+      modelRequestHeaders: opts?.resolvedModel?.request_headers,
+      intent: isAgentCall ? "conversation-agent" : "conversation-panel",
+    }),
+    "X-Initiator": isAgentCall ? "agent" : "user",
+    "anthropic-version": "2023-06-01",
+    ...buildAnthropicBetaHeaders(model, opts?.resolvedModel, {
+      disableContextManagement: contextManagementDisabled,
+    }),
+  }
+
+  // Add context_management if enabled for this model and payload doesn't already have one
+  if (!contextManagementDisabled && !("context_management" in wire) && isContextEditingEnabled(model)) {
+    const hasThinking = Boolean(thinking && thinking.type !== "disabled")
+    const contextManagement = buildContextManagement(state.contextEditingMode, hasThinking)
+    if (contextManagement) {
+      wire.context_management = contextManagement
+      consola.debug("[DirectAnthropic] Added context_management:", JSON.stringify(contextManagement))
+    }
+  }
+
+  // Tools should already be preprocessed by preprocessTools() before reaching here.
+  // No further tool processing needed — wire.tools is used as-is.
+  return { wire, headers }
 }

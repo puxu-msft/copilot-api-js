@@ -1,49 +1,57 @@
 # 代码重构规划
 
-## 背景
+## 目标
 
-前后端合并（docs/merge/）完成后，仓库统一为单 package.json 管理。
-但代码组织层面存在系统性问题：超大文件、命名不一致、模块边界不清、测试文件名与源文件不对应。
+解决代码组织中的**命名不合理、职责不清、内容混乱**问题。不以行数为驱动。
 
-## 当前状态
+## 核心问题
 
-- **7 个文件超过 500 行**，最大 1189 行（违反 CLAUDE.md 的 800 行上限）
-- 路由命名不统一：`history/api.ts` 是唯一不叫 `handler.ts` 的 handler 文件
-- WebSocket 路由在 `start.ts` 注册而非 `routes/index.ts`，路由表分裂
-- `ws/index.ts`（350 行）不是 barrel 却用了 barrel 命名
-- 多个测试文件名与被测源文件不对应
-- 全局状态 `state.ts` 25+ 可变字段，无 setter 纪律
+### P0：路由与 UI 入口不一致（阻塞其他重构）
 
-## 优先级矩阵
+规范 UI 入口是 `/history/v3/`（Vite base、router hash base、E2E 测试、DESIGN.md 都指向它），
+但后端路由只注册了 `/history`（只处理 `/` 和 `/assets/*`），没有 `/history/v3` 或 `/history/v3/assets/*`。
+`/ui` 是未文档化的别名。这是**路由设计问题**，不是注释问题。
 
-| 优先级 | 文档 | 范围 | 依赖 |
-|--------|------|------|------|
-| **P0** | [01-oversized-files.md](01-oversized-files.md) | 拆分 7 个超限文件 | 无，可立即开始 |
-| P1 | [02-route-organization.md](02-route-organization.md) | 路由命名 + WS 注册归位 | 无 |
-| P1 | [03-module-boundaries.md](03-module-boundaries.md) | 模块命名和边界修正 | 建议在 02 之后 |
-| P1 | [04-test-alignment.md](04-test-alignment.md) | 测试文件名对齐 | 与 01 协调（拆分后路径变化） |
-| P1 | [05-state-management.md](05-state-management.md) | 全局状态治理 | 独立 |
-| P2 | [06-frontend-cleanup.md](06-frontend-cleanup.md) | Legacy 页面标记废弃 + 大组件拆分 | 独立 |
-| P2 | [07-cross-cutting.md](07-cross-cutting.md) | 类型耦合、静态服务、配置分散 | 独立 |
+### P1：模块命名和职责混乱
+
+- `history/store.ts` 混合了 33 个类型定义 + 状态管理 + CRUD + 查询 + 统计导出
+- `history/api.ts` 是唯一不叫 `handler.ts` 的 handler 文件
+- `ws/index.ts`（350 行业务逻辑）不是 barrel，却用了 barrel 命名
+- `auto-truncate/index.ts`（425 行引擎代码）同上
+- `system-prompt.ts` 和 `sanitize-system-reminder.ts` 逻辑相关但散落在 `lib/` 顶层
+- WebSocket 路由在 `start.ts` 注册，不在 `routes/index.ts`，路由表分裂
+- `usage/route.ts` 存在但未被 `routes/index.ts` 注册（git 显示曾被移除）
+
+### P1：全局状态无纪律
+
+`state.ts` 的 25+ 字段被 12 个文件直接赋值，无 setter、无追踪、无优先级文档。
+
+### P1：测试可追踪性差
+
+多个测试文件名与被测模块不对应，且部分测试同时覆盖多个模块。
+项目使用 unit/component/integration/e2e 分层测试，不应强求一对一镜像。
+
+### P2：前端双轨页面 + 大组件
+
+5 legacy + 5 Vuetify 页面并存。Legacy `ModelsPage.vue`（713 行）比对应 Vuetify 版更大。
+
+## 文档索引
+
+| 文档 | 优先级 | 范围 |
+|------|--------|------|
+| [01-oversized-files.md](01-oversized-files.md) | P1 | 职责混合的大文件：按职责拆分 |
+| [02-route-organization.md](02-route-organization.md) | P0 | `/history/v3` 入口一致性 + 路由命名 + WS 注册 + orphan route |
+| [03-module-boundaries.md](03-module-boundaries.md) | P1 | 模块命名修正（ws、auto-truncate、system-prompt） |
+| [04-test-alignment.md](04-test-alignment.md) | P1 | 测试可追踪性（非一对一镜像） |
+| [05-state-management.md](05-state-management.md) | P1 | 全局状态写入面治理 |
+| [06-frontend-cleanup.md](06-frontend-cleanup.md) | P2 | Legacy 标记废弃 + 大组件职责拆分 |
+| [07-cross-cutting.md](07-cross-cutting.md) | P2 | 前后端类型耦合 + Vite proxy 硬编码 |
 
 ## 执行顺序
 
 ```
-Phase 1（P0，独立可并行）:
-  01 → 逐个文件拆分，每个文件一个 PR
-
-Phase 2（P1，有序）:
-  02 路由统一 → 03 模块边界 → 04 测试对齐
-  05 状态治理 可与 02-04 并行
-
-Phase 3（P2，P0+P1 完成后）:
-  06 前端清理
-  07 跨领域问题
+Phase 1: 02 路由入口（P0，阻塞其他路由相关改动）
+Phase 2: 01 + 03 + 05（P1，可并行）
+Phase 3: 04（P1，与 01 协调）
+Phase 4: 06 + 07（P2）
 ```
-
-## 原则
-
-- 拆分后通过 barrel re-export 保持所有现有 import 路径不变
-- 每个拆分目标文件 200-400 行，不超过 800 行
-- 重命名通过 grep 确认所有 import 路径后再执行
-- 每步完成后运行 `typecheck` + `test` 验证

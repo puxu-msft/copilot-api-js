@@ -90,6 +90,14 @@ export interface AnthropicConfig {
   /** Strip server-side tools (web_search, etc.) from requests (default: false) */
   strip_server_tools?: boolean
   /**
+   * Treat assistant messages containing `thinking` / `redacted_thinking`
+   * as fully immutable during client-side rewrites.
+   *
+   * Default: false. When enabled, sanitization / dedup / auto-truncate will
+   * not modify those assistant messages in place.
+   */
+  immutable_thinking_messages?: boolean
+  /**
    * Remove duplicate tool_use/tool_result pairs (keep last occurrence).
    * - `false` — disabled (default)
    * - `true` or `"input"` — match by (tool_name, input)
@@ -269,6 +277,7 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.anthropic) {
     const a = config.anthropic
     if (a.strip_server_tools !== undefined) state.stripServerTools = a.strip_server_tools
+    if (a.immutable_thinking_messages !== undefined) state.immutableThinkingMessages = a.immutable_thinking_messages
     if (a.dedup_tool_calls !== undefined) {
       // Normalize: true → "input" for backward compatibility, false → false
       state.dedupToolCalls = a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls

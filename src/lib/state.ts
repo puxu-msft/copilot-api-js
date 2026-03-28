@@ -61,6 +61,16 @@ export interface State {
   stripServerTools: boolean
 
   /**
+   * Treat any assistant message containing `thinking` or `redacted_thinking`
+   * as fully immutable during client-side rewrites.
+   *
+   * Disabled by default. When enabled, sanitization / dedup / auto-truncate
+   * keep those assistant messages byte-for-byte intact instead of editing
+   * adjacent text or tool blocks.
+   */
+  immutableThinkingMessages: boolean
+
+  /**
    * Model name overrides: request model → target model.
    *
    * Override values can be full model names or short aliases (opus, sonnet, haiku).
@@ -176,6 +186,14 @@ export interface State {
   normalizeResponsesCallIds: boolean
 }
 
+/** Epoch ms when the server started (set once in runServer) */
+export let serverStartTime = 0
+
+/** Set the server start time (called once from runServer) */
+export function setServerStartTime(ts: number): void {
+  serverStartTime = ts
+}
+
 /**
  * Rebuild model lookup indexes from state.models.
  * Called by cacheModels() in production; call directly in tests after setting state.models.
@@ -197,6 +215,7 @@ export const state: State = {
   compressToolResultsBeforeTruncate: true,
   contextEditingMode: "off",
   stripServerTools: false,
+  immutableThinkingMessages: false,
   dedupToolCalls: false,
   fetchTimeout: 300,
   historyLimit: 200,

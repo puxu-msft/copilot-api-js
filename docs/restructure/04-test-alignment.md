@@ -1,68 +1,54 @@
-# 04 — 测试文件名对齐（P1）
+# 04 — 测试可追踪性（P1）
 
-## 问题
+## 目标
 
-测试文件命名不一致。部分按被测**源文件**命名（如 `error.test.ts` → `lib/error.ts`），
-部分按被测**功能概念**命名（如 `copilot-headers.test.ts` → `lib/copilot-api.ts` 中的某个函数）。
+不是"每个源文件一个同名测试文件"（本项目使用 unit/component/integration/e2e 分层测试，不适用镜像策略），
+而是**从测试文件名能快速判断它测试的是什么模块/功能**。
 
-这导致：
-- 无法通过文件名快速定位测试与源的对应关系
-- 源文件拆分后，测试文件是否需要跟随拆分不明确
-- 新开发者不知道某个源文件的测试在哪里
+## 命名与追踪性争议文件
 
-## 命名规范
+### 名称与 import 不一致
 
-**规则**：测试文件名镜像源文件路径。
+| 测试文件 | 实际 import 的模块 | 问题 |
+|----------|-------------------|------|
+| `system-prompt-manager.test.ts` | `~/lib/config/config` + `~/lib/system-prompt` | 名称暗示只测 system-prompt，实际同时测 config 和 system-prompt 的集成 |
+| `server-tool-rewriting.test.ts` | `~/lib/anthropic/message-tools` + `~/lib/anthropic/server-tool-filter` | 名称暗示只测 server-tool-filter，实际覆盖两个模块 |
+| `copilot-headers.test.ts` | `~/lib/copilot-api` | 名称用了函数名而非模块名 |
 
-```
-src/lib/foo.ts                    → tests/unit/foo.test.ts
-src/lib/bar/baz.ts                → tests/unit/bar/baz.test.ts（如需子目录）
-src/lib/bar/baz.ts（子功能）      → tests/unit/bar-baz-xxx.test.ts（加后缀区分）
-```
+### 覆盖分散
 
-## 确认的错位列表
+`anthropic/sanitize.ts` 的功能分散在 4 个测试文件中：
+- `message-sanitizer.test.ts` — 主管道
+- `dedup-tool-calls.test.ts` — 去重子功能
+- `strip-read-tool-result-tags.test.ts` — 标签剥离子功能
+- 部分 component test 也覆盖 sanitize 行为
 
-| 当前测试文件 | 实际测试的源文件 | 建议名称 |
-|-------------|-----------------|---------|
-| `copilot-headers.test.ts` | `lib/copilot-api.ts` | `copilot-api.test.ts` |
-| `system-prompt-manager.test.ts` | `lib/config/config.ts` | `config-rewrite-rules.test.ts` |
-| `dedup-tool-calls.test.ts` | `lib/anthropic/sanitize.ts` | `anthropic-sanitize-dedup.test.ts` |
-| `strip-read-tool-result-tags.test.ts` | `lib/anthropic/sanitize.ts` | `anthropic-sanitize-tags.test.ts` |
-| `message-sanitizer.test.ts` | `lib/anthropic/sanitize.ts` | `anthropic-sanitize.test.ts` |
-| `server-tool-rewriting.test.ts` | `lib/anthropic/server-tool-filter.ts` | `anthropic-server-tool-filter.test.ts` |
-| `response-utils.test.ts` | `lib/request/response.ts` | `request-response.test.ts` |
-| `rewrite-rule.test.ts` | `lib/config/config.ts` | 合并入 `config-rewrite-rules.test.ts` |
-| `system-reminder.test.ts` | `lib/sanitize-system-reminder.ts` | `sanitize-system-reminder.test.ts` |
+这不一定需要合并（按功能点分测试是合理的），但需要能追踪到源模块。
 
-## 已正确命名的测试（无需改动）
+## 建议
 
-| 测试文件 | 源文件 |
-|----------|--------|
-| `error.test.ts` | `lib/error.ts` |
-| `anthropic-features.test.ts` | `lib/anthropic/features.ts` |
-| `auto-truncate-common.test.ts` | `lib/auto-truncate/index.ts` |
-| `error-persistence.test.ts` | `lib/context/error-persistence.ts` |
-| `fetch-utils.test.ts` | `lib/fetch-utils.ts` |
-| `history-ws.test.ts` | `lib/history/ws.ts` |
-| `message-mapping.test.ts` | `lib/anthropic/message-mapping.ts` |
-| `orphan-filter-openai.test.ts` | `lib/openai/orphan-filter.ts` |
-| `proxy.test.ts` | `lib/proxy.ts` |
-| `recording.test.ts` | `lib/request/recording.ts` |
-| `repetition-detector.test.ts` | `lib/repetition-detector.ts` |
-| `sanitize-openai.test.ts` | `lib/openai/sanitize.ts` |
-| `tui-format.test.ts` | `lib/tui/format.ts` |
-| `utils.test.ts` | `lib/utils.ts` |
+### 1. 重命名明确误导的文件
 
-## 与 01-oversized-files.md 的协调
+| 当前名称 | 建议名称 | 理由 |
+|----------|---------|------|
+| `copilot-headers.test.ts` | `copilot-api.test.ts` | 与源文件 `copilot-api.ts` 对齐 |
+| `system-prompt-manager.test.ts` | `system-prompt-config-integration.test.ts` | 反映它测的是 config + system-prompt 集成 |
 
-如果 P0 先执行（拆分大文件），部分测试文件可能需要跟随拆分：
+### 2. 不重命名的文件
 
-- `anthropic/sanitize.ts` 拆分为 4 个文件后，`message-sanitizer.test.ts` 应按新文件结构拆分
-- `error.ts` 目录化后，`error.test.ts` 可能需要拆分为 `error/http-error.test.ts` 等
+| 文件 | 理由 |
+|------|------|
+| `dedup-tool-calls.test.ts` | 功能点命名，指向 sanitize 的子功能，足够清晰 |
+| `strip-read-tool-result-tags.test.ts` | 同上 |
+| `message-sanitizer.test.ts` | 虽然不叫 `anthropic-sanitize.test.ts`，但"message sanitizer"是 sanitize 模块的常见称呼 |
+| `server-tool-rewriting.test.ts` | 覆盖两个模块的集成行为，当前名称尚可 |
+| `response-utils.test.ts` | 单函数测试，保持即可 |
 
-**建议**：P0 拆分源文件时同步调整测试文件命名。04 的执行时机与 01 协调。
+### 3. 与 01 协调
+
+如果 `anthropic/sanitize.ts` 按 01 拆分为多个文件，现有的功能点命名测试（dedup、strip-tags）反而会自然对齐到新的子文件。无需提前调整。
 
 ## 验证
 
-- [ ] 所有重命名后 `bun test tests/unit/` 通过
-- [ ] 无遗漏（每个源文件至少有一个同名测试文件）
+- [ ] 重命名后 `bun test tests/unit/` 通过
+- [ ] 每个测试文件的被测模块可追踪（注释或 import 即可判断）

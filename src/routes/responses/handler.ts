@@ -105,7 +105,9 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
 
   const selectedModel = state.modelIndex.get(payload.model)
   const headersCapture: HeadersCapture = {}
-  const adapter = createResponsesAdapter(selectedModel, headersCapture)
+  const adapter = createResponsesAdapter(selectedModel, headersCapture, (wireRequest) => {
+    reqCtx.setAttemptWireRequest(wireRequest)
+  })
   const strategies = createResponsesStrategies()
 
   try {
@@ -123,7 +125,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
     reqCtx.setHttpHeaders(headersCapture)
 
     const response = pipelineResult.response
-    reqCtx.addQueueWaitMs(pipelineResult.queueWaitMs)
+    // Note: queueWaitMs is already accumulated by the pipeline via requestContext.addQueueWaitMs()
 
     // Determine streaming vs non-streaming based on the request payload,
     // not by inspecting the response shape (isNonStreaming checks for "choices"
@@ -171,9 +173,9 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
 
       try {
         const iterator = (response as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()
-        const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbort.signal)
 
         for (;;) {
+          const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbort.signal)
           const result = await raceIteratorNext(iterator.next(), { idleTimeoutMs, abortSignal })
 
           if (result === STREAM_ABORTED) break

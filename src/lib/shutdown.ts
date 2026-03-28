@@ -26,6 +26,7 @@ import { closeAllClients, getClientCount, stopMemoryPressureMonitor } from "./hi
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
 import { tuiLogger } from "./tui"
+import { notifyShutdownPhaseChanged } from "./ws"
 
 // ============================================================================
 // Configuration constants
@@ -44,6 +45,18 @@ let serverInstance: ServerInstance | null = null
 let _isShuttingDown = false
 let shutdownResolve: (() => void) | null = null
 let shutdownAbortController: AbortController | null = null
+let shutdownDrainAbortController: AbortController | null = null
+let shutdownPhase: "idle" | "phase1" | "phase2" | "phase3" | "phase4" | "finalized" = "idle"
+let shutdownPromise: Promise<void> | null = null
+
+/** Transition shutdown phase and broadcast via WebSocket */
+function setPhase(phase: typeof shutdownPhase): void {
+  const prev = shutdownPhase
+  shutdownPhase = phase
+  if (prev !== phase) {
+    notifyShutdownPhaseChanged({ phase, previousPhase: prev })
+  }
+}
 
 // ============================================================================
 // Public API
@@ -52,6 +65,11 @@ let shutdownAbortController: AbortController | null = null
 /** Check if the server is in shutdown state (used by middleware to reject new requests) */
 export function getIsShuttingDown(): boolean {
   return _isShuttingDown
+}
+
+/** Get the current shutdown phase */
+export function getShutdownPhase(): typeof shutdownPhase {
+  return shutdownPhase
 }
 
 /**
@@ -127,14 +145,17 @@ export function formatActiveRequestsSummary(requests: Array<TuiLogEntry>): strin
 export async function drainActiveRequests(
   timeoutMs: number,
   tracker: { getActiveRequests: () => Array<TuiLogEntry> },
-  opts?: { pollIntervalMs?: number; progressIntervalMs?: number },
-): Promise<"drained" | "timeout"> {
+  opts?: { pollIntervalMs?: number; progressIntervalMs?: number; abortSignal?: AbortSignal },
+): Promise<"drained" | "timeout" | "aborted"> {
   const pollInterval = opts?.pollIntervalMs ?? DRAIN_POLL_INTERVAL_MS
   const progressInterval = opts?.progressIntervalMs ?? DRAIN_PROGRESS_INTERVAL_MS
+  const abortSignal = opts?.abortSignal
   const deadline = Date.now() + timeoutMs
   let lastProgressLog = 0
 
   while (Date.now() < deadline) {
+    if (abortSignal?.aborted) return "aborted"
+
     const active = tracker.getActiveRequests()
     if (active.length === 0) return "drained"
 
@@ -145,7 +166,31 @@ export async function drainActiveRequests(
       consola.info(formatActiveRequestsSummary(active))
     }
 
-    await new Promise((resolve) => setTimeout(resolve, pollInterval))
+    const waitResult = await new Promise<"timer" | "aborted">((resolve) => {
+      let settled = false
+      let onAbort: (() => void) | undefined
+
+      const finish = (value: "timer" | "aborted") => {
+        if (settled) return
+        settled = true
+        if (abortSignal && onAbort) {
+          abortSignal.removeEventListener("abort", onAbort)
+        }
+        resolve(value)
+      }
+
+      const timeoutId = setTimeout(() => finish("timer"), pollInterval)
+      if (!abortSignal) return
+
+      onAbort = () => {
+        clearTimeout(timeoutId)
+        finish("aborted")
+      }
+
+      abortSignal.addEventListener("abort", onAbort, { once: true })
+    })
+
+    if (waitResult === "aborted") return "aborted"
   }
 
   return "timeout"
@@ -180,6 +225,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // ── Phase 1: Stop accepting new requests ──────────────────────────────
   _isShuttingDown = true
   shutdownAbortController = new AbortController()
+  setPhase("phase1")
 
   consola.info(`Received ${signal}, shutting down gracefully...`)
 
@@ -225,9 +271,14 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const activeCount = tracker.getActiveRequests().length
   if (activeCount > 0) {
     consola.info(`Phase 2: Waiting up to ${gracefulWaitMs / 1000}s for ${activeCount} active request(s)...`)
+    setPhase("phase2")
+    shutdownDrainAbortController = new AbortController()
 
     try {
-      const phase2Result = await drainActiveRequests(gracefulWaitMs, tracker, drainOpts)
+      const phase2Result = await drainActiveRequests(gracefulWaitMs, tracker, {
+        ...drainOpts,
+        abortSignal: shutdownDrainAbortController.signal,
+      })
       if (phase2Result === "drained") {
         consola.info("All requests completed naturally")
         finalize(tracker)
@@ -244,10 +295,15 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
         + `waiting up to ${abortWaitMs / 1000}s...`,
     )
 
+    setPhase("phase3")
+    shutdownDrainAbortController = new AbortController()
     shutdownAbortController.abort()
 
     try {
-      const phase3Result = await drainActiveRequests(abortWaitMs, tracker, drainOpts)
+      const phase3Result = await drainActiveRequests(abortWaitMs, tracker, {
+        ...drainOpts,
+        abortSignal: shutdownDrainAbortController.signal,
+      })
       if (phase3Result === "drained") {
         consola.info("All requests completed after abort signal")
         finalize(tracker)
@@ -258,6 +314,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     }
 
     // ── Phase 4: Force close ────────────────────────────────────────────
+    setPhase("phase4")
     const forceRemaining = tracker.getActiveRequests().length
     consola.warn(`Phase 4: Force-closing ${forceRemaining} remaining request(s)`)
 
@@ -275,6 +332,8 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
 /** Final cleanup after drain/force-close */
 function finalize(tracker: { destroy: () => void }): void {
+  setPhase("finalized")
+  shutdownDrainAbortController = null
   tracker.destroy()
   consola.info("Shutdown complete")
   shutdownResolve?.()
@@ -284,19 +343,45 @@ function finalize(tracker: { destroy: () => void }): void {
 // Signal handlers
 // ============================================================================
 
+interface HandleShutdownSignalOptions {
+  gracefulShutdownFn?: (signal: string) => Promise<void>
+  exitFn?: (code: number) => void
+}
+
+export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignalOptions): Promise<void> | undefined {
+  const shutdownFn = opts?.gracefulShutdownFn ?? ((shutdownSignal: string) => gracefulShutdown(shutdownSignal))
+  const exitFn = opts?.exitFn ?? ((code: number) => process.exit(code))
+
+  if (_isShuttingDown) {
+    if (shutdownPhase === "phase2") {
+      consola.warn("Second signal received, escalating shutdown to abort active requests")
+      shutdownDrainAbortController?.abort()
+      return shutdownPromise ?? undefined
+    }
+
+    if (shutdownPhase === "phase3") {
+      consola.warn("Additional signal received, escalating shutdown to force-close remaining requests")
+      shutdownDrainAbortController?.abort()
+      return shutdownPromise ?? undefined
+    }
+
+    consola.warn("Additional signal received during forced shutdown, exiting immediately")
+    exitFn(1)
+    return shutdownPromise ?? undefined
+  }
+
+  shutdownPromise = shutdownFn(signal).catch((error: unknown) => {
+      consola.error("Fatal error during shutdown:", error)
+      shutdownResolve?.() // Ensure waitForShutdown resolves even on error
+      exitFn(1)
+    })
+  return shutdownPromise
+}
+
 /** Setup process signal handlers for graceful shutdown */
 export function setupShutdownHandlers(): void {
   const handler = (signal: string) => {
-    if (_isShuttingDown) {
-      // Second signal = force exit immediately
-      consola.warn("Second signal received, forcing immediate exit")
-      process.exit(1)
-    }
-    gracefulShutdown(signal).catch((error: unknown) => {
-      consola.error("Fatal error during shutdown:", error)
-      shutdownResolve?.() // Ensure waitForShutdown resolves even on error
-      process.exit(1)
-    })
+    handleShutdownSignal(signal)
   }
   process.on("SIGINT", () => handler("SIGINT"))
   process.on("SIGTERM", () => handler("SIGTERM"))
@@ -311,5 +396,8 @@ export function _resetShutdownState(): void {
   _isShuttingDown = false
   shutdownResolve = null
   shutdownAbortController = null
+  shutdownDrainAbortController = null
+  shutdownPhase = "idle"
+  shutdownPromise = null
   serverInstance = null
 }

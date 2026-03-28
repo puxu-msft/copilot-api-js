@@ -1,89 +1,77 @@
 # 05 — 全局状态治理（P1）
 
-## 现状
+## 已确认事实
 
-`src/lib/state.ts`（236 行）导出一个 `state` 单例对象，包含 25+ 可变字段。
+`state.ts` 导出一个可变单例对象（25+ 字段），被以下 12 个文件直接赋值：
 
-### 字段分类
-
-| 类别 | 字段 | 来源 |
-|------|------|------|
-| **认证** | `githubToken`、`copilotToken`、`tokenInfo`、`copilotTokenInfo`、`accountType` | token 模块设置 |
-| **模型** | `models`、`modelIndex`、`modelIds`、`modelOverrides` | `start.ts` 缓存 + config |
-| **行为开关** | `autoTruncate`、`compressToolResults…`、`stripServerTools`、`dedupToolCalls`、`stripReadToolResult…`、`contextEditingMode`、`normalizeResponsesCallIds` | config.yaml + CLI |
-| **超时** | `fetchTimeout`、`streamIdleTimeout`、`staleRequestMaxAge` | config.yaml |
-| **关闭** | `shutdownGracefulWait`、`shutdownAbortWait` | config.yaml |
-| **History** | `historyLimit`、`historyMinEntries` | config.yaml |
-| **杂项** | `verbose`、`showGitHubToken`、`vsCodeVersion`、`rewriteSystemReminders`、`adaptiveRateLimitConfig`、`serverStartTime` | 多处 |
-
-### 问题
-
-1. **无封装**：任何模块可直接 `state.xxx = value` 修改任何字段
-2. **无追踪**：无法得知某字段何时被谁修改
-3. **配置来源三处**：`state.ts` 默认值 → `config/config.ts` 热重载 → `start.ts` CLI 参数，优先级隐式
-4. 仅 `setServerStartTime` 和 `rebuildModelIndex` 有专用 setter
-
-## 短期方案：引入 setter + readonly
-
-### 步骤
-
-1. 将 `State` 接口的所有字段标记为 `readonly`
-2. 导出分组 setter 函数，setter 内部通过类型断言绕过 readonly
-3. 所有直接赋值改为调用 setter
-
-```ts
-// 示例
-export interface State {
-  readonly autoTruncate: boolean
-  readonly fetchTimeout: number
-  // ...
-}
-
-export function setBehavior(updates: Partial<Pick<State, "autoTruncate" | "fetchTimeout" | ...>>) {
-  Object.assign(state, updates)
-}
+```
+src/start.ts
+src/auth.ts
+src/check-usage.ts
+src/debug.ts
+src/setup-claude-code.ts
+src/lib/config/config.ts
+src/lib/copilot-api.ts
+src/lib/models/client.ts
+src/lib/state.ts
+src/lib/token/index.ts
+src/lib/token/copilot-token-manager.ts
+src/lib/token/providers/base.ts
 ```
 
-### 分组 setter 设计
+仅 `setServerStartTime` 和 `rebuildModelIndex` 有专用 setter。其余字段全部 `state.xxx = value` 直接写。
+
+注意：`serverStartTime` 不是 `State` 接口的字段，而是 `state.ts` 中的独立导出变量。
+
+## 字段分类
+
+| 类别 | 字段 | 主要写入者 |
+|------|------|-----------|
+| **认证** | `githubToken`, `copilotToken`, `tokenInfo`, `copilotTokenInfo`, `accountType` | token 模块, auth.ts |
+| **模型** | `models`, `modelIndex`, `modelIds`, `modelOverrides` | models/client.ts, start.ts |
+| **行为开关** | `autoTruncate`, `compressToolResults…`, `stripServerTools`, `dedupToolCalls`, `stripReadToolResult…`, `contextEditingMode`, `normalizeResponsesCallIds`, `systemPromptOverrides`, `rewriteSystemReminders` | config.ts, start.ts |
+| **超时** | `fetchTimeout`, `streamIdleTimeout`, `staleRequestMaxAge` | config.ts |
+| **关闭** | `shutdownGracefulWait`, `shutdownAbortWait` | config.ts |
+| **History** | `historyLimit`, `historyMinEntries` | config.ts |
+| **杂项** | `verbose`, `showGitHubToken`, `vsCodeVersion`, `adaptiveRateLimitConfig` | start.ts, copilot-api.ts |
+| **独立变量** | `serverStartTime`（非 State 字段） | start.ts（通过 setter） |
+
+## 配置优先级
+
+当前隐式优先级（未文档化）：
+
+```
+CLI 参数（start.ts）→ config.yaml 热重载（config.ts）→ state.ts 默认值
+```
+
+## 短期方案：setter + readonly
+
+1. `State` 接口所有字段标记 `readonly`
+2. 按领域导出分组 setter：
 
 | setter | 管辖字段 |
 |--------|---------|
 | `setAuth(...)` | githubToken, copilotToken, tokenInfo, copilotTokenInfo, accountType |
-| `setModels(...)` | models, modelIndex, modelIds, modelOverrides |
-| `setBehavior(...)` | autoTruncate, compressToolResults…, stripServerTools, dedupToolCalls, … |
+| `cacheModels(...)` | models, modelIndex, modelIds（已有 `rebuildModelIndex`，可扩展） |
+| `setBehavior(...)` | autoTruncate, compressToolResults…, stripServerTools, dedupToolCalls, contextEditingMode, … |
 | `setTimeouts(...)` | fetchTimeout, streamIdleTimeout, staleRequestMaxAge |
 | `setShutdownConfig(...)` | shutdownGracefulWait, shutdownAbortWait |
 | `setHistoryConfig(...)` | historyLimit, historyMinEntries |
+| `setMisc(...)` | verbose, showGitHubToken, vsCodeVersion, adaptiveRateLimitConfig |
 
-### 配置优先级文档化
+3. 所有 12 个写入者改为调用 setter
 
-在 `state.ts` 顶部注释中明确：
+4. 在 `state.ts` 顶部文档化配置优先级
 
-```
-配置优先级（高 → 低）：
-1. CLI 参数（--auto-truncate, --no-auto-truncate）
-2. config.yaml（热重载）
-3. state.ts 默认值
-```
+## 迁移范围
 
-## 中期方案：按领域拆分
-
-如果 `state.ts` 随功能增长超过 400 行，可拆分为：
-
-```
-src/lib/state/
-├── index.ts          # barrel + 兼容性 re-export
-├── auth.ts           # 认证相关状态
-├── models.ts         # 模型缓存状态
-├── behavior.ts       # 行为开关
-└── timeouts.ts       # 超时和关闭配置
-```
-
-当前 236 行不急，短期 setter 方案足够。
+**不仅是 `state.ts` 本身**——12 个写入者文件都需要修改。特别注意：
+- CLI 命令层（`auth.ts`, `check-usage.ts`, `debug.ts`, `setup-claude-code.ts`）
+- token 子模块（`token/index.ts`, `token/copilot-token-manager.ts`, `token/providers/base.ts`）
+- config 热重载回调（`config/config.ts`）
 
 ## 验证
 
 - [ ] `State` 接口所有字段为 `readonly`
-- [ ] 所有 `state.xxx = value` 改为 setter 调用
-- [ ] `typecheck` 通过
-- [ ] `test` 通过
+- [ ] 12 个文件中的所有 `state.xxx = value` 改为 setter 调用
+- [ ] `typecheck` + `test` 通过

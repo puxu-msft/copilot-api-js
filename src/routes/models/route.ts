@@ -23,6 +23,18 @@ function formatModel(model: Model) {
   }
 }
 
+function formatModelDetail(model: Model) {
+  return {
+    ...formatModel(model),
+    version: model.version,
+    preview: model.preview,
+    model_picker_enabled: model.model_picker_enabled,
+    model_picker_category: model.model_picker_category,
+    supported_endpoints: model.supported_endpoints,
+    billing: model.billing,
+  }
+}
+
 modelsRoutes.get("/", async (c) => {
   try {
     if (!state.models) {
@@ -30,7 +42,9 @@ modelsRoutes.get("/", async (c) => {
       await cacheModels()
     }
 
-    const models = state.models?.data.map((m) => formatModel(m))
+    const detail = c.req.query("detail") === "true"
+    const formatter = detail ? formatModelDetail : formatModel
+    const models = state.models?.data.map((m) => formatter(m))
 
     return c.json({
       object: "list",
@@ -65,7 +79,7 @@ modelsRoutes.get("/:model", async (c) => {
       )
     }
 
-    return c.json(formatModel(model))
+    return c.json(formatModelDetail(model))
   } catch (error) {
     return forwardError(c, error)
   }

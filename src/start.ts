@@ -18,14 +18,13 @@ import { cacheVSCodeVersion } from "./lib/copilot-api"
 import { initHistory, startMemoryPressureMonitor } from "./lib/history"
 import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
-import { resolveModelName } from "./lib/models/resolver"
-import { formatProxyDisplay, initProxy } from "./lib/proxy"
+import { initProxy } from "./lib/proxy"
 import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
-import { state } from "./lib/state"
+import { setServerStartTime, state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { initTuiLogger } from "./lib/tui"
-import { createWebSocketAdapter } from "./lib/ws"
-import { initHistoryWebSocket } from "./routes/history/route"
+import { initWebSocket, setConnectedDataFactory } from "./lib/ws"
+import { createWebSocketAdapter } from "./lib/ws-adapter"
 import { initResponsesWebSocket } from "./routes/responses/ws"
 import { server } from "./server"
 
@@ -50,13 +49,11 @@ function formatModelInfo(model: Model): string {
   const promptK = formatLimit(limits?.max_prompt_tokens)
   const outputK = formatLimit(limits?.max_output_tokens)
 
-  // Main line: model id (vendor) + token limits
   const label = `${model.id} (${model.vendor})`
   const padded = label.length > 45 ? `${label.slice(0, 42)}...` : label.padEnd(45)
   const mainLine =
     `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
 
-  // Features line: boolean capabilities + inferred features
   const features = [
     ...Object.entries(supports ?? {})
       .filter(([, value]) => value === true)
@@ -69,17 +66,10 @@ function formatModelInfo(model: Model): string {
     .join(", ")
   const featLine = features ? pc.dim(`      features:  ${features}`) : ""
 
-  // Endpoints line: from supported_endpoints or inferred from capabilities.type
-  const endpoints = formatEndpoints(getEffectiveEndpoints(model))
-  const endpLine = pc.dim(`      endpoints: ${endpoints}`)
+  const endpoints = getEffectiveEndpoints(model)
+  const endpLine = pc.dim(`      endpoints: ${endpoints?.join(", ") ?? "(unknown)"}`)
 
   return [mainLine, featLine, endpLine].filter(Boolean).join("\n")
-}
-
-/** Format endpoint paths for display */
-function formatEndpoints(endpoints?: Array<string>): string {
-  if (!endpoints || endpoints.length === 0) return "(unknown)"
-  return endpoints.join(", ")
 }
 
 /** Parse an integer from a string, returning a default if the result is NaN. */
@@ -148,106 +138,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const proxyUrl = options.proxy ?? config.proxy
   initProxy({ url: proxyUrl, fromEnv: !proxyUrl && options.httpProxyFromEnv })
 
-  // Log configuration status for all features
-  // Source labels: --flag for CLI options, [key] for config.yaml options
-  const configLines: Array<string> = []
-  const on = (source: string, label: string, detail?: string) =>
-    configLines.push(`  ${pc.dim(source)} ${label}: ON${detail ? ` ${pc.dim(`(${detail})`)}` : ""}`)
-  const off = (source: string, label: string) => configLines.push(pc.dim(`  ${source} ${label}: OFF`))
-  const toggle = (flag: boolean | undefined, source: string, label: string, detail?: string) =>
-    flag ? on(source, label, detail) : off(source, label)
-
-  toggle(options.verbose, "--verbose", "Verbose logging")
-  configLines.push(`  ${pc.dim("--account-type")} Account type: ${options.accountType}`)
-
-  // Rate limiter: merge CLI flag (enable/disable) with config.yaml sub-parameters
+  // Rate limiter configuration (used in Phase 3)
   const rlConfig = config.rate_limiter
   const rlRetryInterval = rlConfig?.retry_interval ?? 10
   const rlRequestInterval = rlConfig?.request_interval ?? 10
   const rlRecoveryTimeout = rlConfig?.recovery_timeout ?? 10
   const rlConsecutiveSuccesses = rlConfig?.consecutive_successes ?? 5
-
-  if (options.rateLimit) {
-    on(
-      "--rate-limit",
-      "Rate limiter",
-      `retry=${rlRetryInterval}s interval=${rlRequestInterval}s recovery=${rlRecoveryTimeout}m successes=${rlConsecutiveSuccesses}`,
-    )
-  } else {
-    off("--rate-limit", "Rate limiter")
-  }
-
-  if (options.autoTruncate) {
-    const detail = state.compressToolResultsBeforeTruncate ? "reactive, compress" : "reactive"
-    on("--auto-truncate", "Auto-truncate", detail)
-  } else {
-    off("--auto-truncate", "Auto-truncate")
-  }
-
-  if (state.compressToolResultsBeforeTruncate && !options.autoTruncate) {
-    // Only show separately if auto-truncate is off but compress is on (unusual)
-    on("[compress_tool_results_before_truncate]", "Compress tool results")
-  }
-  toggle(state.stripServerTools, "[anthropic.strip_server_tools]", "Strip server tools")
-  if (proxyUrl) {
-    on(options.proxy ? "--proxy" : "[proxy]", "Proxy", formatProxyDisplay(proxyUrl))
-  } else if (options.httpProxyFromEnv) {
-    on("--http-proxy-from-env", "Proxy", "from env")
-  } else {
-    off("--http-proxy-from-env", "Proxy")
-  }
-  toggle(options.showGitHubToken, "--show-github-token", "Show GitHub token")
-  const overrideEntries = Object.entries(state.modelOverrides)
-  if (overrideEntries.length > 0) {
-    on("[model_overrides]", "Model overrides")
-  } else {
-    off("[model_overrides]", "Model overrides")
-  }
-  if (state.dedupToolCalls) {
-    on("[anthropic.dedup_tool_calls]", "Dedup tool calls", `mode: ${state.dedupToolCalls}`)
-  } else {
-    off("[anthropic.dedup_tool_calls]", "Dedup tool calls")
-  }
-  toggle(state.stripReadToolResultTags, "[anthropic.strip_read_tool_result_tags]", "Strip Read tool result tags")
-  if (state.rewriteSystemReminders === true) {
-    on("[anthropic.rewrite_system_reminders]", "Rewrite system reminders", "remove all")
-  } else if (state.rewriteSystemReminders === false) {
-    off("[anthropic.rewrite_system_reminders]", "Rewrite system reminders")
-  } else {
-    on(
-      "[anthropic.rewrite_system_reminders]",
-      "Rewrite system reminders",
-      `${state.rewriteSystemReminders.length} rules`,
-    )
-  }
-
-  // Show timeout settings (always show since streamIdleTimeout defaults to 300)
-  {
-    const parts: Array<string> = []
-    if (state.fetchTimeout > 0) parts.push(`fetch=${state.fetchTimeout}s`)
-    parts.push(`stream-idle=${state.streamIdleTimeout}s`)
-    if (state.staleRequestMaxAge > 0) parts.push(`stale-reaper=${state.staleRequestMaxAge}s`)
-    on("[timeouts]", "Timeouts", parts.join(", "))
-  }
-
-  const historyLimitText = state.historyLimit === 0 ? "unlimited" : `max=${state.historyLimit}`
-  on("[history_limit]", "History", historyLimitText)
-
-  // Shutdown timing
-  on("[shutdown]", "Shutdown", `graceful=${state.shutdownGracefulWait}s, abort=${state.shutdownAbortWait}s`)
-
-  // System prompt modifications
-  if (state.systemPromptOverrides.length > 0) {
-    on("[system_prompt_overrides]", "System prompt overrides", `${state.systemPromptOverrides.length} rules`)
-  }
-  if (config.system_prompt_prepend) {
-    on("[system_prompt_prepend]", "System prompt prepend", `${config.system_prompt_prepend.length} chars`)
-  }
-  if (config.system_prompt_append) {
-    on("[system_prompt_append]", "System prompt append", `${config.system_prompt_append.length} chars`)
-  }
-
-  consola.info(`Configuration:\n${configLines.join("\n")}`)
 
   // ===========================================================================
   // Phase 3: Initialize Internal Services (rate limiter, history)
@@ -268,6 +164,19 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Must be after initHistory so history store is ready to receive events
   const contextManager = initRequestContextManager()
   registerContextConsumers(contextManager)
+
+  // Provide active requests snapshot for WS connected events
+  setConnectedDataFactory(() =>
+    contextManager.getAll().map((ctx) => ({
+      id: ctx.id,
+      endpoint: ctx.endpoint,
+      state: ctx.state,
+      startTime: ctx.startTime,
+      durationMs: ctx.durationMs,
+      model: ctx.originalRequest?.model,
+      stream: ctx.originalRequest?.stream,
+    })),
+  )
 
   // Start stale request reaper (periodic cleanup of stuck active contexts)
   contextManager.startReaper()
@@ -301,22 +210,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Load previously learned auto-truncate limits (calibration + token limits)
   await loadPersistedLimits()
 
-  // Show resolved model overrides after models are fetched
-  const availableIds = state.models?.data.map((m) => m.id) ?? []
-  const overrideLines = Object.entries(state.modelOverrides)
-    .map(([from, to]) => {
-      const resolved = resolveModelName(from)
-      const colorize = (name: string) => (availableIds.includes(name) ? name : pc.red(name))
-      if (resolved !== to) {
-        return `  - ${from} → ${to} ${pc.dim(`(→ ${colorize(resolved)})`)}`
-      }
-      return `  - ${from} → ${colorize(to)}`
-    })
-    .join("\n")
-  if (overrideLines) {
-    consola.info(`Model overrides:\n${overrideLines}`)
-  }
-
   // ===========================================================================
   // Phase 5: Start Server
   // ===========================================================================
@@ -328,12 +221,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // on the Node HTTP server, which would cause ERR_STREAM_WRITE_AFTER_END
   // when one handler consumes the socket and the other tries to reject.
   const wsAdapter = await createWebSocketAdapter(server)
-  initHistoryWebSocket(server, wsAdapter.upgradeWebSocket)
+  initWebSocket(server, wsAdapter.upgradeWebSocket)
   initResponsesWebSocket(server, wsAdapter.upgradeWebSocket)
 
-  consola.box(
-    `Web UI:\n🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage\n📜 History UI:   ${serverUrl}/history`,
-  )
+  consola.box(`Web UI: ${serverUrl}/ui`)
 
   // Import hono/bun websocket handler for Bun's WebSocket support.
   // Bun.serve() requires an explicit `websocket` handler object alongside `fetch`
@@ -355,6 +246,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   consola.info(`Listening on ${serverUrl}`)
+  setServerStartTime(Date.now())
 
   // Store server instance and register signal handlers for graceful shutdown.
   // Order matters: setServerInstance must be called before setupShutdownHandlers

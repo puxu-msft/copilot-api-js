@@ -1,22 +1,47 @@
 import config from "@echristian/eslint-config"
+import { defineConfigWithVueTs, vueTsConfigs } from "@vue/eslint-config-typescript"
+import tseslint from "typescript-eslint"
+import pluginVue from "eslint-plugin-vue"
+import prettierConfig from "./prettier.config.mjs"
 
-export default [
+const disableTypescriptRulesForJson = Object.fromEntries(
+  Object.keys(tseslint.plugin.rules).map((ruleName) => [`@typescript-eslint/${ruleName}`, "off"]),
+)
+
+export default defineConfigWithVueTs(
   {
     ignores: [
       //
       "archive/**",
-      "ui/**",
       "refs/**",
+      "ui/**/dist/**",
       "eslint.config.js",
       "tsdown.config.ts",
     ],
   },
-  ...config({
-    prettier: {
-      printWidth: 120,
-      plugins: ["prettier-plugin-packagejson"],
+  {
+    plugins: {
+      "@typescript-eslint": tseslint.plugin,
     },
+  },
+  ...config({
+    prettier: prettierConfig,
   }),
+  {
+    files: ["ui/**/*.vue"],
+    extends: [pluginVue.configs["flat/essential"], vueTsConfigs.recommendedTypeChecked],
+    rules: {
+      "@typescript-eslint/no-base-to-string": "off",
+      "@typescript-eslint/no-non-null-assertion": "off",
+      "@typescript-eslint/no-unnecessary-condition": "off",
+      "@typescript-eslint/restrict-template-expressions": "off",
+      "vue/multi-word-component-names": "off",
+    },
+  },
+  {
+    files: ["**/*.json", "**/*.jsonc", "**/package.json", "**/package-lock.json"],
+    rules: disableTypescriptRulesForJson,
+  },
   {
     rules: {
       // Disable overly restrictive code structure rules
@@ -43,30 +68,7 @@ export default [
       "@typescript-eslint/no-unsafe-assignment": "off",
       "@typescript-eslint/no-unsafe-argument": "off",
       "@typescript-eslint/no-unsafe-return": "off",
-    },
-  },
-  {
-    files: ["tests/**/*.ts"],
-    rules: {
-      // Tests use flexible typing for mock data and assertions
-      "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-unsafe-assignment": "off",
-      "@typescript-eslint/no-unsafe-member-access": "off",
-      "@typescript-eslint/no-unsafe-argument": "off",
-      "@typescript-eslint/no-unsafe-return": "off",
-      "@typescript-eslint/no-non-null-assertion": "off",
-      "@typescript-eslint/no-unnecessary-condition": "off",
-      // Mock functions need async signatures to match interfaces without awaiting
-      "@typescript-eslint/require-await": "off",
-      // expect(mock.method).toHaveBeenCalled() is standard test assertion pattern
-      "@typescript-eslint/unbound-method": "off",
-      // bun:test expect().rejects returns a Promise — false positive from TS eslint
       "@typescript-eslint/await-thenable": "off",
-      "@typescript-eslint/no-confusing-void-expression": "off",
-      // Catch callbacks in tests often need specific types for assertions
-      "@typescript-eslint/use-unknown-in-catch-callback-variable": "off",
-      "unicorn/consistent-function-scoping": "off",
-      "unicorn/no-array-callback-reference": "off",
     },
   },
-]
+)

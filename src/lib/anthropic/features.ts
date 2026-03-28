@@ -82,6 +82,10 @@ export interface AnthropicBetaHeaders {
   "anthropic-beta"?: string
 }
 
+export interface AnthropicBetaHeaderOptions {
+  disableContextManagement?: boolean
+}
+
 /**
  * Check if a model supports adaptive thinking (from model metadata).
  *
@@ -110,7 +114,11 @@ function modelHasAdaptiveThinking(resolvedModel?: Model): boolean {
  * The resolvedModel parameter provides model metadata for capability-based
  * decisions. When unavailable, falls back to name-based detection.
  */
-export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model): AnthropicBetaHeaders {
+export function buildAnthropicBetaHeaders(
+  modelId: string,
+  resolvedModel?: Model,
+  opts?: AnthropicBetaHeaderOptions,
+): AnthropicBetaHeaders {
   const headers: AnthropicBetaHeaders = {}
   const betaFeatures: Array<string> = []
 
@@ -120,7 +128,7 @@ export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model
     betaFeatures.push("interleaved-thinking-2025-05-14")
   }
 
-  if (isContextEditingEnabled(modelId)) {
+  if (!opts?.disableContextManagement && isContextEditingEnabled(modelId)) {
     betaFeatures.push("context-management-2025-06-27")
   }
 

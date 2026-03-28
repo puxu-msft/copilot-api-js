@@ -9,7 +9,7 @@ import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { ApiError } from "~/lib/error"
-import type { EndpointType } from "~/lib/history/store"
+import type { EndpointType, SanitizationInfo } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 
 import { classifyError } from "~/lib/error"
@@ -95,10 +95,29 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
   let effectivePayload = opts.payload
   let lastError: unknown = null
   let totalQueueWaitMs = 0
+  let lastStrategyName: string | undefined
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // 1. Create attempt first (ensures currentAttempt is available for subsequent calls)
+    requestContext?.beginAttempt({
+      strategy: attempt > 0 ? lastStrategyName : undefined,
+    })
+    lastStrategyName = undefined
+
+    // 2. Auto-record effective payload on each attempt (covers all handlers)
+    if (requestContext) {
+      const p = effectivePayload as Record<string, unknown>
+      requestContext.setAttemptEffectiveRequest({
+        model: typeof p.model === "string" ? p.model : "",
+        resolvedModel: model,
+        messages: Array.isArray(p.messages) ? p.messages : [],
+        payload: effectivePayload,
+        format: adapter.format,
+      })
+    }
+
+    // 3. External callback (currentAttempt now exists)
     onBeforeAttempt?.(attempt, effectivePayload)
-    requestContext?.beginAttempt({ strategy: attempt > 0 ? "retry" : undefined })
     requestContext?.transition("executing")
 
     try {
@@ -147,6 +166,12 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
               requestContext?.addQueueWaitMs(action.waitMs)
             }
 
+            // Auto-record sanitization from strategy meta (e.g. auto-truncate provides this)
+            if (action.meta?.sanitization && requestContext) {
+              requestContext.setAttemptSanitization(action.meta.sanitization as SanitizationInfo)
+            }
+
+            lastStrategyName = strategy.name
             effectivePayload = action.payload
             onRetry?.(attempt, strategy.name, action.payload, action.meta)
             handled = true

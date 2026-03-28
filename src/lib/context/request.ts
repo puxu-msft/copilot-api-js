@@ -7,7 +7,7 @@
  */
 
 import type { ApiError } from "~/lib/error"
-import type { EndpointType, PipelineInfo, PreprocessInfo, SanitizationInfo, SseEventRecord } from "~/lib/history/store"
+import type { EndpointType, PipelineInfo, SanitizationInfo, SseEventRecord, TruncationInfo } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 
 import { getErrorMessage } from "~/lib/error"
@@ -17,14 +17,12 @@ import { normalizeModelId } from "~/lib/models/resolver"
 
 export type RequestState =
   | "pending" // Just created, not yet started
-  | "sanitizing" // Sanitizing messages
   | "executing" // Executing API call
-  | "retrying" // Retrying (429 wait or 413 truncation)
   | "streaming" // Streaming response in progress
   | "completed" // Successfully completed
   | "failed" // Failed
 
-// ─── Three-Part Data Model ───
+// ─── Four-Part Data Model ───
 
 /** 1. Original request: client's raw payload (one per request, immutable) */
 export interface OriginalRequest {
@@ -33,10 +31,11 @@ export interface OriginalRequest {
   stream: boolean
   tools?: Array<unknown>
   system?: unknown
+  /** Full raw payload — used by toHistoryEntry() to extract max_tokens, temperature, thinking etc. */
   payload: unknown
 }
 
-/** 2. Effective request: what's sent to upstream API (per attempt, may differ) */
+/** 2. Effective request: logical payload after sanitize/truncate/retry (before client-specific wire mutations) */
 export interface EffectiveRequest {
   model: string
   resolvedModel: Model | undefined
@@ -45,7 +44,16 @@ export interface EffectiveRequest {
   format: EndpointType
 }
 
-/** 3. Response data: upstream API response (per attempt) */
+/** 3. Wire request: final HTTP payload/headers sent upstream (per attempt) */
+export interface WireRequest {
+  model: string
+  messages: Array<unknown>
+  payload: unknown
+  headers: Record<string, string>
+  format: EndpointType
+}
+
+/** 4. Response data: upstream API response (per attempt) */
 export interface ResponseData {
   success: boolean
   model: string
@@ -58,7 +66,6 @@ export interface ResponseData {
   }
   content: unknown
   stop_reason?: string
-  toolCalls?: Array<unknown>
   error?: string
   /** HTTP status code from upstream (only on error) */
   status?: number
@@ -72,35 +79,17 @@ export interface ResponseData {
 export interface Attempt {
   index: number
   effectiveRequest: EffectiveRequest | null
+  wireRequest: WireRequest | null
   response: ResponseData | null
   error: ApiError | null
   /** Strategy that triggered this retry (undefined for first attempt) */
   strategy?: string
-  sanitization?: SanitizationState
-  truncation?: TruncationState
+  sanitization?: SanitizationInfo
+  truncation?: TruncationInfo
   /** Wait time before this retry (rate-limit) */
   waitMs?: number
   startTime: number
   durationMs: number
-}
-
-// ─── Pipeline Processing State ───
-
-export interface SanitizationState {
-  blocksRemoved: number
-  systemReminderRemovals: number
-  orphanedToolUseCount?: number
-  orphanedToolResultCount?: number
-  fixedNameCount?: number
-  emptyTextBlocksRemoved?: number
-}
-
-export interface TruncationState {
-  wasTruncated: boolean
-  originalTokens: number
-  compactedTokens: number
-  removedMessageCount: number
-  processingTimeMs: number
 }
 
 // ─── History Entry Data ───
@@ -113,11 +102,14 @@ export interface HeadersCapture {
 
 /** Serialized form of a completed request (decoupled from history store) */
 export interface HistoryEntryData {
+  // ─── Identity ───
   id: string
   endpoint: EndpointType
   timestamp: number
   durationMs: number
   sessionId?: string
+
+  // ─── Original Request ───
   request: {
     model?: string
     messages?: Array<unknown>
@@ -126,45 +118,48 @@ export interface HistoryEntryData {
     system?: unknown
     max_tokens?: number
     temperature?: number
+    thinking?: unknown
   }
+
+  // ─── Effective Request ───
+  effectiveRequest?: {
+    model?: string
+    format?: EndpointType
+    messageCount?: number
+    messages?: Array<unknown>
+    system?: unknown
+    payload?: unknown
+  }
+
+  wireRequest?: {
+    model?: string
+    format?: EndpointType
+    messageCount?: number
+    messages?: Array<unknown>
+    system?: unknown
+    payload?: unknown
+    headers?: Record<string, string>
+  }
+
+  // ─── Response ───
   response?: ResponseData
-  truncation?: TruncationState
+
+  // ─── Pipeline Metadata ───
+  truncation?: TruncationInfo
   pipelineInfo?: PipelineInfo
   sseEvents?: Array<SseEventRecord>
+  httpHeaders?: {
+    request: Record<string, string>
+    response: Record<string, string>
+  }
   attempts?: Array<{
     index: number
     strategy?: string
     durationMs: number
     error?: string
-    truncation?: TruncationState
-  }>
-  /** HTTP headers sent to and received from upstream API */
-  httpHeaders?: {
-    request: Record<string, string>
-    response: Record<string, string>
-  }
-}
-
-// ─── Stream Accumulator Result ───
-
-/** Data extracted from a stream accumulator for completeFromStream */
-export interface StreamAccumulatorResult {
-  model: string
-  content: string
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheCreationTokens: number
-  stopReason: string
-  contentBlocks: Array<{
-    type: string
-    text?: string
-    thinking?: string
-    id?: string
-    name?: string
-    input?: unknown
-    tool_use_id?: string
-    content?: unknown
+    truncation?: TruncationInfo
+    sanitization?: SanitizationInfo
+    effectiveMessageCount?: number
   }>
 }
 
@@ -198,7 +193,6 @@ export interface RequestContext {
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
   readonly pipelineInfo: PipelineInfo | null
-  readonly preprocessInfo: PreprocessInfo | null
   readonly httpHeaders: { request: Record<string, string>; response: Record<string, string> } | null
 
   // --- Attempts ---
@@ -208,20 +202,18 @@ export interface RequestContext {
 
   // --- Mutation Methods ---
   setOriginalRequest(req: OriginalRequest): void
-  setPreprocessInfo(info: PreprocessInfo): void
-  addSanitizationInfo(info: SanitizationInfo): void
   setPipelineInfo(info: PipelineInfo): void
   setSseEvents(events: Array<SseEventRecord>): void
   setHttpHeaders(capture: HeadersCapture): void
-  beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationState }): void
-  setAttemptSanitization(info: SanitizationState): void
+  beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo }): void
+  setAttemptSanitization(info: SanitizationInfo): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
+  setAttemptWireRequest(req: WireRequest): void
   setAttemptResponse(response: ResponseData): void
   setAttemptError(error: ApiError): void
   addQueueWaitMs(ms: number): void
   transition(newState: RequestState, meta?: Record<string, unknown>): void
   complete(response: ResponseData): void
-  completeFromStream(acc: StreamAccumulatorResult): void
   fail(model: string, error: unknown): void
   toHistoryEntry(): HistoryEntryData
 }
@@ -244,10 +236,8 @@ export function createRequestContext(opts: {
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
   let _pipelineInfo: PipelineInfo | null = null
-  let _preprocessInfo: PreprocessInfo | null = null
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: { request: Record<string, string>; response: Record<string, string> } | null = null
-  const _sanitizationHistory: Array<SanitizationInfo> = []
   let _queueWaitMs = 0
   const _attempts: Array<Attempt> = []
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
@@ -285,9 +275,6 @@ export function createRequestContext(opts: {
     get pipelineInfo() {
       return _pipelineInfo
     },
-    get preprocessInfo() {
-      return _preprocessInfo
-    },
     get httpHeaders() {
       return _httpHeaders
     },
@@ -306,20 +293,9 @@ export function createRequestContext(opts: {
       emit({ type: "updated", context: ctx, field: "originalRequest" })
     },
 
-    setPreprocessInfo(info: PreprocessInfo) {
-      _preprocessInfo = info
-    },
-
-    addSanitizationInfo(info: SanitizationInfo) {
-      _sanitizationHistory.push(info)
-    },
-
     setPipelineInfo(info: PipelineInfo) {
-      _pipelineInfo = {
-        ...(_preprocessInfo && { preprocessing: _preprocessInfo }),
-        ...(_sanitizationHistory.length > 0 && { sanitization: _sanitizationHistory }),
-        ...info,
-      }
+      // Direct assignment — caller assembles the complete PipelineInfo
+      _pipelineInfo = info
       emit({ type: "updated", context: ctx, field: "pipelineInfo" })
     },
 
@@ -333,10 +309,11 @@ export function createRequestContext(opts: {
       }
     },
 
-    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationState }) {
+    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo }) {
       const attempt: Attempt = {
         index: _attempts.length,
         effectiveRequest: null, // Set later via setAttemptEffectiveRequest
+        wireRequest: null, // Set later via setAttemptWireRequest
         response: null,
         error: null,
         strategy: attemptOpts.strategy,
@@ -349,7 +326,7 @@ export function createRequestContext(opts: {
       emit({ type: "updated", context: ctx, field: "attempts" })
     },
 
-    setAttemptSanitization(info: SanitizationState) {
+    setAttemptSanitization(info: SanitizationInfo) {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.sanitization = info
@@ -360,6 +337,13 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.effectiveRequest = req
+      }
+    },
+
+    setAttemptWireRequest(req: WireRequest) {
+      const attempt = ctx.currentAttempt
+      if (attempt) {
+        attempt.wireRequest = req
       }
     },
 
@@ -403,23 +387,6 @@ export function createRequestContext(opts: {
       emit({ type: "completed", context: ctx, entry })
     },
 
-    completeFromStream(acc: StreamAccumulatorResult) {
-      const response: ResponseData = {
-        success: true,
-        model: acc.model,
-        usage: {
-          input_tokens: acc.inputTokens,
-          output_tokens: acc.outputTokens,
-          ...(acc.cacheReadTokens > 0 && { cache_read_input_tokens: acc.cacheReadTokens }),
-          ...(acc.cacheCreationTokens > 0 && { cache_creation_input_tokens: acc.cacheCreationTokens }),
-        },
-        content: acc.contentBlocks.length > 0 ? { role: "assistant", content: acc.contentBlocks } : null,
-        stop_reason: acc.stopReason || undefined,
-      }
-
-      ctx.complete(response)
-    },
-
     fail(model: string, error: unknown) {
       if (settled) return
       settled = true
@@ -454,6 +421,8 @@ export function createRequestContext(opts: {
     },
 
     toHistoryEntry(): HistoryEntryData {
+      // Extract request metadata from the original payload
+      const p = _originalRequest?.payload as Record<string, unknown> | undefined
       const entry: HistoryEntryData = {
         id,
         endpoint: opts.endpoint,
@@ -465,6 +434,10 @@ export function createRequestContext(opts: {
           stream: _originalRequest?.stream,
           tools: _originalRequest?.tools,
           system: _originalRequest?.system,
+          // Auto-extract metadata from payload (no handler changes needed)
+          max_tokens: typeof p?.max_tokens === "number" ? p.max_tokens : undefined,
+          temperature: typeof p?.temperature === "number" ? p.temperature : undefined,
+          thinking: p?.thinking ?? undefined,
         },
       }
 
@@ -490,14 +463,43 @@ export function createRequestContext(opts: {
         entry.httpHeaders = _httpHeaders
       }
 
-      // Include attempt summary
-      if (_attempts.length > 1) {
+      // Extract effective request from the final attempt
+      const finalAttempt = _attempts.at(-1)
+      if (finalAttempt?.effectiveRequest) {
+        const ep = finalAttempt.effectiveRequest
+        entry.effectiveRequest = {
+          model: ep.model,
+          format: ep.format,
+          messageCount: ep.messages.length,
+          messages: ep.messages,
+          system: (ep.payload as Record<string, unknown>)?.system,
+          payload: ep.payload,
+        }
+      }
+
+      if (finalAttempt?.wireRequest) {
+        const wp = finalAttempt.wireRequest
+        entry.wireRequest = {
+          model: wp.model,
+          format: wp.format,
+          messageCount: wp.messages.length,
+          messages: wp.messages,
+          system: (wp.payload as Record<string, unknown>)?.system,
+          payload: wp.payload,
+          headers: wp.headers,
+        }
+      }
+
+      // Always include attempt details (even for single attempts)
+      if (_attempts.length > 0) {
         entry.attempts = _attempts.map((a) => ({
           index: a.index,
           strategy: a.strategy,
           durationMs: a.durationMs,
           error: a.error?.message,
           truncation: a.truncation,
+          sanitization: a.sanitization,
+          effectiveMessageCount: a.effectiveRequest?.messages?.length,
         }))
       }
 

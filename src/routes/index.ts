@@ -6,14 +6,16 @@
 import type { Hono } from "hono"
 
 import { chatCompletionRoutes } from "./chat-completions/route"
+import { configRoutes } from "./config/route"
 import { embeddingsRoutes } from "./embeddings/route"
 import { eventLoggingRoutes } from "./event-logging/route"
 import { historyRoutes } from "./history/route"
+import { logsRoutes } from "./logs/route"
 import { messagesRoutes } from "./messages/route"
 import { modelsRoutes } from "./models/route"
 import { responsesRoutes } from "./responses/route"
+import { statusRoutes } from "./status/route"
 import { tokenRoutes } from "./token/route"
-import { usageRoutes } from "./usage/route"
 
 /**
  * Register all API routes on the given Hono app.
@@ -35,9 +37,13 @@ export function registerRoutes(app: Hono) {
   app.route("/v1/messages", messagesRoutes)
   app.route("/api/event_logging", eventLoggingRoutes)
 
-  app.route("/usage", usageRoutes)
-  app.route("/token", tokenRoutes)
+  // Management API
+  app.route("/api/status", statusRoutes)
+  app.route("/api/tokens", tokenRoutes)
+  app.route("/api/config", configRoutes)
+  app.route("/api/logs", logsRoutes)
 
-  // History viewer (optional, enabled with --history flag)
+  // History API (/history/api/*, /history/ws) + Web UI (/ui)
   app.route("/history", historyRoutes)
+  app.route("/ui", historyRoutes)
 }

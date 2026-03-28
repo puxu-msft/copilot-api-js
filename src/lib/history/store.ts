@@ -148,6 +148,8 @@ export interface ToolDefinition {
 }
 
 export interface TruncationInfo {
+  /** Whether truncation actually occurred */
+  wasTruncated: boolean
   /** Number of messages removed from the beginning of the conversation */
   removedMessageCount: number
   /** Estimated token count before truncation */
@@ -197,10 +199,6 @@ export interface PipelineInfo {
   preprocessing?: PreprocessInfo
   /** Phase 2 sanitization metadata (repeatable, one entry per attempt) */
   sanitization?: Array<SanitizationInfo>
-  /** Rewritten messages as actually sent to the API */
-  rewrittenMessages?: Array<MessageContent>
-  /** Rewritten system prompt (if modified) */
-  rewrittenSystem?: string
   /** Rewritten→original message index mapping: messageMapping[rwIdx] = origIdx */
   messageMapping?: Array<number>
 }
@@ -220,43 +218,82 @@ export interface SystemBlock {
 }
 
 export interface HistoryEntry {
+  // ─── Identity ───
   id: string
-  sessionId: string // Group related requests together
+  sessionId: string
   timestamp: number
   endpoint: EndpointType
+  durationMs?: number
 
+  // ─── Original Request (客户端发来的原始请求 body，sanitize/truncate 前) ───
   request: {
     model?: string
-    messages?: Array<MessageContent> // Full message history
+    messages?: Array<MessageContent>
     stream?: boolean
     tools?: Array<ToolDefinition>
+    system?: string | Array<SystemBlock>
     max_tokens?: number
     temperature?: number
-    system?: string | Array<SystemBlock>
+    /** Anthropic extended thinking configuration */
+    thinking?: unknown
   }
 
+  // ─── Effective Request (经 sanitize/truncate/retry 后的逻辑请求，未做最终 wire 变换) ───
+  // 错误消息中的 messages[N] 索引对应此处的消息数组，而非 request.messages
+  effectiveRequest?: {
+    model?: string
+    format?: EndpointType
+    messageCount?: number
+    messages?: Array<MessageContent>
+    system?: string | Array<SystemBlock>
+    /** Full logical payload after pipeline transforms */
+    payload?: unknown
+  }
+
+  // ─── Wire Request (最终真实出站请求，包含 transport-level 头信息) ───
+  wireRequest?: {
+    model?: string
+    format?: EndpointType
+    messageCount?: number
+    messages?: Array<MessageContent>
+    system?: string | Array<SystemBlock>
+    payload?: unknown
+    /** HTTP headers sent to upstream API (Authorization masked) */
+    headers?: Record<string, string>
+  }
+
+  // ─── Response (上游 API 返回的响应) ───
   response?: {
     success: boolean
     model: string
     usage: UsageData
     stop_reason?: string
     error?: string
-    content: MessageContent | null // Full response content
+    /** HTTP status code from upstream */
+    status?: number
+    /** Structured response content */
+    content: MessageContent | null
+    /** Raw upstream response body — 非流式响应或错误时的原始 body */
+    rawBody?: string
+    /** HTTP headers received from upstream API */
+    headers?: Record<string, string>
   }
-
-  /** All pipeline processing metadata (truncation + sanitization + rewritten content) */
-  pipelineInfo?: PipelineInfo
-
-  /** Filtered SSE events from Anthropic streaming (excludes content_block_delta and ping) */
+  /** SSE events from streaming response (excludes content_block_delta and ping) */
   sseEvents?: Array<SseEventRecord>
 
-  /** HTTP headers sent to and received from upstream API (Authorization masked) */
-  httpHeaders?: {
-    request: Record<string, string>
-    response: Record<string, string>
-  }
-
-  durationMs?: number
+  // ─── Pipeline Metadata (处理管道元数据，衍生/辅助数据) ───
+  /** Pipeline processing details: sanitization stats, truncation, message index mapping */
+  pipelineInfo?: PipelineInfo
+  /** Per-attempt lifecycle details */
+  attempts?: Array<{
+    index: number
+    strategy?: string
+    durationMs: number
+    error?: string
+    truncation?: TruncationInfo
+    sanitization?: SanitizationInfo
+    effectiveMessageCount?: number
+  }>
 }
 
 export interface Session {
@@ -281,8 +318,9 @@ export interface HistoryState {
 }
 
 export interface QueryOptions {
-  page?: number
+  cursor?: string
   limit?: number
+  direction?: "older" | "newer"
   model?: string
   endpoint?: EndpointType
   success?: boolean
@@ -298,6 +336,13 @@ export interface HistoryResult {
   page: number
   limit: number
   totalPages: number
+}
+
+export interface CursorResult<T> {
+  entries: Array<T>
+  total: number
+  nextCursor: string | null
+  prevCursor: string | null
 }
 
 export interface SessionResult {
@@ -351,9 +396,8 @@ export interface EntrySummary {
 export interface SummaryResult {
   entries: Array<EntrySummary>
   total: number
-  page: number
-  limit: number
-  totalPages: number
+  nextCursor: string | null
+  prevCursor: string | null
 }
 
 /** Extract a preview from the last user message (first 100 chars) */
@@ -720,7 +764,10 @@ export function insertEntry(entry: HistoryEntry): void {
 export function updateEntry(
   id: string,
   update: Partial<
-    Pick<HistoryEntry, "request" | "response" | "pipelineInfo" | "sseEvents" | "httpHeaders" | "durationMs">
+    Pick<
+      HistoryEntry,
+      "request" | "response" | "pipelineInfo" | "sseEvents" | "durationMs" | "effectiveRequest" | "wireRequest" | "attempts"
+    >
   >,
 ): void {
   if (!historyState.enabled) return
@@ -772,8 +819,14 @@ export function updateEntry(
   if (update.sseEvents) {
     entry.sseEvents = update.sseEvents
   }
-  if (update.httpHeaders) {
-    entry.httpHeaders = update.httpHeaders
+  if (update.effectiveRequest) {
+    entry.effectiveRequest = update.effectiveRequest
+  }
+  if (update.wireRequest) {
+    entry.wireRequest = update.wireRequest
+  }
+  if (update.attempts) {
+    entry.attempts = update.attempts
   }
 
   // Update session token stats when response is set
@@ -795,7 +848,7 @@ export function updateEntry(
 }
 
 export function getHistory(options: QueryOptions = {}): HistoryResult {
-  const { page = 1, limit = 50, model, endpoint, success, from, to, search, sessionId } = options
+  const { cursor, limit = 50, model, endpoint, success, from, to, search, sessionId } = options
 
   let filtered = [...historyState.entries]
 
@@ -837,16 +890,21 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
   filtered.sort((a, b) => b.timestamp - a.timestamp)
 
   const total = filtered.length
-  const totalPages = Math.ceil(total / limit)
-  const start = (page - 1) * limit
-  const entries = filtered.slice(start, start + limit)
+
+  let startIdx = 0
+  if (cursor) {
+    const cursorIdx = filtered.findIndex((e) => e.id === cursor)
+    if (cursorIdx !== -1) startIdx = cursorIdx + 1
+  }
+
+  const entries = filtered.slice(startIdx, startIdx + limit)
 
   return {
     entries,
     total,
-    page,
+    page: 1,
     limit,
-    totalPages,
+    totalPages: Math.ceil(total / limit),
   }
 }
 
@@ -859,13 +917,12 @@ export function getSummary(id: string): EntrySummary | undefined {
 }
 
 /**
- * Efficient summary-only query for list views. Filters and paginates using
- * the lightweight summaryIndex instead of full entries.
- * Search matches against the pre-computed `searchText` field — O(n) string
- * includes instead of O(n*m*b) deep content block traversal.
+ * Efficient summary-only query for list views with cursor-based pagination.
+ * Filters using the lightweight summaryIndex. Search matches against the
+ * pre-computed `searchText` field.
  */
-export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
-  const { page = 1, limit = 50, model, endpoint, success, from, to, search, sessionId } = options
+export function getHistorySummaries(options: QueryOptions = {}): CursorResult<EntrySummary> {
+  const { cursor, limit = 50, direction = "older", model, endpoint, success, from, to, search, sessionId } = options
 
   let summaries = Array.from(summaryIndex.values())
 
@@ -894,15 +951,27 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
     })
   }
 
-  // Sort newest first
-  summaries.sort((a, b) => b.timestamp - a.timestamp)
+  // Sort newest first (stable sort: timestamp desc, then id desc for same-ms entries)
+  summaries.sort((a, b) => b.timestamp - a.timestamp || b.id.localeCompare(a.id))
 
   const total = summaries.length
-  const totalPages = Math.ceil(total / limit)
-  const start = (page - 1) * limit
-  const entries = summaries.slice(start, start + limit)
 
-  return { entries, total, page, limit, totalPages }
+  // Cursor-based slicing
+  let startIdx = 0
+  if (cursor) {
+    const cursorIdx = summaries.findIndex((s) => s.id === cursor)
+    if (cursorIdx !== -1) {
+      startIdx = direction === "older" ? cursorIdx + 1 : Math.max(0, cursorIdx - limit)
+    }
+    // If cursor not found (evicted), fall back to first page
+  }
+
+  const entries = summaries.slice(startIdx, startIdx + limit)
+
+  const nextCursor = startIdx + limit < total ? (entries.at(-1)?.id ?? null) : null
+  const prevCursor = startIdx > 0 ? (entries[0]?.id ?? null) : null
+
+  return { entries, total, nextCursor, prevCursor }
 }
 
 export function getSessions(): SessionResult {
@@ -918,16 +987,23 @@ export function getSession(id: string): Session | undefined {
   return historyState.sessions.get(id)
 }
 
-export function getSessionEntries(sessionId: string, options: { page?: number; limit?: number } = {}): HistoryResult {
-  const { page = 1, limit = 50 } = options
+export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
+  const { cursor, limit = 50 } = options
   const all = historyState.entries.filter((e) => e.sessionId === sessionId).sort((a, b) => a.timestamp - b.timestamp) // Chronological order for sessions
 
   const total = all.length
-  const totalPages = Math.max(1, Math.ceil(total / limit))
-  const start = (page - 1) * limit
-  const entries = all.slice(start, start + limit)
 
-  return { entries, total, page, limit, totalPages }
+  let startIdx = 0
+  if (cursor) {
+    const cursorIdx = all.findIndex((e) => e.id === cursor)
+    if (cursorIdx !== -1) startIdx = cursorIdx + 1
+  }
+
+  const entries = all.slice(startIdx, startIdx + limit)
+  const nextCursor = startIdx + limit < total ? (entries.at(-1)?.id ?? null) : null
+  const prevCursor = startIdx > 0 ? (entries[0]?.id ?? null) : null
+
+  return { entries, total, nextCursor, prevCursor }
 }
 
 export function clearHistory(): void {

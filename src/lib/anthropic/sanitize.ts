@@ -22,6 +22,8 @@ import { extractLeadingSystemReminderTags, extractTrailingSystemReminderTags } f
 import { state } from "~/lib/state"
 import { isServerToolResultBlock } from "~/types/api/anthropic"
 
+import { hasThinkingSignatureBlocks, isImmutableThinkingAssistantMessage } from "./thinking-immutability"
+
 // ============================================================================
 // Shared: Sanitize text blocks in an array
 // ============================================================================
@@ -131,6 +133,10 @@ function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
     return modified ? ({ role: "user", content: blocks } as UserMessage) : msg
   }
 
+  if (isImmutableThinkingAssistantMessage(msg)) {
+    return msg
+  }
+
   // Assistant message: only sanitize text blocks
   const { blocks, modified } = sanitizeTextBlocksInArray(
     msg.content,
@@ -209,7 +215,7 @@ function filterEmptyAnthropicTextBlocks(messages: Array<MessageParam>): Array<Me
     // even removing an adjacent empty text block causes the content array to change,
     // which can trigger "thinking blocks cannot be modified" errors after
     // context_management truncation changes which message becomes the "latest".
-    if (msg.role === "assistant" && msg.content.some((b) => b.type === "thinking" || b.type === "redacted_thinking")) {
+    if (msg.role === "assistant" && hasThinkingSignatureBlocks(msg)) {
       return msg
     }
 
@@ -324,6 +330,11 @@ export function processToolBlocks(
     }
 
     if (msg.role === "assistant") {
+      if (isImmutableThinkingAssistantMessage(msg)) {
+        result.push(msg)
+        continue
+      }
+
       // Process assistant messages: fix tool names and filter orphaned tool_use/server_tool_use.
       // IMPORTANT: Only create a new message object when content is actually modified.
       // Assistant messages may contain thinking/redacted_thinking blocks with signatures
@@ -547,7 +558,7 @@ export function deduplicateToolCalls(
   const protectedIds = new Set<string>()
   for (const msg of messages) {
     if (msg.role !== "assistant" || typeof msg.content === "string") continue
-    const hasThinking = msg.content.some((b) => b.type === "thinking" || b.type === "redacted_thinking")
+    const hasThinking = hasThinkingSignatureBlocks(msg)
     if (!hasThinking) continue
     for (const block of msg.content) {
       if (block.type === "tool_use") {
@@ -619,6 +630,11 @@ export function deduplicateToolCalls(
   for (const msg of filtered) {
     const prev = merged.at(-1)
     if (prev && prev.role === msg.role) {
+      if (prev.role === "assistant" && (isImmutableThinkingAssistantMessage(prev) || isImmutableThinkingAssistantMessage(msg))) {
+        merged.push(msg)
+        continue
+      }
+
       // Merge content arrays
       const prevContent =
         typeof prev.content === "string" ? [{ type: "text" as const, text: prev.content }] : prev.content

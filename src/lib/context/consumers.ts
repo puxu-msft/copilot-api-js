@@ -22,34 +22,24 @@ function handleHistoryEvent(event: RequestContextEvent): void {
 
   switch (event.type) {
     case "created": {
-      const ctx = event.context
-      const sessionId = getCurrentSession(ctx.endpoint)
-
-      const entry: HistoryEntry = {
-        id: ctx.id,
-        sessionId,
-        timestamp: ctx.startTime,
-        endpoint: ctx.endpoint,
-        request: {
-          model: ctx.originalRequest?.model,
-          messages: ctx.originalRequest?.messages as Array<MessageContent> | undefined,
-          stream: ctx.originalRequest?.stream,
-          tools: ctx.originalRequest?.tools as HistoryEntry["request"]["tools"],
-          system: ctx.originalRequest?.system as HistoryEntry["request"]["system"],
-        },
-      }
-
-      insertEntry(entry)
+      // Don't insert yet — wait for originalRequest to be available
+      // (setOriginalRequest fires "updated" event immediately after create)
       break
     }
 
     case "updated": {
-      // originalRequest is set after the "created" event fires (the context
-      // doesn't exist yet when create() is called, so setOriginalRequest()
-      // comes after). Update the entry with the actual request data now.
-      if (event.field === "originalRequest" && event.context.originalRequest) {
+      // Insert entry on first originalRequest (delayed from "created")
+      if (event.field === "originalRequest") {
         const orig = event.context.originalRequest
-        updateEntry(event.context.id, {
+        if (!orig) break
+        const ctx = event.context
+        const sessionId = getCurrentSession(ctx.endpoint)
+
+        const entry: HistoryEntry = {
+          id: ctx.id,
+          sessionId,
+          timestamp: ctx.startTime,
+          endpoint: ctx.endpoint,
           request: {
             model: orig.model,
             messages: orig.messages as Array<MessageContent> | undefined,
@@ -57,7 +47,9 @@ function handleHistoryEvent(event: RequestContextEvent): void {
             tools: orig.tools as HistoryEntry["request"]["tools"],
             system: orig.system as HistoryEntry["request"]["system"],
           },
-        })
+        }
+
+        insertEntry(entry)
       }
       if (event.field === "pipelineInfo" && event.context.pipelineInfo) {
         updateEntry(event.context.id, { pipelineInfo: event.context.pipelineInfo })
@@ -74,7 +66,30 @@ function handleHistoryEvent(event: RequestContextEvent): void {
         response,
         durationMs: entryData.durationMs,
         sseEvents: entryData.sseEvents,
-        httpHeaders: entryData.httpHeaders,
+        ...(entryData.effectiveRequest && {
+          effectiveRequest: {
+            model: entryData.effectiveRequest.model,
+            format: entryData.effectiveRequest.format,
+            messageCount: entryData.effectiveRequest.messageCount,
+            messages: entryData.effectiveRequest.messages as NonNullable<HistoryEntry["effectiveRequest"]>["messages"],
+            system: entryData.effectiveRequest.system as NonNullable<HistoryEntry["effectiveRequest"]>["system"],
+            payload: entryData.effectiveRequest.payload,
+          },
+        }),
+        ...(entryData.wireRequest && {
+          wireRequest: {
+            model: entryData.wireRequest.model,
+            format: entryData.wireRequest.format,
+            messageCount: entryData.wireRequest.messageCount,
+            messages: entryData.wireRequest.messages as NonNullable<HistoryEntry["wireRequest"]>["messages"],
+            system: entryData.wireRequest.system as NonNullable<HistoryEntry["wireRequest"]>["system"],
+            payload: entryData.wireRequest.payload,
+            headers: entryData.wireRequest.headers ?? entryData.httpHeaders?.request,
+          },
+        }),
+        ...(entryData.attempts && {
+          attempts: entryData.attempts as HistoryEntry["attempts"],
+        }),
       })
       break
     }
@@ -173,7 +188,10 @@ function toHistoryResponse(entryData: HistoryEntryData): HistoryEntry["response"
     },
     stop_reason: r.stop_reason,
     error: r.error,
+    status: r.status,
     content: r.content as MessageContent | null,
+    rawBody: r.responseText,
+    headers: entryData.httpHeaders?.response,
   }
 }
 

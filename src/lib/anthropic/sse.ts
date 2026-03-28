@@ -69,12 +69,15 @@ export async function* processAnthropicStream(
   response: AsyncIterable<ServerSentEventMessage>,
   acc: AnthropicStreamAccumulator,
   clientAbortSignal?: AbortSignal,
+  shutdownSignalProvider: () => AbortSignal | undefined = getShutdownSignal,
 ): AsyncGenerator<ProcessedAnthropicEvent> {
   const idleTimeoutMs = state.streamIdleTimeout * 1000
   const iterator = response[Symbol.asyncIterator]()
-  const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbortSignal)
 
   for (;;) {
+    // Resolve shutdown signal lazily on each iteration so streams that started
+    // before shutdown still observe the Phase 3 abort once shutdown begins.
+    const abortSignal = combineAbortSignals(shutdownSignalProvider(), clientAbortSignal)
     const result = await raceIteratorNext(iterator.next(), { idleTimeoutMs, abortSignal })
 
     // Shutdown abort signal fired while waiting for the next event

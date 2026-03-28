@@ -1,5 +1,7 @@
 import consola from "consola"
 
+import { notifyRateLimiterChanged } from "~/lib/ws"
+
 /**
  * Adaptive Rate Limiter
  *
@@ -242,6 +244,7 @@ export class AdaptiveRateLimiter {
   private enterRateLimitedMode(): void {
     if (this.mode === "rate-limited") return
 
+    const previousMode = this.mode
     this.mode = "rate-limited"
     this.rateLimitedAt = Date.now()
     this.consecutiveSuccesses = 0
@@ -250,6 +253,13 @@ export class AdaptiveRateLimiter {
       `[RateLimiter] Entering rate-limited mode. `
         + `Requests will be queued with exponential backoff (base: ${this.config.baseRetryIntervalSeconds}s).`,
     )
+    notifyRateLimiterChanged({
+      mode: this.mode,
+      previousMode,
+      queueLength: this.queue.length,
+      consecutiveSuccesses: this.consecutiveSuccesses,
+      rateLimitedAt: this.rateLimitedAt,
+    })
   }
 
   /**
@@ -279,6 +289,7 @@ export class AdaptiveRateLimiter {
    * Start gradual recovery mode
    */
   private startGradualRecovery(): void {
+    const previousMode = this.mode
     this.mode = "recovering"
     this.recoveryStepIndex = 0
     this.rateLimitedAt = null
@@ -289,16 +300,31 @@ export class AdaptiveRateLimiter {
       `[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, `
         + `first interval: ${firstInterval}s)`,
     )
+    notifyRateLimiterChanged({
+      mode: this.mode,
+      previousMode,
+      queueLength: this.queue.length,
+      consecutiveSuccesses: this.consecutiveSuccesses,
+      rateLimitedAt: this.rateLimitedAt,
+    })
   }
 
   /**
    * Complete recovery to normal mode
    */
   private completeRecovery(): void {
+    const previousMode = this.mode
     this.mode = "normal"
     this.recoveryStepIndex = 0
 
     consola.success("[RateLimiter] Exiting rate-limited mode.")
+    notifyRateLimiterChanged({
+      mode: this.mode,
+      previousMode,
+      queueLength: this.queue.length,
+      consecutiveSuccesses: this.consecutiveSuccesses,
+      rateLimitedAt: this.rateLimitedAt,
+    })
   }
 
   /**
@@ -473,6 +499,11 @@ export class AdaptiveRateLimiter {
       consecutiveSuccesses: this.consecutiveSuccesses,
       rateLimitedAt: this.rateLimitedAt,
     }
+  }
+
+  /** Get the effective configuration */
+  getConfig(): AdaptiveRateLimiterConfig {
+    return { ...this.config }
   }
 }
 

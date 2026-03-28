@@ -34,6 +34,7 @@ import {
   getLearnedLimits,
 } from "../auto-truncate"
 import { processToolBlocks } from "./sanitize"
+import { isImmutableThinkingAssistantMessage } from "./thinking-immutability"
 
 // ============================================================================
 // Orphan Filtering Utilities (specific to auto-truncate)
@@ -161,6 +162,11 @@ export function filterAnthropicOrphanedToolUse(messages: Array<MessageParam>): A
 
   for (const msg of messages) {
     if (msg.role !== "assistant" || typeof msg.content === "string") {
+      result.push(msg)
+      continue
+    }
+
+    if (isImmutableThinkingAssistantMessage(msg)) {
       result.push(msg)
       continue
     }
@@ -406,6 +412,10 @@ function stripThinkingBlocks(
 
   const result = messages.map((msg, i) => {
     if (i >= stripBefore || msg.role !== "assistant" || !Array.isArray(msg.content)) {
+      return msg
+    }
+
+    if (isImmutableThinkingAssistantMessage(msg)) {
       return msg
     }
 

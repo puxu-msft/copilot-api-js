@@ -2,6 +2,8 @@ import type { HeadersCapture } from "~/lib/context/request"
 
 import { state } from "~/lib/state"
 
+const SENSITIVE_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key"])
+
 /**
  * Create an AbortSignal for fetch timeout if configured.
  * Controls the time from request start to receiving response headers.
@@ -21,6 +23,16 @@ export function captureHttpHeaders(
   requestHeaders: Record<string, string>,
   response: Response,
 ): void {
-  capture.request = { ...requestHeaders }
+  capture.request = sanitizeHeadersForHistory(requestHeaders)
   capture.response = Object.fromEntries(response.headers.entries())
+}
+
+/** Return a copy of headers safe to persist in history/error artifacts. */
+export function sanitizeHeadersForHistory(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [
+      name,
+      SENSITIVE_HEADER_NAMES.has(name.toLowerCase()) ? "***" : value,
+    ]),
+  )
 }

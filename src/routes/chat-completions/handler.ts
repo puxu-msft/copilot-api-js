@@ -135,7 +135,20 @@ async function executeRequest(opts: ExecuteRequestOptions) {
     format: "openai-chat-completions",
     sanitize: (p) => sanitizeOpenAIMessages(p),
     execute: (p) =>
-      executeWithAdaptiveRateLimit(() => createChatCompletions(p, { resolvedModel: selectedModel, headersCapture })),
+      executeWithAdaptiveRateLimit(() =>
+        createChatCompletions(p, {
+          resolvedModel: selectedModel,
+          headersCapture,
+          onPrepared: ({ wire, headers }) => {
+            reqCtx.setAttemptWireRequest({
+              model: typeof wire.model === "string" ? wire.model : payload.model,
+              messages: Array.isArray(wire.messages) ? wire.messages : [],
+              payload: wire,
+              headers,
+              format: "openai-chat-completions",
+            })
+          },
+        })),
     logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
   }
 
@@ -297,9 +310,9 @@ async function handleStreamingResponse(opts: StreamingOptions) {
     }
 
     const iterator = response[Symbol.asyncIterator]()
-    const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbortSignal)
 
     for (;;) {
+      const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbortSignal)
       const result = await raceIteratorNext(iterator.next(), { idleTimeoutMs, abortSignal })
 
       if (result === STREAM_ABORTED) break

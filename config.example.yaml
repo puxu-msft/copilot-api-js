@@ -98,6 +98,10 @@ anthropic:
   # "input": dedup by (name, input); "result": also require identical result
   dedup_tool_calls: false
 
+  # Treat any assistant message containing thinking/redacted_thinking as fully immutable
+  # during client-side rewrites (sanitize, dedup, auto-truncate). Default: false.
+  immutable_thinking_messages: false
+
   # Strip <system-reminder> tags from Read tool results
   strip_read_tool_result_tags: false
 

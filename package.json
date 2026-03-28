@@ -1,6 +1,6 @@
 {
   "name": "@hsupu/copilot-api",
-  "version": "0.8.2",
+  "version": "0.8.1-beta.1",
   "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server.",
   "keywords": [
     "proxy",
@@ -26,36 +26,43 @@
   ],
   "scripts": {
     "build": "npm run build:ui && npx tsdown",
-    "build:ui": "cd ui/history-v3 && bun install && bun run build",
+    "build:backend": "npx tsdown",
+    "build:ui": "vite build --config ui/history-v3/vite.config.ts",
     "dev": "bun run --watch ./src/main.ts",
-    "dev:ui": "cd ui/history-v3 && bun run dev",
+    "dev:ui": "vite --config ui/history-v3/vite.config.ts",
     "knip": "knip-bun",
     "lint": "eslint --cache",
     "lint:all": "eslint --cache .",
     "prepack": "npm run build",
     "prepare": "npm run build && (command -v bun >/dev/null 2>&1 && simple-git-hooks || true)",
+    "preview:ui": "vite preview --config ui/history-v3/vite.config.ts",
     "release": "bumpp && npm publish --access public",
     "start": "NODE_ENV=production bun run ./src/main.ts",
     "test": "bun test tests/unit/",
-    "test:all": "bun test tests/",
+    "test:all": "bun test tests/unit/ tests/component/ tests/contract/ tests/integration/ tests/e2e/",
     "test:ci": "bun test tests/unit/ tests/component/ tests/contract/ tests/integration/",
     "test:component": "bun test tests/component/",
     "test:contract": "bun test tests/contract/",
     "test:e2e": "bun test tests/e2e/",
+    "test:e2e-ui": "bunx playwright test",
     "test:integration": "bun test tests/integration/",
-    "test:ui": "cd ui/history-v3 && bun test tests/",
-    "typecheck": "tsc"
+    "test:ui": "bun test ./ui/history-v3/tests/",
+    "typecheck": "tsc",
+    "typecheck:ui": "vue-tsc --noEmit --project ui/history-v3/tsconfig.json"
   },
   "simple-git-hooks": {
     "pre-commit": "bun x lint-staged"
   },
   "lint-staged": {
-    "*.{ts,js,mjs,cjs}": "bun run lint"
+    "*.{ts,js,mjs,cjs,vue}": "bun run lint"
   },
   "dependencies": {
     "@hono/node-ws": "^1.3.0",
+    "@mdi/font": "^7.4.47",
     "citty": "^0.2.1",
     "consola": "^3.4.2",
+    "diff": "^8.0.3",
+    "diff2html": "^3.4.56",
     "fetch-event-stream": "^0.1.6",
     "gpt-tokenizer": "^3.4.0",
     "hono": "^4.12.3",
@@ -64,15 +71,24 @@
     "socks": "^2.8.7",
     "tiny-invariant": "^1.3.3",
     "undici": "^7.22.0",
+    "vue": "^3.5.29",
+    "vue-json-pretty": "^2.6.0",
+    "vue-router": "^5.0.4",
+    "vuetify": "^4.0.4",
     "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@echristian/eslint-config": "^0.0.54",
+    "@playwright/test": "^1.58.2",
     "@types/bun": "^1.3.9",
+    "@types/diff": "^7.0.0",
     "@types/proxy-from-env": "^1.0.4",
+    "@vitejs/plugin-vue": "^6.0.4",
+    "@vue/eslint-config-typescript": "^14.7.0",
     "bumpp": "^10.4.1",
     "eslint": "^9.39.3",
+    "eslint-plugin-vue": "^10.8.0",
     "knip": "^5.85.0",
     "lint-staged": "^16.2.7",
     "openai": "^6.25.0",
@@ -80,6 +96,8 @@
     "simple-git-hooks": "^2.13.1",
     "tsdown": "^0.20.3",
     "typescript": "^5.9.3",
-    "vue": "^3.5.29"
+    "vite": "^7.3.1",
+    "vite-plugin-vuetify": "^2.1.3",
+    "vue-tsc": "^3.2.5"
   }
 }

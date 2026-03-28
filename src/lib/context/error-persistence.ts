@@ -11,6 +11,8 @@
  * Files:
  *   - meta.json:       structured metadata (timestamp, endpoint, model, error, attempts)
  *   - request.json:    full request payload (messages capped at 50 for size)
+ *   - effective-request.json: logical request after sanitize/truncate/retry
+ *   - wire-request.json: final outbound HTTP payload + headers sent upstream
  *   - response.txt:    raw upstream response body (if available)
  *   - sse-events.json: recorded SSE events (if streaming request failed mid-stream)
  */
@@ -58,6 +60,12 @@ async function writeErrorEntry(entry: HistoryEntryData): Promise<void> {
       messageCount: entry.request.messages?.length,
       toolCount: entry.request.tools?.length,
     },
+    effective: entry.effectiveRequest
+      ? { model: entry.effectiveRequest.model, messageCount: entry.effectiveRequest.messageCount }
+      : undefined,
+    wire: entry.wireRequest
+      ? { model: entry.wireRequest.model, messageCount: entry.wireRequest.messageCount }
+      : undefined,
     response:
       entry.response ?
         {
@@ -95,6 +103,22 @@ async function writeErrorEntry(entry: HistoryEntryData): Promise<void> {
   // SSE events (useful for diagnosing mid-stream failures)
   if (entry.sseEvents?.length) {
     files.push(["sse-events.json", JSON.stringify(entry.sseEvents, null, 2)])
+  }
+
+  // Effective request: logical payload after sanitize/truncate/retry, before
+  // client-specific final wire mutations (beta headers, context_management injection, etc.).
+  if (entry.effectiveRequest) {
+    files.push([
+      "effective-request.json",
+      JSON.stringify(entry.effectiveRequest.payload ?? entry.effectiveRequest, null, 2),
+    ])
+  }
+
+  // Wire request: final outbound HTTP payload and headers. This is the
+  // authoritative source for post-mortems when the client mutates the payload
+  // after the pipeline has already recorded effectiveRequest.
+  if (entry.wireRequest) {
+    files.push(["wire-request.json", JSON.stringify(entry.wireRequest, null, 2)])
   }
 
   // Create directory and write all files (only after all data is collected)
