@@ -13,7 +13,7 @@
  * Handlers integrate via getShutdownSignal() to detect Phase 3 abort.
  */
 
-import type { Server } from "srvx"
+import type { ServerInstance } from "./serve"
 
 import consola from "consola"
 
@@ -40,7 +40,7 @@ export const DRAIN_PROGRESS_INTERVAL_MS = 5_000
 // Module state
 // ============================================================================
 
-let serverInstance: Server | null = null
+let serverInstance: ServerInstance | null = null
 let _isShuttingDown = false
 let shutdownResolve: (() => void) | null = null
 let shutdownAbortController: AbortController | null = null
@@ -74,7 +74,7 @@ export function waitForShutdown(): Promise<void> {
 }
 
 /** Store the server instance for shutdown */
-export function setServerInstance(server: Server): void {
+export function setServerInstance(server: ServerInstance): void {
   serverInstance = server
 }
 

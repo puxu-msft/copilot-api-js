@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import IconSvg from './IconSvg.vue'
+import IconSvg from "./IconSvg.vue"
 
 defineProps<{
   visible: boolean
@@ -9,21 +9,21 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'update:visible': [value: boolean]
+  "update:visible": [value: boolean]
 }>()
 
 function close() {
-  emit('update:visible', false)
+  emit("update:visible", false)
 }
 
 function onOverlayClick(e: MouseEvent) {
-  if ((e.target as HTMLElement).classList.contains('modal-overlay')) {
+  if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
     close()
   }
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
+  if (e.key === "Escape") {
     e.stopPropagation()
     close()
   }
@@ -39,13 +39,22 @@ function onKeydown(e: KeyboardEvent) {
         @click="onOverlayClick"
         @keydown="onKeydown"
       >
-        <div class="modal-content" :style="{ width: width || '80vw', height: height }">
+        <div
+          class="modal-content"
+          :style="{ width: width || '80vw', height: height }"
+        >
           <div class="modal-header">
             <h3 class="modal-title">{{ title }}</h3>
             <div class="modal-header-actions">
               <slot name="header-actions" />
-              <button class="modal-close" @click="close">
-                <IconSvg name="close" :size="16" />
+              <button
+                class="modal-close"
+                @click="close"
+              >
+                <IconSvg
+                  name="close"
+                  :size="16"
+                />
               </button>
             </div>
           </div>

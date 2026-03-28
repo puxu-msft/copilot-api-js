@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { ToolResultContentBlock, ContentBlock } from '@/types'
-import ContentBlockWrapper from './ContentBlockWrapper.vue'
-import LineNumberPre from '@/components/ui/LineNumberPre.vue'
-import { useContentContext } from '@/composables/useContentContext'
-import { useHighlightHtml } from '@/composables/useHighlightHtml'
-import { extractText } from '@/composables/useHistoryStore'
+import { computed } from "vue"
+
+import type { ToolResultContentBlock, ContentBlock } from "@/types"
+
+import LineNumberPre from "@/components/ui/LineNumberPre.vue"
+import { useContentContext } from "@/composables/useContentContext"
+import { useHighlightHtml } from "@/composables/useHighlightHtml"
+import { extractText } from "@/composables/useHistoryStore"
+
+import ContentBlockWrapper from "./ContentBlockWrapper.vue"
 
 const props = defineProps<{
   block: ToolResultContentBlock
@@ -21,13 +24,13 @@ const isError = computed(() => props.block.is_error === true)
 
 const contentText = computed(() => {
   const c = props.block.content
-  if (typeof c === 'string') return c
-  if (Array.isArray(c)) return extractText(c as ContentBlock[])
-  return ''
+  if (typeof c === "string") return c
+  if (Array.isArray(c)) return extractText(c as Array<ContentBlock>)
+  return ""
 })
 
 const summary = computed(() => {
-  return props.toolName ? props.toolName : 'for ' + props.block.tool_use_id.slice(0, 8)
+  return props.toolName || "for " + props.block.tool_use_id.slice(0, 8)
 })
 
 const { displayHtml } = useHighlightHtml(contentText, searchQuery)
@@ -40,11 +43,26 @@ const { displayHtml } = useHighlightHtml(contentText, searchQuery)
     class="aggregated-stub"
     :id="showStub ? 'tool-result-' + block.tool_use_id : undefined"
   >
-    <span class="stub-label" :class="isError ? 'label-error' : 'label-success'">TOOL RESULT</span>
-    <span v-if="toolName" class="result-tool-name">{{ toolName }}</span>
+    <span
+      class="stub-label"
+      :class="isError ? 'label-error' : 'label-success'"
+      >TOOL RESULT</span
+    >
+    <span
+      v-if="toolName"
+      class="result-tool-name"
+      >{{ toolName }}</span
+    >
     <span class="result-tool-id">{{ block.tool_use_id }}</span>
-    <span v-if="isError" class="result-error-badge">ERROR</span>
-    <a class="jump-link" @click.prevent="scrollToCall(block.tool_use_id)">
+    <span
+      v-if="isError"
+      class="result-error-badge"
+      >ERROR</span
+    >
+    <a
+      class="jump-link"
+      @click.prevent="scrollToCall(block.tool_use_id)"
+    >
       ← Jump to call
     </a>
   </div>
@@ -61,16 +79,30 @@ const { displayHtml } = useHighlightHtml(contentText, searchQuery)
     :raw-title="'Raw — tool_result' + (toolName ? ': ' + toolName : '')"
   >
     <template #header-extra>
-      <span v-if="toolName" class="result-tool-name">{{ toolName }}</span>
+      <span
+        v-if="toolName"
+        class="result-tool-name"
+        >{{ toolName }}</span
+      >
       <span class="result-tool-id">for {{ block.tool_use_id }}</span>
-      <span v-if="isError" class="result-error-badge">ERROR</span>
+      <span
+        v-if="isError"
+        class="result-error-badge"
+        >ERROR</span
+      >
     </template>
 
     <LineNumberPre :html="displayHtml" />
 
     <!-- Jump to call (only in standalone non-aggregate mode) -->
-    <div v-if="!embedded" class="tool-jump">
-      <a class="jump-link" @click.prevent="scrollToCall(block.tool_use_id)">
+    <div
+      v-if="!embedded"
+      class="tool-jump"
+    >
+      <a
+        class="jump-link"
+        @click.prevent="scrollToCall(block.tool_use_id)"
+      >
         ← Jump to call
       </a>
     </div>
@@ -94,8 +126,12 @@ const { displayHtml } = useHighlightHtml(contentText, searchQuery)
   flex-shrink: 0;
 }
 
-.label-success { color: var(--success); }
-.label-error { color: var(--error); }
+.label-success {
+  color: var(--success);
+}
+.label-error {
+  color: var(--error);
+}
 
 .result-tool-name {
   font-size: var(--font-size-xs);

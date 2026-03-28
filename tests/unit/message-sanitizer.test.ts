@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
 import type { Message } from "~/types/api/openai-chat-completions"
@@ -24,6 +24,18 @@ import {
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,
 } from "~/lib/sanitize-system-reminder"
+import { state } from "~/lib/state"
+
+let originalImmutableThinkingMessages: boolean
+
+beforeEach(() => {
+  originalImmutableThinkingMessages = state.immutableThinkingMessages
+  state.immutableThinkingMessages = false
+})
+
+afterEach(() => {
+  state.immutableThinkingMessages = originalImmutableThinkingMessages
+})
 
 // =============================================================================
 // system-reminder.ts
@@ -1530,6 +1542,74 @@ describe("Server Tool Use Support", () => {
           expect(typeof toolUse.input).toBe("object")
           expect(toolUse.input).toEqual({})
         }
+      }
+    })
+
+    test("immutable_thinking_messages should preserve a thinking assistant message unchanged", () => {
+      state.immutableThinkingMessages = true
+
+      const immutableAssistant = {
+        role: "assistant" as const,
+        content: [
+          { type: "thinking" as const, thinking: "reasoning", signature: "sig_1" },
+          {
+            type: "text" as const,
+            text: "<system-reminder>\nremove me normally\n</system-reminder>\nkeep original",
+          },
+          {
+            type: "tool_use" as const,
+            id: "tu_immutable",
+            name: "bash",
+            input: "not valid json" as unknown as Record<string, unknown>,
+          },
+        ],
+      }
+
+      const payload = makePayload(
+        [
+          { role: "user", content: "hello" },
+          immutableAssistant,
+          { role: "user", content: "continue" },
+        ],
+        [{ name: "Bash" }],
+      )
+
+      const result = sanitizeAnthropicMessages(payload)
+
+      expect(result.payload.messages[1]).toBe(immutableAssistant)
+      const assistantMsg = result.payload.messages[1]
+      if (typeof assistantMsg.content !== "string") {
+        expect(assistantMsg.content).toHaveLength(3)
+        expect(assistantMsg.content[1]).toEqual(immutableAssistant.content[1])
+        expect(assistantMsg.content[2]).toEqual(immutableAssistant.content[2])
+      }
+    })
+
+    test("immutable_thinking_messages should keep adjacent empty text blocks in thinking assistant messages", () => {
+      state.immutableThinkingMessages = true
+
+      const immutableAssistant = {
+        role: "assistant" as const,
+        content: [
+          { type: "thinking" as const, thinking: "reasoning", signature: "sig_2" },
+          { type: "text" as const, text: "   " },
+          { type: "text" as const, text: "visible" },
+        ],
+      }
+
+      const payload = makePayload([
+        { role: "user", content: "hello" },
+        immutableAssistant,
+        { role: "user", content: "continue" },
+      ])
+
+      const result = sanitizeAnthropicMessages(payload)
+
+      expect(result.payload.messages[1]).toBe(immutableAssistant)
+      const assistantMsg = result.payload.messages[1]
+      if (typeof assistantMsg.content !== "string") {
+        expect(assistantMsg.content).toHaveLength(3)
+        expect(assistantMsg.content[1]).toEqual({ type: "text", text: "   " })
       }
     })
   })

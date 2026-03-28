@@ -8,6 +8,8 @@ export const ENDPOINT = {
   MESSAGES: "/v1/messages",
   CHAT_COMPLETIONS: "/chat/completions",
   RESPONSES: "/responses",
+  /** WebSocket transport for Responses API (client↔proxy only; proxy↔upstream is always HTTP) */
+  WS_RESPONSES: "ws:/responses",
   EMBEDDINGS: "/v1/embeddings",
 } as const
 
@@ -45,6 +47,14 @@ export function getEffectiveEndpoints(model: Model): Array<string> | undefined {
 export function isEndpointSupported(model: Model | undefined, endpoint: string): boolean {
   if (!model?.supported_endpoints) return true
   return model.supported_endpoints.includes(endpoint)
+}
+
+/**
+ * Check if a model supports the Responses API via either transport:
+ * HTTP (`/responses`) or WebSocket (`ws:/responses`).
+ */
+export function isResponsesSupported(model: Model | undefined): boolean {
+  return isEndpointSupported(model, ENDPOINT.RESPONSES) || isEndpointSupported(model, ENDPOINT.WS_RESPONSES)
 }
 
 /**

@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { ToolUseContentBlock, ToolResultContentBlock } from '@/types'
-import ContentBlockWrapper from './ContentBlockWrapper.vue'
-import ToolResultBlock from './ToolResultBlock.vue'
-import VueJsonPretty from 'vue-json-pretty'
-import 'vue-json-pretty/lib/styles.css'
-import { useContentContext } from '@/composables/useContentContext'
+import { computed } from "vue"
+import VueJsonPretty from "vue-json-pretty"
+
+import type { ToolUseContentBlock, ToolResultContentBlock } from "@/types"
+
+import { useContentContext } from "@/composables/useContentContext"
+
+import ContentBlockWrapper from "./ContentBlockWrapper.vue"
+import "vue-json-pretty/lib/styles.css"
+
+import ToolResultBlock from "./ToolResultBlock.vue"
 
 const props = defineProps<{
   block: ToolUseContentBlock
@@ -22,7 +26,7 @@ const inputJson = computed(() => {
 })
 
 const isObjectInput = computed(() => {
-  return props.block.input !== null && typeof props.block.input === 'object'
+  return props.block.input !== null && typeof props.block.input === "object"
 })
 
 const resultBlock = computed(() => {
@@ -30,7 +34,7 @@ const resultBlock = computed(() => {
   return (toolResultMap.value[props.block.id] as ToolResultContentBlock) ?? null
 })
 
-const hasResult = computed(() => !!resultBlock.value)
+const hasResult = computed(() => Boolean(resultBlock.value))
 </script>
 
 <template>
@@ -50,21 +54,38 @@ const hasResult = computed(() => !!resultBlock.value)
 
     <VueJsonPretty
       v-if="isObjectInput"
-      :data="(block.input as any)"
+      :data="block.input as any"
       :deep="3"
       :show-icon="true"
       :show-line-number="true"
       :collapsed-on-click-brackets="true"
     />
-    <pre v-else class="tool-input">{{ inputJson }}</pre>
+    <pre
+      v-else
+      class="tool-input"
+      >{{ inputJson }}</pre
+    >
 
     <!-- Result section: mount once if result exists, toggle visibility -->
     <template v-if="hasResult">
-      <div v-show="aggregateTools" class="tool-aggregate-result">
-        <ToolResultBlock :block="(resultBlock as ToolResultContentBlock)" :tool-name="block.name" :embedded="true" />
+      <div
+        v-show="aggregateTools"
+        class="tool-aggregate-result"
+      >
+        <ToolResultBlock
+          :block="resultBlock as ToolResultContentBlock"
+          :tool-name="block.name"
+          :embedded="true"
+        />
       </div>
-      <div v-show="!aggregateTools" class="tool-jump">
-        <a class="jump-link" @click.prevent="scrollToResult(block.id)">
+      <div
+        v-show="!aggregateTools"
+        class="tool-jump"
+      >
+        <a
+          class="jump-link"
+          @click.prevent="scrollToResult(block.id)"
+        >
           → Jump to result
         </a>
       </div>

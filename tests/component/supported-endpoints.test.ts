@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 
-import { ENDPOINT, isEndpointSupported } from "~/lib/models/endpoint"
+import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
 
 function mockModel(id: string, overrides?: Partial<Model>): Model {
   return {
@@ -47,6 +47,29 @@ describe("supported_endpoints validation", () => {
       expect(isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)).toBe(false)
       expect(isEndpointSupported(model, ENDPOINT.MESSAGES)).toBe(false)
     }
+  })
+
+  test("should recognize ws:/responses as Responses API support", () => {
+    // Model with only ws:/responses (no HTTP /responses)
+    const wsOnly = mockModel("gpt-5.2-codex", {
+      supported_endpoints: [ENDPOINT.WS_RESPONSES],
+    })
+    expect(isResponsesSupported(wsOnly)).toBe(true)
+    expect(isEndpointSupported(wsOnly, ENDPOINT.RESPONSES)).toBe(false)
+    expect(isEndpointSupported(wsOnly, ENDPOINT.CHAT_COMPLETIONS)).toBe(false)
+
+    // Model with both /responses and ws:/responses
+    const both = mockModel("gpt-5-mini", {
+      supported_endpoints: [ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
+    })
+    expect(isResponsesSupported(both)).toBe(true)
+    expect(isEndpointSupported(both, ENDPOINT.CHAT_COMPLETIONS)).toBe(true)
+
+    // Model without any Responses support
+    const noResponses = mockModel("gpt-4o", {
+      supported_endpoints: [ENDPOINT.CHAT_COMPLETIONS],
+    })
+    expect(isResponsesSupported(noResponses)).toBe(false)
   })
 
   test("should block /v1/messages for models that only support /chat/completions", () => {

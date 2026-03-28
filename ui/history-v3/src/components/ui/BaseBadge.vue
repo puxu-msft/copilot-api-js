@@ -1,13 +1,19 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
-  color?: 'default' | 'primary' | 'success' | 'error' | 'warning' | 'purple' | 'cyan' | 'pink' | 'green'
-}>(), {
-  color: 'default',
-})
+withDefaults(
+  defineProps<{
+    color?: "default" | "primary" | "success" | "error" | "warning" | "purple" | "cyan" | "pink" | "green"
+  }>(),
+  {
+    color: "default",
+  },
+)
 </script>
 
 <template>
-  <span class="base-badge" :class="'badge-' + color">
+  <span
+    class="base-badge"
+    :class="'badge-' + color"
+  >
     <slot />
   </span>
 </template>

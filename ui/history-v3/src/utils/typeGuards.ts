@@ -55,7 +55,7 @@ export function isOpenAIToolResponse(msg: MessageContent): boolean {
  * 2. OpenAI text + tool_calls: string content → text block, tool_calls → tool_use blocks
  * 3. OpenAI tool response: role "tool" + tool_call_id → tool_result block
  */
-export function normalizeToContentBlocks(msg: MessageContent): ContentBlock[] {
+export function normalizeToContentBlocks(msg: MessageContent): Array<ContentBlock> {
   // Special case: OpenAI tool response — the entire message IS a tool result
   if (msg.role === "tool" && msg.tool_call_id) {
     const resultContent = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content)
@@ -68,7 +68,7 @@ export function normalizeToContentBlocks(msg: MessageContent): ContentBlock[] {
     ]
   }
 
-  const blocks: ContentBlock[] = []
+  const blocks: Array<ContentBlock> = []
 
   // Handle content field
   if (typeof msg.content === "string") {
@@ -82,7 +82,7 @@ export function normalizeToContentBlocks(msg: MessageContent): ContentBlock[] {
   // Handle OpenAI tool_calls → virtual tool_use blocks
   if (msg.tool_calls) {
     for (const tc of msg.tool_calls) {
-      let input: Record<string, unknown> = {}
+      let input: Record<string, unknown>
       try {
         input = JSON.parse(tc.function.arguments) as Record<string, unknown>
       } catch {

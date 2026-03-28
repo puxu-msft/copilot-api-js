@@ -1,46 +1,39 @@
 <script setup lang="ts">
-import { provide, onMounted, onUnmounted, ref } from 'vue'
-import { useHistoryStore } from '@/composables/useHistoryStore'
-import { useKeyboard } from '@/composables/useKeyboard'
-import AppHeader from '@/components/layout/AppHeader.vue'
-import StatsBar from '@/components/layout/StatsBar.vue'
-import SplitPane from '@/components/layout/SplitPane.vue'
-import RequestList from '@/components/list/RequestList.vue'
-import DetailPanel from '@/components/detail/DetailPanel.vue'
-import BaseToast from '@/components/ui/BaseToast.vue'
-import ErrorBoundary from '@/components/ui/ErrorBoundary.vue'
+import { provide, onMounted, onUnmounted, computed } from "vue"
+import { useRoute } from "vue-router"
+
+import NavBar from "@/components/layout/NavBar.vue"
+import BaseToast from "@/components/ui/BaseToast.vue"
+import { useHistoryStore } from "@/composables/useHistoryStore"
+import { isVuetifyPath } from "@/utils/route-variants"
 
 const store = useHistoryStore()
-provide('historyStore', store)
+provide("historyStore", store)
 
-const requestListRef = ref<InstanceType<typeof RequestList>>()
-
-useKeyboard({
-  onNavigate: (dir) => store.selectAdjacentEntry(dir),
-  onSearch: () => requestListRef.value?.focusSearch(),
-  onEscape: () => store.clearSelection(),
-})
+const route = useRoute()
+/** Vuetify pages live under /v/ — use v-app wrapper for them */
+const isVuetifyRoute = computed(() => isVuetifyPath(route.path))
 
 onMounted(() => store.init())
 onUnmounted(() => store.destroy())
 </script>
 
 <template>
-  <div class="app">
-    <AppHeader />
-    <StatsBar />
-    <SplitPane>
-      <template #left>
-        <ErrorBoundary label="Request list">
-          <RequestList ref="requestListRef" />
-        </ErrorBoundary>
-      </template>
-      <template #right>
-        <ErrorBoundary label="Detail panel">
-          <DetailPanel />
-        </ErrorBoundary>
-      </template>
-    </SplitPane>
+  <!-- Vuetify routes: use v-app for proper theme/layout context -->
+  <v-app v-if="isVuetifyRoute">
+    <NavBar />
+    <v-main>
+      <router-view />
+    </v-main>
+  </v-app>
+
+  <!-- Legacy routes: keep existing layout -->
+  <div
+    v-else
+    class="app"
+  >
+    <NavBar />
+    <router-view />
     <BaseToast />
   </div>
 </template>

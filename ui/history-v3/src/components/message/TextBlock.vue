@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import ContentBlockWrapper from './ContentBlockWrapper.vue'
-import LineNumberPre from '@/components/ui/LineNumberPre.vue'
-import { useContentContext } from '@/composables/useContentContext'
-import { useHighlightHtml } from '@/composables/useHighlightHtml'
+import { computed } from "vue"
+
+import LineNumberPre from "@/components/ui/LineNumberPre.vue"
+import { useContentContext } from "@/composables/useContentContext"
+import { useHighlightHtml } from "@/composables/useHighlightHtml"
+
+import ContentBlockWrapper from "./ContentBlockWrapper.vue"
 
 const props = defineProps<{
   text: string
@@ -11,14 +13,9 @@ const props = defineProps<{
 
 const { searchQuery } = useContentContext()
 
-const summary = computed(() =>
-  props.text.length > 60 ? props.text.slice(0, 60) + '...' : props.text
-)
+const summary = computed(() => (props.text.length > 60 ? props.text.slice(0, 60) + "..." : props.text))
 
-const { displayHtml } = useHighlightHtml(
-  () => props.text,
-  searchQuery,
-)
+const { displayHtml } = useHighlightHtml(() => props.text, searchQuery)
 </script>
 
 <template>

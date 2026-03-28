@@ -5,7 +5,7 @@ defineProps<{
 }>()
 
 defineEmits<{
-  'update:modelValue': [value: boolean]
+  "update:modelValue": [value: boolean]
 }>()
 </script>
 
@@ -16,7 +16,11 @@ defineEmits<{
       :checked="modelValue"
       @change="$emit('update:modelValue', ($event.target as HTMLInputElement).checked)"
     />
-    <span v-if="label" class="checkbox-label">{{ label }}</span>
+    <span
+      v-if="label"
+      class="checkbox-label"
+      >{{ label }}</span
+    >
   </label>
 </template>
 
@@ -49,7 +53,7 @@ defineEmits<{
 }
 
 .base-checkbox input[type="checkbox"]:checked::after {
-  content: '';
+  content: "";
   position: absolute;
   left: 4px;
   top: 1px;

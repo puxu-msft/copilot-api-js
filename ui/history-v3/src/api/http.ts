@@ -1,4 +1,4 @@
-import type { SummaryResult, HistoryEntry, HistoryStats, SessionResult, Session, QueryOptions } from "@/types"
+import type { SummaryResult, HistoryEntry, HistoryStats, SessionResult, QueryOptions } from "@/types"
 
 const BASE = "/history/api"
 
@@ -24,12 +24,26 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json()
 }
 
+/** Fetch from non-history API routes (e.g. /api/status, /models) */
+async function requestRoot<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => "Unknown error")
+    throw new ApiError(res.status, `${res.status}: ${body}`)
+  }
+  return res.json()
+}
+
 export const api = {
-  // Entries
+  // Entries (cursor-based pagination)
   async fetchEntries(options: QueryOptions = {}): Promise<SummaryResult> {
     const params = new URLSearchParams()
-    if (options.page) params.set("page", String(options.page))
+    if (options.cursor) params.set("cursor", options.cursor)
     if (options.limit) params.set("limit", String(options.limit))
+    if (options.direction) params.set("direction", options.direction)
     if (options.model) params.set("model", options.model)
     if (options.endpoint) params.set("endpoint", options.endpoint)
     if (options.success !== undefined) params.set("success", String(options.success))
@@ -54,7 +68,7 @@ export const api = {
     return request<SessionResult>("/sessions")
   },
 
-  async fetchSession(id: string): Promise<Session & { entries: Array<HistoryEntry> }> {
+  async fetchSession(id: string): Promise<ReturnType<typeof request>> {
     return request("/sessions/" + id)
   },
 
@@ -70,4 +84,34 @@ export const api = {
   getExportUrl(format: "json" | "csv"): string {
     return BASE + "/export?format=" + format
   },
+
+  // --- New endpoints for pages ---
+
+  /** Fetch server status (dashboard) */
+  async fetchStatus(): Promise<Record<string, unknown>> {
+    return requestRoot<Record<string, unknown>>("/api/status")
+  },
+
+  /** Fetch server config (dashboard) */
+  async fetchConfig(): Promise<Record<string, unknown>> {
+    return requestRoot<Record<string, unknown>>("/api/config")
+  },
+
+  /** Fetch logs (compact view) */
+  async fetchLogs(limit = 100): Promise<{ entries: Array<EntrySummary> }> {
+    return request<{ entries: Array<EntrySummary> }>(`/entries?limit=${String(limit)}`)
+  },
+
+  /** Fetch models with detail */
+  async fetchModels(detail = false): Promise<{ data: Array<Record<string, unknown>> }> {
+    const qs = detail ? "?detail=true" : ""
+    return requestRoot<{ data: Array<Record<string, unknown>> }>("/models" + qs)
+  },
 }
+
+// Re-export for convenience
+export type { ApiError }
+// Re-export the SummaryResult type used in the store
+import type { EntrySummary } from "@/types"
+
+export { type EntrySummary } from "@/types"

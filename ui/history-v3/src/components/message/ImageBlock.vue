@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import ContentBlockWrapper from './ContentBlockWrapper.vue'
+import ContentBlockWrapper from "./ContentBlockWrapper.vue"
 
 defineProps<{
   mediaType: string
@@ -12,13 +12,20 @@ defineProps<{
     label="IMAGE"
     label-color="pink"
     :summary="mediaType"
-    :raw-data="{ type: 'image', source: { type: 'base64', media_type: mediaType } }"
+    :raw-data="{
+      type: 'image',
+      source: { type: 'base64', media_type: mediaType },
+    }"
     raw-title="Raw — image"
   >
     <template #header-extra>
       <span class="image-media-type">{{ mediaType }}</span>
     </template>
-    <img :src="'data:' + mediaType + ';base64,' + data" alt="Image content" class="image-content" />
+    <img
+      :src="'data:' + mediaType + ';base64,' + data"
+      alt="Image content"
+      class="image-content"
+    />
   </ContentBlockWrapper>
 </template>
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import {
+  buildAnthropicBetaHeaders,
   modelSupportsContextEditing,
   modelSupportsInterleavedThinking,
   modelSupportsToolSearch,
@@ -123,5 +124,16 @@ describe("modelSupportsToolSearch", () => {
   test("should NOT support non-Claude models", () => {
     expect(modelSupportsToolSearch("gpt-4")).toBe(false)
     expect(modelSupportsToolSearch("gemini-2.5-pro")).toBe(false)
+  })
+})
+
+describe("buildAnthropicBetaHeaders", () => {
+  test("omits context-management beta when explicitly disabled", () => {
+    const headers = buildAnthropicBetaHeaders("claude-opus-4.6", undefined, {
+      disableContextManagement: true,
+    })
+
+    expect(headers["anthropic-beta"]).toContain("advanced-tool-use-2025-11-20")
+    expect(headers["anthropic-beta"]).not.toContain("context-management-2025-06-27")
   })
 })

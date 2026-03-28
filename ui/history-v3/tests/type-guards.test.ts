@@ -10,6 +10,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { ContentBlock, MessageContent } from "../src/types"
+
 import {
   isTextBlock,
   isThinkingBlock,
@@ -78,7 +79,9 @@ describe("isToolResultBlock", () => {
 
 describe("isImageBlock", () => {
   test("returns true for image blocks", () => {
-    expect(isImageBlock({ type: "image", source: { type: "base64", media_type: "image/png", data: "" } } as ContentBlock)).toBe(true)
+    expect(
+      isImageBlock({ type: "image", source: { type: "base64", media_type: "image/png", data: "" } } as ContentBlock),
+    ).toBe(true)
   })
 
   test("returns false for text blocks", () => {
@@ -133,7 +136,7 @@ describe("normalizeToContentBlocks", () => {
     const blocks = [
       { type: "text", text: "hello" },
       { type: "tool_use", id: "1", name: "Read", input: {} },
-    ] as ContentBlock[]
+    ] as Array<ContentBlock>
     const msg = { role: "assistant", content: blocks } as MessageContent
     const result = normalizeToContentBlocks(msg)
     expect(result).toEqual(blocks)
@@ -176,9 +179,7 @@ describe("normalizeToContentBlocks", () => {
     const msg = {
       role: "assistant",
       content: "Let me search",
-      tool_calls: [
-        { id: "call_1", type: "function", function: { name: "search", arguments: "{}" } },
-      ],
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "search", arguments: "{}" } }],
     } as unknown as MessageContent
     const result = normalizeToContentBlocks(msg)
     expect(result).toHaveLength(2)
@@ -203,9 +204,7 @@ describe("normalizeToContentBlocks", () => {
     const msg = {
       role: "assistant",
       content: null,
-      tool_calls: [
-        { id: "call_1", type: "function", function: { name: "broken", arguments: "not json" } },
-      ],
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "broken", arguments: "not json" } }],
     } as unknown as MessageContent
     const result = normalizeToContentBlocks(msg)
     expect(result).toHaveLength(1)

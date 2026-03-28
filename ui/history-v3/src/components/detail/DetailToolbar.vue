@@ -1,18 +1,24 @@
 <script setup lang="ts">
-import { inject, ref } from 'vue'
-import type { HistoryStore } from '@/composables/useHistoryStore'
-import BaseInput from '@/components/ui/BaseInput.vue'
-import BaseSelect from '@/components/ui/BaseSelect.vue'
-import BaseCheckbox from '@/components/ui/BaseCheckbox.vue'
-import BaseButton from '@/components/ui/BaseButton.vue'
-import IconSvg from '@/components/ui/IconSvg.vue'
+import { ref } from "vue"
 
-const store = inject<HistoryStore>('historyStore')!
+import BaseButton from "@/components/ui/BaseButton.vue"
+import BaseCheckbox from "@/components/ui/BaseCheckbox.vue"
+import BaseInput from "@/components/ui/BaseInput.vue"
+import BaseSelect from "@/components/ui/BaseSelect.vue"
+import IconSvg from "@/components/ui/IconSvg.vue"
+import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+
+const store = useInjectedHistoryStore()
 
 const props = defineProps<{
   hasRewrites: boolean
-  rewriteSummary: { msgCount: number; sysRewritten: boolean; truncated: boolean; truncatedCount: number }
-  rewrittenIndexList: number[]
+  rewriteSummary: {
+    msgCount: number
+    sysRewritten: boolean
+    truncated: boolean
+    truncatedCount: number
+  }
+  rewrittenIndexList: Array<number>
 }>()
 
 defineEmits<{
@@ -20,24 +26,24 @@ defineEmits<{
 }>()
 
 const roleOptions = [
-  { value: 'system', label: 'System' },
-  { value: 'user', label: 'User' },
-  { value: 'assistant', label: 'Assistant' },
-  { value: 'tool', label: 'Tool' },
+  { value: "system", label: "System" },
+  { value: "user", label: "User" },
+  { value: "assistant", label: "Assistant" },
+  { value: "tool", label: "Tool" },
 ]
 
 const typeOptions = [
-  { value: 'text', label: 'Text' },
-  { value: 'tool_use', label: 'Tool Use' },
-  { value: 'tool_result', label: 'Tool Result' },
-  { value: 'thinking', label: 'Thinking' },
-  { value: 'image', label: 'Image' },
+  { value: "text", label: "Text" },
+  { value: "tool_use", label: "Tool Use" },
+  { value: "tool_result", label: "Tool Result" },
+  { value: "thinking", label: "Thinking" },
+  { value: "image", label: "Image" },
 ]
 
 const viewModeOptions: Array<{ value: string; label: string }> = [
-  { value: 'original', label: 'All Original' },
-  { value: 'rewritten', label: 'All Rewritten' },
-  { value: 'diff', label: 'All Diff' },
+  { value: "original", label: "All Original" },
+  { value: "rewritten", label: "All Rewritten" },
+  { value: "diff", label: "All Diff" },
 ]
 
 /** Current navigation index within the rewritten message list */
@@ -51,17 +57,17 @@ function scrollToRewrittenMessage(index: number) {
   // Find the message block by data-msg-index attribute
   const el = document.querySelector(`[data-msg-index="${index}"]`)
   if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    el.classList.remove('highlight-flash')
+    el.scrollIntoView({ behavior: "smooth", block: "center" })
+    el.classList.remove("highlight-flash")
     void (el as HTMLElement).offsetWidth
-    el.classList.add('highlight-flash')
+    el.classList.add("highlight-flash")
   }
 }
 
-function navigateRewritten(direction: 'prev' | 'next') {
+function navigateRewritten(direction: "prev" | "next") {
   const list = props.rewrittenIndexList
   if (list.length === 0) return
-  if (direction === 'next') {
+  if (direction === "next") {
     navIndex.value = navIndex.value < list.length - 1 ? navIndex.value + 1 : 0
   } else {
     navIndex.value = navIndex.value > 0 ? navIndex.value - 1 : list.length - 1
@@ -96,21 +102,40 @@ function navigateRewritten(direction: 'prev' | 'next') {
         label="Aggregate Tools"
         @update:model-value="store.aggregateTools.value = $event"
       />
-      <BaseButton variant="ghost" @click="$emit('export')">
-        <IconSvg name="download" :size="13" />
+      <BaseButton
+        variant="ghost"
+        @click="$emit('export')"
+      >
+        <IconSvg
+          name="download"
+          :size="13"
+        />
         Export
       </BaseButton>
     </div>
 
     <!-- Rewrite controls: only shown when there are rewrites -->
-    <div v-if="hasRewrites" class="toolbar-row rewrite-row">
+    <div
+      v-if="hasRewrites"
+      class="toolbar-row rewrite-row"
+    >
       <div class="rewrite-stats">
         <span class="rewrite-label">Rewrites:</span>
-        <span v-if="rewriteSummary.msgCount > 0" class="rewrite-stat">
-          {{ rewriteSummary.msgCount }} msg{{ rewriteSummary.msgCount > 1 ? 's' : '' }}
+        <span
+          v-if="rewriteSummary.msgCount > 0"
+          class="rewrite-stat"
+        >
+          {{ rewriteSummary.msgCount }} msg{{ rewriteSummary.msgCount > 1 ? "s" : "" }}
         </span>
-        <span v-if="rewriteSummary.sysRewritten" class="rewrite-stat">system</span>
-        <span v-if="rewriteSummary.truncated" class="rewrite-stat rewrite-stat-truncated">
+        <span
+          v-if="rewriteSummary.sysRewritten"
+          class="rewrite-stat"
+          >system</span
+        >
+        <span
+          v-if="rewriteSummary.truncated"
+          class="rewrite-stat rewrite-stat-truncated"
+        >
           {{ rewriteSummary.truncatedCount }} truncated
         </span>
       </div>
@@ -132,13 +157,30 @@ function navigateRewritten(direction: 'prev' | 'next') {
         />
 
         <!-- Navigation between rewritten messages -->
-        <div v-if="rewriteSummary.msgCount > 0" class="rewrite-nav">
-          <button class="nav-btn" title="Previous rewritten message" @click="navigateRewritten('prev')">
-            <IconSvg name="chevron-up" :size="10" />
+        <div
+          v-if="rewriteSummary.msgCount > 0"
+          class="rewrite-nav"
+        >
+          <button
+            class="nav-btn"
+            title="Previous rewritten message"
+            @click="navigateRewritten('prev')"
+          >
+            <IconSvg
+              name="chevron-up"
+              :size="10"
+            />
           </button>
-          <span class="nav-label">{{ navIndex >= 0 ? navIndex + 1 : '–' }}/{{ rewrittenIndexList.length }}</span>
-          <button class="nav-btn" title="Next rewritten message" @click="navigateRewritten('next')">
-            <IconSvg name="chevron-down" :size="10" />
+          <span class="nav-label">{{ navIndex >= 0 ? navIndex + 1 : "–" }}/{{ rewrittenIndexList.length }}</span>
+          <button
+            class="nav-btn"
+            title="Next rewritten message"
+            @click="navigateRewritten('next')"
+          >
+            <IconSvg
+              name="chevron-down"
+              :size="10"
+            />
           </button>
         </div>
       </div>

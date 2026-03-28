@@ -15,7 +15,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
-import { processAnthropicStream } from "~/lib/anthropic/sse"
+import { processAnthropicStream, type ProcessedAnthropicEvent } from "~/lib/anthropic/sse"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { state } from "~/lib/state"
 import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIteratorNext } from "~/lib/stream"
@@ -430,6 +430,47 @@ describe("processAnthropicStream + shutdown signal", () => {
     } finally {
       unstall()
     }
+  })
+
+  test("observes a shutdown signal that appears after streaming has already started", async () => {
+    state.streamIdleTimeout = 0
+
+    const { stream, unstall } = createStallingStream([
+      makeSseMsg(
+        JSON.stringify({
+          type: "message_start",
+          message: {
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            content: [],
+            model: "claude-opus-4.6",
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 0 },
+          },
+        }),
+      ),
+    ])
+
+    const acc = createAnthropicStreamAccumulator()
+    const controller = new AbortController()
+    let currentShutdownSignal: AbortSignal | undefined
+    const events: Array<ProcessedAnthropicEvent> = []
+
+    try {
+      for await (const event of processAnthropicStream(stream, acc, undefined, () => currentShutdownSignal)) {
+        events.push(event)
+        if (events.length === 1) {
+          currentShutdownSignal = controller.signal
+          setTimeout(() => controller.abort(), 50)
+        }
+      }
+    } finally {
+      unstall()
+    }
+
+    expect(events).toHaveLength(1)
   })
 })
 

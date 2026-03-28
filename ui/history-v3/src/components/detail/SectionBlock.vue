@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import IconSvg from '@/components/ui/IconSvg.vue'
-import { useRawModal } from '@/composables/useRawModal'
+import { ref } from "vue"
 
-const props = withDefaults(defineProps<{
-  title: string
-  defaultCollapsed?: boolean
-  badge?: string
-  rawData?: unknown
-  rewrittenRawData?: unknown
-  rawTitle?: string
-}>(), {
-  rawTitle: 'Raw',
-})
+import IconSvg from "@/components/ui/IconSvg.vue"
+import { useRawModal } from "@/composables/useRawModal"
+
+const props = withDefaults(
+  defineProps<{
+    title: string
+    defaultCollapsed?: boolean
+    badge?: string
+    rawData?: unknown
+    rewrittenRawData?: unknown
+    rawTitle?: string
+  }>(),
+  {
+    rawTitle: "Raw",
+  },
+)
 
 const { openRawModal } = useRawModal()
 const collapsed = ref(props.defaultCollapsed ?? false)
@@ -30,26 +34,42 @@ function openRaw(e: Event) {
 </script>
 
 <template>
-  <div class="section-block" :class="{ collapsed }">
-    <div class="section-header" @click="toggle">
+  <div
+    class="section-block"
+    :class="{ collapsed }"
+  >
+    <div
+      class="section-header"
+      @click="toggle"
+    >
       <IconSvg
         :name="collapsed ? 'chevron-right' : 'chevron-down'"
         :size="12"
         class="section-chevron"
       />
       <span class="section-title">{{ title }}</span>
-      <span v-if="badge" class="section-badge">{{ badge }}</span>
+      <span
+        v-if="badge"
+        class="section-badge"
+        >{{ badge }}</span
+      >
       <button
         v-if="rawData !== undefined"
         class="section-raw-btn"
         title="View raw JSON"
         @click="openRaw"
       >
-        <IconSvg name="code" :size="10" />
+        <IconSvg
+          name="code"
+          :size="10"
+        />
         Raw
       </button>
     </div>
-    <div v-show="!collapsed" class="section-body">
+    <div
+      v-show="!collapsed"
+      class="section-body"
+    >
       <slot />
     </div>
   </div>

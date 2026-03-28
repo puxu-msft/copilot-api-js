@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { inject, ref, watch } from 'vue'
-import type { HistoryStore } from '@/composables/useHistoryStore'
-import BaseInput from '@/components/ui/BaseInput.vue'
-import BaseSelect from '@/components/ui/BaseSelect.vue'
-import RequestItem from './RequestItem.vue'
-import ListPagination from './ListPagination.vue'
+import { ref, watch } from "vue"
 
-const store = inject<HistoryStore>('historyStore')!
+import BaseInput from "@/components/ui/BaseInput.vue"
+import BaseSelect from "@/components/ui/BaseSelect.vue"
+import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
 
-const localSearch = ref('')
+import ListPagination from "./ListPagination.vue"
+import RequestItem from "./RequestItem.vue"
+
+const store = useInjectedHistoryStore()
+
+const localSearch = ref("")
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const searchInputRef = ref<InstanceType<typeof BaseInput>>()
@@ -21,14 +23,14 @@ watch(localSearch, (val) => {
 })
 
 const endpointOptions = [
-  { value: 'anthropic-messages', label: 'Anthropic Messages' },
-  { value: 'openai-chat-completions', label: 'OpenAI Chat Completions' },
-  { value: 'openai-responses', label: 'OpenAI Responses' },
+  { value: "anthropic-messages", label: "Anthropic Messages" },
+  { value: "openai-chat-completions", label: "OpenAI Chat Completions" },
+  { value: "openai-responses", label: "OpenAI Responses" },
 ]
 
 const statusOptions = [
-  { value: 'true', label: 'Success' },
-  { value: 'false', label: 'Failed' },
+  { value: "true", label: "Success" },
+  { value: "false", label: "Failed" },
 ]
 
 function focusSearch() {
@@ -47,8 +49,11 @@ defineExpose({ focusSearch })
         placeholder="Search..."
         icon="search"
       />
-      <span v-if="localSearch && store.total.value > 0" class="search-count">
-        {{ store.total.value }} hit{{ store.total.value !== 1 ? 's' : '' }}
+      <span
+        v-if="localSearch && store.total.value > 0"
+        class="search-count"
+      >
+        {{ store.total.value }} hit{{ store.total.value !== 1 ? "s" : "" }}
       </span>
       <div class="list-filters">
         <BaseSelect
@@ -67,10 +72,16 @@ defineExpose({ focusSearch })
     </div>
 
     <div class="list-body">
-      <div v-if="store.loading.value && store.entries.value.length === 0" class="list-empty">
+      <div
+        v-if="store.loading.value && store.entries.value.length === 0"
+        class="list-empty"
+      >
         Loading...
       </div>
-      <div v-else-if="store.entries.value.length === 0" class="list-empty">
+      <div
+        v-else-if="store.entries.value.length === 0"
+        class="list-empty"
+      >
         No requests found
         <p class="empty-subtitle">Try adjusting your filters</p>
       </div>

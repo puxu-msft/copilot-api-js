@@ -49,9 +49,18 @@
 
 /* Highlight flash for jump targets */
 @keyframes highlight-flash {
-  0%, 100% { border-color: var(--border); }
-  25%, 75% { border-color: var(--primary); }
-  50% { border-color: var(--primary); box-shadow: 0 0 8px rgba(88, 166, 255, 0.3); }
+  0%,
+  100% {
+    border-color: var(--border);
+  }
+  25%,
+  75% {
+    border-color: var(--primary);
+  }
+  50% {
+    border-color: var(--primary);
+    box-shadow: 0 0 8px rgba(88, 166, 255, 0.3);
+  }
 }
 .highlight-flash {
   animation: highlight-flash 1s ease;

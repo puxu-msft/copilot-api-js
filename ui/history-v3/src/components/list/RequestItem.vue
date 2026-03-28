@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import type { EntrySummary } from '@/types'
-import { getStatusClass } from '@/composables/useHistoryStore'
-import { useFormatters } from '@/composables/useFormatters'
-import StatusDot from '@/components/ui/StatusDot.vue'
-import BaseBadge from '@/components/ui/BaseBadge.vue'
+import type { EntrySummary } from "@/types"
+
+import BaseBadge from "@/components/ui/BaseBadge.vue"
+import StatusDot from "@/components/ui/StatusDot.vue"
+import { useFormatters } from "@/composables/useFormatters"
+import { getStatusClass } from "@/composables/useHistoryStore"
 
 defineProps<{
   entry: EntrySummary
@@ -32,23 +33,48 @@ const { formatDate, formatNumber, formatDuration } = useFormatters()
         target="_blank"
         :title="'/history/api/entries/' + entry.id"
         @click.stop
-      >{{ entry.id }}</a>
-      <span class="item-model" :title="entry.responseModel || entry.requestModel || undefined">{{ entry.responseModel || entry.requestModel || '-' }}</span>
+        >{{ entry.id }}</a
+      >
+      <span
+        class="item-model"
+        :title="entry.responseModel || entry.requestModel || undefined"
+        >{{ entry.responseModel || entry.requestModel || "-" }}</span
+      >
     </div>
     <div class="item-meta">
-      <BaseBadge :color="entry.endpoint === 'anthropic-messages' ? 'purple' : entry.endpoint === 'openai-responses' ? 'green' : 'cyan'">
+      <BaseBadge
+        :color="
+          entry.endpoint === 'anthropic-messages' ? 'purple'
+          : entry.endpoint === 'openai-responses' ? 'green'
+          : 'cyan'
+        "
+      >
         {{ entry.endpoint }}
       </BaseBadge>
-      <BaseBadge v-if="entry.stream" color="primary">stream</BaseBadge>
-      <span v-if="entry.usage" class="item-tokens">
-        {{ formatNumber(entry.usage.input_tokens) }} in /
-        {{ formatNumber(entry.usage.output_tokens) }} out
+      <BaseBadge
+        v-if="entry.stream"
+        color="primary"
+        >stream</BaseBadge
+      >
+      <span
+        v-if="entry.usage"
+        class="item-tokens"
+      >
+        {{ formatNumber(entry.usage.input_tokens) }} in / {{ formatNumber(entry.usage.output_tokens) }} out
       </span>
-      <span v-if="entry.durationMs" class="item-duration">
+      <span
+        v-if="entry.durationMs"
+        class="item-duration"
+      >
         · {{ formatDuration(entry.durationMs) }}
       </span>
     </div>
-    <div class="item-preview" :title="entry.previewText || undefined">{{ entry.previewText }}</div>
+    <div
+      class="item-preview"
+      :title="entry.previewText || undefined"
+    >
+      {{ entry.previewText }}
+    </div>
   </div>
 </template>
 

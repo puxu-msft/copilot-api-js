@@ -42,7 +42,7 @@ export function useKeyboard(options: KeyboardOptions) {
         // Don't clear selection if a modal or dropdown is open
         if (document.querySelector(".modal-overlay")) break
         // Check for visible export menu (v-show sets display: none when hidden)
-        const exportMenu = document.querySelector(".export-menu") as HTMLElement | null
+        const exportMenu = document.querySelector<HTMLElement>(".export-menu")
         if (exportMenu && exportMenu.style.display !== "none") break
         options.onEscape()
         break

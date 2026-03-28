@@ -1,20 +1,23 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import type { SystemBlock } from '@/types'
-import { useFormatters } from '@/composables/useFormatters'
-import { useCopyToClipboard } from '@/composables/useCopyToClipboard'
-import { useRawModal } from '@/composables/useRawModal'
-import BaseBadge from '@/components/ui/BaseBadge.vue'
-import IconSvg from '@/components/ui/IconSvg.vue'
-import LineNumberPre from '@/components/ui/LineNumberPre.vue'
-import DiffView from './DiffView.vue'
+import { ref, computed } from "vue"
+
+import type { SystemBlock } from "@/types"
+
+import BaseBadge from "@/components/ui/BaseBadge.vue"
+import IconSvg from "@/components/ui/IconSvg.vue"
+import LineNumberPre from "@/components/ui/LineNumberPre.vue"
+import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
+import { useFormatters } from "@/composables/useFormatters"
+import { useRawModal } from "@/composables/useRawModal"
+
+import DiffView from "./DiffView.vue"
 
 const props = defineProps<{
-  system: string | SystemBlock[]
-  rewrittenSystem?: string | SystemBlock[] | null
+  system: string | Array<SystemBlock>
+  rewrittenSystem?: string | Array<SystemBlock> | null
   searchQuery?: string
   /** Global view mode from toolbar — null means per-message control */
-  globalViewMode?: 'original' | 'rewritten' | 'diff' | null
+  globalViewMode?: "original" | "rewritten" | "diff" | null
 }>()
 
 const { highlightSearch, escapeHtml } = useFormatters()
@@ -25,18 +28,18 @@ const collapsed = ref(false)
 const expanded = ref(false)
 
 // Rewrite view mode: local override or global
-const localViewMode = ref<'original' | 'rewritten' | 'diff' | null>(null)
+const localViewMode = ref<"original" | "rewritten" | "diff" | null>(null)
 
 /** Effective view mode: local override takes priority, then global, then default */
 const viewMode = computed(() => {
   if (localViewMode.value) return localViewMode.value
   if (props.globalViewMode && hasRewrite.value) return props.globalViewMode
-  return 'original'
+  return "original"
 })
 
 const hasLocalOverride = computed(() => localViewMode.value !== null)
 
-function setLocalViewMode(mode: 'original' | 'rewritten' | 'diff') {
+function setLocalViewMode(mode: "original" | "rewritten" | "diff") {
   localViewMode.value = mode
 }
 
@@ -44,18 +47,18 @@ function resetLocalViewMode() {
   localViewMode.value = null
 }
 
-function systemToText(system: string | SystemBlock[]): string {
-  if (typeof system === 'string') return system
-  if (Array.isArray(system)) return system.map(b => b.text).join('\n')
-  return ''
+function systemToText(system: string | Array<SystemBlock>): string {
+  if (typeof system === "string") return system
+  if (Array.isArray(system)) return system.map((b) => b.text).join("\n")
+  return ""
 }
 
 const originalText = computed(() => systemToText(props.system))
-const rewrittenText = computed(() => props.rewrittenSystem ? systemToText(props.rewrittenSystem) : '')
-const hasRewrite = computed(() => !!props.rewrittenSystem)
+const rewrittenText = computed(() => (props.rewrittenSystem ? systemToText(props.rewrittenSystem) : ""))
+const hasRewrite = computed(() => Boolean(props.rewrittenSystem))
 
 const displayText = computed(() => {
-  if (viewMode.value === 'rewritten' && hasRewrite.value) return rewrittenText.value
+  if (viewMode.value === "rewritten" && hasRewrite.value) return rewrittenText.value
   return originalText.value
 })
 
@@ -66,17 +69,17 @@ const displayHtml = computed(() => {
 
 const summary = computed(() => {
   const t = originalText.value
-  return t.length > 80 ? t.slice(0, 80) + '...' : t
+  return t.length > 80 ? t.slice(0, 80) + "..." : t
 })
 
-const systemBlocks = computed<SystemBlock[]>(() => {
-  if (typeof props.system === 'string') return [{ type: 'text', text: props.system }]
+const systemBlocks = computed<Array<SystemBlock>>(() => {
+  if (typeof props.system === "string") return [{ type: "text", text: props.system }]
   return props.system
 })
 
 const hasCacheControl = computed(() => {
-  if (typeof props.system === 'string') return false
-  return props.system.some(b => b.cache_control)
+  if (typeof props.system === "string") return false
+  return props.system.some((b) => b.cache_control)
 })
 
 const rawData = computed(() => {
@@ -90,63 +93,148 @@ const rewrittenRawData = computed(() => {
 </script>
 
 <template>
-  <div class="system-message" :class="{ collapsed }">
-    <div class="system-header" @click="collapsed = !collapsed">
+  <div
+    class="system-message"
+    :class="{ collapsed }"
+  >
+    <div
+      class="system-header"
+      @click="collapsed = !collapsed"
+    >
       <div class="system-header-left">
-        <span class="collapse-icon">{{ collapsed ? '▸' : '▾' }}</span>
+        <span class="collapse-icon">{{ collapsed ? "▸" : "▾" }}</span>
         <BaseBadge color="purple">system</BaseBadge>
-        <BaseBadge v-if="hasCacheControl" color="warning">cached</BaseBadge>
-        <BaseBadge v-if="hasRewrite" color="warning">rewritten</BaseBadge>
-        <span v-if="collapsed" class="collapsed-summary" :title="summary">{{ summary }}</span>
+        <BaseBadge
+          v-if="hasCacheControl"
+          color="warning"
+          >cached</BaseBadge
+        >
+        <BaseBadge
+          v-if="hasRewrite"
+          color="warning"
+          >rewritten</BaseBadge
+        >
+        <span
+          v-if="collapsed"
+          class="collapsed-summary"
+          :title="summary"
+          >{{ summary }}</span
+        >
       </div>
 
       <div class="system-header-right">
         <!-- Rewrite view toggle -->
-        <div v-if="hasRewrite && !collapsed" class="view-toggle" @click.stop>
-          <button :class="{ active: viewMode === 'original' }" @click="setLocalViewMode('original')">Original</button>
-          <button :class="{ active: viewMode === 'rewritten' }" @click="setLocalViewMode('rewritten')">Rewritten</button>
-          <button :class="{ active: viewMode === 'diff' }" @click="setLocalViewMode('diff')">Diff</button>
+        <div
+          v-if="hasRewrite && !collapsed"
+          class="view-toggle"
+          @click.stop
+        >
+          <button
+            :class="{ active: viewMode === 'original' }"
+            @click="setLocalViewMode('original')"
+          >
+            Original
+          </button>
+          <button
+            :class="{ active: viewMode === 'rewritten' }"
+            @click="setLocalViewMode('rewritten')"
+          >
+            Rewritten
+          </button>
+          <button
+            :class="{ active: viewMode === 'diff' }"
+            @click="setLocalViewMode('diff')"
+          >
+            Diff
+          </button>
           <button
             v-if="hasLocalOverride"
             class="reset-btn"
             title="Reset to global view mode"
             @click="resetLocalViewMode()"
-          >×</button>
+          >
+            ×
+          </button>
         </div>
 
-        <button v-if="!collapsed" class="action-btn" @click.stop="expanded = !expanded" v-show="!expanded">
-          <IconSvg name="expand" :size="10" />
+        <button
+          v-if="!collapsed"
+          class="action-btn"
+          @click.stop="expanded = !expanded"
+          v-show="!expanded"
+        >
+          <IconSvg
+            name="expand"
+            :size="10"
+          />
           Expand
         </button>
-        <button v-if="!collapsed && expanded" class="action-btn" @click.stop="expanded = false">
-          <IconSvg name="contract" :size="10" />
+        <button
+          v-if="!collapsed && expanded"
+          class="action-btn"
+          @click.stop="expanded = false"
+        >
+          <IconSvg
+            name="contract"
+            :size="10"
+          />
           Collapse
         </button>
 
-        <button class="action-btn" title="Copy" @click.stop="copy(displayText)">
-          <IconSvg name="copy" :size="10" />
+        <button
+          class="action-btn"
+          title="Copy"
+          @click.stop="copy(displayText)"
+        >
+          <IconSvg
+            name="copy"
+            :size="10"
+          />
           Copy
         </button>
-        <button class="action-btn" title="View raw JSON" @click.stop="openRawModal(rawData, 'Raw — system', rewrittenRawData)">
-          <IconSvg name="code" :size="10" />
+        <button
+          class="action-btn"
+          title="View raw JSON"
+          @click.stop="openRawModal(rawData, 'Raw — system', rewrittenRawData)"
+        >
+          <IconSvg
+            name="code"
+            :size="10"
+          />
           Raw
         </button>
       </div>
     </div>
 
-    <div v-show="!collapsed" class="system-body" :class="{ 'body-expanded': expanded }">
+    <div
+      v-show="!collapsed"
+      class="system-body"
+      :class="{ 'body-expanded': expanded }"
+    >
       <DiffView
         v-if="viewMode === 'diff' && hasRewrite"
         :old-text="originalText"
         :new-text="rewrittenText"
       />
       <template v-else-if="viewMode === 'original' && typeof system !== 'string'">
-        <div v-for="(block, i) in systemBlocks" :key="i" class="system-block-item">
-          <div v-if="block.cache_control" class="cache-label">[cache: {{ block.cache_control.type }}]</div>
+        <div
+          v-for="(block, i) in systemBlocks"
+          :key="i"
+          class="system-block-item"
+        >
+          <div
+            v-if="block.cache_control"
+            class="cache-label"
+          >
+            [cache: {{ block.cache_control.type }}]
+          </div>
           <LineNumberPre :html="searchQuery ? highlightSearch(block.text, searchQuery) : escapeHtml(block.text)" />
         </div>
       </template>
-      <LineNumberPre v-else :html="displayHtml" />
+      <LineNumberPre
+        v-else
+        :html="displayHtml"
+      />
     </div>
   </div>
 </template>

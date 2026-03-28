@@ -1,0 +1,5 @@
+*
+!/.gitignore
+!/AVAILABLE_MODELS.json
+!/error.html
+!/sync-refs.sh

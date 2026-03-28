@@ -1,8 +1,9 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 
 import type { MessageParam } from "~/types/api/anthropic"
 
 import { deduplicateToolCalls } from "~/lib/anthropic/sanitize"
+import { state } from "~/lib/state"
 
 /** Helper: create an assistant message with tool_use blocks */
 function assistantWithTools(
@@ -21,6 +22,17 @@ function userWithResults(...results: Array<{ tool_use_id: string; content: strin
     content: results.map((r) => ({ type: "tool_result" as const, tool_use_id: r.tool_use_id, content: r.content })),
   } as MessageParam
 }
+
+let originalImmutableThinkingMessages: boolean
+
+beforeEach(() => {
+  originalImmutableThinkingMessages = state.immutableThinkingMessages
+  state.immutableThinkingMessages = false
+})
+
+afterEach(() => {
+  state.immutableThinkingMessages = originalImmutableThinkingMessages
+})
 
 describe("deduplicateToolCalls", () => {
   it("should not modify messages without duplicates", () => {
@@ -265,6 +277,34 @@ describe("deduplicateToolCalls", () => {
         && m.content.some((b) => b.type === "text" && (b as { text: string }).text === "Let me read the file"),
     )
     expect(firstAssistant).toBeDefined()
+  })
+
+  it("should not merge an immutable thinking assistant with adjacent assistant messages", () => {
+    state.immutableThinkingMessages = true
+
+    const immutableAssistant = {
+      role: "assistant",
+      content: [
+        { type: "thinking" as const, thinking: "plan", signature: "sig_immutable" },
+        { type: "text" as const, text: "keep me separate" },
+      ],
+    } satisfies MessageParam
+
+    const messages: Array<MessageParam> = [
+      assistantWithTools({ id: "tu_1", name: "Read", input: { file_path: "/a.ts" } }),
+      userWithResults({ tool_use_id: "tu_1", content: "old" }),
+      immutableAssistant,
+      assistantWithTools({ id: "tu_2", name: "Read", input: { file_path: "/a.ts" } }),
+      userWithResults({ tool_use_id: "tu_2", content: "new" }),
+    ]
+
+    const result = deduplicateToolCalls(messages)
+
+    expect(result.dedupedCount).toBe(1)
+    expect(result.messages[0]).toBe(immutableAssistant)
+    expect(result.messages[1]?.role).toBe("assistant")
+    expect(result.messages[2]?.role).toBe("user")
+    expect(result.messages).toHaveLength(3)
   })
 })
 

@@ -461,17 +461,21 @@ describe("getHistorySummaries", () => {
       })
     }
 
-    const page1 = getHistorySummaries({ page: 1, limit: 2 })
+    // First page: no cursor
+    const page1 = getHistorySummaries({ limit: 2 })
     expect(page1.entries.length).toBe(2)
     expect(page1.total).toBe(5)
-    expect(page1.totalPages).toBe(3)
-    expect(page1.page).toBe(1)
+    expect(page1.nextCursor).not.toBeNull()
+    expect(page1.prevCursor).toBeNull()
 
-    const page2 = getHistorySummaries({ page: 2, limit: 2 })
+    // Second page: use last entry's ID as cursor
+    const page2 = getHistorySummaries({ cursor: page1.entries.at(-1)!.id, limit: 2 })
     expect(page2.entries.length).toBe(2)
 
-    const page3 = getHistorySummaries({ page: 3, limit: 2 })
+    // Third (last) page
+    const page3 = getHistorySummaries({ cursor: page2.entries.at(-1)!.id, limit: 2 })
     expect(page3.entries.length).toBe(1)
+    expect(page3.nextCursor).toBeNull()
   })
 
   test("filters by model name (partial, case-insensitive)", () => {
@@ -716,7 +720,7 @@ describe("getHistorySummaries", () => {
     const result = getHistorySummaries({ search: "xyznonexistent" })
     expect(result.total).toBe(0)
     expect(result.entries).toHaveLength(0)
-    expect(result.totalPages).toBe(0)
+    expect(result.nextCursor).toBeNull()
   })
 })
 
@@ -787,7 +791,7 @@ describe("summary cache consistency", () => {
     // Update 2: pipelineInfo (summary should still have request data)
     updateEntry(entry.id, {
       pipelineInfo: {
-        truncation: { removedMessageCount: 1, originalTokens: 5000, compactedTokens: 3000, processingTimeMs: 5 },
+        truncation: { wasTruncated: true, removedMessageCount: 1, originalTokens: 5000, compactedTokens: 3000, processingTimeMs: 5 },
       },
     })
     expect(getSummary(entry.id)!.requestModel).toBe("claude-sonnet-4-20250514")

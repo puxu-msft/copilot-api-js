@@ -17,7 +17,10 @@ onErrorCaptured((err: Error) => {
 </script>
 
 <template>
-  <div v-if="error" class="error-boundary">
+  <div
+    v-if="error"
+    class="error-boundary"
+  >
     <span class="error-icon">!</span>
     <span class="error-label">{{ label || "Render error" }}</span>
     <span class="error-message">{{ error.message }}</span>

@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import type { Model } from "~/lib/models/client"
 
 import { getModels } from "~/lib/models/client"
-import { ENDPOINT, isEndpointSupported } from "~/lib/models/endpoint"
+import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
 import { rebuildModelIndex, state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
@@ -55,7 +55,7 @@ describeWithToken("Model endpoint completeness", () => {
       const canReach =
         isEndpointSupported(model, ENDPOINT.MESSAGES)
         || isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)
-        || isEndpointSupported(model, ENDPOINT.RESPONSES)
+        || isResponsesSupported(model)
       if (!canReach) {
         unreachable.push(`${model.id} (endpoints: ${JSON.stringify(model.supported_endpoints)})`)
       }
@@ -122,6 +122,7 @@ describeWithToken("Model endpoint completeness", () => {
       ENDPOINT.MESSAGES,
       ENDPOINT.CHAT_COMPLETIONS,
       ENDPOINT.RESPONSES,
+      ENDPOINT.WS_RESPONSES,
       ENDPOINT.EMBEDDINGS,
     ])
     const unknownEndpoints: Array<{ model: string; endpoint: string }> = []

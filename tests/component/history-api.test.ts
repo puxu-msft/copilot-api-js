@@ -106,17 +106,23 @@ describe("GET /api/entries", () => {
     expect(body.entries[0].timestamp).toBeGreaterThanOrEqual(body.entries[1].timestamp)
   })
 
-  test("paginates with page and limit params", async () => {
+  test("paginates with cursor and limit params", async () => {
     for (let i = 0; i < 5; i++) {
       createEntry("anthropic-messages", "test", [{ role: "user", content: `msg-${i}` }])
     }
 
-    const res = await get("/api/entries?page=1&limit=2")
-    const body = await json<{ entries: Array<unknown>; total: number; totalPages: number; page: number }>(res)
-    expect(body.entries).toHaveLength(2)
-    expect(body.total).toBe(5)
-    expect(body.totalPages).toBe(3)
-    expect(body.page).toBe(1)
+    const res1 = await get("/api/entries?limit=2")
+    const body1 = await json<{ entries: Array<{ id: string }>; total: number; nextCursor: string | null; prevCursor: string | null }>(res1)
+    expect(body1.entries).toHaveLength(2)
+    expect(body1.total).toBe(5)
+    expect(body1.nextCursor).not.toBeNull()
+    expect(body1.prevCursor).toBeNull()
+
+    // Load next page using cursor
+    const res2 = await get(`/api/entries?cursor=${body1.nextCursor}&limit=2`)
+    const body2 = await json<{ entries: Array<{ id: string }>; total: number; nextCursor: string | null; prevCursor: string | null }>(res2)
+    expect(body2.entries).toHaveLength(2)
+    expect(body2.prevCursor).not.toBeNull()
   })
 
   // Filter logic is thoroughly tested in history-summary.test.ts.
@@ -146,7 +152,34 @@ describe("GET /api/entries", () => {
 
 describe("GET /api/entries/:id", () => {
   test("returns full entry by id", async () => {
-    const entry = createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "hello" }])
+    const entry = createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "hello" }], {
+      effectiveRequest: {
+        model: "claude-sonnet-4-20250514",
+        format: "anthropic-messages",
+        messageCount: 1,
+        messages: [{ role: "user", content: "hello" }],
+        payload: {
+          model: "claude-sonnet-4-20250514",
+          messages: [{ role: "user", content: "hello" }],
+          max_tokens: 4096,
+        },
+      },
+      wireRequest: {
+        model: "claude-sonnet-4-20250514",
+        format: "anthropic-messages",
+        messageCount: 1,
+        messages: [{ role: "user", content: "hello" }],
+        payload: {
+          model: "claude-sonnet-4-20250514",
+          messages: [{ role: "user", content: "hello" }],
+          max_tokens: 4096,
+          stream: true,
+        },
+        headers: {
+          "anthropic-beta": "advanced-tool-use-2025-11-20",
+        },
+      },
+    })
 
     const res = await get(`/api/entries/${entry.id}`)
     expect(res.status).toBe(200)
@@ -154,6 +187,26 @@ describe("GET /api/entries/:id", () => {
     expect(body.id).toBe(entry.id)
     expect(body.request.model).toBe("claude-sonnet-4-20250514")
     expect(body.request.messages).toHaveLength(1)
+    expect(body.effectiveRequest?.payload).toEqual({
+      model: "claude-sonnet-4-20250514",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 4096,
+    })
+    expect(body.wireRequest).toEqual({
+      model: "claude-sonnet-4-20250514",
+      format: "anthropic-messages",
+      messageCount: 1,
+      messages: [{ role: "user", content: "hello" }],
+      payload: {
+        model: "claude-sonnet-4-20250514",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 4096,
+        stream: true,
+      },
+      headers: {
+        "anthropic-beta": "advanced-tool-use-2025-11-20",
+      },
+    })
   })
 
   test("returns 404 for non-existent id", async () => {

@@ -238,4 +238,106 @@ describe("handleErrorPersistence", () => {
       .catch(() => false)
     expect(exists).toBe(false)
   })
+
+  test("writes effective-request.json when effectiveRequest is present", async () => {
+    const event = mockFailedEvent({
+      effectiveRequest: {
+        model: "claude-sonnet-4-20250514",
+        format: "anthropic-messages",
+        messageCount: 2,
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "hi" },
+        ],
+        payload: {
+          model: "claude-sonnet-4-20250514",
+          messages: [
+            { role: "user", content: "hello" },
+            { role: "assistant", content: "hi" },
+          ],
+        },
+      },
+    })
+    handleErrorPersistence(event)
+    const { files, dir } = await readErrorFiles()
+
+    expect(files).toContain("effective-request.json")
+
+    const effective = JSON.parse(await fs.readFile(path.join(dir, "effective-request.json"), "utf8"))
+    expect(effective.model).toBe("claude-sonnet-4-20250514")
+    expect(effective.messages).toHaveLength(2)
+    expect(effective.context_management).toBeUndefined()
+  })
+
+  test("writes wire-request.json when wireRequest is present", async () => {
+    const event = mockFailedEvent({
+      wireRequest: {
+        model: "claude-sonnet-4-20250514",
+        format: "anthropic-messages",
+        messageCount: 2,
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "hi" },
+        ],
+        headers: {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "context-management-2025-06-27",
+        },
+        payload: {
+          model: "claude-sonnet-4-20250514",
+          messages: [
+            { role: "user", content: "hello" },
+            { role: "assistant", content: "hi" },
+          ],
+          context_management: {
+            edits: [{ type: "clear_tool_uses_20250919" }],
+          },
+        },
+      },
+    })
+    handleErrorPersistence(event)
+    const { files, dir } = await readErrorFiles()
+
+    expect(files).toContain("wire-request.json")
+
+    const wire = JSON.parse(await fs.readFile(path.join(dir, "wire-request.json"), "utf8"))
+    expect(wire.headers).toEqual({
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "context-management-2025-06-27",
+    })
+    expect(wire.payload.context_management).toEqual({
+      edits: [{ type: "clear_tool_uses_20250919" }],
+    })
+  })
+
+  test("omits effective-request.json when effectiveRequest is not set", async () => {
+    handleErrorPersistence(mockFailedEvent())
+    const { files } = await readErrorFiles()
+
+    expect(files).not.toContain("effective-request.json")
+  })
+
+  test("meta.json includes effective field when effectiveRequest is present", async () => {
+    const event = mockFailedEvent({
+      effectiveRequest: {
+        model: "claude-sonnet-4-20250514",
+        messageCount: 5,
+      },
+    })
+    handleErrorPersistence(event)
+    const { dir } = await readErrorFiles()
+
+    const meta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf8"))
+    expect(meta.effective).toBeDefined()
+    expect(meta.effective.model).toBe("claude-sonnet-4-20250514")
+    expect(meta.effective.messageCount).toBe(5)
+  })
+
+  test("meta.json omits effective field when effectiveRequest is not set", async () => {
+    handleErrorPersistence(mockFailedEvent())
+    const { dir } = await readErrorFiles()
+
+    const meta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf8"))
+    expect(meta.effective).toBeUndefined()
+  })
 })

@@ -1,23 +1,27 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
-import IconSvg from '@/components/ui/IconSvg.vue'
-import { useCopyToClipboard } from '@/composables/useCopyToClipboard'
-import { useRawModal } from '@/composables/useRawModal'
-import { useSharedResizeObserver } from '@/composables/useSharedResizeObserver'
+import { ref, onMounted, onUnmounted, nextTick } from "vue"
 
-const props = withDefaults(defineProps<{
-  label: string
-  labelColor?: string
-  summary?: string
-  blockId?: string
-  copyText?: string
-  rawData?: unknown
-  rawTitle?: string
-}>(), {
-  labelColor: 'text-muted',
-  summary: '',
-  rawTitle: 'Raw',
-})
+import IconSvg from "@/components/ui/IconSvg.vue"
+import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
+import { useRawModal } from "@/composables/useRawModal"
+import { useSharedResizeObserver } from "@/composables/useSharedResizeObserver"
+
+const props = withDefaults(
+  defineProps<{
+    label: string
+    labelColor?: string
+    summary?: string
+    blockId?: string
+    copyText?: string
+    rawData?: unknown
+    rawTitle?: string
+  }>(),
+  {
+    labelColor: "text-muted",
+    summary: "",
+    rawTitle: "Raw",
+  },
+)
 
 const { copy } = useCopyToClipboard()
 const { openRawModal } = useRawModal()
@@ -39,7 +43,7 @@ function toggleExpand(e: Event) {
 
 function handleCopy(e: Event) {
   e.stopPropagation()
-  if (props.copyText) copy(props.copyText)
+  if (props.copyText) void copy(props.copyText)
 }
 
 function openRaw(e: Event) {
@@ -56,7 +60,7 @@ function checkOverflow() {
 onMounted(() => {
   if (bodyRef.value) {
     sharedObserver.observe(bodyRef.value, checkOverflow)
-    nextTick(checkOverflow)
+    void nextTick(checkOverflow)
   }
 })
 
@@ -66,13 +70,28 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="content-block" :id="blockId">
-    <div class="content-block-header" @click="toggleCollapse">
+  <div
+    class="content-block"
+    :id="blockId"
+  >
+    <div
+      class="content-block-header"
+      @click="toggleCollapse"
+    >
       <div class="content-block-header-left">
-        <span class="collapse-icon">{{ collapsed ? '▸' : '▾' }}</span>
-        <span class="content-type-label" :class="'label-' + labelColor">{{ label }}</span>
+        <span class="collapse-icon">{{ collapsed ? "▸" : "▾" }}</span>
+        <span
+          class="content-type-label"
+          :class="'label-' + labelColor"
+          >{{ label }}</span
+        >
         <slot name="header-extra" />
-        <span v-if="collapsed && summary" class="collapsed-summary" :title="summary">{{ summary }}</span>
+        <span
+          v-if="collapsed && summary"
+          class="collapsed-summary"
+          :title="summary"
+          >{{ summary }}</span
+        >
       </div>
       <div class="content-block-header-right">
         <button
@@ -81,8 +100,11 @@ onUnmounted(() => {
           :title="expanded ? 'Collapse' : 'Expand'"
           @click="toggleExpand"
         >
-          <IconSvg :name="expanded ? 'contract' : 'expand'" :size="10" />
-          {{ expanded ? 'Collapse' : 'Expand' }}
+          <IconSvg
+            :name="expanded ? 'contract' : 'expand'"
+            :size="10"
+          />
+          {{ expanded ? "Collapse" : "Expand" }}
         </button>
         <button
           v-if="copyText"
@@ -90,7 +112,10 @@ onUnmounted(() => {
           title="Copy"
           @click="handleCopy"
         >
-          <IconSvg name="copy" :size="10" />
+          <IconSvg
+            name="copy"
+            :size="10"
+          />
           Copy
         </button>
         <button
@@ -99,7 +124,10 @@ onUnmounted(() => {
           title="View raw JSON"
           @click="openRaw"
         >
-          <IconSvg name="code" :size="10" />
+          <IconSvg
+            name="code"
+            :size="10"
+          />
           Raw
         </button>
       </div>
@@ -163,14 +191,30 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.label-text { color: var(--text-muted); }
-.label-cyan { color: var(--cyan); }
-.label-success { color: var(--success); }
-.label-error { color: var(--error); }
-.label-purple { color: var(--purple); }
-.label-pink { color: var(--pink); }
-.label-warning { color: var(--warning); }
-.label-text-muted { color: var(--text-muted); }
+.label-text {
+  color: var(--text-muted);
+}
+.label-cyan {
+  color: var(--cyan);
+}
+.label-success {
+  color: var(--success);
+}
+.label-error {
+  color: var(--error);
+}
+.label-purple {
+  color: var(--purple);
+}
+.label-pink {
+  color: var(--pink);
+}
+.label-warning {
+  color: var(--warning);
+}
+.label-text-muted {
+  color: var(--text-muted);
+}
 
 .collapsed-summary {
   font-size: var(--font-size-xs);

@@ -78,7 +78,7 @@ describe("registerContextConsumers", () => {
   // ── History: created event ──
 
   describe("history consumer: created", () => {
-    test("inserts history entry on 'created' event", () => {
+    test("does NOT insert on 'created' event (deferred to originalRequest update)", () => {
       manager.emit({
         type: "created",
         context: {
@@ -86,28 +86,25 @@ describe("registerContextConsumers", () => {
           endpoint: "anthropic-messages",
           startTime: Date.now(),
           state: "created",
-          originalRequest: { model: "claude-sonnet-4", messages: [], stream: true },
+          originalRequest: null,
         },
       } as unknown as RequestContextEvent)
 
-      expect(insertEntrySpy).toHaveBeenCalledTimes(1)
-      const entry = insertEntrySpy.mock.calls[0][0]
-      expect(entry.id).toBe("req_1")
-      expect(entry.sessionId).toBe("session_1")
-      expect(entry.endpoint).toBe("anthropic-messages")
+      expect(insertEntrySpy).not.toHaveBeenCalled()
     })
 
     test("does not insert entry when history is disabled", () => {
       isHistoryEnabledSpy.mockReturnValue(false)
 
       manager.emit({
-        type: "created",
+        type: "updated",
+        field: "originalRequest",
         context: {
           id: "req_1",
           endpoint: "anthropic-messages",
           startTime: Date.now(),
-          state: "created",
-          originalRequest: { model: "claude-sonnet-4" },
+          state: "pending",
+          originalRequest: { model: "claude-sonnet-4", messages: [], stream: true },
         },
       } as unknown as RequestContextEvent)
 
@@ -118,12 +115,14 @@ describe("registerContextConsumers", () => {
   // ── History: updated event ──
 
   describe("history consumer: updated", () => {
-    test("updates request data on originalRequest field update", () => {
+    test("inserts entry on originalRequest field update (deferred insert)", () => {
       manager.emit({
         type: "updated",
         field: "originalRequest",
         context: {
           id: "req_1",
+          endpoint: "anthropic-messages",
+          startTime: Date.now(),
           originalRequest: {
             model: "claude-sonnet-4",
             messages: [{ role: "user", content: "hi" }],
@@ -132,10 +131,10 @@ describe("registerContextConsumers", () => {
         },
       } as unknown as RequestContextEvent)
 
-      expect(updateEntrySpy).toHaveBeenCalledTimes(1)
-      const [id, data] = updateEntrySpy.mock.calls[0]
-      expect(id).toBe("req_1")
-      expect(data.request.model).toBe("claude-sonnet-4")
+      expect(insertEntrySpy).toHaveBeenCalledTimes(1)
+      const entry = insertEntrySpy.mock.calls[0][0]
+      expect(entry.id).toBe("req_1")
+      expect(entry.request.model).toBe("claude-sonnet-4")
     })
 
     test("updates pipelineInfo on pipelineInfo field update", () => {
@@ -239,6 +238,149 @@ describe("registerContextConsumers", () => {
       const [id, data] = updateEntrySpy.mock.calls[0]
       expect(id).toBe("req_1")
       expect(data.response.success).toBe(false)
+    })
+
+    test("propagates effectiveRequest and wireRequest separately on completed", () => {
+      manager.emit({
+        type: "completed",
+        context: { id: "req_1", tuiLogId: undefined },
+        entry: {
+          id: "req_1",
+          durationMs: 1000,
+          response: {
+            success: true,
+            model: "claude-sonnet-4",
+            usage: { input_tokens: 50, output_tokens: 25 },
+            content: null,
+          },
+          effectiveRequest: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messageCount: 3,
+            messages: [{ role: "user", content: "hi" }],
+            payload: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "hi" }],
+              max_tokens: 4096,
+            },
+          },
+          wireRequest: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messageCount: 3,
+            messages: [{ role: "user", content: "hi" }],
+            payload: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "hi" }],
+              max_tokens: 4096,
+              stream: true,
+            },
+            headers: { "x-request-id": "wire-abc" },
+          },
+          httpHeaders: {
+            request: { "x-request-id": "abc" },
+            response: { "content-type": "application/json" },
+          },
+        },
+      } as unknown as RequestContextEvent)
+
+      expect(updateEntrySpy).toHaveBeenCalledTimes(1)
+      const [, data] = updateEntrySpy.mock.calls[0]
+      expect(data.effectiveRequest).toBeDefined()
+      expect(data.effectiveRequest.model).toBe("claude-sonnet-4-20250514")
+      expect(data.effectiveRequest.payload).toEqual({
+        model: "claude-sonnet-4-20250514",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 4096,
+      })
+      expect(data.wireRequest).toEqual({
+        model: "claude-sonnet-4-20250514",
+        format: "anthropic-messages",
+        messageCount: 3,
+        messages: [{ role: "user", content: "hi" }],
+        payload: {
+          model: "claude-sonnet-4-20250514",
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 4096,
+          stream: true,
+        },
+        headers: { "x-request-id": "wire-abc" },
+      })
+    })
+
+    test("propagates attempts array on completed", () => {
+      manager.emit({
+        type: "completed",
+        context: { id: "req_1", tuiLogId: undefined },
+        entry: {
+          id: "req_1",
+          durationMs: 1000,
+          response: {
+            success: true,
+            model: "m",
+            usage: { input_tokens: 50, output_tokens: 25 },
+            content: null,
+          },
+          attempts: [
+            { index: 0, durationMs: 500, effectiveMessageCount: 10 },
+            { index: 1, strategy: "auto-truncate", durationMs: 500, effectiveMessageCount: 5 },
+          ],
+        },
+      } as unknown as RequestContextEvent)
+
+      const [, data] = updateEntrySpy.mock.calls[0]
+      expect(data.attempts).toHaveLength(2)
+      expect(data.attempts[1].strategy).toBe("auto-truncate")
+    })
+
+    test("propagates response.status, rawBody, and headers on failed", () => {
+      manager.emit({
+        type: "failed",
+        context: { id: "req_1", tuiLogId: undefined },
+        entry: {
+          id: "req_1",
+          durationMs: 200,
+          response: {
+            success: false,
+            model: "m",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            error: "Bad request",
+            status: 400,
+            responseText: '{"error":{"message":"thinking blocks cannot be modified"}}',
+          },
+          httpHeaders: {
+            request: { authorization: "***" },
+            response: { "x-request-id": "xyz" },
+          },
+        },
+      } as unknown as RequestContextEvent)
+
+      const [, data] = updateEntrySpy.mock.calls[0]
+      expect(data.response.status).toBe(400)
+      expect(data.response.rawBody).toBe('{"error":{"message":"thinking blocks cannot be modified"}}')
+      expect(data.response.headers).toEqual({ "x-request-id": "xyz" })
+    })
+
+    test("omits effectiveRequest when entry has none", () => {
+      manager.emit({
+        type: "completed",
+        context: { id: "req_1", tuiLogId: undefined },
+        entry: {
+          id: "req_1",
+          durationMs: 100,
+          response: {
+            success: true,
+            model: "m",
+            usage: { input_tokens: 10, output_tokens: 5 },
+            content: null,
+          },
+        },
+      } as unknown as RequestContextEvent)
+
+      const [, data] = updateEntrySpy.mock.calls[0]
+      expect(data.effectiveRequest).toBeUndefined()
+      expect(data.wireRequest).toBeUndefined()
+      expect(data.attempts).toBeUndefined()
     })
   })
 

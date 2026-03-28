@@ -7,7 +7,7 @@ import type { EntrySummary, HistoryStats } from "./index"
 
 export type { WSMessage, WSMessageType } from "~backend/lib/history/ws"
 
-// ─── Frontend-only discriminated subtypes ───
+// --- Frontend-only discriminated subtypes ---
 
 export interface WSEntryMessage {
   type: "entry_added" | "entry_updated"
@@ -36,5 +36,23 @@ export interface WSHistoryClearedMessage {
 export interface WSSessionDeletedMessage {
   type: "session_deleted"
   data: { sessionId: string }
+  timestamp: number
+}
+
+export interface WSActiveRequestChanged {
+  type: "active_request_changed"
+  data: unknown
+  timestamp: number
+}
+
+export interface WSRateLimiterChanged {
+  type: "rate_limiter_changed"
+  data: unknown
+  timestamp: number
+}
+
+export interface WSShutdownPhaseChanged {
+  type: "shutdown_phase_changed"
+  data: unknown
   timestamp: number
 }

@@ -70,11 +70,11 @@ describe("createRequestContext - initialization", () => {
 describe("createRequestContext - state transitions", () => {
   test("transition() updates state", () => {
     const { ctx } = makeContext()
-    ctx.transition("sanitizing")
-    expect(ctx.state).toBe("sanitizing")
-
     ctx.transition("executing")
     expect(ctx.state).toBe("executing")
+
+    ctx.transition("streaming")
+    expect(ctx.state).toBe("streaming")
   })
 
   test("transition() fires state_changed event with previousState", () => {
@@ -113,11 +113,22 @@ describe("createRequestContext - attempt lifecycle", () => {
   test("setAttemptSanitization stores on currentAttempt", () => {
     const { ctx } = makeContext()
     ctx.beginAttempt({})
-    ctx.setAttemptSanitization({ blocksRemoved: 3, systemReminderRemovals: 1 })
+    ctx.setAttemptSanitization({
+      totalBlocksRemoved: 3,
+      systemReminderRemovals: 1,
+      orphanedToolUseCount: 0,
+      orphanedToolResultCount: 0,
+      fixedNameCount: 0,
+      emptyTextBlocksRemoved: 0,
+    })
 
     expect(ctx.currentAttempt!.sanitization).toEqual({
-      blocksRemoved: 3,
+      totalBlocksRemoved: 3,
       systemReminderRemovals: 1,
+      orphanedToolUseCount: 0,
+      orphanedToolResultCount: 0,
+      fixedNameCount: 0,
+      emptyTextBlocksRemoved: 0,
     })
   })
 
@@ -134,6 +145,21 @@ describe("createRequestContext - attempt lifecycle", () => {
     ctx.setAttemptEffectiveRequest(effectiveReq)
 
     expect(ctx.currentAttempt!.effectiveRequest).toBe(effectiveReq)
+  })
+
+  test("setAttemptWireRequest stores on currentAttempt", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    const wireReq = {
+      model: "claude-sonnet-4",
+      messages: [{ role: "user", content: "hi" }],
+      payload: { model: "claude-sonnet-4", messages: [{ role: "user", content: "hi" }] },
+      headers: { "anthropic-version": "2023-06-01" },
+      format: "anthropic-messages" as const,
+    }
+    ctx.setAttemptWireRequest(wireReq)
+
+    expect(ctx.currentAttempt!.wireRequest).toBe(wireReq)
   })
 
   test("setAttemptError stores error and calculates durationMs", () => {
@@ -177,27 +203,6 @@ describe("createRequestContext - completion", () => {
     expect(lastCall.entry!.id).toBe(ctx.id)
   })
 
-  test("completeFromStream() builds response from accumulator data", () => {
-    const { ctx } = makeContext()
-    ctx.beginAttempt({})
-
-    ctx.completeFromStream({
-      model: "claude-sonnet-4",
-      content: "Hello world",
-      inputTokens: 100,
-      outputTokens: 50,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-      stopReason: "end_turn",
-      contentBlocks: [{ type: "text", text: "Hello world" }],
-    })
-
-    expect(ctx.state).toBe("completed")
-    expect(ctx.response!.success).toBe(true)
-    expect(ctx.response!.model).toBe("claude-sonnet-4")
-    expect(ctx.response!.stop_reason).toBe("end_turn")
-  })
-
   test("fail() stores error response and fires failed event", () => {
     const { ctx, onEvent } = makeContext()
     ctx.beginAttempt({})
@@ -239,12 +244,11 @@ describe("createRequestContext - data setters", () => {
 
   test("setPipelineInfo stores and emits", () => {
     const { ctx, onEvent } = makeContext()
-    const rewrite = {
-      rewrittenMessages: [{ role: "user", content: "hello" }],
+    const pipeInfo = {
       messageMapping: [0],
     }
-    ctx.setPipelineInfo(rewrite)
-    expect(ctx.pipelineInfo).toEqual(rewrite)
+    ctx.setPipelineInfo(pipeInfo)
+    expect(ctx.pipelineInfo).toEqual(pipeInfo)
     expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("pipelineInfo")
   })
 })
@@ -320,7 +324,6 @@ describe("createRequestContext - toHistoryEntry", () => {
     const { ctx } = makeContext()
     ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
     ctx.setPipelineInfo({
-      rewrittenMessages: [{ role: "user", content: "hello" }],
       messageMapping: [0],
     })
     ctx.beginAttempt({})
@@ -334,6 +337,179 @@ describe("createRequestContext - toHistoryEntry", () => {
     const entry = ctx.toHistoryEntry()
     expect(entry.pipelineInfo).toBeDefined()
     expect(entry.pipelineInfo!.messageMapping).toEqual([0])
+  })
+
+  test("extracts max_tokens, temperature, thinking from payload", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({
+      model: "claude-sonnet-4",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+      payload: {
+        model: "claude-sonnet-4",
+        max_tokens: 4096,
+        temperature: 0.7,
+        thinking: { type: "enabled", budget_tokens: 10000 },
+        messages: [{ role: "user", content: "hi" }],
+      },
+    })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "claude-sonnet-4", usage: { input_tokens: 10, output_tokens: 5 }, content: "ok" })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.request.max_tokens).toBe(4096)
+    expect(entry.request.temperature).toBe(0.7)
+    expect(entry.request.thinking).toEqual({ type: "enabled", budget_tokens: 10000 })
+  })
+
+  test("omits max_tokens/temperature/thinking when not in payload", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: { model: "m", messages: [] } })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.request.max_tokens).toBeUndefined()
+    expect(entry.request.temperature).toBeUndefined()
+    expect(entry.request.thinking).toBeUndefined()
+  })
+
+  test("includes effectiveRequest from final attempt", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [{ role: "user", content: "hi" }], stream: true, payload: {} })
+    ctx.beginAttempt({})
+    ctx.setAttemptEffectiveRequest({
+      model: "claude-sonnet-4-20250514",
+      resolvedModel: undefined,
+      messages: [{ role: "user", content: "truncated" }],
+      payload: { model: "claude-sonnet-4-20250514", messages: [{ role: "user", content: "truncated" }], system: "sys" },
+      format: "anthropic-messages",
+    })
+    ctx.complete({ success: true, model: "claude-sonnet-4-20250514", usage: { input_tokens: 10, output_tokens: 5 }, content: "ok" })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.effectiveRequest).toBeDefined()
+    expect(entry.effectiveRequest!.model).toBe("claude-sonnet-4-20250514")
+    expect(entry.effectiveRequest!.format).toBe("anthropic-messages")
+    expect(entry.effectiveRequest!.messageCount).toBe(1)
+    expect(entry.effectiveRequest!.messages).toHaveLength(1)
+    expect(entry.effectiveRequest!.system).toBe("sys")
+  })
+
+  test("includes wireRequest from final attempt separately from effectiveRequest", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [{ role: "user", content: "hi" }], stream: true, payload: {} })
+    ctx.beginAttempt({})
+    ctx.setAttemptEffectiveRequest({
+      model: "claude-opus-4-6",
+      resolvedModel: undefined,
+      messages: [{ role: "user", content: "logical" }],
+      payload: { model: "claude-opus-4-6", messages: [{ role: "user", content: "logical" }] },
+      format: "anthropic-messages",
+    })
+    ctx.setAttemptWireRequest({
+      model: "claude-opus-4-6",
+      messages: [{ role: "user", content: "logical" }],
+      payload: {
+        model: "claude-opus-4-6",
+        messages: [{ role: "user", content: "logical" }],
+        context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
+      },
+      headers: {
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "context-management-2025-06-27,advanced-tool-use-2025-11-20",
+      },
+      format: "anthropic-messages",
+    })
+    ctx.complete({ success: true, model: "claude-opus-4-6", usage: { input_tokens: 10, output_tokens: 5 }, content: "ok" })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.effectiveRequest).toBeDefined()
+    expect(entry.effectiveRequest!.payload).toEqual({
+      model: "claude-opus-4-6",
+      messages: [{ role: "user", content: "logical" }],
+    })
+    expect(entry.wireRequest).toBeDefined()
+    expect(entry.wireRequest!.payload).toEqual({
+      model: "claude-opus-4-6",
+      messages: [{ role: "user", content: "logical" }],
+      context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
+    })
+    expect(entry.wireRequest!.headers).toEqual({
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "context-management-2025-06-27,advanced-tool-use-2025-11-20",
+    })
+  })
+
+  test("effectiveRequest is undefined when no attempt set it", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.effectiveRequest).toBeUndefined()
+  })
+
+  test("always includes attempts array even for single attempt", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.attempts).toBeDefined()
+    expect(entry.attempts).toHaveLength(1)
+    expect(entry.attempts![0].index).toBe(0)
+    expect(entry.attempts![0].strategy).toBeUndefined()
+  })
+
+  test("attempts is undefined when no attempt was started", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.attempts).toBeUndefined()
+  })
+
+  test("attempt summary includes sanitization and effectiveMessageCount", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
+    ctx.beginAttempt({})
+    ctx.setAttemptSanitization({
+      totalBlocksRemoved: 2,
+      orphanedToolUseCount: 1,
+      orphanedToolResultCount: 0,
+      fixedNameCount: 0,
+      emptyTextBlocksRemoved: 1,
+      systemReminderRemovals: 0,
+    })
+    ctx.setAttemptEffectiveRequest({
+      model: "m",
+      resolvedModel: undefined,
+      messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }],
+      payload: {},
+      format: "anthropic-messages",
+    })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.attempts![0].sanitization!.totalBlocksRemoved).toBe(2)
+    expect(entry.attempts![0].effectiveMessageCount).toBe(2)
+  })
+
+  test("includes sseEvents and httpHeaders in entry", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
+    ctx.setSseEvents([{ offsetMs: 0, type: "message_start", data: {} }])
+    ctx.setHttpHeaders({ request: { "x-req": "1" }, response: { "x-res": "2" } })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.sseEvents).toHaveLength(1)
+    expect(entry.httpHeaders).toEqual({ request: { "x-req": "1" }, response: { "x-res": "2" } })
   })
 })
 
@@ -442,27 +618,6 @@ describe("createRequestContext - settled guard", () => {
       model: "m",
       usage: { input_tokens: 1, output_tokens: 1 },
       content: "ok",
-    })
-    expect(onEvent.mock.calls.length).toBe(eventsAfterFail)
-    expect(ctx.state).toBe("failed")
-  })
-
-  test("completeFromStream() after fail() is no-op (via settled guard)", () => {
-    const { ctx, onEvent } = makeContext()
-    ctx.beginAttempt({})
-
-    ctx.fail("m", new Error("failed"))
-    const eventsAfterFail = onEvent.mock.calls.length
-
-    ctx.completeFromStream({
-      model: "m",
-      content: "hello",
-      inputTokens: 10,
-      outputTokens: 5,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-      stopReason: "end_turn",
-      contentBlocks: [],
     })
     expect(onEvent.mock.calls.length).toBe(eventsAfterFail)
     expect(ctx.state).toBe("failed")

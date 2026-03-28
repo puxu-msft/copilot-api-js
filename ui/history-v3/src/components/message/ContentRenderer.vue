@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { ContentBlock, MessageContent } from '@/types'
+import { computed } from "vue"
+
+import type { ContentBlock, MessageContent } from "@/types"
+
+import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import { useContentContext } from "@/composables/useContentContext"
 import {
   isTextBlock,
   isThinkingBlock,
@@ -9,32 +13,31 @@ import {
   isToolResultBlock,
   isImageBlock,
   normalizeToContentBlocks,
-} from '@/utils/typeGuards'
-import { useContentContext } from '@/composables/useContentContext'
-import TextBlock from './TextBlock.vue'
-import ThinkingBlock from './ThinkingBlock.vue'
-import ImageBlock from './ImageBlock.vue'
-import ToolUseBlock from './ToolUseBlock.vue'
-import ToolResultBlock from './ToolResultBlock.vue'
-import GenericBlock from './GenericBlock.vue'
-import ErrorBoundary from '@/components/ui/ErrorBoundary.vue'
+} from "@/utils/typeGuards"
+
+import GenericBlock from "./GenericBlock.vue"
+import ImageBlock from "./ImageBlock.vue"
+import TextBlock from "./TextBlock.vue"
+import ThinkingBlock from "./ThinkingBlock.vue"
+import ToolResultBlock from "./ToolResultBlock.vue"
+import ToolUseBlock from "./ToolUseBlock.vue"
 
 const props = defineProps<{
-  content: string | ContentBlock[]
+  content: string | Array<ContentBlock>
   /** Full message object — enables OpenAI tool_calls rendering */
   message?: MessageContent
 }>()
 
 const { filterType, toolUseNameMap } = useContentContext()
 
-const blocks = computed<ContentBlock[]>(() => {
+const blocks = computed<Array<ContentBlock>>(() => {
   // If full message is provided, use the normalizer (handles both Anthropic and OpenAI formats)
   if (props.message) {
     return normalizeToContentBlocks(props.message)
   }
   // Fallback: content-only mode (backward compatible)
-  if (typeof props.content === 'string') {
-    return [{ type: 'text', text: props.content }]
+  if (typeof props.content === "string") {
+    return [{ type: "text", text: props.content }]
   }
   if (!Array.isArray(props.content)) return []
   return props.content
@@ -45,7 +48,7 @@ const filteredBlocks = computed(() => {
 
   // Type filter
   if (filterType.value) {
-    result = result.filter(b => b.type === filterType.value)
+    result = result.filter((b) => b.type === filterType.value)
   }
 
   return result
@@ -54,7 +57,10 @@ const filteredBlocks = computed(() => {
 
 <template>
   <div class="content-renderer">
-    <template v-for="(block, i) in filteredBlocks" :key="i">
+    <template
+      v-for="(block, i) in filteredBlocks"
+      :key="i"
+    >
       <ErrorBoundary :label="block.type + ' block'">
         <TextBlock
           v-if="isTextBlock(block)"
@@ -98,5 +104,4 @@ const filteredBlocks = computed(() => {
   flex-direction: column;
   gap: var(--spacing-sm);
 }
-
 </style>

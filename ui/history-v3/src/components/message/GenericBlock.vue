@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { ContentBlock } from '@/types'
-import ContentBlockWrapper from './ContentBlockWrapper.vue'
+import { computed } from "vue"
+
+import type { ContentBlock } from "@/types"
+
+import ContentBlockWrapper from "./ContentBlockWrapper.vue"
 
 const props = defineProps<{
   block: ContentBlock
 }>()
 
-const label = computed(() =>
-  (props.block.type || 'UNKNOWN').toUpperCase()
-)
+const label = computed(() => (props.block.type || "UNKNOWN").toUpperCase())
 
 const json = computed(() => {
   try {

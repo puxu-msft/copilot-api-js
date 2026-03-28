@@ -15,7 +15,7 @@ import type { ResponsesPayload, ResponsesResponse, ResponsesStreamEvent } from "
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
-import { ENDPOINT, isEndpointSupported } from "~/lib/models/endpoint"
+import { ENDPOINT, isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { responsesInputToMessages, responsesOutputToContent } from "~/lib/openai/responses-conversion"
 import {
@@ -48,7 +48,7 @@ export async function handleResponses(c: Context) {
 
   // Validate that the model supports /responses endpoint
   const selectedModel = state.modelIndex.get(payload.model)
-  if (!isEndpointSupported(selectedModel, ENDPOINT.RESPONSES)) {
+  if (!isResponsesSupported(selectedModel)) {
     const msg = `Model "${payload.model}" does not support the ${ENDPOINT.RESPONSES} endpoint`
     throw new HTTPError(msg, 400, msg)
   }

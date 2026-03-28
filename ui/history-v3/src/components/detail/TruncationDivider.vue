@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { TruncationInfo } from '@/types'
-import { useFormatters } from '@/composables/useFormatters'
+import type { TruncationInfo } from "@/types"
+
+import { useFormatters } from "@/composables/useFormatters"
 
 defineProps<{
   truncation: TruncationInfo
@@ -14,12 +15,11 @@ const { formatNumber, formatDuration } = useFormatters()
     <div class="divider-line" />
     <div class="divider-content">
       <span class="divider-icon">✂</span>
-      <span class="divider-text">
-        {{ truncation.removedMessageCount }} messages truncated
-      </span>
+      <span class="divider-text"> {{ truncation.removedMessageCount }} messages truncated </span>
       <span class="divider-detail">
-        {{ formatNumber(truncation.originalTokens) }} → {{ formatNumber(truncation.compactedTokens) }} tokens
-        ({{ formatDuration(truncation.processingTimeMs) }})
+        {{ formatNumber(truncation.originalTokens) }} → {{ formatNumber(truncation.compactedTokens) }} tokens ({{
+          formatDuration(truncation.processingTimeMs)
+        }})
       </span>
     </div>
     <div class="divider-line" />

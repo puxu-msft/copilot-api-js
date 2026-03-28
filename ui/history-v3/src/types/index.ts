@@ -6,6 +6,7 @@
 
 export type {
   ContentBlock,
+  CursorResult,
   EndpointType,
   EntrySummary,
   HistoryEntry,
@@ -14,10 +15,10 @@ export type {
   ImageContentBlock,
   ImageSource,
   MessageContent,
+  PipelineInfo,
   PreprocessInfo,
   QueryOptions,
   RedactedThinkingContentBlock,
-  PipelineInfo,
   SanitizationInfo,
   ServerToolUseContentBlock,
   Session,

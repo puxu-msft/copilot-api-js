@@ -1,9 +1,17 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import vuetify from 'vite-plugin-vuetify'
 import { resolve } from 'path'
 
 export default defineConfig(({ command }) => ({
-  plugins: [vue()],
+  root: __dirname,
+  plugins: [
+    vue(),
+    vuetify({ autoImport: true }),
+  ],
+  optimizeDeps: {
+    include: ["vue-json-pretty", "diff", "diff2html"],
+  },
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
@@ -18,7 +26,7 @@ export default defineConfig(({ command }) => ({
     rollupOptions: {
       output: {
         manualChunks: {
-          vue: ['vue'],
+          vue: ['vue', 'vue-router'],
           vendor: ['vue-json-pretty', 'diff', 'diff2html'],
         },
       },
@@ -30,9 +38,17 @@ export default defineConfig(({ command }) => ({
         target: 'http://localhost:4141',
         changeOrigin: true,
       },
-      '/history/ws': {
+      '/ws': {
         target: 'ws://localhost:4141',
         ws: true,
+      },
+      '/api': {
+        target: 'http://localhost:4141',
+        changeOrigin: true,
+      },
+      '/models': {
+        target: 'http://localhost:4141',
+        changeOrigin: true,
       },
     },
   },

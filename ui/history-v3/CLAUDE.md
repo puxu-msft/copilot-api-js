@@ -69,9 +69,14 @@ DetailPanel → SectionBlock（请求/响应区域）
 ## 构建
 
 ```bash
-bun run build    # 构建到 dist/，产物提交到仓库
-bun run dev      # 开发模式，Vite 代理 API 请求到后端
+npm run build:ui      # 构建到 dist/，产物提交到仓库
+npm run dev:ui        # 开发模式，Vite 代理 API 请求到后端
+npm run preview:ui    # 预览构建产物
+npm run typecheck:ui  # 前端类型检查
+npm run test:ui       # 前端测试
 ```
+
+前端依赖和脚本由仓库根 `package.json` 统一管理，不再在 `ui/history-v3/` 下单独安装依赖。
 
 ## 与后端的关系
 

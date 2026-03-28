@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import IconSvg from './IconSvg.vue'
+import { ref } from "vue"
+
+import IconSvg from "./IconSvg.vue"
 
 defineProps<{
   modelValue: string
@@ -9,7 +10,7 @@ defineProps<{
 }>()
 
 defineEmits<{
-  'update:modelValue': [value: string]
+  "update:modelValue": [value: string]
 }>()
 
 const inputRef = ref<HTMLInputElement>()
@@ -22,8 +23,16 @@ defineExpose({ focus })
 </script>
 
 <template>
-  <div class="base-input" :class="{ 'has-icon': icon }">
-    <IconSvg v-if="icon" :name="icon" :size="13" class="input-icon" />
+  <div
+    class="base-input"
+    :class="{ 'has-icon': icon }"
+  >
+    <IconSvg
+      v-if="icon"
+      :name="icon"
+      :size="13"
+      class="input-icon"
+    />
     <input
       ref="inputRef"
       type="text"

@@ -6,7 +6,7 @@ defineProps<{
 }>()
 
 defineEmits<{
-  'update:modelValue': [value: string | null]
+  "update:modelValue": [value: string | null]
 }>()
 </script>
 
@@ -16,7 +16,12 @@ defineEmits<{
     :value="modelValue ?? ''"
     @change="$emit('update:modelValue', ($event.target as HTMLSelectElement).value || null)"
   >
-    <option v-if="placeholder" value="">{{ placeholder }}</option>
+    <option
+      v-if="placeholder"
+      value=""
+    >
+      {{ placeholder }}
+    </option>
     <option
       v-for="opt in options"
       :key="opt.value"

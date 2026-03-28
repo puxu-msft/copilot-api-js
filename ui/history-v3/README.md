@@ -87,12 +87,14 @@ dist/                       # 构建产物（提交到仓库，由后端 serveSt
 ## 开发
 
 ```bash
-cd ui/history-v3
-bun install
-bun run dev       # 启动 Vite 开发服务器（自动代理 /history/api → 后端）
-bun run build     # 构建到 dist/
-bun run preview   # 预览构建产物
+npm run dev:ui        # 启动 Vite 开发服务器（自动代理 /history/api → 后端）
+npm run build:ui      # 构建到 dist/
+npm run preview:ui    # 预览构建产物
+npm run typecheck:ui  # 前端类型检查
+npm run test:ui       # 前端测试
 ```
+
+前端依赖和脚本由仓库根 `package.json` 统一管理，不再使用 `ui/history-v3/package.json`。
 
 ## 数据流
 

@@ -7,7 +7,7 @@
  * dependencies — pure CSS implementation.
  */
 
-import { computed } from 'vue'
+import { computed } from "vue"
 
 const props = defineProps<{
   /** HTML content to render (may include search highlights) */
@@ -19,7 +19,7 @@ const lines = computed(() => {
   // Split on newlines. The html may contain <mark> or <span> tags for
   // search highlighting — these never span across newlines, so splitting
   // on \n is safe.
-  return props.html.split('\n')
+  return props.html.split("\n")
 })
 </script>
 
@@ -31,7 +31,10 @@ const lines = computed(() => {
       class="line"
     >
       <span class="line-no">{{ i + 1 }}</span>
-      <span class="line-content" v-html="line || '&#8203;'" />
+      <span
+        class="line-content"
+        v-html="line || '&#8203;'"
+      />
     </div>
   </div>
 </template>

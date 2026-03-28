@@ -328,7 +328,6 @@ describe("updateEntry (rewrites)", () => {
             systemReminderRemovals: 1,
           },
         ],
-        rewrittenMessages: [{ role: "user", content: "hello" }],
         messageMapping: [0],
       },
     })
@@ -336,7 +335,6 @@ describe("updateEntry (rewrites)", () => {
     const stored = getEntry(entry.id)
     expect(stored!.pipelineInfo).toBeDefined()
     expect(stored!.pipelineInfo!.sanitization![0].totalBlocksRemoved).toBe(2)
-    expect(stored!.pipelineInfo!.rewrittenMessages).toHaveLength(1)
     expect(stored!.pipelineInfo!.messageMapping).toEqual([0])
   })
 
@@ -349,6 +347,7 @@ describe("updateEntry (rewrites)", () => {
     updateEntry(entry.id, {
       pipelineInfo: {
         truncation: {
+          wasTruncated: true,
           removedMessageCount: 3,
           originalTokens: 8000,
           compactedTokens: 4000,
@@ -360,6 +359,101 @@ describe("updateEntry (rewrites)", () => {
     const stored = getEntry(entry.id)
     expect(stored!.pipelineInfo!.truncation).toBeDefined()
     expect(stored!.pipelineInfo!.truncation!.removedMessageCount).toBe(3)
+  })
+
+  test("stores effectiveRequest via updateEntry", () => {
+    const entry = createEntry("anthropic-messages", {
+      model: "claude-sonnet-4-20250514",
+      messages: [{ role: "user", content: "hello" }],
+    })
+
+    updateEntry(entry.id, {
+      effectiveRequest: {
+        model: "claude-sonnet-4-20250514",
+        format: "anthropic-messages",
+        messageCount: 1,
+        messages: [{ role: "user", content: "truncated" }],
+        payload: {
+          model: "claude-sonnet-4-20250514",
+          messages: [{ role: "user", content: "truncated" }],
+          max_tokens: 4096,
+        },
+      },
+      wireRequest: {
+        model: "claude-sonnet-4-20250514",
+        format: "anthropic-messages",
+        messageCount: 1,
+        messages: [{ role: "user", content: "truncated" }],
+        payload: {
+          model: "claude-sonnet-4-20250514",
+          messages: [{ role: "user", content: "truncated" }],
+          max_tokens: 4096,
+          stream: true,
+        },
+        headers: { "x-request-id": "abc" },
+      },
+    })
+
+    const stored = getEntry(entry.id)
+    expect(stored!.effectiveRequest).toBeDefined()
+    expect(stored!.effectiveRequest!.model).toBe("claude-sonnet-4-20250514")
+    expect(stored!.effectiveRequest!.messageCount).toBe(1)
+    expect(stored!.effectiveRequest!.payload).toEqual({
+      model: "claude-sonnet-4-20250514",
+      messages: [{ role: "user", content: "truncated" }],
+      max_tokens: 4096,
+    })
+    expect(stored!.wireRequest).toEqual({
+      model: "claude-sonnet-4-20250514",
+      format: "anthropic-messages",
+      messageCount: 1,
+      messages: [{ role: "user", content: "truncated" }],
+      payload: {
+        model: "claude-sonnet-4-20250514",
+        messages: [{ role: "user", content: "truncated" }],
+        max_tokens: 4096,
+        stream: true,
+      },
+      headers: { "x-request-id": "abc" },
+    })
+  })
+
+  test("stores attempts via updateEntry", () => {
+    const entry = createEntry("anthropic-messages", { model: "m", messages: undefined })
+
+    updateEntry(entry.id, {
+      attempts: [
+        { index: 0, durationMs: 100, effectiveMessageCount: 10 },
+        { index: 1, strategy: "auto-truncate", durationMs: 200, effectiveMessageCount: 5 },
+      ],
+    })
+
+    const stored = getEntry(entry.id)
+    expect(stored!.attempts).toHaveLength(2)
+    expect(stored!.attempts![1].strategy).toBe("auto-truncate")
+    expect(stored!.attempts![1].effectiveMessageCount).toBe(5)
+  })
+
+  test("stores response with status, rawBody, and headers", () => {
+    const entry = createEntry("anthropic-messages", { model: "m", messages: undefined })
+
+    updateEntry(entry.id, {
+      response: {
+        success: false,
+        model: "claude-sonnet-4",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        error: "Bad request",
+        status: 400,
+        content: null,
+        rawBody: '{"error":"thinking blocks cannot be modified"}',
+        headers: { "x-request-id": "xyz" },
+      },
+    })
+
+    const stored = getEntry(entry.id)
+    expect(stored!.response!.status).toBe(400)
+    expect(stored!.response!.rawBody).toBe('{"error":"thinking blocks cannot be modified"}')
+    expect(stored!.response!.headers).toEqual({ "x-request-id": "xyz" })
   })
 })
 
@@ -389,13 +483,13 @@ describe("getHistory", () => {
       })
     }
 
-    const page1 = getHistory({ page: 1, limit: 2 })
+    const page1 = getHistory({ limit: 2 })
     expect(page1.entries.length).toBe(2)
     expect(page1.total).toBe(5)
     expect(page1.totalPages).toBe(3)
-    expect(page1.page).toBe(1)
 
-    const page2 = getHistory({ page: 2, limit: 2 })
+    // Use last entry's ID as cursor to get next page
+    const page2 = getHistory({ cursor: page1.entries.at(-1)!.id, limit: 2 })
     expect(page2.entries.length).toBe(2)
   })
 
@@ -632,10 +726,10 @@ describe("getSessionEntries pagination", () => {
     const result = getSessionEntries(sessionId)
     expect(result.total).toBe(5)
     expect(result.entries).toHaveLength(5)
-    expect(result.page).toBe(1)
+    expect(result.prevCursor).toBeNull()
   })
 
-  test("respects page and limit", () => {
+  test("respects cursor and limit", () => {
     const sessionId = getCurrentSession("anthropic-messages")
 
     for (let i = 0; i < 10; i++) {
@@ -649,15 +743,17 @@ describe("getSessionEntries pagination", () => {
       insertEntry(entry)
     }
 
-    const page1 = getSessionEntries(sessionId, { page: 1, limit: 3 })
+    // First page: no cursor
+    const page1 = getSessionEntries(sessionId, { limit: 3 })
     expect(page1.total).toBe(10)
     expect(page1.entries).toHaveLength(3)
-    expect(page1.totalPages).toBe(4)
-    expect(page1.page).toBe(1)
+    expect(page1.nextCursor).not.toBeNull()
+    expect(page1.prevCursor).toBeNull()
 
-    const page2 = getSessionEntries(sessionId, { page: 2, limit: 3 })
+    // Second page: use last entry ID from first page as cursor
+    const page2 = getSessionEntries(sessionId, { cursor: page1.entries.at(-1)!.id, limit: 3 })
     expect(page2.entries).toHaveLength(3)
-    expect(page2.page).toBe(2)
+    expect(page2.prevCursor).not.toBeNull()
 
     // Different entries on different pages
     expect(page1.entries[0].id).not.toBe(page2.entries[0].id)

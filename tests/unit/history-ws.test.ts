@@ -108,7 +108,7 @@ describe("addClient", () => {
     const messages = getSentMessages(ws)
     expect(messages).toHaveLength(1)
     expect(messages[0].type).toBe("connected")
-    expect(messages[0].data).toEqual({ clientCount: 1 })
+    expect(messages[0].data).toEqual({ clientCount: 1, activeRequests: [] })
     expect(typeof messages[0].timestamp).toBe("number")
   })
 
@@ -123,7 +123,7 @@ describe("addClient", () => {
 
     // Second client should get count=2
     const messages2 = getSentMessages(ws2)
-    expect(messages2[0].data).toEqual({ clientCount: 2 })
+    expect(messages2[0].data).toEqual({ clientCount: 2, activeRequests: [] })
   })
 })
 

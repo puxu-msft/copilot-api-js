@@ -204,6 +204,79 @@ describe("Auto-Truncate Anthropic", () => {
     })
     expect(hasOrphanedToolResult).toBe(false)
   })
+
+  test("immutable_thinking_messages should prevent client-side thinking stripping", async () => {
+    const originalImmutableThinkingMessages = state.immutableThinkingMessages
+
+    try {
+      const payload: MessagesPayload = {
+        model: "claude-sonnet-4",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: createLargeMessage(20000), signature: "sig_old" },
+              { type: "text", text: "old assistant" },
+            ],
+          },
+          { role: "user", content: createLargeMessage(20000) },
+          { role: "assistant", content: "recent assistant" },
+          { role: "user", content: "recent user" },
+          { role: "assistant", content: "latest assistant" },
+        ],
+      }
+
+      const manuallyStrippedPayload: MessagesPayload = {
+        ...payload,
+        messages: [
+          payload.messages[0],
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "old assistant" }],
+          },
+          ...payload.messages.slice(2),
+        ],
+      }
+
+      const originalTokens = await countTotalTokens(payload, mockModel)
+      const strippedTokens = await countTotalTokens(manuallyStrippedPayload, mockModel)
+      const targetTokenLimit = Math.floor((originalTokens + strippedTokens) / 2)
+
+      state.immutableThinkingMessages = false
+      const mutableResult = await autoTruncateAnthropic(payload, mockModel, { targetTokenLimit })
+      const mutableAssistant = mutableResult.payload.messages[1]
+      expect(Array.isArray(mutableAssistant.content)).toBe(true)
+      if (Array.isArray(mutableAssistant.content)) {
+        expect(mutableAssistant.content.some((block) => block.type === "thinking")).toBe(false)
+      }
+
+      state.immutableThinkingMessages = true
+      const immutableResult = await autoTruncateAnthropic(payload, mockModel, { targetTokenLimit })
+      const oldAssistant = immutableResult.payload.messages.find(
+        (message) =>
+          message.role === "assistant"
+          && Array.isArray(message.content)
+          && message.content.some((block) => block.type === "text" && "text" in block && block.text === "old assistant"),
+      )
+
+      if (oldAssistant && Array.isArray(oldAssistant.content)) {
+        expect(oldAssistant.content.some((block) => block.type === "thinking")).toBe(true)
+      } else {
+        expect(
+          immutableResult.payload.messages.some(
+            (message) =>
+              message.role === "assistant"
+              && Array.isArray(message.content)
+              && message.content.some((block) => block.type === "text" && "text" in block && block.text === "old assistant"),
+          ),
+        ).toBe(false)
+      }
+    } finally {
+      state.immutableThinkingMessages = originalImmutableThinkingMessages
+    }
+  })
 })
 
 describe("Auto-Truncate OpenAI", () => {

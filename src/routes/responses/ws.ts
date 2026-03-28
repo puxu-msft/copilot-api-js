@@ -18,7 +18,7 @@ import type { HeadersCapture } from "~/lib/context/request"
 import type { ResponsesPayload, ResponsesStreamEvent } from "~/types/api/openai-responses"
 
 import { getRequestContextManager } from "~/lib/context/manager"
-import { ENDPOINT, isEndpointSupported } from "~/lib/models/endpoint"
+import { isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { responsesInputToMessages } from "~/lib/openai/responses-conversion"
 import {
@@ -115,7 +115,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
   // Check endpoint support
   const selectedModel = state.modelIndex.get(resolvedModel)
-  if (!isEndpointSupported(selectedModel, ENDPOINT.RESPONSES)) {
+  if (!isResponsesSupported(selectedModel)) {
     sendErrorAndClose(ws, `Model "${resolvedModel}" does not support the Responses API`, "invalid_request_error")
     return
   }

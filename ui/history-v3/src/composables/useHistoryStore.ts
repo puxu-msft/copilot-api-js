@@ -1,10 +1,17 @@
 import { ref, computed, type Ref, type ComputedRef } from "vue"
 
-import type { HistoryEntry, HistoryStats, Session, ContentBlock, MessageContent, EntrySummary, EndpointType } from "../types"
+import type {
+  HistoryEntry,
+  HistoryStats,
+  Session,
+  ContentBlock,
+  MessageContent,
+  EntrySummary,
+  EndpointType,
+} from "../types"
 
 import { api } from "../api/http"
 import { WSClient } from "../api/ws"
-
 import { useToast } from "./useToast"
 
 export interface HistoryStore {
@@ -20,10 +27,11 @@ export interface HistoryStore {
   filterSuccess: Ref<string | null>
   selectedSessionId: Ref<string | null>
 
-  // Pagination
-  page: Ref<number>
-  totalPages: Ref<number>
+  // Cursor pagination
+  nextCursor: Ref<string | null>
+  prevCursor: Ref<string | null>
   total: Ref<number>
+  hasMore: Ref<boolean>
 
   // UI state
   loading: Ref<boolean>
@@ -53,7 +61,8 @@ export interface HistoryStore {
   clearSelection: () => void
   clearAll: () => Promise<void>
   refresh: () => Promise<void>
-  setPage: (p: number) => void
+  loadNext: () => void
+  loadPrev: () => void
   setSessionFilter: (id: string | null) => void
   setEndpointFilter: (ep: string | null) => void
   setSuccessFilter: (s: string | null) => void
@@ -65,30 +74,31 @@ export interface HistoryStore {
 export function useHistoryStore(): HistoryStore {
   const { show: showToast } = useToast()
 
-  // ═══ Data ═══
+  // === Data ===
   const entries = ref<Array<EntrySummary>>([])
   const selectedEntry = ref<HistoryEntry | null>(null)
   const sessions = ref<Array<Session>>([])
   const stats = ref<HistoryStats | null>(null)
 
-  // ═══ Filters ═══
+  // === Filters ===
   const searchQuery = ref("")
   const filterEndpoint = ref<string | null>(null)
   const filterSuccess = ref<string | null>(null)
   const selectedSessionId = ref<string | null>(null)
 
-  // ═══ Pagination ═══
-  const page = ref(1)
-  const totalPages = ref(1)
+  // === Cursor Pagination ===
+  const nextCursor = ref<string | null>(null)
+  const prevCursor = ref<string | null>(null)
   const total = ref(0)
+  const hasMore = ref(false)
   const limit = 20
 
-  // ═══ UI State ═══
+  // === UI State ===
   const loading = ref(false)
   const error = ref<string | null>(null)
   const wsConnected = ref(false)
 
-  // ═══ Detail State ═══
+  // === Detail State ===
   const detailSearch = ref("")
   const detailFilterRole = ref("")
   const detailFilterType = ref("")
@@ -96,24 +106,25 @@ export function useHistoryStore(): HistoryStore {
   const detailViewMode = ref<"original" | "rewritten" | "diff" | null>(null)
   const showOnlyRewritten = ref(false)
 
-  // ═══ Computed ═══
+  // === Computed ===
   const hasSelection = computed(() => selectedEntry.value !== null)
   const selectedIndex = computed(() => {
     if (!selectedEntry.value) return -1
     return entries.value.findIndex((e) => e.id === selectedEntry.value?.id)
   })
 
-  // ═══ WebSocket ═══
+  // === WebSocket ===
   let wsClient: WSClient | null = null
 
-  // ═══ Actions ═══
+  // === Actions ===
 
-  async function fetchEntries(): Promise<void> {
+  async function fetchEntries(cursor?: string, direction?: "older" | "newer"): Promise<void> {
     loading.value = true
     error.value = null
     try {
       const result = await api.fetchEntries({
-        page: page.value,
+        cursor,
+        direction,
         limit,
         endpoint: filterEndpoint.value as EndpointType | undefined,
         success: filterSuccess.value === null ? undefined : filterSuccess.value === "true",
@@ -121,8 +132,10 @@ export function useHistoryStore(): HistoryStore {
         sessionId: selectedSessionId.value || undefined,
       })
       entries.value = result.entries
-      totalPages.value = result.totalPages
+      nextCursor.value = result.nextCursor
+      prevCursor.value = result.prevCursor
       total.value = result.total
+      hasMore.value = result.nextCursor !== null
 
       // Auto-select first entry if nothing selected
       if (selectedEntry.value === null && entries.value.length > 0) {
@@ -195,8 +208,9 @@ export function useHistoryStore(): HistoryStore {
       selectedEntry.value = null
       stats.value = null
       total.value = 0
-      totalPages.value = 1
-      page.value = 1
+      nextCursor.value = null
+      prevCursor.value = null
+      hasMore.value = false
       showToast("History cleared", "success")
       await fetchStats()
     } catch (err) {
@@ -214,48 +228,52 @@ export function useHistoryStore(): HistoryStore {
     }
   }
 
-  function setPage(p: number): void {
-    if (p < 1 || p > totalPages.value) return
-    page.value = p
-    void fetchEntries()
+  function loadNext(): void {
+    if (!nextCursor.value) return
+    void fetchEntries(nextCursor.value, "older")
+  }
+
+  function loadPrev(): void {
+    if (!prevCursor.value) return
+    void fetchEntries(prevCursor.value, "newer")
+  }
+
+  function resetCursors(): void {
+    nextCursor.value = null
+    prevCursor.value = null
   }
 
   function setSessionFilter(id: string | null): void {
     selectedSessionId.value = id
-    page.value = 1
+    resetCursors()
     void fetchEntries()
   }
 
   function setEndpointFilter(ep: string | null): void {
     filterEndpoint.value = ep
-    page.value = 1
+    resetCursors()
     void fetchEntries()
   }
 
   function setSuccessFilter(s: string | null): void {
     filterSuccess.value = s
-    page.value = 1
+    resetCursors()
     void fetchEntries()
   }
 
   function setSearch(q: string): void {
     searchQuery.value = q
-    page.value = 1
+    resetCursors()
     void fetchEntries()
   }
 
-  // ═══ WebSocket Handlers ═══
+  // === WebSocket Handlers ===
 
   function handleEntryAdded(summary: EntrySummary): void {
-    // If on first page, insert at the beginning
-    if (page.value === 1) {
-      entries.value.unshift(summary)
-      // Keep list at limit size
-      if (entries.value.length > limit) {
-        entries.value.pop()
-      }
+    // If showing the first page (no prevCursor), insert at the beginning
+    if (prevCursor.value === null) {
+      entries.value = [summary, ...entries.value.slice(0, limit - 1)]
       total.value++
-      totalPages.value = Math.ceil(total.value / limit)
     }
   }
 
@@ -263,7 +281,7 @@ export function useHistoryStore(): HistoryStore {
     // Update summary in list
     const idx = entries.value.findIndex((e) => e.id === summary.id)
     if (idx !== -1) {
-      entries.value[idx] = summary
+      entries.value = entries.value.map((e, i) => (i === idx ? summary : e))
     }
     // If the selected entry is the one being updated, re-fetch full entry
     // to keep the detail view current
@@ -276,16 +294,16 @@ export function useHistoryStore(): HistoryStore {
     stats.value = newStats
   }
 
-  // ═══ Init / Destroy ═══
+  // === Init / Destroy ===
 
   function init(): void {
     void refresh()
 
     wsClient = new WSClient({
+      topics: ["history"],
       onEntryAdded: handleEntryAdded,
       onEntryUpdated: handleEntryUpdated,
       onStatsUpdated: handleStatsUpdated,
-      onConnected: () => {},
       onHistoryCleared: () => void refresh(),
       onSessionDeleted: () => void refresh(),
       onStatusChange: (connected) => {
@@ -309,9 +327,10 @@ export function useHistoryStore(): HistoryStore {
     filterEndpoint,
     filterSuccess,
     selectedSessionId,
-    page,
-    totalPages,
+    nextCursor,
+    prevCursor,
     total,
+    hasMore,
     loading,
     error,
     wsConnected,
@@ -331,7 +350,8 @@ export function useHistoryStore(): HistoryStore {
     clearSelection,
     clearAll,
     refresh,
-    setPage,
+    loadNext,
+    loadPrev,
     setSessionFilter,
     setEndpointFilter,
     setSuccessFilter,
@@ -341,7 +361,7 @@ export function useHistoryStore(): HistoryStore {
   }
 }
 
-// ═══ Helper: Extract preview text from entry ═══
+// === Helper: Extract preview text from entry ===
 
 export function getPreviewText(entry: HistoryEntry): string {
   const messages = entry.request.messages ?? []
@@ -385,7 +405,7 @@ export function extractText(content: string | Array<ContentBlock> | null): strin
     .map((b) => {
       if (b.type === "text" && "text" in b) return b.text
       if (b.type === "thinking" && "thinking" in b) return b.thinking
-      if (b.type === "tool_use" && "name" in b) return `[Tool: ${String(b.name)}]`
+      if (b.type === "tool_use" && "name" in b) return `[Tool: ${b.name}]`
       if (b.type === "tool_result") return "[Tool Result]"
       return ""
     })

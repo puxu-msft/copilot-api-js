@@ -1,30 +1,32 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import ContentBlockWrapper from './ContentBlockWrapper.vue'
-import { useContentContext } from '@/composables/useContentContext'
-import { useHighlightHtml } from '@/composables/useHighlightHtml'
+import { computed } from "vue"
 
-const props = withDefaults(defineProps<{
-  text: string
-  redacted?: boolean
-}>(), {
-  redacted: false,
-})
+import { useContentContext } from "@/composables/useContentContext"
+import { useHighlightHtml } from "@/composables/useHighlightHtml"
+
+import ContentBlockWrapper from "./ContentBlockWrapper.vue"
+
+const props = withDefaults(
+  defineProps<{
+    text: string
+    redacted?: boolean
+  }>(),
+  {
+    redacted: false,
+  },
+)
 
 const { searchQuery } = useContentContext()
 
 const summary = computed(() => {
-  if (props.redacted) return '[redacted]'
-  return props.text.length > 60 ? props.text.slice(0, 60) + '...' : props.text
+  if (props.redacted) return "[redacted]"
+  return props.text.length > 60 ? props.text.slice(0, 60) + "..." : props.text
 })
 
-const { displayHtml } = useHighlightHtml(
-  () => props.text,
-  searchQuery,
-)
+const { displayHtml } = useHighlightHtml(() => props.text, searchQuery)
 
 const renderedHtml = computed(() => {
-  if (props.redacted) return '<em>[Thinking content redacted]</em>'
+  if (props.redacted) return "<em>[Thinking content redacted]</em>"
   return displayHtml.value
 })
 </script>
@@ -40,9 +42,16 @@ const renderedHtml = computed(() => {
     :class="{ redacted }"
   >
     <template #header-extra>
-      <span v-if="redacted" class="redacted-label">REDACTED</span>
+      <span
+        v-if="redacted"
+        class="redacted-label"
+        >REDACTED</span
+      >
     </template>
-    <pre class="thinking-text" v-html="renderedHtml" />
+    <pre
+      class="thinking-text"
+      v-html="renderedHtml"
+    />
   </ContentBlockWrapper>
 </template>
 

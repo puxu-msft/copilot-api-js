@@ -10,13 +10,14 @@ interface MockWSInstance {
   listeners: Record<string, Array<(event?: any) => void>>
   readyState: number
   close: () => void
+  send: (data: string) => void
   simulateOpen: () => void
   simulateClose: () => void
   simulateError: () => void
   simulateMessage: (data: string) => void
 }
 
-const wsInstances: MockWSInstance[] = []
+const wsInstances: Array<MockWSInstance> = []
 
 class MockWebSocket {
   static readonly OPEN = 1
@@ -34,6 +35,9 @@ class MockWebSocket {
         this.readyState = MockWebSocket.CLOSED
         const closeFns = instance.listeners["close"] ?? []
         for (const fn of closeFns) fn()
+      },
+      send: (_data: string) => {
+        // No-op — subscribe messages are silently consumed
       },
       simulateOpen: () => {
         instance.readyState = MockWebSocket.OPEN
@@ -64,8 +68,12 @@ class MockWebSocket {
     this.listeners[event].push(fn)
   }
 
+  send(_data: string): void {
+    // No-op — subscribe messages are silently consumed
+  }
+
   close(): void {
-    const lastInstance = wsInstances[wsInstances.length - 1]
+    const lastInstance = wsInstances.at(-1)
     lastInstance?.close()
   }
 }
@@ -76,15 +84,12 @@ const origLocation = globalThis.location
 
 beforeEach(() => {
   wsInstances.length = 0
-  // @ts-expect-error — mock
-  globalThis.WebSocket = MockWebSocket
-  // @ts-expect-error — mock
-  globalThis.location = { protocol: "http:", host: "localhost:4141" }
+  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket
+  globalThis.location = { protocol: "http:", host: "localhost:4141" } as Location
 })
 
 afterEach(() => {
   globalThis.WebSocket = origWebSocket
-  // @ts-expect-error — restore
   globalThis.location = origLocation
 })
 
@@ -162,10 +167,12 @@ describe("WSClient", () => {
 
       client.connect()
       wsInstances[0].simulateOpen()
-      wsInstances[0].simulateMessage(JSON.stringify({
-        type: "entry_added",
-        data: { id: "e1" },
-      }))
+      wsInstances[0].simulateMessage(
+        JSON.stringify({
+          type: "entry_added",
+          data: { id: "e1" },
+        }),
+      )
 
       expect(options.onEntryAdded).toHaveBeenCalledWith({ id: "e1" })
     })
@@ -176,10 +183,12 @@ describe("WSClient", () => {
 
       client.connect()
       wsInstances[0].simulateOpen()
-      wsInstances[0].simulateMessage(JSON.stringify({
-        type: "entry_updated",
-        data: { id: "e1", previewText: "updated" },
-      }))
+      wsInstances[0].simulateMessage(
+        JSON.stringify({
+          type: "entry_updated",
+          data: { id: "e1", previewText: "updated" },
+        }),
+      )
 
       expect(options.onEntryUpdated).toHaveBeenCalledWith({ id: "e1", previewText: "updated" })
     })
@@ -191,10 +200,12 @@ describe("WSClient", () => {
 
       client.connect()
       wsInstances[0].simulateOpen()
-      wsInstances[0].simulateMessage(JSON.stringify({
-        type: "stats_updated",
-        data: stats,
-      }))
+      wsInstances[0].simulateMessage(
+        JSON.stringify({
+          type: "stats_updated",
+          data: stats,
+        }),
+      )
 
       expect(options.onStatsUpdated).toHaveBeenCalledWith(stats)
     })
@@ -205,10 +216,12 @@ describe("WSClient", () => {
 
       client.connect()
       wsInstances[0].simulateOpen()
-      wsInstances[0].simulateMessage(JSON.stringify({
-        type: "connected",
-        data: { clientCount: 3 },
-      }))
+      wsInstances[0].simulateMessage(
+        JSON.stringify({
+          type: "connected",
+          data: { clientCount: 3 },
+        }),
+      )
 
       expect(options.onConnected).toHaveBeenCalledWith(3)
     })
@@ -219,10 +232,12 @@ describe("WSClient", () => {
 
       client.connect()
       wsInstances[0].simulateOpen()
-      wsInstances[0].simulateMessage(JSON.stringify({
-        type: "history_cleared",
-        data: {},
-      }))
+      wsInstances[0].simulateMessage(
+        JSON.stringify({
+          type: "history_cleared",
+          data: {},
+        }),
+      )
 
       expect(options.onHistoryCleared).toHaveBeenCalled()
     })
@@ -233,10 +248,12 @@ describe("WSClient", () => {
 
       client.connect()
       wsInstances[0].simulateOpen()
-      wsInstances[0].simulateMessage(JSON.stringify({
-        type: "session_deleted",
-        data: { sessionId: "s1" },
-      }))
+      wsInstances[0].simulateMessage(
+        JSON.stringify({
+          type: "session_deleted",
+          data: { sessionId: "s1" },
+        }),
+      )
 
       expect(options.onSessionDeleted).toHaveBeenCalledWith("s1")
     })
@@ -259,10 +276,12 @@ describe("WSClient", () => {
 
       client.connect()
       wsInstances[0].simulateOpen()
-      wsInstances[0].simulateMessage(JSON.stringify({
-        type: "unknown_event",
-        data: {},
-      }))
+      wsInstances[0].simulateMessage(
+        JSON.stringify({
+          type: "unknown_event",
+          data: {},
+        }),
+      )
 
       // No handler should be called
       expect(options.onEntryAdded).not.toHaveBeenCalled()

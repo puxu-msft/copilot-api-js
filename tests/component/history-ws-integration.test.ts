@@ -256,6 +256,7 @@ describe("updateEntry (pipelineInfo) triggers WS notification", () => {
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     const pipeInfo: PipelineInfo = {
       truncation: {
+        wasTruncated: true,
         removedMessageCount: 3,
         originalTokens: 8000,
         compactedTokens: 4000,
@@ -271,7 +272,6 @@ describe("updateEntry (pipelineInfo) triggers WS notification", () => {
           systemReminderRemovals: 1,
         },
       ],
-      rewrittenMessages: [{ role: "user", content: "Simplified" }],
       messageMapping: [0],
     }
     updateEntry(entry.id, { pipelineInfo: pipeInfo })
@@ -298,6 +298,7 @@ describe("full request lifecycle", () => {
     updateEntry(entry.id, {
       pipelineInfo: {
         truncation: {
+          wasTruncated: true,
           removedMessageCount: 2,
           originalTokens: 5000,
           compactedTokens: 3000,

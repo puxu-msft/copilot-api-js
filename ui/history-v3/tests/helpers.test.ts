@@ -5,9 +5,10 @@
  */
 import { describe, expect, test } from "bun:test"
 
+import type { HistoryEntry } from "../src/types"
+
 // We test the pure functions directly (they don't depend on Vue)
 import { extractText, getMessageSummary, getPreviewText, getStatusClass } from "../src/composables/useHistoryStore"
-import type { HistoryEntry } from "../src/types"
 
 function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return {

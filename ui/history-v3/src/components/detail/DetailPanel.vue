@@ -1,23 +1,28 @@
 <script setup lang="ts">
-import { inject, ref, computed, watch, nextTick } from 'vue'
-import type { HistoryStore } from '@/composables/useHistoryStore'
-import type { ContentBlock, MessageContent } from '@/types'
-import { isToolResultBlock, isToolUseBlock } from '@/utils/typeGuards'
-import { provideContentContext } from '@/composables/useContentContext'
-import { usePipelineInfo } from '@/composables/usePipelineInfo'
-import { provideRawModal } from '@/composables/useRawModal'
-import { provideSharedResizeObserver } from '@/composables/useSharedResizeObserver'
-import DetailToolbar from './DetailToolbar.vue'
-import SectionBlock from './SectionBlock.vue'
-import SseEventsSection from './SseEventsSection.vue'
-import MetaInfo from './MetaInfo.vue'
-import TruncationDivider from './TruncationDivider.vue'
-import SystemMessage from '@/components/message/SystemMessage.vue'
-import MessageBlock from '@/components/message/MessageBlock.vue'
-import RawJsonModal from '@/components/ui/RawJsonModal.vue'
-import ErrorBoundary from '@/components/ui/ErrorBoundary.vue'
+import { ref, computed, watch, nextTick } from "vue"
 
-const store = inject<HistoryStore>('historyStore')!
+import type { ContentBlock, MessageContent } from "@/types"
+
+import MessageBlock from "@/components/message/MessageBlock.vue"
+import SystemMessage from "@/components/message/SystemMessage.vue"
+import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import RawJsonModal from "@/components/ui/RawJsonModal.vue"
+import { provideContentContext } from "@/composables/useContentContext"
+import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+import { usePipelineInfo } from "@/composables/usePipelineInfo"
+import { provideRawModal } from "@/composables/useRawModal"
+import { provideSharedResizeObserver } from "@/composables/useSharedResizeObserver"
+import { isToolResultBlock, isToolUseBlock } from "@/utils/typeGuards"
+
+import AttemptsTimeline from "./AttemptsTimeline.vue"
+import DetailToolbar from "./DetailToolbar.vue"
+import HeadersSection from "./HeadersSection.vue"
+import MetaInfo from "./MetaInfo.vue"
+import SectionBlock from "./SectionBlock.vue"
+import SseEventsSection from "./SseEventsSection.vue"
+import TruncationDivider from "./TruncationDivider.vue"
+
+const store = useInjectedHistoryStore()
 const detailBodyRef = ref<HTMLElement>()
 
 const entry = computed(() => store.selectedEntry.value)
@@ -64,11 +69,11 @@ const toolMaps = computed(() => {
       }
     }
     // OpenAI format: tool response (role: "tool" with tool_call_id)
-    if (msg.role === 'tool' && msg.tool_call_id) {
+    if (msg.role === "tool" && msg.tool_call_id) {
       resultMap[msg.tool_call_id] = {
-        type: 'tool_result',
+        type: "tool_result",
         tool_use_id: msg.tool_call_id,
-        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+        content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
       } as ContentBlock
     }
   }
@@ -108,72 +113,75 @@ const responseMessage = computed<MessageContent | null>(() => {
 })
 
 const requestBadge = computed(() => {
-  if (!entry.value) return ''
+  if (!entry.value) return ""
   return `${(entry.value.request.messages ?? []).length} messages`
 })
 
-/** Rewritten request payload for the Raw modal (original request with rewritten messages/system) */
+/** Rewritten request payload for the Raw modal (effectiveRequest with rewritten messages/system) */
 const rewrittenRequest = computed(() => {
-  if (!entry.value?.pipelineInfo) return undefined
-  const rw = entry.value.pipelineInfo
+  if (!entry.value?.effectiveRequest) return undefined
+  const eff = entry.value.effectiveRequest
   // Only construct if there are actual rewrites
-  if (!rw.rewrittenMessages && !rw.rewrittenSystem) return undefined
+  if (!eff.messages && !eff.system) return undefined
   return {
     ...entry.value.request,
-    ...(rw.rewrittenMessages && { messages: rw.rewrittenMessages }),
-    ...(rw.rewrittenSystem !== undefined && { system: rw.rewrittenSystem }),
+    ...(eff.messages && { messages: eff.messages }),
+    ...(eff.system !== undefined && { system: eff.system }),
   }
 })
 
 function hasMatchingBlockType(msg: MessageContent, filterType: string): boolean {
-  if (typeof msg.content === 'string') {
-    if (filterType === 'text') return true
+  if (typeof msg.content === "string") {
+    if (filterType === "text") return true
     // OpenAI tool_calls on a text message
-    if (filterType === 'tool_use' && msg.tool_calls?.length) return true
+    if (filterType === "tool_use" && msg.tool_calls?.length) return true
     return false
   }
   if (!Array.isArray(msg.content)) return false
-  return msg.content.some(b => b.type === filterType)
+  return msg.content.some((b) => b.type === filterType)
 }
 
 // Scroll and highlight helpers
 function highlightBlock(el: HTMLElement) {
-  el.classList.remove('highlight-flash')
+  el.classList.remove("highlight-flash")
   void el.offsetWidth // force reflow
-  el.classList.add('highlight-flash')
+  el.classList.add("highlight-flash")
 }
 
 function scrollToResult(toolUseId: string) {
-  const el = document.getElementById('tool-result-' + toolUseId)
+  const el = document.querySelector<HTMLElement>(`#tool-result-${toolUseId}`)
   if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.scrollIntoView({ behavior: "smooth", block: "center" })
     highlightBlock(el)
   }
 }
 
 function scrollToCall(toolUseId: string) {
-  const el = document.getElementById('tool-use-' + toolUseId)
+  const el = document.querySelector<HTMLElement>(`#tool-use-${toolUseId}`)
   if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.scrollIntoView({ behavior: "smooth", block: "center" })
     highlightBlock(el)
   }
 }
 
-// Watch detailSearch → scroll to first match
-watch(() => store.detailSearch.value, (q) => {
-  if (!q) return
-  nextTick(() => {
-    setTimeout(() => {
-      const first = document.querySelector('.search-highlight')
-      if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }, 50)
-  })
-})
+// Watch detailSearch -> scroll to first match
+watch(
+  () => store.detailSearch.value,
+  (q) => {
+    if (!q) return
+    void nextTick(() => {
+      setTimeout(() => {
+        const first = document.querySelector(".search-highlight")
+        if (first) first.scrollIntoView({ behavior: "smooth", block: "center" })
+      }, 50)
+    })
+  },
+)
 
-// Watch selectedEntry → scroll detail body to bottom
+// Watch selectedEntry -> scroll detail body to bottom
 watch(entry, (e) => {
   if (e) {
-    nextTick(() => {
+    void nextTick(() => {
       if (detailBodyRef.value) {
         detailBodyRef.value.scrollTo(0, detailBodyRef.value.scrollHeight)
       }
@@ -185,12 +193,12 @@ watch(entry, (e) => {
 function exportEntry() {
   if (!entry.value) return
   const json = JSON.stringify(entry.value, null, 2)
-  const blob = new Blob([json], { type: 'application/json' })
+  const blob = new Blob([json], { type: "application/json" })
   const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
+  const a = document.createElement("a")
   a.href = url
   // Filename: entry id + model (if available)
-  const model = entry.value.request.model || 'unknown'
+  const model = entry.value.request.model || "unknown"
   a.download = `${entry.value.id}_${model}.json`
   a.click()
   URL.revokeObjectURL(url)
@@ -200,9 +208,12 @@ function exportEntry() {
 <template>
   <div class="detail-panel">
     <!-- Empty state -->
-    <div v-if="!store.hasSelection.value" class="detail-empty">
+    <div
+      v-if="!store.hasSelection.value"
+      class="detail-empty"
+    >
       <p>Select a request to view details</p>
-      <p class="detail-hint">Use ↑↓ or j/k to navigate, / to search</p>
+      <p class="detail-hint">Use up/down or j/k to navigate, / to search</p>
     </div>
 
     <!-- Detail content -->
@@ -214,15 +225,24 @@ function exportEntry() {
         @export="exportEntry"
       />
 
-      <div ref="detailBodyRef" class="detail-body">
+      <div
+        ref="detailBodyRef"
+        class="detail-body"
+      >
         <!-- REQUEST Section -->
-        <SectionBlock title="Request" :badge="requestBadge" :raw-data="entry.request" :rewritten-raw-data="rewrittenRequest" raw-title="Raw — Request">
+        <SectionBlock
+          title="Request"
+          :badge="requestBadge"
+          :raw-data="entry.request"
+          :rewritten-raw-data="rewrittenRequest"
+          raw-title="Raw -- Request"
+        >
           <!-- System prompt -->
           <ErrorBoundary label="System prompt">
             <SystemMessage
               v-if="entry.request.system"
               :system="entry.request.system"
-              :rewritten-system="entry.pipelineInfo?.rewrittenSystem"
+              :rewritten-system="entry.effectiveRequest?.system"
               :search-query="store.detailSearch.value"
               :global-view-mode="store.detailViewMode.value"
             />
@@ -230,7 +250,10 @@ function exportEntry() {
 
           <!-- Messages with inline truncation divider -->
           <div class="messages-list">
-            <template v-for="item in filteredMessages" :key="item.originalIndex">
+            <template
+              v-for="item in filteredMessages"
+              :key="item.originalIndex"
+            >
               <!-- Truncation divider: render after the last truncated message -->
               <TruncationDivider
                 v-if="entry.pipelineInfo?.truncation && item.originalIndex === truncationPoint"
@@ -253,9 +276,18 @@ function exportEntry() {
         </SectionBlock>
 
         <!-- RESPONSE Section -->
-        <SectionBlock v-if="responseMessage || entry.response?.error" title="Response" :badge="responseMessage ? '1 message' : ''" :raw-data="entry.response" raw-title="Raw — Response">
+        <SectionBlock
+          v-if="responseMessage || entry.response?.error"
+          title="Response"
+          :badge="responseMessage ? '1 message' : ''"
+          :raw-data="entry.response"
+          raw-title="Raw -- Response"
+        >
           <!-- Error block -->
-          <div v-if="entry.response?.error" class="response-error">
+          <div
+            v-if="entry.response?.error"
+            class="response-error"
+          >
             <span class="error-label">Error</span>
             <span class="error-text">{{ entry.response.error }}</span>
           </div>
@@ -271,41 +303,50 @@ function exportEntry() {
 
         <!-- SSE EVENTS Section (only for streaming requests) -->
         <ErrorBoundary label="SSE events">
-          <SseEventsSection v-if="entry.sseEvents?.length" :events="entry.sseEvents" />
+          <SseEventsSection
+            v-if="entry.sseEvents?.length"
+            :events="entry.sseEvents"
+          />
         </ErrorBoundary>
 
-        <!-- HTTP HEADERS Section -->
+        <!-- WIRE REQUEST HEADERS (collapsible) -->
         <SectionBlock
-          v-if="entry.httpHeaders"
-          title="Headers"
-          :raw-data="entry.httpHeaders"
-          raw-title="Raw — HTTP Headers"
+          v-if="entry.wireRequest?.headers"
+          title="Wire Request Headers"
           default-collapsed
         >
-          <div class="headers-section">
-            <div class="headers-group">
-              <div class="headers-group-title">Request Headers</div>
-              <div class="headers-grid">
-                <div v-for="(value, key) in entry.httpHeaders.request" :key="'req-' + key" class="header-row">
-                  <span class="header-name">{{ key }}</span>
-                  <span class="header-value">{{ value }}</span>
-                </div>
-              </div>
-            </div>
-            <div class="headers-group">
-              <div class="headers-group-title">Response Headers</div>
-              <div class="headers-grid">
-                <div v-for="(value, key) in entry.httpHeaders.response" :key="'res-' + key" class="header-row">
-                  <span class="header-name">{{ key }}</span>
-                  <span class="header-value">{{ value }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <HeadersSection
+            :headers="entry.wireRequest.headers"
+            title="Outbound Headers"
+          />
+        </SectionBlock>
+
+        <!-- RESPONSE HEADERS (collapsible) -->
+        <SectionBlock
+          v-if="entry.response?.headers"
+          title="Response Headers"
+          default-collapsed
+        >
+          <HeadersSection
+            :headers="entry.response.headers"
+            title="Upstream Response Headers"
+          />
+        </SectionBlock>
+
+        <!-- ATTEMPTS TIMELINE (when multiple attempts) -->
+        <SectionBlock
+          v-if="entry.attempts && entry.attempts.length > 1"
+          title="Retry Timeline"
+        >
+          <AttemptsTimeline :attempts="entry.attempts" />
         </SectionBlock>
 
         <!-- META Section -->
-        <SectionBlock title="Meta" :raw-data="entry" raw-title="Raw — Full Entry">
+        <SectionBlock
+          title="Meta"
+          :raw-data="entry"
+          raw-title="Raw -- Full Entry"
+        >
           <ErrorBoundary label="Meta info">
             <MetaInfo :entry="entry" />
           </ErrorBoundary>
@@ -383,7 +424,7 @@ function exportEntry() {
   word-wrap: break-word;
 }
 
-.headers-section {
+.headers-section-wrap {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
@@ -415,7 +456,7 @@ function exportEntry() {
   gap: var(--spacing-sm);
   padding: 2px 0;
   font-size: var(--font-size-xs);
-  border-bottom: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.1));
+  border-bottom: 1px solid var(--border-light);
 }
 
 .header-name {

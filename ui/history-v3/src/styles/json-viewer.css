@@ -1,7 +1,7 @@
 /* vue-json-pretty: always dark theme (code-editor style, independent of app theme) */
 
 .vjs-tree {
-  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-family: "SF Mono", Monaco, "Courier New", monospace;
   font-size: 12px;
   background: #0d1117 !important;
   color: #e6edf3 !important;

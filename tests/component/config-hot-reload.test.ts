@@ -44,6 +44,7 @@ async function removeConfig(): Promise<void> {
 function snapshotState() {
   return {
     stripServerTools: state.stripServerTools,
+    immutableThinkingMessages: state.immutableThinkingMessages,
     fetchTimeout: state.fetchTimeout,
     streamIdleTimeout: state.streamIdleTimeout,
     dedupToolCalls: state.dedupToolCalls,
@@ -62,6 +63,7 @@ function snapshotState() {
 
 function restoreState(snapshot: ReturnType<typeof snapshotState>) {
   state.stripServerTools = snapshot.stripServerTools
+  state.immutableThinkingMessages = snapshot.immutableThinkingMessages
   state.fetchTimeout = snapshot.fetchTimeout
   state.streamIdleTimeout = snapshot.streamIdleTimeout
   state.dedupToolCalls = snapshot.dedupToolCalls
@@ -108,6 +110,7 @@ describe("applyConfigToState: scalar fields", () => {
     await writeConfig(`
 anthropic:
   strip_server_tools: false
+  immutable_thinking_messages: true
   strip_read_tool_result_tags: true
 fetch_timeout: 30
 stream_idle_timeout: 60
@@ -115,6 +118,7 @@ stream_idle_timeout: 60
     await applyConfigToState()
 
     expect(state.stripServerTools).toBe(false)
+    expect(state.immutableThinkingMessages).toBe(true)
     expect(state.fetchTimeout).toBe(30)
     expect(state.streamIdleTimeout).toBe(60)
     expect(state.stripReadToolResultTags).toBe(true)

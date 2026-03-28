@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import BaseModal from './BaseModal.vue'
-import IconSvg from './IconSvg.vue'
-import { useCopyToClipboard } from '@/composables/useCopyToClipboard'
-import VueJsonPretty from 'vue-json-pretty'
-import 'vue-json-pretty/lib/styles.css'
+import { computed } from "vue"
+import VueJsonPretty from "vue-json-pretty"
+
+import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
+
+import BaseModal from "./BaseModal.vue"
+import IconSvg from "./IconSvg.vue"
+import "vue-json-pretty/lib/styles.css"
 
 const props = defineProps<{
   visible: boolean
@@ -14,13 +16,13 @@ const props = defineProps<{
 }>()
 
 defineEmits<{
-  'update:visible': [value: boolean]
+  "update:visible": [value: boolean]
 }>()
 
 const { copy } = useCopyToClipboard()
 
 /** Whether to show split Original / Rewritten view */
-const hasSplit = computed(() => props.rewrittenData != null)
+const hasSplit = computed(() => props.rewrittenData !== null && props.rewrittenData !== undefined)
 
 const jsonText = computed(() => {
   try {
@@ -31,7 +33,7 @@ const jsonText = computed(() => {
 })
 
 const rewrittenJsonText = computed(() => {
-  if (!props.rewrittenData) return ''
+  if (!props.rewrittenData) return ""
   try {
     return JSON.stringify(props.rewrittenData, null, 2)
   } catch {
@@ -40,11 +42,11 @@ const rewrittenJsonText = computed(() => {
 })
 
 function copyJson() {
-  copy(jsonText.value)
+  void copy(jsonText.value)
 }
 
 function copyRewrittenJson() {
-  copy(rewrittenJsonText.value)
+  void copy(rewrittenJsonText.value)
 }
 </script>
 
@@ -58,25 +60,43 @@ function copyRewrittenJson() {
   >
     <template #header-actions>
       <!-- Single view: one copy button -->
-      <button v-if="!hasSplit" class="raw-copy-btn" title="Copy JSON" @click="copyJson">
-        <IconSvg name="copy" :size="12" />
+      <button
+        v-if="!hasSplit"
+        class="raw-copy-btn"
+        title="Copy JSON"
+        @click="copyJson"
+      >
+        <IconSvg
+          name="copy"
+          :size="12"
+        />
         Copy
       </button>
     </template>
 
     <!-- Split view: Original / Rewritten side by side -->
-    <div v-if="hasSplit" class="json-split">
+    <div
+      v-if="hasSplit"
+      class="json-split"
+    >
       <div class="json-pane">
         <div class="pane-header">
           <span class="pane-label">Original</span>
-          <button class="raw-copy-btn" title="Copy original JSON" @click="copyJson">
-            <IconSvg name="copy" :size="12" />
+          <button
+            class="raw-copy-btn"
+            title="Copy original JSON"
+            @click="copyJson"
+          >
+            <IconSvg
+              name="copy"
+              :size="12"
+            />
             Copy
           </button>
         </div>
         <div class="json-viewer">
           <VueJsonPretty
-            :data="(data as any)"
+            :data="data as any"
             :deep="5"
             :show-line-number="true"
             :show-icon="true"
@@ -89,14 +109,21 @@ function copyRewrittenJson() {
       <div class="json-pane">
         <div class="pane-header">
           <span class="pane-label pane-label-rewritten">Rewritten</span>
-          <button class="raw-copy-btn" title="Copy rewritten JSON" @click="copyRewrittenJson">
-            <IconSvg name="copy" :size="12" />
+          <button
+            class="raw-copy-btn"
+            title="Copy rewritten JSON"
+            @click="copyRewrittenJson"
+          >
+            <IconSvg
+              name="copy"
+              :size="12"
+            />
             Copy
           </button>
         </div>
         <div class="json-viewer">
           <VueJsonPretty
-            :data="(rewrittenData as any)"
+            :data="rewrittenData as any"
             :deep="5"
             :show-line-number="true"
             :show-icon="true"
@@ -108,9 +135,12 @@ function copyRewrittenJson() {
     </div>
 
     <!-- Single view (no rewrites) -->
-    <div v-else class="json-viewer">
+    <div
+      v-else
+      class="json-viewer"
+    >
       <VueJsonPretty
-        :data="(data as any)"
+        :data="data as any"
         :deep="5"
         :show-line-number="true"
         :show-icon="true"

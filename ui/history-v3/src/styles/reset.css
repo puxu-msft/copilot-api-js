@@ -1,24 +1,47 @@
-*, *::before, *::after {
+/*
+ * CSS Reset — scoped to NOT affect Vuetify components.
+ *
+ * Vuetify injects its own normalize/reset via `vuetify/styles`.
+ * The broad `* { margin: 0; padding: 0 }` and `button { border: none }`
+ * rules destroy Vuetify's internal component styling.
+ *
+ * Solution: scope destructive resets to `.app` (legacy layout) and exclude
+ * anything under `.v-application` (Vuetify's root class).
+ */
+
+/* Safe universal — box-sizing doesn't conflict with Vuetify */
+*,
+*::before,
+*::after {
   box-sizing: border-box;
+}
+
+/* Scope margin/padding reset to legacy layout only */
+.app *,
+.app *::before,
+.app *::after {
   margin: 0;
   padding: 0;
 }
 
-html, body {
+html,
+body {
   height: 100%;
   overflow: hidden;
 }
 
-ul, ol {
+/* Legacy layout resets — scoped to .app */
+.app ul,
+.app ol {
   list-style: none;
 }
 
-a {
+.app a {
   text-decoration: none;
   color: inherit;
 }
 
-button {
+.app button {
   border: none;
   background: none;
   cursor: pointer;
@@ -26,7 +49,9 @@ button {
   color: inherit;
 }
 
-input, select, textarea {
+.app input,
+.app select,
+.app textarea {
   font: inherit;
   color: inherit;
 }

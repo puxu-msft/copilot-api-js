@@ -1,25 +1,25 @@
 /**
  * Tests for useHistoryStore composable — store actions & WebSocket handlers.
  *
- * Covers: selectAdjacentEntry, setPage, setSearch, setSessionFilter,
+ * Covers: selectAdjacentEntry, loadNext, loadPrev, setSearch, setSessionFilter,
  *         setEndpointFilter, setSuccessFilter, handleEntryAdded,
  *         handleEntryUpdated, handleStatsUpdated, computed properties
  */
 
-import { describe, expect, test, mock, beforeEach, type Mock } from "bun:test"
+import { beforeEach, describe, expect, mock, test } from "bun:test"
 
 import type { EntrySummary, HistoryEntry, HistoryStats, SummaryResult, SessionResult } from "../src/types"
 
 // ─── Mocks ───
 
 // Capture WSClient constructor options to invoke WS handlers in tests
-let capturedWSOptions: Record<string, (...args: any[]) => void> = {}
+let capturedWSOptions: Record<string, (...args: Array<any>) => void> = {}
 const mockWSConnect = mock(() => {})
 const mockWSDisconnect = mock(() => {})
 
 mock.module("../src/api/ws", () => ({
   WSClient: class {
-    constructor(options: Record<string, (...args: any[]) => void>) {
+    constructor(options: Record<string, (...args: Array<any>) => void>) {
       capturedWSOptions = options
     }
     connect = mockWSConnect
@@ -28,18 +28,29 @@ mock.module("../src/api/ws", () => ({
 }))
 
 const mockFetchEntries = mock<() => Promise<SummaryResult>>(() =>
-  Promise.resolve({ entries: [], totalPages: 1, total: 0 }),
+  Promise.resolve({ entries: [], total: 0, nextCursor: null, prevCursor: null }),
 )
-const mockFetchEntry = mock<(id: string) => Promise<HistoryEntry>>(() =>
-  Promise.resolve(makeFullEntry("e1")),
-)
+const mockFetchEntry = mock<(id: string) => Promise<HistoryEntry>>(() => Promise.resolve(makeFullEntry("e1")))
 const mockDeleteEntries = mock<() => Promise<void>>(() => Promise.resolve())
-const mockFetchSessions = mock<() => Promise<SessionResult>>(() =>
-  Promise.resolve({ sessions: [] }),
-)
-const mockFetchStats = mock<() => Promise<HistoryStats>>(() =>
-  Promise.resolve({ totalEntries: 0, successCount: 0, errorCount: 0, totalInputTokens: 0, totalOutputTokens: 0 } as HistoryStats),
-)
+const mockFetchSessions = mock<() => Promise<SessionResult>>(() => Promise.resolve({ sessions: [], total: 0 }))
+
+function makeStats(overrides: Partial<HistoryStats> = {}): HistoryStats {
+  return {
+    totalRequests: 0,
+    successfulRequests: 0,
+    failedRequests: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    averageDurationMs: 0,
+    modelDistribution: {},
+    endpointDistribution: {},
+    recentActivity: [],
+    activeSessions: 0,
+    ...overrides,
+  }
+}
+
+const mockFetchStats = mock<() => Promise<HistoryStats>>(() => Promise.resolve(makeStats()))
 
 mock.module("../src/api/http", () => ({
   api: {
@@ -182,41 +193,45 @@ describe("selectAdjacentEntry", () => {
   })
 })
 
-// ─── setPage ───
+// ─── loadNext / loadPrev (cursor-based pagination) ───
 
-describe("setPage", () => {
+describe("loadNext / loadPrev", () => {
   beforeEach(resetMocks)
 
-  test("updates page and fetches entries", () => {
+  test("loadNext does nothing when nextCursor is null", () => {
     const store = useHistoryStore()
-    store.totalPages.value = 5
+    store.nextCursor.value = null
 
-    store.setPage(3)
+    store.loadNext()
 
-    expect(store.page.value).toBe(3)
+    expect(mockFetchEntries).not.toHaveBeenCalled()
+  })
+
+  test("loadNext fetches when nextCursor is present", () => {
+    const store = useHistoryStore()
+    store.nextCursor.value = "cursor-abc"
+
+    store.loadNext()
+
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
-  test("rejects page below 1", () => {
+  test("loadPrev does nothing when prevCursor is null", () => {
     const store = useHistoryStore()
-    store.totalPages.value = 5
-    store.page.value = 2
+    store.prevCursor.value = null
 
-    store.setPage(0)
+    store.loadPrev()
 
-    expect(store.page.value).toBe(2) // unchanged
     expect(mockFetchEntries).not.toHaveBeenCalled()
   })
 
-  test("rejects page above totalPages", () => {
+  test("loadPrev fetches when prevCursor is present", () => {
     const store = useHistoryStore()
-    store.totalPages.value = 3
-    store.page.value = 2
+    store.prevCursor.value = "cursor-xyz"
 
-    store.setPage(4)
+    store.loadPrev()
 
-    expect(store.page.value).toBe(2) // unchanged
-    expect(mockFetchEntries).not.toHaveBeenCalled()
+    expect(mockFetchEntries).toHaveBeenCalled()
   })
 })
 
@@ -225,47 +240,52 @@ describe("setPage", () => {
 describe("filter setters", () => {
   beforeEach(resetMocks)
 
-  test("setSearch resets page to 1 and fetches", () => {
+  test("setSearch resets cursors and fetches", () => {
     const store = useHistoryStore()
-    store.page.value = 3
+    store.nextCursor.value = "some-cursor"
+    store.prevCursor.value = "prev-cursor"
 
     store.setSearch("test query")
 
     expect(store.searchQuery.value).toBe("test query")
-    expect(store.page.value).toBe(1)
+    expect(store.nextCursor.value).toBeNull()
+    expect(store.prevCursor.value).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
-  test("setSessionFilter resets page to 1 and fetches", () => {
+  test("setSessionFilter resets cursors and fetches", () => {
     const store = useHistoryStore()
-    store.page.value = 2
+    store.nextCursor.value = "some-cursor"
 
     store.setSessionFilter("session-42")
 
     expect(store.selectedSessionId.value).toBe("session-42")
-    expect(store.page.value).toBe(1)
+    expect(store.nextCursor.value).toBeNull()
+    expect(store.prevCursor.value).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
-  test("setEndpointFilter resets page to 1 and fetches", () => {
+  test("setEndpointFilter resets cursors and fetches", () => {
     const store = useHistoryStore()
-    store.page.value = 2
+    store.nextCursor.value = "some-cursor"
 
     store.setEndpointFilter("openai-chat")
 
     expect(store.filterEndpoint.value).toBe("openai-chat")
-    expect(store.page.value).toBe(1)
+    expect(store.nextCursor.value).toBeNull()
+    expect(store.prevCursor.value).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
-  test("setSuccessFilter resets page to 1 and fetches", () => {
+  test("setSuccessFilter resets cursors and fetches", () => {
     const store = useHistoryStore()
-    store.page.value = 2
+    store.nextCursor.value = "some-cursor"
 
     store.setSuccessFilter("true")
 
     expect(store.filterSuccess.value).toBe("true")
-    expect(store.page.value).toBe(1)
+    expect(store.nextCursor.value).toBeNull()
+    expect(store.prevCursor.value).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
@@ -359,9 +379,9 @@ describe("WebSocket handlers", () => {
     expect(mockWSDisconnect).toHaveBeenCalled()
   })
 
-  test("onEntryAdded inserts at beginning on page 1", () => {
+  test("onEntryAdded inserts at beginning when on first page (prevCursor is null)", () => {
     const store = useHistoryStore()
-    store.page.value = 1
+    store.prevCursor.value = null
     store.entries.value = [makeSummary("existing")]
     store.total.value = 1
 
@@ -375,9 +395,9 @@ describe("WebSocket handlers", () => {
     store.destroy()
   })
 
-  test("onEntryAdded does not insert when not on page 1", () => {
+  test("onEntryAdded does not insert when not on first page (prevCursor is set)", () => {
     const store = useHistoryStore()
-    store.page.value = 2
+    store.prevCursor.value = "some-cursor"
     store.entries.value = [makeSummary("existing")]
     store.total.value = 21
 
@@ -392,7 +412,7 @@ describe("WebSocket handlers", () => {
 
   test("onEntryAdded pops excess entries beyond limit (20)", () => {
     const store = useHistoryStore()
-    store.page.value = 1
+    store.prevCursor.value = null
     const twentyEntries = Array.from({ length: 20 }, (_, i) => makeSummary(`e${i}`))
     store.entries.value = twentyEntries
     store.total.value = 20
@@ -436,13 +456,13 @@ describe("WebSocket handlers", () => {
 
   test("onStatsUpdated updates stats", () => {
     const store = useHistoryStore()
-    const newStats = {
-      totalEntries: 42,
-      successCount: 40,
-      errorCount: 2,
+    const newStats = makeStats({
+      totalRequests: 42,
+      successfulRequests: 40,
+      failedRequests: 2,
       totalInputTokens: 10000,
       totalOutputTokens: 5000,
-    } as HistoryStats
+    })
 
     store.init()
     capturedWSOptions.onStatsUpdated(newStats)

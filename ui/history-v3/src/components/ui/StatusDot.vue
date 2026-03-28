@@ -1,10 +1,13 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
-  status: 'success' | 'error' | 'pending'
-  size?: number
-}>(), {
-  size: 8,
-})
+withDefaults(
+  defineProps<{
+    status: "success" | "error" | "pending"
+    size?: number
+  }>(),
+  {
+    size: 8,
+  },
+)
 </script>
 
 <template>
@@ -35,7 +38,12 @@ withDefaults(defineProps<{
   animation: pulse 1.5s ease-in-out infinite;
 }
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 </style>

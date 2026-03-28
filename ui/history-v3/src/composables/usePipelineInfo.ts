@@ -22,12 +22,11 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const rewrittenMessageMap = computed(() => {
     const map = new Map<number, MessageContent>()
     const e = entry.value
-    if (!e?.pipelineInfo?.rewrittenMessages || !e.pipelineInfo.messageMapping) return map
-    const { rewrittenMessages, messageMapping } = e.pipelineInfo
-    for (let i = 0; i < messageMapping.length; i++) {
-      const originalIdx = messageMapping[i]
-      const rewritten = rewrittenMessages[i]
-      if (rewritten) map.set(originalIdx, rewritten)
+    if (!e?.effectiveRequest?.messages || !e.pipelineInfo?.messageMapping) return map
+    const rewrittenMessages = e.effectiveRequest.messages
+    const messageMapping = e.pipelineInfo.messageMapping
+    for (const [i, originalIdx] of messageMapping.entries()) {
+      map.set(originalIdx, rewrittenMessages[i])
     }
     return map
   })
@@ -36,7 +35,7 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const rewrittenIndices = computed(() => {
     const indices = new Set<number>()
     const e = entry.value
-    if (!e?.pipelineInfo?.rewrittenMessages) return indices
+    if (!e?.effectiveRequest?.messages) return indices
     const messages = e.request.messages ?? []
     for (const [idx, rewritten] of rewrittenMessageMap.value) {
       const original = messages[idx]
@@ -56,17 +55,17 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   /** Whether any rewriting occurred (messages or system prompt) */
   const hasRewrites = computed(() => {
     const e = entry.value
-    if (!e?.pipelineInfo) return false
-    return rewrittenIndices.value.size > 0 || !!e.pipelineInfo.rewrittenSystem
+    if (!e?.effectiveRequest) return false
+    return rewrittenIndices.value.size > 0 || Boolean(e.effectiveRequest.system)
   })
 
   /** Whether the system prompt was rewritten */
   const isSystemRewritten = computed(() => {
     const e = entry.value
-    if (!e?.pipelineInfo?.rewrittenSystem) return false
+    if (!e?.effectiveRequest?.system) return false
     const origSystem = e.request.system
-    const rwSystem = e.pipelineInfo.rewrittenSystem
-    if (!origSystem || !rwSystem) return !!rwSystem
+    const rwSystem = e.effectiveRequest.system
+    if (!origSystem || !rwSystem) return Boolean(rwSystem)
     return JSON.stringify(origSystem) !== JSON.stringify(rwSystem)
   })
 

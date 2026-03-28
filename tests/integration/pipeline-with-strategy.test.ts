@@ -307,8 +307,70 @@ describe("pipeline with responses-format adapter", () => {
     expect(reqCtx.attempts).toHaveLength(2)
     expect(reqCtx.attempts[0].error).toBeDefined()
     expect(reqCtx.attempts[0].error!.status).toBe(401)
-    // Pipeline uses generic "retry" label, not the strategy's name
-    expect(reqCtx.attempts[1].strategy).toBe("retry")
+    // Pipeline passes the actual strategy name to beginAttempt
+    expect(reqCtx.attempts[1].strategy).toBe("token-refresh")
+  })
+
+  test("auto-records effectiveRequest on each attempt", async () => {
+    let callCount = 0
+    const adapter = createResponsesAdapter(async (p) => {
+      callCount++
+      if (callCount === 1) {
+        throw new HTTPError("Unauthorized", 401, "")
+      }
+      return { result: { id: "resp_4", model: p.model, output: [] }, queueWaitMs: 0 }
+    })
+
+    const manager = createRequestContextManager()
+    const reqCtx = manager.create({ endpoint: "openai-responses" })
+    reqCtx.setOriginalRequest({ model: "gpt-4o", messages: [], stream: false, payload: {} })
+
+    await executeRequestPipeline({
+      adapter,
+      strategies: [createMockTokenRefreshStrategy()],
+      payload: { ...responsesPayload },
+      originalPayload: { ...responsesPayload },
+      model: undefined,
+      maxRetries: 1,
+      requestContext: reqCtx,
+    })
+
+    // Both attempts should have effectiveRequest recorded
+    expect(reqCtx.attempts[0].effectiveRequest).toBeDefined()
+    expect(reqCtx.attempts[0].effectiveRequest!.model).toBe("gpt-4o")
+    expect(reqCtx.attempts[0].effectiveRequest!.format).toBe("openai-responses")
+    expect(reqCtx.attempts[0].effectiveRequest!.payload).toEqual(responsesPayload)
+
+    expect(reqCtx.attempts[1].effectiveRequest).toBeDefined()
+    expect(reqCtx.attempts[1].effectiveRequest!.model).toBe("gpt-4o")
+    expect(reqCtx.attempts[1].effectiveRequest!.payload).toEqual(responsesPayload)
+  })
+
+  test("beginAttempt is called before onBeforeAttempt", async () => {
+    const adapter = createResponsesAdapter(async (p) => {
+      return { result: { id: "resp_5", model: p.model, output: [] }, queueWaitMs: 0 }
+    })
+
+    const manager = createRequestContextManager()
+    const reqCtx = manager.create({ endpoint: "openai-responses" })
+    reqCtx.setOriginalRequest({ model: "gpt-4o", messages: [], stream: false, payload: {} })
+
+    let attemptExistedInCallback = false
+    await executeRequestPipeline({
+      adapter,
+      strategies: [],
+      payload: { ...responsesPayload },
+      originalPayload: { ...responsesPayload },
+      model: undefined,
+      maxRetries: 0,
+      requestContext: reqCtx,
+      onBeforeAttempt: () => {
+        // currentAttempt should already exist when onBeforeAttempt fires
+        attemptExistedInCallback = reqCtx.currentAttempt !== null
+      },
+    })
+
+    expect(attemptExistedInCallback).toBe(true)
   })
 
   test("non-retryable error is not retried", async () => {

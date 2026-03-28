@@ -3,7 +3,7 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 import pc from "picocolors"
-import { serve, type ServerHandler } from "srvx"
+import { startServer } from "./lib/serve"
 
 import type { Model } from "./lib/models/client"
 
@@ -323,23 +323,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const displayHost = options.host ?? "localhost"
   const serverUrl = `http://${displayHost}:${options.port}`
 
-  // Bun + srvx workaround: srvx's bun adapter wraps the fetch handler and
-  // drops the `server` parameter that Bun.serve normally passes as the second
-  // arg to fetch. hono/bun's upgradeWebSocket needs `c.env.server` to call
-  // server.upgrade(). srvx stores the server on `request.runtime.bun.server`,
-  // so we forward it into Hono's env via middleware.
-  // Must be registered BEFORE any WebSocket routes so Hono dispatches it first.
-  if (typeof globalThis.Bun !== "undefined") {
-    server.use("*", async (c, next) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const runtime = (c.req.raw as any).runtime as { bun?: { server?: unknown } } | undefined
-      if (runtime?.bun?.server) {
-        c.env = { server: runtime.bun.server }
-      }
-      await next()
-    })
-  }
-
   // Initialize WebSocket support using a single shared adapter.
   // A single createNodeWebSocket instance avoids multiple `upgrade` listeners
   // on the Node HTTP server, which would cause ERR_STREAM_WRITE_AFTER_END
@@ -360,25 +343,18 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   let serverInstance
   try {
-    serverInstance = serve({
-      fetch: server.fetch as ServerHandler,
+    serverInstance = await startServer({
+      fetch: server.fetch,
       port: options.port,
       hostname: options.host,
-      reusePort: true,
-      // Disable srvx's built-in graceful shutdown — we have our own
-      // multi-phase shutdown handler (see lib/shutdown.ts) that provides
-      // request draining, abort signaling, and WebSocket cleanup.
-      gracefulShutdown: false,
-      bun: {
-        // Default idleTimeout is 10s, too short for LLM streaming responses
-        idleTimeout: 255, // seconds (Bun max)
-        ...(bunWebSocket && { websocket: bunWebSocket }),
-      },
+      bunWebSocket,
     })
   } catch (error) {
     consola.error(`Failed to start server on port ${options.port}. Is the port already in use?`, error)
     process.exit(1)
   }
+
+  consola.info(`Listening on ${serverUrl}`)
 
   // Store server instance and register signal handlers for graceful shutdown.
   // Order matters: setServerInstance must be called before setupShutdownHandlers
@@ -387,11 +363,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setupShutdownHandlers()
 
   // Inject the single shared WebSocket upgrade handler into Node.js HTTP server (no-op under Bun)
-  if (wsAdapter.injectWebSocket) {
-    const nodeServer = serverInstance.node?.server
-    if (nodeServer && "on" in nodeServer) {
-      wsAdapter.injectWebSocket(nodeServer as import("node:http").Server)
-    }
+  if (wsAdapter.injectWebSocket && serverInstance.nodeServer) {
+    wsAdapter.injectWebSocket(serverInstance.nodeServer)
   }
 
   // Block until a shutdown signal (SIGINT/SIGTERM) is received.

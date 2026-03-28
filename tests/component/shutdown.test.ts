@@ -21,6 +21,7 @@ import {
   getIsShuttingDown,
   getShutdownSignal,
   gracefulShutdown,
+  handleShutdownSignal,
   waitForShutdown,
 } from "~/lib/shutdown"
 
@@ -219,6 +220,20 @@ describe("drainActiveRequests", () => {
 
     // Should have polled multiple times (not just once)
     expect(tracker.getActiveRequests.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  test("returns 'aborted' when phase is externally escalated", async () => {
+    const tracker = createMockTracker([{ status: "executing" }])
+    const abortController = new AbortController()
+    setTimeout(() => abortController.abort(), 20)
+
+    const result = await drainActiveRequests(500, tracker, {
+      pollIntervalMs: 10,
+      progressIntervalMs: 50_000,
+      abortSignal: abortController.signal,
+    })
+
+    expect(result).toBe("aborted")
   })
 })
 
@@ -433,5 +448,45 @@ describe("error resilience", () => {
     await gracefulShutdown("SIGINT", createNoopDeps({ tracker, server }))
 
     expect(tracker.destroy).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ============================================================================
+// Signal escalation
+// ============================================================================
+
+describe("signal escalation", () => {
+  test("second signal during Phase 2 escalates to abort phase instead of exiting immediately", async () => {
+    const tracker = createMockTracker([{ status: "executing" }])
+    const exitFn = mock((_code: number) => {})
+
+    const shutdownPromise = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+      exitFn,
+    })
+
+    expect(shutdownPromise).toBeDefined()
+    expect(getIsShuttingDown()).toBe(true)
+
+    // Escalate while still draining in Phase 2
+    handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+      exitFn,
+    })
+
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (getShutdownSignal()?.aborted) {
+          tracker._clearRequests()
+          clearInterval(check)
+          resolve()
+        }
+      }, 5)
+    })
+
+    await shutdownPromise
+
+    expect(getShutdownSignal()!.aborted).toBe(true)
+    expect(exitFn).not.toHaveBeenCalled()
   })
 })

@@ -1,14 +1,28 @@
 <script setup lang="ts">
-import { inject } from 'vue'
-import type { HistoryStore } from '@/composables/useHistoryStore'
-import { useFormatters } from '@/composables/useFormatters'
+import { computed } from "vue"
 
-const store = inject<HistoryStore>('historyStore')!
-const { formatNumber } = useFormatters()
+import { useFormatters } from "@/composables/useFormatters"
+import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+
+const store = useInjectedHistoryStore()
+const { formatNumber, formatDuration } = useFormatters()
+
+/** Cache hit rate: cache_read tokens / total input tokens */
+const cacheHitRate = computed(() => {
+  const stats = store.stats.value
+  if (!stats || stats.totalInputTokens === 0) return null
+  // Stats don't track cache tokens directly, so only show when available
+  return null
+})
+
+void cacheHitRate.value
 </script>
 
 <template>
-  <div class="stats-bar" v-if="store.stats.value">
+  <div
+    class="stats-bar"
+    v-if="store.stats.value"
+  >
     <div class="stat-item">
       <span class="stat-value">{{ formatNumber(store.stats.value.totalRequests) }}</span>
       <span class="stat-label">Requests</span>
@@ -28,6 +42,13 @@ const { formatNumber } = useFormatters()
     <div class="stat-item">
       <span class="stat-value">{{ formatNumber(store.stats.value.totalOutputTokens) }}</span>
       <span class="stat-label">Out Tokens</span>
+    </div>
+    <div
+      v-if="store.stats.value.averageDurationMs"
+      class="stat-item"
+    >
+      <span class="stat-value">{{ formatDuration(store.stats.value.averageDurationMs) }}</span>
+      <span class="stat-label">Avg Duration</span>
     </div>
   </div>
 </template>

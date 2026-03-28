@@ -27,9 +27,7 @@ describe("escapeHtml", () => {
   })
 
   test("escapes all special characters together", () => {
-    expect(escapeHtml('<a href="url">A & B</a>')).toBe(
-      "&lt;a href=&quot;url&quot;&gt;A &amp; B&lt;/a&gt;",
-    )
+    expect(escapeHtml('<a href="url">A & B</a>')).toBe("&lt;a href=&quot;url&quot;&gt;A &amp; B&lt;/a&gt;")
   })
 
   test("returns empty string unchanged", () => {
@@ -45,7 +43,7 @@ describe("escapeHtml", () => {
   })
 
   test("handles text with XML/HTML-like content from LLM responses", () => {
-    const input = '<system-reminder>Use the <tool> tag for tool calls</system-reminder>'
+    const input = "<system-reminder>Use the <tool> tag for tool calls</system-reminder>"
     const result = escapeHtml(input)
     expect(result).toContain("&lt;system-reminder&gt;")
     expect(result).toContain("&lt;tool&gt;")

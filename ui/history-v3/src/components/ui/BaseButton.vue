@@ -1,15 +1,18 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
-  variant?: 'default' | 'primary' | 'danger' | 'ghost'
-  size?: 'sm' | 'md'
-  disabled?: boolean
-  loading?: boolean
-}>(), {
-  variant: 'default',
-  size: 'sm',
-  disabled: false,
-  loading: false,
-})
+withDefaults(
+  defineProps<{
+    variant?: "default" | "primary" | "danger" | "ghost"
+    size?: "sm" | "md"
+    disabled?: boolean
+    loading?: boolean
+  }>(),
+  {
+    variant: "default",
+    size: "sm",
+    disabled: false,
+    loading: false,
+  },
+)
 
 defineEmits<{
   click: [e: MouseEvent]
@@ -23,7 +26,10 @@ defineEmits<{
     :disabled="disabled || loading"
     @click="$emit('click', $event)"
   >
-    <span v-if="loading" class="spinner" />
+    <span
+      v-if="loading"
+      class="spinner"
+    />
     <slot />
   </button>
 </template>
@@ -103,6 +109,8 @@ defineEmits<{
   animation: spin 0.6s linear infinite;
 }
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

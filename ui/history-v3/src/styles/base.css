@@ -8,14 +8,16 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-#app {
+/* Legacy layout container — Vuetify uses v-app/v-main instead */
+.app {
   height: 100vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-code, pre {
+code,
+pre {
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
 }
@@ -32,8 +34,14 @@ pre {
 
 /* ═══ Highlight Flash Animation ═══ */
 @keyframes highlight-flash {
-  0%, 100% { border-color: var(--border); }
-  25%, 75% { border-color: var(--primary); }
+  0%,
+  100% {
+    border-color: var(--border);
+  }
+  25%,
+  75% {
+    border-color: var(--primary);
+  }
 }
 
 .highlight-flash {

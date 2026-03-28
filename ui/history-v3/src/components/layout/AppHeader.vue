@@ -1,29 +1,30 @@
 <script setup lang="ts">
-import { inject, computed, ref, onMounted, onUnmounted } from 'vue'
-import type { HistoryStore } from '@/composables/useHistoryStore'
-import { useFormatters } from '@/composables/useFormatters'
-import BaseButton from '@/components/ui/BaseButton.vue'
-import BaseSelect from '@/components/ui/BaseSelect.vue'
-import IconSvg from '@/components/ui/IconSvg.vue'
-import StatusDot from '@/components/ui/StatusDot.vue'
+import { computed, ref, onMounted, onUnmounted } from "vue"
 
-const store = inject<HistoryStore>('historyStore')!
+import BaseButton from "@/components/ui/BaseButton.vue"
+import BaseSelect from "@/components/ui/BaseSelect.vue"
+import IconSvg from "@/components/ui/IconSvg.vue"
+import StatusDot from "@/components/ui/StatusDot.vue"
+import { useFormatters } from "@/composables/useFormatters"
+import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+
+const store = useInjectedHistoryStore()
 const { formatDate } = useFormatters()
 
 const refreshing = ref(false)
 
 const sessionOptions = computed(() =>
-  store.sessions.value.map(s => ({
+  store.sessions.value.map((s) => ({
     value: s.id,
     label: `${formatDate(s.startTime)} (${s.requestCount} reqs)`,
-  }))
+  })),
 )
 
 // Export dropdown
 const exportOpen = ref(false)
 const exportRef = ref<HTMLElement>()
 
-function handleExport(format: 'json' | 'csv') {
+function handleExport(format: "json" | "csv") {
   location.href = `/history/api/export?format=${format}`
   exportOpen.value = false
 }
@@ -35,23 +36,23 @@ function handleClickOutside(e: MouseEvent) {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && exportOpen.value) {
+  if (e.key === "Escape" && exportOpen.value) {
     exportOpen.value = false
     e.stopPropagation()
   }
 }
 
 onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-  document.addEventListener('keydown', handleKeydown)
+  document.addEventListener("click", handleClickOutside)
+  document.addEventListener("keydown", handleKeydown)
 })
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-  document.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener("click", handleClickOutside)
+  document.removeEventListener("keydown", handleKeydown)
 })
 
 async function handleClear() {
-  if (!confirm('Clear all history? This cannot be undone.')) return
+  if (!confirm("Clear all history? This cannot be undone.")) return
   await store.clearAll()
 }
 
@@ -81,26 +82,62 @@ async function handleRefresh() {
         :status="store.wsConnected.value ? 'success' : 'error'"
         :size="6"
       />
-      <span class="ws-label">{{ store.wsConnected.value ? 'Live' : 'Offline' }}</span>
+      <span class="ws-label">{{ store.wsConnected.value ? "Live" : "Offline" }}</span>
 
-      <BaseButton variant="ghost" :disabled="refreshing" @click="handleRefresh">
-        <IconSvg name="refresh" :size="13" :class="{ spinning: refreshing }" />
-        {{ refreshing ? 'Refreshing...' : 'Refresh' }}
+      <BaseButton
+        variant="ghost"
+        :disabled="refreshing"
+        @click="handleRefresh"
+      >
+        <IconSvg
+          name="refresh"
+          :size="13"
+          :class="{ spinning: refreshing }"
+        />
+        {{ refreshing ? "Refreshing..." : "Refresh" }}
       </BaseButton>
 
-      <div ref="exportRef" class="export-dropdown">
-        <BaseButton variant="ghost" @click.stop="exportOpen = !exportOpen">
-          <IconSvg name="download" :size="13" />
+      <div
+        ref="exportRef"
+        class="export-dropdown"
+      >
+        <BaseButton
+          variant="ghost"
+          @click.stop="exportOpen = !exportOpen"
+        >
+          <IconSvg
+            name="download"
+            :size="13"
+          />
           Export
         </BaseButton>
-        <div v-show="exportOpen" class="export-menu">
-          <button class="export-item" @click="handleExport('json')">Export JSON</button>
-          <button class="export-item" @click="handleExport('csv')">Export CSV</button>
+        <div
+          v-show="exportOpen"
+          class="export-menu"
+        >
+          <button
+            class="export-item"
+            @click="handleExport('json')"
+          >
+            Export JSON
+          </button>
+          <button
+            class="export-item"
+            @click="handleExport('csv')"
+          >
+            Export CSV
+          </button>
         </div>
       </div>
 
-      <BaseButton variant="danger" @click="handleClear">
-        <IconSvg name="trash" :size="13" />
+      <BaseButton
+        variant="danger"
+        @click="handleClear"
+      >
+        <IconSvg
+          name="trash"
+          :size="13"
+        />
         Clear
       </BaseButton>
     </div>
@@ -181,8 +218,12 @@ async function handleRefresh() {
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .spinning {
