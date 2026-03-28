@@ -16,25 +16,28 @@ import type { Model } from "~/lib/models/client"
 import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
 
 import { getTokenCount } from "~/lib/models/tokenizer"
-import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
 
 import type { AutoTruncateConfig } from "../auto-truncate"
 
 import {
   DEFAULT_AUTO_TRUNCATE_CONFIG,
-  LARGE_TOOL_RESULT_THRESHOLD,
   calibrate,
-  compressToolResultContent,
   computeSafetyMargin,
   getLearnedLimits,
 } from "../auto-truncate"
+import { state } from "~/lib/state"
+import { extractOpenAISystemMessages } from "./orphan-filter"
 import {
-  ensureOpenAIStartsWithUser,
-  extractOpenAISystemMessages,
-  filterOpenAIOrphanedToolResults,
-  filterOpenAIOrphanedToolUse,
-} from "./orphan-filter"
+  addCompressionNotice,
+  cleanupMessages,
+  createTruncationMarker,
+  createTruncationSystemContext,
+  findOptimalPreserveIndex,
+  generateRemovedMessagesSummary,
+  smartCompressToolResults,
+} from "./auto-truncate/truncation"
+import { estimateMessageTokens } from "./auto-truncate/token-counting"
 
 // ============================================================================
 // Result Types
@@ -94,180 +97,6 @@ function calculateTokenLimit(model: Model, config: AutoTruncateConfig): number |
 }
 
 // ============================================================================
-// Message Utilities
-// ============================================================================
-
-/** Estimate tokens for a single message (fast approximation) */
-function estimateMessageTokens(msg: Message): number {
-  let charCount = 0
-
-  if (typeof msg.content === "string") {
-    charCount = msg.content.length
-  } else if (Array.isArray(msg.content)) {
-    for (const part of msg.content) {
-      if (part.type === "text") {
-        charCount += part.text.length
-      } else if ("image_url" in part) {
-        // Base64 images are large but compressed in token counting
-        charCount += Math.min(part.image_url.url.length, 10000)
-      }
-    }
-  }
-
-  if (msg.tool_calls) {
-    charCount += JSON.stringify(msg.tool_calls).length
-  }
-
-  // ~4 chars per token + message overhead
-  return Math.ceil(charCount / 4) + 10
-}
-
-/** Calculate cumulative token sums from the end of the message array */
-function calculateCumulativeSums(messages: Array<Message>): { cumTokens: Array<number> } {
-  const n = messages.length
-  const cumTokens = Array.from<number>({ length: n + 1 }).fill(0)
-  for (let i = n - 1; i >= 0; i--) {
-    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(messages[i])
-  }
-  return { cumTokens }
-}
-
-/**
- * Clean up orphaned tool messages and ensure valid conversation start.
- * Loops until stable since each pass may create new orphans.
- */
-function cleanupMessages(messages: Array<Message>): Array<Message> {
-  let result = messages
-  let prevLength: number
-  do {
-    prevLength = result.length
-    result = filterOpenAIOrphanedToolResults(result)
-    result = filterOpenAIOrphanedToolUse(result)
-    result = ensureOpenAIStartsWithUser(result)
-  } while (result.length !== prevLength)
-  return result
-}
-
-// ============================================================================
-// Smart Tool Result Compression
-// ============================================================================
-
-/**
- * Smart compression strategy for OpenAI format:
- * 1. Calculate tokens from the end until reaching preservePercent of limit
- * 2. Messages before that threshold get their tool content compressed
- * 3. Returns compressed messages and stats
- *
- * @param preservePercent - Percentage of context to preserve uncompressed (0.0-1.0)
- */
-function smartCompressToolResults(
-  messages: Array<Message>,
-  tokenLimit: number,
-  preservePercent: number,
-): {
-  messages: Array<Message>
-  compressedCount: number
-  compressThresholdIndex: number
-} {
-  // Calculate cumulative token size from the end
-  const n = messages.length
-  const { cumTokens } = calculateCumulativeSums(messages)
-
-  // Find the threshold index where we've used the preserve percentage of the limit
-  const preserveTokenLimit = Math.floor(tokenLimit * preservePercent)
-
-  let thresholdIndex = n
-  for (let i = n - 1; i >= 0; i--) {
-    if (cumTokens[i] > preserveTokenLimit) {
-      thresholdIndex = i + 1
-      break
-    }
-    thresholdIndex = i
-  }
-
-  // If threshold is at the end, nothing to compress
-  if (thresholdIndex >= n) {
-    return { messages, compressedCount: 0, compressThresholdIndex: n }
-  }
-
-  // Compress tool messages before threshold
-  const result: Array<Message> = []
-  let compressedCount = 0
-
-  for (const [i, msg] of messages.entries()) {
-    if (
-      i < thresholdIndex
-      && msg.role === "tool"
-      && typeof msg.content === "string"
-      && msg.content.length > LARGE_TOOL_RESULT_THRESHOLD
-    ) {
-      compressedCount++
-      result.push({
-        ...msg,
-        content: compressToolResultContent(msg.content),
-      })
-      continue
-    }
-    result.push(msg)
-  }
-
-  return {
-    messages: result,
-    compressedCount,
-    compressThresholdIndex: thresholdIndex,
-  }
-}
-
-// ============================================================================
-// Binary Search Algorithm
-// ============================================================================
-
-interface PreserveSearchParams {
-  messages: Array<Message>
-  systemTokens: number
-  tokenLimit: number
-}
-
-/**
- * Find the optimal index from which to preserve messages.
- * Uses binary search with pre-calculated cumulative sums.
- * Returns the smallest index where the preserved portion fits within limits.
- */
-function findOptimalPreserveIndex(params: PreserveSearchParams): number {
-  const { messages, systemTokens, tokenLimit } = params
-
-  if (messages.length === 0) return 0
-
-  // Account for truncation marker (~50 tokens)
-  const markerTokens = 50
-
-  const availableTokens = tokenLimit - systemTokens - markerTokens
-
-  if (availableTokens <= 0) {
-    return messages.length // Cannot fit any messages
-  }
-
-  // Pre-calculate cumulative sums from the end
-  const n = messages.length
-  const { cumTokens } = calculateCumulativeSums(messages)
-
-  // Binary search for the smallest index where token limit is satisfied
-  let left = 0
-  let right = n
-
-  while (left < right) {
-    const mid = (left + right) >>> 1
-    if (cumTokens[mid] <= availableTokens) {
-      right = mid // Can keep more messages
-    } else {
-      left = mid + 1 // Need to remove more
-    }
-  }
-
-  return left
-}
-
-// ============================================================================
 // Main API
 // ============================================================================
 
@@ -318,128 +147,6 @@ export async function checkNeedsCompactionOpenAI(
     currentTokens,
     tokenLimit,
     reason: exceedsTokens ? "tokens" : undefined,
-  }
-}
-
-/**
- * Generate a summary of removed messages for context.
- * Extracts key information like tool calls and topics.
- */
-function generateRemovedMessagesSummary(removedMessages: Array<Message>): string {
-  const toolCalls: Array<string> = []
-  let userMessageCount = 0
-  let assistantMessageCount = 0
-
-  for (const msg of removedMessages) {
-    if (msg.role === "user") {
-      userMessageCount++
-    } else if (msg.role === "assistant") {
-      assistantMessageCount++
-    }
-
-    // Extract tool call names
-    if (msg.tool_calls) {
-      for (const tc of msg.tool_calls) {
-        if (tc.function.name) {
-          toolCalls.push(tc.function.name)
-        }
-      }
-    }
-  }
-
-  // Build summary parts
-  const parts: Array<string> = []
-
-  // Message breakdown
-  if (userMessageCount > 0 || assistantMessageCount > 0) {
-    const breakdown = []
-    if (userMessageCount > 0) breakdown.push(`${userMessageCount} user`)
-    if (assistantMessageCount > 0) breakdown.push(`${assistantMessageCount} assistant`)
-    parts.push(`Messages: ${breakdown.join(", ")}`)
-  }
-
-  // Tool calls
-  if (toolCalls.length > 0) {
-    // Deduplicate and limit
-    const uniqueTools = [...new Set(toolCalls)]
-    const displayTools =
-      uniqueTools.length > 5 ? [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`] : uniqueTools
-    parts.push(`Tools used: ${displayTools.join(", ")}`)
-  }
-
-  return parts.join(". ")
-}
-
-/**
- * Add a compression notice to the system message.
- * Informs the model that some tool content has been compressed.
- */
-function addCompressionNotice(payload: ChatCompletionsPayload, compressedCount: number): ChatCompletionsPayload {
-  const notice =
-    `\n\n[CONTEXT NOTE]\n`
-    + `${compressedCount} large tool results have been compressed to reduce context size.\n`
-    + `The compressed results show the beginning and end of the content with an omission marker.\n`
-    + `If you need the full content, you can re-read the file or re-run the tool.\n`
-    + `[END NOTE]`
-
-  // Find last system message and append notice
-  const messages = [...payload.messages]
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
-    if (msg.role === "system" || msg.role === "developer") {
-      if (typeof msg.content === "string") {
-        messages[i] = { ...msg, content: msg.content + notice }
-      }
-      break
-    }
-  }
-
-  return { ...payload, messages }
-}
-
-/**
- * Create truncation context to append to system messages.
- */
-function createTruncationSystemContext(removedCount: number, compressedCount: number, summary: string): string {
-  let context = `\n\n[CONVERSATION CONTEXT]\n`
-
-  if (removedCount > 0) {
-    context += `${removedCount} earlier messages have been removed due to context window limits.\n`
-  }
-
-  if (compressedCount > 0) {
-    context += `${compressedCount} large tool results have been compressed.\n`
-  }
-
-  if (summary) {
-    context += `Summary of removed content: ${summary}\n`
-  }
-
-  context +=
-    `If you need earlier context, ask the user or check available tools for conversation history access.\n`
-    + `[END CONTEXT]`
-
-  return context
-}
-
-/** Create a truncation marker message (fallback when no system message) */
-function createTruncationMarker(removedCount: number, compressedCount: number, summary: string): Message {
-  const parts: Array<string> = []
-
-  if (removedCount > 0) {
-    parts.push(`${removedCount} earlier messages removed`)
-  }
-  if (compressedCount > 0) {
-    parts.push(`${compressedCount} tool results compressed`)
-  }
-
-  let content = `[CONTEXT MODIFIED: ${parts.join(", ")} to fit context limits]`
-  if (summary) {
-    content += `\n[Summary: ${summary}]`
-  }
-  return {
-    role: "user",
-    content,
   }
 }
 

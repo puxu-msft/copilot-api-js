@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** @deprecated Use VHistoryPage.vue (`/v/history`) for ongoing UI work. */
 import { ref } from "vue"
 
 import DetailPanel from "@/components/detail/DetailPanel.vue"

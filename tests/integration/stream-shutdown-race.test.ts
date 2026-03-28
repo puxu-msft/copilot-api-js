@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import { processAnthropicStream, type ProcessedAnthropicEvent } from "~/lib/anthropic/sse"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import { state } from "~/lib/state"
+import { state, setStateForTests } from "~/lib/state"
 import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIteratorNext } from "~/lib/stream"
 
 // ============================================================================
@@ -230,11 +230,11 @@ describe("processAnthropicStream + shutdown signal", () => {
   })
 
   afterEach(() => {
-    state.streamIdleTimeout = savedIdleTimeout
+    setStateForTests({ streamIdleTimeout: savedIdleTimeout })
   })
 
   test("yields all events from a normal stream", async () => {
-    state.streamIdleTimeout = 0
+    setStateForTests({ streamIdleTimeout: 0 })
 
     const sseMessages = [
       makeSseMsg(
@@ -284,7 +284,7 @@ describe("processAnthropicStream + shutdown signal", () => {
   })
 
   test("stops on [DONE] sentinel", async () => {
-    state.streamIdleTimeout = 0
+    setStateForTests({ streamIdleTimeout: 0 })
 
     const sseMessages = [
       makeSseMsg(
@@ -323,7 +323,7 @@ describe("processAnthropicStream + shutdown signal", () => {
   })
 
   test("stops on error event", async () => {
-    state.streamIdleTimeout = 0
+    setStateForTests({ streamIdleTimeout: 0 })
 
     const sseMessages = [
       makeSseMsg(
@@ -362,7 +362,7 @@ describe("processAnthropicStream + shutdown signal", () => {
   })
 
   test("yields keepalive events (no data)", async () => {
-    state.streamIdleTimeout = 0
+    setStateForTests({ streamIdleTimeout: 0 })
 
     const sseMessages: Array<ServerSentEventMessage> = [
       { data: undefined as unknown as string, event: "ping", id: undefined, retry: undefined },
@@ -396,7 +396,7 @@ describe("processAnthropicStream + shutdown signal", () => {
   })
 
   test("throws StreamIdleTimeoutError when stream stalls with idle timeout configured", async () => {
-    state.streamIdleTimeout = 0.05 // 50ms
+    setStateForTests({ streamIdleTimeout: 0.05 })
 
     const { stream, unstall } = createStallingStream([
       makeSseMsg(
@@ -433,7 +433,7 @@ describe("processAnthropicStream + shutdown signal", () => {
   })
 
   test("observes a shutdown signal that appears after streaming has already started", async () => {
-    state.streamIdleTimeout = 0
+    setStateForTests({ streamIdleTimeout: 0 })
 
     const { stream, unstall } = createStallingStream([
       makeSseMsg(
@@ -486,7 +486,7 @@ describe("shutdown signal interrupts stalled stream (the core bug fix)", () => {
   })
 
   afterEach(() => {
-    state.streamIdleTimeout = savedIdleTimeout
+    setStateForTests({ streamIdleTimeout: savedIdleTimeout })
   })
 
   /**
@@ -522,7 +522,7 @@ describe("shutdown signal interrupts stalled stream (the core bug fix)", () => {
 
   test("processAnthropicStream breaks out when idle timeout fires on stalled upstream", async () => {
     // This simulates the bug scenario with idle timeout as the safety net
-    state.streamIdleTimeout = 0.05 // 50ms
+    setStateForTests({ streamIdleTimeout: 0.05 })
 
     const initialEvents = [
       makeSseMsg(

@@ -2,10 +2,11 @@ import { defineConfig } from "@playwright/test"
 
 export default defineConfig({
   testDir: "tests/e2e-ui",
+  testMatch: /.*\.pw\.ts/,
   timeout: 30000,
   retries: 1,
   use: {
-    baseURL: "http://localhost:4141",
+    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:4141",
     headless: true,
   },
   projects: [

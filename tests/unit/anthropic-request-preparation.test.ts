@@ -5,19 +5,13 @@ import {
   markAnthropicFeatureUnsupported,
   resetAnthropicFeatureNegotiationForTesting,
 } from "~/lib/anthropic/feature-negotiation"
-import { state } from "~/lib/state"
+import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-const originalContextEditingMode = state.contextEditingMode
-const originalCopilotToken = state.copilotToken
-const originalVsCodeVersion = state.vsCodeVersion
-const originalAccountType = state.accountType
+const originalState = snapshotStateForTests()
 
 afterEach(() => {
-  state.contextEditingMode = originalContextEditingMode
-  state.copilotToken = originalCopilotToken
-  state.vsCodeVersion = originalVsCodeVersion
-  state.accountType = originalAccountType
+  restoreStateForTests(originalState)
   resetAnthropicFeatureNegotiationForTesting()
 })
 
@@ -31,10 +25,12 @@ function basePayload(): MessagesPayload {
 
 describe("prepareAnthropicRequest", () => {
   test("auto-injects context_management and beta when context editing is enabled", () => {
-    state.contextEditingMode = "clear-tooluse"
-    state.copilotToken = "test-token"
-    state.vsCodeVersion = "1.100.0"
-    state.accountType = "individual"
+    setStateForTests({
+      contextEditingMode: "clear-tooluse",
+      copilotToken: "test-token",
+      vsCodeVersion: "1.100.0",
+      accountType: "individual",
+    })
 
     const prepared = prepareAnthropicRequest(basePayload())
     expect(prepared.wire.context_management).toEqual({
@@ -50,10 +46,12 @@ describe("prepareAnthropicRequest", () => {
   })
 
   test("suppresses context_management when negotiation cache marks it unsupported", () => {
-    state.contextEditingMode = "clear-tooluse"
-    state.copilotToken = "test-token"
-    state.vsCodeVersion = "1.100.0"
-    state.accountType = "individual"
+    setStateForTests({
+      contextEditingMode: "clear-tooluse",
+      copilotToken: "test-token",
+      vsCodeVersion: "1.100.0",
+      accountType: "individual",
+    })
     markAnthropicFeatureUnsupported("claude-opus-4-6", "context_management")
 
     const prepared = prepareAnthropicRequest(basePayload())
@@ -63,10 +61,12 @@ describe("prepareAnthropicRequest", () => {
   })
 
   test("suppresses explicitly provided context_management when upstream is known unsupported", () => {
-    state.contextEditingMode = "off"
-    state.copilotToken = "test-token"
-    state.vsCodeVersion = "1.100.0"
-    state.accountType = "individual"
+    setStateForTests({
+      contextEditingMode: "off",
+      copilotToken: "test-token",
+      vsCodeVersion: "1.100.0",
+      accountType: "individual",
+    })
     markAnthropicFeatureUnsupported("claude-opus-4-6", "context_management")
 
     const prepared = prepareAnthropicRequest({

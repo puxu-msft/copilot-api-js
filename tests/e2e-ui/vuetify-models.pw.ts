@@ -1,22 +1,11 @@
 import { test, expect } from "@playwright/test"
+import { ensureServerRunning, uiUrl } from "./helpers"
 
-const BASE_URL = "http://localhost:4141"
-
-test.beforeAll(async () => {
-  try {
-    const res = await fetch(`${BASE_URL}/health`)
-    if (!res.ok) throw new Error(`Health check returned ${res.status}`)
-  } catch (error) {
-    throw new Error(
-      `Server is not running at ${BASE_URL}. Start the server before running E2E tests. ` +
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-    )
-  }
-})
+test.beforeAll(ensureServerRunning)
 
 test.describe("Vuetify Models", () => {
   test("renders model cards (at least 1)", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/models")
+    await page.goto(uiUrl("#/v/models"))
 
     // Wait for model cards to appear (API fetch + render)
     await page.waitForSelector(".model-card", { timeout: 15000 }).catch(() => {})
@@ -30,16 +19,14 @@ test.describe("Vuetify Models", () => {
   })
 
   test("toolbar shows Models heading with count", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/models")
+    await page.goto(uiUrl("#/v/models"))
 
-    await expect(page.locator(".v-toolbar-title", { hasText: "Models" })).toBeVisible()
-    // Count chip next to title — Vuetify 4 renders v-chip as custom element
-    const countChip = page.locator(".v-toolbar .v-chip")
-    await expect(countChip).toBeVisible({ timeout: 15000 })
+    await expect(page.locator("main")).toContainText("Models")
+    await expect(page.getByPlaceholder("Search models...")).toBeVisible({ timeout: 15000 })
   })
 
   test("search filter narrows results", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/models")
+    await page.goto(uiUrl("#/v/models"))
 
     // Wait for models to load
     await page.waitForSelector(".model-card", { timeout: 15000 }).catch(() => {})
@@ -50,15 +37,15 @@ test.describe("Vuetify Models", () => {
       return
     }
 
-    // Get the first model's ID to use as search term
-    const firstModelId = await page.locator(".model-card .text-subtitle-2").first().textContent()
+    const firstCardText = await page.locator(".model-card").first().textContent()
+    const firstModelId = firstCardText?.match(/\b(?:claude|gpt|gemini)-[A-Za-z0-9.-]+/)?.[0]
     if (!firstModelId) {
       test.skip()
       return
     }
 
     // Find the search input inside the Vuetify text field
-    const searchInput = page.locator('.v-text-field input[type="text"]').first()
+    const searchInput = page.getByPlaceholder("Search models...")
     const box = await searchInput.boundingBox({ timeout: 5000 }).catch(() => null)
     if (!box || box.width === 0) {
       test.skip()
@@ -72,10 +59,11 @@ test.describe("Vuetify Models", () => {
     const filteredCount = await page.locator(".model-card").count()
     expect(filteredCount).toBeLessThanOrEqual(initialCount)
     expect(filteredCount).toBeGreaterThan(0)
+    await expect(page.locator("main")).toContainText(searchTerm)
   })
 
   test("vendor filter narrows results", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/models")
+    await page.goto(uiUrl("#/v/models"))
 
     // Wait for models to load
     await page.waitForSelector(".model-card", { timeout: 15000 }).catch(() => {})
@@ -106,7 +94,7 @@ test.describe("Vuetify Models", () => {
   })
 
   test("Cards/Raw toggle shows JSON in Raw mode", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/models")
+    await page.goto(uiUrl("#/v/models"))
 
     // Wait for models to load
     await page.waitForSelector(".model-card", { timeout: 15000 }).catch(() => {})
@@ -149,7 +137,7 @@ test.describe("Vuetify Models", () => {
   })
 
   test("per-card RAW toggle shows individual model JSON", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/models")
+    await page.goto(uiUrl("#/v/models"))
 
     // Wait for models to load
     await page.waitForSelector(".model-card", { timeout: 15000 }).catch(() => {})

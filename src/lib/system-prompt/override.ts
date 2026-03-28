@@ -1,19 +1,15 @@
 /**
- * System Prompt Manager: config-based overrides.
+ * System prompt override application.
  *
- * - **Overrides**: Applies per-line replacement rules from config.yaml.
- *   Always active.
+ * Applies config-driven override / prepend / append rules for Anthropic,
+ * OpenAI Chat Completions, and Responses instructions.
  */
 
 import type { TextBlockParam } from "~/types/api/anthropic"
 import type { ContentPart, Message } from "~/types/api/openai-chat-completions"
 
-import { applyConfigToState } from "./config/config"
-import { state, type CompiledRewriteRule } from "./state"
-
-// ============================================================================
-// Override Application
-// ============================================================================
+import { applyConfigToState } from "../config/config"
+import { state, type CompiledRewriteRule } from "../state"
 
 /**
  * Apply overrides to a text block.
@@ -34,10 +30,6 @@ export function applyOverrides(text: string, rules: Array<CompiledRewriteRule>, 
   }
   return result
 }
-
-// ============================================================================
-// Core: Plain Text System Prompt Processing
-// ============================================================================
 
 /**
  * Process a plain-text system prompt: apply overrides, prepend, and append.
@@ -60,22 +52,16 @@ export async function processSystemPromptText(text: string, model?: string): Pro
   return result
 }
 
-// ============================================================================
-// Public API: Anthropic
-// ============================================================================
-
 export async function processAnthropicSystem(
   system: string | Array<TextBlockParam> | undefined,
   model?: string,
 ): Promise<string | Array<TextBlockParam> | undefined> {
   if (!system) return system
 
-  // String system prompt — delegate to shared core
   if (typeof system === "string") {
     return processSystemPromptText(system, model)
   }
 
-  // TextBlockParam[] — apply overrides, prepend, append per block
   const config = await applyConfigToState()
   const prepend = config.system_prompt_prepend
   const append = config.system_prompt_append
@@ -99,15 +85,9 @@ export async function processAnthropicSystem(
   return result
 }
 
-// ============================================================================
-// Public API: OpenAI
-// ============================================================================
-
 export async function processOpenAIMessages(messages: Array<Message>, model?: string): Promise<Array<Message>> {
-  // Extract system/developer messages
   const systemMessages = messages.filter((m) => m.role === "system" || m.role === "developer")
   if (systemMessages.length === 0) {
-    // Even with no system messages, we may need to prepend/append
     const config = await applyConfigToState()
     let result = messages
     if (config.system_prompt_prepend) {
@@ -119,12 +99,10 @@ export async function processOpenAIMessages(messages: Array<Message>, model?: st
     return result
   }
 
-  // Load config (also applies to state, populating systemPromptOverrides)
   const config = await applyConfigToState()
   const prepend = config.system_prompt_prepend
   const append = config.system_prompt_append
 
-  // Apply overrides to system/developer messages
   let result =
     state.systemPromptOverrides.length > 0 ?
       messages.map((msg) => {
@@ -150,22 +128,16 @@ export async function processOpenAIMessages(messages: Array<Message>, model?: st
       })
     : messages
 
-  // Apply prepend — insert a system message at the beginning
   if (prepend) {
     result = [{ role: "system" as const, content: prepend }, ...result]
   }
 
-  // Apply append — insert a system message at the end
   if (append) {
     result = [...result, { role: "system" as const, content: append }]
   }
 
   return result
 }
-
-// ============================================================================
-// Public API: Responses
-// ============================================================================
 
 /**
  * Process Responses API `instructions` field (system prompt equivalent).

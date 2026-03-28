@@ -24,17 +24,17 @@ import {
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,
 } from "~/lib/sanitize-system-reminder"
-import { state } from "~/lib/state"
+import { state, setStateForTests } from "~/lib/state"
 
 let originalImmutableThinkingMessages: boolean
 
 beforeEach(() => {
   originalImmutableThinkingMessages = state.immutableThinkingMessages
-  state.immutableThinkingMessages = false
+  setStateForTests({ immutableThinkingMessages: false })
 })
 
 afterEach(() => {
-  state.immutableThinkingMessages = originalImmutableThinkingMessages
+  setStateForTests({ immutableThinkingMessages: originalImmutableThinkingMessages })
 })
 
 // =============================================================================
@@ -1546,7 +1546,7 @@ describe("Server Tool Use Support", () => {
     })
 
     test("immutable_thinking_messages should preserve a thinking assistant message unchanged", () => {
-      state.immutableThinkingMessages = true
+      setStateForTests({ immutableThinkingMessages: true })
 
       const immutableAssistant = {
         role: "assistant" as const,
@@ -1586,7 +1586,7 @@ describe("Server Tool Use Support", () => {
     })
 
     test("immutable_thinking_messages should keep adjacent empty text blocks in thinking assistant messages", () => {
-      state.immutableThinkingMessages = true
+      setStateForTests({ immutableThinkingMessages: true })
 
       const immutableAssistant = {
         role: "assistant" as const,

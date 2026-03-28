@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** @deprecated Use VModelsPage.vue (`/v/models`) for ongoing UI work. */
 import { ref, computed, onMounted } from "vue"
 
 import { api } from "@/api/http"

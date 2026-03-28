@@ -29,7 +29,7 @@ import {
 } from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
 import { autoTruncateOpenAI, checkNeedsCompactionOpenAI } from "~/lib/openai/auto-truncate"
-import { state } from "~/lib/state"
+import { state, setStateForTests } from "~/lib/state"
 
 // Mock model with limits small enough that test payloads exceed them.
 // The GPT tokenizer (o200k_base) tokenizes "x".repeat(10000) as ~1254 tokens,
@@ -244,7 +244,7 @@ describe("Auto-Truncate Anthropic", () => {
       const strippedTokens = await countTotalTokens(manuallyStrippedPayload, mockModel)
       const targetTokenLimit = Math.floor((originalTokens + strippedTokens) / 2)
 
-      state.immutableThinkingMessages = false
+      setStateForTests({ immutableThinkingMessages: false })
       const mutableResult = await autoTruncateAnthropic(payload, mockModel, { targetTokenLimit })
       const mutableAssistant = mutableResult.payload.messages[1]
       expect(Array.isArray(mutableAssistant.content)).toBe(true)
@@ -252,7 +252,7 @@ describe("Auto-Truncate Anthropic", () => {
         expect(mutableAssistant.content.some((block) => block.type === "thinking")).toBe(false)
       }
 
-      state.immutableThinkingMessages = true
+      setStateForTests({ immutableThinkingMessages: true })
       const immutableResult = await autoTruncateAnthropic(payload, mockModel, { targetTokenLimit })
       const oldAssistant = immutableResult.payload.messages.find(
         (message) =>
@@ -274,7 +274,7 @@ describe("Auto-Truncate Anthropic", () => {
         ).toBe(false)
       }
     } finally {
-      state.immutableThinkingMessages = originalImmutableThinkingMessages
+      setStateForTests({ immutableThinkingMessages: originalImmutableThinkingMessages })
     }
   })
 })
@@ -810,7 +810,7 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
   test("Anthropic: should compress recent tool_results when old compression isn't enough", async () => {
     // Ensure compress is enabled
     const origCompress = state.compressToolResultsBeforeTruncate
-    state.compressToolResultsBeforeTruncate = true
+    setStateForTests({ compressToolResultsBeforeTruncate: true })
 
     try {
       // Build payload with tool_use/tool_result pairs spread across old and recent positions
@@ -861,13 +861,13 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
         }
       }
     } finally {
-      state.compressToolResultsBeforeTruncate = origCompress
+      setStateForTests({ compressToolResultsBeforeTruncate: origCompress })
     }
   })
 
   test("OpenAI: should compress recent tool messages when old compression isn't enough", async () => {
     const origCompress = state.compressToolResultsBeforeTruncate
-    state.compressToolResultsBeforeTruncate = true
+    setStateForTests({ compressToolResultsBeforeTruncate: true })
 
     try {
       const messages: ChatCompletionsPayload["messages"] = [
@@ -907,7 +907,7 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
         }
       }
     } finally {
-      state.compressToolResultsBeforeTruncate = origCompress
+      setStateForTests({ compressToolResultsBeforeTruncate: origCompress })
     }
   })
 })

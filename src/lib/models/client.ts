@@ -1,13 +1,12 @@
 import { copilotBaseUrl, copilotHeaders } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { createFetchSignal } from "~/lib/fetch-utils"
-import { rebuildModelIndex, state } from "~/lib/state"
+import { state, setModels } from "~/lib/state"
 
 /** Fetch models from Copilot API and cache in global state */
 export async function cacheModels(): Promise<void> {
   const models = await getModels()
-  state.models = models
-  rebuildModelIndex()
+  setModels(models)
 }
 
 export const getModels = async () => {

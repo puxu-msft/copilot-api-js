@@ -1,4 +1,4 @@
-import { state } from "~/lib/state"
+import { setGitHubToken, state } from "~/lib/state"
 import { getGitHubUser } from "~/lib/token/github-client"
 
 import type { TokenInfo, TokenValidationResult } from "../types"
@@ -47,7 +47,7 @@ export abstract class GitHubTokenProvider {
     const originalToken = state.githubToken
 
     try {
-      state.githubToken = token
+      setGitHubToken(token)
       const user = await getGitHubUser()
       return {
         valid: true,
@@ -60,7 +60,7 @@ export abstract class GitHubTokenProvider {
       }
     } finally {
       // Restore original token
-      state.githubToken = originalToken
+      setGitHubToken(originalToken)
     }
   }
 }

@@ -1,22 +1,11 @@
 import { test, expect } from "@playwright/test"
+import { ensureServerRunning, uiUrl } from "./helpers"
 
-const BASE_URL = "http://localhost:4141"
-
-test.beforeAll(async () => {
-  try {
-    const res = await fetch(`${BASE_URL}/health`)
-    if (!res.ok) throw new Error(`Health check returned ${res.status}`)
-  } catch (error) {
-    throw new Error(
-      `Server is not running at ${BASE_URL}. Start the server before running E2E tests. ` +
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-    )
-  }
-})
+test.beforeAll(ensureServerRunning)
 
 test.describe("Legacy Pages", () => {
-  test("legacy /history/v3#/history renders", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/history")
+  test("legacy /ui#/history renders", async ({ page }) => {
+    await page.goto(uiUrl("#/history"))
     // Legacy history page uses the non-Vuetify layout (.app wrapper)
     await page.waitForTimeout(1000)
     // Should have the NavBar and no crash
@@ -26,32 +15,32 @@ test.describe("Legacy Pages", () => {
     expect(bodyText).toBeTruthy()
   })
 
-  test("legacy /history/v3#/logs renders", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/logs")
+  test("legacy /ui#/logs renders", async ({ page }) => {
+    await page.goto(uiUrl("#/logs"))
     await page.waitForTimeout(1000)
     await expect(page.locator("nav.navbar")).toBeVisible()
     const bodyText = await page.locator("body").textContent()
     expect(bodyText).toBeTruthy()
   })
 
-  test("legacy /history/v3#/dashboard renders", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/dashboard")
+  test("legacy /ui#/dashboard renders", async ({ page }) => {
+    await page.goto(uiUrl("#/dashboard"))
     await page.waitForTimeout(1000)
     await expect(page.locator("nav.navbar")).toBeVisible()
     const bodyText = await page.locator("body").textContent()
     expect(bodyText).toBeTruthy()
   })
 
-  test("legacy /history/v3#/models renders", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/models")
+  test("legacy /ui#/models renders", async ({ page }) => {
+    await page.goto(uiUrl("#/models"))
     await page.waitForTimeout(1000)
     await expect(page.locator("nav.navbar")).toBeVisible()
     const bodyText = await page.locator("body").textContent()
     expect(bodyText).toBeTruthy()
   })
 
-  test("legacy /history/v3#/usage renders", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/usage")
+  test("legacy /ui#/usage renders", async ({ page }) => {
+    await page.goto(uiUrl("#/usage"))
     await page.waitForTimeout(1000)
     await expect(page.locator("nav.navbar")).toBeVisible()
     const bodyText = await page.locator("body").textContent()
@@ -67,11 +56,11 @@ test.describe("Legacy Pages", () => {
     })
 
     const legacyRoutes = [
-      "http://localhost:4141/history/v3#/history",
-      "http://localhost:4141/history/v3#/logs",
-      "http://localhost:4141/history/v3#/dashboard",
-      "http://localhost:4141/history/v3#/models",
-      "http://localhost:4141/history/v3#/usage",
+      uiUrl("#/history"),
+      uiUrl("#/logs"),
+      uiUrl("#/dashboard"),
+      uiUrl("#/models"),
+      uiUrl("#/usage"),
     ]
 
     for (const route of legacyRoutes) {

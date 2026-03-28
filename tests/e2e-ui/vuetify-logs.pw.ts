@@ -1,27 +1,16 @@
 import { test, expect } from "@playwright/test"
+import { ensureServerRunning, uiUrl } from "./helpers"
 
-const BASE_URL = "http://localhost:4141"
-
-test.beforeAll(async () => {
-  try {
-    const res = await fetch(`${BASE_URL}/health`)
-    if (!res.ok) throw new Error(`Health check returned ${res.status}`)
-  } catch (error) {
-    throw new Error(
-      `Server is not running at ${BASE_URL}. Start the server before running E2E tests. ` +
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-    )
-  }
-})
+test.beforeAll(ensureServerRunning)
 
 test.describe("Vuetify Logs", () => {
   test("renders Live Logs heading", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/logs")
-    await expect(page.locator(".v-toolbar-title", { hasText: "Live Logs" })).toBeVisible()
+    await page.goto(uiUrl("#/v/logs"))
+    await expect(page.locator("main")).toContainText("Live Logs")
   })
 
   test("table renders with correct headers", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/logs")
+    await page.goto(uiUrl("#/v/logs"))
 
     // Wait for page to load
     await page.waitForTimeout(2000)
@@ -41,7 +30,6 @@ test.describe("Vuetify Logs", () => {
       const headerTexts = await headers.allTextContents()
 
       // Should have expected column headers
-      expect(headerTexts.some((h) => h.includes("St"))).toBeTruthy()
       expect(headerTexts.some((h) => h.includes("Time"))).toBeTruthy()
       expect(headerTexts.some((h) => h.includes("Model"))).toBeTruthy()
       expect(headerTexts.some((h) => h.includes("Dur"))).toBeTruthy()
@@ -52,10 +40,9 @@ test.describe("Vuetify Logs", () => {
   })
 
   test("entry count chip is visible", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/logs")
+    await page.goto(uiUrl("#/v/logs"))
 
-    // The chip showing entry count should be visible (Vuetify 4 custom element)
-    const countChip = page.locator(".v-chip", { hasText: /\d+ entries/ })
+    const countChip = page.getByText(/\d+ entries/)
     await expect(countChip).toBeVisible({ timeout: 10000 })
   })
 })

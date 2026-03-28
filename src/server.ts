@@ -8,7 +8,7 @@ import { forwardError } from "./lib/error"
 import { state } from "./lib/state"
 import { ensureValidCopilotToken } from "./lib/token"
 import { tuiMiddleware } from "./lib/tui"
-import { registerRoutes } from "./routes"
+import { registerHttpRoutes } from "./routes"
 
 export const server = new Hono()
 
@@ -70,5 +70,6 @@ server.get("/health", (c) => {
   )
 })
 
-// Register all API routes
-registerRoutes(server)
+// Register HTTP routes. WebSocket routes are injected later in start.ts after
+// a shared adapter is created for the concrete runtime/server instance.
+registerHttpRoutes(server)

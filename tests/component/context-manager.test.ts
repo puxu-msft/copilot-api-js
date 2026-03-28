@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import type { RequestContextEvent } from "~/lib/context/manager"
 
 import { createRequestContextManager } from "~/lib/context/manager"
-import { state } from "~/lib/state"
+import { state, setStateForTests } from "~/lib/state"
 
 describe("createRequestContextManager", () => {
   test("create() returns RequestContext and tracks it", () => {
@@ -156,7 +156,7 @@ describe("stale request reaper", () => {
   })
 
   afterEach(() => {
-    state.staleRequestMaxAge = origMaxAge
+    setStateForTests({ staleRequestMaxAge: origMaxAge })
   })
 
   test("startReaper is idempotent (multiple calls don't crash)", () => {
@@ -172,7 +172,7 @@ describe("stale request reaper", () => {
   })
 
   test("_runReaperOnce force-fails contexts exceeding maxAge", async () => {
-    state.staleRequestMaxAge = 0.05 // 50ms for testing
+    setStateForTests({ staleRequestMaxAge: 0.05 })
 
     const manager = createRequestContextManager()
     const events: Array<RequestContextEvent> = []
@@ -197,7 +197,7 @@ describe("stale request reaper", () => {
   })
 
   test("_runReaperOnce does not fail contexts within maxAge", () => {
-    state.staleRequestMaxAge = 600 // normal value
+    setStateForTests({ staleRequestMaxAge: 600 })
 
     const manager = createRequestContextManager()
     const ctx = manager.create({ endpoint: "anthropic-messages" })
@@ -210,7 +210,7 @@ describe("stale request reaper", () => {
   })
 
   test("_runReaperOnce skips when staleRequestMaxAge is 0 (disabled)", () => {
-    state.staleRequestMaxAge = 0
+    setStateForTests({ staleRequestMaxAge: 0 })
 
     const manager = createRequestContextManager()
     const ctx = manager.create({ endpoint: "anthropic-messages" })
@@ -223,7 +223,7 @@ describe("stale request reaper", () => {
   })
 
   test("_runReaperOnce handles already-completed context gracefully", async () => {
-    state.staleRequestMaxAge = 0.01 // 10ms
+    setStateForTests({ staleRequestMaxAge: 0.01 })
 
     const manager = createRequestContextManager()
     const ctx = manager.create({ endpoint: "anthropic-messages" })

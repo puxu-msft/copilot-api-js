@@ -1,7 +1,7 @@
 import consola from "consola"
 
 import { formatErrorWithCause } from "~/lib/error"
-import { state } from "~/lib/state"
+import { setCopilotToken, setGitHubToken } from "~/lib/state"
 
 import type { GitHubTokenManager } from "./github-token-manager"
 import type { CopilotTokenInfo } from "./types"
@@ -56,7 +56,7 @@ export class CopilotTokenManager {
     const tokenInfo = await this.fetchCopilotToken()
 
     // Update global state
-    state.copilotToken = tokenInfo.token
+    setCopilotToken(tokenInfo.token)
 
     // Show token in verbose mode
     consola.debug("GitHub Copilot Token fetched successfully!")
@@ -103,7 +103,7 @@ export class CopilotTokenManager {
           const newGithubToken = await this.githubTokenManager.refresh()
           if (newGithubToken) {
             // Update state and retry
-            state.githubToken = newGithubToken.token
+            setGitHubToken(newGithubToken.token)
             continue
           }
         }
@@ -201,7 +201,7 @@ export class CopilotTokenManager {
       .then((tokenInfo) => {
         if (tokenInfo) {
           this._refreshNeeded = false
-          state.copilotToken = tokenInfo.token
+          setCopilotToken(tokenInfo.token)
           // Reschedule based on new token's refresh_in
           this.scheduleRefresh(tokenInfo.refreshIn)
           consola.verbose(`[CopilotToken] Token refreshed (next refresh_in=${tokenInfo.refreshIn}s)`)

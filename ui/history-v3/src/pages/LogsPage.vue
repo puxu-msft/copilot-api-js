@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** @deprecated Use VLogsPage.vue (`/v/logs`) for ongoing UI work. */
 import { computed } from "vue"
 
 import type { EntrySummary } from "@/types"

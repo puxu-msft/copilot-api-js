@@ -80,6 +80,6 @@ npm run test:ui       # 前端测试
 
 ## 与后端的关系
 
-- 后端 `src/routes/history/route.ts` 通过 `serveStatic` 提供 `dist/` 中的静态文件
-- WebSocket 路由在 `initHistoryWebSocket()` 中注册到根 app 的 `/history/ws`
-- API 路由在 `src/routes/history/api.ts` 中，挂载在 `/history/api/`
+- 后端 `src/routes/ui/route.ts` 提供 `dist/` 中的静态文件，挂载到 `/ui`
+- WebSocket 路由通过 `registerWsRoutes()` 注册到根 app 的 `/ws`
+- API 路由在 `src/routes/history/route.ts` 中，挂载在 `/history/api/`

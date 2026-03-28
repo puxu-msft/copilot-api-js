@@ -1,7 +1,7 @@
 /**
  * Tests for history API route handlers.
  *
- * Tests the Hono route handlers in routes/history/api.ts by mounting them
+ * Tests the Hono route handlers in routes/history/handler.ts by mounting them
  * on a test Hono app and exercising via app.request(). Verifies query param
  * parsing, response formats, error handling, and data flow.
  */
@@ -28,7 +28,7 @@ import {
   handleGetSession,
   handleGetSessions,
   handleGetStats,
-} from "~/routes/history/api"
+} from "~/routes/history/handler"
 
 // ─── Test app ───
 

@@ -18,7 +18,7 @@ import { resolveModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { createChatCompletions } from "~/lib/openai/client"
 import { createEmbeddings } from "~/lib/openai/embeddings"
-import { rebuildModelIndex, state } from "~/lib/state"
+import { setModels, setStateForTests, state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
 import { getE2EMode, getGitHubToken } from "./config"
@@ -43,20 +43,21 @@ describeWithToken("Extended Copilot API Integration", () => {
     const githubToken = getGitHubToken()
     if (!githubToken) throw new Error("GITHUB_TOKEN required")
 
-    state.githubToken = githubToken
-    state.accountType = "individual"
-    state.stripServerTools = true
+    setStateForTests({
+      githubToken,
+      accountType: "individual",
+      stripServerTools: true,
+    })
 
     const { token } = await getCopilotToken()
-    state.copilotToken = token
+    setStateForTests({ copilotToken: token })
 
     const models = await getModels()
 
     if (!models?.data) {
       throw new Error("Failed to fetch models from GitHub Copilot API.")
     }
-    state.models = models
-    rebuildModelIndex()
+    setModels(models)
 
     claudeModel = models.data.find((m) => m.id.includes("claude-sonnet"))?.id ?? "claude-sonnet-4"
     gptModel = models.data.find((m) => m.id.includes("gpt-4"))?.id ?? "gpt-4o"

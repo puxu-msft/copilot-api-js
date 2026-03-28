@@ -13,7 +13,7 @@ export type { CopilotTokenInfo, TokenInfo, TokenSource, TokenValidationResult } 
 
 import consola from "consola"
 
-import { state } from "~/lib/state"
+import { setGitHubToken, setTokenState, state } from "~/lib/state"
 import { getGitHubUser } from "~/lib/token/github-client"
 
 import { CopilotTokenManager } from "./copilot-token-manager"
@@ -47,8 +47,8 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
 
   // Get GitHub token
   const tokenInfo = await githubTokenManager.getToken()
-  state.githubToken = tokenInfo.token
-  state.tokenInfo = tokenInfo
+  setGitHubToken(tokenInfo.token)
+  setTokenState({ tokenInfo })
 
   // Log token source
   const isExplicitToken = tokenInfo.source === "cli" || tokenInfo.source === "env"
@@ -102,7 +102,7 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   // If the token was explicitly provided and Copilot rejects it, abort with clear error
   try {
     const copilotTokenInfo = await copilotTokenManager.initialize()
-    state.copilotTokenInfo = copilotTokenInfo
+    setTokenState({ copilotTokenInfo })
   } catch (error) {
     if (isExplicitToken) {
       const source = tokenInfo.source === "cli" ? "--github-token" : "environment variable"

@@ -23,42 +23,42 @@ export interface CompiledRewriteRule {
 }
 
 export interface State {
-  githubToken?: string
-  copilotToken?: string
+  readonly githubToken?: string
+  readonly copilotToken?: string
 
   /** Token metadata (new token system) */
-  tokenInfo?: TokenInfo
-  copilotTokenInfo?: CopilotTokenInfo
+  readonly tokenInfo?: TokenInfo
+  readonly copilotTokenInfo?: CopilotTokenInfo
 
-  accountType: "individual" | "business" | "enterprise"
-  models?: ModelsResponse
+  readonly accountType: "individual" | "business" | "enterprise"
+  readonly models?: ModelsResponse
   /** O(1) lookup index: model ID → Model object. Rebuilt on cacheModels(). */
-  modelIndex: Map<string, Model>
+  readonly modelIndex: Map<string, Model>
   /** O(1) membership check: set of available model IDs. Rebuilt on cacheModels(). */
-  modelIds: Set<string>
-  vsCodeVersion?: string
+  readonly modelIds: Set<string>
+  readonly vsCodeVersion?: string
 
   /** Show GitHub token in logs */
-  showGitHubToken: boolean
-  verbose: boolean
+  readonly showGitHubToken: boolean
+  readonly verbose: boolean
 
   /** Adaptive rate limiting configuration */
-  adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
+  readonly adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
 
   /**
    * Auto-truncate: reactively truncate on limit errors and pre-check for known limits.
    * Enabled by default; disable with --no-auto-truncate.
    */
-  autoTruncate: boolean
+  readonly autoTruncate: boolean
 
   /**
    * Compress old tool results before truncating messages.
    * When enabled, large tool_result content is compressed to reduce context size.
    */
-  compressToolResultsBeforeTruncate: boolean
+  readonly compressToolResultsBeforeTruncate: boolean
 
   /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
-  stripServerTools: boolean
+  readonly stripServerTools: boolean
 
   /**
    * Treat any assistant message containing `thinking` or `redacted_thinking`
@@ -68,7 +68,7 @@ export interface State {
    * keep those assistant messages byte-for-byte intact instead of editing
    * adjacent text or tool blocks.
    */
-  immutableThinkingMessages: boolean
+  readonly immutableThinkingMessages: boolean
 
   /**
    * Model name overrides: request model → target model.
@@ -77,7 +77,7 @@ export interface State {
    * If the target is not in available models, it's resolved as an alias.
    * Defaults to DEFAULT_MODEL_OVERRIDES; config.yaml `model.model_overrides` replaces entirely.
    */
-  modelOverrides: Record<string, string>
+  readonly modelOverrides: Record<string, string>
 
   /**
    * Deduplicate repeated tool calls: remove duplicate tool_use/tool_result pairs,
@@ -87,7 +87,7 @@ export interface State {
    * - `"input"` — match by (tool_name, input); different results are still deduped
    * - `"result"` — match by (tool_name, input, result); only dedup when result is identical
    */
-  dedupToolCalls: false | "input" | "result"
+  readonly dedupToolCalls: false | "input" | "result"
 
   /**
    * Rewrite `<system-reminder>` tags in messages.
@@ -99,14 +99,14 @@ export interface State {
    *   - If replacement produces an empty string → remove the tag
    *   - Otherwise → replace tag content with the result
    */
-  rewriteSystemReminders: boolean | Array<CompiledRewriteRule>
+  readonly rewriteSystemReminders: boolean | Array<CompiledRewriteRule>
 
   /**
    * Strip injected `<system-reminder>` tags from Read tool results.
    * Reduces context bloat from repeated system reminders in file content.
    * Disabled by default; enable with config anthropic.strip_read_tool_result_tags.
    */
-  stripReadToolResultTags: boolean
+  readonly stripReadToolResultTags: boolean
 
   /**
    * Server-side context editing mode.
@@ -117,23 +117,23 @@ export interface State {
    * - `"clear-tooluse"` — clear old tool_use/tool_result pairs when input_tokens exceed threshold.
    * - `"clear-both"` — apply both clear-thinking and clear-tooluse edits.
    */
-  contextEditingMode: ContextEditingMode
+  readonly contextEditingMode: ContextEditingMode
 
   /** Pre-compiled system prompt override rules from config.yaml */
-  systemPromptOverrides: Array<CompiledRewriteRule>
+  readonly systemPromptOverrides: Array<CompiledRewriteRule>
 
   /**
    * Maximum number of history entries to keep in memory.
    * 0 = unlimited. Default: 200.
    */
-  historyLimit: number
+  readonly historyLimit: number
 
   /**
    * Minimum number of history entries to keep even under memory pressure.
    * The memory pressure monitor will never evict below this floor.
    * Default: 50.
    */
-  historyMinEntries: number
+  readonly historyMinEntries: number
 
   /**
    * Fetch timeout in seconds.
@@ -141,7 +141,7 @@ export interface State {
    * Applies to both streaming and non-streaming requests.
    * 0 = no timeout (rely on upstream gateway timeout).
    */
-  fetchTimeout: number
+  readonly fetchTimeout: number
 
   /**
    * Stream idle timeout in seconds.
@@ -150,28 +150,28 @@ export interface State {
    * Applies to all streaming paths (Anthropic, Chat Completions, Responses).
    * 0 = no idle timeout. Default: 300.
    */
-  streamIdleTimeout: number
+  readonly streamIdleTimeout: number
 
   /**
    * Shutdown Phase 2 timeout in seconds.
    * Wait for in-flight requests to complete naturally before sending abort signal.
    * Default: 60.
    */
-  shutdownGracefulWait: number
+  readonly shutdownGracefulWait: number
 
   /**
    * Shutdown Phase 3 timeout in seconds.
    * After abort signal, wait for handlers to wrap up before force-closing.
    * Default: 120.
    */
-  shutdownAbortWait: number
+  readonly shutdownAbortWait: number
 
   /**
    * Maximum age of an active request before the stale reaper forces it to fail (seconds).
    * Requests exceeding this age are assumed stuck and cleaned up.
    * 0 = disabled. Default: 600 (10 minutes).
    */
-  staleRequestMaxAge: number
+  readonly staleRequestMaxAge: number
 
   /**
    * Normalize function call IDs in Responses API input.
@@ -183,8 +183,14 @@ export interface State {
    *
    * Enabled by default; disable with config openai-responses.normalize_call_ids: false.
    */
-  normalizeResponsesCallIds: boolean
+  readonly normalizeResponsesCallIds: boolean
 }
+
+type MutableState = {
+  -readonly [K in keyof State]: State[K]
+}
+
+export type StateSnapshot = MutableState
 
 /** Epoch ms when the server started (set once in runServer) */
 export let serverStartTime = 0
@@ -194,14 +200,173 @@ export function setServerStartTime(ts: number): void {
   serverStartTime = ts
 }
 
+function updateState(patch: Partial<MutableState>): void {
+  Object.assign(mutableState, patch)
+}
+
+function cloneModels(models: ModelsResponse | undefined): ModelsResponse | undefined {
+  return models ? { ...models, data: [...models.data] } : undefined
+}
+
+function cloneRewriteRules(
+  rules: boolean | Array<CompiledRewriteRule>,
+): boolean | Array<CompiledRewriteRule> {
+  return Array.isArray(rules) ? [...rules] : rules
+}
+
+function cloneState(source: MutableState): MutableState {
+  return {
+    ...source,
+    adaptiveRateLimitConfig: source.adaptiveRateLimitConfig ? { ...source.adaptiveRateLimitConfig } : undefined,
+    copilotTokenInfo: source.copilotTokenInfo ? { ...source.copilotTokenInfo } : undefined,
+    modelIds: new Set(source.modelIds),
+    modelIndex: new Map(source.modelIndex),
+    modelOverrides: { ...source.modelOverrides },
+    models: cloneModels(source.models),
+    rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
+    systemPromptOverrides: [...source.systemPromptOverrides],
+    tokenInfo: source.tokenInfo ? { ...source.tokenInfo } : undefined,
+  }
+}
+
+function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
+  const cloned: Partial<MutableState> = { ...patch }
+
+  if ("adaptiveRateLimitConfig" in patch) {
+    cloned.adaptiveRateLimitConfig = patch.adaptiveRateLimitConfig ? { ...patch.adaptiveRateLimitConfig } : undefined
+  }
+  if ("copilotTokenInfo" in patch) {
+    cloned.copilotTokenInfo = patch.copilotTokenInfo ? { ...patch.copilotTokenInfo } : undefined
+  }
+  if ("modelIds" in patch) {
+    cloned.modelIds = patch.modelIds ? new Set(patch.modelIds) : undefined
+  }
+  if ("modelIndex" in patch) {
+    cloned.modelIndex = patch.modelIndex ? new Map(patch.modelIndex) : undefined
+  }
+  if ("modelOverrides" in patch) {
+    cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
+  }
+  if ("models" in patch) {
+    cloned.models = cloneModels(patch.models)
+  }
+  if ("rewriteSystemReminders" in patch) {
+    cloned.rewriteSystemReminders =
+      patch.rewriteSystemReminders === undefined ? undefined : cloneRewriteRules(patch.rewriteSystemReminders)
+  }
+  if ("systemPromptOverrides" in patch) {
+    cloned.systemPromptOverrides = patch.systemPromptOverrides ? [...patch.systemPromptOverrides] : undefined
+  }
+  if ("tokenInfo" in patch) {
+    cloned.tokenInfo = patch.tokenInfo ? { ...patch.tokenInfo } : undefined
+  }
+
+  return cloned
+}
+
+export function setGitHubToken(githubToken: string | undefined): void {
+  updateState({ githubToken })
+}
+
+export function setCopilotToken(copilotToken: string | undefined): void {
+  updateState({ copilotToken })
+}
+
+export function setTokenState(patch: Partial<Pick<MutableState, "tokenInfo" | "copilotTokenInfo">>): void {
+  updateState(patch)
+}
+
+export function setCliState(
+  patch: Partial<Pick<MutableState, "accountType" | "showGitHubToken" | "autoTruncate" | "verbose">>,
+): void {
+  updateState(patch)
+}
+
+export function setVSCodeVersion(vsCodeVersion: string | undefined): void {
+  updateState({ vsCodeVersion })
+}
+
+export function setModels(models: ModelsResponse | undefined): void {
+  updateState({ models })
+  rebuildModelIndex()
+}
+
+export function setAnthropicBehavior(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "stripServerTools"
+      | "immutableThinkingMessages"
+      | "dedupToolCalls"
+      | "stripReadToolResultTags"
+      | "contextEditingMode"
+      | "rewriteSystemReminders"
+      | "systemPromptOverrides"
+      | "compressToolResultsBeforeTruncate"
+    >
+  >,
+): void {
+  updateState(patch)
+}
+
+export function setModelOverrides(modelOverrides: Record<string, string>): void {
+  updateState({ modelOverrides })
+}
+
+export function setHistoryConfig(patch: Partial<Pick<MutableState, "historyLimit" | "historyMinEntries">>): void {
+  updateState(patch)
+}
+
+export function setShutdownConfig(
+  patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>,
+): void {
+  updateState(patch)
+}
+
+export function setTimeoutConfig(
+  patch: Partial<Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge">>,
+): void {
+  updateState(patch)
+}
+
+export function setResponsesConfig(patch: Partial<Pick<MutableState, "normalizeResponsesCallIds">>): void {
+  updateState(patch)
+}
+
+/**
+ * Capture a deep-enough clone of state for test restoration.
+ * Tests should prefer this over direct mutation snapshots so State can stay readonly.
+ */
+export function snapshotStateForTests(): StateSnapshot {
+  return cloneState(mutableState)
+}
+
+/**
+ * Controlled test-only mutation path.
+ * Keeps readonly State in application code while allowing tests to set fixtures.
+ */
+export function setStateForTests(patch: Partial<MutableState>): void {
+  updateState(cloneStatePatch(patch))
+  if ("models" in patch && !("modelIndex" in patch) && !("modelIds" in patch)) {
+    rebuildModelIndex()
+  }
+}
+
+/** Restore state from a snapshot captured by snapshotStateForTests(). */
+export function restoreStateForTests(snapshot: StateSnapshot): void {
+  updateState(cloneState(snapshot))
+}
+
 /**
  * Rebuild model lookup indexes from state.models.
  * Called by cacheModels() in production; call directly in tests after setting state.models.
  */
 export function rebuildModelIndex(): void {
-  const data = state.models?.data ?? []
-  state.modelIndex = new Map(data.map((m) => [m.id, m]))
-  state.modelIds = new Set(data.map((m) => m.id))
+  const data = mutableState.models?.data ?? []
+  updateState({
+    modelIndex: new Map(data.map((m) => [m.id, m])),
+    modelIds: new Set(data.map((m) => m.id)),
+  })
 }
 export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {
   opus: "claude-opus-4.6",
@@ -209,7 +374,7 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {
   haiku: "claude-haiku-4.5",
 }
 
-export const state: State = {
+const mutableState: MutableState = {
   accountType: "individual",
   autoTruncate: true,
   compressToolResultsBeforeTruncate: true,
@@ -234,3 +399,5 @@ export const state: State = {
   normalizeResponsesCallIds: true,
   verbose: false,
 }
+
+export const state: State = mutableState

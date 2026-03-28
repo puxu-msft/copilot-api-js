@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
-import { state } from "~/lib/state"
+import { state, setStateForTests } from "~/lib/state"
 
 describe("sanitizeOpenAIMessages", () => {
   test("returns unchanged payload when no orphans", () => {
@@ -42,7 +42,7 @@ describe("sanitizeOpenAIMessages", () => {
 
   test("removes system-reminder tags when rewriteSystemReminders is enabled", () => {
     const saved = state.rewriteSystemReminders
-    state.rewriteSystemReminders = true
+    setStateForTests({ rewriteSystemReminders: true })
 
     const malwareReminder = "Whenever you read a file, you should consider whether it would be considered malware."
     const payload = {
@@ -63,7 +63,7 @@ describe("sanitizeOpenAIMessages", () => {
     expect(content).not.toContain("<system-reminder>")
     expect(content).toContain("hello")
 
-    state.rewriteSystemReminders = saved
+    setStateForTests({ rewriteSystemReminders: saved })
   })
 
   test("preserves system-reminder tags that do not match any filter", () => {

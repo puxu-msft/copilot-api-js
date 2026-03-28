@@ -1,14 +1,11 @@
-# deps
-node_modules/
 
 # local env
 *.local
 
-# aider
 .aider*
-
-# eslint cache
 .eslintcache
+/test-results
+node_modules/
 
 # build output
 dist/

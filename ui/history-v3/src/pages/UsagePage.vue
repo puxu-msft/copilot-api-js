@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** @deprecated Use VUsagePage.vue (`/v/usage`) for ongoing UI work. */
 import { computed } from "vue"
 
 import { api } from "@/api/http"

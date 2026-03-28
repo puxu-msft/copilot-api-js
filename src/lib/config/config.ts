@@ -9,7 +9,17 @@ import consola from "consola"
 import fs from "node:fs/promises"
 
 import { setHistoryMaxEntries } from "~/lib/history"
-import { type CompiledRewriteRule, type ContextEditingMode, DEFAULT_MODEL_OVERRIDES, state } from "~/lib/state"
+import {
+  type CompiledRewriteRule,
+  type ContextEditingMode,
+  DEFAULT_MODEL_OVERRIDES,
+  setAnthropicBehavior,
+  setHistoryConfig,
+  setModelOverrides,
+  setResponsesConfig,
+  setShutdownConfig,
+  setTimeoutConfig,
+} from "~/lib/state"
 
 import { PATHS } from "./paths"
 
@@ -276,20 +286,22 @@ export async function applyConfigToState(): Promise<Config> {
   // Anthropic settings (scalar: override only when present)
   if (config.anthropic) {
     const a = config.anthropic
-    if (a.strip_server_tools !== undefined) state.stripServerTools = a.strip_server_tools
-    if (a.immutable_thinking_messages !== undefined) state.immutableThinkingMessages = a.immutable_thinking_messages
+    if (a.strip_server_tools !== undefined) setAnthropicBehavior({ stripServerTools: a.strip_server_tools })
+    if (a.immutable_thinking_messages !== undefined)
+      setAnthropicBehavior({ immutableThinkingMessages: a.immutable_thinking_messages })
     if (a.dedup_tool_calls !== undefined) {
       // Normalize: true → "input" for backward compatibility, false → false
-      state.dedupToolCalls = a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls
+      setAnthropicBehavior({ dedupToolCalls: a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls })
     }
-    if (a.strip_read_tool_result_tags !== undefined) state.stripReadToolResultTags = a.strip_read_tool_result_tags
-    if (a.context_editing !== undefined) state.contextEditingMode = a.context_editing
+    if (a.strip_read_tool_result_tags !== undefined)
+      setAnthropicBehavior({ stripReadToolResultTags: a.strip_read_tool_result_tags })
+    if (a.context_editing !== undefined) setAnthropicBehavior({ contextEditingMode: a.context_editing })
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {
-        state.rewriteSystemReminders = a.rewrite_system_reminders
+        setAnthropicBehavior({ rewriteSystemReminders: a.rewrite_system_reminders })
       } else if (Array.isArray(a.rewrite_system_reminders)) {
-        state.rewriteSystemReminders = compileRewriteRules(a.rewrite_system_reminders)
+        setAnthropicBehavior({ rewriteSystemReminders: compileRewriteRules(a.rewrite_system_reminders) })
       }
     }
   }
@@ -297,48 +309,50 @@ export async function applyConfigToState(): Promise<Config> {
   // System prompt overrides (collection: entire replacement)
   // Use Array.isArray to guard against YAML null (which passes !== undefined but crashes on .length)
   if (Array.isArray(config.system_prompt_overrides)) {
-    state.systemPromptOverrides =
-      config.system_prompt_overrides.length > 0 ? compileRewriteRules(config.system_prompt_overrides) : []
+    setAnthropicBehavior({
+      systemPromptOverrides:
+        config.system_prompt_overrides.length > 0 ? compileRewriteRules(config.system_prompt_overrides) : [],
+    })
   }
 
   // Model overrides (collection: entire replacement from defaults + config)
   // User deletes a key → it reverts to default; user adds a key → it overrides default
   if (config.model_overrides) {
-    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES, ...config.model_overrides }
+    setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES, ...config.model_overrides })
   }
 
   // Other settings (scalar: override only when present)
   if (config.compress_tool_results_before_truncate !== undefined)
-    state.compressToolResultsBeforeTruncate = config.compress_tool_results_before_truncate
+    setAnthropicBehavior({ compressToolResultsBeforeTruncate: config.compress_tool_results_before_truncate })
 
   // History settings (nested: override only when present)
   if (config.history) {
     const h = config.history
     if (h.limit !== undefined) {
-      state.historyLimit = h.limit
+      setHistoryConfig({ historyLimit: h.limit })
       setHistoryMaxEntries(h.limit)
     }
-    if (h.min_entries !== undefined) state.historyMinEntries = h.min_entries
+    if (h.min_entries !== undefined) setHistoryConfig({ historyMinEntries: h.min_entries })
   }
 
   // Shutdown timing (scalar: override only when present)
   if (config.shutdown) {
     const s = config.shutdown
-    if (s.graceful_wait !== undefined) state.shutdownGracefulWait = s.graceful_wait
-    if (s.abort_wait !== undefined) state.shutdownAbortWait = s.abort_wait
+    if (s.graceful_wait !== undefined) setShutdownConfig({ shutdownGracefulWait: s.graceful_wait })
+    if (s.abort_wait !== undefined) setShutdownConfig({ shutdownAbortWait: s.abort_wait })
   }
 
   // Top-level timeouts
-  if (config.fetch_timeout !== undefined) state.fetchTimeout = config.fetch_timeout
-  if (config.stream_idle_timeout !== undefined) state.streamIdleTimeout = config.stream_idle_timeout
+  if (config.fetch_timeout !== undefined) setTimeoutConfig({ fetchTimeout: config.fetch_timeout })
+  if (config.stream_idle_timeout !== undefined) setTimeoutConfig({ streamIdleTimeout: config.stream_idle_timeout })
 
   // Stale request reaper max age (scalar: override only when present)
-  if (config.stale_request_max_age !== undefined) state.staleRequestMaxAge = config.stale_request_max_age
+  if (config.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: config.stale_request_max_age })
 
   // Responses API settings (scalar: override only when present)
   const responsesConfig = config["openai-responses"]
   if (responsesConfig && responsesConfig.normalize_call_ids !== undefined)
-    state.normalizeResponsesCallIds = responsesConfig.normalize_call_ids
+    setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
 
   // Log when config actually changes (skip initial startup load)
   const currentMtime = getConfigMtimeMs()

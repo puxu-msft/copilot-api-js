@@ -16,7 +16,13 @@ import path from "node:path"
 import { applyConfigToState, resetApplyState, resetConfigCache } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
 import { historyState, initHistory } from "~/lib/history"
-import { DEFAULT_MODEL_OVERRIDES, state } from "~/lib/state"
+import {
+  DEFAULT_MODEL_OVERRIDES,
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  state,
+} from "~/lib/state"
 
 // ============================================================================
 // Helpers
@@ -40,49 +46,10 @@ async function removeConfig(): Promise<void> {
   }
 }
 
-/** Save and restore original state values */
-function snapshotState() {
-  return {
-    stripServerTools: state.stripServerTools,
-    immutableThinkingMessages: state.immutableThinkingMessages,
-    fetchTimeout: state.fetchTimeout,
-    streamIdleTimeout: state.streamIdleTimeout,
-    dedupToolCalls: state.dedupToolCalls,
-    stripReadToolResultTags: state.stripReadToolResultTags,
-    rewriteSystemReminders: state.rewriteSystemReminders,
-    modelOverrides: { ...state.modelOverrides },
-    compressToolResultsBeforeTruncate: state.compressToolResultsBeforeTruncate,
-    systemPromptOverrides: [...state.systemPromptOverrides],
-    historyLimit: state.historyLimit,
-    shutdownGracefulWait: state.shutdownGracefulWait,
-    shutdownAbortWait: state.shutdownAbortWait,
-    staleRequestMaxAge: state.staleRequestMaxAge,
-    normalizeResponsesCallIds: state.normalizeResponsesCallIds,
-  }
-}
-
-function restoreState(snapshot: ReturnType<typeof snapshotState>) {
-  state.stripServerTools = snapshot.stripServerTools
-  state.immutableThinkingMessages = snapshot.immutableThinkingMessages
-  state.fetchTimeout = snapshot.fetchTimeout
-  state.streamIdleTimeout = snapshot.streamIdleTimeout
-  state.dedupToolCalls = snapshot.dedupToolCalls
-  state.stripReadToolResultTags = snapshot.stripReadToolResultTags
-  state.rewriteSystemReminders = snapshot.rewriteSystemReminders
-  state.modelOverrides = snapshot.modelOverrides
-  state.compressToolResultsBeforeTruncate = snapshot.compressToolResultsBeforeTruncate
-  state.systemPromptOverrides = snapshot.systemPromptOverrides
-  state.historyLimit = snapshot.historyLimit
-  state.shutdownGracefulWait = snapshot.shutdownGracefulWait
-  state.shutdownAbortWait = snapshot.shutdownAbortWait
-  state.staleRequestMaxAge = snapshot.staleRequestMaxAge
-  state.normalizeResponsesCallIds = snapshot.normalizeResponsesCallIds
-}
-
-let originalState: ReturnType<typeof snapshotState>
+let originalState = snapshotStateForTests()
 
 beforeEach(async () => {
-  originalState = snapshotState()
+  originalState = snapshotStateForTests()
   // Redirect PATHS to a unique temp dir — isolates from concurrent test files
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "config-test-"))
   savedAppDir = PATHS.APP_DIR
@@ -95,7 +62,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  restoreState(originalState)
+  restoreStateForTests(originalState)
   // Restore original PATHS
   ;(PATHS as { APP_DIR: string }).APP_DIR = savedAppDir
   ;(PATHS as { CONFIG_YAML: string }).CONFIG_YAML = savedConfigYaml
@@ -125,7 +92,7 @@ stream_idle_timeout: 60
   })
 
   test("leaves state unchanged when config has no anthropic section", async () => {
-    state.fetchTimeout = 42
+    setStateForTests({ fetchTimeout: 42 })
     await writeConfig(`
 history:
   limit: 100
@@ -175,8 +142,7 @@ shutdown:
   })
 
   test("leaves shutdown fields unchanged when config has no shutdown section", async () => {
-    state.shutdownGracefulWait = 45
-    state.shutdownAbortWait = 90
+    setStateForTests({ shutdownGracefulWait: 45, shutdownAbortWait: 90 })
     await writeConfig("history_limit: 100\n")
     await applyConfigToState()
 
@@ -185,7 +151,7 @@ shutdown:
   })
 
   test("applies openai-responses.normalize_call_ids", async () => {
-    state.normalizeResponsesCallIds = false
+    setStateForTests({ normalizeResponsesCallIds: false })
     await writeConfig(`
 openai-responses:
   normalize_call_ids: true
@@ -195,7 +161,7 @@ openai-responses:
   })
 
   test("applies openai-responses.normalize_call_ids: false", async () => {
-    state.normalizeResponsesCallIds = true
+    setStateForTests({ normalizeResponsesCallIds: true })
     await writeConfig(`
 openai-responses:
   normalize_call_ids: false
@@ -205,7 +171,7 @@ openai-responses:
   })
 
   test("leaves normalizeResponsesCallIds unchanged when config has no openai-responses section", async () => {
-    state.normalizeResponsesCallIds = true
+    setStateForTests({ normalizeResponsesCallIds: true })
     await writeConfig("fetch_timeout: 30\n")
     await applyConfigToState()
     expect(state.normalizeResponsesCallIds).toBe(true)
@@ -218,7 +184,7 @@ openai-responses:
   })
 
   test("leaves staleRequestMaxAge unchanged when absent", async () => {
-    state.staleRequestMaxAge = 900
+    setStateForTests({ staleRequestMaxAge: 900 })
     await writeConfig("fetch_timeout: 30\n")
     await applyConfigToState()
     expect(state.staleRequestMaxAge).toBe(900)
@@ -299,7 +265,7 @@ system_prompt_overrides:
 
   test("system_prompt_overrides: absent config does not reset state", async () => {
     // Pre-populate
-    state.systemPromptOverrides = [{ from: /pre-existing/, to: "rule" }]
+    setStateForTests({ systemPromptOverrides: [{ from: /pre-existing/, to: "rule" }] })
 
     // Write config without system_prompt_overrides
     await writeConfig("history_limit: 100\n")
@@ -313,10 +279,12 @@ system_prompt_overrides:
 describe("applyConfigToState: empty / missing config", () => {
   test("empty config does not mutate state", async () => {
     // Set some non-default values
-    state.fetchTimeout = 99
-    state.modelOverrides = { opus: "custom-model" }
-    state.systemPromptOverrides = [{ from: /test/, to: "keep" }]
-    state.historyLimit = 500
+    setStateForTests({
+      fetchTimeout: 99,
+      modelOverrides: { opus: "custom-model" },
+      systemPromptOverrides: [{ from: /test/, to: "keep" }],
+      historyLimit: 500,
+    })
 
     await writeConfig("")
     await applyConfigToState()
@@ -329,8 +297,10 @@ describe("applyConfigToState: empty / missing config", () => {
   })
 
   test("missing config file does not mutate state", async () => {
-    state.modelOverrides = { opus: "custom-model" }
-    state.systemPromptOverrides = [{ from: /test/, to: "keep" }]
+    setStateForTests({
+      modelOverrides: { opus: "custom-model" },
+      systemPromptOverrides: [{ from: /test/, to: "keep" }],
+    })
 
     await removeConfig()
     await applyConfigToState()

@@ -7,7 +7,7 @@ import os from "node:os"
 
 import { ensurePaths, PATHS } from "./lib/config/paths"
 import { getModels } from "./lib/models/client"
-import { state } from "./lib/state"
+import { setCliState, setCopilotToken, setGitHubToken, state } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
 import { getCopilotToken, getCopilotUsage } from "./lib/token/copilot-client"
 import { getGitHubUser } from "./lib/token/github-client"
@@ -82,7 +82,7 @@ async function getAccountInfo(): Promise<{
     // Use GitHubTokenManager to get token
     const tokenManager = new GitHubTokenManager()
     const tokenInfo = await tokenManager.getToken()
-    state.githubToken = tokenInfo.token
+    setGitHubToken(tokenInfo.token)
 
     if (!state.githubToken) return null
 
@@ -191,23 +191,23 @@ const debugModels = defineCommand({
     },
   },
   async run({ args }) {
-    state.accountType = args["account-type"] as "individual" | "business" | "enterprise"
+    setCliState({ accountType: args["account-type"] as "individual" | "business" | "enterprise" })
 
     await ensurePaths()
 
     if (args["github-token"]) {
-      state.githubToken = args["github-token"]
+      setGitHubToken(args["github-token"])
       consola.info("Using provided GitHub token")
     } else {
       // Use GitHubTokenManager to get token
       const tokenManager = new GitHubTokenManager()
       const tokenInfo = await tokenManager.getToken()
-      state.githubToken = tokenInfo.token
+      setGitHubToken(tokenInfo.token)
     }
 
     // Get Copilot token without setting up refresh interval
     const { token } = await getCopilotToken()
-    state.copilotToken = token
+    setCopilotToken(token)
 
     const models = await getModels()
 

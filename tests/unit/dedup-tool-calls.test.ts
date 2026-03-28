@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import type { MessageParam } from "~/types/api/anthropic"
 
 import { deduplicateToolCalls } from "~/lib/anthropic/sanitize"
-import { state } from "~/lib/state"
+import { state, setStateForTests } from "~/lib/state"
 
 /** Helper: create an assistant message with tool_use blocks */
 function assistantWithTools(
@@ -27,11 +27,11 @@ let originalImmutableThinkingMessages: boolean
 
 beforeEach(() => {
   originalImmutableThinkingMessages = state.immutableThinkingMessages
-  state.immutableThinkingMessages = false
+  setStateForTests({ immutableThinkingMessages: false })
 })
 
 afterEach(() => {
-  state.immutableThinkingMessages = originalImmutableThinkingMessages
+  setStateForTests({ immutableThinkingMessages: originalImmutableThinkingMessages })
 })
 
 describe("deduplicateToolCalls", () => {
@@ -280,7 +280,7 @@ describe("deduplicateToolCalls", () => {
   })
 
   it("should not merge an immutable thinking assistant with adjacent assistant messages", () => {
-    state.immutableThinkingMessages = true
+    setStateForTests({ immutableThinkingMessages: true })
 
     const immutableAssistant = {
       role: "assistant",

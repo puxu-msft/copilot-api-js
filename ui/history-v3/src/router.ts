@@ -1,13 +1,13 @@
 import { createRouter, createWebHashHistory } from "vue-router"
 
 const router = createRouter({
-  history: createWebHashHistory("/history/v3/"),
+  history: createWebHashHistory("/ui/"),
   routes: [
     {
       path: "/",
       redirect: "/v/dashboard",
     },
-    // Legacy routes (original pages)
+    // @deprecated Legacy routes are maintenance-only. Prefer /v/* Vuetify routes.
     {
       path: "/history",
       name: "history",
@@ -33,7 +33,7 @@ const router = createRouter({
       name: "usage",
       component: () => import("@/pages/UsagePage.vue"),
     },
-    // Vuetify routes
+    // Canonical Vuetify routes
     {
       path: "/v/history",
       name: "v-history",

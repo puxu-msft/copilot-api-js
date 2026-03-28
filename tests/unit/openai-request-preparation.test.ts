@@ -2,24 +2,22 @@ import { afterEach, describe, expect, test } from "bun:test"
 
 import { prepareChatCompletionsRequest } from "~/lib/openai/client"
 import { prepareResponsesRequest } from "~/lib/openai/responses-client"
-import { state } from "~/lib/state"
+import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
-const originalCopilotToken = state.copilotToken
-const originalVsCodeVersion = state.vsCodeVersion
-const originalAccountType = state.accountType
+const originalState = snapshotStateForTests()
 
 afterEach(() => {
-  state.copilotToken = originalCopilotToken
-  state.vsCodeVersion = originalVsCodeVersion
-  state.accountType = originalAccountType
+  restoreStateForTests(originalState)
 })
 
 function initState() {
-  state.copilotToken = "test-token"
-  state.vsCodeVersion = "1.100.0"
-  state.accountType = "individual"
+  setStateForTests({
+    copilotToken: "test-token",
+    vsCodeVersion: "1.100.0",
+    accountType: "individual",
+  })
 }
 
 describe("prepareChatCompletionsRequest", () => {

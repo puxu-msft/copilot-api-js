@@ -3,16 +3,19 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Model } from "~/lib/models/client"
 
 import { getModelFamily, normalizeForMatching, resolveModelName } from "~/lib/models/resolver"
-import { DEFAULT_MODEL_OVERRIDES, rebuildModelIndex, state } from "~/lib/state"
+import {
+  DEFAULT_MODEL_OVERRIDES,
+  restoreStateForTests,
+  setModelOverrides,
+  setModels as setCachedModels,
+  snapshotStateForTests,
+  state,
+} from "~/lib/state"
 
-// Save original state for restoration after each test
-const originalModels = state.models
-const originalModelOverrides = { ...state.modelOverrides }
+const originalState = snapshotStateForTests()
 
 afterEach(() => {
-  state.models = originalModels
-  rebuildModelIndex()
-  state.modelOverrides = { ...originalModelOverrides }
+  restoreStateForTests(originalState)
 })
 
 function mockModel(id: string): Model {
@@ -29,8 +32,7 @@ function mockModel(id: string): Model {
 
 /** Set state.models and rebuild indexes for testing */
 function setModels(models: typeof state.models): void {
-  state.models = models
-  rebuildModelIndex()
+  setCachedModels(models)
 }
 
 describe("Model Name Translation", () => {
@@ -154,18 +156,18 @@ describe("model overrides", () => {
   })
 
   test("should override exact model name to available target", () => {
-    state.modelOverrides = { "claude-sonnet-4.5": "claude-opus-4.6" }
+    setModelOverrides({ "claude-sonnet-4.5": "claude-opus-4.6" })
     expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
   })
 
   test("should override short alias to specific model", () => {
-    state.modelOverrides = { sonnet: "claude-opus-4.6" }
+    setModelOverrides({ sonnet: "claude-opus-4.6" })
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.6")
   })
 
   test("should resolve override target as alias when not directly available", () => {
     // Target "opus" is not in available models, but resolves as short alias
-    state.modelOverrides = { sonnet: "opus" }
+    setModelOverrides({ sonnet: "opus" })
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.6")
   })
 
@@ -175,37 +177,37 @@ describe("model overrides", () => {
       object: "list",
       data: [mockModel("claude-opus-4.5"), mockModel("claude-sonnet-4.5")],
     })
-    state.modelOverrides = { sonnet: "claude-opus-4.6" }
+    setModelOverrides({ sonnet: "claude-opus-4.6" })
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.5")
   })
 
   test("should match resolved model name when raw name has no override", () => {
     // "claude-sonnet-4-5" resolves to "claude-sonnet-4.5", then check override
-    state.modelOverrides = { "claude-sonnet-4.5": "claude-opus-4.6" }
+    setModelOverrides({ "claude-sonnet-4.5": "claude-opus-4.6" })
     expect(resolveModelName("claude-sonnet-4-5")).toBe("claude-opus-4.6")
   })
 
   test("should not apply override to non-matching models", () => {
-    state.modelOverrides = { sonnet: "claude-opus-4.6" }
+    setModelOverrides({ sonnet: "claude-opus-4.6" })
     expect(resolveModelName("claude-opus-4.6")).toBe("claude-opus-4.6")
     expect(resolveModelName("gpt-4")).toBe("gpt-4")
   })
 
   test("should pass through when no overrides configured", () => {
-    state.modelOverrides = {}
+    setModelOverrides({})
     expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-sonnet-4.5")
     expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5") // still resolves via internal alias
   })
 
   test("should handle override to unknown model as passthrough", () => {
-    state.modelOverrides = { sonnet: "my-custom-model" }
+    setModelOverrides({ sonnet: "my-custom-model" })
     // my-custom-model is not available and not a known family — passed through
     expect(resolveModelName("sonnet")).toBe("my-custom-model")
   })
 
   test("default overrides map short aliases to top preferences", () => {
     // Verify DEFAULT_MODEL_OVERRIDES is applied correctly
-    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES }
+    setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
     expect(resolveModelName("opus")).toBe("claude-opus-4.6")
     expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5")
     expect(resolveModelName("haiku")).toBe("claude-haiku-4.5")
@@ -221,7 +223,7 @@ describe("model overrides", () => {
         mockModel("claude-haiku-4.5"),
       ],
     })
-    state.modelOverrides = { opus: "claude-opus-4.6-1m", sonnet: "opus" }
+    setModelOverrides({ opus: "claude-opus-4.6-1m", sonnet: "opus" })
     // sonnet → opus (override) → claude-opus-4.6-1m (chained override)
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.6-1m")
     // opus → claude-opus-4.6-1m (direct override)
@@ -233,7 +235,7 @@ describe("model overrides", () => {
       object: "list",
       data: [mockModel("claude-opus-4.6"), mockModel("claude-opus-4.6-1m"), mockModel("claude-sonnet-4.5")],
     })
-    state.modelOverrides = { opus: "claude-opus-4.6-1m" }
+    setModelOverrides({ opus: "claude-opus-4.6-1m" })
     // claude-opus-4-6 normalizes to claude-opus-4.6, then family override applies
     expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6-1m")
     // claude-opus-4.6 directly also gets family override
@@ -243,12 +245,12 @@ describe("model overrides", () => {
   test("should not apply family override when resolved model matches override target", () => {
     // Default overrides: opus → claude-opus-4.6
     // claude-opus-4-6 normalizes to claude-opus-4.6, which is the same as the override target
-    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES }
+    setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
     expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
   })
 
   test("should handle circular override chains gracefully", () => {
-    state.modelOverrides = { sonnet: "opus", opus: "sonnet" }
+    setModelOverrides({ sonnet: "opus", opus: "sonnet" })
     // Should not infinite loop — falls back to alias resolution
     const result = resolveModelName("sonnet")
     expect(result).toBeDefined()
@@ -256,7 +258,7 @@ describe("model overrides", () => {
 
   test("user overrides merge with defaults", () => {
     // Simulate deep merge: user overrides sonnet, keeps default opus/haiku
-    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES, sonnet: "claude-opus-4.6" }
+    setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES, sonnet: "claude-opus-4.6" })
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.6") // user override
     expect(resolveModelName("opus")).toBe("claude-opus-4.6") // default preserved
     expect(resolveModelName("haiku")).toBe("claude-haiku-4.5") // default preserved
@@ -286,7 +288,7 @@ describe("family override: propagates to all family members as last-resort fallb
 
   afterEach(() => {
     setModels(undefined)
-    state.modelOverrides = { ...DEFAULT_MODEL_OVERRIDES }
+    setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
   })
 
   // Same-family override (opus → opus-1m) propagates to all opus models
@@ -302,7 +304,7 @@ describe("family override: propagates to all family members as last-resort fallb
   for (const { input, expected } of opusTestCases) {
     test(`same-family propagation: ${input} → ${expected}`, () => {
       setModels(realModels)
-      state.modelOverrides = { ...overrides }
+      setModelOverrides({ ...overrides })
       expect(resolveModelName(input)).toBe(expected)
     })
   }
@@ -310,7 +312,7 @@ describe("family override: propagates to all family members as last-resort fallb
   // Cross-family override: also propagates to family members (step 4 fallback)
   test("cross-family: sonnet → opus propagates to all sonnet family members", () => {
     setModels(realModels)
-    state.modelOverrides = { ...overrides }
+    setModelOverrides({ ...overrides })
     // Short alias is redirected (step 1)
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.6-1m")
     // Specific sonnet models are also redirected (step 4 fallback)
@@ -322,7 +324,7 @@ describe("family override: propagates to all family members as last-resort fallb
 
   test("cross-family: haiku → claude-sonnet-4.6 propagates to all haiku family members", () => {
     setModels(realModels)
-    state.modelOverrides = { ...overrides }
+    setModelOverrides({ ...overrides })
     // Short alias is redirected (step 1)
     expect(resolveModelName("haiku")).toBe("claude-sonnet-4.6")
     // Specific haiku models are also redirected (step 4 fallback)
@@ -333,10 +335,10 @@ describe("family override: propagates to all family members as last-resort fallb
   test("direct override takes precedence over family override", () => {
     setModels(realModels)
     // sonnet → opus (family), but claude-sonnet-4.5 has its own direct override
-    state.modelOverrides = {
+    setModelOverrides({
       ...overrides,
       "claude-sonnet-4.5": "claude-haiku-4.5",
-    }
+    })
     // Direct override wins (step 1/3), not family override
     expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-haiku-4.5")
     // Other sonnet models still fall through to family override (step 4)
@@ -345,7 +347,7 @@ describe("family override: propagates to all family members as last-resort fallb
 
   test("within-family override: sonnet → claude-sonnet-4.5 propagates to all sonnet", () => {
     setModels(realModels)
-    state.modelOverrides = { sonnet: "claude-sonnet-4.5" }
+    setModelOverrides({ sonnet: "claude-sonnet-4.5" })
     // Same family, non-default override → propagates
     expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5")
     expect(resolveModelName("claude-sonnet-4")).toBe("claude-sonnet-4.5")
@@ -355,7 +357,7 @@ describe("family override: propagates to all family members as last-resort fallb
 
   test("non-Claude models pass through unchanged", () => {
     setModels(realModels)
-    state.modelOverrides = { ...overrides }
+    setModelOverrides({ ...overrides })
     expect(resolveModelName("gpt-4")).toBe("gpt-4")
     expect(resolveModelName("custom-model")).toBe("custom-model")
   })

@@ -1,18 +1,7 @@
 import { test, expect } from "@playwright/test"
+import { BASE_URL, ensureServerRunning } from "./helpers"
 
-const BASE_URL = "http://localhost:4141"
-
-test.beforeAll(async () => {
-  try {
-    const res = await fetch(`${BASE_URL}/health`)
-    if (!res.ok) throw new Error(`Health check returned ${res.status}`)
-  } catch (error) {
-    throw new Error(
-      `Server is not running at ${BASE_URL}. Start the server before running E2E tests. ` +
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-    )
-  }
-})
+test.beforeAll(ensureServerRunning)
 
 test.describe("API Endpoints", () => {
   test("GET /api/status returns 200 with expected fields", async ({ request }) => {

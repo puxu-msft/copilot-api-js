@@ -4,7 +4,11 @@
  */
 
 import type { Hono } from "hono"
+import type { UpgradeWebSocket } from "hono/ws"
 
+import { initWebSocket } from "~/lib/ws"
+
+import { initResponsesWebSocket } from "./responses/ws"
 import { chatCompletionRoutes } from "./chat-completions/route"
 import { configRoutes } from "./config/route"
 import { embeddingsRoutes } from "./embeddings/route"
@@ -16,11 +20,13 @@ import { modelsRoutes } from "./models/route"
 import { responsesRoutes } from "./responses/route"
 import { statusRoutes } from "./status/route"
 import { tokenRoutes } from "./token/route"
+import { uiRoutes } from "./ui/route"
 
 /**
- * Register all API routes on the given Hono app.
+ * Register all HTTP routes on the given Hono app.
  */
-export function registerRoutes(app: Hono) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function registerHttpRoutes(app: Hono) {
   // OpenAI-compatible endpoints
   app.route("/chat/completions", chatCompletionRoutes)
   app.route("/models", modelsRoutes)
@@ -43,7 +49,16 @@ export function registerRoutes(app: Hono) {
   app.route("/api/config", configRoutes)
   app.route("/api/logs", logsRoutes)
 
-  // History API (/history/api/*, /history/ws) + Web UI (/ui)
+  // History API and standalone Web UI entry
   app.route("/history", historyRoutes)
-  app.route("/ui", historyRoutes)
+  app.route("/ui", uiRoutes)
+}
+
+/**
+ * Register all WebSocket routes on the given Hono app.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function registerWsRoutes(app: Hono, wsUpgrade: UpgradeWebSocket<any>) {
+  initWebSocket(app, wsUpgrade)
+  initResponsesWebSocket(app, wsUpgrade)
 }

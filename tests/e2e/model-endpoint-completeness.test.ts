@@ -11,7 +11,7 @@ import type { Model } from "~/lib/models/client"
 
 import { getModels } from "~/lib/models/client"
 import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
-import { rebuildModelIndex, state } from "~/lib/state"
+import { setModels, setStateForTests } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
 import { getE2EMode, getGitHubToken } from "./config"
@@ -27,16 +27,14 @@ describeWithToken("Model endpoint completeness", () => {
     const githubToken = getGitHubToken()
     if (!githubToken) throw new Error("GITHUB_TOKEN required")
 
-    state.githubToken = githubToken
-    state.accountType = "individual"
+    setStateForTests({ githubToken, accountType: "individual" })
 
     const { token } = await getCopilotToken()
-    state.copilotToken = token
+    setStateForTests({ copilotToken: token })
 
     const models = await getModels()
     if (!models?.data) throw new Error("Failed to fetch models")
-    state.models = models
-    rebuildModelIndex()
+    setModels(models)
 
     allModels = models.data
     // Exclude embedding models from routing tests

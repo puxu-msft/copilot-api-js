@@ -20,12 +20,11 @@ import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { initProxy } from "./lib/proxy"
 import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
-import { setServerStartTime, state } from "./lib/state"
+import { setCliState, setServerStartTime, state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { initTuiLogger } from "./lib/tui"
-import { initWebSocket, setConnectedDataFactory } from "./lib/ws"
-import { createWebSocketAdapter } from "./lib/ws-adapter"
-import { initResponsesWebSocket } from "./routes/responses/ws"
+import { createWebSocketAdapter, setConnectedDataFactory } from "./lib/ws"
+import { registerWsRoutes } from "./routes"
 import { server } from "./server"
 
 /** Format limit values as "Xk" or "?" if not available */
@@ -109,7 +108,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   if (options.verbose) {
     consola.level = 5
-    state.verbose = true
+    setCliState({ verbose: true })
   }
 
   // ===========================================================================
@@ -118,9 +117,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   consola.info(`copilot-api v${packageJson.version}`)
 
   // Set global state from CLI options
-  state.accountType = options.accountType
-  state.showGitHubToken = options.showGitHubToken
-  state.autoTruncate = options.autoTruncate
+  setCliState({
+    accountType: options.accountType,
+    showGitHubToken: options.showGitHubToken,
+    autoTruncate: options.autoTruncate,
+  })
 
   // ===========================================================================
   // Phase 2.5: Load config.yaml and apply runtime settings
@@ -221,8 +222,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // on the Node HTTP server, which would cause ERR_STREAM_WRITE_AFTER_END
   // when one handler consumes the socket and the other tries to reject.
   const wsAdapter = await createWebSocketAdapter(server)
-  initWebSocket(server, wsAdapter.upgradeWebSocket)
-  initResponsesWebSocket(server, wsAdapter.upgradeWebSocket)
+  registerWsRoutes(server, wsAdapter.upgradeWebSocket)
 
   consola.box(`Web UI: ${serverUrl}/ui`)
 

@@ -9,7 +9,7 @@ import { describe, test, expect, beforeAll } from "bun:test"
 
 import { getModels } from "~/lib/models/client"
 import { resolveModelName } from "~/lib/models/resolver"
-import { rebuildModelIndex, state } from "~/lib/state"
+import { setModels, setStateForTests, state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
 import { getE2EMode, getGitHubToken } from "./config"
@@ -23,11 +23,10 @@ describeWithToken("Model Name Resolution", () => {
       throw new Error("GITHUB_TOKEN required but not found")
     }
 
-    state.githubToken = githubToken
-    state.accountType = "individual"
+    setStateForTests({ githubToken, accountType: "individual" })
 
     const { token } = await getCopilotToken()
-    state.copilotToken = token
+    setStateForTests({ copilotToken: token })
 
     // Cache models - getModels returns ModelsResponse which always has data
     // but we add runtime check for robustness
@@ -38,8 +37,7 @@ describeWithToken("Model Name Resolution", () => {
         "Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.",
       )
     }
-    state.models = models
-    rebuildModelIndex()
+    setModels(models)
 
     console.log(
       "[Setup] Available Claude models:",

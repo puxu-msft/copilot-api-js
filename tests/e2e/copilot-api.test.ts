@@ -16,7 +16,7 @@ import { createAnthropicMessages } from "~/lib/anthropic/client"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/sse"
 import { getModels } from "~/lib/models/client"
 import { createChatCompletions } from "~/lib/openai/client"
-import { state, rebuildModelIndex } from "~/lib/state"
+import { setModels, setStateForTests, state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
 import { getE2EMode, getGitHubToken } from "./config"
@@ -48,13 +48,15 @@ describeWithToken("GitHub Copilot API Integration", () => {
     }
 
     // Initialize state
-    state.githubToken = githubToken
-    state.accountType = "individual"
-    state.stripServerTools = true
+    setStateForTests({
+      githubToken,
+      accountType: "individual",
+      stripServerTools: true,
+    })
 
     // Get Copilot token
     const { token } = await getCopilotToken()
-    state.copilotToken = token
+    setStateForTests({ copilotToken: token })
 
     // Cache models - getModels returns ModelsResponse which always has data
     // but we add runtime check for robustness
@@ -65,8 +67,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
         "Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.",
       )
     }
-    state.models = models
-    rebuildModelIndex()
+    setModels(models)
 
     console.log(`[Setup] Loaded ${models.data.length} models`)
   }, 30000) // 30 second timeout for setup

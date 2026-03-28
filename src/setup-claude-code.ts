@@ -10,7 +10,7 @@ import { ensurePaths } from "./lib/config/paths"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
 import { cacheModels } from "./lib/models/client"
 import { initProxy } from "./lib/proxy"
-import { state } from "./lib/state"
+import { setCliState, state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 
 /**
@@ -98,7 +98,7 @@ export async function runSetupClaudeCode(options: SetupClaudeCodeOptions): Promi
     consola.info("Verbose logging enabled")
   }
 
-  state.accountType = options.accountType
+  setCliState({ accountType: options.accountType })
 
   // Load config and initialize proxy before any network requests
   await ensurePaths()

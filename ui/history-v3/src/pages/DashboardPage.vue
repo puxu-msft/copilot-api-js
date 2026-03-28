@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** @deprecated Use VDashboardPage.vue (`/v/dashboard`) for ongoing UI work. */
 import { ref, computed, onMounted, onUnmounted } from "vue"
 
 import { api } from "@/api/http"

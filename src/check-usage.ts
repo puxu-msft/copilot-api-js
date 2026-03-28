@@ -4,7 +4,7 @@ import consola from "consola"
 import { applyConfigToState } from "./lib/config/config"
 import { ensurePaths } from "./lib/config/paths"
 import { initProxy } from "./lib/proxy"
-import { state } from "./lib/state"
+import { setGitHubToken } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
 import { getCopilotUsage, type QuotaDetail } from "./lib/token/copilot-client"
 import { getGitHubUser } from "./lib/token/github-client"
@@ -28,7 +28,7 @@ export const checkUsage = defineCommand({
     // Use GitHubTokenManager to get token
     const tokenManager = new GitHubTokenManager()
     const tokenInfo = await tokenManager.getToken()
-    state.githubToken = tokenInfo.token
+    setGitHubToken(tokenInfo.token)
 
     // Show logged in user
     const user = await getGitHubUser()

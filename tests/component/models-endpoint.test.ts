@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 
-import { rebuildModelIndex, state } from "~/lib/state"
+import { restoreStateForTests, setModels, snapshotStateForTests, state } from "~/lib/state"
 
 function mockModel(id: string, overrides?: Partial<Model>): Model {
   return {
@@ -35,7 +35,7 @@ function formatModel(model: Model) {
 }
 
 describe("Models endpoint logic", () => {
-  const originalModels = state.models
+  const originalState = snapshotStateForTests()
   const testModels = [
     mockModel("claude-opus-4.6", { vendor: "Anthropic", name: "Claude Opus 4.6" }),
     mockModel("gpt-4o", { vendor: "OpenAI", name: "GPT-4o" }),
@@ -43,13 +43,11 @@ describe("Models endpoint logic", () => {
   ]
 
   beforeEach(() => {
-    state.models = { object: "list", data: testModels }
-    rebuildModelIndex()
+    setModels({ object: "list", data: testModels })
   })
 
   afterEach(() => {
-    state.models = originalModels
-    rebuildModelIndex()
+    restoreStateForTests(originalState)
   })
 
   describe("model lookup", () => {

@@ -11,9 +11,9 @@
 
 | 测试文件 | 实际 import 的模块 | 问题 |
 |----------|-------------------|------|
-| `system-prompt-manager.test.ts` | `~/lib/config/config` + `~/lib/system-prompt` | 名称暗示只测 system-prompt，实际同时测 config 和 system-prompt 的集成 |
+| `system-prompt-config-integration.test.ts` | `~/lib/config/config` + `~/lib/system-prompt` | 已按真实覆盖范围命名 |
 | `server-tool-rewriting.test.ts` | `~/lib/anthropic/message-tools` + `~/lib/anthropic/server-tool-filter` | 名称暗示只测 server-tool-filter，实际覆盖两个模块 |
-| `copilot-headers.test.ts` | `~/lib/copilot-api` | 名称用了函数名而非模块名 |
+| `copilot-api.test.ts` | `~/lib/copilot-api` | 已与源文件模块名对齐 |
 
 ### 覆盖分散
 
@@ -31,8 +31,8 @@
 
 | 当前名称 | 建议名称 | 理由 |
 |----------|---------|------|
-| `copilot-headers.test.ts` | `copilot-api.test.ts` | 与源文件 `copilot-api.ts` 对齐 |
-| `system-prompt-manager.test.ts` | `system-prompt-config-integration.test.ts` | 反映它测的是 config + system-prompt 集成 |
+| `copilot-api.test.ts` | `copilot-api.test.ts` | 已完成，与源文件 `copilot-api.ts` 对齐 |
+| `system-prompt-config-integration.test.ts` | `system-prompt-config-integration.test.ts` | 已完成，反映它测的是 config + system-prompt 集成 |
 
 ### 2. 不重命名的文件
 

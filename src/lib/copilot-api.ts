@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 
 import type { State } from "./state"
 
-import { state } from "./state"
+import { setVSCodeVersion } from "./state"
 
 export const standardHeaders = () => ({
   "content-type": "application/json",
@@ -105,7 +105,7 @@ interface GitHubRelease {
 /** Fetch the latest VSCode version and cache in global state */
 export async function cacheVSCodeVersion(): Promise<void> {
   const response = await getVSCodeVersion()
-  state.vsCodeVersion = response
+  setVSCodeVersion(response)
   consola.info(`Using VSCode version: ${response}`)
 }
 

@@ -4,6 +4,10 @@ import type { State } from "~/lib/state"
 
 import { copilotHeaders } from "~/lib/copilot-api"
 
+/**
+ * Unit tests for `~/lib/copilot-api` request header generation.
+ */
+
 // ============================================================================
 // Helpers
 // ============================================================================

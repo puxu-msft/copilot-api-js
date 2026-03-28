@@ -1,5 +1,7 @@
 /**
- * Unit tests for system prompt manager: config-based overrides.
+ * Integration-style unit tests for config-driven system prompt processing.
+ *
+ * Covers both config loading/compilation and `~/lib/system-prompt` behavior.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"

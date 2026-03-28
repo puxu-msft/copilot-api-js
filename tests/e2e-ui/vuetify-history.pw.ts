@@ -1,29 +1,18 @@
 import { test, expect } from "@playwright/test"
+import { ensureServerRunning, uiUrl } from "./helpers"
 
-const BASE_URL = "http://localhost:4141"
-
-test.beforeAll(async () => {
-  try {
-    const res = await fetch(`${BASE_URL}/health`)
-    if (!res.ok) throw new Error(`Health check returned ${res.status}`)
-  } catch (error) {
-    throw new Error(
-      `Server is not running at ${BASE_URL}. Start the server before running E2E tests. ` +
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-    )
-  }
-})
+test.beforeAll(ensureServerRunning)
 
 test.describe("Vuetify History", () => {
   test("navigation drawer renders", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/history")
+    await page.goto(uiUrl("#/v/history"))
 
     const drawer = page.locator(".v-navigation-drawer")
     await expect(drawer).toBeVisible()
   })
 
   test("History heading visible in navbar", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/history")
+    await page.goto(uiUrl("#/v/history"))
     await page.waitForTimeout(1000)
 
     const historyLink = page.locator("a.nav-link.active", { hasText: "History" })
@@ -31,7 +20,7 @@ test.describe("Vuetify History", () => {
   })
 
   test("search field visible", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/history")
+    await page.goto(uiUrl("#/v/history"))
 
     // Vuetify 4's v-navigation-drawer #prepend slot may not render in web component mode.
     // The search field is a v-text-field in the drawer's prepend slot.
@@ -47,7 +36,7 @@ test.describe("Vuetify History", () => {
   })
 
   test("endpoint filter visible", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/history")
+    await page.goto(uiUrl("#/v/history"))
 
     // The endpoint filter is a v-select in the drawer's prepend slot.
     // In Vuetify 4 web component mode, this may not render.
@@ -62,7 +51,7 @@ test.describe("Vuetify History", () => {
   })
 
   test("empty state shows placeholder when no selection", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/history")
+    await page.goto(uiUrl("#/v/history"))
 
     // Right panel should show "Select a request to view details" when nothing is selected.
     // However, the first entry may auto-select. Use a specific locator to avoid
@@ -80,7 +69,7 @@ test.describe("Vuetify History", () => {
   })
 
   test("refresh button visible", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/history")
+    await page.goto(uiUrl("#/v/history"))
 
     // The refresh button is in the drawer's #prepend toolbar slot.
     // In Vuetify 4 web component mode, this may not render.
@@ -97,7 +86,7 @@ test.describe("Vuetify History", () => {
   })
 
   test("request list renders entries if available", async ({ page }) => {
-    await page.goto("http://localhost:4141/history/v3#/v/history")
+    await page.goto(uiUrl("#/v/history"))
 
     // Wait for initial data load
     await page.waitForTimeout(2000)

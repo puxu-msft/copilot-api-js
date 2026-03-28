@@ -6,7 +6,7 @@ import consola from "consola"
 import { applyConfigToState } from "./lib/config/config"
 import { PATHS, ensurePaths } from "./lib/config/paths"
 import { initProxy } from "./lib/proxy"
-import { state } from "./lib/state"
+import { setCliState } from "./lib/state"
 import { DeviceAuthProvider, FileTokenProvider } from "./lib/token"
 
 interface RunAuthOptions {
@@ -20,7 +20,7 @@ export async function runAuth(options: RunAuthOptions): Promise<void> {
     consola.info("Verbose logging enabled")
   }
 
-  state.showGitHubToken = options.showGitHubToken
+  setCliState({ showGitHubToken: options.showGitHubToken })
 
   await ensurePaths()
 

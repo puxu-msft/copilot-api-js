@@ -9,7 +9,7 @@ import {
   filterServerToolBlocksFromResponse,
   isServerToolBlock,
 } from "~/lib/anthropic/server-tool-filter"
-import { state } from "~/lib/state"
+import { state, setStateForTests } from "~/lib/state"
 
 // Helper to build minimal StreamEvent objects for filter testing.
 // The filter only inspects .type, .index, and .content_block.type —
@@ -29,7 +29,7 @@ function blockStop(index: number): StreamEvent {
 const originalStripServerTools = state.stripServerTools
 
 afterAll(() => {
-  state.stripServerTools = originalStripServerTools
+  setStateForTests({ stripServerTools: originalStripServerTools })
 })
 
 // ============================================================================
@@ -39,12 +39,12 @@ afterAll(() => {
 describe("stripServerTools", () => {
   describe("when stripping is disabled", () => {
     test("should return undefined for undefined input", () => {
-      state.stripServerTools = false
+      setStateForTests({ stripServerTools: false })
       expect(stripServerTools(undefined)).toBeUndefined()
     })
 
     test("should return the same array reference (no allocation)", () => {
-      state.stripServerTools = false
+      setStateForTests({ stripServerTools: false })
       const tools: Array<Tool> = [
         { name: "web_search", type: "web_search_20250305" },
         { name: "Bash", description: "Run bash", input_schema: { type: "object" } },
@@ -56,19 +56,19 @@ describe("stripServerTools", () => {
 
   describe("when stripping is enabled", () => {
     test("should strip web_search server tool", () => {
-      state.stripServerTools = true
+      setStateForTests({ stripServerTools: true })
       const tools: Array<Tool> = [{ name: "web_search", type: "web_search_20250305" }]
       expect(stripServerTools(tools)).toBeUndefined()
     })
 
     test("should strip code_execution server tool", () => {
-      state.stripServerTools = true
+      setStateForTests({ stripServerTools: true })
       const tools: Array<Tool> = [{ name: "code_execution", type: "code_execution_20250522" }]
       expect(stripServerTools(tools)).toBeUndefined()
     })
 
     test("should not strip custom tools", () => {
-      state.stripServerTools = true
+      setStateForTests({ stripServerTools: true })
       const customTool: Tool = {
         name: "Bash",
         description: "Run bash commands",
@@ -80,7 +80,7 @@ describe("stripServerTools", () => {
     })
 
     test("should handle mixed server and custom tools", () => {
-      state.stripServerTools = true
+      setStateForTests({ stripServerTools: true })
       const tools: Array<Tool> = [
         { name: "web_search", type: "web_search_20250305" },
         { name: "Bash", description: "Run bash", input_schema: { type: "object" } },
@@ -92,12 +92,12 @@ describe("stripServerTools", () => {
     })
 
     test("should return undefined for empty array", () => {
-      state.stripServerTools = true
+      setStateForTests({ stripServerTools: true })
       expect(stripServerTools([])).toBeUndefined()
     })
 
     test("should match tools by type prefix, not exact match", () => {
-      state.stripServerTools = true
+      setStateForTests({ stripServerTools: true })
       // Different date versions should all match the same prefix
       const tools: Array<Tool> = [
         { name: "ws1", type: "web_search_20250101" },
