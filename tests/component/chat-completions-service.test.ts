@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, test, expect, mock } from "bun:test"
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { createChatCompletions } from "~/lib/openai/client"
+import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
 
 // Save and mock global state

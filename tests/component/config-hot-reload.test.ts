@@ -17,8 +17,10 @@ import { applyConfigToState, resetApplyState, resetConfigCache } from "~/lib/con
 import { PATHS } from "~/lib/config/paths"
 import { historyState, initHistory } from "~/lib/history"
 import {
+  CONFIG_MANAGED_DEFAULTS,
   DEFAULT_MODEL_OVERRIDES,
   restoreStateForTests,
+  resetConfigManagedState,
   setStateForTests,
   snapshotStateForTests,
   state,
@@ -308,6 +310,18 @@ describe("applyConfigToState: empty / missing config", () => {
     expect(state.modelOverrides.opus).toBe("custom-model")
     expect(state.systemPromptOverrides).toHaveLength(1)
   })
+
+  test("ordinary hot-reload remains merge-only when a key is removed outside PUT", async () => {
+    await writeConfig("fetch_timeout: 123\n")
+    await applyConfigToState()
+    expect(state.fetchTimeout).toBe(123)
+
+    resetConfigCache()
+    await writeConfig("")
+    await applyConfigToState()
+
+    expect(state.fetchTimeout).toBe(123)
+  })
 })
 
 describe("applyConfigToState: history.limit syncs to historyState", () => {
@@ -323,5 +337,74 @@ history:
 
     expect(state.historyLimit).toBe(50)
     expect(historyState.maxEntries).toBe(50)
+  })
+})
+
+describe("config-managed defaults", () => {
+  test("CONFIG_MANAGED_DEFAULTS stay aligned with initial mutable state", () => {
+    expect(CONFIG_MANAGED_DEFAULTS.stripServerTools).toBe(false)
+    expect(CONFIG_MANAGED_DEFAULTS.stripServerTools).toBe(state.stripServerTools)
+    expect(CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages).toBe(state.immutableThinkingMessages)
+    expect(state.dedupToolCalls).toBe(CONFIG_MANAGED_DEFAULTS.dedupToolCalls as typeof state.dedupToolCalls)
+    expect(CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags).toBe(state.stripReadToolResultTags)
+    expect(state.contextEditingMode).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingMode as typeof state.contextEditingMode)
+    expect(state.rewriteSystemReminders).toBe(
+      CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders as typeof state.rewriteSystemReminders,
+    )
+    expect(CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate).toBe(state.compressToolResultsBeforeTruncate)
+    expect(CONFIG_MANAGED_DEFAULTS.fetchTimeout).toBe(state.fetchTimeout)
+    expect(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout).toBe(state.streamIdleTimeout)
+    expect(CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge).toBe(state.staleRequestMaxAge)
+    expect(CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait).toBe(state.shutdownGracefulWait)
+    expect(CONFIG_MANAGED_DEFAULTS.shutdownAbortWait).toBe(state.shutdownAbortWait)
+    expect(CONFIG_MANAGED_DEFAULTS.historyLimit).toBe(state.historyLimit)
+    expect(CONFIG_MANAGED_DEFAULTS.historyMinEntries).toBe(state.historyMinEntries)
+    expect(CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds).toBe(state.normalizeResponsesCallIds)
+    expect(CONFIG_MANAGED_DEFAULTS.systemPromptOverrides).toEqual(state.systemPromptOverrides)
+  })
+
+  test("resetConfigManagedState restores config-managed runtime defaults", () => {
+    setStateForTests({
+      stripServerTools: true,
+      immutableThinkingMessages: true,
+      dedupToolCalls: "result",
+      stripReadToolResultTags: true,
+      contextEditingMode: "clear-both",
+      rewriteSystemReminders: true,
+      systemPromptOverrides: [{ from: /custom/, to: "rule" }],
+      compressToolResultsBeforeTruncate: false,
+      fetchTimeout: 999,
+      streamIdleTimeout: 888,
+      staleRequestMaxAge: 777,
+      shutdownGracefulWait: 66,
+      shutdownAbortWait: 55,
+      historyLimit: 44,
+      historyMinEntries: 33,
+      modelOverrides: { custom: "model" },
+      normalizeResponsesCallIds: false,
+    })
+
+    resetConfigManagedState()
+
+    expect(state.stripServerTools).toBe(CONFIG_MANAGED_DEFAULTS.stripServerTools)
+    expect(state.immutableThinkingMessages).toBe(CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages)
+    expect(state.dedupToolCalls).toBe(CONFIG_MANAGED_DEFAULTS.dedupToolCalls as typeof state.dedupToolCalls)
+    expect(state.stripReadToolResultTags).toBe(CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags)
+    expect(state.contextEditingMode).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingMode as typeof state.contextEditingMode)
+    expect(state.rewriteSystemReminders).toBe(
+      CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders as typeof state.rewriteSystemReminders,
+    )
+    expect(state.systemPromptOverrides).toEqual(CONFIG_MANAGED_DEFAULTS.systemPromptOverrides)
+    expect(state.compressToolResultsBeforeTruncate).toBe(CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate)
+    expect(state.fetchTimeout).toBe(CONFIG_MANAGED_DEFAULTS.fetchTimeout)
+    expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)
+    expect(state.staleRequestMaxAge).toBe(CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge)
+    expect(state.shutdownGracefulWait).toBe(CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait)
+    expect(state.shutdownAbortWait).toBe(CONFIG_MANAGED_DEFAULTS.shutdownAbortWait)
+    expect(state.historyLimit).toBe(CONFIG_MANAGED_DEFAULTS.historyLimit)
+    expect(state.historyMinEntries).toBe(CONFIG_MANAGED_DEFAULTS.historyMinEntries)
+    expect(state.modelOverrides).toEqual(DEFAULT_MODEL_OVERRIDES)
+    expect(state.normalizeResponsesCallIds).toBe(CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds)
+    expect(historyState.maxEntries).toBe(CONFIG_MANAGED_DEFAULTS.historyLimit)
   })
 })

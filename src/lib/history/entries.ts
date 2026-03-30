@@ -1,7 +1,8 @@
 import { generateId } from "../utils"
+import { notifyEntryAdded, notifyEntryUpdated, notifyHistoryCleared, notifyStatsUpdated } from "../ws"
 import { historyIndexes, historyState, invalidateHistoryStats, resetHistoryIndexes } from "./state"
+import { getStats } from "./stats"
 import type { EntrySummary, HistoryEntry } from "./types"
-import { notifyEntryAdded, notifyEntryUpdated, notifyHistoryCleared, notifyStatsChanged } from "./ws"
 
 /** Extract a preview from the last user message (first 100 chars) */
 function extractPreviewText(entry: HistoryEntry): string {
@@ -124,7 +125,7 @@ function removeOldestEntries(count: number): number {
 export function evictOldestEntries(count: number): number {
   const evicted = removeOldestEntries(count)
   if (evicted > 0) {
-    notifyStatsChanged()
+    notifyStatsUpdated(getStats())
   }
   return evicted
 }
@@ -151,7 +152,7 @@ export function insertEntry(entry: HistoryEntry): void {
 
   invalidateHistoryStats()
   notifyEntryAdded(summary)
-  notifyStatsChanged()
+  notifyStatsUpdated(getStats())
 }
 
 export function updateEntry(
@@ -193,7 +194,7 @@ export function updateEntry(
   const summary = toSummary(entry)
   historyIndexes.summaryIndex.set(entry.id, summary)
   notifyEntryUpdated(summary)
-  notifyStatsChanged()
+  notifyStatsUpdated(getStats())
 }
 
 export function clearHistory(): void {
@@ -203,5 +204,5 @@ export function clearHistory(): void {
   resetHistoryIndexes()
   invalidateHistoryStats()
   notifyHistoryCleared()
-  notifyStatsChanged()
+  notifyStatsUpdated(getStats())
 }

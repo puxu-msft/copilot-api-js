@@ -70,13 +70,6 @@ export function getGitHubToken(): string | undefined {
   return undefined
 }
 
-/**
- * @deprecated Use getE2EMode() instead
- */
-export function shouldRunIntegrationTests(): boolean {
-  return getE2EMode() !== "mock"
-}
-
 // ─── Fixture management ───
 
 const FIXTURES_DIR = resolve(import.meta.dirname, "fixtures")

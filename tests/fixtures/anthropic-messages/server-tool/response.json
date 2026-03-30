@@ -1,0 +1,38 @@
+{
+  "id": "msg_server_tool",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4.6-20250514",
+  "content": [
+    {
+      "type": "server_tool_use",
+      "id": "srv_search",
+      "name": "web_search",
+      "input": {
+        "query": "Bun test coverage"
+      }
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srv_search",
+      "content": [
+        {
+          "type": "web_search_result",
+          "title": "Bun test coverage",
+          "url": "https://example.com",
+          "encrypted_content": "mock-encrypted-content"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "text": "Found a result."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 21,
+    "output_tokens": 13
+  }
+}

@@ -224,7 +224,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const wsAdapter = await createWebSocketAdapter(server)
   registerWsRoutes(server, wsAdapter.upgradeWebSocket)
 
-  consola.box(`Web UI: ${serverUrl}/ui`)
+  consola.info(`Web UI: ${serverUrl}/ui`)
 
   // Import hono/bun websocket handler for Bun's WebSocket support.
   // Bun.serve() requires an explicit `websocket` handler object alongside `fetch`

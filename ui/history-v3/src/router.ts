@@ -50,6 +50,11 @@ const router = createRouter({
       component: () => import("@/pages/vuetify/VDashboardPage.vue"),
     },
     {
+      path: "/v/config",
+      name: "v-config",
+      component: () => import("@/pages/vuetify/VConfigPage.vue"),
+    },
+    {
       path: "/v/models",
       name: "v-models",
       component: () => import("@/pages/vuetify/VModelsPage.vue"),

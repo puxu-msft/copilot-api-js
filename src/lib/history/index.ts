@@ -76,6 +76,6 @@ export {
   notifySessionDeleted,
   notifyStatsUpdated,
   removeClient,
-} from "./ws"
+} from "../ws"
 
-export type { WSMessage, WSMessageType } from "./ws"
+export type { WSMessage, WSMessageType } from "../ws"

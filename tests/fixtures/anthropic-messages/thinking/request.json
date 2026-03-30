@@ -1,0 +1,15 @@
+{
+  "model": "claude-sonnet-4.6",
+  "max_tokens": 256,
+  "stream": false,
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 64
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "Think briefly, then answer."
+    }
+  ]
+}

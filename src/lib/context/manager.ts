@@ -82,6 +82,12 @@ export function getRequestContextManager(): RequestContextManager {
   return _manager
 }
 
+export function resetRequestContextManagerForTests(): RequestContextManager {
+  _manager?.stopReaper()
+  _manager = createRequestContextManager()
+  return _manager
+}
+
 // ─── Factory ───
 
 export function createRequestContextManager(): RequestContextManager {

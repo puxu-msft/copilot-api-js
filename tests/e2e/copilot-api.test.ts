@@ -15,7 +15,7 @@ import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api
 import { createAnthropicMessages } from "~/lib/anthropic/client"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/sse"
 import { getModels } from "~/lib/models/client"
-import { createChatCompletions } from "~/lib/openai/client"
+import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import { setModels, setStateForTests, state } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 

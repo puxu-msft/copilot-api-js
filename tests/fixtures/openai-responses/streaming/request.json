@@ -1,0 +1,6 @@
+{
+  "model": "gpt-5.1",
+  "input": "Stream a short greeting.",
+  "max_output_tokens": 64,
+  "stream": true
+}

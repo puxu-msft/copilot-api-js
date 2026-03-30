@@ -44,7 +44,7 @@ Session {
 
 ## WebSocket 实时推送
 
-`/history/ws` 提供实时事件流：
+`/ws` 提供实时事件流：
 
 - `entry:created` — 新请求开始
 - `entry:updated` — 请求状态更新（流式内容、完成、失败等）
@@ -55,7 +55,7 @@ Session {
 | 版本 | 技术栈 | 路径 |
 |------|--------|------|
 | v1 | 原生 HTML/JS | `/history/v1/` |
-| v3 | Vue 3 + Vite | `/history/v3/` |
+| v3 | Vue 3 + Vite | `/ui/` |
 
 前端类型统一从后端 re-export（`~backend/lib/history/store`），不重复定义。
 

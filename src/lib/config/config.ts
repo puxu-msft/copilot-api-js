@@ -213,6 +213,26 @@ let configLastMtimeMs: number = 0
 let lastStatTimeMs: number = 0
 const STAT_DEBOUNCE_MS = 2000
 
+export async function loadRawConfigFile(): Promise<Config> {
+  try {
+    const content = await fs.readFile(PATHS.CONFIG_YAML, "utf8")
+    const { parse } = await import("yaml")
+    const parsed = parse(content)
+
+    if (parsed == null) return {}
+    if (typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("config.yaml must contain a top-level mapping")
+    }
+
+    return parsed as Config
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return {}
+    }
+    throw err
+  }
+}
+
 export async function loadConfig(): Promise<Config> {
   try {
     // Debounce: if we already have a cached config and checked recently, skip stat()
@@ -226,11 +246,7 @@ export async function loadConfig(): Promise<Config> {
     if (cachedConfig && stat.mtimeMs === configLastMtimeMs) {
       return cachedConfig
     }
-    const content = await fs.readFile(PATHS.CONFIG_YAML, "utf8")
-    const { parse } = await import("yaml")
-    const parsed = parse(content)
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- yaml.parse returns null for empty files
-    cachedConfig = (parsed as Config) ?? {}
+    cachedConfig = await loadRawConfigFile()
     configLastMtimeMs = stat.mtimeMs
     return cachedConfig
   } catch (err: unknown) {

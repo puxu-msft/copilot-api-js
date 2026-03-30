@@ -1,0 +1,23 @@
+{
+  "id": "msg_thinking",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4.6-20250514",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "Need a concise answer.",
+      "signature": "mock-signature"
+    },
+    {
+      "type": "text",
+      "text": "Done."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 18,
+    "output_tokens": 9
+  }
+}

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 
-import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
+import { ENDPOINT, assertEndpointSupported, getEffectiveEndpoints, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
 
 function mockModel(id: string, overrides?: Partial<Model>): Model {
   return {
@@ -93,5 +93,53 @@ describe("supported_endpoints validation", () => {
     expect(isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)).toBe(true)
     expect(isEndpointSupported(model, ENDPOINT.MESSAGES)).toBe(true)
     expect(isEndpointSupported(model, ENDPOINT.RESPONSES)).toBe(true)
+  })
+
+  test("should infer effective endpoints for legacy capability types", () => {
+    const chatModel = mockModel("gpt-4o", {
+      capabilities: { type: "chat" } as Model["capabilities"],
+    })
+    const embeddingsModel = mockModel("text-embedding-3-small", {
+      capabilities: { type: "embeddings" } as Model["capabilities"],
+    })
+
+    expect(getEffectiveEndpoints(chatModel)).toEqual([ENDPOINT.CHAT_COMPLETIONS])
+    expect(getEffectiveEndpoints(embeddingsModel)).toEqual([ENDPOINT.EMBEDDINGS])
+  })
+
+  test("should prefer supported_endpoints over legacy capability inference", () => {
+    const model = mockModel("custom-model", {
+      supported_endpoints: [ENDPOINT.RESPONSES],
+      capabilities: { type: "chat" } as Model["capabilities"],
+    })
+
+    expect(getEffectiveEndpoints(model)).toEqual([ENDPOINT.RESPONSES])
+  })
+
+  test("should return undefined effective endpoints when no legacy capability mapping exists", () => {
+    const model = mockModel("unknown-model", {
+      capabilities: { type: "vision" } as Model["capabilities"],
+    })
+
+    expect(getEffectiveEndpoints(model)).toBeUndefined()
+  })
+
+  test("assertEndpointSupported should throw a descriptive error for unsupported endpoints", () => {
+    const model = mockModel("claude-opus-4.6", {
+      supported_endpoints: [ENDPOINT.MESSAGES],
+    })
+
+    expect(() => assertEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)).toThrow(
+      'Model "claude-opus-4.6" does not support /chat/completions. Supported endpoints: /v1/messages',
+    )
+  })
+
+  test("assertEndpointSupported should allow supported and unknown models", () => {
+    const model = mockModel("gpt-4o", {
+      supported_endpoints: [ENDPOINT.CHAT_COMPLETIONS],
+    })
+
+    expect(() => assertEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)).not.toThrow()
+    expect(() => assertEndpointSupported(undefined, ENDPOINT.CHAT_COMPLETIONS)).not.toThrow()
   })
 })

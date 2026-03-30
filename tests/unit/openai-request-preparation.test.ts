@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 
-import { prepareChatCompletionsRequest } from "~/lib/openai/client"
+import { prepareChatCompletionsRequest } from "~/lib/openai/chat-completions-client"
 import { prepareResponsesRequest } from "~/lib/openai/responses-client"
 import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"

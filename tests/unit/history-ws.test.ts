@@ -17,7 +17,7 @@ import {
   notifyEntryUpdated,
   notifyStatsUpdated,
   removeClient,
-} from "~/lib/history/ws"
+} from "~/lib/ws"
 
 // ─── Mock WebSocket ───
 

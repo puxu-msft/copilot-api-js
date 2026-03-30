@@ -1,4 +1,5 @@
 import type { SummaryResult, HistoryEntry, HistoryStats, SessionResult, QueryOptions } from "@/types"
+import type { ConfigValidationError, ConfigYamlResponse, EditableConfig } from "@/types/config"
 
 const BASE = "/history/api"
 
@@ -6,6 +7,7 @@ class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public bodyText: string,
   ) {
     super(message)
     this.name = "ApiError"
@@ -19,7 +21,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const body = await res.text().catch(() => "Unknown error")
-    throw new ApiError(res.status, `${res.status}: ${body}`)
+    throw new ApiError(res.status, `${res.status}: ${body}`, body)
   }
   return res.json()
 }
@@ -32,7 +34,7 @@ async function requestRoot<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const body = await res.text().catch(() => "Unknown error")
-    throw new ApiError(res.status, `${res.status}: ${body}`)
+    throw new ApiError(res.status, `${res.status}: ${body}`, body)
   }
   return res.json()
 }
@@ -97,6 +99,19 @@ export const api = {
     return requestRoot<Record<string, unknown>>("/api/config")
   },
 
+  /** Fetch editable config.yaml contents */
+  async fetchConfigYaml(): Promise<ConfigYamlResponse> {
+    return requestRoot<ConfigYamlResponse>("/api/config/yaml")
+  },
+
+  /** Save editable config.yaml contents */
+  async saveConfigYaml(config: EditableConfig): Promise<ConfigYamlResponse> {
+    return requestRoot<ConfigYamlResponse>("/api/config/yaml", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    })
+  },
+
   /** Fetch logs (compact view) */
   async fetchLogs(limit = 100): Promise<{ entries: Array<EntrySummary> }> {
     return request<{ entries: Array<EntrySummary> }>(`/entries?limit=${String(limit)}`)
@@ -110,7 +125,8 @@ export const api = {
 }
 
 // Re-export for convenience
-export type { ApiError }
+export { ApiError }
+export type { ConfigValidationError, ConfigYamlResponse, EditableConfig }
 // Re-export the SummaryResult type used in the store
 import type { EntrySummary } from "@/types"
 

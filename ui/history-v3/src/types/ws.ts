@@ -5,7 +5,7 @@
  */
 import type { EntrySummary, HistoryStats } from "./index"
 
-export type { WSMessage, WSMessageType } from "~backend/lib/history/ws"
+export type { WSMessage, WSMessageType } from "~backend/lib/ws"
 
 // --- Frontend-only discriminated subtypes ---
 

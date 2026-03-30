@@ -35,7 +35,7 @@ export function createResponsesAdapter(
           onPrepared: ({ wire, headers }) => {
             onPrepared?.({
               model: typeof wire.model === "string" ? wire.model : p.model,
-              messages: [],
+              messages: extractInputItems(wire.input),
               payload: wire,
               headers,
               format: "openai-responses",
@@ -52,6 +52,14 @@ export function createResponsesAdapter(
 /** Create the retry strategies for Responses API pipeline execution */
 export function createResponsesStrategies() {
   return [createNetworkRetryStrategy<ResponsesPayload>(), createTokenRefreshStrategy<ResponsesPayload>()]
+}
+
+export function extractInputItems(input: string | Array<ResponsesInputItem>): Array<unknown> {
+  if (typeof input === "string") {
+    return [{ type: "message", role: "user", content: input }]
+  }
+
+  return input
 }
 
 // ============================================================================

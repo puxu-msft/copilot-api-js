@@ -60,6 +60,7 @@ statusRoutes.get("/", async (c) => {
     status: getIsShuttingDown() ? "shutting_down" : (state.copilotToken && state.githubToken ? "healthy" : "unhealthy"),
     uptime: serverStartTime > 0 ? Math.floor((now - serverStartTime) / 1000) : 0,
     version: packageJson.version,
+    vsCodeVersion: state.vsCodeVersion ?? null,
 
     auth: {
       accountType: state.accountType,
@@ -76,10 +77,11 @@ statusRoutes.get("/", async (c) => {
 
     rateLimiter: limiterStatus
       ? {
+          enabled: true,
           ...limiterStatus,
           config: limiter!.getConfig(),
         }
-      : null,
+      : { enabled: false },
 
     memory: {
       heapUsedMB: memStats.heapUsedMB,

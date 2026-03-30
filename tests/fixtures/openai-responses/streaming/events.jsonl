@@ -1,0 +1,3 @@
+{"type":"response.created","sequence_number":0,"response":{"id":"resp_stream","object":"response","created_at":1772432000,"status":"in_progress","model":"gpt-5.1-2025-11-13","output":[],"usage":null,"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"store":false}}
+{"type":"response.output_text.delta","sequence_number":1,"output_index":0,"content_index":0,"delta":"Hello from responses stream."}
+{"type":"response.completed","sequence_number":2,"response":{"id":"resp_stream","object":"response","created_at":1772432000,"status":"completed","model":"gpt-5.1-2025-11-13","output":[],"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18},"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"store":false}}

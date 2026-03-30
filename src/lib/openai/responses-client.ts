@@ -1,6 +1,6 @@
 /**
  * Responses API client for Copilot /responses endpoint.
- * Follows the same pattern as client.ts but targets the /responses endpoint.
+ * Follows the same pattern as chat-completions-client.ts but targets the /responses endpoint.
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -10,14 +10,13 @@ import { events } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
-import type { ResponsesPayload, ResponsesResponse, ResponsesInputItem } from "~/types/api/openai-responses"
+import type { ResponsesPayload, ResponsesResponse } from "~/types/api/openai-responses"
 
-import { copilotHeaders, copilotBaseUrl } from "~/lib/copilot-api"
+import { copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { createFetchSignal, captureHttpHeaders, sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
-
-import type { PreparedOpenAIRequest } from "./client"
+import { prepareResponsesRequest, type PreparedOpenAIRequest } from "./request-preparation"
 
 interface CreateResponsesOptions {
   resolvedModel?: Model
@@ -25,36 +24,7 @@ interface CreateResponsesOptions {
   onPrepared?: (request: PreparedOpenAIRequest<ResponsesPayload>) => void
 }
 
-export function prepareResponsesRequest(
-  payload: ResponsesPayload,
-  opts?: Pick<CreateResponsesOptions, "resolvedModel">,
-): PreparedOpenAIRequest<ResponsesPayload> {
-  const wire = payload
-
-  // Check for vision content in input
-  const enableVision = hasVisionContent(wire.input)
-
-  // Determine if this is an agent call (has assistant or function_call items in history)
-  const isAgentCall =
-    Array.isArray(wire.input)
-    && wire.input.some(
-      (item) => item.role === "assistant" || item.type === "function_call" || item.type === "function_call_output",
-    )
-
-  // Only set vision header if model supports it (default to true when unknown)
-  const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
-
-  const headers: Record<string, string> = {
-    ...copilotHeaders(state, {
-      vision: enableVision && modelSupportsVision,
-      modelRequestHeaders: opts?.resolvedModel?.request_headers,
-      intent: isAgentCall ? "conversation-agent" : "conversation-panel",
-    }),
-    "X-Initiator": isAgentCall ? "agent" : "user",
-  }
-
-  return { wire, headers }
-}
+export { prepareResponsesRequest, type PreparedOpenAIRequest } from "./request-preparation"
 
 /** Call Copilot /responses endpoint */
 export const createResponses = async (
@@ -95,12 +65,4 @@ export const createResponses = async (
   }
 
   return (await response.json()) as ResponsesResponse
-}
-
-/** Check if the input contains any image content */
-function hasVisionContent(input: string | Array<ResponsesInputItem>): boolean {
-  if (typeof input === "string") return false
-  return input.some(
-    (item) => Array.isArray(item.content) && item.content.some((part) => "type" in part && part.type === "input_image"),
-  )
 }

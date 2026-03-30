@@ -1,8 +1,16 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
 import type { State } from "~/lib/state"
 
-import { copilotHeaders } from "~/lib/copilot-api"
+import {
+  cacheVSCodeVersion,
+  copilotBaseUrl,
+  copilotHeaders,
+  getVSCodeVersion,
+  githubHeaders,
+  standardHeaders,
+} from "~/lib/copilot-api"
+import { restoreStateForTests, setStateForTests, snapshotStateForTests, state } from "~/lib/state"
 
 /**
  * Unit tests for `~/lib/copilot-api` request header generation.
@@ -14,6 +22,7 @@ import { copilotHeaders } from "~/lib/copilot-api"
 
 function makeState(overrides: Partial<State> = {}): State {
   return {
+    githubToken: "gh-test-token",
     copilotToken: "test-token",
     vsCodeVersion: "1.104.3",
     accountType: "individual",
@@ -26,6 +35,36 @@ function makeState(overrides: Partial<State> = {}): State {
 // ============================================================================
 
 describe("copilotHeaders", () => {
+  const originalFetch = globalThis.fetch
+  const originalState = snapshotStateForTests()
+
+  beforeEach(() => {
+    setStateForTests({
+      githubToken: "gh-test-token",
+      copilotToken: "test-token",
+      vsCodeVersion: "1.104.3",
+      accountType: "individual",
+    })
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    restoreStateForTests(originalState)
+  })
+
+  test("returns the standard JSON headers", () => {
+    expect(standardHeaders()).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+    })
+  })
+
+  test("builds the correct Copilot base URL for each account type", () => {
+    expect(copilotBaseUrl(makeState({ accountType: "individual" }))).toBe("https://api.githubcopilot.com")
+    expect(copilotBaseUrl(makeState({ accountType: "business" }))).toBe("https://api.business.githubcopilot.com")
+    expect(copilotBaseUrl(makeState({ accountType: "enterprise" }))).toBe("https://api.enterprise.githubcopilot.com")
+  })
+
   // ── Core headers ──
 
   test("returns required core headers", () => {
@@ -146,5 +185,66 @@ describe("copilotHeaders", () => {
     expect(headers["copilot-vision-request"]).toBe("true")
     expect(headers["openai-intent"]).toBe("conversation-agent")
     expect(headers["x-model-header"]).toBe("value")
+  })
+
+  test("builds GitHub headers from shared state", () => {
+    const headers = githubHeaders(state)
+
+    expect(headers).toMatchObject({
+      accept: "application/json",
+      "content-type": "application/json",
+      authorization: "token gh-test-token",
+      "editor-version": "vscode/1.104.3",
+      "editor-plugin-version": "copilot-chat/0.38.0",
+      "user-agent": "GitHubCopilotChat/0.38.0",
+      "x-github-api-version": "2022-11-28",
+      "x-vscode-user-agent-library-version": "electron-fetch",
+    })
+  })
+
+  test("getVSCodeVersion returns the latest release tag when GitHub succeeds", async () => {
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ tag_name: "1.107.1" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch
+
+    await expect(getVSCodeVersion()).resolves.toBe("1.107.1")
+  })
+
+  test("getVSCodeVersion falls back when GitHub returns a non-ok response", async () => {
+    globalThis.fetch = mock(async () => new Response("bad gateway", { status: 502 })) as unknown as typeof fetch
+
+    await expect(getVSCodeVersion()).resolves.toBe("1.104.3")
+  })
+
+  test("getVSCodeVersion falls back when GitHub returns an invalid tag", async () => {
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ tag_name: "stable" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch
+
+    await expect(getVSCodeVersion()).resolves.toBe("1.104.3")
+  })
+
+  test("getVSCodeVersion falls back when fetch throws", async () => {
+    globalThis.fetch = mock(async () => {
+      throw new Error("network down")
+    }) as unknown as typeof fetch
+
+    await expect(getVSCodeVersion()).resolves.toBe("1.104.3")
+  })
+
+  test("cacheVSCodeVersion stores the fetched version in global state", async () => {
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ tag_name: "1.106.0" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch
+
+    await cacheVSCodeVersion()
+
+    expect(state.vsCodeVersion).toBe("1.106.0")
   })
 })

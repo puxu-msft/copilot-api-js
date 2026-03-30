@@ -5,13 +5,10 @@
 .aider*
 .eslintcache
 /test-results
+coverage/
 node_modules/
 
-# build output
 dist/
 
 /.env
-/refs/agent-maestro
-/refs/ghc-api-py
-/refs/vscode-copilot-chat
 /*.txt

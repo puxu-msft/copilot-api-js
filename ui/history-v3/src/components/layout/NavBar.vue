@@ -18,18 +18,19 @@ const route = useRoute()
 const isVuetify = computed(() => isVuetifyPath(route.path))
 
 const vuetifyLinks = [
-  { to: "/v/history", label: "History" },
-  { to: "/v/logs", label: "Logs" },
   { to: "/v/dashboard", label: "Dashboard" },
+  { to: "/v/config", label: "Config" },
   { to: "/v/models", label: "Models" },
+  { to: "/v/logs", label: "Logs" },
+  { to: "/v/history", label: "History" },
   { to: "/v/usage", label: "Usage" },
 ]
 
 const legacyLinks = [
-  { to: "/history", label: "History" },
-  { to: "/logs", label: "Logs" },
   { to: "/dashboard", label: "Dashboard" },
   { to: "/models", label: "Models" },
+  { to: "/logs", label: "Logs" },
+  { to: "/history", label: "History" },
   { to: "/usage", label: "Usage" },
 ]
 
@@ -63,6 +64,7 @@ function isActive(path: string): boolean {
     </div>
     <div class="navbar-right">
       <router-link
+        v-if="switchPath"
         :to="switchPath"
         class="switch-link"
         >{{ switchLabel }}</router-link

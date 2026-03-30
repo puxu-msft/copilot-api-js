@@ -94,13 +94,12 @@ src/lib/
 | `/responses`、`/v1/responses` | OpenAI Responses API（HTTP POST + WebSocket GET） |
 | `/models`、`/v1/models` | 模型列表 |
 | `/embeddings`、`/v1/embeddings` | OpenAI Embeddings API |
-| `/usage` | Copilot 使用量查询 |
 | `/token` | Token 信息 |
 | `/api/event_logging` | Anthropic 事件日志（静默消费） |
 | `/health` | 健康检查（容器编排用） |
 | `/history/api/*` | History REST API |
-| `/history/ws` | History WebSocket |
-| `/history/v3/*` | History UI v3 静态文件 |
+| `/ws` | History WebSocket |
+| `/ui/*` | History UI v3 静态文件 |
 
 ### 前端子项目
 
@@ -114,6 +113,7 @@ ui/
 
 路径别名：后端 `~/*` → `src/*`，前端 `@/*` → `src/*`，前端引用后端 `~backend/*` → `../../src/*`。
 前端类型统一从后端 re-export，不重复定义。
+前端依赖与脚本由仓库根 `package.json` 统一管理；`ui/history-v3/` 不再维护独立的包管理配置。
 
 ## 运行时选项
 

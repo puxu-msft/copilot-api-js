@@ -1,4 +1,3 @@
-import consola from "consola"
 import { randomUUID } from "node:crypto"
 
 import type { State } from "./state"
@@ -106,7 +105,6 @@ interface GitHubRelease {
 export async function cacheVSCodeVersion(): Promise<void> {
   const response = await getVSCodeVersion()
   setVSCodeVersion(response)
-  consola.info(`Using VSCode version: ${response}`)
 }
 
 /** Fetch the latest VSCode version from GitHub releases, falling back to a hardcoded version */

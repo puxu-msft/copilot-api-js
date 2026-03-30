@@ -19,18 +19,24 @@ import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
-import { ENDPOINT, isEndpointSupported } from "~/lib/models/endpoint"
+import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import {
   autoTruncateOpenAI,
   createTruncationResponseMarkerOpenAI,
   type OpenAIAutoTruncateResult,
 } from "~/lib/openai/auto-truncate"
-import { createChatCompletions } from "~/lib/openai/client"
+import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createOpenAIStreamAccumulator, accumulateOpenAIStreamEvent } from "~/lib/openai/stream-accumulator"
+import {
+  createStreamTranslator,
+  translateChatCompletionsToResponses,
+  translateResponsesResponseToCC,
+  translateResponsesStream,
+} from "~/lib/openai/translate"
 import { buildOpenAIResponseData, isNonStreaming, logPayloadSizeInfo } from "~/lib/request"
-import { executeRequestPipeline } from "~/lib/request/pipeline"
+import { executeRequestPipeline, type RetryStrategy } from "~/lib/request/pipeline"
 import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
@@ -40,6 +46,8 @@ import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIterat
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
+import { createResponses } from "~/lib/openai/responses-client"
+import { extractInputItems, normalizeCallIds } from "~/routes/responses/pipeline"
 
 export async function handleChatCompletion(c: Context) {
   const originalPayload = await c.req.json<ChatCompletionsPayload>()
@@ -52,12 +60,8 @@ export async function handleChatCompletion(c: Context) {
     originalPayload.model = resolvedModel
   }
 
-  // Find the selected model and validate endpoint support
+  // Find the selected model
   const selectedModel = state.modelIndex.get(originalPayload.model)
-  if (!isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
-    const msg = `Model "${originalPayload.model}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint`
-    throw new HTTPError(msg, 400, msg)
-  }
 
   // System prompt collection + config-based overrides (always active)
   originalPayload.messages = await processOpenAIMessages(originalPayload.messages, originalPayload.model)
@@ -103,14 +107,31 @@ export async function handleChatCompletion(c: Context) {
     consola.debug("Set max_tokens to:", JSON.stringify(finalPayload.max_tokens))
   }
 
-  // Execute request with reactive retry pipeline
-  return executeRequest({
-    c,
-    payload: finalPayload,
-    originalPayload,
-    selectedModel,
-    reqCtx,
-  })
+  if (isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
+    return executeRequest({
+      c,
+      payload: finalPayload,
+      originalPayload,
+      selectedModel,
+      reqCtx,
+    })
+  }
+
+  if (isResponsesSupported(selectedModel)) {
+    if (tuiLogId) {
+      tuiLogger.updateRequest(tuiLogId, { tags: ["via-responses"] })
+    }
+    return executeRequestViaResponses({
+      c,
+      payload: finalPayload,
+      originalPayload,
+      selectedModel,
+      reqCtx,
+    })
+  }
+
+  const msg = `Model "${originalPayload.model}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint`
+  throw new HTTPError(msg, 400, msg)
 }
 
 /** Options for executeRequest */
@@ -152,7 +173,87 @@ async function executeRequest(opts: ExecuteRequestOptions) {
     logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
   }
 
-  const strategies = [
+  const strategies = createChatCompletionsStrategies("Completions")
+
+  return executeRequestWithAdapter({
+    c,
+    payload,
+    originalPayload,
+    selectedModel,
+    reqCtx,
+    adapter,
+    strategies,
+    headersCapture,
+  })
+}
+
+async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
+  const { c, payload, originalPayload, selectedModel, reqCtx } = opts
+  const headersCapture: HeadersCapture = {}
+  const adapter: FormatAdapter<ChatCompletionsPayload> = {
+    format: "openai-chat-completions",
+    sanitize: (p) => sanitizeOpenAIMessages(p),
+    execute: async (ccPayload) => {
+      const { payload: responsesPayload, droppedParams } = translateChatCompletionsToResponses(ccPayload)
+      if (droppedParams.length > 0) {
+        consola.debug(`[CC→Responses] Dropped: ${droppedParams.join(", ")}`)
+        if (reqCtx.tuiLogId) {
+          tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: ["dropped-params"] })
+        }
+      }
+
+      const finalPayload = state.normalizeResponsesCallIds ? normalizeCallIds(responsesPayload) : responsesPayload
+      const result = await executeWithAdaptiveRateLimit(() =>
+        createResponses(finalPayload, {
+          resolvedModel: selectedModel,
+          headersCapture,
+          onPrepared: ({ wire, headers }) => {
+            reqCtx.setAttemptWireRequest({
+              model: typeof wire.model === "string" ? wire.model : ccPayload.model,
+              messages: extractInputItems(wire.input),
+              payload: wire,
+              headers,
+              format: "openai-responses",
+            })
+          },
+        }))
+
+      if (!ccPayload.stream) {
+        return {
+          result: translateResponsesResponseToCC(result.result as any),
+          queueWaitMs: result.queueWaitMs,
+        }
+      }
+
+      const translatedStream = translateResponsesStream(
+        result.result as AsyncIterable<ServerSentEventMessage>,
+        createStreamTranslator({ includeUsage: ccPayload.stream_options?.include_usage ?? false }),
+      )
+
+      return {
+        result: translatedStream,
+        queueWaitMs: result.queueWaitMs,
+      }
+    },
+    logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
+  }
+
+  const strategies = createChatCompletionsStrategies("Completions(→Responses)")
+
+  return executeRequestWithAdapter({
+    c,
+    payload,
+    originalPayload,
+    selectedModel,
+    reqCtx,
+    adapter,
+    strategies,
+    headersCapture,
+  })
+}
+
+function createChatCompletionsStrategies(label: string): Array<RetryStrategy<ChatCompletionsPayload>> {
+  return [
     createNetworkRetryStrategy<ChatCompletionsPayload>(),
     createTokenRefreshStrategy<ChatCompletionsPayload>(),
     createAutoTruncateStrategy<ChatCompletionsPayload>({
@@ -160,9 +261,19 @@ async function executeRequest(opts: ExecuteRequestOptions) {
         autoTruncateOpenAI(p, model, truncOpts) as Promise<TruncateResult<ChatCompletionsPayload>>,
       resanitize: (p) => sanitizeOpenAIMessages(p),
       isEnabled: () => state.autoTruncate,
-      label: "Completions",
+      label,
     }),
   ]
+}
+
+interface ExecuteRequestWithAdapterOptions extends ExecuteRequestOptions {
+  adapter: FormatAdapter<ChatCompletionsPayload>
+  strategies: Array<RetryStrategy<ChatCompletionsPayload>>
+  headersCapture: HeadersCapture
+}
+
+async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions) {
+  const { c, payload, originalPayload, selectedModel, reqCtx, adapter, strategies, headersCapture } = opts
 
   // Track truncation result for non-streaming response marker
   let truncateResult: OpenAIAutoTruncateResult | undefined

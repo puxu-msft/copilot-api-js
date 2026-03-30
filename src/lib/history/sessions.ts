@@ -1,7 +1,8 @@
 import { generateId } from "../utils"
+import { notifySessionDeleted, notifyStatsUpdated } from "../ws"
 import { historyIndexes, historyState, invalidateHistoryStats } from "./state"
+import { getStats } from "./stats"
 import type { CursorResult, EndpointType, HistoryEntry, Session, SessionResult } from "./types"
-import { notifySessionDeleted, notifyStatsChanged } from "./ws"
 
 /**
  * Get or create current session.
@@ -97,6 +98,6 @@ export function deleteSession(sessionId: string): boolean {
   }
 
   notifySessionDeleted(sessionId)
-  notifyStatsChanged()
+  notifyStatsUpdated(getStats())
   return true
 }

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import DashboardActiveRequestsTable from "@/components/dashboard/DashboardActiveRequestsTable.vue"
-import DashboardConfigPanel from "@/components/dashboard/DashboardConfigPanel.vue"
 import DashboardOverviewPanel from "@/components/dashboard/DashboardOverviewPanel.vue"
 import DashboardStatusBar from "@/components/dashboard/DashboardStatusBar.vue"
 import { useDashboardStatus } from "@/composables/useDashboardStatus"
@@ -8,7 +7,6 @@ import { useDashboardStatus } from "@/composables/useDashboardStatus"
 const {
   activeRequests,
   auth,
-  configGroups,
   copilotExpiresAt,
   formatNumber,
   memory,
@@ -68,8 +66,6 @@ const {
       />
 
       <v-divider />
-
-      <DashboardConfigPanel :config-groups="configGroups" />
 
       <DashboardActiveRequestsTable
         :active-requests="activeRequests"

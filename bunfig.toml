@@ -7,3 +7,6 @@ token = "$NPM_TOKEN"
 
 [test]
 root = "./tests"
+coverage = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"

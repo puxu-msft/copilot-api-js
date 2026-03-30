@@ -34,8 +34,9 @@ onUnmounted(() => store.destroy())
   >
     <NavBar />
     <router-view />
-    <BaseToast />
   </div>
+
+  <BaseToast />
 </template>
 
 <style scoped>

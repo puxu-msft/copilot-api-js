@@ -1,0 +1,3 @@
+{"id":"chatcmpl_stream","object":"chat.completion.chunk","created":1772432000,"model":"gpt-4o-2024-11-20","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null,"logprobs":null}]}
+{"id":"chatcmpl_stream","object":"chat.completion.chunk","created":1772432001,"model":"gpt-4o-2024-11-20","choices":[{"index":0,"delta":{"content":" there."},"finish_reason":null,"logprobs":null}]}
+{"id":"chatcmpl_stream","object":"chat.completion.chunk","created":1772432002,"model":"gpt-4o-2024-11-20","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}]}

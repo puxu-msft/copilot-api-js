@@ -1,0 +1,11 @@
+{
+  "model": "claude-sonnet-4.6",
+  "max_tokens": 128,
+  "stream": true,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Stream a short greeting."
+    }
+  ]
+}

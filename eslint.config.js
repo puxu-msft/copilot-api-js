@@ -1,7 +1,8 @@
 import config from "@echristian/eslint-config"
-import { defineConfigWithVueTs, vueTsConfigs } from "@vue/eslint-config-typescript"
+import { defineConfigWithVueTs } from "@vue/eslint-config-typescript"
 import tseslint from "typescript-eslint"
 import pluginVue from "eslint-plugin-vue"
+import vueParser from "vue-eslint-parser"
 import prettierConfig from "./prettier.config.mjs"
 
 const disableTypescriptRulesForJson = Object.fromEntries(
@@ -9,6 +10,7 @@ const disableTypescriptRulesForJson = Object.fromEntries(
 )
 
 export default defineConfigWithVueTs(
+  pluginVue.configs["flat/essential"],
   {
     ignores: [
       //
@@ -19,17 +21,18 @@ export default defineConfigWithVueTs(
       "tsdown.config.ts",
     ],
   },
-  {
-    plugins: {
-      "@typescript-eslint": tseslint.plugin,
-    },
-  },
   ...config({
     prettier: prettierConfig,
   }),
   {
     files: ["ui/**/*.vue"],
-    extends: [pluginVue.configs["flat/essential"], vueTsConfigs.recommendedTypeChecked],
+    languageOptions: {
+      parser: vueParser,
+      parserOptions: {
+        parser: tseslint.parser,
+        extraFileExtensions: [".vue"],
+      },
+    },
     rules: {
       "@typescript-eslint/no-base-to-string": "off",
       "@typescript-eslint/no-non-null-assertion": "off",

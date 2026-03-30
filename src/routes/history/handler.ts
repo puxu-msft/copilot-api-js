@@ -44,6 +44,9 @@ export function handleGetEntry(c: Context) {
   }
 
   const id = c.req.param("id")
+  if (!id) {
+    return c.json({ error: "Entry id is required" }, 400)
+  }
   const entry = getEntry(id)
 
   if (!entry) {
@@ -106,6 +109,9 @@ export function handleGetSession(c: Context) {
   }
 
   const id = c.req.param("id")
+  if (!id) {
+    return c.json({ error: "Session id is required" }, 400)
+  }
   const session = getSession(id)
 
   if (!session) {
@@ -131,6 +137,9 @@ export function handleDeleteSession(c: Context) {
   }
 
   const id = c.req.param("id")
+  if (!id) {
+    return c.json({ error: "Session id is required" }, 400)
+  }
   const success = deleteSession(id)
 
   if (!success) {

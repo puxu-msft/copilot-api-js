@@ -5,17 +5,6 @@ import { WSClient, type ActiveRequestChangedInfo, type ActiveRequestInfo, type R
 import { useFormatters } from "@/composables/useFormatters"
 import { usePolling } from "@/composables/usePolling"
 
-interface ConfigEntry {
-  key: string
-  value: string
-  isComplex: boolean
-}
-
-export interface ConfigGroup {
-  label: string
-  entries: Array<ConfigEntry>
-}
-
 export interface QuotaItem {
   label: string
   used: number
@@ -25,7 +14,6 @@ export interface QuotaItem {
 export function useDashboardStatus() {
   const { formatNumber } = useFormatters()
   const { data: status, loading: statusLoading } = usePolling(() => api.fetchStatus(), 5000)
-  const { data: config } = usePolling(() => api.fetchConfig(), 30000)
 
   const activeRequests = ref<Array<ActiveRequestInfo>>([])
   const activeCount = ref(0)
@@ -114,60 +102,6 @@ export function useDashboardStatus() {
     () => activeCount.value || (status.value?.activeRequests as Record<string, number> | undefined)?.count || 0,
   )
 
-  const configGroups = computed<Array<ConfigGroup>>(() => {
-    if (!config.value) return []
-    const raw = config.value
-
-    function fmt(v: unknown): string {
-      if (v === null || v === undefined) return "null"
-      if (typeof v === "boolean") return v ? "true" : "false"
-      if (typeof v === "number") return String(v)
-      if (typeof v === "string") return v || '""'
-      return JSON.stringify(v, null, 2)
-    }
-
-    function isComplex(v: unknown): boolean {
-      return typeof v === "object" && v !== null
-    }
-
-    function entry(key: string): ConfigEntry {
-      return { key, value: fmt(raw[key]), isComplex: isComplex(raw[key]) }
-    }
-
-    return [
-      {
-        label: "Anthropic Pipeline",
-        entries: [
-          entry("autoTruncate"),
-          entry("compressToolResultsBeforeTruncate"),
-          entry("stripServerTools"),
-          entry("immutableThinkingMessages"),
-          entry("dedupToolCalls"),
-          entry("contextEditingMode"),
-          entry("rewriteSystemReminders"),
-          entry("stripReadToolResultTags"),
-          entry("systemPromptOverridesCount"),
-        ],
-      },
-      { label: "OpenAI", entries: [entry("normalizeResponsesCallIds")] },
-      { label: "Timeouts", entries: [entry("fetchTimeout"), entry("streamIdleTimeout"), entry("staleRequestMaxAge")] },
-      { label: "Shutdown", entries: [entry("shutdownGracefulWait"), entry("shutdownAbortWait")] },
-      { label: "History", entries: [entry("historyLimit"), entry("historyMinEntries")] },
-      {
-        label: "Model Overrides",
-        entries:
-          raw.modelOverrides ?
-            Object.entries(raw.modelOverrides as Record<string, string>).map(([from, to]) => ({
-              key: from,
-              value: to,
-              isComplex: false,
-            }))
-          : [],
-      },
-      { label: "Rate Limiter", entries: [entry("rateLimiter")] },
-    ].filter((group) => group.entries.length > 0)
-  })
-
   const quotaItems = computed<Array<QuotaItem>>(() => {
     if (!quota.value) return []
     const items: Array<QuotaItem> = []
@@ -200,7 +134,6 @@ export function useDashboardStatus() {
   return {
     activeRequests,
     auth,
-    configGroups,
     copilotExpiresAt,
     formatNumber: formatMetric,
     memory,

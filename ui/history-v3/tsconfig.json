@@ -22,5 +22,5 @@
       "~backend/*": ["../../src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "tests/**/*.ts", "vitest/**/*.ts", "vitest.config.ts"]
 }

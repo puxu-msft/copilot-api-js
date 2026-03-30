@@ -1,5 +1,7 @@
 import type { Model, ModelsResponse } from "~/lib/models/client"
 
+import { setHistoryMaxEntries } from "~/lib/history"
+
 import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
 import type { CopilotTokenInfo, TokenInfo } from "./token/types"
 
@@ -374,29 +376,84 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {
   haiku: "claude-haiku-4.5",
 }
 
+/**
+ * Default values for config-managed scalar/runtime fields.
+ * Single source of truth for mutableState initialization and resetConfigManagedState().
+ * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
+ */
+export const CONFIG_MANAGED_DEFAULTS = {
+  stripServerTools: false,
+  immutableThinkingMessages: false,
+  dedupToolCalls: false as const,
+  stripReadToolResultTags: false,
+  contextEditingMode: "off" as const,
+  rewriteSystemReminders: false as const,
+  systemPromptOverrides: [] as Array<CompiledRewriteRule>,
+  compressToolResultsBeforeTruncate: true,
+  fetchTimeout: 300,
+  streamIdleTimeout: 300,
+  staleRequestMaxAge: 600,
+  shutdownGracefulWait: 60,
+  shutdownAbortWait: 120,
+  historyLimit: 200,
+  historyMinEntries: 50,
+  normalizeResponsesCallIds: true,
+}
+
+export function resetConfigManagedState(): void {
+  setAnthropicBehavior({
+    stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+    immutableThinkingMessages: CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages,
+    dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
+    stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
+    contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
+    rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
+    systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+    compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
+  })
+  setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
+  setTimeoutConfig({
+    fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
+    streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
+    staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+  })
+  setShutdownConfig({
+    shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+    shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  })
+  setHistoryConfig({
+    historyLimit: CONFIG_MANAGED_DEFAULTS.historyLimit,
+    historyMinEntries: CONFIG_MANAGED_DEFAULTS.historyMinEntries,
+  })
+  setHistoryMaxEntries(CONFIG_MANAGED_DEFAULTS.historyLimit)
+  setResponsesConfig({
+    normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
+  })
+}
+
 const mutableState: MutableState = {
   accountType: "individual",
   autoTruncate: true,
-  compressToolResultsBeforeTruncate: true,
-  contextEditingMode: "off",
-  stripServerTools: false,
-  immutableThinkingMessages: false,
-  dedupToolCalls: false,
-  fetchTimeout: 300,
-  historyLimit: 200,
-  historyMinEntries: 50,
+  compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
+  contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
+  stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+  immutableThinkingMessages: CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages,
+  dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
+  fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
+  historyLimit: CONFIG_MANAGED_DEFAULTS.historyLimit,
+  historyMinEntries: CONFIG_MANAGED_DEFAULTS.historyMinEntries,
   modelIds: new Set(),
   modelIndex: new Map(),
   modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },
-  rewriteSystemReminders: false,
+  rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
-  shutdownAbortWait: 120,
-  shutdownGracefulWait: 60,
-  staleRequestMaxAge: 600,
-  streamIdleTimeout: 300,
-  systemPromptOverrides: [],
-  stripReadToolResultTags: false,
-  normalizeResponsesCallIds: true,
+  shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+  staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+  streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
+  systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+  stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
+  normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
   verbose: false,
 }
 

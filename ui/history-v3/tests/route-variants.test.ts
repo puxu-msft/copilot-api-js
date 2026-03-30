@@ -22,4 +22,8 @@ describe("route variants", () => {
     expect(getVariantSwitchPath("/v/logs")).toBe("/logs")
     expect(getVariantSwitchPath("/v/models")).toBe("/models")
   })
+
+  test("hides the variant switch on /v/config because there is no legacy page", () => {
+    expect(getVariantSwitchPath("/v/config")).toBeNull()
+  })
 })
