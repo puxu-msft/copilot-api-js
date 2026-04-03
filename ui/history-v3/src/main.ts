@@ -5,6 +5,7 @@ import { vuetify } from "./plugins/vuetify"
 import router from "./router"
 // Vuetify styles load first (via plugin), then project styles.
 // Project reset.css is scoped to NOT affect Vuetify components — see reset.css.
+import "./styles/vuetify-overrides.css"
 import "./styles/reset.css"
 import "./styles/variables.css"
 import "./styles/base.css"

@@ -4,60 +4,71 @@ import { BASE_URL, ensureServerRunning, uiUrl } from "./helpers"
 test.beforeAll(ensureServerRunning)
 
 test.describe("Navigation", () => {
-  test("/history is not a UI entrypoint", async ({ page }) => {
+  test("/history redirects to /ui#/v/activity", async ({ page }) => {
     const response = await page.goto(`${BASE_URL}/history`)
     expect(response).not.toBeNull()
-    expect(response?.status()).toBe(404)
+    expect(response?.status()).toBe(200)
+    await page.waitForURL(/\/ui#\/v\/activity/)
   })
 
-  test("/ui loads and shows the NavBar", async ({ page }) => {
+  test("/ui loads and shows the Vuetify app bar", async ({ page }) => {
     await page.goto(uiUrl())
-    // NavBar should be visible with the brand text
-    const navbar = page.locator("nav.navbar")
-    await expect(navbar).toBeVisible()
-    await expect(navbar.locator(".navbar-brand")).toHaveText("copilot-api")
+    await page.waitForURL(/\/ui#\/v\/dashboard/)
+
+    const appBar = page.locator(".v-app-bar")
+    await expect(appBar).toBeVisible()
+    await expect(appBar).toContainText("copilot-api")
   })
 
   test("default route goes to /v/dashboard", async ({ page }) => {
     await page.goto(uiUrl())
-    // The hash router defaults to /v/dashboard
     await page.waitForURL(/\/ui#\/v\/dashboard/)
-    await expect(page.locator("main")).toContainText("Authentication")
+    await expect(page.locator("main")).toContainText("Operations Workspace")
   })
 
-  test("clicking History nav link navigates to /v/history", async ({ page }) => {
+  test("History does not appear as a navbar tab", async ({ page }) => {
     await page.goto(uiUrl("#/v/dashboard"))
-    await page.locator("a.nav-link", { hasText: "History" }).click()
-    await page.waitForURL(/\/ui#\/v\/history/)
-    // History page renders a navigation drawer with a toolbar containing "History" text
-    await expect(page.locator(".v-navigation-drawer")).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole("tab", { name: "History" })).toHaveCount(0)
   })
 
-  test("clicking Logs nav link navigates to /v/logs", async ({ page }) => {
+  test("clicking Activity nav link navigates to /v/activity", async ({ page }) => {
     await page.goto(uiUrl("#/v/dashboard"))
-    await page.locator("a.nav-link", { hasText: "Logs" }).click()
-    await page.waitForURL(/\/ui#\/v\/logs/)
-    await expect(page.locator("main")).toContainText("Live Logs")
+    await page.getByRole("tab", { name: "Activity" }).click()
+    await page.waitForURL(/\/ui#\/v\/activity/)
+    await expect(page.locator("main")).toContainText("Activity")
   })
 
   test("clicking Dashboard nav link navigates to /v/dashboard", async ({ page }) => {
-    await page.goto(uiUrl("#/v/logs"))
-    await page.locator("a.nav-link", { hasText: "Dashboard" }).click()
+    await page.goto(uiUrl("#/v/activity"))
+    await page.getByRole("tab", { name: "Dashboard" }).click()
     await page.waitForURL(/\/ui#\/v\/dashboard/)
-    await expect(page.locator("main")).toContainText("Authentication")
+    await expect(page.locator("main")).toContainText("Dashboard and usage are now one surface.")
   })
 
   test("clicking Models nav link navigates to /v/models", async ({ page }) => {
     await page.goto(uiUrl("#/v/dashboard"))
-    await page.locator("a.nav-link", { hasText: "Models" }).click()
+    await page.getByRole("tab", { name: "Models" }).click()
     await page.waitForURL(/\/ui#\/v\/models/)
-    await expect(page.getByPlaceholder("Search models...")).toBeVisible()
+    await expect(page.getByPlaceholder("Search model id or name")).toBeVisible()
   })
 
-  test("clicking Usage nav link navigates to /v/usage", async ({ page }) => {
-    await page.goto(uiUrl("#/v/dashboard"))
-    await page.locator("a.nav-link", { hasText: "Usage" }).click()
-    await page.waitForURL(/\/ui#\/v\/usage/)
-    await expect(page.locator("main")).toContainText("Quota")
+  test("from /v/models, clicking Config tab navigates to /v/config", async ({ page }) => {
+    await page.goto(uiUrl("#/v/models"))
+    await expect(page.getByPlaceholder("Search model id or name")).toBeVisible({ timeout: 15000 })
+    await page.getByRole("tab", { name: "Config" }).click()
+    await page.waitForURL(/\/ui#\/v\/config/)
+    await expect(page.locator("main")).toContainText("Config")
+  })
+
+  test("/v/history redirects to /v/activity", async ({ page }) => {
+    await page.goto(uiUrl("#/v/history"))
+    await page.waitForURL(/\/ui#\/v\/activity/)
+    await expect(page.locator("main")).toContainText("Activity")
+  })
+
+  test("/v/usage redirects back to /v/dashboard", async ({ page }) => {
+    await page.goto(uiUrl("#/v/usage"))
+    await page.waitForURL(/\/ui#\/v\/dashboard/)
+    await expect(page.locator("main")).toContainText("Operations Workspace")
   })
 })

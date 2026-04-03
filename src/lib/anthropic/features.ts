@@ -186,11 +186,9 @@ export function buildContextManagement(mode: ContextEditingMode, hasThinking: bo
     return undefined
   }
 
-  // Default config from getContextManagementFromConfig
-  const triggerType = "input_tokens"
-  const triggerValue = 100_000
-  const keepCount = 3
-  const thinkingKeepTurns = 1
+  const triggerValue = state.contextEditingTrigger
+  const keepCount = state.contextEditingKeepTools
+  const thinkingKeepTurns = state.contextEditingKeepThinking
 
   const edits: Array<ContextManagementEdit> = []
 
@@ -206,7 +204,7 @@ export function buildContextManagement(mode: ContextEditingMode, hasThinking: bo
   if (mode === "clear-tooluse" || mode === "clear-both") {
     edits.push({
       type: "clear_tool_uses_20250919",
-      trigger: { type: triggerType, value: triggerValue },
+      trigger: { type: "input_tokens", value: triggerValue },
       keep: { type: "tool_uses", value: keepCount },
     })
   }

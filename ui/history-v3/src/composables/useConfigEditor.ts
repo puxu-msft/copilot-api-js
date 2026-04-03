@@ -38,7 +38,12 @@ export function normalizeConfigForEditor(
     : {}),
     ...(input.anthropic !== undefined ? { anthropic: normalizeAnthropic(input.anthropic) } : {}),
     ...(input["openai-responses"] !== undefined ?
-      { "openai-responses": normalizeScalarSection(input["openai-responses"], ["normalize_call_ids"]) }
+      {
+        "openai-responses": normalizeScalarSection(input["openai-responses"], [
+          "normalize_call_ids",
+          "upstream_websocket",
+        ]),
+      }
     : {}),
     ...(input.rate_limiter !== undefined ?
       {
@@ -185,6 +190,18 @@ function normalizeAnthropic(
       { strip_read_tool_result_tags: value.strip_read_tool_result_tags }
     : {}),
     ...(value.context_editing !== undefined ? { context_editing: value.context_editing } : {}),
+    ...(value.context_editing_trigger !== undefined ? { context_editing_trigger: value.context_editing_trigger } : {}),
+    ...(value.context_editing_keep_tools !== undefined ?
+      { context_editing_keep_tools: value.context_editing_keep_tools }
+    : {}),
+    ...(value.context_editing_keep_thinking !== undefined ?
+      { context_editing_keep_thinking: value.context_editing_keep_thinking }
+    : {}),
+    ...(value.tool_search !== undefined ? { tool_search: value.tool_search } : {}),
+    ...(value.auto_cache_control !== undefined ? { auto_cache_control: value.auto_cache_control } : {}),
+    ...(value.non_deferred_tools !== undefined ?
+      { non_deferred_tools: value.non_deferred_tools === null ? null : [...value.non_deferred_tools] }
+    : {}),
     ...(value.rewrite_system_reminders !== undefined ?
       { rewrite_system_reminders: normalizeReminderSetting(value.rewrite_system_reminders) }
     : {}),

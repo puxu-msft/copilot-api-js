@@ -11,6 +11,66 @@ export interface QuotaItem {
   total: number
 }
 
+export interface RequestTelemetryBucket {
+  timestamp: number
+  count: number
+}
+
+export interface RequestTelemetryModelBucket {
+  timestamp: number
+  requestCount: number
+  successCount: number
+  failureCount: number
+  totalDurationMs: number
+  averageDurationMs: number
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+    cacheReadInputTokens: number
+    cacheCreationInputTokens: number
+    reasoningTokens: number
+  }
+}
+
+export interface RequestTelemetryModelStats {
+  model: string
+  requestCount: number
+  successCount: number
+  failureCount: number
+  totalDurationMs: number
+  averageDurationMs: number
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+    cacheReadInputTokens: number
+    cacheCreationInputTokens: number
+    reasoningTokens: number
+  }
+}
+
+export interface RequestTelemetrySnapshot {
+  acceptedSinceStart: number
+  bucketSizeMinutes: number
+  windowDays: number
+  totalLast7d: number
+  buckets: Array<RequestTelemetryBucket>
+  modelsSinceStart: Array<RequestTelemetryModelStats>
+  modelsLast7d: Array<RequestTelemetryModelStats & { buckets: Array<RequestTelemetryModelBucket> }>
+}
+
+export interface RateLimiterSnapshot {
+  enabled: boolean
+  mode: string | null
+  queueLength: number
+  consecutiveSuccesses: number
+  rateLimitedAt: number | null
+  config: Record<string, unknown> | null
+}
+
+const ACTIVE_REQUEST_REMOVE_DELAY_MS = 3000
+
 export function useDashboardStatus() {
   const { formatNumber } = useFormatters()
   const { data: status, loading: statusLoading } = usePolling(() => api.fetchStatus(), 5000)
@@ -23,16 +83,47 @@ export function useDashboardStatus() {
   const wsConnected = ref(false)
 
   let wsClient: WSClient | null = null
+  const pendingRequestRemovals = new Map<string, ReturnType<typeof setTimeout>>()
+
+  function cancelPendingRemoval(requestId: string): void {
+    const timer = pendingRequestRemovals.get(requestId)
+    if (!timer) return
+    clearTimeout(timer)
+    pendingRequestRemovals.delete(requestId)
+  }
+
+  function scheduleDelayedRemoval(requestId: string): void {
+    cancelPendingRemoval(requestId)
+    const timer = setTimeout(() => {
+      activeRequests.value = activeRequests.value.filter((request) => request.id !== requestId)
+      pendingRequestRemovals.delete(requestId)
+    }, ACTIVE_REQUEST_REMOVE_DELAY_MS)
+    pendingRequestRemovals.set(requestId, timer)
+  }
+
+  function upsertActiveRequest(request: ActiveRequestInfo): void {
+    const existingIndex = activeRequests.value.findIndex((entry) => entry.id === request.id)
+    if (existingIndex === -1) {
+      activeRequests.value = [...activeRequests.value, request]
+      return
+    }
+
+    activeRequests.value = activeRequests.value.map((entry, index) => (index === existingIndex ? request : entry))
+  }
 
   function handleActiveRequestChanged(data: ActiveRequestChangedInfo): void {
     activeCount.value = data.activeCount
     if (data.action === "created" && data.request) {
-      activeRequests.value = [...activeRequests.value, data.request]
+      cancelPendingRemoval(data.request.id)
+      upsertActiveRequest(data.request)
     } else if (data.action === "state_changed" && data.request) {
       const request = data.request
-      activeRequests.value = activeRequests.value.map((r) => (r.id === request.id ? request : r))
+      cancelPendingRemoval(request.id)
+      upsertActiveRequest(request)
     } else if (data.action === "completed" || data.action === "failed") {
-      activeRequests.value = activeRequests.value.filter((r) => r.id !== data.requestId)
+      if (data.requestId) {
+        scheduleDelayedRemoval(data.requestId)
+      }
     }
   }
 
@@ -57,6 +148,10 @@ export function useDashboardStatus() {
   })
 
   onUnmounted(() => {
+    for (const timer of pendingRequestRemovals.values()) {
+      clearTimeout(timer)
+    }
+    pendingRequestRemovals.clear()
     wsClient?.disconnect()
     wsClient = null
   })
@@ -68,6 +163,19 @@ export function useDashboardStatus() {
   const rateLimiterQueue = computed<number | null>(() => {
     const fallback = (status.value?.rateLimiter as Record<string, unknown> | null)?.queueLength
     return wsRateLimiterQueue.value ?? (typeof fallback === "number" ? fallback : null)
+  })
+  const rateLimiter = computed<RateLimiterSnapshot | null>(() => {
+    const source = (status.value?.rateLimiter as Record<string, unknown> | null) ?? null
+    if (!source) return null
+
+    return {
+      enabled: source.enabled === true,
+      mode: rateLimiterMode.value,
+      queueLength: rateLimiterQueue.value ?? 0,
+      consecutiveSuccesses: typeof source.consecutiveSuccesses === "number" ? source.consecutiveSuccesses : 0,
+      rateLimitedAt: typeof source.rateLimitedAt === "number" ? source.rateLimitedAt : null,
+      config: source.config && typeof source.config === "object" ? (source.config as Record<string, unknown>) : null,
+    }
   })
   const shutdownPhase = computed<string>(() => {
     const fallback = (status.value?.shutdown as Record<string, unknown> | null)?.phase
@@ -88,6 +196,78 @@ export function useDashboardStatus() {
   const auth = computed(() => (status.value?.auth as Record<string, unknown> | null) ?? null)
   const quota = computed(() => (status.value?.quota as Record<string, unknown> | null) ?? null)
   const memory = computed(() => (status.value?.memory as Record<string, unknown> | null) ?? null)
+  const requestTelemetry = computed<RequestTelemetrySnapshot | null>(() => {
+    const source = (status.value?.requestTelemetry as Record<string, unknown> | null) ?? null
+    if (!source) return null
+
+    const rawBuckets = Array.isArray(source.buckets) ? source.buckets : []
+    const buckets = rawBuckets
+      .filter((bucket): bucket is Record<string, unknown> => Boolean(bucket) && typeof bucket === "object")
+      .map((bucket) => ({
+        timestamp: typeof bucket.timestamp === "number" ? bucket.timestamp : 0,
+        count: typeof bucket.count === "number" ? bucket.count : 0,
+      }))
+    const parseUsage = (rawValue: unknown) => {
+      const usage = (rawValue && typeof rawValue === "object" ? rawValue : {}) as Record<string, unknown>
+      return {
+        inputTokens: typeof usage.inputTokens === "number" ? usage.inputTokens : 0,
+        outputTokens: typeof usage.outputTokens === "number" ? usage.outputTokens : 0,
+        totalTokens: typeof usage.totalTokens === "number" ? usage.totalTokens : 0,
+        cacheReadInputTokens: typeof usage.cacheReadInputTokens === "number" ? usage.cacheReadInputTokens : 0,
+        cacheCreationInputTokens: typeof usage.cacheCreationInputTokens === "number" ? usage.cacheCreationInputTokens : 0,
+        reasoningTokens: typeof usage.reasoningTokens === "number" ? usage.reasoningTokens : 0,
+      }
+    }
+    const parseModelStats = (entry: Record<string, unknown>) => {
+      return {
+        model: typeof entry.model === "string" ? entry.model : "unknown",
+        requestCount: typeof entry.requestCount === "number" ? entry.requestCount : 0,
+        successCount: typeof entry.successCount === "number" ? entry.successCount : 0,
+        failureCount: typeof entry.failureCount === "number" ? entry.failureCount : 0,
+        totalDurationMs: typeof entry.totalDurationMs === "number" ? entry.totalDurationMs : 0,
+        averageDurationMs: typeof entry.averageDurationMs === "number" ? entry.averageDurationMs : 0,
+        usage: parseUsage(entry.usage),
+      }
+    }
+    const parseModels = (rawValue: unknown) =>
+      (Array.isArray(rawValue) ? rawValue : [])
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+        .map((entry) => parseModelStats(entry))
+    const parseModelSeries = (rawValue: unknown) =>
+      (Array.isArray(rawValue) ? rawValue : [])
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+        .map((entry) => {
+          const stats = parseModelStats(entry)
+          const buckets = (Array.isArray(entry.buckets) ? entry.buckets : [])
+            .filter((bucket): bucket is Record<string, unknown> => Boolean(bucket) && typeof bucket === "object")
+            .map((bucket) => ({
+              timestamp: typeof bucket.timestamp === "number" ? bucket.timestamp : 0,
+              requestCount: typeof bucket.requestCount === "number" ? bucket.requestCount : 0,
+              successCount: typeof bucket.successCount === "number" ? bucket.successCount : 0,
+              failureCount: typeof bucket.failureCount === "number" ? bucket.failureCount : 0,
+              totalDurationMs: typeof bucket.totalDurationMs === "number" ? bucket.totalDurationMs : 0,
+              averageDurationMs: typeof bucket.averageDurationMs === "number" ? bucket.averageDurationMs : 0,
+              usage: parseUsage(bucket.usage),
+            }))
+
+          return {
+            ...stats,
+            buckets,
+          }
+        })
+    const modelsSinceStart = parseModels(source.modelsSinceStart)
+    const modelsLast7d = parseModelSeries(source.modelsLast7d)
+
+    return {
+      acceptedSinceStart: typeof source.acceptedSinceStart === "number" ? source.acceptedSinceStart : 0,
+      bucketSizeMinutes: typeof source.bucketSizeMinutes === "number" ? source.bucketSizeMinutes : 5,
+      windowDays: typeof source.windowDays === "number" ? source.windowDays : 7,
+      totalLast7d: typeof source.totalLast7d === "number" ? source.totalLast7d : 0,
+      buckets,
+      modelsSinceStart,
+      modelsLast7d,
+    }
+  })
   const quotaPlan = computed<string | null>(() => {
     const plan = quota.value?.plan
     return typeof plan === "string" ? plan : null
@@ -139,6 +319,8 @@ export function useDashboardStatus() {
     memory,
     quotaItems,
     quotaPlan,
+    requestTelemetry,
+    rateLimiter,
     rateLimiterColor,
     rateLimiterMode,
     rateLimiterQueue,

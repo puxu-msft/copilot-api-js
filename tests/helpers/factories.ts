@@ -26,6 +26,8 @@ export function mockModel(id: string, overrides?: Partial<Model>): Model {
     vendor: "openai",
     preview: false,
     model_picker_enabled: true,
+    is_chat_default: false,
+    is_chat_fallback: false,
     capabilities: {
       family: "gpt-4",
       type: "chat",

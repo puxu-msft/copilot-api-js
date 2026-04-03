@@ -1,6 +1,15 @@
 export { clearHistory, evictOldestEntries, insertEntry, updateEntry } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
-export { deleteSession, getCurrentSession, getSession, getSessionEntries, getSessions } from "./sessions"
+export {
+  deleteSession,
+  getCurrentSession,
+  getSession,
+  getSessionEntries,
+  getSessionIdFromHeaders,
+  getSessions,
+  registerResponseSession,
+  resolveResponseSessionId,
+} from "./sessions"
 export { exportHistory, getStats } from "./stats"
 export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries } from "./state"
 
@@ -20,6 +29,8 @@ export type {
   PreprocessInfo,
   QueryOptions,
   RedactedThinkingContentBlock,
+  RequestLifecycleState,
+  RequestTransport,
   SanitizationInfo,
   ServerToolResultContentBlock,
   ServerToolUseContentBlock,

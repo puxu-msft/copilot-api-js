@@ -3,10 +3,11 @@ import { Hono } from "hono"
 import { forwardError } from "~/lib/error"
 import { state } from "~/lib/state"
 import { registerHttpRoutes } from "~/routes"
+import type { UiRoutesOptions } from "~/routes/ui/route"
 
 const browserProbePaths = new Set(["/favicon.ico", "/.well-known/appspecific/com.chrome.devtools.json"])
 
-export function createFullTestApp() {
+export function createFullTestApp(options: UiRoutesOptions = {}) {
   const app = new Hono()
 
   app.onError((error, c) => {
@@ -40,7 +41,7 @@ export function createFullTestApp() {
     )
   })
 
-  registerHttpRoutes(app)
+  registerHttpRoutes(app, options)
 
   return app
 }

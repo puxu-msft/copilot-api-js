@@ -344,6 +344,7 @@ const rewrittenRawData = computed(() => {
   padding: var(--spacing-sm);
   max-height: 400px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .system-body.body-expanded {

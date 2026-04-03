@@ -50,7 +50,9 @@ const MAX_MESSAGES_IN_DUMP = 50
 async function writeErrorEntry(entry: HistoryEntryData): Promise<void> {
   // Build compact meta (focused on debugging, not full replay)
   const meta = {
-    timestamp: new Date(entry.timestamp).toISOString(),
+    timestamp: new Date(entry.startedAt).toISOString(),
+    startedAt: new Date(entry.startedAt).toISOString(),
+    endedAt: new Date(entry.endedAt).toISOString(),
     id: entry.id,
     endpoint: entry.endpoint,
     durationMs: entry.durationMs,

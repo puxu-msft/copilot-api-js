@@ -8,7 +8,7 @@ export const ENDPOINT = {
   MESSAGES: "/v1/messages",
   CHAT_COMPLETIONS: "/chat/completions",
   RESPONSES: "/responses",
-  /** WebSocket transport for Responses API (client↔proxy only; proxy↔upstream is always HTTP) */
+  /** WebSocket transport for Responses API. */
   WS_RESPONSES: "ws:/responses",
   EMBEDDINGS: "/v1/embeddings",
 } as const
@@ -55,6 +55,18 @@ export function isEndpointSupported(model: Model | undefined, endpoint: string):
  */
 export function isResponsesSupported(model: Model | undefined): boolean {
   return isEndpointSupported(model, ENDPOINT.RESPONSES) || isEndpointSupported(model, ENDPOINT.WS_RESPONSES)
+}
+
+/**
+ * Check if a model explicitly supports upstream WebSocket transport for Responses API.
+ *
+ * Unlike `isEndpointSupported`, legacy models without `supported_endpoints` do not
+ * implicitly gain WebSocket support. We only enable this transport when Copilot has
+ * advertised the dedicated `ws:/responses` capability.
+ */
+export function isWsResponsesSupported(model: Model | undefined): boolean {
+  if (!model?.supported_endpoints) return false
+  return model.supported_endpoints.includes(ENDPOINT.WS_RESPONSES)
 }
 
 /**

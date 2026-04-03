@@ -18,13 +18,16 @@ interface HealthResponseBody {
 
 interface ModelsListResponseBody {
   object: string
-  has_more: boolean
   data: Array<{
     id: string
     object: string
-    type: string
-    owned_by: string
-    display_name: string
+    vendor: string
+    name: string
+    version: string
+    preview: boolean
+    model_picker_enabled: boolean
+    is_chat_default: boolean
+    is_chat_fallback: boolean
   }>
 }
 
@@ -92,24 +95,30 @@ describe("basic HTTP routes", () => {
     })
   })
 
-  test("GET /models returns formatted model list", async () => {
+  test("GET /models returns upstream model data as-is", async () => {
     const res = await app.request("/models")
     const body = (await res.json()) as ModelsListResponseBody
 
     expect(res.status).toBe(200)
     expect(body.object).toBe("list")
-    expect(body.has_more).toBe(false)
+    expect(body).not.toHaveProperty("has_more")
     expect(body.data).toHaveLength(1)
     expect(body.data[0]).toMatchObject({
       id: "claude-sonnet-4.6",
       object: "model",
-      type: "model",
-      owned_by: "Anthropic",
-      display_name: "claude-sonnet-4.6",
+      vendor: "Anthropic",
+      name: "claude-sonnet-4.6",
+      is_chat_default: false,
+      is_chat_fallback: false,
     })
+    expect(body.data[0]).not.toHaveProperty("type")
+    expect(body.data[0]).not.toHaveProperty("created")
+    expect(body.data[0]).not.toHaveProperty("created_at")
+    expect(body.data[0]).not.toHaveProperty("owned_by")
+    expect(body.data[0]).not.toHaveProperty("display_name")
   })
 
-  test("GET /models?detail=true returns detailed model fields", async () => {
+  test("GET /models?detail=true remains equivalent to the default response", async () => {
     setModels({
       object: "list",
       data: [
@@ -118,15 +127,21 @@ describe("basic HTTP routes", () => {
           version: "2025-01-01",
           supported_endpoints: ["/chat/completions", "/responses"],
           billing: { is_premium: true, multiplier: 10 },
+          is_chat_default: false,
+          is_chat_fallback: false,
         }),
       ],
     })
 
-    const res = await app.request("/models?detail=true")
-    const body = (await res.json()) as ModelsListResponseBody
+    const defaultRes = await app.request("/models")
+    const detailRes = await app.request("/models?detail=true")
+    const defaultBody = (await defaultRes.json()) as ModelsListResponseBody
+    const detailBody = (await detailRes.json()) as ModelsListResponseBody
 
-    expect(res.status).toBe(200)
-    expect(body.data[0]).toMatchObject({
+    expect(defaultRes.status).toBe(200)
+    expect(detailRes.status).toBe(200)
+    expect(detailBody).toEqual(defaultBody)
+    expect(detailBody.data[0]).toMatchObject({
       id: "gpt-4o",
       version: "2025-01-01",
       supported_endpoints: ["/chat/completions", "/responses"],
@@ -134,7 +149,7 @@ describe("basic HTTP routes", () => {
     })
   })
 
-  test("GET /models/:id returns a detailed model object", async () => {
+  test("GET /models/:id returns upstream model data as-is", async () => {
     setModels({
       object: "list",
       data: [
@@ -142,6 +157,8 @@ describe("basic HTTP routes", () => {
           vendor: "OpenAI",
           version: "2025-01-01",
           supported_endpoints: ["/chat/completions", "/responses"],
+          is_chat_default: false,
+          is_chat_fallback: false,
         }),
       ],
     })
@@ -153,10 +170,11 @@ describe("basic HTTP routes", () => {
     expect(body).toMatchObject({
       id: "gpt-4o",
       object: "model",
-      type: "model",
+      vendor: "OpenAI",
       version: "2025-01-01",
       supported_endpoints: ["/chat/completions", "/responses"],
     })
+    expect(body).not.toHaveProperty("type")
   })
 
   test("GET /models/:id returns a model_not_found payload for unknown models", async () => {
@@ -189,6 +207,8 @@ describe("basic HTTP routes", () => {
               model_picker_enabled: true,
               preview: false,
               version: "fetched-model",
+              is_chat_default: false,
+              is_chat_fallback: false,
             },
           ],
         }),
@@ -220,6 +240,8 @@ describe("basic HTTP routes", () => {
               model_picker_enabled: true,
               preview: false,
               version: "fetched-model",
+              is_chat_default: false,
+              is_chat_fallback: false,
             },
           ],
         }),
@@ -236,8 +258,10 @@ describe("basic HTTP routes", () => {
     expect(body).toMatchObject({
       id: "fetched-model",
       object: "model",
-      type: "model",
+      is_chat_default: false,
+      is_chat_fallback: false,
     })
+    expect(body).not.toHaveProperty("type")
   })
 
   test("GET /models forwards model cache failures through the shared error handler", async () => {

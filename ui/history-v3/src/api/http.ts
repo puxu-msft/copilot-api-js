@@ -117,10 +117,9 @@ export const api = {
     return request<{ entries: Array<EntrySummary> }>(`/entries?limit=${String(limit)}`)
   },
 
-  /** Fetch models with detail */
-  async fetchModels(detail = false): Promise<{ data: Array<Record<string, unknown>> }> {
-    const qs = detail ? "?detail=true" : ""
-    return requestRoot<{ data: Array<Record<string, unknown>> }>("/models" + qs)
+  /** Fetch models using the default full public payload. */
+  async fetchModels(): Promise<{ data: Array<Record<string, unknown>> }> {
+    return requestRoot<{ data: Array<Record<string, unknown>> }>("/models")
   },
 }
 

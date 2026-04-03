@@ -19,6 +19,7 @@ import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initProxy } from "./lib/proxy"
+import { initRequestTelemetry } from "./lib/request-telemetry"
 import { startServer } from "./lib/serve"
 import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
 import { setCliState, setServerStartTime, state } from "./lib/state"
@@ -26,7 +27,8 @@ import { initTokenManagers } from "./lib/token"
 import { initTuiLogger } from "./lib/tui"
 import { createWebSocketAdapter, setConnectedDataFactory } from "./lib/ws"
 import { registerWsRoutes } from "./routes"
-import { server } from "./server"
+import { normalizeExternalUiUrl } from "./routes/ui/route"
+import { createServer } from "./server"
 
 /** Format limit values as "Xk" or "?" if not available */
 function formatLimit(value?: number): string {
@@ -93,6 +95,7 @@ interface RunServerOptions {
   proxy?: string
   httpProxyFromEnv: boolean
   autoTruncate: boolean
+  externalUiUrl?: string
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -102,6 +105,15 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   if (!VALID_ACCOUNT_TYPES.includes(options.accountType)) {
     consola.error(`Invalid account type: "${options.accountType}". Must be one of: ${VALID_ACCOUNT_TYPES.join(", ")}`)
     process.exit(1)
+  }
+  let externalUiUrl: string | undefined
+  if (options.externalUiUrl) {
+    try {
+      externalUiUrl = normalizeExternalUiUrl(options.externalUiUrl)
+    } catch (error) {
+      consola.error(error instanceof Error ? error.message : String(error))
+      process.exit(1)
+    }
   }
 
   // ===========================================================================
@@ -161,6 +173,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   initHistory(true, state.historyLimit)
   startMemoryPressureMonitor()
+  await initRequestTelemetry()
 
   // Initialize request context manager and register event consumers
   // Must be after initHistory so history store is ready to receive events
@@ -172,6 +185,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     contextManager.getAll().map((ctx) => ({
       id: ctx.id,
       endpoint: ctx.endpoint,
+      rawPath: ctx.rawPath,
       state: ctx.state,
       startTime: ctx.startTime,
       durationMs: ctx.durationMs,
@@ -218,6 +232,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   const displayHost = options.host ?? "localhost"
   const serverUrl = `http://${displayHost}:${options.port}`
+  const server = createServer({ externalUiUrl })
 
   // Initialize WebSocket support using a single shared adapter.
   // A single createNodeWebSocket instance avoids multiple `upgrade` listeners
@@ -226,7 +241,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const wsAdapter = await createWebSocketAdapter(server)
   registerWsRoutes(server, wsAdapter.upgradeWebSocket)
 
-  consola.info(`Web UI: ${serverUrl}/ui`)
+  if (externalUiUrl) {
+    consola.info(`Web UI: ${serverUrl}/ui (proxied from ${externalUiUrl})`)
+  } else {
+    consola.info(`Web UI: ${serverUrl}/ui`)
+  }
 
   // Import hono/bun websocket handler for Bun's WebSocket support.
   // Bun.serve() requires an explicit `websocket` handler object alongside `fetch`
@@ -331,6 +350,10 @@ export const start = defineCommand({
       description:
         "Reactive auto-truncate: retries with truncated payload on limit errors (disable with --no-auto-truncate)",
     },
+    "external-ui-url": {
+      type: "string",
+      description: "Proxy /ui to an external frontend dev/build server (for example http://localhost:5173)",
+    },
   },
   run({ args }) {
     // Check for unknown arguments
@@ -368,6 +391,9 @@ export const start = defineCommand({
       // auto-truncate (citty handles --no-auto-truncate via built-in negation)
       "auto-truncate",
       "autoTruncate",
+      // external-ui-url
+      "external-ui-url",
+      "externalUiUrl",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
@@ -385,6 +411,7 @@ export const start = defineCommand({
       proxy: args.proxy,
       httpProxyFromEnv: args["http-proxy-from-env"],
       autoTruncate: args["auto-truncate"],
+      externalUiUrl: args["external-ui-url"],
     })
   },
 })

@@ -28,12 +28,19 @@ configRoutes.get("/", (c) => {
     immutableThinkingMessages: state.immutableThinkingMessages,
     dedupToolCalls: state.dedupToolCalls,
     contextEditingMode: state.contextEditingMode,
+    contextEditingTrigger: state.contextEditingTrigger,
+    contextEditingKeepTools: state.contextEditingKeepTools,
+    contextEditingKeepThinking: state.contextEditingKeepThinking,
+    toolSearchEnabled: state.toolSearchEnabled,
+    cacheControlMode: state.cacheControlMode,
+    nonDeferredTools: state.nonDeferredTools,
     rewriteSystemReminders: serializeRewriteSystemReminders(state.rewriteSystemReminders),
     stripReadToolResultTags: state.stripReadToolResultTags,
     systemPromptOverridesCount: state.systemPromptOverrides.length,
 
     // ─── OpenAI Responses ───
     normalizeResponsesCallIds: state.normalizeResponsesCallIds,
+    upstreamWebSocket: state.upstreamWebSocket,
 
     // ─── Timeouts ───
     fetchTimeout: state.fetchTimeout,
@@ -161,14 +168,21 @@ const ANTHROPIC_KEYS = new Set([
   "immutable_thinking_messages",
   "strip_read_tool_result_tags",
   "context_editing",
+  "context_editing_trigger",
+  "context_editing_keep_tools",
+  "context_editing_keep_thinking",
+  "tool_search",
+  "cache_control",
+  "auto_cache_control",
+  "non_deferred_tools",
   "rewrite_system_reminders",
 ])
 
 const SHUTDOWN_KEYS = new Set(["graceful_wait", "abort_wait"])
 const HISTORY_KEYS = new Set(["limit", "min_entries"])
-const RESPONSES_KEYS = new Set(["normalize_call_ids"])
+const RESPONSES_KEYS = new Set(["normalize_call_ids", "upstream_websocket"])
 const RATE_LIMITER_KEYS = new Set(["retry_interval", "request_interval", "recovery_timeout", "consecutive_successes"])
-const ANTHROPIC_COLLECTION_KEYS = new Set(["rewrite_system_reminders"])
+const ANTHROPIC_COLLECTION_KEYS = new Set(["rewrite_system_reminders", "non_deferred_tools"])
 
 function validateConfigBody(input: unknown): ValidationResult {
   if (!isPlainObject(input)) {
@@ -266,6 +280,34 @@ function validateAnthropic(value: unknown, details: Array<ConfigValidationDetail
       details,
     )
   }
+  if (hasOwn(value, "context_editing_trigger")) {
+    validateNonNegativeInteger(value.context_editing_trigger, "anthropic.context_editing_trigger", details)
+  }
+  if (hasOwn(value, "context_editing_keep_tools")) {
+    validateNonNegativeInteger(value.context_editing_keep_tools, "anthropic.context_editing_keep_tools", details)
+  }
+  if (hasOwn(value, "context_editing_keep_thinking")) {
+    validateNonNegativeInteger(value.context_editing_keep_thinking, "anthropic.context_editing_keep_thinking", details)
+  }
+  if (hasOwn(value, "tool_search")) {
+    validateBoolean(value.tool_search, "anthropic.tool_search", details)
+  }
+  if (hasOwn(value, "cache_control")) {
+    const valid = ["disabled", "passthrough", "sanitize", "proxied"]
+    if (!valid.includes(value.cache_control as string)) {
+      details.push({
+        field: "anthropic.cache_control",
+        message: `Must be one of: ${valid.join(", ")}`,
+        value: value.cache_control,
+      })
+    }
+  }
+  if (hasOwn(value, "auto_cache_control")) {
+    validateBoolean(value.auto_cache_control, "anthropic.auto_cache_control (deprecated)", details)
+  }
+  if (hasOwn(value, "non_deferred_tools")) {
+    validateStringArray(value.non_deferred_tools, "anthropic.non_deferred_tools", details)
+  }
   if (hasOwn(value, "rewrite_system_reminders")) {
     const rewrite = value.rewrite_system_reminders
     if (typeof rewrite === "boolean") return
@@ -319,6 +361,20 @@ function validateStringMap(value: unknown, field: string, details: Array<ConfigV
     }
     if (typeof target !== "string" || target.trim().length === 0) {
       pushDetail(details, `${field}.${key}`, "Override target must be a non-empty string", target)
+    }
+  }
+}
+
+function validateStringArray(value: unknown, field: string, details: Array<ConfigValidationDetail>): void {
+  if (value === null) return
+  if (!Array.isArray(value)) {
+    pushDetail(details, field, "Must be an array of strings or null", value)
+    return
+  }
+
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      pushDetail(details, `${field}.${index}`, "Must be a non-empty string", item)
     }
   }
 }
@@ -507,6 +563,9 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
         const rewrite = anthropic.rewrite_system_reminders
         const normalized = Array.isArray(rewrite) && rewrite.length === 0 ? false : rewrite
         replaceCollection(doc, ["anthropic", "rewrite_system_reminders"], normalized)
+      }
+      if (hasOwn(anthropic, "non_deferred_tools")) {
+        replaceCollection(doc, ["anthropic", "non_deferred_tools"], anthropic.non_deferred_tools)
       }
     }
   }

@@ -13,25 +13,15 @@ function mockModel(id: string, overrides?: Partial<Model>): Model {
     model_picker_enabled: true,
     preview: false,
     version: id,
+    is_chat_default: false,
+    is_chat_fallback: false,
     ...overrides,
   }
 }
 
-/**
- * Replicates the formatModel logic from src/routes/models/route.ts
- * to test the formatting contract without importing the route handler.
- */
-function formatModel(model: Model) {
-  return {
-    id: model.id,
-    object: "model" as const,
-    type: "model" as const,
-    created: 0,
-    created_at: new Date(0).toISOString(),
-    owned_by: model.vendor,
-    display_name: model.name,
-    capabilities: model.capabilities,
-  }
+function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
+  const { request_headers: _requestHeaders, ...rest } = model
+  return rest
 }
 
 describe("Models endpoint logic", () => {
@@ -73,20 +63,31 @@ describe("Models endpoint logic", () => {
     })
   })
 
-  describe("formatModel", () => {
-    test("should format model with correct fields", () => {
-      const model = testModels[0]
-      const formatted = formatModel(model)
-      expect(formatted.id).toBe("claude-opus-4.6")
-      expect(formatted.object).toBe("model")
-      expect(formatted.type).toBe("model")
-      expect(formatted.created).toBe(0)
-      expect(formatted.created_at).toBe("1970-01-01T00:00:00.000Z")
-      expect(formatted.owned_by).toBe("Anthropic")
-      expect(formatted.display_name).toBe("Claude Opus 4.6")
+  describe("passthrough contract", () => {
+    test("should expose all upstream fields except request_headers", () => {
+      const model = mockModel("claude-opus-4.6", {
+        vendor: "Anthropic",
+        name: "Claude Opus 4.6",
+        request_headers: { "x-secret": "should-not-appear" },
+      })
+
+      const exposed = stripInternalFields(model)
+
+      expect(exposed).toEqual({
+        id: "claude-opus-4.6",
+        name: "Claude Opus 4.6",
+        vendor: "Anthropic",
+        object: "model",
+        model_picker_enabled: true,
+        preview: false,
+        version: "claude-opus-4.6",
+        is_chat_default: false,
+        is_chat_fallback: false,
+      })
+      expect(exposed).not.toHaveProperty("request_headers")
     })
 
-    test("should include capabilities when present", () => {
+    test("should keep capabilities when present", () => {
       const model = mockModel("test-model", {
         capabilities: {
           supports: {
@@ -96,26 +97,35 @@ describe("Models endpoint logic", () => {
           },
         },
       })
-      const formatted = formatModel(model)
-      expect(formatted.capabilities).toBeDefined()
-      const supports = (formatted.capabilities as Record<string, Record<string, boolean>>)?.supports
+
+      const exposed = stripInternalFields(model)
+      expect(exposed.capabilities).toBeDefined()
+      const supports = (exposed.capabilities as Record<string, Record<string, boolean>>)?.supports
       expect(supports?.tool_calls).toBe(true)
       expect(supports?.parallel_tool_calls).toBe(true)
     })
 
     test("should handle model without capabilities", () => {
-      const model = mockModel("test-model")
-      const formatted = formatModel(model)
-      expect(formatted.capabilities).toBeUndefined()
+      const exposed = stripInternalFields(mockModel("test-model"))
+      expect(exposed.capabilities).toBeUndefined()
     })
 
-    test("should format all models in list consistently", () => {
-      const formatted = testModels.map(formatModel)
-      for (const f of formatted) {
-        expect(f.object).toBe("model")
-        expect(f.type).toBe("model")
-        expect(f.created).toBe(0)
-        expect(f.created_at).toBe("1970-01-01T00:00:00.000Z")
+    test("should not inject fabricated or renamed fields", () => {
+      const exposed = stripInternalFields(mockModel("test-model"))
+
+      expect(exposed).not.toHaveProperty("type")
+      expect(exposed).not.toHaveProperty("created")
+      expect(exposed).not.toHaveProperty("created_at")
+      expect(exposed).not.toHaveProperty("owned_by")
+      expect(exposed).not.toHaveProperty("display_name")
+      expect(exposed).not.toHaveProperty("has_more")
+    })
+
+    test("should preserve each model object identity fields across the list", () => {
+      const exposed = testModels.map(stripInternalFields)
+      for (const model of exposed) {
+        expect(model.object).toBe("model")
+        expect(model.id).toBeTruthy()
       }
     })
   })

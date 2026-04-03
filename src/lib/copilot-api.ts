@@ -34,6 +34,8 @@ export const copilotBaseUrl = (state: State) =>
     "https://api.githubcopilot.com"
   : `https://api.${state.accountType}.githubcopilot.com`
 
+export const copilotWsUrl = (state: State) => copilotBaseUrl(state).replace(/^https:\/\//u, "wss://") + "/responses"
+
 export interface CopilotHeaderOptions {
   /** Whether to set the Copilot-Vision-Request header */
   vision?: boolean

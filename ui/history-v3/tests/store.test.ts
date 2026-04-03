@@ -76,7 +76,7 @@ function makeSummary(id: string, overrides: Partial<EntrySummary> = {}): EntrySu
   return {
     id,
     sessionId: "s1",
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint: "anthropic-messages",
     requestModel: "claude-sonnet-4.6",
     previewText: `preview-${id}`,
@@ -89,7 +89,7 @@ function makeFullEntry(id: string): HistoryEntry {
   return {
     id,
     sessionId: "s1",
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint: "anthropic-messages",
     request: {
       model: "claude-sonnet-4.6",

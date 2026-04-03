@@ -7,7 +7,7 @@ defineProps<{
 </script>
 
 <template>
-  <v-card class="config-section">
+  <v-card>
     <v-card-title class="d-flex align-center ga-3">
       <div class="flex-grow-1">
         <div class="text-subtitle-1 font-weight-bold">{{ title }}</div>
@@ -46,9 +46,3 @@ defineProps<{
     </v-card-text>
   </v-card>
 </template>
-
-<style scoped>
-.config-section {
-  border-radius: 16px;
-}
-</style>

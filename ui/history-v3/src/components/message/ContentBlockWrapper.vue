@@ -136,7 +136,7 @@ onUnmounted(() => {
       v-show="!collapsed"
       ref="bodyRef"
       class="content-block-body"
-      :class="{ 'body-collapsed': !expanded }"
+      :class="{ 'body-collapsed': !expanded && needsExpand }"
     >
       <slot />
     </div>
@@ -246,5 +246,6 @@ onUnmounted(() => {
 .body-collapsed {
   max-height: 200px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 </style>

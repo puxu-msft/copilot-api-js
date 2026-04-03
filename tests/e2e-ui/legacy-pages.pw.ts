@@ -23,28 +23,22 @@ test.describe("Legacy Pages", () => {
     expect(bodyText).toBeTruthy()
   })
 
-  test("legacy /ui#/dashboard renders", async ({ page }) => {
+  test("legacy /ui#/dashboard redirects to the Vuetify dashboard", async ({ page }) => {
     await page.goto(uiUrl("#/dashboard"))
-    await page.waitForTimeout(1000)
-    await expect(page.locator("nav.navbar")).toBeVisible()
-    const bodyText = await page.locator("body").textContent()
-    expect(bodyText).toBeTruthy()
+    await page.waitForURL(/\/ui#\/v\/dashboard/)
+    await expect(page.locator(".v-app-bar")).toBeVisible()
   })
 
-  test("legacy /ui#/models renders", async ({ page }) => {
+  test("legacy /ui#/models redirects to the Vuetify models page", async ({ page }) => {
     await page.goto(uiUrl("#/models"))
-    await page.waitForTimeout(1000)
-    await expect(page.locator("nav.navbar")).toBeVisible()
-    const bodyText = await page.locator("body").textContent()
-    expect(bodyText).toBeTruthy()
+    await page.waitForURL(/\/ui#\/v\/models/)
+    await expect(page.locator(".toolbar-shell")).toBeVisible()
   })
 
-  test("legacy /ui#/usage renders", async ({ page }) => {
+  test("legacy /ui#/usage redirects to the Vuetify dashboard", async ({ page }) => {
     await page.goto(uiUrl("#/usage"))
-    await page.waitForTimeout(1000)
-    await expect(page.locator("nav.navbar")).toBeVisible()
-    const bodyText = await page.locator("body").textContent()
-    expect(bodyText).toBeTruthy()
+    await page.waitForURL(/\/ui#\/v\/dashboard/)
+    await expect(page.locator(".v-app-bar")).toBeVisible()
   })
 
   test("no console errors on legacy pages", async ({ page }) => {

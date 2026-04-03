@@ -12,6 +12,12 @@ import type { CopilotTokenInfo, TokenInfo } from "./token/types"
  */
 export type ContextEditingMode = "off" | "clear-thinking" | "clear-tooluse" | "clear-both"
 
+/**
+ * Cache control mode for Anthropic requests.
+ * Controls how cache_control fields are handled in the wire payload.
+ */
+export type CacheControlMode = "disabled" | "passthrough" | "sanitize" | "proxied"
+
 /** A compiled rewrite rule (regex pre-compiled from config string) */
 export interface CompiledRewriteRule {
   /** Pattern to match (regex in regex mode, string in line mode) */
@@ -121,6 +127,27 @@ export interface State {
    */
   readonly contextEditingMode: ContextEditingMode
 
+  /** Input token threshold that triggers clear_tool_uses (default: 100000) */
+  readonly contextEditingTrigger: number
+  /** Number of most recent tool_use pairs to keep after clearing (default: 3) */
+  readonly contextEditingKeepTools: number
+  /** Number of most recent thinking turns to keep after clearing (default: 1) */
+  readonly contextEditingKeepThinking: number
+
+  /** Enable server-side tool search injection (default: true) */
+  readonly toolSearchEnabled: boolean
+  /**
+   * Cache control mode for Anthropic requests.
+   * - "disabled": strip all cache_control fields
+   * - "passthrough": forward client cache_control as-is
+   * - "sanitize": forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
+   * - "proxied": proxy controls injection (auto-add breakpoints on tools/system)
+   * Default: "proxied".
+   */
+  readonly cacheControlMode: CacheControlMode
+  /** Additional tool names that should never be deferred (merged with built-in list) */
+  readonly nonDeferredTools: ReadonlyArray<string>
+
   /** Pre-compiled system prompt override rules from config.yaml */
   readonly systemPromptOverrides: Array<CompiledRewriteRule>
 
@@ -192,6 +219,12 @@ export interface State {
    * Enabled by default; disable with config openai-responses.normalize_call_ids: false.
    */
   readonly normalizeResponsesCallIds: boolean
+
+  /**
+   * Enable upstream WebSocket transport for Responses API when supported.
+   * Disabled by default; enable with config openai-responses.upstream_websocket: true.
+   */
+  readonly upstreamWebSocket: boolean
 }
 
 type MutableState = {
@@ -306,6 +339,12 @@ export function setAnthropicBehavior(
       | "dedupToolCalls"
       | "stripReadToolResultTags"
       | "contextEditingMode"
+      | "contextEditingTrigger"
+      | "contextEditingKeepTools"
+      | "contextEditingKeepThinking"
+      | "toolSearchEnabled"
+      | "cacheControlMode"
+      | "nonDeferredTools"
       | "rewriteSystemReminders"
       | "systemPromptOverrides"
       | "compressToolResultsBeforeTruncate"
@@ -337,7 +376,9 @@ export function setTimeoutConfig(
   updateState(patch)
 }
 
-export function setResponsesConfig(patch: Partial<Pick<MutableState, "normalizeResponsesCallIds">>): void {
+export function setResponsesConfig(
+  patch: Partial<Pick<MutableState, "normalizeResponsesCallIds" | "upstreamWebSocket">>,
+): void {
   updateState(patch)
 }
 
@@ -393,6 +434,12 @@ export const CONFIG_MANAGED_DEFAULTS = {
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
   contextEditingMode: "off" as const,
+  contextEditingTrigger: 100_000,
+  contextEditingKeepTools: 3,
+  contextEditingKeepThinking: 1,
+  toolSearchEnabled: true,
+  cacheControlMode: "proxied" as CacheControlMode,
+  nonDeferredTools: [] as ReadonlyArray<string>,
   rewriteSystemReminders: false as const,
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
   compressToolResultsBeforeTruncate: true,
@@ -405,6 +452,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyLimit: 200,
   historyMinEntries: 50,
   normalizeResponsesCallIds: true,
+  upstreamWebSocket: false,
 }
 
 export function resetConfigManagedState(): void {
@@ -414,6 +462,12 @@ export function resetConfigManagedState(): void {
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
     contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
+    contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
+    contextEditingKeepTools: CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools,
+    contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
+    toolSearchEnabled: CONFIG_MANAGED_DEFAULTS.toolSearchEnabled,
+    cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
+    nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
     rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
@@ -436,6 +490,7 @@ export function resetConfigManagedState(): void {
   setHistoryMaxEntries(CONFIG_MANAGED_DEFAULTS.historyLimit)
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
+    upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
   })
 }
 
@@ -444,6 +499,12 @@ const mutableState: MutableState = {
   autoTruncate: true,
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
+  contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
+  contextEditingKeepTools: CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools,
+  contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
+  toolSearchEnabled: CONFIG_MANAGED_DEFAULTS.toolSearchEnabled,
+  cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
+  nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   immutableThinkingMessages: CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
@@ -463,6 +524,7 @@ const mutableState: MutableState = {
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
+  upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
   verbose: false,
 }
 

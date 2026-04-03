@@ -9,6 +9,7 @@
 import consola from "consola"
 
 import type { HeadersCapture, WireRequest } from "~/lib/context/request"
+import type { RequestTransport } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
 import type { ResponsesInputItem, ResponsesPayload } from "~/types/api/openai-responses"
@@ -23,6 +24,7 @@ export function createResponsesAdapter(
   selectedModel?: Model,
   headersCapture?: HeadersCapture,
   onPrepared?: (request: WireRequest) => void,
+  onTransport?: (transport: RequestTransport) => void,
 ): FormatAdapter<ResponsesPayload> {
   return {
     format: "openai-responses",
@@ -32,6 +34,7 @@ export function createResponsesAdapter(
         createResponses(p, {
           resolvedModel: selectedModel,
           headersCapture,
+          onTransport,
           onPrepared: ({ wire, headers }) => {
             onPrepared?.({
               model: typeof wire.model === "string" ? wire.model : p.model,
@@ -41,7 +44,8 @@ export function createResponsesAdapter(
               format: "openai-responses",
             })
           },
-        })),
+        }),
+      ),
     logPayloadSize: (p) => {
       const count = typeof p.input === "string" ? 1 : p.input.length
       consola.debug(`Responses payload: ${count} input item(s), model: ${p.model}`)

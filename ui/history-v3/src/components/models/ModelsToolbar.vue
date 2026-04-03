@@ -1,39 +1,65 @@
 <script setup lang="ts">
 defineProps<{
   filteredCount: number
+  totalCount: number
+  vendorCount: number
+  endpointCount: number
 }>()
-
-const viewSwitch = defineModel<number>("viewSwitch", { required: true })
+defineEmits<{
+  openRawJson: []
+}>()
 </script>
 
 <template>
-  <v-toolbar
-    flat
-    density="compact"
-    color="surface"
-  >
-    <v-toolbar-title class="text-body-1 font-weight-bold">
-      Models
-      <span class="text-caption text-medium-emphasis ml-2">{{ filteredCount }}</span>
-    </v-toolbar-title>
-    <v-spacer />
-    <v-btn-toggle
-      v-model="viewSwitch"
-      mandatory
-      density="compact"
+  <div class="toolbar-shell">
+    <div class="toolbar-copy">
+      <div class="toolbar-title">Models</div>
+      <div class="toolbar-meta text-caption text-medium-emphasis">
+        {{ filteredCount }} visible / {{ totalCount }} total · {{ vendorCount }} vendors · {{ endpointCount }} endpoints
+      </div>
+    </div>
+
+    <v-btn
       variant="outlined"
-      class="mr-2"
+      class="raw-json-button"
+      @click="$emit('openRawJson')"
     >
-      <v-btn
-        :value="0"
-        size="small"
-        >Cards</v-btn
-      >
-      <v-btn
-        :value="1"
-        size="small"
-        >Raw</v-btn
-      >
-    </v-btn-toggle>
-  </v-toolbar>
+      Raw JSON
+    </v-btn>
+  </div>
 </template>
+
+<style scoped>
+.toolbar-shell {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.toolbar-copy {
+  min-width: 0;
+}
+
+.toolbar-title {
+  font-size: 1.125rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+.toolbar-meta {
+  margin-top: 4px;
+}
+
+.raw-json-button {
+  flex-shrink: 0;
+}
+
+@media (max-width: 900px) {
+  .toolbar-shell {
+    flex-direction: column;
+    align-items: start;
+  }
+}
+</style>

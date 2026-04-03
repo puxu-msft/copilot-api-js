@@ -1,0 +1,74 @@
+.v-overlay__content,
+.v-snackbar__wrapper,
+.v-banner,
+.v-bottom-sheet {
+  border-radius: 0 !important;
+}
+
+.v-theme--light {
+  color-scheme: light;
+}
+
+.v-theme--dark {
+  color-scheme: dark;
+}
+
+.v-application {
+  background: rgb(var(--v-theme-background));
+  color: rgb(var(--v-theme-on-background));
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+}
+
+.v-application__wrap,
+.v-main {
+  min-width: 0;
+  min-height: 0;
+}
+
+.v-application__wrap {
+  height: 100%;
+  overflow: hidden;
+}
+
+.v-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.v-main > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.v-page-root {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.v-page-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.v-page-fill {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.font-mono {
+  font-family: "SF Mono", Monaco, "Courier New", monospace;
+}

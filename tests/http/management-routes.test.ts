@@ -8,6 +8,7 @@ import {
   initHistory,
   insertEntry,
 } from "~/lib/history"
+import { _resetRequestTelemetryForTests, recordAcceptedRequest, recordSettledRequest } from "~/lib/request-telemetry"
 import { type StateSnapshot, restoreStateForTests, setModels, setStateForTests, snapshotStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
@@ -94,14 +95,34 @@ interface StatusResponseBody {
     totalCount: number
     availableCount: number
   }
+  requestTelemetry: {
+    acceptedSinceStart: number
+    totalLast7d: number
+    modelsSinceStart: Array<{
+      model: string
+      requestCount: number
+      averageDurationMs: number
+      usage: {
+        totalTokens: number
+      }
+    }>
+    modelsLast7d: Array<{
+      model: string
+      requestCount: number
+      buckets: Array<{
+        timestamp: number
+        requestCount: number
+      }>
+    }>
+  }
 }
 
 function createHistoryEntry(overrides?: Partial<HistoryEntry>): HistoryEntry {
   const endpoint = overrides?.endpoint ?? "anthropic-messages"
   return {
     id: overrides?.id ?? generateId(),
-    sessionId: overrides?.sessionId ?? getCurrentSession(endpoint),
-    timestamp: overrides?.timestamp ?? Date.now(),
+    sessionId: overrides?.sessionId ?? getCurrentSession(endpoint, generateId()),
+    startedAt: overrides?.startedAt ?? Date.now(),
     endpoint,
     request: overrides?.request ?? {
       model: "claude-sonnet-4.6",
@@ -125,6 +146,7 @@ describe("management and history HTTP routes", () => {
     getCopilotUsageMock.mockClear()
     initHistory(true, 100)
     clearHistory()
+    _resetRequestTelemetryForTests()
 
     setModels({
       object: "list",
@@ -139,6 +161,7 @@ describe("management and history HTTP routes", () => {
 
   afterEach(() => {
     clearHistory()
+    _resetRequestTelemetryForTests()
     restoreStateForTests(snapshot)
     resetTestRuntime()
   })
@@ -179,6 +202,18 @@ describe("management and history HTTP routes", () => {
   })
 
   test("GET /api/status returns aggregated server status with quota data", async () => {
+    const now = Date.UTC(2026, 3, 1, 12, 0, 0)
+    recordAcceptedRequest(now)
+    recordSettledRequest("claude-sonnet-4.6", {
+      startedAt: now,
+      endedAt: now + 1_250,
+      success: true,
+      usage: {
+        input_tokens: 120,
+        output_tokens: 80,
+      },
+    })
+
     setStateForTests({
       githubToken: "ghp_test",
       copilotToken: "copilot_test",
@@ -206,6 +241,20 @@ describe("management and history HTTP routes", () => {
     expect(body.activeRequests.count).toBe(0)
     expect(body.models.totalCount).toBe(1)
     expect(body.models.availableCount).toBe(1)
+    expect(body.requestTelemetry.acceptedSinceStart).toBe(1)
+    expect(body.requestTelemetry.totalLast7d).toBeGreaterThanOrEqual(0)
+    expect(body.requestTelemetry.modelsSinceStart[0]).toMatchObject({
+      model: "claude-sonnet-4.6",
+      requestCount: 1,
+      usage: {
+        totalTokens: 200,
+      },
+    })
+    expect(body.requestTelemetry.modelsLast7d[0]).toMatchObject({
+      model: "claude-sonnet-4.6",
+      requestCount: 1,
+    })
+    expect(body.requestTelemetry.modelsLast7d[0]?.buckets).toHaveLength(1)
     expect(getCopilotUsageMock).toHaveBeenCalledTimes(1)
   })
 

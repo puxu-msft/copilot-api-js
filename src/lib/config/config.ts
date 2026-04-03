@@ -10,6 +10,7 @@ import fs from "node:fs/promises"
 
 import { setHistoryMaxEntries } from "~/lib/history"
 import {
+  type CacheControlMode,
   type CompiledRewriteRule,
   type ContextEditingMode,
   DEFAULT_MODEL_OVERRIDES,
@@ -142,6 +143,41 @@ export interface AnthropicConfig {
    * Only effective for models that support context editing (Haiku 4.5, Sonnet 4/4.5/4.6, Opus 4/4.1/4.5/4.6).
    */
   context_editing?: ContextEditingMode
+  /**
+   * Input token threshold that triggers clear_tool_uses when context_editing includes tool clearing.
+   * Default: 100000.
+   */
+  context_editing_trigger?: number
+  /** Number of most recent tool_use pairs to keep after clearing (default: 3) */
+  context_editing_keep_tools?: number
+  /** Number of most recent thinking turns to keep after clearing (default: 1) */
+  context_editing_keep_thinking?: number
+  /**
+   * Enable server-side tool search (tool_search_tool_regex injection).
+   * When enabled and the model supports it, a tool search tool is prepended
+   * and non-essential tools are marked defer_loading.
+   * Default: true.
+   */
+  tool_search?: boolean
+  /**
+   * Cache control mode for Anthropic requests.
+   * - "disabled": strip all cache_control fields from the request
+   * - "passthrough": forward client cache_control as-is (no modification or injection)
+   * - "sanitize": forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
+   * - "proxied": proxy controls injection (auto-add breakpoints on tools/system)
+   * Default: "proxied".
+   */
+  cache_control?: "disabled" | "passthrough" | "sanitize" | "proxied"
+  /**
+   * @deprecated Use `cache_control` instead. `true` maps to "proxied", `false` maps to "disabled".
+   */
+  auto_cache_control?: boolean
+  /**
+   * Additional tool names that should never be deferred when tool search is enabled.
+   * Merged with the built-in non-deferred tool list (Claude Code + VSCode tools).
+   * Example: ["my_custom_tool", "another_tool"]
+   */
+  non_deferred_tools?: Array<string>
 }
 
 /** Shutdown timing configuration section */
@@ -161,6 +197,8 @@ export interface ResponsesConfig {
    * Default: true.
    */
   normalize_call_ids?: boolean
+  /** Enable upstream WebSocket transport for /responses when supported by the model (default: false). */
+  upstream_websocket?: boolean
 }
 
 /** History storage configuration section */
@@ -198,7 +236,7 @@ export interface Config {
   shutdown?: ShutdownConfig
   /** Stream idle timeout in seconds for all paths (default: 300, 0 = no timeout) */
   stream_idle_timeout?: number
-  /** Fetch timeout in seconds: request start → HTTP response headers (default: 0 = no timeout) */
+  /** Fetch timeout in seconds: request start → HTTP response headers (default: 300, 0 = no timeout) */
   fetch_timeout?: number
   /** Maximum age (seconds) of an active request before stale reaper forces fail (0 = disabled, default: 600) */
   stale_request_max_age?: number
@@ -315,6 +353,24 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.strip_read_tool_result_tags !== undefined)
       setAnthropicBehavior({ stripReadToolResultTags: a.strip_read_tool_result_tags })
     if (a.context_editing !== undefined) setAnthropicBehavior({ contextEditingMode: a.context_editing })
+    if (a.context_editing_trigger !== undefined)
+      setAnthropicBehavior({ contextEditingTrigger: a.context_editing_trigger })
+    if (a.context_editing_keep_tools !== undefined)
+      setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
+    if (a.context_editing_keep_thinking !== undefined)
+      setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
+    if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
+    // cache_control takes precedence over deprecated auto_cache_control
+    if (a.cache_control !== undefined) {
+      setAnthropicBehavior({ cacheControlMode: a.cache_control })
+    } else if (a.auto_cache_control !== undefined) {
+      const mapped: CacheControlMode = a.auto_cache_control ? "proxied" : "disabled"
+      consola.warn(
+        `[Config] anthropic.auto_cache_control is deprecated, use cache_control: "${mapped}" instead`,
+      )
+      setAnthropicBehavior({ cacheControlMode: mapped })
+    }
+    if (Array.isArray(a.non_deferred_tools)) setAnthropicBehavior({ nonDeferredTools: a.non_deferred_tools })
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {
@@ -374,6 +430,8 @@ export async function applyConfigToState(): Promise<Config> {
   const responsesConfig = config["openai-responses"]
   if (responsesConfig && responsesConfig.normalize_call_ids !== undefined)
     setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
+  if (responsesConfig && responsesConfig.upstream_websocket !== undefined)
+    setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_websocket })
 
   syncModelRefreshLoop()
 

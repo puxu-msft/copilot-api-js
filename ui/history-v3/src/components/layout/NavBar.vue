@@ -2,62 +2,120 @@
 import { inject, computed } from "vue"
 import { useRoute } from "vue-router"
 
-import type { HistoryStore } from "@/composables/useHistoryStore"
+import type { AppThemeController } from "@/composables/useAppTheme"
 
-import StatusDot from "@/components/ui/StatusDot.vue"
-import { getVariantSwitchPath, isVuetifyPath } from "@/utils/route-variants"
-
-const store = inject<HistoryStore>("historyStore")
-
-if (!store) {
-  throw new Error("historyStore injection missing")
-}
+import { getVariantSwitchPath, isVuetifyPath, legacyNavLinks, vuetifyNavLinks } from "@/utils/route-variants"
 const route = useRoute()
+const appTheme = inject<AppThemeController | null>("appTheme", null)
 
 /** Current UI variant based on route path */
 const isVuetify = computed(() => isVuetifyPath(route.path))
-
-const vuetifyLinks = [
-  { to: "/v/dashboard", label: "Dashboard" },
-  { to: "/v/config", label: "Config" },
-  { to: "/v/models", label: "Models" },
-  { to: "/v/logs", label: "Logs" },
-  { to: "/v/history", label: "History" },
-  { to: "/v/usage", label: "Usage" },
-]
-
-const legacyLinks = [
-  { to: "/dashboard", label: "Dashboard" },
-  { to: "/models", label: "Models" },
-  { to: "/logs", label: "Logs" },
-  { to: "/history", label: "History" },
-  { to: "/usage", label: "Usage" },
-]
-
-const navLinks = computed(() => (isVuetify.value ? vuetifyLinks : legacyLinks))
+const navLinks = computed(() => (isVuetify.value ? vuetifyNavLinks : legacyNavLinks))
 
 /** Switch to the equivalent page in the other UI variant */
 const switchPath = computed(() => getVariantSwitchPath(route.path))
 
 const switchLabel = computed(() => (isVuetify.value ? "Legacy" : "Vuetify"))
+const activeVuetifyTab = computed(() => {
+  if (route.path.startsWith("/v/history/")) return "/v/activity"
+  return vuetifyNavLinks.some((link) => link.path === route.path) ? route.path : null
+})
+const homePath = computed(() => (isVuetify.value ? "/v/dashboard" : "/logs"))
 
-function isActive(path: string): boolean {
-  return route.path === path
+const themeIcon = computed(() => {
+  const name = appTheme?.name()
+  if (name === "light") return "mdi-brightness-5"
+  if (name === "dark") return "mdi-brightness-2"
+  return "mdi-brightness-auto"
+})
+
+const themeLabel = computed(() => {
+  const name = appTheme?.name()
+  if (name === "light") return "Light"
+  if (name === "dark") return "Dark"
+  return "System"
+})
+
+function cycleTheme(): void {
+  appTheme?.cycle()
 }
 </script>
 
 <template>
-  <nav class="navbar">
+  <v-app-bar
+    v-if="isVuetify"
+    flat
+    density="compact"
+    color="surface"
+  >
+    <v-app-bar-title class="text-body-1 font-weight-bold flex-grow-0">
+      <router-link
+        :to="homePath"
+        class="app-bar-brand"
+      >
+        copilot-api
+      </router-link>
+    </v-app-bar-title>
+
+    <v-tabs
+      :model-value="activeVuetifyTab"
+      color="primary"
+      density="compact"
+      align-tabs="start"
+    >
+      <v-tab
+        v-for="link in vuetifyNavLinks"
+        :key="link.path"
+        :value="link.path"
+        :to="link.path"
+      >
+        {{ link.label }}
+      </v-tab>
+    </v-tabs>
+
+    <v-spacer />
+
+    <v-btn
+      v-if="switchPath"
+      :to="switchPath"
+      size="small"
+      variant="text"
+      class="mr-1"
+    >
+      {{ switchLabel }}
+    </v-btn>
+
+    <v-btn
+      icon
+      :aria-label="`Theme: ${themeLabel}`"
+      @click="cycleTheme"
+    >
+      <v-icon :icon="themeIcon" />
+      <v-tooltip activator="parent">
+        {{ themeLabel }}
+      </v-tooltip>
+    </v-btn>
+  </v-app-bar>
+
+  <nav
+    v-else
+    class="navbar"
+  >
     <div class="navbar-left">
-      <span class="navbar-brand">copilot-api</span>
+      <router-link
+        :to="homePath"
+        class="navbar-brand"
+      >
+        copilot-api
+      </router-link>
     </div>
     <div class="navbar-center">
       <router-link
         v-for="link in navLinks"
-        :key="link.to"
-        :to="link.to"
+        :key="link.path"
+        :to="link.path"
         class="nav-link"
-        :class="{ active: isActive(link.to) }"
+        exact-active-class="active"
       >
         {{ link.label }}
       </router-link>
@@ -69,11 +127,6 @@ function isActive(path: string): boolean {
         class="switch-link"
         >{{ switchLabel }}</router-link
       >
-      <StatusDot
-        :status="store.wsConnected.value ? 'success' : 'error'"
-        :size="6"
-      />
-      <span class="ws-label">{{ store.wsConnected.value ? "Live" : "Offline" }}</span>
     </div>
   </nav>
 </template>
@@ -96,10 +149,16 @@ function isActive(path: string): boolean {
 }
 
 .navbar-brand {
+  text-decoration: none;
   font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--text);
   letter-spacing: -0.3px;
+}
+
+.app-bar-brand {
+  color: inherit;
+  text-decoration: none;
 }
 
 .navbar-center {
@@ -148,11 +207,6 @@ function isActive(path: string): boolean {
 .switch-link:hover {
   color: var(--primary);
   border-color: var(--primary);
-}
-
-.ws-label {
-  font-size: var(--font-size-xs);
-  color: var(--text-dim);
 }
 
 @media (max-width: 768px) {

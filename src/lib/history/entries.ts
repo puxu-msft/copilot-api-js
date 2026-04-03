@@ -1,8 +1,8 @@
 import type { EntrySummary, HistoryEntry } from "./types"
 
-import { generateId } from "../utils"
 import { notifyEntryAdded, notifyEntryUpdated, notifyHistoryCleared, notifyStatsUpdated } from "../ws"
 import { historyIndexes, historyState, invalidateHistoryStats, resetHistoryIndexes } from "./state"
+import { getCurrentSession } from "./sessions"
 import { getStats } from "./stats"
 
 /** Extract a preview from the last user message (first 100 chars) */
@@ -50,9 +50,17 @@ function extractPreviewText(entry: HistoryEntry): string {
 function toSummary(entry: HistoryEntry): EntrySummary {
   return {
     id: entry.id,
-    sessionId: entry.sessionId,
-    timestamp: entry.timestamp,
+    ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
+    rawPath: entry.rawPath,
+    startedAt: entry.startedAt,
+    endedAt: entry.endedAt,
     endpoint: entry.endpoint,
+    state: entry.state,
+    active: entry.active,
+    lastUpdatedAt: entry.lastUpdatedAt,
+    queueWaitMs: entry.queueWaitMs,
+    attemptCount: entry.attemptCount,
+    currentStrategy: entry.currentStrategy,
     requestModel: entry.request.model,
     stream: entry.request.stream,
     messageCount: entry.request.messages?.length ?? 0,
@@ -67,6 +75,7 @@ function toSummary(entry: HistoryEntry): EntrySummary {
 }
 
 function updateSessionMetadata(entry: HistoryEntry): void {
+  if (!entry.sessionId) return
   const session = historyState.sessions.get(entry.sessionId)
   if (!session) return
 
@@ -97,6 +106,42 @@ function updateSessionMetadata(entry: HistoryEntry): void {
   }
 }
 
+function attachEntryToSession(entry: HistoryEntry): void {
+  if (!entry.sessionId) return
+  const sessionId = getCurrentSession(entry.endpoint, entry.sessionId)
+  if (!sessionId) return
+
+  const session = historyState.sessions.get(sessionId)
+  if (!session) return
+
+  entry.sessionId = sessionId
+  session.requestCount++
+  historyIndexes.sessionEntryCount.set(
+    sessionId,
+    (historyIndexes.sessionEntryCount.get(sessionId) ?? 0) + 1,
+  )
+  updateSessionMetadata(entry)
+}
+
+function detachEntryFromSession(entry: HistoryEntry): void {
+  if (!entry.sessionId) return
+  const sessionId = entry.sessionId
+  const session = historyState.sessions.get(sessionId)
+  if (session) {
+    session.requestCount = Math.max(0, session.requestCount - 1)
+  }
+
+  const sessionCount = (historyIndexes.sessionEntryCount.get(sessionId) ?? 1) - 1
+  if (sessionCount <= 0) {
+    historyIndexes.sessionEntryCount.delete(sessionId)
+    historyIndexes.sessionModelsSet.delete(sessionId)
+    historyIndexes.sessionToolsSet.delete(sessionId)
+    historyState.sessions.delete(sessionId)
+  } else {
+    historyIndexes.sessionEntryCount.set(sessionId, sessionCount)
+  }
+}
+
 function removeOldestEntries(count: number): number {
   if (count <= 0 || historyState.entries.length === 0) return 0
 
@@ -105,15 +150,7 @@ function removeOldestEntries(count: number): number {
   for (const entry of removed) {
     historyIndexes.entryIndex.delete(entry.id)
     historyIndexes.summaryIndex.delete(entry.id)
-    const sessionCount = (historyIndexes.sessionEntryCount.get(entry.sessionId) ?? 1) - 1
-    if (sessionCount <= 0) {
-      historyIndexes.sessionEntryCount.delete(entry.sessionId)
-      historyIndexes.sessionModelsSet.delete(entry.sessionId)
-      historyIndexes.sessionToolsSet.delete(entry.sessionId)
-      historyState.sessions.delete(entry.sessionId)
-    } else {
-      historyIndexes.sessionEntryCount.set(entry.sessionId, sessionCount)
-    }
+    detachEntryFromSession(entry)
   }
 
   if (removed.length > 0) {
@@ -134,18 +171,9 @@ export function evictOldestEntries(count: number): number {
 export function insertEntry(entry: HistoryEntry): void {
   if (!historyState.enabled) return
 
-  const session = historyState.sessions.get(entry.sessionId)
-  if (!session) return
-
   historyState.entries.push(entry)
   historyIndexes.entryIndex.set(entry.id, entry)
-  session.requestCount++
-  historyIndexes.sessionEntryCount.set(
-    entry.sessionId,
-    (historyIndexes.sessionEntryCount.get(entry.sessionId) ?? 0) + 1,
-  )
-
-  updateSessionMetadata(entry)
+  attachEntryToSession(entry)
 
   const summary = toSummary(entry)
   historyIndexes.summaryIndex.set(entry.id, summary)
@@ -164,14 +192,26 @@ export function updateEntry(
   update: Partial<
     Pick<
       HistoryEntry,
+      | "rawPath"
+      | "sessionId"
+      | "state"
+      | "active"
+      | "lastUpdatedAt"
+      | "queueWaitMs"
+      | "attemptCount"
+      | "currentStrategy"
       | "request"
       | "response"
       | "pipelineInfo"
       | "sseEvents"
       | "durationMs"
+      | "rawPath"
+      | "startedAt"
+      | "endedAt"
       | "effectiveRequest"
       | "wireRequest"
       | "attempts"
+      | "transport"
       | "warningMessages"
     >
   >,
@@ -181,13 +221,28 @@ export function updateEntry(
   const entry = historyIndexes.entryIndex.get(id)
   if (!entry) return
 
+  if (update.sessionId !== undefined && update.sessionId !== entry.sessionId) {
+    detachEntryFromSession(entry)
+    entry.sessionId = update.sessionId
+    attachEntryToSession(entry)
+  }
   if (update.request) {
     entry.request = update.request
     updateSessionMetadata(entry)
   }
+  if (update.rawPath !== undefined) entry.rawPath = update.rawPath
+  if (update.state !== undefined) entry.state = update.state
+  if (update.active !== undefined) entry.active = update.active
+  if (update.lastUpdatedAt !== undefined) entry.lastUpdatedAt = update.lastUpdatedAt
+  if (update.queueWaitMs !== undefined) entry.queueWaitMs = update.queueWaitMs
+  if (update.attemptCount !== undefined) entry.attemptCount = update.attemptCount
+  if (update.currentStrategy !== undefined) entry.currentStrategy = update.currentStrategy
   if (update.response) entry.response = update.response
   if (update.pipelineInfo) entry.pipelineInfo = update.pipelineInfo
   if (update.durationMs !== undefined) entry.durationMs = update.durationMs
+  if (update.startedAt !== undefined) entry.startedAt = update.startedAt
+  if (update.endedAt !== undefined) entry.endedAt = update.endedAt
+  if (update.transport !== undefined) entry.transport = update.transport
   if (update.sseEvents) entry.sseEvents = update.sseEvents
   if (update.effectiveRequest) entry.effectiveRequest = update.effectiveRequest
   if (update.wireRequest) entry.wireRequest = update.wireRequest
@@ -195,7 +250,7 @@ export function updateEntry(
   if (update.warningMessages) entry.warningMessages = update.warningMessages
 
   if (update.response) {
-    const session = historyState.sessions.get(entry.sessionId)
+    const session = entry.sessionId ? historyState.sessions.get(entry.sessionId) : undefined
     if (session) {
       session.totalInputTokens += update.response.usage.input_tokens
       session.totalOutputTokens += update.response.usage.output_tokens
@@ -213,7 +268,7 @@ export function updateEntry(
 export function clearHistory(): void {
   historyState.entries = []
   historyState.sessions = new Map()
-  historyState.currentSessionId = generateId()
+  historyState.currentSessionId = ""
   resetHistoryIndexes()
   invalidateHistoryStats()
   notifyHistoryCleared()

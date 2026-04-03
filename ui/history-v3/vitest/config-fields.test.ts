@@ -5,6 +5,7 @@ import ConfigKeyValueList from "@/components/config/ConfigKeyValueList.vue"
 import ConfigNumber from "@/components/config/ConfigNumber.vue"
 import ConfigRewriteRules from "@/components/config/ConfigRewriteRules.vue"
 import ConfigSection from "@/components/config/ConfigSection.vue"
+import ConfigStringList from "@/components/config/ConfigStringList.vue"
 import ConfigText from "@/components/config/ConfigText.vue"
 import ConfigToggle from "@/components/config/ConfigToggle.vue"
 
@@ -133,6 +134,38 @@ describe("config field components", () => {
     const inputs = wrapper.findAll("input")
     await inputs[0].setValue("gpt-4")
     expect(wrapper.emitted("update:modelValue")?.[1]).toEqual([[{ key: "gpt-4", value: "claude-sonnet" }]])
+
+    await wrapper.findAll("button")[0].trigger("click")
+    expect(wrapper.emitted("update:modelValue")?.at(-1)).toEqual([[]])
+  })
+
+  it("ConfigStringList supports add, edit, remove, and empty state", async () => {
+    const emptyWrapper = mountWithVuetifyStubs(ConfigStringList, {
+      props: {
+        modelValue: [],
+        label: "Non-Deferred Tools",
+      },
+    })
+    expect(emptyWrapper.text()).toContain("No values configured.")
+
+    const wrapper = mountWithVuetifyStubs(ConfigStringList, {
+      props: {
+        modelValue: ["custom_tool"],
+        label: "Non-Deferred Tools",
+        itemLabel: "Tool name",
+      },
+    })
+
+    const addButton = wrapper.findAll("button").find((node) => node.text().includes("Add item"))
+    if (!addButton) {
+      throw new Error("Add item button missing")
+    }
+    await addButton.trigger("click")
+    expect(wrapper.emitted("update:modelValue")?.[0]).toEqual([["custom_tool", ""]])
+
+    const inputs = wrapper.findAll("input")
+    await inputs[0].setValue("rewritten_tool")
+    expect(wrapper.emitted("update:modelValue")?.[1]).toEqual([["rewritten_tool"]])
 
     await wrapper.findAll("button")[0].trigger("click")
     expect(wrapper.emitted("update:modelValue")?.at(-1)).toEqual([[]])

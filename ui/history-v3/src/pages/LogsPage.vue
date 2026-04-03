@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** @deprecated Use VLogsPage.vue (`/v/logs`) for ongoing UI work. */
+/** @deprecated Use VActivityPage.vue (`/v/activity`) for ongoing UI work. */
 import { computed } from "vue"
 
 import type { EntrySummary } from "@/types"
@@ -100,7 +100,7 @@ const sortedEntries = computed(() => {
                 {{ statusSymbol(entry) }}
               </span>
             </td>
-            <td class="col-time">{{ formatTime(entry.timestamp) }}</td>
+            <td class="col-time">{{ formatTime(entry.startedAt) }}</td>
             <td class="col-code">{{ httpStatusCode(entry) }}</td>
             <td class="col-model">{{ modelName(entry) }}</td>
             <td class="col-duration">{{ formatDuration(entry.durationMs) }}</td>

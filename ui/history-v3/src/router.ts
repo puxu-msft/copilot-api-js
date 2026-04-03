@@ -1,7 +1,12 @@
 import { createRouter, createWebHashHistory } from "vue-router"
+import { resolveRouterBase } from "@/utils/router-base"
 
 const router = createRouter({
-  history: createWebHashHistory("/ui/"),
+  history: createWebHashHistory(resolveRouterBase(import.meta.env.BASE_URL)),
+  scrollBehavior(_to, _from, savedPosition) {
+    if (savedPosition) return savedPosition
+    return { top: 0 }
+  },
   routes: [
     {
       path: "/",
@@ -10,8 +15,7 @@ const router = createRouter({
     // @deprecated Legacy routes are maintenance-only. Prefer /v/* Vuetify routes.
     {
       path: "/history",
-      name: "history",
-      component: () => import("@/pages/HistoryPage.vue"),
+      redirect: "/v/activity",
     },
     {
       path: "/logs",
@@ -21,28 +25,36 @@ const router = createRouter({
     {
       path: "/dashboard",
       name: "dashboard",
-      component: () => import("@/pages/DashboardPage.vue"),
+      redirect: "/v/dashboard",
     },
     {
       path: "/models",
       name: "models",
-      component: () => import("@/pages/ModelsPage.vue"),
+      redirect: "/v/models",
     },
     {
       path: "/usage",
       name: "usage",
-      component: () => import("@/pages/UsagePage.vue"),
+      redirect: "/v/dashboard",
     },
     // Canonical Vuetify routes
     {
       path: "/v/history",
-      name: "v-history",
-      component: () => import("@/pages/vuetify/VHistoryPage.vue"),
+      redirect: "/v/activity",
+    },
+    {
+      path: "/v/history/:id",
+      name: "v-history-detail",
+      component: () => import("@/pages/vuetify/VActivityPage.vue"),
     },
     {
       path: "/v/logs",
-      name: "v-logs",
-      component: () => import("@/pages/vuetify/VLogsPage.vue"),
+      redirect: "/v/activity",
+    },
+    {
+      path: "/v/activity",
+      name: "v-activity",
+      component: () => import("@/pages/vuetify/VActivityPage.vue"),
     },
     {
       path: "/v/dashboard",
@@ -61,8 +73,7 @@ const router = createRouter({
     },
     {
       path: "/v/usage",
-      name: "v-usage",
-      component: () => import("@/pages/vuetify/VUsagePage.vue"),
+      redirect: "/v/dashboard",
     },
   ],
 })

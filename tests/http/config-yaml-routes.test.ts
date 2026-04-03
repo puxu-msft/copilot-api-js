@@ -116,6 +116,7 @@ anthropic:
       method: regex
 openai-responses:
   normalize_call_ids: false
+  upstream_websocket: true
 rate_limiter:
   retry_interval: 15
   request_interval: 30
@@ -173,6 +174,7 @@ system_prompt_append: "append"
       },
       "openai-responses": {
         normalize_call_ids: false,
+        upstream_websocket: true,
       },
       rate_limiter: {
         retry_interval: 15,
@@ -440,6 +442,7 @@ fetch_timeout: 600
       },
       "openai-responses": {
         normalize_call_ids: false,
+        upstream_websocket: true,
       },
       rate_limiter: {
         retry_interval: 15,
@@ -500,9 +503,10 @@ fetch_timeout: 600
     expect(state.contextEditingKeepTools).toBe(4)
     expect(state.contextEditingKeepThinking).toBe(2)
     expect(state.toolSearchEnabled).toBe(false)
-    expect(state.autoCacheControl).toBe(false)
+    expect(state.cacheControlMode).toBe("disabled")
     expect(state.nonDeferredTools).toEqual(["custom_tool", "second_tool"])
     expect(state.normalizeResponsesCallIds).toBe(false)
+    expect(state.upstreamWebSocket).toBe(true)
   })
 
   test("PUT /api/config/yaml rejects invalid anthropic tuning fields", async () => {

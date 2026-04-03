@@ -6,6 +6,7 @@ import {
   cacheVSCodeVersion,
   copilotBaseUrl,
   copilotHeaders,
+  copilotWsUrl,
   getVSCodeVersion,
   githubHeaders,
   standardHeaders,
@@ -63,6 +64,11 @@ describe("copilotHeaders", () => {
     expect(copilotBaseUrl(makeState({ accountType: "individual" }))).toBe("https://api.githubcopilot.com")
     expect(copilotBaseUrl(makeState({ accountType: "business" }))).toBe("https://api.business.githubcopilot.com")
     expect(copilotBaseUrl(makeState({ accountType: "enterprise" }))).toBe("https://api.enterprise.githubcopilot.com")
+  })
+
+  test("builds the correct Copilot websocket URL for each account type", () => {
+    expect(copilotWsUrl(makeState({ accountType: "individual" }))).toBe("wss://api.githubcopilot.com/responses")
+    expect(copilotWsUrl(makeState({ accountType: "business" }))).toBe("wss://api.business.githubcopilot.com/responses")
   })
 
   // ── Core headers ──

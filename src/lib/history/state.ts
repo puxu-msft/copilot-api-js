@@ -1,4 +1,3 @@
-import { generateId } from "../utils"
 import type { EntrySummary, HistoryEntry, HistoryState, HistoryStats, Session } from "./types"
 
 export const historyState: HistoryState = {
@@ -15,6 +14,7 @@ export const historyIndexes = {
   sessionEntryCount: new Map<string, number>(),
   sessionModelsSet: new Map<string, Set<string>>(),
   sessionToolsSet: new Map<string, Set<string>>(),
+  responseSessionIndex: new Map<string, string>(),
 }
 
 export const historyStatsCache: {
@@ -31,6 +31,7 @@ export function resetHistoryIndexes(): void {
   historyIndexes.sessionEntryCount.clear()
   historyIndexes.sessionModelsSet.clear()
   historyIndexes.sessionToolsSet.clear()
+  historyIndexes.responseSessionIndex.clear()
 }
 
 export function invalidateHistoryStats(): void {
@@ -122,7 +123,7 @@ export function initHistory(enabled: boolean, maxEntries: number): void {
   historyState.maxEntries = maxEntries
   historyState.entries = []
   historyState.sessions = new Map()
-  historyState.currentSessionId = enabled ? generateId() : ""
+  historyState.currentSessionId = ""
   resetHistoryIndexes()
   invalidateHistoryStats()
 }
@@ -138,7 +139,7 @@ export function isHistoryEnabled(): boolean {
 export function resetHistoryStateForClear(): void {
   historyState.entries = []
   historyState.sessions = new Map<string, Session>()
-  historyState.currentSessionId = generateId()
+  historyState.currentSessionId = ""
   resetHistoryIndexes()
   invalidateHistoryStats()
 }

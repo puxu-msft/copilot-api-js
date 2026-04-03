@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue"
+import { computed, ref } from "vue"
 
 import IconSvg from "@/components/ui/IconSvg.vue"
 import { useRawModal } from "@/composables/useRawModal"
@@ -20,6 +20,7 @@ const props = withDefaults(
 
 const { openRawModal } = useRawModal()
 const collapsed = ref(props.defaultCollapsed ?? false)
+const sectionSlug = computed(() => props.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))
 
 function toggle() {
   collapsed.value = !collapsed.value
@@ -37,6 +38,7 @@ function openRaw(e: Event) {
   <div
     class="section-block"
     :class="{ collapsed }"
+    :data-testid="`section-block-${sectionSlug}`"
   >
     <div
       class="section-header"
@@ -57,6 +59,7 @@ function openRaw(e: Event) {
         v-if="rawData !== undefined"
         class="section-raw-btn"
         title="View raw JSON"
+        :data-testid="`section-raw-${sectionSlug}`"
         @click="openRaw"
       >
         <IconSvg

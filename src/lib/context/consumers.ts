@@ -9,11 +9,13 @@
 
 import type { HistoryEntry, MessageContent } from "~/lib/history"
 
-import { getCurrentSession, insertEntry, isHistoryEnabled, updateEntry } from "~/lib/history/store"
+import { insertEntry, isHistoryEnabled, updateEntry } from "~/lib/history/store"
 import { tuiLogger } from "~/lib/tui"
 
 import type { RequestContextEvent, RequestContextManager } from "./manager"
 import type { HistoryEntryData, ResponseData } from "./request"
+
+import { buildHistoryActivityPatch } from "./activity-summary"
 
 // ─── History Consumer ───
 
@@ -33,13 +35,13 @@ function handleHistoryEvent(event: RequestContextEvent): void {
         const orig = event.context.originalRequest
         if (!orig) break
         const ctx = event.context
-        const sessionId = getCurrentSession(ctx.endpoint)
 
         const entry: HistoryEntry = {
           id: ctx.id,
-          sessionId,
-          timestamp: ctx.startTime,
+          ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+          ...(ctx.rawPath ? { rawPath: ctx.rawPath } : {}),
           endpoint: ctx.endpoint,
+          ...buildHistoryActivityPatch(ctx),
           request: {
             model: orig.model,
             messages: orig.messages as Array<MessageContent> | undefined,
@@ -51,6 +53,9 @@ function handleHistoryEvent(event: RequestContextEvent): void {
 
         insertEntry(entry)
       }
+      if (event.field === "attempts" || event.field === "queueWaitMs") {
+        updateEntry(event.context.id, buildHistoryActivityPatch(event.context))
+      }
       if (event.field === "warningMessages" && event.context.warningMessages.length > 0) {
         updateEntry(event.context.id, { warningMessages: [...event.context.warningMessages] })
       }
@@ -60,14 +65,30 @@ function handleHistoryEvent(event: RequestContextEvent): void {
       break
     }
 
+    case "state_changed": {
+      updateEntry(event.context.id, buildHistoryActivityPatch(event.context))
+      break
+    }
+
     case "completed":
     case "failed": {
       const entryData = event.entry
       const response = toHistoryResponse(entryData)
 
       updateEntry(entryData.id, {
+        rawPath: entryData.rawPath,
+        sessionId: entryData.sessionId,
+        state: entryData.state,
+        active: entryData.active,
+        lastUpdatedAt: entryData.lastUpdatedAt,
+        queueWaitMs: entryData.queueWaitMs,
+        attemptCount: entryData.attemptCount,
+        currentStrategy: entryData.currentStrategy,
         response,
+        startedAt: entryData.startedAt,
+        endedAt: entryData.endedAt,
         durationMs: entryData.durationMs,
+        transport: entryData.transport,
         sseEvents: entryData.sseEvents,
         ...(entryData.warningMessages && { warningMessages: entryData.warningMessages }),
         ...(entryData.effectiveRequest && {
@@ -130,6 +151,12 @@ function handleTuiEvent(event: RequestContextEvent): void {
         const attempt = event.context.currentAttempt
         if (attempt?.strategy) {
           tuiLogger.updateRequest(tuiLogId, { tags: [attempt.strategy] })
+        }
+      }
+      if (event.field === "attempts") {
+        const transportTag = toTransportTag(event.context.currentAttempt?.transport)
+        if (transportTag) {
+          tuiLogger.updateRequest(tuiLogId, { tags: [transportTag] })
         }
       }
       break
@@ -197,6 +224,12 @@ function toHistoryResponse(entryData: HistoryEntryData): HistoryEntry["response"
     rawBody: r.responseText,
     headers: entryData.httpHeaders?.response,
   }
+}
+
+function toTransportTag(transport: HistoryEntry["transport"] | undefined): string | undefined {
+  if (transport === "upstream-ws") return "ws"
+  if (transport === "upstream-ws-fallback") return "ws→http"
+  return undefined
 }
 
 // ─── Registration ───

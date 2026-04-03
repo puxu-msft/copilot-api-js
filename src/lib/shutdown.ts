@@ -23,6 +23,8 @@ import type { TuiLogEntry } from "./tui"
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { getRequestContextManager } from "./context/manager"
 import { closeAllClients, getClientCount, stopMemoryPressureMonitor } from "./history"
+import { peekUpstreamWsManager } from "./openai/upstream-ws"
+import { shutdownRequestTelemetry } from "./request-telemetry"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
 import { tuiLogger } from "./tui"
@@ -240,6 +242,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // Stop background services
   stopRefresh()
   stopMemoryPressureMonitor()
+  peekUpstreamWsManager()?.stopNew()
 
   const wsClients = getWsClientCount()
   if (wsClients > 0) {
@@ -325,6 +328,8 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
         consola.error("Error force-closing server:", error)
       }
     }
+
+    peekUpstreamWsManager()?.closeAll()
   }
 
   finalize(tracker)
@@ -335,8 +340,10 @@ function finalize(tracker: { destroy: () => void }): void {
   setPhase("finalized")
   shutdownDrainAbortController = null
   tracker.destroy()
-  consola.info("Shutdown complete")
-  shutdownResolve?.()
+  void shutdownRequestTelemetry().finally(() => {
+    consola.info("Shutdown complete")
+    shutdownResolve?.()
+  })
 }
 
 // ============================================================================
@@ -353,21 +360,41 @@ export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignal
   const exitFn = opts?.exitFn ?? ((code: number) => process.exit(code))
 
   if (_isShuttingDown) {
-    if (shutdownPhase === "phase2") {
-      consola.warn("Second signal received, escalating shutdown to abort active requests")
-      shutdownDrainAbortController?.abort()
-      return shutdownPromise ?? undefined
-    }
+    switch (shutdownPhase) {
+      case "phase1":
+        // Phase 1 is fast synchronous setup — ignore duplicate signal, it will
+        // proceed to phase2 momentarily. This commonly happens when bun --watch
+        // forwards SIGINT to both parent and child processes.
+        consola.warn("Signal received during Phase 1 setup, waiting for shutdown to proceed")
+        return shutdownPromise ?? undefined
 
-    if (shutdownPhase === "phase3") {
-      consola.warn("Additional signal received, escalating shutdown to force-close remaining requests")
-      shutdownDrainAbortController?.abort()
-      return shutdownPromise ?? undefined
-    }
+      case "phase2":
+        consola.warn("Second signal received, escalating shutdown to abort active requests")
+        shutdownDrainAbortController?.abort()
+        return shutdownPromise ?? undefined
 
-    consola.warn("Additional signal received during forced shutdown, exiting immediately")
-    exitFn(1)
-    return shutdownPromise ?? undefined
+      case "phase3":
+        consola.warn("Additional signal received, escalating shutdown to force-close remaining requests")
+        shutdownDrainAbortController?.abort()
+        return shutdownPromise ?? undefined
+
+      case "phase4":
+        // Force close is already in progress — user insists on immediate exit
+        consola.warn("Additional signal received during forced shutdown, exiting immediately")
+        exitFn(1)
+        return shutdownPromise ?? undefined
+
+      case "finalized":
+        // Cleanup is already completing — ignore
+        consola.info("Signal received after shutdown finalized, ignoring")
+        return shutdownPromise ?? undefined
+
+      default:
+        // Should not happen, but guard exhaustively
+        consola.warn("Signal received in unexpected shutdown phase, exiting immediately")
+        exitFn(1)
+        return shutdownPromise ?? undefined
+    }
   }
 
   shutdownPromise = shutdownFn(signal).catch((error: unknown) => {

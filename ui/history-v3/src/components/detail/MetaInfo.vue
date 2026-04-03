@@ -14,8 +14,30 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
 <template>
   <div class="meta-grid">
     <div class="meta-row">
+      <span class="meta-label">Request Id</span>
+      <span class="meta-value mono">{{ entry.id }}</span>
+    </div>
+    <div
+      v-if="entry.sessionId"
+      class="meta-row"
+    >
+      <span class="meta-label">Session Id</span>
+      <span class="meta-value mono">{{ entry.sessionId }}</span>
+    </div>
+    <div class="meta-row">
       <span class="meta-label">Time</span>
-      <span class="meta-value">{{ formatDate(entry.timestamp) }}</span>
+      <span class="meta-value">{{ formatDate(entry.startedAt) }}</span>
+    </div>
+    <div
+      v-if="entry.rawPath"
+      class="meta-row"
+    >
+      <span class="meta-label">Path</span>
+      <span class="meta-value mono">{{ entry.rawPath }}</span>
+    </div>
+    <div class="meta-row">
+      <span class="meta-label">State</span>
+      <span class="meta-value">{{ entry.state ?? "pending" }}</span>
     </div>
     <div class="meta-row">
       <span class="meta-label">Model</span>
@@ -55,6 +77,34 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
       <span class="meta-value">{{ entry.request.stream === true ? "Yes" : "No" }}</span>
     </div>
     <div
+      v-if="entry.transport"
+      class="meta-row"
+    >
+      <span class="meta-label">Transport</span>
+      <span class="meta-value">{{ entry.transport }}</span>
+    </div>
+    <div
+      v-if="entry.attemptCount !== undefined"
+      class="meta-row"
+    >
+      <span class="meta-label">Attempts</span>
+      <span class="meta-value mono">{{ entry.attemptCount }}</span>
+    </div>
+    <div
+      v-if="entry.currentStrategy"
+      class="meta-row"
+    >
+      <span class="meta-label">Strategy</span>
+      <span class="meta-value">{{ entry.currentStrategy }}</span>
+    </div>
+    <div
+      v-if="entry.queueWaitMs !== undefined"
+      class="meta-row"
+    >
+      <span class="meta-label">Queue Wait</span>
+      <span class="meta-value">{{ formatDuration(entry.queueWaitMs) }}</span>
+    </div>
+    <div
       v-if="entry.request.max_tokens"
       class="meta-row"
     >
@@ -81,6 +131,13 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
     >
       <span class="meta-label">Stop Reason</span>
       <span class="meta-value">{{ entry.response.stop_reason }}</span>
+    </div>
+    <div
+      v-if="entry.lastUpdatedAt"
+      class="meta-row"
+    >
+      <span class="meta-label">Last Update</span>
+      <span class="meta-value">{{ formatDate(entry.lastUpdatedAt) }}</span>
     </div>
 
     <!-- Token Usage -->
@@ -339,7 +396,5 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
   padding: var(--spacing-sm);
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 200px;
-  overflow-y: auto;
 }
 </style>

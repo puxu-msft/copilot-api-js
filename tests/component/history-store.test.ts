@@ -36,11 +36,11 @@ function createEntry(
   endpoint: EndpointType,
   request: Partial<HistoryEntry["request"]> & { model: string; messages: HistoryEntry["request"]["messages"] },
 ): HistoryEntry {
-  const sessionId = getCurrentSession(endpoint)
+  const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint,
     request: {
       model: request.model,
@@ -96,9 +96,9 @@ describe("initHistory", () => {
     expect(historyState.entries.length).toBe(0)
   })
 
-  test("generates a session ID when enabled", () => {
+  test("does not generate a synthetic session ID on init", () => {
     initHistory(true, 100)
-    expect(historyState.currentSessionId).toBeTruthy()
+    expect(historyState.currentSessionId).toBe("")
   })
 })
 
@@ -122,7 +122,7 @@ describe("insertEntry", () => {
     const entry: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: Date.now(),
+      startedAt: Date.now(),
       endpoint: "anthropic-messages",
       request: {
         model: "claude-sonnet-4-20250514",
@@ -158,7 +158,7 @@ describe("insertEntry", () => {
     expect(stored!.response).toBeUndefined()
   })
 
-  test("assigns sessionId to entry", () => {
+  test("keeps an explicit sessionId on the entry", () => {
     const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "test" }],
@@ -168,30 +168,57 @@ describe("insertEntry", () => {
   })
 
   test("tracks tools used in session", () => {
-    createEntry("anthropic-messages", {
+    const entry = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "test" }],
       tools: [{ name: "file_search" }, { name: "read_file" }],
     })
 
-    const session = historyState.sessions.get(historyState.currentSessionId)
+    const session = historyState.sessions.get(entry.sessionId!)
     expect(session).toBeDefined()
     expect(session!.toolsUsed).toContain("file_search")
     expect(session!.toolsUsed).toContain("read_file")
   })
 
   test("increments session request count", () => {
-    createEntry("anthropic-messages", {
+    const first = createEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "1" }],
     })
-    createEntry("anthropic-messages", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "2" }],
+    const sessionId = first.sessionId!
+    insertEntry({
+      id: generateId(),
+      sessionId,
+      startedAt: Date.now(),
+      endpoint: "anthropic-messages",
+      request: {
+        model: "claude-sonnet-4-20250514",
+        messages: [{ role: "user", content: "2" }],
+        stream: true,
+      },
     })
 
-    const session = historyState.sessions.get(historyState.currentSessionId)
+    const session = historyState.sessions.get(sessionId)
     expect(session!.requestCount).toBe(2)
+  })
+
+  test("stores entries without a session when none is provided", () => {
+    const entry: HistoryEntry = {
+      id: generateId(),
+      startedAt: Date.now(),
+      endpoint: "anthropic-messages",
+      request: {
+        model: "claude-sonnet-4-20250514",
+        messages: [{ role: "user", content: "no session" }],
+        stream: true,
+      },
+    }
+
+    insertEntry(entry)
+
+    const stored = getEntry(entry.id)
+    expect(stored?.sessionId).toBeUndefined()
+    expect(historyState.sessions.size).toBe(0)
   })
 })
 
@@ -301,7 +328,7 @@ describe("updateEntry (response)", () => {
       },
     })
 
-    const session = historyState.sessions.get(historyState.currentSessionId)
+    const session = historyState.sessions.get(entry.sessionId!)
     expect(session!.totalInputTokens).toBe(100)
     expect(session!.totalOutputTokens).toBe(50)
   })
@@ -434,6 +461,20 @@ describe("updateEntry (rewrites)", () => {
     expect(stored!.attempts![1].effectiveMessageCount).toBe(5)
   })
 
+  test("stores transport via updateEntry", () => {
+    const entry = createEntry("openai-responses", {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hello" }],
+    })
+
+    updateEntry(entry.id, {
+      transport: "upstream-ws-fallback",
+    })
+
+    const stored = getEntry(entry.id)
+    expect(stored!.transport).toBe("upstream-ws-fallback")
+  })
+
   test("stores warningMessages via updateEntry", () => {
     const entry = createEntry("openai-chat-completions", {
       model: "gpt-5-resp",
@@ -484,7 +525,7 @@ describe("updateEntry (rewrites)", () => {
 // ─── getHistory ───
 
 describe("getHistory", () => {
-  test("returns entries sorted by timestamp descending", () => {
+  test("returns entries sorted by startedAt descending", () => {
     createEntry("anthropic-messages", {
       model: "model-a",
       messages: [{ role: "user", content: "first" }],
@@ -496,7 +537,7 @@ describe("getHistory", () => {
 
     const result = getHistory()
     expect(result.entries.length).toBe(2)
-    expect(result.entries[0].timestamp).toBeGreaterThanOrEqual(result.entries[1].timestamp)
+    expect(result.entries[0].startedAt).toBeGreaterThanOrEqual(result.entries[1].startedAt)
   })
 
   test("paginates results", () => {
@@ -597,14 +638,14 @@ describe("getHistory", () => {
     expect(result.total).toBe(1)
   })
 
-  test("filters by timestamp range (to)", () => {
+  test("filters by startedAt range (to)", () => {
     const now = Date.now()
-    const sessionId = getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     const old: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now - 10000,
+      startedAt: now - 10000,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
     }
@@ -613,7 +654,7 @@ describe("getHistory", () => {
     const recent: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now,
+      startedAt: now,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
     }
@@ -624,14 +665,14 @@ describe("getHistory", () => {
     expect(result.entries[0].id).toBe(old.id)
   })
 
-  test("filters by timestamp range (from + to)", () => {
+  test("filters by startedAt range (from + to)", () => {
     const now = Date.now()
-    const sessionId = getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     const old: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now - 20000,
+      startedAt: now - 20000,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
     }
@@ -640,7 +681,7 @@ describe("getHistory", () => {
     const mid: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now - 10000,
+      startedAt: now - 10000,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "mid" }], stream: true },
     }
@@ -649,7 +690,7 @@ describe("getHistory", () => {
     const recent: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now,
+      startedAt: now,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
     }
@@ -705,25 +746,25 @@ describe("updateEntry stores sseEvents", () => {
 
 describe("Session.endpoints tracking", () => {
   test("new session records initial endpoint", () => {
-    const sessionId = getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages", "session-1")!
     const session = getSession(sessionId) as Session
     expect(session.endpoints).toEqual(["anthropic-messages"])
   })
 
   test("same endpoint is not duplicated", () => {
-    getCurrentSession("anthropic-messages")
-    getCurrentSession("anthropic-messages")
-    getCurrentSession("anthropic-messages")
-    const sessionId = getCurrentSession("anthropic-messages")
+    getCurrentSession("anthropic-messages", "session-1")
+    getCurrentSession("anthropic-messages", "session-1")
+    getCurrentSession("anthropic-messages", "session-1")
+    const sessionId = getCurrentSession("anthropic-messages", "session-1")!
 
     const session = getSession(sessionId) as Session
     expect(session.endpoints).toEqual(["anthropic-messages"])
   })
 
   test("different endpoints accumulate", () => {
-    getCurrentSession("anthropic-messages")
-    getCurrentSession("openai-chat-completions")
-    const sessionId = getCurrentSession("openai-responses")
+    getCurrentSession("anthropic-messages", "session-1")
+    getCurrentSession("openai-chat-completions", "session-1")
+    const sessionId = getCurrentSession("openai-responses", "session-1")!
 
     const session = getSession(sessionId) as Session
     expect(session.endpoints).toEqual(["anthropic-messages", "openai-chat-completions", "openai-responses"])
@@ -734,13 +775,13 @@ describe("Session.endpoints tracking", () => {
 
 describe("getSessionEntries pagination", () => {
   test("returns paginated results with default limit", () => {
-    const sessionId = getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     for (let i = 0; i < 5; i++) {
       const entry: HistoryEntry = {
         id: generateId(),
         sessionId,
-        timestamp: Date.now() + i,
+        startedAt: Date.now() + i,
         endpoint: "anthropic-messages",
         request: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
       }
@@ -754,13 +795,13 @@ describe("getSessionEntries pagination", () => {
   })
 
   test("respects cursor and limit", () => {
-    const sessionId = getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     for (let i = 0; i < 10; i++) {
       const entry: HistoryEntry = {
         id: generateId(),
         sessionId,
-        timestamp: Date.now() + i,
+        startedAt: Date.now() + i,
         endpoint: "anthropic-messages",
         request: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
       }
@@ -807,10 +848,10 @@ describe("clearHistory", () => {
     expect(historyState.sessions.size).toBe(0)
   })
 
-  test("generates new session ID after clearing", () => {
-    const oldSessionId = historyState.currentSessionId
+  test("clears the current session marker", () => {
+    historyState.currentSessionId = "session-1"
     clearHistory()
-    expect(historyState.currentSessionId).not.toBe(oldSessionId)
+    expect(historyState.currentSessionId).toBe("")
   })
 })
 

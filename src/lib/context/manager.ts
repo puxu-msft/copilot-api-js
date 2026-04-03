@@ -21,9 +21,11 @@ import type { EndpointType } from "~/lib/history/store"
 import { state } from "~/lib/state"
 
 import { notifyActiveRequestChanged } from "~/lib/ws"
+import { recordAcceptedRequest, recordSettledRequest } from "~/lib/request-telemetry"
 
 import type { HistoryEntryData, RequestContext, RequestContextEventData, RequestState } from "./request"
 
+import { summarizeRequestContext } from "./activity-summary"
 import { createRequestContext } from "./request"
 
 // ─── Event Types ───
@@ -39,7 +41,7 @@ export type RequestContextEvent =
 
 export interface RequestContextManager {
   /** Create and register a new active request context */
-  create(opts: { endpoint: EndpointType; tuiLogId?: string }): RequestContext
+  create(opts: { endpoint: EndpointType; sessionId?: string; tuiLogId?: string; rawPath?: string }): RequestContext
 
   /** Get an active request by ID */
   get(id: string): RequestContext | undefined
@@ -159,7 +161,7 @@ export function createRequestContextManager(): RequestContextManager {
           })
           notifyActiveRequestChanged({
             action: "state_changed",
-            request: summarizeContext(context),
+            request: summarizeRequestContext(context),
             activeCount: activeContexts.size,
           })
         }
@@ -177,6 +179,12 @@ export function createRequestContextManager(): RequestContextManager {
       }
       case "completed": {
         if (rawEvent.entry) {
+          recordSettledRequest(rawEvent.entry.response?.model ?? rawEvent.entry.request.model ?? "unknown", {
+            startedAt: rawEvent.entry.startedAt,
+            endedAt: rawEvent.entry.endedAt,
+            success: rawEvent.entry.response?.success ?? true,
+            usage: rawEvent.entry.response?.usage,
+          })
           emit({
             type: "completed",
             context,
@@ -193,6 +201,12 @@ export function createRequestContextManager(): RequestContextManager {
       }
       case "failed": {
         if (rawEvent.entry) {
+          recordSettledRequest(rawEvent.entry.response?.model ?? rawEvent.entry.request.model ?? "unknown", {
+            startedAt: rawEvent.entry.startedAt,
+            endedAt: rawEvent.entry.endedAt,
+            success: rawEvent.entry.response?.success ?? false,
+            usage: rawEvent.entry.response?.usage,
+          })
           emit({
             type: "failed",
             context,
@@ -213,34 +227,21 @@ export function createRequestContextManager(): RequestContextManager {
     }
   }
 
-  /** Build a lightweight summary of a context for WS broadcast */
-  function summarizeContext(ctx: RequestContext) {
-    return {
-      id: ctx.id,
-      endpoint: ctx.endpoint,
-      state: ctx.state,
-      startTime: ctx.startTime,
-      durationMs: ctx.durationMs,
-      model: ctx.originalRequest?.model,
-      stream: ctx.originalRequest?.stream,
-      attemptCount: ctx.attempts.length,
-      currentStrategy: ctx.currentAttempt?.strategy,
-      queueWaitMs: ctx.queueWaitMs,
-    }
-  }
-
   return {
     create(opts) {
       const ctx = createRequestContext({
         endpoint: opts.endpoint,
+        sessionId: opts.sessionId,
         tuiLogId: opts.tuiLogId,
+        rawPath: opts.rawPath,
         onEvent: handleContextEvent,
       })
+      recordAcceptedRequest(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
       emit({ type: "created", context: ctx })
       notifyActiveRequestChanged({
         action: "created",
-        request: summarizeContext(ctx),
+        request: summarizeRequestContext(ctx),
         activeCount: activeContexts.size,
       })
       return ctx

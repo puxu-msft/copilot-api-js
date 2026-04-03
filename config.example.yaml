@@ -117,6 +117,29 @@ anthropic:
   # Only effective for models that support context editing.
   context_editing: off
 
+  # Input token threshold that triggers clear_tool_uses when context_editing includes tool clearing.
+  context_editing_trigger: 100000
+
+  # Number of most recent tool_use pairs to keep after clear_tool_uses runs.
+  context_editing_keep_tools: 3
+
+  # Number of most recent thinking turns to keep after clear_thinking runs.
+  context_editing_keep_thinking: 1
+
+  # Inject Copilot tool_search helper when the model supports it.
+  tool_search: true
+
+  # Cache control mode for prompt caching.
+  #   disabled:    strip all cache_control fields (no caching)
+  #   passthrough: forward client cache_control as-is
+  #   sanitize:    forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
+  #   proxied:     proxy controls injection — auto-add breakpoints on tools/system (default)
+  cache_control: proxied
+
+  # Additional tool names that should never be deferred when tool_search is enabled.
+  # non_deferred_tools:
+  #   - my_custom_tool
+
   # Rewrite system-reminder tags in messages. false = keep all (default), true = remove all.
   # Or provide rewrite rules (first match wins, top-down).
   # Note: `model` field is NOT supported here (only in system_prompt_overrides).
@@ -137,6 +160,8 @@ openai-responses:
   # Convert `call_xxx` IDs to `fc_xxx` in input. Required when clients send conversation history with
   # Chat Completions-format tool call IDs to the Responses API (which requires `fc_` prefix). Default: true.
   normalize_call_ids: true
+  # Use upstream WebSocket transport for streaming /responses when the model supports it. Default: false.
+  upstream_websocket: false
 
 # ============================================================================
 # Rate Limiter

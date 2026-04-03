@@ -20,13 +20,13 @@ import { modelsRoutes } from "./models/route"
 import { responsesRoutes } from "./responses/route"
 import { statusRoutes } from "./status/route"
 import { tokenRoutes } from "./token/route"
-import { uiRoutes } from "./ui/route"
+import { type UiRoutesOptions, createUiRoutes } from "./ui/route"
 
 /**
  * Register all HTTP routes on the given Hono app.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function registerHttpRoutes(app: Hono) {
+export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
   // OpenAI-compatible endpoints
   app.route("/chat/completions", chatCompletionRoutes)
   app.route("/models", modelsRoutes)
@@ -51,7 +51,7 @@ export function registerHttpRoutes(app: Hono) {
 
   // History API and standalone Web UI entry
   app.route("/history", historyRoutes)
-  app.route("/ui", uiRoutes)
+  app.route("/ui", createUiRoutes(options))
 }
 
 /**

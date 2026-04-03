@@ -30,7 +30,7 @@ defineProps<{
     :badge="requestBadge"
     :raw-data="entry.request"
     :rewritten-raw-data="rewrittenRequest"
-    raw-title="Raw -- Request"
+    raw-title="Request"
   >
     <ErrorBoundary label="System prompt">
       <SystemMessage

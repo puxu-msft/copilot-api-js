@@ -6,14 +6,17 @@
 
 import { Hono } from "hono"
 
-import packageJson from "../../../package.json"
 import { getAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { historyState } from "~/lib/history/store"
 import { getMemoryPressureStats } from "~/lib/history/memory-pressure"
+import { historyState } from "~/lib/history/store"
+import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
+import { getRequestTelemetrySnapshot } from "~/lib/request-telemetry"
 import { getIsShuttingDown, getShutdownPhase } from "~/lib/shutdown"
 import { serverStartTime, state } from "~/lib/state"
 import { getCopilotUsage, type QuotaDetail } from "~/lib/token/copilot-client"
+
+import packageJson from "../../../package.json"
 
 export const statusRoutes = new Hono()
 
@@ -23,9 +26,27 @@ statusRoutes.get("/", async (c) => {
   // Rate limiter status + config
   const limiter = getAdaptiveRateLimiter()
   const limiterStatus = limiter?.getStatus()
+  let serverStatus: "healthy" | "unhealthy" | "shutting_down"
+  if (getIsShuttingDown()) {
+    serverStatus = "shutting_down"
+  } else if (state.copilotToken && state.githubToken) {
+    serverStatus = "healthy"
+  } else {
+    serverStatus = "unhealthy"
+  }
+  const rateLimiter =
+    limiter && limiterStatus ?
+      {
+        enabled: true,
+        ...limiterStatus,
+        config: limiter.getConfig(),
+      }
+    : { enabled: false }
 
   // Memory pressure
   const memStats = getMemoryPressureStats()
+  const requestTelemetry = getRequestTelemetrySnapshot(now)
+  const upstreamWs = peekUpstreamWsManager()
 
   // Active request count (safe — returns 0 if manager not initialized)
   let activeCount = 0
@@ -57,7 +78,7 @@ statusRoutes.get("/", async (c) => {
   }
 
   return c.json({
-    status: getIsShuttingDown() ? "shutting_down" : (state.copilotToken && state.githubToken ? "healthy" : "unhealthy"),
+    status: serverStatus,
     uptime: serverStartTime > 0 ? Math.floor((now - serverStartTime) / 1000) : 0,
     version: packageJson.version,
     vsCodeVersion: state.vsCodeVersion ?? null,
@@ -75,13 +96,9 @@ statusRoutes.get("/", async (c) => {
       count: activeCount,
     },
 
-    rateLimiter: limiterStatus
-      ? {
-          enabled: true,
-          ...limiterStatus,
-          config: limiter!.getConfig(),
-        }
-      : { enabled: false },
+    rateLimiter,
+
+    requestTelemetry,
 
     memory: {
       heapUsedMB: memStats.heapUsedMB,
@@ -98,6 +115,13 @@ statusRoutes.get("/", async (c) => {
     models: {
       totalCount: state.models?.data.length ?? 0,
       availableCount: state.modelIds.size,
+    },
+
+    upstream_websocket: {
+      enabled: state.upstreamWebSocket,
+      active_connections: upstreamWs?.activeCount ?? 0,
+      consecutive_fallbacks: upstreamWs?.consecutiveFallbacks ?? 0,
+      temporarily_disabled: upstreamWs?.temporarilyDisabled ?? false,
     },
   })
 })

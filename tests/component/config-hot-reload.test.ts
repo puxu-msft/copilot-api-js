@@ -100,7 +100,7 @@ stream_idle_timeout: 60
     expect(state.contextEditingKeepTools).toBe(5)
     expect(state.contextEditingKeepThinking).toBe(2)
     expect(state.toolSearchEnabled).toBe(false)
-    expect(state.autoCacheControl).toBe(false)
+    expect(state.cacheControlMode).toBe("disabled")
   })
 
   test("leaves state unchanged when config has no anthropic section", async () => {
@@ -187,6 +187,23 @@ openai-responses:
     await writeConfig("fetch_timeout: 30\n")
     await applyConfigToState()
     expect(state.normalizeResponsesCallIds).toBe(true)
+  })
+
+  test("applies openai-responses.upstream_websocket", async () => {
+    setStateForTests({ upstreamWebSocket: false })
+    await writeConfig(`
+openai-responses:
+  upstream_websocket: true
+`)
+    await applyConfigToState()
+    expect(state.upstreamWebSocket).toBe(true)
+  })
+
+  test("leaves upstreamWebSocket unchanged when config has no openai-responses section", async () => {
+    setStateForTests({ upstreamWebSocket: true })
+    await writeConfig("fetch_timeout: 30\n")
+    await applyConfigToState()
+    expect(state.upstreamWebSocket).toBe(true)
   })
 
   test("applies stale_request_max_age", async () => {
@@ -393,7 +410,7 @@ describe("config-managed defaults", () => {
     expect(state.contextEditingKeepTools).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools)
     expect(state.contextEditingKeepThinking).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking)
     expect(state.toolSearchEnabled).toBe(CONFIG_MANAGED_DEFAULTS.toolSearchEnabled)
-    expect(state.autoCacheControl).toBe(CONFIG_MANAGED_DEFAULTS.autoCacheControl)
+    expect(state.cacheControlMode).toBe(CONFIG_MANAGED_DEFAULTS.cacheControlMode)
     expect(state.nonDeferredTools).toEqual(CONFIG_MANAGED_DEFAULTS.nonDeferredTools)
     expect(state.rewriteSystemReminders).toBe(
       CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders as typeof state.rewriteSystemReminders,
@@ -422,7 +439,7 @@ describe("config-managed defaults", () => {
       contextEditingKeepTools: 9,
       contextEditingKeepThinking: 4,
       toolSearchEnabled: false,
-      autoCacheControl: false,
+      cacheControlMode: "disabled",
       nonDeferredTools: ["custom_tool"],
       rewriteSystemReminders: true,
       systemPromptOverrides: [{ from: /custom/, to: "rule" }],
@@ -450,7 +467,7 @@ describe("config-managed defaults", () => {
     expect(state.contextEditingKeepTools).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools)
     expect(state.contextEditingKeepThinking).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking)
     expect(state.toolSearchEnabled).toBe(CONFIG_MANAGED_DEFAULTS.toolSearchEnabled)
-    expect(state.autoCacheControl).toBe(CONFIG_MANAGED_DEFAULTS.autoCacheControl)
+    expect(state.cacheControlMode).toBe(CONFIG_MANAGED_DEFAULTS.cacheControlMode)
     expect(state.nonDeferredTools).toEqual(CONFIG_MANAGED_DEFAULTS.nonDeferredTools)
     expect(state.rewriteSystemReminders).toBe(
       CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders as typeof state.rewriteSystemReminders,

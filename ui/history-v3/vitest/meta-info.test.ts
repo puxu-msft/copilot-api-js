@@ -9,7 +9,7 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return {
     id: "entry-1",
     sessionId: "session-1",
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint: "openai-chat-completions",
     request: {
       model: "gpt-5-resp",

@@ -292,7 +292,7 @@ function exportEntry() {
         <SectionBlock
           title="Meta"
           :raw-data="entry"
-          raw-title="Raw -- Full Entry"
+          raw-title="Entry"
         >
           <ErrorBoundary label="Meta info">
             <MetaInfo :entry="entry" />
@@ -317,6 +317,7 @@ function exportEntry() {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
   background: var(--bg);
 }
 
@@ -337,7 +338,11 @@ function exportEntry() {
 
 .detail-body {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: var(--spacing-sm);
 }
 

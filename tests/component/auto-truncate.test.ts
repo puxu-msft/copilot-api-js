@@ -42,6 +42,8 @@ const mockModel: Model = {
   preview: false,
   model_picker_enabled: true,
   version: "claude-sonnet-4",
+  is_chat_default: false,
+  is_chat_fallback: false,
   capabilities: {
     tokenizer: "o200k_base",
     limits: {
@@ -794,6 +796,8 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
     preview: false,
     model_picker_enabled: true,
     version: "tiny-model",
+    is_chat_default: false,
+    is_chat_fallback: false,
     capabilities: {
       tokenizer: "o200k_base",
       limits: {

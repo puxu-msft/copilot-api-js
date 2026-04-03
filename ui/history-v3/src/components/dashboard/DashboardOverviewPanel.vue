@@ -27,8 +27,8 @@ defineProps<{
       >
         <template v-if="auth">
           <v-list-item
+            density="compact"
             class="px-2"
-            style="min-height: 32px"
           >
             <template #prepend>
               <span class="kv-label text-caption text-medium-emphasis">Account</span>
@@ -37,8 +37,8 @@ defineProps<{
           </v-list-item>
           <v-list-item
             v-if="auth.tokenSource"
+            density="compact"
             class="px-2"
-            style="min-height: 32px"
           >
             <template #prepend>
               <span class="kv-label text-caption text-medium-emphasis">Token Source</span>
@@ -47,19 +47,19 @@ defineProps<{
           </v-list-item>
           <v-list-item
             v-if="copilotExpiresAt"
+            density="compact"
             class="px-2"
-            style="min-height: 32px"
           >
             <template #prepend>
               <span class="kv-label text-caption text-medium-emphasis">Expires</span>
             </template>
-            <v-list-item-title class="text-caption mono">{{ copilotExpiresAt }}</v-list-item-title>
+            <v-list-item-title class="text-caption font-mono">{{ copilotExpiresAt }}</v-list-item-title>
           </v-list-item>
         </template>
         <v-list-item
           v-else
+          density="compact"
           class="px-2"
-          style="min-height: 32px"
         >
           <v-list-item-title class="text-caption text-disabled">No auth info</v-list-item-title>
         </v-list-item>
@@ -75,8 +75,8 @@ defineProps<{
         class="bg-transparent py-0"
       >
         <v-list-item
+          density="compact"
           class="px-2"
-          style="min-height: 32px"
         >
           <template #prepend>
             <span class="kv-label text-caption text-medium-emphasis">Mode</span>
@@ -91,13 +91,13 @@ defineProps<{
           </v-list-item-title>
         </v-list-item>
         <v-list-item
+          density="compact"
           class="px-2"
-          style="min-height: 32px"
         >
           <template #prepend>
             <span class="kv-label text-caption text-medium-emphasis">Queue</span>
           </template>
-          <v-list-item-title class="text-caption mono">{{ rateLimiterQueue ?? 0 }}</v-list-item-title>
+          <v-list-item-title class="text-caption font-mono">{{ rateLimiterQueue ?? 0 }}</v-list-item-title>
         </v-list-item>
       </v-list>
 
@@ -112,7 +112,7 @@ defineProps<{
       >
         <div class="d-flex justify-space-between text-caption mb-1">
           <span class="text-medium-emphasis">Heap</span>
-          <span class="mono">
+          <span class="font-mono">
             {{ memory.heapUsedMB }} MB{{ memory.heapLimitMB ? ` / ${memory.heapLimitMB} MB` : "" }}
           </span>
         </div>
@@ -126,14 +126,14 @@ defineProps<{
         />
         <div class="d-flex justify-space-between text-caption">
           <span class="text-medium-emphasis">History</span>
-          <span class="mono">{{ memory.historyEntryCount }} / {{ memory.historyMaxEntries }} entries</span>
+          <span class="font-mono">{{ memory.historyEntryCount }} / {{ memory.historyMaxEntries }} entries</span>
         </div>
         <div
           v-if="totalEvictedCount > 0"
           class="d-flex justify-space-between text-caption mt-1"
         >
           <span class="text-medium-emphasis">Evicted</span>
-          <span class="mono">{{ totalEvictedCount }}</span>
+          <span class="font-mono">{{ totalEvictedCount }}</span>
         </div>
       </div>
       <div
@@ -166,12 +166,11 @@ defineProps<{
         >
           <div class="d-flex justify-space-between text-caption mb-1">
             <span>{{ item.label }}</span>
-            <span class="mono">{{ formatNumber(item.used) }} / {{ formatNumber(item.total) }}</span>
+            <span class="font-mono">{{ formatNumber(item.used) }} / {{ formatNumber(item.total) }}</span>
           </div>
           <v-progress-linear
             :model-value="item.total > 0 ? (item.used / item.total) * 100 : 0"
             :color="item.total > 0 && item.used / item.total > 0.9 ? 'error' : 'primary'"
-            rounded
             height="6"
           />
         </div>
@@ -187,10 +186,6 @@ defineProps<{
 </template>
 
 <style scoped>
-.mono {
-  font-family: "SF Mono", Monaco, "Courier New", monospace;
-}
-
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -24,17 +24,17 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
     filtered = filtered.filter((entry) => entry.response?.success === success)
   }
   if (from) {
-    filtered = filtered.filter((entry) => entry.timestamp >= from)
+    filtered = filtered.filter((entry) => entry.startedAt >= from)
   }
   if (to) {
-    filtered = filtered.filter((entry) => entry.timestamp <= to)
+    filtered = filtered.filter((entry) => entry.startedAt <= to)
   }
   if (search) {
     const searchLower = search.toLowerCase()
     filtered = filtered.filter((entry) => ensureSearchText(entry.id).includes(searchLower))
   }
 
-  filtered.sort((a, b) => b.timestamp - a.timestamp)
+  filtered.sort((a, b) => b.startedAt - a.startedAt)
 
   const total = filtered.length
   let startIdx = 0
@@ -77,15 +77,15 @@ export function getHistorySummaries(options: QueryOptions = {}): CursorResult<En
   }
   if (endpoint) summaries = summaries.filter((summary) => summary.endpoint === endpoint)
   if (success !== undefined) summaries = summaries.filter((summary) => summary.responseSuccess === success)
-  if (from) summaries = summaries.filter((summary) => summary.timestamp >= from)
-  if (to) summaries = summaries.filter((summary) => summary.timestamp <= to)
+  if (from) summaries = summaries.filter((summary) => summary.startedAt >= from)
+  if (to) summaries = summaries.filter((summary) => summary.startedAt <= to)
 
   if (search) {
     const needle = search.toLowerCase()
     summaries = summaries.filter((summary) => ensureSearchText(summary.id).includes(needle))
   }
 
-  summaries.sort((a, b) => b.timestamp - a.timestamp || b.id.localeCompare(a.id))
+  summaries.sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id))
 
   const total = summaries.length
   let startIdx = 0

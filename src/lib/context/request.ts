@@ -53,7 +53,9 @@ let idCounter = 0
 
 export function createRequestContext(opts: {
   endpoint: EndpointType
+  sessionId?: string
   tuiLogId?: string
+  rawPath?: string
   onEvent: RequestContextEventCallback
 }): RequestContext {
   const id = `req_${Date.now()}_${++idCounter}`
@@ -62,6 +64,7 @@ export function createRequestContext(opts: {
 
   // Mutable internal state
   let _state: RequestState = "pending"
+  let _sessionId = opts.sessionId
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
   let _pipelineInfo: PipelineInfo | null = null
@@ -70,6 +73,7 @@ export function createRequestContext(opts: {
   let _queueWaitMs = 0
   const _warningMessages: Array<WarningMessage> = []
   const _attempts: Array<Attempt> = []
+  let _endTime: number | null = null
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
   let settled = false
 
@@ -83,8 +87,15 @@ export function createRequestContext(opts: {
 
   const ctx: RequestContext = {
     id,
+    get sessionId() {
+      return _sessionId
+    },
     tuiLogId: opts.tuiLogId,
+    rawPath: opts.rawPath,
     startTime,
+    get endTime() {
+      return _endTime
+    },
     endpoint: opts.endpoint,
 
     get state() {
@@ -108,6 +119,9 @@ export function createRequestContext(opts: {
     get httpHeaders() {
       return _httpHeaders
     },
+    get transport() {
+      return _attempts.findLast((attempt) => attempt.response)?.transport ?? _attempts.at(-1)?.transport ?? null
+    },
     get attempts() {
       return _attempts
     },
@@ -119,6 +133,10 @@ export function createRequestContext(opts: {
     },
     get warningMessages() {
       return _warningMessages
+    },
+
+    setSessionId(sessionId: string | undefined) {
+      _sessionId = sessionId
     },
 
     setOriginalRequest(req: OriginalRequest) {
@@ -152,13 +170,19 @@ export function createRequestContext(opts: {
       emit({ type: "updated", context: ctx, field: "warningMessages" })
     },
 
-    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo }) {
+    beginAttempt(attemptOpts: {
+      strategy?: string
+      waitMs?: number
+      truncation?: TruncationInfo
+      transport?: Attempt["transport"]
+    }) {
       const attempt: Attempt = {
         index: _attempts.length,
         effectiveRequest: null, // Set later via setAttemptEffectiveRequest
         wireRequest: null, // Set later via setAttemptWireRequest
         response: null,
         error: null,
+        transport: attemptOpts.transport ?? "http",
         strategy: attemptOpts.strategy,
         truncation: attemptOpts.truncation,
         waitMs: attemptOpts.waitMs,
@@ -180,6 +204,7 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.effectiveRequest = req
+        emit({ type: "updated", context: ctx, field: "attempts" })
       }
     },
 
@@ -187,6 +212,15 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.wireRequest = req
+        emit({ type: "updated", context: ctx, field: "attempts" })
+      }
+    },
+
+    setAttemptTransport(transport: Attempt["transport"]) {
+      const attempt = ctx.currentAttempt
+      if (attempt) {
+        attempt.transport = transport
+        emit({ type: "updated", context: ctx, field: "attempts" })
       }
     },
 
@@ -208,6 +242,7 @@ export function createRequestContext(opts: {
 
     addQueueWaitMs(ms: number) {
       _queueWaitMs += ms
+      emit({ type: "updated", context: ctx, field: "queueWaitMs" })
     },
 
     transition(newState: RequestState, meta?: Record<string, unknown>) {
@@ -219,6 +254,7 @@ export function createRequestContext(opts: {
     complete(response: ResponseData) {
       if (settled) return
       settled = true
+      _endTime = Date.now()
 
       // Normalize response model to canonical dot-version form
       // (API may return "claude-opus-4-6" instead of "claude-opus-4.6")
@@ -233,6 +269,7 @@ export function createRequestContext(opts: {
     fail(model: string, error: unknown) {
       if (settled) return
       settled = true
+      _endTime = Date.now()
 
       const errorMsg = getErrorMessage(error)
       _response = {
@@ -266,11 +303,22 @@ export function createRequestContext(opts: {
     toHistoryEntry(): HistoryEntryData {
       // Extract request metadata from the original payload
       const p = _originalRequest?.payload as Record<string, unknown> | undefined
+      const endedAt = _endTime ?? Date.now()
       const entry: HistoryEntryData = {
         id,
         endpoint: opts.endpoint,
-        timestamp: startTime,
-        durationMs: Date.now() - startTime,
+        ...(_sessionId ? { sessionId: _sessionId } : {}),
+        ...(opts.rawPath ? { rawPath: opts.rawPath } : {}),
+        startedAt: startTime,
+        endedAt,
+        state: _state,
+        active: false,
+        lastUpdatedAt: endedAt,
+        queueWaitMs: _queueWaitMs,
+        attemptCount: _attempts.length,
+        currentStrategy: _attempts.at(-1)?.strategy,
+        durationMs: endedAt - startTime,
+        ...(ctx.transport ? { transport: ctx.transport } : {}),
         ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
         request: {
           model: _originalRequest?.model,
@@ -340,6 +388,7 @@ export function createRequestContext(opts: {
           index: a.index,
           strategy: a.strategy,
           durationMs: a.durationMs,
+          transport: a.transport,
           error: a.error?.message,
           truncation: a.truncation,
           sanitization: a.sanitization,

@@ -11,6 +11,7 @@ export const PATHS = {
   GITHUB_TOKEN_PATH,
   CONFIG_YAML: path.join(APP_DIR, "config.yaml"),
   LEARNED_LIMITS: path.join(APP_DIR, "learned-limits.json"),
+  REQUEST_TELEMETRY: path.join(APP_DIR, "request-telemetry.json"),
   ERROR_DIR: path.join(APP_DIR, "errmsgs"),
 }
 

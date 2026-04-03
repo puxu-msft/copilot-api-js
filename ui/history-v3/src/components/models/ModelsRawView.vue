@@ -1,22 +1,21 @@
 <script setup lang="ts">
+import JsonViewerSurface from "@/components/ui/JsonViewerSurface.vue"
+
 defineProps<{
   rawApiResponse: unknown
 }>()
 </script>
 
 <template>
-  <div class="flex-grow-1 overflow-y-auto pa-4">
-    <pre class="text-caption mono raw-pre">{{ JSON.stringify(rawApiResponse, null, 2) }}</pre>
-  </div>
+  <JsonViewerSurface
+    :data="rawApiResponse"
+    copy-message="Models JSON copied"
+    class="raw-view"
+  />
 </template>
 
 <style scoped>
-.mono {
-  font-family: "SF Mono", Monaco, "Courier New", monospace;
-}
-
-.raw-pre {
-  white-space: pre-wrap;
-  word-break: break-all;
+.raw-view {
+  min-height: 0;
 }
 </style>

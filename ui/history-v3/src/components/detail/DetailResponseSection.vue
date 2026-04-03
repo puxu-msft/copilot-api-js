@@ -18,7 +18,7 @@ defineProps<{
     title="Response"
     :badge="responseMessage ? '1 message' : ''"
     :raw-data="entry.response"
-    raw-title="Raw -- Response"
+    raw-title="Response"
   >
     <div
       v-if="entry.response?.error"

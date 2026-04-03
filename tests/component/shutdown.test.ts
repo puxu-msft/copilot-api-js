@@ -19,6 +19,7 @@ import {
   drainActiveRequests,
   formatActiveRequestsSummary,
   getIsShuttingDown,
+  getShutdownPhase,
   getShutdownSignal,
   gracefulShutdown,
   handleShutdownSignal,
@@ -488,5 +489,161 @@ describe("signal escalation", () => {
 
     expect(getShutdownSignal()!.aborted).toBe(true)
     expect(exitFn).not.toHaveBeenCalled()
+  })
+
+  test("second signal during Phase 1 does not exit — waits for shutdown to proceed", async () => {
+    const tracker = createMockTracker([{ status: "executing" }])
+    const exitFn = mock((_code: number) => {})
+
+    // Use a gracefulShutdownFn that stays in phase1 longer by delaying the
+    // actual gracefulShutdown call. The first handleShutdownSignal sets
+    // _isShuttingDown=true but the async function hasn't started gracefulShutdown
+    // yet, so shutdownPhase is still "idle". However, in production, bun --watch
+    // sends a second SIGINT while phase1 is executing synchronously inside
+    // gracefulShutdown. Since phase1 is synchronous and fast, we simulate this
+    // by injecting a gracefulShutdownFn that delays before calling the real
+    // gracefulShutdown, then sending the second signal during that delay window.
+    //
+    // The key insight: handleShutdownSignal sets _isShuttingDown via the
+    // gracefulShutdownFn's *synchronous* first line, but the shutdownPhase
+    // only advances to "phase1" inside gracefulShutdown. Between these two
+    // points, shutdownPhase can be "idle" or "phase1".
+    //
+    // We test that phase1 signals don't exit by directly calling
+    // handleShutdownSignal, letting gracefulShutdown set phase to "phase1",
+    // and then immediately sending a second signal before phase2 is reached.
+    let resolveDelay: () => void
+    const delayBarrier = new Promise<void>((r) => {
+      resolveDelay = r
+    })
+
+    const shutdownPromise = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: async (signal) => {
+        // gracefulShutdown sets _isShuttingDown=true and phase="phase1" synchronously
+        const done = gracefulShutdown(signal, createNoopDeps({ tracker }))
+        // Hold here while phase1 is active (before drainActiveRequests advances to phase2)
+        await delayBarrier
+        return done
+      },
+      exitFn,
+    })
+
+    // Yield to let the async function start — gracefulShutdown has set phase1
+    await new Promise((r) => setTimeout(r, 5))
+
+    // At this point, phase is "phase1" or "phase2" — both should be safe
+    const phase = getShutdownPhase()
+    expect(phase === "phase1" || phase === "phase2").toBe(true)
+
+    // Second signal arrives
+    handleShutdownSignal("SIGINT", { exitFn })
+
+    // Must NOT have called exitFn (the bug was: exitFn was called here)
+    expect(exitFn).not.toHaveBeenCalled()
+
+    // Release barrier and let shutdown complete
+    resolveDelay!()
+    tracker._clearRequests()
+    await shutdownPromise
+  })
+
+  test("signal during Phase 4 (force close) calls exitFn(1)", async () => {
+    const tracker = createMockTracker([{ status: "streaming" }])
+    // Never clear — requests persist through all phases to reach Phase 4
+    const exitFn = mock((_code: number) => {})
+
+    // Make server.close(true) slow so Phase 4 lasts long enough to test
+    let resolveForceClose: () => void
+    const forceCloseBarrier = new Promise<void>((r) => {
+      resolveForceClose = r
+    })
+    const server = {
+      close: mock(async (force?: boolean) => {
+        if (force) await forceCloseBarrier
+      }),
+    }
+
+    const shutdownPromise = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker, server })),
+      exitFn,
+    })
+
+    // Wait for Phase 4 to be reached
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (getShutdownPhase() === "phase4") {
+          clearInterval(check)
+          resolve()
+        }
+      }, 5)
+    })
+
+    // Send signal during Phase 4
+    handleShutdownSignal("SIGINT", { exitFn })
+
+    expect(exitFn).toHaveBeenCalledWith(1)
+
+    // Clean up — release force close barrier and let shutdown complete
+    resolveForceClose!()
+    tracker._clearRequests()
+    await shutdownPromise
+  })
+
+  test("signal after finalized phase is ignored", async () => {
+    const exitFn = mock((_code: number) => {})
+
+    // Complete shutdown with no active requests (goes straight to finalized)
+    await gracefulShutdown("SIGINT", createNoopDeps())
+    expect(getShutdownPhase()).toBe("finalized")
+
+    // Send signal after shutdown is finalized
+    handleShutdownSignal("SIGINT", { exitFn })
+
+    expect(exitFn).not.toHaveBeenCalled()
+  })
+
+  test("triple signal escalates through phase2 → phase3 → phase4", async () => {
+    const tracker = createMockTracker([{ status: "streaming" }])
+    // Never clear — requests persist through all phases
+    const exitFn = mock((_code: number) => {})
+    const opts = { exitFn }
+
+    const shutdownPromise = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+      ...opts,
+    })
+
+    // Wait for Phase 2
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (getShutdownPhase() === "phase2") {
+          clearInterval(check)
+          resolve()
+        }
+      }, 5)
+    })
+
+    // Second signal: phase2 → phase3
+    handleShutdownSignal("SIGINT", opts)
+
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (getShutdownPhase() === "phase3") {
+          clearInterval(check)
+          resolve()
+        }
+      }, 5)
+    })
+
+    // Third signal: phase3 → phase4
+    handleShutdownSignal("SIGINT", opts)
+
+    // Wait for shutdown to complete (Phase 4 force-closes)
+    await shutdownPromise
+
+    // Should NOT have called exitFn — Phase 4 ran to completion
+    expect(exitFn).not.toHaveBeenCalled()
+    expect(getShutdownSignal()!.aborted).toBe(true)
+    expect(tracker.destroy).toHaveBeenCalledTimes(1)
   })
 })

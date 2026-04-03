@@ -5,6 +5,7 @@ import type { WSMessage } from "@/types/ws"
 export interface ActiveRequestInfo {
   id: string
   endpoint: string
+  rawPath?: string
   state: string
   startTime: number
   durationMs: number

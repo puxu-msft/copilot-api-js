@@ -36,6 +36,7 @@ import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumul
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
+import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { resolveModelName } from "~/lib/models/resolver"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import { buildAnthropicResponseData, createTruncationMarker, prependMarkerToResponse } from "~/lib/request"
@@ -93,7 +94,12 @@ export async function handleMessages(c: Context) {
 
   // Create request context — this triggers the "created" event → history consumer inserts entry
   const manager = getRequestContextManager()
-  const reqCtx = manager.create({ endpoint: "anthropic-messages", tuiLogId })
+  const reqCtx = manager.create({
+    endpoint: "anthropic-messages",
+    sessionId: getSessionIdFromHeaders(c.req.raw.headers),
+    tuiLogId,
+    rawPath: c.req.path,
+  })
   reqCtx.setOriginalRequest({
     // Use client's original model name (before resolution/overrides)
     model: clientModelName ?? anthropicPayload.model,

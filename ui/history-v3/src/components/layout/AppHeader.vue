@@ -7,11 +7,13 @@ import IconSvg from "@/components/ui/IconSvg.vue"
 import StatusDot from "@/components/ui/StatusDot.vue"
 import { useFormatters } from "@/composables/useFormatters"
 import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+import { formatWsTargetStatus } from "@/utils/ws-status"
 
 const store = useInjectedHistoryStore()
 const { formatDate } = useFormatters()
 
 const refreshing = ref(false)
+const historyWsStatusLabel = computed(() => formatWsTargetStatus("history", store.wsConnected.value))
 
 const sessionOptions = computed(() =>
   store.sessions.value.map((s) => ({
@@ -82,7 +84,7 @@ async function handleRefresh() {
         :status="store.wsConnected.value ? 'success' : 'error'"
         :size="6"
       />
-      <span class="ws-label">{{ store.wsConnected.value ? "Live" : "Offline" }}</span>
+      <span class="ws-label">{{ historyWsStatusLabel }}</span>
 
       <BaseButton
         variant="ghost"

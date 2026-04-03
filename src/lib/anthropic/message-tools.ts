@@ -146,7 +146,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   // the client already has "read" (different casing). Without this, the model sees two
   // similar tools: the client's (with proper schema) and the stub (with empty schema).
   const existingNamesLower = new Set(tools.map((t) => t.name.toLowerCase()))
-  const toolSearchEnabled = modelSupportsToolSearch(modelId)
+  const toolSearchEnabled = state.toolSearchEnabled && modelSupportsToolSearch(modelId)
 
   // Collect tool names already referenced in message history — these must
   // stay non-deferred to avoid "Tool reference not found" errors
@@ -177,6 +177,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
       toolSearchEnabled
       && tool.defer_loading !== false
       && !NON_DEFERRED_TOOL_NAMES.has(tool.name)
+      && !state.nonDeferredTools.includes(tool.name)
       && !historyToolNames?.has(tool.name)
 
     if (shouldDefer) {

@@ -22,10 +22,7 @@ defineProps<{
     >
       <thead>
         <tr>
-          <th
-            class="text-caption"
-            style="width: 32px"
-          ></th>
+          <th class="text-caption col-status"></th>
           <th class="text-caption">Model</th>
           <th class="text-caption">State</th>
           <th class="text-caption">Strategy</th>
@@ -45,11 +42,11 @@ defineProps<{
               >mdi-circle</v-icon
             >
           </td>
-          <td class="text-caption mono">{{ req.model ?? "?" }}</td>
+          <td class="text-caption font-mono">{{ req.model ?? "?" }}</td>
           <td class="text-caption">{{ req.state }}</td>
           <td class="text-caption text-medium-emphasis">{{ req.currentStrategy ?? "-" }}</td>
-          <td class="text-caption mono text-right">{{ Math.round(req.durationMs / 1000) }}s</td>
-          <td class="text-caption mono text-right">{{ req.attemptCount ?? 1 }}</td>
+          <td class="text-caption font-mono text-right">{{ Math.round(req.durationMs / 1000) }}s</td>
+          <td class="text-caption font-mono text-right">{{ req.attemptCount ?? 1 }}</td>
         </tr>
       </tbody>
     </v-table>
@@ -57,11 +54,11 @@ defineProps<{
 </template>
 
 <style scoped>
-.mono {
-  font-family: "SF Mono", Monaco, "Courier New", monospace;
-}
-
 .section-header {
   letter-spacing: 0.05em;
+}
+
+.col-status {
+  width: 32px;
 }
 </style>

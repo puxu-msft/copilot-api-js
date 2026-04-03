@@ -2,7 +2,14 @@ import { describe, expect, test } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 
-import { ENDPOINT, assertEndpointSupported, getEffectiveEndpoints, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
+import {
+  ENDPOINT,
+  assertEndpointSupported,
+  getEffectiveEndpoints,
+  isEndpointSupported,
+  isResponsesSupported,
+  isWsResponsesSupported,
+} from "~/lib/models/endpoint"
 
 function mockModel(id: string, overrides?: Partial<Model>): Model {
   return {
@@ -13,6 +20,8 @@ function mockModel(id: string, overrides?: Partial<Model>): Model {
     model_picker_enabled: true,
     preview: false,
     version: id,
+    is_chat_default: false,
+    is_chat_fallback: false,
     ...overrides,
   }
 }
@@ -55,6 +64,7 @@ describe("supported_endpoints validation", () => {
       supported_endpoints: [ENDPOINT.WS_RESPONSES],
     })
     expect(isResponsesSupported(wsOnly)).toBe(true)
+    expect(isWsResponsesSupported(wsOnly)).toBe(true)
     expect(isEndpointSupported(wsOnly, ENDPOINT.RESPONSES)).toBe(false)
     expect(isEndpointSupported(wsOnly, ENDPOINT.CHAT_COMPLETIONS)).toBe(false)
 
@@ -63,6 +73,7 @@ describe("supported_endpoints validation", () => {
       supported_endpoints: [ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
     })
     expect(isResponsesSupported(both)).toBe(true)
+    expect(isWsResponsesSupported(both)).toBe(true)
     expect(isEndpointSupported(both, ENDPOINT.CHAT_COMPLETIONS)).toBe(true)
 
     // Model without any Responses support
@@ -70,6 +81,7 @@ describe("supported_endpoints validation", () => {
       supported_endpoints: [ENDPOINT.CHAT_COMPLETIONS],
     })
     expect(isResponsesSupported(noResponses)).toBe(false)
+    expect(isWsResponsesSupported(noResponses)).toBe(false)
   })
 
   test("should block /v1/messages for models that only support /chat/completions", () => {

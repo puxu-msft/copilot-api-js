@@ -31,11 +31,11 @@ function createEntry(
   endpoint: EndpointType,
   request: Partial<HistoryEntry["request"]> & { model: string; messages: HistoryEntry["request"]["messages"] },
 ): HistoryEntry {
-  const sessionId = getCurrentSession(endpoint)
+  const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint,
     request: {
       model: request.model,
@@ -53,11 +53,11 @@ function createEntry(
 
 /** Create an entry with empty request (simulates context "created" event timing) */
 function createEmptyEntry(endpoint: EndpointType): HistoryEntry {
-  const sessionId = getCurrentSession(endpoint)
+  const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint,
     request: {
       model: undefined,
@@ -91,7 +91,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary).toBeDefined()
     expect(summary!.id).toBe(entry.id)
     expect(summary!.sessionId).toBe(entry.sessionId)
-    expect(summary!.timestamp).toBe(entry.timestamp)
+    expect(summary!.startedAt).toBe(entry.startedAt)
     expect(summary!.endpoint).toBe("anthropic-messages")
     expect(summary!.requestModel).toBe("claude-sonnet-4-20250514")
     expect(summary!.stream).toBe(true)
@@ -438,7 +438,7 @@ describe("updateEntry (request)", () => {
 // ─── getHistorySummaries ───
 
 describe("getHistorySummaries", () => {
-  test("returns summaries sorted by timestamp descending", () => {
+  test("returns summaries sorted by startedAt descending", () => {
     createEntry("anthropic-messages", {
       model: "model-a",
       messages: [{ role: "user", content: "first" }],
@@ -450,7 +450,7 @@ describe("getHistorySummaries", () => {
 
     const result = getHistorySummaries()
     expect(result.entries.length).toBe(2)
-    expect(result.entries[0].timestamp).toBeGreaterThanOrEqual(result.entries[1].timestamp)
+    expect(result.entries[0].startedAt).toBeGreaterThanOrEqual(result.entries[1].startedAt)
   })
 
   test("paginates results", () => {
@@ -557,14 +557,14 @@ describe("getHistorySummaries", () => {
     expect(failures.entries[0].id).toBe(e2.id)
   })
 
-  test("filters by timestamp range (from)", () => {
+  test("filters by startedAt range (from)", () => {
     const now = Date.now()
-    const sessionId = getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     const old: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now - 10000,
+      startedAt: now - 10000,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "old" }] },
     }
@@ -573,7 +573,7 @@ describe("getHistorySummaries", () => {
     const recent: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now,
+      startedAt: now,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "new" }] },
     }
@@ -584,14 +584,14 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].id).toBe(recent.id)
   })
 
-  test("filters by timestamp range (to)", () => {
+  test("filters by startedAt range (to)", () => {
     const now = Date.now()
-    const sessionId = getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     const old: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now - 10000,
+      startedAt: now - 10000,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "old" }] },
     }
@@ -600,7 +600,7 @@ describe("getHistorySummaries", () => {
     const recent: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now,
+      startedAt: now,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "new" }] },
     }
@@ -611,14 +611,14 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].id).toBe(old.id)
   })
 
-  test("filters by timestamp range (from + to)", () => {
+  test("filters by startedAt range (from + to)", () => {
     const now = Date.now()
-    const sessionId = getCurrentSession("anthropic-messages")
+    const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     const old: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now - 20000,
+      startedAt: now - 20000,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "old" }] },
     }
@@ -627,7 +627,7 @@ describe("getHistorySummaries", () => {
     const mid: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now - 10000,
+      startedAt: now - 10000,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "mid" }] },
     }
@@ -636,7 +636,7 @@ describe("getHistorySummaries", () => {
     const recent: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: now,
+      startedAt: now,
       endpoint: "anthropic-messages",
       request: { model: "test", messages: [{ role: "user", content: "new" }] },
     }

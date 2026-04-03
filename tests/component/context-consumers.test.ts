@@ -135,6 +135,29 @@ describe("registerContextConsumers", () => {
       const entry = insertEntrySpy.mock.calls[0][0]
       expect(entry.id).toBe("req_1")
       expect(entry.request.model).toBe("claude-sonnet-4")
+      expect(entry.state).toBe("pending")
+      expect(entry.active).toBe(true)
+    })
+
+    test("includes transport when inserting deferred history entry", () => {
+      manager.emit({
+        type: "updated",
+        field: "originalRequest",
+        context: {
+          id: "req_1",
+          endpoint: "openai-responses",
+          startTime: Date.now(),
+          transport: "upstream-ws",
+          originalRequest: {
+            model: "gpt-5.2",
+            messages: [{ role: "user", content: "hi" }],
+            stream: true,
+          },
+        },
+      } as unknown as RequestContextEvent)
+
+      const entry = insertEntrySpy.mock.calls[0][0]
+      expect(entry.transport).toBe("upstream-ws")
     })
 
     test("updates pipelineInfo on pipelineInfo field update", () => {
@@ -149,6 +172,37 @@ describe("registerContextConsumers", () => {
       const [id, data] = updateEntrySpy.mock.calls[0]
       expect(id).toBe("req_1")
       expect(data.pipelineInfo).toBe(rewrites)
+    })
+
+    test("propagates lifecycle updates for attempts and queue wait", () => {
+      manager.emit({
+        type: "updated",
+        field: "attempts",
+        context: {
+          id: "req_1",
+          startTime: Date.now() - 100,
+          state: "executing",
+          rawPath: "/v1/messages",
+          durationMs: 100,
+          queueWaitMs: 250,
+          attempts: [{ strategy: "network-retry" }],
+          currentAttempt: { strategy: "network-retry" },
+          transport: "http",
+        },
+      } as unknown as RequestContextEvent)
+
+      expect(updateEntrySpy).toHaveBeenCalledWith(
+        "req_1",
+        expect.objectContaining({
+          state: "executing",
+          active: true,
+          queueWaitMs: 250,
+          attemptCount: 1,
+          currentStrategy: "network-retry",
+          rawPath: "/v1/messages",
+          transport: "http",
+        }),
+      )
     })
 
     test("propagates warningMessages updates to history", () => {
@@ -187,6 +241,37 @@ describe("registerContextConsumers", () => {
     })
   })
 
+  describe("history consumer: state_changed", () => {
+    test("propagates lifecycle state transitions to history", () => {
+      manager.emit({
+        type: "state_changed",
+        previousState: "pending",
+        context: {
+          id: "req_1",
+          startTime: Date.now() - 50,
+          state: "streaming",
+          durationMs: 50,
+          queueWaitMs: 100,
+          attempts: [{ strategy: "network-retry" }],
+          currentAttempt: { strategy: "network-retry" },
+          transport: "upstream-ws",
+        },
+      } as unknown as RequestContextEvent)
+
+      expect(updateEntrySpy).toHaveBeenCalledWith(
+        "req_1",
+        expect.objectContaining({
+          state: "streaming",
+          active: true,
+          queueWaitMs: 100,
+          attemptCount: 1,
+          currentStrategy: "network-retry",
+          transport: "upstream-ws",
+        }),
+      )
+    })
+  })
+
   // ── History: completed/failed events ──
 
   describe("history consumer: completed/failed", () => {
@@ -196,6 +281,11 @@ describe("registerContextConsumers", () => {
         context: { id: "req_1", tuiLogId: undefined },
         entry: {
           id: "req_1",
+          state: "completed",
+          active: false,
+          lastUpdatedAt: Date.now(),
+          queueWaitMs: 0,
+          attemptCount: 1,
           durationMs: 1500,
           response: {
             success: true,
@@ -210,9 +300,37 @@ describe("registerContextConsumers", () => {
       expect(updateEntrySpy).toHaveBeenCalledTimes(1)
       const [id, data] = updateEntrySpy.mock.calls[0]
       expect(id).toBe("req_1")
+      expect(data.state).toBe("completed")
+      expect(data.active).toBe(false)
       expect(data.response.success).toBe(true)
       expect(data.response.model).toBe("claude-sonnet-4")
       expect(data.durationMs).toBe(1500)
+    })
+
+    test("propagates transport on completed", () => {
+      manager.emit({
+        type: "completed",
+        context: { id: "req_1", tuiLogId: undefined },
+        entry: {
+          id: "req_1",
+          state: "completed",
+          active: false,
+          lastUpdatedAt: Date.now(),
+          queueWaitMs: 0,
+          attemptCount: 1,
+          durationMs: 1500,
+          transport: "upstream-ws-fallback",
+          response: {
+            success: true,
+            model: "gpt-5.2",
+            usage: { input_tokens: 100, output_tokens: 50 },
+            content: null,
+          },
+        },
+      } as unknown as RequestContextEvent)
+
+      const [, data] = updateEntrySpy.mock.calls[0]
+      expect(data.transport).toBe("upstream-ws-fallback")
     })
 
     test("preserves output_tokens_details through toHistoryResponse", () => {
@@ -535,6 +653,34 @@ describe("registerContextConsumers", () => {
       } as unknown as RequestContextEvent)
 
       expect(tuiUpdateSpy).toHaveBeenCalledWith("tui_1", { tags: ["token-refresh"] })
+    })
+
+    test("adds websocket transport tag on attempts update", () => {
+      manager.emit({
+        type: "updated",
+        field: "attempts",
+        context: {
+          tuiLogId: "tui_1",
+          attempts: [{ transport: "upstream-ws" }],
+          currentAttempt: { transport: "upstream-ws" },
+        },
+      } as unknown as RequestContextEvent)
+
+      expect(tuiUpdateSpy).toHaveBeenCalledWith("tui_1", { tags: ["ws"] })
+    })
+
+    test("adds websocket fallback transport tag on attempts update", () => {
+      manager.emit({
+        type: "updated",
+        field: "attempts",
+        context: {
+          tuiLogId: "tui_1",
+          attempts: [{ transport: "upstream-ws-fallback" }],
+          currentAttempt: { transport: "upstream-ws-fallback" },
+        },
+      } as unknown as RequestContextEvent)
+
+      expect(tuiUpdateSpy).toHaveBeenCalledWith("tui_1", { tags: ["ws→http"] })
     })
   })
 })

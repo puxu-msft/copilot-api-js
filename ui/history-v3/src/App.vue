@@ -4,11 +4,14 @@ import { useRoute } from "vue-router"
 
 import NavBar from "@/components/layout/NavBar.vue"
 import BaseToast from "@/components/ui/BaseToast.vue"
+import { useAppTheme } from "@/composables/useAppTheme"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { isVuetifyPath } from "@/utils/route-variants"
 
 const store = useHistoryStore()
 provide("historyStore", store)
+const appTheme = useAppTheme()
+provide("appTheme", appTheme)
 
 const route = useRoute()
 /** Vuetify pages live under /v/ — use v-app wrapper for them */

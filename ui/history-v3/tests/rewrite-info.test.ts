@@ -21,7 +21,7 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return {
     id: "test-id",
     sessionId: "session-1",
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint: "anthropic-messages",
     request: {
       model: "claude-sonnet-4-20250514",

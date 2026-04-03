@@ -20,6 +20,7 @@ import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
+import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import {
@@ -74,7 +75,12 @@ export async function handleChatCompletion(c: Context) {
 
   // Create request context — triggers "created" event → history consumer inserts entry
   const manager = getRequestContextManager()
-  const reqCtx = manager.create({ endpoint: "openai-chat-completions", tuiLogId })
+  const reqCtx = manager.create({
+    endpoint: "openai-chat-completions",
+    sessionId: getSessionIdFromHeaders(c.req.raw.headers),
+    tuiLogId,
+    rawPath: c.req.path,
+  })
   reqCtx.setOriginalRequest({
     // Use client's original model name (before resolution/overrides)
     model: clientModel,

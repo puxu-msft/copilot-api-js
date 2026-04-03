@@ -29,7 +29,7 @@ export function prepareAnthropicRequest(
 ): PreparedAnthropicRequest {
   const wire = buildWirePayload(payload)
   adjustThinkingBudget(wire, opts?.resolvedModel)
-  addToolsAndSystemCacheControl(wire)
+  applyCacheControlMode(wire)
 
   const model = wire.model as string
   const messages = wire.messages as MessagesPayload["messages"]
@@ -126,6 +126,37 @@ function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Mod
     consola.debug(
       `[DirectAnthropic] Capped thinking.budget_tokens: ${budgetTokens} → ${adjusted} (max_tokens=${maxTokens})`,
     )
+  }
+}
+
+// ============================================================================
+// Cache control
+// ============================================================================
+
+/**
+ * Dispatch cache_control handling based on the configured mode.
+ * - disabled:    strip all cache_control from the wire payload
+ * - passthrough: leave everything as-is
+ * - sanitize:    normalize all cache_control to { type: "ephemeral" }
+ * - proxied:     strip client cache_control then auto-inject breakpoints
+ */
+function applyCacheControlMode(wire: Record<string, unknown>): void {
+  switch (state.cacheControlMode) {
+    case "disabled":
+      walkCacheControl(wire, () => undefined)
+      break
+    case "passthrough":
+      break
+    case "sanitize":
+      walkCacheControl(wire, () => EPHEMERAL_CACHE_CONTROL)
+      break
+    case "proxied":
+      // Match GHC behavior: strip all client cache_control first, then inject our own.
+      // GHC reconstructs content from scratch so client cache_control never passes through;
+      // only proxy-controlled breakpoints exist in the final payload.
+      walkCacheControl(wire, () => undefined)
+      addToolsAndSystemCacheControl(wire)
+      break
   }
 }
 
@@ -226,4 +257,44 @@ function findLastIndex<T>(items: Array<T>, predicate: (item: T) => boolean): num
   }
 
   return -1
+}
+
+/**
+ * Walk all cache_control occurrences in the wire payload (system, messages, tools)
+ * and apply a handler. The handler receives the existing cache_control value and returns:
+ * - undefined: delete the cache_control field
+ * - an object: replace the cache_control field with this value
+ */
+function walkCacheControl(
+  wire: Record<string, unknown>,
+  handler: (current: unknown) => { type: string } | undefined,
+): void {
+  for (const key of ["system", "messages", "tools"] as const) {
+    if (Array.isArray(wire[key])) {
+      walkCacheControlArray(wire[key] as Array<Record<string, unknown>>, handler)
+    }
+  }
+}
+
+function walkCacheControlArray(
+  items: Array<Record<string, unknown>>,
+  handler: (current: unknown) => { type: string } | undefined,
+): void {
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue
+
+    if ("cache_control" in item && item.cache_control) {
+      const replacement = handler(item.cache_control)
+      if (replacement === undefined) {
+        delete item.cache_control
+      } else {
+        item.cache_control = replacement
+      }
+    }
+
+    // Recurse into content arrays (message.content, tool_result.content)
+    if (Array.isArray(item.content)) {
+      walkCacheControlArray(item.content as Array<Record<string, unknown>>, handler)
+    }
+  }
 }

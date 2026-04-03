@@ -41,7 +41,7 @@ export function getStats(): HistoryStats {
     modelDist[model] = (modelDist[model] || 0) + 1
     endpointDist[entry.endpoint] = (endpointDist[entry.endpoint] || 0) + 1
 
-    const date = new Date(entry.timestamp)
+    const date = new Date(entry.startedAt)
     const year = date.getFullYear()
     const month = String(date.getMonth() + 1).padStart(2, "0")
     const day = String(date.getDate()).padStart(2, "0")
@@ -103,7 +103,7 @@ export function exportHistory(format: "json" | "csv" = "json"): string {
   const headers = [
     "id",
     "session_id",
-    "timestamp",
+    "started_at",
     "endpoint",
     "request_model",
     "message_count",
@@ -119,8 +119,8 @@ export function exportHistory(format: "json" | "csv" = "json"): string {
 
   const rows = historyState.entries.map((entry) => [
     entry.id,
-    entry.sessionId,
-    formatLocalTimestamp(entry.timestamp),
+    entry.sessionId ?? "",
+    formatLocalTimestamp(entry.startedAt),
     entry.endpoint,
     entry.request.model,
     entry.request.messages?.length,

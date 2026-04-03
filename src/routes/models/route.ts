@@ -8,31 +8,10 @@ import { state } from "~/lib/state"
 
 export const modelsRoutes = new Hono()
 
-const EPOCH_ISO = new Date(0).toISOString()
-
-function formatModel(model: Model) {
-  return {
-    id: model.id,
-    object: "model" as const,
-    type: "model" as const,
-    created: 0, // No date available from source
-    created_at: EPOCH_ISO, // No date available from source
-    owned_by: model.vendor,
-    display_name: model.name,
-    capabilities: model.capabilities,
-  }
-}
-
-function formatModelDetail(model: Model) {
-  return {
-    ...formatModel(model),
-    version: model.version,
-    preview: model.preview,
-    model_picker_enabled: model.model_picker_enabled,
-    model_picker_category: model.model_picker_category,
-    supported_endpoints: model.supported_endpoints,
-    billing: model.billing,
-  }
+/** Strip internal fields that should not be exposed to external consumers. */
+function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
+  const { request_headers: _requestHeaders, ...rest } = model
+  return rest
 }
 
 modelsRoutes.get("/", async (c) => {
@@ -42,14 +21,13 @@ modelsRoutes.get("/", async (c) => {
       await cacheModels()
     }
 
-    const detail = c.req.query("detail") === "true"
-    const formatter = detail ? formatModelDetail : formatModel
-    const models = state.models?.data.map((m) => formatter(m))
+    // `?detail=true` remains accepted for backwards compatibility but is now a
+    // no-op because the default response already returns the full public model.
+    const models = state.models?.data.map(stripInternalFields)
 
     return c.json({
-      object: "list",
+      object: state.models?.object ?? "list",
       data: models,
-      has_more: false,
     })
   } catch (error) {
     return forwardError(c, error)
@@ -79,7 +57,7 @@ modelsRoutes.get("/:model", async (c) => {
       )
     }
 
-    return c.json(formatModelDetail(model))
+    return c.json(stripInternalFields(model))
   } catch (error) {
     return forwardError(c, error)
   }

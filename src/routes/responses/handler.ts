@@ -15,6 +15,7 @@ import type { ResponsesPayload, ResponsesResponse, ResponsesStreamEvent } from "
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
+import { getSessionIdFromHeaders, registerResponseSession, resolveResponseSessionId } from "~/lib/history/store"
 import { ENDPOINT, isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { responsesInputToMessages, responsesOutputToContent } from "~/lib/openai/responses-conversion"
@@ -66,7 +67,12 @@ export async function handleResponses(c: Context) {
 
   // Create request context (Responses API is a distinct OpenAI-format endpoint)
   const manager = getRequestContextManager()
-  const reqCtx = manager.create({ endpoint: "openai-responses", tuiLogId })
+  const reqCtx = manager.create({
+    endpoint: "openai-responses",
+    sessionId: getSessionIdFromHeaders(c.req.raw.headers) ?? resolveResponseSessionId(payload.previous_response_id),
+    tuiLogId,
+    rawPath: c.req.path,
+  })
 
   // Record original request for history
   reqCtx.setOriginalRequest({
@@ -105,9 +111,16 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
 
   const selectedModel = state.modelIndex.get(payload.model)
   const headersCapture: HeadersCapture = {}
-  const adapter = createResponsesAdapter(selectedModel, headersCapture, (wireRequest) => {
-    reqCtx.setAttemptWireRequest(wireRequest)
-  })
+  const adapter = createResponsesAdapter(
+    selectedModel,
+    headersCapture,
+    (wireRequest) => {
+      reqCtx.setAttemptWireRequest(wireRequest)
+    },
+    (transport) => {
+      reqCtx.setAttemptTransport(transport)
+    },
+  )
   const strategies = createResponsesStrategies()
 
   try {
@@ -133,6 +146,10 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
     if (!payload.stream) {
       // Non-streaming response — build content from output items
       const responsesResponse = response as ResponsesResponse
+      if (!reqCtx.sessionId && responsesResponse.id) {
+        reqCtx.setSessionId(responsesResponse.id)
+      }
+      registerResponseSession(responsesResponse.id, reqCtx.sessionId)
       const content = responsesOutputToContent(responsesResponse.output)
 
       reqCtx.complete({
@@ -208,6 +225,10 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
         }
 
         // Use shared recording utility for consistent response data
+        if (!reqCtx.sessionId && acc.responseId) {
+          reqCtx.setSessionId(acc.responseId)
+        }
+        registerResponseSession(acc.responseId, reqCtx.sessionId)
         const responseData = buildResponsesResponseData(acc, payload.model)
         reqCtx.complete(responseData)
       } catch (error) {

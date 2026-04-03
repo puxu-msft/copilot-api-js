@@ -38,10 +38,17 @@ afterEach(async () => {
 
 /** Create a mock "failed" event with HistoryEntryData */
 function mockFailedEvent(overrides?: Partial<HistoryEntryData>): RequestContextEvent {
+  const ts = Date.now()
   const entry: HistoryEntryData = {
     id: "test-ctx-id",
     endpoint: "anthropic-messages",
-    timestamp: Date.now(),
+    startedAt: ts,
+    endedAt: ts + 150,
+    state: "failed",
+    active: false,
+    lastUpdatedAt: ts + 150,
+    queueWaitMs: 0,
+    attemptCount: 1,
     durationMs: 150,
     request: {
       model: "claude-sonnet-4",

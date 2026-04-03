@@ -114,6 +114,10 @@ describe("VConfigPage", () => {
       model_refresh_interval: 600,
       anthropic: {
         strip_server_tools: true,
+        context_editing_trigger: 100000,
+        tool_search: true,
+        auto_cache_control: true,
+        non_deferred_tools: ["custom_tool"],
         rewrite_system_reminders: false,
       },
       "openai-responses": {
@@ -135,6 +139,10 @@ describe("VConfigPage", () => {
     expect(mockState.editor?.load).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain("General")
     expect(wrapper.text()).toContain("Anthropic Pipeline")
+    expect(wrapper.text()).toContain("Context Editing Trigger")
+    expect(wrapper.text()).toContain("Tool Search")
+    expect(wrapper.text()).toContain("Auto Cache Control")
+    expect(wrapper.text()).toContain("Non-Deferred Tools")
     expect(wrapper.text()).toContain("System Prompt")
     expect(wrapper.text()).toContain("OpenAI Responses")
     expect(wrapper.text()).toContain("Timeouts")

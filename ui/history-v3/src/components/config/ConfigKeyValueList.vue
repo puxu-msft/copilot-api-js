@@ -80,6 +80,7 @@ function duplicateKey(index: number): boolean {
         icon="mdi-close"
         size="small"
         variant="text"
+        :aria-label="`Remove override ${index + 1}`"
         @click="removeEntry(index)"
       />
     </div>

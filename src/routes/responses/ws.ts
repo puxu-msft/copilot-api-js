@@ -18,6 +18,7 @@ import type { HeadersCapture } from "~/lib/context/request"
 import type { ResponsesPayload, ResponsesStreamEvent } from "~/types/api/openai-responses"
 
 import { getRequestContextManager } from "~/lib/context/manager"
+import { registerResponseSession, resolveResponseSessionId } from "~/lib/history/store"
 import { isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { responsesInputToMessages } from "~/lib/openai/responses-conversion"
@@ -136,7 +137,12 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   })
 
   // Create request context for tracking
-  const reqCtx = getRequestContextManager().create({ endpoint: "openai-responses", tuiLogId })
+  const reqCtx = getRequestContextManager().create({
+    endpoint: "openai-responses",
+    sessionId: resolveResponseSessionId(payload.previous_response_id),
+    tuiLogId,
+    rawPath: "/v1/responses",
+  })
 
   reqCtx.setOriginalRequest({
     model: requestedModel,
@@ -157,9 +163,16 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
   // Build pipeline adapter and strategies (shared with HTTP handler)
   const headersCapture: HeadersCapture = {}
-  const adapter = createResponsesAdapter(selectedModel, headersCapture, (wireRequest) => {
-    reqCtx.setAttemptWireRequest(wireRequest)
-  })
+  const adapter = createResponsesAdapter(
+    selectedModel,
+    headersCapture,
+    (wireRequest) => {
+      reqCtx.setAttemptWireRequest(wireRequest)
+    },
+    (transport) => {
+      reqCtx.setAttemptTransport(transport)
+    },
+  )
   const strategies = createResponsesStrategies()
 
   try {
@@ -217,6 +230,10 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     }
 
     // Record to history
+    if (!reqCtx.sessionId && acc.responseId) {
+      reqCtx.setSessionId(acc.responseId)
+    }
+    registerResponseSession(acc.responseId, reqCtx.sessionId)
     const responseData = buildResponsesResponseData(acc, resolvedModel)
     reqCtx.complete(responseData)
 

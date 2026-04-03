@@ -67,11 +67,11 @@ function createEntry(
   endpoint: EndpointType,
   request: Partial<HistoryEntry["request"]> & { model: string },
 ): HistoryEntry {
-  const sessionId = getCurrentSession(endpoint)
+  const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint,
     request: {
       model: request.model,
@@ -114,6 +114,7 @@ describe("insertEntry triggers WS notification", () => {
     expect(summary.endpoint).toBe("anthropic-messages")
     expect(summary.requestModel).toBe("claude-sonnet-4-20250514")
     expect(summary.stream).toBe(false)
+    expect(summary.state).toBeUndefined()
   })
 
   test("multiple clients all receive entry_added", () => {
@@ -220,6 +221,31 @@ describe("updateEntry (response) triggers WS notification", () => {
     expect(summary.requestModel).toBe("claude-sonnet-4-20250514")
     expect(summary.responseSuccess).toBe(true)
     expect(summary.durationMs).toBe(200)
+  })
+
+  test("lifecycle updates are reflected in entry_updated summaries", () => {
+    const ws = createMockWebSocket()
+    addClient(ws)
+
+    const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
+    updateEntry(entry.id, {
+      state: "streaming",
+      active: true,
+      queueWaitMs: 320,
+      attemptCount: 2,
+      currentStrategy: "network-retry",
+      startedAt: entry.startedAt,
+      lastUpdatedAt: entry.startedAt + 320,
+      durationMs: 320,
+    })
+
+    const msg = getLastSentMessageOfType(ws, "entry_updated")
+    const summary = msg.data as EntrySummary
+    expect(summary.state).toBe("streaming")
+    expect(summary.active).toBe(true)
+    expect(summary.queueWaitMs).toBe(320)
+    expect(summary.attemptCount).toBe(2)
+    expect(summary.currentStrategy).toBe("network-retry")
   })
 
   test("error response triggers entry_updated with error info", () => {
@@ -436,7 +462,7 @@ describe("history disabled", () => {
     const entry: HistoryEntry = {
       id: generateId(),
       sessionId,
-      timestamp: Date.now(),
+      startedAt: Date.now(),
       endpoint: "anthropic-messages",
       request: {
         model: "claude-sonnet-4-20250514",
@@ -477,9 +503,10 @@ describe("clearHistory and deleteSession broadcast WS notifications", () => {
     addClient(ws)
 
     const entry = createEntry("anthropic-messages", { model: "test" })
+    expect(entry.sessionId).toBeTruthy()
     ;(ws.send as ReturnType<typeof mock>).mockClear()
 
-    deleteSession(entry.sessionId)
+    deleteSession(entry.sessionId!)
 
     const msgs = getSentMessages(ws)
     const types = msgs.map((m) => m.type)
@@ -488,6 +515,6 @@ describe("clearHistory and deleteSession broadcast WS notifications", () => {
 
     // session_deleted message includes sessionId
     const sessionMsg = msgs.find((m) => m.type === "session_deleted")!
-    expect((sessionMsg.data as { sessionId: string }).sessionId).toBe(entry.sessionId)
+    expect((sessionMsg.data as { sessionId: string }).sessionId).toBe(entry.sessionId!)
   })
 })

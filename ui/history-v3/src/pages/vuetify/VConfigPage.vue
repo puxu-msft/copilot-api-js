@@ -8,6 +8,7 @@ import ConfigKeyValueList from "@/components/config/ConfigKeyValueList.vue"
 import ConfigNumber from "@/components/config/ConfigNumber.vue"
 import ConfigRewriteRules from "@/components/config/ConfigRewriteRules.vue"
 import ConfigSection from "@/components/config/ConfigSection.vue"
+import ConfigStringList from "@/components/config/ConfigStringList.vue"
 import ConfigText from "@/components/config/ConfigText.vue"
 import ConfigToggle from "@/components/config/ConfigToggle.vue"
 import { useConfigEditor } from "@/composables/useConfigEditor"
@@ -50,8 +51,14 @@ const immutableThinkingMessages = nestedField("anthropic", "immutable_thinking_m
 const dedupToolCalls = nestedField("anthropic", "dedup_tool_calls", false)
 const stripReadToolResultTags = nestedField("anthropic", "strip_read_tool_result_tags", false)
 const contextEditingMode = nestedField("anthropic", "context_editing", "off")
+const contextEditingTrigger = nestedField("anthropic", "context_editing_trigger", 100000)
+const contextEditingKeepTools = nestedField("anthropic", "context_editing_keep_tools", 3)
+const contextEditingKeepThinking = nestedField("anthropic", "context_editing_keep_thinking", 1)
+const toolSearchEnabled = nestedField("anthropic", "tool_search", true)
+const autoCacheControl = nestedField("anthropic", "auto_cache_control", true)
 
 const normalizeCallIds = nestedField("openai-responses", "normalize_call_ids", true)
+const upstreamWebSocket = nestedField("openai-responses", "upstream_websocket", false)
 
 const shutdownGracefulWait = nestedField("shutdown", "graceful_wait", null)
 const shutdownAbortWait = nestedField("shutdown", "abort_wait", null)
@@ -89,6 +96,18 @@ const rewriteSystemReminders = computed<boolean | Array<ReminderRewriteRule>>({
 const systemPromptOverrides = computed<Array<PromptOverrideRule>>({
   get: () => editor.config.value?.system_prompt_overrides ?? [],
   set: (value) => setTopLevel("system_prompt_overrides", value),
+})
+
+const nonDeferredTools = computed<Array<string>>({
+  get: () => editor.config.value?.anthropic?.non_deferred_tools ?? [],
+  set: (value) =>
+    setNested(
+      "anthropic",
+      "non_deferred_tools",
+      value
+        .map((entry) => entry.trim())
+        .filter((entry, index, entries) => entry.length > 0 && entries.indexOf(entry) === index),
+    ),
 })
 
 async function save(): Promise<void> {
@@ -148,8 +167,13 @@ function nestedField<
 </script>
 
 <template>
-  <div class="config-page d-flex flex-column fill-height">
-    <div class="page-toolbar px-4 py-3 d-flex align-center ga-3">
+  <div class="config-page v-page-root">
+    <v-toolbar
+      class="page-toolbar px-4"
+      color="surface"
+      density="comfortable"
+      flat
+    >
       <div>
         <div class="text-h6 font-weight-bold">Config</div>
         <div class="text-body-2 text-medium-emphasis">Edit `config.yaml` as structured fields.</div>
@@ -164,11 +188,11 @@ function nestedField<
       >
         Save
       </v-btn>
-    </div>
+    </v-toolbar>
 
     <div
       v-if="loading && !editor.config.value"
-      class="d-flex align-center justify-center flex-grow-1"
+      class="v-page-fill align-center justify-center"
     >
       <v-progress-circular
         indeterminate
@@ -178,7 +202,7 @@ function nestedField<
 
     <div
       v-else
-      class="flex-grow-1 overflow-y-auto"
+      class="v-page-scroll"
     >
       <div class="config-shell px-4 py-4 mx-auto">
         <v-alert
@@ -230,6 +254,24 @@ function nestedField<
               description="Enable server-side context trimming for supported Anthropic models."
               :options="[...contextEditingOptions]"
             />
+            <ConfigNumber
+              v-model="contextEditingTrigger"
+              label="Context Editing Trigger"
+              description="Input token threshold that triggers tool-use clearing."
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="contextEditingKeepTools"
+              label="Context Editing Keep Tools"
+              description="How many recent tool-use pairs to retain after clearing."
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="contextEditingKeepThinking"
+              label="Context Editing Keep Thinking"
+              description="How many recent thinking turns to retain after clearing."
+              :min="0"
+            />
             <ConfigToggle
               v-model="immutableThinkingMessages"
               label="Immutable Thinking Messages"
@@ -239,6 +281,23 @@ function nestedField<
               v-model="stripReadToolResultTags"
               label="Strip Read Tool Result Tags"
               description="Remove injected system-reminder tags from Read tool results."
+            />
+            <ConfigToggle
+              v-model="toolSearchEnabled"
+              label="Tool Search"
+              description="Inject Copilot tool_search helpers when the model supports them."
+            />
+            <ConfigToggle
+              v-model="autoCacheControl"
+              label="Auto Cache Control"
+              description="Inject cache_control breakpoints on stable tools and system blocks."
+            />
+            <ConfigStringList
+              v-model="nonDeferredTools"
+              label="Non-Deferred Tools"
+              description="Additional tool names that should stay eager when tool search is enabled."
+              item-label="Tool name"
+              empty-text="No extra non-deferred tools configured."
             />
             <ConfigRewriteRules
               v-model="rewriteSystemReminders"
@@ -280,6 +339,11 @@ function nestedField<
               v-model="normalizeCallIds"
               label="Normalize Call IDs"
               description="Convert Chat Completions-style tool call IDs to Responses format."
+            />
+            <ConfigToggle
+              v-model="upstreamWebSocket"
+              label="Upstream WebSocket"
+              description="Use upstream WebSocket transport for streaming /responses when the model supports it."
             />
           </ConfigSection>
 
@@ -395,28 +459,33 @@ function nestedField<
       </div>
     </div>
 
-    <div class="page-footer px-4 py-3 d-flex align-center ga-3">
-      <div class="text-body-2 text-medium-emphasis">
-        {{ isDirty ? "Unsaved changes" : "No pending changes" }}
+    <v-footer
+      class="page-footer px-4"
+      color="surface"
+    >
+      <div class="d-flex align-center ga-3 w-100 py-3">
+        <div class="text-body-2 text-medium-emphasis">
+          {{ isDirty ? "Unsaved changes" : "No pending changes" }}
+        </div>
+        <v-spacer />
+        <v-btn
+          :disabled="!isDirty || saving || loading"
+          variant="outlined"
+          @click="discard"
+        >
+          Discard
+        </v-btn>
+        <v-btn
+          color="primary"
+          :disabled="!isDirty || saving || loading"
+          :loading="saving"
+          variant="flat"
+          @click="save"
+        >
+          Save
+        </v-btn>
       </div>
-      <v-spacer />
-      <v-btn
-        :disabled="!isDirty || saving || loading"
-        variant="outlined"
-        @click="discard"
-      >
-        Discard
-      </v-btn>
-      <v-btn
-        color="primary"
-        :disabled="!isDirty || saving || loading"
-        :loading="saving"
-        variant="flat"
-        @click="save"
-      >
-        Save
-      </v-btn>
-    </div>
+    </v-footer>
   </div>
 </template>
 
@@ -429,8 +498,6 @@ function nestedField<
 .page-footer {
   position: sticky;
   z-index: 2;
-  background: color-mix(in srgb, rgb(var(--v-theme-surface)) 92%, transparent);
-  backdrop-filter: blur(10px);
 }
 
 .page-toolbar {

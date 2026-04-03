@@ -13,6 +13,7 @@ import {
 
 export const historyRoutes = new Hono()
 
+historyRoutes.get("/", (c) => c.redirect("/ui#/v/activity", 302))
 historyRoutes.all("/", (c) => c.json({ error: "Not Found" }, 404))
 
 /** API endpoints */

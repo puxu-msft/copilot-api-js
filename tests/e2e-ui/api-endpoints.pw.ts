@@ -83,19 +83,24 @@ test.describe("API Endpoints", () => {
     expect(typeof body.total).toBe("number")
   })
 
-  test("GET /models?detail=true returns 200 with model data", async ({ request }) => {
-    const response = await request.get(`${BASE_URL}/models?detail=true`)
-    expect(response.status()).toBe(200)
+  test("GET /models and GET /models?detail=true both return compatible model data", async ({ request }) => {
+    const defaultResponse = await request.get(`${BASE_URL}/models`)
+    const detailResponse = await request.get(`${BASE_URL}/models?detail=true`)
+    expect(defaultResponse.status()).toBe(200)
+    expect(detailResponse.status()).toBe(200)
 
-    const body = await response.json()
+    const defaultBody = await defaultResponse.json()
+    const detailBody = await detailResponse.json()
 
-    expect(body).toHaveProperty("data")
-    expect(Array.isArray(body.data)).toBeTruthy()
+    expect(defaultBody).toHaveProperty("data")
+    expect(Array.isArray(defaultBody.data)).toBeTruthy()
+    expect(detailBody).toEqual(defaultBody)
 
-    // If models are loaded, verify structure
-    if (body.data.length > 0) {
-      const firstModel = body.data[0]
+    if (defaultBody.data.length > 0) {
+      const firstModel = defaultBody.data[0]
       expect(firstModel).toHaveProperty("id")
+      expect(firstModel).toHaveProperty("vendor")
+      expect(firstModel).toHaveProperty("name")
       expect(typeof firstModel.id).toBe("string")
     }
   })

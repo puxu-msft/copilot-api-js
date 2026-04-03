@@ -57,7 +57,7 @@ function createMockSummary(overrides: Partial<EntrySummary> = {}): EntrySummary 
   return {
     id: "test-entry-1",
     sessionId: "test-session-1",
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint: "anthropic-messages",
     requestModel: "claude-3-opus",
     stream: false,

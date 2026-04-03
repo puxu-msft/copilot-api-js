@@ -1,6 +1,9 @@
 /** Supported API endpoint types */
 export type EndpointType = "anthropic-messages" | "openai-chat-completions" | "openai-responses"
 
+export type RequestTransport = "http" | "upstream-ws" | "upstream-ws-fallback"
+export type RequestLifecycleState = "pending" | "executing" | "streaming" | "completed" | "failed"
+
 /** Message types for full content storage */
 export interface MessageContent {
   role: string
@@ -165,10 +168,19 @@ export interface SystemBlock {
 
 export interface HistoryEntry {
   id: string
-  sessionId: string
-  timestamp: number
+  sessionId?: string
+  rawPath?: string
+  startedAt: number
+  endedAt?: number
   endpoint: EndpointType
+  state?: RequestLifecycleState
+  active?: boolean
+  lastUpdatedAt?: number
+  queueWaitMs?: number
+  attemptCount?: number
+  currentStrategy?: string
   durationMs?: number
+  transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
   request: {
     model?: string
@@ -214,6 +226,7 @@ export interface HistoryEntry {
     index: number
     strategy?: string
     durationMs: number
+    transport?: RequestTransport
     error?: string
     truncation?: TruncationInfo
     sanitization?: SanitizationInfo
@@ -289,9 +302,17 @@ export interface HistoryStats {
 
 export interface EntrySummary {
   id: string
-  sessionId: string
-  timestamp: number
+  sessionId?: string
+  rawPath?: string
+  startedAt: number
+  endedAt?: number
   endpoint: EndpointType
+  state?: RequestLifecycleState
+  active?: boolean
+  lastUpdatedAt?: number
+  queueWaitMs?: number
+  attemptCount?: number
+  currentStrategy?: string
   requestModel?: string
   stream?: boolean
   messageCount: number

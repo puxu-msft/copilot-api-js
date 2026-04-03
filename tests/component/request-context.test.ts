@@ -53,6 +53,7 @@ describe("createRequestContext - initialization", () => {
     expect(ctx.originalRequest).toBeNull()
     expect(ctx.response).toBeNull()
     expect(ctx.pipelineInfo).toBeNull()
+    expect(ctx.endTime).toBeNull()
     expect(ctx.attempts).toHaveLength(0)
     expect(ctx.currentAttempt).toBeNull()
     expect(ctx.queueWaitMs).toBe(0)
@@ -177,6 +178,18 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(ctx.currentAttempt!.error).toBe(apiError)
     expect(ctx.currentAttempt!.durationMs).toBeGreaterThanOrEqual(0)
   })
+
+  test("setAttemptTransport updates current and effective transport", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+
+    expect(ctx.transport).toBe("http")
+
+    ctx.setAttemptTransport("upstream-ws")
+
+    expect(ctx.currentAttempt!.transport).toBe("upstream-ws")
+    expect(ctx.transport).toBe("upstream-ws")
+  })
 })
 
 // ─── Completion ───
@@ -196,11 +209,14 @@ describe("createRequestContext - completion", () => {
 
     expect(ctx.state).toBe("completed")
     expect(ctx.response).toEqual(response)
+    expect(ctx.endTime).not.toBeNull()
 
     const lastCall = (onEvent.mock.calls.at(-1) as any)![0]
     expect(lastCall.type).toBe("completed")
     expect(lastCall.entry).toBeDefined()
     expect(lastCall.entry!.id).toBe(ctx.id)
+    expect(lastCall.entry!.startedAt).toBe(ctx.startTime)
+    expect(lastCall.entry!.endedAt).toBe(ctx.endTime)
   })
 
   test("fail() stores error response and fires failed event", () => {
@@ -212,6 +228,7 @@ describe("createRequestContext - completion", () => {
     expect(ctx.state).toBe("failed")
     expect(ctx.response!.success).toBe(false)
     expect(ctx.response!.error).toBe("Something broke")
+    expect(ctx.endTime).not.toBeNull()
 
     const lastCall = (onEvent.mock.calls.at(-1) as any)![0]
     expect(lastCall.type).toBe("failed")
@@ -290,7 +307,39 @@ describe("createRequestContext - toHistoryEntry", () => {
     expect(entry.id).toBe(ctx.id)
     expect(entry.endpoint).toBe("anthropic-messages")
     expect(entry.request.model).toBe("claude-sonnet-4")
+    expect(entry.state).toBe("completed")
+    expect(entry.active).toBe(false)
+    expect(entry.attemptCount).toBe(1)
+    expect(entry.queueWaitMs).toBe(0)
     expect(entry.response!.success).toBe(true)
+  })
+
+  test("serializes lifecycle activity fields", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({
+      model: "claude-sonnet-4",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+      payload: {},
+    })
+    ctx.beginAttempt({ strategy: "network-retry" })
+    ctx.addQueueWaitMs(250)
+    ctx.transition("streaming")
+    ctx.complete({
+      success: true,
+      model: "claude-sonnet-4",
+      usage: { input_tokens: 12, output_tokens: 34 },
+      content: "Hello",
+    })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.state).toBe("completed")
+    expect(entry.active).toBe(false)
+    expect(entry.queueWaitMs).toBe(250)
+    expect(entry.attemptCount).toBe(1)
+    expect(entry.currentStrategy).toBe("network-retry")
+    expect(typeof entry.lastUpdatedAt).toBe("number")
+    expect(entry.lastUpdatedAt).toBeGreaterThanOrEqual(entry.startedAt)
   })
 
   test("includes truncation from last attempt that had one", () => {
@@ -476,6 +525,18 @@ describe("createRequestContext - toHistoryEntry", () => {
     expect(entry.attempts).toHaveLength(1)
     expect(entry.attempts![0].index).toBe(0)
     expect(entry.attempts![0].strategy).toBeUndefined()
+  })
+
+  test("includes transport in entry and attempt summary", () => {
+    const { ctx } = makeContext({ endpoint: "openai-responses" })
+    ctx.setOriginalRequest({ model: "gpt-5.2", messages: [], stream: true, payload: {} })
+    ctx.beginAttempt({})
+    ctx.setAttemptTransport("upstream-ws-fallback")
+    ctx.complete({ success: true, model: "gpt-5.2", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.transport).toBe("upstream-ws-fallback")
+    expect(entry.attempts![0].transport).toBe("upstream-ws-fallback")
   })
 
   test("attempts is undefined when no attempt was started", () => {

@@ -26,7 +26,7 @@ const { formatDate, formatNumber, formatDuration } = useFormatters()
   >
     <div class="item-header">
       <StatusDot :status="getStatusClass(entry)" />
-      <span class="item-time">{{ formatDate(entry.timestamp) }}</span>
+      <span class="item-time">{{ formatDate(entry.startedAt) }}</span>
       <a
         class="item-id"
         :href="'/history/api/entries/' + entry.id"

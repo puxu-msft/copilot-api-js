@@ -21,8 +21,34 @@ test.describe("Vuetify Models", () => {
   test("toolbar shows Models heading with count", async ({ page }) => {
     await page.goto(uiUrl("#/v/models"))
 
-    await expect(page.locator("main")).toContainText("Models")
-    await expect(page.getByPlaceholder("Search models...")).toBeVisible({ timeout: 15000 })
+    await expect(page.locator(".toolbar-shell")).toContainText("Models")
+    await expect(page.locator(".toolbar-shell")).toContainText("visible /")
+    await expect(page.getByPlaceholder("Search model id or name")).toBeVisible({ timeout: 15000 })
+  })
+
+  test("models list remains scrollable when content exceeds the viewport", async ({ page }) => {
+    await page.goto(uiUrl("#/v/models"))
+
+    const scroller = page.locator(".models-page .v-page-scroll")
+    await expect(scroller).toBeVisible({ timeout: 15000 })
+
+    const before = await scroller.evaluate((el) => ({
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop,
+    }))
+
+    if (before.scrollHeight <= before.clientHeight) {
+      test.skip()
+      return
+    }
+
+    await scroller.hover()
+    await page.mouse.wheel(0, 1600)
+    await page.waitForTimeout(300)
+
+    const after = await scroller.evaluate((el) => el.scrollTop)
+    expect(after).toBeGreaterThan(before.scrollTop)
   })
 
   test("search filter narrows results", async ({ page }) => {
@@ -45,7 +71,7 @@ test.describe("Vuetify Models", () => {
     }
 
     // Find the search input inside the Vuetify text field
-    const searchInput = page.getByPlaceholder("Search models...")
+    const searchInput = page.getByPlaceholder("Search model id or name")
     const box = await searchInput.boundingBox({ timeout: 5000 }).catch(() => null)
     if (!box || box.width === 0) {
       test.skip()
@@ -59,7 +85,7 @@ test.describe("Vuetify Models", () => {
     const filteredCount = await page.locator(".model-card").count()
     expect(filteredCount).toBeLessThanOrEqual(initialCount)
     expect(filteredCount).toBeGreaterThan(0)
-    await expect(page.locator("main")).toContainText(searchTerm)
+    await expect(page.locator(".models-page")).toContainText(searchTerm)
   })
 
   test("vendor filter narrows results", async ({ page }) => {
@@ -93,50 +119,35 @@ test.describe("Vuetify Models", () => {
     expect(filteredCount).toBeLessThanOrEqual(initialCount)
   })
 
-  test("Cards/Raw toggle shows JSON in Raw mode", async ({ page }) => {
+  test("type filter narrows results to the selected model type", async ({ page }) => {
     await page.goto(uiUrl("#/v/models"))
 
-    // Wait for models to load
     await page.waitForSelector(".model-card", { timeout: 15000 }).catch(() => {})
 
-    const modelCount = await page.locator(".model-card").count()
-    if (modelCount === 0) {
-      test.skip()
-      return
-    }
-
-    // Vuetify 4 v-btn-toggle may not respond to click events.
-    // Check if the Raw button is interactable.
-    const rawButton = page.locator(".v-btn-toggle .v-btn", { hasText: "Raw" })
-    const box = await rawButton.boundingBox()
+    const typeSelect = page.locator(".filter-panel .v-select").nth(3)
+    const box = await typeSelect.boundingBox()
     if (!box || box.width === 0) {
       test.skip()
       return
     }
 
-    await rawButton.click({ force: true })
+    await typeSelect.click()
+    const embeddingsOption = page.locator(".v-list-item").filter({ hasText: "embeddings" }).first()
+    await embeddingsOption.waitFor({ state: "visible", timeout: 5000 })
+    await embeddingsOption.click()
     await page.waitForTimeout(500)
 
-    // Check if the toggle actually worked by looking for <pre>
-    const preBlock = page.locator("pre")
-    const preVisible = await preBlock.isVisible().catch(() => false)
-    if (!preVisible) {
-      // Toggle click did not work (Vuetify 4 web component limitation) — skip
-      test.skip()
-      return
+    const cards = page.locator(".model-card")
+    const count = await cards.count()
+    expect(count).toBeGreaterThan(0)
+
+    const texts = await cards.evaluateAll((nodes) => nodes.map((node) => node.textContent ?? ""))
+    for (const text of texts) {
+      expect(text.toLowerCase()).toContain("embeddings")
     }
-
-    const preText = await preBlock.textContent()
-    expect(preText).toBeTruthy()
-    expect(() => JSON.parse(preText!)).not.toThrow()
-
-    // Switch back to Cards
-    const cardsButton = page.locator(".v-btn-toggle .v-btn", { hasText: "Cards" })
-    await cardsButton.click({ force: true })
-    await expect(page.locator(".model-card").first()).toBeVisible()
   })
 
-  test("per-card RAW toggle shows individual model JSON", async ({ page }) => {
+  test("toolbar Raw JSON button opens the full models JSON dialog", async ({ page }) => {
     await page.goto(uiUrl("#/v/models"))
 
     // Wait for models to load
@@ -148,18 +159,51 @@ test.describe("Vuetify Models", () => {
       return
     }
 
-    // Click the per-card toggle button on the first card
+    await page.getByRole("button", { name: "Raw JSON" }).click()
+    await page.waitForTimeout(500)
+
+    const dialog = page.locator(".models-json-dialog")
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText("Full Models Raw JSON")
+    await expect(dialog.getByRole("button", { name: "Copy JSON" })).toBeVisible()
+
+    await dialog.getByRole("button", { name: "Close" }).click()
+    await expect(page.locator(".model-card").first()).toBeVisible()
+  })
+
+  test("per-card JSON button opens the individual model JSON dialog", async ({ page }) => {
+    await page.goto(uiUrl("#/v/models"))
+
+    // Wait for models to load
+    await page.waitForSelector(".model-card", { timeout: 15000 }).catch(() => {})
+
+    const modelCount = await page.locator(".model-card").count()
+    if (modelCount === 0) {
+      test.skip()
+      return
+    }
+
     const firstCard = page.locator(".model-card").first()
-    const toggleButton = firstCard.locator(".v-btn")
-    await expect(toggleButton).toBeVisible()
-    await toggleButton.click()
+    const jsonButton = firstCard.getByRole("button", { name: "JSON" })
+    await expect(jsonButton).toBeVisible()
+    await jsonButton.click()
 
-    // The first card should now show a <pre> block with JSON
-    const preBlock = firstCard.locator("pre")
-    await expect(preBlock).toBeVisible()
+    const dialog = page.locator(".json-dialog")
+    await expect(dialog).toBeVisible()
+    await expect(dialog.locator(".dialog-title")).toBeVisible()
+    await expect(dialog.getByRole("button", { name: "Copy JSON" })).toBeVisible()
+  })
 
-    const preText = await preBlock.textContent()
-    expect(preText).toBeTruthy()
-    expect(() => JSON.parse(preText!)).not.toThrow()
+  test("embedding models show embedding-specific limits instead of LLM token limits", async ({ page }) => {
+    await page.goto(uiUrl("#/v/models"))
+
+    const embeddingCard = page.locator(".model-card", { hasText: "text-embedding-3-small" }).first()
+    await expect(embeddingCard).toBeVisible({ timeout: 15000 })
+
+    await expect(embeddingCard).toContainText("Max Inputs")
+    await expect(embeddingCard).toContainText("512")
+    await expect(embeddingCard).not.toContainText("Context Window")
+    await expect(embeddingCard).not.toContainText("Max Prompt")
+    await expect(embeddingCard).not.toContainText("Max Output")
   })
 })

@@ -27,6 +27,8 @@ function mockModel(id: string): Model {
     model_picker_enabled: true,
     preview: false,
     version: id,
+    is_chat_default: false,
+    is_chat_fallback: false,
   }
 }
 

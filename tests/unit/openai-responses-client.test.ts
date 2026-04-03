@@ -1,11 +1,15 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
-
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+
+import type { Model } from "~/lib/models/client"
+import type { ResponsesPayload, ResponsesStreamEvent } from "~/types/api/openai-responses"
+
 import { HTTPError } from "~/lib/error"
+import { ENDPOINT } from "~/lib/models/endpoint"
 import { createResponses } from "~/lib/openai/responses-client"
+import { resetUpstreamWsManagerForTests, setUpstreamWsConnectionFactoryForTests } from "~/lib/openai/upstream-ws"
 import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
-import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 const originalFetch = globalThis.fetch
 
@@ -38,44 +42,52 @@ describe("responses client", () => {
   const originalState = snapshotStateForTests()
 
   beforeEach(() => {
+    resetUpstreamWsManagerForTests()
+    setUpstreamWsConnectionFactoryForTests(null)
     setStateForTests({
       accountType: "individual",
       copilotToken: "copilot-test-token",
       vsCodeVersion: "1.100.0",
       fetchTimeout: 0,
+      upstreamWebSocket: false,
     })
   })
 
   afterEach(() => {
     globalThis.fetch = originalFetch
+    resetUpstreamWsManagerForTests()
+    setUpstreamWsConnectionFactoryForTests(null)
     restoreStateForTests(originalState)
   })
 
   test("returns JSON responses and captures sanitized headers", async () => {
-    const fetchMock = mock(async () =>
-      new Response(
-        JSON.stringify({
-          id: "resp_123",
-          object: "response",
-          created_at: 1,
-          status: "completed",
-          model: "gpt-4o",
-          output: [],
-          usage: {
-            input_tokens: 3,
-            output_tokens: 2,
-            total_tokens: 5,
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "resp_123",
+            object: "response",
+            created_at: 1,
+            status: "completed",
+            model: "gpt-4o",
+            output: [],
+            usage: {
+              input_tokens: 3,
+              output_tokens: 2,
+              total_tokens: 5,
+            },
+            tools: [],
+            tool_choice: "auto",
+            parallel_tool_calls: false,
+            store: false,
+          }),
+          {
+            status: 200,
+            headers: { "x-request-id": "resp-2" },
           },
-          tools: [],
-          tool_choice: "auto",
-          parallel_tool_calls: false,
-          store: false,
-        }),
-        {
-          status: 200,
-          headers: { "x-request-id": "resp-2" },
-        },
-      ))
+        ),
+      ),
+    )
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
     const headersCapture: {
@@ -100,11 +112,14 @@ describe("responses client", () => {
   })
 
   test("returns an async iterable for streaming responses", async () => {
-    globalThis.fetch = mock(async () =>
-      createSseResponse([
-        'event: response.created\ndata: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[],"usage":null,"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"store":false}}\n\n',
-        "data: [DONE]\n\n",
-      ])) as unknown as typeof fetch
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        createSseResponse([
+          'event: response.created\ndata: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[],"usage":null,"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"store":false}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+    ) as unknown as typeof fetch
 
     const result = await createResponses(createPayload({ stream: true }))
     const iterator = (result as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()
@@ -115,8 +130,182 @@ describe("responses client", () => {
   })
 
   test("throws HTTPError for failed upstream responses", async () => {
-    globalThis.fetch = mock(async () => new Response("bad gateway", { status: 502 })) as unknown as typeof fetch
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("bad gateway", { status: 502 })),
+    ) as unknown as typeof fetch
 
-    await expect(createResponses(createPayload())).rejects.toBeInstanceOf(HTTPError)
+    try {
+      await createResponses(createPayload())
+      throw new Error("Expected createResponses to throw")
+    } catch (error) {
+      expect(error).toBeInstanceOf(HTTPError)
+    }
+  })
+
+  test("uses upstream websocket for streaming responses when enabled and supported", async () => {
+    let open = false
+    const connect = mock(() => {
+      open = true
+      return Promise.resolve()
+    })
+    const sendRequest = mock(() =>
+      createAsyncIterable<ResponsesStreamEvent>([
+        {
+          type: "response.created",
+          sequence_number: 0,
+          response: {
+            id: "resp_1",
+            object: "response",
+            created_at: 1,
+            status: "in_progress",
+            model: "gpt-4o",
+            output: [],
+            usage: null,
+            tools: [],
+            tool_choice: "auto",
+            parallel_tool_calls: false,
+            store: false,
+          },
+        },
+        {
+          type: "response.completed",
+          sequence_number: 1,
+          response: {
+            id: "resp_1",
+            object: "response",
+            created_at: 1,
+            status: "completed",
+            model: "gpt-4o",
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            tools: [],
+            tool_choice: "auto",
+            parallel_tool_calls: false,
+            store: false,
+          },
+        },
+      ]),
+    )
+    setUpstreamWsConnectionFactoryForTests(() => ({
+      connect,
+      sendRequest,
+      get isOpen() {
+        return open
+      },
+      get isBusy() {
+        return false
+      },
+      statefulMarker: undefined,
+      model: "gpt-4o",
+      close: () => {},
+    }))
+    setStateForTests({ upstreamWebSocket: true })
+
+    const transports: Array<string> = []
+    const model = {
+      id: "gpt-4o",
+      name: "gpt-4o",
+      vendor: "OpenAI",
+      object: "model",
+      version: "gpt-4o",
+      model_picker_enabled: true,
+      preview: false,
+      supported_endpoints: [ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
+    } as Model
+
+    const result = await createResponses(createPayload({ stream: true }), {
+      resolvedModel: model,
+      onTransport: (transport) => transports.push(transport),
+    })
+
+    const iterator = (result as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()
+    const first = await iterator.next()
+
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(sendRequest).toHaveBeenCalledTimes(1)
+    expect(first.value?.event).toBe("response.created")
+    expect(transports).toEqual(["upstream-ws"])
+  })
+
+  test("falls back to HTTP before first websocket event", async () => {
+    let open = false
+    setUpstreamWsConnectionFactoryForTests(() => ({
+      connect: () => {
+        open = true
+        return Promise.resolve()
+      },
+      sendRequest: () => createRejectingAsyncIterable(new Error("handshake finished but no first event")),
+      get isOpen() {
+        return open
+      },
+      get isBusy() {
+        return false
+      },
+      statefulMarker: undefined,
+      model: "gpt-4o",
+      close: () => {},
+    }))
+    setStateForTests({ upstreamWebSocket: true })
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        createSseResponse([
+          'event: response.created\ndata: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[],"usage":null,"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"store":false}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+    ) as unknown as typeof fetch
+
+    const transports: Array<string> = []
+    const model = {
+      id: "gpt-4o",
+      name: "gpt-4o",
+      vendor: "OpenAI",
+      object: "model",
+      version: "gpt-4o",
+      model_picker_enabled: true,
+      preview: false,
+      supported_endpoints: [ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
+    } as Model
+
+    const result = await createResponses(createPayload({ stream: true }), {
+      resolvedModel: model,
+      onTransport: (transport) => transports.push(transport),
+    })
+
+    const iterator = (result as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()
+    const first = await iterator.next()
+
+    expect(first.value?.event).toBe("response.created")
+    expect(transports).toEqual(["upstream-ws-fallback"])
   })
 })
+
+function createAsyncIterable<T>(values: Array<T>): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator]() {
+      let index = 0
+      return {
+        next() {
+          if (index >= values.length) {
+            return Promise.resolve({ done: true, value: undefined })
+          }
+          const value = values[index++]
+          return Promise.resolve({ done: false, value })
+        },
+      }
+    },
+  }
+}
+
+function createRejectingAsyncIterable(error: Error): AsyncIterable<never> {
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next() {
+          return Promise.reject(error)
+        },
+      }
+    },
+  }
+}

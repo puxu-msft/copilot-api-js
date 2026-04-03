@@ -29,10 +29,17 @@ export interface ConfigYamlResponse {
     immutable_thinking_messages?: boolean
     strip_read_tool_result_tags?: boolean
     context_editing?: "off" | "clear-thinking" | "clear-tooluse" | "clear-both"
+    context_editing_trigger?: number
+    context_editing_keep_tools?: number
+    context_editing_keep_thinking?: number
+    tool_search?: boolean
+    auto_cache_control?: boolean
+    non_deferred_tools?: Array<string>
     rewrite_system_reminders?: boolean | Array<ReminderRewriteRule>
   }
   "openai-responses"?: {
     normalize_call_ids?: boolean
+    upstream_websocket?: boolean
   }
   rate_limiter?: {
     retry_interval?: number
@@ -67,10 +74,17 @@ export interface EditableConfig {
     immutable_thinking_messages?: boolean | null
     strip_read_tool_result_tags?: boolean | null
     context_editing?: "off" | "clear-thinking" | "clear-tooluse" | "clear-both" | null
+    context_editing_trigger?: number | null
+    context_editing_keep_tools?: number | null
+    context_editing_keep_thinking?: number | null
+    tool_search?: boolean | null
+    auto_cache_control?: boolean | null
+    non_deferred_tools?: Array<string> | null
     rewrite_system_reminders?: boolean | Array<ReminderRewriteRule> | null
   } | null
   "openai-responses"?: {
     normalize_call_ids?: boolean | null
+    upstream_websocket?: boolean | null
   } | null
   rate_limiter?: {
     retry_interval?: number | null

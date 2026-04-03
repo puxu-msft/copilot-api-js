@@ -46,6 +46,9 @@ describe("useConfigEditor", () => {
       fetch_timeout: 300,
       model_refresh_interval: 600,
       anthropic: {
+        context_editing_trigger: 100000,
+        tool_search: true,
+        non_deferred_tools: ["custom_tool"],
         rewrite_system_reminders: [],
       },
     })
@@ -59,6 +62,9 @@ describe("useConfigEditor", () => {
       fetch_timeout: 300,
       model_refresh_interval: 600,
       anthropic: {
+        context_editing_trigger: 100000,
+        tool_search: true,
+        non_deferred_tools: ["custom_tool"],
         rewrite_system_reminders: false,
       },
     })
@@ -185,6 +191,7 @@ describe("useConfigEditor", () => {
     mockFetchConfigYaml.mockResolvedValue({
       anthropic: {
         strip_server_tools: true,
+        non_deferred_tools: ["existing_tool"],
       },
     })
     mockSaveConfigYaml.mockImplementation((config) => Promise.resolve(config as ConfigYamlResponse))
@@ -197,6 +204,7 @@ describe("useConfigEditor", () => {
       anthropic: {
         ...editor.config.value?.anthropic,
         strip_server_tools: false,
+        non_deferred_tools: ["existing_tool", "custom_tool"],
       },
     })
 
@@ -206,11 +214,13 @@ describe("useConfigEditor", () => {
     expect(editor.config.value).toEqual({
       anthropic: {
         strip_server_tools: false,
+        non_deferred_tools: ["existing_tool", "custom_tool"],
       },
     })
     expect(editor.original.value).toEqual({
       anthropic: {
         strip_server_tools: false,
+        non_deferred_tools: ["existing_tool", "custom_tool"],
       },
     })
   })

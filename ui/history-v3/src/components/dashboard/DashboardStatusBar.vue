@@ -1,11 +1,17 @@
 <script setup lang="ts">
-defineProps<{
+import { computed } from "vue"
+
+import { formatWsTargetStatus } from "@/utils/ws-status"
+
+const props = defineProps<{
   status: Record<string, unknown> | null | undefined
   uptime: string
   resolvedActiveCount: number
   shutdownPhase: string | null
   wsConnected: boolean
 }>()
+
+const wsStatusLabel = computed(() => formatWsTargetStatus("requests + status", props.wsConnected))
 </script>
 
 <template>
@@ -26,7 +32,7 @@ defineProps<{
 
     <div class="d-flex align-center ga-1">
       <span class="text-caption text-medium-emphasis">Uptime</span>
-      <span class="text-caption mono">{{ uptime }}</span>
+      <span class="text-caption font-mono">{{ uptime }}</span>
     </div>
 
     <div
@@ -34,12 +40,12 @@ defineProps<{
       class="d-flex align-center ga-1"
     >
       <span class="text-caption text-medium-emphasis">Version</span>
-      <span class="text-caption mono">{{ status.version }}</span>
+      <span class="text-caption font-mono">{{ status.version }}</span>
     </div>
 
     <div class="d-flex align-center ga-1">
       <span class="text-caption text-medium-emphasis">Active</span>
-      <span class="text-caption mono">{{ resolvedActiveCount }}</span>
+      <span class="text-caption font-mono">{{ resolvedActiveCount }}</span>
     </div>
 
     <v-chip
@@ -63,16 +69,12 @@ defineProps<{
       size="small"
       variant="tonal"
     >
-      {{ wsConnected ? "WS Live" : "WS Offline" }}
+      {{ wsStatusLabel }}
     </v-chip>
   </div>
 </template>
 
 <style scoped>
-.mono {
-  font-family: "SF Mono", Monaco, "Courier New", monospace;
-}
-
 .status-bar {
   background: rgb(var(--v-theme-surface-variant));
 }

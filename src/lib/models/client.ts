@@ -66,6 +66,8 @@ export interface Model {
   name: string
   object: string
   preview: boolean
+  is_chat_default: boolean
+  is_chat_fallback: boolean
   /** Model-specific request headers from CAPI (forwarded to upstream API requests) */
   request_headers?: Record<string, string>
   supported_endpoints?: Array<string>

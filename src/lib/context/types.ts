@@ -2,6 +2,8 @@ import type { ApiError } from "~/lib/error"
 import type {
   EndpointType,
   PipelineInfo,
+  RequestLifecycleState,
+  RequestTransport,
   SanitizationInfo,
   SseEventRecord,
   TruncationInfo,
@@ -11,7 +13,7 @@ import type { Model } from "~/lib/models/client"
 
 // ─── Request State Machine ───
 
-export type RequestState = "pending" | "executing" | "streaming" | "completed" | "failed"
+export type RequestState = RequestLifecycleState
 
 // ─── Four-Part Data Model ───
 
@@ -73,6 +75,7 @@ export interface Attempt {
   wireRequest: WireRequest | null
   response: ResponseData | null
   error: ApiError | null
+  transport: RequestTransport
   /** Strategy that triggered this retry (undefined for first attempt) */
   strategy?: string
   sanitization?: SanitizationInfo
@@ -95,9 +98,18 @@ export interface HeadersCapture {
 export interface HistoryEntryData {
   id: string
   endpoint: EndpointType
-  timestamp: number
+  rawPath?: string
+  startedAt: number
+  endedAt: number
+  state: RequestState
+  active: boolean
+  lastUpdatedAt: number
+  queueWaitMs: number
+  attemptCount: number
+  currentStrategy?: string
   durationMs: number
   sessionId?: string
+  transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
 
   request: {
@@ -142,6 +154,7 @@ export interface HistoryEntryData {
     index: number
     strategy?: string
     durationMs: number
+    transport?: RequestTransport
     error?: string
     truncation?: TruncationInfo
     sanitization?: SanitizationInfo
@@ -166,8 +179,11 @@ export type RequestContextEventCallback = (event: RequestContextEventData) => vo
 
 export interface RequestContext {
   readonly id: string
+  readonly sessionId: string | undefined
   readonly tuiLogId: string | undefined
+  readonly rawPath: string | undefined
   readonly startTime: number
+  readonly endTime: number | null
   readonly endpoint: EndpointType
   readonly state: RequestState
   readonly durationMs: number
@@ -178,21 +194,29 @@ export interface RequestContext {
   readonly response: ResponseData | null
   readonly pipelineInfo: PipelineInfo | null
   readonly httpHeaders: { request: Record<string, string>; response: Record<string, string> } | null
+  readonly transport: RequestTransport | null
 
   readonly attempts: ReadonlyArray<Attempt>
   readonly currentAttempt: Attempt | null
   readonly queueWaitMs: number
   readonly warningMessages: ReadonlyArray<WarningMessage>
 
+  setSessionId(sessionId: string | undefined): void
   setOriginalRequest(req: OriginalRequest): void
   setPipelineInfo(info: PipelineInfo): void
   setSseEvents(events: Array<SseEventRecord>): void
   setHttpHeaders(capture: HeadersCapture): void
   addWarningMessage(warning: WarningMessage): void
-  beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo }): void
+  beginAttempt(opts: {
+    strategy?: string
+    waitMs?: number
+    truncation?: TruncationInfo
+    transport?: RequestTransport
+  }): void
   setAttemptSanitization(info: SanitizationInfo): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
   setAttemptWireRequest(req: WireRequest): void
+  setAttemptTransport(transport: RequestTransport): void
   setAttemptResponse(response: ResponseData): void
   setAttemptError(error: ApiError): void
   addQueueWaitMs(ms: number): void

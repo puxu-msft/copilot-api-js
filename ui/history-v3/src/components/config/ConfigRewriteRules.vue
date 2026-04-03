@@ -114,81 +114,87 @@ function ruleSummary(rule: PromptOverrideRule | ReminderRewriteRule): string {
       :key="index"
       class="rule-card"
     >
-      <div class="d-flex align-center mb-3">
-        <div class="text-body-2 font-weight-medium">Rule {{ index + 1 }}</div>
-        <div
-          class="text-caption text-medium-emphasis ml-2"
-          data-testid="rule-summary"
-        >
-          {{ ruleSummary(rule) }}
-        </div>
-        <v-spacer />
-        <v-btn
-          :disabled="disabled"
-          :icon="isRuleCollapsed(index) ? 'mdi-chevron-down' : 'mdi-chevron-up'"
-          data-testid="toggle-rule"
-          size="small"
-          variant="text"
-          @click="toggleRule(index)"
-        />
-        <v-btn
-          :disabled="disabled"
-          icon="mdi-delete-outline"
-          size="small"
-          variant="text"
-          @click="removeRule(index)"
-        />
-      </div>
+      <v-card variant="outlined">
+        <v-card-text class="pa-4">
+          <div class="d-flex align-center mb-3">
+            <div class="text-body-2 font-weight-medium">Rule {{ index + 1 }}</div>
+            <div
+              class="text-caption text-medium-emphasis ml-2"
+              data-testid="rule-summary"
+            >
+              {{ ruleSummary(rule) }}
+            </div>
+            <v-spacer />
+            <v-btn
+              :disabled="disabled"
+              :icon="isRuleCollapsed(index) ? 'mdi-chevron-down' : 'mdi-chevron-up'"
+              :aria-label="isRuleCollapsed(index) ? `Expand rule ${index + 1}` : `Collapse rule ${index + 1}`"
+              data-testid="toggle-rule"
+              size="small"
+              variant="text"
+              @click="toggleRule(index)"
+            />
+            <v-btn
+              :disabled="disabled"
+              icon="mdi-delete-outline"
+              :aria-label="`Remove rule ${index + 1}`"
+              size="small"
+              variant="text"
+              @click="removeRule(index)"
+            />
+          </div>
 
-      <div
-        v-if="!isRuleCollapsed(index)"
-        class="d-flex flex-column ga-3"
-      >
-        <v-text-field
-          :model-value="rule.from"
-          :disabled="disabled"
-          label="From"
-          @update:model-value="updateRule(index, { from: String($event ?? '') })"
-        />
-        <v-textarea
-          :model-value="rule.to"
-          :disabled="disabled"
-          auto-grow
-          label="To"
-          rows="2"
-          variant="outlined"
-          @update:model-value="updateRule(index, { to: String($event ?? '') })"
-        />
-        <div class="d-flex flex-wrap ga-3">
-          <v-select
-            :model-value="rule.method ?? 'regex'"
-            :disabled="disabled"
-            :items="[
-              { title: 'Regex', value: 'regex' },
-              { title: 'Line', value: 'line' },
-            ]"
-            class="method-select"
-            label="Method"
-            @update:model-value="updateRule(index, { method: $event as 'line' | 'regex' })"
-          />
-          <v-text-field
-            v-if="showModelField"
-            :model-value="'model' in rule ? (rule.model ?? '') : ''"
-            :disabled="disabled"
-            class="model-select"
-            label="Model regex"
-            @update:model-value="updateRule(index, { model: String($event ?? '') || undefined })"
-          />
-        </div>
-      </div>
+          <div
+            v-if="!isRuleCollapsed(index)"
+            class="d-flex flex-column ga-3"
+          >
+            <v-text-field
+              :model-value="rule.from"
+              :disabled="disabled"
+              label="From"
+              @update:model-value="updateRule(index, { from: String($event ?? '') })"
+            />
+            <v-textarea
+              :model-value="rule.to"
+              :disabled="disabled"
+              auto-grow
+              label="To"
+              rows="2"
+              variant="outlined"
+              @update:model-value="updateRule(index, { to: String($event ?? '') })"
+            />
+            <div class="d-flex flex-wrap ga-3">
+              <v-select
+                :model-value="rule.method ?? 'regex'"
+                :disabled="disabled"
+                :items="[
+                  { title: 'Regex', value: 'regex' },
+                  { title: 'Line', value: 'line' },
+                ]"
+                class="method-select"
+                label="Method"
+                @update:model-value="updateRule(index, { method: $event as 'line' | 'regex' })"
+              />
+              <v-text-field
+                v-if="showModelField"
+                :model-value="'model' in rule ? (rule.model ?? '') : ''"
+                :disabled="disabled"
+                class="model-select"
+                label="Model regex"
+                @update:model-value="updateRule(index, { model: String($event ?? '') || undefined })"
+              />
+            </div>
+          </div>
 
-      <div
-        v-else
-        class="text-body-2 text-medium-emphasis"
-        data-testid="collapsed-rule-summary"
-      >
-        {{ rule.from || "Empty pattern" }} → {{ rule.to || "Empty replacement" }}
-      </div>
+          <div
+            v-else
+            class="text-body-2 text-medium-emphasis"
+            data-testid="collapsed-rule-summary"
+          >
+            {{ rule.from || "Empty pattern" }} → {{ rule.to || "Empty replacement" }}
+          </div>
+        </v-card-text>
+      </v-card>
     </div>
 
     <div
@@ -208,13 +214,6 @@ function ruleSummary(rule: PromptOverrideRule | ReminderRewriteRule): string {
 </template>
 
 <style scoped>
-.rule-card {
-  padding: 16px;
-  border: 1px solid rgb(var(--v-theme-surface-variant));
-  border-radius: 14px;
-  background: rgb(var(--v-theme-surface));
-}
-
 .method-select {
   max-width: 180px;
 }

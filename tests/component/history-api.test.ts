@@ -50,11 +50,11 @@ function createEntry(
   messages: HistoryEntry["request"]["messages"],
   extra?: Partial<HistoryEntry>,
 ): HistoryEntry {
-  const sessionId = getCurrentSession(endpoint)
+  const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
-    timestamp: Date.now(),
+    startedAt: Date.now(),
     endpoint,
     request: { model, messages, stream: true },
     ...extra,
@@ -96,14 +96,14 @@ describe("GET /api/entries", () => {
     expect(body.entries).toHaveLength(0)
   })
 
-  test("returns summaries sorted by timestamp descending", async () => {
+  test("returns summaries sorted by startedAt descending", async () => {
     createEntry("anthropic-messages", "model-a", [{ role: "user", content: "first" }])
     createEntry("anthropic-messages", "model-b", [{ role: "user", content: "second" }])
 
     const res = await get("/api/entries")
-    const body = await json<{ entries: Array<{ requestModel: string; timestamp: number }> }>(res)
+    const body = await json<{ entries: Array<{ requestModel: string; startedAt: number }> }>(res)
     expect(body.entries).toHaveLength(2)
-    expect(body.entries[0].timestamp).toBeGreaterThanOrEqual(body.entries[1].timestamp)
+    expect(body.entries[0].startedAt).toBeGreaterThanOrEqual(body.entries[1].startedAt)
   })
 
   test("paginates with cursor and limit params", async () => {
@@ -284,11 +284,12 @@ describe("sessions API", () => {
 
   test("GET /api/sessions/:id returns session with entries", async () => {
     const entry = createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
+    expect(entry.sessionId).toBeTruthy()
 
     const res = await get(`/api/sessions/${entry.sessionId}`)
     expect(res.status).toBe(200)
     const body = await json<{ id: string; entries: Array<unknown> }>(res)
-    expect(body.id).toBe(entry.sessionId)
+    expect(body.id).toBe(entry.sessionId!)
     expect(body.entries.length).toBeGreaterThanOrEqual(1)
   })
 
