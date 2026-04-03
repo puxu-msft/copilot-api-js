@@ -1,8 +1,9 @@
+import type { EntrySummary, HistoryEntry } from "./types"
+
 import { generateId } from "../utils"
 import { notifyEntryAdded, notifyEntryUpdated, notifyHistoryCleared, notifyStatsUpdated } from "../ws"
 import { historyIndexes, historyState, invalidateHistoryStats, resetHistoryIndexes } from "./state"
 import { getStats } from "./stats"
-import type { EntrySummary, HistoryEntry } from "./types"
 
 /** Extract a preview from the last user message (first 100 chars) */
 function extractPreviewText(entry: HistoryEntry): string {
@@ -139,7 +140,10 @@ export function insertEntry(entry: HistoryEntry): void {
   historyState.entries.push(entry)
   historyIndexes.entryIndex.set(entry.id, entry)
   session.requestCount++
-  historyIndexes.sessionEntryCount.set(entry.sessionId, (historyIndexes.sessionEntryCount.get(entry.sessionId) ?? 0) + 1)
+  historyIndexes.sessionEntryCount.set(
+    entry.sessionId,
+    (historyIndexes.sessionEntryCount.get(entry.sessionId) ?? 0) + 1,
+  )
 
   updateSessionMetadata(entry)
 
@@ -160,7 +164,15 @@ export function updateEntry(
   update: Partial<
     Pick<
       HistoryEntry,
-      "request" | "response" | "pipelineInfo" | "sseEvents" | "durationMs" | "effectiveRequest" | "wireRequest" | "attempts"
+      | "request"
+      | "response"
+      | "pipelineInfo"
+      | "sseEvents"
+      | "durationMs"
+      | "effectiveRequest"
+      | "wireRequest"
+      | "attempts"
+      | "warningMessages"
     >
   >,
 ): void {
@@ -180,6 +192,7 @@ export function updateEntry(
   if (update.effectiveRequest) entry.effectiveRequest = update.effectiveRequest
   if (update.wireRequest) entry.wireRequest = update.wireRequest
   if (update.attempts) entry.attempts = update.attempts
+  if (update.warningMessages) entry.warningMessages = update.warningMessages
 
   if (update.response) {
     const session = historyState.sessions.get(entry.sessionId)

@@ -51,6 +51,9 @@ function handleHistoryEvent(event: RequestContextEvent): void {
 
         insertEntry(entry)
       }
+      if (event.field === "warningMessages" && event.context.warningMessages.length > 0) {
+        updateEntry(event.context.id, { warningMessages: [...event.context.warningMessages] })
+      }
       if (event.field === "pipelineInfo" && event.context.pipelineInfo) {
         updateEntry(event.context.id, { pipelineInfo: event.context.pipelineInfo })
       }
@@ -66,6 +69,7 @@ function handleHistoryEvent(event: RequestContextEvent): void {
         response,
         durationMs: entryData.durationMs,
         sseEvents: entryData.sseEvents,
+        ...(entryData.warningMessages && { warningMessages: entryData.warningMessages }),
         ...(entryData.effectiveRequest && {
           effectiveRequest: {
             model: entryData.effectiveRequest.model,

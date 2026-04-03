@@ -41,6 +41,7 @@ const compressToolResultsBeforeTruncate = topLevelField("compress_tool_results_b
 const fetchTimeout = topLevelField("fetch_timeout", null)
 const streamIdleTimeout = topLevelField("stream_idle_timeout", null)
 const staleRequestMaxAge = topLevelField("stale_request_max_age", null)
+const modelRefreshInterval = topLevelField("model_refresh_interval", null)
 const systemPromptPrepend = topLevelField("system_prompt_prepend", null)
 const systemPromptAppend = topLevelField("system_prompt_append", null)
 
@@ -304,6 +305,13 @@ function nestedField<
               v-model="staleRequestMaxAge"
               label="Stale Request Max Age"
               description="Force-fail active requests that outlive this threshold."
+              suffix="s"
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="modelRefreshInterval"
+              label="Model Refresh Interval"
+              description="Refresh the cached model list in the background. Set to 0 to disable."
               suffix="s"
               :min="0"
             />

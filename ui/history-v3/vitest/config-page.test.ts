@@ -111,6 +111,7 @@ describe("VConfigPage", () => {
     mockState.editor = createEditorMock({
       proxy: "http://127.0.0.1:7890",
       fetch_timeout: 300,
+      model_refresh_interval: 600,
       anthropic: {
         strip_server_tools: true,
         rewrite_system_reminders: false,
@@ -137,6 +138,7 @@ describe("VConfigPage", () => {
     expect(wrapper.text()).toContain("System Prompt")
     expect(wrapper.text()).toContain("OpenAI Responses")
     expect(wrapper.text()).toContain("Timeouts")
+    expect(wrapper.text()).toContain("Model Refresh Interval")
     expect(wrapper.text()).toContain("Shutdown")
     expect(wrapper.text()).toContain("History")
     expect(wrapper.text()).toContain("Model Overrides")

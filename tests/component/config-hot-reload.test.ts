@@ -81,6 +81,11 @@ anthropic:
   strip_server_tools: false
   immutable_thinking_messages: true
   strip_read_tool_result_tags: true
+  context_editing_trigger: 200000
+  context_editing_keep_tools: 5
+  context_editing_keep_thinking: 2
+  tool_search: false
+  auto_cache_control: false
 fetch_timeout: 30
 stream_idle_timeout: 60
 `)
@@ -91,6 +96,11 @@ stream_idle_timeout: 60
     expect(state.fetchTimeout).toBe(30)
     expect(state.streamIdleTimeout).toBe(60)
     expect(state.stripReadToolResultTags).toBe(true)
+    expect(state.contextEditingTrigger).toBe(200000)
+    expect(state.contextEditingKeepTools).toBe(5)
+    expect(state.contextEditingKeepThinking).toBe(2)
+    expect(state.toolSearchEnabled).toBe(false)
+    expect(state.autoCacheControl).toBe(false)
   })
 
   test("leaves state unchanged when config has no anthropic section", async () => {
@@ -185,6 +195,17 @@ openai-responses:
     expect(state.staleRequestMaxAge).toBe(300)
   })
 
+  test("applies model_refresh_interval and allows zero to disable", async () => {
+    await writeConfig("model_refresh_interval: 0\n")
+    await applyConfigToState()
+    expect(state.modelRefreshInterval).toBe(0)
+
+    resetConfigCache()
+    await writeConfig("model_refresh_interval: 120\n")
+    await applyConfigToState()
+    expect(state.modelRefreshInterval).toBe(120)
+  })
+
   test("leaves staleRequestMaxAge unchanged when absent", async () => {
     setStateForTests({ staleRequestMaxAge: 900 })
     await writeConfig("fetch_timeout: 30\n")
@@ -246,6 +267,26 @@ anthropic:
 `)
     await applyConfigToState()
     expect(state.rewriteSystemReminders).toBe(true)
+  })
+
+  test("non_deferred_tools: entire replacement", async () => {
+    await writeConfig(`
+anthropic:
+  non_deferred_tools:
+    - first_tool
+    - second_tool
+`)
+    await applyConfigToState()
+    expect(state.nonDeferredTools).toEqual(["first_tool", "second_tool"])
+
+    resetConfigCache()
+    await writeConfig(`
+anthropic:
+  non_deferred_tools:
+    - replacement_tool
+`)
+    await applyConfigToState()
+    expect(state.nonDeferredTools).toEqual(["replacement_tool"])
   })
 
   test("system_prompt_overrides: compiles to state.systemPromptOverrides", async () => {
@@ -348,6 +389,12 @@ describe("config-managed defaults", () => {
     expect(state.dedupToolCalls).toBe(CONFIG_MANAGED_DEFAULTS.dedupToolCalls as typeof state.dedupToolCalls)
     expect(CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags).toBe(state.stripReadToolResultTags)
     expect(state.contextEditingMode).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingMode as typeof state.contextEditingMode)
+    expect(state.contextEditingTrigger).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingTrigger)
+    expect(state.contextEditingKeepTools).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools)
+    expect(state.contextEditingKeepThinking).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking)
+    expect(state.toolSearchEnabled).toBe(CONFIG_MANAGED_DEFAULTS.toolSearchEnabled)
+    expect(state.autoCacheControl).toBe(CONFIG_MANAGED_DEFAULTS.autoCacheControl)
+    expect(state.nonDeferredTools).toEqual(CONFIG_MANAGED_DEFAULTS.nonDeferredTools)
     expect(state.rewriteSystemReminders).toBe(
       CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders as typeof state.rewriteSystemReminders,
     )
@@ -355,6 +402,7 @@ describe("config-managed defaults", () => {
     expect(CONFIG_MANAGED_DEFAULTS.fetchTimeout).toBe(state.fetchTimeout)
     expect(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout).toBe(state.streamIdleTimeout)
     expect(CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge).toBe(state.staleRequestMaxAge)
+    expect(CONFIG_MANAGED_DEFAULTS.modelRefreshInterval).toBe(state.modelRefreshInterval)
     expect(CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait).toBe(state.shutdownGracefulWait)
     expect(CONFIG_MANAGED_DEFAULTS.shutdownAbortWait).toBe(state.shutdownAbortWait)
     expect(CONFIG_MANAGED_DEFAULTS.historyLimit).toBe(state.historyLimit)
@@ -370,12 +418,19 @@ describe("config-managed defaults", () => {
       dedupToolCalls: "result",
       stripReadToolResultTags: true,
       contextEditingMode: "clear-both",
+      contextEditingTrigger: 777777,
+      contextEditingKeepTools: 9,
+      contextEditingKeepThinking: 4,
+      toolSearchEnabled: false,
+      autoCacheControl: false,
+      nonDeferredTools: ["custom_tool"],
       rewriteSystemReminders: true,
       systemPromptOverrides: [{ from: /custom/, to: "rule" }],
       compressToolResultsBeforeTruncate: false,
       fetchTimeout: 999,
       streamIdleTimeout: 888,
       staleRequestMaxAge: 777,
+      modelRefreshInterval: 666,
       shutdownGracefulWait: 66,
       shutdownAbortWait: 55,
       historyLimit: 44,
@@ -391,6 +446,12 @@ describe("config-managed defaults", () => {
     expect(state.dedupToolCalls).toBe(CONFIG_MANAGED_DEFAULTS.dedupToolCalls as typeof state.dedupToolCalls)
     expect(state.stripReadToolResultTags).toBe(CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags)
     expect(state.contextEditingMode).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingMode as typeof state.contextEditingMode)
+    expect(state.contextEditingTrigger).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingTrigger)
+    expect(state.contextEditingKeepTools).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools)
+    expect(state.contextEditingKeepThinking).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking)
+    expect(state.toolSearchEnabled).toBe(CONFIG_MANAGED_DEFAULTS.toolSearchEnabled)
+    expect(state.autoCacheControl).toBe(CONFIG_MANAGED_DEFAULTS.autoCacheControl)
+    expect(state.nonDeferredTools).toEqual(CONFIG_MANAGED_DEFAULTS.nonDeferredTools)
     expect(state.rewriteSystemReminders).toBe(
       CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders as typeof state.rewriteSystemReminders,
     )
@@ -399,6 +460,7 @@ describe("config-managed defaults", () => {
     expect(state.fetchTimeout).toBe(CONFIG_MANAGED_DEFAULTS.fetchTimeout)
     expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)
     expect(state.staleRequestMaxAge).toBe(CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge)
+    expect(state.modelRefreshInterval).toBe(CONFIG_MANAGED_DEFAULTS.modelRefreshInterval)
     expect(state.shutdownGracefulWait).toBe(CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait)
     expect(state.shutdownAbortWait).toBe(CONFIG_MANAGED_DEFAULTS.shutdownAbortWait)
     expect(state.historyLimit).toBe(CONFIG_MANAGED_DEFAULTS.historyLimit)

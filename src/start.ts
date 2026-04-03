@@ -3,7 +3,6 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 import pc from "picocolors"
-import { startServer } from "./lib/serve"
 
 import type { Model } from "./lib/models/client"
 
@@ -18,7 +17,9 @@ import { cacheVSCodeVersion } from "./lib/copilot-api"
 import { initHistory, startMemoryPressureMonitor } from "./lib/history"
 import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
+import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initProxy } from "./lib/proxy"
+import { startServer } from "./lib/serve"
 import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
 import { setCliState, setServerStartTime, state } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
@@ -207,6 +208,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   consola.info(`Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`)
+  const stopModelRefreshLoop = startModelRefreshLoop()
 
   // Load previously learned auto-truncate limits (calibration + token limits)
   await loadPersistedLimits()
@@ -259,10 +261,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     wsAdapter.injectWebSocket(serverInstance.nodeServer)
   }
 
-  // Block until a shutdown signal (SIGINT/SIGTERM) is received.
-  // This prevents runMain() from returning, which would trigger
-  // process.exit(0) in main.ts (needed for one-shot commands).
-  await waitForShutdown()
+  try {
+    // Block until a shutdown signal (SIGINT/SIGTERM) is received.
+    // This prevents runMain() from returning, which would trigger
+    // process.exit(0) in main.ts (needed for one-shot commands).
+    await waitForShutdown()
+  } finally {
+    stopModelRefreshLoop()
+  }
 }
 
 export const start = defineCommand({

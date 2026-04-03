@@ -1344,6 +1344,60 @@ describe("Server Tool Use Support", () => {
       }
     })
 
+    test("should preserve document blocks nested inside tool_result content", () => {
+      const payload = makePayload(
+        [
+          { role: "user", content: "summarize this pdf" },
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "tu_1", name: "Read", input: { file: "spec.pdf" } }],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tu_1",
+                content: [
+                  { type: "text", text: "Attached document" },
+                  {
+                    type: "document",
+                    source: {
+                      type: "base64",
+                      media_type: "application/pdf",
+                      data: "JVBERi0xLjQK",
+                    },
+                  } as unknown as MessageParam["content"] extends Array<infer T> ? T : never,
+                ],
+              },
+            ],
+          },
+        ],
+        [{ name: "Read" }],
+      )
+
+      const result = sanitizeAnthropicMessages(payload)
+      expect(result.blocksRemoved).toBe(0)
+
+      const userMsg = result.payload.messages[2]
+      expect(typeof userMsg.content).not.toBe("string")
+      if (typeof userMsg.content !== "string") {
+        const toolResult = userMsg.content.find((block) => block.type === "tool_result")
+        expect(toolResult).toBeDefined()
+        if (toolResult?.type === "tool_result" && Array.isArray(toolResult.content)) {
+          expect(toolResult.content).toHaveLength(2)
+          expect(toolResult.content[1]).toMatchObject({
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: "JVBERi0xLjQK",
+            },
+          })
+        }
+      }
+    })
+
     test("server_tool_use input field should remain as object (not string)", () => {
       const payload = makePayload([
         { role: "user", content: "search" },

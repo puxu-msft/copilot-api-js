@@ -63,6 +63,10 @@ fetch_timeout: 600
 # Safety net for requests that never complete/fail normally.
 stale_request_max_age: 600
 
+# Seconds between background model list refreshes (0 = disabled).
+# Keeps /models cache fresh for long-running instances without requiring a restart.
+model_refresh_interval: 600
+
 # ============================================================================
 # Shutdown
 # ============================================================================

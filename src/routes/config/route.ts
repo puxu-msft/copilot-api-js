@@ -39,6 +39,7 @@ configRoutes.get("/", (c) => {
     fetchTimeout: state.fetchTimeout,
     streamIdleTimeout: state.streamIdleTimeout,
     staleRequestMaxAge: state.staleRequestMaxAge,
+    modelRefreshInterval: state.modelRefreshInterval,
 
     // ─── Shutdown ───
     shutdownGracefulWait: state.shutdownGracefulWait,
@@ -142,6 +143,7 @@ const TOP_LEVEL_KEYS = new Set([
   "stream_idle_timeout",
   "fetch_timeout",
   "stale_request_max_age",
+  "model_refresh_interval",
   "shutdown",
   "history",
   "anthropic",
@@ -192,6 +194,8 @@ function validateConfigBody(input: unknown): ValidationResult {
   if (hasOwn(body, "fetch_timeout")) validateNonNegativeInteger(body.fetch_timeout, "fetch_timeout", details)
   if (hasOwn(body, "stale_request_max_age"))
     validateNonNegativeInteger(body.stale_request_max_age, "stale_request_max_age", details)
+  if (hasOwn(body, "model_refresh_interval"))
+    validateNonNegativeInteger(body.model_refresh_interval, "model_refresh_interval", details)
   if (hasOwn(body, "compress_tool_results_before_truncate"))
     validateBoolean(body.compress_tool_results_before_truncate, "compress_tool_results_before_truncate", details)
   if (hasOwn(body, "system_prompt_prepend"))
@@ -477,6 +481,7 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "stream_idle_timeout")) setScalar(doc, ["stream_idle_timeout"], body.stream_idle_timeout)
   if (hasOwn(body, "fetch_timeout")) setScalar(doc, ["fetch_timeout"], body.fetch_timeout)
   if (hasOwn(body, "stale_request_max_age")) setScalar(doc, ["stale_request_max_age"], body.stale_request_max_age)
+  if (hasOwn(body, "model_refresh_interval")) setScalar(doc, ["model_refresh_interval"], body.model_refresh_interval)
   if (hasOwn(body, "compress_tool_results_before_truncate")) {
     setScalar(doc, ["compress_tool_results_before_truncate"], body.compress_tool_results_before_truncate)
   }
@@ -495,7 +500,7 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
     const anthropic = body.anthropic as Config["anthropic"] | null
     if (anthropic === null) {
       doc.deleteIn(["anthropic"])
-    } else {
+    } else if (anthropic) {
       setNestedScalarContainer(doc, ["anthropic"], anthropic, { excludeKeys: ANTHROPIC_COLLECTION_KEYS })
 
       if (hasOwn(anthropic, "rewrite_system_reminders")) {

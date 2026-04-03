@@ -251,6 +251,20 @@ describe("createRequestContext - data setters", () => {
     expect(ctx.pipelineInfo).toEqual(pipeInfo)
     expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("pipelineInfo")
   })
+
+  test("addWarningMessage deduplicates and emits", () => {
+    const { ctx, onEvent } = makeContext()
+    const warning = {
+      code: "cc_to_responses_dropped_params",
+      message: "Dropped unsupported params: stop, seed",
+    }
+
+    ctx.addWarningMessage(warning)
+    ctx.addWarningMessage(warning)
+
+    expect(ctx.warningMessages).toEqual([warning])
+    expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("warningMessages")
+  })
 })
 
 // ─── toHistoryEntry ───
@@ -510,6 +524,25 @@ describe("createRequestContext - toHistoryEntry", () => {
     const entry = ctx.toHistoryEntry()
     expect(entry.sseEvents).toHaveLength(1)
     expect(entry.httpHeaders).toEqual({ request: { "x-req": "1" }, response: { "x-res": "2" } })
+  })
+
+  test("includes warningMessages in entry", () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: false, payload: {} })
+    ctx.addWarningMessage({
+      code: "cc_to_responses_dropped_params",
+      message: "Dropped unsupported params: stop",
+    })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.warningMessages).toEqual([
+      {
+        code: "cc_to_responses_dropped_params",
+        message: "Dropped unsupported params: stop",
+      },
+    ])
   })
 })
 

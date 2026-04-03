@@ -14,6 +14,7 @@ export interface ConfigYamlResponse {
   stream_idle_timeout?: number
   fetch_timeout?: number
   stale_request_max_age?: number
+  model_refresh_interval?: number
   shutdown?: {
     graceful_wait?: number
     abort_wait?: number
@@ -51,6 +52,7 @@ export interface EditableConfig {
   stream_idle_timeout?: number | null
   fetch_timeout?: number | null
   stale_request_max_age?: number | null
+  model_refresh_interval?: number | null
   shutdown?: {
     graceful_wait?: number | null
     abort_wait?: number | null

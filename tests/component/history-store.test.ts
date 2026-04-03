@@ -434,6 +434,30 @@ describe("updateEntry (rewrites)", () => {
     expect(stored!.attempts![1].effectiveMessageCount).toBe(5)
   })
 
+  test("stores warningMessages via updateEntry", () => {
+    const entry = createEntry("openai-chat-completions", {
+      model: "gpt-5-resp",
+      messages: [{ role: "user", content: "hello" }],
+    })
+
+    updateEntry(entry.id, {
+      warningMessages: [
+        {
+          code: "cc_to_responses_dropped_params",
+          message: "Chat Completions -> Responses translation dropped unsupported params: stop, seed",
+        },
+      ],
+    })
+
+    const stored = getEntry(entry.id)
+    expect(stored!.warningMessages).toEqual([
+      {
+        code: "cc_to_responses_dropped_params",
+        message: "Chat Completions -> Responses translation dropped unsupported params: stop, seed",
+      },
+    ])
+  })
+
   test("stores response with status, rawBody, and headers", () => {
     const entry = createEntry("anthropic-messages", { model: "m", messages: undefined })
 

@@ -1,5 +1,6 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
 
+import consola from "consola"
 import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
@@ -128,9 +129,11 @@ const app = createFullTestApp()
 
 describe("POST /chat/completions via /responses translation", () => {
   let snapshot: StateSnapshot
+  let warnSpy: ReturnType<typeof spyOn>
 
   beforeAll(() => {
     bootstrapTestRuntime()
+    warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
   })
 
   beforeEach(() => {
@@ -138,11 +141,16 @@ describe("POST /chat/completions via /responses translation", () => {
     capturedResponsesPayload = undefined
     createChatCompletionsMock.mockClear()
     createResponsesMock.mockClear()
+    warnSpy.mockClear()
   })
 
   afterEach(() => {
     restoreStateForTests(snapshot)
     resetTestRuntime()
+  })
+
+  afterAll(() => {
+    warnSpy.mockRestore()
   })
 
   test("translates non-streaming chat completions requests for responses-only models", async () => {
@@ -207,6 +215,76 @@ describe("POST /chat/completions via /responses translation", () => {
     const historyEntry = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
     expect(historyEntry?.wireRequest?.format).toBe("openai-responses")
     expect(historyEntry?.wireRequest?.messageCount).toBe(1)
+    expect(historyEntry?.warningMessages).toEqual([
+      {
+        code: "cc_to_responses_dropped_params",
+        message: "Chat Completions -> Responses translation dropped unsupported params: stop",
+      },
+    ])
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[CC→Responses] model=gpt-5-resp Chat Completions -> Responses translation dropped unsupported params: stop",
+    )
+  })
+
+  test("normalizes translated call ids before sending to responses upstream by default", async () => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("gpt-5-resp", {
+          vendor: "OpenAI",
+          supported_endpoints: ["/responses"],
+        }),
+      ],
+    })
+
+    const res = await app.request("/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5-resp",
+        stream: false,
+        messages: [
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_weather",
+                type: "function",
+                function: { name: "lookup_weather", arguments: '{"city":"Paris"}' },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            tool_call_id: "call_weather",
+            content: "sunny",
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(capturedResponsesPayload?.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "hello" }],
+      },
+      {
+        type: "function_call",
+        id: "fc_weather",
+        call_id: "fc_weather",
+        name: "lookup_weather",
+        arguments: '{"city":"Paris"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "fc_weather",
+        output: "sunny",
+      },
+    ])
   })
 
   test("streams translated chat completion chunks from responses upstream", async () => {

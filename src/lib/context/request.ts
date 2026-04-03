@@ -6,9 +6,19 @@
  * Each retry creates a new Attempt in the attempts array.
  */
 
+import type { ApiError } from "~/lib/error"
 import type {
-  ApiError,
-} from "~/lib/error"
+  EndpointType,
+  PipelineInfo,
+  SanitizationInfo,
+  SseEventRecord,
+  TruncationInfo,
+  WarningMessage,
+} from "~/lib/history/store"
+
+import { getErrorMessage } from "~/lib/error"
+import { normalizeModelId } from "~/lib/models/resolver"
+
 import type {
   Attempt,
   EffectiveRequest,
@@ -22,10 +32,7 @@ import type {
   ResponseData,
   WireRequest,
 } from "./types"
-import type { EndpointType, PipelineInfo, SanitizationInfo, SseEventRecord, TruncationInfo } from "~/lib/history/store"
 
-import { getErrorMessage } from "~/lib/error"
-import { normalizeModelId } from "~/lib/models/resolver"
 export type {
   Attempt,
   EffectiveRequest,
@@ -61,6 +68,7 @@ export function createRequestContext(opts: {
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: { request: Record<string, string>; response: Record<string, string> } | null = null
   let _queueWaitMs = 0
+  const _warningMessages: Array<WarningMessage> = []
   const _attempts: Array<Attempt> = []
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
   let settled = false
@@ -109,6 +117,9 @@ export function createRequestContext(opts: {
     get queueWaitMs() {
       return _queueWaitMs
     },
+    get warningMessages() {
+      return _warningMessages
+    },
 
     setOriginalRequest(req: OriginalRequest) {
       _originalRequest = req
@@ -129,6 +140,16 @@ export function createRequestContext(opts: {
       if (capture.request && capture.response) {
         _httpHeaders = { request: capture.request, response: capture.response }
       }
+    },
+
+    addWarningMessage(warning: WarningMessage) {
+      const exists = _warningMessages.some(
+        (existing) => existing.code === warning.code && existing.message === warning.message,
+      )
+      if (exists) return
+
+      _warningMessages.push(warning)
+      emit({ type: "updated", context: ctx, field: "warningMessages" })
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo }) {
@@ -250,6 +271,7 @@ export function createRequestContext(opts: {
         endpoint: opts.endpoint,
         timestamp: startTime,
         durationMs: Date.now() - startTime,
+        ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
         request: {
           model: _originalRequest?.model,
           messages: _originalRequest?.messages,
@@ -294,7 +316,7 @@ export function createRequestContext(opts: {
           format: ep.format,
           messageCount: ep.messages.length,
           messages: ep.messages,
-          system: (ep.payload as Record<string, unknown>)?.system,
+          system: (ep.payload as Record<string, unknown>).system,
           payload: ep.payload,
         }
       }
@@ -306,7 +328,7 @@ export function createRequestContext(opts: {
           format: wp.format,
           messageCount: wp.messages.length,
           messages: wp.messages,
-          system: (wp.payload as Record<string, unknown>)?.system,
+          system: (wp.payload as Record<string, unknown>).system,
           payload: wp.payload,
           headers: wp.headers,
         }
@@ -321,7 +343,7 @@ export function createRequestContext(opts: {
           error: a.error?.message,
           truncation: a.truncation,
           sanitization: a.sanitization,
-          effectiveMessageCount: a.effectiveRequest?.messages?.length,
+          effectiveMessageCount: a.effectiveRequest?.messages.length,
         }))
       }
 

@@ -21,6 +21,7 @@ import {
   setTimeoutConfig,
 } from "~/lib/state"
 
+import { syncModelRefreshLoop } from "../models/refresh-loop"
 import { PATHS } from "./paths"
 
 // ============================================================================
@@ -201,6 +202,8 @@ export interface Config {
   fetch_timeout?: number
   /** Maximum age (seconds) of an active request before stale reaper forces fail (0 = disabled, default: 600) */
   stale_request_max_age?: number
+  /** Interval in seconds for refreshing the cached model list (0 = disabled, default: 600) */
+  model_refresh_interval?: number
 }
 
 // ============================================================================
@@ -219,9 +222,9 @@ export async function loadRawConfigFile(): Promise<Config> {
     const { parse } = await import("yaml")
     const parsed = parse(content)
 
-    if (parsed == null) return {}
+    if (parsed === null || parsed === undefined) return {}
     if (typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("config.yaml must contain a top-level mapping")
+      throw new TypeError("config.yaml must contain a top-level mapping")
     }
 
     return parsed as Config
@@ -364,11 +367,15 @@ export async function applyConfigToState(): Promise<Config> {
 
   // Stale request reaper max age (scalar: override only when present)
   if (config.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: config.stale_request_max_age })
+  if (config.model_refresh_interval !== undefined)
+    setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 
   // Responses API settings (scalar: override only when present)
   const responsesConfig = config["openai-responses"]
   if (responsesConfig && responsesConfig.normalize_call_ids !== undefined)
     setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
+
+  syncModelRefreshLoop()
 
   // Log when config actually changes (skip initial startup load)
   const currentMtime = getConfigMtimeMs()

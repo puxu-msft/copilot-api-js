@@ -35,5 +35,6 @@ export type {
   ToolUseContentBlock,
   TruncationInfo,
   UsageData,
+  WarningMessage,
   WebSearchToolResultContentBlock,
 } from "~backend/lib/history/store"

@@ -152,6 +152,8 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   // stay non-deferred to avoid "Tool reference not found" errors
   const historyToolNames = toolSearchEnabled ? collectHistoryToolNames(messages) : undefined
 
+  const nonDeferred: Array<Tool> = []
+  const deferred: Array<Tool> = []
   const result: Array<Tool> = []
 
   // Prepend tool_search_tool_regex if model supports it
@@ -177,7 +179,11 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
       && !NON_DEFERRED_TOOL_NAMES.has(tool.name)
       && !historyToolNames?.has(tool.name)
 
-    result.push(shouldDefer ? { ...normalized, defer_loading: true } : normalized)
+    if (shouldDefer) {
+      deferred.push({ ...normalized, defer_loading: true })
+    } else {
+      nonDeferred.push(normalized)
+    }
   }
 
   // Inject stubs for any missing Claude Code official tools
@@ -188,8 +194,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
         description: `Claude Code ${name} tool`,
         input_schema: EMPTY_INPUT_SCHEMA,
       }
-      // Official tools are always non-deferred, no defer_loading needed
-      result.push(stub)
+      nonDeferred.push(stub)
     }
   }
 
@@ -199,11 +204,11 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   // rejects the request because the historical tool_use references a tool that
   // doesn't exist in the tools list at all.
   if (historyToolNames) {
-    const allResultNames = new Set(result.map((t) => t.name))
+    const allResultNames = new Set([...nonDeferred, ...deferred, ...result].map((t) => t.name))
     for (const name of historyToolNames) {
       if (!allResultNames.has(name)) {
         consola.debug(`[ToolPipeline] Injecting stub for history-referenced tool: ${name}`)
-        result.push({
+        nonDeferred.push({
           name,
           description: `Stub for tool referenced in conversation history`,
           input_schema: EMPTY_INPUT_SCHEMA,
@@ -211,6 +216,8 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
       }
     }
   }
+
+  result.push(...nonDeferred, ...deferred)
 
   const deferredCount = result.filter((t) => t.defer_loading === true).length
   const injectedCount = result.length - tools.length

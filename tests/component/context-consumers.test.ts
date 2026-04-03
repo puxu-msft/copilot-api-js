@@ -151,6 +151,31 @@ describe("registerContextConsumers", () => {
       expect(data.pipelineInfo).toBe(rewrites)
     })
 
+    test("propagates warningMessages updates to history", () => {
+      manager.emit({
+        type: "updated",
+        field: "warningMessages",
+        context: {
+          id: "req_1",
+          warningMessages: [
+            {
+              code: "cc_to_responses_dropped_params",
+              message: "Chat Completions -> Responses translation dropped unsupported params: stop",
+            },
+          ],
+        },
+      } as unknown as RequestContextEvent)
+
+      expect(updateEntrySpy).toHaveBeenCalledWith("req_1", {
+        warningMessages: [
+          {
+            code: "cc_to_responses_dropped_params",
+            message: "Chat Completions -> Responses translation dropped unsupported params: stop",
+          },
+        ],
+      })
+    })
+
     test("ignores unrelated field updates", () => {
       manager.emit({
         type: "updated",
@@ -216,6 +241,37 @@ describe("registerContextConsumers", () => {
       const [, data] = updateEntrySpy.mock.calls[0]
       expect(data.response.usage.output_tokens_details).toEqual({ reasoning_tokens: 30 })
       expect(data.response.usage.cache_read_input_tokens).toBe(50)
+    })
+
+    test("propagates warningMessages on completed", () => {
+      manager.emit({
+        type: "completed",
+        context: { id: "req_1", tuiLogId: undefined },
+        entry: {
+          id: "req_1",
+          durationMs: 1000,
+          response: {
+            success: true,
+            model: "gpt-5-resp",
+            usage: { input_tokens: 50, output_tokens: 25 },
+            content: null,
+          },
+          warningMessages: [
+            {
+              code: "cc_to_responses_dropped_params",
+              message: "Chat Completions -> Responses translation dropped unsupported params: stop, seed",
+            },
+          ],
+        },
+      } as unknown as RequestContextEvent)
+
+      const [, data] = updateEntrySpy.mock.calls[0]
+      expect(data.warningMessages).toEqual([
+        {
+          code: "cc_to_responses_dropped_params",
+          message: "Chat Completions -> Responses translation dropped unsupported params: stop, seed",
+        },
+      ])
     })
 
     test("updates entry on failed event", () => {

@@ -131,6 +131,21 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
       <pre class="raw-body">{{ entry.response.rawBody }}</pre>
     </div>
 
+    <div
+      v-if="entry.warningMessages?.length"
+      class="meta-section"
+    >
+      <div class="meta-section-title">Warnings</div>
+      <div
+        v-for="warning in entry.warningMessages"
+        :key="`${warning.code}:${warning.message}`"
+        class="meta-row"
+      >
+        <span class="meta-label meta-label--code">{{ warning.code }}</span>
+        <span class="meta-value warning-text">{{ warning.message }}</span>
+      </div>
+    </div>
+
     <!-- Tools -->
     <div
       v-if="entry.request.tools?.length"
@@ -267,6 +282,10 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
   color: var(--text-muted);
 }
 
+.meta-label--code {
+  font-family: var(--font-mono);
+}
+
 .meta-value {
   font-size: var(--font-size-xs);
   color: var(--text);
@@ -306,6 +325,10 @@ const { formatNumber, formatDuration, formatDate } = useFormatters()
 
 .error-text {
   color: var(--error);
+}
+
+.warning-text {
+  color: var(--warning);
 }
 
 .raw-body {

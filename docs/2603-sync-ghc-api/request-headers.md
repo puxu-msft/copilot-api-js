@@ -35,25 +35,15 @@ Token 请求使用独立版本号 (`copilot-client.ts:13`)。
 
 此外本项目还有 GHC 没有的 `X-Interaction-Id`（会话级追踪头，`copilot-api.ts:26-28`），在服务器生命周期内保持不变，用于聚合同一实例的所有请求。
 
-### 剩余 Gap
+### 已补齐项
 
-#### `X-Interaction-Type` — P2
+#### `X-Interaction-Type` ✅
 
-**GHC 值**: `conversation-agent` | `conversation-subagent` | `conversation-background`
+本项目已设置该头（`copilot-api.ts:60`），当前值与 `openai-intent` 保持一致。
 
-GHC 用此头区分主请求、子代理请求、后台请求。
+#### `X-Agent-Task-Id` ✅
 
-**评估**: 本项目作为代理，所有请求对 Copilot API 而言都是"代理请求"。缺少此头不影响功能。如果 Copilot API 未来基于此头做差异化处理（如限流策略），可以补充。
-
-**建议**: 可固定为 `conversation-agent`，或从客户端请求头中提取。
-
-#### `X-Agent-Task-Id` — P2
-
-**GHC 值**: 与 `X-Request-Id` 相同。
-
-**评估**: 用于请求聚合分析。本项目的 `x-request-id` 已提供等价的请求追踪能力。
-
-**建议**: 可与 `x-request-id` 保持一致，实现成本极低。
+本项目已设置该头（`copilot-api.ts:61`），并与 `x-request-id` 保持一致，行为与 GHC 对齐。
 
 ## Anthropic 特有的头
 

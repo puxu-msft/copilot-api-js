@@ -1,15 +1,17 @@
 import type { ApiError } from "~/lib/error"
-import type { EndpointType, PipelineInfo, SanitizationInfo, SseEventRecord, TruncationInfo } from "~/lib/history/store"
+import type {
+  EndpointType,
+  PipelineInfo,
+  SanitizationInfo,
+  SseEventRecord,
+  TruncationInfo,
+  WarningMessage,
+} from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 
 // ─── Request State Machine ───
 
-export type RequestState =
-  | "pending"
-  | "executing"
-  | "streaming"
-  | "completed"
-  | "failed"
+export type RequestState = "pending" | "executing" | "streaming" | "completed" | "failed"
 
 // ─── Four-Part Data Model ───
 
@@ -96,6 +98,7 @@ export interface HistoryEntryData {
   timestamp: number
   durationMs: number
   sessionId?: string
+  warningMessages?: Array<WarningMessage>
 
   request: {
     model?: string
@@ -179,11 +182,13 @@ export interface RequestContext {
   readonly attempts: ReadonlyArray<Attempt>
   readonly currentAttempt: Attempt | null
   readonly queueWaitMs: number
+  readonly warningMessages: ReadonlyArray<WarningMessage>
 
   setOriginalRequest(req: OriginalRequest): void
   setPipelineInfo(info: PipelineInfo): void
   setSseEvents(events: Array<SseEventRecord>): void
   setHttpHeaders(capture: HeadersCapture): void
+  addWarningMessage(warning: WarningMessage): void
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo }): void
   setAttemptSanitization(info: SanitizationInfo): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void

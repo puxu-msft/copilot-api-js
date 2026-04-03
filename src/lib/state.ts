@@ -176,6 +176,12 @@ export interface State {
   readonly staleRequestMaxAge: number
 
   /**
+   * Interval in seconds for refreshing the cached model list from Copilot.
+   * 0 = disabled. Default: 600 (10 minutes).
+   */
+  readonly modelRefreshInterval: number
+
+  /**
    * Normalize function call IDs in Responses API input.
    * Converts `call_` prefixed IDs (Chat Completions format) to `fc_` prefixed IDs
    * (Responses API format) before forwarding to upstream.
@@ -210,9 +216,7 @@ function cloneModels(models: ModelsResponse | undefined): ModelsResponse | undef
   return models ? { ...models, data: [...models.data] } : undefined
 }
 
-function cloneRewriteRules(
-  rules: boolean | Array<CompiledRewriteRule>,
-): boolean | Array<CompiledRewriteRule> {
+function cloneRewriteRules(rules: boolean | Array<CompiledRewriteRule>): boolean | Array<CompiledRewriteRule> {
   return Array.isArray(rules) ? [...rules] : rules
 }
 
@@ -326,7 +330,9 @@ export function setShutdownConfig(
 }
 
 export function setTimeoutConfig(
-  patch: Partial<Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge">>,
+  patch: Partial<
+    Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval">
+  >,
 ): void {
   updateState(patch)
 }
@@ -393,6 +399,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   fetchTimeout: 300,
   streamIdleTimeout: 300,
   staleRequestMaxAge: 600,
+  modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
   historyLimit: 200,
@@ -416,6 +423,7 @@ export function resetConfigManagedState(): void {
     fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+    modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   })
   setShutdownConfig({
     shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
@@ -450,6 +458,7 @@ const mutableState: MutableState = {
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
   staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+  modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,

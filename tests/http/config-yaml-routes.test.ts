@@ -89,6 +89,7 @@ model_overrides:
 stream_idle_timeout: 301
 fetch_timeout: 600
 stale_request_max_age: 900
+model_refresh_interval: 0
 shutdown:
   graceful_wait: 12
   abort_wait: 34
@@ -101,6 +102,14 @@ anthropic:
   immutable_thinking_messages: true
   strip_read_tool_result_tags: true
   context_editing: clear-both
+  context_editing_trigger: 200000
+  context_editing_keep_tools: 4
+  context_editing_keep_thinking: 2
+  tool_search: false
+  auto_cache_control: false
+  non_deferred_tools:
+    - custom_tool
+    - second_tool
   rewrite_system_reminders:
     - from: '(?i)warning'
       to: ''
@@ -133,6 +142,7 @@ system_prompt_append: "append"
       stream_idle_timeout: 301,
       fetch_timeout: 600,
       stale_request_max_age: 900,
+      model_refresh_interval: 0,
       shutdown: {
         graceful_wait: 12,
         abort_wait: 34,
@@ -147,6 +157,12 @@ system_prompt_append: "append"
         immutable_thinking_messages: true,
         strip_read_tool_result_tags: true,
         context_editing: "clear-both",
+        context_editing_trigger: 200000,
+        context_editing_keep_tools: 4,
+        context_editing_keep_thinking: 2,
+        tool_search: false,
+        auto_cache_control: false,
+        non_deferred_tools: ["custom_tool", "second_tool"],
         rewrite_system_reminders: [
           {
             from: "(?i)warning",
@@ -393,6 +409,7 @@ fetch_timeout: 600
       stream_idle_timeout: 301,
       fetch_timeout: 600,
       stale_request_max_age: 900,
+      model_refresh_interval: 0,
       shutdown: {
         graceful_wait: 12,
         abort_wait: 34,
@@ -407,6 +424,12 @@ fetch_timeout: 600
         immutable_thinking_messages: true,
         strip_read_tool_result_tags: true,
         context_editing: "clear-both",
+        context_editing_trigger: 200000,
+        context_editing_keep_tools: 4,
+        context_editing_keep_thinking: 2,
+        tool_search: false,
+        auto_cache_control: false,
+        non_deferred_tools: ["custom_tool", "second_tool"],
         rewrite_system_reminders: [
           {
             from: "(?i)warning",
@@ -452,9 +475,13 @@ fetch_timeout: 600
     expect(written).toContain("stream_idle_timeout: 301")
     expect(written).toContain("fetch_timeout: 600")
     expect(written).toContain("stale_request_max_age: 900")
+    expect(written).toContain("model_refresh_interval: 0")
     expect(written).toContain("shutdown:")
     expect(written).toContain("history:")
     expect(written).toContain("anthropic:")
+    expect(written).toContain("context_editing_trigger: 200000")
+    expect(written).toContain("tool_search: false")
+    expect(written).toContain("non_deferred_tools:")
     expect(written).toContain("openai-responses:")
     expect(written).toContain("rate_limiter:")
     expect(written).toContain("system_prompt_overrides:")
@@ -462,13 +489,56 @@ fetch_timeout: 600
     expect(state.fetchTimeout).toBe(600)
     expect(state.streamIdleTimeout).toBe(301)
     expect(state.staleRequestMaxAge).toBe(900)
+    expect(state.modelRefreshInterval).toBe(0)
     expect(state.shutdownGracefulWait).toBe(12)
     expect(state.shutdownAbortWait).toBe(34)
     expect(state.historyLimit).toBe(20)
     expect(state.historyMinEntries).toBe(10)
     expect(state.stripServerTools).toBe(true)
     expect(state.contextEditingMode).toBe("clear-both")
+    expect(state.contextEditingTrigger).toBe(200000)
+    expect(state.contextEditingKeepTools).toBe(4)
+    expect(state.contextEditingKeepThinking).toBe(2)
+    expect(state.toolSearchEnabled).toBe(false)
+    expect(state.autoCacheControl).toBe(false)
+    expect(state.nonDeferredTools).toEqual(["custom_tool", "second_tool"])
     expect(state.normalizeResponsesCallIds).toBe(false)
+  })
+
+  test("PUT /api/config/yaml rejects invalid anthropic tuning fields", async () => {
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        anthropic: {
+          context_editing_trigger: -1,
+          tool_search: "yes",
+          non_deferred_tools: ["valid", 123],
+        },
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: "Config validation failed",
+      details: [
+        {
+          field: "anthropic.context_editing_trigger",
+          message: "Must be a non-negative integer or null",
+          value: -1,
+        },
+        {
+          field: "anthropic.tool_search",
+          message: "Must be a boolean or null",
+          value: "yes",
+        },
+        {
+          field: "anthropic.non_deferred_tools.1",
+          message: "Must be a non-empty string",
+          value: 123,
+        },
+      ],
+    })
   })
 
   test("PUT /api/config/yaml rejects unsupported proxy schemes", async () => {
@@ -488,6 +558,28 @@ fetch_timeout: 600
           field: "proxy",
           message: "Proxy must use http, https, socks5, or socks5h scheme",
           value: "ftp://example.com",
+        },
+      ],
+    })
+  })
+
+  test("PUT /api/config/yaml rejects negative model_refresh_interval", async () => {
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model_refresh_interval: -1,
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: "Config validation failed",
+      details: [
+        {
+          field: "model_refresh_interval",
+          message: "Must be a non-negative integer or null",
+          value: -1,
         },
       ],
     })

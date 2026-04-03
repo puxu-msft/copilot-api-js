@@ -29,6 +29,7 @@ export function normalizeConfigForEditor(
     ...(input.stream_idle_timeout !== undefined ? { stream_idle_timeout: input.stream_idle_timeout } : {}),
     ...(input.fetch_timeout !== undefined ? { fetch_timeout: input.fetch_timeout } : {}),
     ...(input.stale_request_max_age !== undefined ? { stale_request_max_age: input.stale_request_max_age } : {}),
+    ...(input.model_refresh_interval !== undefined ? { model_refresh_interval: input.model_refresh_interval } : {}),
     ...(input.shutdown !== undefined ?
       { shutdown: normalizeScalarSection(input.shutdown, ["graceful_wait", "abort_wait"]) }
     : {}),

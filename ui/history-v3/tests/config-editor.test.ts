@@ -44,6 +44,7 @@ describe("useConfigEditor", () => {
   test("load populates config and original with normalized data", async () => {
     mockFetchConfigYaml.mockResolvedValue({
       fetch_timeout: 300,
+      model_refresh_interval: 600,
       anthropic: {
         rewrite_system_reminders: [],
       },
@@ -56,6 +57,7 @@ describe("useConfigEditor", () => {
     expect(editor.error.value).toBeNull()
     expect(editor.config.value).toEqual({
       fetch_timeout: 300,
+      model_refresh_interval: 600,
       anthropic: {
         rewrite_system_reminders: false,
       },
@@ -128,6 +130,7 @@ describe("useConfigEditor", () => {
   test("hasRestartFields only tracks proxy and rate_limiter changes", async () => {
     mockFetchConfigYaml.mockResolvedValue({
       fetch_timeout: 300,
+      model_refresh_interval: 600,
     })
 
     const editor = useConfigEditor()
@@ -138,6 +141,12 @@ describe("useConfigEditor", () => {
     editor.config.value = {
       ...editor.config.value,
       fetch_timeout: 600,
+    }
+    expect(editor.hasRestartFields.value).toBe(false)
+
+    editor.config.value = {
+      ...editor.config.value,
+      model_refresh_interval: 0,
     }
     expect(editor.hasRestartFields.value).toBe(false)
 

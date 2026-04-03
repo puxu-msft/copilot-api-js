@@ -188,4 +188,46 @@ describe("translateChatCompletionsToResponses", () => {
       },
     ])
   })
+
+  test("converts null tool content to empty output and joins text parts", () => {
+    const payload: ChatCompletionsPayload = {
+      model: "gpt-5-resp",
+      messages: [
+        { role: "user", content: "hello" },
+        {
+          role: "tool",
+          content: null,
+          tool_call_id: "call_null",
+        },
+        {
+          role: "tool",
+          content: [
+            { type: "text", text: "abc" },
+            { type: "text", text: "def" },
+          ],
+          tool_call_id: "call_text",
+        },
+      ],
+    }
+
+    const result = translateChatCompletionsToResponses(payload)
+
+    expect(result.payload.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "hello" }],
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_null",
+        output: "",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_text",
+        output: "abcdef",
+      },
+    ])
+  })
 })

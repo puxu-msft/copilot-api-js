@@ -124,12 +124,19 @@ ui/
 | `autoTruncate` | `--auto-truncate` / `--no-auto-truncate` | boolean | `true` | 响应式 auto-truncate：限制错误时用截断 payload 重试 |
 | `compressToolResultsBeforeTruncate` | config `compress_tool_results_before_truncate` | boolean | `true` | 截断消息前先压缩旧的 tool_result 内容 |
 | `stripServerTools` | config `anthropic.strip_server_tools` | boolean | `false` | 从请求中剥离服务端工具（web_search 等） |
-| `fetchTimeout` | config `fetch_timeout` | number | `60` | 请求超时：请求开始到收到 HTTP 响应头的秒数（0 = 无超时） |
+| `fetchTimeout` | config `fetch_timeout` | number | `300` | 请求超时：请求开始到收到 HTTP 响应头的秒数（0 = 无超时） |
 | `streamIdleTimeout` | config `stream_idle_timeout` | number | `300` | 流空闲超时：连续 SSE 事件间最大等待秒数（0 = 无超时） |
+| `modelRefreshInterval` | config `model_refresh_interval` | number | `600` | 模型列表后台刷新周期秒数（0 = 禁用） |
 | `dedupToolCalls` | config `anthropic.dedup_tool_calls` | `false \| "input" \| "result"` | `false` | 去重重复的 tool_use/tool_result 对 |
+| `toolSearchEnabled` | config `anthropic.tool_search` | boolean | `true` | 是否注入 Copilot `tool_search` 工具 |
+| `autoCacheControl` | config `anthropic.auto_cache_control` | boolean | `true` | 是否自动注入 `cache_control` breakpoint |
+| `nonDeferredTools` | config `anthropic.non_deferred_tools` | `string[]` | `[]` | 额外的不延迟工具名称列表 |
 | `stripReadToolResultTags` | config `anthropic.strip_read_tool_result_tags` | boolean | `false` | 剥离 Read 结果中的 system-reminder 标签 |
 | `rewriteSystemReminders` | config `anthropic.rewrite_system_reminders` | `boolean \| Array<{from, to, method?}>` | `false` | 重写消息中的 system-reminder 标签 |
 | `contextEditingMode` | config `anthropic.context_editing` | `'off' \| 'clear-thinking' \| 'clear-tooluse' \| 'clear-both'` | `'off'` | 服务端上下文编辑模式 |
+| `contextEditingTrigger` | config `anthropic.context_editing_trigger` | number | `100000` | `clear_tool_uses` 的触发 token 阈值 |
+| `contextEditingKeepTools` | config `anthropic.context_editing_keep_tools` | number | `3` | 清理后保留的最近 tool_use 对数量 |
+| `contextEditingKeepThinking` | config `anthropic.context_editing_keep_thinking` | number | `1` | 清理后保留的最近 thinking turn 数量 |
 | `historyLimit` | config `history.limit` | number | `200` | 内存中保留的最大历史条目数（0 = 无限制） |
 | `historyMinEntries` | config `history.min_entries` | number | `50` | 内存压力下保留的最少历史条目数 |
 | `modelOverrides` | config `model_overrides` | `Record<string, string>` | opus→claude-opus-4.6 等 | Model 名称映射 |

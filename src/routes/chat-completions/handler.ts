@@ -14,6 +14,7 @@ import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/types/api/openai-chat-completions"
+import type { ResponsesResponse } from "~/types/api/openai-responses"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
@@ -27,6 +28,7 @@ import {
   type OpenAIAutoTruncateResult,
 } from "~/lib/openai/auto-truncate"
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
+import { createResponses } from "~/lib/openai/responses-client"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createOpenAIStreamAccumulator, accumulateOpenAIStreamEvent } from "~/lib/openai/stream-accumulator"
 import {
@@ -46,8 +48,9 @@ import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIterat
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
-import { createResponses } from "~/lib/openai/responses-client"
 import { extractInputItems, normalizeCallIds } from "~/routes/responses/pipeline"
+
+const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 export async function handleChatCompletion(c: Context) {
   const originalPayload = await c.req.json<ChatCompletionsPayload>()
@@ -169,7 +172,8 @@ async function executeRequest(opts: ExecuteRequestOptions) {
               format: "openai-chat-completions",
             })
           },
-        })),
+        }),
+      ),
     logPayloadSize: (p) => logPayloadSizeInfo(p, selectedModel),
   }
 
@@ -196,10 +200,7 @@ async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
     execute: async (ccPayload) => {
       const { payload: responsesPayload, droppedParams } = translateChatCompletionsToResponses(ccPayload)
       if (droppedParams.length > 0) {
-        consola.debug(`[CC→Responses] Dropped: ${droppedParams.join(", ")}`)
-        if (reqCtx.tuiLogId) {
-          tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: ["dropped-params"] })
-        }
+        recordDroppedCcParamsWarning(reqCtx, ccPayload.model, droppedParams)
       }
 
       const finalPayload = state.normalizeResponsesCallIds ? normalizeCallIds(responsesPayload) : responsesPayload
@@ -216,11 +217,12 @@ async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
               format: "openai-responses",
             })
           },
-        }))
+        }),
+      )
 
       if (!ccPayload.stream) {
         return {
-          result: translateResponsesResponseToCC(result.result as any),
+          result: translateResponsesResponseToCC(result.result as ResponsesResponse),
           queueWaitMs: result.queueWaitMs,
         }
       }
@@ -250,6 +252,26 @@ async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
     strategies,
     headersCapture,
   })
+}
+
+function recordDroppedCcParamsWarning(reqCtx: RequestContext, model: string, droppedParams: Array<string>) {
+  const paramsText = droppedParams.join(", ")
+  const message = `Chat Completions -> Responses translation dropped unsupported params: ${paramsText}`
+  const alreadyRecorded = reqCtx.warningMessages.some(
+    (warning) => warning.code === DROPPED_CC_PARAMS_WARNING_CODE && warning.message === message,
+  )
+
+  if (alreadyRecorded) return
+
+  consola.warn(`[CC→Responses] model=${model} ${message}`)
+  reqCtx.addWarningMessage({
+    code: DROPPED_CC_PARAMS_WARNING_CODE,
+    message,
+  })
+
+  if (reqCtx.tuiLogId) {
+    tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: ["dropped-params"] })
+  }
 }
 
 function createChatCompletionsStrategies(label: string): Array<RetryStrategy<ChatCompletionsPayload>> {

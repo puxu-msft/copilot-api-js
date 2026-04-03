@@ -44,6 +44,8 @@ export interface CopilotHeaderOptions {
 }
 
 export const copilotHeaders = (state: State, opts?: CopilotHeaderOptions) => {
+  const requestId = randomUUID()
+  const interactionType = opts?.intent ?? "conversation-panel"
   const headers: Record<string, string> = {
     Authorization: `Bearer ${state.copilotToken}`,
     "content-type": standardHeaders()["content-type"],
@@ -51,10 +53,12 @@ export const copilotHeaders = (state: State, opts?: CopilotHeaderOptions) => {
     "editor-version": `vscode/${state.vsCodeVersion}`,
     "editor-plugin-version": EDITOR_PLUGIN_VERSION,
     "user-agent": USER_AGENT,
-    "openai-intent": opts?.intent ?? "conversation-panel",
+    "openai-intent": interactionType,
     "x-github-api-version": COPILOT_API_VERSION,
-    "x-request-id": randomUUID(),
+    "x-request-id": requestId,
     "X-Interaction-Id": INTERACTION_ID,
+    "X-Interaction-Type": interactionType,
+    "X-Agent-Task-Id": requestId,
     "x-vscode-user-agent-library-version": "electron-fetch",
   }
 

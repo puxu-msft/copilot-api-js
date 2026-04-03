@@ -144,6 +144,11 @@ export interface PipelineInfo {
   messageMapping?: Array<number>
 }
 
+export interface WarningMessage {
+  code: string
+  message: string
+}
+
 export interface UsageData {
   input_tokens: number
   output_tokens: number
@@ -164,6 +169,7 @@ export interface HistoryEntry {
   timestamp: number
   endpoint: EndpointType
   durationMs?: number
+  warningMessages?: Array<WarningMessage>
   request: {
     model?: string
     messages?: Array<MessageContent>

@@ -82,6 +82,7 @@ export interface MessagesPayload {
   tools?: Array<Tool>
   tool_choice?: ToolChoice
   thinking?: ThinkingConfigParam
+  output_config?: OutputConfig
   metadata?: { user_id?: string }
   /** `null` is an internal sentinel meaning "do not auto-inject context_management on retry". */
   context_management?: Record<string, unknown> | null
@@ -97,6 +98,10 @@ export interface Tool {
 }
 
 export type ToolChoice = { type: "auto" } | { type: "any" } | { type: "none" } | { type: "tool"; name: string }
+
+export interface OutputConfig {
+  effort?: "low" | "medium" | "high"
+}
 
 // ============================================================================
 // Message subtypes (narrow role for cast convenience)

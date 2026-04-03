@@ -77,6 +77,8 @@ describe("copilotHeaders", () => {
     expect(headers["x-github-api-version"]).toBe("2025-05-01")
     expect(headers["x-request-id"]).toBeDefined()
     expect(headers["X-Interaction-Id"]).toBeDefined()
+    expect(headers["X-Interaction-Type"]).toBe("conversation-panel")
+    expect(headers["X-Agent-Task-Id"]).toBe(headers["x-request-id"])
   })
 
   test("generates unique x-request-id per call", () => {
@@ -122,6 +124,8 @@ describe("copilotHeaders", () => {
   test("sets custom openai-intent", () => {
     const headers = copilotHeaders(makeState(), { intent: "conversation-agent" })
     expect(headers["openai-intent"]).toBe("conversation-agent")
+    expect(headers["X-Interaction-Type"]).toBe("conversation-agent")
+    expect(headers["X-Agent-Task-Id"]).toBe(headers["x-request-id"])
   })
 
   test("falls back to conversation-panel when intent is undefined", () => {
@@ -203,45 +207,55 @@ describe("copilotHeaders", () => {
   })
 
   test("getVSCodeVersion returns the latest release tag when GitHub succeeds", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ tag_name: "1.107.1" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })) as unknown as typeof fetch
+    globalThis.fetch = mock(
+      () =>
+        new Response(JSON.stringify({ tag_name: "1.107.1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    ) as unknown as typeof fetch
 
-    await expect(getVSCodeVersion()).resolves.toBe("1.107.1")
+    const version = await getVSCodeVersion()
+    expect(version).toBe("1.107.1")
   })
 
   test("getVSCodeVersion falls back when GitHub returns a non-ok response", async () => {
-    globalThis.fetch = mock(async () => new Response("bad gateway", { status: 502 })) as unknown as typeof fetch
+    globalThis.fetch = mock(() => new Response("bad gateway", { status: 502 })) as unknown as typeof fetch
 
-    await expect(getVSCodeVersion()).resolves.toBe("1.104.3")
+    const version = await getVSCodeVersion()
+    expect(version).toBe("1.104.3")
   })
 
   test("getVSCodeVersion falls back when GitHub returns an invalid tag", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ tag_name: "stable" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })) as unknown as typeof fetch
+    globalThis.fetch = mock(
+      () =>
+        new Response(JSON.stringify({ tag_name: "stable" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    ) as unknown as typeof fetch
 
-    await expect(getVSCodeVersion()).resolves.toBe("1.104.3")
+    const version = await getVSCodeVersion()
+    expect(version).toBe("1.104.3")
   })
 
   test("getVSCodeVersion falls back when fetch throws", async () => {
-    globalThis.fetch = mock(async () => {
+    globalThis.fetch = mock(() => {
       throw new Error("network down")
     }) as unknown as typeof fetch
 
-    await expect(getVSCodeVersion()).resolves.toBe("1.104.3")
+    const version = await getVSCodeVersion()
+    expect(version).toBe("1.104.3")
   })
 
   test("cacheVSCodeVersion stores the fetched version in global state", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ tag_name: "1.106.0" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })) as unknown as typeof fetch
+    globalThis.fetch = mock(
+      () =>
+        new Response(JSON.stringify({ tag_name: "1.106.0" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    ) as unknown as typeof fetch
 
     await cacheVSCodeVersion()
 

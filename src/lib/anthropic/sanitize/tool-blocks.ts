@@ -163,6 +163,7 @@ export function processToolBlocks(
         } else if (
           (block as unknown as Record<string, unknown>).type !== "text"
           && (block as unknown as Record<string, unknown>).type !== "image"
+          && (block as unknown as Record<string, unknown>).type !== "document"
         ) {
           orphanedToolResultCount++
           continue

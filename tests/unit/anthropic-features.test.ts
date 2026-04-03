@@ -76,12 +76,21 @@ describe("modelSupportsContextEditing", () => {
     expect(modelSupportsContextEditing("claude-sonnet-4.5")).toBe(true)
   })
 
+  test("should support claude-sonnet-4.6", () => {
+    expect(modelSupportsContextEditing("claude-sonnet-4.6")).toBe(true)
+  })
+
   test("should support claude-sonnet-4", () => {
     expect(modelSupportsContextEditing("claude-sonnet-4")).toBe(true)
   })
 
   test("should support claude-haiku-4.5", () => {
     expect(modelSupportsContextEditing("claude-haiku-4.5")).toBe(true)
+  })
+
+  test("should NOT match future-lookalike model ids by prefix accident", () => {
+    expect(modelSupportsContextEditing("claude-sonnet-40")).toBe(false)
+    expect(modelSupportsContextEditing("claude-opus-40")).toBe(false)
   })
 
   test("should NOT support non-Claude models", () => {
@@ -103,6 +112,14 @@ describe("modelSupportsToolSearch", () => {
     expect(modelSupportsToolSearch("claude-opus-4.5")).toBe(true)
   })
 
+  test("should support claude-sonnet-4.5", () => {
+    expect(modelSupportsToolSearch("claude-sonnet-4.5")).toBe(true)
+  })
+
+  test("should support claude-sonnet-4.6", () => {
+    expect(modelSupportsToolSearch("claude-sonnet-4.6")).toBe(true)
+  })
+
   test("should NOT support claude-opus-4 (base)", () => {
     expect(modelSupportsToolSearch("claude-opus-4")).toBe(false)
   })
@@ -112,9 +129,8 @@ describe("modelSupportsToolSearch", () => {
     expect(modelSupportsToolSearch("claude-opus-41")).toBe(false)
   })
 
-  test("should NOT support claude-sonnet models", () => {
+  test("should NOT support unsupported claude-sonnet models", () => {
     expect(modelSupportsToolSearch("claude-sonnet-4")).toBe(false)
-    expect(modelSupportsToolSearch("claude-sonnet-4.5")).toBe(false)
   })
 
   test("should NOT support claude-haiku models", () => {

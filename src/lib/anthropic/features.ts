@@ -39,19 +39,21 @@ export function modelSupportsInterleavedThinking(modelId: string): boolean {
 /**
  * Context editing is supported by a broader set of models:
  * - Claude Haiku 4.5
- * - Claude Sonnet 4/4.5
+ * - Claude Sonnet 4/4.5/4.6
  * - Claude Opus 4/4.1/4.5/4.6
  */
 export function modelSupportsContextEditing(modelId: string): boolean {
   const normalized = normalizeForMatching(modelId)
   return (
     normalized.startsWith("claude-haiku-4-5")
+    || normalized.startsWith("claude-sonnet-4-6")
     || normalized.startsWith("claude-sonnet-4-5")
-    || normalized.startsWith("claude-sonnet-4")
+    || normalized === "claude-sonnet-4"
     || normalized.startsWith("claude-opus-4-5")
     || normalized.startsWith("claude-opus-4-6")
     || normalized.startsWith("claude-opus-4-1")
-    || normalized.startsWith("claude-opus-4")
+    || normalized === "claude-opus-41"
+    || normalized === "claude-opus-4"
   )
 }
 
@@ -66,11 +68,17 @@ export function isContextEditingEnabled(modelId: string): boolean {
 
 /**
  * Tool search is supported by:
+ * - Claude Sonnet 4.5/4.6
  * - Claude Opus 4.5/4.6
  */
 export function modelSupportsToolSearch(modelId: string): boolean {
   const normalized = normalizeForMatching(modelId)
-  return normalized.startsWith("claude-opus-4-5") || normalized.startsWith("claude-opus-4-6")
+  return (
+    normalized.startsWith("claude-sonnet-4-5")
+    || normalized.startsWith("claude-sonnet-4-6")
+    || normalized.startsWith("claude-opus-4-5")
+    || normalized.startsWith("claude-opus-4-6")
+  )
 }
 
 // ============================================================================

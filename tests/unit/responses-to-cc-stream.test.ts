@@ -149,7 +149,7 @@ describe("createStreamTranslator", () => {
     expect(completed[0]?.choices[0]?.finish_reason).toBe("tool_calls")
   })
 
-  test("maps incomplete content_filter and throws on failed events", async () => {
+  test("maps incomplete content_filter and throws on failed or error events", async () => {
     const translator = createStreamTranslator({ includeUsage: false })
 
     translator.translate({
@@ -216,30 +216,23 @@ describe("createStreamTranslator", () => {
       }),
     ).toThrow("Upstream stream failed")
 
+    expect(() =>
+      translator.translate({
+        type: "error",
+        sequence_number: 3,
+        code: "boom",
+        message: "Explicit upstream error event",
+      }),
+    ).toThrow("Explicit upstream error event")
+
     async function* failingUpstream(): AsyncGenerator<ServerSentEventMessage> {
       yield {
-        event: "response.failed",
+        event: "error",
         data: JSON.stringify({
-          type: "response.failed",
+          type: "error",
           sequence_number: 0,
-          response: {
-            id: "resp_stream_4",
-            object: "response",
-            created_at: 1,
-            status: "failed",
-            model: "gpt-5-resp",
-            output: [],
-            usage: null,
-            error: {
-              message: "Generator failed",
-              type: "server_error",
-              code: "boom",
-            },
-            tools: [],
-            tool_choice: "auto",
-            parallel_tool_calls: false,
-            store: false,
-          },
+          code: "boom",
+          message: "Generator error event",
         }),
       }
     }
@@ -249,6 +242,6 @@ describe("createStreamTranslator", () => {
       for await (const _event of translated) {
         // exhaust
       }
-    }).toThrow("Generator failed")
+    }).toThrow("Generator error event")
   })
 })
