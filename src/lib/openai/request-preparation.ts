@@ -18,7 +18,18 @@ export function prepareChatCompletionsRequest(
   payload: ChatCompletionsPayload,
   opts?: PrepareOpenAIRequestOptions,
 ): PreparedOpenAIRequest<ChatCompletionsPayload> {
-  const wire = payload
+  const vendor = opts?.resolvedModel?.vendor
+  const isOpenAIVendor = vendor === "OpenAI" || vendor === "Azure OpenAI"
+  const isLikelyGPT = !opts?.resolvedModel && /^gpt-/i.test(payload.model)
+
+  let wire: ChatCompletionsPayload
+  if (isOpenAIVendor || isLikelyGPT) {
+    const { max_tokens, max_completion_tokens, ...rest } = payload
+    const effective = max_completion_tokens ?? max_tokens
+    wire = { ...rest, ...(effective != null && { max_completion_tokens: effective }) }
+  } else {
+    wire = payload
+  }
 
   const enableVision = wire.messages.some(
     (message) => typeof message.content !== "string" && message.content?.some((part) => part.type === "image_url"),
