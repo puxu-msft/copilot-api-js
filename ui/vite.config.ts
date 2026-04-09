@@ -21,7 +21,7 @@ export default defineConfig(({ command }) => {
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src'),
-        '~backend': resolve(__dirname, '../../src'),
+        '~backend': resolve(__dirname, '../src'),
       },
     },
     // In dev mode, serve from root for convenience; in build, use /ui/ prefix

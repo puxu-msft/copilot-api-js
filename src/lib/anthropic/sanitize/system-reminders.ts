@@ -84,10 +84,10 @@ function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
     let modified = false
     const blocks = msg.content.map((block) => {
       if (block.type === "text" && "text" in block) {
-        const sanitized = removeSystemReminderTags((block as { text: string }).text)
-        if (sanitized !== (block as { text: string }).text) {
+        const text = (block as { text: string }).text
+        const sanitized = removeSystemReminderTags(text)
+        if (sanitized !== text) {
           modified = true
-          // Preserve the block even when text becomes empty (single space placeholder)
           return { ...block, text: sanitized || " " } as ContentBlock
         }
       }

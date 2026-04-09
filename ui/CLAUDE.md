@@ -1,4 +1,4 @@
-# CLAUDE.md — History V3
+# CLAUDE.md — Web UI
 
 ## 项目上下文
 
@@ -76,7 +76,7 @@ npm run typecheck:ui  # 前端类型检查
 npm run test:ui       # 前端测试
 ```
 
-前端依赖和脚本由仓库根 `package.json` 统一管理，不再在 `ui/history-v3/` 下单独安装依赖。
+前端依赖和脚本由仓库根 `package.json` 统一管理。
 
 ## 与后端的关系
 

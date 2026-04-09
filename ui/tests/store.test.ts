@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
 
 import type { EntrySummary, HistoryEntry, HistoryStats, SummaryResult, SessionResult } from "../src/types"
+import { useDetailViewState } from "../src/composables/useDetailViewState"
 
 // ─── Mocks ───
 
@@ -489,34 +490,32 @@ describe("WebSocket handlers", () => {
 // ─── Detail panel state ───
 
 describe("detail panel state", () => {
-  beforeEach(resetMocks)
-
   test("initial detail state values", () => {
-    const store = useHistoryStore()
+    const detail = useDetailViewState()
 
-    expect(store.detailSearch.value).toBe("")
-    expect(store.detailFilterRole.value).toBe("")
-    expect(store.detailFilterType.value).toBe("")
-    expect(store.aggregateTools.value).toBe(true)
-    expect(store.detailViewMode.value).toBeNull()
-    expect(store.showOnlyRewritten.value).toBe(false)
+    expect(detail.detailSearch.value).toBe("")
+    expect(detail.detailFilterRole.value).toBe("")
+    expect(detail.detailFilterType.value).toBe("")
+    expect(detail.aggregateTools.value).toBe(true)
+    expect(detail.detailViewMode.value).toBeNull()
+    expect(detail.showOnlyRewritten.value).toBe(false)
   })
 
   test("detail state is mutable", () => {
-    const store = useHistoryStore()
+    const detail = useDetailViewState()
 
-    store.detailSearch.value = "search term"
-    store.detailFilterRole.value = "user"
-    store.detailFilterType.value = "tool_use"
-    store.aggregateTools.value = false
-    store.detailViewMode.value = "diff"
-    store.showOnlyRewritten.value = true
+    detail.detailSearch.value = "search term"
+    detail.detailFilterRole.value = "user"
+    detail.detailFilterType.value = "tool_use"
+    detail.aggregateTools.value = false
+    detail.detailViewMode.value = "diff"
+    detail.showOnlyRewritten.value = true
 
-    expect(store.detailSearch.value).toBe("search term")
-    expect(store.detailFilterRole.value).toBe("user")
-    expect(store.detailFilterType.value).toBe("tool_use")
-    expect(store.aggregateTools.value).toBe(false)
-    expect(store.detailViewMode.value).toBe("diff")
-    expect(store.showOnlyRewritten.value).toBe(true)
+    expect(detail.detailSearch.value).toBe("search term")
+    expect(detail.detailFilterRole.value).toBe("user")
+    expect(detail.detailFilterType.value).toBe("tool_use")
+    expect(detail.aggregateTools.value).toBe(false)
+    expect(detail.detailViewMode.value).toBe("diff")
+    expect(detail.showOnlyRewritten.value).toBe(true)
   })
 })

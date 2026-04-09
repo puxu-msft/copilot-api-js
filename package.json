@@ -21,21 +21,21 @@
   },
   "files": [
     "dist",
-    "ui/history-v3/dist",
+    "ui/dist",
     "config.example.yaml"
   ],
   "scripts": {
     "build": "npm run build:ui && npm run build:backend",
     "build:backend": "npx tsdown",
-    "build:ui": "vite build --config ui/history-v3/vite.config.ts",
+    "build:ui": "vite build --config ui/vite.config.ts",
     "dev": "bun run --watch ./src/main.ts",
-    "dev:ui": "vite --config ui/history-v3/vite.config.ts",
+    "dev:ui": "vite --config ui/vite.config.ts",
     "knip": "knip-bun",
     "lint": "eslint --cache",
     "lint:all": "eslint --cache .",
     "prepack": "npm run build",
     "prepare": "npm run build && (command -v bun >/dev/null 2>&1 && simple-git-hooks || true)",
-    "preview:ui": "vite preview --config ui/history-v3/vite.config.ts",
+    "preview:ui": "vite preview --config ui/vite.config.ts",
     "release": "bumpp && npm publish --access public",
     "start": "NODE_ENV=production bun run ./src/main.ts",
     "test": "bun test tests/unit/",
@@ -53,11 +53,11 @@
     "test:http": "bun test tests/http/",
     "test:integration": "bun test tests/integration/",
     "test:ui": "npm run test:ui:bun && npm run test:ui:vitest",
-    "test:ui:bun": "bun test ./ui/history-v3/tests/",
-    "test:ui:vitest": "vitest run --config ui/history-v3/vitest.config.ts",
+    "test:ui:bun": "bun test ./ui/tests/",
+    "test:ui:vitest": "vitest run --config ui/vitest.config.ts",
     "test:ws": "bun test tests/ws/",
     "typecheck": "tsc",
-    "typecheck:ui": "vue-tsc --noEmit --project ui/history-v3/tsconfig.json"
+    "typecheck:ui": "vue-tsc --noEmit --project ui/tsconfig.json"
   },
   "simple-git-hooks": {
     "pre-commit": "bun x lint-staged"

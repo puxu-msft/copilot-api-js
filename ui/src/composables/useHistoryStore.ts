@@ -27,13 +27,6 @@ export interface HistoryStore {
   error: Ref<string | null>
   wsConnected: Ref<boolean>
 
-  detailSearch: Ref<string>
-  detailFilterRole: Ref<string>
-  detailFilterType: Ref<string>
-  aggregateTools: Ref<boolean>
-  detailViewMode: Ref<"original" | "rewritten" | "diff" | null>
-  showOnlyRewritten: Ref<boolean>
-
   hasSelection: ComputedRef<boolean>
   selectedIndex: ComputedRef<number>
 
@@ -59,13 +52,6 @@ export function useHistoryStore(): HistoryStore {
   const { show: showToast } = useToast()
   const data = useHistoryData(showToast)
   const wsConnected = ref(false)
-
-  const detailSearch = ref("")
-  const detailFilterRole = ref("")
-  const detailFilterType = ref("")
-  const aggregateTools = ref(true)
-  const detailViewMode = ref<"original" | "rewritten" | "diff" | null>(null)
-  const showOnlyRewritten = ref(false)
 
   const realtime = useHistoryWS({
     entries: data.entries,
@@ -95,12 +81,6 @@ export function useHistoryStore(): HistoryStore {
     loading: data.loading,
     error: data.error,
     wsConnected,
-    detailSearch,
-    detailFilterRole,
-    detailFilterType,
-    aggregateTools,
-    detailViewMode,
-    showOnlyRewritten,
     hasSelection: data.hasSelection,
     selectedIndex: data.selectedIndex,
     fetchEntries: data.fetchEntries,

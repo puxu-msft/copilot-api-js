@@ -47,7 +47,7 @@ function resolveUiDir(subpath: string): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
 }
 
-const uiDir = resolveUiDir("history-v3/dist")
+const uiDir = resolveUiDir("dist")
 
 function stripTrailingSlash(pathname: string): string {
   return pathname !== "/" ? pathname.replace(/\/+$/, "") : pathname

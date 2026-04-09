@@ -6,6 +6,7 @@ import type { ContentBlock, MessageContent } from "@/types"
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
 import RawJsonModal from "@/components/ui/RawJsonModal.vue"
 import { provideContentContext } from "@/composables/useContentContext"
+import { useInjectedDetailViewState } from "@/composables/useInjectedDetailViewState"
 import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
 import { usePipelineInfo } from "@/composables/usePipelineInfo"
 import { provideRawModal } from "@/composables/useRawModal"
@@ -22,6 +23,7 @@ import SectionBlock from "./SectionBlock.vue"
 import SseEventsSection from "./SseEventsSection.vue"
 
 const store = useInjectedHistoryStore()
+const detail = useInjectedDetailViewState()
 const detailBodyRef = ref<HTMLElement>()
 
 const entry = computed(() => store.selectedEntry.value)
@@ -81,9 +83,9 @@ const toolMaps = computed(() => {
 
 // Provide ContentContext so all content blocks can inject
 provideContentContext({
-  searchQuery: computed(() => store.detailSearch.value),
-  filterType: computed(() => store.detailFilterType.value),
-  aggregateTools: computed(() => store.aggregateTools.value),
+  searchQuery: computed(() => detail.detailSearch.value),
+  filterType: computed(() => detail.detailFilterType.value),
+  aggregateTools: computed(() => detail.aggregateTools.value),
   toolResultMap: computed(() => toolMaps.value.resultMap),
   toolUseNameMap: computed(() => toolMaps.value.nameMap),
   scrollToResult,
@@ -95,11 +97,11 @@ const filteredMessages = computed(() => {
   if (!entry.value) return []
   const messages = entry.value.request.messages ?? []
   let indexed = messages.map((msg, i) => ({ msg, originalIndex: i }))
-  if (store.detailFilterRole.value) {
-    indexed = indexed.filter(({ msg }) => msg.role === store.detailFilterRole.value)
+  if (detail.detailFilterRole.value) {
+    indexed = indexed.filter(({ msg }) => msg.role === detail.detailFilterRole.value)
   }
   // Show only rewritten messages filter
-  if (store.showOnlyRewritten.value) {
+  if (detail.showOnlyRewritten.value) {
     indexed = indexed.filter(({ originalIndex }) => isMessageRewritten(originalIndex))
   }
   return indexed
@@ -165,7 +167,7 @@ function scrollToCall(toolUseId: string) {
 
 // Watch detailSearch -> scroll to first match
 watch(
-  () => store.detailSearch.value,
+  () => detail.detailSearch.value,
   (q) => {
     if (!q) return
     void nextTick(() => {
@@ -234,9 +236,9 @@ function exportEntry() {
           :rewritten-request="rewrittenRequest"
           :filtered-messages="filteredMessages"
           :truncation-point="truncationPoint"
-          :search-query="store.detailSearch.value"
-          :detail-filter-type="store.detailFilterType.value"
-          :detail-view-mode="store.detailViewMode.value"
+          :search-query="detail.detailSearch.value"
+          :detail-filter-type="detail.detailFilterType.value"
+          :detail-view-mode="detail.detailViewMode.value"
           :has-matching-block-type="hasMatchingBlockType"
           :is-message-truncated="isMessageTruncated"
           :is-message-rewritten="isMessageRewritten"

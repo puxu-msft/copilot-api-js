@@ -156,6 +156,14 @@ export interface State {
   /** Additional tool names that should never be deferred (merged with built-in list) */
   readonly nonDeferredTools: ReadonlyArray<string>
 
+  /**
+   * Anthropic API key for accurate Claude token counting.
+   * When set, `/v1/messages/count_tokens` for Claude models is forwarded to
+   * Anthropic's free token counting endpoint instead of using GPT tokenizer estimation.
+   * Also reads ANTHROPIC_API_KEY env var as fallback.
+   */
+  readonly anthropicApiKey: string
+
   /** Pre-compiled system prompt override rules from config.yaml */
   readonly systemPromptOverrides: Array<CompiledRewriteRule>
 
@@ -233,6 +241,14 @@ export interface State {
    * Disabled by default; enable with config openai-responses.upstream_websocket: true.
    */
   readonly upstreamWebSocket: boolean
+
+  /**
+   * Fix inconsistent item IDs between output_item.added and output_item.done events
+   * from GitHub Copilot's Responses API. Without this fix, @ai-sdk/openai breaks
+   * because it expects consistent IDs across the stream lifecycle.
+   * Enabled by default; disable with config openai-responses.fix_stream_ids: false.
+   */
+  readonly fixResponsesStreamIds: boolean
 }
 
 type MutableState = {
@@ -356,6 +372,7 @@ export function setAnthropicBehavior(
       | "rewriteSystemReminders"
       | "systemPromptOverrides"
       | "compressToolResultsBeforeTruncate"
+      | "anthropicApiKey"
     >
   >,
 ): void {
@@ -385,7 +402,7 @@ export function setTimeoutConfig(
 }
 
 export function setResponsesConfig(
-  patch: Partial<Pick<MutableState, "normalizeResponsesCallIds" | "upstreamWebSocket">>,
+  patch: Partial<Pick<MutableState, "normalizeResponsesCallIds" | "upstreamWebSocket" | "fixResponsesStreamIds">>,
 ): void {
   updateState(patch)
 }
@@ -461,6 +478,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyMinEntries: 50,
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
+  fixResponsesStreamIds: true,
+  anthropicApiKey: "",
 }
 
 export function resetConfigManagedState(): void {
@@ -479,6 +498,7 @@ export function resetConfigManagedState(): void {
     rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
+    anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
   })
   setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
   setTimeoutConfig({
@@ -499,6 +519,7 @@ export function resetConfigManagedState(): void {
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
+    fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
   })
 }
 
@@ -533,6 +554,8 @@ const mutableState: MutableState = {
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
   upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
+  fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+  anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
   verbose: false,
 }
 

@@ -23,6 +23,7 @@ import {
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
+import { createStreamIdTracker, fixStreamEventIds } from "~/lib/openai/stream-id-sync"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { getShutdownSignal } from "~/lib/shutdown"
@@ -37,8 +38,7 @@ import { createResponsesAdapter, createResponsesStrategies, normalizeCallIds } f
 
 /** Handle an inbound Responses API request */
 export async function handleResponses(c: Context) {
-  let payload =
-    (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
+  let payload = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
 
   // Resolve model name aliases
   const clientModel = payload.model
@@ -184,6 +184,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
 
       const acc = createResponsesStreamAccumulator()
       const idleTimeoutMs = state.streamIdleTimeout * 1000
+      const idTracker = state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
 
       // Streaming metrics for TUI footer
       let bytesIn = 0
@@ -214,11 +215,13 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
             }
 
             try {
-              const event = JSON.parse(rawEvent.data) as ResponsesStreamEvent
+              // Fix inconsistent IDs from upstream before processing
+              const eventData = idTracker ? fixStreamEventIds(rawEvent.data, rawEvent.event, idTracker) : rawEvent.data
+              const event = JSON.parse(eventData) as ResponsesStreamEvent
               accumulateResponsesStreamEvent(event, acc)
 
-              // Forward the event as-is (including SSE event type field)
-              await stream.writeSSE({ event: rawEvent.event ?? event.type, data: rawEvent.data })
+              // Forward the (possibly ID-corrected) event
+              await stream.writeSSE({ event: rawEvent.event ?? event.type, data: eventData })
             } catch {
               // Ignore parse errors
             }

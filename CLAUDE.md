@@ -66,7 +66,7 @@
 - 严格 TypeScript（`strict: true`）。避免 `any`。
 - ESNext 模块，不用 CommonJS。
 - 路径别名：后端 `~/*` 映射到 `src/*`，前端 `@/*` 映射到 `src/*`，前端引用后端 `~backend/*` 映射到 `../../src/*`。
-- 测试：使用 Bun 内置测试运行器。后端测试放在 `tests/`，前端测试放在 `ui/history-v3/tests/`。命名为 `*.test.ts`。
+- 测试：使用 Bun 内置测试运行器。后端测试放在 `tests/`，前端测试放在 `ui/tests/`。命名为 `*.test.ts`。
 - 前端依赖与脚本由仓库根 `package.json` 统一管理：使用 `npm run build:ui`、`npm run dev:ui`、`npm run typecheck:ui`、`npm run test:ui`。
 - 错误处理：使用显式错误类（参见 `src/lib/error.ts`）。避免静默失败。
 

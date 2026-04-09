@@ -22,6 +22,7 @@ import { registerResponseSession, resolveResponseSessionId } from "~/lib/history
 import { isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { responsesInputToMessages } from "~/lib/openai/responses-conversion"
+import { createStreamIdTracker, fixStreamEventIds } from "~/lib/openai/stream-id-sync"
 import {
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
@@ -197,6 +198,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     const iterator = (response as AsyncIterable<{ data?: string; event?: string }>)[Symbol.asyncIterator]()
     const acc = createResponsesStreamAccumulator()
     const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
+    const idTracker = state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
     let eventsReceived = 0
 
     while (true) {
@@ -212,11 +214,13 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
       if (!sseEvent.data || sseEvent.data === "[DONE]") continue
 
       try {
-        const parsed = JSON.parse(sseEvent.data) as ResponsesStreamEvent
+        // Fix inconsistent IDs from upstream before processing
+        const eventData = idTracker ? fixStreamEventIds(sseEvent.data, sseEvent.event, idTracker) : sseEvent.data
+        const parsed = JSON.parse(eventData) as ResponsesStreamEvent
         accumulateResponsesStreamEvent(parsed, acc)
 
-        // Forward event as WebSocket JSON frame
-        ws.send(sseEvent.data)
+        // Forward (possibly ID-corrected) event as WebSocket JSON frame
+        ws.send(eventData)
         eventsReceived++
 
         // Update TUI with stream progress

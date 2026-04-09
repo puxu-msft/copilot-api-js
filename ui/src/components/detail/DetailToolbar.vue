@@ -6,9 +6,9 @@ import BaseCheckbox from "@/components/ui/BaseCheckbox.vue"
 import BaseInput from "@/components/ui/BaseInput.vue"
 import BaseSelect from "@/components/ui/BaseSelect.vue"
 import IconSvg from "@/components/ui/IconSvg.vue"
-import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+import { useInjectedDetailViewState } from "@/composables/useInjectedDetailViewState"
 
-const store = useInjectedHistoryStore()
+const detail = useInjectedDetailViewState()
 
 const props = defineProps<{
   hasRewrites: boolean
@@ -50,7 +50,7 @@ const viewModeOptions: Array<{ value: string; label: string }> = [
 const navIndex = ref(-1)
 
 function setGlobalViewMode(value: string | null) {
-  store.detailViewMode.value = value as "original" | "rewritten" | "diff" | null
+  detail.detailViewMode.value = value as "original" | "rewritten" | "diff" | null
 }
 
 function scrollToRewrittenMessage(index: number) {
@@ -79,28 +79,28 @@ function navigateRewritten(direction: "prev" | "next") {
 <template>
   <div class="detail-toolbar">
     <BaseInput
-      :model-value="store.detailSearch.value"
+      :model-value="detail.detailSearch.value"
       placeholder="Search in messages..."
       icon="search"
-      @update:model-value="store.detailSearch.value = $event"
+      @update:model-value="detail.detailSearch.value = $event"
     />
     <div class="toolbar-row">
       <BaseSelect
-        :model-value="store.detailFilterRole.value || null"
+        :model-value="detail.detailFilterRole.value || null"
         :options="roleOptions"
         placeholder="Role"
-        @update:model-value="store.detailFilterRole.value = $event ?? ''"
+        @update:model-value="detail.detailFilterRole.value = $event ?? ''"
       />
       <BaseSelect
-        :model-value="store.detailFilterType.value || null"
+        :model-value="detail.detailFilterType.value || null"
         :options="typeOptions"
         placeholder="Type"
-        @update:model-value="store.detailFilterType.value = $event ?? ''"
+        @update:model-value="detail.detailFilterType.value = $event ?? ''"
       />
       <BaseCheckbox
-        :model-value="store.aggregateTools.value"
+        :model-value="detail.aggregateTools.value"
         label="Aggregate Tools"
-        @update:model-value="store.aggregateTools.value = $event"
+        @update:model-value="detail.aggregateTools.value = $event"
       />
       <BaseButton
         variant="ghost"
@@ -143,7 +143,7 @@ function navigateRewritten(direction: "prev" | "next") {
       <div class="rewrite-controls">
         <!-- Global view mode -->
         <BaseSelect
-          :model-value="store.detailViewMode.value"
+          :model-value="detail.detailViewMode.value"
           :options="viewModeOptions"
           placeholder="Per-message"
           @update:model-value="setGlobalViewMode($event)"
@@ -151,9 +151,9 @@ function navigateRewritten(direction: "prev" | "next") {
 
         <!-- Show only rewritten filter -->
         <BaseCheckbox
-          :model-value="store.showOnlyRewritten.value"
+          :model-value="detail.showOnlyRewritten.value"
           label="Only Rewritten"
-          @update:model-value="store.showOnlyRewritten.value = $event"
+          @update:model-value="detail.showOnlyRewritten.value = $event"
         />
 
         <!-- Navigation between rewritten messages -->

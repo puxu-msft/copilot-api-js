@@ -181,6 +181,13 @@ export interface AnthropicConfig {
    * Example: ["my_custom_tool", "another_tool"]
    */
   non_deferred_tools?: Array<string>
+  /**
+   * Anthropic API key for accurate Claude token counting.
+   * When set, `/v1/messages/count_tokens` for Claude models is forwarded to
+   * Anthropic's free token counting endpoint for exact counts.
+   * Also reads ANTHROPIC_API_KEY env var as fallback.
+   */
+  api_key?: string
 }
 
 /** Shutdown timing configuration section */
@@ -202,6 +209,13 @@ export interface ResponsesConfig {
   normalize_call_ids?: boolean
   /** Enable upstream WebSocket transport for /responses when supported by the model (default: false). */
   upstream_websocket?: boolean
+  /**
+   * Fix inconsistent item IDs between output_item.added and output_item.done events
+   * from GitHub Copilot's Responses API. Without this fix, @ai-sdk/openai breaks
+   * because it expects consistent IDs across the stream lifecycle.
+   * Default: true.
+   */
+  fix_stream_ids?: boolean
 }
 
 /** History storage configuration section */
@@ -374,12 +388,11 @@ export async function applyConfigToState(): Promise<Config> {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
     } else if (a.auto_cache_control !== undefined) {
       const mapped: CacheControlMode = a.auto_cache_control ? "proxied" : "disabled"
-      consola.warn(
-        `[Config] anthropic.auto_cache_control is deprecated, use cache_control: "${mapped}" instead`,
-      )
+      consola.warn(`[Config] anthropic.auto_cache_control is deprecated, use cache_control: "${mapped}" instead`)
       setAnthropicBehavior({ cacheControlMode: mapped })
     }
     if (Array.isArray(a.non_deferred_tools)) setAnthropicBehavior({ nonDeferredTools: a.non_deferred_tools })
+    if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {
@@ -441,6 +454,8 @@ export async function applyConfigToState(): Promise<Config> {
     setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
   if (responsesConfig && responsesConfig.upstream_websocket !== undefined)
     setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_websocket })
+  if (responsesConfig && responsesConfig.fix_stream_ids !== undefined)
+    setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
 
   syncModelRefreshLoop()
 
