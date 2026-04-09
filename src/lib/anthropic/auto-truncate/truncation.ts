@@ -13,7 +13,7 @@ import {
 import { processToolBlocks } from "../sanitize"
 import { ensureAnthropicStartsWithUser } from "./tool-utils"
 import { estimateMessageTokens } from "./token-counting"
-import { isImmutableThinkingAssistantMessage } from "../thinking-immutability"
+import { shouldPreserveThinkingBlocks } from "../thinking-immutability"
 
 /**
  * Strip thinking/redacted_thinking blocks from old assistant messages.
@@ -31,7 +31,7 @@ export function stripThinkingBlocks(
       return msg
     }
 
-    if (isImmutableThinkingAssistantMessage(msg)) {
+    if (shouldPreserveThinkingBlocks(msg)) {
       return msg
     }
 

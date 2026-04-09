@@ -9,7 +9,7 @@ import type {
 import { removeSystemReminderTags } from "~/lib/system-prompt"
 
 import { sanitizeTextBlocksInArray } from "./text-blocks"
-import { isImmutableThinkingAssistantMessage } from "../thinking-immutability"
+import { isFixedIndexThinkingMessage, isImmutableThinkingMessage } from "../thinking-immutability"
 
 /**
  * Sanitize tool_result content (can be string or array of text/image blocks).
@@ -74,10 +74,29 @@ function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
     return modified ? ({ role: "user", content: blocks } as UserMessage) : msg
   }
 
-  if (isImmutableThinkingAssistantMessage(msg)) {
+  // immutable: skip the entire message
+  if (isImmutableThinkingMessage(msg)) {
     return msg
   }
 
+  // fixed-index: sanitize text content but never add or remove blocks
+  if (isFixedIndexThinkingMessage(msg)) {
+    let modified = false
+    const blocks = msg.content.map((block) => {
+      if (block.type === "text" && "text" in block) {
+        const sanitized = removeSystemReminderTags((block as { text: string }).text)
+        if (sanitized !== (block as { text: string }).text) {
+          modified = true
+          // Preserve the block even when text becomes empty (single space placeholder)
+          return { ...block, text: sanitized || " " } as ContentBlock
+        }
+      }
+      return block
+    })
+    return modified ? ({ role: "assistant", content: blocks } as AssistantMessage) : msg
+  }
+
+  // stripped: normal sanitize (may delete empty text blocks)
   const { blocks, modified } = sanitizeTextBlocksInArray(
     msg.content,
     (block) => (block.type === "text" && "text" in block ? (block as { text: string }).text : undefined),

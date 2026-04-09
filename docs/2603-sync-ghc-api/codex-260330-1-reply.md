@@ -82,15 +82,16 @@ GHC 默认主动加 `include: ['reasoning.encrypted_content']`。这意味着即
 
 ## 更新后的完整 Gap List
 
+> **注意**：以下为回应撰写时的快照。#1-5 已在后续实施中完成，最新状态见 [README.md](README.md)。
+
 合并原审阅回应 + 本次扫描后：
 
-| # | Gap | 优先级 | 说明 |
+| # | Gap | 优先级 | 状态 |
 |---|-----|--------|------|
-| 1 | cache_control 自动注入 + tool 排序 | P0 | non-deferred/deferred 分组排序 → 注入 breakpoint |
-| 2 | tool result document block 保留 | P0 | sanitize 过滤器缺少 `document` 类型 |
-| 3 | modelSupportsToolSearch 扩展到 Sonnet | P1 | 当前仅 Opus 4.5/4.6，GHC 含 Sonnet 4.5/4.6 |
-| 4 | thinking budget min/max 校验 | P1 | 只做 `< max_tokens` 裁剪 |
-| 5 | output_config 可用性测试 | P1 | 当前被 COPILOT_REJECTED_FIELDS 剥离 |
-| 6 | 模型列表定期刷新 | P1 | 启动时单次 cacheModels() |
-| 7 | X-Interaction-Type / X-Agent-Task-Id | P2 | 需独立评估收益 |
-| 8 | modelSupportsContextEditing 显式列出 | P2 | 当前依赖前缀匹配副作用 |
+| 1 | cache_control 自动注入 + tool 排序 | P0 | ✅ 已完成 |
+| 2 | tool result document block 保留 | P0 | ✅ 已完成 |
+| 3 | modelSupportsToolSearch 扩展到 Sonnet | P1 | ✅ 已完成 |
+| 4 | thinking budget min/max 校验 | P1 | ✅ 已完成 |
+| 5 | output_config 可用性测试 | P1 | ✅ 已完成 |
+| 6 | X-Interaction-Type / X-Agent-Task-Id | P2 | ✅ 已完成 |
+| 7 | modelSupportsContextEditing 显式列出 | P2 | ✅ 已完成 |

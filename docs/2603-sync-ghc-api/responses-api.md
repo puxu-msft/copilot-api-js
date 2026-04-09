@@ -1,180 +1,114 @@
 # OpenAI Responses API
 
-## GHC 的 Responses API 实现 (`responsesApi.ts`)
+## GHC 的 Responses API 实现
 
-## 1. Context Management (Compaction) — P1
+GHC 的 `responsesApi.ts` 围绕**跨轮状态**设计：`previous_response_id`、compaction、encrypted reasoning、prompt cache。
 
-### GHC 行为
+## 1. Context Management (Compaction)
+
+### GHC 做法
 
 Responses API 有独立的 context management 机制 — compaction（压缩）：
 
 ```typescript
-// 不支持 compaction 的模型
 const modelsWithoutResponsesContextManagement = new Set(['gpt-5', 'gpt-5.1', 'gpt-5.2'])
 
-if (contextManagementEnabled && !modelsWithoutResponsesContextManagement.has(endpoint.family)) {
-  const compactThreshold = endpoint.modelMaxPromptTokens > 0
-    ? Math.floor(endpoint.modelMaxPromptTokens * 0.9)
-    : 50000
-  body.context_management = [{
-    type: 'compaction',
-    compact_threshold: compactThreshold  // 90% of max prompt tokens
-  }]
-}
+body.context_management = [{
+  type: 'compaction',
+  compact_threshold: Math.floor(endpoint.modelMaxPromptTokens * 0.9)
+}]
 ```
 
-当 context 超过阈值时，服务端返回一个 `compaction` 类型的 output item，包含 `encrypted_content`。
-后续请求需要将此 item 放入 input 中替代被压缩的历史消息。
-
-流事件处理：
-```typescript
-case 'response.output_item.done':
-  if (chunk.item.type === 'compaction') {
-    onProgress({
-      text: '',
-      contextManagement: {
-        type: 'compaction',
-        id: compactionItem.id,
-        encrypted_content: compactionItem.encrypted_content,
-      }
-    })
-  }
-```
+当 context 超过阈值时，服务端返回 `compaction` output item（含 `encrypted_content`），后续请求需要将其放入 input 替代被压缩的历史。
 
 ### 本项目现状
 
-`responses-client.ts` 透传请求，未添加 context management。
+作为代理透传请求体。如果客户端自己设置 `context_management`，会被透传。✅
 
-### 建议
+**评估**: 本项目定位是透传代理，不自己管理对话状态。客户端负责 context 管理。**不是 gap**。
 
-作为代理有两种策略：
-- **透传**: 如果客户端自己管理 compaction → 不需要改动
-- **代理注入**: 自动添加 `context_management`，并在响应中透传 compaction 事件
+## 2. Stateful Marker / `previous_response_id`
 
-建议采用透传策略，因为客户端（如 Claude Code）自己管理上下文窗口。
+### GHC 做法
 
-但如果未来要做服务端 context 管理，可以参考 GHC 的实现。
-
-## 2. Stateful Marker / previous_response_id — P1
-
-### GHC 行为
-
-Responses API 返回 `response.id`，GHC 将其作为 `statefulMarker` 保存。
-下次请求时通过 `previous_response_id` 字段传递，让服务端维护对话状态：
-
-```typescript
-// 构建请求时
-return { input, previous_response_id: previousResponseId }
-
-// 收到响应时
-case 'response.completed':
-  onProgress({ text: '', statefulMarker: chunk.response.id })
-```
-
-这避免了在每次请求中重新发送完整的对话历史。
+Responses API 返回 `response.id`，GHC 保存为 `statefulMarker`，下次请求通过 `previous_response_id` 传递，让服务端维护对话状态。
 
 ### 本项目现状
 
-`normalizeResponsesCallIds` 配置只处理 `call_` → `fc_` 的 ID 前缀转换，
-未处理 `previous_response_id` 的管理。
+- `types/api/openai-responses.ts:120` 定义了 `previous_response_id` 字段 ✅
+- 请求体透传，不剥离 ✅
+- `normalizeResponsesCallIds` 配置仅处理 `call_` → `fc_` 的 ID 前缀转换
 
-### 建议
+**评估**: 客户端（如 Claude Code）自己管理 `previous_response_id`，代理透传即可。✅
 
-作为代理，客户端（如 Claude Code）会自己传递 `previous_response_id`，我们只需透传。✅
-目前不需要额外工作。
+## 3. Reasoning (Thinking) 在 Responses API
 
-## 3. Reasoning (Thinking) 在 Responses API — P2
-
-### GHC 行为
+### GHC 做法
 
 ```typescript
-body.reasoning = {
-  effort: 'medium',               // 客户端可指定
-  summary: summaryConfig,          // 配置控制
-}
+body.reasoning = { effort: 'medium', summary: summaryConfig }
 body.include = ['reasoning.encrypted_content']
 ```
 
-GHC 还处理 `reasoning` 类型的 output item：
-- `response.reasoning_summary_text.delta` — thinking 文本增量
-- `response.output_item.done` (type: 'reasoning') — thinking 完成
+GHC **主动**添加 `include: ['reasoning.encrypted_content']`，即使客户端未请求。
 
 ### 本项目现状
 
-透传 reasoning 相关字段。✅
+透传客户端的 `reasoning` 和 `include` 字段。✅
 
-### 建议
+**评估**: 本项目不自己管理对话状态，不需要主动注入 `include`。如果客户端需要 encrypted reasoning 用于后续 round-trip，客户端自行设置。**不是 gap**。
 
-确保 `include: ['reasoning.encrypted_content']` 在 Responses API 请求中被透传。
-如果客户端不设置，考虑是否自动添加。
+## 4. Truncation 配置
 
-## 4. Truncation 配置 — P2
-
-### GHC 行为
+### GHC 做法
 
 ```typescript
-body.truncation = configService.getConfig(ConfigKey.Advanced.UseResponsesApiTruncation)
-  ? 'auto'
-  : 'disabled'
+body.truncation = useResponsesApiTruncation ? 'auto' : 'disabled'
 ```
 
 ### 本项目现状
 
-由 `auto-truncate` 模块自己管理截断逻辑。
+有自己的 auto-truncate 模块管理截断逻辑。透传客户端的 `truncation` 字段。✅
 
-### 建议
+## 5. `prompt_cache_key`
 
-不需要改动，本项目有自己的截断策略。✅
-
-## 5. prompt_cache_key — P2
-
-### GHC 行为
+### GHC 做法
 
 ```typescript
-if (promptCacheKeyEnabled && options.conversationId) {
-  body.prompt_cache_key = `${options.conversationId}:${endpoint.family}`
-}
+body.prompt_cache_key = `${options.conversationId}:${endpoint.family}`
 ```
-
-这告诉服务端用特定的 key 缓存 prompt，同一 conversation 的后续请求可以复用。
 
 ### 本项目现状
 
-未实现。
+透传客户端的 `prompt_cache_key`。如果客户端不设，则没有此字段。
 
-### 建议
+**评估**: 可以考虑从请求上下文推断 conversation ID 并自动设置，但需要客户端配合。P2，暂不作为 gap。
 
-如果要优化 Responses API 的响应速度，可以考虑从请求中提取 conversation ID
-并自动设置 `prompt_cache_key`。但这需要客户端传递 conversation ID，
-或从请求上下文中推断。P2。
+## 6. Verbosity 控制
 
-## 6. Verbosity 控制 — P2
-
-### GHC 行为
+### GHC 做法
 
 ```typescript
-function getVerbosityForModelSync(model): 'low' | 'medium' | 'high' | undefined {
-  if (model.family === 'gpt-5.1' || model.family === 'gpt-5-mini') {
-    return 'low'
-  }
-  return undefined
-}
-
+// gpt-5.1 和 gpt-5-mini 使用 low verbosity
 body.text = verbosity ? { verbosity } : undefined
 ```
 
 ### 本项目现状
 
-未实现。
+透传客户端的 `text.verbosity` 字段。✅
 
-### 建议
+## 7. WebSocket Transport
 
-P2。如果客户端传入 `text.verbosity` 则透传，不需要自动添加。
+### GHC 做法
 
-## 影响评估
+GHC 的 WebSocket Responses 是**代理↔上游**的持久连接：
+- 按 `conversationId + turnId` 复用连接
+- 同一轮 tool call 可复用，turn 变化关闭旧连接
+- WS 失败透明降级到 HTTP，连续多次失败临时禁用 WS
 
-| 项目 | 优先级 | 工作量 | 收益 |
-|------|--------|--------|------|
-| context management 理解 | P1 | 仅文档 | 为未来 context 管理做准备 |
-| prompt_cache_key | P2 | 小 | 响应速度优化 |
-| verbosity 透传 | P2 | 极小 | 完整性 |
+### 本项目现状
+
+本项目已实现**客户端↔代理**的 WebSocket（`routes/responses/ws.ts`）。✅
+代理↔上游仍走 HTTP/SSE。
+
+**评估**: 如果要进一步降低 tool-calling 延迟，可考虑代理↔上游也走 WebSocket。P2，实现复杂度高。

@@ -1,6 +1,6 @@
 import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
 
-import { hasThinkingSignatureBlocks } from "../thinking-immutability"
+import { shouldPreserveThinkingBlocks } from "../thinking-immutability"
 
 /**
  * Final pass: remove any empty/whitespace-only text content blocks from Anthropic messages.
@@ -10,7 +10,7 @@ export function filterEmptyAnthropicTextBlocks(messages: Array<MessageParam>): A
   return messages.map((msg) => {
     if (typeof msg.content === "string") return msg
 
-    if (msg.role === "assistant" && hasThinkingSignatureBlocks(msg)) {
+    if (msg.role === "assistant" && shouldPreserveThinkingBlocks(msg)) {
       return msg
     }
 

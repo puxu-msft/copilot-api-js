@@ -4,6 +4,7 @@
 
 .aider*
 .eslintcache
+/.playwright-mcp
 /test-results
 coverage/
 node_modules/

@@ -54,7 +54,8 @@ import { extractInputItems, normalizeCallIds } from "~/routes/responses/pipeline
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 export async function handleChatCompletion(c: Context) {
-  const originalPayload = await c.req.json<ChatCompletionsPayload>()
+  const originalPayload =
+    (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
 
   // Resolve model name aliases and date-suffixed versions
   const clientModel = originalPayload.model

@@ -18,6 +18,16 @@ export type ContextEditingMode = "off" | "clear-thinking" | "clear-tooluse" | "c
  */
 export type CacheControlMode = "disabled" | "passthrough" | "sanitize" | "proxied"
 
+/**
+ * Policy for assistant messages that contain `thinking` / `redacted_thinking` blocks.
+ *
+ * - `stripped`    — Delete thinking blocks from old messages; delete the message if empty after stripping.
+ * - `immutable`   — Treat the entire assistant message as immutable (keep or truncate as a whole).
+ * - `fixed-index` — Allow editing non-thinking blocks, but preserve the content array structure
+ *                   (skip empty-block filtering so thinking block indices stay stable).
+ */
+export type ThinkingBlockMessagePolicy = "stripped" | "immutable" | "fixed-index"
+
 /** A compiled rewrite rule (regex pre-compiled from config string) */
 export interface CompiledRewriteRule {
   /** Pattern to match (regex in regex mode, string in line mode) */
@@ -69,14 +79,12 @@ export interface State {
   readonly stripServerTools: boolean
 
   /**
-   * Treat any assistant message containing `thinking` or `redacted_thinking`
-   * as fully immutable during client-side rewrites.
+   * Policy for assistant messages containing `thinking` / `redacted_thinking`.
    *
-   * Disabled by default. When enabled, sanitization / dedup / auto-truncate
-   * keep those assistant messages byte-for-byte intact instead of editing
-   * adjacent text or tool blocks.
+   * Default: `"immutable"`. Set to `"stripped"` to aggressively remove thinking
+   * blocks, or `"fixed-index"` to allow edits while preserving array structure.
    */
-  readonly immutableThinkingMessages: boolean
+  readonly thinkingBlockMessagePolicy: ThinkingBlockMessagePolicy
 
   /**
    * Model name overrides: request model → target model.
@@ -335,7 +343,7 @@ export function setAnthropicBehavior(
     Pick<
       MutableState,
       | "stripServerTools"
-      | "immutableThinkingMessages"
+      | "thinkingBlockMessagePolicy"
       | "dedupToolCalls"
       | "stripReadToolResultTags"
       | "contextEditingMode"
@@ -430,7 +438,7 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {
  */
 export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
-  immutableThinkingMessages: false,
+  thinkingBlockMessagePolicy: "immutable" as ThinkingBlockMessagePolicy,
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
   contextEditingMode: "off" as const,
@@ -458,7 +466,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
 export function resetConfigManagedState(): void {
   setAnthropicBehavior({
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
-    immutableThinkingMessages: CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages,
+    thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
     contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
@@ -506,7 +514,7 @@ const mutableState: MutableState = {
   cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
-  immutableThinkingMessages: CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages,
+  thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
   historyLimit: CONFIG_MANAGED_DEFAULTS.historyLimit,

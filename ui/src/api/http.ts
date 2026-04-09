@@ -117,9 +117,9 @@ export const api = {
     return request<{ entries: Array<EntrySummary> }>(`/entries?limit=${String(limit)}`)
   },
 
-  /** Fetch models using the default full public payload. */
+  /** Fetch models using the full internal Copilot model payload. */
   async fetchModels(): Promise<{ data: Array<Record<string, unknown>> }> {
-    return requestRoot<{ data: Array<Record<string, unknown>> }>("/models")
+    return requestRoot<{ data: Array<Record<string, unknown>> }>("/api/models")
   },
 }
 

@@ -1,6 +1,6 @@
 import type { MessageParam } from "~/types/api/anthropic"
 
-import { hasThinkingSignatureBlocks, isImmutableThinkingAssistantMessage } from "../thinking-immutability"
+import { hasThinkingSignatureBlocks, shouldPreserveThinkingBlocks } from "../thinking-immutability"
 
 /**
  * Remove duplicate tool_use/tool_result pairs, keeping only the last occurrence
@@ -130,7 +130,7 @@ export function deduplicateToolCalls(
   for (const msg of filtered) {
     const prev = merged.at(-1)
     if (prev && prev.role === msg.role) {
-      if (prev.role === "assistant" && (isImmutableThinkingAssistantMessage(prev) || isImmutableThinkingAssistantMessage(msg))) {
+      if (prev.role === "assistant" && (shouldPreserveThinkingBlocks(prev) || shouldPreserveThinkingBlocks(msg))) {
         merged.push(msg)
         continue
       }

@@ -14,7 +14,7 @@
 
 **补充**: 审阅提到的 `X-Interaction-Id` 会话级追踪头也确实存在（`copilot-api.ts:26-28`），这是本项目独有的，应在修订中说明。
 
-**剩余 gap**: 仅 `X-Interaction-Type` 和 `X-Agent-Task-Id`，是否需要补齐待独立评估。
+**后续更新**: `X-Interaction-Type` 和 `X-Agent-Task-Id` 已在后续实现中补齐（`copilot-api.ts:60-61`）。
 
 ### Finding 2 — supported_endpoints ✅ 接受
 
@@ -42,26 +42,38 @@
 
 `src/routes/responses/ws.ts` 已实现客户端↔代理的 WebSocket transport。`previous_response_id` 在类型中定义且透传。原文档的"未实现"描述不准确。
 
-### Finding 6 — 参考基线 ⚠️ 部分不同意
+### Finding 6 — 参考基线 ⚠️ 路径命名失误，但不影响正文结论
 
-审阅说"当前工作区不存在这个 checkout"，但经验证 `refs/vscode-copilot-chat/.git` 目录存在，commit `b3e2aa33` 可通过 `git log`/`git diff` 在本地复核。
+这里的分歧本质上不是"能否复核参考仓库"，而是**本地参考路径命名不一致**：
 
-**实际情况**: 参考仓库在 `refs/vscode-copilot-chat/` 下完整可用，文档中记录的 commit hash 有操作价值。不过审阅的建议——"把关键引用片段连同文件路径固化到文档中"——仍然有参考意义，可以提高文档的自包含性。
+- `refs/vscode-copilot-chat/`
+- `refs/github-copilot-chat/`
+
+这两个目录指向的是同一上游仓库 `microsoft/vscode-copilot-chat`，只是本地 checkout 时间和 commit 不同。这里属于用户侧路径命名失误，不是正文分析错误。
+
+**收敛结论**:
+
+- 后续统一使用 `refs/vscode-copilot-chat/` 作为标准参考路径
+- `refs/github-copilot-chat/` 可视为临时/补充 checkout，不再作为主文档基线
+- 这条问题不影响审阅的核心结论：文档正文里多处“当前现状”描述已经过时，需要收敛
+
+审阅里提出的附加建议仍然成立：在文档中保留关键文件路径和引用片段，可以提高可复核性和自包含性。
 
 ## 仍然有效的 Gap 清单（审阅验证后）
 
+> **注意**：以下为回应撰写时的快照。#1-5 已在后续实施中完成，最新状态见 [README.md](README.md)。
+
 基于审阅和本次代码验证，更新后的真实 gap：
 
-| # | Gap | 优先级 | 说明 |
+| # | Gap | 优先级 | 状态 |
 |---|-----|--------|------|
-| 1 | cache_control 自动注入 | P0 | 未见自动注入链路，只有类型声明 |
-| 2 | tool result document block 保留 | P0 | sanitize 过滤器缺少 `document` 类型 |
-| 3 | modelSupportsToolSearch 扩展到 Sonnet | P1 | 当前仅 Opus 4.5/4.6 |
-| 4 | thinking budget min/max 校验 | P1 | 只做 `< max_tokens` 裁剪 |
-| 5 | output_config 可用性测试 | P1 | 当前被 COPILOT_REJECTED_FIELDS 剥离 |
-| 6 | 模型列表定期刷新 | P1 | 启动时单次 cacheModels() |
-| 7 | X-Interaction-Type / X-Agent-Task-Id | P2 | 需独立评估是否有收益 |
-| 8 | modelSupportsContextEditing 显式列出 | P2 | 当前依赖前缀匹配副作用 |
+| 1 | cache_control 自动注入 | P0 | ✅ 已完成 |
+| 2 | tool result document block 保留 | P0 | ✅ 已完成 |
+| 3 | modelSupportsToolSearch 扩展到 Sonnet | P1 | ✅ 已完成 |
+| 4 | thinking budget min/max 校验 | P1 | ✅ 已完成 |
+| 5 | output_config 可用性测试 | P1 | ✅ 已完成 |
+| 6 | X-Interaction-Type / X-Agent-Task-Id | P2 | ✅ 已完成 |
+| 7 | modelSupportsContextEditing 显式列出 | P2 | ✅ 已完成 |
 
 ## 下一步建议
 
@@ -70,4 +82,4 @@
 但建议**不急于重写整组文档**。更务实的方式是：
 1. 用本回应 + 审阅文档取代原 README.md 的优先级总览
 2. 直接基于上表的 Gap 清单推进实施
-3. 实施完成后再收敛文档（此时文档与代码同步更新）
+3. 实施完成后再收敛文档（现已完成）

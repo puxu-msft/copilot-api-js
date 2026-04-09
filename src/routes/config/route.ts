@@ -25,7 +25,7 @@ configRoutes.get("/", (c) => {
     autoTruncate: state.autoTruncate,
     compressToolResultsBeforeTruncate: state.compressToolResultsBeforeTruncate,
     stripServerTools: state.stripServerTools,
-    immutableThinkingMessages: state.immutableThinkingMessages,
+    thinkingBlockMessagePolicy: state.thinkingBlockMessagePolicy,
     dedupToolCalls: state.dedupToolCalls,
     contextEditingMode: state.contextEditingMode,
     contextEditingTrigger: state.contextEditingTrigger,
@@ -165,6 +165,7 @@ const TOP_LEVEL_KEYS = new Set([
 const ANTHROPIC_KEYS = new Set([
   "strip_server_tools",
   "dedup_tool_calls",
+  "thinking_block_message_policy",
   "immutable_thinking_messages",
   "strip_read_tool_result_tags",
   "context_editing",
@@ -261,6 +262,10 @@ function validateAnthropic(value: unknown, details: Array<ConfigValidationDetail
 
   if (hasOwn(value, "strip_server_tools")) {
     validateBoolean(value.strip_server_tools, "anthropic.strip_server_tools", details)
+  }
+  if (hasOwn(value, "thinking_block_message_policy")) {
+    const allowed = new Set(["stripped", "immutable", "fixed-index"])
+    validateEnum(value.thinking_block_message_policy, "anthropic.thinking_block_message_policy", allowed, details)
   }
   if (hasOwn(value, "immutable_thinking_messages")) {
     validateBoolean(value.immutable_thinking_messages, "anthropic.immutable_thinking_messages", details)

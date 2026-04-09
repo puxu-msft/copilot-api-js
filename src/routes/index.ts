@@ -9,6 +9,7 @@ import type { UpgradeWebSocket } from "hono/ws"
 import { initWebSocket } from "~/lib/ws"
 
 import { initResponsesWebSocket } from "./responses/ws"
+import { azureDeploymentRoutes } from "./azure-openai/route"
 import { chatCompletionRoutes } from "./chat-completions/route"
 import { configRoutes } from "./config/route"
 import { embeddingsRoutes } from "./embeddings/route"
@@ -16,7 +17,7 @@ import { eventLoggingRoutes } from "./event-logging/route"
 import { historyRoutes } from "./history/route"
 import { logsRoutes } from "./logs/route"
 import { messagesRoutes } from "./messages/route"
-import { modelsRoutes } from "./models/route"
+import { modelsRoutes, internalModelsRoutes } from "./models/route"
 import { responsesRoutes } from "./responses/route"
 import { statusRoutes } from "./status/route"
 import { tokenRoutes } from "./token/route"
@@ -39,6 +40,16 @@ export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
   app.route("/v1/embeddings", embeddingsRoutes)
   app.route("/v1/responses", responsesRoutes)
 
+  // Azure OpenAI classic deployment-based format
+  // e.g. POST /openai/deployments/{model}/chat/completions?api-version=2024-10-21
+  app.route("/openai/deployments", azureDeploymentRoutes)
+
+  // Azure OpenAI v1 format (standard OpenAI paths under /openai prefix)
+  app.route("/openai/v1/chat/completions", chatCompletionRoutes)
+  app.route("/openai/v1/models", modelsRoutes)
+  app.route("/openai/v1/embeddings", embeddingsRoutes)
+  app.route("/openai/v1/responses", responsesRoutes)
+
   // Anthropic-compatible endpoints
   app.route("/v1/messages", messagesRoutes)
   app.route("/api/event_logging", eventLoggingRoutes)
@@ -48,6 +59,7 @@ export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
   app.route("/api/tokens", tokenRoutes)
   app.route("/api/config", configRoutes)
   app.route("/api/logs", logsRoutes)
+  app.route("/api/models", internalModelsRoutes)
 
   // History API and standalone Web UI entry
   app.route("/history", historyRoutes)

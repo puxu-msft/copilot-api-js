@@ -102,9 +102,11 @@ anthropic:
   # "input": dedup by (name, input); "result": also require identical result
   dedup_tool_calls: false
 
-  # Treat any assistant message containing thinking/redacted_thinking as fully immutable
-  # during client-side rewrites (sanitize, dedup, auto-truncate). Default: false.
-  immutable_thinking_messages: false
+  # Policy for assistant messages containing thinking/redacted_thinking blocks.
+  #   stripped:    delete thinking blocks (delete message if empty after stripping)
+  #   immutable:   entire message is immutable — keep or truncate as a whole (default)
+  #   fixed-index: allow editing non-thinking blocks, but preserve array structure
+  thinking_block_message_policy: fixed-index
 
   # Strip <system-reminder> tags from Read tool results
   strip_read_tool_result_tags: false

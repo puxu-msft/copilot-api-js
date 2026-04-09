@@ -92,7 +92,7 @@ stream_idle_timeout: 60
     await applyConfigToState()
 
     expect(state.stripServerTools).toBe(false)
-    expect(state.immutableThinkingMessages).toBe(true)
+    expect(state.thinkingBlockMessagePolicy).toBe("immutable")
     expect(state.fetchTimeout).toBe(30)
     expect(state.streamIdleTimeout).toBe(60)
     expect(state.stripReadToolResultTags).toBe(true)
@@ -402,7 +402,7 @@ describe("config-managed defaults", () => {
   test("CONFIG_MANAGED_DEFAULTS stay aligned with initial mutable state", () => {
     expect(CONFIG_MANAGED_DEFAULTS.stripServerTools).toBe(false)
     expect(CONFIG_MANAGED_DEFAULTS.stripServerTools).toBe(state.stripServerTools)
-    expect(CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages).toBe(state.immutableThinkingMessages)
+    expect(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy).toBe(state.thinkingBlockMessagePolicy)
     expect(state.dedupToolCalls).toBe(CONFIG_MANAGED_DEFAULTS.dedupToolCalls as typeof state.dedupToolCalls)
     expect(CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags).toBe(state.stripReadToolResultTags)
     expect(state.contextEditingMode).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingMode as typeof state.contextEditingMode)
@@ -431,7 +431,7 @@ describe("config-managed defaults", () => {
   test("resetConfigManagedState restores config-managed runtime defaults", () => {
     setStateForTests({
       stripServerTools: true,
-      immutableThinkingMessages: true,
+      thinkingBlockMessagePolicy: "stripped",
       dedupToolCalls: "result",
       stripReadToolResultTags: true,
       contextEditingMode: "clear-both",
@@ -459,7 +459,7 @@ describe("config-managed defaults", () => {
     resetConfigManagedState()
 
     expect(state.stripServerTools).toBe(CONFIG_MANAGED_DEFAULTS.stripServerTools)
-    expect(state.immutableThinkingMessages).toBe(CONFIG_MANAGED_DEFAULTS.immutableThinkingMessages)
+    expect(state.thinkingBlockMessagePolicy).toBe(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy)
     expect(state.dedupToolCalls).toBe(CONFIG_MANAGED_DEFAULTS.dedupToolCalls as typeof state.dedupToolCalls)
     expect(state.stripReadToolResultTags).toBe(CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags)
     expect(state.contextEditingMode).toBe(CONFIG_MANAGED_DEFAULTS.contextEditingMode as typeof state.contextEditingMode)

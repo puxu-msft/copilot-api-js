@@ -2,7 +2,7 @@ import type { ContentBlockParam, MessageParam } from "~/types/api/anthropic"
 
 import { isServerToolResultBlock } from "~/types/api/anthropic"
 
-import { isImmutableThinkingAssistantMessage } from "../thinking-immutability"
+import { isImmutableThinkingMessage } from "../thinking-immutability"
 
 /**
  * Parse a potentially stringified JSON input into a proper object.
@@ -82,7 +82,7 @@ export function processToolBlocks(
     }
 
     if (msg.role === "assistant") {
-      if (isImmutableThinkingAssistantMessage(msg)) {
+      if (isImmutableThinkingMessage(msg)) {
         result.push(msg)
         continue
       }

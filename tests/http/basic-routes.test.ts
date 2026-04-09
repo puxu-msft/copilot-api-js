@@ -21,13 +21,8 @@ interface ModelsListResponseBody {
   data: Array<{
     id: string
     object: string
-    vendor: string
-    name: string
-    version: string
-    preview: boolean
-    model_picker_enabled: boolean
-    is_chat_default: boolean
-    is_chat_fallback: boolean
+    created: number
+    owned_by: string
   }>
 }
 
@@ -95,7 +90,7 @@ describe("basic HTTP routes", () => {
     })
   })
 
-  test("GET /models returns upstream model data as-is", async () => {
+  test("GET /models returns OpenAI-compatible format", async () => {
     const res = await app.request("/models")
     const body = (await res.json()) as ModelsListResponseBody
 
@@ -103,19 +98,12 @@ describe("basic HTTP routes", () => {
     expect(body.object).toBe("list")
     expect(body).not.toHaveProperty("has_more")
     expect(body.data).toHaveLength(1)
-    expect(body.data[0]).toMatchObject({
+    expect(body.data[0]).toEqual({
       id: "claude-sonnet-4.6",
       object: "model",
-      vendor: "Anthropic",
-      name: "claude-sonnet-4.6",
-      is_chat_default: false,
-      is_chat_fallback: false,
+      created: 0,
+      owned_by: "Anthropic",
     })
-    expect(body.data[0]).not.toHaveProperty("type")
-    expect(body.data[0]).not.toHaveProperty("created")
-    expect(body.data[0]).not.toHaveProperty("created_at")
-    expect(body.data[0]).not.toHaveProperty("owned_by")
-    expect(body.data[0]).not.toHaveProperty("display_name")
   })
 
   test("GET /models?detail=true remains equivalent to the default response", async () => {
@@ -141,15 +129,15 @@ describe("basic HTTP routes", () => {
     expect(defaultRes.status).toBe(200)
     expect(detailRes.status).toBe(200)
     expect(detailBody).toEqual(defaultBody)
-    expect(detailBody.data[0]).toMatchObject({
+    expect(detailBody.data[0]).toEqual({
       id: "gpt-4o",
-      version: "2025-01-01",
-      supported_endpoints: ["/chat/completions", "/responses"],
-      billing: { is_premium: true, multiplier: 10 },
+      object: "model",
+      created: 0,
+      owned_by: "OpenAI",
     })
   })
 
-  test("GET /models/:id returns upstream model data as-is", async () => {
+  test("GET /models/:id returns OpenAI-compatible format", async () => {
     setModels({
       object: "list",
       data: [
@@ -167,14 +155,12 @@ describe("basic HTTP routes", () => {
     const body = await res.json()
 
     expect(res.status).toBe(200)
-    expect(body).toMatchObject({
+    expect(body).toEqual({
       id: "gpt-4o",
       object: "model",
-      vendor: "OpenAI",
-      version: "2025-01-01",
-      supported_endpoints: ["/chat/completions", "/responses"],
+      created: 0,
+      owned_by: "OpenAI",
     })
-    expect(body).not.toHaveProperty("type")
   })
 
   test("GET /models/:id returns a model_not_found payload for unknown models", async () => {
@@ -255,13 +241,12 @@ describe("basic HTTP routes", () => {
     const body = await res.json()
 
     expect(res.status).toBe(200)
-    expect(body).toMatchObject({
+    expect(body).toEqual({
       id: "fetched-model",
       object: "model",
-      is_chat_default: false,
-      is_chat_fallback: false,
+      created: 0,
+      owned_by: "OpenAI",
     })
-    expect(body).not.toHaveProperty("type")
   })
 
   test("GET /models forwards model cache failures through the shared error handler", async () => {
@@ -308,6 +293,40 @@ describe("basic HTTP routes", () => {
 
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: "Not Found" })
+  })
+
+  test("GET /api/models returns full internal format", async () => {
+    const res = await app.request("/api/models")
+    const body = (await res.json()) as { object: string; data: Array<Record<string, unknown>> }
+
+    expect(res.status).toBe(200)
+    expect(body.object).toBe("list")
+    expect(body.data).toHaveLength(1)
+    // Internal format includes all Copilot fields
+    expect(body.data[0]).toMatchObject({
+      id: "claude-sonnet-4.6",
+      object: "model",
+      vendor: "Anthropic",
+      name: "claude-sonnet-4.6",
+      is_chat_default: false,
+      is_chat_fallback: false,
+    })
+    // Internal format should NOT have created/owned_by (these are OpenAI-only)
+    expect(body.data[0]).not.toHaveProperty("created")
+    expect(body.data[0]).not.toHaveProperty("owned_by")
+  })
+
+  test("GET /api/models/:id returns full internal format", async () => {
+    const res = await app.request("/api/models/claude-sonnet-4.6")
+    const body = (await res.json()) as Record<string, unknown>
+
+    expect(res.status).toBe(200)
+    expect(body).toMatchObject({
+      id: "claude-sonnet-4.6",
+      vendor: "Anthropic",
+      name: "claude-sonnet-4.6",
+      version: "1.0",
+    })
   })
 })
 

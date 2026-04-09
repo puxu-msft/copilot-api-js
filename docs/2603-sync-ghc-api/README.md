@@ -20,35 +20,33 @@
 
 ## 剩余 Gap 总览
 
-### P0 — 高价值，应尽快采纳
+当前 `docs/2603-sync-ghc-api/` 原先识别出的 P0/P1/P2 项均已落地。本目录现在主要用于保留：
 
-1. **cache_control 自动注入 + tool 排序** — non-deferred/deferred 分组排序后注入 breakpoint（详见 [messages-api.md](messages-api.md)）
-2. **tool result document block 保留** — sanitize 过滤器缺少 `document` 类型（详见 [messages-api.md](messages-api.md)）
-
-### P1 — 中等价值，需一定工作量
-
-3. **modelSupportsToolSearch 扩展到 Sonnet** — 当前仅 Opus 4.5/4.6，GHC 含 Sonnet 4.5/4.6（详见 [messages-api.md](messages-api.md)）
-4. **thinking budget min/max 校验** — 只做 `< max_tokens` 裁剪，缺少模型元数据上下界（详见 [thinking-system.md](thinking-system.md)）
-5. **output_config 可用性测试** — 当前被 COPILOT_REJECTED_FIELDS 剥离（详见 [thinking-system.md](thinking-system.md)）
-6. **模型列表定期刷新** — 启动时单次 cacheModels()（详见 [model-capabilities.md](model-capabilities.md)）
-
-### P2 — 参考价值，按需采纳
-
-7. **X-Interaction-Type / X-Agent-Task-Id** — 需独立评估收益（详见 [request-headers.md](request-headers.md)）
-8. **modelSupportsContextEditing 显式列出** — 当前依赖前缀匹配副作用（详见 [thinking-system.md](thinking-system.md)）
+- GHC 机制对照
+- 实施决策背景
+- 审阅与修订记录
 
 ## 已完成项（历史记录）
 
 以下是原始分析中识别的 gap，经审阅确认已在当前代码中实现：
 
 - ~~请求头 `X-GitHub-Api-Version`、`X-Request-Id`、`OpenAI-Intent`~~ → `copilot-api.ts:54-56`
+- ~~`X-Interaction-Type` / `X-Agent-Task-Id`~~ → `copilot-api.ts:60-61`
 - ~~`supported_endpoints` 路由决策~~ → `models/endpoint.ts` + `chat-completions/handler.ts`
 - ~~tool search 注入 (`tool_search_tool_regex`)~~ → `anthropic/message-tools.ts:157-163`
 - ~~tool deferral (`defer_loading`)~~ → `anthropic/message-tools.ts:166-180`
-- ~~Sonnet 4.6 context editing 支持~~ → `anthropic/features.ts:50`（`claude-sonnet-4` 前缀匹配）
+- ~~tool 排序（non-deferred 在前）~~ → `anthropic/message-tools.ts:155-220`
+- ~~cache_control 自动注入~~ → `anthropic/request-preparation.ts:129-216`
+- ~~tool result document block 保留~~ → `anthropic/sanitize/tool-blocks.ts:166`
+- ~~modelSupportsToolSearch 扩展到 Sonnet~~ → `anthropic/features.ts:76-77`
+- ~~thinking budget min/max 校验~~ → `anthropic/request-preparation.ts:97-127`
+- ~~output_config 透传~~ → `anthropic/request-preparation.ts:22`（从 COPILOT_REJECTED_FIELDS 移除）
+- ~~Sonnet 4.6 context editing 支持~~ → `anthropic/features.ts:45-55`
+- ~~modelSupportsContextEditing 显式列出~~ → `anthropic/features.ts:45-55`
 - ~~adaptive thinking 检测~~ → `anthropic/features.ts:102-104`
 - ~~Responses WebSocket transport（客户端↔代理）~~ → `routes/responses/ws.ts`
 - ~~`previous_response_id` 透传~~ → `types/api/openai-responses.ts:120`
+- ~~模型列表定期刷新~~ → `lib/models/refresh-loop.ts` + `config model_refresh_interval`（`0 = disabled`）
 
 ## 审阅记录
 

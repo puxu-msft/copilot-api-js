@@ -4,7 +4,7 @@ import type { MessageParam } from "~/types/api/anthropic"
 
 import { isServerToolResultBlock, isToolResultBlock } from "~/types/api/anthropic"
 
-import { isImmutableThinkingAssistantMessage } from "../thinking-immutability"
+import { isImmutableThinkingMessage } from "../thinking-immutability"
 
 /**
  * Get tool_use IDs from an Anthropic assistant message.
@@ -78,6 +78,12 @@ export function filterAnthropicOrphanedToolResults(messages: Array<MessageParam>
       continue
     }
 
+    // immutable policy: never modify assistant messages with thinking blocks
+    if (msg.role === "assistant" && isImmutableThinkingMessage(msg)) {
+      result.push(msg)
+      continue
+    }
+
     const filtered = msg.content.filter((block) => {
       if (isToolResultBlock(block) && !toolUseIds.has(block.tool_use_id)) {
         removed++
@@ -125,7 +131,7 @@ export function filterAnthropicOrphanedToolUse(messages: Array<MessageParam>): A
       continue
     }
 
-    if (isImmutableThinkingAssistantMessage(msg)) {
+    if (isImmutableThinkingMessage(msg)) {
       result.push(msg)
       continue
     }

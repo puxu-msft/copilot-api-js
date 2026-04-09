@@ -26,15 +26,15 @@ import {
 } from "~/lib/system-prompt"
 import { state, setStateForTests } from "~/lib/state"
 
-let originalImmutableThinkingMessages: boolean
+let originalPolicy: typeof state.thinkingBlockMessagePolicy
 
 beforeEach(() => {
-  originalImmutableThinkingMessages = state.immutableThinkingMessages
-  setStateForTests({ immutableThinkingMessages: false })
+  originalPolicy = state.thinkingBlockMessagePolicy
+  setStateForTests({ thinkingBlockMessagePolicy: "stripped" })
 })
 
 afterEach(() => {
-  setStateForTests({ immutableThinkingMessages: originalImmutableThinkingMessages })
+  setStateForTests({ thinkingBlockMessagePolicy: originalPolicy })
 })
 
 // =============================================================================
@@ -1600,7 +1600,7 @@ describe("Server Tool Use Support", () => {
     })
 
     test("immutable_thinking_messages should preserve a thinking assistant message unchanged", () => {
-      setStateForTests({ immutableThinkingMessages: true })
+      setStateForTests({ thinkingBlockMessagePolicy: "immutable" })
 
       const immutableAssistant = {
         role: "assistant" as const,
@@ -1640,7 +1640,7 @@ describe("Server Tool Use Support", () => {
     })
 
     test("immutable_thinking_messages should keep adjacent empty text blocks in thinking assistant messages", () => {
-      setStateForTests({ immutableThinkingMessages: true })
+      setStateForTests({ thinkingBlockMessagePolicy: "immutable" })
 
       const immutableAssistant = {
         role: "assistant" as const,

@@ -37,7 +37,8 @@ import { createResponsesAdapter, createResponsesStrategies, normalizeCallIds } f
 
 /** Handle an inbound Responses API request */
 export async function handleResponses(c: Context) {
-  let payload = await c.req.json<ResponsesPayload>()
+  let payload =
+    (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
 
   // Resolve model name aliases
   const clientModel = payload.model

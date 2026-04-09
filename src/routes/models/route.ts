@@ -6,7 +6,16 @@ import { forwardError } from "~/lib/error"
 import { cacheModels } from "~/lib/models/client"
 import { state } from "~/lib/state"
 
-export const modelsRoutes = new Hono()
+// ============================================================================
+// Shared helpers
+// ============================================================================
+
+/** Ensure the models cache is populated, fetching if needed. */
+async function ensureModels() {
+  if (!state.models) {
+    await cacheModels()
+  }
+}
 
 /** Strip internal fields that should not be exposed to external consumers. */
 function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
@@ -14,20 +23,37 @@ function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
   return rest
 }
 
+// ============================================================================
+// OpenAI-compatible format (/models, /v1/models, /openai/v1/models)
+// ============================================================================
+
+/** OpenAI standard model object — only the fields defined by the OpenAI API spec. */
+interface OpenAIModel {
+  id: string
+  object: "model"
+  created: number
+  owned_by: string
+}
+
+/** Convert a Copilot model to OpenAI standard format. */
+function toOpenAIModel(model: Model): OpenAIModel {
+  return {
+    id: model.id,
+    object: "model",
+    created: 0,
+    owned_by: model.vendor,
+  }
+}
+
+export const modelsRoutes = new Hono()
+
 modelsRoutes.get("/", async (c) => {
   try {
-    if (!state.models) {
-      // This should be handled by startup logic, but as a fallback.
-      await cacheModels()
-    }
-
-    // `?detail=true` remains accepted for backwards compatibility but is now a
-    // no-op because the default response already returns the full public model.
-    const models = state.models?.data.map(stripInternalFields)
+    await ensureModels()
 
     return c.json({
-      object: state.models?.object ?? "list",
-      data: models,
+      object: "list",
+      data: state.models?.data.map(toOpenAIModel) ?? [],
     })
   } catch (error) {
     return forwardError(c, error)
@@ -36,9 +62,53 @@ modelsRoutes.get("/", async (c) => {
 
 modelsRoutes.get("/:model", async (c) => {
   try {
-    if (!state.models) {
-      await cacheModels()
+    await ensureModels()
+
+    const modelId = c.req.param("model")
+    const model = state.modelIndex.get(modelId)
+
+    if (!model) {
+      return c.json(
+        {
+          error: {
+            message: `The model '${modelId}' does not exist`,
+            type: "invalid_request_error",
+            param: "model",
+            code: "model_not_found",
+          },
+        },
+        404,
+      )
     }
+
+    return c.json(toOpenAIModel(model))
+  } catch (error) {
+    return forwardError(c, error)
+  }
+})
+
+// ============================================================================
+// Internal format (/api/models) — full Copilot model data
+// ============================================================================
+
+export const internalModelsRoutes = new Hono()
+
+internalModelsRoutes.get("/", async (c) => {
+  try {
+    await ensureModels()
+
+    return c.json({
+      object: state.models?.object ?? "list",
+      data: state.models?.data.map(stripInternalFields) ?? [],
+    })
+  } catch (error) {
+    return forwardError(c, error)
+  }
+})
+
+internalModelsRoutes.get("/:model", async (c) => {
+  try {
+    await ensureModels()
 
     const modelId = c.req.param("model")
     const model = state.modelIndex.get(modelId)

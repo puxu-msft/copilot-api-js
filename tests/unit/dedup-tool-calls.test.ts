@@ -23,15 +23,15 @@ function userWithResults(...results: Array<{ tool_use_id: string; content: strin
   } as MessageParam
 }
 
-let originalImmutableThinkingMessages: boolean
+let originalPolicy: typeof state.thinkingBlockMessagePolicy
 
 beforeEach(() => {
-  originalImmutableThinkingMessages = state.immutableThinkingMessages
-  setStateForTests({ immutableThinkingMessages: false })
+  originalPolicy = state.thinkingBlockMessagePolicy
+  setStateForTests({ thinkingBlockMessagePolicy: "stripped" })
 })
 
 afterEach(() => {
-  setStateForTests({ immutableThinkingMessages: originalImmutableThinkingMessages })
+  setStateForTests({ thinkingBlockMessagePolicy: originalPolicy })
 })
 
 describe("deduplicateToolCalls", () => {
@@ -280,7 +280,7 @@ describe("deduplicateToolCalls", () => {
   })
 
   it("should not merge an immutable thinking assistant with adjacent assistant messages", () => {
-    setStateForTests({ immutableThinkingMessages: true })
+    setStateForTests({ thinkingBlockMessagePolicy: "immutable" })
 
     const immutableAssistant = {
       role: "assistant",

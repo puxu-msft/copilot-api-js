@@ -1,178 +1,86 @@
 # Anthropic Messages API
 
-## GHC 的 Messages API 实现 (`messagesApi.ts`)
+## GHC 的 Messages API 实现
 
-GHC 的 Messages API 实现是最复杂的端点之一，包含多个本项目尚未实现的特性。
+GHC 的 `messagesApi.ts` 是**强改写型适配层**，不是透传。它主动构建 tool 列表、thinking 配置、context management、cache_control 等。
 
-## 1. cache_control 自动注入 — P0
+## 1. cache_control 自动注入 + tool 排序 — 已实现 ✅
 
-### GHC 行为
+### GHC 做法
 
-GHC 在 `addToolsAndSystemCacheControl()` 中自动为 tools 和 system 添加 `cache_control` breakpoint：
+GHC 在 `addToolsAndSystemCacheControl()` 中自动注入 `cache_control` breakpoint：
 
-```typescript
-// 最多 4 个 cache_control breakpoint（Anthropic API 限制）
-// 分配策略：
-// 1. 先计算 messages 中已有的 cache_control 数量
-// 2. 剩余 slot 分配给最后一个非 deferred tool
-// 3. 再分配给最后一个 system block
-
-lastCacheableTool.cache_control = { type: 'ephemeral' }
-lastSystemBlock.cache_control = { type: 'ephemeral' }
-```
-
-### 本项目现状
-
-本项目在 `types/api/anthropic.ts` 中定义了 `cache_control` 类型，但不会自动注入。
-客户端需要自行在 payload 中添加 `cache_control`。
-
-### 建议
-
-作为代理，应在转发请求时自动为 tools 和 system 添加 `cache_control`，这样所有客户端
-都能受益于 prompt 缓存，而无需各自实现。
-
-实现要点：
-- 计算已有 breakpoint 数量（messages 中的 `cache_control`）
-- 在剩余 slot 内标记最后一个 tool 和最后一个 system block
-- 尊重客户端已设置的 `cache_control`，不重复添加
+- Anthropic 允许最多 **4 个** `cache_control` breakpoint（缓存层级：tools → system → messages）
+- 先统计 messages 中已有的 breakpoint 数量
+- 在剩余 slot 内优先标记**最后一个非 deferred tool**
+- 再标记**最后一个 system block**
 - 跳过 `defer_loading: true` 的 tool（不能有 cache_control）
 
-## 2. Tool Search (Server-Side) — P1
+为了最大化缓存命中率，GHC 还**排序 tools 数组**：
+1. `tool_search_tool_regex`（最前）
+2. 所有 non-deferred tools
+3. 所有 deferred tools
 
-### GHC 行为
-
-当启用 tool search 时，GHC 向 tools 列表中添加一个特殊的 `tool_search_tool_regex` 工具：
-
-```typescript
-// server-side tool search
-finalTools.push({
-  name: 'tool_search_tool_regex',
-  type: 'tool_search_tool_regex_20251119',
-  defer_loading: false
-})
-```
-
-支持的模型：`claude-sonnet-4.5`, `claude-sonnet-4.6`, `claude-opus-4.5`, `claude-opus-4.6`
-
-工具搜索的流事件类型：
-- `server_tool_use` — 服务端发起工具搜索请求
-- `tool_search_tool_result` — 返回匹配的工具引用列表
+这样 non-deferred 部分是稳定前缀，deferred 部分的变化不破坏缓存。
 
 ### 本项目现状
 
-已在 `features.ts` 中实现 `modelSupportsToolSearch()`，
-但只支持 `claude-opus-4.5` 和 `claude-opus-4.6`。
-未在请求构建中注入 tool search 工具。
+- `request-preparation.ts:129-216` — `addToolsAndSystemCacheControl()` 实现 ✅
+  - 递归统计现有 breakpoint 数量（`countExistingCacheBreakpoints`）
+  - 优先标记最后一个 non-deferred tool → 再标记最后一个 system block
+  - 尊重已有 `cache_control`，不重复添加
+  - 不可变更新（返回新数组）
+- `message-tools.ts:155-220` — tool 排序 ✅
+  - 分别收集 `nonDeferred` 和 `deferred`
+  - 最终拼接顺序：`tool_search → nonDeferred → deferred`
+- 调用时机：`prepareAnthropicRequest()` 中 `buildWirePayload`（已含 `stripServerTools`）之后
 
-**差距**: 缺少 Sonnet 4.5/4.6 支持，且未在请求中自动注入 tool search 工具。
+## 2. Tool Search — 已实现 ✅
 
-### 建议
+### GHC 做法
 
-1. 扩展 `modelSupportsToolSearch()` 支持 Sonnet 4.5/4.6
-2. 在 `request-preparation.ts` 中检测并注入 tool search 工具
-3. 透传 `tool_search_tool_result` 流事件（作为代理应直接透传）
+支持两种 tool search 模式：
 
-## 3. Tool Deferral — P1
+- **Server-side**: 注入 `tool_search_tool_regex`（`type: tool_search_tool_regex_20251119`）
+- **Client-side custom**: 自定义 `tool_search`，结果转 `tool_reference` block
 
-### GHC 行为
-
-当 tool search 启用时，GHC 将"不常用"的工具标记为 `defer_loading: true`：
-
-```typescript
-const isDeferred = toolSearchEnabled
-  && isAllowedConversationAgent
-  && !isSubagent
-  && !toolDeferralService.isNonDeferredTool(tool.function.name)
-
-anthropicTool = { ...anthropicTool, defer_loading: isDeferred ? true : undefined }
-```
-
-这优化了 prompt 缓存命中率：非 deferred 工具定义被缓存，deferred 工具只在 tool search 发现后加载。
+支持的模型前缀：`claude-sonnet-4.5`、`claude-sonnet-4.6`、`claude-opus-4.5`、`claude-opus-4.6`
 
 ### 本项目现状
 
-未实现。
+- Server-side tool search 注入 ✅（`message-tools.ts:157-163`）
+- defer_loading 标记 ✅（`message-tools.ts:166-187`）
+- tool 排序（non-deferred 在前）✅（`message-tools.ts:155-220`）
+- 历史 tool name 收集（避免已用工具被 defer）✅（`message-tools.ts:153`）
+- `beta` header `advanced-tool-use-2025-11-20` ✅（`features.ts:135`）
+- 模型覆盖范围包含 Sonnet 4.5/4.6 ✅（`features.ts:76-77`）
 
-### 建议
+## 3. Tool Result Content Type 过滤 — 已实现 ✅
 
-作为代理，可以：
-- 方案 A：透传客户端已设置的 `defer_loading` 标记
-- 方案 B：基于配置的"核心工具列表"自动标记
+### GHC 做法
 
-建议先实现方案 A（透传），再考虑方案 B。
-
-## 4. Trailing Assistant Message Guard — P1
-
-### GHC 行为
-
-```typescript
-// Messages API 要求对话以 user message 结尾
-// 尾随 assistant 消息会被当作 prefill 请求（不支持），返回 400
-if (lastMessage && lastMessage.role === 'assistant') {
-  messagesResult.messages.push({
-    role: 'user',
-    content: [{ type: 'text', text: 'Please continue.' }],
-  })
-}
-```
+tool_result 内容块只允许 `text`、`image`、`document` 类型，空文本被丢弃。
 
 ### 本项目现状
 
-`sanitize.ts` 中有消息清洗管道，但未明确处理这个场景。
+`sanitize/tool-blocks.ts:163-167` 的 user-side block 过滤保留 `text`、`image`、`document` ✅
 
-### 建议
+## 4. Trailing Assistant Message Guard — 已透传
 
-在 sanitize 管道中添加尾随 assistant 消息检测和修复。
+### GHC 做法
 
-## 5. Tool Result Content Type Filtering — P0
-
-### GHC 行为
-
-tool_result 内容块只允许 `text`、`image`、`document` 类型：
-
-```typescript
-const validContent = toolContent.filter(c =>
-  (c.type === 'text' || c.type === 'image' || c.type === 'document')
-  && !(c.type === 'text' && c.text.trim() === '')
-)
-```
+Messages API 要求对话以 user message 结尾。GHC 检测到尾随 assistant 消息时自动追加 `{ role: 'user', content: 'Please continue.' }`。
 
 ### 本项目现状
 
-透传客户端内容，未做过滤。
+作为代理透传客户端消息。客户端（如 Claude Code）自行确保消息结构合法。`sanitize.ts` 管道处理的是 orphaned tool blocks，不涉及尾随 assistant 修复。
 
-### 建议
+**评估**: 如果客户端总是发送合法结构，此项不是 gap。如果要增强健壮性，可以在 sanitize 管道末尾添加检测。P2。
 
-在 sanitize 管道中添加 tool_result 内容类型过滤。
+## 5. Image / PDF 处理 — 已透传 ✅
 
-## 6. Image URL → base64 转换
+本项目作为代理透传，客户端已按 Anthropic 格式构建图片和 PDF block。不需要做格式转换。
 
-### GHC 行为
+## 6. Thinking Round-trip — 已透传 ✅
 
-支持两种图片格式：
-- `data:image/...;base64,...` → 转为 Anthropic `image.source.type: 'base64'`
-- `https://...` → 转为 Anthropic `image.source.type: 'url'`
-
-### 本项目现状
-
-作为代理透传，由客户端确保格式正确。✅ 不需要改动。
-
-## 7. Document (PDF) 支持
-
-### GHC 行为
-
-支持 `application/pdf` 类型的 document block，仅 Anthropic 模型支持。
-
-### 本项目现状
-
-透传处理，不需要特殊逻辑。✅
-
-## 影响评估
-
-| 项目 | 优先级 | 工作量 | 收益 |
-|------|--------|--------|------|
-| cache_control 自动注入 | P0 | 中 | 显著降低 token 成本 |
-| tool result content 过滤 | P0 | 小 | 防止 400 错误 |
-| trailing assistant guard | P1 | 小 | 防止 400 错误 |
-| tool search 注入 | P1 | 中 | 解锁工具搜索功能 |
-| tool deferral 透传 | P1 | 小 | prompt 缓存优化 |
+客户端（如 Claude Code）自己管理 thinking/redacted_thinking block 的回传。代理透传即可。

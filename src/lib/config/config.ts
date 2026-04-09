@@ -13,6 +13,7 @@ import {
   type CacheControlMode,
   type CompiledRewriteRule,
   type ContextEditingMode,
+  type ThinkingBlockMessagePolicy,
   DEFAULT_MODEL_OVERRIDES,
   setAnthropicBehavior,
   setHistoryConfig,
@@ -102,12 +103,14 @@ export interface AnthropicConfig {
   /** Strip server-side tools (web_search, etc.) from requests (default: false) */
   strip_server_tools?: boolean
   /**
-   * Treat assistant messages containing `thinking` / `redacted_thinking`
-   * as fully immutable during client-side rewrites.
+   * Policy for assistant messages containing `thinking` / `redacted_thinking`.
    *
-   * Default: false. When enabled, sanitization / dedup / auto-truncate will
-   * not modify those assistant messages in place.
+   * - `"stripped"` — delete thinking blocks; delete the message if empty
+   * - `"immutable"` — entire message is immutable (default)
+   * - `"fixed-index"` — allow editing non-thinking blocks, preserve array structure
    */
+  thinking_block_message_policy?: ThinkingBlockMessagePolicy
+  /** @deprecated Use `thinking_block_message_policy` instead */
   immutable_thinking_messages?: boolean
   /**
    * Remove duplicate tool_use/tool_result pairs (keep last occurrence).
@@ -344,8 +347,14 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.anthropic) {
     const a = config.anthropic
     if (a.strip_server_tools !== undefined) setAnthropicBehavior({ stripServerTools: a.strip_server_tools })
-    if (a.immutable_thinking_messages !== undefined)
-      setAnthropicBehavior({ immutableThinkingMessages: a.immutable_thinking_messages })
+    // thinking_block_message_policy takes precedence over deprecated immutable_thinking_messages
+    if (a.thinking_block_message_policy !== undefined) {
+      setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
+    } else if (a.immutable_thinking_messages !== undefined) {
+      setAnthropicBehavior({
+        thinkingBlockMessagePolicy: a.immutable_thinking_messages ? "immutable" : "stripped",
+      })
+    }
     if (a.dedup_tool_calls !== undefined) {
       // Normalize: true → "input" for backward compatibility, false → false
       setAnthropicBehavior({ dedupToolCalls: a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls })

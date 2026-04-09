@@ -208,7 +208,7 @@ describe("Auto-Truncate Anthropic", () => {
   })
 
   test("immutable_thinking_messages should prevent client-side thinking stripping", async () => {
-    const originalImmutableThinkingMessages = state.immutableThinkingMessages
+    const originalPolicy = state.thinkingBlockMessagePolicy
 
     try {
       const payload: MessagesPayload = {
@@ -246,7 +246,7 @@ describe("Auto-Truncate Anthropic", () => {
       const strippedTokens = await countTotalTokens(manuallyStrippedPayload, mockModel)
       const targetTokenLimit = Math.floor((originalTokens + strippedTokens) / 2)
 
-      setStateForTests({ immutableThinkingMessages: false })
+      setStateForTests({ thinkingBlockMessagePolicy: "stripped" })
       const mutableResult = await autoTruncateAnthropic(payload, mockModel, { targetTokenLimit })
       const mutableAssistant = mutableResult.payload.messages[1]
       expect(Array.isArray(mutableAssistant.content)).toBe(true)
@@ -254,7 +254,7 @@ describe("Auto-Truncate Anthropic", () => {
         expect(mutableAssistant.content.some((block) => block.type === "thinking")).toBe(false)
       }
 
-      setStateForTests({ immutableThinkingMessages: true })
+      setStateForTests({ thinkingBlockMessagePolicy: "immutable" })
       const immutableResult = await autoTruncateAnthropic(payload, mockModel, { targetTokenLimit })
       const oldAssistant = immutableResult.payload.messages.find(
         (message) =>
@@ -276,7 +276,7 @@ describe("Auto-Truncate Anthropic", () => {
         ).toBe(false)
       }
     } finally {
-      setStateForTests({ immutableThinkingMessages: originalImmutableThinkingMessages })
+      setStateForTests({ thinkingBlockMessagePolicy: originalPolicy })
     }
   })
 })
