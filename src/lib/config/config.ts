@@ -14,6 +14,7 @@ import {
   type CompiledRewriteRule,
   type ContextEditingMode,
   type ThinkingBlockMessagePolicy,
+  type WarmupPolicy,
   DEFAULT_MODEL_OVERRIDES,
   setAnthropicBehavior,
   setHistoryConfig,
@@ -188,6 +189,25 @@ export interface AnthropicConfig {
    * Also reads ANTHROPIC_API_KEY env var as fallback.
    */
   api_key?: string
+  /**
+   * Policy for Claude Code "Warmup" requests.
+   * - `"allow"` — pass through normally (default)
+   * - `"reject"` — return HTTP 429 error
+   * - `"drop"` — return minimal empty success response without forwarding upstream
+   * - `"fake"` — return a realistic fake response with cache_creation_input_tokens
+   */
+  warmup?: WarmupPolicy
+  /**
+   * Per-model supported effort levels (whitelist).
+   * Keys are model name substrings matched against the resolved model name.
+   * Values are arrays of supported effort levels.
+   * Examples:
+   *   claude-opus-4.6-1m: [medium, high]  # only medium and high are supported
+   *   claude-opus-4.7: [medium]            # only medium is supported
+   * If a request's output_config.effort is not in the list, it is adjusted per effort_overflow.
+   * Runtime may dynamically extend this map when upstream returns invalid_reasoning_effort errors.
+   */
+  efforts_overrides?: Record<string, Array<string>>
 }
 
 /** Shutdown timing configuration section */
@@ -393,6 +413,10 @@ export async function applyConfigToState(): Promise<Config> {
     }
     if (Array.isArray(a.non_deferred_tools)) setAnthropicBehavior({ nonDeferredTools: a.non_deferred_tools })
     if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
+    if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
+    // Collection: always replace from config (deletion → empty).
+    // Runtime-learned entries (from invalid_reasoning_effort errors) re-populate on next error.
+    setAnthropicBehavior({ effortsOverrides: a.efforts_overrides ?? {} })
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {

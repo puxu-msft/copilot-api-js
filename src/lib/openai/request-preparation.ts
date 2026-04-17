@@ -18,7 +18,7 @@ export function prepareChatCompletionsRequest(
   payload: ChatCompletionsPayload,
   opts?: PrepareOpenAIRequestOptions,
 ): PreparedOpenAIRequest<ChatCompletionsPayload> {
-  const wire = payload
+  const wire = normalizeMaxTokens(payload)
 
   const enableVision = wire.messages.some(
     (message) => typeof message.content !== "string" && message.content?.some((part) => part.type === "image_url"),
@@ -46,8 +46,8 @@ export function prepareResponsesRequest(
   const wire = payload
   const enableVision = hasVisionContent(wire.input)
   const isAgentCall =
-    Array.isArray(wire.input)
-    && wire.input.some(
+    Array.isArray(wire.input) &&
+    wire.input.some(
       (item) => item.role === "assistant" || item.type === "function_call" || item.type === "function_call_output",
     )
   const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
@@ -69,4 +69,22 @@ function hasVisionContent(input: string | Array<ResponsesInputItem>): boolean {
   return input.some(
     (item) => Array.isArray(item.content) && item.content.some((part) => "type" in part && part.type === "input_image"),
   )
+}
+
+/**
+ * Normalize max_tokens → max_completion_tokens for upstream wire payload.
+ *
+ * OpenAI deprecated `max_tokens` in favor of `max_completion_tokens`. Newer models
+ * (gpt-5.x, o-series) reject `max_tokens` entirely. We always send the modern
+ * parameter to avoid model-specific detection heuristics.
+ */
+function normalizeMaxTokens(payload: ChatCompletionsPayload): ChatCompletionsPayload {
+  if (payload.max_tokens == null && payload.max_completion_tokens == null) return payload
+
+  const { max_tokens, ...rest } = payload
+  return {
+    ...rest,
+    // Client's explicit max_completion_tokens takes precedence over max_tokens
+    max_completion_tokens: payload.max_completion_tokens ?? max_tokens,
+  }
 }

@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import type { TruncationInfo } from "@/types"
 
-import { useFormatters } from "@/composables/useFormatters"
+import { formatDuration, formatNumber } from "@/utils/formatters"
 
 defineProps<{
   truncation: TruncationInfo
 }>()
-
-const { formatNumber, formatDuration } = useFormatters()
 </script>
 
 <template>

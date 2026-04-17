@@ -81,7 +81,7 @@ const renderedHtml = computed(() => {
 }
 
 :deep(.content-block) {
-  border-color: rgba(163, 113, 247, 0.3);
+  border-color: var(--purple-muted);
 }
 
 :deep(.content-block-header) {

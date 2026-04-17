@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useFormatters } from "@/composables/useFormatters"
+import { formatDuration, formatNumber } from "@/utils/formatters"
 
 interface AttemptInfo {
   index: number
@@ -19,7 +19,6 @@ defineProps<{
   attempts: Array<AttemptInfo>
 }>()
 
-const { formatDuration, formatNumber } = useFormatters()
 
 function nodeColor(attempt: AttemptInfo): string {
   if (attempt.error) return "var(--error)"

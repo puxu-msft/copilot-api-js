@@ -8,8 +8,16 @@ const MAX_CONSECUTIVE_WS_FALLBACKS = 3
 let connectionFactory: (opts: CreateUpstreamWsConnectionOptions) => UpstreamWsConnection = createUpstreamWsConnection
 
 export interface UpstreamWsManager {
-  findReusable(opts: { previousResponseId: string; model: string }): UpstreamWsConnection | undefined
-  create(opts: { headers: Record<string, string>; model: string }): Promise<UpstreamWsConnection>
+  findReusable(opts: {
+    previousResponseId?: string
+    conversationId?: string
+    model: string
+  }): UpstreamWsConnection | undefined
+  create(opts: {
+    headers: Record<string, string>
+    model: string
+    conversationId?: string
+  }): Promise<UpstreamWsConnection>
   stopNew(): void
   closeAll(): void
   resetRuntimeState(): void
@@ -28,27 +36,43 @@ export function createUpstreamWsManager(): UpstreamWsManager {
   let temporarilyDisabled = false
 
   return {
-    findReusable({ previousResponseId, model }) {
+    findReusable({ previousResponseId, conversationId, model }) {
       if (stopped || temporarilyDisabled) return undefined
 
-      for (const connection of connections.values()) {
-        if (!connection.isOpen) continue
-        if (connection.isBusy) continue
-        if (connection.statefulMarker !== previousResponseId) continue
-        if (connection.model !== model) continue
-        return connection
+      // Primary key: statefulMarker matches (strongest — upstream state chained)
+      if (previousResponseId) {
+        for (const connection of connections.values()) {
+          if (!connection.isOpen) continue
+          if (connection.isBusy) continue
+          if (connection.model !== model) continue
+          if (connection.statefulMarker === previousResponseId) return connection
+        }
+      }
+
+      // Fallback key: same conversation — reuse an idle connection when the
+      // client did not chain via previous_response_id (e.g. first turn of a
+      // conversation after server-side context reset, or proxy does not expose
+      // upstream response IDs back to the client).
+      if (conversationId) {
+        for (const connection of connections.values()) {
+          if (!connection.isOpen) continue
+          if (connection.isBusy) continue
+          if (connection.model !== model) continue
+          if (connection.conversationId === conversationId) return connection
+        }
       }
 
       return undefined
     },
 
-    create({ headers, model }) {
+    create({ headers, model, conversationId }) {
       if (stopped) throw new Error("Upstream WebSocket manager is not accepting new work")
 
       const key = randomUUID()
       const connection = connectionFactory({
         headers,
         model,
+        conversationId,
         onClose: () => {
           connections.delete(key)
         },

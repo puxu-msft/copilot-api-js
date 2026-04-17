@@ -19,6 +19,16 @@ export type ContextEditingMode = "off" | "clear-thinking" | "clear-tooluse" | "c
 export type CacheControlMode = "disabled" | "passthrough" | "sanitize" | "proxied"
 
 /**
+ * Policy for handling Claude Code "Warmup" requests.
+ *
+ * - `"allow"`  — pass through normally (default)
+ * - `"reject"` — return HTTP 429 error
+ * - `"drop"`   — return minimal empty success response without forwarding upstream
+ * - `"fake"`   — return a realistic fake response with cache_creation_input_tokens
+ */
+export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
+
+/**
  * Policy for assistant messages that contain `thinking` / `redacted_thinking` blocks.
  *
  * - `stripped`    — Delete thinking blocks from old messages; delete the message if empty after stripping.
@@ -249,6 +259,35 @@ export interface State {
    * Enabled by default; disable with config openai-responses.fix_stream_ids: false.
    */
   readonly fixResponsesStreamIds: boolean
+
+  /**
+   * Policy for handling Claude Code "Warmup" requests.
+   * - "allow" — pass through normally (default)
+   * - "reject" — return HTTP 429 error
+   * - "drop" — return minimal empty success response without forwarding upstream
+   * - "fake" — return a realistic fake response with cache_creation_input_tokens
+   */
+  readonly warmupPolicy: WarmupPolicy
+
+  /**
+   * Per-model supported effort levels (whitelist), from config.yaml.
+   * Keys are model name substrings matched against the resolved model name.
+   * Values are arrays of supported effort levels (e.g. ["medium", "high"] or ["medium"]).
+   * If a request's output_config.effort is outside the supported range, it is clamped:
+   *   - above max → max supported; below min → min supported.
+   * Empty record = no constraints from config (default).
+   *
+   * Hot-reloadable: entirely replaced on config reload (including to {} on deletion).
+   */
+  readonly effortsOverrides: Record<string, Array<string>>
+
+  /**
+   * Per-model supported effort levels learned at runtime from upstream
+   * `invalid_reasoning_effort` errors. Keys are exact resolved model names.
+   * Merged with effortsOverrides at lookup time (config takes precedence).
+   * Not persisted; reset only on process restart.
+   */
+  readonly learnedEffortsOverrides: Record<string, Array<string>>
 }
 
 type MutableState = {
@@ -285,6 +324,8 @@ function cloneState(source: MutableState): MutableState {
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
     modelOverrides: { ...source.modelOverrides },
+    effortsOverrides: { ...source.effortsOverrides },
+    learnedEffortsOverrides: { ...source.learnedEffortsOverrides },
     models: cloneModels(source.models),
     rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
     systemPromptOverrides: [...source.systemPromptOverrides],
@@ -322,6 +363,12 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("tokenInfo" in patch) {
     cloned.tokenInfo = patch.tokenInfo ? { ...patch.tokenInfo } : undefined
+  }
+  if ("effortsOverrides" in patch) {
+    cloned.effortsOverrides = patch.effortsOverrides ? { ...patch.effortsOverrides } : undefined
+  }
+  if ("learnedEffortsOverrides" in patch) {
+    cloned.learnedEffortsOverrides = patch.learnedEffortsOverrides ? { ...patch.learnedEffortsOverrides } : undefined
   }
 
   return cloned
@@ -373,6 +420,9 @@ export function setAnthropicBehavior(
       | "systemPromptOverrides"
       | "compressToolResultsBeforeTruncate"
       | "anthropicApiKey"
+      | "warmupPolicy"
+      | "effortsOverrides"
+      | "learnedEffortsOverrides"
     >
   >,
 ): void {
@@ -480,6 +530,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   upstreamWebSocket: false,
   fixResponsesStreamIds: true,
   anthropicApiKey: "",
+  warmupPolicy: "allow" as WarmupPolicy,
+  effortsOverrides: {} as Record<string, Array<string>>,
+  learnedEffortsOverrides: {} as Record<string, Array<string>>,
 }
 
 export function resetConfigManagedState(): void {
@@ -499,6 +552,9 @@ export function resetConfigManagedState(): void {
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
+    warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
+    effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+    learnedEffortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.learnedEffortsOverrides },
   })
   setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
   setTimeoutConfig({
@@ -556,6 +612,9 @@ const mutableState: MutableState = {
   upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
   fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
   anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
+  warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
+  effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+  learnedEffortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.learnedEffortsOverrides },
   verbose: false,
 }
 

@@ -109,8 +109,10 @@ function handleHistoryEvent(event: RequestContextEvent): void {
             messages: entryData.wireRequest.messages as NonNullable<HistoryEntry["wireRequest"]>["messages"],
             system: entryData.wireRequest.system as NonNullable<HistoryEntry["wireRequest"]>["system"],
             payload: entryData.wireRequest.payload,
-            headers: entryData.wireRequest.headers ?? entryData.httpHeaders?.request,
           },
+        }),
+        ...(entryData.httpHeaders && {
+          httpHeaders: entryData.httpHeaders,
         }),
         ...(entryData.attempts && {
           attempts: entryData.attempts as HistoryEntry["attempts"],
@@ -222,7 +224,6 @@ function toHistoryResponse(entryData: HistoryEntryData): HistoryEntry["response"
     status: r.status,
     content: r.content as MessageContent | null,
     rawBody: r.responseText,
-    headers: entryData.httpHeaders?.response,
   }
 }
 

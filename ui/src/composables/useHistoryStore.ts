@@ -1,57 +1,15 @@
-import { ref, type ComputedRef, type Ref } from "vue"
-
-import type { EntrySummary, HistoryEntry, HistoryStats, Session } from "../types"
+import { shallowRef } from "vue"
+import { defineStore } from "pinia"
 
 import { extractText, getMessageSummary, getPreviewText, getStatusClass } from "./history-store/helpers"
 import { useHistoryData } from "./history-store/useHistoryData"
 import { useHistoryWS } from "./history-store/useHistoryWS"
 import { useToast } from "./useToast"
 
-export interface HistoryStore {
-  entries: Ref<Array<EntrySummary>>
-  selectedEntry: Ref<HistoryEntry | null>
-  sessions: Ref<Array<Session>>
-  stats: Ref<HistoryStats | null>
-
-  searchQuery: Ref<string>
-  filterEndpoint: Ref<string | null>
-  filterSuccess: Ref<string | null>
-  selectedSessionId: Ref<string | null>
-
-  nextCursor: Ref<string | null>
-  prevCursor: Ref<string | null>
-  total: Ref<number>
-  hasMore: Ref<boolean>
-
-  loading: Ref<boolean>
-  error: Ref<string | null>
-  wsConnected: Ref<boolean>
-
-  hasSelection: ComputedRef<boolean>
-  selectedIndex: ComputedRef<number>
-
-  fetchEntries: () => Promise<void>
-  fetchStats: () => Promise<void>
-  fetchSessions: () => Promise<void>
-  selectEntry: (id: string) => Promise<void>
-  selectAdjacentEntry: (direction: "next" | "prev") => void
-  clearSelection: () => void
-  clearAll: () => Promise<void>
-  refresh: () => Promise<void>
-  loadNext: () => void
-  loadPrev: () => void
-  setSessionFilter: (id: string | null) => void
-  setEndpointFilter: (ep: string | null) => void
-  setSuccessFilter: (s: string | null) => void
-  setSearch: (q: string) => void
-  init: () => void
-  destroy: () => void
-}
-
-export function useHistoryStore(): HistoryStore {
+export const useHistoryStore = defineStore("history", () => {
   const { show: showToast } = useToast()
   const data = useHistoryData(showToast)
-  const wsConnected = ref(false)
+  const wsConnected = shallowRef(false)
 
   const realtime = useHistoryWS({
     entries: data.entries,
@@ -100,6 +58,9 @@ export function useHistoryStore(): HistoryStore {
     init: realtime.init,
     destroy: realtime.destroy,
   }
-}
+})
+
+/** Store type for consumers that need explicit typing */
+export type HistoryStore = ReturnType<typeof useHistoryStore>
 
 export { extractText, getMessageSummary, getPreviewText, getStatusClass }

@@ -1,19 +1,9 @@
 body {
   font-family: var(--font-sans);
   font-size: var(--font-size-md);
-  color: var(--text);
-  background: var(--bg);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-/* Legacy layout container — Vuetify uses v-app/v-main instead */
-.app {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
 }
 
 code,
@@ -27,23 +17,16 @@ pre {
   word-wrap: break-word;
 }
 
+/* ═══ Text Selection ═══ */
+/* Clickable interactive elements should not be selectable; all content is selectable by default */
+button,
+[role="button"],
+label,
+[data-clickable] {
+  user-select: none;
+}
+
 ::selection {
-  background: var(--primary-muted);
-  color: var(--text);
-}
-
-/* ═══ Highlight Flash Animation ═══ */
-@keyframes highlight-flash {
-  0%,
-  100% {
-    border-color: var(--border);
-  }
-  25%,
-  75% {
-    border-color: var(--primary);
-  }
-}
-
-.highlight-flash {
-  animation: highlight-flash 0.4s ease-in-out 2;
+  background: rgb(var(--v-theme-primary) / 40%);
+  color: #fff;
 }

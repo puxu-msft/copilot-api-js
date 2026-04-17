@@ -109,6 +109,8 @@ export interface ChatCompletionsPayload {
   temperature?: number | null
   top_p?: number | null
   max_tokens?: number | null
+  /** OpenAI's replacement for max_tokens (required by newer models like gpt-5.x, o-series) */
+  max_completion_tokens?: number | null
   stop?: string | Array<string> | null
   n?: number | null
   stream?: boolean | null

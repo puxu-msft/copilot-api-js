@@ -7,10 +7,10 @@ import BaseBadge from "@/components/ui/BaseBadge.vue"
 import IconSvg from "@/components/ui/IconSvg.vue"
 import LineNumberPre from "@/components/ui/LineNumberPre.vue"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
-import { useFormatters } from "@/composables/useFormatters"
+import { escapeHtml, highlightSearch } from "@/utils/formatters"
 import { useRawModal } from "@/composables/useRawModal"
 
-import DiffView from "./DiffView.vue"
+import SideBySideView from "./SideBySideView.vue"
 
 const props = defineProps<{
   system: string | Array<SystemBlock>
@@ -20,12 +20,10 @@ const props = defineProps<{
   globalViewMode?: "original" | "rewritten" | "diff" | null
 }>()
 
-const { highlightSearch, escapeHtml } = useFormatters()
 const { copy } = useCopyToClipboard()
 const { openRawModal } = useRawModal()
 
 const collapsed = ref(false)
-const expanded = ref(false)
 
 // Rewrite view mode: local override or global
 const localViewMode = ref<"original" | "rewritten" | "diff" | null>(null)
@@ -57,6 +55,12 @@ const originalText = computed(() => systemToText(props.system))
 const rewrittenText = computed(() => (props.rewrittenSystem ? systemToText(props.rewrittenSystem) : ""))
 const hasRewrite = computed(() => Boolean(props.rewrittenSystem))
 
+/** Whether content actually differs (text level) */
+const contentDiffers = computed(() => hasRewrite.value && originalText.value !== rewrittenText.value)
+
+/** Show toggle whenever rewritten data exists */
+const showViewToggle = computed(() => hasRewrite.value)
+
 const displayText = computed(() => {
   if (viewMode.value === "rewritten" && hasRewrite.value) return rewrittenText.value
   return originalText.value
@@ -75,6 +79,18 @@ const summary = computed(() => {
 const systemBlocks = computed<Array<SystemBlock>>(() => {
   if (typeof props.system === "string") return [{ type: "text", text: props.system }]
   return props.system
+})
+
+const rewrittenBlocks = computed<Array<SystemBlock>>(() => {
+  if (!props.rewrittenSystem) return []
+  if (typeof props.rewrittenSystem === "string") return [{ type: "text", text: props.rewrittenSystem }]
+  return props.rewrittenSystem
+})
+
+/** Blocks to render based on current view mode */
+const displayBlocks = computed<Array<SystemBlock>>(() => {
+  if (viewMode.value === "rewritten" && hasRewrite.value) return rewrittenBlocks.value
+  return systemBlocks.value
 })
 
 const hasCacheControl = computed(() => {
@@ -99,6 +115,7 @@ const rewrittenRawData = computed(() => {
   >
     <div
       class="system-header"
+      data-clickable
       @click="collapsed = !collapsed"
     >
       <div class="system-header-left">
@@ -110,8 +127,13 @@ const rewrittenRawData = computed(() => {
           >cached</BaseBadge
         >
         <BaseBadge
-          v-if="hasRewrite"
+          v-if="contentDiffers"
           color="warning"
+          >modified</BaseBadge
+        >
+        <BaseBadge
+          v-else-if="hasRewrite"
+          color="default"
           >rewritten</BaseBadge
         >
         <span
@@ -123,9 +145,9 @@ const rewrittenRawData = computed(() => {
       </div>
 
       <div class="system-header-right">
-        <!-- Rewrite view toggle -->
+        <!-- Rewrite view toggle (only when content differs) -->
         <div
-          v-if="hasRewrite && !collapsed"
+          v-if="showViewToggle && !collapsed"
           class="view-toggle"
           @click.stop
         >
@@ -158,30 +180,6 @@ const rewrittenRawData = computed(() => {
         </div>
 
         <button
-          v-if="!collapsed"
-          class="action-btn"
-          @click.stop="expanded = !expanded"
-          v-show="!expanded"
-        >
-          <IconSvg
-            name="expand"
-            :size="10"
-          />
-          Expand
-        </button>
-        <button
-          v-if="!collapsed && expanded"
-          class="action-btn"
-          @click.stop="expanded = false"
-        >
-          <IconSvg
-            name="contract"
-            :size="10"
-          />
-          Collapse
-        </button>
-
-        <button
           class="action-btn"
           title="Copy"
           @click.stop="copy(displayText)"
@@ -209,39 +207,92 @@ const rewrittenRawData = computed(() => {
     <div
       v-show="!collapsed"
       class="system-body"
-      :class="{ 'body-expanded': expanded }"
     >
-      <DiffView
-        v-if="viewMode === 'diff' && hasRewrite"
-        :old-text="originalText"
-        :new-text="rewrittenText"
-      />
-      <template v-else-if="viewMode === 'original' && typeof system !== 'string'">
+      <!-- Diff view: side-by-side comparison -->
+      <template v-if="viewMode === 'diff' && hasRewrite">
         <div
-          v-for="(block, i) in systemBlocks"
-          :key="i"
-          class="system-block-item"
+          v-if="systemBlocks.length !== rewrittenBlocks.length"
+          class="diff-structure-notice"
         >
-          <div
-            v-if="block.cache_control"
-            class="cache-label"
-          >
-            [cache: {{ block.cache_control.type }}]
+          Block count changed: {{ systemBlocks.length }} → {{ rewrittenBlocks.length }}
+        </div>
+        <SideBySideView :identical="!contentDiffers">
+          <template #original>
+            <div
+              v-for="(block, i) in systemBlocks"
+              :key="i"
+              class="system-block-item"
+              :class="{ 'system-block-separated': systemBlocks.length > 1 }"
+            >
+              <div
+                v-if="systemBlocks.length > 1 || block.cache_control"
+                class="block-label"
+              >
+                <span v-if="systemBlocks.length > 1">text[{{ i }}]</span>
+                <span
+                  v-if="block.cache_control"
+                  class="cache-label"
+                >[cache: {{ block.cache_control.type }}]</span>
+              </div>
+              <LineNumberPre :html="searchQuery ? highlightSearch(block.text, searchQuery) : escapeHtml(block.text)" />
+            </div>
+          </template>
+          <template #rewritten>
+            <div
+              v-for="(block, i) in rewrittenBlocks"
+              :key="i"
+              class="system-block-item"
+              :class="{ 'system-block-separated': rewrittenBlocks.length > 1 }"
+            >
+              <div
+                v-if="rewrittenBlocks.length > 1 || block.cache_control"
+                class="block-label"
+              >
+                <span v-if="rewrittenBlocks.length > 1">text[{{ i }}]</span>
+                <span
+                  v-if="block.cache_control"
+                  class="cache-label"
+                >[cache: {{ block.cache_control.type }}]</span>
+              </div>
+              <LineNumberPre :html="searchQuery ? highlightSearch(block.text, searchQuery) : escapeHtml(block.text)" />
+            </div>
+          </template>
+        </SideBySideView>
+      </template>
+      <!-- Per-block rendering for arrays (original or rewritten mode) -->
+      <template v-else-if="displayBlocks.length > 1">
+        <div
+          v-for="(block, i) in displayBlocks"
+          :key="i"
+          class="system-block-item system-block-separated"
+        >
+          <div class="block-label">
+            <span>text[{{ i }}]</span>
+            <span
+              v-if="block.cache_control"
+              class="cache-label"
+            >[cache: {{ block.cache_control.type }}]</span>
           </div>
           <LineNumberPre :html="searchQuery ? highlightSearch(block.text, searchQuery) : escapeHtml(block.text)" />
         </div>
       </template>
-      <LineNumberPre
-        v-else
-        :html="displayHtml"
-      />
+      <!-- Single block or string — render as one -->
+      <template v-else>
+        <div
+          v-if="displayBlocks.length === 1 && displayBlocks[0].cache_control"
+          class="block-label"
+        >
+          <span class="cache-label">[cache: {{ displayBlocks[0].cache_control.type }}]</span>
+        </div>
+        <LineNumberPre :html="displayHtml" />
+      </template>
     </div>
   </div>
 </template>
 
 <style scoped>
 .system-message {
-  border: 1px solid rgba(163, 113, 247, 0.3);
+  border: 1px solid var(--purple-muted);
   overflow: hidden;
   margin-bottom: var(--spacing-sm);
 }
@@ -253,11 +304,10 @@ const rewrittenRawData = computed(() => {
   padding: var(--spacing-xs) var(--spacing-sm);
   background: var(--purple-muted);
   cursor: pointer;
-  user-select: none;
 }
 
 .system-header:hover {
-  background: rgba(163, 113, 247, 0.2);
+  background: var(--purple-muted);
 }
 
 .system-header-left {
@@ -342,13 +392,6 @@ const rewrittenRawData = computed(() => {
 
 .system-body {
   padding: var(--spacing-sm);
-  max-height: 400px;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-}
-
-.system-body.body-expanded {
-  max-height: none;
 }
 
 .system-block-item {
@@ -359,10 +402,34 @@ const rewrittenRawData = computed(() => {
   margin-bottom: 0;
 }
 
+.system-block-separated {
+  border: 1px solid var(--border);
+  padding: var(--spacing-xs);
+}
+
+.block-label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
+  margin-bottom: 2px;
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+}
+
 .cache-label {
   font-size: var(--font-size-xs);
   color: var(--warning);
   font-style: italic;
-  margin-bottom: 2px;
+}
+
+.diff-structure-notice {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--warning);
+  background: var(--warning-muted);
+  border-bottom: 1px solid var(--warning);
+  margin-bottom: var(--spacing-xs);
 }
 </style>

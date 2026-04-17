@@ -1,8 +1,8 @@
-import { computed, onMounted, onUnmounted, ref } from "vue"
+import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue"
 
 import { api } from "@/api/http"
 import { WSClient, type ActiveRequestChangedInfo, type ActiveRequestInfo, type RateLimiterChangeInfo } from "@/api/ws"
-import { useFormatters } from "@/composables/useFormatters"
+import { formatNumber } from "@/utils/formatters"
 import { usePolling } from "@/composables/usePolling"
 
 export interface QuotaItem {
@@ -72,15 +72,14 @@ export interface RateLimiterSnapshot {
 const ACTIVE_REQUEST_REMOVE_DELAY_MS = 3000
 
 export function useDashboardStatus() {
-  const { formatNumber } = useFormatters()
   const { data: status, loading: statusLoading } = usePolling(() => api.fetchStatus(), 5000)
 
   const activeRequests = ref<Array<ActiveRequestInfo>>([])
-  const activeCount = ref(0)
-  const wsRateLimiterMode = ref<string | null>(null)
-  const wsRateLimiterQueue = ref<number | null>(null)
-  const wsShutdownPhase = ref<string | null>(null)
-  const wsConnected = ref(false)
+  const activeCount = shallowRef(0)
+  const wsRateLimiterMode = shallowRef<string | null>(null)
+  const wsRateLimiterQueue = shallowRef<number | null>(null)
+  const wsShutdownPhase = shallowRef<string | null>(null)
+  const wsConnected = shallowRef(false)
 
   let wsClient: WSClient | null = null
   const pendingRequestRemovals = new Map<string, ReturnType<typeof setTimeout>>()
@@ -214,7 +213,8 @@ export function useDashboardStatus() {
         outputTokens: typeof usage.outputTokens === "number" ? usage.outputTokens : 0,
         totalTokens: typeof usage.totalTokens === "number" ? usage.totalTokens : 0,
         cacheReadInputTokens: typeof usage.cacheReadInputTokens === "number" ? usage.cacheReadInputTokens : 0,
-        cacheCreationInputTokens: typeof usage.cacheCreationInputTokens === "number" ? usage.cacheCreationInputTokens : 0,
+        cacheCreationInputTokens:
+          typeof usage.cacheCreationInputTokens === "number" ? usage.cacheCreationInputTokens : 0,
         reasoningTokens: typeof usage.reasoningTokens === "number" ? usage.reasoningTokens : 0,
       }
     }
@@ -285,7 +285,11 @@ export function useDashboardStatus() {
   const quotaItems = computed<Array<QuotaItem>>(() => {
     if (!quota.value) return []
     const items: Array<QuotaItem> = []
-    for (const [key, label] of [["premiumInteractions", "Premium"], ["chat", "Chat"], ["completions", "Completions"]] as const) {
+    for (const [key, label] of [
+      ["premiumInteractions", "Premium"],
+      ["chat", "Chat"],
+      ["completions", "Completions"],
+    ] as const) {
       const q = quota.value[key] as Record<string, number> | undefined
       if (q) {
         items.push({ label, used: q.entitlement - q.remaining, total: q.entitlement })

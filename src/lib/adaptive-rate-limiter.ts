@@ -1,5 +1,6 @@
 import consola from "consola"
 
+import { HTTPError } from "~/lib/error/http-error"
 import { notifyRateLimiterChanged } from "~/lib/ws"
 
 /**
@@ -119,13 +120,13 @@ export class AdaptiveRateLimiter {
         try {
           const parsed: unknown = JSON.parse(error.responseText)
           if (
-            parsed
-            && typeof parsed === "object"
-            && "error" in parsed
-            && parsed.error
-            && typeof parsed.error === "object"
-            && "code" in parsed.error
-            && parsed.error.code === "rate_limited"
+            parsed &&
+            typeof parsed === "object" &&
+            "error" in parsed &&
+            parsed.error &&
+            typeof parsed.error === "object" &&
+            "code" in parsed.error &&
+            parsed.error.code === "rate_limited"
           ) {
             return { isRateLimit: true }
           }
@@ -152,13 +153,13 @@ export class AdaptiveRateLimiter {
         }
         // Also check nested error.retry_after
         if (
-          parsed
-          && typeof parsed === "object"
-          && "error" in parsed
-          && parsed.error
-          && typeof parsed.error === "object"
-          && "retry_after" in parsed.error
-          && typeof parsed.error.retry_after === "number"
+          parsed &&
+          typeof parsed === "object" &&
+          "error" in parsed &&
+          parsed.error &&
+          typeof parsed.error === "object" &&
+          "retry_after" in parsed.error &&
+          typeof parsed.error.retry_after === "number"
         ) {
           return parsed.error.retry_after
         }
@@ -219,8 +220,8 @@ export class AdaptiveRateLimiter {
       } else {
         const nextInterval = this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
         consola.info(
-          `[RateLimiter] Ramp-up step ${this.recoveryStepIndex}/${this.config.gradualRecoverySteps.length} `
-            + `(next interval: ${nextInterval}s)`,
+          `[RateLimiter] Ramp-up step ${this.recoveryStepIndex}/${this.config.gradualRecoverySteps.length} ` +
+            `(next interval: ${nextInterval}s)`,
         )
       }
 
@@ -250,8 +251,8 @@ export class AdaptiveRateLimiter {
     this.consecutiveSuccesses = 0
 
     consola.warn(
-      `[RateLimiter] Entering rate-limited mode. `
-        + `Requests will be queued with exponential backoff (base: ${this.config.baseRetryIntervalSeconds}s).`,
+      `[RateLimiter] Entering rate-limited mode. ` +
+        `Requests will be queued with exponential backoff (base: ${this.config.baseRetryIntervalSeconds}s).`,
     )
     notifyRateLimiterChanged({
       mode: this.mode,
@@ -297,8 +298,8 @@ export class AdaptiveRateLimiter {
 
     const firstInterval = this.config.gradualRecoverySteps[0] ?? 0
     consola.info(
-      `[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, `
-        + `first interval: ${firstInterval}s)`,
+      `[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, ` +
+        `first interval: ${firstInterval}s)`,
     )
     notifyRateLimiterChanged({
       mode: this.mode,
@@ -429,8 +430,8 @@ export class AdaptiveRateLimiter {
           const nextInterval = this.calculateRetryInterval(request)
           const source = retryAfter ? "server Retry-After" : "exponential backoff"
           consola.warn(
-            `[RateLimiter] Request failed with 429 (retry #${request.retryCount}). `
-              + `Retrying in ${nextInterval}s (${source})...`,
+            `[RateLimiter] Request failed with 429 (retry #${request.retryCount}). ` +
+              `Retrying in ${nextInterval}s (${source})...`,
           )
         } else {
           // Other error, fail this request and continue with queue
@@ -505,10 +506,35 @@ export class AdaptiveRateLimiter {
   getConfig(): AdaptiveRateLimiterConfig {
     return { ...this.config }
   }
+
+  /**
+   * Force the rate limiter into rate-limited mode without an actual 429 error.
+   * Used by --mock-rate-limiter-throttled to display rate-limited status.
+   */
+  forceRateLimitedMode(): void {
+    if (this.mode === "rate-limited") return
+
+    const previousMode = this.mode
+    this.mode = "rate-limited"
+    this.rateLimitedAt = Date.now()
+    this.consecutiveSuccesses = 0
+
+    consola.warn("[RateLimiter] Forced into rate-limited mode (mock throttle enabled)")
+    notifyRateLimiterChanged({
+      mode: this.mode,
+      previousMode,
+      queueLength: this.queue.length,
+      consecutiveSuccesses: this.consecutiveSuccesses,
+      rateLimitedAt: this.rateLimitedAt,
+    })
+  }
 }
 
 /** Singleton instance */
 let rateLimiterInstance: AdaptiveRateLimiter | null = null
+
+/** Mock throttle flag: when true, all requests are rejected with 429 without calling upstream */
+let mockThrottled = false
 
 /**
  * Initialize the adaptive rate limiter with configuration
@@ -524,9 +550,9 @@ export function initAdaptiveRateLimiter(config: Partial<AdaptiveRateLimiterConfi
   const steps = config.gradualRecoverySteps ?? DEFAULT_CONFIG.gradualRecoverySteps
 
   consola.info(
-    `[RateLimiter] Initialized (backoff: ${baseRetry}s-${maxRetry}s, `
-      + `interval: ${interval}s, recovery: ${recovery}min or ${successes} successes, `
-      + `gradual: [${steps.join("s, ")}s])`,
+    `[RateLimiter] Initialized (backoff: ${baseRetry}s-${maxRetry}s, ` +
+      `interval: ${interval}s, recovery: ${recovery}min or ${successes} successes, ` +
+      `gradual: [${steps.join("s, ")}s])`,
   )
 }
 
@@ -542,14 +568,40 @@ export function getAdaptiveRateLimiter(): AdaptiveRateLimiter | null {
  */
 export function resetAdaptiveRateLimiter(): void {
   rateLimiterInstance = null
+  mockThrottled = false
+}
+
+/**
+ * Enable or disable mock rate limiter throttling.
+ * When enabled, all requests are rejected with 429 after a delay (baseRetryIntervalSeconds).
+ * Forces the rate limiter into rate-limited mode for status display.
+ */
+export function setMockRateLimiterThrottled(enabled: boolean): void {
+  mockThrottled = enabled
+  if (enabled && rateLimiterInstance) {
+    rateLimiterInstance.forceRateLimitedMode()
+  }
 }
 
 /**
  * Execute a request with adaptive rate limiting.
  * If rate limiter is not initialized, executes immediately.
  * Returns the result along with queue wait time.
+ *
+ * When mock throttle is enabled, waits for baseRetryIntervalSeconds
+ * then throws a 429 error without calling the upstream function.
  */
 export async function executeWithAdaptiveRateLimit<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
+  if (mockThrottled) {
+    const delay = rateLimiterInstance?.getConfig().baseRetryIntervalSeconds ?? DEFAULT_CONFIG.baseRetryIntervalSeconds
+    await new Promise((resolve) => setTimeout(resolve, delay * 1000))
+    throw new HTTPError(
+      "Mock rate limiter: all requests throttled",
+      429,
+      JSON.stringify({ error: { code: "rate_limited", message: "Mock rate limiter throttled" } }),
+    )
+  }
+
   if (!rateLimiterInstance) {
     const result = await fn()
     return { result, queueWaitMs: 0 }

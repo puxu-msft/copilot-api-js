@@ -10,71 +10,47 @@ const router = createRouter({
   routes: [
     {
       path: "/",
-      redirect: "/v/dashboard",
-    },
-    // @deprecated Legacy routes are maintenance-only. Prefer /v/* Vuetify routes.
-    {
-      path: "/history",
-      redirect: "/v/activity",
-    },
-    {
-      path: "/logs",
-      name: "logs",
-      component: () => import("@/pages/LogsPage.vue"),
+      redirect: "/dashboard",
     },
     {
       path: "/dashboard",
       name: "dashboard",
-      redirect: "/v/dashboard",
+      component: () => import("@/pages/vuetify/VDashboardPage.vue"),
+    },
+    {
+      path: "/activity",
+      name: "activity",
+      component: () => import("@/pages/vuetify/VActivityPage.vue"),
+    },
+    {
+      path: "/activity/:id",
+      name: "activity-detail",
+      component: () => import("@/pages/vuetify/VDetailPage.vue"),
+    },
+    {
+      path: "/config",
+      name: "config",
+      component: () => import("@/pages/vuetify/VConfigPage.vue"),
     },
     {
       path: "/models",
       name: "models",
-      redirect: "/v/models",
-    },
-    {
-      path: "/usage",
-      name: "usage",
-      redirect: "/v/dashboard",
-    },
-    // Canonical Vuetify routes
-    {
-      path: "/v/history",
-      redirect: "/v/activity",
-    },
-    {
-      path: "/v/history/:id",
-      name: "v-history-detail",
-      component: () => import("@/pages/vuetify/VActivityPage.vue"),
-    },
-    {
-      path: "/v/logs",
-      redirect: "/v/activity",
-    },
-    {
-      path: "/v/activity",
-      name: "v-activity",
-      component: () => import("@/pages/vuetify/VActivityPage.vue"),
-    },
-    {
-      path: "/v/dashboard",
-      name: "v-dashboard",
-      component: () => import("@/pages/vuetify/VDashboardPage.vue"),
-    },
-    {
-      path: "/v/config",
-      name: "v-config",
-      component: () => import("@/pages/vuetify/VConfigPage.vue"),
-    },
-    {
-      path: "/v/models",
-      name: "v-models",
       component: () => import("@/pages/vuetify/VModelsPage.vue"),
     },
-    {
-      path: "/v/usage",
-      redirect: "/v/dashboard",
-    },
+    // Legacy redirects (bookmarks, external links)
+    { path: "/v/dashboard", redirect: "/dashboard" },
+    { path: "/v/activity", redirect: "/activity" },
+    { path: "/v/history", redirect: "/activity" },
+    { path: "/v/history/:id", redirect: (to) => `/activity/${to.params.id}` },
+    { path: "/v/config", redirect: "/config" },
+    { path: "/v/models", redirect: "/models" },
+    { path: "/v/usage", redirect: "/dashboard" },
+    { path: "/v/logs", redirect: "/activity" },
+    { path: "/history", redirect: "/activity" },
+    { path: "/logs", redirect: "/activity" },
+    { path: "/usage", redirect: "/dashboard" },
+    // 404 catch-all
+    { path: "/:pathMatch(.*)*", name: "not-found", redirect: "/dashboard" },
   ],
 })
 

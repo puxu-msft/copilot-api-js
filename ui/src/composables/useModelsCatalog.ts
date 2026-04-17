@@ -1,4 +1,4 @@
-import { computed, onMounted, ref, watch } from "vue"
+import { computed, onMounted, ref, shallowRef, watch } from "vue"
 
 import { api } from "@/api/http"
 import { getEffectiveEndpoints } from "@/utils/model-endpoints"
@@ -14,12 +14,13 @@ export interface PrimaryLimitMetric {
 
 export function useModelsCatalog() {
   const models = ref<Array<ModelData>>([])
-  const loading = ref(true)
-  const searchQuery = ref("")
-  const vendorFilter = ref<string | null>(null)
-  const endpointFilter = ref<string | null>(null)
-  const featureFilter = ref<string | null>(null)
-  const typeFilter = ref<string | null>(null)
+  const loading = shallowRef(true)
+  const error = shallowRef<string | null>(null)
+  const searchQuery = shallowRef("")
+  const vendorFilter = shallowRef<string | null>(null)
+  const endpointFilter = shallowRef<string | null>(null)
+  const featureFilter = shallowRef<string | null>(null)
+  const typeFilter = shallowRef<string | null>(null)
   const billingRange = ref<[number, number]>([0, 0])
   const rawApiResponse = ref<unknown>(null)
 
@@ -28,8 +29,8 @@ export function useModelsCatalog() {
       const result = await api.fetchModels()
       rawApiResponse.value = result
       models.value = (result.data ?? []) as Array<ModelData>
-    } catch {
-      // Non-critical
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "Failed to load models"
     } finally {
       loading.value = false
     }
@@ -126,8 +127,8 @@ export function useModelsCatalog() {
       const query = searchQuery.value.toLowerCase()
       result = result.filter(
         (m) =>
-          (m.id as string).toLowerCase().includes(query)
-          || (m.name as string | undefined)?.toLowerCase().includes(query),
+          (m.id as string).toLowerCase().includes(query) ||
+          (m.name as string | undefined)?.toLowerCase().includes(query),
       )
     }
     return result
@@ -246,7 +247,8 @@ export function useModelsCatalog() {
     const result: Array<[string, string]> = []
     if (vision.max_prompt_images) result.push(["Max images", String(vision.max_prompt_images)])
     if (vision.max_prompt_image_size) result.push(["Max size", fmtNum(vision.max_prompt_image_size)])
-    if (vision.supported_media_types) result.push(["Formats", (vision.supported_media_types as Array<string>).join(", ")])
+    if (vision.supported_media_types)
+      result.push(["Formats", (vision.supported_media_types as Array<string>).join(", ")])
     return result.length > 0 ? result : null
   }
 
@@ -255,6 +257,7 @@ export function useModelsCatalog() {
     billingRange,
     endpointFilter,
     endpointOptions,
+    error,
     featureFilter,
     featureOptions,
     filteredModels,

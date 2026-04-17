@@ -1,21 +1,54 @@
+import consola from "consola"
+
 import { copilotBaseUrl, copilotHeaders } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { createFetchSignal } from "~/lib/fetch-utils"
 import { state, setModels } from "~/lib/state"
 
-/** Fetch models from Copilot API and cache in global state */
-export async function cacheModels(): Promise<void> {
-  const models = await getModels()
-  setModels(models)
+/**
+ * Cached ETag from the last successful /models response.
+ * Sent as `If-None-Match` on subsequent requests; a 304 response means the
+ * server confirmed our cache is current and we skip the JSON parse + setModels.
+ * Module-scoped so it survives across refresh-loop ticks but resets on process restart.
+ */
+let modelsEtag: string | undefined
+
+/** Test helper — reset the cached ETag to simulate a fresh process. */
+export function resetModelsEtagForTests(): void {
+  modelsEtag = undefined
 }
 
-export const getModels = async () => {
+/** Fetch models from Copilot API and cache in global state. Skips setModels on 304 Not Modified. */
+export async function cacheModels(): Promise<void> {
+  const models = await getModels()
+  if (models) setModels(models)
+}
+
+/**
+ * Fetch the /models catalog.
+ *
+ * Returns `undefined` when the server replies 304 Not Modified — in that case
+ * the caller should keep its current cache unchanged. Returns the parsed body
+ * on 200 OK.
+ */
+export const getModels = async (): Promise<ModelsResponse | undefined> => {
+  const headers = copilotHeaders(state)
+  if (modelsEtag) headers["If-None-Match"] = modelsEtag
+
   const response = await fetch(`${copilotBaseUrl(state)}/models`, {
-    headers: copilotHeaders(state),
+    headers,
     signal: createFetchSignal(),
   })
 
+  if (response.status === 304) {
+    consola.debug("[Models] 304 Not Modified — keeping cached catalog")
+    return undefined
+  }
+
   if (!response.ok) throw await HTTPError.fromResponse("Failed to get models", response)
+
+  const etag = response.headers.get("etag")
+  if (etag) modelsEtag = etag
 
   return (await response.json()) as ModelsResponse
 }
@@ -41,7 +74,11 @@ interface ModelLimits {
 }
 
 interface ModelSupports {
-  [key: string]: boolean | number | undefined
+  /**
+   * Arbitrary capability flags. Copilot returns booleans (vision, streaming, …),
+   * numbers (min/max_thinking_budget), and string arrays (reasoning_effort).
+   */
+  [key: string]: boolean | number | Array<string> | undefined
 }
 
 interface ModelCapabilities {

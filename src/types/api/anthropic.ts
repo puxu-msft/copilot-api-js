@@ -99,8 +99,12 @@ export interface Tool {
 
 export type ToolChoice = { type: "auto" } | { type: "any" } | { type: "none" } | { type: "tool"; name: string }
 
+/** Known effort levels, ordered from lowest to highest */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const
+export type EffortLevel = (typeof EFFORT_LEVELS)[number]
+
 export interface OutputConfig {
-  effort?: "low" | "medium" | "high"
+  effort?: string
 }
 
 // ============================================================================

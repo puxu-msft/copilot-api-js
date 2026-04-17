@@ -77,6 +77,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
       const models = await getModels()
 
       expect(models).toBeDefined()
+      if (!models?.data) throw new Error("Failed to fetch models")
       expect(models.data).toBeInstanceOf(Array)
       expect(models.data.length).toBeGreaterThan(0)
 
@@ -88,6 +89,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
     test("should include Claude models", async () => {
       const models = await getModels()
+      if (!models?.data) throw new Error("Failed to fetch models")
       const claudeModels = models.data.filter((m) => m.id.includes("claude"))
 
       expect(claudeModels.length).toBeGreaterThan(0)
@@ -96,6 +98,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
     test("should include GPT models", async () => {
       const models = await getModels()
+      if (!models?.data) throw new Error("Failed to fetch models")
       const gptModels = models.data.filter((m) => m.id.includes("gpt"))
 
       expect(gptModels.length).toBeGreaterThan(0)

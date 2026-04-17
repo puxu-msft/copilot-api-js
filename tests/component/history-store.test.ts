@@ -417,7 +417,9 @@ describe("updateEntry (rewrites)", () => {
           max_tokens: 4096,
           stream: true,
         },
-        headers: { "x-request-id": "abc" },
+      },
+      httpHeaders: {
+        outboundRequest: { "x-request-id": "abc" },
       },
     })
 
@@ -441,7 +443,9 @@ describe("updateEntry (rewrites)", () => {
         max_tokens: 4096,
         stream: true,
       },
-      headers: { "x-request-id": "abc" },
+    })
+    expect(stored!.httpHeaders).toEqual({
+      outboundRequest: { "x-request-id": "abc" },
     })
   })
 
@@ -511,14 +515,16 @@ describe("updateEntry (rewrites)", () => {
         status: 400,
         content: null,
         rawBody: '{"error":"thinking blocks cannot be modified"}',
-        headers: { "x-request-id": "xyz" },
+      },
+      httpHeaders: {
+        outboundResponse: { "x-request-id": "xyz" },
       },
     })
 
     const stored = getEntry(entry.id)
     expect(stored!.response!.status).toBe(400)
     expect(stored!.response!.rawBody).toBe('{"error":"thinking blocks cannot be modified"}')
-    expect(stored!.response!.headers).toEqual({ "x-request-id": "xyz" })
+    expect(stored!.httpHeaders!.outboundResponse).toEqual({ "x-request-id": "xyz" })
   })
 })
 

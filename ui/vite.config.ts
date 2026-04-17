@@ -1,11 +1,14 @@
-import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import vuetify from 'vite-plugin-vuetify'
-import { resolve } from 'path'
+import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import vuetify from "vite-plugin-vuetify"
+import VueDevTools from "vite-plugin-vue-devtools"
+import AutoImport from "unplugin-auto-import/vite"
+import Components from "unplugin-vue-components/vite"
+import { resolve } from "path"
 
 export default defineConfig(({ command }) => {
-  const backendHost = process.env.COPILOT_API_HOST ?? 'localhost'
-  const backendPort = process.env.COPILOT_API_PORT ?? '4141'
+  const backendHost = process.env.COPILOT_API_HOST ?? "localhost"
+  const backendPort = process.env.COPILOT_API_PORT ?? "4141"
   const backendHttpUrl = `http://${backendHost}:${backendPort}`
   const backendWsUrl = `ws://${backendHost}:${backendPort}`
 
@@ -14,45 +17,54 @@ export default defineConfig(({ command }) => {
     plugins: [
       vue(),
       vuetify({ autoImport: true }),
+      VueDevTools(),
+      AutoImport({
+        imports: ["vue", "vue-router", "pinia", "@vueuse/core"],
+        dts: resolve(__dirname, "types/auto-imports.d.ts"),
+      }),
+      Components({
+        dirs: [resolve(__dirname, "src/components")],
+        dts: resolve(__dirname, "types/components.d.ts"),
+      }),
     ],
     optimizeDeps: {
       include: ["vue-json-pretty", "diff", "diff2html"],
     },
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src'),
-        '~backend': resolve(__dirname, '../src'),
+        "@": resolve(__dirname, "src"),
+        "~backend": resolve(__dirname, "../src"),
       },
     },
     // In dev mode, serve from root for convenience; in build, use /ui/ prefix
-    base: command === 'serve' ? '/' : '/ui/',
+    base: command === "serve" ? "/" : "/ui/",
     build: {
-      outDir: 'dist',
+      outDir: "dist",
       emptyOutDir: true,
       rollupOptions: {
         output: {
           manualChunks: {
-            vue: ['vue', 'vue-router'],
-            vendor: ['vue-json-pretty', 'diff', 'diff2html'],
+            vue: ["vue", "vue-router"],
+            vendor: ["vue-json-pretty", "diff", "diff2html"],
           },
         },
       },
     },
     server: {
       proxy: {
-        '/history/api': {
+        "/history/api": {
           target: backendHttpUrl,
           changeOrigin: true,
         },
-        '/ws': {
+        "/ws": {
           target: backendWsUrl,
           ws: true,
         },
-        '/api': {
+        "/api": {
           target: backendHttpUrl,
           changeOrigin: true,
         },
-        '/models': {
+        "/models": {
           target: backendHttpUrl,
           changeOrigin: true,
         },

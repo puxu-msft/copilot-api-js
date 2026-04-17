@@ -1,14 +1,4 @@
 {
-  "enabledPlugins": {
-    "context7-plugin@context7-marketplace": true,
-    "episodic-memory@superpowers-marketplace": true,
-    "everything-claude-code@everything-claude-code": true,
-    "feature-dev@claude-plugins-official": true,
-    "frontend-design@claude-plugins-official": true,
-    "serena@claude-plugins-official": true,
-    "superpowers@superpowers-marketplace": true,
-    "typescript-lsp@claude-plugins-official": true
-  },
   "permissions": {
     "allow": [
       "Bash",
@@ -45,5 +35,10 @@
       "Bash(git stash push)",
       "Bash(git stash pop)"
     ]
+  },
+  "enabledPlugins": {
+    "feature-dev@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true
   }
 }

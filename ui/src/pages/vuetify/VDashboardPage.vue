@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { computed } from "vue"
 
 import CompactTimelineBarChart from "@/components/charts/CompactTimelineBarChart.vue"
 import DashboardRateLimiterPanel from "@/components/dashboard/DashboardRateLimiterPanel.vue"
-import { useFormatters } from "@/composables/useFormatters"
 import { useDashboardStatus } from "@/composables/useDashboardStatus"
-import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+import { useHistoryStore } from "@/composables/useHistoryStore"
+import { useModelTelemetry } from "@/composables/useModelTelemetry"
+import { formatDate, formatDuration, formatNumber } from "@/utils/formatters"
 import { formatWsTargetStatus } from "@/utils/ws-status"
 
-const store = useInjectedHistoryStore()
-const { formatDate, formatDuration, formatNumber } = useFormatters()
+const store = useHistoryStore()
 const {
   auth,
   copilotExpiresAt,
@@ -42,7 +42,7 @@ const quotaResetDate = computed(() => {
 })
 
 const sessionTokens = computed(() => {
-  const stats = store.stats.value
+  const stats = store.stats
   if (!stats) return null
   return {
     input: stats.totalInputTokens,
@@ -76,152 +76,17 @@ const requestBurstMaximum = computed(() => {
   return Math.max(...counts, 0)
 })
 
-type ModelTimelineMetric = "requests" | "duration" | "tokens"
-
-const selectedModelTimelineMetric = ref<ModelTimelineMetric>("requests")
-const selectedModelSortMetric = ref<ModelTimelineMetric>("requests")
-const modelTimelineMetricOptions: Array<{ label: string; value: ModelTimelineMetric }> = [
-  { label: "Requests", value: "requests" },
-  { label: "Duration", value: "duration" },
-  { label: "Tokens", value: "tokens" },
-]
-
-const modelTelemetryEntries = computed(() => {
-  const runtimeEntries = requestTelemetry.value?.modelsSinceStart ?? []
-  const rollingEntries = requestTelemetry.value?.modelsLast7d ?? []
-  const rows = new Map<string, {
-    model: string
-    runtime: (typeof runtimeEntries)[number] | null
-    last7d: (typeof rollingEntries)[number] | null
-    displayCount: number
-  }>()
-
-  for (const entry of runtimeEntries) {
-    rows.set(entry.model, {
-      model: entry.model,
-      runtime: entry,
-      last7d: null,
-      displayCount: entry.requestCount,
-    })
-  }
-
-  for (const entry of rollingEntries) {
-    const existing = rows.get(entry.model)
-    if (existing) {
-      existing.last7d = entry
-      existing.displayCount = Math.max(existing.displayCount, entry.requestCount)
-    } else {
-      rows.set(entry.model, {
-        model: entry.model,
-        runtime: null,
-        last7d: entry,
-        displayCount: entry.requestCount,
-      })
-    }
-  }
-
-  return [...rows.values()].sort(
-    (left, right) =>
-      getModelMetricValue(right.last7d, selectedModelSortMetric.value)
-      - getModelMetricValue(left.last7d, selectedModelSortMetric.value)
-      || getModelMetricValue(right.runtime, selectedModelSortMetric.value)
-      - getModelMetricValue(left.runtime, selectedModelSortMetric.value)
-      || left.model.localeCompare(right.model),
-  )
-})
-
-const maxModelMetricValue = computed(() =>
-  Math.max(
-    ...modelTelemetryEntries.value.map((item) => getModelMetricValue(item.last7d, selectedModelTimelineMetric.value)),
-    1,
-  ),
-)
-const MODEL_TIMELINE_TARGET_BUCKETS = 72
-
-function relativeModelWidth(count: number): number {
-  return maxModelMetricValue.value > 0 ? (count / maxModelMetricValue.value) * 100 : 0
-}
-
-function modelBarColor(model: string): string {
-  const value = model.toLowerCase()
-  if (value.includes("claude") || value.includes("anthropic")) return "#d299ff"
-  if (value.includes("gpt") || value.includes("openai") || value.includes("o1") || value.includes("o3") || value.includes("o4")) {
-    return "#7cc0ff"
-  }
-  if (value.includes("gemini")) return "#58d18d"
-  return "#7cc0ff"
-}
-
-function compressModelTimeline(
-  buckets: Array<{
-    timestamp: number
-    requestCount: number
-    totalDurationMs: number
-    usage: { totalTokens: number }
-  }>,
-): Array<{ timestamp: number; count: number }> {
-  if (buckets.length <= MODEL_TIMELINE_TARGET_BUCKETS) {
-    return buckets.map((bucket) => ({
-      timestamp: bucket.timestamp,
-      count: getModelBucketMetricValue(bucket, selectedModelTimelineMetric.value),
-    }))
-  }
-
-  const groupSize = Math.ceil(buckets.length / MODEL_TIMELINE_TARGET_BUCKETS)
-  const result: Array<{ timestamp: number; count: number }> = []
-
-  for (let index = 0; index < buckets.length; index += groupSize) {
-    const group = buckets.slice(index, index + groupSize)
-    if (group.length === 0) continue
-    result.push({
-      timestamp: group[0].timestamp,
-      count: group.reduce((sum, bucket) => sum + getModelBucketMetricValue(bucket, selectedModelTimelineMetric.value), 0),
-    })
-  }
-
-  return result
-}
-
-function getModelBucketMetricValue(
-  bucket: {
-    requestCount: number
-    totalDurationMs: number
-    usage: { totalTokens: number }
-  },
-  metric: ModelTimelineMetric,
-): number {
-  if (metric === "duration") return bucket.totalDurationMs
-  if (metric === "tokens") return bucket.usage.totalTokens
-  return bucket.requestCount
-}
-
-function getModelMetricValue(
-  entry: {
-    requestCount: number
-    totalDurationMs: number
-    usage: { totalTokens: number }
-  } | null | undefined,
-  metric: ModelTimelineMetric,
-): number {
-  if (!entry) return 0
-  if (metric === "duration") return entry.totalDurationMs
-  if (metric === "tokens") return entry.usage.totalTokens
-  return entry.requestCount
-}
-
-function formatModelMetricValue(
-  entry: {
-    requestCount: number
-    totalDurationMs: number
-    usage: { totalTokens: number }
-  } | null | undefined,
-  metric: ModelTimelineMetric,
-): string {
-  if (!entry) return "-"
-  if (metric === "duration") return formatDuration(entry.totalDurationMs)
-  if (metric === "tokens") return `${formatNumber(entry.usage.totalTokens)} tok`
-  return `${formatNumber(entry.requestCount)} req`
-}
+const {
+  selectedChartMetric: selectedModelTimelineMetric,
+  selectedSortMetric: selectedModelSortMetric,
+  metricOptions: modelTimelineMetricOptions,
+  modelTelemetryEntries,
+  relativeWidth: relativeModelWidth,
+  barColor: modelBarColor,
+  formatMetricValue: formatModelMetricValue,
+  getMetricValue: getModelMetricValue,
+  compressTimeline: compressModelTimeline,
+} = useModelTelemetry(requestTelemetry)
 </script>
 
 <template>
@@ -885,15 +750,8 @@ function formatModelMetricValue(
   padding: 4px 0 2px;
 }
 
-.empty-panel,
-.empty-state {
+.empty-panel {
   padding: 16px 0 6px;
-}
-
-.empty-title {
-  font-size: 1rem;
-  font-weight: 600;
-  margin-bottom: 6px;
 }
 
 @media (max-width: 1100px) {

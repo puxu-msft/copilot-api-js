@@ -7,6 +7,7 @@
  */
 
 import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { createPinia, setActivePinia } from "pinia"
 
 import type { EntrySummary, HistoryEntry, HistoryStats, SummaryResult, SessionResult } from "../src/types"
 import { useDetailViewState } from "../src/composables/useDetailViewState"
@@ -100,6 +101,7 @@ function makeFullEntry(id: string): HistoryEntry {
 }
 
 function resetMocks(): void {
+  setActivePinia(createPinia())
   mockFetchEntries.mockClear()
   mockFetchEntry.mockClear()
   mockDeleteEntries.mockClear()
@@ -117,8 +119,8 @@ describe("selectAdjacentEntry", () => {
 
   test("selects first entry when nothing selected and direction is next", async () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
-    store.selectedEntry.value = null
+    store.entries = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
+    store.selectedEntry = null
 
     store.selectAdjacentEntry("next")
 
@@ -129,8 +131,8 @@ describe("selectAdjacentEntry", () => {
 
   test("selects first entry when nothing selected and direction is prev", async () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b")]
-    store.selectedEntry.value = null
+    store.entries = [makeSummary("a"), makeSummary("b")]
+    store.selectedEntry = null
 
     store.selectAdjacentEntry("prev")
 
@@ -140,8 +142,8 @@ describe("selectAdjacentEntry", () => {
 
   test("moves to next entry", async () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
-    store.selectedEntry.value = makeFullEntry("a")
+    store.entries = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
+    store.selectedEntry = makeFullEntry("a")
 
     store.selectAdjacentEntry("next")
 
@@ -151,8 +153,8 @@ describe("selectAdjacentEntry", () => {
 
   test("moves to previous entry", async () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
-    store.selectedEntry.value = makeFullEntry("b")
+    store.entries = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
+    store.selectedEntry = makeFullEntry("b")
 
     store.selectAdjacentEntry("prev")
 
@@ -162,8 +164,8 @@ describe("selectAdjacentEntry", () => {
 
   test("clamps at last entry when moving next", async () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b")]
-    store.selectedEntry.value = makeFullEntry("b")
+    store.entries = [makeSummary("a"), makeSummary("b")]
+    store.selectedEntry = makeFullEntry("b")
 
     store.selectAdjacentEntry("next")
 
@@ -174,8 +176,8 @@ describe("selectAdjacentEntry", () => {
 
   test("clamps at first entry when moving prev", async () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b")]
-    store.selectedEntry.value = makeFullEntry("a")
+    store.entries = [makeSummary("a"), makeSummary("b")]
+    store.selectedEntry = makeFullEntry("a")
 
     store.selectAdjacentEntry("prev")
 
@@ -185,8 +187,8 @@ describe("selectAdjacentEntry", () => {
 
   test("does nothing when entries list is empty", () => {
     const store = useHistoryStore()
-    store.entries.value = []
-    store.selectedEntry.value = null
+    store.entries = []
+    store.selectedEntry = null
 
     store.selectAdjacentEntry("next")
 
@@ -201,7 +203,7 @@ describe("loadNext / loadPrev", () => {
 
   test("loadNext does nothing when nextCursor is null", () => {
     const store = useHistoryStore()
-    store.nextCursor.value = null
+    store.nextCursor = null
 
     store.loadNext()
 
@@ -210,7 +212,7 @@ describe("loadNext / loadPrev", () => {
 
   test("loadNext fetches when nextCursor is present", () => {
     const store = useHistoryStore()
-    store.nextCursor.value = "cursor-abc"
+    store.nextCursor = "cursor-abc"
 
     store.loadNext()
 
@@ -219,7 +221,7 @@ describe("loadNext / loadPrev", () => {
 
   test("loadPrev does nothing when prevCursor is null", () => {
     const store = useHistoryStore()
-    store.prevCursor.value = null
+    store.prevCursor = null
 
     store.loadPrev()
 
@@ -228,7 +230,7 @@ describe("loadNext / loadPrev", () => {
 
   test("loadPrev fetches when prevCursor is present", () => {
     const store = useHistoryStore()
-    store.prevCursor.value = "cursor-xyz"
+    store.prevCursor = "cursor-xyz"
 
     store.loadPrev()
 
@@ -243,60 +245,60 @@ describe("filter setters", () => {
 
   test("setSearch resets cursors and fetches", () => {
     const store = useHistoryStore()
-    store.nextCursor.value = "some-cursor"
-    store.prevCursor.value = "prev-cursor"
+    store.nextCursor = "some-cursor"
+    store.prevCursor = "prev-cursor"
 
     store.setSearch("test query")
 
-    expect(store.searchQuery.value).toBe("test query")
-    expect(store.nextCursor.value).toBeNull()
-    expect(store.prevCursor.value).toBeNull()
+    expect(store.searchQuery).toBe("test query")
+    expect(store.nextCursor).toBeNull()
+    expect(store.prevCursor).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
   test("setSessionFilter resets cursors and fetches", () => {
     const store = useHistoryStore()
-    store.nextCursor.value = "some-cursor"
+    store.nextCursor = "some-cursor"
 
     store.setSessionFilter("session-42")
 
-    expect(store.selectedSessionId.value).toBe("session-42")
-    expect(store.nextCursor.value).toBeNull()
-    expect(store.prevCursor.value).toBeNull()
+    expect(store.selectedSessionId).toBe("session-42")
+    expect(store.nextCursor).toBeNull()
+    expect(store.prevCursor).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
   test("setEndpointFilter resets cursors and fetches", () => {
     const store = useHistoryStore()
-    store.nextCursor.value = "some-cursor"
+    store.nextCursor = "some-cursor"
 
     store.setEndpointFilter("openai-chat")
 
-    expect(store.filterEndpoint.value).toBe("openai-chat")
-    expect(store.nextCursor.value).toBeNull()
-    expect(store.prevCursor.value).toBeNull()
+    expect(store.filterEndpoint).toBe("openai-chat")
+    expect(store.nextCursor).toBeNull()
+    expect(store.prevCursor).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
   test("setSuccessFilter resets cursors and fetches", () => {
     const store = useHistoryStore()
-    store.nextCursor.value = "some-cursor"
+    store.nextCursor = "some-cursor"
 
     store.setSuccessFilter("true")
 
-    expect(store.filterSuccess.value).toBe("true")
-    expect(store.nextCursor.value).toBeNull()
-    expect(store.prevCursor.value).toBeNull()
+    expect(store.filterSuccess).toBe("true")
+    expect(store.nextCursor).toBeNull()
+    expect(store.prevCursor).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 
   test("setSessionFilter with null clears filter", () => {
     const store = useHistoryStore()
-    store.selectedSessionId.value = "session-42"
+    store.selectedSessionId = "session-42"
 
     store.setSessionFilter(null)
 
-    expect(store.selectedSessionId.value).toBeNull()
+    expect(store.selectedSessionId).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
   })
 })
@@ -308,35 +310,35 @@ describe("computed properties", () => {
 
   test("hasSelection is false when no entry selected", () => {
     const store = useHistoryStore()
-    store.selectedEntry.value = null
-    expect(store.hasSelection.value).toBe(false)
+    store.selectedEntry = null
+    expect(store.hasSelection).toBe(false)
   })
 
   test("hasSelection is true when entry selected", () => {
     const store = useHistoryStore()
-    store.selectedEntry.value = makeFullEntry("e1")
-    expect(store.hasSelection.value).toBe(true)
+    store.selectedEntry = makeFullEntry("e1")
+    expect(store.hasSelection).toBe(true)
   })
 
   test("selectedIndex returns -1 when no selection", () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b")]
-    store.selectedEntry.value = null
-    expect(store.selectedIndex.value).toBe(-1)
+    store.entries = [makeSummary("a"), makeSummary("b")]
+    store.selectedEntry = null
+    expect(store.selectedIndex).toBe(-1)
   })
 
   test("selectedIndex returns correct index", () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
-    store.selectedEntry.value = makeFullEntry("b")
-    expect(store.selectedIndex.value).toBe(1)
+    store.entries = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
+    store.selectedEntry = makeFullEntry("b")
+    expect(store.selectedIndex).toBe(1)
   })
 
   test("selectedIndex returns -1 when selected entry not in list", () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a")]
-    store.selectedEntry.value = makeFullEntry("missing")
-    expect(store.selectedIndex.value).toBe(-1)
+    store.entries = [makeSummary("a")]
+    store.selectedEntry = makeFullEntry("missing")
+    expect(store.selectedIndex).toBe(-1)
   })
 })
 
@@ -347,11 +349,11 @@ describe("clearSelection", () => {
 
   test("sets selectedEntry to null", () => {
     const store = useHistoryStore()
-    store.selectedEntry.value = makeFullEntry("e1")
+    store.selectedEntry = makeFullEntry("e1")
 
     store.clearSelection()
 
-    expect(store.selectedEntry.value).toBeNull()
+    expect(store.selectedEntry).toBeNull()
   })
 })
 
@@ -382,69 +384,69 @@ describe("WebSocket handlers", () => {
 
   test("onEntryAdded inserts at beginning when on first page (prevCursor is null)", () => {
     const store = useHistoryStore()
-    store.prevCursor.value = null
-    store.entries.value = [makeSummary("existing")]
-    store.total.value = 1
+    store.prevCursor = null
+    store.entries = [makeSummary("existing")]
+    store.total = 1
 
     store.init()
     capturedWSOptions.onEntryAdded(makeSummary("new"))
 
-    expect(store.entries.value[0].id).toBe("new")
-    expect(store.entries.value[1].id).toBe("existing")
-    expect(store.total.value).toBe(2)
+    expect(store.entries[0].id).toBe("new")
+    expect(store.entries[1].id).toBe("existing")
+    expect(store.total).toBe(2)
 
     store.destroy()
   })
 
   test("onEntryAdded does not insert when not on first page (prevCursor is set)", () => {
     const store = useHistoryStore()
-    store.prevCursor.value = "some-cursor"
-    store.entries.value = [makeSummary("existing")]
-    store.total.value = 21
+    store.prevCursor = "some-cursor"
+    store.entries = [makeSummary("existing")]
+    store.total = 21
 
     store.init()
     capturedWSOptions.onEntryAdded(makeSummary("new"))
 
-    expect(store.entries.value).toHaveLength(1)
-    expect(store.entries.value[0].id).toBe("existing")
+    expect(store.entries).toHaveLength(1)
+    expect(store.entries[0].id).toBe("existing")
 
     store.destroy()
   })
 
   test("onEntryAdded pops excess entries beyond limit (20)", () => {
     const store = useHistoryStore()
-    store.prevCursor.value = null
+    store.prevCursor = null
     const twentyEntries = Array.from({ length: 20 }, (_, i) => makeSummary(`e${i}`))
-    store.entries.value = twentyEntries
-    store.total.value = 20
+    store.entries = twentyEntries
+    store.total = 20
 
     store.init()
     capturedWSOptions.onEntryAdded(makeSummary("new"))
 
-    expect(store.entries.value).toHaveLength(20) // still 20, not 21
-    expect(store.entries.value[0].id).toBe("new") // new entry at front
-    expect(store.entries.value[19].id).toBe("e18") // last of original entries was e19, now popped
+    expect(store.entries).toHaveLength(20) // still 20, not 21
+    expect(store.entries[0].id).toBe("new") // new entry at front
+    expect(store.entries[19].id).toBe("e18") // last of original entries was e19, now popped
 
     store.destroy()
   })
 
   test("onEntryUpdated updates entry in list", () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
+    store.entries = [makeSummary("a"), makeSummary("b"), makeSummary("c")]
     const updatedB = makeSummary("b", { requestModel: "gpt-4o" })
 
     store.init()
     capturedWSOptions.onEntryUpdated(updatedB)
 
-    expect(store.entries.value[1].requestModel).toBe("gpt-4o")
+    expect(store.entries[1].requestModel).toBe("gpt-4o")
 
     store.destroy()
   })
 
   test("onEntryUpdated re-fetches selected entry", async () => {
     const store = useHistoryStore()
-    store.entries.value = [makeSummary("a")]
-    store.selectedEntry.value = makeFullEntry("a")
+    store.entries = [makeSummary("a")]
+    store.selectedEntry = makeFullEntry("a")
 
     store.init()
     capturedWSOptions.onEntryUpdated(makeSummary("a", { requestModel: "updated" }))
@@ -468,7 +470,7 @@ describe("WebSocket handlers", () => {
     store.init()
     capturedWSOptions.onStatsUpdated(newStats)
 
-    expect(store.stats.value).toEqual(newStats)
+    expect(store.stats).toEqual(newStats)
 
     store.destroy()
   })
@@ -478,10 +480,10 @@ describe("WebSocket handlers", () => {
 
     store.init()
     capturedWSOptions.onStatusChange(true)
-    expect(store.wsConnected.value).toBe(true)
+    expect(store.wsConnected).toBe(true)
 
     capturedWSOptions.onStatusChange(false)
-    expect(store.wsConnected.value).toBe(false)
+    expect(store.wsConnected).toBe(false)
 
     store.destroy()
   })
@@ -490,32 +492,34 @@ describe("WebSocket handlers", () => {
 // ─── Detail panel state ───
 
 describe("detail panel state", () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
   test("initial detail state values", () => {
     const detail = useDetailViewState()
 
-    expect(detail.detailSearch.value).toBe("")
-    expect(detail.detailFilterRole.value).toBe("")
-    expect(detail.detailFilterType.value).toBe("")
-    expect(detail.aggregateTools.value).toBe(true)
-    expect(detail.detailViewMode.value).toBeNull()
-    expect(detail.showOnlyRewritten.value).toBe(false)
+    expect(detail.detailSearch).toBe("")
+    expect(detail.detailFilterRole).toBe("")
+    expect(detail.detailFilterType).toBe("")
+    expect(detail.aggregateTools).toBe(true)
+    expect(detail.detailViewMode).toBeNull()
+    expect(detail.showOnlyRewritten).toBe(false)
   })
 
   test("detail state is mutable", () => {
     const detail = useDetailViewState()
 
-    detail.detailSearch.value = "search term"
-    detail.detailFilterRole.value = "user"
-    detail.detailFilterType.value = "tool_use"
-    detail.aggregateTools.value = false
-    detail.detailViewMode.value = "diff"
-    detail.showOnlyRewritten.value = true
+    detail.detailSearch = "search term"
+    detail.detailFilterRole = "user"
+    detail.detailFilterType = "tool_use"
+    detail.aggregateTools = false
+    detail.detailViewMode = "diff"
+    detail.showOnlyRewritten = true
 
-    expect(detail.detailSearch.value).toBe("search term")
-    expect(detail.detailFilterRole.value).toBe("user")
-    expect(detail.detailFilterType.value).toBe("tool_use")
-    expect(detail.aggregateTools.value).toBe(false)
-    expect(detail.detailViewMode.value).toBe("diff")
-    expect(detail.showOnlyRewritten.value).toBe(true)
+    expect(detail.detailSearch).toBe("search term")
+    expect(detail.detailFilterRole).toBe("user")
+    expect(detail.detailFilterType).toBe("tool_use")
+    expect(detail.aggregateTools).toBe(false)
+    expect(detail.detailViewMode).toBe("diff")
+    expect(detail.showOnlyRewritten).toBe(true)
   })
 })

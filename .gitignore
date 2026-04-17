@@ -7,11 +7,10 @@
 /.playwright-mcp
 /test-results
 coverage/
+dist/
 node_modules/
 
-dist/
-ui/dist/
-
-/.superpowers
-/.env
-/*.txt
+.superpowers
+.env
+*.txt
+*.log

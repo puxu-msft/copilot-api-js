@@ -1,27 +1,27 @@
 <script setup lang="ts">
-import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+import { useHistoryStore } from "@/composables/useHistoryStore"
 
-const store = useInjectedHistoryStore()
+const store = useHistoryStore()
 </script>
 
 <template>
   <div
     class="list-pagination"
-    v-if="store.total.value > 0"
+    v-if="store.total > 0"
   >
     <button
       class="page-btn nav-btn"
-      :disabled="!store.prevCursor.value"
+      :disabled="!store.prevCursor"
       @click="store.loadPrev()"
     >
       Previous
     </button>
 
-    <span class="page-info"> {{ store.entries.value.length }} of {{ store.total.value }} </span>
+    <span class="page-info"> {{ store.entries.length }} of {{ store.total }} </span>
 
     <button
       class="page-btn nav-btn"
-      :disabled="!store.nextCursor.value"
+      :disabled="!store.nextCursor"
       @click="store.loadNext()"
     >
       Next

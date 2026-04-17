@@ -58,11 +58,11 @@
 
 /* Changed inline highlights */
 .d2h-ins .d2h-code-line-ctn ins {
-  background: rgba(63, 185, 80, 0.3);
+  background: rgba(92, 184, 112, 0.3);
   text-decoration: none;
 }
 .d2h-del .d2h-code-line-ctn del {
-  background: rgba(248, 81, 73, 0.3);
+  background: rgba(217, 85, 80, 0.3);
   text-decoration: none;
 }
 

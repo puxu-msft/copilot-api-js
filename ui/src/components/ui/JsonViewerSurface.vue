@@ -118,7 +118,7 @@ function copyJson(): void {
   max-height: 68vh;
   min-height: 0;
   overflow: auto;
-  background: #0d1117;
+  background: #111115;
 }
 
 .json-viewer-frame-fill {

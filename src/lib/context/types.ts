@@ -139,7 +139,6 @@ export interface HistoryEntryData {
     messages?: Array<unknown>
     system?: unknown
     payload?: unknown
-    headers?: Record<string, string>
   }
 
   response?: ResponseData
@@ -147,8 +146,10 @@ export interface HistoryEntryData {
   pipelineInfo?: PipelineInfo
   sseEvents?: Array<SseEventRecord>
   httpHeaders?: {
-    request: Record<string, string>
-    response: Record<string, string>
+    inboundRequest?: Record<string, string>
+    outboundRequest?: Record<string, string>
+    outboundResponse?: Record<string, string>
+    inboundResponse?: Record<string, string>
   }
   attempts?: Array<{
     index: number
@@ -193,7 +194,12 @@ export interface RequestContext {
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
   readonly pipelineInfo: PipelineInfo | null
-  readonly httpHeaders: { request: Record<string, string>; response: Record<string, string> } | null
+  readonly httpHeaders: {
+    inboundRequest?: Record<string, string>
+    outboundRequest?: Record<string, string>
+    outboundResponse?: Record<string, string>
+    inboundResponse?: Record<string, string>
+  } | null
   readonly transport: RequestTransport | null
 
   readonly attempts: ReadonlyArray<Attempt>
@@ -206,6 +212,7 @@ export interface RequestContext {
   setPipelineInfo(info: PipelineInfo): void
   setSseEvents(events: Array<SseEventRecord>): void
   setHttpHeaders(capture: HeadersCapture): void
+  setInboundRequestHeaders(headers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void
   beginAttempt(opts: {
     strategy?: string

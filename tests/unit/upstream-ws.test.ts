@@ -12,6 +12,7 @@ function createConnection(overrides: Partial<UpstreamWsConnection> = {}): Upstre
     isBusy: false,
     statefulMarker: undefined,
     model: "gpt-5.2",
+    conversationId: undefined,
     close: () => {},
     ...overrides,
   }
@@ -20,7 +21,7 @@ function createConnection(overrides: Partial<UpstreamWsConnection> = {}): Upstre
 describe("upstream websocket manager", () => {
   beforeEach(() => {
     setUpstreamWsConnectionFactoryForTests((opts: CreateUpstreamWsConnectionOptions) => {
-      return createConnection({ model: opts.model })
+      return createConnection({ model: opts.model, conversationId: opts.conversationId })
     })
   })
 
@@ -99,5 +100,83 @@ describe("upstream websocket manager", () => {
         model: "gpt-5.2",
       }),
     ).toBeUndefined()
+  })
+
+  test("reuses by conversationId when previousResponseId is absent", async () => {
+    const manager = createUpstreamWsManager()
+    const connection = await manager.create({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      conversationId: "conv-abc",
+    })
+
+    // Same conversationId, no previousResponseId → hit
+    expect(
+      manager.findReusable({
+        conversationId: "conv-abc",
+        model: "gpt-5.2",
+      }),
+    ).toBe(connection)
+
+    // Different conversationId → miss
+    expect(
+      manager.findReusable({
+        conversationId: "conv-xyz",
+        model: "gpt-5.2",
+      }),
+    ).toBeUndefined()
+
+    // Different model → miss
+    expect(
+      manager.findReusable({
+        conversationId: "conv-abc",
+        model: "gpt-5.3",
+      }),
+    ).toBeUndefined()
+  })
+
+  test("prefers previousResponseId over conversationId when both supplied", async () => {
+    const manager = createUpstreamWsManager()
+    const a = await manager.create({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      conversationId: "conv-1",
+    })
+    ;(a as { statefulMarker: string }).statefulMarker = "resp_A"
+
+    const b = await manager.create({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      conversationId: "conv-1",
+    })
+    ;(b as { statefulMarker: string }).statefulMarker = "resp_B"
+
+    // previousResponseId targets B directly — should return B, not A
+    expect(
+      manager.findReusable({
+        previousResponseId: "resp_B",
+        conversationId: "conv-1",
+        model: "gpt-5.2",
+      }),
+    ).toBe(b)
+  })
+
+  test("falls back to conversationId when previousResponseId does not match any connection", async () => {
+    const manager = createUpstreamWsManager()
+    const connection = await manager.create({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      conversationId: "conv-1",
+    })
+    ;(connection as { statefulMarker: string }).statefulMarker = "resp_existing"
+
+    // previousResponseId miss, conversationId hit → still reuses
+    expect(
+      manager.findReusable({
+        previousResponseId: "resp_nonexistent",
+        conversationId: "conv-1",
+        model: "gpt-5.2",
+      }),
+    ).toBe(connection)
   })
 })

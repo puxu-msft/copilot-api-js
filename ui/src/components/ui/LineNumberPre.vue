@@ -5,22 +5,30 @@
  * Renders pre-formatted text with a line-number gutter using CSS counters.
  * Supports v-html content (e.g. search-highlighted text). No external
  * dependencies — pure CSS implementation.
+ *
+ * Large texts (>500 lines) are truncated by default with a "Show all" button
+ * to avoid creating thousands of DOM nodes on initial render.
  */
 
-import { computed } from "vue"
+import { computed, ref } from "vue"
 
 const props = defineProps<{
   /** HTML content to render (may include search highlights) */
   html: string
 }>()
 
-/** Split HTML by newlines, wrapping each line in a numbered span */
-const lines = computed(() => {
-  // Split on newlines. The html may contain <mark> or <span> tags for
-  // search highlighting — these never span across newlines, so splitting
-  // on \n is safe.
-  return props.html.split("\n")
-})
+const INITIAL_LINE_LIMIT = 500
+const showAll = ref(false)
+
+const allLines = computed(() => props.html.split("\n"))
+
+const isTruncated = computed(() => !showAll.value && allLines.value.length > INITIAL_LINE_LIMIT)
+
+const lines = computed(() =>
+  isTruncated.value ? allLines.value.slice(0, INITIAL_LINE_LIMIT) : allLines.value,
+)
+
+const hiddenCount = computed(() => allLines.value.length - INITIAL_LINE_LIMIT)
 </script>
 
 <template>
@@ -35,6 +43,17 @@ const lines = computed(() => {
         class="line-content"
         v-html="line || '&#8203;'"
       />
+    </div>
+    <div
+      v-if="isTruncated"
+      class="truncation-notice"
+    >
+      <button
+        class="show-all-btn"
+        @click="showAll = true"
+      >
+        {{ hiddenCount }} more lines — click to show all {{ allLines.length }} lines
+      </button>
     </div>
   </div>
 </template>
@@ -71,6 +90,26 @@ const lines = computed(() => {
   flex: 1;
   min-width: 0;
   color: var(--text);
+}
+
+.truncation-notice {
+  padding: var(--spacing-sm) 0;
+  text-align: center;
+  border-top: 1px dashed var(--border);
+  margin-top: var(--spacing-xs);
+}
+
+.show-all-btn {
+  font-size: var(--font-size-xs);
+  color: var(--primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+.show-all-btn:hover {
+  text-decoration: underline;
 }
 
 :deep(.search-highlight) {

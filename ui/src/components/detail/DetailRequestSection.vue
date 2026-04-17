@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed } from "vue"
+
 import type { HistoryEntry, MessageContent } from "@/types"
 
 import MessageBlock from "@/components/message/MessageBlock.vue"
@@ -8,7 +10,7 @@ import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
 import SectionBlock from "./SectionBlock.vue"
 import TruncationDivider from "./TruncationDivider.vue"
 
-defineProps<{
+const props = defineProps<{
   entry: HistoryEntry
   requestBadge: string
   rewrittenRequest?: unknown
@@ -22,11 +24,20 @@ defineProps<{
   isMessageRewritten: (index: number) => boolean
   getRewrittenMessage: (index: number) => MessageContent | null
 }>()
+
+/** Only expand the last 5 messages by default — older messages start collapsed */
+const EXPAND_RECENT_COUNT = 5
+
+const collapseThreshold = computed(() => {
+  const total = props.filteredMessages.length
+  return total > EXPAND_RECENT_COUNT ? total - EXPAND_RECENT_COUNT : 0
+})
 </script>
 
 <template>
   <SectionBlock
     title="Request"
+    anchor="request"
     :badge="requestBadge"
     :raw-data="entry.request"
     :rewritten-raw-data="rewrittenRequest"
@@ -44,7 +55,7 @@ defineProps<{
 
     <div class="messages-list">
       <template
-        v-for="item in filteredMessages"
+        v-for="(item, listIndex) in filteredMessages"
         :key="item.originalIndex"
       >
         <TruncationDivider
@@ -61,6 +72,7 @@ defineProps<{
             :is-rewritten="isMessageRewritten(item.originalIndex)"
             :rewritten-message="getRewrittenMessage(item.originalIndex)"
             :global-view-mode="detailViewMode"
+            :default-collapsed="listIndex < collapseThreshold"
           />
         </ErrorBoundary>
       </template>

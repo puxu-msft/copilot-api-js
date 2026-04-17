@@ -20,6 +20,7 @@ import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
+import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
@@ -93,6 +94,7 @@ export async function handleChatCompletion(c: Context) {
     })),
     payload: originalPayload,
   })
+  reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
 
   // Update TUI tracker with model info (immediate feedback)
   if (tuiLogId) {
@@ -105,16 +107,17 @@ export async function handleChatCompletion(c: Context) {
   // Sanitize messages (filter orphaned tool blocks, system-reminders)
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(originalPayload)
 
-  const finalPayload =
-    isNullish(sanitizedPayload.max_tokens) ?
-      {
+  // Auto-fill max output tokens if neither max_tokens nor max_completion_tokens is provided
+  const hasMaxTokens = !isNullish(sanitizedPayload.max_tokens) || !isNullish(sanitizedPayload.max_completion_tokens)
+  const finalPayload = hasMaxTokens
+    ? sanitizedPayload
+    : {
         ...sanitizedPayload,
-        max_tokens: selectedModel?.capabilities?.limits?.max_output_tokens,
+        max_completion_tokens: selectedModel?.capabilities?.limits?.max_output_tokens,
       }
-    : sanitizedPayload
 
-  if (isNullish(originalPayload.max_tokens)) {
-    consola.debug("Set max_tokens to:", JSON.stringify(finalPayload.max_tokens))
+  if (!hasMaxTokens) {
+    consola.debug("Set max_completion_tokens to:", JSON.stringify(finalPayload.max_completion_tokens))
   }
 
   if (isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {

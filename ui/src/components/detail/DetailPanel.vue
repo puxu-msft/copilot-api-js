@@ -1,34 +1,31 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from "vue"
 
-import type { ContentBlock, MessageContent } from "@/types"
-
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
 import RawJsonModal from "@/components/ui/RawJsonModal.vue"
 import { provideContentContext } from "@/composables/useContentContext"
-import { useInjectedDetailViewState } from "@/composables/useInjectedDetailViewState"
-import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
-import { usePipelineInfo } from "@/composables/usePipelineInfo"
+import { useDetailOrchestration } from "@/composables/useDetailOrchestration"
+import { useDetailViewState } from "@/composables/useDetailViewState"
+import { useHistoryStore } from "@/composables/useHistoryStore"
 import { provideRawModal } from "@/composables/useRawModal"
-import { provideSharedResizeObserver } from "@/composables/useSharedResizeObserver"
-import { isToolResultBlock, isToolUseBlock } from "@/utils/typeGuards"
+import { downloadEntryAsJson } from "@/utils/export-entry"
 
 import AttemptsTimeline from "./AttemptsTimeline.vue"
 import DetailRequestSection from "./DetailRequestSection.vue"
 import DetailResponseSection from "./DetailResponseSection.vue"
 import DetailToolbar from "./DetailToolbar.vue"
-import HeadersSection from "./HeadersSection.vue"
+import HeadersComparisonSection from "./HeadersComparisonSection.vue"
 import MetaInfo from "./MetaInfo.vue"
 import SectionBlock from "./SectionBlock.vue"
 import SseEventsSection from "./SseEventsSection.vue"
 
-const store = useInjectedHistoryStore()
-const detail = useInjectedDetailViewState()
+const store = useHistoryStore()
+const detail = useDetailViewState()
 const detailBodyRef = ref<HTMLElement>()
 
-const entry = computed(() => store.selectedEntry.value)
+const entry = computed(() => store.selectedEntry)
 
-// Plan A: Shared RawJsonModal — single instance for all child components
+// Shared RawJsonModal — single instance for all child components
 const {
   visible: rawModalVisible,
   data: rawModalData,
@@ -36,10 +33,7 @@ const {
   title: rawModalTitle,
 } = provideRawModal()
 
-// Plan C: Shared ResizeObserver — single instance for all child components
-provideSharedResizeObserver()
-
-// Rewrite info composable (Plan D: pre-computed maps, O(1) lookups)
+// Orchestration: tool maps, filtered messages, pipeline info, scroll helpers
 const {
   truncationPoint,
   hasRewrites,
@@ -48,126 +42,30 @@ const {
   getRewrittenMessage,
   isMessageRewritten,
   isMessageTruncated,
-} = usePipelineInfo(entry)
-
-// Merged tool maps — single pass over messages
-const toolMaps = computed(() => {
-  const resultMap: Record<string, ContentBlock> = {}
-  const nameMap: Record<string, string> = {}
-  if (!entry.value) return { resultMap, nameMap }
-  for (const msg of entry.value.request.messages ?? []) {
-    // Anthropic format: content is ContentBlock[]
-    if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (isToolResultBlock(block)) resultMap[block.tool_use_id] = block
-        if (isToolUseBlock(block)) nameMap[block.id] = block.name
-      }
-    }
-    // OpenAI format: tool_calls on message
-    if (msg.tool_calls) {
-      for (const tc of msg.tool_calls) {
-        nameMap[tc.id] = tc.function.name
-      }
-    }
-    // OpenAI format: tool response (role: "tool" with tool_call_id)
-    if (msg.role === "tool" && msg.tool_call_id) {
-      resultMap[msg.tool_call_id] = {
-        type: "tool_result",
-        tool_use_id: msg.tool_call_id,
-        content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
-      } as ContentBlock
-    }
-  }
-  return { resultMap, nameMap }
-})
+  toolMaps,
+  filteredMessages,
+  responseMessage,
+  requestBadge,
+  rewrittenRequest,
+  hasMatchingBlockType,
+  scrollToResult,
+  scrollToCall,
+} = useDetailOrchestration(entry)
 
 // Provide ContentContext so all content blocks can inject
 provideContentContext({
-  searchQuery: computed(() => detail.detailSearch.value),
-  filterType: computed(() => detail.detailFilterType.value),
-  aggregateTools: computed(() => detail.aggregateTools.value),
+  searchQuery: computed(() => detail.detailSearch),
+  filterType: computed(() => detail.detailFilterType),
+  aggregateTools: computed(() => detail.aggregateTools),
   toolResultMap: computed(() => toolMaps.value.resultMap),
   toolUseNameMap: computed(() => toolMaps.value.nameMap),
   scrollToResult,
   scrollToCall,
 })
 
-// Plan D: Filter messages by role, with pre-computed original indices (eliminates indexOf)
-const filteredMessages = computed(() => {
-  if (!entry.value) return []
-  const messages = entry.value.request.messages ?? []
-  let indexed = messages.map((msg, i) => ({ msg, originalIndex: i }))
-  if (detail.detailFilterRole.value) {
-    indexed = indexed.filter(({ msg }) => msg.role === detail.detailFilterRole.value)
-  }
-  // Show only rewritten messages filter
-  if (detail.showOnlyRewritten.value) {
-    indexed = indexed.filter(({ originalIndex }) => isMessageRewritten(originalIndex))
-  }
-  return indexed
-})
-
-// Response message
-const responseMessage = computed<MessageContent | null>(() => {
-  if (!entry.value?.response?.content) return null
-  return entry.value.response.content
-})
-
-const requestBadge = computed(() => {
-  if (!entry.value) return ""
-  return `${(entry.value.request.messages ?? []).length} messages`
-})
-
-/** Rewritten request payload for the Raw modal (effectiveRequest with rewritten messages/system) */
-const rewrittenRequest = computed(() => {
-  if (!entry.value?.effectiveRequest) return undefined
-  const eff = entry.value.effectiveRequest
-  // Only construct if there are actual rewrites
-  if (!eff.messages && !eff.system) return undefined
-  return {
-    ...entry.value.request,
-    ...(eff.messages && { messages: eff.messages }),
-    ...(eff.system !== undefined && { system: eff.system }),
-  }
-})
-
-function hasMatchingBlockType(msg: MessageContent, filterType: string): boolean {
-  if (typeof msg.content === "string") {
-    if (filterType === "text") return true
-    // OpenAI tool_calls on a text message
-    if (filterType === "tool_use" && msg.tool_calls?.length) return true
-    return false
-  }
-  if (!Array.isArray(msg.content)) return false
-  return msg.content.some((b) => b.type === filterType)
-}
-
-// Scroll and highlight helpers
-function highlightBlock(el: HTMLElement) {
-  el.classList.remove("highlight-flash")
-  void el.offsetWidth // force reflow
-  el.classList.add("highlight-flash")
-}
-
-function scrollToResult(toolUseId: string) {
-  const el = document.querySelector<HTMLElement>(`#tool-result-${toolUseId}`)
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" })
-    highlightBlock(el)
-  }
-}
-
-function scrollToCall(toolUseId: string) {
-  const el = document.querySelector<HTMLElement>(`#tool-use-${toolUseId}`)
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" })
-    highlightBlock(el)
-  }
-}
-
 // Watch detailSearch -> scroll to first match
 watch(
-  () => detail.detailSearch.value,
+  () => detail.detailSearch,
   (q) => {
     if (!q) return
     void nextTick(() => {
@@ -192,17 +90,7 @@ watch(entry, (e) => {
 
 /** Export full entry as downloadable JSON file */
 function exportEntry() {
-  if (!entry.value) return
-  const json = JSON.stringify(entry.value, null, 2)
-  const blob = new Blob([json], { type: "application/json" })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  // Filename: entry id + model (if available)
-  const model = entry.value.request.model || "unknown"
-  a.download = `${entry.value.id}_${model}.json`
-  a.click()
-  URL.revokeObjectURL(url)
+  if (entry.value) downloadEntryAsJson(entry.value)
 }
 </script>
 
@@ -210,7 +98,7 @@ function exportEntry() {
   <div class="detail-panel">
     <!-- Empty state -->
     <div
-      v-if="!store.hasSelection.value"
+      v-if="!store.hasSelection"
       class="detail-empty"
     >
       <p>Select a request to view details</p>
@@ -236,9 +124,9 @@ function exportEntry() {
           :rewritten-request="rewrittenRequest"
           :filtered-messages="filteredMessages"
           :truncation-point="truncationPoint"
-          :search-query="detail.detailSearch.value"
-          :detail-filter-type="detail.detailFilterType.value"
-          :detail-view-mode="detail.detailViewMode.value"
+          :search-query="detail.detailSearch"
+          :detail-filter-type="detail.detailFilterType"
+          :detail-view-mode="detail.detailViewMode"
           :has-matching-block-type="hasMatchingBlockType"
           :is-message-truncated="isMessageTruncated"
           :is-message-rewritten="isMessageRewritten"
@@ -258,34 +146,19 @@ function exportEntry() {
           />
         </ErrorBoundary>
 
-        <!-- WIRE REQUEST HEADERS (collapsible) -->
-        <SectionBlock
-          v-if="entry.wireRequest?.headers"
-          title="Wire Request Headers"
-          default-collapsed
-        >
-          <HeadersSection
-            :headers="entry.wireRequest.headers"
-            title="Outbound Headers"
-          />
-        </SectionBlock>
-
-        <!-- RESPONSE HEADERS (collapsible) -->
-        <SectionBlock
-          v-if="entry.response?.headers"
-          title="Response Headers"
-          default-collapsed
-        >
-          <HeadersSection
-            :headers="entry.response.headers"
-            title="Upstream Response Headers"
-          />
-        </SectionBlock>
+        <!-- HTTP HEADERS (unified comparison view) -->
+        <HeadersComparisonSection
+          v-if="entry.httpHeaders || (entry.wireRequest as any)?.headers || (entry.response as any)?.headers"
+          :inbound-request="entry.httpHeaders?.inboundRequest"
+          :outbound-request="entry.httpHeaders?.outboundRequest ?? (entry.wireRequest as any)?.headers"
+          :outbound-response="entry.httpHeaders?.outboundResponse ?? (entry.response as any)?.headers"
+        />
 
         <!-- ATTEMPTS TIMELINE (when multiple attempts) -->
         <SectionBlock
           v-if="entry.attempts && entry.attempts.length > 1"
           title="Retry Timeline"
+          anchor="attempts"
         >
           <AttemptsTimeline :attempts="entry.attempts" />
         </SectionBlock>
@@ -293,6 +166,7 @@ function exportEntry() {
         <!-- META Section -->
         <SectionBlock
           title="Meta"
+          anchor="meta"
           :raw-data="entry"
           raw-title="Entry"
         >
@@ -346,54 +220,5 @@ function exportEntry() {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding: var(--spacing-sm);
-}
-
-.headers-section-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-}
-
-.headers-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.headers-group-title {
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding-bottom: var(--spacing-xs);
-  border-bottom: 1px solid var(--border);
-}
-
-.headers-grid {
-  display: flex;
-  flex-direction: column;
-}
-
-.header-row {
-  display: flex;
-  gap: var(--spacing-sm);
-  padding: 2px 0;
-  font-size: var(--font-size-xs);
-  border-bottom: 1px solid var(--border-light);
-}
-
-.header-name {
-  flex: 0 0 220px;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  word-break: break-all;
-}
-
-.header-value {
-  flex: 1;
-  color: var(--text);
-  font-family: var(--font-mono);
-  word-break: break-all;
 }
 </style>

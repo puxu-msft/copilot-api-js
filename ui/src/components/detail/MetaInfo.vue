@@ -2,13 +2,11 @@
 import type { HistoryEntry } from "@/types"
 
 import BaseBadge from "@/components/ui/BaseBadge.vue"
-import { useFormatters } from "@/composables/useFormatters"
+import { formatDate, formatDuration, formatNumber } from "@/utils/formatters"
 
 defineProps<{
   entry: HistoryEntry
 }>()
-
-const { formatNumber, formatDuration, formatDate } = useFormatters()
 </script>
 
 <template>

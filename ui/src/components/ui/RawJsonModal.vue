@@ -4,7 +4,6 @@ import VueJsonPretty from "vue-json-pretty"
 
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
 
-import IconSvg from "./IconSvg.vue"
 import "vue-json-pretty/lib/styles.css"
 
 const props = defineProps<{
@@ -60,7 +59,7 @@ function copyRewrittenJson(): void {
     scrollable
     :transition="false"
     :z-index="2510"
-    :scrim="false"
+    :scrim="true"
     content-class="raw-json-dialog"
   >
     <v-card
@@ -81,12 +80,9 @@ function copyRewrittenJson(): void {
             v-if="!hasSplit"
             variant="text"
             size="small"
+            prepend-icon="mdi-content-copy"
             @click="copyJson"
           >
-            <IconSvg
-              name="copy"
-              :size="12"
-            />
             Copy
           </v-btn>
           <v-btn
@@ -111,12 +107,9 @@ function copyRewrittenJson(): void {
               <v-btn
                 variant="text"
                 size="small"
+                prepend-icon="mdi-content-copy"
                 @click="copyJson"
               >
-                <IconSvg
-                  name="copy"
-                  :size="12"
-                />
                 Copy
               </v-btn>
             </div>
@@ -140,12 +133,9 @@ function copyRewrittenJson(): void {
               <v-btn
                 variant="text"
                 size="small"
+                prepend-icon="mdi-content-copy"
                 @click="copyRewrittenJson"
               >
-                <IconSvg
-                  name="copy"
-                  :size="12"
-                />
                 Copy
               </v-btn>
             </div>

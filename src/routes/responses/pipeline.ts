@@ -25,6 +25,7 @@ export function createResponsesAdapter(
   headersCapture?: HeadersCapture,
   onPrepared?: (request: WireRequest) => void,
   onTransport?: (transport: RequestTransport) => void,
+  conversationId?: string,
 ): FormatAdapter<ResponsesPayload> {
   return {
     format: "openai-responses",
@@ -35,6 +36,7 @@ export function createResponsesAdapter(
           resolvedModel: selectedModel,
           headersCapture,
           onTransport,
+          conversationId,
           onPrepared: ({ wire, headers }) => {
             onPrepared?.({
               model: typeof wire.model === "string" ? wire.model : p.model,

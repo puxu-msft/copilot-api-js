@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted } from "vue"
+import { useEventListener } from "@vueuse/core"
 
 export interface KeyboardOptions {
   onNavigate: (direction: "next" | "prev") => void
@@ -7,7 +7,7 @@ export interface KeyboardOptions {
 }
 
 export function useKeyboard(options: KeyboardOptions) {
-  function handleKeydown(e: KeyboardEvent) {
+  useEventListener(document, "keydown", (e: KeyboardEvent) => {
     const target = e.target as HTMLElement
     const isInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT"
 
@@ -51,13 +51,5 @@ export function useKeyboard(options: KeyboardOptions) {
         break
       }
     }
-  }
-
-  onMounted(() => {
-    document.addEventListener("keydown", handleKeydown)
-  })
-
-  onUnmounted(() => {
-    document.removeEventListener("keydown", handleKeydown)
   })
 }

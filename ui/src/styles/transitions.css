@@ -59,7 +59,7 @@
   }
   50% {
     border-color: var(--primary);
-    box-shadow: 0 0 8px rgba(88, 166, 255, 0.3);
+    box-shadow: 0 0 8px var(--primary-muted);
   }
 }
 .highlight-flash {

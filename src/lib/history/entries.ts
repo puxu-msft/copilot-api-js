@@ -116,10 +116,7 @@ function attachEntryToSession(entry: HistoryEntry): void {
 
   entry.sessionId = sessionId
   session.requestCount++
-  historyIndexes.sessionEntryCount.set(
-    sessionId,
-    (historyIndexes.sessionEntryCount.get(sessionId) ?? 0) + 1,
-  )
+  historyIndexes.sessionEntryCount.set(sessionId, (historyIndexes.sessionEntryCount.get(sessionId) ?? 0) + 1)
   updateSessionMetadata(entry)
 }
 
@@ -210,6 +207,7 @@ export function updateEntry(
       | "endedAt"
       | "effectiveRequest"
       | "wireRequest"
+      | "httpHeaders"
       | "attempts"
       | "transport"
       | "warningMessages"
@@ -246,6 +244,7 @@ export function updateEntry(
   if (update.sseEvents) entry.sseEvents = update.sseEvents
   if (update.effectiveRequest) entry.effectiveRequest = update.effectiveRequest
   if (update.wireRequest) entry.wireRequest = update.wireRequest
+  if (update.httpHeaders) entry.httpHeaders = update.httpHeaders
   if (update.attempts) entry.attempts = update.attempts
   if (update.warningMessages) entry.warningMessages = update.warningMessages
 

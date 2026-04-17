@@ -417,7 +417,12 @@ describe("createRequestContext - toHistoryEntry", () => {
       },
     })
     ctx.beginAttempt({})
-    ctx.complete({ success: true, model: "claude-sonnet-4", usage: { input_tokens: 10, output_tokens: 5 }, content: "ok" })
+    ctx.complete({
+      success: true,
+      model: "claude-sonnet-4",
+      usage: { input_tokens: 10, output_tokens: 5 },
+      content: "ok",
+    })
 
     const entry = ctx.toHistoryEntry()
     expect(entry.request.max_tokens).toBe(4096)
@@ -448,7 +453,12 @@ describe("createRequestContext - toHistoryEntry", () => {
       payload: { model: "claude-sonnet-4-20250514", messages: [{ role: "user", content: "truncated" }], system: "sys" },
       format: "anthropic-messages",
     })
-    ctx.complete({ success: true, model: "claude-sonnet-4-20250514", usage: { input_tokens: 10, output_tokens: 5 }, content: "ok" })
+    ctx.complete({
+      success: true,
+      model: "claude-sonnet-4-20250514",
+      usage: { input_tokens: 10, output_tokens: 5 },
+      content: "ok",
+    })
 
     const entry = ctx.toHistoryEntry()
     expect(entry.effectiveRequest).toBeDefined()
@@ -484,7 +494,12 @@ describe("createRequestContext - toHistoryEntry", () => {
       },
       format: "anthropic-messages",
     })
-    ctx.complete({ success: true, model: "claude-opus-4-6", usage: { input_tokens: 10, output_tokens: 5 }, content: "ok" })
+    ctx.complete({
+      success: true,
+      model: "claude-opus-4-6",
+      usage: { input_tokens: 10, output_tokens: 5 },
+      content: "ok",
+    })
 
     const entry = ctx.toHistoryEntry()
     expect(entry.effectiveRequest).toBeDefined()
@@ -498,7 +513,7 @@ describe("createRequestContext - toHistoryEntry", () => {
       messages: [{ role: "user", content: "logical" }],
       context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
     })
-    expect(entry.wireRequest!.headers).toEqual({
+    expect(entry.httpHeaders?.outboundRequest).toEqual({
       "anthropic-version": "2023-06-01",
       "anthropic-beta": "context-management-2025-06-27,advanced-tool-use-2025-11-20",
     })
@@ -563,7 +578,10 @@ describe("createRequestContext - toHistoryEntry", () => {
     ctx.setAttemptEffectiveRequest({
       model: "m",
       resolvedModel: undefined,
-      messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }],
+      messages: [
+        { role: "user", content: "a" },
+        { role: "assistant", content: "b" },
+      ],
       payload: {},
       format: "anthropic-messages",
     })
@@ -584,7 +602,7 @@ describe("createRequestContext - toHistoryEntry", () => {
 
     const entry = ctx.toHistoryEntry()
     expect(entry.sseEvents).toHaveLength(1)
-    expect(entry.httpHeaders).toEqual({ request: { "x-req": "1" }, response: { "x-res": "2" } })
+    expect(entry.httpHeaders).toEqual({ outboundRequest: { "x-req": "1" }, outboundResponse: { "x-res": "2" } })
   })
 
   test("includes warningMessages in entry", () => {

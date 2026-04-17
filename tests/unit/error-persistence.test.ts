@@ -86,10 +86,9 @@ async function readErrorDirEntries(): Promise<Array<string>> {
 
 async function waitForErrorDirEntries(count = 1): Promise<Array<string>> {
   const errmsgsDir = path.join(tmpDir, "errmsgs")
-  await waitUntil(
-    async () => existsSync(errmsgsDir) && (await fs.readdir(errmsgsDir)).length >= count,
-    { label: `error directory to contain at least ${count} entr${count === 1 ? "y" : "ies"}` },
-  )
+  await waitUntil(async () => existsSync(errmsgsDir) && (await fs.readdir(errmsgsDir)).length >= count, {
+    label: `error directory to contain at least ${count} entr${count === 1 ? "y" : "ies"}`,
+  })
   return await readErrorDirEntries()
 }
 
@@ -300,10 +299,6 @@ describe("handleErrorPersistence", () => {
           { role: "user", content: "hello" },
           { role: "assistant", content: "hi" },
         ],
-        headers: {
-          "anthropic-version": "2023-06-01",
-          "anthropic-beta": "context-management-2025-06-27",
-        },
         payload: {
           model: "claude-sonnet-4-20250514",
           messages: [
@@ -322,10 +317,6 @@ describe("handleErrorPersistence", () => {
     expect(files).toContain("wire-request.json")
 
     const wire = JSON.parse(await fs.readFile(path.join(dir, "wire-request.json"), "utf8"))
-    expect(wire.headers).toEqual({
-      "anthropic-version": "2023-06-01",
-      "anthropic-beta": "context-management-2025-06-27",
-    })
     expect(wire.payload.context_management).toEqual({
       edits: [{ type: "clear_tool_uses_20250919" }],
     })

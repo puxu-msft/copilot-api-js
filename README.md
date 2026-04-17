@@ -6,7 +6,7 @@
 > [!WARNING]
 > This is a reverse proxy for the GitHub Copilot API. It is not officially supported by GitHub and may break at any time. Use at your own risk.
 
-A reverse proxy that exposes GitHub Copilot's API as standard OpenAI and Anthropic compatible endpoints. Works with Claude Code, Cursor, and other tools that speak these protocols.
+A reverse proxy that exposes GitHub Copilot's API as standard OpenAI and Anthropic compatible endpoints.
 
 ## Quick Start
 
@@ -22,15 +22,20 @@ npx -y @hsupu/copilot-api start
 git clone https://github.com/puxu-msft/copilot-api-js.git
 cd copilot-api-js
 bun install
-bun run dev      # Development mode with hot reload
-bun run start    # Production mode
-bun run build    # Build for distribution
+bun run dev  # Development mode with hot reload
+bun run dev:ui  # Development mode for UI
+bun run start --port 4141 --external-ui-url http://localhost:5173  # Production mode with separate UI server
 
 # Testing
 bun test                   # Backend unit tests
 bun run test:all           # All backend tests
 bun run test:ui            # Frontend (History UI) tests
 bun run typecheck          # TypeScript type checking
+
+# Publish to npm
+BROWSER=wslview npm login
+BROWSER=wslview npm publish --access public --tag beta
+BROWSER=wslview npm dist-tag add @hsupu/copilot-api@0.8.3 latest
 ```
 
 ## Using with Claude Code
@@ -41,84 +46,29 @@ Run the interactive setup command:
 copilot-api setup-claude-code
 ```
 
-Or manually create `~/.claude/settings.json`:
+Or manually create and modify `~/.claude/settings.json`:
 
 ```json
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:4141",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "opus",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet",
+    "ANTHROPIC_MODEL": "opus[1m]",
     "ANTHROPIC_SMALL_FAST_MODEL": "haiku",
-    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0"
   }
 }
 ```
 
-## Features
+## Configuration
 
-### Dual API Compatibility
+All `config.yaml`, `github_token` and more are saved in `~/.local/share/copilot-api/`.
 
-Exposes both OpenAI and Anthropic compatible endpoints through a single proxy:
-
-- **Direct Anthropic path** — Uses Copilot API's native Anthropic endpoint for Claude models
-- **OpenAI-compatible path** — Forwards OpenAI Chat Completions, Responses, Embeddings, and Models requests to Copilot's OpenAI endpoints
-
-### Auto-Truncate
-
-Automatically handles context length limits (enabled by default):
-
-- **Reactive** — Retries failed requests with a truncated payload when hitting token or byte limits
-- **Proactive** — Pre-checks requests against known model limits before sending
-- **Dynamic limit learning** — Adjusts limits based on actual API error responses
-- **Tool result compression** — Compresses old `tool_result` content before truncating messages
-
-### Message Sanitization
-
-Cleans up messages before forwarding to the API:
-
-- Filters orphaned `tool_use` / `tool_result` blocks (unpaired due to interrupted tool calls or truncation)
-- Fixes tool name casing mismatches
-- Removes empty text content blocks
-- Strips `<system-reminder>` tags from message content
-- **[Optional]** Deduplicates repeated tool calls (`config.yaml: anthropic.dedup_tool_calls`)
-- **[Optional]** Strips system-reminder tags from Read tool results (`config.yaml: anthropic.truncate_read_tool_result`)
-
-### Model Name Translation
-
-Translates client-sent model names to matching Copilot models:
-
-| Input | Resolved To |
-|-------|-------------|
-| `opus`, `sonnet`, `haiku` | Best available model in that family |
-| `claude-opus-4-6` | `claude-opus-4.6` |
-| `claude-sonnet-4-6-20250514` | `claude-sonnet-4.6` |
-| `claude-opus-4-6-fast`, `opus[1m]` | `claude-opus-4.6-fast`, `claude-opus-4.6-1m` |
-| `claude-sonnet-4`, `gpt-4` | Passed through directly |
-
-User-configured `model_overrides` (via config.yaml) can redirect any model name to another, with chained resolution and family-level overrides.
-
-### Server-Side Tools
-
-Supports Anthropic server-side tools (`web_search`, `tool_search`). These tools are executed by the API backend, with both `server_tool_use` and result blocks appearing inline in assistant messages. Tool definitions can optionally be rewritten to a custom format (`--no-rewrite-anthropic-tools`).
-
-### Request History UI
-
-Built-in web interface for inspecting API requests and responses. Access at `http://localhost:4141/history/v3/`.
-
-- Real-time updates via WebSocket
-- Filter by model, endpoint, status, and time range
-- Session tracking and statistics
-
-### Additional Features
-
-- **Model overrides** — Configure arbitrary model name redirections via config.yaml
-- **Adaptive rate limiting** — Intelligent rate limiting with exponential backoff (3 modes: Normal, Rate-limited, Recovering)
-- **Tool name truncation** — Truncates tool names exceeding 64 characters (OpenAI limit) with hash suffixes
-- **Health checks** — Container-ready endpoint at `/health`
-- **Graceful shutdown** — Connection draining on shutdown signals
-- **Proxy support** — HTTP/HTTPS proxy via environment variables
+See [`config.example.yaml`](config.example.yaml) for all available options.
 
 ## Commands
 
@@ -145,39 +95,17 @@ Built-in web interface for inspecting API requests and responses. Access at `htt
 | `--account-type`, `-a` | individual | Account type: `individual`, `business`, or `enterprise` |
 | `--github-token`, `-g` | | Provide GitHub token directly |
 | `--no-http-proxy-from-env` | enabled | Disable HTTP proxy from environment variables |
-
-**Auto-Truncate:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--no-auto-truncate` | enabled | Disable auto-truncation on context limit errors |
-
-**Anthropic-Specific (via config.yaml):**
-
-These options are configured in `config.yaml` under the `anthropic:` section. See [`config.example.yaml`](config.example.yaml).
-
-| Config Key | Default | Description |
-|------------|---------|-------------|
-| `anthropic.rewrite_tools` | true | Rewrite server-side tools to custom format |
-| `stream_idle_timeout` | 300 | Max seconds between SSE events (0 = no timeout) |
-
-**Sanitization:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
 | `--collect-system-prompts` | false | Collect system prompts to file |
-
-**Rate Limiting:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
+| `--no-auto-truncate` | enabled | Disable auto-truncation on context limit errors |
 | `--no-rate-limit` | enabled | Disable adaptive rate limiting |
 
-Rate limiter sub-parameters are configured in `config.yaml` under `rate_limiter:`. See [`config.example.yaml`](config.example.yaml).
+The account type determines the Copilot API base URL:
 
-## Configuration
-
-Create a `config.yaml` in the working directory. See [`config.example.yaml`](config.example.yaml) for all available options.
+| Type | API Base URL |
+|------|-------------|
+| `individual` | `api.githubcopilot.com` |
+| `business` | `api.business.githubcopilot.com` |
+| `enterprise` | `api.enterprise.githubcopilot.com` |
 
 ## API Endpoints
 
@@ -191,7 +119,7 @@ Create a `config.yaml` in the working directory. See [`config.example.yaml`](con
 | `/v1/models/:model` | GET | Get specific model details |
 | `/v1/embeddings` | POST | Text embeddings |
 
-All endpoints also work without the `/v1` prefix.
+All endpoints also work without the `/v1` prefix for backwards compatibility.
 
 ### Anthropic Compatible
 
@@ -205,25 +133,6 @@ All endpoints also work without the `/v1` prefix.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check (200 healthy, 503 unhealthy) |
-| `/usage` | GET | Copilot usage and quota statistics |
-| `/token` | GET | Current Copilot token information |
-| `/history/v3/` | GET | History web UI |
-| `/history/ws` | WebSocket | Real-time history updates |
-| `/history/api/entries` | GET | Query history entries |
-| `/history/api/entries/:id` | GET | Get single entry |
-| `/history/api/summaries` | GET | Entry summaries |
-| `/history/api/stats` | GET | Usage statistics |
-| `/history/api/sessions` | GET | List sessions |
-
-## Account Types
-
-The account type determines the Copilot API base URL:
-
-| Type | API Base URL |
-|------|-------------|
-| `individual` | `api.githubcopilot.com` |
-| `business` | `api.business.githubcopilot.com` |
-| `enterprise` | `api.enterprise.githubcopilot.com` |
 
 ## License
 

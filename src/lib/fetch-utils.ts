@@ -2,7 +2,19 @@ import type { HeadersCapture } from "~/lib/context/request"
 
 import { state } from "~/lib/state"
 
-const SENSITIVE_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key"])
+const SENSITIVE_HEADER_NAMES = new Set([
+  "authorization",
+  "proxy-authorization",
+  "x-api-key",
+  "api-key",
+  "cookie",
+  "set-cookie",
+])
+
+/** Convert a Headers object to a sanitized Record for history persistence. */
+export function captureInboundHeaders(headers: Headers): Record<string, string> {
+  return sanitizeHeadersForHistory(Object.fromEntries(headers.entries()))
+}
 
 /**
  * Create an AbortSignal for fetch timeout if configured.

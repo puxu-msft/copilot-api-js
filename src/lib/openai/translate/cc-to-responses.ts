@@ -14,15 +14,7 @@ import type {
   ResponsesToolChoice,
 } from "~/types/api/openai-responses"
 
-const DROPPED_PARAMS = [
-  "stop",
-  "n",
-  "frequency_penalty",
-  "presence_penalty",
-  "logit_bias",
-  "logprobs",
-  "seed",
-] as const
+const DROPPED_PARAMS = ["stop", "n", "frequency_penalty", "presence_penalty", "logit_bias", "logprobs", "seed"] as const
 
 export interface TranslateResult {
   payload: ResponsesPayload
@@ -62,10 +54,12 @@ export function translateChatCompletionsToResponses(payload: ChatCompletionsPayl
     ...(instructions !== undefined && { instructions }),
     ...(payload.temperature !== undefined && payload.temperature !== null && { temperature: payload.temperature }),
     ...(payload.top_p !== undefined && payload.top_p !== null && { top_p: payload.top_p }),
-    ...(payload.max_tokens !== undefined && payload.max_tokens !== null && { max_output_tokens: payload.max_tokens }),
+    ...((payload.max_completion_tokens ?? payload.max_tokens) != null && {
+      max_output_tokens: (payload.max_completion_tokens ?? payload.max_tokens)!,
+    }),
     ...(payload.stream !== undefined && payload.stream !== null && { stream: payload.stream }),
-    ...(payload.parallel_tool_calls !== undefined
-      && payload.parallel_tool_calls !== null && { parallel_tool_calls: payload.parallel_tool_calls }),
+    ...(payload.parallel_tool_calls !== undefined &&
+      payload.parallel_tool_calls !== null && { parallel_tool_calls: payload.parallel_tool_calls }),
     ...(payload.user !== undefined && { user: payload.user }),
     ...(payload.service_tier !== undefined && { service_tier: payload.service_tier }),
     ...(payload.top_logprobs !== undefined && payload.top_logprobs !== null && { top_logprobs: payload.top_logprobs }),
@@ -192,7 +186,10 @@ function convertToolMessage(message: Message): ResponsesInputItem {
 function extractTextContent(content: string | Array<ContentPart> | null): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
-  return content.filter((part): part is TextPart => part.type === "text").map((part) => part.text).join("")
+  return content
+    .filter((part): part is TextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("")
 }
 
 function translateTools(tools: Array<Tool>): Array<ResponsesFunctionTool> {
@@ -205,9 +202,7 @@ function translateTools(tools: Array<Tool>): Array<ResponsesFunctionTool> {
   }))
 }
 
-function translateToolChoice(
-  choice: NonNullable<ChatCompletionsPayload["tool_choice"]>,
-): ResponsesToolChoice {
+function translateToolChoice(choice: NonNullable<ChatCompletionsPayload["tool_choice"]>): ResponsesToolChoice {
   if (typeof choice === "string") return choice
   return {
     type: "function",

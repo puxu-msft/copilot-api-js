@@ -69,7 +69,12 @@ export function createRequestContext(opts: {
   let _response: ResponseData | null = null
   let _pipelineInfo: PipelineInfo | null = null
   let _sseEvents: Array<SseEventRecord> | null = null
-  let _httpHeaders: { request: Record<string, string>; response: Record<string, string> } | null = null
+  let _httpHeaders: {
+    inboundRequest?: Record<string, string>
+    outboundRequest?: Record<string, string>
+    outboundResponse?: Record<string, string>
+    inboundResponse?: Record<string, string>
+  } | null = null
   let _queueWaitMs = 0
   const _warningMessages: Array<WarningMessage> = []
   const _attempts: Array<Attempt> = []
@@ -155,9 +160,17 @@ export function createRequestContext(opts: {
     },
 
     setHttpHeaders(capture: HeadersCapture) {
-      if (capture.request && capture.response) {
-        _httpHeaders = { request: capture.request, response: capture.response }
+      if (capture.request || capture.response) {
+        _httpHeaders = {
+          ..._httpHeaders,
+          ...(capture.request && { outboundRequest: capture.request }),
+          ...(capture.response && { outboundResponse: capture.response }),
+        }
       }
+    },
+
+    setInboundRequestHeaders(headers: Record<string, string>) {
+      _httpHeaders = { ..._httpHeaders, inboundRequest: headers }
     },
 
     addWarningMessage(warning: WarningMessage) {
@@ -282,9 +295,9 @@ export function createRequestContext(opts: {
 
       // Preserve upstream HTTP error details as structured fields
       if (
-        error instanceof Error
-        && "responseText" in error
-        && typeof (error as { responseText: unknown }).responseText === "string"
+        error instanceof Error &&
+        "responseText" in error &&
+        typeof (error as { responseText: unknown }).responseText === "string"
       ) {
         const responseText = (error as { responseText: string }).responseText
         if (responseText) {
@@ -327,7 +340,12 @@ export function createRequestContext(opts: {
           tools: _originalRequest?.tools,
           system: _originalRequest?.system,
           // Auto-extract metadata from payload (no handler changes needed)
-          max_tokens: typeof p?.max_tokens === "number" ? p.max_tokens : undefined,
+          max_tokens:
+            typeof p?.max_tokens === "number"
+              ? p.max_tokens
+              : typeof p?.max_completion_tokens === "number"
+                ? p.max_completion_tokens
+                : undefined,
           temperature: typeof p?.temperature === "number" ? p.temperature : undefined,
           thinking: p?.thinking ?? undefined,
         },
@@ -349,10 +367,6 @@ export function createRequestContext(opts: {
 
       if (_sseEvents) {
         entry.sseEvents = _sseEvents
-      }
-
-      if (_httpHeaders) {
-        entry.httpHeaders = _httpHeaders
       }
 
       // Extract effective request from the final attempt
@@ -378,8 +392,16 @@ export function createRequestContext(opts: {
           messages: wp.messages,
           system: (wp.payload as Record<string, unknown>).system,
           payload: wp.payload,
-          headers: wp.headers,
         }
+        // Migrate wireRequest.headers → httpHeaders.outboundRequest
+        if (wp.headers) {
+          _httpHeaders = { ..._httpHeaders, outboundRequest: wp.headers }
+        }
+      }
+
+      // Assign httpHeaders AFTER wireRequest migration so outboundRequest is included
+      if (_httpHeaders) {
+        entry.httpHeaders = _httpHeaders
       }
 
       // Always include attempt details (even for single attempts)

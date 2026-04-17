@@ -21,9 +21,13 @@ import { state } from "~/lib/state"
  * Interleaved thinking is supported by:
  * - Claude Sonnet 4/4.5
  * - Claude Haiku 4.5
- * - Claude Opus 4.5/4.6
+ * - Claude Opus 4.5
  *
- * Notably, claude-opus-4 and claude-opus-4-1 do NOT support interleaved thinking.
+ * Notably:
+ * - claude-opus-4 and claude-opus-4-1 do NOT support interleaved thinking
+ * - claude-opus-4-6 uses adaptive thinking (not interleaved); see
+ *   modelHasAdaptiveThinking() for the runtime decision that drives the
+ *   interleaved-thinking beta header.
  */
 export function modelSupportsInterleavedThinking(modelId: string): boolean {
   const normalized = normalizeForMatching(modelId)
@@ -32,7 +36,6 @@ export function modelSupportsInterleavedThinking(modelId: string): boolean {
     || normalized.startsWith("claude-sonnet-4")
     || normalized.startsWith("claude-haiku-4-5")
     || normalized.startsWith("claude-opus-4-5")
-    || normalized.startsWith("claude-opus-4-6")
   )
 }
 
@@ -149,6 +152,29 @@ export function buildAnthropicBetaHeaders(
   }
 
   return headers
+}
+
+/**
+ * Merge client-sent `anthropic-beta` with locally-built beta features.
+ *
+ * The client may send its own beta features (e.g. from Anthropic SDK — extended
+ * cache TTL, token counting, etc.) that our feature-detection layer doesn't know
+ * about. Overwriting would drop those betas; merging preserves both sources.
+ *
+ * Mirrors VSCode Copilot Chat's fix in #4945 (ClaudeStreamingPassThroughEndpoint).
+ *
+ * @returns merged comma-separated string, or undefined if both inputs are empty
+ */
+export function mergeAnthropicBeta(clientBeta: string | undefined, localBeta: string | undefined): string | undefined {
+  const merged = new Set<string>()
+  for (const source of [clientBeta, localBeta]) {
+    if (!source) continue
+    for (const value of source.split(",")) {
+      const trimmed = value.trim()
+      if (trimmed) merged.add(trimmed)
+    }
+  }
+  return merged.size > 0 ? [...merged].join(",") : undefined
 }
 
 // ============================================================================

@@ -34,17 +34,29 @@
 # If still unavailable, the best model in the same family is used as fallback.
 
 model_overrides:
-  opus: claude-opus-4.6-1m
-  # Redirect all sonnet requests to best opus
-  # sonnet: claude-opus-4.6-1m
-  haiku: claude-sonnet-4.6
-  claude-opus-4.5: claude-opus-4.6-1m
-  claude-opus-4.6: claude-opus-4.6-1m
-  claude-opus-4-6: claude-opus-4.6-1m
+  opus: claude-opus-4.6
+  sonnet: claude-sonnet-4.6
+  haiku: claude-haiku-4.5
+
+  # opus: claude-opus-4.6-1m
+  # claude-opus-4.5: claude-opus-4.6-1m
+  # claude-opus-4.6: claude-opus-4.6-1m
+  # claude-opus-4-6: claude-opus-4.6-1m
+
   # Use latest sonnet
-  claude-sonnet-4.5: claude-sonnet-4.6
+  # claude-sonnet-4.5: claude-sonnet-4.6
+  # claude-sonnet-4-5: claude-sonnet-4.6
+
+  # Redirect all sonnet requests to best opus
+  # sonnet: claude-opus-4.6
+  # claude-sonnet-4.5: claude-opus-4.6
+  # claude-sonnet-4.6: claude-opus-4.6
+  # claude-sonnet-4-5: claude-opus-4.6
+  # claude-sonnet-4-6: claude-opus-4.6
+
   # Upgrade haiku to sonnet
-  claude-haiku-4.5: claude-sonnet-4.6
+  # haiku: claude-sonnet-4.6
+  # claude-haiku-4.5: claude-sonnet-4.6
 
 # ============================================================================
 # Timeouts
@@ -74,9 +86,9 @@ model_refresh_interval: 600
 
 shutdown:
   # Phase 2: seconds to wait for in-flight requests to complete naturally (default: 60)
-  graceful_wait: 300
+  graceful_wait: 60
   # Phase 3: seconds to wait after abort signal for handlers to wrap up (default: 120)
-  abort_wait: 600
+  abort_wait: 120
 
 # ============================================================================
 # History
@@ -85,9 +97,9 @@ shutdown:
 
 history:
   # Maximum number of entries to keep in memory (0 = unlimited, default: 200)
-  limit: 200
+  limit: 50
   # Minimum entries to keep even under memory pressure (default: 50)
-  min_entries: 50
+  min_entries: 20
 
 # ============================================================================
 # Anthropic
@@ -136,7 +148,7 @@ anthropic:
   #   passthrough: forward client cache_control as-is
   #   sanitize:    forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
   #   proxied:     proxy controls injection — auto-add breakpoints on tools/system (default)
-  cache_control: proxied
+  cache_control: sanitize
 
   # Additional tool names that should never be deferred when tool_search is enabled.
   # non_deferred_tools:
@@ -152,6 +164,27 @@ anthropic:
       to: ""
     # - from: ".*"           # Catch-all: keep unchanged (gms flags are automatic)
     #   to: "$0"             # $0 = original content
+
+  # Policy for Claude Code "Warmup" requests.
+  # Claude Code sends warmup requests on session start to pre-fill the prompt cache.
+  # Zombie processes may send these repeatedly, generating significant traffic.
+  #   allow:  pass through to upstream API (default)
+  #   reject: return HTTP 429 error
+  #   drop:   return minimal empty response without forwarding upstream
+  #   fake:   return realistic response with cache_creation_input_tokens (recommended)
+  warmup: fake
+
+  # Per-model supported effort levels (whitelist) for output_config.effort.
+  # Keys are model name substrings matched against the resolved model name.
+  # Values are arrays of supported efforts from: low, medium, high, xhigh, max.
+  # Requests outside the whitelist are clamped to the nearest supported value
+  # (above max → max supported; below min → min supported).
+  # Runtime dynamically extends this (learned from invalid_reasoning_effort errors,
+  # in-memory only). Config-sourced entries take precedence over runtime-learned.
+  # Default: no constraints (all effort levels pass through).
+  efforts_overrides:
+    claude-opus-4.6-1m: [medium, high]
+    claude-opus-4.7: [medium]
 
 # ============================================================================
 # Responses API

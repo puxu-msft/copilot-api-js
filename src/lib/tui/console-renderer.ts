@@ -153,12 +153,19 @@ export class ConsoleRenderer implements TuiRenderer {
     }
 
     // Multiple requests — compact: model elapsed stream-info | model elapsed stream-info
-    const items = Array.from(this.activeRequests.values()).map((req) => {
+    const MAX_SHOWN = 3
+    const all = Array.from(this.activeRequests.values()).sort((a, b) => a.startTime - b.startTime)
+    const shown = all.slice(0, MAX_SHOWN)
+    const items = shown.map((req) => {
       const elapsed = formatDuration(now - req.startTime)
       const label = req.model || `${req.method} ${req.path}`
       const streamInfo = formatStreamInfo(req)
       return `${label} ${elapsed}${streamInfo}`
     })
+    const overflow = activeCount - MAX_SHOWN
+    if (overflow > 0) {
+      items.push(`+${overflow} more`)
+    }
     return pc.dim(`[<-->] ${items.join(" | ")}`)
   }
 
@@ -280,9 +287,9 @@ export class ConsoleRenderer implements TuiRenderer {
     let coloredModel = ""
     if (model) {
       coloredModel =
-        clientModel && clientModel !== model ?
-          ` ${pc.dim(clientModel)} → ${pc.magenta(model)}`
-        : pc.magenta(` ${model}`)
+        clientModel && clientModel !== model
+          ? ` ${pc.dim(clientModel)} → ${pc.magenta(model)}`
+          : pc.magenta(` ${model}`)
     }
     const coloredMultiplier = multiplier !== undefined ? pc.dim(` (${multiplier}x)`) : ""
     const coloredDuration = duration ? ` ${pc.yellow(duration)}` : ""

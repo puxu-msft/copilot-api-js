@@ -27,6 +27,12 @@ interface CreateResponsesOptions {
   headersCapture?: HeadersCapture
   onPrepared?: (request: PreparedOpenAIRequest<ResponsesPayload>) => void
   onTransport?: (transport: RequestTransport) => void
+  /**
+   * Optional conversation identifier (e.g. from X-Conversation-Id header).
+   * Used as a fallback upstream-WS reuse key when `previous_response_id` is
+   * absent. Mirrors GHC per-conversation WS pattern (#4827).
+   */
+  conversationId?: string
 }
 
 export { type PreparedOpenAIRequest, prepareResponsesRequest } from "./request-preparation"
@@ -48,14 +54,18 @@ export const createResponses = async (
 
   if (wire.stream && canUseUpstreamWebSocket(opts?.resolvedModel)) {
     const manager = getUpstreamWsManager()
+    const previousResponseId = typeof wire.previous_response_id === "string" ? wire.previous_response_id : undefined
     const reusable =
-      typeof wire.previous_response_id === "string" ?
+      previousResponseId || opts?.conversationId ?
         manager.findReusable({
-          previousResponseId: wire.previous_response_id,
+          previousResponseId,
+          conversationId: opts?.conversationId,
           model: wire.model,
         })
       : undefined
-    const connection = reusable ?? (await manager.create({ headers: prepared.headers, model: wire.model }))
+    const connection =
+      reusable
+      ?? (await manager.create({ headers: prepared.headers, model: wire.model, conversationId: opts?.conversationId }))
 
     try {
       if (!connection.isOpen) {

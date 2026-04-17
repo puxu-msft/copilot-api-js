@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef, type Ref } from "vue"
+import { computed, ref, shallowRef, type ComputedRef, type Ref } from "vue"
 
 import type { EndpointType, EntrySummary, HistoryEntry, HistoryStats, Session } from "@/types"
 
@@ -44,17 +44,17 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
   const sessions = ref<Array<Session>>([])
   const stats = ref<HistoryStats | null>(null)
 
-  const searchQuery = ref("")
-  const filterEndpoint = ref<string | null>(null)
-  const filterSuccess = ref<string | null>(null)
-  const selectedSessionId = ref<string | null>(null)
+  const searchQuery = shallowRef("")
+  const filterEndpoint = shallowRef<string | null>(null)
+  const filterSuccess = shallowRef<string | null>(null)
+  const selectedSessionId = shallowRef<string | null>(null)
 
-  const nextCursor = ref<string | null>(null)
-  const prevCursor = ref<string | null>(null)
-  const total = ref(0)
-  const hasMore = ref(false)
-  const loading = ref(false)
-  const error = ref<string | null>(null)
+  const nextCursor = shallowRef<string | null>(null)
+  const prevCursor = shallowRef<string | null>(null)
+  const total = shallowRef(0)
+  const hasMore = shallowRef(false)
+  const loading = shallowRef(false)
+  const error = shallowRef<string | null>(null)
   const pageSize = 20
 
   const hasSelection = computed(() => selectedEntry.value !== null)
@@ -97,8 +97,8 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
   async function fetchStats(): Promise<void> {
     try {
       stats.value = await api.fetchStats()
-    } catch {
-      // Stats are non-critical, don't show error
+    } catch (err) {
+      console.warn("[history] Failed to fetch stats:", err instanceof Error ? err.message : err)
     }
   }
 
@@ -106,8 +106,8 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     try {
       const result = await api.fetchSessions()
       sessions.value = result.sessions
-    } catch {
-      // Sessions are non-critical
+    } catch (err) {
+      console.warn("[history] Failed to fetch sessions:", err instanceof Error ? err.message : err)
     }
   }
 

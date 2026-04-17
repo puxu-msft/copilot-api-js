@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue"
+import { ref, computed, onMounted, onUnmounted } from "vue"
 
 import type { MessageContent } from "@/types"
 
@@ -7,11 +7,10 @@ import BaseBadge from "@/components/ui/BaseBadge.vue"
 import IconSvg from "@/components/ui/IconSvg.vue"
 import { extractText } from "@/composables/useHistoryStore"
 import { useRawModal } from "@/composables/useRawModal"
-import { useSharedResizeObserver } from "@/composables/useSharedResizeObserver"
 import { isTextBlock } from "@/utils/typeGuards"
 
 import ContentRenderer from "./ContentRenderer.vue"
-import DiffView from "./DiffView.vue"
+import SideBySideView from "./SideBySideView.vue"
 
 const props = withDefaults(
   defineProps<{
@@ -22,6 +21,8 @@ const props = withDefaults(
     rewrittenMessage?: MessageContent | null
     /** Global view mode from toolbar — null means per-message control */
     globalViewMode?: "original" | "rewritten" | "diff" | null
+    /** Start collapsed to defer content rendering */
+    defaultCollapsed?: boolean
   }>(),
   {
     isTruncated: false,
@@ -30,14 +31,24 @@ const props = withDefaults(
 )
 
 // Collapse/expand
-const collapsed = ref(false)
-const expanded = ref(false)
-const isOverflowing = ref(false)
-const bodyRef = ref<HTMLElement>()
+const collapsed = ref(props.defaultCollapsed ?? false)
+const msgRef = ref<HTMLElement>()
 
-// Shared modal and observer
+// Shared modal
 const { openRawModal } = useRawModal()
-const sharedObserver = useSharedResizeObserver()
+
+/** Auto-expand when navigated from TOC sidebar */
+function handleTocNavigate() {
+  if (collapsed.value) collapsed.value = false
+}
+
+onMounted(() => {
+  msgRef.value?.addEventListener("toc-navigate", handleTocNavigate)
+})
+
+onUnmounted(() => {
+  msgRef.value?.removeEventListener("toc-navigate", handleTocNavigate)
+})
 
 // Rewrite view mode: local override or global
 const localViewMode = ref<"original" | "rewritten" | "diff" | null>(null)
@@ -106,6 +117,30 @@ const messageSummary = computed(() => {
 const originalText = computed(() => extractText(props.message.content))
 const rewrittenText = computed(() => (props.rewrittenMessage ? extractText(props.rewrittenMessage.content) : ""))
 
+/** Content blocks for structural comparison */
+const originalBlocks = computed(() => {
+  const c = props.message.content
+  if (typeof c === "string") return [{ type: "text" }]
+  if (Array.isArray(c)) return c.map((b) => ({ type: b.type }))
+  return []
+})
+
+const rewrittenBlocks = computed(() => {
+  const c = props.rewrittenMessage?.content
+  if (!c) return []
+  if (typeof c === "string") return [{ type: "text" }]
+  if (Array.isArray(c)) return c.map((b) => ({ type: b.type }))
+  return []
+})
+
+/** Whether the content actually differs (rewritten flag may be set but content identical) */
+const contentDiffers = computed(() =>
+  props.isRewritten && props.rewrittenMessage && originalText.value !== rewrittenText.value,
+)
+
+/** Show toggle whenever rewritten data exists */
+const showViewToggle = computed(() => props.isRewritten && Boolean(props.rewrittenMessage))
+
 const displayContent = computed(() => {
   if (viewMode.value === "rewritten" && props.rewrittenMessage) {
     return props.rewrittenMessage.content ?? ""
@@ -121,20 +156,6 @@ const displayMessage = computed<MessageContent | undefined>(() => {
   return props.message
 })
 
-function checkOverflow() {
-  if (bodyRef.value && !expanded.value) {
-    isOverflowing.value = bodyRef.value.scrollHeight > bodyRef.value.clientHeight + 10
-  }
-}
-
-function toggleExpand(event: Event) {
-  event.stopPropagation()
-  expanded.value = !expanded.value
-  if (!expanded.value) {
-    void nextTick(checkOverflow)
-  }
-}
-
 function openRaw(event: Event) {
   event.stopPropagation()
   openRawModal(
@@ -143,41 +164,23 @@ function openRaw(event: Event) {
     props.isRewritten ? props.rewrittenMessage : undefined,
   )
 }
-
-onMounted(() => {
-  void nextTick(() => {
-    checkOverflow()
-    if (bodyRef.value) {
-      sharedObserver.observe(bodyRef.value, checkOverflow)
-    }
-  })
-})
-
-onUnmounted(() => {
-  if (bodyRef.value) sharedObserver.unobserve(bodyRef.value)
-})
-
-watch(
-  () => props.message,
-  () => {
-    expanded.value = false
-    void nextTick(checkOverflow)
-  },
-)
 </script>
 
 <template>
   <div
+    ref="msgRef"
     class="message-block"
     :class="{
       truncated: isTruncated,
       collapsed,
       'is-rewritten': isRewritten,
     }"
+    :id="index >= 0 ? `request.messages.${index}` : 'response.content'"
     :data-msg-index="index"
   >
     <div
       class="msg-header"
+      data-clickable
       @click="collapsed = !collapsed"
     >
       <div class="msg-header-left">
@@ -186,8 +189,13 @@ watch(
         <span class="msg-index">#{{ index + 1 }}</span>
 
         <BaseBadge
-          v-if="isRewritten"
+          v-if="contentDiffers"
           color="warning"
+          >modified</BaseBadge
+        >
+        <BaseBadge
+          v-else-if="isRewritten"
+          color="default"
           >rewritten</BaseBadge
         >
         <BaseBadge
@@ -205,9 +213,9 @@ watch(
       </div>
 
       <div class="msg-header-right">
-        <!-- Rewrite view toggle -->
+        <!-- Rewrite view toggle (only when content actually differs) -->
         <div
-          v-if="isRewritten && rewrittenMessage"
+          v-if="showViewToggle"
           class="view-toggle"
           @click.stop
         >
@@ -252,34 +260,36 @@ watch(
           Raw
         </button>
 
-        <!-- Expand/collapse -->
-        <button
-          v-if="isOverflowing && !collapsed"
-          class="action-btn"
-          @click="toggleExpand($event)"
-          :title="expanded ? 'Collapse content' : 'Show full content'"
-        >
-          <IconSvg
-            :name="expanded ? 'contract' : 'expand'"
-            :size="10"
-          />
-          {{ expanded ? "Collapse" : "Expand" }}
-        </button>
       </div>
     </div>
 
     <div
       v-show="!collapsed"
-      ref="bodyRef"
       class="msg-body"
-      :class="{ 'body-limited': isOverflowing && !expanded }"
     >
-      <!-- Diff view -->
-      <DiffView
-        v-if="viewMode === 'diff' && isRewritten"
-        :old-text="originalText"
-        :new-text="rewrittenText"
-      />
+      <!-- Diff view: side-by-side comparison -->
+      <template v-if="viewMode === 'diff' && isRewritten && rewrittenMessage">
+        <div
+          v-if="originalBlocks.length !== rewrittenBlocks.length"
+          class="diff-structure-notice"
+        >
+          Block count changed: {{ originalBlocks.length }} → {{ rewrittenBlocks.length }}
+        </div>
+        <SideBySideView :identical="!contentDiffers">
+          <template #original>
+            <ContentRenderer
+              :content="message.content ?? ''"
+              :message="message"
+            />
+          </template>
+          <template #rewritten>
+            <ContentRenderer
+              :content="rewrittenMessage.content ?? ''"
+              :message="rewrittenMessage"
+            />
+          </template>
+        </SideBySideView>
+      </template>
 
       <!-- Normal content -->
       <ContentRenderer
@@ -310,7 +320,6 @@ watch(
   padding: 6px 10px;
   background: var(--bg-tertiary);
   cursor: pointer;
-  user-select: none;
 }
 
 .msg-header:hover {
@@ -411,9 +420,13 @@ watch(
   padding: var(--spacing-sm);
 }
 
-.msg-body.body-limited {
-  max-height: 200px;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
+.diff-structure-notice {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--warning);
+  background: var(--warning-muted);
+  border-bottom: 1px solid var(--warning);
+  margin-bottom: var(--spacing-xs);
 }
 </style>

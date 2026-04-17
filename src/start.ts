@@ -7,7 +7,7 @@ import pc from "picocolors"
 import type { Model } from "./lib/models/client"
 
 import packageJson from "../package.json"
-import { initAdaptiveRateLimiter } from "./lib/adaptive-rate-limiter"
+import { initAdaptiveRateLimiter, setMockRateLimiterThrottled } from "./lib/adaptive-rate-limiter"
 import { loadPersistedLimits } from "./lib/auto-truncate"
 import { applyConfigToState } from "./lib/config/config"
 import { PATHS, ensurePaths } from "./lib/config/paths"
@@ -89,6 +89,8 @@ interface RunServerOptions {
   accountType: "individual" | "business" | "enterprise"
   // Adaptive rate limiting (disabled if rateLimit is false)
   rateLimit: boolean
+  /** Mock rate limiter throttle: reject all requests with 429 */
+  mockRateLimiterThrottled: boolean
   githubToken?: string
   showGitHubToken: boolean
   /** Explicit proxy URL (CLI --proxy). Takes precedence over config.yaml and env vars. */
@@ -171,6 +173,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     })
   }
 
+  if (options.mockRateLimiterThrottled) {
+    if (!options.rateLimit) {
+      consola.warn("--mock-rate-limiter-throttled requires rate limiting to be enabled (--no-rate-limit is set)")
+    }
+    setMockRateLimiterThrottled(true)
+  }
+
   initHistory(true, state.historyLimit)
   startMemoryPressureMonitor()
   await initRequestTelemetry()
@@ -215,8 +224,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   } catch (error) {
     consola.error("Failed to fetch models from Copilot API:", error instanceof Error ? error.message : error)
     consola.error(
-      `Verify that --account-type "${state.accountType}" is correct. `
-        + `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
+      `Verify that --account-type "${state.accountType}" is correct. ` +
+        `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
     )
     process.exit(1)
   }
@@ -324,6 +333,11 @@ export const start = defineCommand({
       default: true,
       description: "Adaptive rate limiting (disable with --no-rate-limit)",
     },
+    "mock-rate-limiter-throttled": {
+      type: "boolean",
+      default: false,
+      description: "Mock rate limiter: reject all GHC API requests with 429 after timeout (for testing)",
+    },
     "github-token": {
       alias: "g",
       type: "string",
@@ -376,6 +390,9 @@ export const start = defineCommand({
       // rate-limit (citty handles --no-rate-limit via built-in negation)
       "rate-limit",
       "rateLimit",
+      // mock-rate-limiter-throttled
+      "mock-rate-limiter-throttled",
+      "mockRateLimiterThrottled",
       // github-token
       "github-token",
       "githubToken",
@@ -406,6 +423,7 @@ export const start = defineCommand({
       verbose: args.verbose,
       accountType: args["account-type"] as "individual" | "business" | "enterprise",
       rateLimit: args["rate-limit"],
+      mockRateLimiterThrottled: args["mock-rate-limiter-throttled"],
       githubToken: args["github-token"],
       showGitHubToken: args["show-github-token"],
       proxy: args.proxy,

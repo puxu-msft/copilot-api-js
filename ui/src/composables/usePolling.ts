@@ -1,4 +1,5 @@
-import { ref, onMounted, onUnmounted, type Ref } from "vue"
+import { shallowRef, type Ref } from "vue"
+import { useIntervalFn } from "@vueuse/core"
 
 export interface UsePollingReturn<T> {
   data: Ref<T | null>
@@ -9,10 +10,9 @@ export interface UsePollingReturn<T> {
 
 /** Generic polling composable: fetches data on mount, then at intervalMs */
 export function usePolling<T>(fetchFn: () => Promise<T>, intervalMs: number): UsePollingReturn<T> {
-  const data = ref<T | null>(null) as Ref<T | null>
-  const loading = ref(true)
-  const error = ref<string | null>(null)
-  let timer: ReturnType<typeof setInterval> | null = null
+  const data = shallowRef<T | null>(null) as Ref<T | null>
+  const loading = shallowRef(true)
+  const error = shallowRef<string | null>(null)
 
   async function refresh(): Promise<void> {
     try {
@@ -26,17 +26,9 @@ export function usePolling<T>(fetchFn: () => Promise<T>, intervalMs: number): Us
     }
   }
 
-  onMounted(() => {
-    void refresh()
-    timer = setInterval(() => void refresh(), intervalMs)
-  })
-
-  onUnmounted(() => {
-    if (timer) {
-      clearInterval(timer)
-      timer = null
-    }
-  })
+  // Fetch immediately, then poll at interval (auto-cleans up on unmount)
+  void refresh()
+  useIntervalFn(() => void refresh(), intervalMs)
 
   return { data, loading, error, refresh }
 }

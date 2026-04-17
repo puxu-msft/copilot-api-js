@@ -153,6 +153,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     system: payload.instructions ?? undefined,
     payload,
   })
+  // WS transport: no inbound HTTP headers to capture
 
   // Update TUI with resolved model (if different from requested)
   if (requestedModel !== resolvedModel) {

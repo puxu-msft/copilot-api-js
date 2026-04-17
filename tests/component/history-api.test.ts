@@ -112,7 +112,12 @@ describe("GET /api/entries", () => {
     }
 
     const res1 = await get("/api/entries?limit=2")
-    const body1 = await json<{ entries: Array<{ id: string }>; total: number; nextCursor: string | null; prevCursor: string | null }>(res1)
+    const body1 = await json<{
+      entries: Array<{ id: string }>
+      total: number
+      nextCursor: string | null
+      prevCursor: string | null
+    }>(res1)
     expect(body1.entries).toHaveLength(2)
     expect(body1.total).toBe(5)
     expect(body1.nextCursor).not.toBeNull()
@@ -120,7 +125,12 @@ describe("GET /api/entries", () => {
 
     // Load next page using cursor
     const res2 = await get(`/api/entries?cursor=${body1.nextCursor}&limit=2`)
-    const body2 = await json<{ entries: Array<{ id: string }>; total: number; nextCursor: string | null; prevCursor: string | null }>(res2)
+    const body2 = await json<{
+      entries: Array<{ id: string }>
+      total: number
+      nextCursor: string | null
+      prevCursor: string | null
+    }>(res2)
     expect(body2.entries).toHaveLength(2)
     expect(body2.prevCursor).not.toBeNull()
   })
@@ -175,7 +185,9 @@ describe("GET /api/entries/:id", () => {
           max_tokens: 4096,
           stream: true,
         },
-        headers: {
+      },
+      httpHeaders: {
+        outboundRequest: {
           "anthropic-beta": "advanced-tool-use-2025-11-20",
         },
       },
@@ -203,7 +215,9 @@ describe("GET /api/entries/:id", () => {
         max_tokens: 4096,
         stream: true,
       },
-      headers: {
+    })
+    expect(body.httpHeaders).toEqual({
+      outboundRequest: {
         "anthropic-beta": "advanced-tool-use-2025-11-20",
       },
     })

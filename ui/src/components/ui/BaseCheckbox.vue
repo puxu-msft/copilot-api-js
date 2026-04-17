@@ -32,7 +32,6 @@ defineEmits<{
   cursor: pointer;
   font-size: var(--font-size-xs);
   color: var(--text-muted);
-  user-select: none;
 }
 
 .base-checkbox input[type="checkbox"] {

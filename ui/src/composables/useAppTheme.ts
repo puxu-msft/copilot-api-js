@@ -1,3 +1,4 @@
+import { useLocalStorage } from "@vueuse/core"
 import { watch } from "vue"
 import { useTheme } from "vuetify"
 
@@ -13,16 +14,18 @@ export interface AppThemeController {
 
 export function useAppTheme(): AppThemeController {
   const theme = useTheme()
+  const storedTheme = useLocalStorage(STORAGE_KEY, theme.global.name.value)
 
-  const stored = localStorage.getItem(STORAGE_KEY)
-  if (stored && VALID_THEMES.has(stored)) {
-    theme.change(stored)
+  // Apply stored theme on init (if valid)
+  if (VALID_THEMES.has(storedTheme.value)) {
+    theme.change(storedTheme.value)
   }
 
+  // Sync Vuetify theme name → localStorage
   watch(
     () => theme.global.name.value,
     (name) => {
-      localStorage.setItem(STORAGE_KEY, name)
+      storedTheme.value = name
     },
   )
 

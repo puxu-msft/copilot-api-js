@@ -16,6 +16,7 @@ defineProps<{
   <SectionBlock
     v-if="responseMessage || entry.response?.error"
     title="Response"
+    anchor="response"
     :badge="responseMessage ? '1 message' : ''"
     :raw-data="entry.response"
     raw-title="Response"
@@ -32,7 +33,7 @@ defineProps<{
       <MessageBlock
         v-if="responseMessage"
         :message="responseMessage"
-        :index="0"
+        :index="-1"
       />
     </ErrorBoundary>
   </SectionBlock>

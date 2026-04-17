@@ -207,7 +207,6 @@ export interface HistoryEntry {
     messages?: Array<MessageContent>
     system?: string | Array<SystemBlock>
     payload?: unknown
-    headers?: Record<string, string>
   }
   response?: {
     success: boolean
@@ -218,7 +217,17 @@ export interface HistoryEntry {
     status?: number
     content: MessageContent | null
     rawBody?: string
-    headers?: Record<string, string>
+  }
+  /** HTTP headers captured at each leg of the proxy pipeline */
+  httpHeaders?: {
+    /** Client → Proxy (inbound request) */
+    inboundRequest?: Record<string, string>
+    /** Proxy → Upstream API (outbound request) */
+    outboundRequest?: Record<string, string>
+    /** Upstream API → Proxy (outbound response) */
+    outboundResponse?: Record<string, string>
+    /** Proxy → Client (inbound response) — reserved for future use */
+    inboundResponse?: Record<string, string>
   }
   sseEvents?: Array<SseEventRecord>
   pipelineInfo?: PipelineInfo

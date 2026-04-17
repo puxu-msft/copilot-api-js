@@ -181,11 +181,13 @@ export class WSClient {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return
+    // Add ±25% jitter to prevent thundering herd
+    const jitteredDelay = this.reconnectDelay * (0.75 + Math.random() * 0.5)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.createConnection()
-    }, this.reconnectDelay)
-    // Exponential backoff
+    }, jitteredDelay)
+    // Exponential backoff for the base delay
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay)
   }
 }

@@ -12,6 +12,13 @@ const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "respo
 export interface CreateUpstreamWsConnectionOptions {
   headers: Record<string, string>
   model: string
+  /**
+   * Optional conversation identifier (e.g. from X-Conversation-Id header).
+   * Used as a fallback reuse key when `previous_response_id` is absent —
+   * mirrors GHC per-conversation WS pattern (#4827) for turn boundaries
+   * that don't yet carry a stateful marker.
+   */
+  conversationId?: string
   onClose?: () => void
   idleTimeoutMs?: number
   createSocket?: (url: string, headers: Record<string, string>) => WebSocketLike
@@ -32,6 +39,7 @@ export interface UpstreamWsConnection {
   readonly isBusy: boolean
   readonly statefulMarker: string | undefined
   readonly model: string
+  readonly conversationId: string | undefined
   close(): void
 }
 
@@ -233,6 +241,10 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
     get model() {
       return opts.model
+    },
+
+    get conversationId() {
+      return opts.conversationId
     },
 
     close() {

@@ -2,18 +2,19 @@ import { describe, expect, test } from "bun:test"
 
 import {
   buildAnthropicBetaHeaders,
+  mergeAnthropicBeta,
   modelSupportsContextEditing,
   modelSupportsInterleavedThinking,
   modelSupportsToolSearch,
 } from "~/lib/anthropic/features"
 
 describe("modelSupportsInterleavedThinking", () => {
-  test("should support claude-opus-4.6", () => {
-    expect(modelSupportsInterleavedThinking("claude-opus-4.6")).toBe(true)
-  })
-
-  test("should support claude-opus-4-6 (hyphenated)", () => {
-    expect(modelSupportsInterleavedThinking("claude-opus-4-6")).toBe(true)
+  test("should NOT support claude-opus-4.6 (uses adaptive thinking instead)", () => {
+    // Opus 4.6 has adaptive thinking, which doesn't need the interleaved-thinking
+    // beta header. The runtime decision uses modelHasAdaptiveThinking() from model
+    // metadata; this function only covers the non-adaptive path.
+    expect(modelSupportsInterleavedThinking("claude-opus-4.6")).toBe(false)
+    expect(modelSupportsInterleavedThinking("claude-opus-4-6")).toBe(false)
   })
 
   test("should support claude-opus-4.5", () => {
@@ -151,5 +152,40 @@ describe("buildAnthropicBetaHeaders", () => {
 
     expect(headers["anthropic-beta"]).toContain("advanced-tool-use-2025-11-20")
     expect(headers["anthropic-beta"]).not.toContain("context-management-2025-06-27")
+  })
+})
+
+describe("mergeAnthropicBeta", () => {
+  test("merges client and local betas with dedup", () => {
+    const merged = mergeAnthropicBeta(
+      "interleaved-thinking-2025-05-14, extended-cache-ttl-2025-04-11",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27",
+    )
+    if (!merged) throw new Error("Expected merged to be defined")
+    const parts = merged.split(",")
+    expect(parts).toContain("interleaved-thinking-2025-05-14")
+    expect(parts).toContain("extended-cache-ttl-2025-04-11")
+    expect(parts).toContain("context-management-2025-06-27")
+    expect(parts.length).toBe(3)
+  })
+
+  test("trims whitespace around values", () => {
+    const merged = mergeAnthropicBeta("  a , b  ", " c , a ")
+    expect(merged).toBe("a,b,c")
+  })
+
+  test("returns only local when client is empty", () => {
+    expect(mergeAnthropicBeta(undefined, "context-management-2025-06-27")).toBe("context-management-2025-06-27")
+    expect(mergeAnthropicBeta("", "context-management-2025-06-27")).toBe("context-management-2025-06-27")
+  })
+
+  test("returns only client when local is empty", () => {
+    expect(mergeAnthropicBeta("extended-cache-ttl-2025-04-11", undefined)).toBe("extended-cache-ttl-2025-04-11")
+  })
+
+  test("returns undefined when both are empty", () => {
+    expect(mergeAnthropicBeta(undefined, undefined)).toBeUndefined()
+    expect(mergeAnthropicBeta("", "")).toBeUndefined()
+    expect(mergeAnthropicBeta("  ", ",,")).toBeUndefined()
   })
 })

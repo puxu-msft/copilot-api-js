@@ -1,22 +1,17 @@
-import { ref, type Ref } from "vue"
-
-export interface DetailViewState {
-  detailSearch: Ref<string>
-  detailFilterRole: Ref<string>
-  detailFilterType: Ref<string>
-  aggregateTools: Ref<boolean>
-  detailViewMode: Ref<"original" | "rewritten" | "diff" | null>
-  showOnlyRewritten: Ref<boolean>
-}
+import { shallowRef } from "vue"
+import { defineStore } from "pinia"
 
 /** Detail panel view state: search, filters, and display mode */
-export function useDetailViewState(): DetailViewState {
+export const useDetailViewState = defineStore("detailView", () => {
   return {
-    detailSearch: ref(""),
-    detailFilterRole: ref(""),
-    detailFilterType: ref(""),
-    aggregateTools: ref(true),
-    detailViewMode: ref<"original" | "rewritten" | "diff" | null>(null),
-    showOnlyRewritten: ref(false),
+    detailSearch: shallowRef(""),
+    detailFilterRole: shallowRef(""),
+    detailFilterType: shallowRef(""),
+    aggregateTools: shallowRef(true),
+    detailViewMode: shallowRef<"original" | "rewritten" | "diff" | null>(null),
+    showOnlyRewritten: shallowRef(false),
   }
-}
+})
+
+/** Store type for consumers that need explicit typing */
+export type DetailViewState = ReturnType<typeof useDetailViewState>

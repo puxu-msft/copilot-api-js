@@ -197,6 +197,7 @@ describe("responses client", () => {
       },
       statefulMarker: undefined,
       model: "gpt-4o",
+      conversationId: undefined,
       close: () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
@@ -243,6 +244,7 @@ describe("responses client", () => {
       },
       statefulMarker: undefined,
       model: "gpt-4o",
+      conversationId: undefined,
       close: () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })

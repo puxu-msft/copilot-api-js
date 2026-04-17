@@ -33,9 +33,11 @@ import {
 } from "~/lib/anthropic/server-tool-filter"
 import { processAnthropicStream, supportsDirectAnthropicApi } from "~/lib/anthropic/sse"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { handleWarmupRequest, isWarmupRequest } from "~/lib/anthropic/warmup"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
+import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { resolveModelName } from "~/lib/models/resolver"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
@@ -63,6 +65,11 @@ import { tuiLogger } from "~/lib/tui"
  */
 export async function handleMessages(c: Context) {
   const anthropicPayload = await c.req.json<MessagesPayload>()
+
+  // Warmup interception — before any heavy processing (model resolution, context creation, etc.)
+  if (state.warmupPolicy !== "allow" && isWarmupRequest(anthropicPayload)) {
+    return handleWarmupRequest(c, anthropicPayload, state.warmupPolicy)
+  }
 
   // Resolve model name aliases and date-suffixed versions
   // e.g., "haiku" → "claude-haiku-4.5", "claude-sonnet-4-20250514" → "claude-sonnet-4"
@@ -109,6 +116,7 @@ export async function handleMessages(c: Context) {
     system: anthropicPayload.system,
     payload: anthropicPayload,
   })
+  reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
 
   // Update TUI tracker with model info (immediate feedback, don't wait for event loop)
   if (tuiLogId) {
@@ -134,7 +142,12 @@ export async function handleMessages(c: Context) {
 // ============================================================================
 
 // Handle completion using direct Anthropic API (no translation needed)
-async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: MessagesPayload, reqCtx: RequestContext, preprocessInfo: PreprocessInfo) {
+async function handleDirectAnthropicCompletion(
+  c: Context,
+  anthropicPayload: MessagesPayload,
+  reqCtx: RequestContext,
+  preprocessInfo: PreprocessInfo,
+) {
   consola.debug("Using direct Anthropic API path for model:", anthropicPayload.model)
 
   // Find model for auto-truncate and usage adjustment
@@ -183,6 +196,7 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
         createAnthropicMessages(p, {
           resolvedModel: selectedModel,
           headersCapture,
+          clientAnthropicBeta: c.req.raw.headers.get("anthropic-beta") ?? undefined,
           onPrepared: ({ wire, headers }) => {
             reqCtx.setAttemptWireRequest({
               model: typeof wire.model === "string" ? wire.model : anthropicPayload.model,
@@ -192,7 +206,8 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
               format: "anthropic-messages",
             })
           },
-        })),
+        }),
+      ),
     logPayloadSize: (p) => logPayloadSizeInfoAnthropic(p, selectedModel),
   }
 

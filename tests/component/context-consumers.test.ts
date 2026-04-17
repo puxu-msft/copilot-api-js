@@ -449,11 +449,11 @@ describe("registerContextConsumers", () => {
               max_tokens: 4096,
               stream: true,
             },
-            headers: { "x-request-id": "wire-abc" },
           },
           httpHeaders: {
-            request: { "x-request-id": "abc" },
-            response: { "content-type": "application/json" },
+            inboundRequest: { "x-request-id": "abc" },
+            outboundRequest: { "x-request-id": "wire-abc" },
+            outboundResponse: { "content-type": "application/json" },
           },
         },
       } as unknown as RequestContextEvent)
@@ -478,7 +478,11 @@ describe("registerContextConsumers", () => {
           max_tokens: 4096,
           stream: true,
         },
-        headers: { "x-request-id": "wire-abc" },
+      })
+      expect(data.httpHeaders).toEqual({
+        inboundRequest: { "x-request-id": "abc" },
+        outboundRequest: { "x-request-id": "wire-abc" },
+        outboundResponse: { "content-type": "application/json" },
       })
     })
 
@@ -523,8 +527,8 @@ describe("registerContextConsumers", () => {
             responseText: '{"error":{"message":"thinking blocks cannot be modified"}}',
           },
           httpHeaders: {
-            request: { authorization: "***" },
-            response: { "x-request-id": "xyz" },
+            outboundRequest: { authorization: "***" },
+            outboundResponse: { "x-request-id": "xyz" },
           },
         },
       } as unknown as RequestContextEvent)
@@ -532,7 +536,10 @@ describe("registerContextConsumers", () => {
       const [, data] = updateEntrySpy.mock.calls[0]
       expect(data.response.status).toBe(400)
       expect(data.response.rawBody).toBe('{"error":{"message":"thinking blocks cannot be modified"}}')
-      expect(data.response.headers).toEqual({ "x-request-id": "xyz" })
+      expect(data.httpHeaders).toEqual({
+        outboundRequest: { authorization: "***" },
+        outboundResponse: { "x-request-id": "xyz" },
+      })
     })
 
     test("omits effectiveRequest when entry has none", () => {

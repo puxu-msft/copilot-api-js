@@ -10,14 +10,10 @@ function makeRouter() {
     history: createMemoryHistory(),
     routes: [
       { path: "/dashboard", component: { template: "<div />" } },
-      { path: "/history", component: { template: "<div />" } },
-      { path: "/v/dashboard", component: { template: "<div />" } },
-      { path: "/v/history", component: { template: "<div />" } },
-      { path: "/v/history/:id", component: { template: "<div />" } },
-      { path: "/v/config", component: { template: "<div />" } },
-      { path: "/v/models", component: { template: "<div />" } },
-      { path: "/v/activity", component: { template: "<div />" } },
-      { path: "/logs", component: { template: "<div />" } },
+      { path: "/activity", component: { template: "<div />" } },
+      { path: "/activity/:id", component: { template: "<div />" } },
+      { path: "/config", component: { template: "<div />" } },
+      { path: "/models", component: { template: "<div />" } },
     ],
   })
 }
@@ -50,7 +46,6 @@ async function mountNavBarAt(path: string) {
           props: ["icon"],
           template: '<button type="button" data-testid="v-btn"><slot /></button>',
         },
-        "v-chip": { template: '<div data-testid="v-chip"><slot /></div>' },
         "v-icon": {
           props: ["icon"],
           template: '<i data-testid="v-icon">{{ icon }}<slot /></i>',
@@ -70,43 +65,32 @@ async function mountNavBarAt(path: string) {
   })
 }
 
-describe("NavBar config route integration", () => {
-  it("shows Config in Vuetify mode immediately after Dashboard and renders the Vuetify shell on /v/config", async () => {
-    const wrapper = await mountNavBarAt("/v/config")
+describe("NavBar", () => {
+  it("renders all nav tabs including Config", async () => {
+    const wrapper = await mountNavBarAt("/config")
     const labels = wrapper.findAll('[data-testid="v-tab"]').map((node) => node.text())
 
     expect(labels).toEqual(["Dashboard", "Config", "Models", "Activity"])
     expect(wrapper.find('[data-testid="v-app-bar"]').exists()).toBe(true)
-    expect(wrapper.find(".switch-link").exists()).toBe(false)
     expect(wrapper.text()).toContain("System")
   })
 
-  it("does not show Config in legacy mode", async () => {
-    const wrapper = await mountNavBarAt("/logs")
-    const labels = wrapper.findAll(".navbar-center a").map((node) => node.text())
+  it("selects Activity tab for detail routes", async () => {
+    const wrapper = await mountNavBarAt("/activity/req_123")
 
-    expect(labels).toEqual(["Logs"])
-    expect(labels).not.toContain("Config")
-    expect(wrapper.find(".switch-link").exists()).toBe(true)
-    expect(wrapper.find(".navbar").exists()).toBe(true)
+    expect(wrapper.get('[data-testid="v-tabs"]').attributes("data-model-value")).toBe("/activity")
   })
 
-  it("marks the current legacy route active via exact-active-class", async () => {
-    const wrapper = await mountNavBarAt("/logs")
+  it("selects Dashboard tab on /dashboard", async () => {
+    const wrapper = await mountNavBarAt("/dashboard")
 
-    expect(wrapper.get(".navbar-center a.active").text()).toBe("Logs")
+    expect(wrapper.get('[data-testid="v-tabs"]').attributes("data-model-value")).toBe("/dashboard")
   })
 
-  it("shows the variant switch in Vuetify mode when a legacy counterpart exists", async () => {
-    const wrapper = await mountNavBarAt("/v/activity")
+  it("renders theme toggle with system label", async () => {
+    const wrapper = await mountNavBarAt("/dashboard")
 
-    expect(wrapper.find('[data-testid="v-app-bar"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain("Legacy")
-  })
-
-  it("keeps Activity selected for history detail routes", async () => {
-    const wrapper = await mountNavBarAt("/v/history/req_123")
-
-    expect(wrapper.get('[data-testid="v-tabs"]').attributes("data-model-value")).toBe("/v/activity")
+    expect(wrapper.text()).toContain("System")
+    expect(wrapper.find('[aria-label="Theme: System"]').exists()).toBe(true)
   })
 })

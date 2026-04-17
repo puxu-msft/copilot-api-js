@@ -1,26 +1,21 @@
 <script setup lang="ts">
-import { ref, watch } from "vue"
+import { ref } from "vue"
+import { watchDebounced } from "@vueuse/core"
 
 import BaseInput from "@/components/ui/BaseInput.vue"
 import BaseSelect from "@/components/ui/BaseSelect.vue"
-import { useInjectedHistoryStore } from "@/composables/useInjectedHistoryStore"
+import { useHistoryStore } from "@/composables/useHistoryStore"
 
 import ListPagination from "./ListPagination.vue"
 import RequestItem from "./RequestItem.vue"
 
-const store = useInjectedHistoryStore()
+const store = useHistoryStore()
 
 const localSearch = ref("")
-let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const searchInputRef = ref<InstanceType<typeof BaseInput>>()
 
-watch(localSearch, (val) => {
-  if (searchTimer) clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => {
-    store.setSearch(val)
-  }, 300)
-})
+watchDebounced(localSearch, (val) => store.setSearch(val), { debounce: 300 })
 
 const endpointOptions = [
   { value: "anthropic-messages", label: "Anthropic Messages" },
@@ -50,20 +45,20 @@ defineExpose({ focusSearch })
         icon="search"
       />
       <span
-        v-if="localSearch && store.total.value > 0"
+        v-if="localSearch && store.total > 0"
         class="search-count"
       >
-        {{ store.total.value }} hit{{ store.total.value !== 1 ? "s" : "" }}
+        {{ store.total }} hit{{ store.total !== 1 ? "s" : "" }}
       </span>
       <div class="list-filters">
         <BaseSelect
-          :model-value="store.filterEndpoint.value"
+          :model-value="store.filterEndpoint"
           :options="endpointOptions"
           placeholder="Endpoint"
           @update:model-value="store.setEndpointFilter($event)"
         />
         <BaseSelect
-          :model-value="store.filterSuccess.value"
+          :model-value="store.filterSuccess"
           :options="statusOptions"
           placeholder="Status"
           @update:model-value="store.setSuccessFilter($event)"
@@ -73,13 +68,13 @@ defineExpose({ focusSearch })
 
     <div class="list-body">
       <div
-        v-if="store.loading.value && store.entries.value.length === 0"
+        v-if="store.loading && store.entries.length === 0"
         class="list-empty"
       >
         Loading...
       </div>
       <div
-        v-else-if="store.entries.value.length === 0"
+        v-else-if="store.entries.length === 0"
         class="list-empty"
       >
         No requests found
@@ -87,10 +82,10 @@ defineExpose({ focusSearch })
       </div>
       <template v-else>
         <RequestItem
-          v-for="entry in store.entries.value"
+          v-for="entry in store.entries"
           :key="entry.id"
           :entry="entry"
-          :selected="store.selectedEntry.value?.id === entry.id"
+          :selected="store.selectedEntry?.id === entry.id"
           @select="store.selectEntry($event)"
         />
       </template>

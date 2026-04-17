@@ -15,6 +15,7 @@ import type { ResponsesPayload, ResponsesResponse, ResponsesStreamEvent } from "
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
+import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders, registerResponseSession, resolveResponseSessionId } from "~/lib/history/store"
 import { ENDPOINT, isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
@@ -84,6 +85,7 @@ export async function handleResponses(c: Context) {
     system: payload.instructions ?? undefined,
     payload,
   })
+  reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
 
   // Update TUI tracker with model info
   if (tuiLogId) {
@@ -112,6 +114,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
 
   const selectedModel = state.modelIndex.get(payload.model)
   const headersCapture: HeadersCapture = {}
+  const conversationId = getSessionIdFromHeaders(c.req.raw.headers)
   const adapter = createResponsesAdapter(
     selectedModel,
     headersCapture,
@@ -121,6 +124,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
     (transport) => {
       reqCtx.setAttemptTransport(transport)
     },
+    conversationId,
   )
   const strategies = createResponsesStrategies()
 

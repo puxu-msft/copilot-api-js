@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from "vue"
+import { ref } from "vue"
 
 import IconSvg from "@/components/ui/IconSvg.vue"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
 import { useRawModal } from "@/composables/useRawModal"
-import { useSharedResizeObserver } from "@/composables/useSharedResizeObserver"
 
 const props = withDefaults(
   defineProps<{
@@ -25,20 +24,11 @@ const props = withDefaults(
 
 const { copy } = useCopyToClipboard()
 const { openRawModal } = useRawModal()
-const sharedObserver = useSharedResizeObserver()
 
 const collapsed = ref(false)
-const expanded = ref(false)
-const needsExpand = ref(false)
-const bodyRef = ref<HTMLElement>()
 
 function toggleCollapse() {
   collapsed.value = !collapsed.value
-}
-
-function toggleExpand(e: Event) {
-  e.stopPropagation()
-  expanded.value = !expanded.value
 }
 
 function handleCopy(e: Event) {
@@ -50,23 +40,6 @@ function openRaw(e: Event) {
   e.stopPropagation()
   if (props.rawData !== undefined) openRawModal(props.rawData, props.rawTitle)
 }
-
-// Simplified: rAF throttling is handled by the shared ResizeObserver
-function checkOverflow() {
-  if (!bodyRef.value) return
-  needsExpand.value = bodyRef.value.scrollHeight > 208
-}
-
-onMounted(() => {
-  if (bodyRef.value) {
-    sharedObserver.observe(bodyRef.value, checkOverflow)
-    void nextTick(checkOverflow)
-  }
-})
-
-onUnmounted(() => {
-  if (bodyRef.value) sharedObserver.unobserve(bodyRef.value)
-})
 </script>
 
 <template>
@@ -76,6 +49,7 @@ onUnmounted(() => {
   >
     <div
       class="content-block-header"
+      data-clickable
       @click="toggleCollapse"
     >
       <div class="content-block-header-left">
@@ -94,18 +68,6 @@ onUnmounted(() => {
         >
       </div>
       <div class="content-block-header-right">
-        <button
-          v-if="!collapsed && needsExpand"
-          class="action-btn"
-          :title="expanded ? 'Collapse' : 'Expand'"
-          @click="toggleExpand"
-        >
-          <IconSvg
-            :name="expanded ? 'contract' : 'expand'"
-            :size="10"
-          />
-          {{ expanded ? "Collapse" : "Expand" }}
-        </button>
         <button
           v-if="copyText"
           class="action-btn"
@@ -134,9 +96,7 @@ onUnmounted(() => {
     </div>
     <div
       v-show="!collapsed"
-      ref="bodyRef"
       class="content-block-body"
-      :class="{ 'body-collapsed': !expanded && needsExpand }"
     >
       <slot />
     </div>
@@ -155,7 +115,6 @@ onUnmounted(() => {
   padding: var(--spacing-xs) var(--spacing-sm);
   background: var(--bg-tertiary);
   cursor: pointer;
-  user-select: none;
 }
 
 .content-block-header:hover {
@@ -241,11 +200,5 @@ onUnmounted(() => {
 
 .content-block-body {
   padding: var(--spacing-sm);
-}
-
-.body-collapsed {
-  max-height: 200px;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
 }
 </style>

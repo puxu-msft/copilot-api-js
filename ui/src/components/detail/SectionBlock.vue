@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { computed, ref, onMounted, onUnmounted } from "vue"
 
 import IconSvg from "@/components/ui/IconSvg.vue"
 import { useRawModal } from "@/composables/useRawModal"
@@ -12,6 +12,8 @@ const props = withDefaults(
     rawData?: unknown
     rewrittenRawData?: unknown
     rawTitle?: string
+    /** Override the auto-generated anchor id (for path-based TOC navigation) */
+    anchor?: string
   }>(),
   {
     rawTitle: "Raw",
@@ -21,10 +23,24 @@ const props = withDefaults(
 const { openRawModal } = useRawModal()
 const collapsed = ref(props.defaultCollapsed ?? false)
 const sectionSlug = computed(() => props.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))
+const sectionRef = ref<HTMLElement>()
 
 function toggle() {
   collapsed.value = !collapsed.value
 }
+
+/** Auto-expand when navigated from TOC sidebar */
+function handleTocNavigate() {
+  if (collapsed.value) collapsed.value = false
+}
+
+onMounted(() => {
+  sectionRef.value?.addEventListener("toc-navigate", handleTocNavigate)
+})
+
+onUnmounted(() => {
+  sectionRef.value?.removeEventListener("toc-navigate", handleTocNavigate)
+})
 
 function openRaw(e: Event) {
   e.stopPropagation()
@@ -36,12 +52,15 @@ function openRaw(e: Event) {
 
 <template>
   <div
+    ref="sectionRef"
     class="section-block"
     :class="{ collapsed }"
+    :id="anchor || `section-${sectionSlug}`"
     :data-testid="`section-block-${sectionSlug}`"
   >
     <div
       class="section-header"
+      data-clickable
       @click="toggle"
     >
       <IconSvg
@@ -92,7 +111,6 @@ function openRaw(e: Event) {
   padding: var(--spacing-sm) var(--spacing-md);
   background: var(--bg-tertiary);
   cursor: pointer;
-  user-select: none;
 }
 
 .section-header:hover {

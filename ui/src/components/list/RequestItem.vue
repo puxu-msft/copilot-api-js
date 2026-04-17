@@ -3,7 +3,7 @@ import type { EntrySummary } from "@/types"
 
 import BaseBadge from "@/components/ui/BaseBadge.vue"
 import StatusDot from "@/components/ui/StatusDot.vue"
-import { useFormatters } from "@/composables/useFormatters"
+import { formatDate, formatDuration, formatNumber } from "@/utils/formatters"
 import { getStatusClass } from "@/composables/useHistoryStore"
 
 defineProps<{
@@ -15,7 +15,6 @@ defineEmits<{
   select: [id: string]
 }>()
 
-const { formatDate, formatNumber, formatDuration } = useFormatters()
 </script>
 
 <template>

@@ -23,7 +23,7 @@ import { HTTPError } from "~/lib/error"
 import { createFetchSignal, captureHttpHeaders, sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 
-import { prepareAnthropicRequest, type PreparedAnthropicRequest } from "./request-preparation"
+import { prepareAnthropicRequest, learnEffortsFromError, type PreparedAnthropicRequest } from "./request-preparation"
 
 /** Re-export the response type for consumers */
 export type AnthropicMessageResponse = AnthropicResponse
@@ -33,6 +33,8 @@ interface CreateAnthropicMessagesOptions {
   resolvedModel?: Model
   headersCapture?: HeadersCapture
   onPrepared?: (request: PreparedAnthropicRequest) => void
+  /** Client-sent `anthropic-beta` header, forwarded to request preparation for merging. */
+  clientAnthropicBeta?: string
 }
 
 // ============================================================================
@@ -49,52 +51,59 @@ export async function createAnthropicMessages(
 ): Promise<AnthropicMessageResponse | AsyncGenerator<ServerSentEventMessage>> {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
-  const prepared = prepareAnthropicRequest(payload, opts)
-  opts?.onPrepared?.({
-    wire: prepared.wire,
-    headers: sanitizeHeadersForHistory(prepared.headers),
-  })
-
-  const { wire, headers } = prepared
-
-  // Destructure known fields for typed access
-  const model = wire.model as string
-  const messages = wire.messages as MessagesPayload["messages"]
-  const tools = wire.tools as Array<Tool> | undefined
-  const thinking = wire.thinking as MessagesPayload["thinking"]
-
-  consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
-
-  // Apply fetch timeout if configured (connection + response headers)
-  const fetchSignal = createFetchSignal()
-
-  const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(wire),
-    signal: fetchSignal,
-  })
-
-  // Capture HTTP headers for history (before error check — capture even on failure)
-  if (opts?.headersCapture) {
-    captureHttpHeaders(opts.headersCapture, headers, response)
-  }
-
-  if (!response.ok) {
-    consola.debug("Request failed:", {
-      model,
-      max_tokens: wire.max_tokens,
-      stream: wire.stream,
-      toolCount: tools?.length ?? 0,
-      thinking,
-      messageCount: messages.length,
+  // Up to 2 attempts: first normal, second after learning invalid_reasoning_effort
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const prepared = prepareAnthropicRequest(payload, opts)
+    opts?.onPrepared?.({
+      wire: prepared.wire,
+      headers: sanitizeHeadersForHistory(prepared.headers),
     })
-    throw await HTTPError.fromResponse("Failed to create Anthropic messages", response, model)
-  }
 
-  if (payload.stream) {
-    return events(response)
-  }
+    const { wire, headers } = prepared
+    const model = wire.model as string
+    const messages = wire.messages as MessagesPayload["messages"]
+    const tools = wire.tools as Array<Tool> | undefined
+    const thinking = wire.thinking as MessagesPayload["thinking"]
 
-  return (await response.json()) as AnthropicMessageResponse
+    consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
+
+    const fetchSignal = createFetchSignal()
+
+    const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(wire),
+      signal: fetchSignal,
+    })
+
+    if (opts?.headersCapture) {
+      captureHttpHeaders(opts.headersCapture, headers, response)
+    }
+
+    if (!response.ok) {
+      const responseText = await response.text()
+      // Learn supported efforts from upstream error and retry once
+      if (attempt === 0 && response.status === 400 && learnEffortsFromError(responseText)) {
+        consola.debug("Retrying Anthropic request after learning supported efforts")
+        continue
+      }
+      consola.debug("Request failed:", {
+        model,
+        max_tokens: wire.max_tokens,
+        stream: wire.stream,
+        toolCount: tools?.length ?? 0,
+        thinking,
+        messageCount: messages.length,
+      })
+      throw new HTTPError("Failed to create Anthropic messages", response.status, responseText, model, response.headers)
+    }
+
+    if (payload.stream) {
+      return events(response)
+    }
+
+    return (await response.json()) as AnthropicMessageResponse
+  }
+  // Unreachable (loop always returns or throws)
+  throw new Error("createAnthropicMessages: unreachable state")
 }

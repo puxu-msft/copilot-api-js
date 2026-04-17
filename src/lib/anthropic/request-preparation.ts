@@ -1,13 +1,18 @@
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
-import type { MessagesPayload, Tool } from "~/types/api/anthropic"
 
 import { copilotHeaders } from "~/lib/copilot-api"
-import { state } from "~/lib/state"
+import { setAnthropicBehavior, state } from "~/lib/state"
+import { type MessagesPayload, type OutputConfig, type Tool, EFFORT_LEVELS } from "~/types/api/anthropic"
 
 import { isAnthropicFeatureUnsupported } from "./feature-negotiation"
-import { buildAnthropicBetaHeaders, buildContextManagement, isContextEditingEnabled } from "./features"
+import {
+  buildAnthropicBetaHeaders,
+  buildContextManagement,
+  isContextEditingEnabled,
+  mergeAnthropicBeta,
+} from "./features"
 import { stripServerTools } from "./message-tools"
 
 export interface PreparedAnthropicRequest {
@@ -17,6 +22,12 @@ export interface PreparedAnthropicRequest {
 
 interface PrepareAnthropicRequestOptions {
   resolvedModel?: Model
+  /**
+   * Client-sent `anthropic-beta` header (raw comma-separated string).
+   * Merged with locally-built beta features so SDK-provided betas survive.
+   * Mirrors GHC #4945 fix.
+   */
+  clientAnthropicBeta?: string
 }
 
 const COPILOT_REJECTED_FIELDS = new Set(["inference_geo"])
@@ -29,6 +40,7 @@ export function prepareAnthropicRequest(
 ): PreparedAnthropicRequest {
   const wire = buildWirePayload(payload)
   adjustThinkingBudget(wire, opts?.resolvedModel)
+  clampEffortLevel(wire, opts?.resolvedModel)
   applyCacheControlMode(wire)
 
   const model = wire.model as string
@@ -49,6 +61,11 @@ export function prepareAnthropicRequest(
     delete wire.context_management
   }
 
+  const localBeta = buildAnthropicBetaHeaders(model, opts?.resolvedModel, {
+    disableContextManagement: contextManagementDisabled,
+  })
+  const mergedBeta = mergeAnthropicBeta(opts?.clientAnthropicBeta, localBeta["anthropic-beta"])
+
   const headers: Record<string, string> = {
     ...copilotHeaders(state, {
       vision: enableVision && modelSupportsVision,
@@ -57,10 +74,8 @@ export function prepareAnthropicRequest(
     }),
     "X-Initiator": isAgentCall ? "agent" : "user",
     "anthropic-version": "2023-06-01",
-    ...buildAnthropicBetaHeaders(model, opts?.resolvedModel, {
-      disableContextManagement: contextManagementDisabled,
-    }),
   }
+  if (mergedBeta) headers["anthropic-beta"] = mergedBeta
 
   if (!contextManagementDisabled && !("context_management" in wire) && isContextEditingEnabled(model)) {
     const hasThinking = Boolean(thinking && thinking.type !== "disabled")
@@ -130,6 +145,150 @@ function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Mod
 }
 
 // ============================================================================
+// Effort level clamping
+// ============================================================================
+
+/**
+ * Parse an `invalid_reasoning_effort` upstream error and extract the supported values.
+ * Example error body:
+ *   {"error":{"message":"output_config.effort \"high\" is not supported by model claude-opus-4.7; supported values: [medium]","code":"invalid_reasoning_effort"}}
+ *
+ * Returns { modelName, supported } if the error matches, otherwise null.
+ */
+export function parseInvalidEffortError(responseText: string): { modelName: string; supported: Array<string> } | null {
+  // Find the "supported values: [...]" list and the "model X;" identifier.
+  // The outer JSON may be double-wrapped so operate on the raw text.
+  const codeMatch = responseText.includes("invalid_reasoning_effort")
+  if (!codeMatch) return null
+
+  const modelMatch = /by model ([^;"]+)[;"]/.exec(responseText)
+  const supportedMatch = /supported values:\s*\[([^\]]*)\]/.exec(responseText)
+  if (!modelMatch || !supportedMatch) return null
+
+  const modelName = modelMatch[1].trim()
+  const supported = supportedMatch[1]
+    .split(",")
+    .map((s) => s.trim().replaceAll(/^["']|["']$/g, ""))
+    .filter((s) => s.length > 0)
+
+  if (supported.length === 0) return null
+  return { modelName, supported }
+}
+
+/**
+ * Dynamically update learnedEffortsOverrides from an upstream `invalid_reasoning_effort` error.
+ * Adds/overwrites the entry for the exact model name (in-memory only, not persisted).
+ * Config-sourced `effortsOverrides` remains untouched. Returns true if the state was updated.
+ * Emits an info-level log on first-time learning (visible in TUI as `[INFO]`).
+ */
+export function learnEffortsFromError(responseText: string): boolean {
+  const parsed = parseInvalidEffortError(responseText)
+  if (!parsed) return false
+
+  const current = state.learnedEffortsOverrides
+  const existing = current[parsed.modelName]
+  const isFirstLearn = !existing
+  // Skip if the existing entry already matches
+  if (existing && existing.length === parsed.supported.length && existing.every((e, i) => e === parsed.supported[i])) {
+    return false
+  }
+
+  const next = { ...current, [parsed.modelName]: parsed.supported }
+  setAnthropicBehavior({ learnedEffortsOverrides: next })
+  if (isFirstLearn) {
+    consola.info(
+      `[DirectAnthropic] Learned supported efforts for ${parsed.modelName}: [${parsed.supported.join(", ")}]`,
+    )
+  } else {
+    consola.debug(
+      `[DirectAnthropic] Updated supported efforts for ${parsed.modelName}: [${parsed.supported.join(", ")}]`,
+    )
+  }
+  return true
+}
+
+/**
+ * Find the supported-effort whitelist for a given model name.
+ *
+ * Priority (highest → lowest):
+ *   1. Config-sourced `effortsOverrides` (explicit operator override)
+ *   2. Runtime-learned entries (observed via `invalid_reasoning_effort` errors)
+ *   3. Model metadata `capabilities.supports.reasoning_effort` (upstream declaration)
+ *
+ * Reading metadata as a fallback lets us skip the first-round 400 for models
+ * that declare effort support upfront (mirrors GHC #5010 precheck), while still
+ * allowing operators to override via config when metadata is inaccurate.
+ */
+export function findSupportedEfforts(modelName: string, resolvedModel?: Model): Array<string> | undefined {
+  // Check config first
+  for (const [pattern, supported] of Object.entries(state.effortsOverrides)) {
+    if (modelName.includes(pattern) && supported.length > 0) {
+      return supported
+    }
+  }
+  // Fall back to runtime-learned
+  for (const [pattern, supported] of Object.entries(state.learnedEffortsOverrides)) {
+    if (modelName.includes(pattern) && supported.length > 0) {
+      return supported
+    }
+  }
+  // Last resort: model metadata (from /models API)
+  const metadataEfforts = resolvedModel?.capabilities?.supports?.reasoning_effort
+  if (Array.isArray(metadataEfforts) && metadataEfforts.length > 0) {
+    return metadataEfforts
+  }
+  return undefined
+}
+
+/**
+ * Adjust output_config.effort to fit the supported whitelist for the resolved model.
+ * Always clamps to the nearest supported value:
+ *   - Above max supported → max supported
+ *   - Below min supported → min supported
+ *   - Within range → pass through
+ *
+ * Some models (e.g. opus 4.6-1m) only support low/medium/high and reject xhigh/max.
+ * Some models (e.g. opus 4.7) only support medium.
+ */
+function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model): void {
+  const outputConfig = wire.output_config as OutputConfig | undefined
+  if (!outputConfig?.effort) return
+
+  const modelName = resolvedModel?.id ?? (wire.model as string)
+  if (!modelName) return
+
+  const supported = findSupportedEfforts(modelName, resolvedModel)
+  if (!supported) return
+
+  // Compute min/max indices of supported efforts
+  const supportedIndices = supported
+    .map((e) => EFFORT_LEVELS.indexOf(e as (typeof EFFORT_LEVELS)[number]))
+    .filter((i) => i >= 0)
+  if (supportedIndices.length === 0) return
+
+  const minIndex = Math.min(...supportedIndices)
+  const maxIndex = Math.max(...supportedIndices)
+  const minEffort = EFFORT_LEVELS[minIndex]
+  const maxEffort = EFFORT_LEVELS[maxIndex]
+
+  const currentIndex = EFFORT_LEVELS.indexOf(outputConfig.effort as (typeof EFFORT_LEVELS)[number])
+  // Unknown effort level — treat as overflow (above max)
+  const isOverflow = currentIndex === -1 || currentIndex > maxIndex
+  const isUnderflow = currentIndex >= 0 && currentIndex < minIndex
+
+  if (isOverflow) {
+    const original = outputConfig.effort
+    ;(wire.output_config as OutputConfig).effort = maxEffort
+    consola.debug(`[DirectAnthropic] Clamped output_config.effort: ${original} → ${maxEffort} (model=${modelName})`)
+  } else if (isUnderflow) {
+    const original = outputConfig.effort
+    ;(wire.output_config as OutputConfig).effort = minEffort
+    consola.debug(`[DirectAnthropic] Raised output_config.effort: ${original} → ${minEffort} (model=${modelName})`)
+  }
+  // else: currentIndex within [min, max], pass through
+}
+
+// ============================================================================
 // Cache control
 // ============================================================================
 
@@ -142,21 +301,25 @@ function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Mod
  */
 function applyCacheControlMode(wire: Record<string, unknown>): void {
   switch (state.cacheControlMode) {
-    case "disabled":
+    case "disabled": {
       walkCacheControl(wire, () => undefined)
       break
-    case "passthrough":
+    }
+    case "passthrough": {
       break
-    case "sanitize":
+    }
+    case "sanitize": {
       walkCacheControl(wire, () => EPHEMERAL_CACHE_CONTROL)
       break
-    case "proxied":
+    }
+    case "proxied": {
       // Match GHC behavior: strip all client cache_control first, then inject our own.
       // GHC reconstructs content from scratch so client cache_control never passes through;
       // only proxy-controlled breakpoints exist in the final payload.
       walkCacheControl(wire, () => undefined)
       addToolsAndSystemCacheControl(wire)
       break
+    }
   }
 }
 

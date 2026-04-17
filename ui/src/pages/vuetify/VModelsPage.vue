@@ -22,6 +22,7 @@ const {
   getThinkingBudget,
   getVision,
   loading,
+  error: modelsError,
   rawApiResponse,
   searchQuery,
   typeFilter,
@@ -92,6 +93,19 @@ function copyModelsJson(): void {
               indeterminate
               color="primary"
             />
+          </div>
+
+          <div
+            v-else-if="modelsError"
+            class="empty-shell"
+          >
+            <v-icon
+              icon="mdi-alert-circle-outline"
+              size="36"
+              color="error"
+              class="mb-2"
+            />
+            <div class="empty-title">{{ modelsError }}</div>
           </div>
 
           <div
