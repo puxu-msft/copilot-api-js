@@ -64,7 +64,6 @@ export async function handleResponses(c: Context) {
   if (state.normalizeResponsesCallIds) {
     payload = normalizeCallIds(payload)
   }
-
   // Get tracking ID
   const tuiLogId = c.get("tuiLogId") as string | undefined
 
@@ -95,16 +94,19 @@ export async function handleResponses(c: Context) {
     })
   }
 
-  // Check endpoint compatibility matrices and route accordingly
-  if (!isResponsesSupported(selectedModel)) {
-    if (isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
+  // Determine if we should intercept and use the Chat Completions fallback pipeline
+  const isGoogle = selectedModel?.vendor === "Google"
+  const useFallbackPipeline = !isResponsesSupported(selectedModel) || isGoogle
+
+  if (useFallbackPipeline) {
+    if (isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS) || isGoogle) {
       if (tuiLogId) {
         tuiLogger.updateRequest(tuiLogId, { tags: ["via-chat-completions-fallback"] })
       }
       return executeResponsesViaChatCompletions({ c, payload, reqCtx, selectedModel })
     }
 
-    const msg = `Model "${payload.model}" does not support either Responses or Chat Completions`
+    const msg = `Model "${payload.model}" does not support the /responses endpoint`
     throw new HTTPError(msg, 400, msg)
   }
 
@@ -126,8 +128,12 @@ async function executeResponsesViaChatCompletions(opts: {
 
   // 2. Encapsulate execution inside custom adapter contract for the request pipeline
   const adapter = {
-    format: "openai-responses",
-    sanitize: (p: ResponsesPayload) => p,
+    format: "openai-responses" as const,
+    sanitize: (p: ResponsesPayload) => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 }),
+    logPayloadSize: (p: ResponsesPayload) => {
+      const count = typeof p.input === "string" ? 1 : p.input.length
+      consola.debug(`Responses fallback payload: ${count} input item(s), model: ${p.model}`)
+    },
     execute: async (_currentPayload: ResponsesPayload) => {
       const result = await executeWithAdaptiveRateLimit(() =>
         createChatCompletions(ccPayload, {
@@ -196,7 +202,7 @@ async function executeResponsesViaChatCompletions(opts: {
           output_tokens: responsesResponse.usage?.output_tokens ?? 0,
         },
         stop_reason: responsesResponse.status,
-        content: responsesResponse.output_text,
+        content: responsesOutputToContent(responsesResponse.output),
       })
       return c.json(responsesResponse)
     }
@@ -210,6 +216,7 @@ async function executeResponsesViaChatCompletions(opts: {
       stream.onAbort(() => clientAbort.abort())
 
       const idleTimeoutMs = state.streamIdleTimeout * 1000
+      const acc = createResponsesStreamAccumulator()
       try {
         const iterator = (response as AsyncIterable<{ event: string; data: string }>)[Symbol.asyncIterator]()
         for (;;) {
@@ -218,11 +225,30 @@ async function executeResponsesViaChatCompletions(opts: {
 
           if (result === STREAM_ABORTED || result.done) break
           const item = result.value
+          if (item.data && item.data !== "[DONE]") {
+            try {
+              accumulateResponsesStreamEvent(JSON.parse(item.data) as ResponsesStreamEvent, acc)
+            } catch {
+              // Ignore parse errors; the client still receives the original event.
+            }
+          }
           await stream.writeSSE({ event: item.event, data: item.data })
         }
-        reqCtx.complete({ success: true })
+        const responseData = buildResponsesResponseData(acc, payload.model)
+        reqCtx.complete(responseData)
       } catch (error) {
         reqCtx.fail(payload.model, error)
+
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            error: {
+              message: errorMessage,
+              type: error instanceof StreamIdleTimeoutError ? "timeout_error" : "server_error",
+            },
+          }),
+        })
       }
     })
   } catch (error) {
