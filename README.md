@@ -6,7 +6,7 @@
 > [!WARNING]
 > This is a reverse proxy for the GitHub Copilot API. It is not officially supported by GitHub and may break at any time. Use at your own risk.
 
-A reverse proxy that exposes GitHub Copilot's API as standard OpenAI and Anthropic compatible endpoints. Works with Claude Code, Cursor, and other tools that speak these protocols.
+A reverse proxy that exposes GitHub Copilot's API as standard OpenAI and Anthropic compatible endpoints. Seamlessly connects your GitHub Copilot subscription to Codex CLI and its plugins, allowing you to easily use advanced models like Google Gemini and Anthropic Claude.
 
 ## Quick Start
 
