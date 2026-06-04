@@ -10,6 +10,6 @@ chatCompletionRoutes.post("/", async (c) => {
   try {
     return await handleChatCompletion(c)
   } catch (error) {
-    return forwardError(c, error)
+    return forwardError(c, error, "openai")
   }
 })

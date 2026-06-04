@@ -1,12 +1,27 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 
-import { getModelFamily, normalizeForMatching, resolveModelName } from "~/lib/models/resolver"
 import {
+  //
+  getModelFamily,
+  normalizeForMatching,
+  resolveModelName,
+} from "~/lib/models/resolver"
+import {
+  //
   DEFAULT_MODEL_OVERRIDES,
+  DEFAULT_MODEL_PREFERENCE,
   restoreStateForTests,
   setModelOverrides,
+  setModelPreference,
   setModels as setCachedModels,
   snapshotStateForTests,
   state,
@@ -67,13 +82,13 @@ describe("Model Name Translation", () => {
   test("should fall back to next preference when top choice is unavailable", () => {
     setModels({
       object: "list",
-      data: [mockModel("claude-opus-41"), mockModel("claude-sonnet-4")],
+      data: [mockModel("claude-opus-41"), mockModel("claude-sonnet-4.5")],
     })
 
-    // opus: 4.6 unavailable, 4.5 unavailable, falls to claude-opus-41
+    // opus: 4.7/4.6/4.5 unavailable, falls to claude-opus-41
     expect(resolveModelName("opus")).toBe("claude-opus-41")
-    // sonnet: 4.5 unavailable, falls to claude-sonnet-4
-    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4")
+    // sonnet: 4.6 unavailable, falls to claude-sonnet-4.5
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5")
     // haiku: 4.5 unavailable, falls back to top preference (default)
     expect(resolveModelName("haiku")).toBe("claude-haiku-4.5")
   })
@@ -461,5 +476,66 @@ describe("Bracket notation handling [1m]", () => {
     // claude-opus-4-6-20250514[1m] → claude-opus-4-6-20250514-1m
     // extractModifierSuffix strips -1m → resolveBase handles date suffix → re-attach -1m
     expect(resolveModelName("claude-opus-4-6-20250514[1m]")).toBe("claude-opus-4.6-1m")
+  })
+})
+
+describe("Config-driven model preference", () => {
+  beforeEach(() => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.7"),
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.5"),
+        mockModel("claude-sonnet-4.6"),
+        mockModel("claude-haiku-4.5"),
+      ],
+    })
+    // Clear default overrides so preference list is what's exercised; overrides
+    // are independently tested in the "model overrides" describe block above.
+    setModelOverrides({})
+  })
+
+  test("custom preference picks the highest-priority available entry", () => {
+    setModelPreference({
+      ...DEFAULT_MODEL_PREFERENCE,
+      opus: ["claude-opus-unreleased", "claude-opus-4.6"],
+    })
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6")
+  })
+
+  test("custom preference demotes a model below another", () => {
+    // Default would pick 4.7; demote it below 4.6
+    setModelPreference({
+      ...DEFAULT_MODEL_PREFERENCE,
+      opus: ["claude-opus-4.6", "claude-opus-4.7"],
+    })
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6")
+  })
+
+  test("falls back to first entry when state.modelIds is empty", () => {
+    setModels({ object: "list", data: [] })
+    setModelPreference({
+      ...DEFAULT_MODEL_PREFERENCE,
+      sonnet: ["claude-sonnet-future", "claude-sonnet-4.6"],
+    })
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-future")
+  })
+
+  test("omitted families keep built-in defaults", () => {
+    setModelPreference({
+      ...DEFAULT_MODEL_PREFERENCE,
+      opus: ["claude-opus-4.6"],
+    })
+    // sonnet/haiku untouched → default behaviour
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.6")
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4.5")
+  })
+
+  test("default preference reproduces pre-refactor behaviour", () => {
+    // Sanity guard: with DEFAULT_MODEL_PREFERENCE in effect, resolution matches
+    // the hardcoded list semantics (4.7 wins over 4.6 when available).
+    setModelPreference(DEFAULT_MODEL_PREFERENCE)
+    expect(resolveModelName("opus")).toBe("claude-opus-4.7")
   })
 })

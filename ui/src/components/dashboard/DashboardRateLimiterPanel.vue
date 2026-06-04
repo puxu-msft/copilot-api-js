@@ -98,7 +98,8 @@ const configEntries = computed(() => {
     { label: "Recovery Timeout", value: formatMinutes(recoveryTimeoutMinutes.value) },
     {
       label: "Gradual Recovery",
-      value: gradualRecoverySteps.value.length > 0 ? gradualRecoverySteps.value.map((step) => `${step}s`).join(" -> ") : "-",
+      value:
+        gradualRecoverySteps.value.length > 0 ? gradualRecoverySteps.value.map((step) => `${step}s`).join(" -> ") : "-",
     },
   ]
 })
@@ -121,7 +122,7 @@ const configEntries = computed(() => {
         variant="tonal"
         size="small"
       >
-        {{ rateLimiter?.enabled ? rateLimiter?.mode ?? "unknown" : "disabled" }}
+        {{ rateLimiter?.enabled ? (rateLimiter?.mode ?? "unknown") : "disabled" }}
       </v-chip>
     </div>
 
@@ -161,7 +162,8 @@ const configEntries = computed(() => {
       <div class="config-column">
         <div class="config-title">Limiter policy</div>
         <div class="config-copy text-caption text-medium-emphasis">
-          This is the effective limiter configuration for the current process. Config changes only apply here after a restart.
+          This is the effective limiter configuration for the current process. Config changes only apply here after a
+          restart.
         </div>
 
         <div class="config-stack">

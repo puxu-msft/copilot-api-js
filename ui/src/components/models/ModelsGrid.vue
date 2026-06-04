@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import type { ModelData, PrimaryLimitMetric } from "@/composables/useModelsCatalog"
+import type {
+ModelData,
+PrimaryLimitMetric
+} from "@/composables/useModelsCatalog";
 
 import ModelCard from "./ModelCard.vue"
 
@@ -16,17 +19,17 @@ defineProps<{
 
 <template>
   <div class="models-grid">
-      <ModelCard
-        v-for="model in filteredModels"
-        :key="model.id"
-        :model="model"
-        :vendor-color="vendorColor"
-        :get-limits="getLimits"
-        :get-primary-limits="getPrimaryLimits"
-        :get-thinking-budget="getThinkingBudget"
-        :get-capabilities="getCapabilities"
-        :get-vision="getVision"
-      />
+    <ModelCard
+      v-for="model in filteredModels"
+      :key="model.id"
+      :model="model"
+      :vendor-color="vendorColor"
+      :get-limits="getLimits"
+      :get-primary-limits="getPrimaryLimits"
+      :get-thinking-budget="getThinkingBudget"
+      :get-capabilities="getCapabilities"
+      :get-vision="getVision"
+    />
   </div>
 </template>
 

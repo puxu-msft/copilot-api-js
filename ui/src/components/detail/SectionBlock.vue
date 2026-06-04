@@ -22,7 +22,12 @@ const props = withDefaults(
 
 const { openRawModal } = useRawModal()
 const collapsed = ref(props.defaultCollapsed ?? false)
-const sectionSlug = computed(() => props.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))
+const sectionSlug = computed(() =>
+  props.title
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/^-|-$/g, ""),
+)
 const sectionRef = ref<HTMLElement>()
 
 function toggle() {

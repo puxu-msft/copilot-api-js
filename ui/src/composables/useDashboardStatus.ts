@@ -2,8 +2,8 @@ import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue"
 
 import { api } from "@/api/http"
 import { WSClient, type ActiveRequestChangedInfo, type ActiveRequestInfo, type RateLimiterChangeInfo } from "@/api/ws"
-import { formatNumber } from "@/utils/formatters"
 import { usePolling } from "@/composables/usePolling"
+import { formatNumber } from "@/utils/formatters"
 
 export interface QuotaItem {
   label: string
@@ -119,10 +119,8 @@ export function useDashboardStatus() {
       const request = data.request
       cancelPendingRemoval(request.id)
       upsertActiveRequest(request)
-    } else if (data.action === "completed" || data.action === "failed") {
-      if (data.requestId) {
-        scheduleDelayedRemoval(data.requestId)
-      }
+    } else if ((data.action === "completed" || data.action === "failed") && data.requestId) {
+      scheduleDelayedRemoval(data.requestId)
     }
   }
 

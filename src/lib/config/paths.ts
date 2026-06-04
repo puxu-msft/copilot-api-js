@@ -2,7 +2,13 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-const APP_DIR = path.join(os.homedir(), ".local", "share", "copilot-api")
+function computeAppDir(): string {
+  const override = process.env.XDG_DATA_HOME
+  const base = override && override.length > 0 ? override : path.join(os.homedir(), ".local", "share")
+  return path.join(base, "copilot-api")
+}
+
+const APP_DIR = computeAppDir()
 
 const GITHUB_TOKEN_PATH = path.join(APP_DIR, "github_token")
 
@@ -12,7 +18,8 @@ export const PATHS = {
   CONFIG_YAML: path.join(APP_DIR, "config.yaml"),
   LEARNED_LIMITS: path.join(APP_DIR, "learned-limits.json"),
   REQUEST_TELEMETRY: path.join(APP_DIR, "request-telemetry.json"),
-  ERROR_DIR: path.join(APP_DIR, "errmsgs"),
+  NEGOTIATION_STATES: path.join(APP_DIR, "negotiation-states.json"),
+  HISTORY_DB: path.join(APP_DIR, "history.db"),
 }
 
 export async function ensurePaths(): Promise<void> {

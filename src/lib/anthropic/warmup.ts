@@ -11,10 +11,10 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
+import type { WarmupPolicy } from "~/lib/state"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { HTTPError } from "~/lib/error"
-import type { WarmupPolicy } from "~/lib/state"
 
 // ============================================================================
 // Detection
@@ -28,6 +28,9 @@ import type { WarmupPolicy } from "~/lib/state"
  */
 export function isWarmupRequest(payload: MessagesPayload): boolean {
   const messages = payload.messages
+  // Defensive: payload arrives from external JSON; the declared type says
+  // messages is required but malformed requests can omit it.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (!messages || messages.length === 0) return false
 
   const firstMsg = messages[0]
@@ -199,10 +202,11 @@ export function handleWarmupRequest(c: Context, payload: MessagesPayload, policy
   consola.debug(`[Warmup] ${policy}: model=${payload.model} stream=${isStream} msgs=${payload.messages.length}`)
 
   switch (policy) {
-    case "reject":
+    case "reject": {
       throw new HTTPError("Warmup requests are not accepted", 429, "Warmup requests are not accepted")
+    }
 
-    case "drop":
+    case "drop": {
       if (isStream) {
         return streamSSE(c, async (stream) => {
           // Send minimal message_start + message_stop
@@ -230,8 +234,9 @@ export function handleWarmupRequest(c: Context, payload: MessagesPayload, policy
         })
       }
       return c.json(createDropResponse(payload))
+    }
 
-    case "fake":
+    case "fake": {
       if (isStream) {
         return streamSSE(c, async (stream) => {
           for (const evt of createFakeStreamEvents(payload)) {
@@ -240,9 +245,11 @@ export function handleWarmupRequest(c: Context, payload: MessagesPayload, policy
         })
       }
       return c.json(createFakeResponse(payload))
+    }
 
-    default:
+    default: {
       // "allow" should never reach here; handled by caller
       return undefined
+    }
   }
 }

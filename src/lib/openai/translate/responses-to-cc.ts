@@ -1,5 +1,16 @@
-import type { ChatCompletionResponse, FinishReason, ResponseMessage, ToolCall } from "~/types/api/openai-chat-completions"
-import type { ResponsesResponse, ResponsesUsage, ResponsesOutputItem } from "~/types/api/openai-responses"
+import type {
+  //
+  ChatCompletionResponse,
+  FinishReason,
+  ResponseMessage,
+  ToolCall,
+} from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ResponsesResponse,
+  ResponsesUsage,
+  ResponsesOutputItem,
+} from "~/types/api/openai-responses"
 
 import { HTTPError } from "~/lib/error"
 
@@ -64,14 +75,17 @@ function mapFinishReason(
   if (hasToolCalls) return "tool_calls"
 
   switch (status) {
-    case "completed":
+    case "completed": {
       return "stop"
-    case "incomplete":
+    }
+    case "incomplete": {
       return mapIncompleteFinishReason(incompleteDetails)
-    case "failed":
-    case "cancelled":
-    default:
+    }
+    default: {
+      // Covers "failed", "cancelled", and any future Responses-API status —
+      // map them all to OpenAI Chat Completions' "stop" finish reason.
       return "stop"
+    }
   }
 }
 

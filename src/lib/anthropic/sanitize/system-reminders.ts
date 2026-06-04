@@ -1,4 +1,5 @@
 import type {
+  //
   AssistantMessage,
   ContentBlock,
   ContentBlockParam,
@@ -8,8 +9,12 @@ import type {
 
 import { removeSystemReminderTags } from "~/lib/system-prompt"
 
+import {
+  //
+  isFixedIndexThinkingMessage,
+  isImmutableThinkingMessage,
+} from "../thinking-immutability"
 import { sanitizeTextBlocksInArray } from "./text-blocks"
-import { isFixedIndexThinkingMessage, isImmutableThinkingMessage } from "../thinking-immutability"
 
 /**
  * Sanitize tool_result content (can be string or array of text/image blocks).
@@ -47,7 +52,7 @@ function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
   }
 
   if (msg.role === "user") {
-    let modified = false
+    let modified = false as boolean
     const blocks: Array<ContentBlockParam> = []
 
     for (const block of msg.content) {
@@ -81,7 +86,7 @@ function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
 
   // fixed-index: sanitize text content but never add or remove blocks
   if (isFixedIndexThinkingMessage(msg)) {
-    let modified = false
+    let modified = false as boolean
     const blocks = msg.content.map((block) => {
       if (block.type === "text" && "text" in block) {
         const text = (block as { text: string }).text

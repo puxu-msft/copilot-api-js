@@ -9,8 +9,58 @@
 import consola from "consola"
 import tls from "node:tls"
 import { getProxyForUrl } from "proxy-from-env"
-import { SocksClient, type SocksProxy } from "socks"
-import { Agent, ProxyAgent, setGlobalDispatcher, type Dispatcher } from "undici"
+import {
+  //
+  SocksClient,
+  type SocksProxy,
+} from "socks"
+import {
+  //
+  Agent,
+  ProxyAgent,
+  setGlobalDispatcher,
+  type Dispatcher,
+} from "undici"
+
+import {
+  //
+  onTransportTimeoutChange,
+  state,
+} from "./state"
+
+// ============================================================================
+// Undici timeout configuration
+// ============================================================================
+
+/**
+ * Multiplier applied to application-level timeouts when configuring undici's
+ * transport-level timeouts. Ensures undici does not fire before our own
+ * `streamIdleTimeout` / `fetchTimeout` watchdogs, so timeout errors surface
+ * through the application layer with proper context.
+ */
+const UNDICI_TIMEOUT_MULTIPLIER = 1.5
+
+/**
+ * Convert an application timeout in seconds (0 = disabled) to undici's
+ * milliseconds (0 = disabled), applying the safety multiplier.
+ */
+function scaleTimeout(seconds: number): number {
+  if (seconds <= 0) return 0
+  return Math.ceil(seconds * UNDICI_TIMEOUT_MULTIPLIER * 1000)
+}
+
+/**
+ * Build undici Agent timeout options from current runtime state.
+ *
+ * - `headersTimeout` follows `fetchTimeout` (time to first response headers)
+ * - `bodyTimeout`    follows `streamIdleTimeout` (gap between body chunks)
+ */
+function getUndiciTimeoutOptions(): { headersTimeout: number; bodyTimeout: number } {
+  return {
+    headersTimeout: scaleTimeout(state.fetchTimeout),
+    bodyTimeout: scaleTimeout(state.streamIdleTimeout),
+  }
+}
 
 // ============================================================================
 // Public API
@@ -57,17 +107,22 @@ export function formatProxyDisplay(proxyUrl: string): string {
 
 function initProxyNode(options: ProxyOptions): void {
   try {
-    if (options.url) {
-      const dispatcher = createDispatcherForUrl(options.url)
-      setGlobalDispatcher(dispatcher)
-      consola.debug(`Proxy configured: ${formatProxyDisplay(options.url)}`)
-      return
-    }
+    cachedProxyOptions = options
+    installGlobalDispatcher(options)
 
-    if (options.fromEnv) {
-      const dispatcher = new EnvProxyDispatcher()
-      setGlobalDispatcher(dispatcher)
-      consola.debug("HTTP proxy configured from environment (per-URL)")
+    if (!timeoutSubscriptionInstalled) {
+      onTransportTimeoutChange(() => {
+        if (!cachedProxyOptions) return
+        try {
+          installGlobalDispatcher(cachedProxyOptions)
+          consola.debug(
+            `Undici timeouts reloaded: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`,
+          )
+        } catch (err) {
+          consola.error("Undici timeout reload failed:", err)
+        }
+      })
+      timeoutSubscriptionInstalled = true
     }
   } catch (err) {
     consola.error("Proxy setup failed:", err)
@@ -75,13 +130,44 @@ function initProxyNode(options: ProxyOptions): void {
   }
 }
 
+/** Cached proxy options so timeout hot-reload can rebuild the same dispatcher type. */
+let cachedProxyOptions: ProxyOptions | null = null
+let timeoutSubscriptionInstalled = false
+
+/**
+ * Install (or replace) the global undici dispatcher.
+ * Old dispatcher is left for GC; in-flight requests continue on it.
+ */
+function installGlobalDispatcher(options: ProxyOptions): void {
+  if (options.url) {
+    setGlobalDispatcher(createDispatcherForUrl(options.url))
+    consola.debug(`Proxy configured: ${formatProxyDisplay(options.url)}`)
+    return
+  }
+
+  if (options.fromEnv) {
+    setGlobalDispatcher(new EnvProxyDispatcher())
+    consola.debug("HTTP proxy configured from environment (per-URL)")
+    return
+  }
+
+  // No proxy: still install a configured global Agent so undici's default
+  // 300s headers/body timeouts do not pre-empt our application-level
+  // streamIdleTimeout / fetchTimeout.
+  setGlobalDispatcher(new Agent(getUndiciTimeoutOptions()))
+  consola.debug(
+    `Undici timeouts: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`,
+  )
+}
+
 /** Create the appropriate undici dispatcher for a proxy URL scheme */
 export function createDispatcherForUrl(proxyUrl: string): Dispatcher {
   const url = new URL(proxyUrl)
   const protocol = url.protocol.toLowerCase()
+  const timeouts = getUndiciTimeoutOptions()
 
   if (protocol === "http:" || protocol === "https:") {
-    return new ProxyAgent(proxyUrl)
+    return new ProxyAgent({ uri: proxyUrl, ...timeouts })
   }
 
   if (protocol === "socks5:" || protocol === "socks5h:") {
@@ -116,6 +202,7 @@ function createSocksAgent(proxyUrl: URL): Agent {
   }
 
   return new Agent({
+    ...getUndiciTimeoutOptions(),
     connect(opts, callback) {
       const destPort = Number(opts.port) || (opts.protocol === "https:" ? 443 : 80)
 
@@ -156,6 +243,11 @@ function createSocksAgent(proxyUrl: URL): Agent {
  */
 class EnvProxyDispatcher extends Agent {
   private proxies = new Map<string, ProxyAgent>()
+  private readonly timeoutOptions = getUndiciTimeoutOptions()
+
+  constructor() {
+    super(getUndiciTimeoutOptions())
+  }
 
   dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler): boolean {
     try {
@@ -187,7 +279,7 @@ class EnvProxyDispatcher extends Agent {
   private getOrCreateProxyAgent(proxyUrl: string): ProxyAgent {
     let agent = this.proxies.get(proxyUrl)
     if (!agent) {
-      agent = new ProxyAgent(proxyUrl)
+      agent = new ProxyAgent({ uri: proxyUrl, ...this.timeoutOptions })
       this.proxies.set(proxyUrl, agent)
     }
     return agent

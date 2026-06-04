@@ -1,4 +1,7 @@
+import consola from "consola"
+
 import type {
+  //
   ChatCompletionsPayload,
   ContentPart,
   Message,
@@ -7,12 +10,15 @@ import type {
   Tool,
 } from "~/types/api/openai-chat-completions"
 import type {
+  //
   ResponsesFunctionTool,
   ResponsesInputItem,
   ResponsesPayload,
   ResponsesTextFormat,
   ResponsesToolChoice,
 } from "~/types/api/openai-responses"
+
+import { HTTPError } from "~/lib/error"
 
 const DROPPED_PARAMS = ["stop", "n", "frequency_penalty", "presence_penalty", "logit_bias", "logprobs", "seed"] as const
 
@@ -54,12 +60,13 @@ export function translateChatCompletionsToResponses(payload: ChatCompletionsPayl
     ...(instructions !== undefined && { instructions }),
     ...(payload.temperature !== undefined && payload.temperature !== null && { temperature: payload.temperature }),
     ...(payload.top_p !== undefined && payload.top_p !== null && { top_p: payload.top_p }),
-    ...((payload.max_completion_tokens ?? payload.max_tokens) != null && {
-      max_output_tokens: (payload.max_completion_tokens ?? payload.max_tokens)!,
-    }),
+    ...(() => {
+      const maxOut = payload.max_completion_tokens ?? payload.max_tokens
+      return maxOut !== undefined && maxOut !== null ? { max_output_tokens: maxOut } : {}
+    })(),
     ...(payload.stream !== undefined && payload.stream !== null && { stream: payload.stream }),
-    ...(payload.parallel_tool_calls !== undefined &&
-      payload.parallel_tool_calls !== null && { parallel_tool_calls: payload.parallel_tool_calls }),
+    ...(payload.parallel_tool_calls !== undefined
+      && payload.parallel_tool_calls !== null && { parallel_tool_calls: payload.parallel_tool_calls }),
     ...(payload.user !== undefined && { user: payload.user }),
     ...(payload.service_tier !== undefined && { service_tier: payload.service_tier }),
     ...(payload.top_logprobs !== undefined && payload.top_logprobs !== null && { top_logprobs: payload.top_logprobs }),
@@ -163,6 +170,23 @@ function convertAssistantMessage(message: Message): Array<ResponsesInputItem> {
     })
   }
 
+  // An assistant turn with neither text nor tool_calls produces zero items,
+  // which would drop the entire turn from the converted history. Downstream
+  // turns then lose context (e.g. the model believes the user spoke twice
+  // in a row). Inject an empty placeholder and surface a warn so misbehaving
+  // clients can be diagnosed without silently corrupting conversation flow.
+  if (items.length === 0) {
+    consola.warn(
+      "[cc-to-responses] assistant message has neither text nor tool_calls; "
+        + "injecting empty placeholder to preserve conversation turn structure",
+    )
+    items.push({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "" }],
+    })
+  }
+
   return items
 }
 
@@ -176,9 +200,27 @@ function convertToolMessage(message: Message): ResponsesInputItem {
     output = textParts.length > 0 ? textParts.join("") : JSON.stringify(message.content)
   }
 
+  // Responses API matches function_call_output items to prior function_call
+  // items by `call_id`. An empty string here would silently produce an
+  // unmatched-call_id upstream error that is hard for clients to diagnose.
+  // Reject loudly at the translate boundary with an actionable 400 instead.
+  if (!message.tool_call_id) {
+    throw new HTTPError(
+      "tool message missing tool_call_id (required when bridging Chat Completions tool messages to Responses API)",
+      400,
+      JSON.stringify({
+        error: {
+          message: "tool message missing tool_call_id",
+          type: "invalid_request_error",
+          code: "missing_tool_call_id",
+        },
+      }),
+    )
+  }
+
   return {
     type: "function_call_output",
-    call_id: message.tool_call_id ?? "",
+    call_id: message.tool_call_id,
     output,
   }
 }

@@ -1,8 +1,24 @@
-import { computed, ref, shallowRef, toRaw, type ComputedRef, type Ref } from "vue"
+import {
+computed,
+ref,
+shallowRef,
+toRaw,
+type ComputedRef,
+type Ref
+} from "vue";
 
-import type { PromptOverrideRule, ReminderRewriteRule } from "@/types/config"
+import type {
+PromptOverrideRule,
+ReminderRewriteRule
+} from "@/types/config";
 
-import { api, ApiError, type ConfigValidationError, type ConfigYamlResponse, type EditableConfig } from "@/api/http"
+import {
+api,
+ApiError,
+type ConfigValidationError,
+type ConfigYamlResponse,
+type EditableConfig
+} from "@/api/http";
 import { useToast } from "@/composables/useToast"
 
 export interface UseConfigEditor {
@@ -30,39 +46,39 @@ export function normalizeConfigForEditor(
     ...(input.fetch_timeout !== undefined ? { fetch_timeout: input.fetch_timeout } : {}),
     ...(input.stale_request_max_age !== undefined ? { stale_request_max_age: input.stale_request_max_age } : {}),
     ...(input.model_refresh_interval !== undefined ? { model_refresh_interval: input.model_refresh_interval } : {}),
-    ...(input.shutdown !== undefined
-      ? { shutdown: normalizeScalarSection(input.shutdown, ["graceful_wait", "abort_wait"]) }
-      : {}),
-    ...(input.history !== undefined
-      ? { history: normalizeScalarSection(input.history, ["limit", "min_entries"]) }
-      : {}),
+    ...(input.shutdown !== undefined ?
+      { shutdown: normalizeScalarSection(input.shutdown, ["graceful_wait", "abort_wait"]) }
+    : {}),
+    ...(input.history !== undefined ?
+      { history: normalizeScalarSection(input.history, ["limit", "min_entries"]) }
+    : {}),
     ...(input.anthropic !== undefined ? { anthropic: normalizeAnthropic(input.anthropic) } : {}),
-    ...(input["openai-responses"] !== undefined
-      ? {
-          "openai-responses": normalizeScalarSection(input["openai-responses"], [
-            "normalize_call_ids",
-            "upstream_websocket",
-          ]),
-        }
-      : {}),
-    ...(input.rate_limiter !== undefined
-      ? {
-          rate_limiter: normalizeScalarSection(input.rate_limiter, [
-            "retry_interval",
-            "request_interval",
-            "recovery_timeout",
-            "consecutive_successes",
-          ]),
-        }
-      : {}),
-    ...(input.compress_tool_results_before_truncate !== undefined
-      ? {
-          compress_tool_results_before_truncate: input.compress_tool_results_before_truncate,
-        }
-      : {}),
-    ...(input.system_prompt_overrides !== undefined
-      ? { system_prompt_overrides: normalizePromptOverrideRules(input.system_prompt_overrides) }
-      : {}),
+    ...(input["openai-responses"] !== undefined ?
+      {
+        "openai-responses": normalizeScalarSection(input["openai-responses"], [
+          "normalize_call_ids",
+          "upstream_websocket",
+        ]),
+      }
+    : {}),
+    ...(input.rate_limiter !== undefined ?
+      {
+        rate_limiter: normalizeScalarSection(input.rate_limiter, [
+          "retry_interval",
+          "request_interval",
+          "recovery_timeout",
+          "consecutive_successes",
+        ]),
+      }
+    : {}),
+    ...(input.compress_tool_results_before_truncate !== undefined ?
+      {
+        compress_tool_results_before_truncate: input.compress_tool_results_before_truncate,
+      }
+    : {}),
+    ...(input.system_prompt_overrides !== undefined ?
+      { system_prompt_overrides: normalizePromptOverrideRules(input.system_prompt_overrides) }
+    : {}),
     ...(input.system_prompt_prepend !== undefined ? { system_prompt_prepend: input.system_prompt_prepend } : {}),
     ...(input.system_prompt_append !== undefined ? { system_prompt_append: input.system_prompt_append } : {}),
   }
@@ -109,8 +125,8 @@ export function useConfigEditor(): UseConfigEditor {
     const current = serializeEditableConfig(config.value)
     const base = serializeEditableConfig(original.value)
     return (
-      JSON.stringify(current.proxy) !== JSON.stringify(base.proxy) ||
-      JSON.stringify(current.rate_limiter) !== JSON.stringify(base.rate_limiter)
+      JSON.stringify(current.proxy) !== JSON.stringify(base.proxy)
+      || JSON.stringify(current.rate_limiter) !== JSON.stringify(base.rate_limiter)
     )
   })
 
@@ -183,28 +199,28 @@ function normalizeAnthropic(
   const normalized = {
     ...(value.strip_server_tools !== undefined ? { strip_server_tools: value.strip_server_tools } : {}),
     ...(value.dedup_tool_calls !== undefined ? { dedup_tool_calls: value.dedup_tool_calls } : {}),
-    ...(value.immutable_thinking_messages !== undefined
-      ? { immutable_thinking_messages: value.immutable_thinking_messages }
-      : {}),
-    ...(value.strip_read_tool_result_tags !== undefined
-      ? { strip_read_tool_result_tags: value.strip_read_tool_result_tags }
-      : {}),
+    ...(value.immutable_thinking_messages !== undefined ?
+      { immutable_thinking_messages: value.immutable_thinking_messages }
+    : {}),
+    ...(value.strip_read_tool_result_tags !== undefined ?
+      { strip_read_tool_result_tags: value.strip_read_tool_result_tags }
+    : {}),
     ...(value.context_editing !== undefined ? { context_editing: value.context_editing } : {}),
     ...(value.context_editing_trigger !== undefined ? { context_editing_trigger: value.context_editing_trigger } : {}),
-    ...(value.context_editing_keep_tools !== undefined
-      ? { context_editing_keep_tools: value.context_editing_keep_tools }
-      : {}),
-    ...(value.context_editing_keep_thinking !== undefined
-      ? { context_editing_keep_thinking: value.context_editing_keep_thinking }
-      : {}),
+    ...(value.context_editing_keep_tools !== undefined ?
+      { context_editing_keep_tools: value.context_editing_keep_tools }
+    : {}),
+    ...(value.context_editing_keep_thinking !== undefined ?
+      { context_editing_keep_thinking: value.context_editing_keep_thinking }
+    : {}),
     ...(value.tool_search !== undefined ? { tool_search: value.tool_search } : {}),
     ...(value.auto_cache_control !== undefined ? { auto_cache_control: value.auto_cache_control } : {}),
-    ...(value.non_deferred_tools !== undefined
-      ? { non_deferred_tools: value.non_deferred_tools === null ? null : [...value.non_deferred_tools] }
-      : {}),
-    ...(value.rewrite_system_reminders !== undefined
-      ? { rewrite_system_reminders: normalizeReminderSetting(value.rewrite_system_reminders) }
-      : {}),
+    ...(value.non_deferred_tools !== undefined ?
+      { non_deferred_tools: value.non_deferred_tools === null ? null : [...value.non_deferred_tools] }
+    : {}),
+    ...(value.rewrite_system_reminders !== undefined ?
+      { rewrite_system_reminders: normalizeReminderSetting(value.rewrite_system_reminders) }
+    : {}),
   }
 
   return normalizeEmptySection(normalized)

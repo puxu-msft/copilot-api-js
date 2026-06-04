@@ -2,7 +2,11 @@ import consola from "consola"
 
 import type { MessageParam } from "~/types/api/anthropic"
 
-import { isServerToolResultBlock, isToolResultBlock } from "~/types/api/anthropic"
+import {
+  //
+  isServerToolResultBlock,
+  isToolResultBlock,
+} from "~/types/api/anthropic"
 
 import { isImmutableThinkingMessage } from "../thinking-immutability"
 

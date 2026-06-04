@@ -3,7 +3,12 @@
 import { state } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
-import type { RequestUpdate, TuiLogEntry, TuiRenderer } from "./types"
+import type {
+  //
+  RequestUpdate,
+  TuiLogEntry,
+  TuiRenderer,
+} from "./types"
 
 interface StartRequestOptions {
   method: string

@@ -332,9 +332,7 @@ export function createHistoryUiScenario(): HistoryUiScenario {
         "openai-responses": 1,
         "anthropic-messages": 1,
       },
-      recentActivity: [
-        { hour: "09:00", count: 2 },
-      ],
+      recentActivity: [{ hour: "09:00", count: 2 }],
       activeSessions: 1,
     },
     status: {
@@ -403,124 +401,134 @@ async function fulfillJson(route: Route, body: unknown, status = 200): Promise<v
 }
 
 export async function installHistoryUiMocks(page: Page, scenario: HistoryUiScenario): Promise<void> {
-  await page.addInitScript(({ wsMessages }) => {
-    const topicByType = {
-      entry_added: "history",
-      entry_updated: "history",
-      stats_updated: "history",
-      history_cleared: "history",
-      session_deleted: "history",
-      active_request_changed: "requests",
-      rate_limiter_changed: "status",
-      shutdown_phase_changed: "status",
-    } as Record<string, string>
+  await page.addInitScript(
+    ({ wsMessages }) => {
+      const topicByType = {
+        entry_added: "history",
+        entry_updated: "history",
+        stats_updated: "history",
+        history_cleared: "history",
+        session_deleted: "history",
+        active_request_changed: "requests",
+        rate_limiter_changed: "status",
+        shutdown_phase_changed: "status",
+      } as Record<string, string>
 
-    class MockWebSocket {
-      static CONNECTING = 0
-      static OPEN = 1
-      static CLOSING = 2
-      static CLOSED = 3
+      class MockWebSocket {
+        static CONNECTING = 0
+        static OPEN = 1
+        static CLOSING = 2
+        static CLOSED = 3
 
-      url: string
-      readyState = MockWebSocket.CONNECTING
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent) => void) | null = null
-      onclose: ((event: CloseEvent) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-      private listeners = new Map<string, Set<(event: Event) => void>>()
-      private topics: Array<string> | null = null
+        url: string
+        readyState = MockWebSocket.CONNECTING
+        onopen: ((event: Event) => void) | null = null
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onclose: ((event: CloseEvent) => void) | null = null
+        onerror: ((event: Event) => void) | null = null
+        private listeners = new Map<string, Set<(event: Event) => void>>()
+        private topics: Array<string> | null = null
 
-      constructor(url: string) {
-        this.url = url
-        setTimeout(() => {
-          this.readyState = MockWebSocket.OPEN
-          this.dispatch("open", new Event("open"))
-        }, 0)
-      }
-
-      addEventListener(type: string, listener: (event: Event) => void): void {
-        const current = this.listeners.get(type) ?? new Set()
-        current.add(listener)
-        this.listeners.set(type, current)
-      }
-
-      removeEventListener(type: string, listener: (event: Event) => void): void {
-        this.listeners.get(type)?.delete(listener)
-      }
-
-      send(raw: string): void {
-        let payload: { type?: string; topics?: Array<string> } | null = null
-        try {
-          payload = JSON.parse(raw) as { type?: string; topics?: Array<string> }
-        } catch {
-          payload = null
+        constructor(url: string) {
+          this.url = url
+          setTimeout(() => {
+            this.readyState = MockWebSocket.OPEN
+            this.dispatch("open", new Event("open"))
+          }, 0)
         }
 
-        if (payload?.type === "subscribe") {
-          this.topics = Array.isArray(payload.topics) ? payload.topics : null
-          this.emitMessage({
-            type: "connected",
-            data: { clientCount: 1 },
-            timestamp: Date.now(),
-          })
+        addEventListener(type: string, listener: (event: Event) => void): void {
+          const current = this.listeners.get(type) ?? new Set()
+          current.add(listener)
+          this.listeners.set(type, current)
+        }
 
-          let elapsed = 0
-          for (const item of wsMessages as Array<{ topic?: string; delayMs?: number; message: { type: string; data: unknown; timestamp: number } }>) {
-            const topic = item.topic ?? topicByType[item.message.type]
-            if (this.topics && topic && !this.topics.includes(topic)) continue
-            elapsed += item.delayMs ?? 0
-            setTimeout(() => this.emitMessage(item.message), elapsed)
+        removeEventListener(type: string, listener: (event: Event) => void): void {
+          this.listeners.get(type)?.delete(listener)
+        }
+
+        send(raw: string): void {
+          let payload: { type?: string; topics?: Array<string> } | null = null
+          try {
+            payload = JSON.parse(raw) as { type?: string; topics?: Array<string> }
+          } catch {
+            payload = null
+          }
+
+          if (payload?.type === "subscribe") {
+            this.topics = Array.isArray(payload.topics) ? payload.topics : null
+            this.emitMessage({
+              type: "connected",
+              data: { clientCount: 1 },
+              timestamp: Date.now(),
+            })
+
+            let elapsed = 0
+            for (const item of wsMessages as Array<{
+              topic?: string
+              delayMs?: number
+              message: { type: string; data: unknown; timestamp: number }
+            }>) {
+              const topic = item.topic ?? topicByType[item.message.type]
+              if (this.topics && topic && !this.topics.includes(topic)) continue
+              elapsed += item.delayMs ?? 0
+              setTimeout(() => this.emitMessage(item.message), elapsed)
+            }
+          }
+        }
+
+        close(): void {
+          this.readyState = MockWebSocket.CLOSED
+          this.dispatch("close", new CloseEvent("close"))
+        }
+
+        private emitMessage(message: { type: string; data: unknown; timestamp: number }): void {
+          const event = new MessageEvent("message", { data: JSON.stringify(message) })
+          this.dispatch("message", event)
+        }
+
+        private dispatch(type: string, event: Event): void {
+          const handler =
+            type === "open" ? this.onopen
+            : type === "message" ? this.onmessage
+            : type === "close" ? this.onclose
+            : this.onerror
+          handler?.(event as never)
+          for (const listener of this.listeners.get(type) ?? []) {
+            listener(event)
           }
         }
       }
 
-      close(): void {
-        this.readyState = MockWebSocket.CLOSED
-        this.dispatch("close", new CloseEvent("close"))
-      }
-
-      private emitMessage(message: { type: string; data: unknown; timestamp: number }): void {
-        const event = new MessageEvent("message", { data: JSON.stringify(message) })
-        this.dispatch("message", event)
-      }
-
-      private dispatch(type: string, event: Event): void {
-        const handler =
-          type === "open" ? this.onopen
-            : type === "message" ? this.onmessage
-              : type === "close" ? this.onclose
-                : this.onerror
-        handler?.(event as never)
-        for (const listener of this.listeners.get(type) ?? []) {
-          listener(event)
-        }
-      }
-    }
-
-    Object.defineProperty(globalThis, "WebSocket", {
-      configurable: true,
-      writable: true,
-      value: MockWebSocket,
-    })
-  }, { wsMessages: scenario.wsMessages ?? [] })
+      Object.defineProperty(globalThis, "WebSocket", {
+        configurable: true,
+        writable: true,
+        value: MockWebSocket,
+      })
+    },
+    { wsMessages: scenario.wsMessages ?? [] },
+  )
 
   await page.route("**/history/api/entries?*", async (route) => {
     await fulfillJson(route, scenario.summaryResult)
   })
 
   await page.route("**/history/api/stats", async (route) => {
-    await fulfillJson(route, scenario.stats ?? {
-      totalRequests: 0,
-      successfulRequests: 0,
-      failedRequests: 0,
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-      averageDurationMs: 0,
-      modelDistribution: {},
-      endpointDistribution: {},
-      recentActivity: [],
-      activeSessions: 0,
-    })
+    await fulfillJson(
+      route,
+      scenario.stats ?? {
+        totalRequests: 0,
+        successfulRequests: 0,
+        failedRequests: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        averageDurationMs: 0,
+        modelDistribution: {},
+        endpointDistribution: {},
+        recentActivity: [],
+        activeSessions: 0,
+      },
+    )
   })
 
   await page.route("**/history/api/sessions", async (route) => {
@@ -541,19 +549,22 @@ export async function installHistoryUiMocks(page: Page, scenario: HistoryUiScena
   })
 
   await page.route("**/api/status", async (route) => {
-    await fulfillJson(route, scenario.status ?? {
-      status: "healthy",
-      uptime: 1,
-      activeRequests: { count: 0 },
-      shutdown: { phase: "idle" },
-      rateLimiter: {
-        enabled: false,
-        mode: "normal",
-        queueLength: 0,
-        consecutiveSuccesses: 0,
-        rateLimitedAt: null,
-        config: {},
+    await fulfillJson(
+      route,
+      scenario.status ?? {
+        status: "healthy",
+        uptime: 1,
+        activeRequests: { count: 0 },
+        shutdown: { phase: "idle" },
+        rateLimiter: {
+          enabled: false,
+          mode: "normal",
+          queueLength: 0,
+          consecutiveSuccesses: 0,
+          rateLimitedAt: null,
+          config: {},
+        },
       },
-    })
+    )
   })
 }

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test"
+
 import { ensureServerRunning, uiUrl } from "./helpers"
 
 test.beforeAll(ensureServerRunning)
@@ -42,7 +43,7 @@ test.describe("Legacy Pages", () => {
   })
 
   test("no console errors on legacy pages", async ({ page }) => {
-    const consoleErrors: string[] = []
+    const consoleErrors: Array<string> = []
     page.on("console", (msg) => {
       if (msg.type() === "error") {
         consoleErrors.push(msg.text())

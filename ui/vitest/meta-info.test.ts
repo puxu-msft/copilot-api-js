@@ -1,5 +1,9 @@
 import { mount } from "@vue/test-utils"
-import { describe, expect, test } from "vitest"
+import {
+  describe,
+  expect,
+  test
+} from "vitest";
 
 import type { HistoryEntry } from "@/types"
 
@@ -43,8 +47,6 @@ describe("MetaInfo", () => {
 
     expect(wrapper.text()).toContain("Warnings")
     expect(wrapper.text()).toContain("cc_to_responses_dropped_params")
-    expect(wrapper.text()).toContain(
-      "Chat Completions -> Responses translation dropped unsupported params: stop, seed",
-    )
+    expect(wrapper.text()).toContain("Chat Completions -> Responses translation dropped unsupported params: stop, seed")
   })
 })

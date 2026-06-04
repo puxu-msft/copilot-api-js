@@ -6,8 +6,11 @@
  * Each retry creates a new Attempt in the attempts array.
  */
 
+import { consola } from "consola"
+
 import type { ApiError } from "~/lib/error"
 import type {
+  //
   EndpointType,
   PipelineInfo,
   SanitizationInfo,
@@ -20,6 +23,7 @@ import { getErrorMessage } from "~/lib/error"
 import { normalizeModelId } from "~/lib/models/resolver"
 
 import type {
+  //
   Attempt,
   EffectiveRequest,
   HeadersCapture,
@@ -50,6 +54,14 @@ export type {
 // ─── Implementation ───
 
 let idCounter = 0
+
+function extractMaxTokens(
+  p: { max_tokens?: unknown; max_completion_tokens?: unknown } | undefined,
+): number | undefined {
+  if (typeof p?.max_tokens === "number") return p.max_tokens
+  if (typeof p?.max_completion_tokens === "number") return p.max_completion_tokens
+  return undefined
+}
 
 export function createRequestContext(opts: {
   endpoint: EndpointType
@@ -85,8 +97,16 @@ export function createRequestContext(opts: {
   function emit(event: RequestContextEventData) {
     try {
       onEvent(event)
-    } catch {
-      // Swallow event handler errors
+    } catch (err) {
+      // The dispatcher error path. manager.ts:emit already logs per-listener
+      // failures with id+endpoint+model context; this catch fires only if
+      // the onEvent function itself throws (not a registered listener). Log
+      // with id + endpoint so the dispatcher crash is traceable.
+      consola.warn(
+        `[context.request] onEvent dispatcher threw for "${event.type}" `
+          + `(request ${id}, endpoint ${opts.endpoint}):`,
+        err instanceof Error ? err.message : err,
+      )
     }
   }
 
@@ -269,12 +289,25 @@ export function createRequestContext(opts: {
       settled = true
       _endTime = Date.now()
 
-      // Normalize response model to canonical dot-version form
-      // (API may return "claude-opus-4-6" instead of "claude-opus-4.6")
-      if (response.model) response.model = normalizeModelId(response.model)
-      _response = response
-      ctx.setAttemptResponse(response)
-      _state = "completed"
+      // Always copy: even when response.model is absent, callers may continue
+      // to mutate `response` after this call returns (e.g. attach a marker,
+      // filter content for the wire reply). Sharing the reference made ctx
+      // visible to those late mutations. Unconditional spread + conditional
+      // model normalization is the immutable invariant CLAUDE.md mandates.
+      const normalized: ResponseData = {
+        ...response,
+        ...(response.model && { model: normalizeModelId(response.model) }),
+      }
+      _response = normalized
+      ctx.setAttemptResponse(normalized)
+      // Drive state via the same `transition` API used by every other state
+      // change — emits `state_changed` so subscribers observing transitions
+      // (e.g. WS clients) see the final terminal transition explicitly.
+      // Safe to call before emitting the full `completed` event because the
+      // history consumer's `updateEntry` no longer auto-persists on state
+      // patches — finalization is explicit (`finalizeEntry`, called from
+      // the `completed`/`failed` handler).
+      ctx.transition("completed")
       const entry = ctx.toHistoryEntry()
       emit({ type: "completed", context: ctx, entry })
     },
@@ -295,9 +328,9 @@ export function createRequestContext(opts: {
 
       // Preserve upstream HTTP error details as structured fields
       if (
-        error instanceof Error &&
-        "responseText" in error &&
-        typeof (error as { responseText: unknown }).responseText === "string"
+        error instanceof Error
+        && "responseText" in error
+        && typeof (error as { responseText: unknown }).responseText === "string"
       ) {
         const responseText = (error as { responseText: string }).responseText
         if (responseText) {
@@ -308,7 +341,12 @@ export function createRequestContext(opts: {
         _response.status = (error as { status: number }).status
       }
 
-      _state = "failed"
+      // Drive state via transition() so `state_changed` fires for the
+      // terminal transition — keeps the WS observer view consistent with
+      // every non-terminal state change. Safe because finalization is now
+      // an explicit `finalizeEntry` call from the consumer (see entries.ts
+      // docstring), not a side effect of the state field.
+      ctx.transition("failed")
       const entry = ctx.toHistoryEntry()
       emit({ type: "failed", context: ctx, entry })
     },
@@ -340,12 +378,7 @@ export function createRequestContext(opts: {
           tools: _originalRequest?.tools,
           system: _originalRequest?.system,
           // Auto-extract metadata from payload (no handler changes needed)
-          max_tokens:
-            typeof p?.max_tokens === "number"
-              ? p.max_tokens
-              : typeof p?.max_completion_tokens === "number"
-                ? p.max_completion_tokens
-                : undefined,
+          max_tokens: extractMaxTokens(p),
           temperature: typeof p?.temperature === "number" ? p.temperature : undefined,
           thinking: p?.thinking ?? undefined,
         },
@@ -393,10 +426,10 @@ export function createRequestContext(opts: {
           system: (wp.payload as Record<string, unknown>).system,
           payload: wp.payload,
         }
-        // Migrate wireRequest.headers → httpHeaders.outboundRequest
-        if (wp.headers) {
-          _httpHeaders = { ..._httpHeaders, outboundRequest: wp.headers }
-        }
+        // wp.headers is non-optional in WireRequest; only migrate when the
+        // shape is sensible (truthy + non-empty would be defensive but the
+        // type guarantees a Record<string, string>).
+        _httpHeaders = { ..._httpHeaders, outboundRequest: wp.headers }
       }
 
       // Assign httpHeaders AFTER wireRequest migration so outboundRequest is included

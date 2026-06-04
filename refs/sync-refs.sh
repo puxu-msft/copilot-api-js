@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPOS=(
   "agent-maestro=https://github.com/Joouis/agent-maestro"
   "awsl-maxx=https://github.com/awsl-project/maxx"
-  "CLIProxyAPIPlus=https://github.com/router-for-me/CLIProxyAPIPlus.git"
+  # "CLIProxyAPIPlus=https://github.com/router-for-me/CLIProxyAPIPlus.git"
   "ghc-api-py=https://github.com/sxwxs/ghc-api/"
   "vscode-copilot-chat=https://github.com/microsoft/vscode-copilot-chat"
 )

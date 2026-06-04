@@ -8,11 +8,17 @@
 import consola from "consola"
 
 import type { SanitizeResult } from "~/lib/request/pipeline"
-import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionsPayload,
+  Message,
+} from "~/types/api/openai-chat-completions"
 
 import { removeSystemReminderTags } from "~/lib/system-prompt"
 
 import {
+  //
+  ensureOpenAIStartsWithUser,
   extractOpenAISystemMessages,
   filterOpenAIOrphanedToolResults,
   filterOpenAIOrphanedToolUse,
@@ -26,17 +32,21 @@ import {
  * Remove system-reminder tags from OpenAI message content.
  * Handles both string content and array of content parts.
  *
- * NOTE: System prompt overrides are handled by
- * system-prompt.ts via config.yaml.
+ * Returns:
+ *   - The original Message if no reminders were present (identity preserved)
+ *   - A new Message with reminders stripped, when content remains
+ *   - `null` when sanitization leaves the message entirely empty — caller
+ *     drops the message. Mirrors the Anthropic-side prune semantics: a
+ *     message whose entire body was system-reminder noise must not survive
+ *     into the wire payload. Keeping it "to be safe" was the opposite of
+ *     what users configured the rewrite rules for.
  */
-function sanitizeOpenAIMessageContent(msg: Message): Message {
+function sanitizeOpenAIMessageContent(msg: Message): Message | null {
   if (typeof msg.content === "string") {
     const sanitized = removeSystemReminderTags(msg.content)
-    if (sanitized !== msg.content) {
-      // Don't return empty content — keep original if sanitized is empty
-      return sanitized ? { ...msg, content: sanitized } : msg
-    }
-    return msg
+    if (sanitized === msg.content) return msg
+    if (sanitized === "") return null // delete the whole message
+    return { ...msg, content: sanitized }
   }
 
   // Handle array of content parts (TextPart | ImagePart)
@@ -69,6 +79,8 @@ function sanitizeOpenAIMessageContent(msg: Message): Message {
     )
 
     if (result.modified) {
+      // All parts removed → drop the whole message (see docstring).
+      if (result.parts.length === 0) return null
       return { ...msg, content: result.parts }
     }
   }
@@ -77,19 +89,26 @@ function sanitizeOpenAIMessageContent(msg: Message): Message {
 }
 
 /**
- * Remove system-reminder tags from all OpenAI messages.
+ * Remove system-reminder tags from all OpenAI messages. Messages that
+ * sanitize down to nothing are dropped entirely (consistent with Anthropic
+ * prune semantics). Returns counts of modified-and-kept + dropped messages.
  */
 export function removeOpenAISystemReminders(messages: Array<Message>): {
   messages: Array<Message>
   modifiedCount: number
 } {
   let modifiedCount = 0
-  const result = messages.map((msg) => {
+  const kept: Array<Message> = []
+  for (const msg of messages) {
     const sanitized = sanitizeOpenAIMessageContent(msg)
+    if (sanitized === null) {
+      modifiedCount++
+      continue
+    }
     if (sanitized !== msg) modifiedCount++
-    return sanitized
-  })
-  return { messages: result, modifiedCount }
+    kept.push(sanitized)
+  }
+  return { messages: kept, modifiedCount }
 }
 
 // ============================================================================
@@ -116,6 +135,14 @@ export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): Sanitiz
   // Filter orphaned tool_result and tool_use messages
   messages = filterOpenAIOrphanedToolResults(messages)
   messages = filterOpenAIOrphanedToolUse(messages)
+
+  // After orphan filtering / system-reminder pruning, the first surviving
+  // non-system message may be an assistant turn (e.g. user wrapped the
+  // conversation history but dropped their opening message). Upstream
+  // rejects that shape. Drop any leading non-user messages so the surviving
+  // conversation always starts with a real user turn. Mirrors the post-
+  // truncation cleanup done in lib/openai/auto-truncate/truncation.ts.
+  messages = ensureOpenAIStartsWithUser(messages)
 
   // Final safety net: remove empty/whitespace-only text parts from array content
   const allMessages = [...sanitizedSystemMessages, ...messages].map((msg) => {

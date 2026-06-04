@@ -13,14 +13,7 @@ import type { EndpointType } from "~/lib/history/store"
 
 const FIXTURES_DIR = join(import.meta.dir, "..", "fixtures")
 
-type Scenario =
-  | "simple"
-  | "tool-use"
-  | "tool-call"
-  | "function-call"
-  | "streaming"
-  | "thinking"
-  | "server-tool"
+type Scenario = "simple" | "tool-use" | "tool-call" | "function-call" | "streaming" | "thinking" | "server-tool"
 
 /** Load a fixture JSON file */
 export function loadFixture(format: EndpointType, scenario: Scenario | "errors", filename: string): unknown {

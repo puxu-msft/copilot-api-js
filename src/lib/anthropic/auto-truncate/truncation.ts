@@ -1,9 +1,16 @@
 import type { Model } from "~/lib/models/client"
-import type { ContentBlock, ContentBlockParam, MessageParam, MessagesPayload } from "~/types/api/anthropic"
+import type {
+  //
+  ContentBlock,
+  ContentBlockParam,
+  MessageParam,
+  MessagesPayload,
+} from "~/types/api/anthropic"
 
 import type { AutoTruncateConfig } from "../../auto-truncate"
 
 import {
+  //
   LARGE_TOOL_RESULT_THRESHOLD,
   compressCompactedReadResult,
   compressToolResultContent,
@@ -11,9 +18,9 @@ import {
   getLearnedLimits,
 } from "../../auto-truncate"
 import { processToolBlocks } from "../sanitize"
-import { ensureAnthropicStartsWithUser } from "./tool-utils"
-import { estimateMessageTokens } from "./token-counting"
 import { shouldPreserveThinkingBlocks } from "../thinking-immutability"
+import { estimateMessageTokens } from "./token-counting"
+import { ensureAnthropicStartsWithUser } from "./tool-utils"
 
 /**
  * Strip thinking/redacted_thinking blocks from old assistant messages.
@@ -109,7 +116,7 @@ export function smartCompressToolResults(
 
   for (const [i, msg] of messages.entries()) {
     if (i < thresholdIndex && msg.role === "user" && Array.isArray(msg.content)) {
-      let hadCompression = false
+      let hadCompression = false as boolean
       const compressedContent = msg.content.map((block) => {
         if (
           block.type === "tool_result"
@@ -270,11 +277,7 @@ export function addCompressionNotice(payload: MessagesPayload, compressedCount: 
   return { ...payload, system: newSystem }
 }
 
-export function createTruncationSystemContext(
-  removedCount: number,
-  compressedCount: number,
-  summary: string,
-): string {
+export function createTruncationSystemContext(removedCount: number, compressedCount: number, summary: string): string {
   let context = `[CONVERSATION CONTEXT]\n`
 
   if (removedCount > 0) {
@@ -296,11 +299,7 @@ export function createTruncationSystemContext(
   return context
 }
 
-export function createTruncationMarker(
-  removedCount: number,
-  compressedCount: number,
-  summary: string,
-): MessageParam {
+export function createTruncationMarker(removedCount: number, compressedCount: number, summary: string): MessageParam {
   const parts: Array<string> = []
 
   if (removedCount > 0) {

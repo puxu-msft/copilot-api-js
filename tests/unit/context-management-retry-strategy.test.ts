@@ -1,24 +1,37 @@
-import { afterEach, describe, expect, test } from "bun:test"
+/* eslint-disable @typescript-eslint/no-deprecated -- intentionally testing deprecated re-exports for back-compat */
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { ApiError } from "~/lib/error"
 import type { RetryContext } from "~/lib/request/pipeline"
 
 import {
-  createContextManagementRetryStrategy,
-  parseContextManagementExtraInputsError,
-} from "~/lib/request/strategies/context-management-retry"
-import {
+  //
   isAnthropicFeatureUnsupported,
   resetAnthropicFeatureNegotiationForTesting,
 } from "~/lib/anthropic/feature-negotiation"
+import {
+  //
+  createBodyFieldRejectionStrategy,
+  createContextManagementRetryStrategy,
+  parseContextManagementExtraInputsError,
+  parseExtraInputsError,
+} from "~/lib/request/strategies/context-management-retry"
 
-afterEach(() => {
-  resetAnthropicFeatureNegotiationForTesting()
+afterEach(async () => {
+  await resetAnthropicFeatureNegotiationForTesting()
 })
 
 interface TestPayload {
   model: string
   context_management?: Record<string, unknown> | null
+  inference_geo?: string
+  [key: string]: unknown
 }
 
 const retryContext: RetryContext<TestPayload> = {
@@ -28,7 +41,7 @@ const retryContext: RetryContext<TestPayload> = {
   model: undefined,
 }
 
-function contextManagementError(message = "context_management: Extra inputs are not permitted"): ApiError {
+function extraInputsError(message = "context_management: Extra inputs are not permitted"): ApiError {
   return {
     type: "bad_request",
     status: 400,
@@ -39,67 +52,93 @@ function contextManagementError(message = "context_management: Extra inputs are 
   } as unknown as ApiError
 }
 
-describe("parseContextManagementExtraInputsError", () => {
-  test("matches the upstream extra-inputs error", () => {
-    expect(parseContextManagementExtraInputsError("context_management: Extra inputs are not permitted")).toBe(true)
+describe("parseExtraInputsError", () => {
+  test("extracts the field name", () => {
+    expect(parseExtraInputsError("context_management: Extra inputs are not permitted")?.field).toBe(
+      "context_management",
+    )
   })
 
-  test("returns false for unrelated messages", () => {
+  test("extracts non-context_management field names too", () => {
+    expect(parseExtraInputsError("inference_geo: Extra inputs are not permitted")?.field).toBe("inference_geo")
+  })
+
+  test("returns null for unrelated messages", () => {
+    expect(parseExtraInputsError("Invalid request body")).toBeNull()
+  })
+})
+
+describe("parseContextManagementExtraInputsError (deprecated)", () => {
+  test("matches only context_management variant", () => {
+    expect(parseContextManagementExtraInputsError("context_management: Extra inputs are not permitted")).toBe(true)
+    expect(parseContextManagementExtraInputsError("inference_geo: Extra inputs are not permitted")).toBe(false)
     expect(parseContextManagementExtraInputsError("Invalid request body")).toBe(false)
   })
 })
 
-describe("createContextManagementRetryStrategy", () => {
+describe("createBodyFieldRejectionStrategy", () => {
   test("has the expected strategy name", () => {
-    expect(createContextManagementRetryStrategy<TestPayload>().name).toBe("context-management-retry")
+    expect(createBodyFieldRejectionStrategy<TestPayload>().name).toBe("body-field-rejection-retry")
   })
 
-  test("canHandle matches the context_management extra-inputs error", () => {
-    const strategy = createContextManagementRetryStrategy<TestPayload>()
-    expect(strategy.canHandle(contextManagementError())).toBe(true)
+  test("createContextManagementRetryStrategy alias preserved", () => {
+    expect(createContextManagementRetryStrategy).toBe(createBodyFieldRejectionStrategy)
+  })
+
+  test("canHandle matches any field's extra-inputs error", () => {
+    const strategy = createBodyFieldRejectionStrategy<TestPayload>()
+    expect(strategy.canHandle(extraInputsError())).toBe(true)
+    expect(strategy.canHandle(extraInputsError("inference_geo: Extra inputs are not permitted"))).toBe(true)
   })
 
   test("canHandle returns false for unrelated 400s", () => {
-    const strategy = createContextManagementRetryStrategy<TestPayload>()
+    const strategy = createBodyFieldRejectionStrategy<TestPayload>()
     const error = {
       type: "bad_request",
       status: 400,
       message: "HTTP 400: Invalid request",
-      raw: {
-        responseText: JSON.stringify({ error: { message: "Invalid request" } }),
-      },
+      raw: { responseText: JSON.stringify({ error: { message: "Invalid request" } }) },
     } as unknown as ApiError
     expect(strategy.canHandle(error)).toBe(false)
   })
 
-  test("handle retries with explicit context_management disable sentinel", async () => {
-    const strategy = createContextManagementRetryStrategy<TestPayload>()
+  test("context_management: retry with explicit null sentinel + marks unsupported", async () => {
+    const strategy = createBodyFieldRejectionStrategy<TestPayload>()
     const payload: TestPayload = {
       model: "claude-opus-4-6",
       context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
     }
 
-    const result = await strategy.handle(contextManagementError(), payload, retryContext)
+    const result = await strategy.handle(extraInputsError(), payload, retryContext)
     expect(result.action).toBe("retry")
     expect((result as { payload: TestPayload }).payload.context_management).toBeNull()
-    expect((result as { meta?: Record<string, unknown> }).meta).toEqual({ disabledContextManagement: true })
+    const meta = (result as { meta?: Record<string, unknown> }).meta
+    expect(meta?.rejectedField).toBe("context_management")
+    expect(meta?.disabledContextManagement).toBe(true)
     expect(isAnthropicFeatureUnsupported("claude-opus-4-6", "context_management")).toBe(true)
+    // C2 (review): the strategy must also surface the rejected field via the
+    // explicit PrepareHints channel so retries don't rely solely on the
+    // negotiation cache + prep re-read implicit contract.
+    const prepareHints = (result as { prepareHints?: { rejectFields?: ReadonlyArray<string> } }).prepareHints
+    expect(prepareHints?.rejectFields).toEqual(["context_management"])
   })
 
-  test("handle also retries when context_management was auto-injected upstream", async () => {
-    const strategy = createContextManagementRetryStrategy<TestPayload>()
-    const payload: TestPayload = { model: "claude-opus-4-6" }
-
-    const result = await strategy.handle(contextManagementError(), payload, retryContext)
-    expect(result.action).toBe("retry")
-    expect((result as { payload: TestPayload }).payload.context_management).toBeNull()
-  })
-
-  test("handle aborts if context_management is already disabled", async () => {
-    const strategy = createContextManagementRetryStrategy<TestPayload>()
+  test("context_management: aborts if already null", async () => {
+    const strategy = createBodyFieldRejectionStrategy<TestPayload>()
     const payload: TestPayload = { model: "claude-opus-4-6", context_management: null }
 
-    const result = await strategy.handle(contextManagementError(), payload, retryContext)
+    const result = await strategy.handle(extraInputsError(), payload, retryContext)
     expect(result.action).toBe("abort")
+  })
+
+  test("generic field: retry by deleting field + marks unsupported", async () => {
+    const strategy = createBodyFieldRejectionStrategy<TestPayload>()
+    const payload: TestPayload = { model: "claude-opus-4-6", inference_geo: "US" }
+
+    const err = extraInputsError("inference_geo: Extra inputs are not permitted")
+    const result = await strategy.handle(err, payload, retryContext)
+    expect(result.action).toBe("retry")
+    expect((result as { payload: TestPayload }).payload.inference_geo).toBeUndefined()
+    expect(isAnthropicFeatureUnsupported("claude-opus-4-6", "inference_geo")).toBe(true)
   })
 })

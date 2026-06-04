@@ -1,7 +1,10 @@
 /**
- * Application configuration: types, YAML loading, and state application.
+ * Application configuration: YAML loading, validation, and state application.
  *
- * All config types live here as the single source of truth.
+ * Types are inferred from Zod schemas in `./schema.ts` (single source of
+ * truth); this file is responsible for I/O and applying parsed config to
+ * runtime state. Validation lives in `./validation.ts`.
+ *
  * config.yaml is loaded with mtime-based caching.
  */
 
@@ -10,15 +13,15 @@ import fs from "node:fs/promises"
 
 import { setHistoryMaxEntries } from "~/lib/history"
 import {
-  type CacheControlMode,
+  //
   type CompiledRewriteRule,
-  type ContextEditingMode,
-  type ThinkingBlockMessagePolicy,
-  type WarmupPolicy,
   DEFAULT_MODEL_OVERRIDES,
+  DEFAULT_MODEL_PREFERENCE,
   setAnthropicBehavior,
+  setDisabledModels,
   setHistoryConfig,
   setModelOverrides,
+  setModelPreference,
   setResponsesConfig,
   setShutdownConfig,
   setTimeoutConfig,
@@ -26,23 +29,49 @@ import {
 
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import { PATHS } from "./paths"
+import { validateConfig } from "./validation"
+
+// Re-export Zod-inferred types so existing imports of these names keep working.
+export type {
+  AnthropicConfig,
+  Config,
+  HistoryConfig,
+  ModelPreferenceConfig,
+  RateLimiterConfig,
+  ResponsesConfig,
+  RewriteRule,
+  ShutdownConfig,
+} from "./schema"
+
+export {
+  AnthropicConfigSchema,
+  ConfigSchema,
+  HistoryConfigSchema,
+  ModelPreferenceSchema,
+  RateLimiterConfigSchema,
+  ResponsesConfigSchema,
+  RewriteRuleSchema,
+  ShutdownConfigSchema,
+} from "./schema"
+
+export {
+  _resetConfigValidationWarnTrackingForTests,
+  type ConfigValidationDetail,
+  type ConfigValidationResult,
+  validateConfig,
+  validateConfigInput,
+} from "./validation"
+
+import type {
+  //
+  Config,
+  RewriteRule,
+} from "./schema"
 
 // ============================================================================
-// Types
-// ============================================================================
-
-/** Raw rewrite rule from config.yaml (shared by system_prompt_overrides and rewrite_system_reminders) */
-export interface RewriteRule {
-  from: string
-  to: string
-  /** Match method: "line" = exact line match, "regex" = regex on full text. Default: "regex". */
-  method?: "line" | "regex"
-  /** Resolved model name regex pattern (case-insensitive). When set, this rule only applies to matching models. */
-  model?: string
-}
-
-// ============================================================================
-// Rule Compilation
+// Rule Compilation (still in this file because it produces runtime state
+// objects — CompiledRewriteRule — that are not part of the validated YAML
+// shape).
 // ============================================================================
 
 /** Compile a raw rewrite rule into a CompiledRewriteRule. Returns null for invalid regex. */
@@ -87,200 +116,6 @@ export function compileRewriteRules(raws: Array<RewriteRule>): Array<CompiledRew
   return raws.map((r) => compileRewriteRule(r)).filter((r): r is CompiledRewriteRule => r !== null)
 }
 
-/** Rate limiter configuration section */
-export interface RateLimiterConfig {
-  /** Seconds to wait before retrying after rate limit error (default: 10) */
-  retry_interval?: number
-  /** Seconds between requests in rate-limited mode (default: 10) */
-  request_interval?: number
-  /** Minutes before attempting recovery from rate-limited mode (default: 10) */
-  recovery_timeout?: number
-  /** Number of consecutive successes needed to recover (default: 5) */
-  consecutive_successes?: number
-}
-
-/** Anthropic-specific configuration section */
-export interface AnthropicConfig {
-  /** Strip server-side tools (web_search, etc.) from requests (default: false) */
-  strip_server_tools?: boolean
-  /**
-   * Policy for assistant messages containing `thinking` / `redacted_thinking`.
-   *
-   * - `"stripped"` — delete thinking blocks; delete the message if empty
-   * - `"immutable"` — entire message is immutable (default)
-   * - `"fixed-index"` — allow editing non-thinking blocks, preserve array structure
-   */
-  thinking_block_message_policy?: ThinkingBlockMessagePolicy
-  /** @deprecated Use `thinking_block_message_policy` instead */
-  immutable_thinking_messages?: boolean
-  /**
-   * Remove duplicate tool_use/tool_result pairs (keep last occurrence).
-   * - `false` — disabled (default)
-   * - `true` or `"input"` — match by (tool_name, input)
-   * - `"result"` — match by (tool_name, input, result)
-   */
-  dedup_tool_calls?: boolean | "input" | "result"
-  /** Strip injected system-reminder tags from Read tool results */
-  strip_read_tool_result_tags?: boolean
-  /**
-   * Rewrite system-reminder tags in messages.
-   * - `false` — keep all tags unchanged (default)
-   * - `true` — remove all system-reminder tags
-   * - Array of rewrite rules — first matching rule wins (top-down):
-   *   - `from`: pattern to match against tag content
-   *   - `to`: replacement string (supports $0, $1, etc. in regex mode)
-   *     Empty string = remove the tag. `$0` = keep unchanged.
-   *   - `method`: `"regex"` (default) or `"line"`
-   */
-  rewrite_system_reminders?: boolean | Array<RewriteRule>
-  /**
-   * Server-side context editing mode.
-   * Controls how Anthropic's context_management trims older context when input grows large.
-   * Requires the `context-management-2025-06-27` beta header (added automatically when not 'off').
-   *
-   * - `"off"` — disabled (default). No context_management sent, no beta header added.
-   * - `"clear-thinking"` — clear old thinking blocks, keeping the last N thinking turns.
-   * - `"clear-tooluse"` — clear old tool_use/tool_result pairs when input_tokens exceed threshold.
-   * - `"clear-both"` — apply both clear-thinking and clear-tooluse edits.
-   *
-   * Mirrors VSCode Copilot Chat's `chat.anthropic.contextEditing.mode` setting.
-   * Only effective for models that support context editing (Haiku 4.5, Sonnet 4/4.5/4.6, Opus 4/4.1/4.5/4.6).
-   */
-  context_editing?: ContextEditingMode
-  /**
-   * Input token threshold that triggers clear_tool_uses when context_editing includes tool clearing.
-   * Default: 100000.
-   */
-  context_editing_trigger?: number
-  /** Number of most recent tool_use pairs to keep after clearing (default: 3) */
-  context_editing_keep_tools?: number
-  /** Number of most recent thinking turns to keep after clearing (default: 1) */
-  context_editing_keep_thinking?: number
-  /**
-   * Enable server-side tool search (tool_search_tool_regex injection).
-   * When enabled and the model supports it, a tool search tool is prepended
-   * and non-essential tools are marked defer_loading.
-   * Default: true.
-   */
-  tool_search?: boolean
-  /**
-   * Cache control mode for Anthropic requests.
-   * - "disabled": strip all cache_control fields from the request
-   * - "passthrough": forward client cache_control as-is (no modification or injection)
-   * - "sanitize": forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
-   * - "proxied": proxy controls injection (auto-add breakpoints on tools/system)
-   * Default: "proxied".
-   */
-  cache_control?: "disabled" | "passthrough" | "sanitize" | "proxied"
-  /**
-   * @deprecated Use `cache_control` instead. `true` maps to "proxied", `false` maps to "disabled".
-   */
-  auto_cache_control?: boolean
-  /**
-   * Additional tool names that should never be deferred when tool search is enabled.
-   * Merged with the built-in non-deferred tool list (Claude Code + VSCode tools).
-   * Example: ["my_custom_tool", "another_tool"]
-   */
-  non_deferred_tools?: Array<string>
-  /**
-   * Anthropic API key for accurate Claude token counting.
-   * When set, `/v1/messages/count_tokens` for Claude models is forwarded to
-   * Anthropic's free token counting endpoint for exact counts.
-   * Also reads ANTHROPIC_API_KEY env var as fallback.
-   */
-  api_key?: string
-  /**
-   * Policy for Claude Code "Warmup" requests.
-   * - `"allow"` — pass through normally (default)
-   * - `"reject"` — return HTTP 429 error
-   * - `"drop"` — return minimal empty success response without forwarding upstream
-   * - `"fake"` — return a realistic fake response with cache_creation_input_tokens
-   */
-  warmup?: WarmupPolicy
-  /**
-   * Per-model supported effort levels (whitelist).
-   * Keys are model name substrings matched against the resolved model name.
-   * Values are arrays of supported effort levels.
-   * Examples:
-   *   claude-opus-4.6-1m: [medium, high]  # only medium and high are supported
-   *   claude-opus-4.7: [medium]            # only medium is supported
-   * If a request's output_config.effort is not in the list, it is adjusted per effort_overflow.
-   * Runtime may dynamically extend this map when upstream returns invalid_reasoning_effort errors.
-   */
-  efforts_overrides?: Record<string, Array<string>>
-}
-
-/** Shutdown timing configuration section */
-export interface ShutdownConfig {
-  /** Phase 2 timeout in seconds: wait for in-flight requests to complete naturally (default: 60) */
-  graceful_wait?: number
-  /** Phase 3 timeout in seconds: wait after abort signal for handlers to wrap up (default: 120) */
-  abort_wait?: number
-}
-
-/** Responses API configuration section */
-export interface ResponsesConfig {
-  /**
-   * Normalize function call IDs: convert `call_` prefix to `fc_` prefix.
-   * Required when clients send conversation history with Chat Completions-format
-   * tool call IDs (`call_xxx`) to the Responses API endpoint (which requires `fc_xxx`).
-   * Default: true.
-   */
-  normalize_call_ids?: boolean
-  /** Enable upstream WebSocket transport for /responses when supported by the model (default: false). */
-  upstream_websocket?: boolean
-  /**
-   * Fix inconsistent item IDs between output_item.added and output_item.done events
-   * from GitHub Copilot's Responses API. Without this fix, @ai-sdk/openai breaks
-   * because it expects consistent IDs across the stream lifecycle.
-   * Default: true.
-   */
-  fix_stream_ids?: boolean
-}
-
-/** History storage configuration section */
-export interface HistoryConfig {
-  /** Maximum number of entries to keep in memory (0 = unlimited, default: 200) */
-  limit?: number
-  /** Minimum entries to keep even under memory pressure (default: 50) */
-  min_entries?: number
-}
-
-/** Application configuration loaded from config.yaml */
-export interface Config {
-  /**
-   * Proxy URL for all outgoing requests.
-   * Supports http://, https://, socks5://, socks5h:// schemes.
-   * Authentication via URL credentials: socks5h://user:pass@host:port
-   * Takes precedence over HTTP_PROXY/HTTPS_PROXY environment variables.
-   * Not hot-reloadable (requires restart).
-   */
-  proxy?: string
-  system_prompt_overrides?: Array<RewriteRule>
-  system_prompt_prepend?: string
-  system_prompt_append?: string
-  rate_limiter?: RateLimiterConfig
-  anthropic?: AnthropicConfig
-  /** Responses API configuration */
-  "openai-responses"?: ResponsesConfig
-  /** Model name overrides: request model → target model */
-  model_overrides?: Record<string, string>
-  /** Compress old tool_result content before truncating (default: true) */
-  compress_tool_results_before_truncate?: boolean
-  /** History storage configuration */
-  history?: HistoryConfig
-  /** Shutdown timing configuration */
-  shutdown?: ShutdownConfig
-  /** Stream idle timeout in seconds for all paths (default: 300, 0 = no timeout) */
-  stream_idle_timeout?: number
-  /** Fetch timeout in seconds: request start → HTTP response headers (default: 300, 0 = no timeout) */
-  fetch_timeout?: number
-  /** Maximum age (seconds) of an active request before stale reaper forces fail (0 = disabled, default: 600) */
-  stale_request_max_age?: number
-  /** Interval in seconds for refreshing the cached model list (0 = disabled, default: 600) */
-  model_refresh_interval?: number
-}
-
 // ============================================================================
 // Config Loading (mtime-cached)
 // ============================================================================
@@ -302,7 +137,7 @@ export async function loadRawConfigFile(): Promise<Config> {
       throw new TypeError("config.yaml must contain a top-level mapping")
     }
 
-    return parsed as Config
+    return validateConfig(parsed)
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return {}
@@ -366,13 +201,21 @@ let lastAppliedMtimeMs = 0
 /**
  * Load config.yaml and apply all hot-reloadable settings to global state.
  *
- * Scalar fields: only overridden when explicitly present in config (deleted keys keep current runtime value).
- * Collection fields (model_overrides, rewrite_system_reminders array): entire replacement when present.
+ * Unified semantic: **retain-on-absence**. Any key (scalar or collection) that
+ * is missing from config.yaml keeps its prior runtime value. An explicitly
+ * present key — including empty collections like `disabled_models: []` or
+ * `model_overrides: {}` — replaces the runtime value.
  *
  * Safe to call per-request — loadConfig() is mtime-cached, so unchanged config
  * only costs one stat() syscall.
  *
- * NOT hot-reloaded: rate_limiter (stateful singleton initialized at startup).
+ * NOT hot-reloaded: rate_limiter (stateful singleton initialized at startup),
+ * proxy (initProxy() runs once before any network requests).
+ *
+ * **Reset-to-defaults**: removing a key from config.yaml at runtime keeps the
+ * previous value — restart, or use the PUT /api/config route (which calls
+ * `resetConfigManagedState()` first) to revert to built-in defaults. This
+ * avoids accidental wipes when users temporarily comment out a line.
  */
 export async function applyConfigToState(): Promise<Config> {
   const config = await loadConfig()
@@ -381,13 +224,11 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.anthropic) {
     const a = config.anthropic
     if (a.strip_server_tools !== undefined) setAnthropicBehavior({ stripServerTools: a.strip_server_tools })
-    // thinking_block_message_policy takes precedence over deprecated immutable_thinking_messages
+    if (a.inject_claude_code_tools !== undefined) {
+      setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.inject_claude_code_tools })
+    }
     if (a.thinking_block_message_policy !== undefined) {
       setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
-    } else if (a.immutable_thinking_messages !== undefined) {
-      setAnthropicBehavior({
-        thinkingBlockMessagePolicy: a.immutable_thinking_messages ? "immutable" : "stripped",
-      })
     }
     if (a.dedup_tool_calls !== undefined) {
       // Normalize: true → "input" for backward compatibility, false → false
@@ -403,43 +244,58 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.context_editing_keep_thinking !== undefined)
       setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
     if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
-    // cache_control takes precedence over deprecated auto_cache_control
     if (a.cache_control !== undefined) {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
-    } else if (a.auto_cache_control !== undefined) {
-      const mapped: CacheControlMode = a.auto_cache_control ? "proxied" : "disabled"
-      consola.warn(`[Config] anthropic.auto_cache_control is deprecated, use cache_control: "${mapped}" instead`)
-      setAnthropicBehavior({ cacheControlMode: mapped })
     }
-    if (Array.isArray(a.non_deferred_tools)) setAnthropicBehavior({ nonDeferredTools: a.non_deferred_tools })
+    if (a.non_deferred_tools !== undefined) setAnthropicBehavior({ nonDeferredTools: a.non_deferred_tools })
     if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
     if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
-    // Collection: always replace from config (deletion → empty).
-    // Runtime-learned entries (from invalid_reasoning_effort errors) re-populate on next error.
-    setAnthropicBehavior({ effortsOverrides: a.efforts_overrides ?? {} })
+    // Collection fields: retain-on-absence semantic — a missing key keeps the
+    // current runtime value; an explicit `{}` overwrites with empty. To revert
+    // to built-in defaults, call resetConfigManagedState() (PUT /api/config).
+    if (a.efforts_overrides !== undefined) setAnthropicBehavior({ effortsOverrides: a.efforts_overrides })
+    if (a.strip_beta_headers !== undefined) setAnthropicBehavior({ stripBetaHeaders: a.strip_beta_headers })
+    if (a.reject_body_fields !== undefined) setAnthropicBehavior({ rejectBodyFields: a.reject_body_fields })
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {
         setAnthropicBehavior({ rewriteSystemReminders: a.rewrite_system_reminders })
-      } else if (Array.isArray(a.rewrite_system_reminders)) {
+      } else {
         setAnthropicBehavior({ rewriteSystemReminders: compileRewriteRules(a.rewrite_system_reminders) })
       }
     }
   }
 
   // System prompt overrides (collection: entire replacement)
-  // Use Array.isArray to guard against YAML null (which passes !== undefined but crashes on .length)
-  if (Array.isArray(config.system_prompt_overrides)) {
+  if (config.system_prompt_overrides !== undefined) {
     setAnthropicBehavior({
       systemPromptOverrides:
         config.system_prompt_overrides.length > 0 ? compileRewriteRules(config.system_prompt_overrides) : [],
     })
   }
 
-  // Model overrides (collection: entire replacement from defaults + config)
-  // User deletes a key → it reverts to default; user adds a key → it overrides default
-  if (config.model_overrides) {
+  // Model overrides: retain-on-absence. An explicit `model_overrides: {}` (or
+  // any present map) replaces the live override map merged on top of defaults;
+  // omitting the key keeps the prior runtime value.
+  if (config.model_overrides !== undefined) {
     setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES, ...config.model_overrides })
+  }
+
+  // Model preference (collection: per-family replacement).
+  // User-provided family list replaces the built-in default for that family;
+  // families absent from config keep their built-in default list.
+  if (config.model_preference !== undefined) {
+    setModelPreference({
+      opus: config.model_preference.opus ?? DEFAULT_MODEL_PREFERENCE.opus,
+      sonnet: config.model_preference.sonnet ?? DEFAULT_MODEL_PREFERENCE.sonnet,
+      haiku: config.model_preference.haiku ?? DEFAULT_MODEL_PREFERENCE.haiku,
+    })
+  }
+
+  // Disabled models: retain-on-absence. An explicit empty list clears; missing
+  // key keeps the prior runtime value. Re-filters `state.models` from cached raw.
+  if (config.disabled_models !== undefined) {
+    setDisabledModels(config.disabled_models)
   }
 
   // Other settings (scalar: override only when present)
@@ -453,7 +309,8 @@ export async function applyConfigToState(): Promise<Config> {
       setHistoryConfig({ historyLimit: h.limit })
       setHistoryMaxEntries(h.limit)
     }
-    if (h.min_entries !== undefined) setHistoryConfig({ historyMinEntries: h.min_entries })
+    if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
+    if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
   }
 
   // Shutdown timing (scalar: override only when present)
@@ -480,6 +337,14 @@ export async function applyConfigToState(): Promise<Config> {
     setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_websocket })
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined)
     setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
+  if (responsesConfig && responsesConfig.client_websocket_keep_open !== undefined)
+    setResponsesConfig({ clientWebsocketKeepOpen: responsesConfig.client_websocket_keep_open })
+  if (responsesConfig && responsesConfig.max_ws_frame_bytes !== undefined)
+    setResponsesConfig({ maxWsFrameBytes: responsesConfig.max_ws_frame_bytes })
+  if (responsesConfig && responsesConfig.max_client_ws_connections !== undefined)
+    setResponsesConfig({ maxClientWsConnections: responsesConfig.max_client_ws_connections })
+  if (responsesConfig && responsesConfig.max_upstream_ws_connections !== undefined)
+    setResponsesConfig({ maxUpstreamWsConnections: responsesConfig.max_upstream_ws_connections })
 
   syncModelRefreshLoop()
 

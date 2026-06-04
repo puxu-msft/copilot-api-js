@@ -28,6 +28,13 @@ export const STREAM_ABORTED = Symbol("STREAM_ABORTED")
  * Combine multiple abort signals into one.
  * Returns undefined if no valid signals provided. Returns the single signal
  * if only one is valid. Otherwise uses AbortSignal.any() to merge.
+ *
+ * Lifecycle note: `AbortSignal.any` on modern Node/Bun uses WeakRef for its
+ * source-signal references, so the composite signal does not pin its sources
+ * once it becomes unreachable — short-lived per-request use is safe without
+ * an explicit dispose handle. For long-lived consumers (e.g. a stream
+ * generator that lives across many ticks), prefer a dedicated AbortController
+ * forwarded from the long-lived signals so cleanup is explicit.
  */
 export function combineAbortSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
   const valid = signals.filter((s): s is AbortSignal => s !== undefined)
@@ -93,4 +100,25 @@ export function raceIteratorNext<T>(
   return Promise.race(racers).finally(() => {
     for (const cleanup of cleanups) cleanup()
   })
+}
+
+// ============================================================================
+// SSE iterator helpers
+// ============================================================================
+
+/** Shape of an SSE frame as produced by `fetch-event-stream` and our pipeline. */
+export interface SseFrame {
+  event?: string
+  data?: string
+}
+
+/**
+ * Obtain an `AsyncIterator<SseFrame>` from whatever the request pipeline
+ * returns for a streaming response. The pipeline's union return type forces
+ * a narrowing cast at every consumer; this helper concentrates the cast in
+ * one place so consumers stay readable and the cast assumption (pipeline
+ * returns AsyncIterable for streaming requests) is documented once.
+ */
+export function iterateSseEvents(response: unknown): AsyncIterator<SseFrame> {
+  return (response as AsyncIterable<SseFrame>)[Symbol.asyncIterator]()
 }

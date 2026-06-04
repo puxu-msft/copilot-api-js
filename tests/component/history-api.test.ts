@@ -12,12 +12,16 @@ import { Hono } from "hono"
 import {
   clearHistory,
   getCurrentSession,
+  finalizeEntry,
   getEntry,
   initHistory,
   insertEntry,
+  shutdownHistory,
+  updateEntry,
   type EndpointType,
   type HistoryEntry,
 } from "~/lib/history"
+import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
   handleDeleteEntries,
@@ -60,6 +64,16 @@ function createEntry(
     ...extra,
   }
   insertEntry(entry)
+  updateEntry(entry.id, {
+    state: "completed",
+    response: {
+      success: true,
+      model,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      content: null,
+    },
+  })
+  finalizeEntry(entry.id)
   return entry
 }
 
@@ -78,11 +92,14 @@ async function json<T = unknown>(res: Response): Promise<T> {
 // ─── Setup / Teardown ───
 
 beforeEach(() => {
+  setStateForTests({ historyDbPath: ":memory:" })
   initHistory(true, 200)
 })
 
 afterEach(() => {
   clearHistory()
+  shutdownHistory()
+  setStateForTests({ historyDbPath: "" })
 })
 
 // ─── handleGetEntries ───

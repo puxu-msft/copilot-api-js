@@ -7,13 +7,31 @@
  * 3. (WebSocket is handled implicitly via store's notifyEntryAdded/Updated)
  */
 
-import type { HistoryEntry, MessageContent } from "~/lib/history"
+import type {
+  //
+  HistoryEntry,
+  MessageContent,
+} from "~/lib/history"
 
-import { insertEntry, isHistoryEnabled, updateEntry } from "~/lib/history/store"
+import {
+  //
+  finalizeEntry,
+  insertEntry,
+  isHistoryEnabled,
+  updateEntry,
+} from "~/lib/history/store"
 import { tuiLogger } from "~/lib/tui"
 
-import type { RequestContextEvent, RequestContextManager } from "./manager"
-import type { HistoryEntryData, ResponseData } from "./request"
+import type {
+  //
+  RequestContextEvent,
+  RequestContextManager,
+} from "./manager"
+import type {
+  //
+  HistoryEntryData,
+  ResponseData,
+} from "./request"
 
 import { buildHistoryActivityPatch } from "./activity-summary"
 
@@ -118,6 +136,14 @@ function handleHistoryEvent(event: RequestContextEvent): void {
           attempts: entryData.attempts as HistoryEntry["attempts"],
         }),
       })
+      // Explicit finalization step. Previously updateEntry inferred terminality
+      // from the state field and auto-persisted as a side effect. That coupled
+      // a data field to a write-to-disk action, so a transition() emitting
+      // state_changed BEFORE the full completed/failed event would persist a
+      // partial entry and remove it from in-flight, making the subsequent
+      // full update silently no-op. Explicit finalize keeps the ordering
+      // contract obvious and auditable.
+      finalizeEntry(entryData.id)
       break
     }
 
@@ -235,10 +261,7 @@ function toTransportTag(transport: HistoryEntry["transport"] | undefined): strin
 
 // ─── Registration ───
 
-import { handleErrorPersistence } from "./error-persistence"
-
 export function registerContextConsumers(manager: RequestContextManager): void {
   manager.on("change", handleHistoryEvent)
   manager.on("change", handleTuiEvent)
-  manager.on("change", handleErrorPersistence)
 }

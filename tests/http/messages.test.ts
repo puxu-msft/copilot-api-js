@@ -1,6 +1,6 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
-
 import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 

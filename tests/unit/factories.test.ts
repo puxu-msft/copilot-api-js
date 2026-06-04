@@ -88,7 +88,7 @@ describe("test factories", () => {
   })
 
   test("mockHTTPError creates an HTTPError with body", () => {
-    const error = mockHTTPError(429, "{\"error\":\"rate limited\"}")
+    const error = mockHTTPError(429, '{"error":"rate limited"}')
 
     expect(error).toBeInstanceOf(HTTPError)
     expect(error.status).toBe(429)

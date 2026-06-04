@@ -1,4 +1,8 @@
-import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
+import type {
+  //
+  MessageParam,
+  MessagesPayload,
+} from "~/types/api/anthropic"
 
 import { shouldPreserveThinkingBlocks } from "../thinking-immutability"
 

@@ -10,7 +10,10 @@
  * to avoid creating thousands of DOM nodes on initial render.
  */
 
-import { computed, ref } from "vue"
+import {
+computed,
+ref
+} from "vue";
 
 const props = defineProps<{
   /** HTML content to render (may include search highlights) */
@@ -24,9 +27,7 @@ const allLines = computed(() => props.html.split("\n"))
 
 const isTruncated = computed(() => !showAll.value && allLines.value.length > INITIAL_LINE_LIMIT)
 
-const lines = computed(() =>
-  isTruncated.value ? allLines.value.slice(0, INITIAL_LINE_LIMIT) : allLines.value,
-)
+const lines = computed(() => (isTruncated.value ? allLines.value.slice(0, INITIAL_LINE_LIMIT) : allLines.value))
 
 const hiddenCount = computed(() => allLines.value.length - INITIAL_LINE_LIMIT)
 </script>

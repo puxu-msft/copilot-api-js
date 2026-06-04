@@ -1,7 +1,15 @@
-import { setGitHubToken, state } from "~/lib/state"
+import {
+  //
+  setGitHubToken,
+  state,
+} from "~/lib/state"
 import { getGitHubUser } from "~/lib/token/github-client"
 
-import type { TokenInfo, TokenValidationResult } from "../types"
+import type {
+  //
+  TokenInfo,
+  TokenValidationResult,
+} from "../types"
 
 /**
  * Abstract base class for GitHub token providers.

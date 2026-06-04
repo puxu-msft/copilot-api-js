@@ -53,7 +53,7 @@ modelsRoutes.get("/", async (c) => {
 
     return c.json({
       object: "list",
-      data: state.models?.data.map(toOpenAIModel) ?? [],
+      data: state.models?.data.map((model) => toOpenAIModel(model)) ?? [],
     })
   } catch (error) {
     return forwardError(c, error)
@@ -99,7 +99,7 @@ internalModelsRoutes.get("/", async (c) => {
 
     return c.json({
       object: state.models?.object ?? "list",
-      data: state.models?.data.map(stripInternalFields) ?? [],
+      data: state.models?.data.map((model) => stripInternalFields(model)) ?? [],
     })
   } catch (error) {
     return forwardError(c, error)

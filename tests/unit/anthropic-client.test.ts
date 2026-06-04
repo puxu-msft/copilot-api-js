@@ -1,11 +1,12 @@
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
 import { HTTPError } from "~/lib/error"
 import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
-import type { MessagesPayload } from "~/types/api/anthropic"
 
 const originalFetch = globalThis.fetch
 
@@ -54,26 +55,28 @@ describe("anthropic client", () => {
   })
 
   test("returns JSON responses and captures sanitized headers", async () => {
-    const fetchMock = mock(async () =>
-      new Response(
-        JSON.stringify({
-          id: "msg_123",
-          type: "message",
-          role: "assistant",
-          model: "claude-sonnet-4.6",
-          content: [{ type: "text", text: "hello back" }],
-          stop_reason: "end_turn",
-          stop_sequence: null,
-          usage: {
-            input_tokens: 10,
-            output_tokens: 5,
+    const fetchMock = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "msg_123",
+            type: "message",
+            role: "assistant",
+            model: "claude-sonnet-4.6",
+            content: [{ type: "text", text: "hello back" }],
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+            },
+          }),
+          {
+            status: 200,
+            headers: { "x-request-id": "resp-1" },
           },
-        }),
-        {
-          status: 200,
-          headers: { "x-request-id": "resp-1" },
-        },
-      ))
+        ),
+    )
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
     const headersCapture: {
@@ -102,7 +105,8 @@ describe("anthropic client", () => {
       createSseResponse([
         'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4.6","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
         "data: [DONE]\n\n",
-      ])) as unknown as typeof fetch
+      ]),
+    ) as unknown as typeof fetch
 
     const result = await createAnthropicMessages(createPayload({ stream: true }))
     const iterator = (result as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()

@@ -1,11 +1,11 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
-
 import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { type StateSnapshot, restoreStateForTests, setModels, snapshotStateForTests } from "~/lib/state"
 import { prepareChatCompletionsRequest } from "~/lib/openai/request-preparation"
+import { type StateSnapshot, restoreStateForTests, setModels, snapshotStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"
@@ -128,7 +128,9 @@ describe("POST /chat/completions", () => {
     expect(await res.json()).toEqual({
       error: {
         message: 'Model "claude-sonnet-4.6" does not support the /chat/completions endpoint',
-        type: "error",
+        type: "api_error",
+        param: null,
+        code: null,
       },
     })
     expect(createChatCompletionsMock).not.toHaveBeenCalled()
@@ -224,8 +226,10 @@ describe("POST /chat/completions", () => {
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({
       error: {
-        type: "error",
+        type: "server_error",
         message: "upstream exploded",
+        param: null,
+        code: null,
       },
     })
   })

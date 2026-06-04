@@ -19,9 +19,7 @@ interface HeaderRow {
   diff: boolean
 }
 
-const requestRows = computed<Array<HeaderRow>>(() =>
-  mergeHeaders(props.inboundRequest, props.outboundRequest),
-)
+const requestRows = computed<Array<HeaderRow>>(() => mergeHeaders(props.inboundRequest, props.outboundRequest))
 
 const responseRows = computed<Array<HeaderRow>>(() => {
   // Response only has outbound (upstream → proxy) for now
@@ -32,24 +30,16 @@ const responseRows = computed<Array<HeaderRow>>(() => {
 })
 
 const hasRequest = computed(() => props.inboundRequest || props.outboundRequest)
-const hasResponse = computed(() => !!props.outboundResponse)
+const hasResponse = computed(() => Boolean(props.outboundResponse))
 
 /** Merge two header sets, sorted by name, with diff flags */
-function mergeHeaders(
-  left?: Record<string, string>,
-  right?: Record<string, string>,
-): Array<HeaderRow> {
-  const allKeys = new Set([
-    ...Object.keys(left ?? {}),
-    ...Object.keys(right ?? {}),
-  ])
-  return [...allKeys]
-    .sort()
-    .map((name) => {
-      const inbound = left?.[name]
-      const outbound = right?.[name]
-      return { name, inbound, outbound, diff: inbound !== outbound }
-    })
+function mergeHeaders(left?: Record<string, string>, right?: Record<string, string>): Array<HeaderRow> {
+  const allKeys = new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})])
+  return [...allKeys].sort().map((name) => {
+    const inbound = left?.[name]
+    const outbound = right?.[name]
+    return { name, inbound, outbound, diff: inbound !== outbound }
+  })
 }
 </script>
 

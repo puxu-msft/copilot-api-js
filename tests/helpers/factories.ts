@@ -4,9 +4,9 @@
 
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages"
 
-import type { Model } from "~/lib/models/client"
 import type { RequestContext } from "~/lib/context/request"
 import type { ApiError, ApiErrorType } from "~/lib/error"
+import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionChunk, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
@@ -111,9 +111,7 @@ export function mockAnthropicPayload(overrides?: Partial<MessagesPayload>): Mess
 /**
  * Create an assistant message with one or more tool_use blocks.
  */
-export function mockToolUseMessage(
-  tools: Array<{ id: string; name: string; input: unknown }>,
-): MessageParam {
+export function mockToolUseMessage(tools: Array<{ id: string; name: string; input: unknown }>): MessageParam {
   return {
     role: "assistant",
     content: tools.map((tool) => ({
@@ -128,9 +126,7 @@ export function mockToolUseMessage(
 /**
  * Create a user message with tool_result blocks.
  */
-export function mockToolResultMessage(
-  results: Array<{ tool_use_id: string; content: string }>,
-): MessageParam {
+export function mockToolResultMessage(results: Array<{ tool_use_id: string; content: string }>): MessageParam {
   return {
     role: "user",
     content: results.map((result) => ({

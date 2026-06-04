@@ -1,10 +1,10 @@
-import { defineConfig } from "vite"
 import vue from "@vitejs/plugin-vue"
-import vuetify from "vite-plugin-vuetify"
-import VueDevTools from "vite-plugin-vue-devtools"
+import { resolve } from "node:path"
 import AutoImport from "unplugin-auto-import/vite"
 import Components from "unplugin-vue-components/vite"
-import { resolve } from "path"
+import { defineConfig } from "vite"
+import VueDevTools from "vite-plugin-vue-devtools"
+import vuetify from "vite-plugin-vuetify"
 
 export default defineConfig(({ command }) => {
   const backendHost = process.env.COPILOT_API_HOST ?? "localhost"

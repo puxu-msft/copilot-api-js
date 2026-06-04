@@ -9,7 +9,15 @@
  *
  * This module tracks the canonical ID from `added` events and patches subsequent
  * events to use the same ID, ensuring consistency for downstream consumers.
+ *
+ * **Best-effort guarantee:** every public helper here returns the original
+ * `data` string unchanged on any parse failure. ID correction is an
+ * optimization for downstream clients — a single malformed frame must never
+ * abort the stream consumer that called us. Callers may sit outside the
+ * SSE-parse try/catch and rely on this contract.
  */
+
+import consola from "consola"
 
 export interface StreamIdTracker {
   /** output_index → canonical item ID from the "added" event */
@@ -30,12 +38,15 @@ export function fixStreamEventIds(data: string, eventType: string | undefined, t
   if (!data) return data
 
   switch (eventType) {
-    case "response.output_item.added":
+    case "response.output_item.added": {
       return handleOutputItemAdded(data, tracker)
-    case "response.output_item.done":
+    }
+    case "response.output_item.done": {
       return handleOutputItemDone(data, tracker)
-    default:
+    }
+    default: {
       return handleItemId(data, eventType, tracker)
+    }
   }
 }
 
@@ -49,7 +60,8 @@ interface AddedEventShape {
 }
 
 function handleOutputItemAdded(data: string, tracker: StreamIdTracker): string {
-  const parsed = JSON.parse(data) as AddedEventShape
+  const parsed = tryParse(data, "response.output_item.added") as AddedEventShape | undefined
+  if (!parsed) return data
 
   // Generate a stable ID if missing
   if (!parsed.item.id) {
@@ -72,7 +84,8 @@ interface DoneEventShape {
 }
 
 function handleOutputItemDone(data: string, tracker: StreamIdTracker): string {
-  const parsed = JSON.parse(data) as DoneEventShape
+  const parsed = tryParse(data, "response.output_item.done") as DoneEventShape | undefined
+  if (!parsed) return data
   const canonicalId = tracker.outputItems.get(parsed.output_index)
 
   if (canonicalId && parsed.item.id !== canonicalId) {
@@ -95,7 +108,8 @@ const ITEM_ID_EVENT_TYPES = new Set(["response.function_call_arguments.delta", "
 function handleItemId(data: string, eventType: string | undefined, tracker: StreamIdTracker): string {
   if (!eventType || !ITEM_ID_EVENT_TYPES.has(eventType)) return data
 
-  const parsed = JSON.parse(data) as IndexedEventShape
+  const parsed = tryParse(data, eventType) as IndexedEventShape | undefined
+  if (!parsed) return data
   if (parsed.output_index === undefined) return data
 
   const canonicalId = tracker.outputItems.get(parsed.output_index)
@@ -105,4 +119,25 @@ function handleItemId(data: string, eventType: string | undefined, tracker: Stre
   }
 
   return data
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Best-effort JSON.parse — returns `undefined` on failure so callers can fall
+ * back to passing the original `data` through unchanged. Logs at debug to keep
+ * malformed-frame incidents visible without spamming production logs.
+ */
+function tryParse(data: string, eventType: string): unknown {
+  try {
+    return JSON.parse(data)
+  } catch (err) {
+    consola.debug(
+      `[stream-id-sync] skipping ID correction for unparseable ${eventType} frame (${err instanceof Error ? err.message : String(err)}):`,
+      data.slice(0, 200),
+    )
+    return undefined
+  }
 }

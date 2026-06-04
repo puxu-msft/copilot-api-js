@@ -2,14 +2,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "
 
 import type { HistoryEntry, HistoryStats } from "~/lib/history"
 
-import {
-  clearHistory,
-  getCurrentSession,
-  initHistory,
-  insertEntry,
-} from "~/lib/history"
+import { clearHistory, getCurrentSession, initHistory, insertEntry } from "~/lib/history"
 import { _resetRequestTelemetryForTests, recordAcceptedRequest, recordSettledRequest } from "~/lib/request-telemetry"
-import { type StateSnapshot, restoreStateForTests, setModels, setStateForTests, snapshotStateForTests } from "~/lib/state"
+import {
+  type StateSnapshot,
+  restoreStateForTests,
+  setModels,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"
@@ -85,9 +86,11 @@ interface StatusResponseBody {
     copilotTokenExpiresAt: number | null
   }
   quota: {
-    plan: string
-    resetDate: string
-  } | null
+    status: "ok" | "no_data" | "error"
+    plan?: string
+    resetDate?: string | null
+    error?: string
+  }
   activeRequests: {
     count: number
   }
@@ -202,7 +205,9 @@ describe("management and history HTTP routes", () => {
   })
 
   test("GET /api/status returns aggregated server status with quota data", async () => {
-    const now = Date.UTC(2026, 3, 1, 12, 0, 0)
+    // Use a recent timestamp so the recorded telemetry stays inside the 7-day
+    // window — getRequestTelemetrySnapshot() prunes against the wall clock.
+    const now = Date.now()
     recordAcceptedRequest(now)
     recordSettledRequest("claude-sonnet-4.6", {
       startedAt: now,
@@ -235,6 +240,7 @@ describe("management and history HTTP routes", () => {
       tokenSource: "cli",
     })
     expect(body.quota).toMatchObject({
+      status: "ok",
       plan: "individual",
       resetDate: "2026-04-01",
     })

@@ -81,6 +81,18 @@ export class AdaptiveRateLimiter {
   private recoveryStepIndex = 0
   /** Abort controller for cancelling pending sleeps during shutdown */
   private sleepAbortController = new AbortController()
+  /**
+   * Monotonically-advancing earliest-allowed-start timestamp for the NEXT
+   * recovering-mode request. Implements a leaky-bucket admission gate: each
+   * concurrent caller atomically reserves a slot by computing
+   * `start = max(now, nextAvailableAt)` and then bumping
+   * `nextAvailableAt = start + interval`. Without this, N concurrent
+   * recovering-mode callers all read the same `lastRequestTime`, sleep to
+   * the same target, and fire simultaneously — gradual ramp-up is then
+   * pointless and the first batch immediately re-trips the 429 boundary,
+   * pinning the limiter back into rate-limited mode forever.
+   */
+  private recoveringNextAvailableAt = 0
 
   constructor(config: Partial<AdaptiveRateLimiterConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -120,13 +132,13 @@ export class AdaptiveRateLimiter {
         try {
           const parsed: unknown = JSON.parse(error.responseText)
           if (
-            parsed &&
-            typeof parsed === "object" &&
-            "error" in parsed &&
-            parsed.error &&
-            typeof parsed.error === "object" &&
-            "code" in parsed.error &&
-            parsed.error.code === "rate_limited"
+            parsed
+            && typeof parsed === "object"
+            && "error" in parsed
+            && parsed.error
+            && typeof parsed.error === "object"
+            && "code" in parsed.error
+            && parsed.error.code === "rate_limited"
           ) {
             return { isRateLimit: true }
           }
@@ -153,13 +165,13 @@ export class AdaptiveRateLimiter {
         }
         // Also check nested error.retry_after
         if (
-          parsed &&
-          typeof parsed === "object" &&
-          "error" in parsed &&
-          parsed.error &&
-          typeof parsed.error === "object" &&
-          "retry_after" in parsed.error &&
-          typeof parsed.error.retry_after === "number"
+          parsed
+          && typeof parsed === "object"
+          && "error" in parsed
+          && parsed.error
+          && typeof parsed.error === "object"
+          && "retry_after" in parsed.error
+          && typeof parsed.error.retry_after === "number"
         ) {
           return parsed.error.retry_after
         }
@@ -190,39 +202,69 @@ export class AdaptiveRateLimiter {
   }
 
   /**
-   * Execute in recovering mode - gradual speedup
+   * Execute in recovering mode — gradual speedup with concurrency-safe pacing.
+   *
+   * Concurrency model — two independent guarantees:
+   *
+   *   1. Pacing: each caller atomically reserves a "slot" in a leaky-bucket
+   *      admission gate. The reservation is synchronous (no `await` between
+   *      reading `recoveringNextAvailableAt` and writing it back), so N
+   *      concurrent callers get N consecutive slots spaced by the current
+   *      ramp-up interval. Sleeping happens AFTER reservation, so each caller
+   *      waits its own dedicated quantum instead of all racing the same wakeup.
+   *
+   *   2. Step advancement: each caller captures the step index it observed at
+   *      reservation time. After fn() succeeds, we ONLY advance the global
+   *      `recoveryStepIndex` if it is still equal to the captured value —
+   *      i.e. this caller is the first completion of its step. Without this
+   *      guard, N successful completions at the same step would `++` the
+   *      index N times and short-circuit ramp-up to `completeRecovery()` on
+   *      the first round of concurrency (defeating the whole point of a
+   *      multi-step ramp).
    */
   private async executeInRecoveringMode<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
     const startTime = Date.now()
-    const currentInterval = this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
+    const reservedStepIndex = this.recoveryStepIndex
+    const currentInterval = this.config.gradualRecoverySteps[reservedStepIndex] ?? 0
+    const intervalMs = currentInterval * 1000
 
-    // Wait for the current recovery interval
-    if (currentInterval > 0) {
-      const now = Date.now()
-      const elapsedMs = now - this.lastRequestTime
-      const requiredMs = currentInterval * 1000
+    // ── Synchronous slot reservation ──
+    // The first caller after entering recovering mode sees nextAvailableAt = 0
+    // and starts immediately. Each subsequent concurrent caller is pushed out
+    // by `intervalMs` from the prior reservation. After `await`, the read-
+    // modify-write must NOT happen, so all state mutation is colocated here.
+    const now = Date.now()
+    const slotStart = Math.max(now, this.recoveringNextAvailableAt)
+    this.recoveringNextAvailableAt = slotStart + intervalMs
+    // Note: `lastRequestTime` deliberately holds the SCHEDULED start (which may
+    // be in the future). It's only consulted by processQueue() on a rate-limit
+    // rebound to space the first requeued request; "next allowed time" is the
+    // correct semantic for that read.
+    this.lastRequestTime = slotStart
 
-      if (this.lastRequestTime > 0 && elapsedMs < requiredMs) {
-        const waitMs = requiredMs - elapsedMs
-        await this.sleep(waitMs)
-      }
+    const waitMs = slotStart - now
+    if (waitMs > 0) {
+      await this.sleep(waitMs)
     }
-
-    this.lastRequestTime = Date.now()
 
     try {
       const result = await fn()
 
-      // Success - advance recovery step
-      this.recoveryStepIndex++
-      if (this.recoveryStepIndex >= this.config.gradualRecoverySteps.length) {
-        this.completeRecovery()
-      } else {
-        const nextInterval = this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
-        consola.info(
-          `[RateLimiter] Ramp-up step ${this.recoveryStepIndex}/${this.config.gradualRecoverySteps.length} ` +
-            `(next interval: ${nextInterval}s)`,
-        )
+      // Step advancement guard: only the first caller of THIS step advances
+      // the index. If another caller already advanced past `reservedStepIndex`,
+      // we silently skip — that caller has already logged the transition and
+      // we don't want to double-advance.
+      if (this.recoveryStepIndex === reservedStepIndex) {
+        this.recoveryStepIndex++
+        if (this.recoveryStepIndex >= this.config.gradualRecoverySteps.length) {
+          this.completeRecovery()
+        } else {
+          const nextInterval = this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
+          consola.info(
+            `[RateLimiter] Ramp-up step ${this.recoveryStepIndex}/${this.config.gradualRecoverySteps.length} `
+              + `(next interval: ${nextInterval}s)`,
+          )
+        }
       }
 
       const queueWaitMs = Date.now() - startTime
@@ -230,7 +272,13 @@ export class AdaptiveRateLimiter {
     } catch (error) {
       const { isRateLimit, retryAfter } = this.isRateLimitError(error)
       if (isRateLimit) {
-        // Back to rate-limited mode
+        // Back to rate-limited mode. Note: any callers that were behind us in
+        // the leaky-bucket gate (reserved slots > slotStart) will still wake
+        // and call fn() directly — they won't go through the rate-limited
+        // queue. They'll likely hit 429 too and individually fall back. This
+        // is a known limitation: the gate doesn't notify reservations that
+        // mode has changed; the first failure simply re-arms rate-limited
+        // mode for *future* execute() calls.
         consola.warn("[RateLimiter] Hit rate limit during ramp-up, returning to rate-limited mode")
         this.enterRateLimitedMode()
         return this.enqueue(fn, retryAfter)
@@ -251,8 +299,8 @@ export class AdaptiveRateLimiter {
     this.consecutiveSuccesses = 0
 
     consola.warn(
-      `[RateLimiter] Entering rate-limited mode. ` +
-        `Requests will be queued with exponential backoff (base: ${this.config.baseRetryIntervalSeconds}s).`,
+      `[RateLimiter] Entering rate-limited mode. `
+        + `Requests will be queued with exponential backoff (base: ${this.config.baseRetryIntervalSeconds}s).`,
     )
     notifyRateLimiterChanged({
       mode: this.mode,
@@ -295,11 +343,16 @@ export class AdaptiveRateLimiter {
     this.recoveryStepIndex = 0
     this.rateLimitedAt = null
     this.consecutiveSuccesses = 0
+    // Reset the leaky-bucket gate so the first recovering-mode call has no
+    // historical pacing debt to wait off. Without this, a long rate-limited
+    // period leaves nextAvailableAt at its last value (possibly in the past,
+    // which is harmless), but resetting makes the semantics explicit.
+    this.recoveringNextAvailableAt = 0
 
     const firstInterval = this.config.gradualRecoverySteps[0] ?? 0
     consola.info(
-      `[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, ` +
-        `first interval: ${firstInterval}s)`,
+      `[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, `
+        + `first interval: ${firstInterval}s)`,
     )
     notifyRateLimiterChanged({
       mode: this.mode,
@@ -378,11 +431,17 @@ export class AdaptiveRateLimiter {
     while (this.queue.length > 0) {
       const request = this.queue[0]
 
-      // Check if we should try recovery before processing
-      if (this.shouldAttemptRecovery()) {
+      // Check if we should try recovery before processing.
+      // Guard on `mode === "rate-limited"` so the recovery transition fires at
+      // most once per rate-limit episode. Without this guard, every additional
+      // `consecutiveSuccessesForRecovery` successes in the queue drain would
+      // re-trigger startGradualRecovery() — producing repeated "Starting
+      // ramp-up" logs and WS notifications, and resetting recoveryStepIndex to
+      // 0 over and over. After the transition, the queue continues to drain at
+      // the normal interval; ramp-up actually applies to *new* requests coming
+      // in via execute() → executeInRecoveringMode (queue is empty by then).
+      if (this.mode === "rate-limited" && this.shouldAttemptRecovery()) {
         this.startGradualRecovery()
-        // Continue processing remaining queue items in recovering mode
-        // But first, let the current queue drain
       }
 
       // Calculate wait time based on whether this is a retry or new request
@@ -430,8 +489,8 @@ export class AdaptiveRateLimiter {
           const nextInterval = this.calculateRetryInterval(request)
           const source = retryAfter ? "server Retry-After" : "exponential backoff"
           consola.warn(
-            `[RateLimiter] Request failed with 429 (retry #${request.retryCount}). ` +
-              `Retrying in ${nextInterval}s (${source})...`,
+            `[RateLimiter] Request failed with 429 (retry #${request.retryCount}). `
+              + `Retrying in ${nextInterval}s (${source})...`,
           )
         } else {
           // Other error, fail this request and continue with queue
@@ -528,6 +587,16 @@ export class AdaptiveRateLimiter {
       rateLimitedAt: this.rateLimitedAt,
     })
   }
+
+  /**
+   * Testing-only: jump directly into recovering mode at step 0.
+   * Lets the H3 concurrency regression test exercise executeInRecoveringMode
+   * without first round-tripping through the rate-limited queue (which would
+   * require waiting baseRetryIntervalSeconds before any request drains).
+   */
+  _enterRecoveringModeForTesting(): void {
+    this.startGradualRecovery()
+  }
 }
 
 /** Singleton instance */
@@ -550,9 +619,9 @@ export function initAdaptiveRateLimiter(config: Partial<AdaptiveRateLimiterConfi
   const steps = config.gradualRecoverySteps ?? DEFAULT_CONFIG.gradualRecoverySteps
 
   consola.info(
-    `[RateLimiter] Initialized (backoff: ${baseRetry}s-${maxRetry}s, ` +
-      `interval: ${interval}s, recovery: ${recovery}min or ${successes} successes, ` +
-      `gradual: [${steps.join("s, ")}s])`,
+    `[RateLimiter] Initialized (backoff: ${baseRetry}s-${maxRetry}s, `
+      + `interval: ${interval}s, recovery: ${recovery}min or ${successes} successes, `
+      + `gradual: [${steps.join("s, ")}s])`,
   )
 }
 

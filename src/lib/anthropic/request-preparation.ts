@@ -3,17 +3,36 @@ import consola from "consola"
 import type { Model } from "~/lib/models/client"
 
 import { copilotHeaders } from "~/lib/copilot-api"
-import { setAnthropicBehavior, state } from "~/lib/state"
-import { type MessagesPayload, type OutputConfig, type Tool, EFFORT_LEVELS } from "~/types/api/anthropic"
-
-import { isAnthropicFeatureUnsupported } from "./feature-negotiation"
+import { state } from "~/lib/state"
 import {
+  //
+  type MessagesPayload,
+  type OutputConfig,
+  type Tool,
+  EFFORT_LEVELS,
+} from "~/types/api/anthropic"
+
+import {
+  //
+  getSupportedEfforts,
+  getUnsupportedFeatures,
+  isAnthropicBetaUnsupported,
+  isAnthropicFeatureUnsupported,
+  setSupportedEfforts,
+} from "./feature-negotiation"
+import {
+  //
   buildAnthropicBetaHeaders,
   buildContextManagement,
   isContextEditingEnabled,
   mergeAnthropicBeta,
 } from "./features"
 import { stripServerTools } from "./message-tools"
+import {
+  //
+  collectAllMatching,
+  findMostSpecific,
+} from "./per-model-config"
 
 export interface PreparedAnthropicRequest {
   wire: Record<string, unknown>
@@ -28,17 +47,98 @@ interface PrepareAnthropicRequestOptions {
    * Mirrors GHC #4945 fix.
    */
   clientAnthropicBeta?: string
+  /**
+   * Per-attempt overrides supplied by retry strategies (see PrepareHints in
+   * lib/request/pipeline.ts). These are unioned with the persistent
+   * negotiation cache results during filtering, so the retry caller gets
+   * deterministic exclusion of THIS attempt without depending on the cache
+   * having been written by a prior strategy.
+   */
+  excludeBetas?: ReadonlyArray<string>
+  rejectFields?: ReadonlyArray<string>
 }
 
-const COPILOT_REJECTED_FIELDS = new Set(["inference_geo"])
+/**
+ * Built-in body fields the Copilot upstream historically rejects.
+ * Merged with config `rejectBodyFields` (per-model) and runtime-learned
+ * negotiation cache entries.
+ */
+const BUILTIN_REJECTED_FIELDS: ReadonlyArray<string> = ["inference_geo"]
 const CACHE_CONTROL_BREAKPOINT_LIMIT = 4
 const EPHEMERAL_CACHE_CONTROL = { type: "ephemeral" } as const
+
+/**
+ * Collect the full set of body fields to strip for `modelName`:
+ *   - built-in defaults (e.g. inference_geo)
+ *   - config-sourced `anthropic.reject_body_fields` (per-model substring, `"*"` = all)
+ *   - runtime-learned negotiation cache (per-(endpoint, model))
+ *
+ * Use `getUnsupportedFeatures(model)` rather than per-field probing so this
+ * stays O(1) over the negotiation map size.
+ */
+function collectRejectedFields(modelName: string): Set<string> {
+  const reject = new Set<string>(BUILTIN_REJECTED_FIELDS)
+  for (const fields of collectAllMatching(modelName, state.rejectBodyFields)) {
+    for (const field of fields) reject.add(field)
+  }
+  for (const field of getUnsupportedFeatures(modelName)) reject.add(field)
+  return reject
+}
+
+/**
+ * Return the set of beta tokens that should be stripped for `modelName`,
+ * combining config-sourced `stripBetaHeaders` and runtime-learned entries.
+ * The pseudo-key `"*"` in config applies to every model.
+ */
+function collectStripBetas(modelName: string): Set<string> {
+  const strip = new Set<string>()
+  for (const tokens of collectAllMatching(modelName, state.stripBetaHeaders)) {
+    for (const token of tokens) strip.add(token)
+  }
+  return strip
+}
+
+/**
+ * Drop beta tokens that are known-unsupported for `modelName`. Returns the
+ * filtered comma-separated header value, or `undefined` if nothing remains.
+ *
+ * Filter sources, unioned:
+ *   - Config `stripBetaHeaders` (per-model + wildcard "*")
+ *   - Persistent negotiation cache (runtime-learned across requests)
+ *   - `excludeBetas` — per-attempt hint passed from a retry strategy via
+ *     `PrepareHints.excludeBetas`. Makes intra-retry exclusion deterministic
+ *     without depending on cache having been written.
+ */
+export function filterUnsupportedBetas(
+  modelName: string,
+  merged: string | undefined,
+  excludeBetas?: ReadonlyArray<string>,
+): string | undefined {
+  if (!merged) return undefined
+  const configStrip = collectStripBetas(modelName)
+  const hintStrip = new Set(excludeBetas ?? [])
+  const kept: Array<string> = []
+  const dropped: Array<string> = []
+  for (const raw of merged.split(",")) {
+    const token = raw.trim()
+    if (!token) continue
+    if (configStrip.has(token) || hintStrip.has(token) || isAnthropicBetaUnsupported(modelName, token)) {
+      dropped.push(token)
+      continue
+    }
+    kept.push(token)
+  }
+  if (dropped.length > 0) {
+    consola.debug(`[DirectAnthropic] Stripped unsupported beta(s) for ${modelName}: ${dropped.join(", ")}`)
+  }
+  return kept.length > 0 ? kept.join(",") : undefined
+}
 
 export function prepareAnthropicRequest(
   payload: MessagesPayload,
   opts?: PrepareAnthropicRequestOptions,
 ): PreparedAnthropicRequest {
-  const wire = buildWirePayload(payload)
+  const wire = buildWirePayload(payload, opts?.rejectFields)
   adjustThinkingBudget(wire, opts?.resolvedModel)
   clampEffortLevel(wire, opts?.resolvedModel)
   applyCacheControlMode(wire)
@@ -54,6 +154,11 @@ export function prepareAnthropicRequest(
 
   const isAgentCall = messages.some((msg) => msg.role === "assistant")
   const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
+  // context_management body field is stripped by buildWirePayload when the negotiation
+  // cache or rejectBodyFields config marks it unsupported. We also need to suppress
+  // the matching beta header and any subsequent auto-injection by the contextEditingMode
+  // logic. The signal source is the negotiation cache (config-driven strip implies
+  // the operator already knows it's unsupported but is independent of the cache).
   const contextManagementDisabled =
     wire.context_management === null || isAnthropicFeatureUnsupported(model, "context_management")
 
@@ -65,6 +170,7 @@ export function prepareAnthropicRequest(
     disableContextManagement: contextManagementDisabled,
   })
   const mergedBeta = mergeAnthropicBeta(opts?.clientAnthropicBeta, localBeta["anthropic-beta"])
+  const filteredBeta = filterUnsupportedBetas(model, mergedBeta, opts?.excludeBetas)
 
   const headers: Record<string, string> = {
     ...copilotHeaders(state, {
@@ -75,7 +181,7 @@ export function prepareAnthropicRequest(
     "X-Initiator": isAgentCall ? "agent" : "user",
     "anthropic-version": "2023-06-01",
   }
-  if (mergedBeta) headers["anthropic-beta"] = mergedBeta
+  if (filteredBeta) headers["anthropic-beta"] = filteredBeta
 
   if (!contextManagementDisabled && !("context_management" in wire) && isContextEditingEnabled(model)) {
     const hasThinking = Boolean(thinking && thinking.type !== "disabled")
@@ -89,13 +195,32 @@ export function prepareAnthropicRequest(
   return { wire, headers }
 }
 
-function buildWirePayload(payload: MessagesPayload): Record<string, unknown> {
+function buildWirePayload(payload: MessagesPayload, rejectFields?: ReadonlyArray<string>): Record<string, unknown> {
   const wire: Record<string, unknown> = {}
+  const rejected = collectRejectedFields(payload.model)
+  if (rejectFields) {
+    for (const f of rejectFields) rejected.add(f)
+  }
   const rejectedFields: Array<string> = []
 
+  // Fields that prepare-time transforms (applyCacheControlMode,
+  // stripServerTools, clampEffortLevel, adjustThinkingBudget, etc.) mutate
+  // via walkCacheControlArray, direct splice, or property assignment.
+  // Without deep-cloning these into the wire object, the mutations leak back
+  // into the caller's payload — and on retry, the next prep step sees an
+  // already-stripped / already-clamped payload, accumulating losses across
+  // attempts.
+  //
+  // Add to this set whenever a new mutate-in-place transform targets a
+  // nested payload field; the set is the single source of "what wire owns
+  // exclusively" so we don't grow an ad-hoc collection of one-off clones.
+  const DEEP_CLONE_FIELDS = new Set(["messages", "system", "tools", "output_config", "thinking"])
+
   for (const [key, value] of Object.entries(payload)) {
-    if (COPILOT_REJECTED_FIELDS.has(key)) {
+    if (rejected.has(key)) {
       rejectedFields.push(key)
+    } else if (DEEP_CLONE_FIELDS.has(key) && value !== undefined && value !== null) {
+      wire[key] = structuredClone(value)
     } else {
       wire[key] = value
     }
@@ -176,25 +301,20 @@ export function parseInvalidEffortError(responseText: string): { modelName: stri
 }
 
 /**
- * Dynamically update learnedEffortsOverrides from an upstream `invalid_reasoning_effort` error.
- * Adds/overwrites the entry for the exact model name (in-memory only, not persisted).
- * Config-sourced `effortsOverrides` remains untouched. Returns true if the state was updated.
- * Emits an info-level log on first-time learning (visible in TUI as `[INFO]`).
+ * Dynamically record per-model effort whitelists discovered from upstream
+ * `invalid_reasoning_effort` errors. Persisted via the negotiation cache.
+ * Config-sourced `effortsOverrides` remains untouched. Returns true if the
+ * cache was updated (first-time learn or value changed).
  */
 export function learnEffortsFromError(responseText: string): boolean {
   const parsed = parseInvalidEffortError(responseText)
   if (!parsed) return false
 
-  const current = state.learnedEffortsOverrides
-  const existing = current[parsed.modelName]
+  const existing = getSupportedEfforts(parsed.modelName)
   const isFirstLearn = !existing
-  // Skip if the existing entry already matches
-  if (existing && existing.length === parsed.supported.length && existing.every((e, i) => e === parsed.supported[i])) {
-    return false
-  }
+  const changed = setSupportedEfforts(parsed.modelName, parsed.supported)
+  if (!changed) return false
 
-  const next = { ...current, [parsed.modelName]: parsed.supported }
-  setAnthropicBehavior({ learnedEffortsOverrides: next })
   if (isFirstLearn) {
     consola.info(
       `[DirectAnthropic] Learned supported efforts for ${parsed.modelName}: [${parsed.supported.join(", ")}]`,
@@ -211,33 +331,72 @@ export function learnEffortsFromError(responseText: string): boolean {
  * Find the supported-effort whitelist for a given model name.
  *
  * Priority (highest → lowest):
- *   1. Config-sourced `effortsOverrides` (explicit operator override)
- *   2. Runtime-learned entries (observed via `invalid_reasoning_effort` errors)
- *   3. Model metadata `capabilities.supports.reasoning_effort` (upstream declaration)
+ *   1. Config-sourced `effortsOverrides` (explicit operator override).
+ *      Matched via most-specific key (longest substring); the pseudo-key `"*"`
+ *      is a wildcard fallback. Switching from union to most-specific avoids the
+ *      bug where a shorter family key (e.g. `claude-opus-4.7`) would shadow a
+ *      stricter variant-specific entry (e.g. `claude-opus-4.7-high`).
+ *   2. Runtime-learned entries from the negotiation cache (persisted).
+ *   3. Model metadata `capabilities.supports.reasoning_effort` (upstream declaration).
  *
  * Reading metadata as a fallback lets us skip the first-round 400 for models
  * that declare effort support upfront (mirrors GHC #5010 precheck), while still
  * allowing operators to override via config when metadata is inaccurate.
+ *
+ * Cross-validation: when config or learned values include efforts not declared
+ * by the model metadata, those out-of-range entries are dropped and warned.
+ * Operator intent is preserved for values that ARE in the metadata; only the
+ * unsupported tail is trimmed. If the intersection is empty (operator wrote a
+ * whitelist that the model rejects entirely), we trust the metadata over the
+ * stale config to avoid guaranteed 400s.
  */
 export function findSupportedEfforts(modelName: string, resolvedModel?: Model): Array<string> | undefined {
-  // Check config first
-  for (const [pattern, supported] of Object.entries(state.effortsOverrides)) {
-    if (modelName.includes(pattern) && supported.length > 0) {
-      return supported
-    }
+  const rawMetadata = resolvedModel?.capabilities?.supports?.reasoning_effort
+  const metadataEfforts = Array.isArray(rawMetadata) && rawMetadata.length > 0 ? rawMetadata : undefined
+  const metadataSet = metadataEfforts ? new Set(metadataEfforts) : undefined
+
+  const fromConfig = findMostSpecific(modelName, state.effortsOverrides)
+  if (fromConfig && fromConfig.length > 0) {
+    return reconcileWithMetadata(fromConfig, metadataSet, modelName, "config")
   }
-  // Fall back to runtime-learned
-  for (const [pattern, supported] of Object.entries(state.learnedEffortsOverrides)) {
-    if (modelName.includes(pattern) && supported.length > 0) {
-      return supported
-    }
+  const learned = getSupportedEfforts(modelName)
+  if (learned && learned.length > 0) {
+    return reconcileWithMetadata(learned, metadataSet, modelName, "learned")
   }
-  // Last resort: model metadata (from /models API)
-  const metadataEfforts = resolvedModel?.capabilities?.supports?.reasoning_effort
-  if (Array.isArray(metadataEfforts) && metadataEfforts.length > 0) {
-    return metadataEfforts
-  }
+  if (metadataEfforts) return metadataEfforts
   return undefined
+}
+
+/**
+ * Intersect a configured/learned effort whitelist with the model's declared
+ * metadata set, logging any out-of-range entries. Returns the intersection
+ * when non-empty; otherwise falls back to the metadata list (or the original
+ * whitelist if metadata is unavailable).
+ */
+function reconcileWithMetadata(
+  whitelist: Array<string>,
+  metadataSet: Set<string> | undefined,
+  modelName: string,
+  source: "config" | "learned",
+): Array<string> {
+  if (!metadataSet) return whitelist
+  const kept: Array<string> = []
+  const dropped: Array<string> = []
+  for (const effort of whitelist) {
+    if (metadataSet.has(effort)) kept.push(effort)
+    else dropped.push(effort)
+  }
+  if (dropped.length === 0) return whitelist
+  if (kept.length === 0) {
+    consola.warn(
+      `[DirectAnthropic] ${source} effort whitelist for ${modelName} has no overlap with model metadata [${[...metadataSet].join(", ")}]; falling back to metadata. Dropped: [${dropped.join(", ")}]`,
+    )
+    return [...metadataSet]
+  }
+  consola.warn(
+    `[DirectAnthropic] ${source} effort whitelist for ${modelName} dropped out-of-range values [${dropped.join(", ")}] not in model metadata [${[...metadataSet].join(", ")}]`,
+  )
+  return kept
 }
 
 /**
@@ -318,6 +477,12 @@ function applyCacheControlMode(wire: Record<string, unknown>): void {
       // only proxy-controlled breakpoints exist in the final payload.
       walkCacheControl(wire, () => undefined)
       addToolsAndSystemCacheControl(wire)
+      break
+    }
+    default: {
+      // Exhaustive switch over CacheControlMode union; future modes added to the
+      // type must update this switch — `default` is a safety net for runtime
+      // values from configs that bypass type checking.
       break
     }
   }
@@ -440,7 +605,9 @@ function walkCacheControl(
 }
 
 function walkCacheControlArray(
-  items: Array<Record<string, unknown>>,
+  // Runtime data: items may include null / non-objects coming from JSON.parse
+  // even though our internal type narrows them, so accept `unknown`-ish entries.
+  items: Array<Record<string, unknown> | null | undefined>,
   handler: (current: unknown) => { type: string } | undefined,
 ): void {
   for (const item of items) {

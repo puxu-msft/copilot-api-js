@@ -1,6 +1,15 @@
-import type { ContentBlockParam, MessageParam, UserMessage } from "~/types/api/anthropic"
+import type {
+  //
+  ContentBlockParam,
+  MessageParam,
+  UserMessage,
+} from "~/types/api/anthropic"
 
-import { extractLeadingSystemReminderTags, extractTrailingSystemReminderTags } from "~/lib/system-prompt"
+import {
+  //
+  extractLeadingSystemReminderTags,
+  extractTrailingSystemReminderTags,
+} from "~/lib/system-prompt"
 
 /**
  * Strip ALL `<system-reminder>` tags from Read tool results.
@@ -29,7 +38,7 @@ export function stripReadToolResultTags(messages: Array<MessageParam>): {
   const result = messages.map((msg) => {
     if (msg.role !== "user" || typeof msg.content === "string") return msg
 
-    let modified = false
+    let modified = false as boolean
     const newContent = msg.content.map((block) => {
       if (block.type !== "tool_result" || !readToolUseIds.has(block.tool_use_id)) {
         return block
@@ -67,7 +76,7 @@ function stripAllSystemReminderTags(content: string | Array<{ type: string; text
 
   let totalTagCount = 0
   const allPreviews: Array<string> = []
-  let modified = false
+  let modified = false as boolean
   const result = content.map((block) => {
     if (block.type !== "text" || !block.text) return block
     const stripped = stripAllTagsFromString(block.text)

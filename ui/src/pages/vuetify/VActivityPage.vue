@@ -16,7 +16,10 @@ import {
   tokenOut,
   truncPreview,
 } from "@/utils/activity-helpers"
-import { formatDuration, formatTime } from "@/utils/formatters"
+import {
+formatDuration,
+formatTime
+} from "@/utils/formatters";
 
 const router = useRouter()
 const store = useHistoryStore()
@@ -340,13 +343,29 @@ function onStatusFilter(value: string | null): void {
   background: rgb(var(--v-theme-primary) / 6%);
 }
 
-.col-status { width: 28px; }
-.col-time { width: 68px; }
-.col-model { width: 200px; max-width: 200px; }
-.col-endpoint { width: 92px; }
-.col-state { width: 80px; }
-.col-dur, .col-token { width: 56px; }
-.col-preview { max-width: 0; }
+.col-status {
+  width: 28px;
+}
+.col-time {
+  width: 68px;
+}
+.col-model {
+  width: 200px;
+  max-width: 200px;
+}
+.col-endpoint {
+  width: 92px;
+}
+.col-state {
+  width: 80px;
+}
+.col-dur,
+.col-token {
+  width: 56px;
+}
+.col-preview {
+  max-width: 0;
+}
 
 .truncate-inline,
 .preview-text {
@@ -371,11 +390,26 @@ function onStatusFilter(value: string | null): void {
   text-transform: uppercase;
 }
 
-.status-pill-completed { background: rgb(var(--v-theme-success) / 14%); color: rgb(var(--v-theme-success)); }
-.status-pill-failed { background: rgb(var(--v-theme-error) / 14%); color: rgb(var(--v-theme-error)); }
-.status-pill-pending { background: rgb(var(--v-theme-secondary) / 14%); color: rgb(var(--v-theme-secondary)); }
-.status-pill-executing { background: rgb(var(--v-theme-warning) / 14%); color: rgb(var(--v-theme-warning)); }
-.status-pill-streaming { background: rgb(var(--v-theme-info) / 14%); color: rgb(var(--v-theme-info)); }
+.status-pill-completed {
+  background: rgb(var(--v-theme-success) / 14%);
+  color: rgb(var(--v-theme-success));
+}
+.status-pill-failed {
+  background: rgb(var(--v-theme-error) / 14%);
+  color: rgb(var(--v-theme-error));
+}
+.status-pill-pending {
+  background: rgb(var(--v-theme-secondary) / 14%);
+  color: rgb(var(--v-theme-secondary));
+}
+.status-pill-executing {
+  background: rgb(var(--v-theme-warning) / 14%);
+  color: rgb(var(--v-theme-warning));
+}
+.status-pill-streaming {
+  background: rgb(var(--v-theme-info) / 14%);
+  color: rgb(var(--v-theme-info));
+}
 
 .pagination-bar {
   display: flex;

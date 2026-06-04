@@ -4,10 +4,21 @@
  * Tests: sanitizeOpenAIMessages
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
-import { state, setStateForTests } from "~/lib/state"
+import {
+  //
+  state,
+  setStateForTests,
+} from "~/lib/state"
 
 describe("sanitizeOpenAIMessages", () => {
   test("returns unchanged payload when no orphans", () => {
@@ -130,5 +141,62 @@ describe("sanitizeOpenAIMessages", () => {
     const result = sanitizeOpenAIMessages(payload)
     expect(result.payload.messages).toHaveLength(4)
     expect(result.blocksRemoved).toBe(0)
+  })
+
+  test("drops a message whose entire content was system-reminder noise (M8)", () => {
+    // M8: pre-fix behavior was "keep original if sanitized is empty" — the
+    // most clearly-noise message survived. Post-fix: empty result deletes
+    // the message, matching Anthropic-side prune semantics and what users
+    // configured rewrite rules to do.
+    const saved = state.rewriteSystemReminders
+    setStateForTests({ rewriteSystemReminders: true })
+    try {
+      // The reminder grammar requires \n<TAG>\n...\n</TAG> framing; build a
+      // message whose entire payload is exactly one reminder so sanitization
+      // produces an empty string.
+      const reminder = "\n<system-reminder>\nnoise\n</system-reminder>"
+      const payload: ChatCompletionsPayload = {
+        model: "gpt-5.2",
+        messages: [
+          { role: "user", content: "real message" },
+          { role: "user", content: reminder },
+          { role: "assistant", content: "ok" },
+        ],
+      }
+
+      const result = sanitizeOpenAIMessages(payload)
+      const contents = result.payload.messages.map((m) => (typeof m.content === "string" ? m.content : "[parts]"))
+      expect(contents).not.toContain(reminder)
+      expect(contents).toContain("real message")
+      expect(contents).toContain("ok")
+      expect(result.systemReminderRemovals).toBeGreaterThan(0)
+    } finally {
+      setStateForTests({ rewriteSystemReminders: saved })
+    }
+  })
+
+  test("drops a message whose array content sanitizes to zero parts (M8)", () => {
+    const saved = state.rewriteSystemReminders
+    setStateForTests({ rewriteSystemReminders: true })
+    try {
+      const reminder = "\n<system-reminder>\nnoise\n</system-reminder>"
+      const payload: ChatCompletionsPayload = {
+        model: "gpt-5.2",
+        messages: [
+          { role: "user", content: "first" },
+          {
+            role: "user",
+            content: [{ type: "text" as const, text: reminder }],
+          },
+          { role: "assistant", content: "last" },
+        ],
+      }
+
+      const result = sanitizeOpenAIMessages(payload)
+      expect(result.payload.messages).toHaveLength(2)
+      expect(result.systemReminderRemovals).toBeGreaterThan(0)
+    } finally {
+      setStateForTests({ rewriteSystemReminders: saved })
+    }
   })
 })

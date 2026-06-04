@@ -23,27 +23,20 @@ import { bytesToKB } from "~/lib/utils"
 import type { AutoTruncateConfig } from "../auto-truncate"
 
 import {
+  //
   DEFAULT_AUTO_TRUNCATE_CONFIG,
   calibrate,
   getLearnedLimits,
 } from "../auto-truncate"
 import {
-  ensureAnthropicStartsWithUser,
-  filterAnthropicOrphanedToolResults,
-  filterAnthropicOrphanedToolUse,
-  getAnthropicToolResultIds,
-  getAnthropicToolUseIds,
-} from "./auto-truncate/tool-utils"
-import {
-  contentToText,
+  //
   countFixedTokens,
-  countMessageTokens,
   countMessagesTokens,
   countSystemTokens,
-  countTotalInputTokens,
   countTotalTokens,
 } from "./auto-truncate/token-counting"
 import {
+  //
   addCompressionNotice,
   calculateTokenLimit,
   cleanupMessages,
@@ -54,22 +47,6 @@ import {
   smartCompressToolResults,
   stripThinkingBlocks,
 } from "./auto-truncate/truncation"
-export {
-  ensureAnthropicStartsWithUser,
-  filterAnthropicOrphanedToolResults,
-  filterAnthropicOrphanedToolUse,
-  getAnthropicToolResultIds,
-  getAnthropicToolUseIds,
-}
-export {
-  contentToText,
-  countFixedTokens,
-  countMessageTokens,
-  countMessagesTokens,
-  countSystemTokens,
-  countTotalInputTokens,
-  countTotalTokens,
-}
 
 // ============================================================================
 // Result Types
@@ -412,3 +389,20 @@ export async function checkNeedsCompactionAnthropic(
     reason: exceedsTokens ? "tokens" : undefined,
   }
 }
+
+export {
+  contentToText,
+  countFixedTokens,
+  countMessagesTokens,
+  countMessageTokens,
+  countSystemTokens,
+  countTotalInputTokens,
+  countTotalTokens,
+} from "./auto-truncate/token-counting"
+export {
+  ensureAnthropicStartsWithUser,
+  filterAnthropicOrphanedToolResults,
+  filterAnthropicOrphanedToolUse,
+  getAnthropicToolResultIds,
+  getAnthropicToolUseIds,
+} from "./auto-truncate/tool-utils"

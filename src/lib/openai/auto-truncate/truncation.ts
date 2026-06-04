@@ -1,13 +1,26 @@
-import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionsPayload,
+  Message,
+} from "~/types/api/openai-chat-completions"
 
-import { LARGE_TOOL_RESULT_THRESHOLD, compressToolResultContent } from "../../auto-truncate"
 import {
+  //
+  LARGE_TOOL_RESULT_THRESHOLD,
+  compressToolResultContent,
+} from "../../auto-truncate"
+import {
+  //
   ensureOpenAIStartsWithUser,
   extractOpenAISystemMessages,
   filterOpenAIOrphanedToolResults,
   filterOpenAIOrphanedToolUse,
 } from "../orphan-filter"
-import { calculateCumulativeSums, estimateMessageTokens } from "./token-counting"
+import {
+  //
+  calculateCumulativeSums,
+  estimateMessageTokens,
+} from "./token-counting"
 
 /**
  * Clean up orphaned tool messages and ensure valid conversation start.
@@ -166,10 +179,7 @@ export function generateRemovedMessagesSummary(removedMessages: Array<Message>):
 /**
  * Add a compression notice to the system message.
  */
-export function addCompressionNotice(
-  payload: ChatCompletionsPayload,
-  compressedCount: number,
-): ChatCompletionsPayload {
+export function addCompressionNotice(payload: ChatCompletionsPayload, compressedCount: number): ChatCompletionsPayload {
   const notice =
     `\n\n[CONTEXT NOTE]\n`
     + `${compressedCount} large tool results have been compressed to reduce context size.\n`
@@ -194,11 +204,7 @@ export function addCompressionNotice(
 /**
  * Create truncation context to append to system messages.
  */
-export function createTruncationSystemContext(
-  removedCount: number,
-  compressedCount: number,
-  summary: string,
-): string {
+export function createTruncationSystemContext(removedCount: number, compressedCount: number, summary: string): string {
   let context = `\n\n[CONVERSATION CONTEXT]\n`
 
   if (removedCount > 0) {
@@ -219,11 +225,7 @@ export function createTruncationSystemContext(
 }
 
 /** Create a truncation marker message (fallback when no system message) */
-export function createTruncationMarker(
-  removedCount: number,
-  compressedCount: number,
-  summary: string,
-): Message {
+export function createTruncationMarker(removedCount: number, compressedCount: number, summary: string): Message {
   const parts: Array<string> = []
 
   if (removedCount > 0) {

@@ -1,5 +1,6 @@
-import { Hono } from "hono"
 import type { Context } from "hono"
+
+import { Hono } from "hono"
 import { existsSync } from "node:fs"
 import { access, constants, readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
@@ -18,11 +19,7 @@ const TEXT_RESPONSE_TYPES = [
   "application/javascript",
   "application/x-javascript",
 ]
-const JAVASCRIPT_RESPONSE_TYPES = [
-  "text/javascript",
-  "application/javascript",
-  "application/x-javascript",
-]
+const JAVASCRIPT_RESPONSE_TYPES = ["text/javascript", "application/javascript", "application/x-javascript"]
 const VITE_DEV_PATH_PREFIXES = [
   "/@vite",
   "/@fs/",
@@ -53,8 +50,20 @@ function stripTrailingSlash(pathname: string): string {
   return pathname !== "/" ? pathname.replace(/\/+$/, "") : pathname
 }
 
+/**
+ * Translate a path observed at the external base (e.g. `/proxy/ui/foo`) back
+ * to a local UI-relative path (`/foo`). Splits the previous nested ternary
+ * into named branches for readability.
+ */
+function computeLocalPathname(externalBasePath: string, resolvedPathname: string): string {
+  if (externalBasePath === "/") return resolvedPathname
+  const isWithinBase = resolvedPathname.startsWith(`${externalBasePath}/`) || resolvedPathname === externalBasePath
+  if (!isWithinBase) return resolvedPathname
+  return resolvedPathname.slice(externalBasePath.length) || "/"
+}
+
 function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return value.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
 }
 
 function joinUrlPath(basePathname: string, requestPathname: string): string {
@@ -86,7 +95,7 @@ function isJavaScriptResponse(contentType: string | null): boolean {
 }
 
 function rewriteBaseUrlLiteral(content: string): string {
-  return content.replace(/("BASE_URL"\s*:\s*")\/(")/g, `$1${UI_MOUNT_PREFIX}/$2`)
+  return content.replaceAll(/("BASE_URL"\s*:\s*")\/(")/g, `$1${UI_MOUNT_PREFIX}/$2`)
 }
 
 function rewriteQuotedPathPrefixes(content: string, fromPrefix: string, toPrefix: string): string {
@@ -106,13 +115,15 @@ function rewriteProxyTextResponse(content: string, externalUiUrl: string, conten
   const rewriteBareParenthesizedPaths = !isJavaScriptResponse(contentType)
 
   return VITE_DEV_PATH_PREFIXES.reduce((current, vitePathPrefix) => {
-    const externalPathPrefix = externalBasePath === "/"
-      ? vitePathPrefix
-      : `${externalBasePath}${vitePathPrefix}`
+    const externalPathPrefix = externalBasePath === "/" ? vitePathPrefix : `${externalBasePath}${vitePathPrefix}`
     const localPathPrefix = `${UI_MOUNT_PREFIX}${vitePathPrefix}`
     const absoluteExternalPrefix = `${externalBase.origin}${externalPathPrefix}`
     const rewrittenQuotedAbsolute = rewriteQuotedPathPrefixes(current, absoluteExternalPrefix, localPathPrefix)
-    const rewrittenQuotedRelative = rewriteQuotedPathPrefixes(rewrittenQuotedAbsolute, externalPathPrefix, localPathPrefix)
+    const rewrittenQuotedRelative = rewriteQuotedPathPrefixes(
+      rewrittenQuotedAbsolute,
+      externalPathPrefix,
+      localPathPrefix,
+    )
 
     if (!rewriteBareParenthesizedPaths) {
       return rewrittenQuotedRelative
@@ -137,11 +148,7 @@ function rewriteLocationHeader(location: string, externalUiUrl: string): string 
   }
 
   const externalBasePath = stripTrailingSlash(externalBase.pathname)
-  const localPathname = externalBasePath === "/"
-    ? resolvedLocation.pathname
-    : resolvedLocation.pathname.startsWith(`${externalBasePath}/`) || resolvedLocation.pathname === externalBasePath
-      ? resolvedLocation.pathname.slice(externalBasePath.length) || "/"
-      : resolvedLocation.pathname
+  const localPathname = computeLocalPathname(externalBasePath, resolvedLocation.pathname)
 
   return `${UI_MOUNT_PREFIX}${localPathname}${resolvedLocation.search}${resolvedLocation.hash}`
 }

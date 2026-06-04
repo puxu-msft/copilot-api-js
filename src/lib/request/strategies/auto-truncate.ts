@@ -9,10 +9,20 @@ import consola from "consola"
 import type { ApiError } from "~/lib/error"
 import type { Model } from "~/lib/models/client"
 
-import { AUTO_TRUNCATE_RETRY_FACTOR, tryParseAndLearnLimit } from "~/lib/auto-truncate"
+import {
+  //
+  AUTO_TRUNCATE_RETRY_FACTOR,
+  tryParseAndLearnLimit,
+} from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
 
-import type { RetryAction, RetryContext, RetryStrategy, SanitizeResult } from "../pipeline"
+import type {
+  //
+  RetryAction,
+  RetryContext,
+  RetryStrategy,
+  SanitizeResult,
+} from "../pipeline"
 
 /** Result from a truncation operation */
 export interface TruncateResult<TPayload> {

@@ -125,8 +125,10 @@ export const api = {
 
 // Re-export for convenience
 export { ApiError }
-export type { ConfigValidationError, ConfigYamlResponse, EditableConfig }
+export type { ConfigValidationError }
 // Re-export the SummaryResult type used in the store
 import type { EntrySummary } from "@/types"
 
 export { type EntrySummary } from "@/types"
+
+export { type ConfigYamlResponse, type EditableConfig } from "@/types/config"

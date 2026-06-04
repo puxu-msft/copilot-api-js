@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import {
+computed,
+ref
+} from "vue";
+
+import type { ModelData, PrimaryLimitMetric } from "@/composables/useModelsCatalog"
 
 import JsonViewerSurface from "@/components/ui/JsonViewerSurface.vue"
-import type { ModelData, PrimaryLimitMetric } from "@/composables/useModelsCatalog"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
 import { getEffectiveEndpoints } from "@/utils/model-endpoints"
 
@@ -52,61 +56,57 @@ const jsonText = computed(() => JSON.stringify(props.model, null, 2))
 
 const headerChipEntries = computed<Array<HeaderChipEntry>>(() =>
   [
-    props.model.vendor
-      ? {
-          key: "vendor",
-          label: "Vendor",
-          value: String(props.model.vendor),
-          color: props.vendorColor(String(props.model.vendor)),
-          variant: "tonal",
-        }
-      : null,
-    props.model.capabilities?.type
-      ? {
-          key: "type",
-          label: "Type",
-          value: String(props.model.capabilities.type),
-          variant: "outlined",
-        }
-      : null,
-    props.model.billing?.is_premium
-      ? {
-          key: "premium",
-          label: "Tier",
-          value: "Premium",
-          color: "warning",
-          variant: "tonal",
-        }
-      : null,
-    props.model.preview
-      ? {
-          key: "preview",
-          label: "Stage",
-          value: "Preview",
-          color: "secondary",
-          variant: "tonal",
-        }
-      : null,
+    props.model.vendor ?
+      {
+        key: "vendor",
+        label: "Vendor",
+        value: String(props.model.vendor),
+        color: props.vendorColor(String(props.model.vendor)),
+        variant: "tonal",
+      }
+    : null,
+    props.model.capabilities?.type ?
+      {
+        key: "type",
+        label: "Type",
+        value: String(props.model.capabilities.type),
+        variant: "outlined",
+      }
+    : null,
+    props.model.billing?.is_premium ?
+      {
+        key: "premium",
+        label: "Tier",
+        value: "Premium",
+        color: "warning",
+        variant: "tonal",
+      }
+    : null,
+    props.model.preview ?
+      {
+        key: "preview",
+        label: "Stage",
+        value: "Preview",
+        color: "secondary",
+        variant: "tonal",
+      }
+    : null,
   ].filter((entry): entry is HeaderChipEntry => entry !== null),
 )
 
 const metadataEntries = computed<Array<MetadataEntry>>(() =>
   [
-    props.model.capabilities?.family
-      ? { label: "Family", value: String(props.model.capabilities.family), tone: "default" as const }
-      : null,
-    props.model.model_picker_category
-      ? { label: "Category", value: String(props.model.model_picker_category), tone: "default" as const }
-      : null,
-    thinkingBudget.value
-      ? { label: "Thinking Budget", value: thinkingBudget.value, tone: "numeric" as const }
-      : null,
-    nonStreamLimit.value
-      ? { label: "Non-stream Output", value: nonStreamLimit.value, tone: "numeric" as const }
-      : null,
-    props.model.capabilities?.tokenizer
-      ? { label: "Tokenizer", value: String(props.model.capabilities.tokenizer), tone: "technical" as const }
-      : null,
+    props.model.capabilities?.family ?
+      { label: "Family", value: String(props.model.capabilities.family), tone: "default" as const }
+    : null,
+    props.model.model_picker_category ?
+      { label: "Category", value: String(props.model.model_picker_category), tone: "default" as const }
+    : null,
+    thinkingBudget.value ? { label: "Thinking Budget", value: thinkingBudget.value, tone: "numeric" as const } : null,
+    nonStreamLimit.value ? { label: "Non-stream Output", value: nonStreamLimit.value, tone: "numeric" as const } : null,
+    props.model.capabilities?.tokenizer ?
+      { label: "Tokenizer", value: String(props.model.capabilities.tokenizer), tone: "technical" as const }
+    : null,
   ].filter((entry): entry is MetadataEntry => entry !== null),
 )
 
@@ -131,8 +131,8 @@ function copyModelJson(): void {
     border
   >
     <div class="card-header">
-        <div class="header-top">
-          <div class="header-copy">
+      <div class="header-top">
+        <div class="header-copy">
           <div class="model-id">{{ model.id }}</div>
           <div
             v-if="displayName"

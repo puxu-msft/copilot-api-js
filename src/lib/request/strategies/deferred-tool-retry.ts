@@ -19,7 +19,19 @@ import consola from "consola"
 import type { ApiError } from "~/lib/error"
 import type { Tool } from "~/types/api/anthropic"
 
-import type { RetryAction, RetryContext, RetryStrategy } from "../pipeline"
+import {
+  //
+  getStickyUndeferredTools,
+  isToolStickyUndeferred,
+  markToolUndeferred,
+} from "~/lib/anthropic/feature-negotiation"
+
+import type {
+  //
+  RetryAction,
+  RetryContext,
+  RetryStrategy,
+} from "../pipeline"
 
 // ============================================================================
 // Error parsing
@@ -46,12 +58,13 @@ export function parseToolReferenceError(message: string): string | null {
  *
  * When the API rejects a request because a deferred tool is referenced
  * in the message history, this strategy un-defers that tool and retries.
+ * The (model, toolName) pair is also recorded in the persistent
+ * negotiation cache so future requests pre-emptively un-defer the tool
+ * via `applyStickyUndeferredTools` during preprocessing.
  */
-export function createDeferredToolRetryStrategy<TPayload extends { tools?: Array<Tool> }>(): RetryStrategy<TPayload> {
-  // Track tool names that have already been un-deferred across retries
-  // to avoid infinite retry loops on the same tool
-  const undeferredTools = new Set<string>()
-
+export function createDeferredToolRetryStrategy<
+  TPayload extends { model: string; tools?: Array<Tool> },
+>(): RetryStrategy<TPayload> {
   return {
     name: "deferred-tool-retry",
 
@@ -65,8 +78,7 @@ export function createDeferredToolRetryStrategy<TPayload extends { tools?: Array
       const toolName = parseToolReferenceFromResponse(responseText)
       if (!toolName) return false
 
-      // Only handle if we haven't already retried for this tool
-      return !undeferredTools.has(toolName)
+      return true
     },
 
     handle(error: ApiError, currentPayload: TPayload, context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
@@ -77,10 +89,19 @@ export function createDeferredToolRetryStrategy<TPayload extends { tools?: Array
         return Promise.resolve({ action: "abort", error })
       }
 
+      // If already sticky for this model, the persisted cache should have un-deferred
+      // it during preprocessing — re-erroring means there's nothing more to try.
+      if (isToolStickyUndeferred(currentPayload.model, toolName)) {
+        return Promise.resolve({ action: "abort", error })
+      }
+
       consola.debug(
         `[DeferredToolRetry] Tool "${toolName}" error.`
           + ` Payload has ${currentPayload.tools.length} tools: [${currentPayload.tools.map((t) => t.name).join(", ")}]`,
       )
+
+      // Record sticky decision (persisted) for future requests
+      markToolUndeferred(currentPayload.model, toolName)
 
       // Find the tool in the payload
       const toolIndex = currentPayload.tools.findIndex((t) => t.name === toolName)
@@ -91,7 +112,6 @@ export function createDeferredToolRetryStrategy<TPayload extends { tools?: Array
         // Inject a minimal stub with no defer_loading so the API accepts
         // the tool_use reference on retry.
         consola.debug(`[DeferredToolRetry] Tool "${toolName}" not in payload, injecting non-deferred stub`)
-        undeferredTools.add(toolName)
 
         const newTools = [
           ...currentPayload.tools,
@@ -108,9 +128,6 @@ export function createDeferredToolRetryStrategy<TPayload extends { tools?: Array
         })
       }
 
-      // Mark as un-deferred and track it
-      undeferredTools.add(toolName)
-
       const newTools = [...currentPayload.tools]
       newTools[toolIndex] = { ...newTools[toolIndex], defer_loading: false }
 
@@ -126,6 +143,32 @@ export function createDeferredToolRetryStrategy<TPayload extends { tools?: Array
       })
     },
   }
+}
+
+/**
+ * Apply persisted sticky-undefer decisions to a payload's tools array.
+ * Run during preprocessing so future requests skip the 400-then-retry round-trip
+ * for tools we've already learned must not be deferred for this model.
+ *
+ * Also returns the tool names that were affected (for telemetry / logging).
+ */
+export function applyStickyUndeferredTools<TPayload extends { model: string; tools?: Array<Tool> }>(
+  payload: TPayload,
+): { payload: TPayload; affected: Array<string> } {
+  const sticky = getStickyUndeferredTools(payload.model)
+  if (sticky.length === 0 || !payload.tools) return { payload, affected: [] }
+
+  const affected: Array<string> = []
+  const newTools = payload.tools.map((tool) => {
+    if (sticky.includes(tool.name) && tool.defer_loading === true) {
+      affected.push(tool.name)
+      return { ...tool, defer_loading: false }
+    }
+    return tool
+  })
+
+  if (affected.length === 0) return { payload, affected: [] }
+  return { payload: { ...payload, tools: newTools }, affected }
 }
 
 // ============================================================================

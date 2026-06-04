@@ -12,7 +12,12 @@ import type { ApiError } from "~/lib/error"
 
 import { getCopilotTokenManager } from "~/lib/token"
 
-import type { RetryAction, RetryContext, RetryStrategy } from "../pipeline"
+import type {
+  //
+  RetryAction,
+  RetryContext,
+  RetryStrategy,
+} from "../pipeline"
 
 /**
  * Refresh the Copilot token via the global manager.

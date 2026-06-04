@@ -5,7 +5,12 @@
 
 import consola from "consola"
 
-import type { CopilotAnnotations, StreamEvent, RawMessageStartEvent } from "~/types/api/anthropic"
+import type {
+  //
+  CopilotAnnotations,
+  StreamEvent,
+  RawMessageStartEvent,
+} from "~/types/api/anthropic"
 
 import { isServerToolResultType } from "./server-tool-filter"
 

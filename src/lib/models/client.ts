@@ -1,9 +1,17 @@
 import consola from "consola"
 
-import { copilotBaseUrl, copilotHeaders } from "~/lib/copilot-api"
+import {
+  //
+  copilotBaseUrl,
+  copilotHeaders,
+} from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { createFetchSignal } from "~/lib/fetch-utils"
-import { state, setModels } from "~/lib/state"
+import {
+  //
+  state,
+  setModels,
+} from "~/lib/state"
 
 /**
  * Cached ETag from the last successful /models response.

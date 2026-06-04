@@ -10,9 +10,17 @@
  * - executeWithAdaptiveRateLimit wrapper
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import {
+  //
   AdaptiveRateLimiter,
   executeWithAdaptiveRateLimit,
   getAdaptiveRateLimiter,
@@ -300,6 +308,47 @@ describe("AdaptiveRateLimiter recovery", () => {
     const result2 = await limiter.execute(async () => "normal-mode")
     expect(result2.result).toBe("normal-mode")
   })
+
+  test("startGradualRecovery fires at most once per rate-limit episode (consecutiveSuccesses not repeatedly reset)", async () => {
+    // Regression: processQueue used to call shouldAttemptRecovery() +
+    // startGradualRecovery() on every iteration. Each transition resets
+    // `consecutiveSuccesses` to 0. With the fix, the transition fires at
+    // most once and the counter accumulates across the rest of the drain;
+    // pre-fix, the counter oscillates near 0.
+    const limiter = new AdaptiveRateLimiter({
+      baseRetryIntervalSeconds: 0.001,
+      requestIntervalSeconds: 0.001,
+      consecutiveSuccessesForRecovery: 2,
+      gradualRecoverySteps: [60], // Non-zero so recovery doesn't complete during drain
+    })
+
+    // Trigger 429 to enter rate-limited mode synchronously (microtask cycle).
+    // We must AWAIT this so subsequent execute() calls see mode === "rate-limited"
+    // and therefore go through enqueue → processQueue (instead of running in
+    // normal mode directly).
+    let first = true
+    await limiter.execute(async () => {
+      if (first) {
+        first = false
+        throw { status: 429 } // eslint-disable-line @typescript-eslint/only-throw-error -- simulating API error
+      }
+      return "trigger-ok"
+    })
+
+    expect(limiter.getStatus().mode).toBe("rate-limited")
+
+    // Now enqueue many successful requests — these go through processQueue.
+    // Pre-fix: each batch of consecutiveSuccessesForRecovery (=2) successes
+    // re-triggers startGradualRecovery, resetting consecutiveSuccesses to 0.
+    // Post-fix: the transition fires once, then the counter accumulates.
+    const queued = Array.from({ length: 20 }, (_, i) => limiter.execute(async () => `q-${i}`))
+    await Promise.all(queued)
+
+    const status = limiter.getStatus()
+    // After the queue drain, consecutiveSuccesses should reflect the bulk of
+    // the drained requests (>= 10). Pre-fix it would oscillate in [0, 2].
+    expect(status.consecutiveSuccesses).toBeGreaterThan(2)
+  })
 })
 
 // ─── Non-429 error handling in queue ───
@@ -364,5 +413,93 @@ describe("AdaptiveRateLimiter sleep cancellation", () => {
     expect(result.result).toBe("ok")
     expect(result.queueWaitMs).toBeGreaterThanOrEqual(0)
     expect(result.queueWaitMs).toBeLessThan(2000)
+  })
+})
+
+describe("AdaptiveRateLimiter recovering mode — concurrency safety (H3 regression guard)", () => {
+  test("N concurrent recovering-mode callers are paced one ramp-up interval apart", async () => {
+    // 400ms first interval gives enough headroom that 4 concurrent callers'
+    // actual start times must be clearly spaced. Multi-step ramp config makes
+    // sure the test exercises step-0 throughout (concurrent step-0 callers do
+    // not advance the index past 1 — see the dedicated step-advancement test).
+    const limiter = new AdaptiveRateLimiter({
+      gradualRecoverySteps: [0.4, 0.4, 0.4, 0.4, 0.4, 0.4],
+    })
+
+    limiter._enterRecoveringModeForTesting()
+    expect(limiter.getStatus().mode).toBe("recovering")
+
+    // Fire 4 concurrent recovering-mode requests; capture observed start
+    // times. Each must be ≥ ~400ms after the prior — proving the leaky-bucket
+    // gate serialized them instead of letting them all race the same wakeup.
+    const startTimes: Array<number> = []
+    const recordStart = () => {
+      startTimes.push(Date.now())
+      return Promise.resolve("ok")
+    }
+    const fns = Array.from({ length: 4 }, () => limiter.execute(recordStart))
+    await Promise.all(fns)
+
+    expect(startTimes).toHaveLength(4)
+    startTimes.sort((a, b) => a - b)
+    for (let i = 1; i < startTimes.length; i++) {
+      const gap = startTimes[i] - startTimes[i - 1]
+      // 400ms interval; tolerate up to 100ms scheduler jitter (CI / WSL2 timers).
+      expect(gap).toBeGreaterThanOrEqual(300)
+    }
+  })
+
+  test("concurrent recovering-mode total elapsed time ≥ (N-1) × interval (no bursting)", async () => {
+    const limiter = new AdaptiveRateLimiter({
+      gradualRecoverySteps: [0.3, 0.3, 0.3, 0.3, 0.3],
+    })
+
+    limiter._enterRecoveringModeForTesting()
+    expect(limiter.getStatus().mode).toBe("recovering")
+
+    const start = Date.now()
+    await Promise.all([
+      limiter.execute(() => Promise.resolve("a")),
+      limiter.execute(() => Promise.resolve("b")),
+      limiter.execute(() => Promise.resolve("c")),
+    ])
+    const elapsed = Date.now() - start
+
+    // 3 concurrent calls at 300ms interval: first runs immediately, next 2
+    // wait 300ms and 600ms respectively → total ≥ ~600ms. Pre-fix completed
+    // all three in ~300ms (they all raced the same sleep target). Allow
+    // 100ms jitter buffer.
+    expect(elapsed).toBeGreaterThanOrEqual(500)
+  })
+
+  test("N concurrent step-0 callers advance recoveryStepIndex by exactly 1 (not N)", async () => {
+    // H1 (from subagent review): without the "first-completion-of-step" guard,
+    // N successful completions all read step=0 at reservation time, then each
+    // ++ on completion, jumping the index by N — short-circuiting ramp-up to
+    // completeRecovery() after just one round of concurrency.
+    //
+    // To make the failure mode observable, we pick N concurrent callers > step
+    // count: pre-fix index jumps 0 → N, exceeds step count, triggers
+    // completeRecovery → mode == "normal". Post-fix index advances 0 → 1, mode
+    // stays "recovering".
+    const limiter = new AdaptiveRateLimiter({
+      // 3 steps; 5 concurrent callers all reserve while step=0.
+      gradualRecoverySteps: [0.05, 0.05, 0.05],
+    })
+
+    limiter._enterRecoveringModeForTesting()
+    expect(limiter.getStatus().mode).toBe("recovering")
+
+    await Promise.all([
+      limiter.execute(() => Promise.resolve("a")),
+      limiter.execute(() => Promise.resolve("b")),
+      limiter.execute(() => Promise.resolve("c")),
+      limiter.execute(() => Promise.resolve("d")),
+      limiter.execute(() => Promise.resolve("e")),
+    ])
+
+    // Mode must still be "recovering" — ramp-up not collapsed by the burst.
+    // Pre-fix behavior: mode === "normal" because index jumped 0 → 5 > 3.
+    expect(limiter.getStatus().mode).toBe("recovering")
   })
 })

@@ -1,15 +1,42 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
-
+import {
+  //
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 import { Hono } from "hono"
-import { upgradeWebSocket, websocket } from "hono/bun"
+import {
+  //
+  upgradeWebSocket,
+  websocket,
+} from "hono/bun"
 
-import type { ResponsesPayload, ResponsesResponse } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesPayload,
+  ResponsesResponse,
+} from "~/types/api/openai-responses"
 
 import { closeAllClients } from "~/lib/history"
-import { type StateSnapshot, restoreStateForTests, setModels, setStateForTests, snapshotStateForTests } from "~/lib/state"
+import {
+  //
+  type StateSnapshot,
+  restoreStateForTests,
+  setModels,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"
+import {
+  //
+  bootstrapTestRuntime,
+  resetTestRuntime,
+} from "../helpers/test-bootstrap"
 
 let capturedPayload: ResponsesPayload | undefined
 const originalFetch = globalThis.fetch
@@ -32,7 +59,10 @@ function createSseResponse(chunks: Array<string>) {
 }
 
 const upstreamFetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-  capturedPayload = JSON.parse(String(init?.body)) as ResponsesPayload
+  if (typeof init?.body !== "string") {
+    throw new TypeError(`expected string body in mock, got ${typeof init?.body}`)
+  }
+  capturedPayload = JSON.parse(init.body) as ResponsesPayload
 
   return createSseResponse([
     `event: response.created\ndata: ${JSON.stringify({
@@ -266,5 +296,107 @@ describe("Responses WebSocket transport", () => {
     expect(capturedPayload?.model).toBe("gpt-4o")
     expect(capturedPayload?.input).toBe("Hello from WS client")
     expect(capturedPayload?.stream).toBe(true)
+  })
+
+  test("keeps socket open after response.completed when clientWebsocketKeepOpen is true", async () => {
+    setStateForTests({ clientWebsocketKeepOpen: true })
+    setModels({
+      object: "list",
+      data: [
+        mockModel("gpt-4o", {
+          vendor: "OpenAI",
+          supported_endpoints: ["/chat/completions", "/responses"],
+        }),
+      ],
+    })
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    await waitForOpen(ws)
+
+    const messages: Array<Record<string, unknown>> = []
+    ws.addEventListener("message", (event: MessageEvent) => {
+      messages.push(JSON.parse(String(event.data)) as Record<string, unknown>)
+    })
+
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "first" } }))
+
+    // Wait for the response.completed frame to arrive
+    for (let i = 0; i < 50; i++) {
+      if (messages.some((m) => m.type === "response.completed")) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    expect(messages.some((m) => m.type === "response.completed")).toBe(true)
+
+    // Socket must still be OPEN — server did not close after completed
+    expect(ws.readyState).toBe(WebSocket.OPEN)
+
+    ws.close()
+  })
+
+  test("rejects messages exceeding maxWsFrameBytes with invalid_request_error", async () => {
+    server = startWsServer()
+
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+
+    await waitForOpen(ws)
+    // Build a 1 MiB + 1 byte payload — over the default 1 MiB cap
+    const huge = "x".repeat(1024 * 1024 + 1)
+    ws.send(huge)
+
+    const result = await closePromise
+
+    expect(result.messages).toHaveLength(1)
+    expect((result.messages[0] as { error: { type: string; message: string } }).error.type).toBe(
+      "invalid_request_error",
+    )
+    expect((result.messages[0] as { error: { message: string } }).error.message).toContain("byte limit")
+    expect(result.code).toBe(1011)
+    expect(upstreamFetchMock).not.toHaveBeenCalled()
+  })
+
+  test("custom maxWsFrameBytes is honored by the cap check", async () => {
+    setStateForTests({ maxWsFrameBytes: 64 })
+    server = startWsServer()
+
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+
+    await waitForOpen(ws)
+    // 65 bytes — over the configured 64-byte cap
+    ws.send("x".repeat(65))
+
+    const result = await closePromise
+    expect((result.messages[0] as { error: { message: string } }).error.message).toContain("64 byte limit")
+  })
+
+  test("rejects new connections beyond maxClientWsConnections", async () => {
+    setStateForTests({ maxClientWsConnections: 1 })
+    setModels({
+      object: "list",
+      data: [
+        mockModel("gpt-4o", {
+          vendor: "OpenAI",
+          supported_endpoints: ["/chat/completions", "/responses"],
+        }),
+      ],
+    })
+
+    server = startWsServer()
+
+    const first = new WebSocket(`${server.url}/responses`)
+    await waitForOpen(first)
+
+    // Second connection must be rejected with code 1013 (Try Again Later).
+    const second = new WebSocket(`${server.url}/responses`)
+    const secondClose = waitForSocketClose(second)
+    const result = await secondClose
+
+    expect(result.code).toBe(1013)
+    expect(result.messages).toHaveLength(1)
+    expect((result.messages[0] as { error: { type: string } }).error.type).toBe("server_overloaded")
+
+    first.close()
   })
 })

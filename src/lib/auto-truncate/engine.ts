@@ -6,10 +6,16 @@
 import consola from "consola"
 import fs from "node:fs/promises"
 
+import {
+  //
+  atomicWriteJson,
+  createSerializedAsyncFn,
+} from "~/lib/atomic-fs"
 import { PATHS } from "~/lib/config/paths"
 import { HTTPError } from "~/lib/error"
 import { parseTokenLimitError } from "~/lib/error/parsing"
 import {
+  //
   CLOSE_TAG,
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
@@ -210,16 +216,26 @@ export function schedulePersist(): void {
   }, PERSIST_DEBOUNCE_MS)
 }
 
-/** Write learned limits to disk */
-export async function persistLimits(): Promise<void> {
+/**
+ * Write learned limits to disk. Serialized + atomic — see `~/lib/atomic-fs`.
+ *
+ * Without serialization, debounce-fired writes can race a shutdown-fired
+ * write and the older snapshot can rename last, losing newer learned limits.
+ * Without atomicity, a crash mid-write leaves truncated JSON and the loader's
+ * `catch{}` silently zeroes every model's learned token limit — each model
+ * then needs one extra failed round-trip to relearn its cap.
+ */
+export const persistLimits = createSerializedAsyncFn(async () => {
   if (learnedLimits.size === 0) return
   const data: LearnedLimitsFile = { version: 1, limits: Object.fromEntries(learnedLimits) }
   try {
-    await fs.writeFile(PATHS.LEARNED_LIMITS, JSON.stringify(data, null, 2), "utf8")
-  } catch {
-    // Write failure is non-critical — limits will be re-learned on next error
+    await atomicWriteJson(PATHS.LEARNED_LIMITS, data)
+  } catch (err) {
+    // Re-learnable on next error, but persistent ENOSPC / permission failures
+    // still warrant a trail. Matches feature-negotiation / telemetry log level.
+    consola.debug("[AutoTruncate] persist failed:", err)
   }
-}
+})
 
 /** Load previously persisted limits from disk (called at startup) */
 export async function loadPersistedLimits(): Promise<void> {

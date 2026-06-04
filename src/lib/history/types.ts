@@ -257,10 +257,6 @@ export interface Session {
 
 export interface HistoryState {
   enabled: boolean
-  entries: Array<HistoryEntry>
-  sessions: Map<string, Session>
-  currentSessionId: string
-  maxEntries: number
 }
 
 export interface QueryOptions {

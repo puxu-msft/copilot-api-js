@@ -1,4 +1,8 @@
-import { copilotHeaders, copilotBaseUrl } from "~/lib/copilot-api"
+import {
+  //
+  copilotHeaders,
+  copilotBaseUrl,
+} from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { createFetchSignal } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"

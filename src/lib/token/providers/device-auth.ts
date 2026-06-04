@@ -1,7 +1,11 @@
 import consola from "consola"
 
 import { state } from "~/lib/state"
-import { getDeviceCode, pollAccessToken } from "~/lib/token/github-client"
+import {
+  //
+  getDeviceCode,
+  pollAccessToken,
+} from "~/lib/token/github-client"
 
 import type { TokenInfo } from "../types"
 

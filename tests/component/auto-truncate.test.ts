@@ -260,7 +260,9 @@ describe("Auto-Truncate Anthropic", () => {
         (message) =>
           message.role === "assistant"
           && Array.isArray(message.content)
-          && message.content.some((block) => block.type === "text" && "text" in block && block.text === "old assistant"),
+          && message.content.some(
+            (block) => block.type === "text" && "text" in block && block.text === "old assistant",
+          ),
       )
 
       if (oldAssistant && Array.isArray(oldAssistant.content)) {
@@ -271,7 +273,9 @@ describe("Auto-Truncate Anthropic", () => {
             (message) =>
               message.role === "assistant"
               && Array.isArray(message.content)
-              && message.content.some((block) => block.type === "text" && "text" in block && block.text === "old assistant"),
+              && message.content.some(
+                (block) => block.type === "text" && "text" in block && block.text === "old assistant",
+              ),
           ),
         ).toBe(false)
       }

@@ -6,7 +6,11 @@
  */
 
 import type { MessageContent } from "~/lib/history"
-import type { ResponsesInputItem, ResponsesOutputItem } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesInputItem,
+  ResponsesOutputItem,
+} from "~/types/api/openai-responses"
 
 // ============================================================================
 // Input conversion

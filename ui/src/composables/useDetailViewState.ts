@@ -1,5 +1,5 @@
-import { shallowRef } from "vue"
 import { defineStore } from "pinia"
+import { shallowRef } from "vue"
 
 /** Detail panel view state: search, filters, and display mode */
 export const useDetailViewState = defineStore("detailView", () => {

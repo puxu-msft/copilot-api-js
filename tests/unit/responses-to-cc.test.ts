@@ -102,6 +102,34 @@ describe("translateResponsesResponseToCC", () => {
     expect(translated.choices[0]?.finish_reason).toBe("content_filter")
   })
 
+  test("maps incomplete with max_output_tokens reason to length finish_reason", () => {
+    const translated = translateResponsesResponseToCC({
+      id: "resp_4",
+      object: "response",
+      created_at: 1711600003,
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      model: "gpt-5-resp",
+      output: [
+        {
+          type: "message",
+          id: "msg_4",
+          role: "assistant",
+          status: "incomplete",
+          content: [{ type: "output_text", text: "partial reply cut off", annotations: [] }],
+        },
+      ],
+      usage: null,
+      tools: [],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      store: false,
+    })
+
+    expect(translated.choices[0]?.message.content).toBe("partial reply cut off")
+    expect(translated.choices[0]?.finish_reason).toBe("length")
+  })
+
   test("throws an HTTPError when the upstream response status is failed", () => {
     expect(() =>
       translateResponsesResponseToCC({
@@ -123,5 +151,31 @@ describe("translateResponsesResponseToCC", () => {
         store: false,
       }),
     ).toThrow(HTTPError)
+  })
+
+  test("throws HTTPError with default message when failed status has no error field", () => {
+    let thrown: unknown
+
+    try {
+      translateResponsesResponseToCC({
+        id: "resp_5",
+        object: "response",
+        created_at: 1711600004,
+        status: "failed",
+        model: "gpt-5-resp",
+        output: [],
+        usage: null,
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      })
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(HTTPError)
+    expect((thrown as HTTPError).message).toBe("Upstream response failed")
+    expect((thrown as HTTPError).status).toBe(500)
   })
 })

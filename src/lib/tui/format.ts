@@ -2,7 +2,21 @@
 
 import pc from "picocolors"
 
+import { state } from "~/lib/state"
+
 import type { TuiLogEntry } from "./types"
+
+/**
+ * Format the per-model billing badge: ` (payg)` on token-based billing
+ * accounts, ` (${multiplier}x)` for legacy multiplier accounts, or `""`
+ * when no multiplier is known. Returns the leading space so callers can
+ * unconditionally append.
+ */
+export function formatBillingLabel(multiplier: number | undefined): string {
+  if (state.tokenBasedBilling) return " (payg)"
+  if (multiplier === undefined) return ""
+  return ` (${multiplier}x)`
+}
 
 export function formatTime(date: Date = new Date()): string {
   const h = String(date.getHours()).padStart(2, "0")

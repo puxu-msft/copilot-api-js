@@ -1,7 +1,35 @@
-import { notifySessionDeleted, notifyStatsUpdated } from "../ws"
-import { historyIndexes, historyState, invalidateHistoryStats } from "./state"
-import { getStats } from "./stats"
-import type { CursorResult, EndpointType, HistoryEntry, Session, SessionResult } from "./types"
+import type {
+  //
+  CursorResult,
+  EndpointType,
+  HistoryEntry,
+  Session,
+  SessionResult,
+} from "./types"
+
+import {
+  //
+  notifySessionDeleted,
+  notifyStatsUpdated,
+} from "../ws"
+import {
+  //
+  listInFlight,
+  removeInFlight,
+} from "./in-flight"
+import {
+  //
+  getSessionById,
+  listSessions,
+  queryEntries,
+  resolveResponseSession,
+} from "./sqlite/read"
+import { computeStats } from "./sqlite/stats"
+import {
+  //
+  deleteSession as sqliteDeleteSession,
+  upsertResponseSession,
+} from "./sqlite/write"
 
 const SESSION_HEADER_CANDIDATES = [
   "x-session-id",
@@ -17,36 +45,6 @@ function normalizeSessionId(value: string | null | undefined): string | undefine
   return trimmed.length > 0 ? trimmed : undefined
 }
 
-function ensureSession(sessionId: string, endpoint: EndpointType): Session {
-  const existing = historyState.sessions.get(sessionId)
-  if (existing) {
-    existing.lastActivity = Date.now()
-    if (!existing.endpoints.includes(endpoint)) {
-      existing.endpoints.push(endpoint)
-    }
-    historyState.currentSessionId = sessionId
-    return existing
-  }
-
-  const now = Date.now()
-  const session: Session = {
-    id: sessionId,
-    startTime: now,
-    lastActivity: now,
-    requestCount: 0,
-    totalInputTokens: 0,
-    totalOutputTokens: 0,
-    models: [],
-    endpoints: [endpoint],
-  }
-
-  historyState.sessions.set(sessionId, session)
-  historyIndexes.sessionModelsSet.set(sessionId, new Set())
-  historyIndexes.sessionToolsSet.set(sessionId, new Set())
-  historyState.currentSessionId = sessionId
-  return session
-}
-
 export function getSessionIdFromHeaders(headers: Headers | Record<string, string | undefined>): string | undefined {
   for (const name of SESSION_HEADER_CANDIDATES) {
     const value = headers instanceof Headers ? headers.get(name) : headers[name]
@@ -59,29 +57,29 @@ export function getSessionIdFromHeaders(headers: Headers | Record<string, string
 export function resolveResponseSessionId(previousResponseId: string | null | undefined): string | undefined {
   const normalized = normalizeSessionId(previousResponseId)
   if (!normalized) return undefined
-  return historyIndexes.responseSessionIndex.get(normalized) ?? normalized
+  return resolveResponseSession(normalized) ?? normalized
 }
 
 export function registerResponseSession(responseId: string | null | undefined, sessionId: string | undefined): void {
   const normalizedResponseId = normalizeSessionId(responseId)
   const normalizedSessionId = normalizeSessionId(sessionId)
   if (!normalizedResponseId || !normalizedSessionId) return
-  historyIndexes.responseSessionIndex.set(normalizedResponseId, normalizedSessionId)
+  upsertResponseSession(normalizedResponseId, normalizedSessionId)
 }
 
 /**
- * Get or create a tracked session when the caller has a real session identifier.
- * Returns undefined when no trustworthy identifier is available.
+ * Return the normalized session id when the caller has a real session identifier.
+ *
+ * Returns undefined when no trustworthy identifier is available. The SQLite
+ * session row is created on entry completion by `insertCompletedEntry`, so no
+ * eager session-map tracking is necessary here.
  */
-export function getCurrentSession(endpoint: EndpointType, sessionId?: string): string | undefined {
-  const normalized = normalizeSessionId(sessionId)
-  if (!normalized) return undefined
-  ensureSession(normalized, endpoint)
-  return normalized
+export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): string | undefined {
+  return normalizeSessionId(sessionId)
 }
 
 export function getSessions(): SessionResult {
-  const sessions = Array.from(historyState.sessions.values()).sort((a, b) => b.lastActivity - a.lastActivity)
+  const sessions = listSessions()
   return {
     sessions,
     total: sessions.length,
@@ -89,12 +87,15 @@ export function getSessions(): SessionResult {
 }
 
 export function getSession(id: string): Session | undefined {
-  return historyState.sessions.get(id)
+  return getSessionById(id)
 }
 
-export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
+export function getSessionEntries(
+  sessionId: string,
+  options: { cursor?: string; limit?: number } = {},
+): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
-  const all = historyState.entries.filter((entry) => entry.sessionId === sessionId).sort((a, b) => a.startedAt - b.startedAt)
+  const all = queryEntries({ sessionId, limit: 1_000_000 }).sort((a, b) => a.startedAt - b.startedAt)
 
   const total = all.length
   let startIdx = 0
@@ -111,39 +112,18 @@ export function getSessionEntries(sessionId: string, options: { cursor?: string;
 }
 
 export function deleteSession(sessionId: string): boolean {
-  if (!historyState.sessions.has(sessionId)) {
+  const existed = getSessionById(sessionId) !== undefined
+  const deleted = sqliteDeleteSession(sessionId)
+
+  // Also remove any in-flight entries belonging to this session
+  const inFlightMatches = listInFlight().filter((e) => e.sessionId === sessionId)
+  for (const entry of inFlightMatches) removeInFlight(entry.id)
+
+  if (!existed && deleted === 0 && inFlightMatches.length === 0) {
     return false
   }
 
-  const remaining: Array<HistoryEntry> = []
-  for (const entry of historyState.entries) {
-    if (entry.sessionId === sessionId) {
-      historyIndexes.entryIndex.delete(entry.id)
-      historyIndexes.summaryIndex.delete(entry.id)
-    } else {
-      remaining.push(entry)
-    }
-  }
-
-  historyState.entries = remaining
-  historyState.sessions.delete(sessionId)
-  historyIndexes.sessionEntryCount.delete(sessionId)
-  historyIndexes.sessionModelsSet.delete(sessionId)
-  historyIndexes.sessionToolsSet.delete(sessionId)
-
-  for (const [responseId, mappedSessionId] of historyIndexes.responseSessionIndex) {
-    if (mappedSessionId === sessionId) {
-      historyIndexes.responseSessionIndex.delete(responseId)
-    }
-  }
-
-  invalidateHistoryStats()
-
-  if (historyState.currentSessionId === sessionId) {
-    historyState.currentSessionId = ""
-  }
-
   notifySessionDeleted(sessionId)
-  notifyStatsUpdated(getStats())
+  notifyStatsUpdated(computeStats())
   return true
 }

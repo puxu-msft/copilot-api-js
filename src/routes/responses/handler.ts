@@ -4,42 +4,92 @@
  * Models that do not support /responses get a 400 error.
  */
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import type { HeadersCapture, RequestContext } from "~/lib/context/request"
-import type { ResponsesPayload, ResponsesResponse, ResponsesStreamEvent } from "~/types/api/openai-responses"
+import type {
+  //
+  HeadersCapture,
+  RequestContext,
+} from "~/lib/context/request"
+import type {
+  //
+  ResponsesPayload,
+  ResponsesResponse,
+  ResponsesStreamEvent,
+} from "~/types/api/openai-responses"
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
-import { getSessionIdFromHeaders, registerResponseSession, resolveResponseSessionId } from "~/lib/history/store"
-import { ENDPOINT, isResponsesSupported } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
-import { responsesInputToMessages, responsesOutputToContent } from "~/lib/openai/responses-conversion"
 import {
+  //
+  getSessionIdFromHeaders,
+  registerResponseSession,
+  resolveResponseSessionId,
+} from "~/lib/history/store"
+import {
+  //
+  ENDPOINT,
+  isResponsesSupported,
+} from "~/lib/models/endpoint"
+import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  responsesInputToMessages,
+  responsesOutputToContent,
+} from "~/lib/openai/responses-conversion"
+import {
+  //
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
-import { createStreamIdTracker, fixStreamEventIds } from "~/lib/openai/stream-id-sync"
+import {
+  //
+  createStreamIdTracker,
+  fixStreamEventIds,
+} from "~/lib/openai/stream-id-sync"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIteratorNext } from "~/lib/stream"
+import {
+  //
+  STREAM_ABORTED,
+  StreamIdleTimeoutError,
+  combineAbortSignals,
+  iterateSseEvents,
+  raceIteratorNext,
+} from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 
-import { createResponsesAdapter, createResponsesStrategies, normalizeCallIds } from "./pipeline"
+import {
+  //
+  createResponsesAdapter,
+  createResponsesStrategies,
+  normalizeCallIds,
+} from "./pipeline"
 
 // Re-export conversion functions (other modules may import from ./handler)
 
 /** Handle an inbound Responses API request */
 export async function handleResponses(c: Context) {
   let payload = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
+
+  // Snapshot inbound payload BEFORE mutation (model resolution, instructions
+  // processing, call_id normalization) so history "original" reflects what
+  // the client sent, not the half-processed in-flight version.
+  const originalSnapshot = structuredClone(payload)
+
+  // Azure deployment routes pass deployment-name via this channel instead
+  // of mutating body.model. Apply AFTER snapshotting so history sees raw body.
+  const azureModelOverride = c.get("azureModelOverride") as string | undefined
+  if (azureModelOverride !== undefined) {
+    payload.model = azureModelOverride
+  }
 
   // Resolve model name aliases
   const clientModel = payload.model
@@ -79,11 +129,11 @@ export async function handleResponses(c: Context) {
   // Record original request for history
   reqCtx.setOriginalRequest({
     model: clientModel,
-    messages: responsesInputToMessages(payload.input),
-    stream: payload.stream ?? false,
-    tools: payload.tools,
-    system: payload.instructions ?? undefined,
-    payload,
+    messages: responsesInputToMessages(originalSnapshot.input),
+    stream: originalSnapshot.stream ?? false,
+    tools: originalSnapshot.tools,
+    system: originalSnapshot.instructions ?? undefined,
+    payload: originalSnapshot,
   })
   reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
 
@@ -115,6 +165,9 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
   const selectedModel = state.modelIndex.get(payload.model)
   const headersCapture: HeadersCapture = {}
   const conversationId = getSessionIdFromHeaders(c.req.raw.headers)
+  // Hoisted so streamSSE.onAbort below can trigger it and the WS path can react
+  // to client disconnects at the lowest level (connect / sendRequest).
+  const clientAbort = new AbortController()
   const adapter = createResponsesAdapter(
     selectedModel,
     headersCapture,
@@ -125,6 +178,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
       reqCtx.setAttemptTransport(transport)
     },
     conversationId,
+    clientAbort.signal,
   )
   const strategies = createResponsesStrategies()
 
@@ -183,7 +237,6 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
     reqCtx.transition("streaming")
 
     return streamSSE(c, async (stream) => {
-      const clientAbort = new AbortController()
       stream.onAbort(() => clientAbort.abort())
 
       const acc = createResponsesStreamAccumulator()
@@ -195,7 +248,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
       let eventsIn = 0
 
       try {
-        const iterator = (response as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()
+        const iterator = iterateSseEvents(response)
 
         for (;;) {
           const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbort.signal)
@@ -218,17 +271,26 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
               })
             }
 
+            // Fix inconsistent IDs from upstream before processing
+            const eventData = idTracker ? fixStreamEventIds(rawEvent.data, rawEvent.event, idTracker) : rawEvent.data
+            let event: ResponsesStreamEvent
             try {
-              // Fix inconsistent IDs from upstream before processing
-              const eventData = idTracker ? fixStreamEventIds(rawEvent.data, rawEvent.event, idTracker) : rawEvent.data
-              const event = JSON.parse(eventData) as ResponsesStreamEvent
-              accumulateResponsesStreamEvent(event, acc)
-
-              // Forward the (possibly ID-corrected) event
-              await stream.writeSSE({ event: rawEvent.event ?? event.type, data: eventData })
-            } catch {
-              // Ignore parse errors
+              event = JSON.parse(eventData) as ResponsesStreamEvent
+            } catch (err) {
+              // Tolerate occasional malformed frames (heartbeats, partial chunks,
+              // upstream comment lines). Log at debug so we keep visibility
+              // without spamming production logs.
+              consola.debug(
+                `[responses] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`,
+                eventData.slice(0, 200),
+              )
+              continue
             }
+
+            accumulateResponsesStreamEvent(event, acc)
+
+            // Forward the (possibly ID-corrected) event
+            await stream.writeSSE({ event: rawEvent.event ?? event.type, data: eventData })
           }
         }
 

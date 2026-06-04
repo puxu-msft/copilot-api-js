@@ -1,7 +1,11 @@
 import consola from "consola"
 
 import { formatErrorWithCause } from "~/lib/error"
-import { setCopilotToken, setGitHubToken } from "~/lib/state"
+import {
+  //
+  setCopilotToken,
+  setGitHubToken,
+} from "~/lib/state"
 
 import type { GitHubTokenManager } from "./github-token-manager"
 import type { CopilotTokenInfo } from "./types"

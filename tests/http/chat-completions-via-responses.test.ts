@@ -1,7 +1,8 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
-
-import consola from "consola"
 import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
+import consola from "consola"
+
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
@@ -325,41 +326,43 @@ describe("POST /chat/completions via /responses translation", () => {
   })
 
   test("fails the request context when the translated upstream stream emits response.failed", async () => {
-    createResponsesMock.mockImplementationOnce(async (payload: ResponsesPayload, opts?: { onPrepared?: (request: any) => void }) => {
-      capturedResponsesPayload = payload
-      opts?.onPrepared?.({
-        wire: payload,
-        headers: { "x-test": "1" },
-      })
+    createResponsesMock.mockImplementationOnce(
+      async (payload: ResponsesPayload, opts?: { onPrepared?: (request: any) => void }) => {
+        capturedResponsesPayload = payload
+        opts?.onPrepared?.({
+          wire: payload,
+          headers: { "x-test": "1" },
+        })
 
-      return (async function* () {
-        yield {
-          event: "response.failed",
-          data: JSON.stringify({
-            type: "response.failed",
-            sequence_number: 0,
-            response: {
-              id: "resp-stream-failed",
-              object: "response",
-              created_at: 1,
-              status: "failed",
-              model: payload.model,
-              output: [],
-              usage: null,
-              error: {
-                message: "Translated upstream failure",
-                type: "server_error",
-                code: "boom",
+        return (async function* () {
+          yield {
+            event: "response.failed",
+            data: JSON.stringify({
+              type: "response.failed",
+              sequence_number: 0,
+              response: {
+                id: "resp-stream-failed",
+                object: "response",
+                created_at: 1,
+                status: "failed",
+                model: payload.model,
+                output: [],
+                usage: null,
+                error: {
+                  message: "Translated upstream failure",
+                  type: "server_error",
+                  code: "boom",
+                },
+                tools: [],
+                tool_choice: "auto",
+                parallel_tool_calls: false,
+                store: false,
               },
-              tools: [],
-              tool_choice: "auto",
-              parallel_tool_calls: false,
-              store: false,
-            },
-          }),
-        }
-      })()
-    })
+            }),
+          }
+        })()
+      },
+    )
 
     setModels({
       object: "list",

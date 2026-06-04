@@ -24,22 +24,24 @@ describe("OpenAI embeddings client", () => {
   })
 
   test("normalizes string input to an array before calling the embeddings endpoint", async () => {
-    const fetchMock = mock(async () =>
-      new Response(
-        JSON.stringify({
-          object: "list",
-          data: [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }],
-          model: "text-embedding-3-small",
-          usage: {
-            prompt_tokens: 2,
-            total_tokens: 2,
+    const fetchMock = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            object: "list",
+            data: [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }],
+            model: "text-embedding-3-small",
+            usage: {
+              prompt_tokens: 2,
+              total_tokens: 2,
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
           },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ))
+        ),
+    )
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
     const result = await createEmbeddings({
@@ -51,7 +53,11 @@ describe("OpenAI embeddings client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = (fetchMock.mock.calls as unknown as Array<[string, RequestInit | undefined]>)[0]
     expect(url).toBe("https://api.githubcopilot.com/embeddings")
-    expect(JSON.parse(String(init?.body))).toEqual({
+    // Narrow body to string: client always sends JSON text, but BodyInit is wider.
+    if (typeof init?.body !== "string") {
+      throw new TypeError(`expected string body in mock, got ${typeof init?.body}`)
+    }
+    expect(JSON.parse(init.body)).toEqual({
       model: "text-embedding-3-small",
       input: ["hello"],
     })

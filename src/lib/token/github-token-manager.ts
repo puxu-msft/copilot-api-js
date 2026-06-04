@@ -1,7 +1,11 @@
 import consola from "consola"
 
 import type { GitHubTokenProvider } from "./providers/base"
-import type { TokenInfo, TokenValidationResult } from "./types"
+import type {
+  //
+  TokenInfo,
+  TokenValidationResult,
+} from "./types"
 
 import { CLITokenProvider } from "./providers/cli"
 import { DeviceAuthProvider } from "./providers/device-auth"

@@ -1,9 +1,10 @@
 import { Hono } from "hono"
 
+import type { UiRoutesOptions } from "~/routes/ui/route"
+
 import { forwardError } from "~/lib/error"
 import { state } from "~/lib/state"
 import { registerHttpRoutes } from "~/routes"
-import type { UiRoutesOptions } from "~/routes/ui/route"
 
 const browserProbePaths = new Set(["/favicon.ico", "/.well-known/appspecific/com.chrome.devtools.json"])
 

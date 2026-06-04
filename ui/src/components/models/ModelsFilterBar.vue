@@ -13,7 +13,7 @@ defineProps<{
   endpointOptions: Array<string>
   featureOptions: Array<FeatureOption>
   typeOptions: Array<string>
-  billingBounds: { min: number, max: number }
+  billingBounds: { min: number; max: number }
   activeFilterCount: number
 }>()
 

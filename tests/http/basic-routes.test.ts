@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
-import { type StateSnapshot, restoreStateForTests, setModels, setStateForTests, snapshotStateForTests } from "~/lib/state"
 import { HTTPError } from "~/lib/error"
+import {
+  type StateSnapshot,
+  restoreStateForTests,
+  setModels,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { createFullTestApp, createMinimalApp } from "../helpers/test-app"
@@ -180,29 +186,31 @@ describe("basic HTTP routes", () => {
 
   test("GET /models fetches and caches models when state is empty", async () => {
     setStateForTests({ models: undefined })
-    globalThis.fetch = mock(async () =>
-      new Response(
-        JSON.stringify({
-          object: "list",
-          data: [
-            {
-              id: "fetched-model",
-              name: "Fetched Model",
-              vendor: "OpenAI",
-              object: "model",
-              model_picker_enabled: true,
-              preview: false,
-              version: "fetched-model",
-              is_chat_default: false,
-              is_chat_fallback: false,
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      )) as unknown as typeof fetch
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            object: "list",
+            data: [
+              {
+                id: "fetched-model",
+                name: "Fetched Model",
+                vendor: "OpenAI",
+                object: "model",
+                model_picker_enabled: true,
+                preview: false,
+                version: "fetched-model",
+                is_chat_default: false,
+                is_chat_fallback: false,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    ) as unknown as typeof fetch
 
     const res = await app.request("/models")
     const body = (await res.json()) as ModelsListResponseBody
@@ -213,29 +221,31 @@ describe("basic HTTP routes", () => {
 
   test("GET /models/:id fetches and caches models when state is empty", async () => {
     setStateForTests({ models: undefined })
-    globalThis.fetch = mock(async () =>
-      new Response(
-        JSON.stringify({
-          object: "list",
-          data: [
-            {
-              id: "fetched-model",
-              name: "Fetched Model",
-              vendor: "OpenAI",
-              object: "model",
-              model_picker_enabled: true,
-              preview: false,
-              version: "fetched-model",
-              is_chat_default: false,
-              is_chat_fallback: false,
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      )) as unknown as typeof fetch
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            object: "list",
+            data: [
+              {
+                id: "fetched-model",
+                name: "Fetched Model",
+                vendor: "OpenAI",
+                object: "model",
+                model_picker_enabled: true,
+                preview: false,
+                version: "fetched-model",
+                is_chat_default: false,
+                is_chat_fallback: false,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    ) as unknown as typeof fetch
 
     const res = await app.request("/models/fetched-model")
     const body = await res.json()

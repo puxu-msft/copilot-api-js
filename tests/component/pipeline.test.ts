@@ -5,7 +5,13 @@
  * pipeline orchestration logic in isolation.
  */
 
-import { describe, expect, mock, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { ApiError } from "~/lib/error"
 import type { RetryStrategy } from "~/lib/request/pipeline"
@@ -14,7 +20,12 @@ import { HTTPError } from "~/lib/error"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 
 import { createMockAdapter } from "../helpers/mock-adapter"
-import { createMockStrategy, createRetryStrategy, createTypedStrategy } from "../helpers/mock-strategy"
+import {
+  //
+  createMockStrategy,
+  createRetryStrategy,
+  createTypedStrategy,
+} from "../helpers/mock-strategy"
 
 type TestPayload = { data: string }
 
@@ -223,6 +234,104 @@ describe("executeRequestPipeline - retry path", () => {
     expect(firstStrategy.handle).toHaveBeenCalledTimes(1)
     expect(secondStrategy.handle).not.toHaveBeenCalled()
   })
+
+  test("forwards strategy prepareHints to adapter.execute on the next attempt (H4 end-to-end)", async () => {
+    // H4 end-to-end coverage: strategy → pipeline → adapter contract.
+    // Earlier unit tests verified each leg in isolation; this asserts the
+    // middle (pipeline-cached pendingPrepareHints → next execute call)
+    // works as a chain.
+    const receivedHints: Array<unknown> = []
+    let callCount = 0
+    const adapter = createMockAdapter<TestPayload>({
+      execute: mock(async (_p: TestPayload, hints?: unknown) => {
+        callCount++
+        receivedHints.push(hints)
+        if (callCount === 1) {
+          throw new HTTPError("Bad", 400, JSON.stringify({ error: { message: "unsupported beta header(s): foo" } }))
+        }
+        return { result: { ok: true }, queueWaitMs: 0 }
+      }),
+    })
+
+    const strategy: RetryStrategy<TestPayload> = {
+      name: "hint-emitting-strategy",
+      canHandle: () => true,
+      handle: async () => {
+        await Promise.resolve()
+        return {
+          action: "retry",
+          payload: { data: "next" },
+          prepareHints: { excludeBetas: ["foo"] },
+        }
+      },
+    }
+
+    await executeRequestPipeline({
+      adapter,
+      payload: { data: "init" },
+      originalPayload: { data: "init" },
+      strategies: [strategy],
+      model: undefined,
+      maxRetries: 3,
+    })
+
+    expect(callCount).toBe(2)
+    expect(receivedHints[0]).toBeUndefined()
+    expect(receivedHints[1]).toEqual({ excludeBetas: ["foo"] })
+  })
+
+  test("prepareHints follows replace semantics — undefined from a later retry clears prior hints", async () => {
+    // M3 (subagent review): document & test replace-not-merge. If retry 1
+    // returns hints={excludeBetas:['x']} and retry 2 returns
+    // hints=undefined, the third execute() must NOT receive the stale ['x'].
+    // Cross-request memory of "x is unsupported" belongs in negotiation cache,
+    // not in hints.
+    const receivedHints: Array<unknown> = []
+    let callCount = 0
+    const adapter = createMockAdapter<TestPayload>({
+      execute: mock(async (_p: TestPayload, hints?: unknown) => {
+        callCount++
+        receivedHints.push(hints)
+        if (callCount < 3) {
+          throw new HTTPError("Bad", 400, "")
+        }
+        return { result: { ok: true }, queueWaitMs: 0 }
+      }),
+    })
+
+    const hintEmitter: RetryStrategy<TestPayload> = {
+      name: "first-hint",
+      canHandle: () => callCount === 1,
+      handle: async () => {
+        await Promise.resolve()
+        return { action: "retry", payload: { data: "h1" }, prepareHints: { excludeBetas: ["x"] } }
+      },
+    }
+    const plainRetry: RetryStrategy<TestPayload> = {
+      name: "plain-retry",
+      canHandle: () => callCount === 2,
+      handle: async () => {
+        await Promise.resolve()
+        // No prepareHints — must clear prior excludeBetas
+        return { action: "retry", payload: { data: "h2" } }
+      },
+    }
+
+    await executeRequestPipeline({
+      adapter,
+      payload: { data: "init" },
+      originalPayload: { data: "init" },
+      strategies: [hintEmitter, plainRetry],
+      model: undefined,
+      maxRetries: 5,
+    })
+
+    expect(callCount).toBe(3)
+    expect(receivedHints[0]).toBeUndefined()
+    expect(receivedHints[1]).toEqual({ excludeBetas: ["x"] })
+    // Third call must receive undefined — replace semantics, not merge.
+    expect(receivedHints[2]).toBeUndefined()
+  })
 })
 
 // ─── Failure path ───
@@ -235,7 +344,7 @@ describe("executeRequestPipeline - failure path", () => {
       }),
     })
 
-    const strategy = createRetryStrategy<TestPayload>({ data: "truncated" })
+    const strategy = createRetryStrategy({ data: "truncated" })
 
     await expect(
       executeRequestPipeline({
@@ -259,7 +368,7 @@ describe("executeRequestPipeline - failure path", () => {
       }),
     })
 
-    const strategy = createRetryStrategy<TestPayload>({ data: "truncated" })
+    const strategy = createRetryStrategy({ data: "truncated" })
 
     await expect(
       executeRequestPipeline({

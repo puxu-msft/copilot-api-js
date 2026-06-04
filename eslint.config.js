@@ -1,8 +1,9 @@
 import config from "@echristian/eslint-config"
 import { defineConfigWithVueTs } from "@vue/eslint-config-typescript"
-import tseslint from "typescript-eslint"
 import pluginVue from "eslint-plugin-vue"
+import tseslint from "typescript-eslint"
 import vueParser from "vue-eslint-parser"
+import localPlugin from "./scripts/eslint-rules/import-marker.js"
 import prettierConfig from "./prettier.config.mjs"
 
 const disableTypescriptRulesForJson = Object.fromEntries(
@@ -19,6 +20,10 @@ export default defineConfigWithVueTs(
       "ui/**/dist/**",
       "eslint.config.js",
       "tsdown.config.ts",
+      // Fixture / config JSON files — typescript-eslint parser rejects them
+      // ("non-standard extension") and they need no linting in the first place.
+      "tests/fixtures/**/*.json",
+      "tests/e2e-ui/tsconfig.json",
     ],
   },
   ...config({
@@ -44,6 +49,17 @@ export default defineConfigWithVueTs(
   {
     files: ["**/*.json", "**/*.jsonc", "**/package.json", "**/package-lock.json"],
     rules: disableTypescriptRulesForJson,
+  },
+  {
+    plugins: {
+      local: localPlugin,
+    },
+    rules: {
+      // Force imports with >1 specifier to break across lines, with a `{ //`
+      // marker so Prettier doesn't fold them back. See the rule source for
+      // details.
+      "local/multiline-imports": "error",
+    },
   },
   {
     rules: {

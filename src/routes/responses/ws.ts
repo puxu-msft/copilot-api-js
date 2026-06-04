@@ -10,32 +10,60 @@
  */
 
 import type { Hono } from "hono"
-import type { UpgradeWebSocket, WSContext } from "hono/ws"
+import type {
+  //
+  UpgradeWebSocket,
+  WSContext,
+} from "hono/ws"
 
 import consola from "consola"
 
 import type { HeadersCapture } from "~/lib/context/request"
-import type { ResponsesPayload, ResponsesStreamEvent } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesPayload,
+  ResponsesStreamEvent,
+} from "~/types/api/openai-responses"
 
 import { getRequestContextManager } from "~/lib/context/manager"
-import { registerResponseSession, resolveResponseSessionId } from "~/lib/history/store"
+import {
+  //
+  registerResponseSession,
+  resolveResponseSessionId,
+} from "~/lib/history/store"
 import { isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { responsesInputToMessages } from "~/lib/openai/responses-conversion"
-import { createStreamIdTracker, fixStreamEventIds } from "~/lib/openai/stream-id-sync"
 import {
+  //
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
+import {
+  //
+  createStreamIdTracker,
+  fixStreamEventIds,
+} from "~/lib/openai/stream-id-sync"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { STREAM_ABORTED, raceIteratorNext } from "~/lib/stream"
+import {
+  //
+  STREAM_ABORTED,
+  combineAbortSignals,
+  iterateSseEvents,
+  raceIteratorNext,
+} from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 
-import { createResponsesAdapter, createResponsesStrategies, normalizeCallIds } from "./pipeline"
+import {
+  //
+  createResponsesAdapter,
+  createResponsesStrategies,
+  normalizeCallIds,
+} from "./pipeline"
 
 // ============================================================================
 // Constants
@@ -43,6 +71,20 @@ import { createResponsesAdapter, createResponsesStrategies, normalizeCallIds } f
 
 /** Terminal event types that signal the end of a response */
 const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "response.incomplete", "error"])
+
+/**
+ * Default client-side WebSocket frame cap (1 MiB) is enforced via
+ * `state.maxWsFrameBytes` (config `openai-responses.max_ws_frame_bytes`).
+ * 0 means unlimited. See onMessage for enforcement.
+ */
+
+/**
+ * Client-side idle timeout when `client_websocket_keep_open` is true (5 min).
+ * Without this, a client that opens the socket, sends one `response.create`,
+ * and then walks away would pin a WSContext and file descriptor indefinitely.
+ * Mirrors the 5-min idle close on the upstream side.
+ */
+const CLIENT_KEEP_OPEN_IDLE_MS = 5 * 60_000
 
 // ============================================================================
 // Payload extraction
@@ -112,6 +154,10 @@ function sendErrorAndClose(ws: WSContext, message: string, code?: string): void 
 async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload): Promise<void> {
   let payload = rawPayload
   const requestedModel = payload.model
+  // Snapshot BEFORE any mutation so history "original" reflects the client's
+  // raw frame, not the half-processed in-flight version (model resolution,
+  // instructions processing, call_id normalization all mutate payload below).
+  const originalSnapshot = structuredClone(payload)
   const resolvedModel = resolveModelName(requestedModel)
   payload.model = resolvedModel
 
@@ -147,11 +193,11 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
   reqCtx.setOriginalRequest({
     model: requestedModel,
-    messages: responsesInputToMessages(payload.input),
+    messages: responsesInputToMessages(originalSnapshot.input),
     stream: true,
-    tools: payload.tools,
-    system: payload.instructions ?? undefined,
-    payload,
+    tools: originalSnapshot.tools,
+    system: originalSnapshot.instructions ?? undefined,
+    payload: originalSnapshot,
   })
   // WS transport: no inbound HTTP headers to capture
 
@@ -165,6 +211,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
   // Build pipeline adapter and strategies (shared with HTTP handler)
   const headersCapture: HeadersCapture = {}
+  const clientAbort = new AbortController()
   const adapter = createResponsesAdapter(
     selectedModel,
     headersCapture,
@@ -174,6 +221,8 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     (transport) => {
       reqCtx.setAttemptTransport(transport)
     },
+    undefined,
+    clientAbort.signal,
   )
   const strategies = createResponsesStrategies()
 
@@ -195,8 +244,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     const response = pipelineResult.response
 
     // Stream SSE events → WebSocket JSON frames
-    // The pipeline returns an AsyncIterable<ServerSentEventMessage> for streaming
-    const iterator = (response as AsyncIterable<{ data?: string; event?: string }>)[Symbol.asyncIterator]()
+    const iterator = iterateSseEvents(response)
     const acc = createResponsesStreamAccumulator()
     const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
     const idTracker = state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
@@ -206,7 +254,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
       const shutdownSignal = getShutdownSignal()
       const result = await raceIteratorNext(iterator.next(), {
         idleTimeoutMs,
-        abortSignal: shutdownSignal ?? undefined,
+        abortSignal: combineAbortSignals(shutdownSignal, clientAbort.signal),
       })
 
       if (result === STREAM_ABORTED || result.done) break
@@ -242,8 +290,12 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     const responseData = buildResponsesResponseData(acc, resolvedModel)
     reqCtx.complete(responseData)
 
-    // Close WebSocket gracefully
-    ws.close(1000, "done")
+    // Close WebSocket unless the client has opted into long-lived sessions.
+    // When kept open, the client may send another `response.create` on the same
+    // socket; concurrency is rejected by the per-socket in-flight lock below.
+    if (!state.clientWebsocketKeepOpen) {
+      ws.close(1000, "done")
+    }
   } catch (error) {
     reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(resolvedModel, error)
@@ -270,21 +322,123 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocket<any>): void {
+  // Per-socket in-flight tracking. Bun's WS adapter serializes onMessage by
+  // awaiting the returned Promise, so this lock is primarily a defense for
+  // non-Bun runtimes (e.g. @hono/node-ws) and as a guard against future
+  // adapter behavior changes — a misbehaving client firing two
+  // `response.create` frames must never race two pipelines on the same socket.
+  // WeakMap so entries are GC'd when the socket is collected.
+  const inFlight = new WeakMap<WSContext, Promise<void>>()
+
+  /**
+   * Live connection counter for `state.maxClientWsConnections` enforcement.
+   * onOpen increments, onClose/onError decrements via `releaseConnection`.
+   * `decremented` ensures release is idempotent — onError followed by onClose
+   * (or vice versa) must not double-decrement, and a successful onClose alone
+   * must still decrement exactly once.
+   */
+  let liveConnectionCount = 0
+  const rejectedAtOpen = new WeakSet<WSContext>()
+  const decremented = new WeakSet<WSContext>()
+
+  const releaseConnection = (ws: WSContext) => {
+    if (rejectedAtOpen.has(ws)) {
+      rejectedAtOpen.delete(ws)
+      return
+    }
+    if (decremented.has(ws)) return
+    decremented.add(ws)
+    liveConnectionCount = Math.max(0, liveConnectionCount - 1)
+  }
+
+  // Per-socket idle timer for keep-open mode. Closes the socket if no new
+  // `response.create` arrives within CLIENT_KEEP_OPEN_IDLE_MS. WeakMap so
+  // entries are GC'd when the socket is collected; we still clear timers
+  // explicitly on close to avoid keeping the runtime alive.
+  const idleTimers = new WeakMap<WSContext, ReturnType<typeof setTimeout>>()
+
+  const clearIdleTimer = (ws: WSContext) => {
+    const timer = idleTimers.get(ws)
+    if (timer) {
+      clearTimeout(timer)
+      idleTimers.delete(ws)
+    }
+  }
+
+  const armIdleTimer = (ws: WSContext) => {
+    clearIdleTimer(ws)
+    if (!state.clientWebsocketKeepOpen) return
+    const timer = setTimeout(() => {
+      idleTimers.delete(ws)
+      try {
+        ws.close(1000, "Idle timeout")
+      } catch {
+        // Already closed
+      }
+    }, CLIENT_KEEP_OPEN_IDLE_MS)
+    // unref so a lingering idle timer never holds the event loop open
+    // (e.g. during graceful shutdown or test teardown). Bun/Node both implement
+    // this on Timeout; cast through unknown for cross-runtime type compatibility.
+    ;(timer as unknown as { unref: () => void }).unref()
+    idleTimers.set(ws, timer)
+  }
+
   // Create the WebSocket handler
   const wsHandler = upgradeWs(() => ({
-    onOpen(_event: Event, _ws: WSContext) {
-      consola.debug("[WS] Responses API WebSocket connected")
+    onOpen(_event: Event, ws: WSContext) {
+      // Enforce max client connections BEFORE the connection becomes usable.
+      // The cap (state.maxClientWsConnections) is per proxy process; 0 disables.
+      const cap = state.maxClientWsConnections
+      if (cap > 0 && liveConnectionCount >= cap) {
+        rejectedAtOpen.add(ws)
+        try {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              error: {
+                type: "server_overloaded",
+                message: `Server has reached max WebSocket connections (${cap}); retry later`,
+              },
+            }),
+          )
+        } catch {
+          // Best-effort
+        }
+        try {
+          ws.close(1013, "Try again later")
+        } catch {
+          // Already closed
+        }
+        consola.warn(`[WS] Rejected connection — cap ${cap} reached`)
+        return
+      }
+      liveConnectionCount += 1
+      consola.debug(`[WS] Responses API WebSocket connected (active: ${liveConnectionCount})`)
+      armIdleTimer(ws)
     },
 
-    onClose(_event: Event, _ws: WSContext) {
-      consola.debug("[WS] Responses API WebSocket disconnected")
+    onClose(_event: Event, ws: WSContext) {
+      releaseConnection(ws)
+      consola.debug(`[WS] Responses API WebSocket disconnected (active: ${liveConnectionCount})`)
+      clearIdleTimer(ws)
     },
 
     async onMessage(event: MessageEvent, ws: WSContext) {
+      if (rejectedAtOpen.has(ws)) return
+      clearIdleTimer(ws)
       // Parse the incoming message
       let message: unknown
       try {
         const raw = typeof event.data === "string" ? event.data : String(event.data)
+        // maxWsFrameBytes === 0 means unlimited (operator opt-out); any positive
+        // value is the cap. We do not fall back to DEFAULT here — config and
+        // state already merge defaults at load time, so by the time we read
+        // state, the value is authoritative.
+        const cap = state.maxWsFrameBytes
+        if (cap > 0 && raw.length > cap) {
+          sendErrorAndClose(ws, `Message exceeds ${cap} byte limit (${raw.length} bytes)`, "invalid_request_error")
+          return
+        }
         message = JSON.parse(raw)
       } catch {
         sendErrorAndClose(ws, "Invalid JSON message", "invalid_request_error")
@@ -302,12 +456,46 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
         return
       }
 
-      // Handle the response creation
-      await handleResponseCreate(ws, payload)
+      // Reject concurrent response.create on the same socket. Without this,
+      // two requests would race on the same WSContext and both write frames.
+      if (inFlight.has(ws)) {
+        try {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              error: {
+                type: "invalid_request_error",
+                message: "Concurrent response.create not allowed; wait for the previous response to terminate",
+              },
+            }),
+          )
+        } catch {
+          // Socket may already be gone
+        }
+        // Re-arm the idle timer — the previous request is still in flight but
+        // this rejected frame doesn't count as activity for keep-open purposes.
+        armIdleTimer(ws)
+        return
+      }
+
+      // Handle the response creation, tracking it as in-flight so a follow-up
+      // request on the same socket (when keep-open is enabled) is serialized.
+      const work = handleResponseCreate(ws, payload).finally(() => {
+        inFlight.delete(ws)
+        // After completion, re-arm the idle timer when keep-open is on. When
+        // keep-open is off the socket has already been closed by handleResponseCreate.
+        armIdleTimer(ws)
+      })
+      inFlight.set(ws, work)
+      await work
     },
 
     onError(event: Event, ws: WSContext) {
       consola.error("[WS] Responses API WebSocket error:", event)
+      // Release immediately — some adapter error paths don't reliably trigger
+      // onClose. releaseConnection is idempotent, so a subsequent onClose is safe.
+      releaseConnection(ws)
+      clearIdleTimer(ws)
       try {
         ws.close(1011, "Internal error")
       } catch {

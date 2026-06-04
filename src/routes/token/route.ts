@@ -8,16 +8,18 @@ export const tokenRoutes = new Hono()
 tokenRoutes.get("/", (c) => {
   try {
     return c.json({
-      github: state.tokenInfo
-        ? {
+      github:
+        state.tokenInfo ?
+          {
             token: state.tokenInfo.token,
             source: state.tokenInfo.source,
             expiresAt: state.tokenInfo.expiresAt ?? null,
             refreshable: state.tokenInfo.refreshable,
           }
         : null,
-      copilot: state.copilotTokenInfo
-        ? {
+      copilot:
+        state.copilotTokenInfo ?
+          {
             token: state.copilotTokenInfo.token,
             expiresAt: state.copilotTokenInfo.expiresAt,
             refreshIn: state.copilotTokenInfo.refreshIn,

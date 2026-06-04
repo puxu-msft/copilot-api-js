@@ -34,7 +34,7 @@ function createModel(overrides: Partial<Model> = {}): Model {
 }
 
 function getLoggedLines(infoSpy: ReturnType<typeof spyOn>): Array<string> {
-  return infoSpy.mock.calls.map((call: Array<unknown>) => call.map((item) => String(item)).join(" "))
+  return infoSpy.mock.calls.map((call: Array<unknown>) => call.map(String).join(" "))
 }
 
 describe("request payload logging", () => {

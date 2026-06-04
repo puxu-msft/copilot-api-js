@@ -1,6 +1,13 @@
 <script setup lang="ts">
-import { computed, watch, shallowRef } from "vue"
-import { useRoute, useRouter } from "vue-router"
+import {
+computed,
+watch,
+shallowRef
+} from "vue";
+import {
+useRoute,
+useRouter
+} from "vue-router";
 
 import DetailPanel from "@/components/detail/DetailPanel.vue"
 import TocTree from "@/components/detail/TocTree.vue"
@@ -8,7 +15,11 @@ import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { useTocTree } from "@/composables/useTocTree"
 import { downloadEntryAsJson } from "@/utils/export-entry"
-import { formatDate, formatDuration, formatNumber } from "@/utils/formatters"
+import {
+formatDate,
+formatDuration,
+formatNumber
+} from "@/utils/formatters";
 
 const route = useRoute()
 const router = useRouter()
@@ -130,9 +141,7 @@ function exportEntry(): void {
         class="mb-3"
       />
       <div class="text-h6">{{ loadError || "Request not found" }}</div>
-      <div class="text-caption text-medium-emphasis mt-2">
-        ID: {{ entryId }}
-      </div>
+      <div class="text-caption text-medium-emphasis mt-2">ID: {{ entryId }}</div>
       <v-btn
         class="mt-4"
         variant="outlined"

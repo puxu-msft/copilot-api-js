@@ -1,6 +1,15 @@
 import { HTTPError } from "./http-error"
-import { extractRetryAfterFromBody, extractTokenLimitFromResponseText, isUpstreamRateLimited } from "./parsing"
-import { formatErrorWithCause, parseRetryAfterHeader } from "./utils"
+import {
+  //
+  extractRetryAfterFromBody,
+  extractTokenLimitFromResponseText,
+  isUpstreamRateLimited,
+} from "./parsing"
+import {
+  //
+  formatErrorWithCause,
+  parseRetryAfterHeader,
+} from "./utils"
 
 /** Structured error types for pipeline retry decisions */
 export type ApiErrorType =
@@ -11,6 +20,7 @@ export type ApiErrorType =
   | "quota_exceeded" // 402 — free tier / premium quota exceeded
   | "auth_expired" // Token expired
   | "network_error" // Connection failure
+  | "aborted" // Operation cancelled via AbortSignal (shutdown, client cancel, internal timeout)
   | "server_error" // 5xx (non-503-upstream)
   | "upstream_rate_limited" // 503 — upstream provider rate limited
   | "bad_request" // 400 (non-token-limit)
@@ -39,6 +49,21 @@ export interface ApiError {
 export function classifyError(error: unknown): ApiError {
   if (error instanceof HTTPError) {
     return classifyHTTPError(error)
+  }
+
+  // Aborts (client cancel, shutdown signal, internal timeout watchdogs) must
+  // be classified separately from network errors. They share message keywords
+  // ("aborted", "abort") but have opposite retry semantics: a real network
+  // glitch warrants a retry; an abort means the caller no longer wants the
+  // result. Classify aborts first so they bypass the network_error pattern
+  // match below.
+  if (error instanceof Error && isAbortError(error)) {
+    return {
+      type: "aborted",
+      status: 0,
+      message: formatErrorWithCause(error),
+      raw: error,
+    }
   }
 
   // Network errors: fetch failures, socket closures, connection resets, timeouts, DNS failures
@@ -223,8 +248,29 @@ const NETWORK_ERROR_PATTERNS = [
   "network",
   "TLS",
   "CERT",
-  "abort",
 ]
+
+/**
+ * Detect aborts (client cancel, shutdown, internal timeout watchdogs).
+ *
+ * AbortSignal-triggered errors surface in multiple shapes:
+ *  - `DOMException` with `name === "AbortError"` (standard `AbortController`)
+ *  - `Error` with `name === "AbortError"` or `"TimeoutError"` (`AbortSignal.timeout`)
+ *  - Plain `Error` with message containing "abort" / "aborted" (project-internal
+ *    aborts like `new Error("Upstream WebSocket request aborted")`)
+ *
+ * We check name first (cheap, exact) then fall back to message keywords so
+ * project-internal aborts are also caught.
+ */
+function isAbortError(error: Error): boolean {
+  if (error.name === "AbortError" || error.name === "TimeoutError") return true
+  const msg = error.message.toLowerCase()
+  if (msg.includes("aborted") || msg.includes(" abort ") || msg.endsWith(" abort") || msg.startsWith("abort")) {
+    return true
+  }
+  if (error.cause instanceof Error) return isAbortError(error.cause)
+  return false
+}
 
 /** Check if an error is a network-level failure (socket, DNS, TLS, connection errors) */
 function isNetworkError(error: Error): boolean {

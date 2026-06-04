@@ -7,25 +7,21 @@
 
 import consola from "consola"
 
-import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
+import type {
+  //
+  MessageParam,
+  MessagesPayload,
+} from "~/types/api/anthropic"
 
 import { state } from "~/lib/state"
 
 import { countAnthropicContentBlocks } from "./sanitize/content-blocks"
 import { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"
 import { stripReadToolResultTags } from "./sanitize/read-tool-result-tags"
-import { finalizeAnthropicSanitization, type SanitizationStats } from "./sanitize/result"
-import { removeAnthropicSystemReminders } from "./sanitize/system-reminders"
+import { finalizeAnthropicSanitization } from "./sanitize/result"
 import { sanitizeAnthropicSystemPrompt } from "./sanitize/system-prompt"
+import { removeAnthropicSystemReminders } from "./sanitize/system-reminders"
 import { processToolBlocks } from "./sanitize/tool-blocks"
-
-export {
-  deduplicateToolCalls,
-  processToolBlocks,
-  removeAnthropicSystemReminders,
-  type SanitizationStats,
-  stripReadToolResultTags,
-}
 
 /**
  * One-time preprocessing of Anthropic messages.
@@ -71,9 +67,7 @@ export function preprocessAnthropicMessages(messages: Array<MessageParam>): {
 /**
  * Sanitize Anthropic messages by filtering orphaned tool blocks and system reminders.
  */
-export function sanitizeAnthropicMessages(
-  payload: MessagesPayload,
-): ReturnType<typeof finalizeAnthropicSanitization> {
+export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<typeof finalizeAnthropicSanitization> {
   let messages = payload.messages
   const originalBlocks = countAnthropicContentBlocks(messages)
 
@@ -85,5 +79,19 @@ export function sanitizeAnthropicMessages(
 
   const toolResult = processToolBlocks(messages, payload.tools)
   messages = toolResult.messages
-  return finalizeAnthropicSanitization(payload, messages, sanitizedSystem, originalBlocks, toolResult, systemReminderRemovals)
+  return finalizeAnthropicSanitization(
+    payload,
+    messages,
+    sanitizedSystem,
+    originalBlocks,
+    toolResult,
+    systemReminderRemovals,
+  )
 }
+
+export { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"
+
+export { stripReadToolResultTags } from "./sanitize/read-tool-result-tags"
+export { type SanitizationStats } from "./sanitize/result"
+export { removeAnthropicSystemReminders } from "./sanitize/system-reminders"
+export { processToolBlocks } from "./sanitize/tool-blocks"

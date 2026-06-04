@@ -1,6 +1,10 @@
 import type { MessageParam } from "~/types/api/anthropic"
 
-import { hasThinkingSignatureBlocks, shouldPreserveThinkingBlocks } from "../thinking-immutability"
+import {
+  //
+  hasThinkingSignatureBlocks,
+  shouldPreserveThinkingBlocks,
+} from "../thinking-immutability"
 
 /**
  * Remove duplicate tool_use/tool_result pairs, keeping only the last occurrence

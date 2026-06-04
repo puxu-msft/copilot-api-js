@@ -49,26 +49,30 @@ describe("history UI routes", () => {
 
   test("external /ui proxy rewrites Vite HTML and JS paths but preserves backend API roots", async () => {
     const externalUiApp = new Hono()
-    externalUiApp.get("/", () =>
-      new Response(
-        '<script type="module" src="/@vite/client"></script><script type="module" src="/src/main.ts?t=1"></script>',
-        { headers: { "Content-Type": "text/html; charset=utf-8" } },
-      ))
-    externalUiApp.get("/src/main.ts", () =>
-      new Response(
-        'import "/@fs/work/node_modules/vue.js"; import "/src/App.vue"; fetch("/api/status"); import "/models?detail=true";',
-        { headers: { "Content-Type": "application/javascript" } },
-      ))
+    externalUiApp.get(
+      "/",
+      () =>
+        new Response(
+          '<script type="module" src="/@vite/client"></script><script type="module" src="/src/main.ts?t=1"></script>',
+          { headers: { "Content-Type": "text/html; charset=utf-8" } },
+        ),
+    )
+    externalUiApp.get(
+      "/src/main.ts",
+      () =>
+        new Response(
+          'import "/@fs/work/node_modules/vue.js"; import "/src/App.vue"; fetch("/api/status"); import "/models?detail=true";',
+          { headers: { "Content-Type": "application/javascript" } },
+        ),
+    )
 
     globalThis.fetch = mock((input: string | URL | Request, init?: RequestInit) => {
-      const url = typeof input === "string" || input instanceof URL
-        ? new URL(input)
-        : new URL(input.url)
+      const url = typeof input === "string" || input instanceof URL ? new URL(input) : new URL(input.url)
 
       if (url.origin === "http://external-ui.test") {
         return externalUiApp.request(url.toString(), init)
       }
-      return originalFetch(input as Parameters<typeof fetch>[0], init)
+      return originalFetch(input, init)
     }) as unknown as typeof fetch
 
     const proxyApp = new Hono()
@@ -77,8 +81,8 @@ describe("history UI routes", () => {
     const htmlRes = await proxyApp.request("http://localhost/ui")
     expect(htmlRes.status).toBe(200)
     const html = await htmlRes.text()
-    expect(html).toContain('/ui/@vite/client')
-    expect(html).toContain('/ui/src/main.ts?t=1')
+    expect(html).toContain("/ui/@vite/client")
+    expect(html).toContain("/ui/src/main.ts?t=1")
 
     const jsRes = await proxyApp.request("http://localhost/ui/src/main.ts")
     expect(jsRes.status).toBe(200)
@@ -91,26 +95,27 @@ describe("history UI routes", () => {
 
   test("external /ui proxy preserves JavaScript regex literals while still rewriting Vite paths in strings", async () => {
     const externalUiApp = new Hono()
-    externalUiApp.get("/@vite/client", () =>
-      new Response(
-        [
-          'const currentScriptHost = currentScriptHostURL.pathname.replace(/@vite\\/client$/, "");',
-          'import "/@fs/work/node_modules/vite/dist/client/env.mjs";',
-          'const direct = "/@vite/client";',
-          'const absolute = "http://external-ui.test/@vite/client";',
-        ].join("\n"),
-        { headers: { "Content-Type": "application/javascript" } },
-      ))
+    externalUiApp.get(
+      "/@vite/client",
+      () =>
+        new Response(
+          [
+            String.raw`const currentScriptHost = currentScriptHostURL.pathname.replace(/@vite\/client$/, "");`,
+            'import "/@fs/work/node_modules/vite/dist/client/env.mjs";',
+            'const direct = "/@vite/client";',
+            'const absolute = "http://external-ui.test/@vite/client";',
+          ].join("\n"),
+          { headers: { "Content-Type": "application/javascript" } },
+        ),
+    )
 
     globalThis.fetch = mock((input: string | URL | Request, init?: RequestInit) => {
-      const url = typeof input === "string" || input instanceof URL
-        ? new URL(input)
-        : new URL(input.url)
+      const url = typeof input === "string" || input instanceof URL ? new URL(input) : new URL(input.url)
 
       if (url.origin === "http://external-ui.test") {
         return externalUiApp.request(url.toString(), init)
       }
-      return originalFetch(input as Parameters<typeof fetch>[0], init)
+      return originalFetch(input, init)
     }) as unknown as typeof fetch
 
     const proxyApp = new Hono()
@@ -120,7 +125,7 @@ describe("history UI routes", () => {
     expect(jsRes.status).toBe(200)
     const js = await jsRes.text()
 
-    expect(js).toContain('pathname.replace(/@vite\\/client$/, "")')
+    expect(js).toContain(String.raw`pathname.replace(/@vite\/client$/, "")`)
     expect(js).toContain('import "/ui/@fs/work/node_modules/vite/dist/client/env.mjs"')
     expect(js).toContain('const direct = "/ui/@vite/client"')
     expect(js).toContain('const absolute = "/ui/@vite/client"')

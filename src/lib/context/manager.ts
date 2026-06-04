@@ -18,12 +18,21 @@ import { consola } from "consola"
 
 import type { EndpointType } from "~/lib/history/store"
 
+import {
+  //
+  recordAcceptedRequest,
+  recordSettledRequest,
+} from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
-
 import { notifyActiveRequestChanged } from "~/lib/ws"
-import { recordAcceptedRequest, recordSettledRequest } from "~/lib/request-telemetry"
 
-import type { HistoryEntryData, RequestContext, RequestContextEventData, RequestState } from "./request"
+import type {
+  //
+  HistoryEntryData,
+  RequestContext,
+  RequestContextEventData,
+  RequestState,
+} from "./request"
 
 import { summarizeRequestContext } from "./activity-summary"
 import { createRequestContext } from "./request"
@@ -98,7 +107,33 @@ export function createRequestContextManager(): RequestContextManager {
 
   // ─── Stale Request Reaper ───
 
-  const REAPER_INTERVAL_MS = 60_000
+  /**
+   * Cap on the reaper scan interval. A scan misses stale work for at most
+   * `interval` ms, so we derive the effective interval from staleRequestMaxAge
+   * — but clamp to this cap so a maxAge of hours doesn't translate into a
+   * scan-every-many-minutes cadence that delays operator-visible failures.
+   */
+  const REAPER_INTERVAL_MAX_MS = 60_000
+  /**
+   * Floor on the reaper scan interval. Even when maxAge is small (e.g. 1s
+   * for tests), don't scan faster than this — every scan walks all active
+   * contexts and the cost is wasted when no entry is near expiry.
+   */
+  const REAPER_INTERVAL_MIN_MS = 250
+
+  /**
+   * Derive the per-instance scan interval. Scanning every `maxAge / 3` keeps
+   * worst-case detection latency under ~1.33 × maxAge: a request that goes
+   * stale right after a scan waits one full interval (maxAge/3) plus the
+   * usual variance. Configurable via `staleRequestMaxAge` alone — no extra
+   * knob, which means operators can't accidentally set them inconsistently.
+   */
+  function computeReaperIntervalMs(): number {
+    const derived = Math.floor((state.staleRequestMaxAge * 1000) / 3)
+    if (derived <= 0) return REAPER_INTERVAL_MAX_MS
+    return Math.max(REAPER_INTERVAL_MIN_MS, Math.min(REAPER_INTERVAL_MAX_MS, derived))
+  }
+
   let reaperTimer: ReturnType<typeof setInterval> | null = null
 
   /** Single reaper scan — force-fail contexts exceeding maxAge */
@@ -127,7 +162,8 @@ export function createRequestContextManager(): RequestContextManager {
 
   function startReaper() {
     if (reaperTimer) return // idempotent
-    reaperTimer = setInterval(runReaperOnce, REAPER_INTERVAL_MS)
+    if (state.staleRequestMaxAge <= 0) return // explicitly disabled — no timer at all
+    reaperTimer = setInterval(runReaperOnce, computeReaperIntervalMs())
   }
 
   function stopReaper() {
@@ -141,10 +177,34 @@ export function createRequestContextManager(): RequestContextManager {
     for (const listener of listeners) {
       try {
         listener(event)
-      } catch {
-        // Swallow listener errors
+      } catch (err) {
+        // A consumer (history / TUI / metrics) bug must NOT take down the
+        // request lifecycle — but it also must not be invisible. Include
+        // endpoint and model so logs are actionable beyond a random request id.
+        const endpoint = event.context.endpoint
+        const model = event.context.originalRequest?.model
+        consola.warn(
+          `[context] listener threw for event "${event.type}" `
+            + `(request ${event.context.id}, endpoint ${endpoint}${model ? `, model ${model}` : ""}):`,
+          err instanceof Error ? err.message : err,
+        )
       }
     }
+  }
+
+  /**
+   * Mirror a settled history entry into request-telemetry. Used by both the
+   * "completed" and "failed" paths; defaultSuccess flips the assumed success
+   * value when the entry's `response.success` is missing (completed defaults
+   * to true, failed defaults to false).
+   */
+  function recordSettledFromEntry(entry: HistoryEntryData, defaultSuccess: boolean): void {
+    recordSettledRequest(entry.response?.model ?? entry.request.model ?? "unknown", {
+      startedAt: entry.startedAt,
+      endedAt: entry.endedAt,
+      success: entry.response?.success ?? defaultSuccess,
+      usage: entry.response?.usage,
+    })
   }
 
   function handleContextEvent(rawEvent: RequestContextEventData) {
@@ -179,12 +239,7 @@ export function createRequestContextManager(): RequestContextManager {
       }
       case "completed": {
         if (rawEvent.entry) {
-          recordSettledRequest(rawEvent.entry.response?.model ?? rawEvent.entry.request.model ?? "unknown", {
-            startedAt: rawEvent.entry.startedAt,
-            endedAt: rawEvent.entry.endedAt,
-            success: rawEvent.entry.response?.success ?? true,
-            usage: rawEvent.entry.response?.usage,
-          })
+          recordSettledFromEntry(rawEvent.entry, true)
           emit({
             type: "completed",
             context,
@@ -201,12 +256,7 @@ export function createRequestContextManager(): RequestContextManager {
       }
       case "failed": {
         if (rawEvent.entry) {
-          recordSettledRequest(rawEvent.entry.response?.model ?? rawEvent.entry.request.model ?? "unknown", {
-            startedAt: rawEvent.entry.startedAt,
-            endedAt: rawEvent.entry.endedAt,
-            success: rawEvent.entry.response?.success ?? false,
-            usage: rawEvent.entry.response?.usage,
-          })
+          recordSettledFromEntry(rawEvent.entry, false)
           emit({
             type: "failed",
             context,

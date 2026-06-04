@@ -1,4 +1,5 @@
 import { useClipboard } from "@vueuse/core"
+
 import { useToast } from "./useToast"
 
 export function useCopyToClipboard() {

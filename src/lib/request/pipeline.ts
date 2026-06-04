@@ -9,12 +9,33 @@ import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { ApiError } from "~/lib/error"
-import type { EndpointType, SanitizationInfo } from "~/lib/history/store"
+import type {
+  //
+  EndpointType,
+  SanitizationInfo,
+} from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 
 import { classifyError } from "~/lib/error"
 
 // --- FormatAdapter ---
+
+/**
+ * Stringify an unknown throw value preserving as much diagnostic detail as
+ * possible. Plain objects use JSON; primitives use String(); everything that
+ * fails JSON.stringify (circular refs etc.) falls back to a generic marker.
+ */
+function safeStringifyUnknown(value: unknown): string {
+  if (value === null) return "null"
+  if (value === undefined) return "undefined"
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return "[unserializable error value]"
+  }
+}
 
 export interface SanitizeResult<TPayload> {
   payload: TPayload
@@ -29,8 +50,17 @@ export interface SanitizeResult<TPayload> {
 export interface FormatAdapter<TPayload> {
   readonly format: EndpointType
   sanitize(payload: TPayload): SanitizeResult<TPayload>
-  /** Execute API call — raw execution without rate limiting wrapper */
-  execute(payload: TPayload): Promise<{ result: unknown; queueWaitMs: number }>
+  /**
+   * Execute the API call — raw execution without rate limiting wrapper.
+   *
+   * `hints` is an opaque (typed as `PrepareHints` in pipeline.ts) bag of
+   * preparation guidance the adapter SHOULD forward to its format-specific
+   * preparation step. The pipeline supplies hints from the most recent
+   * retry action; on the first attempt and on attempts that did not produce
+   * hints, this argument is undefined. Adapters that don't recognize a hint
+   * field MUST ignore it (forward-compatible).
+   */
+  execute(payload: TPayload, hints?: PrepareHints): Promise<{ result: unknown; queueWaitMs: number }>
   logPayloadSize(payload: TPayload): void | Promise<void>
 }
 
@@ -43,8 +73,43 @@ export interface RetryContext<TPayload> {
   maxRetries: number
 }
 
+/**
+ * Optional preparation hints attached to a retry action. The pipeline passes
+ * these to the adapter on the next attempt; the adapter forwards them to
+ * format-specific request preparation (e.g. `prepareAnthropicRequest`).
+ *
+ * Why this exists: previously, strategies like `unsupported-beta-retry`
+ * communicated "exclude these betas on the next prep" implicitly via a
+ * global negotiation cache. That coupled retry success to an undocumented
+ * adapter contract ("execute() must re-prepare and re-read cache every
+ * attempt"). Hints make the dependency explicit, statically typed, and
+ * testable — the cache continues to exist as a cross-request memo, but
+ * it is no longer the only carrier of intra-retry intent.
+ *
+ * Adapters that don't recognize a hint field MUST ignore it (forward-compat).
+ */
+export interface PrepareHints {
+  /**
+   * Beta tokens to drop from the outbound `anthropic-beta` header on the
+   * next prep, in addition to anything the global cache already strips.
+   */
+  excludeBetas?: ReadonlyArray<string>
+  /**
+   * Body fields to drop from the next wire payload, in addition to anything
+   * the global cache already strips.
+   */
+  rejectFields?: ReadonlyArray<string>
+}
+
 export type RetryAction<TPayload> =
-  | { action: "retry"; payload: TPayload; waitMs?: number; meta?: Record<string, unknown> }
+  | {
+      action: "retry"
+      payload: TPayload
+      waitMs?: number
+      meta?: Record<string, unknown>
+      /** Format-specific preparation hints forwarded to the next adapter.execute() call. */
+      prepareHints?: PrepareHints
+    }
   | { action: "abort"; error: ApiError }
 
 export interface RetryStrategy<TPayload> {
@@ -96,6 +161,14 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
   let lastError: unknown = null
   let totalQueueWaitMs = 0
   let lastStrategyName: string | undefined
+  // Preparation hints from the most recent retry action. Cleared on attempt 0.
+  // **Replace semantics** (not merge): each retry's `prepareHints` completely
+  // overrides the previous one. A strategy that returns `prepareHints: undefined`
+  // clears prior hints. Rationale: hints are intra-retry intent ("this attempt
+  // should exclude X"); cross-request memory belongs in negotiation cache.
+  // Merging would silently accumulate exclusions across unrelated strategies
+  // — exactly the implicit-state coupling H4 was designed to eliminate.
+  let pendingPrepareHints: PrepareHints | undefined
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     // 1. Create attempt first (ensures currentAttempt is available for subsequent calls)
@@ -121,7 +194,7 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
     requestContext?.transition("executing")
 
     try {
-      const { result: response, queueWaitMs } = await adapter.execute(effectivePayload)
+      const { result: response, queueWaitMs } = await adapter.execute(effectivePayload, pendingPrepareHints)
       totalQueueWaitMs += queueWaitMs
       requestContext?.addQueueWaitMs(queueWaitMs)
 
@@ -173,6 +246,7 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
 
             lastStrategyName = strategy.name
             effectivePayload = action.payload
+            pendingPrepareHints = action.prepareHints
             onRetry?.(attempt, strategy.name, action.payload, action.meta)
             handled = true
             break
@@ -202,7 +276,14 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
       await adapter.logPayloadSize(effectivePayload)
     }
 
-    throw lastError instanceof Error ? lastError : new Error("Unknown error")
+    // Preserve non-Error throws (string, number, plain object …) — the
+    // original value is often diagnostic (e.g. an HTTPError-shaped object
+    // thrown raw, or a TimeoutError from a third-party library). JSON
+    // stringify covers plain objects (which `String(x)` would render as
+    // `"[object Object]"`, losing the diagnostic) and falls back to the
+    // String form when JSON.stringify can't handle the value.
+    if (lastError instanceof Error) throw lastError
+    throw new Error(safeStringifyUnknown(lastError))
   }
 
   // Should not reach here

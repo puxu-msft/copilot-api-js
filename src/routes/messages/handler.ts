@@ -8,32 +8,66 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 
 import consola from "consola"
-import { SSEStreamingApi, streamSSE } from "hono/streaming"
+import {
+  //
+  SSEStreamingApi,
+  streamSSE,
+} from "hono/streaming"
 
-import type { HeadersCapture, RequestContext } from "~/lib/context/request"
-import type { MessageContent, ToolDefinition } from "~/lib/history"
-import type { PreprocessInfo, SseEventRecord } from "~/lib/history/store"
+import type {
+  //
+  HeadersCapture,
+  RequestContext,
+} from "~/lib/context/request"
+import type {
+  //
+  MessageContent,
+  ToolDefinition,
+} from "~/lib/history"
+import type {
+  //
+  PreprocessInfo,
+  SseEventRecord,
+} from "~/lib/history/store"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
-import { type AnthropicAutoTruncateResult, autoTruncateAnthropic } from "~/lib/anthropic/auto-truncate"
-import { createAnthropicMessages, type AnthropicMessageResponse } from "~/lib/anthropic/client"
+import {
+  //
+  type AnthropicAutoTruncateResult,
+  autoTruncateAnthropic,
+} from "~/lib/anthropic/auto-truncate"
+import {
+  //
+  createAnthropicMessages,
+  type AnthropicMessageResponse,
+} from "~/lib/anthropic/client"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { preprocessTools } from "~/lib/anthropic/message-tools"
 import {
+  //
   preprocessAnthropicMessages,
   sanitizeAnthropicMessages,
   type SanitizationStats,
 } from "~/lib/anthropic/sanitize"
 import {
+  //
   createServerToolBlockFilter,
   filterServerToolBlocksFromResponse,
   logServerToolBlock,
   logServerToolBlocks,
 } from "~/lib/anthropic/server-tool-filter"
-import { processAnthropicStream, supportsDirectAnthropicApi } from "~/lib/anthropic/sse"
+import {
+  //
+  processAnthropicStream,
+  supportsDirectAnthropicApi,
+} from "~/lib/anthropic/sse"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import { handleWarmupRequest, isWarmupRequest } from "~/lib/anthropic/warmup"
+import {
+  //
+  handleWarmupRequest,
+  isWarmupRequest,
+} from "~/lib/anthropic/warmup"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
@@ -41,14 +75,28 @@ import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { resolveModelName } from "~/lib/models/resolver"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
-import { buildAnthropicResponseData, createTruncationMarker, prependMarkerToResponse } from "~/lib/request"
+import {
+  //
+  buildAnthropicResponseData,
+  createTruncationMarker,
+  prependMarkerToResponse,
+} from "~/lib/request"
 import { logPayloadSizeInfoAnthropic } from "~/lib/request/payload"
-import { executeRequestPipeline, type FormatAdapter } from "~/lib/request/pipeline"
-import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
-import { createContextManagementRetryStrategy } from "~/lib/request/strategies/context-management-retry"
+import {
+  //
+  executeRequestPipeline,
+  type FormatAdapter,
+} from "~/lib/request/pipeline"
+import {
+  //
+  createAutoTruncateStrategy,
+  type TruncateResult,
+} from "~/lib/request/strategies/auto-truncate"
+import { createBodyFieldRejectionStrategy } from "~/lib/request/strategies/context-management-retry"
 import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferred-tool-retry"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
+import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { state } from "~/lib/state"
 import { StreamIdleTimeoutError } from "~/lib/stream"
 import { processAnthropicSystem } from "~/lib/system-prompt"
@@ -70,6 +118,15 @@ export async function handleMessages(c: Context) {
   if (state.warmupPolicy !== "allow" && isWarmupRequest(anthropicPayload)) {
     return handleWarmupRequest(c, anthropicPayload, state.warmupPolicy)
   }
+
+  // Snapshot the inbound payload BEFORE any mutation (model resolution,
+  // system processing, message preprocessing). This is what we record as
+  // the request's "original" — handlers below intentionally rewrite
+  // anthropicPayload in place, so without this snapshot the history view
+  // would show a half-processed payload labeled as the user's raw input,
+  // and auto-truncate's "re-truncate from original" path would compound
+  // edits that already happened on the wire.
+  const originalSnapshot = structuredClone(anthropicPayload)
 
   // Resolve model name aliases and date-suffixed versions
   // e.g., "haiku" → "claude-haiku-4.5", "claude-sonnet-4-20250514" → "claude-sonnet-4"
@@ -109,12 +166,12 @@ export async function handleMessages(c: Context) {
   })
   reqCtx.setOriginalRequest({
     // Use client's original model name (before resolution/overrides)
-    model: clientModelName ?? anthropicPayload.model,
-    messages: anthropicPayload.messages as unknown as Array<MessageContent>,
-    stream: anthropicPayload.stream ?? false,
-    tools: anthropicPayload.tools as Array<ToolDefinition> | undefined,
-    system: anthropicPayload.system,
-    payload: anthropicPayload,
+    model: clientModelName ?? originalSnapshot.model,
+    messages: originalSnapshot.messages as unknown as Array<MessageContent>,
+    stream: originalSnapshot.stream ?? false,
+    tools: originalSnapshot.tools as Array<ToolDefinition> | undefined,
+    system: originalSnapshot.system,
+    payload: originalSnapshot,
   })
   reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
 
@@ -191,12 +248,18 @@ async function handleDirectAnthropicCompletion(
   const adapter: FormatAdapter<MessagesPayload> = {
     format: "anthropic-messages",
     sanitize: (p) => sanitizeAnthropicMessages(preprocessTools(p)),
-    execute: (p) =>
+    execute: (p, hints) =>
       executeWithAdaptiveRateLimit(() =>
         createAnthropicMessages(p, {
           resolvedModel: selectedModel,
           headersCapture,
           clientAnthropicBeta: c.req.raw.headers.get("anthropic-beta") ?? undefined,
+          // PrepareHints from the previous retry attempt — forwarded into
+          // request preparation so the next wire payload deterministically
+          // excludes the offending fields/betas, without depending on the
+          // negotiation cache as the sole communication channel.
+          excludeBetas: hints?.excludeBetas,
+          rejectFields: hints?.rejectFields,
           onPrepared: ({ wire, headers }) => {
             reqCtx.setAttemptWireRequest({
               model: typeof wire.model === "string" ? wire.model : anthropicPayload.model,
@@ -214,7 +277,8 @@ async function handleDirectAnthropicCompletion(
   const strategies = [
     createNetworkRetryStrategy<MessagesPayload>(),
     createTokenRefreshStrategy<MessagesPayload>(),
-    createContextManagementRetryStrategy<MessagesPayload>(),
+    createBodyFieldRejectionStrategy<MessagesPayload>(),
+    createUnsupportedBetaRetryStrategy<MessagesPayload>(),
     createDeferredToolRetryStrategy<MessagesPayload>(),
     createAutoTruncateStrategy<MessagesPayload>({
       truncate: (p, model, opts) => autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,

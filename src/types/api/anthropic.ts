@@ -99,8 +99,15 @@ export interface Tool {
 
 export type ToolChoice = { type: "auto" } | { type: "any" } | { type: "none" } | { type: "tool"; name: string }
 
-/** Known effort levels, ordered from lowest to highest */
-export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const
+/**
+ * Known effort levels, ordered from lowest to highest.
+ *
+ * - "none" — reasoning disabled entirely (declared by gpt-5.5; semantically
+ *   below "low" so clamping to the lowest supported value gracefully degrades
+ *   when the model whitelist excludes it).
+ * - "low"/"medium"/"high"/"xhigh"/"max" — increasing reasoning budget.
+ */
+export const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const
 export type EffortLevel = (typeof EFFORT_LEVELS)[number]
 
 export interface OutputConfig {

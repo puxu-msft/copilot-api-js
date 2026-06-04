@@ -1,6 +1,14 @@
-import { computed, ref, type ComputedRef, type Ref } from "vue"
+import {
+computed,
+ref,
+type ComputedRef,
+type Ref
+} from "vue";
 
-import { formatDuration, formatNumber } from "@/utils/formatters"
+import {
+formatDuration,
+formatNumber
+} from "@/utils/formatters";
 
 import type { RequestTelemetrySnapshot } from "./useDashboardStatus"
 
@@ -75,11 +83,11 @@ function modelBarColor(model: string): string {
   const value = model.toLowerCase()
   if (value.includes("claude") || value.includes("anthropic")) return "#c8a0d8"
   if (
-    value.includes("gpt") ||
-    value.includes("openai") ||
-    value.includes("o1") ||
-    value.includes("o3") ||
-    value.includes("o4")
+    value.includes("gpt")
+    || value.includes("openai")
+    || value.includes("o1")
+    || value.includes("o3")
+    || value.includes("o4")
   ) {
     return "#7ab8d0"
   }
@@ -145,11 +153,11 @@ export function useModelTelemetry(
 
     return [...rows.values()].sort(
       (left, right) =>
-        getModelMetricValue(right.last7d, selectedSortMetric.value) -
-          getModelMetricValue(left.last7d, selectedSortMetric.value) ||
-        getModelMetricValue(right.runtime, selectedSortMetric.value) -
-          getModelMetricValue(left.runtime, selectedSortMetric.value) ||
-        left.model.localeCompare(right.model),
+        getModelMetricValue(right.last7d, selectedSortMetric.value)
+          - getModelMetricValue(left.last7d, selectedSortMetric.value)
+        || getModelMetricValue(right.runtime, selectedSortMetric.value)
+          - getModelMetricValue(left.runtime, selectedSortMetric.value)
+        || left.model.localeCompare(right.model),
     )
   })
 

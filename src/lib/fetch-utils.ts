@@ -48,3 +48,21 @@ export function sanitizeHeadersForHistory(headers: Record<string, string>): Reco
     ]),
   )
 }
+
+/**
+ * Case-insensitive header lookup over a plain Record.
+ * Use this whenever an HTTP/WS header may have been written with arbitrary
+ * casing (clients are inconsistent) and you need a single canonical answer
+ * without building a normalized map per call.
+ */
+export function getHeaderCaseInsensitive(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined
+  const target = name.toLowerCase()
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) return value
+  }
+  return undefined
+}

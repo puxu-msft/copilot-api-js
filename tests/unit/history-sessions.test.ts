@@ -4,24 +4,32 @@ import {
   clearHistory,
   getCurrentSession,
   getSessionIdFromHeaders,
-  historyState,
+  getSessions,
   initHistory,
   registerResponseSession,
   resolveResponseSessionId,
+  shutdownHistory,
 } from "~/lib/history"
+import { closeDatabase, openInMemoryDatabase } from "~/lib/history/sqlite/connection"
+import { setStateForTests } from "~/lib/state"
 
 describe("history session resolution", () => {
   beforeEach(() => {
+    setStateForTests({ historyDbPath: ":memory:" })
+    openInMemoryDatabase()
     initHistory(true, 200)
   })
 
   afterEach(() => {
     clearHistory()
+    shutdownHistory()
+    closeDatabase()
+    setStateForTests({ historyDbPath: "" })
   })
 
   test("does not create a synthetic session when no id is provided", () => {
     expect(getCurrentSession("anthropic-messages")).toBeUndefined()
-    expect(historyState.sessions.size).toBe(0)
+    expect(getSessions().sessions.length).toBe(0)
   })
 
   test("extracts a real client session id from headers", () => {

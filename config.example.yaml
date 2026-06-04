@@ -34,14 +34,14 @@
 # If still unavailable, the best model in the same family is used as fallback.
 
 model_overrides:
-  opus: claude-opus-4.6
+  opus: claude-opus-4.7-1m-internal
   sonnet: claude-sonnet-4.6
   haiku: claude-haiku-4.5
 
-  # opus: claude-opus-4.6-1m
-  # claude-opus-4.5: claude-opus-4.6-1m
-  # claude-opus-4.6: claude-opus-4.6-1m
-  # claude-opus-4-6: claude-opus-4.6-1m
+  # opus: claude-opus-4.7-1m-internal
+  # claude-opus-4.5: claude-opus-4.7-1m-internal
+  # claude-opus-4.6: claude-opus-4.7-1m-internal
+  # claude-opus-4-6: claude-opus-4.7-1m-internal
 
   # Use latest sonnet
   # claude-sonnet-4.5: claude-sonnet-4.6
@@ -57,6 +57,85 @@ model_overrides:
   # Upgrade haiku to sonnet
   # haiku: claude-sonnet-4.6
   # claude-haiku-4.5: claude-sonnet-4.6
+
+# ============================================================================
+# Model Preference (per-family priority order)
+# ============================================================================
+# Per-family preferred-model order used when resolving short aliases
+# (opus/sonnet/haiku) and family-level fallbacks. The first entry that exists
+# in the live `/models` catalog wins; if none exist, the first entry is
+# returned as a best-effort fallback.
+#
+# Semantics: per-family REPLACEMENT. Supplying `opus: [...]` replaces the
+# built-in opus list entirely. Families omitted from this section keep their
+# built-in defaults (shown below).
+#
+# Use this to pick up newly released Claude models without recompiling, or to
+# demote a model that misbehaves on your account.
+#
+# Built-in defaults:
+#   opus:
+#     - claude-opus-4.7-1m-internal
+#     - claude-opus-4.7
+#     - claude-opus-4.6
+#     - claude-opus-4.5
+#     - claude-opus-41
+#   sonnet:
+#     - claude-sonnet-4.6
+#     - claude-sonnet-4.5
+#   haiku:
+#     - claude-haiku-4.5
+
+model_preference:
+  opus:
+    - claude-opus-4.7-1m-internal
+    - claude-opus-4.8
+    - claude-opus-4.7
+    - claude-opus-4.6
+    - claude-opus-4.5
+  sonnet:
+    - claude-sonnet-4.6
+    - claude-sonnet-4.5
+  haiku:
+    - claude-haiku-4.5
+
+# ============================================================================
+# Disabled Models
+# ============================================================================
+# Hide specific models from the available list by ID, even when Copilot
+# advertises them. Use this to suppress deprecated/legacy models so they
+# don't show up in `/models`, the UI picker, or model resolution fallbacks.
+# Match is exact against `Model.id`. Empty/omitted = nothing disabled.
+
+disabled_models:
+  - claude-opus-4.6-1m
+  - claude-opus-4.6
+  - gpt-5.2-codex
+  - gpt-5.3-codex
+  - gpt-5.4-mini
+  - gpt-5.4
+  - gpt-5-mini
+  - gpt-4o-mini-2024-07-18
+  - gpt-4o-2024-11-20
+  - gpt-4o-2024-08-06
+  # - text-embedding-3-small
+  - claude-sonnet-4.5
+  - claude-opus-4.5
+  - gemini-3-flash-preview
+  - gemini-2.5-pro
+  - gpt-4.1-2025-04-14
+  - gpt-5.2
+  - gpt-41-copilot
+  - gpt-3.5-turbo-0613
+  - gpt-4
+  - gpt-4-0613
+  - gpt-4-0125-preview
+  - gpt-4o-2024-05-13
+  - gpt-4-o-preview
+  - gpt-4.1
+  - gpt-3.5-turbo
+  - gpt-4o-mini
+  - text-embedding-ada-002
 
 # ============================================================================
 # Timeouts
@@ -96,10 +175,8 @@ shutdown:
 # Control history recording behavior.
 
 history:
-  # Maximum number of entries to keep in memory (0 = unlimited, default: 200)
+  # Maximum number of entries to keep in SQLite (0 = unlimited, default: 200)
   limit: 50
-  # Minimum entries to keep even under memory pressure (default: 50)
-  min_entries: 20
 
 # ============================================================================
 # Anthropic
@@ -176,15 +253,68 @@ anthropic:
 
   # Per-model supported effort levels (whitelist) for output_config.effort.
   # Keys are model name substrings matched against the resolved model name.
-  # Values are arrays of supported efforts from: low, medium, high, xhigh, max.
+  # Values are arrays of supported efforts from: none, low, medium, high, xhigh, max.
   # Requests outside the whitelist are clamped to the nearest supported value
   # (above max → max supported; below min → min supported).
+  #
+  # Match semantics (whitelist — single source of truth):
+  #   - The MOST SPECIFIC (longest) key whose substring matches the model wins.
+  #     e.g. for model "claude-opus-4.7-high", the key "claude-opus-4.7-high"
+  #     beats "claude-opus-4.7"; only the winning key's values apply (no union).
+  #   - The pseudo-key "*" is a last-resort wildcard (used only when no other
+  #     key matches).
+  #
+  # Cross-validation: if a configured whitelist contains efforts the upstream
+  # model metadata does NOT declare, the out-of-range entries are dropped with
+  # a warn log. If the intersection is empty, the metadata wins (avoids
+  # guaranteed 400s from stale config).
+  #
   # Runtime dynamically extends this (learned from invalid_reasoning_effort errors,
-  # in-memory only). Config-sourced entries take precedence over runtime-learned.
-  # Default: no constraints (all effort levels pass through).
+  # persisted to negotiation-states.json). Config-sourced entries take precedence
+  # over runtime-learned, which in turn take precedence over model metadata.
+  # Default: no constraints (all effort levels declared by the model pass through).
   efforts_overrides:
     claude-opus-4.6-1m: [medium, high]
     claude-opus-4.7: [medium]
+    claude-opus-4.7-1m-internal: [medium, high]
+
+  # ---------------------------------------------------------------------------
+  # anthropic-beta header pre-filter
+  # ---------------------------------------------------------------------------
+  # Strip the listed `anthropic-beta` tokens from outbound requests before they
+  # are forwarded upstream. Keys are model-name substrings matched against the
+  # resolved model name; the pseudo-key "*" applies to every model.
+  # Applies to both client-sent and locally-built betas, so use it for tokens
+  # the upstream rejects (e.g. `unsupported beta header(s): X`).
+  #
+  # Match semantics (strip-list — additive): every matching key contributes
+  # its tokens to the strip set, including "*". Use "*" to define a baseline
+  # and per-model keys to add to it.
+  #
+  # Runtime negotiation also populates a persistent cache (negotiation-states.json)
+  # when upstream returns "unsupported beta header(s)". Config entries are always
+  # applied; runtime-learned entries survive restarts.
+  #
+  # Default: none (no pre-filter; rely on runtime negotiation only).
+  # strip_beta_headers:
+  #   claude-opus-4.7-1m-internal: [context-1m-2025-08-07]
+  #   "*": []
+
+  # ---------------------------------------------------------------------------
+  # Body field pre-filter
+  # ---------------------------------------------------------------------------
+  # Strip top-level body fields from outbound Anthropic payloads per model.
+  # Keys are model-name substrings; "*" applies to every model.
+  # Match semantics (strip-list — additive): every matching key contributes
+  # its fields to the strip set, including "*".
+  # Always merged with the built-in default {"*": [inference_geo]} and with
+  # runtime-learned entries from upstream `<field>: Extra inputs are not
+  # permitted` 400 errors (persisted in negotiation-states.json).
+  #
+  # Default: none (only built-in inference_geo strip + runtime negotiation).
+  # reject_body_fields:
+  #   "*": [some_global_field]
+  #   claude-opus-4.7: [model_specific_field]
 
 # ============================================================================
 # Responses API
@@ -195,8 +325,22 @@ openai-responses:
   # Convert `call_xxx` IDs to `fc_xxx` in input. Required when clients send conversation history with
   # Chat Completions-format tool call IDs to the Responses API (which requires `fc_` prefix). Default: true.
   normalize_call_ids: true
-  # Use upstream WebSocket transport for streaming /responses when the model supports it. Default: false.
+
+  # Use upstream WebSocket transport for streaming /responses when the model supports it.
+  # Connections are reused across tool-call rounds via `previous_response_id` or session header.
+  # WS failures fall back to HTTP transparently; 3 consecutive fallbacks temporarily disable WS
+  # for 5 minutes (single half-open probe on expiry). Default: false.
   upstream_websocket: false
+
+  # Fix inconsistent item IDs across `output_item.added` / `output_item.done` events from Copilot's
+  # upstream stream. Required by `@ai-sdk/openai` which validates ID continuity. Default: true.
+  fix_stream_ids: true
+
+  # Keep the client-side WebSocket open after `response.completed` so the client can issue
+  # follow-up `response.create` frames on the same socket. When false (default), the socket
+  # closes with code 1000 after each request (HTTP-like one-shot semantics).
+  # Concurrent `response.create` on the same socket is rejected with an error frame.
+  client_websocket_keep_open: false
 
 # ============================================================================
 # Rate Limiter

@@ -1,0 +1,100 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+
+import type { HistoryEntry } from "~/lib/history"
+
+import { closeDatabase, openInMemoryDatabase } from "~/lib/history/sqlite/connection"
+import { getEntryById, queryEntryCount } from "~/lib/history/sqlite/read"
+import {
+  finalizeEntry,
+  getEntry,
+  initHistory,
+  insertEntry,
+  shutdownHistory,
+  updateEntry,
+} from "~/lib/history/store"
+import { setHistoryConfig } from "~/lib/state"
+
+function baseEntry(id: string): HistoryEntry {
+  return {
+    id,
+    endpoint: "anthropic-messages",
+    startedAt: Date.now(),
+    state: "pending",
+    active: true,
+    lastUpdatedAt: Date.now(),
+    request: { model: "claude-opus-4-7" },
+  } as HistoryEntry
+}
+
+describe("history persistence boundary", () => {
+  beforeEach(() => {
+    // Ensure any previous db is closed, then force initHistory to use in-memory
+    shutdownHistory()
+    setHistoryConfig({ historyDbPath: ":memory:" })
+    initHistory(true)
+    // Guard: openInMemoryDatabase is idempotent if already in-memory
+    openInMemoryDatabase()
+  })
+
+  afterEach(() => {
+    shutdownHistory()
+    closeDatabase()
+    setHistoryConfig({ historyDbPath: "" })
+  })
+
+  test("pending entry stays out of sqlite", () => {
+    insertEntry(baseEntry("e1"))
+    expect(queryEntryCount()).toBe(0)
+    expect(getEntry("e1")?.state).toBe("pending")
+    expect(getEntryById("e1")).toBeUndefined()
+  })
+
+  test("only writes to sqlite on completion", () => {
+    insertEntry(baseEntry("e2"))
+    updateEntry("e2", { state: "streaming", active: true, lastUpdatedAt: Date.now() })
+    expect(queryEntryCount()).toBe(0)
+
+    updateEntry("e2", {
+      state: "completed",
+      active: false,
+      lastUpdatedAt: Date.now(),
+      endedAt: Date.now(),
+      response: {
+        success: true,
+        model: "claude-opus-4-7",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: null,
+      },
+    })
+    // updateEntry no longer auto-persists; finalizeEntry is the explicit step
+    // (see entries.ts docstring). State alone is not a side-effect trigger.
+    expect(queryEntryCount()).toBe(0)
+    finalizeEntry("e2")
+    expect(queryEntryCount()).toBe(1)
+    // After finalize the entry lives in SQLite (not in-flight) — getEntry
+    // reads SQLite as fallback, so we still see "completed" via that path.
+    expect(getEntry("e2")?.state).toBe("completed")
+    expect(getEntryById("e2")).toBeDefined()
+    expect(getEntryById("e2")?.state).toBe("completed")
+  })
+
+  test("failed entries are also persisted", () => {
+    insertEntry(baseEntry("e3"))
+    updateEntry("e3", {
+      state: "failed",
+      active: false,
+      lastUpdatedAt: Date.now(),
+      endedAt: Date.now(),
+      response: {
+        success: false,
+        model: "claude-opus-4-7",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        content: null,
+        error: "timeout",
+      },
+    })
+    finalizeEntry("e3")
+    expect(queryEntryCount()).toBe(1)
+    expect(getEntryById("e3")).toBeDefined()
+  })
+})

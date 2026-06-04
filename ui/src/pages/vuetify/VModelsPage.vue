@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import {
+computed,
+ref
+} from "vue";
 
 import ModelsFilterBar from "@/components/models/ModelsFilterBar.vue"
 import ModelsGrid from "@/components/models/ModelsGrid.vue"
 import ModelsToolbar from "@/components/models/ModelsToolbar.vue"
-import { useModelsCatalog } from "@/composables/useModelsCatalog"
-import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
 import JsonViewerSurface from "@/components/ui/JsonViewerSurface.vue"
+import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
+import { useModelsCatalog } from "@/composables/useModelsCatalog"
 
 const {
   billingBounds,

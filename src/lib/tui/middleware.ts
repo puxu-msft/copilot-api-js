@@ -17,9 +17,18 @@
  * finishRequest is idempotent — second call for the same ID is a no-op.
  */
 
-import type { Context, MiddlewareHandler, Next } from "hono"
+import type {
+  //
+  Context,
+  MiddlewareHandler,
+  Next,
+} from "hono"
 
-import { getErrorMessage, HTTPError } from "~/lib/error"
+import {
+  //
+  getErrorMessage,
+  HTTPError,
+} from "~/lib/error"
 import { getIsShuttingDown } from "~/lib/shutdown"
 
 import { tuiLogger } from "./tracker"

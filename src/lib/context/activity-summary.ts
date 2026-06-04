@@ -1,6 +1,14 @@
-import type { HistoryEntry, RequestTransport } from "~/lib/history/store"
+import type {
+  //
+  HistoryEntry,
+  RequestTransport,
+} from "~/lib/history/store"
 
-import type { RequestContext, RequestState } from "./request"
+import type {
+  //
+  RequestContext,
+  RequestState,
+} from "./request"
 
 export interface RequestActivitySnapshot {
   id: string
@@ -24,6 +32,12 @@ export function isActiveRequestState(state: RequestState): boolean {
 }
 
 export function summarizeRequestContext(context: RequestContext): RequestActivitySnapshot {
+  // Defensive fallbacks: the RequestContext interface declares these fields
+  // as non-nullable, but consumers (tests, partial mocks, event payloads from
+  // external sources) sometimes pass incomplete shapes. Keeping the fallbacks
+  // makes this function robust without forcing every caller to comply with
+  // the full type contract.
+  /* eslint-disable @typescript-eslint/no-unnecessary-condition -- see comment above */
   const state = context.state ?? "pending"
 
   return {
@@ -42,9 +56,12 @@ export function summarizeRequestContext(context: RequestContext): RequestActivit
     queueWaitMs: context.queueWaitMs ?? 0,
     ...(context.transport ? { transport: context.transport } : {}),
   }
+  /* eslint-enable @typescript-eslint/no-unnecessary-condition */
 }
 
-export function buildHistoryActivityPatch(context: RequestContext): Pick<
+export function buildHistoryActivityPatch(
+  context: RequestContext,
+): Pick<
   HistoryEntry,
   | "rawPath"
   | "startedAt"

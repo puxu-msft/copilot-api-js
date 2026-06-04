@@ -179,4 +179,101 @@ describe("error response format compliance", () => {
     const logMessage = errorSpy.mock.calls[0].join(" ")
     expect(logMessage).toContain("cause: connection reset by remote host")
   })
+
+  // ────────────────────────────────────────────────────────────────────
+  // OpenAI wire-format (format="openai")
+  //
+  // OpenAI SDKs (openai-python, openai-node, LangChain, LiteLLM) parse
+  // `error.type` and `error.code` to drive retry/fallback decisions.
+  // The proxy must emit OpenAI's canonical literals
+  // (rate_limit_exceeded, insufficient_quota, context_length_exceeded, etc.)
+  // when serving OpenAI-compatible endpoints.
+  // ────────────────────────────────────────────────────────────────────
+
+  test("OpenAI 413 returns request_too_large code (no top-level type:error envelope)", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Too large", 413, ""), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(413)
+    expect((resp.data as any).type).toBeUndefined()
+    expect((resp.data as any).error.type).toBe("invalid_request_error")
+    expect((resp.data as any).error.code).toBe("request_too_large")
+  })
+
+  test("OpenAI token-limit returns context_length_exceeded code", () => {
+    const { c, getLastResponse } = mockContext()
+    const body = JSON.stringify({
+      error: { message: "prompt token count of 150000 exceeds the limit of 128000" },
+    })
+    forwardError(c, new HTTPError("Token limit", 400, body), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(400)
+    expect((resp.data as any).error.code).toBe("context_length_exceeded")
+    expect((resp.data as any).error.type).toBe("invalid_request_error")
+    expect((resp.data as any).error.param).toBe("messages")
+    expect((resp.data as any).error.message).toContain("128000")
+  })
+
+  test("OpenAI 429 returns rate_limit_exceeded type and code", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Rate limited", 429, ""), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(429)
+    expect((resp.data as any).error.type).toBe("rate_limit_exceeded")
+    expect((resp.data as any).error.code).toBe("rate_limit_exceeded")
+  })
+
+  test("OpenAI 402 returns insufficient_quota type and code", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Quota", 402, ""), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(402)
+    expect((resp.data as any).error.type).toBe("insufficient_quota")
+    expect((resp.data as any).error.code).toBe("insufficient_quota")
+  })
+
+  test("OpenAI 422 returns content_filter code", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Filtered", 422, ""), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(422)
+    expect((resp.data as any).error.code).toBe("content_filter")
+  })
+
+  test("OpenAI default 5xx returns server_error type", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Bad gateway", 502, "upstream blew up"), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+    expect((resp.data as any).error.type).toBe("server_error")
+    expect((resp.data as any).error.message).toContain("upstream blew up")
+    expect((resp.data as any).type).toBeUndefined()
+  })
+
+  test("OpenAI default 4xx returns api_error type", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Bad", 400, "malformed payload"), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(400)
+    expect((resp.data as any).error.type).toBe("api_error")
+    expect((resp.data as any).error.message).toContain("malformed payload")
+  })
+
+  test("OpenAI 401 includes invalid_api_key code", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Unauthorized", 401, "bad token"), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(401)
+    expect((resp.data as any).error.code).toBe("invalid_api_key")
+  })
+
+  test("OpenAI non-HTTP error returns server_error envelope", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new Error("Boom"), "openai")
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(500)
+    expect((resp.data as any).error.type).toBe("server_error")
+    expect((resp.data as any).error.message).toContain("Boom")
+    expect((resp.data as any).type).toBeUndefined()
+  })
 })

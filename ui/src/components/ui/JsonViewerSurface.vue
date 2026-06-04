@@ -1,25 +1,31 @@
 <script setup lang="ts">
-import { computed, useSlots } from "vue"
+import {
+computed,
+useSlots
+} from "vue";
 import VueJsonPretty from "vue-json-pretty"
 
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
 
 import "vue-json-pretty/lib/styles.css"
 
-const props = withDefaults(defineProps<{
-  data: unknown
-  copyMessage?: string
-  copyLabel?: string
-  deep?: number
-  fillHeight?: boolean
-  showToolbar?: boolean
-}>(), {
-  copyLabel: "Copy JSON",
-  copyMessage: "JSON copied",
-  deep: 5,
-  fillHeight: false,
-  showToolbar: true,
-})
+const props = withDefaults(
+  defineProps<{
+    data: unknown
+    copyMessage?: string
+    copyLabel?: string
+    deep?: number
+    fillHeight?: boolean
+    showToolbar?: boolean
+  }>(),
+  {
+    copyLabel: "Copy JSON",
+    copyMessage: "JSON copied",
+    deep: 5,
+    fillHeight: false,
+    showToolbar: true,
+  },
+)
 
 const { copy } = useCopyToClipboard()
 const slots = useSlots()

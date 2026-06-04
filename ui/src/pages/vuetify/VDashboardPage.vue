@@ -6,7 +6,11 @@ import DashboardRateLimiterPanel from "@/components/dashboard/DashboardRateLimit
 import { useDashboardStatus } from "@/composables/useDashboardStatus"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { useModelTelemetry } from "@/composables/useModelTelemetry"
-import { formatDate, formatDuration, formatNumber } from "@/utils/formatters"
+import {
+formatDate,
+formatDuration,
+formatNumber
+} from "@/utils/formatters";
 import { formatWsTargetStatus } from "@/utils/ws-status"
 
 const store = useHistoryStore()
@@ -108,12 +112,8 @@ const {
       <section class="hero-shell px-4 px-md-6 pt-5 pb-4">
         <div class="hero-grid">
           <div class="hero-copy">
-            <div class="eyebrow text-caption font-weight-bold text-uppercase mb-3">
-              Operations Workspace
-            </div>
-            <h1 class="hero-title">
-              Dashboard and usage are now one surface.
-            </h1>
+            <div class="eyebrow text-caption font-weight-bold text-uppercase mb-3">Operations Workspace</div>
+            <h1 class="hero-title">Dashboard and usage are now one surface.</h1>
             <p class="hero-body text-body-2 text-medium-emphasis">
               Monitor service health, rate limiting, quota pressure, memory headroom, model mix, and live requests
               without switching tabs.
@@ -320,7 +320,8 @@ const {
               <div class="d-flex justify-space-between text-caption mb-1">
                 <span>History Cache</span>
                 <span class="font-mono">
-                  {{ formatNumber(memorySummary.historyEntryCount) }} / {{ formatNumber(memorySummary.historyMaxEntries) }}
+                  {{ formatNumber(memorySummary.historyEntryCount) }} /
+                  {{ formatNumber(memorySummary.historyMaxEntries) }}
                 </span>
               </div>
               <v-progress-linear
@@ -366,7 +367,9 @@ const {
             <div class="request-volume-summary">
               <div class="request-volume-stat">
                 <span class="request-volume-label">Since startup</span>
-                <span class="request-volume-value font-mono">{{ formatNumber(requestTelemetry.acceptedSinceStart) }}</span>
+                <span class="request-volume-value font-mono">{{
+                  formatNumber(requestTelemetry.acceptedSinceStart)
+                }}</span>
               </div>
               <div class="request-volume-stat">
                 <span class="request-volume-label">Last 7d total</span>
@@ -399,9 +402,7 @@ const {
               <div class="panel-title">Model Telemetry</div>
             </div>
             <div class="traffic-toolbar">
-              <div class="text-caption text-medium-emphasis">
-                7d persisted + runtime
-              </div>
+              <div class="text-caption text-medium-emphasis">7d persisted + runtime</div>
               <div class="traffic-toggle-group">
                 <div class="traffic-toggle-label text-caption text-medium-emphasis">Chart</div>
                 <v-btn-toggle
@@ -502,7 +503,6 @@ const {
           </div>
         </v-sheet>
       </section>
-
     </div>
   </div>
 </template>
@@ -522,8 +522,7 @@ const {
   content: "";
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(135deg, rgb(var(--v-theme-surface)) 0%, rgb(var(--v-theme-surface-variant)) 100%);
+  background: linear-gradient(135deg, rgb(var(--v-theme-surface)) 0%, rgb(var(--v-theme-surface-variant)) 100%);
   opacity: 0.92;
   pointer-events: none;
 }

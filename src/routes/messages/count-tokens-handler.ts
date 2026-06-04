@@ -50,8 +50,8 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
 
     if (!response.ok) {
       consola.warn(
-        `[count_tokens] Anthropic API failed: ${response.status} ` +
-          `${await response.text().catch(() => "")} — falling back to local estimation`,
+        `[count_tokens] Anthropic API failed: ${response.status} `
+          + `${await response.text().catch(() => "")} — falling back to local estimation`,
       )
       return null
     }
@@ -121,9 +121,9 @@ export async function handleCountTokens(c: Context) {
         const inflatedTokens = Math.floor(contextWindow * 0.95)
 
         consola.info(
-          `[count_tokens] Prompt too long: ` +
-            `${truncateCheck.currentTokens} tokens > ${truncateCheck.tokenLimit} limit, ` +
-            `returning inflated count ${inflatedTokens} to trigger client-side compaction`,
+          `[count_tokens] Prompt too long: `
+            + `${truncateCheck.currentTokens} tokens > ${truncateCheck.tokenLimit} limit, `
+            + `returning inflated count ${inflatedTokens} to trigger client-side compaction`,
         )
 
         if (tuiLogId) {
@@ -139,8 +139,8 @@ export async function handleCountTokens(c: Context) {
     const inputTokens = await countTotalInputTokens(anthropicPayload, selectedModel)
 
     consola.debug(
-      `[count_tokens] ${inputTokens} tokens (native Anthropic) ` +
-        `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`,
+      `[count_tokens] ${inputTokens} tokens (native Anthropic) `
+        + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`,
     )
 
     if (tuiLogId) {

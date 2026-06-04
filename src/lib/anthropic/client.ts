@@ -16,14 +16,29 @@ import { events } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
-import type { MessagesPayload, Message as AnthropicResponse, Tool } from "~/types/api/anthropic"
+import type {
+  //
+  MessagesPayload,
+  Message as AnthropicResponse,
+  Tool,
+} from "~/types/api/anthropic"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal, captureHttpHeaders, sanitizeHeadersForHistory } from "~/lib/fetch-utils"
+import {
+  //
+  createFetchSignal,
+  captureHttpHeaders,
+  sanitizeHeadersForHistory,
+} from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 
-import { prepareAnthropicRequest, learnEffortsFromError, type PreparedAnthropicRequest } from "./request-preparation"
+import {
+  //
+  prepareAnthropicRequest,
+  learnEffortsFromError,
+  type PreparedAnthropicRequest,
+} from "./request-preparation"
 
 /** Re-export the response type for consumers */
 export type AnthropicMessageResponse = AnthropicResponse
@@ -35,6 +50,19 @@ interface CreateAnthropicMessagesOptions {
   onPrepared?: (request: PreparedAnthropicRequest) => void
   /** Client-sent `anthropic-beta` header, forwarded to request preparation for merging. */
   clientAnthropicBeta?: string
+  /**
+   * Per-attempt preparation overrides supplied by retry strategies via the
+   * pipeline's `PrepareHints`. Forwarded to `prepareAnthropicRequest`.
+   *
+   * `excludeBetas`: beta tokens to drop from this attempt's outbound header,
+   *   on top of whatever the persistent negotiation cache already strips.
+   * `rejectFields`: body fields to drop from this attempt's wire payload,
+   *   on top of whatever the persistent negotiation cache already strips.
+   *
+   * Either can be omitted; preparation falls back to cache-only filtering.
+   */
+  excludeBetas?: ReadonlyArray<string>
+  rejectFields?: ReadonlyArray<string>
 }
 
 // ============================================================================

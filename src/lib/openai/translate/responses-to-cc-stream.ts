@@ -1,7 +1,18 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import type { ChatCompletionChunk, FinishReason, StreamingDelta } from "~/types/api/openai-chat-completions"
-import type { ResponsesResponse, ResponsesStreamEvent } from "~/types/api/openai-responses"
+import consola from "consola"
+
+import type {
+  //
+  ChatCompletionChunk,
+  FinishReason,
+  StreamingDelta,
+} from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ResponsesResponse,
+  ResponsesStreamEvent,
+} from "~/types/api/openai-responses"
 
 import { mapIncompleteFinishReason } from "./responses-to-cc"
 
@@ -103,7 +114,7 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
       }
 
       case "error": {
-        throw new Error(event.message ?? "Upstream error")
+        throw new Error(event.message)
       }
 
       default: {
@@ -125,7 +136,22 @@ export async function* translateResponsesStream(
   for await (const rawEvent of upstream) {
     if (!rawEvent.data || rawEvent.data === "[DONE]") continue
 
-    const event = JSON.parse(rawEvent.data) as ResponsesStreamEvent
+    // Tolerate occasional malformed frames from upstream (SSE parsers may
+    // surface non-JSON payloads on comment lines, partial chunks, or heartbeats).
+    // Mirrors the defensive `try/catch` in `routes/responses/handler.ts` around
+    // the same upstream — without this, a single SyntaxError tears down the
+    // entire chat-completions stream and surfaces as `server_error` to the client.
+    let event: ResponsesStreamEvent
+    try {
+      event = JSON.parse(rawEvent.data) as ResponsesStreamEvent
+    } catch (err) {
+      consola.debug(
+        `[cc←responses] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`,
+        rawEvent.data.slice(0, 200),
+      )
+      continue
+    }
+
     const chunks = translator.translate(event)
 
     for (const chunk of chunks) {

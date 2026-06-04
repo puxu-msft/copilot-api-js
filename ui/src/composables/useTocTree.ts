@@ -42,7 +42,7 @@ function blockLabel(block: {
   tool_use_id?: string
 }): string {
   if (block.type === "text" && typeof block.text === "string") {
-    const preview = block.text.slice(0, 30).replace(/\n/g, " ")
+    const preview = block.text.slice(0, 30).replaceAll("\n", " ")
     return `text: ${preview}${block.text.length > 30 ? "…" : ""}`
   }
   if (block.type === "thinking") return "thinking"
@@ -64,7 +64,7 @@ function msgContentBlocks(
 function msgSummary(msg: MessageContent): string {
   const blocks = msgContentBlocks(msg)
   if (blocks.length === 1 && blocks[0].type === "text") {
-    const preview = (blocks[0].text ?? "").slice(0, 30).replace(/\n/g, " ")
+    const preview = (blocks[0].text ?? "").slice(0, 30).replaceAll("\n", " ")
     return preview + ((blocks[0].text ?? "").length > 30 ? "…" : "")
   }
   return `${blocks.length} blocks`
@@ -73,7 +73,7 @@ function msgSummary(msg: MessageContent): string {
 /** Build TOC tree, manage expand/collapse, and handle scroll-to navigation */
 export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<HistoryEntry | null>): UseTocTreeReturn {
   const activeId = ref("")
-  const expandedNodes = ref<Set<string>>(new Set(["request"]))
+  const expandedNodes = ref(new Set(["request"]))
 
   const tocTree = computed<Array<TocNode>>(() => {
     if (!entry.value) return []
@@ -87,18 +87,17 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
       requestChildren.push({ id: "request", label: "system", icon: "mdi-cog" })
     }
 
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i]
+    for (const [i, msg] of messages.entries()) {
       const role = msg.role ?? "unknown"
       const blocks = msgContentBlocks(msg)
       const contentChildren: Array<TocNode> =
-        blocks.length > 1
-          ? blocks.map((block, j) => ({
-              id: `request.messages.${i}.content.${j}`,
-              label: blockLabel(block),
-              icon: blockTypeIcon(block.type),
-            }))
-          : []
+        blocks.length > 1 ?
+          blocks.map((block, j) => ({
+            id: `request.messages.${i}.content.${j}`,
+            label: blockLabel(block),
+            icon: blockTypeIcon(block.type),
+          }))
+        : []
 
       requestChildren.push({
         id: `request.messages.${i}`,

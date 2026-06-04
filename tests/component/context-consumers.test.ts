@@ -12,6 +12,7 @@ import * as tui from "~/lib/tui"
 
 let insertEntrySpy: ReturnType<typeof spyOn>
 let updateEntrySpy: ReturnType<typeof spyOn>
+let finalizeEntrySpy: ReturnType<typeof spyOn>
 let getCurrentSessionSpy: ReturnType<typeof spyOn>
 let isHistoryEnabledSpy: ReturnType<typeof spyOn>
 let tuiUpdateSpy: ReturnType<typeof spyOn>
@@ -20,6 +21,7 @@ let tuiFinishSpy: ReturnType<typeof spyOn>
 beforeAll(() => {
   insertEntrySpy = spyOn(historyStore, "insertEntry").mockImplementation(() => {})
   updateEntrySpy = spyOn(historyStore, "updateEntry").mockImplementation(() => {})
+  finalizeEntrySpy = spyOn(historyStore, "finalizeEntry").mockImplementation(() => {})
   getCurrentSessionSpy = spyOn(historyStore, "getCurrentSession").mockReturnValue("session_1")
   isHistoryEnabledSpy = spyOn(historyStore, "isHistoryEnabled").mockReturnValue(true)
   tuiUpdateSpy = spyOn(tui.tuiLogger, "updateRequest").mockImplementation(() => {})
@@ -29,6 +31,7 @@ beforeAll(() => {
 afterAll(() => {
   insertEntrySpy.mockRestore()
   updateEntrySpy.mockRestore()
+  finalizeEntrySpy.mockRestore()
   getCurrentSessionSpy.mockRestore()
   isHistoryEnabledSpy.mockRestore()
   tuiUpdateSpy.mockRestore()
@@ -65,6 +68,7 @@ describe("registerContextConsumers", () => {
   beforeEach(() => {
     insertEntrySpy.mockClear()
     updateEntrySpy.mockClear()
+    finalizeEntrySpy.mockClear()
     getCurrentSessionSpy.mockClear()
     getCurrentSessionSpy.mockReturnValue("session_1")
     isHistoryEnabledSpy.mockReturnValue(true)
@@ -305,6 +309,11 @@ describe("registerContextConsumers", () => {
       expect(data.response.success).toBe(true)
       expect(data.response.model).toBe("claude-sonnet-4")
       expect(data.durationMs).toBe(1500)
+      // Subagent review M1: explicit finalize is now the persistence
+      // boundary — a missed call would silently leave the entry in-flight
+      // forever. Pin the contract here.
+      expect(finalizeEntrySpy).toHaveBeenCalledTimes(1)
+      expect(finalizeEntrySpy.mock.calls[0]?.[0]).toBe("req_1")
     })
 
     test("propagates transport on completed", () => {
@@ -412,6 +421,10 @@ describe("registerContextConsumers", () => {
       const [id, data] = updateEntrySpy.mock.calls[0]
       expect(id).toBe("req_1")
       expect(data.response.success).toBe(false)
+      // Subagent review M1: failed path must also call finalizeEntry —
+      // mirror the completed-path contract.
+      expect(finalizeEntrySpy).toHaveBeenCalledTimes(1)
+      expect(finalizeEntrySpy.mock.calls[0]?.[0]).toBe("req_1")
     })
 
     test("propagates effectiveRequest and wireRequest separately on completed", () => {

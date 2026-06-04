@@ -5,8 +5,8 @@ import type { ToolResultContentBlock } from "@/types"
 
 import LineNumberPre from "@/components/ui/LineNumberPre.vue"
 import { useContentContext } from "@/composables/useContentContext"
-import { escapeHtml } from "@/utils/formatters"
 import { useHighlightHtml } from "@/composables/useHighlightHtml"
+import { escapeHtml } from "@/utils/formatters"
 
 import ContentBlockWrapper from "./ContentBlockWrapper.vue"
 
@@ -41,7 +41,7 @@ const copyText = computed(() => {
   if (typeof props.block.content === "string") return props.block.content
   if (Array.isArray(props.block.content)) {
     return props.block.content
-      .map((b: { type: string; text?: string }) => (b.type === "text" ? b.text ?? "" : JSON.stringify(b)))
+      .map((b: { type: string; text?: string }) => (b.type === "text" ? (b.text ?? "") : JSON.stringify(b)))
       .join("\n")
   }
   return ""
@@ -126,7 +126,8 @@ const { displayHtml } = useHighlightHtml(stringContent, searchQuery)
         <pre
           v-else
           class="result-raw-block"
-        >{{ JSON.stringify(sub, null, 2) }}</pre>
+          >{{ JSON.stringify(sub, null, 2) }}</pre
+        >
       </div>
     </template>
 

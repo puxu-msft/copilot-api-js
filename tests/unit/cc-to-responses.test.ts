@@ -1,8 +1,18 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionsPayload,
+  Message,
+} from "~/types/api/openai-chat-completions"
 
 import {
+  //
   splitInstructionsAndConversation,
   translateChatCompletionsToResponses,
 } from "~/lib/openai/translate/cc-to-responses"
@@ -229,5 +239,97 @@ describe("translateChatCompletionsToResponses", () => {
         output: "abcdef",
       },
     ])
+  })
+
+  test("emits only function_call items for an assistant message with null content and tool_calls", () => {
+    const payload: ChatCompletionsPayload = {
+      model: "gpt-5-resp",
+      messages: [
+        { role: "user", content: "call the tool" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_a",
+              type: "function",
+              function: { name: "first_tool", arguments: '{"a":1}' },
+            },
+            {
+              id: "call_b",
+              type: "function",
+              function: { name: "second_tool", arguments: '{"b":2}' },
+            },
+          ],
+        },
+      ],
+    }
+
+    const result = translateChatCompletionsToResponses(payload)
+
+    expect(result.payload.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "call the tool" }],
+      },
+      {
+        type: "function_call",
+        id: "call_a",
+        call_id: "call_a",
+        name: "first_tool",
+        arguments: '{"a":1}',
+      },
+      {
+        type: "function_call",
+        id: "call_b",
+        call_id: "call_b",
+        name: "second_tool",
+        arguments: '{"b":2}',
+      },
+    ])
+  })
+
+  test("throws 400 HTTPError when a tool message lacks tool_call_id (M6)", () => {
+    const messages: Array<Message> = [
+      { role: "user", content: "do stuff" },
+      // No tool_call_id — produces "" in old code, upstream then fails opaquely.
+      // Caller error must surface at the translate boundary instead.
+      { role: "tool", content: "result without id" } as unknown as Message,
+    ]
+
+    let caught: unknown
+    try {
+      translateChatCompletionsToResponses({
+        model: "gpt-5.2",
+        messages,
+      } as unknown as ChatCompletionsPayload)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeDefined()
+    // HTTPError shape carries .status
+    expect((caught as { status?: number }).status).toBe(400)
+    expect((caught as Error).message).toContain("tool_call_id")
+  })
+
+  test("assistant message with neither text nor tool_calls injects empty placeholder + warns (M7)", () => {
+    const messages: Array<Message> = [
+      { role: "user", content: "hi" },
+      // Pathological: no text, no tool_calls. Pre-fix: turn vanishes.
+      { role: "assistant", content: "" },
+      { role: "user", content: "continue" },
+    ]
+
+    const { payload } = translateChatCompletionsToResponses({
+      model: "gpt-5.2",
+      messages,
+    } as unknown as ChatCompletionsPayload)
+
+    const input = payload.input as Array<{ type: string; role?: string; content?: unknown }>
+    // user, assistant placeholder, user — 3 turns preserved
+    expect(input).toHaveLength(3)
+    expect(input[1].type).toBe("message")
+    expect(input[1].role).toBe("assistant")
   })
 })

@@ -1,9 +1,29 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { ApiError } from "~/lib/error"
 import type { RetryContext } from "~/lib/request/pipeline"
 
-import { createDeferredToolRetryStrategy, parseToolReferenceError } from "~/lib/request/strategies/deferred-tool-retry"
+import {
+  //
+  isToolStickyUndeferred,
+  resetAnthropicFeatureNegotiationForTesting,
+} from "~/lib/anthropic/feature-negotiation"
+import {
+  //
+  applyStickyUndeferredTools,
+  createDeferredToolRetryStrategy,
+  parseToolReferenceError,
+} from "~/lib/request/strategies/deferred-tool-retry"
+
+afterEach(async () => {
+  await resetAnthropicFeatureNegotiationForTesting()
+})
 
 // ============================================================================
 // Helpers
@@ -132,7 +152,7 @@ describe("createDeferredToolRetryStrategy", () => {
     expect(strategy.canHandle(error)).toBe(false)
   })
 
-  test("canHandle returns false for already-undeferred tool", async () => {
+  test("canHandle still returns true for already-undeferred tool (handle aborts instead)", async () => {
     const strategy = createDeferredToolRetryStrategy<TestPayload>()
     const payload: TestPayload = {
       model: "test",
@@ -140,7 +160,10 @@ describe("createDeferredToolRetryStrategy", () => {
     }
 
     await strategy.handle(toolReferenceError("get_weather"), payload, retryContext)
-    expect(strategy.canHandle(toolReferenceError("get_weather"))).toBe(false)
+    // canHandle stays true so the pipeline routes here, but handle aborts
+    expect(strategy.canHandle(toolReferenceError("get_weather"))).toBe(true)
+    const result = await strategy.handle(toolReferenceError("get_weather"), payload, retryContext)
+    expect(result.action).toBe("abort")
   })
 
   // ── handle ──
@@ -186,7 +209,7 @@ describe("createDeferredToolRetryStrategy", () => {
     expect(stub!.defer_loading).toBeUndefined()
   })
 
-  test("handle injects stub and marks tool as undeferred (prevents duplicate retry)", async () => {
+  test("handle injects stub and marks tool as sticky (next call aborts)", async () => {
     const strategy = createDeferredToolRetryStrategy<TestPayload>()
     const payload: TestPayload = {
       model: "test",
@@ -194,10 +217,13 @@ describe("createDeferredToolRetryStrategy", () => {
     }
 
     // First call: injects stub
-    await strategy.handle(toolReferenceError("missing_tool"), payload, retryContext)
+    const first = await strategy.handle(toolReferenceError("missing_tool"), payload, retryContext)
+    expect(first.action).toBe("retry")
+    expect(isToolStickyUndeferred("test", "missing_tool")).toBe(true)
 
-    // Second call for same tool: canHandle returns false (already undeferred)
-    expect(strategy.canHandle(toolReferenceError("missing_tool"))).toBe(false)
+    // Second call: aborts because sticky entry exists
+    const second = await strategy.handle(toolReferenceError("missing_tool"), payload, retryContext)
+    expect(second.action).toBe("abort")
   })
 
   test("handle returns abort when payload has no tools", async () => {
@@ -217,6 +243,20 @@ describe("createDeferredToolRetryStrategy", () => {
 
     const result = await strategy.handle(toolReferenceError("get_weather"), payload, retryContext)
     expect((result as any).meta).toEqual({ undeferredTool: "get_weather" })
+  })
+
+  // ── sticky persistence behavior ──
+
+  test("handle records sticky un-defer in negotiation cache", async () => {
+    const strategy = createDeferredToolRetryStrategy<TestPayload>()
+    const payload: TestPayload = {
+      model: "claude-opus-4.6",
+      tools: [{ name: "Read", description: "Read", defer_loading: true }],
+    }
+
+    await strategy.handle(toolReferenceError("Read"), payload, retryContext)
+    expect(isToolStickyUndeferred("claude-opus-4.6", "Read")).toBe(true)
+    expect(isToolStickyUndeferred("claude-opus-4.7", "Read")).toBe(false)
   })
 
   test("handle does not mutate original payload", async () => {
@@ -242,8 +282,43 @@ describe("createDeferredToolRetryStrategy", () => {
 
     const result1 = await strategy.handle(toolReferenceError("tool_a"), payload, retryContext)
     expect(result1.action).toBe("retry")
-
+    // canHandle is no longer per-tool stateful; both still match. Sticky check happens in handle.
     expect(strategy.canHandle(toolReferenceError("tool_b"))).toBe(true)
-    expect(strategy.canHandle(toolReferenceError("tool_a"))).toBe(false)
+    expect(strategy.canHandle(toolReferenceError("tool_a"))).toBe(true)
+  })
+})
+
+describe("applyStickyUndeferredTools", () => {
+  test("noop when no sticky entries exist", () => {
+    const payload = {
+      model: "claude-opus-4.6",
+      tools: [{ name: "Read", description: "Read", defer_loading: true }],
+    }
+    const result = applyStickyUndeferredTools(payload)
+    expect(result.affected).toEqual([])
+    expect(result.payload).toBe(payload)
+  })
+
+  test("flips defer_loading for sticky tools (and only those)", async () => {
+    const strategy = createDeferredToolRetryStrategy<TestPayload>()
+    const initial: TestPayload = {
+      model: "m",
+      tools: [{ name: "Read", description: "Read", defer_loading: true }],
+    }
+    await strategy.handle(toolReferenceError("Read"), initial, retryContext)
+
+    const next: TestPayload = {
+      model: "m",
+      tools: [
+        { name: "Read", description: "Read", defer_loading: true },
+        { name: "Other", description: "Other", defer_loading: true },
+      ],
+    }
+    const result = applyStickyUndeferredTools(next)
+    expect(result.affected).toEqual(["Read"])
+    const readTool = result.payload.tools?.find((t) => t.name === "Read")
+    const otherTool = result.payload.tools?.find((t) => t.name === "Other")
+    expect(readTool?.defer_loading).toBe(false)
+    expect(otherTool?.defer_loading).toBe(true)
   })
 })

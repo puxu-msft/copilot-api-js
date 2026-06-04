@@ -7,25 +7,55 @@ import pc from "picocolors"
 import type { Model } from "./lib/models/client"
 
 import packageJson from "../package.json"
-import { initAdaptiveRateLimiter, setMockRateLimiterThrottled } from "./lib/adaptive-rate-limiter"
+import {
+  //
+  initAdaptiveRateLimiter,
+  setMockRateLimiterThrottled,
+} from "./lib/adaptive-rate-limiter"
+import { loadPersistedFeatureNegotiation } from "./lib/anthropic/feature-negotiation"
 import { loadPersistedLimits } from "./lib/auto-truncate"
 import { applyConfigToState } from "./lib/config/config"
-import { PATHS, ensurePaths } from "./lib/config/paths"
+import {
+  //
+  PATHS,
+  ensurePaths,
+} from "./lib/config/paths"
 import { registerContextConsumers } from "./lib/context/consumers"
 import { initRequestContextManager } from "./lib/context/manager"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
-import { initHistory, startMemoryPressureMonitor } from "./lib/history"
+import { initHistory } from "./lib/history"
 import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initProxy } from "./lib/proxy"
 import { initRequestTelemetry } from "./lib/request-telemetry"
 import { startServer } from "./lib/serve"
-import { setServerInstance, setupShutdownHandlers, waitForShutdown } from "./lib/shutdown"
-import { setCliState, setServerStartTime, state } from "./lib/state"
+import {
+  //
+  setServerInstance,
+  setupShutdownHandlers,
+  waitForShutdown,
+} from "./lib/shutdown"
+import {
+  //
+  setCliState,
+  setServerStartTime,
+  setTokenBasedBilling,
+  state,
+  getRawModels,
+} from "./lib/state"
 import { initTokenManagers } from "./lib/token"
-import { initTuiLogger } from "./lib/tui"
-import { createWebSocketAdapter, setConnectedDataFactory } from "./lib/ws"
+import { getCopilotUsage } from "./lib/token/copilot-client"
+import {
+  //
+  formatBillingLabel,
+  initTuiLogger,
+} from "./lib/tui"
+import {
+  //
+  createWebSocketAdapter,
+  setConnectedDataFactory,
+} from "./lib/ws"
 import { registerWsRoutes } from "./routes"
 import { normalizeExternalUiUrl } from "./routes/ui/route"
 import { createServer } from "./server"
@@ -39,22 +69,28 @@ function formatLimit(value?: number): string {
  * Format a model as 3 lines: main info, features, and supported endpoints.
  *
  * Example output:
- *   - claude-opus-4.6-1m (Anthropic)               ctx:1000k prp: 936k out:  64k
+ *   - claude-opus-4.6-1m (3x) (Anthropic)          ctx:1000k prp: 936k out:  64k
  *       features:  adaptive-thinking, thinking, streaming, vision, tool-calls
  *       endpoints: /v1/messages, /chat/completions
  */
-function formatModelInfo(model: Model): string {
+function formatModelInfo(model: Model, disabled = false): string {
   const limits = model.capabilities?.limits
   const supports = model.capabilities?.supports
 
   const contextK = formatLimit(limits?.max_context_window_tokens)
   const promptK = formatLimit(limits?.max_prompt_tokens)
   const outputK = formatLimit(limits?.max_output_tokens)
+  const billingPart = formatBillingLabel(model.billing?.multiplier)
 
-  const label = `${model.id} (${model.vendor})`
+  const disabledTag = disabled ? " [disabled]" : ""
+  const label = `${model.id}${billingPart} (${model.vendor})${disabledTag}`
   const padded = label.length > 45 ? `${label.slice(0, 42)}...` : label.padEnd(45)
-  const mainLine =
+  const mainLineRaw =
     `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
+  // Only the main line is recolored when disabled — features/endpoints stay
+  // in their normal dim style so the disabled marker doesn't drown out the
+  // surrounding section.
+  const mainLine = disabled ? pc.red(pc.dim(mainLineRaw)) : mainLineRaw
 
   const features = [
     ...Object.entries(supports ?? {})
@@ -78,6 +114,23 @@ function formatModelInfo(model: Model): string {
 function parseIntOrDefault(value: string, defaultValue: number): number {
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) ? parsed : defaultValue
+}
+
+/**
+ * Resolve the --host CLI value into one or more concrete bind addresses.
+ *
+ * - undefined / "localhost"  → 127.0.0.1 + ::1 (dual-stack loopback)
+ * - "any"                    → 0.0.0.0 + ::    (dual-stack all interfaces)
+ * - anything else            → used as-is (single bind)
+ */
+export function resolveBindHostnames(host: string | undefined): { hostnames: Array<string>; displayHost: string } {
+  if (host === undefined || host === "localhost") {
+    return { hostnames: ["127.0.0.1", "::1"], displayHost: "localhost" }
+  }
+  if (host === "any") {
+    return { hostnames: ["0.0.0.0", "::"], displayHost: "0.0.0.0" }
+  }
+  return { hostnames: [host], displayHost: host }
 }
 
 const VALID_ACCOUNT_TYPES = ["individual", "business", "enterprise"] as const
@@ -181,7 +234,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   initHistory(true, state.historyLimit)
-  startMemoryPressureMonitor()
   await initRequestTelemetry()
 
   // Initialize request context manager and register event consumers
@@ -224,22 +276,41 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   } catch (error) {
     consola.error("Failed to fetch models from Copilot API:", error instanceof Error ? error.message : error)
     consola.error(
-      `Verify that --account-type "${state.accountType}" is correct. ` +
-        `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
+      `Verify that --account-type "${state.accountType}" is correct. `
+        + `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
     )
     process.exit(1)
   }
 
-  consola.info(`Available models:\n${state.models?.data.map((m) => formatModelInfo(m)).join("\n")}`)
+  // Probe billing mode — non-fatal. When the account is on token-based
+  // billing, formatModelInfo renders `(payg)` instead of the now-meaningless
+  // `(1x)` multiplier badge.
+  try {
+    const usage = await getCopilotUsage()
+    const tokenBased =
+      usage.token_based_billing === true || usage.quota_snapshots?.premium_interactions?.token_based_billing === true
+    setTokenBasedBilling(tokenBased)
+  } catch (error) {
+    consola.debug("[billing] usage probe failed; assuming multiplier billing:", error)
+  }
+
+  // List all upstream models, marking disabled entries so it's obvious which
+  // ones have been filtered out by config.disabled_models.
+  const rawList = getRawModels()?.data ?? state.models?.data ?? []
+  const disabledSet = new Set(state.disabledModels)
+  consola.info(`Available models:\n${rawList.map((m) => formatModelInfo(m, disabledSet.has(m.id))).join("\n")}`)
   const stopModelRefreshLoop = startModelRefreshLoop()
 
   // Load previously learned auto-truncate limits (calibration + token limits)
   await loadPersistedLimits()
 
+  // Load previously negotiated feature/beta-header support (states.json)
+  await loadPersistedFeatureNegotiation()
+
   // ===========================================================================
   // Phase 5: Start Server
   // ===========================================================================
-  const displayHost = options.host ?? "localhost"
+  const { hostnames, displayHost } = resolveBindHostnames(options.host)
   const serverUrl = `http://${displayHost}:${options.port}`
   const server = createServer({ externalUiUrl })
 
@@ -267,7 +338,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     serverInstance = await startServer({
       fetch: server.fetch,
       port: options.port,
-      hostname: options.host,
+      hostnames,
       bunWebSocket,
     })
   } catch (error) {
@@ -284,9 +355,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setServerInstance(serverInstance)
   setupShutdownHandlers()
 
-  // Inject the single shared WebSocket upgrade handler into Node.js HTTP server (no-op under Bun)
-  if (wsAdapter.injectWebSocket && serverInstance.nodeServer) {
-    wsAdapter.injectWebSocket(serverInstance.nodeServer)
+  // Inject the single shared WebSocket upgrade handler into each Node.js HTTP server (no-op under Bun)
+  if (wsAdapter.injectWebSocket && serverInstance.nodeServers) {
+    for (const nodeServer of serverInstance.nodeServers) {
+      wsAdapter.injectWebSocket(nodeServer)
+    }
   }
 
   try {
@@ -314,7 +387,8 @@ export const start = defineCommand({
     host: {
       alias: "H",
       type: "string",
-      description: "Host/interface to bind to (e.g., 127.0.0.1 for localhost only, 0.0.0.0 for all interfaces)",
+      description:
+        "Host/interface to bind to. Special values: 'localhost' (default) binds 127.0.0.1 + ::1, 'any' binds 0.0.0.0 + ::. Specific addresses (e.g. 127.0.0.1, 0.0.0.0) bind only that interface.",
     },
     verbose: {
       alias: "v",

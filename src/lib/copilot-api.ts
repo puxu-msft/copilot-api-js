@@ -34,7 +34,26 @@ export const copilotBaseUrl = (state: State) =>
     "https://api.githubcopilot.com"
   : `https://api.${state.accountType}.githubcopilot.com`
 
-export const copilotWsUrl = (state: State) => copilotBaseUrl(state).replace(/^https:\/\//u, "wss://") + "/responses"
+export const copilotWsUrl = (state: State) => {
+  const url = new URL(copilotBaseUrl(state))
+  // Only HTTP-family protocols upgrade to WebSocket. Any other scheme is a
+  // misconfiguration (e.g. accidentally passing a ws://, file://, or unix:
+  // base URL through Copilot's account-type → URL pipeline). Fail fast with
+  // a clear error rather than silently constructing an invalid wss:// URL.
+  if (url.protocol === "https:") {
+    url.protocol = "wss:"
+  } else if (url.protocol === "http:") {
+    url.protocol = "ws:"
+  } else {
+    throw new Error(
+      `copilotWsUrl: cannot derive a WebSocket URL from base "${url.toString()}" (protocol "${url.protocol}")`,
+    )
+  }
+  url.pathname = "/responses"
+  url.search = ""
+  url.hash = ""
+  return url.toString().replace(/\/$/u, "")
+}
 
 export interface CopilotHeaderOptions {
   /** Whether to set the Copilot-Vision-Request header */

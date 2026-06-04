@@ -7,6 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
+import { state, setStateForTests } from "~/lib/state"
 import {
   CLOSE_TAG,
   OPEN_TAG,
@@ -14,7 +15,6 @@ import {
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,
 } from "~/lib/system-prompt"
-import { state, setStateForTests } from "~/lib/state"
 
 // ─── extractTrailingSystemReminderTags ───
 

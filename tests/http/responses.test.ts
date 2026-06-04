@@ -2,7 +2,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "
 
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
-import { type StateSnapshot, restoreStateForTests, setModels, setStateForTests, snapshotStateForTests } from "~/lib/state"
+import {
+  type StateSnapshot,
+  restoreStateForTests,
+  setModels,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"
@@ -41,7 +47,13 @@ function getCapturedInputItem(index: number) {
 
 let responseFactory: (payload: ResponsesPayload) => Promise<Response> | Response
 const upstreamFetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-  capturedPayload = JSON.parse(String(init?.body)) as ResponsesPayload
+  // init.body is typed as BodyInit (string | Blob | …); our request layer
+  // always serializes JSON to a string, so narrow before parsing rather than
+  // String()-coercing a possible non-string into "[object Object]".
+  if (typeof init?.body !== "string") {
+    throw new TypeError(`expected string body in mock, got ${typeof init?.body}`)
+  }
+  capturedPayload = JSON.parse(init.body) as ResponsesPayload
   return await responseFactory(capturedPayload)
 })
 
@@ -185,7 +197,9 @@ describe("POST /responses", () => {
     expect(await res.json()).toEqual({
       error: {
         message: 'Model "claude-sonnet-4.6" does not support the /responses endpoint',
-        type: "error",
+        type: "api_error",
+        param: null,
+        code: null,
       },
     })
     expect(upstreamFetchMock).not.toHaveBeenCalled()
@@ -213,7 +227,7 @@ describe("POST /responses", () => {
             id: "call_123",
             call_id: "call_123",
             name: "lookup_weather",
-            arguments: "{\"city\":\"Paris\"}",
+            arguments: '{"city":"Paris"}',
           },
           {
             type: "function_call_output",
@@ -263,7 +277,7 @@ describe("POST /responses", () => {
             id: "call_999",
             call_id: "call_999",
             name: "lookup_weather",
-            arguments: "{\"city\":\"Berlin\"}",
+            arguments: '{"city":"Berlin"}',
           },
         ],
       }),
@@ -330,8 +344,10 @@ describe("POST /responses", () => {
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({
       error: {
-        type: "error",
+        type: "server_error",
         message: "responses upstream exploded",
+        param: null,
+        code: null,
       },
     })
   })

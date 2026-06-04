@@ -7,8 +7,11 @@ import BaseBadge from "@/components/ui/BaseBadge.vue"
 import IconSvg from "@/components/ui/IconSvg.vue"
 import LineNumberPre from "@/components/ui/LineNumberPre.vue"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
-import { escapeHtml, highlightSearch } from "@/utils/formatters"
 import { useRawModal } from "@/composables/useRawModal"
+import {
+escapeHtml,
+highlightSearch
+} from "@/utils/formatters";
 
 import SideBySideView from "./SideBySideView.vue"
 
@@ -232,7 +235,8 @@ const rewrittenRawData = computed(() => {
                 <span
                   v-if="block.cache_control"
                   class="cache-label"
-                >[cache: {{ block.cache_control.type }}]</span>
+                  >[cache: {{ block.cache_control.type }}]</span
+                >
               </div>
               <LineNumberPre :html="searchQuery ? highlightSearch(block.text, searchQuery) : escapeHtml(block.text)" />
             </div>
@@ -252,7 +256,8 @@ const rewrittenRawData = computed(() => {
                 <span
                   v-if="block.cache_control"
                   class="cache-label"
-                >[cache: {{ block.cache_control.type }}]</span>
+                  >[cache: {{ block.cache_control.type }}]</span
+                >
               </div>
               <LineNumberPre :html="searchQuery ? highlightSearch(block.text, searchQuery) : escapeHtml(block.text)" />
             </div>
@@ -271,7 +276,8 @@ const rewrittenRawData = computed(() => {
             <span
               v-if="block.cache_control"
               class="cache-label"
-            >[cache: {{ block.cache_control.type }}]</span>
+              >[cache: {{ block.cache_control.type }}]</span
+            >
           </div>
           <LineNumberPre :html="searchQuery ? highlightSearch(block.text, searchQuery) : escapeHtml(block.text)" />
         </div>

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test"
-
 import { Agent, ProxyAgent } from "undici"
 
 import { createDispatcherForUrl, formatProxyDisplay, initProxy } from "~/lib/proxy"

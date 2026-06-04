@@ -1,4 +1,10 @@
-import { computed, onMounted, ref, shallowRef, watch } from "vue"
+import {
+computed,
+onMounted,
+ref,
+shallowRef,
+watch
+} from "vue";
 
 import { api } from "@/api/http"
 import { getEffectiveEndpoints } from "@/utils/model-endpoints"
@@ -21,7 +27,7 @@ export function useModelsCatalog() {
   const endpointFilter = shallowRef<string | null>(null)
   const featureFilter = shallowRef<string | null>(null)
   const typeFilter = shallowRef<string | null>(null)
-  const billingRange = ref<[number, number]>([0, 0])
+  const billingRange = ref([0, 0])
   const rawApiResponse = ref<unknown>(null)
 
   onMounted(async () => {
@@ -127,8 +133,8 @@ export function useModelsCatalog() {
       const query = searchQuery.value.toLowerCase()
       result = result.filter(
         (m) =>
-          (m.id as string).toLowerCase().includes(query) ||
-          (m.name as string | undefined)?.toLowerCase().includes(query),
+          (m.id as string).toLowerCase().includes(query)
+          || (m.name as string | undefined)?.toLowerCase().includes(query),
       )
     }
     return result

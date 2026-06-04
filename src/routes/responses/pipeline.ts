@@ -8,11 +8,19 @@
 
 import consola from "consola"
 
-import type { HeadersCapture, WireRequest } from "~/lib/context/request"
+import type {
+  //
+  HeadersCapture,
+  WireRequest,
+} from "~/lib/context/request"
 import type { RequestTransport } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
-import type { ResponsesInputItem, ResponsesPayload } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesInputItem,
+  ResponsesPayload,
+} from "~/types/api/openai-responses"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { createResponses } from "~/lib/openai/responses-client"
@@ -26,17 +34,23 @@ export function createResponsesAdapter(
   onPrepared?: (request: WireRequest) => void,
   onTransport?: (transport: RequestTransport) => void,
   conversationId?: string,
+  clientAbortSignal?: AbortSignal,
 ): FormatAdapter<ResponsesPayload> {
   return {
     format: "openai-responses",
     sanitize: (p) => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 }),
-    execute: (p) =>
+    // `_hints`: see PrepareHints in lib/request/pipeline.ts. Responses request
+    // preparation does not yet consume hints; the argument is accepted (and
+    // ignored) so any future hints-producing strategy explicitly documents
+    // what it expects to land here.
+    execute: (p, _hints) =>
       executeWithAdaptiveRateLimit(() =>
         createResponses(p, {
           resolvedModel: selectedModel,
           headersCapture,
           onTransport,
           conversationId,
+          clientAbortSignal,
           onPrepared: ({ wire, headers }) => {
             onPrepared?.({
               model: typeof wire.model === "string" ? wire.model : p.model,

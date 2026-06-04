@@ -5,14 +5,19 @@ import fs from "node:fs/promises"
 import { parseDocument } from "yaml"
 
 import {
+  //
   applyConfigToState,
-  compileRewriteRule,
-  loadRawConfigFile,
   type Config,
+  loadRawConfigFile,
   resetConfigCache,
+  validateConfigInput,
 } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
-import { resetConfigManagedState, state } from "~/lib/state"
+import {
+  //
+  resetConfigManagedState,
+  state,
+} from "~/lib/state"
 
 export const configRoutes = new Hono()
 
@@ -41,6 +46,7 @@ configRoutes.get("/", (c) => {
     // ─── OpenAI Responses ───
     normalizeResponsesCallIds: state.normalizeResponsesCallIds,
     upstreamWebSocket: state.upstreamWebSocket,
+    clientWebsocketKeepOpen: state.clientWebsocketKeepOpen,
 
     // ─── Timeouts ───
     fetchTimeout: state.fetchTimeout,
@@ -54,7 +60,8 @@ configRoutes.get("/", (c) => {
 
     // ─── History ───
     historyLimit: state.historyLimit,
-    historyMinEntries: state.historyMinEntries,
+    historyReaperInterval: state.historyReaperInterval,
+    historyDbPath: state.historyDbPath,
 
     // ─── Model overrides ───
     modelOverrides: state.modelOverrides,
@@ -94,7 +101,7 @@ configRoutes.put("/yaml", async (c) => {
     )
   }
 
-  const validation = validateConfigBody(body)
+  const validation = validateConfigInput(body)
   if (!validation.valid) {
     return c.json(
       {
@@ -136,369 +143,6 @@ function serializeRewriteSystemReminders(
   }))
 }
 
-interface ConfigValidationDetail {
-  field: string
-  message: string
-  value?: unknown
-}
-
-type ValidationResult = { valid: true; value: Config } | { valid: false; details: Array<ConfigValidationDetail> }
-
-const TOP_LEVEL_KEYS = new Set([
-  "proxy",
-  "model_overrides",
-  "stream_idle_timeout",
-  "fetch_timeout",
-  "stale_request_max_age",
-  "model_refresh_interval",
-  "shutdown",
-  "history",
-  "anthropic",
-  "openai-responses",
-  "rate_limiter",
-  "compress_tool_results_before_truncate",
-  "system_prompt_overrides",
-  "system_prompt_prepend",
-  "system_prompt_append",
-])
-
-const ANTHROPIC_KEYS = new Set([
-  "strip_server_tools",
-  "dedup_tool_calls",
-  "thinking_block_message_policy",
-  "immutable_thinking_messages",
-  "strip_read_tool_result_tags",
-  "context_editing",
-  "context_editing_trigger",
-  "context_editing_keep_tools",
-  "context_editing_keep_thinking",
-  "tool_search",
-  "cache_control",
-  "auto_cache_control",
-  "non_deferred_tools",
-  "rewrite_system_reminders",
-])
-
-const SHUTDOWN_KEYS = new Set(["graceful_wait", "abort_wait"])
-const HISTORY_KEYS = new Set(["limit", "min_entries"])
-const RESPONSES_KEYS = new Set(["normalize_call_ids", "upstream_websocket"])
-const RATE_LIMITER_KEYS = new Set(["retry_interval", "request_interval", "recovery_timeout", "consecutive_successes"])
-const ANTHROPIC_COLLECTION_KEYS = new Set(["rewrite_system_reminders", "non_deferred_tools"])
-
-function validateConfigBody(input: unknown): ValidationResult {
-  if (!isPlainObject(input)) {
-    return {
-      valid: false,
-      details: [{ field: "$", message: "Config body must be a JSON object", value: input }],
-    }
-  }
-
-  const body = input
-  const details: Array<ConfigValidationDetail> = []
-
-  validateUnknownKeys(body, TOP_LEVEL_KEYS, "", details)
-
-  if (hasOwn(body, "proxy")) {
-    validateOptionalString(body.proxy, "proxy", details, { validateUrlScheme: true })
-  }
-  if (hasOwn(body, "model_overrides")) {
-    validateStringMap(body.model_overrides, "model_overrides", details)
-  }
-  if (hasOwn(body, "stream_idle_timeout"))
-    validateNonNegativeInteger(body.stream_idle_timeout, "stream_idle_timeout", details)
-  if (hasOwn(body, "fetch_timeout")) validateNonNegativeInteger(body.fetch_timeout, "fetch_timeout", details)
-  if (hasOwn(body, "stale_request_max_age"))
-    validateNonNegativeInteger(body.stale_request_max_age, "stale_request_max_age", details)
-  if (hasOwn(body, "model_refresh_interval"))
-    validateNonNegativeInteger(body.model_refresh_interval, "model_refresh_interval", details)
-  if (hasOwn(body, "compress_tool_results_before_truncate"))
-    validateBoolean(body.compress_tool_results_before_truncate, "compress_tool_results_before_truncate", details)
-  if (hasOwn(body, "system_prompt_prepend"))
-    validateOptionalString(body.system_prompt_prepend, "system_prompt_prepend", details)
-  if (hasOwn(body, "system_prompt_append"))
-    validateOptionalString(body.system_prompt_append, "system_prompt_append", details)
-  if (hasOwn(body, "system_prompt_overrides")) {
-    validateRewriteRules(body.system_prompt_overrides, "system_prompt_overrides", details, { allowModel: true })
-  }
-  if (hasOwn(body, "shutdown")) {
-    validateNestedObject(body.shutdown, "shutdown", SHUTDOWN_KEYS, details, (value, path) =>
-      validateNonNegativeInteger(value, path, details),
-    )
-  }
-  if (hasOwn(body, "history")) {
-    validateNestedObject(body.history, "history", HISTORY_KEYS, details, (value, path) =>
-      validateNonNegativeInteger(value, path, details),
-    )
-  }
-  if (hasOwn(body, "openai-responses")) {
-    validateNestedObject(body["openai-responses"], "openai-responses", RESPONSES_KEYS, details, (value, path) =>
-      validateBoolean(value, path, details),
-    )
-  }
-  if (hasOwn(body, "rate_limiter")) {
-    validateNestedObject(body.rate_limiter, "rate_limiter", RATE_LIMITER_KEYS, details, (value, path) =>
-      validateNonNegativeInteger(value, path, details),
-    )
-  }
-  if (hasOwn(body, "anthropic")) {
-    validateAnthropic(body.anthropic, details)
-  }
-
-  if (details.length > 0) {
-    return { valid: false, details }
-  }
-
-  return { valid: true, value: input as Config }
-}
-
-function validateAnthropic(value: unknown, details: Array<ConfigValidationDetail>): void {
-  if (value === null) return
-  if (!isPlainObject(value)) {
-    pushDetail(details, "anthropic", "Must be an object or null", value)
-    return
-  }
-
-  validateUnknownKeys(value, ANTHROPIC_KEYS, "anthropic", details)
-
-  if (hasOwn(value, "strip_server_tools")) {
-    validateBoolean(value.strip_server_tools, "anthropic.strip_server_tools", details)
-  }
-  if (hasOwn(value, "thinking_block_message_policy")) {
-    const allowed = new Set(["stripped", "immutable", "fixed-index"])
-    validateEnum(value.thinking_block_message_policy, "anthropic.thinking_block_message_policy", allowed, details)
-  }
-  if (hasOwn(value, "immutable_thinking_messages")) {
-    validateBoolean(value.immutable_thinking_messages, "anthropic.immutable_thinking_messages", details)
-  }
-  if (hasOwn(value, "strip_read_tool_result_tags")) {
-    validateBoolean(value.strip_read_tool_result_tags, "anthropic.strip_read_tool_result_tags", details)
-  }
-  if (hasOwn(value, "dedup_tool_calls")) {
-    const allowed = new Set([false, true, "input", "result"])
-    validateEnum(value.dedup_tool_calls, "anthropic.dedup_tool_calls", allowed, details)
-  }
-  if (hasOwn(value, "context_editing")) {
-    validateEnum(
-      value.context_editing,
-      "anthropic.context_editing",
-      new Set(["off", "clear-thinking", "clear-tooluse", "clear-both"]),
-      details,
-    )
-  }
-  if (hasOwn(value, "context_editing_trigger")) {
-    validateNonNegativeInteger(value.context_editing_trigger, "anthropic.context_editing_trigger", details)
-  }
-  if (hasOwn(value, "context_editing_keep_tools")) {
-    validateNonNegativeInteger(value.context_editing_keep_tools, "anthropic.context_editing_keep_tools", details)
-  }
-  if (hasOwn(value, "context_editing_keep_thinking")) {
-    validateNonNegativeInteger(value.context_editing_keep_thinking, "anthropic.context_editing_keep_thinking", details)
-  }
-  if (hasOwn(value, "tool_search")) {
-    validateBoolean(value.tool_search, "anthropic.tool_search", details)
-  }
-  if (hasOwn(value, "cache_control")) {
-    const valid = ["disabled", "passthrough", "sanitize", "proxied"]
-    if (!valid.includes(value.cache_control as string)) {
-      details.push({
-        field: "anthropic.cache_control",
-        message: `Must be one of: ${valid.join(", ")}`,
-        value: value.cache_control,
-      })
-    }
-  }
-  if (hasOwn(value, "auto_cache_control")) {
-    validateBoolean(value.auto_cache_control, "anthropic.auto_cache_control (deprecated)", details)
-  }
-  if (hasOwn(value, "non_deferred_tools")) {
-    validateStringArray(value.non_deferred_tools, "anthropic.non_deferred_tools", details)
-  }
-  if (hasOwn(value, "rewrite_system_reminders")) {
-    const rewrite = value.rewrite_system_reminders
-    if (typeof rewrite === "boolean") return
-    validateRewriteRules(rewrite, "anthropic.rewrite_system_reminders", details, { allowModel: false })
-  }
-}
-
-function validateUnknownKeys(
-  object: Record<string, unknown>,
-  allowedKeys: Set<string>,
-  parentPath: string,
-  details: Array<ConfigValidationDetail>,
-): void {
-  for (const key of Object.keys(object)) {
-    if (allowedKeys.has(key)) continue
-    const field = parentPath ? `${parentPath}.${key}` : key
-    pushDetail(details, field, "Unknown config field", object[key])
-  }
-}
-
-function validateNestedObject(
-  value: unknown,
-  field: string,
-  allowedKeys: Set<string>,
-  details: Array<ConfigValidationDetail>,
-  validateValue: (value: unknown, path: string) => void,
-): void {
-  if (value === null) return
-  if (!isPlainObject(value)) {
-    pushDetail(details, field, "Must be an object or null", value)
-    return
-  }
-
-  validateUnknownKeys(value, allowedKeys, field, details)
-
-  for (const [key, child] of Object.entries(value)) {
-    validateValue(child, `${field}.${key}`)
-  }
-}
-
-function validateStringMap(value: unknown, field: string, details: Array<ConfigValidationDetail>): void {
-  if (value === null) return
-  if (!isPlainObject(value)) {
-    pushDetail(details, field, "Must be an object or null", value)
-    return
-  }
-
-  for (const [key, target] of Object.entries(value)) {
-    if (key.trim().length === 0) {
-      pushDetail(details, `${field}.${key}`, "Override key must be a non-empty string", key)
-    }
-    if (typeof target !== "string" || target.trim().length === 0) {
-      pushDetail(details, `${field}.${key}`, "Override target must be a non-empty string", target)
-    }
-  }
-}
-
-function validateStringArray(value: unknown, field: string, details: Array<ConfigValidationDetail>): void {
-  if (value === null) return
-  if (!Array.isArray(value)) {
-    pushDetail(details, field, "Must be an array of strings or null", value)
-    return
-  }
-
-  for (const [index, item] of value.entries()) {
-    if (typeof item !== "string" || item.trim().length === 0) {
-      pushDetail(details, `${field}.${index}`, "Must be a non-empty string", item)
-    }
-  }
-}
-
-function validateRewriteRules(
-  value: unknown,
-  field: string,
-  details: Array<ConfigValidationDetail>,
-  options: { allowModel: boolean },
-): void {
-  if (value === null) return
-  if (!Array.isArray(value)) {
-    pushDetail(details, field, "Must be an array, boolean, or null", value)
-    return
-  }
-
-  for (const [index, item] of value.entries()) {
-    const itemField = `${field}.${index}`
-    if (!isPlainObject(item)) {
-      pushDetail(details, itemField, "Rule must be an object", item)
-      continue
-    }
-
-    const allowedKeys =
-      options.allowModel ? new Set(["from", "to", "method", "model"]) : new Set(["from", "to", "method"])
-    validateUnknownKeys(item, allowedKeys, itemField, details)
-
-    if (typeof item.from !== "string" || item.from.length === 0) {
-      pushDetail(details, `${itemField}.from`, "Must be a non-empty string", item.from)
-      continue
-    }
-    if (typeof item.to !== "string") {
-      pushDetail(details, `${itemField}.to`, "Must be a string", item.to)
-    }
-    if (item.method !== undefined && item.method !== "line" && item.method !== "regex") {
-      pushDetail(details, `${itemField}.method`, "Must be 'line' or 'regex'", item.method)
-    }
-    if (!options.allowModel && hasOwn(item, "model")) {
-      pushDetail(details, `${itemField}.model`, "Field is not supported here", item.model)
-    }
-    if (options.allowModel && item.model !== undefined && typeof item.model !== "string") {
-      pushDetail(details, `${itemField}.model`, "Must be a string", item.model)
-    }
-
-    if (details.some((detail) => detail.field.startsWith(`${itemField}.`))) {
-      continue
-    }
-
-    const compiledRule = compileRewriteRule({
-      from: item.from,
-      to: item.to as string,
-      ...(item.method ? { method: item.method as "line" | "regex" } : {}),
-      ...(options.allowModel && typeof item.model === "string" ? { model: item.model } : {}),
-    })
-
-    if (compiledRule === null) {
-      pushDetail(details, `${itemField}.from`, "Invalid rewrite rule regex", item.from)
-    }
-  }
-}
-
-function validateOptionalString(
-  value: unknown,
-  field: string,
-  details: Array<ConfigValidationDetail>,
-  options?: { validateUrlScheme?: boolean },
-): void {
-  if (value === null) return
-  if (typeof value !== "string") {
-    pushDetail(details, field, "Must be a string or null", value)
-    return
-  }
-
-  if (options?.validateUrlScheme) {
-    validateProxy(value, field, details)
-  }
-}
-
-function validateProxy(value: string, field: string, details: Array<ConfigValidationDetail>): void {
-  try {
-    const url = new URL(value)
-    if (!["http:", "https:", "socks5:", "socks5h:"].includes(url.protocol)) {
-      pushDetail(details, field, "Proxy must use http, https, socks5, or socks5h scheme", value)
-    }
-  } catch {
-    pushDetail(details, field, "Proxy must be a valid URL", value)
-  }
-}
-
-function validateBoolean(value: unknown, field: string, details: Array<ConfigValidationDetail>): void {
-  if (value === null) return
-  if (typeof value !== "boolean") {
-    pushDetail(details, field, "Must be a boolean or null", value)
-  }
-}
-
-function validateNonNegativeInteger(value: unknown, field: string, details: Array<ConfigValidationDetail>): void {
-  if (value === null) return
-  if (!Number.isInteger(value) || Number(value) < 0) {
-    pushDetail(details, field, "Must be a non-negative integer or null", value)
-  }
-}
-
-function validateEnum(
-  value: unknown,
-  field: string,
-  allowed: Set<boolean | string>,
-  details: Array<ConfigValidationDetail>,
-): void {
-  if (value === null) return
-  if (!allowed.has(value as boolean | string)) {
-    pushDetail(details, field, `Must be one of: ${[...allowed].map(String).join(", ")}`, value)
-  }
-}
-
-function pushDetail(details: Array<ConfigValidationDetail>, field: string, message: string, value?: unknown): void {
-  details.push({ field, message, ...(value !== undefined ? { value } : {}) })
-}
-
 function hasOwn(object: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(object, key)
 }
@@ -506,6 +150,11 @@ function hasOwn(object: object, key: string): boolean {
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
+
+/** Anthropic section keys whose values are collections (arrays / booleans) and
+ *  therefore must NOT be written by the generic scalar setter — they are
+ *  handled explicitly by replaceCollection / setScalar below. */
+const ANTHROPIC_COLLECTION_KEYS = new Set(["rewrite_system_reminders", "non_deferred_tools"])
 
 type ConfigDocument = ReturnType<typeof parseDocument>
 

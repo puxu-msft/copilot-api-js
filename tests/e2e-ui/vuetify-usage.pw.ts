@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test"
+
 import { ensureServerRunning, uiUrl } from "./helpers"
 
 test.beforeAll(ensureServerRunning)
@@ -26,7 +27,10 @@ test.describe("Vuetify Usage", () => {
     await expect(main.getByText("Quota")).toBeVisible({ timeout: 10000 })
 
     const hasProgressBar = (await main.getByRole("progressbar").count()) > 0
-    const hasNoData = await main.getByText("No quota data available").isVisible().catch(() => false)
+    const hasNoData = await main
+      .getByText("No quota data available")
+      .isVisible()
+      .catch(() => false)
     expect(hasProgressBar || hasNoData).toBeTruthy()
   })
 
@@ -43,14 +47,23 @@ test.describe("Vuetify Usage", () => {
     await page.goto(uiUrl("#/v/usage"))
     const main = page.locator("main")
 
-    const hasDistributionSection = await main.getByText("Model Distribution").isVisible().catch(() => false)
+    const hasDistributionSection = await main
+      .getByText("Model Distribution")
+      .isVisible()
+      .catch(() => false)
     if (!hasDistributionSection) {
       await expect(main).toContainText("Total")
       return
     }
 
-    const hasDistribution = await main.getByText(/\d+(\.\d+)?%/).isVisible().catch(() => false)
-    const hasNoData = await main.getByText("No model data").isVisible().catch(() => false)
+    const hasDistribution = await main
+      .getByText(/\d+(\.\d+)?%/)
+      .isVisible()
+      .catch(() => false)
+    const hasNoData = await main
+      .getByText("No model data")
+      .isVisible()
+      .catch(() => false)
     expect(hasDistribution || hasNoData).toBeTruthy()
   })
 })

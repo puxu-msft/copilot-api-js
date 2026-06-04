@@ -24,7 +24,7 @@ export function handleGetEntries(c: Context) {
   const options: QueryOptions = {
     cursor: query.cursor || undefined,
     limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
-    direction: (query.direction as "older" | "newer") || undefined,
+    direction: query.direction ? (query.direction as "older" | "newer") : undefined,
     model: query.model || undefined,
     endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,

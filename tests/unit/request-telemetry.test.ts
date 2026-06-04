@@ -31,8 +31,8 @@ afterEach(async () => {
 describe("request telemetry", () => {
   test("tracks accepted requests in filled 5-minute buckets across the rolling window", () => {
     const now = Date.UTC(2026, 3, 1, 12, 0, 0)
-    const oldTimestamp = now - (8 * 24 * 60 * 60 * 1000)
-    const recentTimestamp = now - (10 * 60 * 1000)
+    const oldTimestamp = now - 8 * 24 * 60 * 60 * 1000
+    const recentTimestamp = now - 10 * 60 * 1000
 
     recordAcceptedRequest(oldTimestamp)
     recordAcceptedRequest(recentTimestamp)
@@ -144,7 +144,10 @@ describe("request telemetry", () => {
   })
 
   test("persists rolling buckets and 7d model stats but resets since-start counters on restart", async () => {
-    const now = Date.UTC(2026, 3, 1, 12, 0, 0)
+    // Use a recent timestamp (relative to real Date.now()) so the data stays
+    // inside the 7-day retention window when initRequestTelemetry() re-loads
+    // and calls pruneBuckets() against the wall clock on restart.
+    const now = Date.now()
 
     recordAcceptedRequest(now)
     recordSettledRequest("gpt-5.2", {
@@ -167,12 +170,13 @@ describe("request telemetry", () => {
     expect(snapshot.acceptedSinceStart).toBe(0)
     expect(snapshot.modelsSinceStart).toHaveLength(0)
     expect(snapshot.modelsLast7d).toHaveLength(1)
+    const bucketTimestamp = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
     expect(snapshot.modelsLast7d[0]).toMatchObject({
       model: "gpt-5.2",
       requestCount: 1,
       buckets: [
         {
-          timestamp: now,
+          timestamp: bucketTimestamp,
           requestCount: 1,
         },
       ],
@@ -180,5 +184,52 @@ describe("request telemetry", () => {
         totalTokens: 15,
       },
     })
+  })
+
+  test("concurrent persists serialize and produce a readable file (no torn writes)", async () => {
+    const now = Date.now()
+    for (let i = 0; i < 50; i++) {
+      recordSettledRequest(`model-${i % 3}`, {
+        startedAt: now - i,
+        endedAt: now,
+        success: true,
+        usage: { input_tokens: i, output_tokens: i * 2 },
+      })
+    }
+
+    // Fire many persists in parallel — the periodic timer and shutdown can
+    // race in production. With the serialized atomic-write path, the final
+    // file must be parseable JSON, not torn bytes.
+    await Promise.all(Array.from({ length: 25 }, () => persistRequestTelemetry()))
+
+    const raw = await fs.readFile(telemetryFile, "utf8")
+    expect(() => JSON.parse(raw)).not.toThrow()
+
+    // No stray temp files should be left behind.
+    const siblings = await fs.readdir(tempDir)
+    expect(siblings.filter((name) => name.includes(".tmp."))).toEqual([])
+
+    // Re-init from the persisted file → state survives.
+    _resetRequestTelemetryForTests()
+    _setRequestTelemetryFilePathForTests(telemetryFile)
+    await initRequestTelemetry()
+    const snapshot = getRequestTelemetrySnapshot(now)
+    expect(snapshot.modelsLast7d.length).toBeGreaterThan(0)
+  })
+
+  test("corrupted telemetry file is quarantined and starts fresh", async () => {
+    await fs.writeFile(telemetryFile, "{not valid json", "utf8")
+
+    await initRequestTelemetry()
+
+    // Fresh state
+    const snapshot = getRequestTelemetrySnapshot(Date.now())
+    expect(snapshot.totalLast7d).toBe(0)
+    expect(snapshot.modelsLast7d).toHaveLength(0)
+
+    // Original corrupted file is gone; a `.corrupted.<ts>` sibling exists.
+    const siblings = await fs.readdir(tempDir)
+    expect(siblings.some((name) => name.includes(".corrupted."))).toBe(true)
+    expect(siblings).not.toContain(path.basename(telemetryFile))
   })
 })

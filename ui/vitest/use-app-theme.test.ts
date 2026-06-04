@@ -1,10 +1,24 @@
-import type { ComputedRef, Ref } from "vue"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { computed, nextTick, ref } from "vue"
+import type {
+  ComputedRef,
+  Ref
+} from "vue";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi
+} from "vitest";
+import {
+  computed,
+  nextTick,
+  ref
+} from "vue";
 
 type ThemeMock = {
   change: ReturnType<typeof vi.fn<(name: string) => void>>
-  cycle: ReturnType<typeof vi.fn<(names?: string[]) => void>>
+  cycle: ReturnType<typeof vi.fn<(names?: Array<string>) => void>>
   global: {
     current: ComputedRef<{ dark: boolean }>
     name: Ref<string>
@@ -25,7 +39,7 @@ describe("useAppTheme", () => {
       change: vi.fn((name: string) => {
         themeMock.global.name.value = name
       }),
-      cycle: vi.fn((names?: string[]) => {
+      cycle: vi.fn((names?: Array<string>) => {
         const options = names ?? ["light", "dark"]
         const currentIndex = options.indexOf(themeMock.global.name.value)
         const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % options.length

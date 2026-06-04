@@ -1,4 +1,12 @@
-export { clearHistory, evictOldestEntries, insertEntry, updateEntry } from "./entries"
+export {
+  clearHistory,
+  finalizeEntry,
+  getInFlightEntry,
+  insertEntry,
+  listInFlightEntries,
+  listInFlightSummaries,
+  updateEntry,
+} from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
 export {
   deleteSession,
@@ -10,8 +18,8 @@ export {
   registerResponseSession,
   resolveResponseSessionId,
 } from "./sessions"
+export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries, shutdownHistory } from "./state"
 export { exportHistory, getStats } from "./stats"
-export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries } from "./state"
 
 export type {
   ContentBlock,
@@ -36,8 +44,8 @@ export type {
   ServerToolUseContentBlock,
   Session,
   SessionResult,
-  SummaryResult,
   SseEventRecord,
+  SummaryResult,
   SystemBlock,
   TextContentBlock,
   ThinkingContentBlock,

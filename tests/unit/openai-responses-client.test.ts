@@ -1,15 +1,36 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { Model } from "~/lib/models/client"
-import type { ResponsesPayload, ResponsesStreamEvent } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesPayload,
+  ResponsesStreamEvent,
+} from "~/types/api/openai-responses"
 
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { createResponses } from "~/lib/openai/responses-client"
-import { resetUpstreamWsManagerForTests, setUpstreamWsConnectionFactoryForTests } from "~/lib/openai/upstream-ws"
-import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
+import {
+  //
+  resetUpstreamWsManagerForTests,
+  setUpstreamWsConnectionFactoryForTests,
+} from "~/lib/openai/upstream-ws"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 const originalFetch = globalThis.fetch
 
@@ -198,6 +219,7 @@ describe("responses client", () => {
       statefulMarker: undefined,
       model: "gpt-4o",
       conversationId: undefined,
+      handshakeHeaders: {},
       close: () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
@@ -245,6 +267,7 @@ describe("responses client", () => {
       statefulMarker: undefined,
       model: "gpt-4o",
       conversationId: undefined,
+      handshakeHeaders: {},
       close: () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
@@ -278,6 +301,233 @@ describe("responses client", () => {
     const iterator = (result as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()
     const first = await iterator.next()
 
+    expect(first.value?.event).toBe("response.created")
+    expect(transports).toEqual(["upstream-ws-fallback"])
+  })
+
+  test("propagates client abort signal into upstream WS sendRequest", async () => {
+    let sentAbortSignal: AbortSignal | undefined
+    let rejectQueue: (error: Error) => void = () => {}
+
+    let open = false
+    setUpstreamWsConnectionFactoryForTests(() => ({
+      connect: () => {
+        open = true
+        return Promise.resolve()
+      },
+      sendRequest: (_payload, callOpts) => {
+        sentAbortSignal = callOpts?.abortSignal
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next() {
+                return new Promise<IteratorResult<ResponsesStreamEvent>>((_, reject) => {
+                  rejectQueue = reject
+                  callOpts?.abortSignal?.addEventListener(
+                    "abort",
+                    () => reject(new Error("Upstream WebSocket request aborted")),
+                    { once: true },
+                  )
+                })
+              },
+            }
+          },
+        }
+      },
+      get isOpen() {
+        return open
+      },
+      get isBusy() {
+        return false
+      },
+      statefulMarker: undefined,
+      model: "gpt-4o",
+      conversationId: undefined,
+      handshakeHeaders: {},
+      close: () => {},
+    }))
+
+    // HTTP fallback target — should be hit after WS aborts pre-first-event
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        createSseResponse([
+          'event: response.created\ndata: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[],"usage":null,"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"store":false}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+    ) as unknown as typeof fetch
+
+    setStateForTests({ upstreamWebSocket: true })
+    const clientAbort = new AbortController()
+    const model = {
+      id: "gpt-4o",
+      name: "gpt-4o",
+      vendor: "OpenAI",
+      object: "model",
+      version: "gpt-4o",
+      model_picker_enabled: true,
+      preview: false,
+      supported_endpoints: [ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
+    } as Model
+
+    const transports: Array<string> = []
+    const createPromise = createResponses(createPayload({ stream: true }), {
+      resolvedModel: model,
+      clientAbortSignal: clientAbort.signal,
+      onTransport: (t) => transports.push(t),
+    })
+
+    // Wait a tick to ensure sendRequest has been called and the abort listener wired up
+    await new Promise((r) => setTimeout(r, 5))
+    expect(sentAbortSignal).toBeDefined()
+    expect(sentAbortSignal?.aborted).toBe(false)
+
+    clientAbort.abort()
+    // Drain pending rejection (simulate connection's failRequest)
+    rejectQueue(new Error("aborted via signal"))
+
+    const result = await createPromise
+    const iterator = (result as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()
+    const first = await iterator.next()
+
+    // Should have fallen back to HTTP (the mocked fetch)
+    expect(first.value?.event).toBe("response.created")
+    expect(transports).toEqual(["upstream-ws-fallback"])
+  })
+
+  test("WS generator aborts upstream request when consumer stops iterating via shared abort signal", async () => {
+    let abortFired = false
+    let yielded = false
+    let releaseSecondEvent: () => void = () => {}
+
+    let open = false
+    setUpstreamWsConnectionFactoryForTests(() => ({
+      connect: () => {
+        open = true
+        return Promise.resolve()
+      },
+      sendRequest: (_payload, callOpts) => {
+        callOpts?.abortSignal?.addEventListener("abort", () => {
+          abortFired = true
+        })
+        return {
+          [Symbol.asyncIterator]() {
+            let sentFirst = false
+            return {
+              next() {
+                if (!sentFirst) {
+                  sentFirst = true
+                  yielded = true
+                  return Promise.resolve({
+                    done: false,
+                    value: {
+                      type: "response.created",
+                      sequence_number: 0,
+                      response: {
+                        id: "resp_1",
+                        object: "response",
+                        created_at: 1,
+                        status: "in_progress",
+                        model: "gpt-4o",
+                        output: [],
+                        usage: null,
+                        tools: [],
+                        tool_choice: "auto",
+                        parallel_tool_calls: false,
+                        store: false,
+                      },
+                    } as ResponsesStreamEvent,
+                  })
+                }
+                return new Promise<IteratorResult<ResponsesStreamEvent>>((resolve) => {
+                  releaseSecondEvent = () => resolve({ done: true, value: undefined })
+                  callOpts?.abortSignal?.addEventListener("abort", () => resolve({ done: true, value: undefined }), {
+                    once: true,
+                  })
+                })
+              },
+            }
+          },
+        }
+      },
+      get isOpen() {
+        return open
+      },
+      get isBusy() {
+        return false
+      },
+      statefulMarker: undefined,
+      model: "gpt-4o",
+      conversationId: undefined,
+      handshakeHeaders: {},
+      close: () => {},
+    }))
+
+    setStateForTests({ upstreamWebSocket: true })
+    const model = {
+      id: "gpt-4o",
+      name: "gpt-4o",
+      vendor: "OpenAI",
+      object: "model",
+      version: "gpt-4o",
+      model_picker_enabled: true,
+      preview: false,
+      supported_endpoints: [ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
+    } as Model
+
+    const result = await createResponses(createPayload({ stream: true }), { resolvedModel: model })
+    const generator = result as AsyncGenerator<ServerSentEventMessage>
+
+    const first = await generator.next()
+    expect(first.value?.event).toBe("response.created")
+    expect(yielded).toBe(true)
+
+    // Consumer aborts by calling .return() — generator's finally must abort the WS request.
+    await generator.return(undefined)
+    expect(abortFired).toBe(true)
+    releaseSecondEvent()
+  })
+
+  test("falls back to HTTP when manager.create() throws during shutdown (TOCTOU window)", async () => {
+    // Simulate the shutdown race: canUseUpstreamWebSocket() passes (state has
+    // upstreamWebSocket=true and manager not yet stopped), but by the time we
+    // call manager.create() the manager has called stopNew() and create()
+    // throws. The request must transparently fall back to HTTP — bubbling the
+    // error to the client would violate "WS failures must never fail requests".
+    setUpstreamWsConnectionFactoryForTests(() => {
+      throw new Error("Upstream WebSocket manager is not accepting new work")
+    })
+    setStateForTests({ upstreamWebSocket: true })
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        createSseResponse([
+          'event: response.created\ndata: {"type":"response.created","sequence_number":0,"response":{"id":"resp_http","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[],"usage":null,"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"store":false}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+    ) as unknown as typeof fetch
+
+    const transports: Array<string> = []
+    const model = {
+      id: "gpt-4o",
+      name: "gpt-4o",
+      vendor: "OpenAI",
+      object: "model",
+      version: "gpt-4o",
+      model_picker_enabled: true,
+      preview: false,
+      supported_endpoints: [ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
+    } as Model
+
+    // Must not throw — must degrade to HTTP
+    const result = await createResponses(createPayload({ stream: true }), {
+      resolvedModel: model,
+      onTransport: (t) => transports.push(t),
+    })
+
+    const iterator = (result as AsyncIterable<ServerSentEventMessage>)[Symbol.asyncIterator]()
+    const first = await iterator.next()
     expect(first.value?.event).toBe("response.created")
     expect(transports).toEqual(["upstream-ws-fallback"])
   })

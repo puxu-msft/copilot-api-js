@@ -6,7 +6,11 @@
  * and family-level fallbacks.
  */
 
-import { DEFAULT_MODEL_OVERRIDES, state } from "~/lib/state"
+import {
+  //
+  DEFAULT_MODEL_OVERRIDES,
+  state,
+} from "~/lib/state"
 
 // ============================================================================
 // Types
@@ -14,29 +18,8 @@ import { DEFAULT_MODEL_OVERRIDES, state } from "~/lib/state"
 
 export type ModelFamily = "opus" | "sonnet" | "haiku"
 
-// ============================================================================
-// Model Preference Lists
-// ============================================================================
-
-/** Preferred model order per family, highest priority first. */
-export const MODEL_PREFERENCE: Record<ModelFamily, Array<string>> = {
-  opus: [
-    "claude-opus-4.6",
-    "claude-opus-4.5",
-    "claude-opus-41", // 4.1
-    // "claude-opus-4",
-  ],
-  sonnet: [
-    "claude-sonnet-4.6",
-    "claude-sonnet-4.5",
-    "claude-sonnet-4",
-    // "claude-sonnet-3.5",
-  ],
-  haiku: [
-    "claude-haiku-4.5",
-    // "claude-haiku-3.5",
-  ],
-}
+/** Canonical list of known model families. Order is not significant. */
+export const MODEL_FAMILIES: ReadonlyArray<ModelFamily> = ["opus", "sonnet", "haiku"]
 
 // ============================================================================
 // Normalization and Detection
@@ -102,12 +85,13 @@ export function isOpusModel(modelId: string): boolean {
 /**
  * Find the best available model for a family by checking the preference list
  * against actually available models. Returns the first match, or the top
- * preference as fallback when state.models is unavailable.
+ * preference as fallback when state.models is unavailable. Returns the family
+ * name as-is when the family is unknown or its preference list is empty.
  */
 export function findPreferredModel(family: string): string {
-  const preference = MODEL_PREFERENCE[family as ModelFamily]
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive for arbitrary family strings
-  if (!preference) return family
+  if (!isModelFamily(family)) return family
+  const preference = state.modelPreference[family]
+  if (preference.length === 0) return family
 
   if (state.modelIds.size === 0) {
     return preference[0]
@@ -120,6 +104,10 @@ export function findPreferredModel(family: string): string {
   }
 
   return preference[0]
+}
+
+function isModelFamily(value: string): value is ModelFamily {
+  return (MODEL_FAMILIES as ReadonlyArray<string>).includes(value)
 }
 
 /** Known model modifier suffixes (e.g., "-fast" for fast output mode, "-1m" for 1M context). */
@@ -273,7 +261,7 @@ function resolveModelNameCore(model: string): string {
 /** Resolve a base model name (without modifier suffix) to its canonical form. */
 function resolveBase(model: string): string {
   // 1. Short alias: "opus" → best opus
-  if (model in MODEL_PREFERENCE) {
+  if (isModelFamily(model)) {
     return findPreferredModel(model)
   }
 

@@ -13,22 +13,28 @@
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
-import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionsPayload,
+  Message,
+} from "~/types/api/openai-chat-completions"
 
 import { getTokenCount } from "~/lib/models/tokenizer"
+import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
 
 import type { AutoTruncateConfig } from "../auto-truncate"
 
 import {
+  //
   DEFAULT_AUTO_TRUNCATE_CONFIG,
   calibrate,
   computeSafetyMargin,
   getLearnedLimits,
 } from "../auto-truncate"
-import { state } from "~/lib/state"
-import { extractOpenAISystemMessages } from "./orphan-filter"
+import { estimateMessageTokens } from "./auto-truncate/token-counting"
 import {
+  //
   addCompressionNotice,
   cleanupMessages,
   createTruncationMarker,
@@ -37,7 +43,7 @@ import {
   generateRemovedMessagesSummary,
   smartCompressToolResults,
 } from "./auto-truncate/truncation"
-import { estimateMessageTokens } from "./auto-truncate/token-counting"
+import { extractOpenAISystemMessages } from "./orphan-filter"
 
 // ============================================================================
 // Result Types

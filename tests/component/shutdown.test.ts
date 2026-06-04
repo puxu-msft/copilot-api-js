@@ -10,10 +10,11 @@
  * - Error resilience (server.close failures)
  */
 
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 
 import type { TuiLogEntry } from "~/lib/tui/types"
 
+import { getUpstreamWsManager, resetUpstreamWsManagerForTests } from "~/lib/openai/upstream-ws"
 import {
   _resetShutdownState,
   drainActiveRequests,
@@ -470,7 +471,7 @@ describe("signal escalation", () => {
     expect(getIsShuttingDown()).toBe(true)
 
     // Escalate while still draining in Phase 2
-    handleShutdownSignal("SIGINT", {
+    void handleShutdownSignal("SIGINT", {
       gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
       exitFn,
     })
@@ -536,7 +537,7 @@ describe("signal escalation", () => {
     expect(phase === "phase1" || phase === "phase2").toBe(true)
 
     // Second signal arrives
-    handleShutdownSignal("SIGINT", { exitFn })
+    void handleShutdownSignal("SIGINT", { exitFn })
 
     // Must NOT have called exitFn (the bug was: exitFn was called here)
     expect(exitFn).not.toHaveBeenCalled()
@@ -579,7 +580,7 @@ describe("signal escalation", () => {
     })
 
     // Send signal during Phase 4
-    handleShutdownSignal("SIGINT", { exitFn })
+    void handleShutdownSignal("SIGINT", { exitFn })
 
     expect(exitFn).toHaveBeenCalledWith(1)
 
@@ -597,7 +598,7 @@ describe("signal escalation", () => {
     expect(getShutdownPhase()).toBe("finalized")
 
     // Send signal after shutdown is finalized
-    handleShutdownSignal("SIGINT", { exitFn })
+    void handleShutdownSignal("SIGINT", { exitFn })
 
     expect(exitFn).not.toHaveBeenCalled()
   })
@@ -624,7 +625,7 @@ describe("signal escalation", () => {
     })
 
     // Second signal: phase2 → phase3
-    handleShutdownSignal("SIGINT", opts)
+    void handleShutdownSignal("SIGINT", opts)
 
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {
@@ -636,7 +637,7 @@ describe("signal escalation", () => {
     })
 
     // Third signal: phase3 → phase4
-    handleShutdownSignal("SIGINT", opts)
+    void handleShutdownSignal("SIGINT", opts)
 
     // Wait for shutdown to complete (Phase 4 force-closes)
     await shutdownPromise
@@ -645,5 +646,79 @@ describe("signal escalation", () => {
     expect(exitFn).not.toHaveBeenCalled()
     expect(getShutdownSignal()!.aborted).toBe(true)
     expect(tracker.destroy).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ============================================================================
+// Upstream WebSocket cleanup ordering
+// ============================================================================
+
+describe("upstream WebSocket cleanup", () => {
+  test("graceful path (drain succeeds) still closes upstream WS connections", async () => {
+    // Materialize a manager; spy on closeAll/stopNew. The shutdown path must
+    // release these connections even on the drain-success early-return —
+    // otherwise GHC-side connection quota leaks until process GC.
+    const manager = getUpstreamWsManager()
+    const closeAllSpy = spyOn(manager, "closeAll")
+    const stopNewSpy = spyOn(manager, "stopNew")
+
+    try {
+      await gracefulShutdown("SIGINT", createNoopDeps())
+
+      expect(stopNewSpy).toHaveBeenCalledTimes(1)
+      // Was previously called 0 times on this path — finalize() now guarantees it.
+      expect(closeAllSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      closeAllSpy.mockRestore()
+      stopNewSpy.mockRestore()
+      resetUpstreamWsManagerForTests()
+    }
+  })
+
+  test("force-close path closes upstream WS BEFORE downstream server (avoid EPIPE noise)", async () => {
+    const manager = getUpstreamWsManager()
+    const closeAllSpy = spyOn(manager, "closeAll")
+
+    const callOrder: Array<string> = []
+    closeAllSpy.mockImplementation(() => {
+      callOrder.push("upstream.closeAll")
+    })
+
+    const server = createMockServer()
+    const originalClose = server.close
+    server.close = mock(async (force?: boolean) => {
+      callOrder.push(`server.close(force=${force ?? false})`)
+      return originalClose.call(server, force)
+    })
+
+    // Tracker reports a stuck request so we reach Phase 4 force-close.
+    const tracker = createMockTracker([
+      { id: "stuck", state: "executing", model: "x", startedAt: Date.now() } as unknown as TuiLogEntry,
+    ])
+
+    try {
+      await gracefulShutdown(
+        "SIGINT",
+        createNoopDeps({
+          tracker,
+          server,
+          // Tight timing to fall through Phase 2 → Phase 3 → Phase 4.
+          gracefulWaitMs: 20,
+          abortWaitMs: 20,
+          drainPollIntervalMs: 5,
+        }),
+      )
+
+      // Upstream WS must be closed BEFORE the downstream force-close, otherwise
+      // in-flight forwarders push data into a dead socket → EPIPE noise + delay.
+      const upstreamIdx = callOrder.indexOf("upstream.closeAll")
+      const forceCloseIdx = callOrder.indexOf("server.close(force=true)")
+      expect(upstreamIdx).toBeGreaterThanOrEqual(0)
+      expect(forceCloseIdx).toBeGreaterThanOrEqual(0)
+      expect(upstreamIdx).toBeLessThan(forceCloseIdx)
+    } finally {
+      closeAllSpy.mockRestore()
+      resetUpstreamWsManagerForTests()
+    }
   })
 })

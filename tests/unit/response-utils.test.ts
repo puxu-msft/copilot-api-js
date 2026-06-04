@@ -39,7 +39,7 @@ describe("isNonStreaming", () => {
 
 describe("safeParseJson", () => {
   test("parses valid JSON strings", () => {
-    expect(safeParseJson("{\"ok\":true}")).toEqual({ ok: true })
+    expect(safeParseJson('{"ok":true}')).toEqual({ ok: true })
   })
 
   test("returns object inputs unchanged", () => {

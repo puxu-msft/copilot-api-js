@@ -1,5 +1,8 @@
-import { shallowRef, type Ref } from "vue"
 import { useIntervalFn } from "@vueuse/core"
+import {
+shallowRef,
+type Ref
+} from "vue";
 
 export interface UsePollingReturn<T> {
   data: Ref<T | null>

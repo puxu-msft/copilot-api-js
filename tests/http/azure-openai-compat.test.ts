@@ -9,11 +9,11 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
 
-import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 import type { EmbeddingRequest } from "~/lib/openai/embeddings"
+import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { type StateSnapshot, restoreStateForTests, setModels, snapshotStateForTests } from "~/lib/state"
 import { prepareChatCompletionsRequest } from "~/lib/openai/request-preparation"
+import { type StateSnapshot, restoreStateForTests, setModels, snapshotStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"

@@ -1,7 +1,13 @@
+import consola from "consola"
 import fs from "node:fs/promises"
 
 import type { UsageData } from "./history/store"
 
+import {
+  //
+  atomicWriteJson,
+  createSerializedAsyncFn,
+} from "./atomic-fs"
 import { PATHS } from "./config/paths"
 
 const BUCKET_MS = 5 * 60 * 1000
@@ -100,6 +106,15 @@ let modelBucketStats = new Map<number, Map<string, MutableModelTelemetry>>()
 let persistTimer: ReturnType<typeof setInterval> | null = null
 let telemetryFilePath = PATHS.REQUEST_TELEMETRY
 
+/**
+ * Persistence is serialized via `createSerializedAsyncFn` (see ./atomic-fs):
+ * concurrent callers (periodic timer + shutdown + ad-hoc flush) take turns so
+ * a younger snapshot can never lose to an older one's late rename. Combined
+ * with `atomicWriteJson`, this closes both partial-write and racing-snapshot
+ * failure modes that would otherwise wipe the 7-day telemetry history (the
+ * loader's `catch{}` silently zeroes on corrupt JSON).
+ */
+
 function getBucketStart(timestamp: number): number {
   return Math.floor(timestamp / BUCKET_MS) * BUCKET_MS
 }
@@ -148,10 +163,7 @@ function copyPersistedTelemetry(stats: PersistedModelTelemetry): MutableModelTel
   }
 }
 
-function getOrCreateModelStats(
-  target: Map<string, MutableModelTelemetry>,
-  model: string,
-): MutableModelTelemetry {
+function getOrCreateModelStats(target: Map<string, MutableModelTelemetry>, model: string): MutableModelTelemetry {
   const normalizedModel = model.trim() || "unknown"
   let stats = target.get(normalizedModel)
   if (!stats) {
@@ -227,9 +239,7 @@ function buildFilledBuckets(now = Date.now()): Array<RequestTelemetryBucket> {
   return result
 }
 
-function buildModelSnapshots(
-  source: Iterable<[string, MutableModelTelemetry]>,
-): Array<RequestTelemetryModelSnapshot> {
+function buildModelSnapshots(source: Iterable<[string, MutableModelTelemetry]>): Array<RequestTelemetryModelSnapshot> {
   return [...source]
     .map(([model, stats]) => toModelSnapshot(model, stats))
     .sort(
@@ -326,7 +336,10 @@ function stopPeriodicPersistence(): void {
   persistTimer = null
 }
 
-function loadModelBuckets(raw: Record<string, Record<string, PersistedModelTelemetry>>): void {
+function loadModelBuckets(
+  // Runtime JSON: values may be null/non-objects despite the optimistic type.
+  raw: Record<string, Record<string, PersistedModelTelemetry> | null | undefined>,
+): void {
   modelBucketStats = new Map(
     Object.entries(raw)
       .map(([bucketKey, bucketValue]) => {
@@ -344,6 +357,7 @@ function loadModelBuckets(raw: Record<string, Record<string, PersistedModelTelem
 
         return [bucketTimestamp, bucket] as const
       })
+      // eslint-disable-next-line unicorn/prefer-native-coercion-functions -- type predicate narrows (X | null)[] → X[]; replacing with Boolean drops the narrowing and breaks the Map<> constructor signature
       .filter((entry): entry is readonly [number, Map<string, MutableModelTelemetry>] => Boolean(entry)),
   )
 }
@@ -355,22 +369,53 @@ export async function initRequestTelemetry(): Promise<void> {
   modelStatsSinceStart = new Map()
   modelBucketStats = new Map()
 
+  let raw: string
   try {
-    const raw = await fs.readFile(telemetryFilePath, "utf8")
-    const parsed = JSON.parse(raw) as RequestTelemetryFile
-    if (parsed.buckets && typeof parsed.buckets === "object") {
-      bucketCounts = new Map(
-        Object.entries(parsed.buckets)
-          .map(([key, value]) => [Number(key), value] as const)
-          .filter(([key, value]) => Number.isFinite(key) && typeof value === "number" && value >= 0),
-      )
-    }
-
-    if (parsed.version === 2 && parsed.modelBuckets && typeof parsed.modelBuckets === "object") {
-      loadModelBuckets(parsed.modelBuckets)
-    }
+    raw = await fs.readFile(telemetryFilePath, "utf8")
   } catch {
-    // Missing or malformed file is non-critical; start fresh.
+    // Missing file is non-critical; start fresh.
+    pruneBuckets()
+    startPeriodicPersistence()
+    return
+  }
+
+  // Cast to Partial<> because JSON.parse output is unknown shape; the
+  // defensive `truthy && typeof === "object"` guards below validate runtime
+  // structure rather than rely on the asserted type.
+  let parsed: Partial<RequestTelemetryFile>
+  try {
+    parsed = JSON.parse(raw) as Partial<RequestTelemetryFile>
+  } catch (err) {
+    // Corrupted JSON: surface the loss and quarantine the file for postmortem
+    // instead of silently restarting from zero. Most common historical cause:
+    // two concurrent writers interleaving O_TRUNC writes (now prevented by the
+    // serialized atomic-write path below — but old corrupted files can still
+    // exist from prior versions).
+    consola.warn(
+      `[telemetry] resetting 7-day usage history: telemetry file is corrupted (${err instanceof Error ? err.message : String(err)})`,
+    )
+    const quarantine = `${telemetryFilePath}.corrupted.${Date.now()}`
+    try {
+      await fs.rename(telemetryFilePath, quarantine)
+      consola.warn(`[telemetry] quarantined corrupted file → ${quarantine}`)
+    } catch {
+      // Rename may fail (permissions, file already gone) — non-fatal.
+    }
+    pruneBuckets()
+    startPeriodicPersistence()
+    return
+  }
+
+  if (parsed.buckets && typeof parsed.buckets === "object") {
+    bucketCounts = new Map(
+      Object.entries(parsed.buckets)
+        .map(([key, value]) => [Number(key), value] as const)
+        .filter(([key, value]) => Number.isFinite(key) && typeof value === "number" && value >= 0),
+    )
+  }
+
+  if (parsed.version === 2 && parsed.modelBuckets && typeof parsed.modelBuckets === "object") {
+    loadModelBuckets(parsed.modelBuckets)
   }
 
   pruneBuckets()
@@ -420,7 +465,7 @@ export function getRequestTelemetrySnapshot(now = Date.now()): RequestTelemetryS
   }
 }
 
-export async function persistRequestTelemetry(): Promise<void> {
+const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
   pruneBuckets()
   const file: RequestTelemetryFileV2 = {
     version: 2,
@@ -447,15 +492,23 @@ export async function persistRequestTelemetry(): Promise<void> {
       ]),
     ),
   }
+
   try {
-    await fs.writeFile(telemetryFilePath, JSON.stringify(file, null, 2), "utf8")
-  } catch {
-    // Write failure is non-critical; telemetry will continue in memory.
+    await atomicWriteJson(telemetryFilePath, file)
+  } catch (err) {
+    consola.debug(`[telemetry] persist failed:`, err)
   }
+})
+
+export function persistRequestTelemetry(): Promise<void> {
+  return persistTelemetrySerialized()
 }
 
 export async function shutdownRequestTelemetry(): Promise<void> {
   stopPeriodicPersistence()
+  // The serialized chain inside persistTelemetrySerialized guarantees this
+  // shutdown-fired persist runs AFTER any timer-fired persist already in
+  // flight (or queued just before stopPeriodicPersistence cleared the timer).
   await persistRequestTelemetry()
 }
 

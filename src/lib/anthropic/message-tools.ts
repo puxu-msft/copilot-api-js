@@ -14,8 +14,14 @@
 
 import consola from "consola"
 
-import type { MessageParam, MessagesPayload, Tool } from "~/types/api/anthropic"
+import type {
+  //
+  MessageParam,
+  MessagesPayload,
+  Tool,
+} from "~/types/api/anthropic"
 
+import { applyStickyUndeferredTools } from "~/lib/request/strategies/deferred-tool-retry"
 import { state } from "~/lib/state"
 
 import { modelSupportsToolSearch } from "./features"
@@ -187,15 +193,28 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
     }
   }
 
-  // Inject stubs for any missing Claude Code official tools
-  for (const name of CLAUDE_CODE_OFFICIAL_TOOLS) {
-    if (!existingNamesLower.has(name.toLowerCase())) {
-      const stub: Tool = {
-        name,
-        description: `Claude Code ${name} tool`,
-        input_schema: EMPTY_INPUT_SCHEMA,
+  // Inject stubs for any missing Claude Code official tools.
+  //
+  // Why this exists: Claude Code clients sometimes send a request where the
+  // tool_use blocks in message history reference tools that aren't present
+  // in the current `tools` array. Without stubs, the upstream rejects the
+  // request because the historical tool_use has no matching declaration.
+  //
+  // Why it's configurable: clients other than Claude Code (raw SDK callers,
+  // custom integrations) have no reason to receive 16 unused stub tools in
+  // every prompt — it wastes prompt budget and shapes model behavior toward
+  // tool-calling for a workload that may be plain Q&A. Operators disable via
+  // `anthropic.inject_claude_code_tools: false`.
+  if (state.injectClaudeCodeOfficialTools) {
+    for (const name of CLAUDE_CODE_OFFICIAL_TOOLS) {
+      if (!existingNamesLower.has(name.toLowerCase())) {
+        const stub: Tool = {
+          name,
+          description: `Claude Code ${name} tool`,
+          input_schema: EMPTY_INPUT_SCHEMA,
+        }
+        nonDeferred.push(stub)
       }
-      nonDeferred.push(stub)
     }
   }
 
@@ -255,24 +274,32 @@ export function preprocessTools(payload: MessagesPayload): MessagesPayload {
   const model = payload.model
   const messages = payload.messages
 
+  let processed: MessagesPayload
   if (tools && tools.length > 0) {
-    return { ...payload, tools: processToolPipeline(tools, model, messages) }
-  }
-
-  // No tools in request — but if tool search is enabled and history has tool_use
-  // references, we need stubs to satisfy API validation
-  if (modelSupportsToolSearch(model)) {
+    processed = { ...payload, tools: processToolPipeline(tools, model, messages) }
+  } else if (modelSupportsToolSearch(model)) {
+    // No tools in request — but if tool search is enabled and history has tool_use
+    // references, we need stubs to satisfy API validation
     const historyToolNames = collectHistoryToolNames(messages)
     if (historyToolNames.size > 0) {
       consola.debug(
         `[ToolPipeline] Injecting ${historyToolNames.size} tool stubs for`
           + ` history references (no tools in request): ${[...historyToolNames].join(", ")}`,
       )
-      return { ...payload, tools: buildHistoryToolStubs(historyToolNames) }
+      processed = { ...payload, tools: buildHistoryToolStubs(historyToolNames) }
+    } else {
+      processed = payload
     }
+  } else {
+    processed = payload
   }
 
-  return payload
+  // Apply persisted sticky-undefer decisions from prior `deferred-tool-retry` runs
+  const { payload: withSticky, affected } = applyStickyUndeferredTools(processed)
+  if (affected.length > 0) {
+    consola.debug(`[ToolPipeline] Applied sticky un-defer for ${model}: ${affected.join(", ")}`)
+  }
+  return withSticky
 }
 
 // ============================================================================

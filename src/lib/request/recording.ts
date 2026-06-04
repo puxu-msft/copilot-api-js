@@ -20,8 +20,10 @@ function mapAnthropicContentBlocks(acc: AnthropicStreamAccumulator): Array<unkno
     .filter((block) => {
       // Keep all non-text blocks (thinking, redacted_thinking, tool_use, etc.)
       if (block.type !== "text") return true
-      // Filter out empty/whitespace-only text blocks
-      return "text" in block && (block as { text: string }).text.trim() !== ""
+      // Defensive: a text block with no `text` property is malformed but
+      // possible if upstream streaming aborted mid-block. Treat it as empty.
+      if (!("text" in block)) return false
+      return (block as { text: string }).text.trim() !== ""
     })
     .map((block) => {
       // Generic (unknown) blocks are passed through as-is

@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue"
+import {
+ref,
+computed,
+onMounted,
+onUnmounted
+} from "vue";
 
 import type { MessageContent } from "@/types"
 
@@ -134,8 +139,8 @@ const rewrittenBlocks = computed(() => {
 })
 
 /** Whether the content actually differs (rewritten flag may be set but content identical) */
-const contentDiffers = computed(() =>
-  props.isRewritten && props.rewrittenMessage && originalText.value !== rewrittenText.value,
+const contentDiffers = computed(
+  () => props.isRewritten && props.rewrittenMessage && originalText.value !== rewrittenText.value,
 )
 
 /** Show toggle whenever rewritten data exists */
@@ -259,7 +264,6 @@ function openRaw(event: Event) {
           />
           Raw
         </button>
-
       </div>
     </div>
 

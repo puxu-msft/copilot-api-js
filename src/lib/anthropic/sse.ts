@@ -12,12 +12,25 @@ import consola from "consola"
 
 import type { StreamEvent } from "~/types/api/anthropic"
 
-import { ENDPOINT, isEndpointSupported } from "~/lib/models/endpoint"
+import {
+  //
+  ENDPOINT,
+  isEndpointSupported,
+} from "~/lib/models/endpoint"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { combineAbortSignals, raceIteratorNext, STREAM_ABORTED } from "~/lib/stream"
+import {
+  //
+  combineAbortSignals,
+  raceIteratorNext,
+  STREAM_ABORTED,
+} from "~/lib/stream"
 
-import { type AnthropicStreamAccumulator, accumulateAnthropicStreamEvent } from "./stream-accumulator"
+import {
+  //
+  type AnthropicStreamAccumulator,
+  accumulateAnthropicStreamEvent,
+} from "./stream-accumulator"
 
 // ============================================================================
 // API routing

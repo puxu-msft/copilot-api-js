@@ -1,6 +1,10 @@
 import type { Model } from "~/lib/models/client"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
-import type { ResponsesInputItem, ResponsesPayload } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesInputItem,
+  ResponsesPayload,
+} from "~/types/api/openai-responses"
 
 import { copilotHeaders } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
@@ -46,8 +50,8 @@ export function prepareResponsesRequest(
   const wire = payload
   const enableVision = hasVisionContent(wire.input)
   const isAgentCall =
-    Array.isArray(wire.input) &&
-    wire.input.some(
+    Array.isArray(wire.input)
+    && wire.input.some(
       (item) => item.role === "assistant" || item.type === "function_call" || item.type === "function_call_output",
     )
   const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
@@ -79,7 +83,12 @@ function hasVisionContent(input: string | Array<ResponsesInputItem>): boolean {
  * parameter to avoid model-specific detection heuristics.
  */
 function normalizeMaxTokens(payload: ChatCompletionsPayload): ChatCompletionsPayload {
-  if (payload.max_tokens == null && payload.max_completion_tokens == null) return payload
+  if (
+    (payload.max_tokens === undefined || payload.max_tokens === null)
+    && (payload.max_completion_tokens === undefined || payload.max_completion_tokens === null)
+  ) {
+    return payload
+  }
 
   const { max_tokens, ...rest } = payload
   return {

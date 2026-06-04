@@ -1,5 +1,6 @@
 /** TUI module exports */
 
+export { formatBillingLabel } from "./format"
 export { tuiMiddleware } from "./middleware"
 export { tuiLogger } from "./tracker"
 export type { RequestOutcome } from "./tracker"

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test"
+
 import { ensureServerRunning, uiUrl } from "./helpers"
 
 test.beforeAll(ensureServerRunning)
@@ -11,7 +12,10 @@ test.describe("Vuetify Models", () => {
     await page.waitForSelector(".model-card", { timeout: 15000 }).catch(() => {})
 
     const cardCount = await page.locator(".model-card").count()
-    const noModelsVisible = await page.getByText("No models found").isVisible().catch(() => false)
+    const noModelsVisible = await page
+      .getByText("No models found")
+      .isVisible()
+      .catch(() => false)
 
     if (!noModelsVisible) {
       expect(cardCount).toBeGreaterThan(0)

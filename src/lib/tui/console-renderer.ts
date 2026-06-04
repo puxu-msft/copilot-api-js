@@ -6,9 +6,22 @@
 import consola from "consola"
 import pc from "picocolors"
 
-import type { RequestUpdate, TuiLogEntry, TuiRenderer } from "./types"
+import type {
+  //
+  RequestUpdate,
+  TuiLogEntry,
+  TuiRenderer,
+} from "./types"
 
-import { formatBytes, formatDuration, formatStreamInfo, formatTime, formatTokens } from "./format"
+import {
+  //
+  formatBillingLabel,
+  formatBytes,
+  formatDuration,
+  formatStreamInfo,
+  formatTime,
+  formatTokens,
+} from "./format"
 
 // ANSI escape codes for cursor control
 const CLEAR_LINE = "\x1b[2K\r"
@@ -287,11 +300,11 @@ export class ConsoleRenderer implements TuiRenderer {
     let coloredModel = ""
     if (model) {
       coloredModel =
-        clientModel && clientModel !== model
-          ? ` ${pc.dim(clientModel)} → ${pc.magenta(model)}`
-          : pc.magenta(` ${model}`)
+        clientModel && clientModel !== model ?
+          ` ${pc.dim(clientModel)} → ${pc.magenta(model)}`
+        : pc.magenta(` ${model}`)
     }
-    const coloredMultiplier = multiplier !== undefined ? pc.dim(` (${multiplier}x)`) : ""
+    const coloredMultiplier = pc.dim(formatBillingLabel(multiplier))
     const coloredDuration = duration ? ` ${pc.yellow(duration)}` : ""
     const coloredQueueWait = queueWait ? ` ${pc.dim(`(queued ${queueWait})`)}` : ""
 

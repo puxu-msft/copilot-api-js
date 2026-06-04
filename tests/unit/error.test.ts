@@ -383,6 +383,36 @@ describe("classifyError", () => {
     expect(result.type).toBe("network_error")
     expect(result.message).toContain("cause: connection reset by remote host")
   })
+
+  // ─── aborts must NOT be classified as network_error ─────────────────────
+  // Previously `NETWORK_ERROR_PATTERNS` included "abort", which made any
+  // AbortSignal-triggered error (client cancel, shutdown, fetch timeout,
+  // internal watchdogs) trigger a network-retry. Aborts have opposite retry
+  // semantics — the caller no longer wants the result.
+
+  test("classifies AbortError (DOMException-shaped Error) as aborted", () => {
+    const error = new Error("The operation was aborted")
+    error.name = "AbortError"
+    expect(classifyError(error).type).toBe("aborted")
+  })
+
+  test("classifies AbortSignal.timeout TimeoutError as aborted", () => {
+    const error = new Error("The operation was aborted due to timeout")
+    error.name = "TimeoutError"
+    expect(classifyError(error).type).toBe("aborted")
+  })
+
+  test("classifies project-internal abort messages as aborted (not network_error)", () => {
+    expect(classifyError(new Error("Upstream WebSocket request aborted")).type).toBe("aborted")
+    expect(classifyError(new Error("Request aborted by client")).type).toBe("aborted")
+  })
+
+  test("aborted classification walks cause chain", () => {
+    const cause = new Error("operation aborted")
+    cause.name = "AbortError"
+    const wrapped = new Error("fetch wrapper", { cause })
+    expect(classifyError(wrapped).type).toBe("aborted")
+  })
 })
 
 // ─── formatErrorWithCause ───

@@ -1,6 +1,10 @@
 import { WebSocket } from "undici"
 
-import type { ResponsesPayload, ResponsesStreamEvent } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesPayload,
+  ResponsesStreamEvent,
+} from "~/types/api/openai-responses"
 
 import { copilotWsUrl } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
@@ -40,6 +44,8 @@ export interface UpstreamWsConnection {
   readonly statefulMarker: string | undefined
   readonly model: string
   readonly conversationId: string | undefined
+  /** Headers captured at handshake time — used for reuse-diff diagnostics */
+  readonly handshakeHeaders: Record<string, string>
   close(): void
 }
 
@@ -55,10 +61,30 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
   const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   let socket: WebSocketLike | null = null
   let busy = false
+  /**
+   * Synchronously marks the connection as unfit for reuse before the underlying
+   * socket close event lands. Set on parse error / async errors observed while
+   * the socket is technically still in OPEN state — a `findReusable` lookup
+   * in the same tick must not return it. `isOpen` consults this flag so the
+   * pool sees a single authoritative "available" signal.
+   */
+  let unusable = false
   let statefulMarker: string | undefined
   let currentQueue: AsyncQueue<ResponsesStreamEvent> | null = null
   let currentAbortCleanup: (() => void) | null = null
   let idleTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * In-flight handshake promise. Set when connect() starts, cleared when it
+   * settles (success or failure). A concurrent connect() call returns the same
+   * promise instead of throwing — this is the right primitive because a
+   * connection is meant to be acquired-then-used by a single caller, and any
+   * "did the handshake finish?" question deserves the same answer.
+   */
+  let connectingPromise: Promise<void> | null = null
+
+  const markUnusable = () => {
+    unusable = true
+  }
 
   const clearIdleTimer = () => {
     if (idleTimer) {
@@ -111,15 +137,34 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       }
     } catch (error) {
       failRequest(error instanceof Error ? error : new Error(String(error)))
+      // Parse error implies the upstream protocol state is dirty — the next frame
+      // is likely also malformed. Mark unusable synchronously so any same-tick
+      // findReusable() lookup ignores this connection, then drop the socket.
+      markUnusable()
+      socket?.close(CLOSE_CODE_GOING_AWAY, "Parse error")
     }
   }
 
   const handleError = () => {
-    if (!busy || !currentQueue) return
-    failRequest(new Error("Upstream WebSocket error"))
+    if (busy && currentQueue) {
+      failRequest(new Error("Upstream WebSocket error"))
+    }
+    // Even when idle, an error means the socket state is suspect. Mark unusable
+    // and actively close so the pool removes it now instead of waiting for the
+    // close event — that latency window is where stale connections leak into
+    // findReusable() and cause an extra fallback hop.
+    markUnusable()
+    socket?.close(CLOSE_CODE_GOING_AWAY, "Socket error")
   }
 
+  let closeHandled = false
   const handleClose = (event: Event) => {
+    // Defensive re-entry guard: some WS implementations dispatch close more than
+    // once (e.g. after an error). Reuse-of-stale-event would re-fire failRequest
+    // with a stale reason and re-trigger opts.onClose, masking the real cause.
+    if (closeHandled) return
+    closeHandled = true
+
     clearIdleTimer()
     socket?.removeEventListener("message", handleMessage)
     socket?.removeEventListener("error", handleError)
@@ -134,54 +179,78 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
   }
 
   return {
-    async connect(connectOpts) {
-      const existingSocket = socket
-      if (existingSocket && existingSocket.readyState === existingSocket.OPEN) return
-      if (existingSocket && existingSocket.readyState === existingSocket.CONNECTING) {
-        throw new Error("Upstream WebSocket is already connecting")
+    connect(connectOpts) {
+      // Already connected — fast path.
+      if (socket && socket.readyState === socket.OPEN) return Promise.resolve()
+
+      // Build (or join) the shared handshake promise. The shared promise itself
+      // is NOT bound to any single caller's abort signal: if caller A aborts,
+      // the underlying handshake still proceeds for caller B. Each caller then
+      // races the shared promise against its own signal locally below.
+      if (!connectingPromise) {
+        const ws = createSocket(copilotWsUrl(state), opts.headers)
+
+        connectingPromise = new Promise<void>((resolve, reject) => {
+          const cleanup = () => {
+            ws.removeEventListener("open", onOpen)
+            ws.removeEventListener("error", onOpenError)
+          }
+
+          const onOpen = () => {
+            cleanup()
+            // Only after a successful handshake do we (a) bind the long-lived
+            // lifecycle listeners and (b) promote `ws` to the module-level
+            // `socket`. A failed handshake leaves no shared state behind.
+            socket = ws
+            ws.addEventListener("message", handleMessage)
+            ws.addEventListener("error", handleError)
+            ws.addEventListener("close", handleClose)
+            scheduleIdleClose()
+            resolve()
+          }
+
+          const onOpenError = () => {
+            cleanup()
+            ws.close(CLOSE_CODE_GOING_AWAY, "Handshake failed")
+            reject(new Error("Upstream WebSocket handshake failed"))
+          }
+
+          ws.addEventListener("open", onOpen, { once: true })
+          ws.addEventListener("error", onOpenError, { once: true })
+        }).finally(() => {
+          connectingPromise = null
+        })
       }
 
-      const ws = createSocket(copilotWsUrl(state), opts.headers)
-      socket = ws
-      ws.addEventListener("message", handleMessage)
-      ws.addEventListener("error", handleError)
-      ws.addEventListener("close", handleClose)
+      const handshake = connectingPromise
+      const signal = connectOpts?.signal
+      if (!signal) return handshake
 
-      await new Promise<void>((resolve, reject) => {
-        const signal = connectOpts?.signal
-        const activeSocket = ws
-
-        const cleanup = () => {
-          activeSocket.removeEventListener("open", onOpen)
-          activeSocket.removeEventListener("error", onOpenError)
-          signal?.removeEventListener("abort", onAbort)
-        }
-
-        const onOpen = () => {
-          cleanup()
-          resolve()
-        }
-
-        const onOpenError = () => {
-          cleanup()
-          activeSocket.close(CLOSE_CODE_GOING_AWAY, "Handshake failed")
-          reject(new Error("Upstream WebSocket handshake failed"))
-        }
-
+      // Per-caller race: if THIS caller's signal aborts, they get an "aborted"
+      // rejection without affecting the shared handshake (other joined callers
+      // continue waiting for the real outcome).
+      return new Promise<void>((resolve, reject) => {
         const onAbort = () => {
-          cleanup()
-          activeSocket.close(CLOSE_CODE_GOING_AWAY, "Aborted")
+          signal.removeEventListener("abort", onAbort)
           reject(new Error("Upstream WebSocket connection aborted"))
         }
+        if (signal.aborted) {
+          reject(new Error("Upstream WebSocket connection aborted"))
+          return
+        }
+        signal.addEventListener("abort", onAbort, { once: true })
 
-        activeSocket.addEventListener("open", onOpen, { once: true })
-        activeSocket.addEventListener("error", onOpenError, { once: true })
-        signal?.addEventListener("abort", onAbort, { once: true })
-
-        if (signal?.aborted) onAbort()
+        handshake.then(
+          (value) => {
+            signal.removeEventListener("abort", onAbort)
+            resolve(value)
+          },
+          (error: unknown) => {
+            signal.removeEventListener("abort", onAbort)
+            reject(error as Error)
+          },
+        )
       })
-
-      scheduleIdleClose()
     },
 
     sendRequest(payload, requestOpts) {
@@ -213,6 +282,11 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         currentAbortCleanup()
         currentAbortCleanup = null
         failRequest(error instanceof Error ? error : new Error(String(error)))
+        // A send failure leaves the protocol in an indeterminate state. Mark
+        // the connection unusable synchronously so any same-tick reuse lookup
+        // skips it, then tear down the socket.
+        markUnusable()
+        socket.close(CLOSE_CODE_GOING_AWAY, "Send failed")
       }
 
       const queue = currentQueue
@@ -228,7 +302,10 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     },
 
     get isOpen() {
-      return socket !== null && socket.readyState === socket.OPEN
+      // `unusable` is the synchronous signal — see the field declaration for why.
+      // Without it, parse/send/error handlers race the close event and a same-tick
+      // findReusable() can hand out a connection that's already toast.
+      return !unusable && socket !== null && socket.readyState === socket.OPEN
     },
 
     get isBusy() {
@@ -247,9 +324,25 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       return opts.conversationId
     },
 
+    get handshakeHeaders() {
+      return opts.headers
+    },
+
     close() {
       clearIdleTimer()
-      socket?.close(CLOSE_CODE_GOING_AWAY, "Going away")
+      if (socket) {
+        // Has a live or closing socket — close it; handleClose will fire the
+        // onClose callback so the manager removes us from the pool.
+        socket.close(CLOSE_CODE_GOING_AWAY, "Going away")
+      } else if (!closeHandled) {
+        // No socket yet (handshake either in progress or never started) — we
+        // still need to inform the manager so a placeholder created via
+        // manager.create() does not linger in the pool forever. Mark as
+        // unusable so any racing reuse lookup skips us.
+        closeHandled = true
+        markUnusable()
+        opts.onClose?.()
+      }
     },
   }
 }

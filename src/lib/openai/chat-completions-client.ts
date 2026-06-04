@@ -5,13 +5,27 @@ import { events } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
-import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionsPayload,
+  ChatCompletionResponse,
+} from "~/types/api/openai-chat-completions"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal, captureHttpHeaders, sanitizeHeadersForHistory } from "~/lib/fetch-utils"
+import {
+  //
+  createFetchSignal,
+  captureHttpHeaders,
+  sanitizeHeadersForHistory,
+} from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
-import { prepareChatCompletionsRequest, type PreparedOpenAIRequest } from "./request-preparation"
+
+import {
+  //
+  prepareChatCompletionsRequest,
+  type PreparedOpenAIRequest,
+} from "./request-preparation"
 
 interface CreateChatCompletionsOptions {
   resolvedModel?: Model

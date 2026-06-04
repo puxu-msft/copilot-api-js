@@ -2,7 +2,11 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 
 import consola from "consola"
-import { SSEStreamingApi, streamSSE } from "hono/streaming"
+import {
+  //
+  SSEStreamingApi,
+  streamSSE,
+} from "hono/streaming"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { HeadersCapture } from "~/lib/context/request"
@@ -10,6 +14,7 @@ import type { MessageContent } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
 import type {
+  //
   ChatCompletionChunk,
   ChatCompletionResponse,
   ChatCompletionsPayload,
@@ -22,9 +27,15 @@ import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
-import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
+import {
+  //
+  ENDPOINT,
+  isEndpointSupported,
+  isResponsesSupported,
+} from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import {
+  //
   autoTruncateOpenAI,
   createTruncationResponseMarkerOpenAI,
   type OpenAIAutoTruncateResult,
@@ -32,31 +43,73 @@ import {
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import { createResponses } from "~/lib/openai/responses-client"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
-import { createOpenAIStreamAccumulator, accumulateOpenAIStreamEvent } from "~/lib/openai/stream-accumulator"
 import {
+  //
+  createOpenAIStreamAccumulator,
+  accumulateOpenAIStreamEvent,
+} from "~/lib/openai/stream-accumulator"
+import {
+  //
   createStreamTranslator,
   translateChatCompletionsToResponses,
   translateResponsesResponseToCC,
   translateResponsesStream,
 } from "~/lib/openai/translate"
-import { buildOpenAIResponseData, isNonStreaming, logPayloadSizeInfo } from "~/lib/request"
-import { executeRequestPipeline, type RetryStrategy } from "~/lib/request/pipeline"
-import { createAutoTruncateStrategy, type TruncateResult } from "~/lib/request/strategies/auto-truncate"
+import {
+  //
+  buildOpenAIResponseData,
+  isNonStreaming,
+  logPayloadSizeInfo,
+} from "~/lib/request"
+import {
+  //
+  executeRequestPipeline,
+  type RetryStrategy,
+} from "~/lib/request/pipeline"
+import {
+  //
+  createAutoTruncateStrategy,
+  type TruncateResult,
+} from "~/lib/request/strategies/auto-truncate"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIteratorNext } from "~/lib/stream"
+import {
+  //
+  STREAM_ABORTED,
+  StreamIdleTimeoutError,
+  combineAbortSignals,
+  raceIteratorNext,
+} from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
-import { extractInputItems, normalizeCallIds } from "~/routes/responses/pipeline"
+import {
+  //
+  extractInputItems,
+  normalizeCallIds,
+} from "~/routes/responses/pipeline"
 
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 export async function handleChatCompletion(c: Context) {
   const originalPayload =
     (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
+
+  // Snapshot the inbound payload BEFORE any mutation so the recorded
+  // "original" reflects what the client actually sent — handlers below
+  // rewrite model / messages in place. Without this snapshot the history
+  // view would show a half-processed payload as the user's raw input.
+  const originalSnapshot = structuredClone(originalPayload)
+
+  // Azure deployment routes pass the deployment-name as an explicit override
+  // instead of mutating body.model. Apply AFTER snapshotting so history sees
+  // the client's raw body and the protocol contract still holds (path wins).
+  const azureModelOverride = c.get("azureModelOverride") as string | undefined
+  if (azureModelOverride !== undefined) {
+    originalPayload.model = azureModelOverride
+  }
 
   // Resolve model name aliases and date-suffixed versions
   const clientModel = originalPayload.model
@@ -86,13 +139,13 @@ export async function handleChatCompletion(c: Context) {
   reqCtx.setOriginalRequest({
     // Use client's original model name (before resolution/overrides)
     model: clientModel,
-    messages: originalPayload.messages as unknown as Array<MessageContent>,
-    stream: originalPayload.stream ?? false,
-    tools: originalPayload.tools?.map((t) => ({
+    messages: originalSnapshot.messages as unknown as Array<MessageContent>,
+    stream: originalSnapshot.stream ?? false,
+    tools: originalSnapshot.tools?.map((t) => ({
       name: t.function.name,
       description: t.function.description,
     })),
-    payload: originalPayload,
+    payload: originalSnapshot,
   })
   reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
 
@@ -109,12 +162,13 @@ export async function handleChatCompletion(c: Context) {
 
   // Auto-fill max output tokens if neither max_tokens nor max_completion_tokens is provided
   const hasMaxTokens = !isNullish(sanitizedPayload.max_tokens) || !isNullish(sanitizedPayload.max_completion_tokens)
-  const finalPayload = hasMaxTokens
-    ? sanitizedPayload
-    : {
+  const finalPayload =
+    hasMaxTokens ? sanitizedPayload : (
+      {
         ...sanitizedPayload,
         max_completion_tokens: selectedModel?.capabilities?.limits?.max_output_tokens,
       }
+    )
 
   if (!hasMaxTokens) {
     consola.debug("Set max_completion_tokens to:", JSON.stringify(finalPayload.max_completion_tokens))
@@ -168,7 +222,12 @@ async function executeRequest(opts: ExecuteRequestOptions) {
   const adapter: FormatAdapter<ChatCompletionsPayload> = {
     format: "openai-chat-completions",
     sanitize: (p) => sanitizeOpenAIMessages(p),
-    execute: (p) =>
+    // `_hints` is the PrepareHints bag forwarded by the pipeline from the
+    // previous retry attempt. The chat-completions request preparation does
+    // not yet consume hints; the argument is accepted (and ignored) so any
+    // future hints-producing strategy explicitly documents what it expects
+    // to land here. See lib/request/pipeline.ts PrepareHints docstring.
+    execute: (p, _hints) =>
       executeWithAdaptiveRateLimit(() =>
         createChatCompletions(p, {
           resolvedModel: selectedModel,
@@ -207,7 +266,11 @@ async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
   const adapter: FormatAdapter<ChatCompletionsPayload> = {
     format: "openai-chat-completions",
     sanitize: (p) => sanitizeOpenAIMessages(p),
-    execute: async (ccPayload) => {
+    execute: async (ccPayload, _hints) => {
+      // `_hints`: see PrepareHints in lib/request/pipeline.ts. The cc-as-
+      // responses bridge does not yet consume hints; future strategies that
+      // produce hints for this path must update both this adapter and the
+      // downstream responses preparation.
       const { payload: responsesPayload, droppedParams } = translateChatCompletionsToResponses(ccPayload)
       if (droppedParams.length > 0) {
         recordDroppedCcParamsWarning(reqCtx, ccPayload.model, droppedParams)

@@ -64,7 +64,7 @@ function formatTickLabel(timestamp: number): string {
         :title="`${formatTickLabel(bar.timestamp)} · ${bar.count}`"
       >
         <div
-        class="timeline-bar-fill"
+          class="timeline-bar-fill"
           :style="{ height: `${bar.height}px`, background: color || undefined }"
         />
       </div>

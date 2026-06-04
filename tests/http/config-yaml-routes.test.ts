@@ -95,18 +95,18 @@ shutdown:
   abort_wait: 34
 history:
   limit: 20
-  min_entries: 10
+  reaper_interval: 120
 anthropic:
   strip_server_tools: true
   dedup_tool_calls: result
-  immutable_thinking_messages: true
+  thinking_block_message_policy: immutable
   strip_read_tool_result_tags: true
   context_editing: clear-both
   context_editing_trigger: 200000
   context_editing_keep_tools: 4
   context_editing_keep_thinking: 2
   tool_search: false
-  auto_cache_control: false
+  cache_control: disabled
   non_deferred_tools:
     - custom_tool
     - second_tool
@@ -150,19 +150,19 @@ system_prompt_append: "append"
       },
       history: {
         limit: 20,
-        min_entries: 10,
+        reaper_interval: 120,
       },
       anthropic: {
         strip_server_tools: true,
         dedup_tool_calls: "result",
-        immutable_thinking_messages: true,
+        thinking_block_message_policy: "immutable",
         strip_read_tool_result_tags: true,
         context_editing: "clear-both",
         context_editing_trigger: 200000,
         context_editing_keep_tools: 4,
         context_editing_keep_thinking: 2,
         tool_search: false,
-        auto_cache_control: false,
+        cache_control: "disabled",
         non_deferred_tools: ["custom_tool", "second_tool"],
         rewrite_system_reminders: [
           {
@@ -418,19 +418,19 @@ fetch_timeout: 600
       },
       history: {
         limit: 20,
-        min_entries: 10,
+        reaper_interval: 120,
       },
       anthropic: {
         strip_server_tools: true,
         dedup_tool_calls: "result",
-        immutable_thinking_messages: true,
+        thinking_block_message_policy: "immutable",
         strip_read_tool_result_tags: true,
         context_editing: "clear-both",
         context_editing_trigger: 200000,
         context_editing_keep_tools: 4,
         context_editing_keep_thinking: 2,
         tool_search: false,
-        auto_cache_control: false,
+        cache_control: "disabled",
         non_deferred_tools: ["custom_tool", "second_tool"],
         rewrite_system_reminders: [
           {
@@ -496,7 +496,7 @@ fetch_timeout: 600
     expect(state.shutdownGracefulWait).toBe(12)
     expect(state.shutdownAbortWait).toBe(34)
     expect(state.historyLimit).toBe(20)
-    expect(state.historyMinEntries).toBe(10)
+    expect(state.historyReaperInterval).toBe(120)
     expect(state.stripServerTools).toBe(true)
     expect(state.contextEditingMode).toBe("clear-both")
     expect(state.contextEditingTrigger).toBe(200000)

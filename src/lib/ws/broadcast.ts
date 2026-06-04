@@ -15,7 +15,11 @@ import type { UpgradeWebSocket } from "hono/ws"
 
 import consola from "consola"
 
-import type { EntrySummary, HistoryStats } from "../history/store"
+import type {
+  //
+  EntrySummary,
+  HistoryStats,
+} from "../history/store"
 
 // ============================================================================
 // Types
@@ -134,6 +138,49 @@ export function handleClientMessage(ws: WebSocket, data: string): void {
 // ============================================================================
 
 /**
+ * Send `data` to every client matching `shouldSend` and split the result into
+ * `delivered` (send returned without error and socket is OPEN) and `dead`
+ * (closed or threw). Mutating `clients` mid-iteration works in current V8 but
+ * reads as a foot-gun — collecting first is the safer pattern.
+ */
+function sendToEach(
+  data: string,
+  shouldSend: (client: WSClient) => boolean,
+): { delivered: Array<WebSocket>; dead: Array<WebSocket> } {
+  const delivered: Array<WebSocket> = []
+  const dead: Array<WebSocket> = []
+  for (const [rawWs, client] of clients) {
+    if (!shouldSend(client)) continue
+    try {
+      if (rawWs.readyState === WebSocket.OPEN) {
+        rawWs.send(data)
+        delivered.push(rawWs)
+      } else {
+        dead.push(rawWs)
+      }
+    } catch (error) {
+      consola.debug("WebSocket send failed, removing client:", error)
+      dead.push(rawWs)
+    }
+  }
+  return { delivered, dead }
+}
+
+function dropClients(dead: ReadonlyArray<WebSocket>): void {
+  for (const ws of dead) clients.delete(ws)
+}
+
+/**
+ * Read a WebSocket's `bufferedAmount` defensively. The field is part of the
+ * standard interface but absent from some adapter typings — we centralize the
+ * cast here so callers stay readable.
+ */
+function getBufferedAmount(ws: WebSocket): number {
+  const amount = (ws as unknown as { bufferedAmount?: number }).bufferedAmount
+  return typeof amount === "number" ? amount : 0
+}
+
+/**
  * Broadcast a message to clients subscribed to a specific topic.
  *
  * - Clients with no subscriptions (empty topics) receive the message (wildcard).
@@ -142,24 +189,9 @@ export function handleClientMessage(ws: WebSocket, data: string): void {
  */
 export function broadcast(message: WSMessage, topic: WSTopic): void {
   if (clients.size === 0) return
-
   const data = JSON.stringify(message)
-  for (const [rawWs, client] of clients) {
-    // Skip clients that have explicit subscriptions but not this topic
-    if (client.topics.size > 0 && !client.topics.has(topic)) continue
-
-    try {
-      if (rawWs.readyState === WebSocket.OPEN) {
-        rawWs.send(data)
-      } else {
-        // Remove clients that are no longer open (CLOSING, CLOSED)
-        clients.delete(rawWs)
-      }
-    } catch (error) {
-      consola.debug("WebSocket send failed, removing client:", error)
-      clients.delete(rawWs)
-    }
-  }
+  const { dead } = sendToEach(data, (client) => client.topics.size === 0 || client.topics.has(topic))
+  dropClients(dead)
 }
 
 /**
@@ -168,20 +200,59 @@ export function broadcast(message: WSMessage, topic: WSTopic): void {
  */
 export function broadcastAlways(message: WSMessage): void {
   if (clients.size === 0) return
+  const data = JSON.stringify(message)
+  const { dead } = sendToEach(data, () => true)
+  dropClients(dead)
+}
+
+/**
+ * Broadcast and wait until every client's TCP write buffer drains (or a
+ * deadline elapses). Use this for shutdown phase transitions where we MUST
+ * guarantee the frame leaves the box before the socket is force-closed —
+ * `broadcast()` only enqueues, and a subsequent `ws.close(force=true)` can
+ * truncate the queued frame.
+ *
+ * Returns the count of clients whose buffer was still non-zero at deadline
+ * (i.e. likely truncated). Caller can use this for diagnostics.
+ *
+ * Algorithm: poll `bufferedAmount` per client every `pollMs` until all reach 0
+ * or `deadlineMs` elapses. We do NOT block on a single slow client — once the
+ * deadline hits we return whatever clients are still buffering.
+ */
+export async function broadcastAndFlush(
+  message: WSMessage,
+  topic: WSTopic | "*",
+  opts?: { deadlineMs?: number; pollMs?: number },
+): Promise<{ stillBuffering: number }> {
+  const deadlineMs = opts?.deadlineMs ?? 500
+  const pollMs = opts?.pollMs ?? 10
+
+  if (clients.size === 0) return { stillBuffering: 0 }
 
   const data = JSON.stringify(message)
-  for (const [rawWs] of clients) {
-    try {
-      if (rawWs.readyState === WebSocket.OPEN) {
-        rawWs.send(data)
-      } else {
-        clients.delete(rawWs)
-      }
-    } catch (error) {
-      consola.debug("WebSocket send failed, removing client:", error)
-      clients.delete(rawWs)
-    }
+  const shouldSend =
+    topic === "*" ? () => true : (client: WSClient) => client.topics.size === 0 || client.topics.has(topic)
+
+  const { delivered, dead } = sendToEach(data, shouldSend)
+  dropClients(dead)
+
+  // Poll bufferedAmount until drained or deadline.
+  const start = Date.now()
+  while (Date.now() - start < deadlineMs) {
+    const stillBuffering = delivered.filter((ws) => getBufferedAmount(ws) > 0)
+    if (stillBuffering.length === 0) return { stillBuffering: 0 }
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, pollMs)
+      ;(timer as unknown as { unref: () => void }).unref()
+    })
   }
+
+  const stillBuffering = delivered.filter((ws) => getBufferedAmount(ws) > 0).length
+
+  if (stillBuffering > 0) {
+    consola.warn(`[WS] broadcastAndFlush deadline ${deadlineMs}ms hit with ${stillBuffering} client(s) still buffering`)
+  }
+  return { stillBuffering }
 }
 
 // ============================================================================
@@ -304,6 +375,26 @@ export function notifyShutdownPhaseChanged(data: unknown): void {
   )
 }
 
+/**
+ * Like `notifyShutdownPhaseChanged` but waits until every status-subscribed
+ * client's TCP buffer drains. Use this when the next step will force-close
+ * sockets and we MUST guarantee the phase frame leaves the box.
+ */
+export function notifyShutdownPhaseChangedAndFlush(
+  data: unknown,
+  opts?: { deadlineMs?: number },
+): Promise<{ stillBuffering: number }> {
+  return broadcastAndFlush(
+    {
+      type: "shutdown_phase_changed",
+      data,
+      timestamp: Date.now(),
+    },
+    "status",
+    opts,
+  )
+}
+
 // ============================================================================
 // WebSocket route registration
 // ============================================================================
@@ -327,7 +418,23 @@ export function initWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocket<any>): 
         removeClient(ws.raw as unknown as WebSocket)
       },
       onMessage(event, ws) {
-        const raw = typeof event.data === "string" ? event.data : String(event.data)
+        // event.data is string | Buffer | ArrayBuffer | Blob (per the WS event spec);
+        // the client protocol is JSON text, so decode binary frames as UTF-8 rather
+        // than calling String() (which would yield "[object Object]" for Buffer).
+        // Blob shouldn't occur on the server side (Bun/Node WS yields Buffer/ArrayBuffer)
+        // but we defensively drop it rather than feed garbage to JSON.parse.
+        let raw: string
+        if (typeof event.data === "string") {
+          raw = event.data
+        } else if (event.data instanceof ArrayBuffer) {
+          raw = new TextDecoder().decode(event.data)
+        } else if (ArrayBuffer.isView(event.data) && !(event.data instanceof SharedArrayBuffer)) {
+          // Buffer / Uint8Array / etc. — but exclude SharedArrayBuffer which TextDecoder rejects.
+          // Cast to BufferSource to satisfy strict TextDecoder typings across runtimes.
+          raw = new TextDecoder().decode(event.data as unknown as Uint8Array)
+        } else {
+          return
+        }
         handleClientMessage(ws.raw as unknown as WebSocket, raw)
       },
       onError(event, ws) {

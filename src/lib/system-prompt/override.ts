@@ -6,10 +6,18 @@
  */
 
 import type { TextBlockParam } from "~/types/api/anthropic"
-import type { ContentPart, Message } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ContentPart,
+  Message,
+} from "~/types/api/openai-chat-completions"
 
 import { applyConfigToState } from "../config/config"
-import { state, type CompiledRewriteRule } from "../state"
+import {
+  //
+  state,
+  type CompiledRewriteRule,
+} from "../state"
 
 /**
  * Apply overrides to a text block.

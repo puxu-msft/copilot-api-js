@@ -1,10 +1,19 @@
-import { computed, type ComputedRef, type Ref } from "vue"
+import {
+computed,
+type ComputedRef,
+type Ref
+} from "vue";
 
-import type { ContentBlock, HistoryEntry, MessageContent } from "@/types"
+import type {
+ContentBlock,
+HistoryEntry,
+MessageContent
+} from "@/types";
 
-import { usePipelineInfo } from "./usePipelineInfo"
-import { useDetailViewState } from "./useDetailViewState"
 import { isToolResultBlock, isToolUseBlock } from "@/utils/typeGuards"
+
+import { useDetailViewState } from "./useDetailViewState"
+import { usePipelineInfo } from "./usePipelineInfo"
 
 export interface DetailOrchestration {
   // Pipeline info (delegated)

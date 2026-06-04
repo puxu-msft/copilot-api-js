@@ -4,19 +4,31 @@
  * Re-exports all history-related types and functions.
  */
 
-// Memory pressure monitor
-export { startMemoryPressureMonitor, stopMemoryPressureMonitor } from "./memory-pressure"
+// WebSocket
+export {
+  addClient,
+  closeAllClients,
+  getClientCount,
+  notifyEntryAdded,
+  notifyEntryUpdated,
+  notifyHistoryCleared,
+  notifySessionDeleted,
+  notifyStatsUpdated,
+  removeClient,
+} from "../ws"
 
+export type { WSMessage, WSMessageType } from "../ws"
 // Store (persistence and query)
 export {
   clearHistory,
   deleteSession,
-  evictOldestEntries,
   exportHistory,
+  finalizeEntry,
   getCurrentSession,
   getEntry,
   getHistory,
   getHistorySummaries,
+  getInFlightEntry,
   getSession,
   getSessionEntries,
   getSessionIdFromHeaders,
@@ -27,9 +39,12 @@ export {
   initHistory,
   insertEntry,
   isHistoryEnabled,
+  listInFlightEntries,
+  listInFlightSummaries,
   registerResponseSession,
   resolveResponseSessionId,
   setHistoryMaxEntries,
+  shutdownHistory,
   updateEntry,
 } from "./store"
 
@@ -70,17 +85,3 @@ export type {
   UsageData,
   WebSearchToolResultContentBlock,
 } from "./store"
-// WebSocket
-export {
-  addClient,
-  closeAllClients,
-  getClientCount,
-  notifyEntryAdded,
-  notifyEntryUpdated,
-  notifyHistoryCleared,
-  notifySessionDeleted,
-  notifyStatsUpdated,
-  removeClient,
-} from "../ws"
-
-export type { WSMessage, WSMessageType } from "../ws"

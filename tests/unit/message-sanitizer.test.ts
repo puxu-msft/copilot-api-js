@@ -19,12 +19,12 @@ import {
   getOpenAIToolCallIds,
   getOpenAIToolResultIds,
 } from "~/lib/openai/orphan-filter"
+import { state, setStateForTests } from "~/lib/state"
 import {
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,
 } from "~/lib/system-prompt"
-import { state, setStateForTests } from "~/lib/state"
 
 let originalPolicy: typeof state.thinkingBlockMessagePolicy
 
@@ -1620,11 +1620,7 @@ describe("Server Tool Use Support", () => {
       }
 
       const payload = makePayload(
-        [
-          { role: "user", content: "hello" },
-          immutableAssistant,
-          { role: "user", content: "continue" },
-        ],
+        [{ role: "user", content: "hello" }, immutableAssistant, { role: "user", content: "continue" }],
         [{ name: "Bash" }],
       )
 
