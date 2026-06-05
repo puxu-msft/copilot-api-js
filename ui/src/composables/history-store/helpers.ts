@@ -1,4 +1,10 @@
-import type { ContentBlock, EntrySummary, HistoryEntry, MessageContent } from "@/types"
+import type {
+  //
+  ContentBlock,
+  EntrySummary,
+  HistoryEntry,
+  MessageContent,
+} from "@/types"
 
 export function getPreviewText(entry: HistoryEntry): string {
   const messages = entry.request.messages ?? []

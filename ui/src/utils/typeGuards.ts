@@ -1,4 +1,5 @@
 import type {
+  //
   ContentBlock,
   MessageContent,
   TextContentBlock,
@@ -64,7 +65,7 @@ export function normalizeToContentBlocks(msg: MessageContent): Array<ContentBloc
         type: "tool_result",
         tool_use_id: msg.tool_call_id,
         content: resultContent,
-      } as ToolResultContentBlock,
+      },
     ]
   }
 
@@ -73,7 +74,7 @@ export function normalizeToContentBlocks(msg: MessageContent): Array<ContentBloc
   // Handle content field
   if (typeof msg.content === "string") {
     if (msg.content) {
-      blocks.push({ type: "text", text: msg.content } as TextContentBlock)
+      blocks.push({ type: "text", text: msg.content })
     }
   } else if (Array.isArray(msg.content)) {
     blocks.push(...msg.content)
@@ -93,7 +94,7 @@ export function normalizeToContentBlocks(msg: MessageContent): Array<ContentBloc
         id: tc.id,
         name: tc.function.name,
         input,
-      } as ToolUseContentBlock)
+      })
     }
   }
 

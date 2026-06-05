@@ -1,5 +1,9 @@
 import { PATHS } from "~/lib/config/paths"
-import { state } from "~/lib/state"
+import {
+  //
+  onHistoryLimitChange,
+  state,
+} from "~/lib/state"
 
 import { clearInFlight } from "./in-flight"
 import {
@@ -14,6 +18,7 @@ import {
 } from "./sqlite/reaper"
 
 let enabled = false
+let unsubscribeHistoryLimit: (() => void) | undefined
 
 export const historyState = {
   get enabled(): boolean {
@@ -32,9 +37,16 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   const dbPath = state.historyDbPath || PATHS.HISTORY_DB
   openDatabase(dbPath)
   startReaper(state.historyLimit, state.historyReaperInterval)
+  // Subscribe to live limit changes from config hot-reload.
+  // `onHistoryLimitChange` invokes the listener synchronously once with the
+  // current value, so we don't miss any reset that happened before this point.
+  unsubscribeHistoryLimit?.()
+  unsubscribeHistoryLimit = onHistoryLimitChange(setHistoryMaxEntries)
 }
 
 export function shutdownHistory(): void {
+  unsubscribeHistoryLimit?.()
+  unsubscribeHistoryLimit = undefined
   stopReaper()
   closeDatabase()
   enabled = false

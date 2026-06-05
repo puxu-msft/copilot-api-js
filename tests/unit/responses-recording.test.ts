@@ -3,7 +3,12 @@
  * accumulator into the unified ResponseData format for history recording.
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
 import { buildResponsesResponseData } from "~/lib/request/recording"
@@ -235,5 +240,25 @@ describe("buildResponsesResponseData", () => {
       output_tokens_details: { reasoning_tokens: 80 },
       cache_read_input_tokens: 150,
     })
+  })
+
+  // ── responseId propagation (Task A) ──
+
+  test("includes responseId from accumulator when present", () => {
+    const acc = createResponsesStreamAccumulator()
+    acc.model = "gpt-4o"
+    acc.responseId = "resp_abc123"
+    acc.contentParts.push("hi")
+
+    const result = buildResponsesResponseData(acc, "fallback")
+    expect(result.responseId).toBe("resp_abc123")
+  })
+
+  test("omits responseId when accumulator value is empty", () => {
+    const acc = createResponsesStreamAccumulator()
+    acc.contentParts.push("hi")
+
+    const result = buildResponsesResponseData(acc, "model")
+    expect(result.responseId).toBeUndefined()
   })
 })

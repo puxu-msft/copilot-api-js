@@ -1,7 +1,22 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import { Agent, ProxyAgent } from "undici"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
+import {
+  //
+  Agent,
+  ProxyAgent,
+} from "undici"
 
-import { createDispatcherForUrl, formatProxyDisplay, initProxy } from "~/lib/proxy"
+import {
+  //
+  createDispatcherForUrl,
+  formatProxyDisplay,
+  initProxy,
+} from "~/lib/proxy"
 
 const originalHttpProxy = process.env.HTTP_PROXY
 const originalHttpsProxy = process.env.HTTPS_PROXY

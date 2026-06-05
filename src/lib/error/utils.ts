@@ -1,3 +1,5 @@
+import { HTTPError } from "./http-error"
+
 /**
  * Parse the `Retry-After` HTTP response header.
  * Supports both formats per RFC 7231:
@@ -51,23 +53,22 @@ export function formatErrorWithCause(error: Error): string {
 
 /** Extract error message with fallback. For HTTPError, extracts the actual API error response. */
 export function getErrorMessage(error: unknown, fallback = "Unknown error"): string {
-  if (error instanceof Error) {
-    if ("responseText" in error && typeof (error as { responseText: unknown }).responseText === "string") {
-      const responseText = (error as { responseText: string }).responseText
-      const status = "status" in error ? (error as { status: number }).status : undefined
-      try {
-        const parsed = JSON.parse(responseText) as { error?: { message?: string; type?: string } }
-        if (parsed.error?.message) {
-          return status ? `HTTP ${status}: ${parsed.error.message}` : parsed.error.message
-        }
-      } catch {
-        if (responseText.length > 0 && responseText.length < 500) {
-          return status ? `HTTP ${status}: ${responseText}` : responseText
-        }
+  if (error instanceof HTTPError) {
+    const { responseText, status } = error
+    try {
+      const parsed = JSON.parse(responseText) as { error?: { message?: string; type?: string } }
+      if (parsed.error?.message) {
+        return `HTTP ${status}: ${parsed.error.message}`
       }
-      return status ? `HTTP ${status}: ${error.message}` : error.message
+    } catch {
+      if (responseText.length > 0 && responseText.length < 500) {
+        return `HTTP ${status}: ${responseText}`
+      }
     }
+    return `HTTP ${status}: ${error.message}`
+  }
 
+  if (error instanceof Error) {
     return formatErrorWithCause(error)
   }
 

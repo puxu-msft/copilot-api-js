@@ -13,15 +13,25 @@ import { chatCompletionRoutes } from "./chat-completions/route"
 import { configRoutes } from "./config/route"
 import { embeddingsRoutes } from "./embeddings/route"
 import { eventLoggingRoutes } from "./event-logging/route"
+import { geminiRoutes } from "./gemini/route"
 import { historyRoutes } from "./history/route"
 import { logsRoutes } from "./logs/route"
 import { messagesRoutes } from "./messages/route"
-import { modelsRoutes, internalModelsRoutes } from "./models/route"
+import {
+  //
+  anthropicModelsRoutes,
+  internalModelsRoutes,
+  modelsRoutes,
+} from "./models/route"
 import { responsesRoutes } from "./responses/route"
 import { initResponsesWebSocket } from "./responses/ws"
 import { statusRoutes } from "./status/route"
 import { tokenRoutes } from "./token/route"
-import { type UiRoutesOptions, createUiRoutes } from "./ui/route"
+import {
+  //
+  type UiRoutesOptions,
+  createUiRoutes,
+} from "./ui/route"
 
 /**
  * Register all HTTP routes on the given Hono app.
@@ -52,7 +62,14 @@ export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
 
   // Anthropic-compatible endpoints
   app.route("/v1/messages", messagesRoutes)
+  app.route("/anthropic/v1/messages", messagesRoutes)
+  app.route("/anthropic/v1/models", anthropicModelsRoutes)
   app.route("/api/event_logging", eventLoggingRoutes)
+
+  // Google Gemini-compatible endpoints
+  // POST /v1beta/models/<model>:<method> where method ∈
+  // generateContent | streamGenerateContent | countTokens
+  app.route("/v1beta", geminiRoutes)
 
   // Management API
   app.route("/api/status", statusRoutes)

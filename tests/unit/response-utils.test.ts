@@ -5,11 +5,21 @@
  * Tests: isNonStreaming, safeParseJson, prependMarkerToResponse
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
-import { isNonStreaming, prependMarkerToResponse, safeParseJson } from "~/lib/request/response"
+import {
+  //
+  isNonStreaming,
+  prependMarkerToResponse,
+  safeParseJson,
+} from "~/lib/request/response"
 
 describe("isNonStreaming", () => {
   test("returns true for response with choices property", () => {
@@ -47,8 +57,23 @@ describe("safeParseJson", () => {
     expect(safeParseJson(input)).toBe(input)
   })
 
-  test("returns an empty object for invalid JSON strings", () => {
-    expect(safeParseJson("{ nope")).toEqual({})
+  test("preserves the raw input as a marker object for invalid JSON strings", () => {
+    expect(safeParseJson("{ nope")).toEqual({ _parseError: true, _rawInput: "{ nope" })
+  })
+
+  test("preserves partial JSON from aborted tool_use streams", () => {
+    const partial = '{"path": "/tmp/foo", "content": "hello wo'
+    expect(safeParseJson(partial)).toEqual({ _parseError: true, _rawInput: partial })
+  })
+
+  test("preserves long realistic Write-tool partial truncated inside a string value", () => {
+    const partial = '{"file_path":"/home/user/some/long/path","content":"function foo() {'
+    expect(safeParseJson(partial)).toEqual({ _parseError: true, _rawInput: partial })
+  })
+
+  test("preserves partial truncated inside an array value", () => {
+    const partial = '{"command":"ls","args":["a","b'
+    expect(safeParseJson(partial)).toEqual({ _parseError: true, _rawInput: partial })
   })
 })
 

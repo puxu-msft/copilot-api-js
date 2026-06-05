@@ -3,7 +3,12 @@
  * Tests the pattern used by handlers to gracefully stop streaming on shutdown.
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import { createFakeStream } from "../helpers/fake-stream"
 

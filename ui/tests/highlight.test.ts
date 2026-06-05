@@ -4,7 +4,12 @@
  * The composable takes text + searchQuery refs and returns displayHtml computed.
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 import { ref } from "vue"
 
 import { useHighlightHtml } from "../src/composables/useHighlightHtml"

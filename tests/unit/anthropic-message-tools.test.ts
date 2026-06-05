@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import type { MessagesPayload, Tool } from "~/types/api/anthropic"
+import type {
+  //
+  MessagesPayload,
+  Tool,
+} from "~/types/api/anthropic"
 
 import { preprocessTools } from "~/lib/anthropic/message-tools"
 

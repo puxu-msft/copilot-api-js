@@ -21,7 +21,6 @@ import type {
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
-import { closeAllClients } from "~/lib/history"
 import {
   //
   type StateSnapshot,
@@ -30,6 +29,7 @@ import {
   setStateForTests,
   snapshotStateForTests,
 } from "~/lib/state"
+import { closeAllClients } from "~/lib/ws"
 
 import { mockModel } from "../helpers/factories"
 import {

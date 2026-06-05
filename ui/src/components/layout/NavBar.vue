@@ -1,6 +1,14 @@
 <script setup lang="ts">
-import { inject, computed } from "vue"
-import { useRoute, useRouter } from "vue-router"
+import {
+  //
+  inject,
+  computed,
+} from "vue"
+import {
+  //
+  useRoute,
+  useRouter,
+} from "vue-router"
 
 import type { AppThemeController } from "@/composables/useAppTheme"
 

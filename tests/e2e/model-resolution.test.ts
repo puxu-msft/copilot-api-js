@@ -5,14 +5,29 @@
  * are correctly resolved to available models.
  */
 
-import { describe, test, expect, beforeAll } from "bun:test"
+import {
+  //
+  describe,
+  test,
+  expect,
+  beforeAll,
+} from "bun:test"
 
 import { getModels } from "~/lib/models/client"
 import { resolveModelName } from "~/lib/models/resolver"
-import { setModels, setStateForTests, state } from "~/lib/state"
+import {
+  //
+  setModels,
+  setStateForTests,
+  state,
+} from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
-import { getE2EMode, getGitHubToken } from "./config"
+import {
+  //
+  getE2EMode,
+  getGitHubToken,
+} from "./config"
 
 const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 

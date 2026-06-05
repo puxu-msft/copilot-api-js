@@ -1,6 +1,6 @@
 import type { HeadersCapture } from "~/lib/context/request"
 
-import { state } from "~/lib/state"
+import { state } from "./state"
 
 const SENSITIVE_HEADER_NAMES = new Set([
   "authorization",

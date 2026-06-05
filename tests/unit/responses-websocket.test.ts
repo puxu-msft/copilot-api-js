@@ -1,4 +1,9 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 // ─── extractPayload (unit tests via module internals) ───
 // Since extractPayload is not exported, we test it indirectly through

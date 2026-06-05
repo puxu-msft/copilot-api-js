@@ -1,6 +1,16 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import type { CursorResult, ServerToolResultContentBlock, SseEventRecord } from "~/lib/history"
+import type {
+  //
+  CursorResult,
+  ServerToolResultContentBlock,
+  SseEventRecord,
+} from "~/lib/history"
 
 describe("History barrel type exports", () => {
   test("exports CursorResult from ~/lib/history", () => {

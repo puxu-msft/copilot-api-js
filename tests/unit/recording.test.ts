@@ -1,9 +1,18 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { AnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import type { OpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 
-import { buildAnthropicResponseData, buildOpenAIResponseData } from "~/lib/request/recording"
+import {
+  //
+  buildAnthropicResponseData,
+  buildOpenAIResponseData,
+} from "~/lib/request/recording"
 
 // ============================================================================
 // Helpers
@@ -126,17 +135,31 @@ describe("buildAnthropicResponseData", () => {
     expect(content.content[0]).toEqual({ type: "thinking", thinking: "Let me think..." })
   })
 
-  test("maps redacted_thinking content blocks", () => {
+  test("preserves thinking signature when present", () => {
+    const acc = makeAnthropicAcc({
+      contentBlocks: [{ type: "thinking", thinking: "Reasoning step", signature: "sig-abc-123" }],
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    const content = result.content as { role: string; content: Array<unknown> }
+    expect(content.content[0]).toEqual({
+      type: "thinking",
+      thinking: "Reasoning step",
+      signature: "sig-abc-123",
+    })
+  })
+
+  test("maps redacted_thinking content blocks preserving data", () => {
     const acc = makeAnthropicAcc({
       contentBlocks: [
-        { type: "redacted_thinking", data: "" },
+        { type: "redacted_thinking", data: "opaque-payload" },
         { type: "text", text: "Answer" },
       ],
     })
 
     const result = buildAnthropicResponseData(acc, "fallback")
     const content = result.content as { role: string; content: Array<unknown> }
-    expect(content.content[0]).toEqual({ type: "redacted_thinking" })
+    expect(content.content[0]).toEqual({ type: "redacted_thinking", data: "opaque-payload" })
   })
 
   test("filters empty text blocks from response content", () => {
@@ -187,7 +210,13 @@ describe("buildAnthropicResponseData", () => {
 
   test("passes through generic blocks", () => {
     const acc = makeAnthropicAcc({
-      contentBlocks: [{ type: "custom_type", _generic: true, data: "value" } as any],
+      contentBlocks: [
+        {
+          type: "custom_type",
+          _generic: true,
+          data: "value",
+        } as unknown as AnthropicStreamAccumulator["contentBlocks"][number],
+      ],
     })
 
     const result = buildAnthropicResponseData(acc, "fallback")
@@ -233,6 +262,81 @@ describe("buildAnthropicResponseData", () => {
     const content = result.content as { role: string; content: Array<unknown> }
     expect(content.content[0]).toHaveProperty("type", "web_search_tool_result")
     expect(content.content[0]).toHaveProperty("tool_use_id", "srvtoolu_123")
+  })
+
+  // ── Task C: copilotAnnotations propagation ──
+
+  test("propagates copilotAnnotations from accumulator when present", () => {
+    const citation = {
+      url: "https://github.com/example/repo",
+      license: "MIT",
+      repository: "example/repo",
+      start_line: 1,
+      end_line: 10,
+    }
+    const acc = makeAnthropicAcc({
+      contentBlocks: [{ type: "text", text: "hi" }],
+      copilotAnnotations: [{ ip_code_citations: [citation] }],
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    expect(result.copilotAnnotations).toEqual([{ ip_code_citations: [citation] }])
+  })
+
+  test("omits copilotAnnotations when accumulator list is empty", () => {
+    const acc = makeAnthropicAcc({
+      contentBlocks: [{ type: "text", text: "hi" }],
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    expect(result.copilotAnnotations).toBeUndefined()
+  })
+
+  // ── toolSearchRequests propagation ──
+
+  test("propagates toolSearchRequests when greater than zero", () => {
+    const acc = makeAnthropicAcc({
+      contentBlocks: [{ type: "text", text: "hi" }],
+      toolSearchRequests: 3,
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    expect(result.toolSearchRequests).toBe(3)
+  })
+
+  test("omits toolSearchRequests when zero", () => {
+    const acc = makeAnthropicAcc({
+      contentBlocks: [{ type: "text", text: "hi" }],
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    expect(result.toolSearchRequests).toBeUndefined()
+  })
+
+  // ── Task B: partial tool_use input preservation ──
+
+  test("preserves partial JSON for tool_use blocks when streaming was interrupted", () => {
+    const partialJson = '{"path": "/tmp/foo", "content": "hello wo'
+    const acc = makeAnthropicAcc({
+      stopReason: "tool_use",
+      contentBlocks: [
+        {
+          type: "tool_use",
+          id: "toolu_abort",
+          name: "write_file",
+          input: partialJson,
+        },
+      ],
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    const content = result.content as { role: string; content: Array<unknown> }
+    expect(content.content[0]).toEqual({
+      type: "tool_use",
+      id: "toolu_abort",
+      name: "write_file",
+      input: { _parseError: true, _rawInput: partialJson },
+    })
   })
 })
 

@@ -5,6 +5,7 @@
 
 import consola from "consola"
 
+import type { BaseStreamAccumulator } from "~/lib/stream"
 import type {
   //
   CopilotAnnotations,
@@ -87,14 +88,8 @@ export interface AccumulatedGenericBlock {
 // Base accumulator interface (shared with OpenAI accumulator)
 // ============================================================================
 
-/** Minimal accumulator contract for tracking and error recording */
-export interface BaseStreamAccumulator {
-  model: string
-  inputTokens: number
-  outputTokens: number
-  /** Plain text content accumulated from text deltas (error recording fallback) */
-  rawContent: string
-}
+// BaseStreamAccumulator moved to ~/lib/stream — re-exported here for backward
+// compatibility with any external consumer that referenced it from this module.
 
 // ============================================================================
 // Anthropic stream accumulator
@@ -398,3 +393,5 @@ export function getThinkingContent(acc: AnthropicStreamAccumulator): string {
 export function getRedactedThinkingCount(acc: AnthropicStreamAccumulator): number {
   return acc.contentBlocks.filter((b) => b.type === "redacted_thinking").length
 }
+
+export { type BaseStreamAccumulator } from "~/lib/stream"

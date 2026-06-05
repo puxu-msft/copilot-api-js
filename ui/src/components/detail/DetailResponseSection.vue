@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import type { HistoryEntry, MessageContent } from "@/types"
+import type {
+  //
+  HistoryEntry,
+  MessageContent,
+} from "@/types"
 
 import MessageBlock from "@/components/message/MessageBlock.vue"
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"

@@ -1,5 +1,23 @@
+import type {
+  //
+  Base64ImageSource,
+  ImageBlockParam,
+  RedactedThinkingBlockParam,
+  ServerToolUseBlockParam,
+  TextBlockParam,
+  ThinkingBlockParam,
+  ToolResultBlockParam,
+  ToolUseBlockParam,
+  URLImageSource,
+  WebSearchToolResultBlockParam,
+} from "@anthropic-ai/sdk/resources/messages"
+
 /** Supported API endpoint types */
-export type EndpointType = "anthropic-messages" | "openai-chat-completions" | "openai-responses"
+export type EndpointType =
+  | "anthropic-messages"
+  | "openai-chat-completions"
+  | "openai-responses"
+  | "gemini-generate-content"
 
 export type RequestTransport = "http" | "upstream-ws" | "upstream-ws-fallback"
 export type RequestLifecycleState = "pending" | "executing" | "streaming" | "completed" | "failed"
@@ -18,75 +36,38 @@ export interface MessageContent {
   name?: string
 }
 
-export interface TextContentBlock {
-  type: "text"
-  text: string
-}
+// ============================================================================
+// Content block aliases — authoritative definitions live in the Anthropic SDK.
+// History stores request-shaped data (no `caller`, optional `citations`), so
+// aliases point at the `*Param` variants rather than the response-side `*Block`
+// types. See `@anthropic-ai/sdk/resources/messages` for field-level docs.
+// ============================================================================
 
-export interface ThinkingContentBlock {
-  type: "thinking"
-  thinking: string
-  signature?: string
-}
+export type TextContentBlock = TextBlockParam
+export type ThinkingContentBlock = ThinkingBlockParam
+export type ToolUseContentBlock = ToolUseBlockParam
+export type RedactedThinkingContentBlock = RedactedThinkingBlockParam
+export type ServerToolUseContentBlock = ServerToolUseBlockParam
+export type WebSearchToolResultContentBlock = WebSearchToolResultBlockParam
+export type ToolResultContentBlock = ToolResultBlockParam
+export type ImageContentBlock = ImageBlockParam
+export type ImageSource = Base64ImageSource | URLImageSource
 
-export interface ToolUseContentBlock {
-  type: "tool_use"
-  id: string
-  name: string
-  input: Record<string, unknown>
-}
+/** Member type used inside `ToolResultBlockParam.content`. */
+export type ToolResultTextBlock = TextBlockParam
+/** Member type used inside `ToolResultBlockParam.content`. */
+export type ToolResultImageBlock = ImageBlockParam
 
-export interface ToolResultTextBlock {
-  type: "text"
-  text: string
-}
-
-export interface ToolResultImageBlock {
-  type: "image"
-  source: ImageSource
-}
-
-export interface ToolResultContentBlock {
-  type: "tool_result"
-  tool_use_id: string
-  content: string | Array<ToolResultTextBlock | ToolResultImageBlock>
-  is_error?: boolean
-}
-
-export type ImageSource =
-  | {
-      type: "base64"
-      media_type: string
-      data: string
-    }
-  | {
-      type: "url"
-      url: string
-    }
-
-export interface ImageContentBlock {
-  type: "image"
-  source: ImageSource
-}
-
-export interface ServerToolUseContentBlock {
-  type: "server_tool_use"
-  id: string
-  name: string
-  input: Record<string, unknown>
-}
-
-export interface RedactedThinkingContentBlock {
-  type: "redacted_thinking"
-  data?: string
-}
-
-export interface WebSearchToolResultContentBlock {
-  type: "web_search_tool_result"
-  tool_use_id: string
-  content: unknown
-}
-
+/**
+ * Catch-all server-side tool result envelope.
+ *
+ * The Anthropic SDK ships several concrete server tool result types
+ * (`WebSearchToolResultBlock`, `CodeExecutionToolResultBlock`,
+ * `ToolSearchToolResultBlock`, …) — but every Copilot integration that records
+ * one of these into history just needs the common `{ type, tool_use_id, content }`
+ * shape. Retained per principle 5 ("any 与具体类型并存"): kept loose so consumers
+ * that don't care about the concrete variant don't need to discriminate.
+ */
 export interface ServerToolResultContentBlock {
   type: string
   tool_use_id: string

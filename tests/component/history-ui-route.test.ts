@@ -1,8 +1,19 @@
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 import { Hono } from "hono"
 
 import { historyRoutes } from "~/routes/history/route"
-import { createUiRoutes, normalizeExternalUiUrl } from "~/routes/ui/route"
+import {
+  //
+  createUiRoutes,
+  normalizeExternalUiUrl,
+} from "~/routes/ui/route"
 
 const app = new Hono()
 app.route("/history", historyRoutes)

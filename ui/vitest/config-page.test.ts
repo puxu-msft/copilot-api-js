@@ -1,6 +1,20 @@
 import { flushPromises } from "@vue/test-utils"
-import { beforeEach, describe, expect, it, vi } from "vitest"
-import { computed, ref, toRaw, type ComputedRef, type Ref } from "vue"
+import {
+  //
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest"
+import {
+  //
+  computed,
+  ref,
+  toRaw,
+  type ComputedRef,
+  type Ref,
+} from "vue"
 
 import type { EditableConfig } from "@/types/config"
 

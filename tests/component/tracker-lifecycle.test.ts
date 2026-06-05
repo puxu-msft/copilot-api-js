@@ -2,7 +2,12 @@
  * Component tests for TuiLogger lifecycle (clear and destroy).
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import { TuiLogger } from "~/lib/tui/tracker"
 

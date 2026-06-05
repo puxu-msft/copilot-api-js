@@ -7,21 +7,48 @@
  * Run with: bun test tests/integration/extended-api.test.ts
  */
 
-import { describe, test, expect, beforeAll } from "bun:test"
+import {
+  //
+  describe,
+  test,
+  expect,
+  beforeAll,
+} from "bun:test"
 
-import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
-import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  MessagesPayload,
+  Message as AnthropicResponse,
+} from "~/types/api/anthropic"
+import type {
+  //
+  ChatCompletionsPayload,
+  ChatCompletionResponse,
+} from "~/types/api/openai-chat-completions"
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
-import { getModels, type Model } from "~/lib/models/client"
+import {
+  //
+  getModels,
+  type Model,
+} from "~/lib/models/client"
 import { resolveModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import { createEmbeddings } from "~/lib/openai/embeddings"
-import { setModels, setStateForTests, state } from "~/lib/state"
+import {
+  //
+  setModels,
+  setStateForTests,
+  state,
+} from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
-import { getE2EMode, getGitHubToken } from "./config"
+import {
+  //
+  getE2EMode,
+  getGitHubToken,
+} from "./config"
 
 function assertNonStreamingResponse(response: ChatCompletionResponse | AsyncIterable<unknown>): ChatCompletionResponse {
   if ("choices" in response) return response

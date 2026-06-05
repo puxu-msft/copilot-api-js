@@ -59,10 +59,18 @@ function mapAnthropicContentBlocks(acc: AnthropicStreamAccumulator): Array<unkno
           return { type: "text" as const, text: narrowed.text }
         }
         case "thinking": {
-          return { type: "thinking" as const, thinking: narrowed.thinking }
+          // Preserve signature — it's the integrity signature for the thinking
+          // block and is required by Anthropic's SDK for replay/multi-turn use.
+          return {
+            type: "thinking" as const,
+            thinking: narrowed.thinking,
+            ...(narrowed.signature !== undefined && { signature: narrowed.signature }),
+          }
         }
         case "redacted_thinking": {
-          return { type: "redacted_thinking" as const }
+          // Preserve `data` — a redacted_thinking block without its opaque
+          // payload is meaningless for replay or diagnostics.
+          return { type: "redacted_thinking" as const, data: narrowed.data }
         }
         case "tool_use":
         case "server_tool_use": {
@@ -100,6 +108,8 @@ export function buildAnthropicResponseData(acc: AnthropicStreamAccumulator, fall
     },
     stop_reason: acc.stopReason || undefined,
     content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
+    ...(acc.copilotAnnotations.length > 0 && { copilotAnnotations: acc.copilotAnnotations }),
+    ...(acc.toolSearchRequests > 0 && { toolSearchRequests: acc.toolSearchRequests }),
   }
 }
 
@@ -168,6 +178,7 @@ export function buildResponsesResponseData(acc: ResponsesStreamAccumulator, fall
   return {
     success: true,
     model: acc.model || fallbackModel,
+    ...(acc.responseId && { responseId: acc.responseId }),
     usage: {
       input_tokens: acc.inputTokens,
       output_tokens: acc.outputTokens,

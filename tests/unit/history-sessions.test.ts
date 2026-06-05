@@ -1,6 +1,14 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import {
+  //
   clearHistory,
   getCurrentSession,
   getSessionIdFromHeaders,
@@ -10,7 +18,11 @@ import {
   resolveResponseSessionId,
   shutdownHistory,
 } from "~/lib/history"
-import { closeDatabase, openInMemoryDatabase } from "~/lib/history/sqlite/connection"
+import {
+  //
+  closeDatabase,
+  openInMemoryDatabase,
+} from "~/lib/history/sqlite/connection"
 import { setStateForTests } from "~/lib/state"
 
 describe("history session resolution", () => {

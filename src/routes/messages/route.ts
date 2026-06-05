@@ -2,7 +2,7 @@ import { Hono } from "hono"
 
 import { forwardError } from "~/lib/error"
 
-import { handleCountTokens } from "./count-tokens-handler"
+import { handleCountTokens } from "./count-tokens"
 import { handleMessages } from "./handler"
 
 export const messagesRoutes = new Hono()

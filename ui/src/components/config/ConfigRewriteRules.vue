@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { ref } from "vue"
 
-import type { PromptOverrideRule, ReminderRewriteRule } from "@/types/config"
+import type {
+  //
+  PromptOverrideRule,
+  ReminderRewriteRule,
+} from "@/types/config"
 
 type RewriteRuleValue = boolean | Array<PromptOverrideRule | ReminderRewriteRule> | null | undefined
 

@@ -4,7 +4,13 @@
  * Tests: createRequestContext, state transitions, attempts, events
  */
 
-import { describe, expect, mock, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { ApiError } from "~/lib/error"
 import type { EndpointType } from "~/lib/history/store"

@@ -1,14 +1,16 @@
 import {
-computed,
-ref,
-type ComputedRef,
-type Ref
-} from "vue";
+  //
+  computed,
+  ref,
+  type ComputedRef,
+  type Ref,
+} from "vue"
 
 import {
-formatDuration,
-formatNumber
-} from "@/utils/formatters";
+  //
+  formatDuration,
+  formatNumber,
+} from "@/utils/formatters"
 
 import type { RequestTelemetrySnapshot } from "./useDashboardStatus"
 

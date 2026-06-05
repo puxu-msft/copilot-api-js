@@ -3,7 +3,7 @@
  * Accumulates semantic SSE events into a final state for history/tracking.
  */
 
-import type { BaseStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import type { BaseStreamAccumulator } from "~/lib/stream"
 import type { ResponsesStreamEvent } from "~/types/api/openai-responses"
 
 /** Internal tool call accumulator using string array to avoid O(n²) concatenation */

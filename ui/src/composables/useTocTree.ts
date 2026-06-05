@@ -1,6 +1,16 @@
-import { computed, ref, type ComputedRef, type Ref } from "vue"
+import {
+  //
+  computed,
+  ref,
+  type ComputedRef,
+  type Ref,
+} from "vue"
 
-import type { HistoryEntry, MessageContent } from "@/types"
+import type {
+  //
+  HistoryEntry,
+  MessageContent,
+} from "@/types"
 
 export interface TocNode {
   id: string
@@ -88,7 +98,7 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     }
 
     for (const [i, msg] of messages.entries()) {
-      const role = msg.role ?? "unknown"
+      const role = msg.role
       const blocks = msgContentBlocks(msg)
       const contentChildren: Array<TocNode> =
         blocks.length > 1 ?
@@ -194,10 +204,11 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     activeId.value = id
     ensureExpanded(id)
 
-    let el = document.getElementById(id)
+    let el = document.querySelector<HTMLElement>(`#${CSS.escape(id)}`)
     // Fall back to parent message when content-block element doesn't exist in DOM
     if (!el && id.includes(".content.")) {
-      el = document.getElementById(id.replace(/\.content\.\d+$/, ""))
+      const parentId = id.replace(/\.content\.\d+$/, "")
+      el = document.querySelector<HTMLElement>(`#${CSS.escape(parentId)}`)
     }
     if (!el) return
 

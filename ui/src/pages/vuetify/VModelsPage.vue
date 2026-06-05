@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import {
-computed,
-ref
-} from "vue";
+  //
+  computed,
+  ref,
+} from "vue"
 
 import ModelsFilterBar from "@/components/models/ModelsFilterBar.vue"
 import ModelsGrid from "@/components/models/ModelsGrid.vue"

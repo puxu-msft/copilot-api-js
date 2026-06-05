@@ -13,7 +13,7 @@ import {
 } from "~/lib/atomic-fs"
 import { PATHS } from "~/lib/config/paths"
 import { HTTPError } from "~/lib/error"
-import { parseTokenLimitError } from "~/lib/error/parsing"
+import { parseTokenLimitError } from "~/lib/error"
 import {
   //
   CLOSE_TAG,

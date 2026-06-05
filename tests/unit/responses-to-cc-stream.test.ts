@@ -1,8 +1,17 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { createStreamTranslator, translateResponsesStream } from "~/lib/openai/translate/responses-to-cc-stream"
+import {
+  //
+  createStreamTranslator,
+  translateResponsesStream,
+} from "~/lib/openai/translate/responses-to-cc-stream"
 
 describe("createStreamTranslator", () => {
   test("translates text deltas and emits a usage chunk on completion", () => {
@@ -470,7 +479,6 @@ describe("createStreamTranslator", () => {
   })
 
   test("translateResponsesStream skips unparseable frames and continues streaming", async () => {
-    // eslint-disable-next-line @typescript-eslint/require-await -- async generator yields static fixtures
     async function* mixedUpstream(): AsyncGenerator<ServerSentEventMessage> {
       // Well-formed `response.created`
       yield {

@@ -5,10 +5,18 @@
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages"
 
 import type { RequestContext } from "~/lib/context/request"
-import type { ApiError, ApiErrorType } from "~/lib/error"
+import type {
+  //
+  ApiError,
+  ApiErrorType,
+} from "~/lib/error"
 import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
-import type { ChatCompletionChunk, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionChunk,
+  ChatCompletionResponse,
+} from "~/types/api/openai-chat-completions"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { createRequestContext } from "~/lib/context/request"

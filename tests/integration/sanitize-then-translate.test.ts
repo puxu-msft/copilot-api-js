@@ -5,7 +5,12 @@
  * without mocking either module.
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 

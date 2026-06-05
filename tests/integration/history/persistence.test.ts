@@ -1,10 +1,26 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { HistoryEntry } from "~/lib/history"
 
-import { closeDatabase, openInMemoryDatabase } from "~/lib/history/sqlite/connection"
-import { getEntryById, queryEntryCount } from "~/lib/history/sqlite/read"
 import {
+  //
+  closeDatabase,
+  openInMemoryDatabase,
+} from "~/lib/history/sqlite/connection"
+import {
+  //
+  getEntryById,
+  queryEntryCount,
+} from "~/lib/history/sqlite/read"
+import {
+  //
   finalizeEntry,
   getEntry,
   initHistory,

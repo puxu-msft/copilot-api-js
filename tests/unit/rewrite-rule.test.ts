@@ -2,9 +2,19 @@
  * Unit tests for rewrite rule compilation: compileRewriteRule / compileRewriteRules.
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { compileRewriteRule, compileRewriteRules, type RewriteRule } from "~/lib/config/config"
+import {
+  //
+  compileRewriteRule,
+  compileRewriteRules,
+  type RewriteRule,
+} from "~/lib/config/config"
 
 // ============================================================================
 // compileRewriteRule

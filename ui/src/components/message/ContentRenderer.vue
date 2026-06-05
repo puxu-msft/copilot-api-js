@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed } from "vue"
 
-import type { ContentBlock, MessageContent } from "@/types"
+import type {
+  //
+  ContentBlock,
+  MessageContent,
+} from "@/types"
 
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
 import { useContentContext } from "@/composables/useContentContext"
 import {
+  //
   isTextBlock,
   isThinkingBlock,
   isRedactedThinkingBlock,

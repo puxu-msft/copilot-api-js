@@ -4,10 +4,18 @@ import { defineCommand } from "citty"
 import consola from "consola"
 
 import { applyConfigToState } from "./lib/config/config"
-import { PATHS, ensurePaths } from "./lib/config/paths"
+import {
+  //
+  PATHS,
+  ensurePaths,
+} from "./lib/config/paths"
 import { initProxy } from "./lib/proxy"
 import { setCliState } from "./lib/state"
-import { DeviceAuthProvider, FileTokenProvider } from "./lib/token"
+import {
+  //
+  DeviceAuthProvider,
+  FileTokenProvider,
+} from "./lib/token"
 
 interface RunAuthOptions {
   verbose: boolean

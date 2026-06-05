@@ -1,6 +1,14 @@
-import { computed, type Ref } from "vue"
+import {
+  //
+  computed,
+  type Ref,
+} from "vue"
 
-import type { HistoryEntry, MessageContent } from "../types"
+import type {
+  //
+  HistoryEntry,
+  MessageContent,
+} from "../types"
 
 export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const truncationPoint = computed(() => {

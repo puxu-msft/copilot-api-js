@@ -11,13 +11,20 @@ export function isNonStreaming(
   return Object.hasOwn(response, "choices")
 }
 
-/** Parse a JSON string to object, returning the value as-is if already an object */
+/**
+ * Parse a JSON string to object, returning the value as-is if already an object.
+ *
+ * If parsing fails (e.g. a streamed tool_use was aborted mid-JSON or upstream
+ * emitted malformed JSON), returns a marker object `{ _parseError: true,
+ * _rawInput: <original> }` so downstream consumers (history, replay, UI) can
+ * still see the raw fragment instead of silently losing the data.
+ */
 export function safeParseJson(input: string | Record<string, unknown>): Record<string, unknown> {
   if (typeof input !== "string") return input
   try {
     return JSON.parse(input) as Record<string, unknown>
   } catch {
-    return {}
+    return { _parseError: true, _rawInput: input }
   }
 }
 

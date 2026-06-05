@@ -1,9 +1,10 @@
 /**
- * Anthropic SSE stream processing and API routing.
+ * Anthropic SSE stream processing.
  *
  * Reusable components shared across route handlers and tests:
- * - API routing decisions (vendor/endpoint validation)
  * - SSE stream processing (parse, accumulate, shutdown-aware iteration)
+ *
+ * (API routing decisions moved to ./features — `supportsDirectAnthropicApi`.)
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -12,11 +13,6 @@ import consola from "consola"
 
 import type { StreamEvent } from "~/types/api/anthropic"
 
-import {
-  //
-  ENDPOINT,
-  isEndpointSupported,
-} from "~/lib/models/endpoint"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
@@ -31,32 +27,6 @@ import {
   type AnthropicStreamAccumulator,
   accumulateAnthropicStreamEvent,
 } from "./stream-accumulator"
-
-// ============================================================================
-// API routing
-// ============================================================================
-
-export interface ApiRoutingDecision {
-  supported: boolean
-  reason: string
-}
-
-/**
- * Check if a model supports direct Anthropic API.
- * Returns a decision with reason so callers can log/display the routing rationale.
- */
-export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision {
-  const model = state.modelIndex.get(modelId)
-  if (model?.vendor !== "Anthropic") {
-    return { supported: false, reason: `vendor is "${model?.vendor ?? "unknown"}", not Anthropic` }
-  }
-
-  if (!isEndpointSupported(model, ENDPOINT.MESSAGES)) {
-    return { supported: false, reason: "model does not support /v1/messages endpoint" }
-  }
-
-  return { supported: true, reason: "Anthropic vendor with /v1/messages support" }
-}
 
 // ============================================================================
 // Stream processing

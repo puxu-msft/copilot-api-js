@@ -1,14 +1,33 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { prepareChatCompletionsRequest } from "~/lib/openai/request-preparation"
-import { type StateSnapshot, restoreStateForTests, setModels, snapshotStateForTests } from "~/lib/state"
+import {
+  //
+  type StateSnapshot,
+  restoreStateForTests,
+  setModels,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"
+import {
+  //
+  bootstrapTestRuntime,
+  resetTestRuntime,
+} from "../helpers/test-bootstrap"
 
 let capturedPayload: ChatCompletionsPayload | undefined
 
@@ -76,7 +95,6 @@ function createMockChatStream(model: string): AsyncGenerator<ServerSentEventMess
   })()
 }
 
-// eslint-disable-next-line @typescript-eslint/no-floating-promises -- Bun hoists module mocks before imports
 mock.module("~/lib/openai/chat-completions-client", () => ({
   createChatCompletions: createChatCompletionsMock,
   prepareChatCompletionsRequest,

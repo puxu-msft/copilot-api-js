@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from "vue"
+import {
+  //
+  computed,
+  ref,
+  onMounted,
+  onUnmounted,
+} from "vue"
 
 import IconSvg from "@/components/ui/IconSvg.vue"
 import { useRawModal } from "@/composables/useRawModal"

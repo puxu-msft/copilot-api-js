@@ -1,7 +1,23 @@
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
-import { startModelRefreshLoop, syncModelRefreshLoop } from "~/lib/models/refresh-loop"
-import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
+import {
+  //
+  startModelRefreshLoop,
+  syncModelRefreshLoop,
+} from "~/lib/models/refresh-loop"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 describe("startModelRefreshLoop", () => {
   const originalSetTimeout = globalThis.setTimeout

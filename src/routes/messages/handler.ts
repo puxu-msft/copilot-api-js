@@ -29,7 +29,11 @@ import type {
   PreprocessInfo,
   SseEventRecord,
 } from "~/lib/history/store"
-import type { MessagesPayload } from "~/types/api/anthropic"
+import type {
+  //
+  MessagesPayload,
+  StreamEvent,
+} from "~/types/api/anthropic"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import {
@@ -42,6 +46,7 @@ import {
   createAnthropicMessages,
   type AnthropicMessageResponse,
 } from "~/lib/anthropic/client"
+import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { preprocessTools } from "~/lib/anthropic/message-tools"
 import {
@@ -60,8 +65,7 @@ import {
 import {
   //
   processAnthropicStream,
-  supportsDirectAnthropicApi,
-} from "~/lib/anthropic/sse"
+} from "~/lib/anthropic/stream"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import {
   //
@@ -210,6 +214,73 @@ async function handleDirectAnthropicCompletion(
   // Find model for auto-truncate and usage adjustment
   const selectedModel = state.modelIndex.get(anthropicPayload.model)
 
+  const { initialSanitized, initialSanitizationInfo } = runInitialSanitizationAndRecord(
+    anthropicPayload,
+    reqCtx,
+    preprocessInfo,
+  )
+
+  const headersCapture: HeadersCapture = {}
+  const adapter = buildAnthropicAdapter({
+    payload: anthropicPayload,
+    selectedModel,
+    headersCapture,
+    clientAnthropicBeta: c.req.raw.headers.get("anthropic-beta") ?? undefined,
+    reqCtx,
+  })
+  const strategies = buildAnthropicStrategies()
+
+  // Track truncation result for non-streaming response marker
+  let truncateResult: AnthropicAutoTruncateResult | undefined
+
+  try {
+    const result = await executeRequestPipeline({
+      adapter,
+      strategies,
+      payload: initialSanitized,
+      originalPayload: anthropicPayload,
+      model: selectedModel,
+      maxRetries: MAX_AUTO_TRUNCATE_RETRIES,
+      requestContext: reqCtx,
+      onRetry: (_attempt, _strategyName, newPayload, meta) => {
+        const retryTruncateResult = meta?.truncateResult as AnthropicAutoTruncateResult | undefined
+        if (retryTruncateResult) {
+          truncateResult = retryTruncateResult
+        }
+        recordRetryPipelineState({
+          reqCtx,
+          anthropicPayload,
+          newPayload,
+          meta,
+          preprocessInfo,
+          initialSanitizationInfo,
+          retryTruncateResult,
+        })
+      },
+    })
+
+    // Capture HTTP headers from the final attempt for history recording
+    reqCtx.setHttpHeaders(headersCapture)
+
+    return dispatchAnthropicResponse(c, result, reqCtx, truncateResult)
+  } catch (error) {
+    reqCtx.setHttpHeaders(headersCapture)
+    reqCtx.fail(anthropicPayload.model, error)
+    throw error
+  }
+}
+
+/**
+ * Preprocess tools + run initial sanitization, then record pipeline info /
+ * mapping / initial tracking tags onto the request context. Returns the
+ * sanitized payload and the sanitization info envelope for later retry
+ * aggregation.
+ */
+function runInitialSanitizationAndRecord(
+  anthropicPayload: MessagesPayload,
+  reqCtx: RequestContext,
+  preprocessInfo: PreprocessInfo,
+): { initialSanitized: MessagesPayload; initialSanitizationInfo: ReturnType<typeof toSanitizationInfo> } {
   // Preprocess tools: inject stubs for history-referenced tools, set defer_loading,
   // add tool_search. Must run BEFORE sanitize — processToolBlocks (in sanitize) uses
   // the tools array to validate tool_use references in messages.
@@ -243,9 +314,21 @@ async function handleDirectAnthropicCompletion(
     if (tags.length > 0) tuiLogger.updateRequest(reqCtx.tuiLogId, { tags })
   }
 
-  // Build adapter and strategy for the pipeline
-  const headersCapture: HeadersCapture = {}
-  const adapter: FormatAdapter<MessagesPayload> = {
+  return { initialSanitized, initialSanitizationInfo }
+}
+
+interface BuildAnthropicAdapterArgs {
+  payload: MessagesPayload
+  selectedModel: ReturnType<typeof state.modelIndex.get>
+  headersCapture: HeadersCapture
+  clientAnthropicBeta: string | undefined
+  reqCtx: RequestContext
+}
+
+/** Build the FormatAdapter used by executeRequestPipeline for Anthropic. */
+function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAdapter<MessagesPayload> {
+  const { payload: anthropicPayload, selectedModel, headersCapture, clientAnthropicBeta, reqCtx } = args
+  return {
     format: "anthropic-messages",
     sanitize: (p) => sanitizeAnthropicMessages(preprocessTools(p)),
     execute: (p, hints) =>
@@ -253,7 +336,7 @@ async function handleDirectAnthropicCompletion(
         createAnthropicMessages(p, {
           resolvedModel: selectedModel,
           headersCapture,
-          clientAnthropicBeta: c.req.raw.headers.get("anthropic-beta") ?? undefined,
+          clientAnthropicBeta,
           // PrepareHints from the previous retry attempt — forwarded into
           // request preparation so the next wire payload deterministically
           // excludes the offending fields/betas, without depending on the
@@ -273,8 +356,11 @@ async function handleDirectAnthropicCompletion(
       ),
     logPayloadSize: (p) => logPayloadSizeInfoAnthropic(p, selectedModel),
   }
+}
 
-  const strategies = [
+/** Build the retry strategy list for Anthropic completions. */
+function buildAnthropicStrategies() {
+  return [
     createNetworkRetryStrategy<MessagesPayload>(),
     createTokenRefreshStrategy<MessagesPayload>(),
     createBodyFieldRejectionStrategy<MessagesPayload>(),
@@ -287,92 +373,89 @@ async function handleDirectAnthropicCompletion(
       label: "Anthropic",
     }),
   ]
+}
 
-  // Track truncation result for non-streaming response marker
-  let truncateResult: AnthropicAutoTruncateResult | undefined
+interface RecordRetryPipelineStateArgs {
+  reqCtx: RequestContext
+  anthropicPayload: MessagesPayload
+  newPayload: MessagesPayload
+  meta: Record<string, unknown> | undefined
+  preprocessInfo: PreprocessInfo
+  initialSanitizationInfo: ReturnType<typeof toSanitizationInfo>
+  retryTruncateResult: AnthropicAutoTruncateResult | undefined
+}
 
-  try {
-    const result = await executeRequestPipeline({
-      adapter,
-      strategies,
-      payload: initialSanitized,
-      originalPayload: anthropicPayload,
-      model: selectedModel,
-      maxRetries: MAX_AUTO_TRUNCATE_RETRIES,
-      requestContext: reqCtx,
-      onRetry: (_attempt, _strategyName, newPayload, meta) => {
-        // Capture truncation result for response marker
-        const retryTruncateResult = meta?.truncateResult as AnthropicAutoTruncateResult | undefined
-        if (retryTruncateResult) {
-          truncateResult = retryTruncateResult
+/** Record sanitization / truncation / mapping for a retried payload. */
+function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
+  const { reqCtx, anthropicPayload, newPayload, meta, preprocessInfo, initialSanitizationInfo, retryTruncateResult } =
+    args
+
+  const retrySanitization = meta?.sanitization as SanitizationStats | undefined
+  const allSanitization = [
+    initialSanitizationInfo,
+    ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : []),
+  ]
+  const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, newPayload.messages)
+  reqCtx.setPipelineInfo({
+    preprocessing: preprocessInfo,
+    sanitization: allSanitization,
+    truncation:
+      retryTruncateResult ?
+        {
+          wasTruncated: true,
+          removedMessageCount: retryTruncateResult.removedMessageCount,
+          originalTokens: retryTruncateResult.originalTokens,
+          compactedTokens: retryTruncateResult.compactedTokens,
+          processingTimeMs: retryTruncateResult.processingTimeMs,
         }
+      : undefined,
+    messageMapping: retryMessageMapping,
+  })
 
-        // Record rewrites for the retried payload
-        const retrySanitization = meta?.sanitization as SanitizationStats | undefined
-        const allSanitization = [
-          initialSanitizationInfo,
-          ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : []),
-        ]
-        const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, newPayload.messages)
-        reqCtx.setPipelineInfo({
-          preprocessing: preprocessInfo,
-          sanitization: allSanitization,
-          truncation:
-            retryTruncateResult ?
-              {
-                wasTruncated: true,
-                removedMessageCount: retryTruncateResult.removedMessageCount,
-                originalTokens: retryTruncateResult.originalTokens,
-                compactedTokens: retryTruncateResult.compactedTokens,
-                processingTimeMs: retryTruncateResult.processingTimeMs,
-              }
-            : undefined,
-          messageMapping: retryMessageMapping,
-        })
-
-        // Update tracking tags
-        if (reqCtx.tuiLogId) {
-          const retryAttempt = (meta?.attempt as number | undefined) ?? 1
-          const retryTags = ["truncated", `retry-${retryAttempt}`]
-          if (newPayload.thinking && newPayload.thinking.type !== "disabled")
-            retryTags.push(`thinking:${newPayload.thinking.type}`)
-          tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: retryTags })
-        }
-      },
-    })
-
-    // Capture HTTP headers from the final attempt for history recording
-    reqCtx.setHttpHeaders(headersCapture)
-
-    const response = result.response
-    const effectivePayload = result.effectivePayload as MessagesPayload
-
-    // Check if response is streaming (AsyncIterable)
-    if (Symbol.asyncIterator in (response as object)) {
-      consola.debug("Streaming response from Copilot (direct Anthropic)")
-      reqCtx.transition("streaming")
-
-      return streamSSE(c, async (stream) => {
-        const clientAbort = new AbortController()
-        stream.onAbort(() => clientAbort.abort())
-
-        await handleDirectAnthropicStreamingResponse({
-          stream,
-          response: response as AsyncIterable<ServerSentEventMessage>,
-          anthropicPayload: effectivePayload,
-          reqCtx,
-          clientAbortSignal: clientAbort.signal,
-        })
-      })
-    }
-
-    // Non-streaming response
-    return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, reqCtx, truncateResult)
-  } catch (error) {
-    reqCtx.setHttpHeaders(headersCapture)
-    reqCtx.fail(anthropicPayload.model, error)
-    throw error
+  // Update tracking tags
+  if (reqCtx.tuiLogId) {
+    const retryAttempt = (meta?.attempt as number | undefined) ?? 1
+    const retryTags = ["truncated", `retry-${retryAttempt}`]
+    if (newPayload.thinking && newPayload.thinking.type !== "disabled")
+      retryTags.push(`thinking:${newPayload.thinking.type}`)
+    tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: retryTags })
   }
+}
+
+/**
+ * Dispatch the upstream response to the streaming or non-streaming handler.
+ * For streaming responses, also transitions reqCtx to "streaming" before
+ * handing off (so the consumer sees state changes in order).
+ */
+function dispatchAnthropicResponse(
+  c: Context,
+  result: { response: unknown; effectivePayload: unknown },
+  reqCtx: RequestContext,
+  truncateResult: AnthropicAutoTruncateResult | undefined,
+) {
+  const response = result.response
+  const effectivePayload = result.effectivePayload as MessagesPayload
+
+  // Streaming responses are AsyncIterable
+  if (Symbol.asyncIterator in (response as object)) {
+    consola.debug("Streaming response from Copilot (direct Anthropic)")
+    reqCtx.transition("streaming")
+
+    return streamSSE(c, async (stream) => {
+      const clientAbort = new AbortController()
+      stream.onAbort(() => clientAbort.abort())
+
+      await handleDirectAnthropicStreamingResponse({
+        stream,
+        response: response as AsyncIterable<ServerSentEventMessage>,
+        anthropicPayload: effectivePayload,
+        reqCtx,
+        clientAbortSignal: clientAbort.signal,
+      })
+    })
+  }
+
+  return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, reqCtx, truncateResult)
 }
 
 // ============================================================================
@@ -400,88 +483,38 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
   // SSE event recording for debugging (excludes high-volume content_block_delta and ping)
   const sseEvents: Array<SseEventRecord> = []
 
-  // Streaming metrics for TUI footer and debug timing
-  const streamStartMs = Date.now()
-  let bytesIn = 0
-  let eventsIn = 0
-  let currentBlockType = ""
-  let firstEventLogged = false
-
   // Server tool block filter — always active, matching vscode-copilot-chat behavior.
   // Server tool blocks (server_tool_use, tool_search_tool_result, etc.) are server-side
   // artifacts that clients don't expect. The reference implementation (vscode-copilot-chat)
   // intercepts these unconditionally and never forwards raw blocks to the consumer.
   const serverToolFilter = createServerToolBlockFilter()
 
+  const streamState: StreamPumpState = {
+    streamStartMs: Date.now(),
+    bytesIn: 0,
+    eventsIn: 0,
+    currentBlockType: "",
+    firstEventLogged: false,
+  }
+
   try {
     for await (const { raw: rawEvent, parsed } of processAnthropicStream(response, acc, clientAbortSignal)) {
-      const dataLen = rawEvent.data?.length ?? 0
-      bytesIn += dataLen
-      eventsIn++
-
-      // Record non-delta SSE events for history debugging
-      if (parsed && parsed.type !== "content_block_delta" && parsed.type !== "ping") {
-        sseEvents.push({
-          offsetMs: Date.now() - streamStartMs,
-          type: parsed.type,
-          data: parsed,
-        })
-      }
-
-      // Debug: log first event arrival (measures TTFB from stream perspective)
-      if (!firstEventLogged) {
-        const eventType = parsed?.type ?? "keepalive"
-        consola.debug(`[Stream] First event at +${Date.now() - streamStartMs}ms (${eventType})`)
-        firstEventLogged = true
-      }
-
-      // Debug: log content block boundaries with timing
-      if (parsed?.type === "content_block_start") {
-        currentBlockType = (parsed.content_block as { type: string }).type
-        consola.debug(`[Stream] Block #${parsed.index} start: ${currentBlockType} at +${Date.now() - streamStartMs}ms`)
-
-        // Log server tool information (before filtering, so info is never lost)
-        const block = parsed.content_block as unknown as Record<string, unknown> & { type: string }
-        logServerToolBlock(block)
-      } else if (parsed?.type === "content_block_stop") {
-        const offset = Date.now() - streamStartMs
-        consola.debug(
-          `[Stream] Block #${parsed.index} stop (${currentBlockType}) at +${offset}ms, cumulative ↓${bytesIn}B ${eventsIn}ev`,
-        )
-        currentBlockType = ""
-      }
-
-      // Update TUI footer with streaming progress
-      if (reqCtx.tuiLogId) {
-        tuiLogger.updateRequest(reqCtx.tuiLogId, {
-          streamBytesIn: bytesIn,
-          streamEventsIn: eventsIn,
-          streamBlockType: currentBlockType,
-        })
-      }
-
-      // Check for repetitive output in text deltas
-      if (parsed?.type === "content_block_delta") {
-        const delta = parsed.delta as { type: string; text?: string }
-        if (delta.type === "text_delta" && delta.text) {
-          checkRepetition(delta.text)
-        }
-      }
-
-      // Forward event to client, filtering server tool blocks
-      const forwardData = serverToolFilter.rewriteEvent(parsed, rawEvent.data ?? "")
-      if (forwardData === null) continue
-
-      await stream.writeSSE({
-        data: forwardData,
-        event: rawEvent.event,
-        id: rawEvent.id !== undefined ? String(rawEvent.id) : undefined,
-        retry: rawEvent.retry,
+      await processOneStreamEvent({
+        rawEvent,
+        parsed,
+        streamState,
+        sseEvents,
+        reqCtx,
+        checkRepetition,
+        serverToolFilter,
+        stream,
       })
     }
 
     // Debug: stream completion summary
-    const summaryParts = [`↓${bytesIn}B ${eventsIn}ev in ${Date.now() - streamStartMs}ms`]
+    const summaryParts = [
+      `↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`,
+    ]
     if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
@@ -508,6 +541,101 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
       }),
     })
   }
+}
+
+/** Mutable counters/state threaded through the streaming pump. */
+interface StreamPumpState {
+  streamStartMs: number
+  bytesIn: number
+  eventsIn: number
+  currentBlockType: string
+  firstEventLogged: boolean
+}
+
+interface ProcessOneStreamEventArgs {
+  rawEvent: ServerSentEventMessage
+  parsed: StreamEvent | undefined
+  streamState: StreamPumpState
+  sseEvents: Array<SseEventRecord>
+  reqCtx: RequestContext
+  checkRepetition: (text: string) => void
+  serverToolFilter: ReturnType<typeof createServerToolBlockFilter>
+  stream: SSEStreamingApi
+}
+
+/**
+ * Process a single upstream SSE event: update counters, record debug info,
+ * filter server-tool blocks, and forward to the client. Mutates `streamState`,
+ * `sseEvents`, and writes to `stream`.
+ */
+async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<void> {
+  const { rawEvent, parsed, streamState, sseEvents, reqCtx, checkRepetition, serverToolFilter, stream } = args
+
+  const dataLen = rawEvent.data?.length ?? 0
+  streamState.bytesIn += dataLen
+  streamState.eventsIn++
+
+  // Record non-delta SSE events for history debugging
+  if (parsed && parsed.type !== "content_block_delta" && parsed.type !== "ping") {
+    sseEvents.push({
+      offsetMs: Date.now() - streamState.streamStartMs,
+      type: parsed.type,
+      data: parsed,
+    })
+  }
+
+  // Debug: log first event arrival (measures TTFB from stream perspective)
+  if (!streamState.firstEventLogged) {
+    const eventType = parsed?.type ?? "keepalive"
+    consola.debug(`[Stream] First event at +${Date.now() - streamState.streamStartMs}ms (${eventType})`)
+    streamState.firstEventLogged = true
+  }
+
+  // Debug: log content block boundaries with timing
+  if (parsed?.type === "content_block_start") {
+    streamState.currentBlockType = (parsed.content_block as { type: string }).type
+    consola.debug(
+      `[Stream] Block #${parsed.index} start: ${streamState.currentBlockType} at +${Date.now() - streamState.streamStartMs}ms`,
+    )
+
+    // Log server tool information (before filtering, so info is never lost)
+    const block = parsed.content_block as unknown as Record<string, unknown> & { type: string }
+    logServerToolBlock(block)
+  } else if (parsed?.type === "content_block_stop") {
+    const offset = Date.now() - streamState.streamStartMs
+    consola.debug(
+      `[Stream] Block #${parsed.index} stop (${streamState.currentBlockType}) at +${offset}ms, cumulative ↓${streamState.bytesIn}B ${streamState.eventsIn}ev`,
+    )
+    streamState.currentBlockType = ""
+  }
+
+  // Update TUI footer with streaming progress
+  if (reqCtx.tuiLogId) {
+    tuiLogger.updateRequest(reqCtx.tuiLogId, {
+      streamBytesIn: streamState.bytesIn,
+      streamEventsIn: streamState.eventsIn,
+      streamBlockType: streamState.currentBlockType,
+    })
+  }
+
+  // Check for repetitive output in text deltas
+  if (parsed?.type === "content_block_delta") {
+    const delta = parsed.delta as { type: string; text?: string }
+    if (delta.type === "text_delta" && delta.text) {
+      checkRepetition(delta.text)
+    }
+  }
+
+  // Forward event to client, filtering server tool blocks
+  const forwardData = serverToolFilter.rewriteEvent(parsed, rawEvent.data ?? "")
+  if (forwardData === null) return
+
+  await stream.writeSSE({
+    data: forwardData,
+    event: rawEvent.event,
+    id: rawEvent.id !== undefined ? String(rawEvent.id) : undefined,
+    retry: rawEvent.retry,
+  })
 }
 
 /** Handle non-streaming direct Anthropic response */

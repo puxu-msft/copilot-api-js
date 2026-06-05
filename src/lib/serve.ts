@@ -76,7 +76,10 @@ export async function startServerMulti(
   }
 
   if (instances.length === 0) {
-    throw errors[0]?.error ?? new Error("No hostnames bound")
+    const first = errors[0]?.error
+    if (first instanceof Error) throw first
+    if (first === undefined) throw new Error("No hostnames bound")
+    throw new Error(typeof first === "string" ? first : JSON.stringify(first))
   }
 
   for (const { host, error } of errors) {
@@ -152,7 +155,6 @@ interface BunStartOptions extends Omit<StartServerOptions, "hostnames"> {
   hostname?: string
 }
 
-// eslint-disable-next-line @typescript-eslint/require-await -- async signature kept for symmetry with startNodeServer (caller awaits the Promise<ServerInstance> uniformly across runtimes)
 async function startBunServer(options: BunStartOptions): Promise<ServerInstance> {
   // Bun.serve() passes the server instance as 2nd arg to fetch.
   // Forward it to Hono's env so hono/bun's upgradeWebSocket can call server.upgrade().

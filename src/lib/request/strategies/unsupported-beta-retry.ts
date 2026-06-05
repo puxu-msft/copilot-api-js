@@ -22,6 +22,7 @@
 import type { ApiError } from "~/lib/error"
 
 import { markAnthropicBetaUnsupported } from "~/lib/anthropic/feature-negotiation"
+import { HTTPError } from "~/lib/error"
 
 import type {
   //
@@ -34,11 +35,8 @@ const UNSUPPORTED_BETA_PATTERN = /unsupported beta header\(s\):\s*([^"}]+)/i
 
 function extractErrorText(error: ApiError): string | null {
   if (UNSUPPORTED_BETA_PATTERN.test(error.message)) return error.message
-  const raw = error.raw
-  if (!raw || typeof raw !== "object" || !("responseText" in raw) || typeof raw.responseText !== "string") {
-    return null
-  }
-  return raw.responseText
+  if (error.raw instanceof HTTPError) return error.raw.responseText
+  return null
 }
 
 export function parseUnsupportedBetas(text: string): Array<string> {

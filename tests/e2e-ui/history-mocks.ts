@@ -1,4 +1,8 @@
-import type { Page, Route } from "@playwright/test"
+import type {
+  //
+  Page,
+  Route,
+} from "@playwright/test"
 
 const BASE_TIMESTAMP = Date.UTC(2026, 3, 1, 9, 30, 0)
 

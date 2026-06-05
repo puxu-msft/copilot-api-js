@@ -10,7 +10,13 @@
  * redundant layout thrashing from multiple simultaneous resize events.
  */
 
-import { provide, inject, onUnmounted, type InjectionKey } from "vue"
+import {
+  //
+  provide,
+  inject,
+  onUnmounted,
+  type InjectionKey,
+} from "vue"
 
 // ─── Public API ───
 

@@ -7,9 +7,19 @@
  * - record: Uses actual API AND saves responses to fixtures/, requires E2E_RECORD=1 + GITHUB_TOKEN
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import {
+  //
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import {
+  //
+  join,
+  resolve,
+} from "node:path"
 
 // ─── Mode detection ───
 

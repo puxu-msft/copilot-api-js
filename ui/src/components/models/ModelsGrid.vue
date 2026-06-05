@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type {
-ModelData,
-PrimaryLimitMetric
-} from "@/composables/useModelsCatalog";
+  //
+  ModelData,
+  PrimaryLimitMetric,
+} from "@/composables/useModelsCatalog"
 
 import ModelCard from "./ModelCard.vue"
 

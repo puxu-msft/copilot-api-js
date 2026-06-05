@@ -25,6 +25,7 @@ import {
   isToolStickyUndeferred,
   markToolUndeferred,
 } from "~/lib/anthropic/feature-negotiation"
+import { HTTPError } from "~/lib/error"
 
 import type {
   //
@@ -70,20 +71,14 @@ export function createDeferredToolRetryStrategy<
 
     canHandle(error: ApiError): boolean {
       if (error.type !== "bad_request" || error.status !== 400) return false
+      if (!(error.raw instanceof HTTPError)) return false
 
-      const raw = error.raw
-      if (!raw || typeof raw !== "object" || !("responseText" in raw)) return false
-
-      const responseText = (raw as { responseText: string }).responseText
-      const toolName = parseToolReferenceFromResponse(responseText)
-      if (!toolName) return false
-
-      return true
+      const toolName = parseToolReferenceFromResponse(error.raw.responseText)
+      return Boolean(toolName)
     },
 
     handle(error: ApiError, currentPayload: TPayload, context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
-      const raw = error.raw as { responseText: string }
-      const toolName = parseToolReferenceFromResponse(raw.responseText)
+      const toolName = error.raw instanceof HTTPError ? parseToolReferenceFromResponse(error.raw.responseText) : null
 
       if (!toolName || !currentPayload.tools) {
         return Promise.resolve({ action: "abort", error })

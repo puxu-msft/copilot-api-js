@@ -1,5 +1,17 @@
-import type { SummaryResult, HistoryEntry, HistoryStats, SessionResult, QueryOptions } from "@/types"
-import type { ConfigValidationError, ConfigYamlResponse, EditableConfig } from "@/types/config"
+import type {
+  //
+  SummaryResult,
+  HistoryEntry,
+  HistoryStats,
+  SessionResult,
+  QueryOptions,
+} from "@/types"
+import type {
+  //
+
+  ConfigYamlResponse,
+  EditableConfig,
+} from "@/types/config"
 
 const BASE = "/history/api"
 
@@ -125,10 +137,10 @@ export const api = {
 
 // Re-export for convenience
 export { ApiError }
-export type { ConfigValidationError }
+
 // Re-export the SummaryResult type used in the store
 import type { EntrySummary } from "@/types"
 
 export { type EntrySummary } from "@/types"
 
-export { type ConfigYamlResponse, type EditableConfig } from "@/types/config"
+export { type ConfigValidationError, type ConfigYamlResponse, type EditableConfig } from "@/types/config"

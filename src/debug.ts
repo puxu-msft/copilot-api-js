@@ -5,11 +5,25 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 
-import { ensurePaths, PATHS } from "./lib/config/paths"
+import {
+  //
+  ensurePaths,
+  PATHS,
+} from "./lib/config/paths"
 import { getModels } from "./lib/models/client"
-import { setCliState, setCopilotToken, setGitHubToken, state } from "./lib/state"
+import {
+  //
+  setCliState,
+  setCopilotToken,
+  setGitHubToken,
+  state,
+} from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
-import { getCopilotToken, getCopilotUsage } from "./lib/token/copilot-client"
+import {
+  //
+  getCopilotToken,
+  getCopilotUsage,
+} from "./lib/token/copilot-client"
 import { getGitHubUser } from "./lib/token/github-client"
 
 interface DebugInfo {

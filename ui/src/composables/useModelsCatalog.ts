@@ -1,10 +1,11 @@
 import {
-computed,
-onMounted,
-ref,
-shallowRef,
-watch
-} from "vue";
+  //
+  computed,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+} from "vue"
 
 import { api } from "@/api/http"
 import { getEffectiveEndpoints } from "@/utils/model-endpoints"
@@ -34,7 +35,7 @@ export function useModelsCatalog() {
     try {
       const result = await api.fetchModels()
       rawApiResponse.value = result
-      models.value = (result.data ?? []) as Array<ModelData>
+      models.value = result.data as Array<ModelData>
     } catch (err) {
       error.value = err instanceof Error ? err.message : "Failed to load models"
     } finally {
@@ -113,12 +114,14 @@ export function useModelsCatalog() {
   const filteredModels = computed(() => {
     let result = models.value
     if (vendorFilter.value) result = result.filter((m) => m.vendor === vendorFilter.value)
-    if (endpointFilter.value) {
-      result = result.filter((m) => getEffectiveEndpoints(m).includes(endpointFilter.value!))
+    const endpoint = endpointFilter.value
+    if (endpoint) {
+      result = result.filter((m) => getEffectiveEndpoints(m).includes(endpoint))
     }
-    if (featureFilter.value) {
+    const feature = featureFilter.value
+    if (feature) {
       result = result.filter(
-        (m) => (m.capabilities?.supports as Record<string, unknown> | undefined)?.[featureFilter.value!] === true,
+        (m) => (m.capabilities?.supports as Record<string, unknown> | undefined)?.[feature] === true,
       )
     }
     if (typeFilter.value) {
@@ -251,7 +254,8 @@ export function useModelsCatalog() {
     const vision = model.capabilities?.limits?.vision as Record<string, unknown> | undefined
     if (!vision) return null
     const result: Array<[string, string]> = []
-    if (vision.max_prompt_images) result.push(["Max images", String(vision.max_prompt_images)])
+    if (vision.max_prompt_images !== null && vision.max_prompt_images !== undefined)
+      result.push(["Max images", String(vision.max_prompt_images as number | string)])
     if (vision.max_prompt_image_size) result.push(["Max size", fmtNum(vision.max_prompt_image_size)])
     if (vision.supported_media_types)
       result.push(["Formats", (vision.supported_media_types as Array<string>).join(", ")])

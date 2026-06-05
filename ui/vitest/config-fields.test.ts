@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest"
+import {
+  //
+  describe,
+  expect,
+  it,
+} from "vitest"
 
 import ConfigEnum from "@/components/config/ConfigEnum.vue"
 import ConfigKeyValueList from "@/components/config/ConfigKeyValueList.vue"
@@ -9,7 +14,12 @@ import ConfigStringList from "@/components/config/ConfigStringList.vue"
 import ConfigText from "@/components/config/ConfigText.vue"
 import ConfigToggle from "@/components/config/ConfigToggle.vue"
 
-import { mountWithVuetifyStubs, VBtnToggleStub, VSelectStub } from "./helpers/mount"
+import {
+  //
+  mountWithVuetifyStubs,
+  VBtnToggleStub,
+  VSelectStub,
+} from "./helpers/mount"
 
 describe("config field components", () => {
   it("ConfigToggle supports label, disabled, and v-model updates", async () => {

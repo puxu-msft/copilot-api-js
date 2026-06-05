@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import {
-computed,
-ref
-} from "vue";
+  //
+  computed,
+  ref,
+} from "vue"
 
-import type { ModelData, PrimaryLimitMetric } from "@/composables/useModelsCatalog"
+import type {
+  //
+  ModelData,
+  PrimaryLimitMetric,
+} from "@/composables/useModelsCatalog"
 
 import JsonViewerSurface from "@/components/ui/JsonViewerSurface.vue"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"

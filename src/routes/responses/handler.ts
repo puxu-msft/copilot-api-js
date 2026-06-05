@@ -57,11 +57,10 @@ import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
   //
-  STREAM_ABORTED,
   StreamIdleTimeoutError,
   combineAbortSignals,
-  iterateSseEvents,
-  raceIteratorNext,
+  guardSseIterable,
+  type SseFrame,
 } from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
@@ -248,17 +247,12 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
       let eventsIn = 0
 
       try {
-        const iterator = iterateSseEvents(response)
+        const guarded = guardSseIterable(response as AsyncIterable<SseFrame>, {
+          idleTimeoutMs,
+          getAbortSignal: () => combineAbortSignals(getShutdownSignal(), clientAbort.signal),
+        })
 
-        for (;;) {
-          const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbort.signal)
-          const result = await raceIteratorNext(iterator.next(), { idleTimeoutMs, abortSignal })
-
-          if (result === STREAM_ABORTED) break
-          if (result.done) break
-
-          const rawEvent = result.value
-
+        for await (const rawEvent of guarded) {
           if (rawEvent.data && rawEvent.data !== "[DONE]") {
             bytesIn += rawEvent.data.length
             eventsIn++

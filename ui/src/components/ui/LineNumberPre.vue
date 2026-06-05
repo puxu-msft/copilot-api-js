@@ -11,9 +11,10 @@
  */
 
 import {
-computed,
-ref
-} from "vue";
+  //
+  computed,
+  ref,
+} from "vue"
 
 const props = defineProps<{
   /** HTML content to render (may include search highlights) */

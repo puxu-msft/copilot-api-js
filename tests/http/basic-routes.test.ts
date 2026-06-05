@@ -1,7 +1,16 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import { HTTPError } from "~/lib/error"
 import {
+  //
   type StateSnapshot,
   restoreStateForTests,
   setModels,
@@ -10,7 +19,11 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { createFullTestApp, createMinimalApp } from "../helpers/test-app"
+import {
+  //
+  createFullTestApp,
+  createMinimalApp,
+} from "../helpers/test-app"
 import { resetTestRuntime } from "../helpers/test-bootstrap"
 
 interface HealthResponseBody {
@@ -29,6 +42,16 @@ interface ModelsListResponseBody {
     object: string
     created: number
     owned_by: string
+    display_name?: string
+    context_window?: number
+    max_input_tokens?: number
+    max_output_tokens?: number
+    vision?: boolean
+    tool_calls?: boolean
+    parallel_tool_calls?: boolean
+    reasoning_effort?: ReadonlyArray<string>
+    family?: string
+    vendor?: string
   }>
 }
 
@@ -109,6 +132,12 @@ describe("basic HTTP routes", () => {
       object: "model",
       created: 0,
       owned_by: "Anthropic",
+      display_name: "claude-sonnet-4.6",
+      context_window: 128_000,
+      max_input_tokens: 100_000,
+      max_output_tokens: 4096,
+      family: "gpt-4",
+      vendor: "Anthropic",
     })
   })
 
@@ -140,6 +169,12 @@ describe("basic HTTP routes", () => {
       object: "model",
       created: 0,
       owned_by: "OpenAI",
+      display_name: "gpt-4o",
+      context_window: 128_000,
+      max_input_tokens: 100_000,
+      max_output_tokens: 4096,
+      family: "gpt-4",
+      vendor: "OpenAI",
     })
   })
 
@@ -166,6 +201,12 @@ describe("basic HTTP routes", () => {
       object: "model",
       created: 0,
       owned_by: "OpenAI",
+      display_name: "gpt-4o",
+      context_window: 128_000,
+      max_input_tokens: 100_000,
+      max_output_tokens: 4096,
+      family: "gpt-4",
+      vendor: "OpenAI",
     })
   })
 
@@ -256,6 +297,8 @@ describe("basic HTTP routes", () => {
       object: "model",
       created: 0,
       owned_by: "OpenAI",
+      display_name: "Fetched Model",
+      vendor: "OpenAI",
     })
   })
 

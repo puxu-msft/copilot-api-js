@@ -1,7 +1,19 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test"
 import consola from "consola"
 
-import { _resetConfigValidationWarnTrackingForTests, validateConfig } from "~/lib/config/config"
+import {
+  //
+  _resetConfigValidationWarnTrackingForTests,
+  validateConfig,
+} from "~/lib/config/config"
 
 let warnSpy: ReturnType<typeof spyOn<typeof consola, "warn">>
 

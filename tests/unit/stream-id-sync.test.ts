@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { createStreamIdTracker, fixStreamEventIds } from "~/lib/openai/stream-id-sync"
+import {
+  //
+  createStreamIdTracker,
+  fixStreamEventIds,
+} from "~/lib/openai/stream-id-sync"
 
 describe("fixStreamEventIds", () => {
   test("returns data unchanged when event type is not handled", () => {

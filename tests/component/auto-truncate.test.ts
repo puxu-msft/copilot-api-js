@@ -5,13 +5,20 @@
  * token counting, compression, reactive helpers.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import {
+  //
   autoTruncateAnthropic,
   checkNeedsCompactionAnthropic,
   contentToText,
@@ -19,6 +26,7 @@ import {
   countTotalTokens,
 } from "~/lib/anthropic/auto-truncate"
 import {
+  //
   compressCompactedReadResult,
   compressToolResultContent,
   getLearnedLimits,
@@ -28,8 +36,16 @@ import {
   tryParseAndLearnLimit,
 } from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
-import { autoTruncateOpenAI, checkNeedsCompactionOpenAI } from "~/lib/openai/auto-truncate"
-import { state, setStateForTests } from "~/lib/state"
+import {
+  //
+  autoTruncateOpenAI,
+  checkNeedsCompactionOpenAI,
+} from "~/lib/openai/auto-truncate"
+import {
+  //
+  state,
+  setStateForTests,
+} from "~/lib/state"
 
 // Mock model with limits small enough that test payloads exceed them.
 // The GPT tokenizer (o200k_base) tokenizes "x".repeat(10000) as ~1254 tokens,

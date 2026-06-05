@@ -11,11 +11,24 @@
  * - Session management and max entries enforcement
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import type { EndpointType, HistoryEntry, Session } from "~/lib/history"
+import type {
+  //
+  EndpointType,
+  HistoryEntry,
+  Session,
+} from "~/lib/history"
 
 import {
+  //
   clearHistory,
   getCurrentSession,
   getEntry,
@@ -34,7 +47,11 @@ import {
 } from "~/lib/history"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
 import { runReaperOnce } from "~/lib/history/sqlite/reaper"
-import { setStateForTests, state } from "~/lib/state"
+import {
+  //
+  setStateForTests,
+  state,
+} from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
 /** Mark an entry as completed so session stats are persisted to SQLite. */

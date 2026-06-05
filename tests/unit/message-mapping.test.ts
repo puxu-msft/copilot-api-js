@@ -5,9 +5,18 @@
  * Tests: buildMessageMapping, messagesMatch
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { buildMessageMapping, messagesMatch } from "~/lib/anthropic/message-mapping"
+import {
+  //
+  buildMessageMapping,
+  messagesMatch,
+} from "~/lib/anthropic/message-mapping"
 
 // ─── buildMessageMapping ───
 

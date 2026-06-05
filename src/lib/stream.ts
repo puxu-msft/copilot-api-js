@@ -122,3 +122,64 @@ export interface SseFrame {
 export function iterateSseEvents(response: unknown): AsyncIterator<SseFrame> {
   return (response as AsyncIterable<SseFrame>)[Symbol.asyncIterator]()
 }
+
+/**
+ * Wrap an async-iterable SSE source so each `.next()` is raced against an
+ * idle-timeout + abort signal recomputed PER ITERATION.
+ *
+ * `getAbortSignal` is a thunk recomputed per iteration. The shutdown signal
+ * starts out `undefined` and only materializes when Phase 1 of graceful
+ * shutdown begins; baking it in at construction time would leave already-in-
+ * flight requests deaf to the abort signal. Each `.next()` therefore re-asks
+ * for the live signal composition (typically
+ * `combineAbortSignals(getShutdownSignal(), clientAbortSignal)`).
+ *
+ * On idle timeout: rejects with `StreamIdleTimeoutError`.
+ * On abort: yields `{ done: true }` cleanly (no exception). The `STREAM_ABORTED`
+ * sentinel from `raceIteratorNext` is translated here so callers can use a
+ * plain `for await` loop without sentinel-comparison branches.
+ *
+ * `return()` is forwarded to the underlying iterator so resource cleanup
+ * (e.g. closing the upstream connection on early break) still works.
+ */
+export function guardSseIterable<T>(
+  source: AsyncIterable<T>,
+  opts: { idleTimeoutMs: number; getAbortSignal?: () => AbortSignal | undefined },
+): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<T> {
+      const inner = source[Symbol.asyncIterator]()
+      return {
+        async next(): Promise<IteratorResult<T>> {
+          const abortSignal = opts.getAbortSignal?.()
+          const result = await raceIteratorNext(inner.next(), {
+            idleTimeoutMs: opts.idleTimeoutMs,
+            abortSignal,
+          })
+          if (result === STREAM_ABORTED) return { value: undefined as unknown as T, done: true }
+          return result
+        },
+        async return(value?: T): Promise<IteratorResult<T>> {
+          if (inner.return) return inner.return(value)
+          return { value: value as T, done: true }
+        },
+      }
+    },
+  }
+}
+
+// ============================================================================
+// Base stream accumulator interface
+// ============================================================================
+
+/**
+ * Minimal accumulator contract for tracking and error recording.
+ * Shared by Anthropic, OpenAI Chat Completions, and Responses accumulators.
+ */
+export interface BaseStreamAccumulator {
+  model: string
+  inputTokens: number
+  outputTokens: number
+  /** Plain text content accumulated from text deltas (error recording fallback) */
+  rawContent: string
+}

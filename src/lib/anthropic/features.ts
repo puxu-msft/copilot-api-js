@@ -10,8 +10,39 @@
 import type { Model } from "~/lib/models/client"
 import type { ContextEditingMode } from "~/lib/state"
 
+import {
+  //
+  ENDPOINT,
+  isEndpointSupported,
+} from "~/lib/models/endpoint"
 import { normalizeForMatching } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
+
+// ============================================================================
+// API routing
+// ============================================================================
+
+export interface ApiRoutingDecision {
+  supported: boolean
+  reason: string
+}
+
+/**
+ * Check if a model supports direct Anthropic API.
+ * Returns a decision with reason so callers can log/display the routing rationale.
+ */
+export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision {
+  const model = state.modelIndex.get(modelId)
+  if (model?.vendor !== "Anthropic") {
+    return { supported: false, reason: `vendor is "${model?.vendor ?? "unknown"}", not Anthropic` }
+  }
+
+  if (!isEndpointSupported(model, ENDPOINT.MESSAGES)) {
+    return { supported: false, reason: "model does not support /v1/messages endpoint" }
+  }
+
+  return { supported: true, reason: "Anthropic vendor with /v1/messages support" }
+}
 
 // ============================================================================
 // Model Feature Detection

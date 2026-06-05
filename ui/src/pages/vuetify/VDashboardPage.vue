@@ -7,10 +7,11 @@ import { useDashboardStatus } from "@/composables/useDashboardStatus"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { useModelTelemetry } from "@/composables/useModelTelemetry"
 import {
-formatDate,
-formatDuration,
-formatNumber
-} from "@/utils/formatters";
+  //
+  formatDate,
+  formatDuration,
+  formatNumber,
+} from "@/utils/formatters"
 import { formatWsTargetStatus } from "@/utils/ws-status"
 
 const store = useHistoryStore()

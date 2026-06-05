@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
-import { defineCommand, runMain } from "citty"
+import {
+  //
+  defineCommand,
+  runMain,
+} from "citty"
 import consola from "consola"
 
 import { auth } from "./auth"

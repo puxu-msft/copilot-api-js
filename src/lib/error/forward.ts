@@ -27,8 +27,13 @@ import {
  *   `rate_limit_exceeded`, `insufficient_quota`, `context_length_exceeded`)
  *   so the proxy must emit those literals — Anthropic's `rate_limit_error`
  *   is not recognized by OpenAI SDK retry logic.
+ * - `gemini` → `{ error: { code: <http-status>, message, status: <GRPC_STATUS> } }`
+ *   used by `/v1beta/models/*` clients (Gemini CLI, `@google/genai`). The
+ *   `status` field is a gRPC canonical code string (INVALID_ARGUMENT,
+ *   NOT_FOUND, RESOURCE_EXHAUSTED, INTERNAL, UNAVAILABLE, ...). Mapping
+ *   follows https://ai.google.dev/api/rest patterns.
  */
-export type ErrorWireFormat = "anthropic" | "openai"
+export type ErrorWireFormat = "anthropic" | "openai" | "gemini"
 
 /** Copilot error structure */
 interface CopilotError {
@@ -207,6 +212,91 @@ function formatContentFilteredErrorOpenAI(responseText: string) {
 }
 
 // ============================================================================
+// Gemini-shape error envelopes
+// ============================================================================
+// Gemini error reference: https://ai.google.dev/api/rest (errors section).
+// Body shape: `{ error: { code, message, status, details? } }` where `status`
+// is the gRPC canonical-code string. SDK clients (`@google/genai`, Gemini CLI)
+// surface this `status` literal when they raise GoogleGenerativeAIError.
+
+/** Map an HTTP status to a gRPC canonical-code string for the `status` field */
+function geminiStatusFromHttp(status: number): string {
+  if (status === 400) return "INVALID_ARGUMENT"
+  if (status === 401) return "UNAUTHENTICATED"
+  if (status === 403) return "PERMISSION_DENIED"
+  if (status === 404) return "NOT_FOUND"
+  if (status === 408) return "DEADLINE_EXCEEDED"
+  if (status === 409) return "ABORTED"
+  if (status === 412) return "FAILED_PRECONDITION"
+  if (status === 413) return "INVALID_ARGUMENT"
+  if (status === 422) return "INVALID_ARGUMENT"
+  if (status === 429) return "RESOURCE_EXHAUSTED"
+  if (status === 499) return "CANCELLED"
+  if (status === 501) return "UNIMPLEMENTED"
+  if (status === 502) return "UNAVAILABLE"
+  if (status === 503) return "UNAVAILABLE"
+  if (status === 504) return "DEADLINE_EXCEEDED"
+  if (status >= 500) return "INTERNAL"
+  return "UNKNOWN"
+}
+
+function geminiEnvelope(code: number, message: string, status?: string) {
+  return {
+    error: {
+      code,
+      message,
+      status: status ?? geminiStatusFromHttp(code),
+    },
+  }
+}
+
+function formatTokenLimitErrorGemini(current: number, limit: number) {
+  const excess = current - limit
+  const percentage = Math.round((excess / limit) * 100)
+  return geminiEnvelope(
+    400,
+    `The input token count (${current}) exceeds the maximum number of tokens allowed (${limit}). `
+      + `Reduce the input by ${excess} tokens (${percentage}% excess).`,
+    "INVALID_ARGUMENT",
+  )
+}
+
+function formatRequestTooLargeErrorGemini() {
+  return geminiEnvelope(
+    413,
+    "Request payload size exceeds the limit. Try reducing the conversation history or removing large content.",
+    "INVALID_ARGUMENT",
+  )
+}
+
+function formatRateLimitErrorGemini(message?: string) {
+  return geminiEnvelope(429, message ?? "Resource has been exhausted (e.g. check quota).", "RESOURCE_EXHAUSTED")
+}
+
+function formatQuotaExceededErrorGemini(retryAfter?: number) {
+  const retryInfo = retryAfter ? ` Quota resets in approximately ${retryAfter} seconds.` : ""
+  return {
+    ...geminiEnvelope(
+      402,
+      `You have exceeded your usage quota. Please try again later.${retryInfo}`,
+      "RESOURCE_EXHAUSTED",
+    ),
+    ...(retryAfter !== undefined && { retry_after: retryAfter }),
+  }
+}
+
+function formatContentFilteredErrorGemini(responseText: string) {
+  let detail = ""
+  try {
+    const parsed = JSON.parse(responseText) as { error?: { message?: string } }
+    if (parsed.error?.message) detail = `: ${parsed.error.message}`
+  } catch {
+    // Not JSON — use generic message
+  }
+  return geminiEnvelope(422, `Content filtered by safety system${detail}`, "INVALID_ARGUMENT")
+}
+
+// ============================================================================
 // Format dispatcher
 // ============================================================================
 
@@ -246,8 +336,19 @@ const OPENAI_HELPERS: FormatHelpers = {
   }),
 }
 
+const GEMINI_HELPERS: FormatHelpers = {
+  tokenLimit: formatTokenLimitErrorGemini,
+  requestTooLarge: formatRequestTooLargeErrorGemini,
+  rateLimit: formatRateLimitErrorGemini,
+  quotaExceeded: formatQuotaExceededErrorGemini,
+  contentFiltered: formatContentFilteredErrorGemini,
+  defaultError: (message, _isServerError, status) => geminiEnvelope(status, message),
+}
+
 function pickHelpers(format: ErrorWireFormat): FormatHelpers {
-  return format === "openai" ? OPENAI_HELPERS : ANTHROPIC_HELPERS
+  if (format === "openai") return OPENAI_HELPERS
+  if (format === "gemini") return GEMINI_HELPERS
+  return ANTHROPIC_HELPERS
 }
 
 export function forwardError(c: Context, error: unknown, format: ErrorWireFormat = "anthropic") {

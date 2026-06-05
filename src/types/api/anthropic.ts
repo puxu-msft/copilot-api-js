@@ -26,9 +26,13 @@ export type {
 export type {
   ContentBlockParam,
   ImageBlockParam,
+  RedactedThinkingBlockParam,
+  ServerToolUseBlockParam,
   TextBlockParam,
+  ThinkingBlockParam,
   ToolResultBlockParam,
   ToolUseBlockParam,
+  WebSearchToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages"
 
 // Messages
@@ -49,6 +53,7 @@ export type {
 
 // Internal-only SDK imports (not re-exported)
 import type {
+  //
   ContentBlock,
   ContentBlockParam,
   TextBlockParam,

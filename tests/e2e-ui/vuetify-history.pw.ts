@@ -1,7 +1,19 @@
-import { test, expect } from "@playwright/test"
+import {
+  //
+  test,
+  expect,
+} from "@playwright/test"
 
-import { ensureServerRunning, uiUrl } from "./helpers"
-import { createHistoryUiScenario, installHistoryUiMocks } from "./history-mocks"
+import {
+  //
+  ensureServerRunning,
+  uiUrl,
+} from "./helpers"
+import {
+  //
+  createHistoryUiScenario,
+  installHistoryUiMocks,
+} from "./history-mocks"
 
 test.beforeAll(ensureServerRunning)
 

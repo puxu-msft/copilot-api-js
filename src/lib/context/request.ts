@@ -20,6 +20,7 @@ import type {
 } from "~/lib/history/store"
 
 import { getErrorMessage } from "~/lib/error"
+import { HTTPError } from "~/lib/error"
 import { normalizeModelId } from "~/lib/models/resolver"
 
 import type {
@@ -29,6 +30,7 @@ import type {
   HeadersCapture,
   HistoryEntryData,
   OriginalRequest,
+  PartialResponseInfo,
   RequestContext,
   RequestContextEventCallback,
   RequestContextEventData,
@@ -43,6 +45,7 @@ export type {
   HeadersCapture,
   HistoryEntryData,
   OriginalRequest,
+  PartialResponseInfo,
   RequestContext,
   RequestContextEventCallback,
   RequestContextEventData,
@@ -312,7 +315,7 @@ export function createRequestContext(opts: {
       emit({ type: "completed", context: ctx, entry })
     },
 
-    fail(model: string, error: unknown) {
+    fail(model: string, error: unknown, partial?: PartialResponseInfo) {
       if (settled) return
       settled = true
       _endTime = Date.now()
@@ -321,24 +324,18 @@ export function createRequestContext(opts: {
       _response = {
         success: false,
         model: normalizeModelId(model),
-        usage: { input_tokens: 0, output_tokens: 0 },
+        usage: partial?.usage ?? { input_tokens: 0, output_tokens: 0 },
         error: errorMsg,
         content: null,
+        ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
       }
 
       // Preserve upstream HTTP error details as structured fields
-      if (
-        error instanceof Error
-        && "responseText" in error
-        && typeof (error as { responseText: unknown }).responseText === "string"
-      ) {
-        const responseText = (error as { responseText: string }).responseText
-        if (responseText) {
-          _response.responseText = responseText
+      if (error instanceof HTTPError) {
+        if (error.responseText) {
+          _response.responseText = error.responseText
         }
-      }
-      if (error instanceof Error && "status" in error && typeof (error as { status: unknown }).status === "number") {
-        _response.status = (error as { status: number }).status
+        _response.status = error.status
       }
 
       // Drive state via transition() so `state_changed` fires for the

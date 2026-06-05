@@ -1,7 +1,16 @@
 import { defineCommand } from "citty"
 import consola from "consola"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import {
+  //
+  existsSync,
+  readdirSync,
+  readFileSync,
+} from "node:fs"
+import {
+  //
+  dirname,
+  join,
+} from "node:path"
 
 /**
  * Get Claude Code version from package.json

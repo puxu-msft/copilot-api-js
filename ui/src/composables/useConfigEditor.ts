@@ -1,24 +1,27 @@
 import {
-computed,
-ref,
-shallowRef,
-toRaw,
-type ComputedRef,
-type Ref
-} from "vue";
+  //
+  computed,
+  ref,
+  shallowRef,
+  toRaw,
+  type ComputedRef,
+  type Ref,
+} from "vue"
 
 import type {
-PromptOverrideRule,
-ReminderRewriteRule
-} from "@/types/config";
+  //
+  PromptOverrideRule,
+  ReminderRewriteRule,
+} from "@/types/config"
 
 import {
-api,
-ApiError,
-type ConfigValidationError,
-type ConfigYamlResponse,
-type EditableConfig
-} from "@/api/http";
+  //
+  api,
+  ApiError,
+  type ConfigValidationError,
+  type ConfigYamlResponse,
+  type EditableConfig,
+} from "@/api/http"
 import { useToast } from "@/composables/useToast"
 
 export interface UseConfigEditor {

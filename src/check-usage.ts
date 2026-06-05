@@ -6,7 +6,11 @@ import { ensurePaths } from "./lib/config/paths"
 import { initProxy } from "./lib/proxy"
 import { setGitHubToken } from "./lib/state"
 import { GitHubTokenManager } from "./lib/token"
-import { getCopilotUsage, type QuotaDetail } from "./lib/token/copilot-client"
+import {
+  //
+  getCopilotUsage,
+  type QuotaDetail,
+} from "./lib/token/copilot-client"
 import { getGitHubUser } from "./lib/token/github-client"
 
 export const checkUsage = defineCommand({

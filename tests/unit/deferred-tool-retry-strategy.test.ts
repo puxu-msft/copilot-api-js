@@ -14,6 +14,7 @@ import {
   isToolStickyUndeferred,
   resetAnthropicFeatureNegotiationForTesting,
 } from "~/lib/anthropic/feature-negotiation"
+import { HTTPError } from "~/lib/error"
 import {
   //
   applyStickyUndeferredTools,
@@ -29,28 +30,30 @@ afterEach(async () => {
 // Helpers
 // ============================================================================
 
-/** Build an ApiError that mimics HTTPError's shape:
- * `error.raw = { responseText: JSON.stringify({ error: { message } }) }` */
+/**
+ * Build an ApiError that carries a real HTTPError in `raw`. The strategy now
+ * requires `error.raw instanceof HTTPError` (not a duck-typed object), so the
+ * fixture must construct a genuine HTTPError instance.
+ */
 function toolReferenceError(toolName: string): ApiError {
   const msg = `Tool reference '${toolName}' not found in available tools`
+  const responseText = JSON.stringify({ error: { message: msg } })
   return {
     type: "bad_request",
     status: 400,
     message: msg,
-    raw: {
-      responseText: JSON.stringify({ error: { message: msg } }),
-    },
+    raw: new HTTPError(msg, 400, responseText),
   } as unknown as ApiError
 }
 
 function otherBadRequest(): ApiError {
+  const msg = "Invalid request"
+  const responseText = JSON.stringify({ error: { message: msg } })
   return {
     type: "bad_request",
     status: 400,
-    message: "Invalid request",
-    raw: {
-      responseText: JSON.stringify({ error: { message: "Invalid request" } }),
-    },
+    message: msg,
+    raw: new HTTPError(msg, 400, responseText),
   } as unknown as ApiError
 }
 

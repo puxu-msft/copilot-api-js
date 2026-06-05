@@ -1,7 +1,18 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 import { reactive } from "vue"
 
-import type { ConfigYamlResponse, EditableConfig } from "../src/types/config"
+import type {
+  //
+  ConfigYamlResponse,
+  EditableConfig,
+} from "../src/types/config"
 
 const toastShow = mock(() => {})
 const mockFetchConfigYaml = mock<() => Promise<ConfigYamlResponse>>(() => Promise.resolve({}))
@@ -31,8 +42,9 @@ void mock.module("../src/composables/useToast", () => ({
   }),
 }))
 
-const { formatConfigErrorMessage, serializeEditableConfig, useConfigEditor } =
-  await import("../src/composables/useConfigEditor")
+const { formatConfigErrorMessage, serializeEditableConfig, useConfigEditor } = await import(
+  "../src/composables/useConfigEditor"
+)
 
 describe("useConfigEditor", () => {
   beforeEach(() => {

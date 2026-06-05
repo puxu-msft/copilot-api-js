@@ -1,8 +1,17 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { HistoryEntry } from "~/lib/history/types"
 
-import { deserializeEntry, serializeEntry } from "~/lib/history/sqlite/serialize"
+import {
+  //
+  deserializeEntry,
+  serializeEntry,
+} from "~/lib/history/sqlite/serialize"
 
 describe("sqlite/serialize", () => {
   test("round-trips a HistoryEntry losslessly", () => {

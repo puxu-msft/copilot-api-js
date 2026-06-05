@@ -1,9 +1,18 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 import type { FinishReason } from "~/types/api/openai-chat-completions"
 
-import { accumulateOpenAIStreamEvent, createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
+import {
+  //
+  accumulateOpenAIStreamEvent,
+  createOpenAIStreamAccumulator,
+} from "~/lib/openai/stream-accumulator"
 
 // ============================================================================
 // Helpers

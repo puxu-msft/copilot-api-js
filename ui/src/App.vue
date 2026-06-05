@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import { provide, onMounted, onUnmounted } from "vue"
+import {
+  //
+  provide,
+  onMounted,
+  onUnmounted,
+} from "vue"
 
 import NavBar from "@/components/layout/NavBar.vue"
 import BaseToast from "@/components/ui/BaseToast.vue"

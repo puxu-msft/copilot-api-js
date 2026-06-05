@@ -21,6 +21,7 @@ const endpointOptions = [
   { value: "anthropic-messages", label: "Anthropic Messages" },
   { value: "openai-chat-completions", label: "OpenAI Chat Completions" },
   { value: "openai-responses", label: "OpenAI Responses" },
+  { value: "gemini-generate-content", label: "Gemini Generate Content" },
 ]
 
 const statusOptions = [

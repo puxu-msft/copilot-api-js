@@ -13,12 +13,33 @@
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { processAnthropicStream, type ProcessedAnthropicEvent } from "~/lib/anthropic/sse"
+import {
+  //
+  processAnthropicStream,
+  type ProcessedAnthropicEvent,
+} from "~/lib/anthropic/stream"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import { state, setStateForTests } from "~/lib/state"
-import { STREAM_ABORTED, StreamIdleTimeoutError, combineAbortSignals, raceIteratorNext } from "~/lib/stream"
+import {
+  //
+  state,
+  setStateForTests,
+} from "~/lib/state"
+import {
+  //
+  STREAM_ABORTED,
+  StreamIdleTimeoutError,
+  combineAbortSignals,
+  raceIteratorNext,
+} from "~/lib/stream"
 
 // ============================================================================
 // Helpers

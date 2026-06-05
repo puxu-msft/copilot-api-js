@@ -4,7 +4,12 @@
  * Covers: escapeHtml, highlightSearch, formatNumber, formatDuration, formatTime, formatDate
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 // Import the composable — Vue reactivity works in plain Bun tests
 import { useFormatters } from "../src/composables/useFormatters"

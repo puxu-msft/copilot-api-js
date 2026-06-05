@@ -4,20 +4,6 @@
  * Re-exports all history-related types and functions.
  */
 
-// WebSocket
-export {
-  addClient,
-  closeAllClients,
-  getClientCount,
-  notifyEntryAdded,
-  notifyEntryUpdated,
-  notifyHistoryCleared,
-  notifySessionDeleted,
-  notifyStatsUpdated,
-  removeClient,
-} from "../ws"
-
-export type { WSMessage, WSMessageType } from "../ws"
 // Store (persistence and query)
 export {
   clearHistory,
@@ -83,5 +69,6 @@ export type {
   ToolUseContentBlock,
   TruncationInfo,
   UsageData,
+  WarningMessage,
   WebSearchToolResultContentBlock,
 } from "./store"

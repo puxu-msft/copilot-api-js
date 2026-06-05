@@ -1,15 +1,26 @@
-import { afterAll, describe, expect, test } from "bun:test"
+import {
+  //
+  afterAll,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { Tool } from "~/types/api/anthropic"
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import { stripServerTools } from "~/lib/anthropic/message-tools"
 import {
+  //
   createServerToolBlockFilter,
   filterServerToolBlocksFromResponse,
   isServerToolBlock,
 } from "~/lib/anthropic/server-tool-filter"
-import { state, setStateForTests } from "~/lib/state"
+import {
+  //
+  state,
+  setStateForTests,
+} from "~/lib/state"
 
 // Helper to build minimal StreamEvent objects for filter testing.
 // The filter only inspects .type, .index, and .content_block.type —

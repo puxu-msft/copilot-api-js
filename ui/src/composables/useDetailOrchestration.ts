@@ -1,16 +1,22 @@
 import {
-computed,
-type ComputedRef,
-type Ref
-} from "vue";
+  //
+  computed,
+  type ComputedRef,
+  type Ref,
+} from "vue"
 
 import type {
-ContentBlock,
-HistoryEntry,
-MessageContent
-} from "@/types";
+  //
+  ContentBlock,
+  HistoryEntry,
+  MessageContent,
+} from "@/types"
 
-import { isToolResultBlock, isToolUseBlock } from "@/utils/typeGuards"
+import {
+  //
+  isToolResultBlock,
+  isToolUseBlock,
+} from "@/utils/typeGuards"
 
 import { useDetailViewState } from "./useDetailViewState"
 import { usePipelineInfo } from "./usePipelineInfo"

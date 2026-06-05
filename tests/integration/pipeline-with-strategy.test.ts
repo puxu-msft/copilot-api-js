@@ -5,9 +5,21 @@
  * working together. Only mocks the network boundary (adapter.execute).
  */
 
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
-import type { FormatAdapter, RetryStrategy, SanitizeResult } from "~/lib/request/pipeline"
+import type {
+  //
+  FormatAdapter,
+  RetryStrategy,
+  SanitizeResult,
+} from "~/lib/request/pipeline"
 import type { TruncateResult } from "~/lib/request/strategies/auto-truncate"
 
 import { resetAllLimitsForTesting } from "~/lib/auto-truncate"

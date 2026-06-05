@@ -1,7 +1,17 @@
 import { mount } from "@vue/test-utils"
-import { describe, expect, it, vi } from "vitest"
+import {
+  //
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest"
 import { ref } from "vue"
-import { createMemoryHistory, createRouter } from "vue-router"
+import {
+  //
+  createMemoryHistory,
+  createRouter,
+} from "vue-router"
 
 import NavBar from "@/components/layout/NavBar.vue"
 

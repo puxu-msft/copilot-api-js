@@ -5,9 +5,18 @@
  * Tests: createTruncationMarker
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { type TruncateResultInfo, createTruncationMarker } from "~/lib/request/truncation"
+import {
+  //
+  type TruncateResultInfo,
+  createTruncationMarker,
+} from "~/lib/request/truncation"
 
 describe("createTruncationMarker", () => {
   test("returns empty string when wasTruncated is false", () => {

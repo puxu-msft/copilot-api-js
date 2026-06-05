@@ -7,11 +7,20 @@
  * These tests use Vue's ref/computed directly (no component mount needed).
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 // Import ref from the SAME vue instance the composable uses (avoids dual-reactivity-system)
 import { ref } from "vue"
 
-import type { HistoryEntry, MessageContent } from "../src/types"
+import type {
+  //
+  HistoryEntry,
+  MessageContent,
+} from "../src/types"
 
 import { usePipelineInfo } from "../src/composables/usePipelineInfo"
 

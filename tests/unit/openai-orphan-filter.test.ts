@@ -6,9 +6,15 @@
  *        ensureOpenAIStartsWithUser, extractOpenAISystemMessages
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import {
+  //
   ensureOpenAIStartsWithUser,
   extractOpenAISystemMessages,
   filterOpenAIOrphanedToolResults,

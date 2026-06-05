@@ -5,9 +5,16 @@
  * Tests: tryParseAndLearnLimit, constants, limit learning
  */
 
-import { afterEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import {
+  //
   AUTO_TRUNCATE_RETRY_FACTOR,
   MAX_AUTO_TRUNCATE_RETRIES,
   getLearnedLimits,

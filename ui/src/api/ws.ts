@@ -1,4 +1,8 @@
-import type { EntrySummary, HistoryStats } from "@/types"
+import type {
+  //
+  EntrySummary,
+  HistoryStats,
+} from "@/types"
 import type { WSMessage } from "@/types/ws"
 
 /** Active request summary from WS event */

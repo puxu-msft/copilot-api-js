@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import {
-formatDuration,
-formatNumber
-} from "@/utils/formatters";
+  //
+  formatDuration,
+  formatNumber,
+} from "@/utils/formatters"
 
 interface AttemptInfo {
   index: number

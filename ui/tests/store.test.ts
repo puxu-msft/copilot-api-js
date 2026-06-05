@@ -6,10 +6,29 @@
  *         handleEntryUpdated, handleStatsUpdated, computed properties
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test"
-import { createPinia, setActivePinia } from "pinia"
+import {
+  //
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
+import {
+  //
+  createPinia,
+  setActivePinia,
+} from "pinia"
 
-import type { EntrySummary, HistoryEntry, HistoryStats, SummaryResult, SessionResult } from "../src/types"
+import type {
+  //
+  EntrySummary,
+  HistoryEntry,
+  HistoryStats,
+  SummaryResult,
+  SessionResult,
+} from "../src/types"
+
 import { useDetailViewState } from "../src/composables/useDetailViewState"
 
 // ─── Mocks ───

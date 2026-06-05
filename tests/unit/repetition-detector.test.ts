@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { RepetitionDetector, createStreamRepetitionChecker } from "~/lib/repetition-detector"
+import {
+  //
+  RepetitionDetector,
+  createStreamRepetitionChecker,
+} from "~/lib/repetition-detector"
 
 describe("RepetitionDetector", () => {
   test("detects simple pattern repetition", () => {

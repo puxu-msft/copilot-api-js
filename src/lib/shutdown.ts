@@ -21,18 +21,18 @@ import type { TuiLogEntry } from "./tui"
 
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { getRequestContextManager } from "./context/manager"
-import {
-  //
-  closeAllClients,
-  getClientCount,
-  shutdownHistory,
-} from "./history"
+import { shutdownHistory } from "./history"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { shutdownRequestTelemetry } from "./request-telemetry"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
 import { tuiLogger } from "./tui"
-import { notifyShutdownPhaseChangedAndFlush } from "./ws"
+import {
+  //
+  closeAllClients,
+  getClientCount,
+  notifyShutdownPhaseChangedAndFlush,
+} from "./ws"
 
 // ============================================================================
 // Configuration constants

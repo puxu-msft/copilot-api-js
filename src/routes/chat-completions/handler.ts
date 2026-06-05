@@ -42,6 +42,11 @@ import {
 } from "~/lib/openai/auto-truncate"
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import { createResponses } from "~/lib/openai/responses-client"
+import {
+  //
+  extractInputItems,
+  normalizeCallIds,
+} from "~/lib/openai/responses-conversion"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import {
   //
@@ -77,19 +82,13 @@ import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
   //
-  STREAM_ABORTED,
   StreamIdleTimeoutError,
   combineAbortSignals,
-  raceIteratorNext,
+  guardSseIterable,
 } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
-import {
-  //
-  extractInputItems,
-  normalizeCallIds,
-} from "~/routes/responses/pipeline"
 
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
@@ -174,41 +173,89 @@ export async function handleChatCompletion(c: Context) {
     consola.debug("Set max_completion_tokens to:", JSON.stringify(finalPayload.max_completion_tokens))
   }
 
-  if (isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
-    return executeRequest({
-      c,
-      payload: finalPayload,
-      originalPayload,
-      selectedModel,
-      reqCtx,
-    })
-  }
-
-  if (isResponsesSupported(selectedModel)) {
-    if (tuiLogId) {
-      tuiLogger.updateRequest(tuiLogId, { tags: ["via-responses"] })
-    }
-    return executeRequestViaResponses({
-      c,
-      payload: finalPayload,
-      originalPayload,
-      selectedModel,
-      reqCtx,
-    })
-  }
-
-  const msg = `Model "${originalPayload.model}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint`
-  throw new HTTPError(msg, 400, msg)
+  return runChatCompletionPipeline({
+    c,
+    payload: finalPayload,
+    originalPayload,
+    selectedModel,
+    reqCtx,
+    render: defaultChatCompletionRenderer,
+  })
 }
 
-/** Options for executeRequest */
-interface ExecuteRequestOptions {
+/**
+ * Options for runChatCompletionPipeline — the reusable inner pipeline that
+ * other handlers (Gemini, future protocols) can wrap to reuse all of:
+ * model-capability routing, retry strategies, sanitize, auto-truncate,
+ * history recording, rate limiting, and stream/non-stream dispatch.
+ *
+ * The caller is responsible for:
+ * - Parsing and snapshotting their own request body
+ * - Creating the `reqCtx` with the appropriate endpoint type
+ * - Calling `setOriginalRequest()` on `reqCtx` BEFORE invoking the pipeline
+ * - Providing a `render` callback that serializes the raw upstream response
+ *   to the protocol-specific wire format.
+ */
+export interface RunChatCompletionPipelineOptions {
   c: Context
   payload: ChatCompletionsPayload
   originalPayload: ChatCompletionsPayload
   selectedModel: Model | undefined
   reqCtx: RequestContext
+  /** Protocol-specific renderer for the raw upstream result */
+  render: ChatCompletionRenderer
 }
+
+/**
+ * Renderer hook: receives the raw upstream response (already classified as
+ * streaming or not) plus the same context bag used by the default renderer.
+ * Implementations MUST call `reqCtx.complete()` / `reqCtx.fail()` to settle
+ * the request context, and MUST return a `Response`.
+ */
+export interface ChatCompletionRenderer {
+  (args: ChatCompletionRendererArgs): Promise<Response> | Response
+}
+
+export interface ChatCompletionRendererArgs {
+  c: Context
+  /** Raw upstream response — guaranteed shape via `isNonStreaming` guard */
+  response: ChatCompletionResponse | AsyncIterable<ServerSentEventMessage>
+  payload: ChatCompletionsPayload
+  reqCtx: RequestContext
+  truncateResult: OpenAIAutoTruncateResult | undefined
+}
+
+/**
+ * Reusable execution core — dispatches to the appropriate execute path based
+ * on model capability (chat-completions vs responses bridge), runs the retry
+ * pipeline, and hands the raw upstream result to `render` for serialization.
+ *
+ * Throws on pipeline failure (caller should wrap with `forwardError`).
+ */
+export async function runChatCompletionPipeline(opts: RunChatCompletionPipelineOptions): Promise<Response> {
+  const { selectedModel, payload, c } = opts
+
+  if (isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
+    return executeRequest(opts)
+  }
+
+  if (isResponsesSupported(selectedModel)) {
+    if (opts.reqCtx.tuiLogId) {
+      tuiLogger.updateRequest(opts.reqCtx.tuiLogId, { tags: ["via-responses"] })
+    }
+    return executeRequestViaResponses(opts)
+  }
+
+  // No-op reference: forces the unused `c` binding to be tree-shake-visible
+  // when only this branch runs (kept as one statement to avoid touching
+  // unrelated logic in this refactor).
+  void c
+  const msg = `Model "${payload.model}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint`
+  throw new HTTPError(msg, 400, msg)
+}
+
+/** Options for executeRequest */
+type ExecuteRequestOptions = RunChatCompletionPipelineOptions
 
 /**
  * Execute the API call with reactive retry pipeline.
@@ -254,6 +301,7 @@ async function executeRequest(opts: ExecuteRequestOptions) {
     originalPayload,
     selectedModel,
     reqCtx,
+    render: opts.render,
     adapter,
     strategies,
     headersCapture,
@@ -321,6 +369,7 @@ async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
     originalPayload,
     selectedModel,
     reqCtx,
+    render: opts.render,
     adapter,
     strategies,
     headersCapture,
@@ -361,14 +410,14 @@ function createChatCompletionsStrategies(label: string): Array<RetryStrategy<Cha
   ]
 }
 
-interface ExecuteRequestWithAdapterOptions extends ExecuteRequestOptions {
+type ExecuteRequestWithAdapterOptions = ExecuteRequestOptions & {
   adapter: FormatAdapter<ChatCompletionsPayload>
   strategies: Array<RetryStrategy<ChatCompletionsPayload>>
   headersCapture: HeadersCapture
 }
 
 async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions) {
-  const { c, payload, originalPayload, selectedModel, reqCtx, adapter, strategies, headersCapture } = opts
+  const { c, payload, originalPayload, selectedModel, reqCtx, adapter, strategies, headersCapture, render } = opts
 
   // Track truncation result for non-streaming response marker
   let truncateResult: OpenAIAutoTruncateResult | undefined
@@ -399,33 +448,42 @@ async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions)
     // Capture HTTP headers from the final attempt for history recording
     reqCtx.setHttpHeaders(headersCapture)
 
-    const response = result.response
-
-    if (isNonStreaming(response as ChatCompletionResponse | AsyncIterable<unknown>)) {
-      return handleNonStreamingResponse(c, response as ChatCompletionResponse, reqCtx, truncateResult)
-    }
-
-    consola.debug("Streaming response")
-    reqCtx.transition("streaming")
-
-    return streamSSE(c, async (stream) => {
-      const clientAbort = new AbortController()
-      stream.onAbort(() => clientAbort.abort())
-
-      await handleStreamingResponse({
-        stream,
-        response: response as AsyncIterable<ServerSentEventMessage>,
-        payload,
-        reqCtx,
-        truncateResult,
-        clientAbortSignal: clientAbort.signal,
-      })
-    })
+    const response = result.response as ChatCompletionResponse | AsyncIterable<ServerSentEventMessage>
+    return await Promise.resolve(render({ c, response, payload, reqCtx, truncateResult }))
   } catch (error) {
     reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(payload.model, error)
     throw error
   }
+}
+
+/**
+ * Default renderer: serves the response in OpenAI Chat Completions wire
+ * format — non-streaming as JSON, streaming as SSE with raw upstream events
+ * forwarded one-to-one.
+ */
+function defaultChatCompletionRenderer(args: ChatCompletionRendererArgs): Response | Promise<Response> {
+  const { c, response, payload, reqCtx, truncateResult } = args
+  if (isNonStreaming(response)) {
+    return handleNonStreamingResponse(c, response, reqCtx, truncateResult)
+  }
+
+  consola.debug("Streaming response")
+  reqCtx.transition("streaming")
+
+  return streamSSE(c, async (stream) => {
+    const clientAbort = new AbortController()
+    stream.onAbort(() => clientAbort.abort())
+
+    await handleStreamingResponse({
+      stream,
+      response,
+      payload,
+      reqCtx,
+      truncateResult,
+      clientAbortSignal: clientAbort.signal,
+    })
+  })
 }
 
 // Handle non-streaming response
@@ -515,17 +573,12 @@ async function handleStreamingResponse(opts: StreamingOptions) {
       acc.rawContent += marker
     }
 
-    const iterator = response[Symbol.asyncIterator]()
+    const guarded = guardSseIterable(response, {
+      idleTimeoutMs,
+      getAbortSignal: () => combineAbortSignals(getShutdownSignal(), clientAbortSignal),
+    })
 
-    for (;;) {
-      const abortSignal = combineAbortSignals(getShutdownSignal(), clientAbortSignal)
-      const result = await raceIteratorNext(iterator.next(), { idleTimeoutMs, abortSignal })
-
-      if (result === STREAM_ABORTED) break
-      if (result.done) break
-
-      const rawEvent = result.value
-
+    for await (const rawEvent of guarded) {
       bytesIn += rawEvent.data?.length ?? 0
       eventsIn++
 

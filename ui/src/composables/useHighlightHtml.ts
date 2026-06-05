@@ -1,6 +1,15 @@
-import { computed, type Ref, unref } from "vue"
+import {
+  //
+  computed,
+  type Ref,
+  unref,
+} from "vue"
 
-import { escapeHtml, highlightSearch } from "@/utils/formatters"
+import {
+  //
+  escapeHtml,
+  highlightSearch,
+} from "@/utils/formatters"
 
 export function useHighlightHtml(text: Ref<string> | (() => string), searchQuery: Ref<string> | (() => string)) {
   const displayHtml = computed(() => {

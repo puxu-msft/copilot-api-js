@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import type { TruncationInfo } from "@/types"
 
-import { formatDuration, formatNumber } from "@/utils/formatters"
+import {
+  //
+  formatDuration,
+  formatNumber,
+} from "@/utils/formatters"
 
 defineProps<{
   truncation: TruncationInfo

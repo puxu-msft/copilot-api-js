@@ -3,7 +3,7 @@
  * Handles accumulating ChatCompletionChunk events for history recording and tracking.
  */
 
-import type { BaseStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import type { BaseStreamAccumulator } from "~/lib/stream"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
 /** Internal tool call accumulator using string array to avoid O(n²) concatenation */

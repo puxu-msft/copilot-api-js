@@ -1,6 +1,11 @@
 import type { Ref } from "vue"
 
-import type { EntrySummary, HistoryEntry, HistoryStats } from "@/types"
+import type {
+  //
+  EntrySummary,
+  HistoryEntry,
+  HistoryStats,
+} from "@/types"
 
 import { WSClient } from "@/api/ws"
 

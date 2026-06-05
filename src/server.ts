@@ -3,6 +3,8 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { trimTrailingSlash } from "hono/trailing-slash"
 
+import type { ErrorWireFormat } from "./lib/error"
+
 import { applyConfigToState } from "./lib/config/config"
 import { forwardError } from "./lib/error"
 import { state } from "./lib/state"
@@ -13,6 +15,29 @@ import { registerHttpRoutes } from "./routes"
 export interface ServerOptions {
   externalUiUrl?: string
 }
+
+/**
+ * Match the response wire format to the route family so SDK clients see an
+ * envelope they can parse. Default = anthropic (covers `/v1/messages` and any
+ * route not registered to a specific protocol). Used by the global onError
+ * handler so unhandled exceptions still produce a protocol-correct envelope.
+ */
+function detectErrorWireFormat(path: string): ErrorWireFormat {
+  if (path.startsWith("/v1beta")) return "gemini"
+  const openaiPrefixes = [
+    "/chat/completions",
+    "/v1/chat/completions",
+    "/openai",
+    "/responses",
+    "/v1/responses",
+    "/embeddings",
+    "/v1/embeddings",
+  ]
+  if (openaiPrefixes.some((p) => path.startsWith(p))) return "openai"
+  return "anthropic"
+}
+
+export { detectErrorWireFormat }
 
 export function createServer(options: ServerOptions = {}) {
   const server = new Hono()
@@ -28,7 +53,7 @@ export function createServer(options: ServerOptions = {}) {
     }
 
     consola.error(`Unhandled route error in ${c.req.method} ${c.req.path}:`, error)
-    return forwardError(c, error)
+    return forwardError(c, error, detectErrorWireFormat(c.req.path))
   })
 
   // Browser auto-requests (favicon, devtools config) — return 204 silently

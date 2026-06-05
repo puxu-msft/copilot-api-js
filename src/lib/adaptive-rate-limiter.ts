@@ -1,6 +1,6 @@
 import consola from "consola"
 
-import { HTTPError } from "~/lib/error/http-error"
+import { HTTPError } from "~/lib/error"
 import { notifyRateLimiterChanged } from "~/lib/ws"
 
 /**
@@ -120,31 +120,28 @@ export class AdaptiveRateLimiter {
     isRateLimit: boolean
     retryAfter?: number
   } {
-    if (error && typeof error === "object") {
-      // Check HTTPError
-      if ("status" in error && error.status === 429) {
-        // Try to extract Retry-After from response headers or body
+    if (error instanceof HTTPError) {
+      // 429 Too Many Requests
+      if (error.status === 429) {
         const retryAfter = this.extractRetryAfter(error)
         return { isRateLimit: true, retryAfter }
       }
-      // Check nested error structure from Copilot
-      if ("responseText" in error && typeof error.responseText === "string") {
-        try {
-          const parsed: unknown = JSON.parse(error.responseText)
-          if (
-            parsed
-            && typeof parsed === "object"
-            && "error" in parsed
-            && parsed.error
-            && typeof parsed.error === "object"
-            && "code" in parsed.error
-            && parsed.error.code === "rate_limited"
-          ) {
-            return { isRateLimit: true }
-          }
-        } catch {
-          // Not JSON, ignore
+      // Nested error structure from Copilot
+      try {
+        const parsed: unknown = JSON.parse(error.responseText)
+        if (
+          parsed
+          && typeof parsed === "object"
+          && "error" in parsed
+          && parsed.error
+          && typeof parsed.error === "object"
+          && "code" in parsed.error
+          && parsed.error.code === "rate_limited"
+        ) {
+          return { isRateLimit: true }
         }
+      } catch {
+        // Not JSON, ignore
       }
     }
     return { isRateLimit: false }
@@ -154,30 +151,27 @@ export class AdaptiveRateLimiter {
    * Extract Retry-After value from error response
    */
   private extractRetryAfter(error: unknown): number | undefined {
-    if (!error || typeof error !== "object") return undefined
+    if (!(error instanceof HTTPError)) return undefined
 
-    // Check responseText for JSON with retry_after field
-    if ("responseText" in error && typeof error.responseText === "string") {
-      try {
-        const parsed: unknown = JSON.parse(error.responseText)
-        if (parsed && typeof parsed === "object" && "retry_after" in parsed && typeof parsed.retry_after === "number") {
-          return parsed.retry_after
-        }
-        // Also check nested error.retry_after
-        if (
-          parsed
-          && typeof parsed === "object"
-          && "error" in parsed
-          && parsed.error
-          && typeof parsed.error === "object"
-          && "retry_after" in parsed.error
-          && typeof parsed.error.retry_after === "number"
-        ) {
-          return parsed.error.retry_after
-        }
-      } catch {
-        // Not JSON, ignore
+    try {
+      const parsed: unknown = JSON.parse(error.responseText)
+      if (parsed && typeof parsed === "object" && "retry_after" in parsed && typeof parsed.retry_after === "number") {
+        return parsed.retry_after
       }
+      // Also check nested error.retry_after
+      if (
+        parsed
+        && typeof parsed === "object"
+        && "error" in parsed
+        && parsed.error
+        && typeof parsed.error === "object"
+        && "retry_after" in parsed.error
+        && typeof parsed.error.retry_after === "number"
+      ) {
+        return parsed.error.retry_after
+      }
+    } catch {
+      // Not JSON, ignore
     }
 
     return undefined

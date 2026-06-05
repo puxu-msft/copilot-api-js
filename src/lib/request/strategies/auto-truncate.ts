@@ -86,34 +86,41 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
 
       const parsed = tryParseAndLearnLimit(rawError, model.id, true, estimatedTokens)
 
+      // Helper closure: run truncation + re-sanitize and assemble a RetryAction.
+      // Used by both branches below (parsed token limit + 413 fallback).
+      const truncateAndBuildRetry = async (targetTokenLimit: number | undefined): Promise<RetryAction<TPayload>> => {
+        // Truncate from original payload (not from already-truncated)
+        const truncateResult = await truncate(originalPayload, model, {
+          checkTokenLimit: true,
+          ...(targetTokenLimit !== undefined && { targetTokenLimit }),
+        })
+
+        if (!truncateResult.wasTruncated) {
+          return { action: "abort", error }
+        }
+
+        const sanitizeResult = resanitize(truncateResult.payload)
+        return {
+          action: "retry",
+          payload: sanitizeResult.payload,
+          meta: {
+            truncateResult,
+            sanitization: sanitizeResult.stats ?? {
+              totalBlocksRemoved: sanitizeResult.blocksRemoved,
+              systemReminderRemovals: sanitizeResult.systemReminderRemovals,
+            },
+            attempt: attempt + 1,
+          },
+        }
+      }
+
       if (!parsed) {
         // For 413 errors without parseable limit info, still retry with truncation
         if (rawError.status === 413) {
           consola.info(
             `[${label}] Attempt ${attempt + 1}/${maxRetries + 1}: ` + `413 Body too large, retrying with truncation...`,
           )
-
-          const truncateResult = await truncate(originalPayload, model, {
-            checkTokenLimit: true,
-          })
-
-          if (!truncateResult.wasTruncated) {
-            return { action: "abort", error }
-          }
-
-          const sanitizeResult = resanitize(truncateResult.payload)
-          return {
-            action: "retry",
-            payload: sanitizeResult.payload,
-            meta: {
-              truncateResult,
-              sanitization: sanitizeResult.stats ?? {
-                totalBlocksRemoved: sanitizeResult.blocksRemoved,
-                systemReminderRemovals: sanitizeResult.systemReminderRemovals,
-              },
-              attempt: attempt + 1,
-            },
-          }
+          return truncateAndBuildRetry(undefined)
         }
 
         return { action: "abort", error }
@@ -131,32 +138,7 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
         )
       }
 
-      // Truncate from original payload (not from already-truncated)
-      const truncateResult = await truncate(originalPayload, model, {
-        checkTokenLimit: true,
-        targetTokenLimit,
-      })
-
-      if (!truncateResult.wasTruncated) {
-        // Truncation didn't help
-        return { action: "abort", error }
-      }
-
-      // Re-sanitize the truncated payload
-      const sanitizeResult = resanitize(truncateResult.payload)
-
-      return {
-        action: "retry",
-        payload: sanitizeResult.payload,
-        meta: {
-          truncateResult,
-          sanitization: sanitizeResult.stats ?? {
-            totalBlocksRemoved: sanitizeResult.blocksRemoved,
-            systemReminderRemovals: sanitizeResult.systemReminderRemovals,
-          },
-          attempt: attempt + 1,
-        },
-      }
+      return truncateAndBuildRetry(targetTokenLimit)
     },
   }
 }

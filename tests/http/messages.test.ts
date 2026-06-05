@@ -1,14 +1,33 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
-import { type StateSnapshot, restoreStateForTests, setModels, snapshotStateForTests } from "~/lib/state"
+import {
+  //
+  type StateSnapshot,
+  restoreStateForTests,
+  setModels,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"
+import {
+  //
+  bootstrapTestRuntime,
+  resetTestRuntime,
+} from "../helpers/test-bootstrap"
 
 let capturedPayload: MessagesPayload | undefined
 
@@ -114,7 +133,6 @@ function createMockAnthropicStream(model: string): AsyncGenerator<ServerSentEven
   })()
 }
 
-// eslint-disable-next-line @typescript-eslint/no-floating-promises -- Bun hoists module mocks before imports
 mock.module("~/lib/anthropic/client", () => ({
   createAnthropicMessages: createAnthropicMessagesMock,
   prepareAnthropicRequest,
@@ -291,5 +309,36 @@ describe("POST /v1/messages", () => {
         message: "anthropic upstream exploded",
       },
     })
+  })
+
+  test("POST /anthropic/v1/messages alias reaches the same handler", async () => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-sonnet-4.6", {
+          vendor: "Anthropic",
+          supported_endpoints: ["/v1/messages"],
+        }),
+      ],
+    })
+
+    const res = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "Hello via /anthropic alias" }],
+        max_tokens: 32,
+        stream: false,
+      }),
+    })
+
+    const body = (await res.json()) as MessagesHttpBody
+
+    expect(res.status).toBe(200)
+    expect(body.id).toBe("msg-http-test")
+    expect(body.model).toBe("claude-sonnet-4.6")
+    expect(createAnthropicMessagesMock).toHaveBeenCalledTimes(1)
+    expect(capturedPayload?.model).toBe("claude-sonnet-4.6")
   })
 })

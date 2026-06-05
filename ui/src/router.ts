@@ -1,4 +1,9 @@
-import { createRouter, createWebHashHistory } from "vue-router"
+import {
+  //
+  createRouter,
+  createWebHashHistory,
+} from "vue-router"
+
 import { resolveRouterBase } from "@/utils/router-base"
 
 const router = createRouter({
@@ -41,7 +46,7 @@ const router = createRouter({
     { path: "/v/dashboard", redirect: "/dashboard" },
     { path: "/v/activity", redirect: "/activity" },
     { path: "/v/history", redirect: "/activity" },
-    { path: "/v/history/:id", redirect: (to) => `/activity/${to.params.id}` },
+    { path: "/v/history/:id", redirect: (to) => `/activity/${String(to.params.id)}` },
     { path: "/v/config", redirect: "/config" },
     { path: "/v/models", redirect: "/models" },
     { path: "/v/usage", redirect: "/dashboard" },

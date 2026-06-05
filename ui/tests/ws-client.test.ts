@@ -2,7 +2,15 @@
  * Tests for WSClient — connection lifecycle, message dispatch, reconnect logic.
  */
 
-import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+  mock,
+  beforeEach,
+  afterEach,
+} from "bun:test"
 
 // ─── WebSocket mock ───
 

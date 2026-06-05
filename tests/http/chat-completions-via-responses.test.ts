@@ -1,16 +1,37 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
+import {
+  //
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test"
 import consola from "consola"
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { getHistory } from "~/lib/history"
-import { type StateSnapshot, restoreStateForTests, setModels, snapshotStateForTests } from "~/lib/state"
+import {
+  //
+  type StateSnapshot,
+  restoreStateForTests,
+  setModels,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"
+import {
+  //
+  bootstrapTestRuntime,
+  resetTestRuntime,
+} from "../helpers/test-bootstrap"
 
 let capturedResponsesPayload: ResponsesPayload | undefined
 const createChatCompletionsMock = mock(async (_payload: ChatCompletionsPayload) => {
@@ -114,12 +135,10 @@ function createMockResponsesStream(model: string): AsyncGenerator<ServerSentEven
   })()
 }
 
-// eslint-disable-next-line @typescript-eslint/no-floating-promises -- Bun hoists module mocks before imports
 mock.module("~/lib/openai/chat-completions-client", () => ({
   createChatCompletions: createChatCompletionsMock,
 }))
 
-// eslint-disable-next-line @typescript-eslint/no-floating-promises -- Bun hoists module mocks before imports
 mock.module("~/lib/openai/responses-client", () => ({
   createResponses: createResponsesMock,
 }))

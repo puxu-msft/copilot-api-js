@@ -7,11 +7,21 @@
  *         normalizeToContentBlocks
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import type { ContentBlock, MessageContent } from "../src/types"
+import type {
+  //
+  ContentBlock,
+  MessageContent,
+} from "../src/types"
 
 import {
+  //
   isTextBlock,
   isThinkingBlock,
   isRedactedThinkingBlock,

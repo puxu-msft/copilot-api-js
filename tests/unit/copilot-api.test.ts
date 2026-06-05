@@ -1,8 +1,17 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { State } from "~/lib/state"
 
 import {
+  //
   cacheVSCodeVersion,
   copilotBaseUrl,
   copilotHeaders,
@@ -11,7 +20,13 @@ import {
   githubHeaders,
   standardHeaders,
 } from "~/lib/copilot-api"
-import { restoreStateForTests, setStateForTests, snapshotStateForTests, state } from "~/lib/state"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  state,
+} from "~/lib/state"
 
 /**
  * Unit tests for `~/lib/copilot-api` request header generation.

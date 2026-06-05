@@ -1,10 +1,35 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
-
-import type { HistoryEntry, HistoryStats } from "~/lib/history"
-
-import { clearHistory, getCurrentSession, initHistory, insertEntry } from "~/lib/history"
-import { _resetRequestTelemetryForTests, recordAcceptedRequest, recordSettledRequest } from "~/lib/request-telemetry"
 import {
+  //
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
+
+import type {
+  //
+  HistoryEntry,
+  HistoryStats,
+} from "~/lib/history"
+
+import {
+  //
+  clearHistory,
+  getCurrentSession,
+  initHistory,
+  insertEntry,
+} from "~/lib/history"
+import {
+  //
+  _resetRequestTelemetryForTests,
+  recordAcceptedRequest,
+  recordSettledRequest,
+} from "~/lib/request-telemetry"
+import {
+  //
   type StateSnapshot,
   restoreStateForTests,
   setModels,
@@ -14,7 +39,11 @@ import {
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"
-import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"
+import {
+  //
+  bootstrapTestRuntime,
+  resetTestRuntime,
+} from "../helpers/test-bootstrap"
 
 const getCopilotUsageMock = mock(async () => ({
   copilot_plan: "individual",
@@ -53,7 +82,6 @@ const getCopilotUsageMock = mock(async () => ({
   },
 }))
 
-// eslint-disable-next-line @typescript-eslint/no-floating-promises -- Bun hoists module mocks before imports
 mock.module("~/lib/token/copilot-client", () => ({
   getCopilotUsage: getCopilotUsageMock,
 }))

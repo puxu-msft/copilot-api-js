@@ -2,7 +2,11 @@
 import { computed } from "vue"
 import VueJsonPretty from "vue-json-pretty"
 
-import type { ToolUseContentBlock, ToolResultContentBlock } from "@/types"
+import type {
+  //
+  ToolUseContentBlock,
+  ToolResultContentBlock,
+} from "@/types"
 
 import { useContentContext } from "@/composables/useContentContext"
 
@@ -17,7 +21,25 @@ const props = defineProps<{
 
 const { aggregateTools, toolResultMap, scrollToResult } = useContentContext()
 
+/**
+ * Parse-error marker injected by backend `safeParseJson` when streamed tool_use
+ * input could not be parsed as JSON (e.g. interrupted mid-stream).
+ */
+interface ParseErrorInput {
+  _parseError: true
+  _rawInput: string
+}
+
+const parseError = computed<ParseErrorInput | null>(() => {
+  const input = props.block.input
+  if (input !== null && typeof input === "object" && (input as { _parseError?: unknown })._parseError === true) {
+    return input as ParseErrorInput
+  }
+  return null
+})
+
 const inputJson = computed(() => {
+  if (parseError.value) return parseError.value._rawInput
   try {
     return JSON.stringify(props.block.input, null, 2)
   } catch {
@@ -26,6 +48,7 @@ const inputJson = computed(() => {
 })
 
 const isObjectInput = computed(() => {
+  if (parseError.value) return false
   return props.block.input !== null && typeof props.block.input === "object"
 })
 
@@ -60,6 +83,12 @@ const hasResult = computed(() => Boolean(resultBlock.value))
       :show-line-number="true"
       :collapsed-on-click-brackets="true"
     />
+    <template v-else-if="parseError">
+      <div class="parse-error-banner">
+        ⚠ Failed to parse tool input as JSON — showing raw streamed text (may be truncated)
+      </div>
+      <pre class="tool-input parse-error-raw">{{ parseError._rawInput }}</pre>
+    </template>
     <pre
       v-else
       class="tool-input"
@@ -110,6 +139,21 @@ const hasResult = computed(() => Boolean(resultBlock.value))
 .tool-input {
   font-size: var(--font-size-sm);
   color: var(--text);
+}
+
+.parse-error-banner {
+  font-size: var(--font-size-xs);
+  color: var(--warning);
+  background: var(--warning-muted);
+  border-left: 3px solid var(--warning);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  margin-bottom: var(--spacing-xs);
+  font-family: var(--font-mono);
+}
+
+.parse-error-raw {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .tool-aggregate-result {

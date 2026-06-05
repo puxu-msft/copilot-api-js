@@ -1,8 +1,18 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { HistoryEntry } from "~/lib/history/types"
 
-import { closeDatabase, openInMemoryDatabase } from "~/lib/history/sqlite/connection"
+import {
+  //
+  closeDatabase,
+  openInMemoryDatabase,
+} from "~/lib/history/sqlite/connection"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
 import { runReaperOnce } from "~/lib/history/sqlite/reaper"
 import { insertCompletedEntry } from "~/lib/history/sqlite/write"

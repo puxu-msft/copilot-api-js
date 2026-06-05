@@ -4,12 +4,24 @@
  * Tests: createRequestContextManager, event forwarding, lifecycle management
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { RequestContextEvent } from "~/lib/context/manager"
 
 import { createRequestContextManager } from "~/lib/context/manager"
-import { state, setStateForTests } from "~/lib/state"
+import {
+  //
+  state,
+  setStateForTests,
+} from "~/lib/state"
 
 import { waitUntil } from "../helpers/wait-until"
 

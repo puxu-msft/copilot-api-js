@@ -1,20 +1,24 @@
 import type {
+  //
   ComputedRef,
-  Ref
-} from "vue";
+  Ref,
+} from "vue"
+
 import {
+  //
   afterEach,
   beforeEach,
   describe,
   expect,
   it,
-  vi
-} from "vitest";
+  vi,
+} from "vitest"
 import {
+  //
   computed,
   nextTick,
-  ref
-} from "vue";
+  ref,
+} from "vue"
 
 type ThemeMock = {
   change: ReturnType<typeof vi.fn<(name: string) => void>>

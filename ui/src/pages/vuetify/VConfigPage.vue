@@ -1,7 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue"
+import {
+  //
+  computed,
+  onMounted,
+} from "vue"
 
-import type { EditableConfig, KeyValueEntry, PromptOverrideRule, ReminderRewriteRule } from "@/types/config"
+import type {
+  //
+  EditableConfig,
+  KeyValueEntry,
+  PromptOverrideRule,
+  ReminderRewriteRule,
+} from "@/types/config"
 
 import ConfigEnum from "@/components/config/ConfigEnum.vue"
 import ConfigKeyValueList from "@/components/config/ConfigKeyValueList.vue"

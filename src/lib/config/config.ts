@@ -11,7 +11,6 @@
 import consola from "consola"
 import fs from "node:fs/promises"
 
-import { setHistoryMaxEntries } from "~/lib/history"
 import {
   //
   type CompiledRewriteRule,
@@ -307,7 +306,6 @@ export async function applyConfigToState(): Promise<Config> {
     const h = config.history
     if (h.limit !== undefined) {
       setHistoryConfig({ historyLimit: h.limit })
-      setHistoryMaxEntries(h.limit)
     }
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })

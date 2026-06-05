@@ -5,16 +5,35 @@
  * assumptions, using live model data from the Copilot API.
  */
 
-import { beforeAll, describe, expect, test } from "bun:test"
+import {
+  //
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 
 import { getModels } from "~/lib/models/client"
-import { ENDPOINT, isEndpointSupported, isResponsesSupported } from "~/lib/models/endpoint"
-import { setModels, setStateForTests } from "~/lib/state"
+import {
+  //
+  ENDPOINT,
+  isEndpointSupported,
+  isResponsesSupported,
+} from "~/lib/models/endpoint"
+import {
+  //
+  setModels,
+  setStateForTests,
+} from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
-import { getE2EMode, getGitHubToken } from "./config"
+import {
+  //
+  getE2EMode,
+  getGitHubToken,
+} from "./config"
 
 // Skip all tests if no token available
 const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip

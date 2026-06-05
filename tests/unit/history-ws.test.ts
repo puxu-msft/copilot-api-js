@@ -5,11 +5,23 @@
  *        notifyEntryAdded, notifyEntryUpdated, notifyStatsUpdated
  */
 
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
-import type { EntrySummary, HistoryStats } from "~/lib/history/store"
+import type {
+  //
+  EntrySummary,
+  HistoryStats,
+} from "~/lib/history/store"
 
 import {
+  //
   addClient,
   closeAllClients,
   getClientCount,

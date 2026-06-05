@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { collectAllMatching, findMostSpecific } from "~/lib/anthropic/per-model-config"
+import {
+  //
+  collectAllMatching,
+  findMostSpecific,
+} from "~/lib/anthropic/per-model-config"
 
 describe("findMostSpecific", () => {
   test("returns undefined when no key matches and no wildcard", () => {

@@ -4,19 +4,32 @@
  * Covers both config loading/compilation and `~/lib/system-prompt` behavior.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
 import {
+  //
   compileRewriteRules,
   loadConfig,
   resetApplyState,
   resetConfigCache,
   type RewriteRule,
 } from "~/lib/config/config"
-import { applyOverrides, processAnthropicSystem, processOpenAIMessages } from "~/lib/system-prompt"
+import {
+  //
+  applyOverrides,
+  processAnthropicSystem,
+  processOpenAIMessages,
+} from "~/lib/system-prompt"
 
 // ============================================================================
 // Helpers

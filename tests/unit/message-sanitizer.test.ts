@@ -1,9 +1,21 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import type { MessageParam, MessagesPayload } from "~/types/api/anthropic"
+import type {
+  //
+  MessageParam,
+  MessagesPayload,
+} from "~/types/api/anthropic"
 import type { Message } from "~/types/api/openai-chat-completions"
 
 import {
+  //
   ensureAnthropicStartsWithUser,
   filterAnthropicOrphanedToolResults,
   filterAnthropicOrphanedToolUse,
@@ -12,6 +24,7 @@ import {
 } from "~/lib/anthropic/auto-truncate"
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import {
+  //
   ensureOpenAIStartsWithUser,
   extractOpenAISystemMessages,
   filterOpenAIOrphanedToolResults,
@@ -19,8 +32,13 @@ import {
   getOpenAIToolCallIds,
   getOpenAIToolResultIds,
 } from "~/lib/openai/orphan-filter"
-import { state, setStateForTests } from "~/lib/state"
 import {
+  //
+  state,
+  setStateForTests,
+} from "~/lib/state"
+import {
+  //
   extractLeadingSystemReminderTags,
   extractTrailingSystemReminderTags,
   removeSystemReminderTags,

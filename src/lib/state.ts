@@ -4,8 +4,6 @@ import type {
   ModelsResponse,
 } from "~/lib/models/client"
 
-import { setHistoryMaxEntries } from "~/lib/history"
-
 import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
 import type {
   //
@@ -605,7 +603,30 @@ export function setModelPreference(modelPreference: Record<"opus" | "sonnet" | "
 export function setHistoryConfig(
   patch: Partial<Pick<MutableState, "historyLimit" | "historyReaperInterval" | "historyDbPath">>,
 ): void {
+  const limitChanged = patch.historyLimit !== undefined && patch.historyLimit !== mutableState.historyLimit
   updateState(patch)
+  if (limitChanged) {
+    for (const listener of historyLimitListeners) listener(mutableState.historyLimit)
+  }
+}
+
+/**
+ * Listeners notified when `historyLimit` changes.
+ * Used by the history module to retune its reaper without a circular import.
+ */
+const historyLimitListeners = new Set<(limit: number) => void>()
+
+/**
+ * Subscribe to `historyLimit` changes.
+ *
+ * The listener is invoked synchronously once on registration with the current
+ * value, so subscribers that register after `resetConfigManagedState()` still
+ * pick up the initial limit. Returns an unsubscribe function.
+ */
+export function onHistoryLimitChange(listener: (limit: number) => void): () => void {
+  historyLimitListeners.add(listener)
+  listener(mutableState.historyLimit)
+  return () => historyLimitListeners.delete(listener)
 }
 
 export function setShutdownConfig(
@@ -810,7 +831,6 @@ export function resetConfigManagedState(): void {
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   })
-  setHistoryMaxEntries(CONFIG_MANAGED_DEFAULTS.historyLimit)
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,

@@ -8,7 +8,11 @@
 
 import { Hono } from "hono"
 
-import { getHistorySummaries, isHistoryEnabled } from "~/lib/history"
+import {
+  //
+  getHistorySummaries,
+  isHistoryEnabled,
+} from "~/lib/history"
 
 export const logsRoutes = new Hono()
 

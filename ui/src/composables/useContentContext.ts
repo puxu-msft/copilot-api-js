@@ -1,4 +1,10 @@
-import { provide, inject, type Ref, type InjectionKey } from "vue"
+import {
+  //
+  provide,
+  inject,
+  type Ref,
+  type InjectionKey,
+} from "vue"
 
 import type { ContentBlock } from "@/types"
 

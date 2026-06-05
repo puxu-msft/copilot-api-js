@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import {
-ref,
-computed,
-onMounted,
-onUnmounted
-} from "vue";
+  //
+  ref,
+  computed,
+  onMounted,
+  onUnmounted,
+} from "vue"
 
 import type { MessageContent } from "@/types"
 

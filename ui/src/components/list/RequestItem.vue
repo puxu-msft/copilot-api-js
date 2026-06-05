@@ -5,10 +5,11 @@ import BaseBadge from "@/components/ui/BaseBadge.vue"
 import StatusDot from "@/components/ui/StatusDot.vue"
 import { getStatusClass } from "@/composables/useHistoryStore"
 import {
-formatDate,
-formatDuration,
-formatNumber
-} from "@/utils/formatters";
+  //
+  formatDate,
+  formatDuration,
+  formatNumber,
+} from "@/utils/formatters"
 
 defineProps<{
   entry: EntrySummary
@@ -48,6 +49,7 @@ defineEmits<{
         :color="
           entry.endpoint === 'anthropic-messages' ? 'purple'
           : entry.endpoint === 'openai-responses' ? 'green'
+          : entry.endpoint === 'gemini-generate-content' ? 'orange'
           : 'cyan'
         "
       >

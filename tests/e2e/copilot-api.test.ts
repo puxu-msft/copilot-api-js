@@ -7,19 +7,42 @@
  * Run with: bun test tests/integration/copilot-api.test.ts
  */
 
-import { describe, test, expect, beforeAll } from "bun:test"
+import {
+  //
+  describe,
+  test,
+  expect,
+  beforeAll,
+} from "bun:test"
 
-import type { MessagesPayload, Message as AnthropicResponse } from "~/types/api/anthropic"
-import type { ChatCompletionsPayload, ChatCompletionResponse } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  MessagesPayload,
+  Message as AnthropicResponse,
+} from "~/types/api/anthropic"
+import type {
+  //
+  ChatCompletionsPayload,
+  ChatCompletionResponse,
+} from "~/types/api/openai-chat-completions"
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
-import { supportsDirectAnthropicApi } from "~/lib/anthropic/sse"
+import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { getModels } from "~/lib/models/client"
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
-import { setModels, setStateForTests, state } from "~/lib/state"
+import {
+  //
+  setModels,
+  setStateForTests,
+  state,
+} from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
-import { getE2EMode, getGitHubToken } from "./config"
+import {
+  //
+  getE2EMode,
+  getGitHubToken,
+} from "./config"
 
 // Helper to assert non-streaming response
 function assertNonStreamingResponse(response: ChatCompletionResponse | AsyncIterable<unknown>): ChatCompletionResponse {

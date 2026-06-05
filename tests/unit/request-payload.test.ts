@@ -1,11 +1,23 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test"
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { logPayloadSizeInfo, logPayloadSizeInfoAnthropic } from "~/lib/request/payload"
+import {
+  //
+  logPayloadSizeInfo,
+  logPayloadSizeInfoAnthropic,
+} from "~/lib/request/payload"
 
 function createNoopLog() {
   return Object.assign((..._: Array<any>) => {}, { raw: (..._: Array<any>) => {} })

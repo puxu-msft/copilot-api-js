@@ -88,6 +88,29 @@ export default defineConfigWithVueTs(
       "@typescript-eslint/no-unsafe-argument": "off",
       "@typescript-eslint/no-unsafe-return": "off",
       "@typescript-eslint/await-thenable": "off",
+      // Project prefers async/await framing even when a body has no await —
+      // keeps signatures uniform and future-proof if the impl later awaits.
+      "@typescript-eslint/require-await": "off",
+    },
+  },
+  {
+    // Test files legitimately use `as any` for fixtures, `!` for narrowing
+    // known-good test data, and mocks that don't need the same strictness
+    // as production code. Mirrors the same relaxations applied to ui/**/*.vue.
+    files: ["**/*.test.ts", "**/*.test.js", "tests/**/*.ts", "ui/tests/**/*.ts", "ui/vitest/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-non-null-assertion": "off",
+      "@typescript-eslint/no-unnecessary-condition": "off",
+      "@typescript-eslint/no-confusing-void-expression": "off",
+      "@typescript-eslint/no-floating-promises": "off",
+      "@typescript-eslint/use-unknown-in-catch-callback-variable": "off",
+      "@typescript-eslint/no-unnecessary-type-conversion": "off",
+      "@typescript-eslint/unbound-method": "off",
+      "@typescript-eslint/no-deprecated": "off",
+      "unicorn/no-array-callback-reference": "off",
+      "no-nested-ternary": "off",
+      "no-useless-assignment": "off",
     },
   },
 )

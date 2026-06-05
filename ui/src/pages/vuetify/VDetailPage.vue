@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import {
-computed,
-watch,
-shallowRef
-} from "vue";
+  //
+  computed,
+  watch,
+  shallowRef,
+} from "vue"
 import {
-useRoute,
-useRouter
-} from "vue-router";
+  //
+  useRoute,
+  useRouter,
+} from "vue-router"
 
 import DetailPanel from "@/components/detail/DetailPanel.vue"
 import TocTree from "@/components/detail/TocTree.vue"
@@ -16,10 +18,11 @@ import { useHistoryStore } from "@/composables/useHistoryStore"
 import { useTocTree } from "@/composables/useTocTree"
 import { downloadEntryAsJson } from "@/utils/export-entry"
 import {
-formatDate,
-formatDuration,
-formatNumber
-} from "@/utils/formatters";
+  //
+  formatDate,
+  formatDuration,
+  formatNumber,
+} from "@/utils/formatters"
 
 const route = useRoute()
 const router = useRouter()

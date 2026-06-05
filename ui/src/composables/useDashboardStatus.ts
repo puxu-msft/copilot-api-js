@@ -1,7 +1,20 @@
-import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue"
+import {
+  //
+  computed,
+  onMounted,
+  onUnmounted,
+  ref,
+  shallowRef,
+} from "vue"
 
 import { api } from "@/api/http"
-import { WSClient, type ActiveRequestChangedInfo, type ActiveRequestInfo, type RateLimiterChangeInfo } from "@/api/ws"
+import {
+  //
+  WSClient,
+  type ActiveRequestChangedInfo,
+  type ActiveRequestInfo,
+  type RateLimiterChangeInfo,
+} from "@/api/ws"
 import { usePolling } from "@/composables/usePolling"
 import { formatNumber } from "@/utils/formatters"
 
@@ -310,7 +323,8 @@ export function useDashboardStatus() {
   }
 
   function formatMetric(value: unknown): string {
-    return formatNumber(typeof value === "number" || value == null ? value : Number(value))
+    const normalized = typeof value === "number" || value === null || value === undefined ? value : Number(value)
+    return formatNumber(normalized)
   }
 
   return {

@@ -1,0 +1,60 @@
+import { Hono } from "hono"
+
+import type { Model } from "~/lib/models/client"
+
+import { forwardError } from "~/lib/error"
+import { state } from "~/lib/state"
+
+import { ensureModels } from "./shared"
+
+/** Strip internal fields that should not be exposed to external consumers. */
+function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
+  const { request_headers: _requestHeaders, ...rest } = model
+  return rest
+}
+
+// ============================================================================
+// Internal format (/api/models) — full Copilot model data
+// ============================================================================
+
+export const internalModelsRoutes = new Hono()
+
+internalModelsRoutes.get("/", async (c) => {
+  try {
+    await ensureModels()
+
+    return c.json({
+      object: state.models?.object ?? "list",
+      data: state.models?.data.map((model) => stripInternalFields(model)) ?? [],
+    })
+  } catch (error) {
+    return forwardError(c, error)
+  }
+})
+
+internalModelsRoutes.get("/:model", async (c) => {
+  try {
+    await ensureModels()
+
+    const modelId = c.req.param("model")
+    const model = state.modelIndex.get(modelId)
+
+    if (!model) {
+      return c.json(
+        {
+          error: {
+            message: `The model '${modelId}' does not exist`,
+            type: "invalid_request_error",
+            param: "model",
+            code: "model_not_found",
+          },
+        },
+        404,
+      )
+    }
+
+    return c.json(stripInternalFields(model))
+  } catch (error) {
+    return forwardError(c, error)
+  }
+})

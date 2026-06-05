@@ -1,8 +1,25 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import { HTTPError } from "~/lib/error"
-import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
-import { getCopilotToken, getCopilotUsage } from "~/lib/token/copilot-client"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
+import {
+  //
+  getCopilotToken,
+  getCopilotUsage,
+} from "~/lib/token/copilot-client"
 
 const originalFetch = globalThis.fetch
 

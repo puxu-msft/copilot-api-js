@@ -5,10 +5,22 @@
  *        removeSystemReminderTags (with state.rewriteSystemReminders modes)
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-
-import { state, setStateForTests } from "~/lib/state"
 import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import {
+  //
+  state,
+  setStateForTests,
+} from "~/lib/state"
+import {
+  //
   CLOSE_TAG,
   OPEN_TAG,
   extractLeadingSystemReminderTags,

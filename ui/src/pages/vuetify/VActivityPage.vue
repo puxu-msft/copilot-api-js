@@ -7,6 +7,7 @@ import type { EntrySummary } from "@/types"
 import { useDashboardStatus } from "@/composables/useDashboardStatus"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import {
+  //
   endpointLabel,
   modelName,
   requestState,
@@ -17,9 +18,10 @@ import {
   truncPreview,
 } from "@/utils/activity-helpers"
 import {
-formatDuration,
-formatTime
-} from "@/utils/formatters";
+  //
+  formatDuration,
+  formatTime,
+} from "@/utils/formatters"
 
 const router = useRouter()
 const store = useHistoryStore()
@@ -29,6 +31,7 @@ const endpointOptions = [
   { title: "Anthropic Messages", value: "anthropic-messages" },
   { title: "OpenAI Chat Completions", value: "openai-chat-completions" },
   { title: "OpenAI Responses", value: "openai-responses" },
+  { title: "Gemini Generate Content", value: "gemini-generate-content" },
 ]
 
 const statusOptions = [
@@ -44,7 +47,7 @@ const mergedEntries = computed<Array<{ entry: EntrySummary; isActive: boolean }>
   const activeRows = activeRequests.value
     .filter((req) => !historyIds.has(req.id))
     .filter((req) => !store.filterEndpoint || req.endpoint === store.filterEndpoint)
-    .filter(() => store.filterSuccess == null)
+    .filter(() => store.filterSuccess === null || store.filterSuccess === undefined)
     .map((req) => ({
       entry: {
         id: req.id,
@@ -68,7 +71,9 @@ const mergedEntries = computed<Array<{ entry: EntrySummary; isActive: boolean }>
 
   const historyRows = store.entries.map((entry) => ({
     entry,
-    isActive: entry.active === true || (entry.state != null && entry.state !== "completed" && entry.state !== "failed"),
+    isActive:
+      entry.active === true
+      || (entry.state !== null && entry.state !== undefined && entry.state !== "completed" && entry.state !== "failed"),
   }))
 
   return [...activeRows, ...historyRows]

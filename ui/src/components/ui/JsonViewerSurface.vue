@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import {
-computed,
-useSlots
-} from "vue";
+  //
+  computed,
+  useSlots,
+} from "vue"
 import VueJsonPretty from "vue-json-pretty"
 
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"

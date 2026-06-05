@@ -3,12 +3,23 @@
  * Verifies that getPreviewText, getMessageSummary, extractText
  * handle edge cases (undefined messages, OpenAI format, etc.)
  */
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { HistoryEntry } from "../src/types"
 
 // We test the pure functions directly (they don't depend on Vue)
-import { extractText, getMessageSummary, getPreviewText, getStatusClass } from "../src/composables/useHistoryStore"
+import {
+  //
+  extractText,
+  getMessageSummary,
+  getPreviewText,
+  getStatusClass,
+} from "../src/composables/useHistoryStore"
 
 function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return {

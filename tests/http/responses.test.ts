@@ -1,8 +1,18 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import {
+  //
   type StateSnapshot,
   restoreStateForTests,
   setModels,
@@ -11,7 +21,11 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { bootstrapTestRuntime, resetTestRuntime } from "../helpers/test-bootstrap"
+import {
+  //
+  bootstrapTestRuntime,
+  resetTestRuntime,
+} from "../helpers/test-bootstrap"
 
 let capturedPayload: ResponsesPayload | undefined
 const originalFetch = globalThis.fetch

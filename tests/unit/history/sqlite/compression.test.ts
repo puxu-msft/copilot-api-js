@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { gunzipJson, gzipJson } from "~/lib/history/sqlite/compression"
+import {
+  //
+  gunzipJson,
+  gzipJson,
+} from "~/lib/history/sqlite/compression"
 
 describe("sqlite/compression", () => {
   test("roundtrips arbitrary JSON", () => {

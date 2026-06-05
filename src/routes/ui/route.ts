@@ -2,8 +2,17 @@ import type { Context } from "hono"
 
 import { Hono } from "hono"
 import { existsSync } from "node:fs"
-import { access, constants, readFile } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import {
+  //
+  access,
+  constants,
+  readFile,
+} from "node:fs/promises"
+import {
+  //
+  join,
+  resolve,
+} from "node:path"
 
 import { getMimeType } from "../history/assets"
 

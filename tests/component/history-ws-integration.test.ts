@@ -8,22 +8,41 @@
  * a real HTTP server or WebSocket upgrade.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
-import type { EndpointType, EntrySummary, HistoryEntry, PipelineInfo, WSMessage } from "~/lib/history"
+import type {
+  //
+  EndpointType,
+  EntrySummary,
+  HistoryEntry,
+  PipelineInfo,
+} from "~/lib/history"
+import type { WSMessage } from "~/lib/ws"
 
 import {
-  addClient,
+  //
   clearHistory,
-  closeAllClients,
   deleteSession,
   getCurrentSession,
-  getClientCount,
   initHistory,
   insertEntry,
   updateEntry,
 } from "~/lib/history"
 import { generateId } from "~/lib/utils"
+import {
+  //
+  addClient,
+  closeAllClients,
+  getClientCount,
+} from "~/lib/ws"
 
 // ─── Helpers ───
 

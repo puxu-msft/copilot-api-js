@@ -2,9 +2,16 @@
  * Unit tests for rate limiter rejectQueued method.
  */
 
-import { afterEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import { AdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
+import { HTTPError } from "~/lib/error"
 
 import { waitUntil } from "../helpers/wait-until"
 
@@ -30,9 +37,7 @@ describe("AdaptiveRateLimiter.rejectQueued", () => {
       .execute(async () => {
         firstCallCount++
         if (firstCallCount === 1) {
-          const err = new Error("Rate limited") as any
-          err.status = 429
-          throw err
+          throw new HTTPError("Rate limited", 429, "")
         }
         return "ok"
       })

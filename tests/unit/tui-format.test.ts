@@ -1,4 +1,10 @@
-import { describe, expect, mock, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { TuiLogEntry } from "~/lib/tui/types"
 
@@ -8,7 +14,7 @@ import type { TuiLogEntry } from "~/lib/tui/types"
 // `pc.dim(x) === x`, so `result.toContain(pc.dim("+200"))` only checks text
 // presence, not color. We mock picocolors to always emit real ANSI codes so
 // that strip() actually strips, and color assertions actually verify colors.
-// eslint-disable-next-line @typescript-eslint/no-floating-promises -- mock.module is synchronous in Bun test runtime
+
 mock.module("picocolors", () => {
   const wrap = (open: number, close: number) => (s: string) => `\x1b[${open}m${s}\x1b[${close}m`
   return {
@@ -22,7 +28,15 @@ mock.module("picocolors", () => {
 // Must import AFTER mock.module (Bun auto-hoists mock.module above imports)
 import pc from "picocolors"
 
-import { formatBytes, formatDuration, formatNumber, formatStreamInfo, formatTime, formatTokens } from "~/lib/tui/format"
+import {
+  //
+  formatBytes,
+  formatDuration,
+  formatNumber,
+  formatStreamInfo,
+  formatTime,
+  formatTokens,
+} from "~/lib/tui/format"
 
 /** Strip ANSI escape codes to get plain text content */
 // eslint-disable-next-line no-control-regex -- intentionally matching ANSI escape sequences

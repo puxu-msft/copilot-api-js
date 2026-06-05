@@ -6,11 +6,24 @@
  * used by the history system.
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import type { ResponsesInputItem, ResponsesOutputItem } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesInputItem,
+  ResponsesOutputItem,
+} from "~/types/api/openai-responses"
 
-import { responsesInputToMessages, responsesOutputToContent } from "~/lib/openai/responses-conversion"
+import {
+  //
+  responsesInputToMessages,
+  responsesOutputToContent,
+} from "~/lib/openai/responses-conversion"
 
 // ============================================================================
 // responsesInputToMessages

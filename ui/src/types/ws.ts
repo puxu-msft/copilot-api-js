@@ -3,7 +3,11 @@
  *
  * Base types re-exported from backend, discriminated subtypes defined locally.
  */
-import type { EntrySummary, HistoryStats } from "./index"
+import type {
+  //
+  EntrySummary,
+  HistoryStats,
+} from "./index"
 
 export type { WSMessage, WSMessageType } from "~backend/lib/ws"
 

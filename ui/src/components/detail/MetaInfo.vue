@@ -2,7 +2,12 @@
 import type { HistoryEntry } from "@/types"
 
 import BaseBadge from "@/components/ui/BaseBadge.vue"
-import { formatDate, formatDuration, formatNumber } from "@/utils/formatters"
+import {
+  //
+  formatDate,
+  formatDuration,
+  formatNumber,
+} from "@/utils/formatters"
 
 defineProps<{
   entry: HistoryEntry
@@ -48,6 +53,7 @@ defineProps<{
           :color="
             entry.endpoint === 'anthropic-messages' ? 'purple'
             : entry.endpoint === 'openai-responses' ? 'green'
+            : entry.endpoint === 'gemini-generate-content' ? 'orange'
             : 'cyan'
           "
         >

@@ -6,10 +6,22 @@
  * AND that the correct log messages are emitted for operators.
  */
 
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test"
 import consola from "consola"
 
-import { HTTPError, forwardError } from "~/lib/error"
+import {
+  //
+  HTTPError,
+  forwardError,
+} from "~/lib/error"
 
 // ─── Mocks ───
 

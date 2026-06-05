@@ -1,5 +1,15 @@
-import { mount, type ComponentMountingOptions } from "@vue/test-utils"
-import { defineComponent, h, type Component, type VNode } from "vue"
+import {
+  //
+  mount,
+  type ComponentMountingOptions,
+} from "@vue/test-utils"
+import {
+  //
+  defineComponent,
+  h,
+  type Component,
+  type VNode,
+} from "vue"
 
 function slotChildren(children: Array<VNode> | undefined): Array<VNode> {
   return children ?? []

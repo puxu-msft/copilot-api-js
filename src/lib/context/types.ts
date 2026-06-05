@@ -11,6 +11,7 @@ import type {
   WarningMessage,
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
+import type { CopilotAnnotations } from "~/types/api/anthropic"
 
 // ─── Request State Machine ───
 
@@ -65,6 +66,22 @@ export interface ResponseData {
   status?: number
   /** Raw response body from upstream (only on error, for post-mortem debugging) */
   responseText?: string
+  /** Responses API: upstream response id (`resp_...`) from event.response.id */
+  responseId?: string
+  /** Copilot-specific: IP code citations collected from stream events (Anthropic path) */
+  copilotAnnotations?: Array<CopilotAnnotations>
+  /** Anthropic server-side tool_search request count, from `usage.server_tool_use.tool_search_requests` */
+  toolSearchRequests?: number
+}
+
+/**
+ * Partial response data captured before a streaming failure. Used by `fail()`
+ * to preserve usage / stop_reason already observed from the upstream stream so
+ * history doesn't show all-zero diagnostics for partially-streamed requests.
+ */
+export interface PartialResponseInfo {
+  usage?: ResponseData["usage"]
+  stop_reason?: string
 }
 
 // ─── Attempt ───
@@ -230,6 +247,11 @@ export interface RequestContext {
   addQueueWaitMs(ms: number): void
   transition(newState: RequestState, meta?: Record<string, unknown>): void
   complete(response: ResponseData): void
-  fail(model: string, error: unknown): void
+  /**
+   * Fail the request with an error. Optional `partial` lets streaming handlers
+   * preserve usage / stop_reason accumulated up to the failure point so that
+   * history doesn't show all-zero diagnostics for partially-streamed requests.
+   */
+  fail(model: string, error: unknown, partial?: PartialResponseInfo): void
   toHistoryEntry(): HistoryEntryData
 }

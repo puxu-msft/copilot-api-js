@@ -1,9 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "bun:test"
 
 import type { MessageParam } from "~/types/api/anthropic"
 
 import { deduplicateToolCalls } from "~/lib/anthropic/sanitize"
-import { state, setStateForTests } from "~/lib/state"
+import {
+  //
+  state,
+  setStateForTests,
+} from "~/lib/state"
 
 /** Helper: create an assistant message with tool_use blocks */
 function assistantWithTools(

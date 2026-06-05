@@ -41,7 +41,7 @@ export abstract class GitHubTokenProvider {
    * Refresh the token (if supported).
    * Default implementation returns null (not supported).
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
+
   async refresh(): Promise<TokenInfo | null> {
     return null
   }

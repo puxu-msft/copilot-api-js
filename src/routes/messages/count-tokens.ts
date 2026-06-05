@@ -2,7 +2,11 @@ import type { Context } from "hono"
 
 import consola from "consola"
 
-import { checkNeedsCompactionAnthropic, countTotalInputTokens } from "~/lib/anthropic/auto-truncate"
+import {
+  //
+  checkNeedsCompactionAnthropic,
+  countTotalInputTokens,
+} from "~/lib/anthropic/auto-truncate"
 import { hasKnownLimits } from "~/lib/auto-truncate"
 import { createFetchSignal } from "~/lib/fetch-utils"
 import { resolveModelName } from "~/lib/models/resolver"

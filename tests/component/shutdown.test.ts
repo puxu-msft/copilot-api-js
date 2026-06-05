@@ -10,12 +10,25 @@
  * - Error resilience (server.close failures)
  */
 
-import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test"
 
 import type { TuiLogEntry } from "~/lib/tui/types"
 
-import { getUpstreamWsManager, resetUpstreamWsManagerForTests } from "~/lib/openai/upstream-ws"
 import {
+  //
+  getUpstreamWsManager,
+  resetUpstreamWsManagerForTests,
+} from "~/lib/openai/upstream-ws"
+import {
+  //
   _resetShutdownState,
   drainActiveRequests,
   formatActiveRequestsSummary,

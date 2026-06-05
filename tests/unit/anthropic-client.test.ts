@@ -1,12 +1,25 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
 import { HTTPError } from "~/lib/error"
-import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 const originalFetch = globalThis.fetch
 

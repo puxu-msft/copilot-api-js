@@ -6,9 +6,18 @@
  * and that fixture data remains structurally valid as code evolves.
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { loadFixturePair, loadFollowupPair } from "../helpers/fixtures"
+import {
+  //
+  loadFixturePair,
+  loadFollowupPair,
+} from "../helpers/fixtures"
 
 // ============================================================================
 // Anthropic Messages

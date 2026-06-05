@@ -27,8 +27,16 @@ import {
   initAdaptiveRateLimiter,
   resetAdaptiveRateLimiter,
 } from "~/lib/adaptive-rate-limiter"
+import { HTTPError } from "~/lib/error"
 
 import { waitUntil } from "../helpers/wait-until"
+
+// Helper: build an HTTPError for tests that previously threw raw `{ status, … }` literals.
+// `isRateLimitError` now requires a real HTTPError instance (not duck-typed objects)
+// to avoid false positives from upstream JSON bodies that happen to carry similar fields.
+function httpError(opts: { status: number; message?: string; responseText?: string }): HTTPError {
+  return new HTTPError(opts.message ?? "test error", opts.status, opts.responseText ?? "")
+}
 
 // ─── isRateLimitError ───
 
@@ -40,55 +48,55 @@ describe("AdaptiveRateLimiter.isRateLimitError", () => {
   })
 
   test("detects 429 status", () => {
-    const error = { status: 429, message: "Rate limited" }
+    const error = httpError({ status: 429, message: "Rate limited" })
     const result = limiter.isRateLimitError(error)
     expect(result.isRateLimit).toBe(true)
   })
 
   test("does not detect non-429 status", () => {
-    const error = { status: 400, message: "Bad request" }
+    const error = httpError({ status: 400, message: "Bad request" })
     const result = limiter.isRateLimitError(error)
     expect(result.isRateLimit).toBe(false)
   })
 
   test("detects rate_limited code in responseText JSON", () => {
-    const error = {
+    const error = httpError({
       status: 200,
       responseText: JSON.stringify({
         error: { code: "rate_limited", message: "Too many requests" },
       }),
-    }
+    })
     const result = limiter.isRateLimitError(error)
     expect(result.isRateLimit).toBe(true)
   })
 
   test("extracts retry_after from responseText (top-level)", () => {
-    const error = {
+    const error = httpError({
       status: 429,
       responseText: JSON.stringify({ retry_after: 30 }),
-    }
+    })
     const result = limiter.isRateLimitError(error)
     expect(result.isRateLimit).toBe(true)
     expect(result.retryAfter).toBe(30)
   })
 
   test("extracts retry_after from responseText (nested in error)", () => {
-    const error = {
+    const error = httpError({
       status: 429,
       responseText: JSON.stringify({
         error: { retry_after: 15, code: "rate_limited" },
       }),
-    }
+    })
     const result = limiter.isRateLimitError(error)
     expect(result.isRateLimit).toBe(true)
     expect(result.retryAfter).toBe(15)
   })
 
   test("handles non-JSON responseText gracefully", () => {
-    const error = {
+    const error = httpError({
       status: 200,
       responseText: "not json",
-    }
+    })
     const result = limiter.isRateLimitError(error)
     expect(result.isRateLimit).toBe(false)
   })
@@ -128,7 +136,7 @@ describe("AdaptiveRateLimiter mode transitions", () => {
     await limiter.execute(async () => {
       callCount++
       if (callCount === 1) {
-        throw { status: 429, message: "Rate limited" } // eslint-disable-line @typescript-eslint/only-throw-error -- simulating API error
+        throw httpError({ status: 429, message: "Rate limited" })
       }
       return "success"
     })
@@ -243,7 +251,7 @@ describe("AdaptiveRateLimiter exponential backoff", () => {
     const result = await limiter.execute(async () => {
       callCount++
       if (callCount <= 3) {
-        throw { status: 429, message: "Rate limited" } // eslint-disable-line @typescript-eslint/only-throw-error -- simulating API error
+        throw httpError({ status: 429, message: "Rate limited" })
       }
       return "recovered"
     })
@@ -266,11 +274,10 @@ describe("AdaptiveRateLimiter exponential backoff", () => {
     const result = await limiter.execute(async () => {
       callCount++
       if (callCount === 1) {
-        // eslint-disable-next-line @typescript-eslint/only-throw-error -- simulating API error with Retry-After
-        throw {
+        throw httpError({
           status: 429,
           responseText: JSON.stringify({ retry_after: 0.01 }),
-        }
+        })
       }
       return "ok"
     })
@@ -296,7 +303,7 @@ describe("AdaptiveRateLimiter recovery", () => {
     // First call: 429 triggers rate-limited mode
     const result1 = await limiter.execute(async () => {
       callCount++
-      if (callCount === 1) throw { status: 429 } // eslint-disable-line @typescript-eslint/only-throw-error -- simulating API error
+      if (callCount === 1) throw httpError({ status: 429 })
       return `call-${callCount}`
     })
 
@@ -330,7 +337,7 @@ describe("AdaptiveRateLimiter recovery", () => {
     await limiter.execute(async () => {
       if (first) {
         first = false
-        throw { status: 429 } // eslint-disable-line @typescript-eslint/only-throw-error -- simulating API error
+        throw httpError({ status: 429 })
       }
       return "trigger-ok"
     })
@@ -366,7 +373,7 @@ describe("AdaptiveRateLimiter non-429 errors", () => {
     // First trigger rate-limited mode
     const promise1 = limiter.execute(async () => {
       callCount++
-      if (callCount === 1) throw { status: 429 } // eslint-disable-line @typescript-eslint/only-throw-error -- simulating API error
+      if (callCount === 1) throw httpError({ status: 429 })
       if (callCount === 2) throw new Error("Server error")
       return "ok"
     })
@@ -390,7 +397,7 @@ describe("AdaptiveRateLimiter sleep cancellation", () => {
     const promise = limiter.execute(async () => {
       callCount++
       if (callCount === 1) {
-        throw { status: 429, message: "Rate limited" } // eslint-disable-line @typescript-eslint/only-throw-error -- simulating API error
+        throw httpError({ status: 429, message: "Rate limited" })
       }
       return "ok"
     })

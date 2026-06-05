@@ -19,6 +19,7 @@
 import type { ApiError } from "~/lib/error"
 
 import { markAnthropicFeatureUnsupported } from "~/lib/anthropic/feature-negotiation"
+import { HTTPError } from "~/lib/error"
 
 import type {
   //
@@ -54,16 +55,14 @@ export function parseContextManagementExtraInputsError(message: string): boolean
 function extractErrorMessage(error: ApiError): string | null {
   if (parseExtraInputsError(error.message)) return error.message
 
-  const raw = error.raw
-  if (!raw || typeof raw !== "object" || !("responseText" in raw) || typeof raw.responseText !== "string") {
-    return null
-  }
+  if (!(error.raw instanceof HTTPError)) return null
+  const responseText = error.raw.responseText
 
   try {
-    const parsed = JSON.parse(raw.responseText) as { error?: { message?: string } }
-    return parsed.error?.message ?? raw.responseText
+    const parsed = JSON.parse(responseText) as { error?: { message?: string } }
+    return parsed.error?.message ?? responseText
   } catch {
-    return raw.responseText
+    return responseText
   }
 }
 

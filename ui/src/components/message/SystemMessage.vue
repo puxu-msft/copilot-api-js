@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from "vue"
+import {
+  //
+  ref,
+  computed,
+} from "vue"
 
 import type { SystemBlock } from "@/types"
 
@@ -9,9 +13,10 @@ import LineNumberPre from "@/components/ui/LineNumberPre.vue"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
 import { useRawModal } from "@/composables/useRawModal"
 import {
-escapeHtml,
-highlightSearch
-} from "@/utils/formatters";
+  //
+  escapeHtml,
+  highlightSearch,
+} from "@/utils/formatters"
 
 import SideBySideView from "./SideBySideView.vue"
 

@@ -1,8 +1,14 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { Model } from "~/lib/models/client"
 
 import {
+  //
   ENDPOINT,
   assertEndpointSupported,
   getEffectiveEndpoints,

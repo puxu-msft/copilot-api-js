@@ -1,12 +1,6 @@
 import { defineStore } from "pinia"
 import { shallowRef } from "vue"
 
-import {
-extractText,
-getMessageSummary,
-getPreviewText,
-getStatusClass
-} from "./history-store/helpers";
 import { useHistoryData } from "./history-store/useHistoryData"
 import { useHistoryWS } from "./history-store/useHistoryWS"
 import { useToast } from "./useToast"
@@ -68,4 +62,4 @@ export const useHistoryStore = defineStore("history", () => {
 /** Store type for consumers that need explicit typing */
 export type HistoryStore = ReturnType<typeof useHistoryStore>
 
-export { extractText, getMessageSummary, getPreviewText, getStatusClass }
+export { extractText, getMessageSummary, getPreviewText, getStatusClass } from "./history-store/helpers"

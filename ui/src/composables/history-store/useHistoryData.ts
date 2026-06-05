@@ -1,6 +1,20 @@
-import { computed, ref, shallowRef, type ComputedRef, type Ref } from "vue"
+import {
+  //
+  computed,
+  ref,
+  shallowRef,
+  type ComputedRef,
+  type Ref,
+} from "vue"
 
-import type { EndpointType, EntrySummary, HistoryEntry, HistoryStats, Session } from "@/types"
+import type {
+  //
+  EndpointType,
+  EntrySummary,
+  HistoryEntry,
+  HistoryStats,
+  Session,
+} from "@/types"
 
 import { api } from "@/api/http"
 
@@ -134,9 +148,7 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     }
 
     const entry = entries.value[newIdx]
-    if (entry) {
-      void selectEntry(entry.id)
-    }
+    void selectEntry(entry.id)
   }
 
   function clearSelection(): void {

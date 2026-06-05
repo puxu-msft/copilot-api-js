@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { ref, onErrorCaptured } from "vue"
+import {
+  //
+  ref,
+  onErrorCaptured,
+} from "vue"
 
 defineProps<{
   /** Fallback label shown when an error is captured */

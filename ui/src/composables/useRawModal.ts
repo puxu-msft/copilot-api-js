@@ -7,7 +7,14 @@
  * openRawModal(data, title) and the provider renders the single shared modal.
  */
 
-import { provide, inject, ref, shallowRef, type InjectionKey } from "vue"
+import {
+  //
+  provide,
+  inject,
+  ref,
+  shallowRef,
+  type InjectionKey,
+} from "vue"
 
 // ─── Public API ───
 
