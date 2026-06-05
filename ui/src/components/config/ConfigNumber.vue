@@ -16,7 +16,7 @@ const emit = defineEmits<{
 }>()
 
 const inputValue = computed({
-  get: () => (props.modelValue == null ? "" : String(props.modelValue)),
+  get: () => (props.modelValue === null || props.modelValue === undefined ? "" : String(props.modelValue)),
   set: (value: string) => {
     if (value.trim().length === 0) {
       emit("update:modelValue", null)

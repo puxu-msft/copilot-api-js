@@ -86,7 +86,6 @@ describe("atomicWriteJson", () => {
         })
       },
     )
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(fs as any).writeFile = stub
 
     try {
@@ -98,7 +97,6 @@ describe("atomicWriteJson", () => {
       }
       expect((caught as Error | undefined)?.message).toBe("simulated crash mid-write")
     } finally {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(fs as any).writeFile = realWriteFile
     }
 
@@ -114,7 +112,6 @@ describe("atomicWriteJson", () => {
   test("rejects re-thrown writeFile error and cleans up tmp", async () => {
     const target = path.join(workDir, "data.json")
     const realWriteFile = fs.writeFile
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(fs as any).writeFile = mock(() => {
       throw new Error("ENOSPC")
     })
@@ -128,7 +125,6 @@ describe("atomicWriteJson", () => {
       }
       expect((caught as Error | undefined)?.message).toBe("ENOSPC")
     } finally {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(fs as any).writeFile = realWriteFile
     }
 

@@ -65,6 +65,14 @@ export interface State {
   readonly copilotTokenInfo?: CopilotTokenInfo
 
   readonly accountType: "individual" | "business" | "enterprise"
+  /**
+   * Explicit upstream GHC API base URL (e.g. `https://api.githubcopilot.com`).
+   * Set via `--ghc-api-base-url` or `ghc_api_base_url` in config.yaml. When
+   * set, this overrides the URL derived from `accountType`. Useful for users
+   * routing through a self-hosted GHC proxy or for unusual deployments where
+   * `accountType` → URL doesn't match upstream's expectations.
+   */
+  readonly ghcApiBaseUrl: string
   readonly models?: ModelsResponse
   /** O(1) lookup index: model ID → Model object. Rebuilt on cacheModels(). */
   readonly modelIndex: Map<string, Model>
@@ -81,14 +89,15 @@ export interface State {
 
   /**
    * Auto-truncate: reactively truncate on limit errors and pre-check for known limits.
-   * Enabled by default; disable with --no-auto-truncate.
+   * Disabled by default; enable with --auto-truncate.
    */
   readonly autoTruncate: boolean
 
   /**
    * Account is on token-based (PAYG) billing rather than premium-request
    * multipliers. Populated from `/copilot_internal/user` at startup. When
-   * true, the `(1x)` suffix in model listings is rendered as `(payg)`.
+   * true, the per-model multiplier suffix in model listings is omitted
+   * (every model is pay-as-you-go, so the badge would be uniform noise).
    */
   readonly tokenBasedBilling: boolean
 
@@ -512,7 +521,7 @@ export function setTokenState(patch: Partial<Pick<MutableState, "tokenInfo" | "c
 }
 
 export function setCliState(
-  patch: Partial<Pick<MutableState, "accountType" | "showGitHubToken" | "autoTruncate" | "verbose">>,
+  patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "autoTruncate" | "verbose">>,
 ): void {
   updateState(patch)
 }
@@ -844,7 +853,8 @@ export function resetConfigManagedState(): void {
 
 const mutableState: MutableState = {
   accountType: "individual",
-  autoTruncate: true,
+  ghcApiBaseUrl: "",
+  autoTruncate: false,
   tokenBasedBilling: false,
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,

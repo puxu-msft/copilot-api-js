@@ -128,6 +128,11 @@ export interface ChatCompletionsPayload {
   user?: string | null
   service_tier?: string | null
   stream_options?: { include_usage?: boolean } | null
+  /**
+   * Reasoning effort hint for o-series / gpt-5.x models (and Copilot-routed
+   * equivalents). Forwarded as-is to upstream; non-reasoning models ignore it.
+   */
+  reasoning_effort?: "low" | "medium" | "high" | null
 }
 
 /** JSON Schema response format for structured outputs */

@@ -86,8 +86,20 @@ describeWithToken("Extended Copilot API Integration", () => {
     }
     setModels(models)
 
-    claudeModel = models.data.find((m) => m.id.includes("claude-sonnet"))?.id ?? "claude-sonnet-4"
-    gptModel = models.data.find((m) => m.id.includes("gpt-4"))?.id ?? "gpt-4o"
+    // Prefer the project's current defaults. For GPT, require upstream to
+    // advertise /chat/completions — many newer SKUs (e.g. gpt-5.5) are
+    // catalog-listed but not accessible on this endpoint for some accounts.
+    claudeModel =
+      models.data.find((m) => m.id === "claude-sonnet-4.6")?.id
+      ?? models.data.find((m) => m.id.startsWith("claude-sonnet-"))?.id
+      ?? "claude-sonnet-4.6"
+    const gptSupportsChat = (id: string) =>
+      models.data.find((m) => m.id === id)?.supported_endpoints?.includes("/chat/completions") ?? false
+    const gptPreferred = ["gpt-5.5", "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4o", "gpt-4.1"]
+    gptModel =
+      gptPreferred.find(gptSupportsChat)
+      ?? models.data.find((m) => m.id.startsWith("gpt-") && m.supported_endpoints?.includes("/chat/completions"))?.id
+      ?? "gpt-4o"
 
     console.log(`[Setup] Using Claude: ${claudeModel}, GPT: ${gptModel}`)
   }, 30000)

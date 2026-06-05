@@ -15,6 +15,7 @@ import {
   applyConfigToState,
   resetApplyState,
   resetConfigCache,
+  setBundledConfigForTests,
 } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
 import { initHistory } from "~/lib/history"
@@ -55,6 +56,7 @@ beforeEach(async () => {
   ;(PATHS as { CONFIG_YAML: string }).CONFIG_YAML = path.join(tmpDir, "config.yaml")
   resetConfigCache()
   resetApplyState()
+  setBundledConfigForTests({})
   initHistory(true, 200)
 })
 
@@ -65,6 +67,7 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true })
   resetConfigCache()
   resetApplyState()
+  setBundledConfigForTests(null)
 })
 
 describe("config yaml routes", () => {

@@ -63,6 +63,25 @@ function assertAnthropicResponse(response: AnthropicResponse | AsyncIterable<unk
 const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 
 describeWithToken("GitHub Copilot API Integration", () => {
+  // Cached after beforeAll; picked dynamically so the test doesn't lock onto
+  // a model ID that the account's GHC catalog or upstream rolls off later.
+  // Convention: prefer a recent gpt-5.x SKU that advertises /chat/completions
+  // upstream — older gpt-4o is acceptable as a final fallback.
+  let gptChatModel: string
+
+  function pickGptChatModel(): string {
+    const data = state.models?.data ?? []
+    const supportsChat = (id: string) =>
+      data.find((m) => m.id === id)?.supported_endpoints?.includes("/chat/completions") ?? false
+    const preferred = ["gpt-5.5", "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4o", "gpt-4.1"]
+    for (const id of preferred) {
+      if (supportsChat(id)) return id
+    }
+    // Last resort: any GPT-family model with /chat/completions advertised.
+    const any = data.find((m) => m.id.startsWith("gpt-") && m.supported_endpoints?.includes("/chat/completions"))
+    return any?.id ?? "gpt-4o"
+  }
+
   beforeAll(async () => {
     const githubToken = getGitHubToken()
     if (!githubToken) {
@@ -92,7 +111,8 @@ describeWithToken("GitHub Copilot API Integration", () => {
     }
     setModels(models)
 
-    console.log(`[Setup] Loaded ${models.data.length} models`)
+    gptChatModel = pickGptChatModel()
+    console.log(`[Setup] Loaded ${models.data.length} models; using GPT chat model: ${gptChatModel}`)
   }, 30000) // 30 second timeout for setup
 
   describe("Models API", () => {
@@ -132,7 +152,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
   describe("OpenAI Chat Completions API", () => {
     test("should complete simple chat with GPT model", async () => {
       const payload: ChatCompletionsPayload = {
-        model: "gpt-4o",
+        model: gptChatModel,
         messages: [{ role: "user", content: "Say 'hello' and nothing else." }],
         max_tokens: 10,
       }
@@ -151,7 +171,14 @@ describeWithToken("GitHub Copilot API Integration", () => {
     })
 
     test("should complete chat with Claude model via OpenAI endpoint", async () => {
-      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
+      // Prefer the project's default sonnet (claude-sonnet-4.6) which is
+      // known to work on /chat/completions for this account. The fallback
+      // string is only used when the model list lookup fails entirely.
+      const claudeModel =
+        state.models?.data.find((m) => m.id === "claude-sonnet-4.6")?.id
+        ?? state.models?.data.find((m) => m.id.startsWith("claude-sonnet-"))?.id
+        ?? state.models?.data.find((m) => m.id.includes("claude"))?.id
+        ?? "claude-sonnet-4.6"
 
       const payload: ChatCompletionsPayload = {
         model: claudeModel,
@@ -169,6 +196,12 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
       expect(response).toBeDefined()
       expect(response.id).toBeDefined()
+      // Some Claude SKUs on Copilot return empty `choices[]` when invoked
+      // via the OpenAI-shape /chat/completions endpoint (upstream quirk).
+      // Predicate-fail with a useful message instead of TypeError-ing on
+      // `choices[0].message` below.
+      expect(response.choices).toBeInstanceOf(Array)
+      expect(response.choices.length).toBeGreaterThan(0)
       expect(response.choices[0].message.content).toBeDefined()
 
       console.log(`[OpenAI+Claude] Model: ${claudeModel}, Response:`, response.choices[0].message.content)
@@ -176,7 +209,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
     test("should handle streaming response", async () => {
       const payload: ChatCompletionsPayload = {
-        model: "gpt-4o",
+        model: gptChatModel,
         messages: [{ role: "user", content: "Count from 1 to 3." }],
         max_tokens: 50,
         stream: true,
@@ -200,7 +233,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
     test("should handle system message", async () => {
       const payload: ChatCompletionsPayload = {
-        model: "gpt-4o",
+        model: gptChatModel,
         messages: [
           {
             role: "system",
@@ -222,19 +255,19 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
   describe("Anthropic Direct API", () => {
     test("should detect Claude model as supporting direct API", () => {
-      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.6"
 
       const supports = supportsDirectAnthropicApi(claudeModel).supported
       expect(supports).toBe(true)
     })
 
     test("should NOT support direct API for GPT models", () => {
-      const supports = supportsDirectAnthropicApi("gpt-4o").supported
+      const supports = supportsDirectAnthropicApi("gpt-5.5").supported
       expect(supports).toBe(false)
     })
 
     test("should complete simple message via direct Anthropic API", async () => {
-      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.6"
 
       const payload: MessagesPayload = {
         model: claudeModel,
@@ -262,7 +295,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     })
 
     test("should handle system prompt in direct API", async () => {
-      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.6"
 
       const payload: MessagesPayload = {
         model: claudeModel,
@@ -283,7 +316,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
   describe("Tool Calling", () => {
     test("should handle tool definition in OpenAI format", async () => {
       const payload: ChatCompletionsPayload = {
-        model: "gpt-4o",
+        model: gptChatModel,
         messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
         tools: [
           {
@@ -317,7 +350,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     })
 
     test("should handle Anthropic tool format", async () => {
-      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.5"
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.6"
 
       const payload: MessagesPayload = {
         model: claudeModel,
@@ -366,7 +399,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
     test("should handle empty messages gracefully", async () => {
       const payload: ChatCompletionsPayload = {
-        model: "gpt-4o",
+        model: gptChatModel,
         messages: [],
         max_tokens: 10,
       }

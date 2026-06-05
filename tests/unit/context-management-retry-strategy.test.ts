@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-deprecated -- intentionally testing deprecated re-exports for back-compat */
+// Intentionally testing deprecated re-exports for back-compat.
 import {
   //
   afterEach,

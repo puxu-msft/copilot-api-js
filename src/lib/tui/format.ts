@@ -7,13 +7,14 @@ import { state } from "~/lib/state"
 import type { TuiLogEntry } from "./types"
 
 /**
- * Format the per-model billing badge: ` (payg)` on token-based billing
- * accounts, ` (${multiplier}x)` for legacy multiplier accounts, or `""`
- * when no multiplier is known. Returns the leading space so callers can
- * unconditionally append.
+ * Format the per-model billing badge: ` (${multiplier}x)` for legacy
+ * multiplier-billing accounts, or `""` otherwise. On token-based-billing
+ * accounts every model is pay-as-you-go, so the badge would be uniform
+ * noise — return `""` so it's omitted entirely. Returns the leading space
+ * so callers can unconditionally append.
  */
 export function formatBillingLabel(multiplier: number | undefined): string {
-  if (state.tokenBasedBilling) return " (payg)"
+  if (state.tokenBasedBilling) return ""
   if (multiplier === undefined) return ""
   return ` (${multiplier}x)`
 }

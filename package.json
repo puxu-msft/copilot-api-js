@@ -1,12 +1,16 @@
 {
   "name": "@hsupu/copilot-api",
-  "version": "0.8.4-beta.3",
-  "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server.",
+  "version": "0.8.4-beta.4",
+  "description": "Turn GitHub Copilot into an OpenAI/Anthropic API compatible provider. Use Gemini and Claude models with Codex CLI through your Copilot subscription.",
   "keywords": [
-    "proxy",
     "github-copilot",
+    "claude",
+    "codex-cli",
+    "proxy",
     "openai-compatible",
-    "anthropic-compatible"
+    "anthropic-compatible",
+    "gemini",
+    "codex-plugin"
   ],
   "homepage": "https://github.com/puxu-msft/copilot-api-js",
   "bugs": "https://github.com/puxu-msft/copilot-api-js/issues",
@@ -22,6 +26,7 @@
   "files": [
     "dist",
     "ui/dist",
+    "config.yaml",
     "config.example.yaml"
   ],
   "scripts": {

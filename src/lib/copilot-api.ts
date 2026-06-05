@@ -29,10 +29,21 @@ const GITHUB_API_VERSION = "2022-11-28"
  */
 const INTERACTION_ID = randomUUID()
 
-export const copilotBaseUrl = (state: State) =>
-  state.accountType === "individual" ?
-    "https://api.githubcopilot.com"
-  : `https://api.${state.accountType}.githubcopilot.com`
+/**
+ * Resolve the GHC API base URL.
+ *
+ * Priority:
+ *   1. `state.ghcApiBaseUrl` — explicit override (CLI `--ghc-api-base-url`
+ *      or `ghc_api_base_url` in config.yaml). Trailing slashes are trimmed
+ *      so callers can safely template `${base}/path`.
+ *   2. Derived from `state.accountType`.
+ */
+export const copilotBaseUrl = (state: State) => {
+  if (state.ghcApiBaseUrl) return state.ghcApiBaseUrl.replace(/\/+$/u, "")
+  return state.accountType === "individual" ?
+      "https://api.githubcopilot.com"
+    : `https://api.${state.accountType}.githubcopilot.com`
+}
 
 export const copilotWsUrl = (state: State) => {
   const url = new URL(copilotBaseUrl(state))

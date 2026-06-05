@@ -1,3 +1,4 @@
+import { statSync } from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -12,10 +13,46 @@ const APP_DIR = computeAppDir()
 
 const GITHUB_TOKEN_PATH = path.join(APP_DIR, "github_token")
 
+/**
+ * Locate the bundled default `config.yaml` shipped inside the npm package.
+ *
+ * Walks up from the current module file looking for `config.yaml`. Works in
+ * both modes:
+ *   - dev (`bun run src/main.ts`):  src/lib/config/paths.ts → walks up to repo root
+ *   - prod (`node dist/main.mjs`):  dist/main.mjs (this module is bundled into
+ *                                   it by tsdown) → walks up to package root
+ *
+ * Returns the resolved absolute path. Throws if not found within 6 levels —
+ * indicates a broken install (config.yaml stripped from the package).
+ */
+function locateBundledConfig(): string {
+  const startDir = import.meta.dirname
+  let dir = startDir
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(dir, "config.yaml")
+    try {
+      // sync stat is acceptable: module load happens once at startup
+      const stats = statSync(candidate)
+      if (stats.isFile()) return candidate
+    } catch {
+      // not found at this level; keep walking
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  throw new Error(
+    `[paths] Bundled config.yaml not found; searched upward from ${startDir}. This indicates a broken install.`,
+  )
+}
+
 export const PATHS = {
   APP_DIR,
   GITHUB_TOKEN_PATH,
+  /** User config file (override). May not exist; absent → use bundled defaults. */
   CONFIG_YAML: path.join(APP_DIR, "config.yaml"),
+  /** Bundled default config.yaml that ships with the package. */
+  BUNDLED_CONFIG_YAML: locateBundledConfig(),
   LEARNED_LIMITS: path.join(APP_DIR, "learned-limits.json"),
   REQUEST_TELEMETRY: path.join(APP_DIR, "request-telemetry.json"),
   NEGOTIATION_STATES: path.join(APP_DIR, "negotiation-states.json"),

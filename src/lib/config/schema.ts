@@ -201,7 +201,15 @@ export const HistoryConfigSchema = z
 // Top-level Config schema
 // ============================================================================
 
-/** Free-form Record<string, string> with non-empty key + non-empty value enforcement */
+/**
+ * Free-form Record<string, string> with non-empty key + non-empty value enforcement.
+ *
+ * Merge semantics: **per-key** (registered via `MERGE_STRATEGY` below). The
+ * bundled defaults provide recommended alias mappings (e.g.
+ * `opus → claude-opus-4.7-1m-internal`); the user's file only needs to
+ * declare overrides for the keys they want to change. Bundled keys without
+ * a user counterpart remain in effect.
+ */
 const ModelOverridesSchema = z.record(z.string(), z.string()).superRefine((value, ctx) => {
   for (const [k, v] of Object.entries(value)) {
     if (k.trim().length === 0) {
@@ -245,6 +253,37 @@ export const ModelPreferenceSchema = z
   })
   .strict()
 
+/**
+ * Explicit upstream GHC API base URL. Overrides the URL derived from
+ * `accountType`. Useful when routing through a self-hosted GHC proxy or
+ * when upstream's hostname-by-account-type convention doesn't fit the
+ * deployment. Accepts `null` to clear via HTTP PUT.
+ */
+const GhcApiBaseUrlSchema = z
+  .string({ error: STRING_MSG })
+  .nullable()
+  .transform((v): string | undefined => v ?? undefined)
+  .optional()
+  .superRefine((value, ctx) => {
+    if (value === undefined || value === "") return
+    try {
+      const url = new URL(value)
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        ctx.addIssue({
+          code: "custom",
+          message: "ghc_api_base_url must use http or https scheme",
+          params: { rejectedValue: value },
+        })
+      }
+    } catch {
+      ctx.addIssue({
+        code: "custom",
+        message: "ghc_api_base_url must be a valid URL",
+        params: { rejectedValue: value },
+      })
+    }
+  })
+
 const ProxySchema = z
   .string({ error: STRING_MSG })
   .nullable()
@@ -281,6 +320,7 @@ function nullableSection<S extends z.ZodObject>(schema: S) {
 export const ConfigSchema = z
   .object({
     proxy: ProxySchema,
+    ghc_api_base_url: GhcApiBaseUrlSchema,
     system_prompt_overrides: RewriteRuleListSchema,
     system_prompt_prepend: nullableString(),
     system_prompt_append: nullableString(),
@@ -359,7 +399,39 @@ export const DEPRECATED_KEYS: ReadonlyArray<DeprecatedKey> = [
 ]
 
 // ============================================================================
-// Inferred TypeScript types — single source of truth for the rest of the codebase
+// Merge-strategy registry — schema-driven, business-semantic merge behavior
+// ============================================================================
+//
+// The schema-driven config merger (`mergeBySchema` in `./config.ts`) chooses
+// how to combine bundled defaults with user overrides at each node based on
+// the schema's shape PLUS, for `ZodRecord` nodes, this explicit registry.
+//
+// All overrides are **business-driven**: the schema alone (record vs object,
+// array vs scalar) cannot distinguish, for example, "user adds one alias on
+// top of bundled" (`model_overrides`) from "user takes full ownership of
+// this strategy table" (`anthropic.efforts_overrides`). We make those
+// choices here as deliberate product decisions, not as type inferences.
+
+/** Merge strategy for a `ZodRecord` schema node. */
+export type RecordMergeStrategy = "per-key" | "replace"
+
+/**
+ * Per-schema merge strategy registry. Use a WeakMap so the strategy is
+ * carried by the schema object itself (immune to .nullable() / .optional()
+ * / .superRefine() wrapper chains that would otherwise reset `.meta()`).
+ *
+ * Only `ZodRecord` schemas need entries — `ZodObject` recurses by shape
+ * automatically and `ZodArray` / scalars always replace. Records without
+ * an entry default to `"replace"` (the more conservative choice: user
+ * owns the table once they declare it).
+ */
+export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
+
+RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
+// efforts_overrides / strip_beta_headers / reject_body_fields intentionally
+// omitted — they default to "replace": when the user sets one of these
+// tables, they take responsibility for the entire policy.
+
 // ============================================================================
 
 export type RewriteRule = z.infer<typeof RewriteRuleSchema>

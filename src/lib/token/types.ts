@@ -4,7 +4,7 @@
 export type TokenSource =
   | "cli" // --github-token parameter
   | "env" // GITHUB_TOKEN environment variable
-  | "file" // File storage (~/.local/share/copilot-api/github_token)
+  | "file" // File storage ($XDG_DATA_HOME/copilot-api/github_token, defaults to ~/.local/share/copilot-api/github_token)
   | "device-auth" // Device authorization flow
 
 /**

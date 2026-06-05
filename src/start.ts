@@ -135,11 +135,43 @@ export function resolveBindHostnames(host: string | undefined): { hostnames: Arr
 
 const VALID_ACCOUNT_TYPES = ["individual", "business", "enterprise"] as const
 
+/**
+ * Best-effort inference of account type from `/copilot_internal/user`.
+ *
+ * Heuristics — conservative, falls through to `"individual"` for unknown
+ * plans rather than guessing. Upstream's `copilot_plan` strings are
+ * documented loosely; we match on substrings so new SKUs (e.g.
+ * `enterprise_seat_v2`) still route correctly.
+ *
+ * Returns `undefined` when no field provides a usable signal.
+ */
+function inferAccountTypeFromUsage(usage: {
+  copilot_plan?: string
+  access_type_sku?: string
+}): (typeof VALID_ACCOUNT_TYPES)[number] | undefined {
+  const haystack = `${usage.copilot_plan ?? ""} ${usage.access_type_sku ?? ""}`.toLowerCase()
+  if (!haystack.trim()) return undefined
+  if (haystack.includes("enterprise")) return "enterprise"
+  if (haystack.includes("business")) return "business"
+  if (haystack.includes("individual") || haystack.includes("free") || haystack.includes("pro")) return "individual"
+  return undefined
+}
+
 interface RunServerOptions {
   port: number
   host?: string
   verbose: boolean
-  accountType: "individual" | "business" | "enterprise"
+  /**
+   * Explicit account type. When `undefined`, the runtime infers it from
+   * the logged-in user's `copilot_plan` field after authentication and
+   * falls back to `"individual"` if no clear signal is found.
+   */
+  accountType?: "individual" | "business" | "enterprise"
+  /**
+   * Explicit GHC API base URL (e.g. `https://api.githubcopilot.com`).
+   * Overrides `accountType`-derived URL when set.
+   */
+  ghcApiBaseUrl?: string
   // Adaptive rate limiting (disabled if rateLimit is false)
   rateLimit: boolean
   /** Mock rate limiter throttle: reject all requests with 429 */
@@ -157,9 +189,22 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   // Phase 0: Validate critical options
   // ===========================================================================
-  if (!VALID_ACCOUNT_TYPES.includes(options.accountType)) {
+  // accountType is optional now — when explicitly passed it must be valid;
+  // when omitted, inference (or a fallback to "individual") will fill it.
+  if (options.accountType !== undefined && !VALID_ACCOUNT_TYPES.includes(options.accountType)) {
     consola.error(`Invalid account type: "${options.accountType}". Must be one of: ${VALID_ACCOUNT_TYPES.join(", ")}`)
     process.exit(1)
+  }
+  if (options.ghcApiBaseUrl !== undefined) {
+    try {
+      const url = new URL(options.ghcApiBaseUrl)
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        throw new Error(`unsupported protocol "${url.protocol}" — only http:/https: are accepted`)
+      }
+    } catch (error) {
+      consola.error(`Invalid --ghc-api-base-url: ${error instanceof Error ? error.message : String(error)}`)
+      process.exit(1)
+    }
   }
   let externalUiUrl: string | undefined
   if (options.externalUiUrl) {
@@ -184,9 +229,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   consola.info(`copilot-api v${packageJson.version}`)
 
-  // Set global state from CLI options
+  // Set global state from CLI options. accountType is only set here when
+  // the user passed it explicitly — otherwise we leave the state default
+  // ("individual") in place until inference runs after authentication,
+  // which may override it. ghcApiBaseUrl is applied below (after config
+  // load) so CLI takes precedence over config.yaml.
   setCliState({
-    accountType: options.accountType,
+    ...(options.accountType !== undefined && { accountType: options.accountType }),
     showGitHubToken: options.showGitHubToken,
     autoTruncate: options.autoTruncate,
   })
@@ -199,6 +248,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   consola.info(`Data directory: ${PATHS.APP_DIR}`)
 
   const config = await applyConfigToState()
+
+  // GHC API base URL — CLI > config.yaml. Not hot-reloadable: changing
+  // the upstream endpoint mid-flight would mis-route active requests.
+  // Apply after applyConfigToState so the CLI value still wins.
+  const resolvedBaseUrl = options.ghcApiBaseUrl ?? config.ghc_api_base_url
+  if (resolvedBaseUrl) {
+    setCliState({ ghcApiBaseUrl: resolvedBaseUrl })
+  }
 
   // ===========================================================================
   // Phase 2.6: Initialize proxy (must be before any network requests)
@@ -270,28 +327,51 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Initialize token management and authenticate
   await initTokenManagers({ cliToken: options.githubToken })
 
+  // Probe `/copilot_internal/user` once, then derive:
+  //   - Account type (only when caller didn't pass --account-type and no
+  //     explicit base URL is in effect).
+  //   - Billing mode (token-based vs. multiplier — affects per-model badge).
+  // Both are non-fatal: failures fall back to current defaults.
+  try {
+    const usage = await getCopilotUsage()
+
+    // Auto-infer account type. Skipped when an explicit base URL is in
+    // effect (state.ghcApiBaseUrl, set from CLI or config) — the URL
+    // override makes account-type irrelevant for routing.
+    if (options.accountType === undefined && !state.ghcApiBaseUrl) {
+      const inferred = inferAccountTypeFromUsage(usage)
+      if (inferred && inferred !== state.accountType) {
+        const sourceField =
+          usage.copilot_plan ? `copilot_plan="${usage.copilot_plan}"` : `access_type_sku="${usage.access_type_sku}"`
+        consola.info(`[account] Inferred account-type=${inferred} from ${sourceField}`)
+        setCliState({ accountType: inferred })
+      } else if (!inferred) {
+        consola.debug(
+          `[account] Could not infer account-type from copilot_plan="${usage.copilot_plan}" / access_type_sku="${usage.access_type_sku}" — keeping "${state.accountType}"`,
+        )
+      }
+    }
+
+    // Billing mode badge — `(1x)` is meaningless when every model is PAYG.
+    const tokenBased =
+      usage.token_based_billing === true || usage.quota_snapshots?.premium_interactions?.token_based_billing === true
+    setTokenBasedBilling(tokenBased)
+  } catch (error) {
+    consola.debug("[account] /copilot_internal/user probe failed; using defaults:", error)
+  }
+
   // Fetch available models from Copilot API
   try {
     await cacheModels()
   } catch (error) {
     consola.error("Failed to fetch models from Copilot API:", error instanceof Error ? error.message : error)
     consola.error(
-      `Verify that --account-type "${state.accountType}" is correct. `
-        + `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
+      state.ghcApiBaseUrl ?
+        `Verify that --ghc-api-base-url "${state.ghcApiBaseUrl}" is reachable.`
+      : `Verify that --account-type "${state.accountType}" is correct. `
+          + `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
     )
     process.exit(1)
-  }
-
-  // Probe billing mode — non-fatal. When the account is on token-based
-  // billing, formatModelInfo renders `(payg)` instead of the now-meaningless
-  // `(1x)` multiplier badge.
-  try {
-    const usage = await getCopilotUsage()
-    const tokenBased =
-      usage.token_based_billing === true || usage.quota_snapshots?.premium_interactions?.token_based_billing === true
-    setTokenBasedBilling(tokenBased)
-  } catch (error) {
-    consola.debug("[billing] usage probe failed; assuming multiplier billing:", error)
   }
 
   // List all upstream models, marking disabled entries so it's obvious which
@@ -399,8 +479,19 @@ export const start = defineCommand({
     "account-type": {
       alias: "a",
       type: "string",
-      default: "individual",
-      description: "Account type to use (individual, business, enterprise)",
+      // No default — when omitted, the runtime may infer it from the
+      // logged-in user's `copilot_plan` field. Falls back to `individual`
+      // if inference fails or yields no clear signal.
+      description:
+        "Upstream account type, one of: individual, business, enterprise."
+        + " When omitted, inferred from the logged-in account; falls back to 'individual'."
+        + " Has no effect when --ghc-api-base-url is set.",
+    },
+    "ghc-api-base-url": {
+      type: "string",
+      description:
+        "Explicit upstream GHC API base URL (e.g. https://api.githubcopilot.com)."
+        + " Overrides --account-type when set.",
     },
     "rate-limit": {
       type: "boolean",
@@ -434,9 +525,9 @@ export const start = defineCommand({
     },
     "auto-truncate": {
       type: "boolean",
-      default: true,
+      default: false,
       description:
-        "Reactive auto-truncate: retries with truncated payload on limit errors (disable with --no-auto-truncate)",
+        "Reactive auto-truncate: retries with truncated payload on limit errors (off by default; enable with --auto-truncate)",
     },
     "external-ui-url": {
       type: "string",
@@ -461,6 +552,9 @@ export const start = defineCommand({
       "account-type",
       "accountType",
       "a",
+      // ghc-api-base-url
+      "ghc-api-base-url",
+      "ghcApiBaseUrl",
       // rate-limit (citty handles --no-rate-limit via built-in negation)
       "rate-limit",
       "rateLimit",
@@ -495,7 +589,10 @@ export const start = defineCommand({
       port: parseIntOrDefault(args.port, 4141),
       host: args.host,
       verbose: args.verbose,
-      accountType: args["account-type"] as "individual" | "business" | "enterprise",
+      // `undefined` triggers auto-inference; the runServer flow falls back
+      // to "individual" when inference yields no clear signal.
+      accountType: args["account-type"] as "individual" | "business" | "enterprise" | undefined,
+      ghcApiBaseUrl: args["ghc-api-base-url"],
       rateLimit: args["rate-limit"],
       mockRateLimiterThrottled: args["mock-rate-limiter-throttled"],
       githubToken: args["github-token"],

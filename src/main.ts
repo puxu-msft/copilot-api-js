@@ -7,8 +7,7 @@ import {
 } from "citty"
 import consola from "consola"
 
-import { auth } from "./auth"
-import { checkUsage } from "./check-usage"
+import { login } from "./auth"
 import { debug } from "./debug"
 import { initConsolaReporter } from "./lib/tui"
 import { listClaudeCode } from "./list-claude-code"
@@ -37,10 +36,9 @@ const main = defineCommand({
     description: "A wrapper around GitHub Copilot API to make it OpenAI compatible, making it usable for other tools.",
   },
   subCommands: {
-    auth,
+    login,
     logout,
     start,
-    "check-usage": checkUsage,
     debug,
     "list-claude-code": listClaudeCode,
     "setup-claude-code": setupClaudeCode,

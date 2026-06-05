@@ -187,12 +187,14 @@ describe("POST /responses", () => {
     resetTestRuntime()
   })
 
-  test("returns 400 when the selected model does not support /responses", async () => {
+  test("returns 400 when the selected model supports neither /responses nor /chat/completions", async () => {
     setModels({
       object: "list",
       data: [
-        mockModel("claude-sonnet-4.6", {
+        mockModel("claude-opus-4.8", {
           vendor: "Anthropic",
+          // Anthropic-only model: native /v1/messages, no OpenAI-shaped paths.
+          // Triggers the "no fallback available" 400 branch.
           supported_endpoints: ["/v1/messages"],
         }),
       ],
@@ -202,7 +204,7 @@ describe("POST /responses", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "claude-sonnet-4.6",
+        model: "claude-opus-4.8",
         input: "Hello",
       }),
     })
@@ -210,7 +212,7 @@ describe("POST /responses", () => {
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({
       error: {
-        message: 'Model "claude-sonnet-4.6" does not support the /responses endpoint',
+        message: 'Model "claude-opus-4.8" does not support /responses or /chat/completions',
         type: "api_error",
         param: null,
         code: null,
@@ -219,11 +221,68 @@ describe("POST /responses", () => {
     expect(upstreamFetchMock).not.toHaveBeenCalled()
   })
 
+  test("falls back to /chat/completions when the model lacks /responses but has /chat/completions", async () => {
+    // Model declares /chat/completions only — handler should translate the
+    // /responses request into a chat completion call and translate back.
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.8", {
+          vendor: "Anthropic",
+          supported_endpoints: ["/chat/completions"],
+        }),
+      ],
+    })
+
+    // Override the upstream mock for this test: fallback hits
+    // /chat/completions (not /responses), so it expects a Chat Completions
+    // shaped response, not a Responses shaped one.
+    responseFactory = () =>
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl-fallback-test",
+          object: "chat.completion",
+          created: 1,
+          model: "claude-opus-4.8",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "Hello from fallback" },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )
+
+    const res = await app.request("/responses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-opus-4.8",
+        input: "Hello",
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(upstreamFetchMock).toHaveBeenCalledTimes(1)
+    // Fallback path translates input → messages and sends /chat/completions.
+    expect((capturedPayload as unknown as { messages?: unknown })?.messages).toBeDefined()
+
+    const body = (await res.json()) as { object: string; output?: Array<{ content?: Array<{ text?: string }> }> }
+    // Response is translated back to Responses shape.
+    expect(body.object).toBe("response")
+    // The translated assistant text should round-trip through the fallback.
+    const text = body.output?.[0]?.content?.[0]?.text
+    expect(text).toBe("Hello from fallback")
+  })
+
   test("normalizes call ids before invoking the upstream responses client", async () => {
     setModels({
       object: "list",
       data: [
-        mockModel("gpt-4o", {
+        mockModel("gpt-5.5", {
           vendor: "OpenAI",
           supported_endpoints: ["/chat/completions", "/responses"],
         }),
@@ -234,7 +293,7 @@ describe("POST /responses", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "gpt-5.5",
         input: [
           {
             type: "function_call",
@@ -258,7 +317,7 @@ describe("POST /responses", () => {
     expect(body).toMatchObject({
       id: "resp-http-test",
       object: "response",
-      model: "gpt-4o",
+      model: "gpt-5.5",
     })
     expect(upstreamFetchMock).toHaveBeenCalledTimes(1)
     const functionCall = getCapturedInputItem(0)
@@ -272,7 +331,7 @@ describe("POST /responses", () => {
     setModels({
       object: "list",
       data: [
-        mockModel("gpt-4o", {
+        mockModel("gpt-5.5", {
           vendor: "OpenAI",
           supported_endpoints: ["/chat/completions", "/responses"],
         }),
@@ -284,7 +343,7 @@ describe("POST /responses", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "gpt-5.5",
         input: [
           {
             type: "function_call",
@@ -308,7 +367,7 @@ describe("POST /responses", () => {
     setModels({
       object: "list",
       data: [
-        mockModel("gpt-4o", {
+        mockModel("gpt-5.5", {
           vendor: "OpenAI",
           supported_endpoints: ["/chat/completions", "/responses"],
         }),
@@ -319,7 +378,7 @@ describe("POST /responses", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "gpt-5.5",
         input: "Stream please",
         stream: true,
       }),
@@ -329,14 +388,14 @@ describe("POST /responses", () => {
     expect(res.headers.get("content-type")).toContain("text/event-stream")
     expect(upstreamFetchMock).toHaveBeenCalledTimes(1)
     expect(capturedPayload?.stream).toBe(true)
-    expect(capturedPayload?.model).toBe("gpt-4o")
+    expect(capturedPayload?.model).toBe("gpt-5.5")
   })
 
   test("forwards upstream failures through the shared error handler", async () => {
     setModels({
       object: "list",
       data: [
-        mockModel("gpt-4o", {
+        mockModel("gpt-5.5", {
           vendor: "OpenAI",
           supported_endpoints: ["/chat/completions", "/responses"],
         }),
@@ -350,7 +409,7 @@ describe("POST /responses", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "gpt-5.5",
         input: "Hello",
       }),
     })

@@ -62,9 +62,12 @@ export async function runAuth(options: RunAuthOptions): Promise<void> {
   }
 }
 
-export const auth = defineCommand({
+export const login = defineCommand({
   meta: {
-    name: "auth",
+    name: "login",
+    // `auth` retained as an alias for backward compatibility — pairs better
+    // with `logout` going forward.
+    alias: ["auth"],
     description: "Run GitHub auth flow without running the server",
   },
   args: {

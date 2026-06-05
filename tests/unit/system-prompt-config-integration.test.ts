@@ -22,6 +22,7 @@ import {
   loadConfig,
   resetApplyState,
   resetConfigCache,
+  setBundledConfigForTests,
   type RewriteRule,
 } from "~/lib/config/config"
 import {
@@ -48,6 +49,8 @@ beforeEach(async () => {
   ;(pathsMod.PATHS as { CONFIG_YAML: string }).CONFIG_YAML = path.join(tmpDir, "config.yaml")
   resetConfigCache()
   resetApplyState()
+  // Isolate from real bundled config — these tests assert raw load semantics.
+  setBundledConfigForTests({})
 })
 
 afterEach(async () => {
@@ -55,6 +58,7 @@ afterEach(async () => {
   ;(pathsMod.PATHS as { APP_DIR: string }).APP_DIR = originalAppDir
   ;(pathsMod.PATHS as { CONFIG_YAML: string }).CONFIG_YAML = originalConfigYaml
   await fs.rm(tmpDir, { recursive: true, force: true })
+  setBundledConfigForTests(null)
 })
 
 // ============================================================================

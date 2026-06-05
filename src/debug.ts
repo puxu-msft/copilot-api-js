@@ -5,12 +5,14 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 
+import { applyConfigToState } from "./lib/config/config"
 import {
   //
   ensurePaths,
   PATHS,
 } from "./lib/config/paths"
 import { getModels } from "./lib/models/client"
+import { initProxy } from "./lib/proxy"
 import {
   //
   setCliState,
@@ -23,6 +25,7 @@ import {
   //
   getCopilotToken,
   getCopilotUsage,
+  type QuotaDetail,
 } from "./lib/token/copilot-client"
 import { getGitHubUser } from "./lib/token/github-client"
 
@@ -229,6 +232,115 @@ const debugModels = defineCommand({
   },
 })
 
+/** Subcommand: debug usage */
+const debugUsage = defineCommand({
+  meta: {
+    name: "usage",
+    description: "Show current GitHub Copilot usage/quota information",
+  },
+  args: {
+    json: {
+      type: "boolean",
+      default: false,
+      description: "Print the raw /copilot_internal/user response as JSON",
+    },
+  },
+  async run({ args }) {
+    await ensurePaths()
+
+    // Load config and initialize proxy before any network requests
+    const config = await applyConfigToState()
+    if (config.proxy) {
+      initProxy({ url: config.proxy, fromEnv: false })
+    } else {
+      initProxy({ url: undefined, fromEnv: true })
+    }
+
+    // Use GitHubTokenManager to get token
+    const tokenManager = new GitHubTokenManager()
+    const tokenInfo = await tokenManager.getToken()
+    setGitHubToken(tokenInfo.token)
+
+    // Show logged in user
+    const user = await getGitHubUser()
+    consola.info(`Logged in as ${user.login}`)
+
+    try {
+      const usage = await getCopilotUsage()
+
+      if (args.json) {
+        console.log(JSON.stringify(usage, null, 2))
+        return
+      }
+
+      // Per-bucket formatter. GHC may omit `quota_snapshots` entirely (free /
+      // expired accounts), and even when present individual buckets may be
+      // absent. We iterate over every bucket actually returned (including
+      // dynamic ones) rather than hard-coding a fixed list — upstream may
+      // add buckets without notice.
+      function summarizeQuota(name: string, snap: QuotaDetail): string {
+        if (snap.unlimited) {
+          const tags: Array<string> = ["unlimited"]
+          if (snap.token_based_billing) tags.push("payg")
+          return `${name}: ${tags.join(", ")}`
+        }
+        const total = snap.entitlement
+        const used = total - snap.remaining
+        const percentUsed = total > 0 ? (used / total) * 100 : 0
+        const percentRemaining = snap.percent_remaining
+        const extras: Array<string> = []
+        if (snap.overage_count > 0) extras.push(`overage ${snap.overage_count}`)
+        if (snap.overage_permitted) extras.push("overage allowed")
+        if (snap.token_based_billing) extras.push("payg")
+        const suffix = extras.length > 0 ? ` [${extras.join(", ")}]` : ""
+        return `${name}: ${used}/${total} used (${percentUsed.toFixed(1)}% used, ${percentRemaining.toFixed(1)}% remaining)${suffix}`
+      }
+
+      // Friendly labels for known buckets; anything else falls back to its raw key.
+      const BUCKET_LABELS: Record<string, string> = {
+        chat: "Chat",
+        completions: "Completions",
+        premium_interactions: "Premium Interactions",
+        premium_models: "Premium Models",
+      }
+
+      const snapshots = usage.quota_snapshots
+      const quotaLines: Array<string> = []
+      if (snapshots) {
+        for (const [key, snap] of Object.entries(snapshots)) {
+          if (!snap) continue
+          const label = BUCKET_LABELS[key] ?? key
+          quotaLines.push(`  ${summarizeQuota(label, snap)}`)
+        }
+      }
+      const quotaSection =
+        quotaLines.length > 0 ? `\nQuotas:\n${quotaLines.join("\n")}` : `\nQuotas: none reported by upstream`
+
+      // Account-level facts. `organization_list` / `organization_login_list`
+      // are typed as unknown[] so we only show counts; users who need details
+      // can pass --json.
+      const accountFacts: Array<string> = [
+        `Plan: ${usage.copilot_plan}`,
+        `SKU: ${usage.access_type_sku}`,
+        `Assigned: ${usage.assigned_date}`,
+        `Chat enabled: ${usage.chat_enabled ? "yes" : "no"}`,
+        `Token-based billing (account): ${usage.token_based_billing ? "yes" : "no"}`,
+        `Can sign up for limited: ${usage.can_signup_for_limited ? "yes" : "no"}`,
+      ]
+      const orgCount = usage.organization_list.length
+      if (orgCount > 0) accountFacts.push(`Organizations: ${orgCount}`)
+      if (usage.analytics_tracking_id) accountFacts.push(`Analytics ID: ${usage.analytics_tracking_id}`)
+
+      const resetLine = usage.quota_reset_date ? `\nQuota resets: ${usage.quota_reset_date}` : ""
+
+      consola.box(`Copilot Usage\n\n${accountFacts.map((l) => `  ${l}`).join("\n")}${resetLine}${quotaSection}`)
+    } catch (err) {
+      consola.error("Failed to fetch Copilot usage:", err)
+      process.exit(1)
+    }
+  },
+})
+
 export const debug = defineCommand({
   meta: {
     name: "debug",
@@ -237,5 +349,6 @@ export const debug = defineCommand({
   subCommands: {
     info: debugInfo,
     models: debugModels,
+    usage: debugUsage,
   },
 })

@@ -20,10 +20,16 @@ export default defineConfigWithVueTs(
       "ui/**/dist/**",
       "eslint.config.js",
       "tsdown.config.ts",
+      "playwright.config.ts",
+      "prettier.config.mjs",
+      // Local ESLint rule sources — not part of the TS project graph.
+      "scripts/eslint-rules/**",
+      // Generated declaration files — not in tsconfig either.
+      "ui/types/**/*.d.ts",
       // Fixture / config JSON files — typescript-eslint parser rejects them
       // ("non-standard extension") and they need no linting in the first place.
-      "tests/fixtures/**/*.json",
-      "tests/e2e-ui/tsconfig.json",
+      "**/*.json",
+      "**/*.jsonc",
     ],
   },
   ...config({

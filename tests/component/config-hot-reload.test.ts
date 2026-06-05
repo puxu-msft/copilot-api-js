@@ -36,6 +36,7 @@ import {
   applyConfigToState,
   resetApplyState,
   resetConfigCache,
+  setBundledConfigForTests,
 } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
 import { ConfigSchema } from "~/lib/config/schema"
@@ -84,6 +85,11 @@ beforeEach(async () => {
   ;(PATHS as { CONFIG_YAML: string }).CONFIG_YAML = path.join(tmpDir, "config.yaml")
   resetConfigCache()
   resetApplyState()
+  // Use an EMPTY bundled-defaults fixture so the legacy hot-reload matrix
+  // tests (R2: retain-on-absence) observe pure runtime state, not bundled
+  // override-merging. Real bundled-merge coverage lives in
+  // tests/unit/config-merge.test.ts.
+  setBundledConfigForTests({})
   initHistory(true, 200)
 })
 
@@ -94,6 +100,7 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true })
   resetConfigCache()
   resetApplyState()
+  setBundledConfigForTests(null) // re-enable real bundled load for other suites
 })
 
 // ============================================================================
@@ -487,6 +494,11 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   {
     configKey: "proxy",
     reason: "initProxy() runs once in start.ts before any network requests; changes require restart",
+  },
+  {
+    configKey: "ghc_api_base_url",
+    reason:
+      "Read once in start.ts; switching upstream mid-flight would mis-route active requests, so changes require restart",
   },
   {
     configKey: "rate_limiter.retry_interval",

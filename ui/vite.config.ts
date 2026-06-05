@@ -6,6 +6,11 @@ import { defineConfig } from "vite"
 import VueDevTools from "vite-plugin-vue-devtools"
 import vuetify from "vite-plugin-vuetify"
 
+// Use import.meta.dirname (Node 20.11+ / 21.2+, also supported by Bun) instead
+// of the CommonJS __dirname global to satisfy unicorn/prefer-module in an ESM
+// config file.
+const here = import.meta.dirname
+
 export default defineConfig(({ command }) => {
   const backendHost = process.env.COPILOT_API_HOST ?? "localhost"
   const backendPort = process.env.COPILOT_API_PORT ?? "4141"
@@ -13,18 +18,18 @@ export default defineConfig(({ command }) => {
   const backendWsUrl = `ws://${backendHost}:${backendPort}`
 
   return {
-    root: __dirname,
+    root: here,
     plugins: [
       vue(),
       vuetify({ autoImport: true }),
       VueDevTools(),
       AutoImport({
         imports: ["vue", "vue-router", "pinia", "@vueuse/core"],
-        dts: resolve(__dirname, "types/auto-imports.d.ts"),
+        dts: resolve(here, "types/auto-imports.d.ts"),
       }),
       Components({
-        dirs: [resolve(__dirname, "src/components")],
-        dts: resolve(__dirname, "types/components.d.ts"),
+        dirs: [resolve(here, "src/components")],
+        dts: resolve(here, "types/components.d.ts"),
       }),
     ],
     optimizeDeps: {
@@ -32,8 +37,8 @@ export default defineConfig(({ command }) => {
     },
     resolve: {
       alias: {
-        "@": resolve(__dirname, "src"),
-        "~backend": resolve(__dirname, "../src"),
+        "@": resolve(here, "src"),
+        "~backend": resolve(here, "../src"),
       },
     },
     // In dev mode, serve from root for convenience; in build, use /ui/ prefix

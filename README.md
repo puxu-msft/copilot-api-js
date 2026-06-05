@@ -1,12 +1,14 @@
-# Copilot API Proxy (Fork)
+# Copilot API Proxy \(Folk\)
 
 > [!NOTE]
-> This is a fork of [ericc-ch/copilot-api](https://github.com/ericc-ch/copilot-api) with additional improvements and bug fixes.
+> This is a fork of [ericc-ch/copilot-api](https://github.com/ericc-ch/copilot-api) which works :\).
 
 > [!WARNING]
-> This is a reverse proxy for the GitHub Copilot API. It is not officially supported by GitHub and may break at any time. Use at your own risk.
+> Reverse proxy for the GitHub Copilot API. It is not officially supported by GitHub and may break at any time. Use at your own risk.
 
-A reverse proxy that exposes GitHub Copilot's API as standard OpenAI and Anthropic compatible endpoints.
+A reverse proxy that exposes GitHub Copilot API from your GitHub Copilot subscription as OpenAI, Anthropic, AOAI and Google Gemini compatible endpoints, so you can drive Claude Code, Codex, Gemini and other AI agent tools through one local server.
+
+---
 
 ## Quick Start
 
@@ -14,7 +16,13 @@ A reverse proxy that exposes GitHub Copilot's API as standard OpenAI and Anthrop
 
 ```sh
 npx -y @hsupu/copilot-api start
+
+# beta version
+npx -y @hsupu/copilot-api@beta start
 ```
+
+First run will trigger GitHub device-flow auth automatically and cache the token under
+`~/.local/share/copilot-api/` (override with `XDG_DATA_HOME`).
 
 ### Run from Source
 
@@ -22,15 +30,8 @@ npx -y @hsupu/copilot-api start
 git clone https://github.com/puxu-msft/copilot-api-js.git
 cd copilot-api-js
 bun install
-bun run dev  # Development mode with hot reload
-bun run dev:ui  # Development mode for UI
-bun run start --port 4141 --external-ui-url http://localhost:5173  # Production mode with separate UI server
-
-# Testing
-bun test                   # Backend unit tests
-bun run test:all           # All backend tests
-bun run test:ui            # Frontend (History UI) tests
-bun run typecheck          # TypeScript type checking
+bun run dev --external-ui-url http://localhost:5173  # Development mode with hot reload and proxying /ui to the Vite dev server
+bun run dev:ui  # Development mode for UI on Vite dev server
 
 # Publish to npm
 BROWSER=wslview npm login
@@ -38,12 +39,60 @@ BROWSER=wslview npm publish --access public --tag beta
 BROWSER=wslview npm dist-tag add @hsupu/copilot-api@0.8.3 latest
 ```
 
-## Using with Claude Code
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `start` | Start the API server (authenticates automatically if needed) |
+| `login` (alias: `auth`) | Run GitHub device-flow authentication, store the GitHub token |
+| `logout` | Clear the stored GitHub token |
+| `debug usage` | Show Copilot subscription usage and quota |
+| `debug info` | Print diagnostic info (paths, runtime, config summary) |
+| `debug models` | Fetch and dump raw model metadata from Copilot |
+| `list-claude-code` | List locally-installed Claude Code versions |
+| `setup-claude-code` | Interactively configure Claude Code to use this proxy |
+
+### `start` options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--port`, `-p` | `4141` | Port to listen on |
+| `--host`, `-H` | `localhost` | `localhost` (v4+v6 loopback), `any` (0.0.0.0+::), or a specific address |
+| `--account-type`, `-a` | auto-detect | `individual` / `business` / `enterprise` (selects API base URL). When omitted, inferred from the logged-in account; falls back to `individual`. |
+| `--ghc-api-base-url` |  | Explicit upstream GHC API base URL (e.g. `https://api.githubcopilot.com`). Overrides `--account-type` when set. |
+| `--github-token`, `-g` |  | Provide a pre-issued GitHub token instead of running auth |
+| `--show-github-token` | `false` | Print the GitHub token in logs |
+| `--proxy` |  | Override outbound proxy URL (http/https/socks5/socks5h) |
+| `--no-http-proxy-from-env` | enabled | Ignore `HTTP_PROXY` / `HTTPS_PROXY` env vars |
+| `--no-rate-limit` | enabled | Disable the adaptive rate limiter |
+
+`--account-type` determines the upstream API base URL (unless `--ghc-api-base-url` overrides it):
+
+| Type | API Base URL |
+|------|--------------|
+| `individual` | `api.githubcopilot.com` |
+| `business` | `api.business.githubcopilot.com` |
+| `enterprise` | `api.enterprise.githubcopilot.com` |
+
+Experimental options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--external-ui-url` |  | Reverse-proxy `/ui` to an external Vite dev / build server |
+| `--verbose`, `-v` | `false` | Verbose logging (includes Copilot token refresh logs) |
+| `--auto-truncate` | disabled | Enable reactive auto-truncate on context-limit errors |
+| `--mock-rate-limiter-throttled` | `false` | Test-only: simulate upstream 429 after the limiter timeout |
+
+---
+
+## Usage
+
+### Using with Claude Code
 
 Run the interactive setup command:
 
 ```sh
-copilot-api setup-claude-code
+npx -y @hsupu/copilot-api setup-claude-code
 ```
 
 Or manually create and modify `~/.claude/settings.json`:
@@ -59,80 +108,189 @@ Or manually create and modify `~/.claude/settings.json`:
     "ANTHROPIC_SMALL_FAST_MODEL": "haiku",
     "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "CLAUDE_CODE_ENABLE_TELEMETRY": "0"
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+    "DISABLE_TELEMETRY": "1"
   }
 }
 ```
 
+### Using with Codex CLI / OpenAI SDK
+
+Point `OPENAI_BASE_URL` (or the equivalent) at the proxy:
+
+```sh
+export OPENAI_BASE_URL=http://localhost:4141/v1
+export OPENAI_API_KEY=dummy
+codex  # or any OpenAI SDK client
+```
+
+Or create and modify `~/.openai/config.toml`:
+
+```toml
+model_provider = "ghc"
+
+[model_providers]
+
+[model_providers.ghc]
+name = "ghc"
+base_url = "http://localhost:4141/v1"
+wire_api = "responses"
+preferred_auth_method = "apikey"
+```
+
+### Using with Gemini CLI
+
+```bash
+export GOOGLE_GEMINI_BASE_URL=http://localhost:4141/v1beta
+export GEMINI_API_KEY=dummy  # not validated, but the CLI requires the var
+gemini -p "hello"
+```
+
+### Using API Endpoints
+
+#### OpenAI compatible
+
+Each route is registered with no prefix, with `/v1`, and with `/openai/v1`.
+
+| Endpoint | Method |
+|----------|--------|
+| `/chat/completions` | POST |
+| `/responses` | POST (also WS GET) |
+| `/embeddings` | POST |
+| `/models` | GET |
+| `/models/:model` | GET |
+
+#### Azure OpenAI compatible
+
+| Endpoint | Method |
+|----------|--------|
+| `/openai/deployments/:deployment/chat/completions` | POST |
+| `/openai/deployments/:deployment/embeddings` | POST |
+| `/openai/deployments/:deployment/responses` | POST |
+
+#### Anthropic compatible
+
+| Endpoint | Method |
+|----------|--------|
+| `/v1/messages`, `/anthropic/v1/messages` | POST |
+| `/v1/messages/count_tokens`, `/anthropic/v1/messages/count_tokens` | POST |
+| `/anthropic/v1/models` | GET |
+| `/anthropic/v1/models/:id` | GET |
+
+`/v1/messages` requires an Anthropic-vendor model — it talks to Copilot's native Anthropic endpoint.
+
+#### Google Gemini compatible
+
+| Endpoint | Method |
+|----------|--------|
+| `/v1beta/models/:model:generateContent` | POST |
+| `/v1beta/models/:model:streamGenerateContent` | POST (SSE) |
+| `/v1beta/models/:model:countTokens` | POST |
+
+---
+
 ## Configuration
 
-All `config.yaml`, `github_token` and more are saved in `~/.local/share/copilot-api/`.
+The recommended defaults ship as **[`config.yaml`](config.yaml) at the package root** (bundled with the npm release). Your personal overrides live at `~/.local/share/copilot-api/config.yaml`. At runtime the effective configuration = **bundled defaults deep-merged with your overrides** (user wins per key):
 
-See [`config.example.yaml`](config.example.yaml) for all available options.
+- Top-level nested sections (`anthropic`, `history`, `shutdown`, `openai-responses`, `rate_limiter`): per-field merge.
+- Free-form maps (`model_overrides`, `anthropic.efforts_overrides`, …): per-key merge.
+- `model_preference`: per-family replacement (omitted families keep bundled defaults).
+- Arrays and scalars: user replaces wholesale when present.
 
-## Commands
+Removing a key from your user file naturally reverts to the bundled default on next reload.
 
-| Command | Description |
-|---------|-------------|
-| `start` | Start the API server (authenticates automatically if needed) |
-| `auth` | Run GitHub authentication flow only |
-| `logout` | Remove stored GitHub token |
-| `check-usage` | Show Copilot usage and quota information |
-| `debug info` | Display diagnostic information |
-| `debug models` | Fetch and display raw model data from Copilot API |
-| `list-claude-code` | List all locally installed Claude Code versions |
-| `setup-claude-code` | Interactively configure Claude Code to use this proxy |
+See [`config.example.yaml`](config.example.yaml) for the full annotated reference (includes commented-out optional fields). The GitHub token, learned negotiation state and the SQLite history database live alongside the user config under the data directory:
 
-### `start` Options
+- Default: `~/.local/share/copilot-api/`
+- Honors `XDG_DATA_HOME` if set: `$XDG_DATA_HOME/copilot-api/`
 
-**General:**
+Most fields hot-reload at runtime (the file is watched).
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--port`, `-p` | 4141 | Port to listen on |
-| `--host`, `-H` | (all interfaces) | Host/interface to bind to |
-| `--verbose`, `-v` | false | Enable verbose logging |
-| `--account-type`, `-a` | individual | Account type: `individual`, `business`, or `enterprise` |
-| `--github-token`, `-g` | | Provide GitHub token directly |
-| `--no-http-proxy-from-env` | enabled | Disable HTTP proxy from environment variables |
-| `--collect-system-prompts` | false | Collect system prompts to file |
-| `--no-auto-truncate` | enabled | Disable auto-truncation on context limit errors |
-| `--no-rate-limit` | enabled | Disable adaptive rate limiting |
+Highlights:
 
-The account type determines the Copilot API base URL:
+- `model_overrides` — rewrite request model names (e.g. `opus → claude-opus-4.7-1m-internal`).
+- `model_preference` — per-family ordered candidate lists used for `opus` / `sonnet` / `haiku` resolution.
+- `disabled_models` — hide deprecated/legacy models from `/models`, the UI picker, and fallback resolution.
+- `anthropic.*` — cache-control mode, tool dedup, thinking-block policy, server-tool stripping, context editing,
+  `tool_search`, `efforts_overrides`, `strip_beta_headers`, `reject_body_fields`, warmup policy, system-reminder
+  rewriting.
+- `openai-responses.*` — `normalize_call_ids`, `upstream_websocket`, `fix_stream_ids`, `client_websocket_keep_open`.
+- `rate_limiter.*` — retry interval, request interval, recovery timeout, success threshold. **Restart required.**
+- `system_prompt_prepend` / `system_prompt_append` / `system_prompt_overrides` — full pipeline for modifying
+  system prompts (line or regex replacement, optional `model` filter).
+- `history.limit` / `history.reaper_interval` / `history.db_path` — control SQLite history retention.
+- `shutdown.graceful_wait` / `shutdown.abort_wait` — drain timings.
+- `stream_idle_timeout` / `fetch_timeout` / `model_refresh_interval` / `stale_request_max_age` — network knobs.
+- `proxy` — outbound proxy URL. **Restart required.**
 
-| Type | API Base URL |
-|------|-------------|
-| `individual` | `api.githubcopilot.com` |
-| `business` | `api.business.githubcopilot.com` |
-| `enterprise` | `api.enterprise.githubcopilot.com` |
+Hot-reload semantics are *retain-on-absence*: missing keys keep the previous value; explicit empty values
+(`disabled_models: []`, `model_overrides: {}`) clear the field.
 
-## API Endpoints
+### Data directory layout
 
-### OpenAI Compatible
+```
+~/.local/share/copilot-api/         # or $XDG_DATA_HOME/copilot-api/
+├── config.yaml                     # user config (hot-reloaded)
+├── github_token                    # GitHub device-flow token
+├── copilot-token.json              # cached Copilot bearer (with expiry)
+├── history.db                      # SQLite history (gzip-compressed payloads)
+├── negotiation-states.json         # learned per-model bans (betas / body fields / efforts)
+├── auto-truncate-limits.json       # learned context-limit per model
+└── system-prompts/                 # optional system-prompt dumps (when enabled)
+```
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `XDG_DATA_HOME` | Override the parent of the `copilot-api/` data directory |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Consulted unless `--no-http-proxy-from-env` |
+| `NODE_ENV` | `npm run start` sets `production`; affects log verbosity |
+| `BROWSER` | Used by the `auth` device-flow to open the verification URL |
+
+---
+
+## Internal API Endpoints
+
+### Management & UI
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/chat/completions` | POST | Chat completions |
-| `/v1/responses` | POST | Responses API |
-| `/v1/models` | GET | List available models |
-| `/v1/models/:model` | GET | Get specific model details |
-| `/v1/embeddings` | POST | Text embeddings |
+| `/api/status` | GET | Server status (uptime, account type, model count, in-flight, etc.) |
+| `/api/tokens` | GET | GitHub + Copilot token info (masked unless `--show-github-token`) |
+| `/api/models` | GET | Internal model catalog (full Copilot data) |
+| `/api/models/:model` | GET | Single model (internal full shape) |
+| `/api/config` | GET | Effective runtime configuration |
+| `/api/config/yaml` | GET / PUT | Read / replace `config.yaml` (triggers full re-apply) |
+| `/api/logs` | GET | Recent request logs (in-memory ring buffer) |
+| `/api/event_logging/batch` | POST | Silently consumes Anthropic event-logging beacons |
+| `/health` | GET | Liveness probe (200 / 503) |
+| `/ui/*` | GET | Vuetify-based History Web UI (static SPA) |
 
-All endpoints also work without the `/v1` prefix for backwards compatibility.
+### History API
 
-### Anthropic Compatible
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/messages` | POST | Messages API |
-| `/v1/messages/count_tokens` | POST | Token counting |
-
-### Utility
+REST under `/history/api/`:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check (200 healthy, 503 unhealthy) |
+| `/history/api/entries` | GET | Paginated entry list (filter by model / endpoint / status / session / time) |
+| `/history/api/entries/:id` | GET | Single entry (decoded payload + response, headers, timing, billing) |
+| `/history/api/entries` | DELETE | Bulk delete (by id list, session, or full clear) |
+| `/history/api/stats` | GET | Aggregate counts, token totals, billing multipliers, model breakdown |
+| `/history/api/sessions` | GET | Session list (Claude Code / Codex sessions inferred from headers) |
+| `/history/api/sessions/:id` | GET | Session detail (aggregate + entry refs) |
+| `/history/api/sessions/:id` | DELETE | Delete all entries for a session |
+| `/history/api/export` | GET | Export history as JSON |
+
+WebSocket `/ws` is a topic-aware bus carrying:
+
+- `history` — new entries, updates, finalize, delete events
+- `status` — server status changes
+- `shutdown` — drain begin / phase transitions
+- (per-request) live SSE replay for in-flight requests
+
+---
 
 ## License
 

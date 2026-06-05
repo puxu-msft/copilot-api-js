@@ -1,7 +1,16 @@
 /**
  * Handler for inbound OpenAI Responses API requests.
- * Routes directly to Copilot /responses endpoint.
- * Models that do not support /responses get a 400 error.
+ *
+ * Dispatches to one of two execution paths:
+ *  - `handleDirectResponses` (default) — passes through to Copilot's
+ *    /responses upstream when the model supports it natively.
+ *  - `executeResponsesViaChatCompletions` (fallback) — translates the payload
+ *    to /chat/completions for models that lack /responses support or whose
+ *    upstream is known-broken (see `shouldForceChatCompletionsFallback`).
+ *
+ * Both paths share the pre-dispatch setup performed in `handleResponses`
+ * (model resolution, instructions processing, call-id normalization, history
+ * recording), so the choice of path is transparent to bookkeeping.
  */
 
 import type { Context } from "hono"
@@ -33,6 +42,7 @@ import {
 import {
   //
   ENDPOINT,
+  isEndpointSupported,
   isResponsesSupported,
 } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
@@ -67,6 +77,11 @@ import { tuiLogger } from "~/lib/tui"
 
 import {
   //
+  executeResponsesViaChatCompletions,
+  shouldForceChatCompletionsFallback,
+} from "./fallback"
+import {
+  //
   createResponsesAdapter,
   createResponsesStrategies,
   normalizeCallIds,
@@ -98,14 +113,20 @@ export async function handleResponses(c: Context) {
     payload.model = resolvedModel
   }
 
-  // Validate that the model supports /responses endpoint
+  // Decide dispatch path: direct /responses, or fallback via /chat/completions.
+  // `useFallback` is true when the model can't reach /responses upstream OR
+  // when the model is on the force-list (e.g. Google — Copilot's /responses
+  // upstream is broken for several Gemini SKUs).
   const selectedModel = state.modelIndex.get(payload.model)
-  if (!isResponsesSupported(selectedModel)) {
-    const msg = `Model "${payload.model}" does not support the ${ENDPOINT.RESPONSES} endpoint`
+  const useFallback = !isResponsesSupported(selectedModel) || shouldForceChatCompletionsFallback(selectedModel)
+
+  if (useFallback && !isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
+    const msg = `Model "${payload.model}" does not support /responses or /chat/completions`
     throw new HTTPError(msg, 400, msg)
   }
 
-  // Process system prompt (overrides, prepend, append from config)
+  // Process system prompt (overrides, prepend, append from config). Runs
+  // before dispatch so both paths transparently inherit config-yaml overrides.
   payload.instructions = await processResponsesInstructions(payload.instructions, payload.model)
 
   // Normalize call IDs before pipeline (call_ → fc_)
@@ -142,6 +163,11 @@ export async function handleResponses(c: Context) {
       model: payload.model,
       ...(clientModel !== payload.model && { clientModel }),
     })
+  }
+
+  if (useFallback) {
+    if (tuiLogId) tuiLogger.updateRequest(tuiLogId, { tags: ["via-chat-completions-fallback"] })
+    return executeResponsesViaChatCompletions({ c, payload, reqCtx, selectedModel })
   }
 
   return handleDirectResponses({ c, payload, reqCtx })
