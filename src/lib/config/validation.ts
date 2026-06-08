@@ -111,10 +111,7 @@ function deepCloneJsonSafe<T>(value: T): T {
 // Step 2 — strip invalid paths so the second parse can succeed
 // ============================================================================
 
-function cleanInvalidPaths(
-  raw: Record<string, unknown>,
-  issues: ReadonlyArray<z.core.$ZodIssue>,
-): Record<string, unknown> {
+function cleanInvalidPaths(raw: Record<string, unknown>, issues: ReadonlyArray<z.core.$ZodIssue>): Record<string, unknown> {
   const clone = deepCloneJsonSafe(raw)
   for (const issue of issues) {
     if (issue.code === "unrecognized_keys") {
@@ -206,9 +203,7 @@ export interface ConfigValidationDetail {
   value?: unknown
 }
 
-export type ConfigValidationResult =
-  | { valid: true; value: Config }
-  | { valid: false; details: Array<ConfigValidationDetail> }
+export type ConfigValidationResult = { valid: true; value: Config } | { valid: false; details: Array<ConfigValidationDetail> }
 
 /**
  * Validate an HTTP PUT body against ConfigSchema. Unlike `validateConfig`,

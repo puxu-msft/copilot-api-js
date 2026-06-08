@@ -145,10 +145,7 @@ export async function* translateResponsesStream(
     try {
       event = JSON.parse(rawEvent.data) as ResponsesStreamEvent
     } catch (err) {
-      consola.debug(
-        `[cc←responses] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`,
-        rawEvent.data.slice(0, 200),
-      )
+      consola.debug(`[cc←responses] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, rawEvent.data.slice(0, 200))
       continue
     }
 
@@ -167,11 +164,7 @@ function syncStateFromResponse(state: StreamTranslatorState, response: Responses
   if (!state.model) state.model = response.model
 }
 
-function buildChunk(
-  state: StreamTranslatorState,
-  delta: StreamingDelta,
-  finishReason: FinishReason | null = null,
-): ChatCompletionChunk {
+function buildChunk(state: StreamTranslatorState, delta: StreamingDelta, finishReason: FinishReason | null = null): ChatCompletionChunk {
   return {
     id: state.responseId,
     object: "chat.completion.chunk",

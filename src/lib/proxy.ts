@@ -115,9 +115,7 @@ function initProxyNode(options: ProxyOptions): void {
         if (!cachedProxyOptions) return
         try {
           installGlobalDispatcher(cachedProxyOptions)
-          consola.debug(
-            `Undici timeouts reloaded: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`,
-          )
+          consola.debug(`Undici timeouts reloaded: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`)
         } catch (err) {
           consola.error("Undici timeout reload failed:", err)
         }
@@ -155,9 +153,7 @@ function installGlobalDispatcher(options: ProxyOptions): void {
   // 300s headers/body timeouts do not pre-empt our application-level
   // streamIdleTimeout / fetchTimeout.
   setGlobalDispatcher(new Agent(getUndiciTimeoutOptions()))
-  consola.debug(
-    `Undici timeouts: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`,
-  )
+  consola.debug(`Undici timeouts: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`)
 }
 
 /** Create the appropriate undici dispatcher for a proxy URL scheme */

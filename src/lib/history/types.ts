@@ -13,11 +13,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages"
 
 /** Supported API endpoint types */
-export type EndpointType =
-  | "anthropic-messages"
-  | "openai-chat-completions"
-  | "openai-responses"
-  | "gemini-generate-content"
+export type EndpointType = "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content"
 
 export type RequestTransport = "http" | "upstream-ws" | "upstream-ws-fallback"
 export type RequestLifecycleState = "pending" | "executing" | "streaming" | "completed" | "failed"

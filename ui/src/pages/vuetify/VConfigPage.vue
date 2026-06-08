@@ -114,9 +114,7 @@ const nonDeferredTools = computed<Array<string>>({
     setNested(
       "anthropic",
       "non_deferred_tools",
-      value
-        .map((entry) => entry.trim())
-        .filter((entry, index, entries) => entry.length > 0 && entries.indexOf(entry) === index),
+      value.map((entry) => entry.trim()).filter((entry, index, entries) => entry.length > 0 && entries.indexOf(entry) === index),
     ),
 })
 

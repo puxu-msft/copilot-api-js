@@ -6,8 +6,7 @@ export async function ensureServerRunning() {
     if (!res.ok) throw new Error(`Health check returned ${res.status}`)
   } catch (error) {
     throw new Error(
-      `Server is not running at ${BASE_URL}. Start the server before running E2E tests. `
-        + `Error: ${error instanceof Error ? error.message : String(error)}`,
+      `Server is not running at ${BASE_URL}. Start the server before running E2E tests. ` + `Error: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
 }

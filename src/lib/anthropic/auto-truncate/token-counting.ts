@@ -79,11 +79,7 @@ export function estimateMessageTokens(msg: MessageParam): number {
 /**
  * Count tokens for an Anthropic message using the model's tokenizer.
  */
-export async function countMessageTokens(
-  msg: MessageParam,
-  model: Model,
-  options?: { includeThinking?: boolean },
-): Promise<number> {
+export async function countMessageTokens(msg: MessageParam, model: Model, options?: { includeThinking?: boolean }): Promise<number> {
   const text = contentToText(msg.content, options)
   return (await countTextTokens(text, model)) + 4
 }

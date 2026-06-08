@@ -44,9 +44,7 @@ export interface StartServerOptions {
 export async function startServer(options: StartServerOptions): Promise<ServerInstance> {
   const isBun = typeof globalThis.Bun !== "undefined"
   const startOne = (hostname: string | undefined): Promise<ServerInstance> =>
-    isBun ?
-      startBunServer({ ...options, hostname })
-    : startNodeServer({ ...options, hostname, ipv6Only: needsIpv6Only(hostname, options.hostnames ?? []) })
+    isBun ? startBunServer({ ...options, hostname }) : startNodeServer({ ...options, hostname, ipv6Only: needsIpv6Only(hostname, options.hostnames ?? []) })
   return startServerMulti(options.hostnames, startOne)
 }
 

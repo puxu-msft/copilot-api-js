@@ -41,9 +41,7 @@ function locateBundledConfig(): string {
     if (parent === dir) break
     dir = parent
   }
-  throw new Error(
-    `[paths] Bundled config.yaml not found; searched upward from ${startDir}. This indicates a broken install.`,
-  )
+  throw new Error(`[paths] Bundled config.yaml not found; searched upward from ${startDir}. This indicates a broken install.`)
 }
 
 export const PATHS = {

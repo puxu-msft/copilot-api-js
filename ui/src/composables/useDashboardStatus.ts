@@ -224,8 +224,7 @@ export function useDashboardStatus() {
         outputTokens: typeof usage.outputTokens === "number" ? usage.outputTokens : 0,
         totalTokens: typeof usage.totalTokens === "number" ? usage.totalTokens : 0,
         cacheReadInputTokens: typeof usage.cacheReadInputTokens === "number" ? usage.cacheReadInputTokens : 0,
-        cacheCreationInputTokens:
-          typeof usage.cacheCreationInputTokens === "number" ? usage.cacheCreationInputTokens : 0,
+        cacheCreationInputTokens: typeof usage.cacheCreationInputTokens === "number" ? usage.cacheCreationInputTokens : 0,
         reasoningTokens: typeof usage.reasoningTokens === "number" ? usage.reasoningTokens : 0,
       }
     }
@@ -289,9 +288,7 @@ export function useDashboardStatus() {
     return new Date(auth.value.copilotTokenExpiresAt as number).toLocaleTimeString()
   })
 
-  const resolvedActiveCount = computed(
-    () => activeCount.value || (status.value?.activeRequests as Record<string, number> | undefined)?.count || 0,
-  )
+  const resolvedActiveCount = computed(() => activeCount.value || (status.value?.activeRequests as Record<string, number> | undefined)?.count || 0)
 
   const quotaItems = computed<Array<QuotaItem>>(() => {
     if (!quota.value) return []

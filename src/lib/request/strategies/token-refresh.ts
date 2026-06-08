@@ -49,15 +49,8 @@ export function createTokenRefreshStrategy<TPayload>(): RetryStrategy<TPayload> 
       return error.type === "auth_expired" && !hasRefreshed
     },
 
-    async handle(
-      error: ApiError,
-      currentPayload: TPayload,
-      context: RetryContext<TPayload>,
-    ): Promise<RetryAction<TPayload>> {
-      consola.info(
-        `[TokenRefresh] Attempt ${context.attempt + 1}/${context.maxRetries + 1}: `
-          + `Got ${error.status}, refreshing Copilot token...`,
-      )
+    async handle(error: ApiError, currentPayload: TPayload, context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
+      consola.info(`[TokenRefresh] Attempt ${context.attempt + 1}/${context.maxRetries + 1}: ` + `Got ${error.status}, refreshing Copilot token...`)
 
       const success = await refreshCopilotToken()
       hasRefreshed = true

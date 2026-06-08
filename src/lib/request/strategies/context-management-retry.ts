@@ -81,11 +81,7 @@ export function createBodyFieldRejectionStrategy<
       return message ? parseExtraInputsError(message) !== null : false
     },
 
-    handle(
-      error: ApiError,
-      currentPayload: TPayload,
-      _context: RetryContext<TPayload>,
-    ): Promise<RetryAction<TPayload>> {
+    handle(error: ApiError, currentPayload: TPayload, _context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
       const message = extractErrorMessage(error)
       const parsed = message ? parseExtraInputsError(message) : null
       if (!parsed) {

@@ -58,9 +58,7 @@ export type {
 
 let idCounter = 0
 
-function extractMaxTokens(
-  p: { max_tokens?: unknown; max_completion_tokens?: unknown } | undefined,
-): number | undefined {
+function extractMaxTokens(p: { max_tokens?: unknown; max_completion_tokens?: unknown } | undefined): number | undefined {
   if (typeof p?.max_tokens === "number") return p.max_tokens
   if (typeof p?.max_completion_tokens === "number") return p.max_completion_tokens
   return undefined
@@ -106,8 +104,7 @@ export function createRequestContext(opts: {
       // the onEvent function itself throws (not a registered listener). Log
       // with id + endpoint so the dispatcher crash is traceable.
       consola.warn(
-        `[context.request] onEvent dispatcher threw for "${event.type}" `
-          + `(request ${id}, endpoint ${opts.endpoint}):`,
+        `[context.request] onEvent dispatcher threw for "${event.type}" ` + `(request ${id}, endpoint ${opts.endpoint}):`,
         err instanceof Error ? err.message : err,
       )
     }
@@ -197,21 +194,14 @@ export function createRequestContext(opts: {
     },
 
     addWarningMessage(warning: WarningMessage) {
-      const exists = _warningMessages.some(
-        (existing) => existing.code === warning.code && existing.message === warning.message,
-      )
+      const exists = _warningMessages.some((existing) => existing.code === warning.code && existing.message === warning.message)
       if (exists) return
 
       _warningMessages.push(warning)
       emit({ type: "updated", context: ctx, field: "warningMessages" })
     },
 
-    beginAttempt(attemptOpts: {
-      strategy?: string
-      waitMs?: number
-      truncation?: TruncationInfo
-      transport?: Attempt["transport"]
-    }) {
+    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
       const attempt: Attempt = {
         index: _attempts.length,
         effectiveRequest: null, // Set later via setAttemptEffectiveRequest

@@ -84,13 +84,7 @@ function formatModelMetricValue(
 function modelBarColor(model: string): string {
   const value = model.toLowerCase()
   if (value.includes("claude") || value.includes("anthropic")) return "#c8a0d8"
-  if (
-    value.includes("gpt")
-    || value.includes("openai")
-    || value.includes("o1")
-    || value.includes("o3")
-    || value.includes("o4")
-  ) {
+  if (value.includes("gpt") || value.includes("openai") || value.includes("o1") || value.includes("o3") || value.includes("o4")) {
     return "#7ab8d0"
   }
   if (value.includes("gemini")) return "#5cb870"
@@ -155,20 +149,13 @@ export function useModelTelemetry(
 
     return [...rows.values()].sort(
       (left, right) =>
-        getModelMetricValue(right.last7d, selectedSortMetric.value)
-          - getModelMetricValue(left.last7d, selectedSortMetric.value)
-        || getModelMetricValue(right.runtime, selectedSortMetric.value)
-          - getModelMetricValue(left.runtime, selectedSortMetric.value)
+        getModelMetricValue(right.last7d, selectedSortMetric.value) - getModelMetricValue(left.last7d, selectedSortMetric.value)
+        || getModelMetricValue(right.runtime, selectedSortMetric.value) - getModelMetricValue(left.runtime, selectedSortMetric.value)
         || left.model.localeCompare(right.model),
     )
   })
 
-  const maxMetricValue = computed(() =>
-    Math.max(
-      ...modelTelemetryEntries.value.map((item) => getModelMetricValue(item.last7d, selectedChartMetric.value)),
-      1,
-    ),
-  )
+  const maxMetricValue = computed(() => Math.max(...modelTelemetryEntries.value.map((item) => getModelMetricValue(item.last7d, selectedChartMetric.value)), 1))
 
   function relativeWidth(count: number): number {
     return maxMetricValue.value > 0 ? (count / maxMetricValue.value) * 100 : 0

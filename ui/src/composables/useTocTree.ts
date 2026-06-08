@@ -44,13 +44,7 @@ function blockTypeIcon(type: string): string {
   return "mdi-code-braces"
 }
 
-function blockLabel(block: {
-  type: string
-  text?: string
-  thinking?: string
-  name?: string
-  tool_use_id?: string
-}): string {
+function blockLabel(block: { type: string; text?: string; thinking?: string; name?: string; tool_use_id?: string }): string {
   if (block.type === "text" && typeof block.text === "string") {
     const preview = block.text.slice(0, 30).replaceAll("\n", " ")
     return `text: ${preview}${block.text.length > 30 ? "…" : ""}`
@@ -62,12 +56,9 @@ function blockLabel(block: {
   return block.type
 }
 
-function msgContentBlocks(
-  msg: MessageContent,
-): Array<{ type: string; text?: string; thinking?: string; name?: string; tool_use_id?: string }> {
+function msgContentBlocks(msg: MessageContent): Array<{ type: string; text?: string; thinking?: string; name?: string; tool_use_id?: string }> {
   if (typeof msg.content === "string") return [{ type: "text", text: msg.content }]
-  if (Array.isArray(msg.content))
-    return msg.content as Array<{ type: string; text?: string; thinking?: string; name?: string; tool_use_id?: string }>
+  if (Array.isArray(msg.content)) return msg.content as Array<{ type: string; text?: string; thinking?: string; name?: string; tool_use_id?: string }>
   return []
 }
 

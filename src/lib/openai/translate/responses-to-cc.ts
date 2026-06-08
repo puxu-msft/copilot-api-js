@@ -66,11 +66,7 @@ function extractMessageFromOutput(output: Array<ResponsesOutputItem>): ResponseM
   }
 }
 
-function mapFinishReason(
-  status: ResponsesResponse["status"],
-  output: Array<ResponsesOutputItem>,
-  incompleteDetails?: { reason: string } | null,
-): FinishReason {
+function mapFinishReason(status: ResponsesResponse["status"], output: Array<ResponsesOutputItem>, incompleteDetails?: { reason: string } | null): FinishReason {
   const hasToolCalls = output.some((item) => item.type === "function_call")
   if (hasToolCalls) return "tool_calls"
 

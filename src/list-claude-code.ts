@@ -21,12 +21,7 @@ function getClaudeCodeVersion(cliPath: string): string | null {
     if (!existsSync(packageJsonPath)) return null
 
     const packageJson: unknown = JSON.parse(readFileSync(packageJsonPath, "utf8"))
-    if (
-      typeof packageJson === "object"
-      && packageJson !== null
-      && "version" in packageJson
-      && typeof packageJson.version === "string"
-    ) {
+    if (typeof packageJson === "object" && packageJson !== null && "version" in packageJson && typeof packageJson.version === "string") {
       return packageJson.version
     }
     return null
@@ -97,11 +92,7 @@ function findAllClaudeCodePaths(): Array<string> {
   }
 
   // Check common global npm paths
-  const globalPaths = [
-    join(home, ".npm-global", "lib", "node_modules"),
-    "/usr/local/lib/node_modules",
-    "/usr/lib/node_modules",
-  ]
+  const globalPaths = [join(home, ".npm-global", "lib", "node_modules"), "/usr/local/lib/node_modules", "/usr/lib/node_modules"]
 
   for (const base of globalPaths) {
     possiblePaths.push(join(base, "@anthropic-ai", "claude-code", "cli.js"))

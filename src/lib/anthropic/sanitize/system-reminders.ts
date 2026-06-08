@@ -20,9 +20,10 @@ import { sanitizeTextBlocksInArray } from "./text-blocks"
  * Sanitize tool_result content (can be string or array of text/image blocks).
  * Returns the sanitized content and whether it was modified.
  */
-function sanitizeToolResultContent(
-  content: string | Array<{ type: "text"; text: string } | { type: "image"; source: unknown }>,
-): { content: typeof content; modified: boolean } {
+function sanitizeToolResultContent(content: string | Array<{ type: "text"; text: string } | { type: "image"; source: unknown }>): {
+  content: typeof content
+  modified: boolean
+} {
   if (typeof content === "string") {
     const sanitized = removeSystemReminderTags(content)
     if (!sanitized && sanitized !== content) {
@@ -64,9 +65,7 @@ function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
           continue
         }
       } else if (block.type === "tool_result" && block.content) {
-        const sanitizedResult = sanitizeToolResultContent(
-          block.content as Parameters<typeof sanitizeToolResultContent>[0],
-        )
+        const sanitizedResult = sanitizeToolResultContent(block.content as Parameters<typeof sanitizeToolResultContent>[0])
         if (sanitizedResult.modified) {
           modified = true
           blocks.push({ ...block, content: sanitizedResult.content } as ContentBlockParam)

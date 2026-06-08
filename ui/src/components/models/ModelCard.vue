@@ -49,9 +49,7 @@ const thinkingBudget = computed(() => props.getThinkingBudget(props.model))
 const visionEntries = computed(() => props.getVision(props.model))
 const endpointEntries = computed(() => getEffectiveEndpoints(props.model))
 const nonStreamLimit = computed(() => limitEntries.value.find(([label]) => label === "Non-stream Output")?.[1] ?? null)
-const billingMultiplier = computed(() =>
-  props.model.billing?.multiplier !== undefined ? `${props.model.billing.multiplier}x` : null,
-)
+const billingMultiplier = computed(() => (props.model.billing?.multiplier !== undefined ? `${props.model.billing.multiplier}x` : null))
 const displayName = computed(() => {
   if (!props.model.name) return null
   const value = String(props.model.name)
@@ -101,17 +99,11 @@ const headerChipEntries = computed<Array<HeaderChipEntry>>(() =>
 
 const metadataEntries = computed<Array<MetadataEntry>>(() =>
   [
-    props.model.capabilities?.family ?
-      { label: "Family", value: String(props.model.capabilities.family), tone: "default" as const }
-    : null,
-    props.model.model_picker_category ?
-      { label: "Category", value: String(props.model.model_picker_category), tone: "default" as const }
-    : null,
+    props.model.capabilities?.family ? { label: "Family", value: String(props.model.capabilities.family), tone: "default" as const } : null,
+    props.model.model_picker_category ? { label: "Category", value: String(props.model.model_picker_category), tone: "default" as const } : null,
     thinkingBudget.value ? { label: "Thinking Budget", value: thinkingBudget.value, tone: "numeric" as const } : null,
     nonStreamLimit.value ? { label: "Non-stream Output", value: nonStreamLimit.value, tone: "numeric" as const } : null,
-    props.model.capabilities?.tokenizer ?
-      { label: "Tokenizer", value: String(props.model.capabilities.tokenizer), tone: "technical" as const }
-    : null,
+    props.model.capabilities?.tokenizer ? { label: "Tokenizer", value: String(props.model.capabilities.tokenizer), tone: "technical" as const } : null,
   ].filter((entry): entry is MetadataEntry => entry !== null),
 )
 

@@ -114,9 +114,7 @@ export class CopilotTokenManager {
 
         const delay = Math.min(1000 * 2 ** attempt, 30000) // Max 30s delay
         const reason = error instanceof Error ? formatErrorWithCause(error) : String(error)
-        consola.warn(
-          `Token refresh attempt ${attempt + 1}/${this.maxRetries} failed: ${reason}, retrying in ${delay}ms`,
-        )
+        consola.warn(`Token refresh attempt ${attempt + 1}/${this.maxRetries} failed: ${reason}, retrying in ${delay}ms`)
         await new Promise((resolve) => setTimeout(resolve, delay))
       }
     }
@@ -154,9 +152,7 @@ export class CopilotTokenManager {
     // Calculate delay (refresh a bit before expiration)
     const delayMs = Math.max((effectiveRefreshIn - 60) * 1000, this.minRefreshIntervalMs)
 
-    consola.debug(
-      `[CopilotToken] refresh_in=${effectiveRefreshIn}s, scheduling next refresh in ${Math.round(delayMs / 1000)}s`,
-    )
+    consola.debug(`[CopilotToken] refresh_in=${effectiveRefreshIn}s, scheduling next refresh in ${Math.round(delayMs / 1000)}s`)
 
     // Clear any existing timer
     this.cancelScheduledRefresh()

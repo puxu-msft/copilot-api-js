@@ -71,8 +71,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
 
   function pickGptChatModel(): string {
     const data = state.models?.data ?? []
-    const supportsChat = (id: string) =>
-      data.find((m) => m.id === id)?.supported_endpoints?.includes("/chat/completions") ?? false
+    const supportsChat = (id: string) => data.find((m) => m.id === id)?.supported_endpoints?.includes("/chat/completions") ?? false
     const preferred = ["gpt-5.5", "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4o", "gpt-4.1"]
     for (const id of preferred) {
       if (supportsChat(id)) return id
@@ -105,9 +104,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
     const models = await getModels()
 
     if (!models?.data) {
-      throw new Error(
-        "Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.",
-      )
+      throw new Error("Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.")
     }
     setModels(models)
 

@@ -189,43 +189,18 @@ Each route is registered with no prefix, with `/v1`, and with `/openai/v1`.
 
 ---
 
-## Configuration
+## Config and Data Storage
 
 The recommended defaults ship as **[`config.yaml`](config.yaml) at the package root** (bundled with the npm release). Your personal overrides live at `~/.local/share/copilot-api/config.yaml`. At runtime the effective configuration = **bundled defaults deep-merged with your overrides** (user wins per key):
 
-- Top-level nested sections (`anthropic`, `history`, `shutdown`, `openai-responses`, `rate_limiter`): per-field merge.
-- Free-form maps (`model_overrides`, `anthropic.efforts_overrides`, …): per-key merge.
-- `model_preference`: per-family replacement (omitted families keep bundled defaults).
-- Arrays and scalars: user replaces wholesale when present.
+See [`config.example.yaml`](config.example.yaml) for the full annotated reference (includes commented-out optional fields).
 
-Removing a key from your user file naturally reverts to the bundled default on next reload.
-
-See [`config.example.yaml`](config.example.yaml) for the full annotated reference (includes commented-out optional fields). The GitHub token, learned negotiation state and the SQLite history database live alongside the user config under the data directory:
+The GitHub token, learned negotiation state and the SQLite history database live alongside the user config under the data directory:
 
 - Default: `~/.local/share/copilot-api/`
 - Honors `XDG_DATA_HOME` if set: `$XDG_DATA_HOME/copilot-api/`
 
-Most fields hot-reload at runtime (the file is watched).
-
-Highlights:
-
-- `model_overrides` — rewrite request model names (e.g. `opus → claude-opus-4.7-1m-internal`).
-- `model_preference` — per-family ordered candidate lists used for `opus` / `sonnet` / `haiku` resolution.
-- `disabled_models` — hide deprecated/legacy models from `/models`, the UI picker, and fallback resolution.
-- `anthropic.*` — cache-control mode, tool dedup, thinking-block policy, server-tool stripping, context editing,
-  `tool_search`, `efforts_overrides`, `strip_beta_headers`, `reject_body_fields`, warmup policy, system-reminder
-  rewriting.
-- `openai-responses.*` — `normalize_call_ids`, `upstream_websocket`, `fix_stream_ids`, `client_websocket_keep_open`.
-- `rate_limiter.*` — retry interval, request interval, recovery timeout, success threshold. **Restart required.**
-- `system_prompt_prepend` / `system_prompt_append` / `system_prompt_overrides` — full pipeline for modifying
-  system prompts (line or regex replacement, optional `model` filter).
-- `history.limit` / `history.reaper_interval` / `history.db_path` — control SQLite history retention.
-- `shutdown.graceful_wait` / `shutdown.abort_wait` — drain timings.
-- `stream_idle_timeout` / `fetch_timeout` / `model_refresh_interval` / `stale_request_max_age` — network knobs.
-- `proxy` — outbound proxy URL. **Restart required.**
-
-Hot-reload semantics are *retain-on-absence*: missing keys keep the previous value; explicit empty values
-(`disabled_models: []`, `model_overrides: {}`) clear the field.
+Most fields hot-reload at runtime (the file is watched). Hot-reload semantics are *retain-on-absence*: missing keys keep the previous value; explicit empty values (`disabled_models: []`, `model_overrides: {}`) clear the field.
 
 ### Data directory layout
 
@@ -233,21 +208,9 @@ Hot-reload semantics are *retain-on-absence*: missing keys keep the previous val
 ~/.local/share/copilot-api/         # or $XDG_DATA_HOME/copilot-api/
 ├── config.yaml                     # user config (hot-reloaded)
 ├── github_token                    # GitHub device-flow token
-├── copilot-token.json              # cached Copilot bearer (with expiry)
 ├── history.db                      # SQLite history (gzip-compressed payloads)
 ├── negotiation-states.json         # learned per-model bans (betas / body fields / efforts)
-├── auto-truncate-limits.json       # learned context-limit per model
-└── system-prompts/                 # optional system-prompt dumps (when enabled)
 ```
-
-### Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `XDG_DATA_HOME` | Override the parent of the `copilot-api/` data directory |
-| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Consulted unless `--no-http-proxy-from-env` |
-| `NODE_ENV` | `npm run start` sets `production`; affects log verbosity |
-| `BROWSER` | Used by the `auth` device-flow to open the verification URL |
 
 ---
 

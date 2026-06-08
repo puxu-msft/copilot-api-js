@@ -116,8 +116,7 @@ const {
             <div class="eyebrow text-caption font-weight-bold text-uppercase mb-3">Operations Workspace</div>
             <h1 class="hero-title">Dashboard and usage are now one surface.</h1>
             <p class="hero-body text-body-2 text-medium-emphasis">
-              Monitor service health, rate limiting, quota pressure, memory headroom, model mix, and live requests
-              without switching tabs.
+              Monitor service health, rate limiting, quota pressure, memory headroom, model mix, and live requests without switching tabs.
             </p>
           </div>
 
@@ -206,9 +205,7 @@ const {
           >
             <div class="metric-label text-caption text-medium-emphasis text-uppercase">Accepted Requests</div>
             <div class="metric-value font-mono">{{ formatNumber(requestTelemetry?.acceptedSinceStart) }}</div>
-            <div class="metric-foot text-caption text-medium-emphasis">
-              {{ formatNumber(requestTelemetry?.totalLast7d) }} received in the last 7 days
-            </div>
+            <div class="metric-foot text-caption text-medium-emphasis">{{ formatNumber(requestTelemetry?.totalLast7d) }} received in the last 7 days</div>
           </v-sheet>
         </div>
       </section>
@@ -305,9 +302,7 @@ const {
             <div class="memory-block">
               <div class="d-flex justify-space-between text-caption mb-1">
                 <span>Heap</span>
-                <span class="font-mono">
-                  {{ formatNumber(memorySummary.heapUsedMB) }} MB / {{ formatNumber(memorySummary.heapLimitMB) }} MB
-                </span>
+                <span class="font-mono"> {{ formatNumber(memorySummary.heapUsedMB) }} MB / {{ formatNumber(memorySummary.heapLimitMB) }} MB </span>
               </div>
               <v-progress-linear
                 :model-value="heapUsagePercent"
@@ -368,9 +363,7 @@ const {
             <div class="request-volume-summary">
               <div class="request-volume-stat">
                 <span class="request-volume-label">Since startup</span>
-                <span class="request-volume-value font-mono">{{
-                  formatNumber(requestTelemetry.acceptedSinceStart)
-                }}</span>
+                <span class="request-volume-value font-mono">{{ formatNumber(requestTelemetry.acceptedSinceStart) }}</span>
               </div>
               <div class="request-volume-stat">
                 <span class="request-volume-label">Last 7d total</span>
@@ -465,9 +458,7 @@ const {
                 >
                   {{ item.model }}
                 </span>
-                <span class="text-caption text-medium-emphasis">
-                  {{ formatModelMetricValue(item.last7d, selectedModelTimelineMetric) }} / 7d
-                </span>
+                <span class="text-caption text-medium-emphasis"> {{ formatModelMetricValue(item.last7d, selectedModelTimelineMetric) }} / 7d </span>
               </div>
               <div class="traffic-subline">
                 <span>7d avg {{ formatDuration(item.last7d?.averageDurationMs ?? null) }}</span>

@@ -21,24 +21,9 @@ export interface UiRoutesOptions {
 }
 
 const UI_MOUNT_PREFIX = "/ui"
-const TEXT_RESPONSE_TYPES = [
-  "text/html",
-  "text/css",
-  "text/javascript",
-  "application/javascript",
-  "application/x-javascript",
-]
+const TEXT_RESPONSE_TYPES = ["text/html", "text/css", "text/javascript", "application/javascript", "application/x-javascript"]
 const JAVASCRIPT_RESPONSE_TYPES = ["text/javascript", "application/javascript", "application/x-javascript"]
-const VITE_DEV_PATH_PREFIXES = [
-  "/@vite",
-  "/@fs/",
-  "/@id/",
-  "/src/",
-  "/node_modules/",
-  "/__vite_ping",
-  "/__open-in-editor",
-  "/vite.svg",
-]
+const VITE_DEV_PATH_PREFIXES = ["/@vite", "/@fs/", "/@id/", "/src/", "/node_modules/", "/__vite_ping", "/__open-in-editor", "/vite.svg"]
 
 /**
  * Resolve a UI directory that exists at runtime.
@@ -46,10 +31,7 @@ const VITE_DEV_PATH_PREFIXES = [
  * In bundled mode (dist/main.mjs) — 1 level below project root.
  */
 function resolveUiDir(subpath: string): string {
-  const candidates = [
-    join(import.meta.dirname, "../../..", "ui", subpath),
-    join(import.meta.dirname, "..", "ui", subpath),
-  ]
+  const candidates = [join(import.meta.dirname, "../../..", "ui", subpath), join(import.meta.dirname, "..", "ui", subpath)]
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
 }
 
@@ -128,21 +110,13 @@ function rewriteProxyTextResponse(content: string, externalUiUrl: string, conten
     const localPathPrefix = `${UI_MOUNT_PREFIX}${vitePathPrefix}`
     const absoluteExternalPrefix = `${externalBase.origin}${externalPathPrefix}`
     const rewrittenQuotedAbsolute = rewriteQuotedPathPrefixes(current, absoluteExternalPrefix, localPathPrefix)
-    const rewrittenQuotedRelative = rewriteQuotedPathPrefixes(
-      rewrittenQuotedAbsolute,
-      externalPathPrefix,
-      localPathPrefix,
-    )
+    const rewrittenQuotedRelative = rewriteQuotedPathPrefixes(rewrittenQuotedAbsolute, externalPathPrefix, localPathPrefix)
 
     if (!rewriteBareParenthesizedPaths) {
       return rewrittenQuotedRelative
     }
 
-    const rewrittenParenthesizedAbsolute = rewriteParenthesizedPathPrefixes(
-      rewrittenQuotedRelative,
-      absoluteExternalPrefix,
-      localPathPrefix,
-    )
+    const rewrittenParenthesizedAbsolute = rewriteParenthesizedPathPrefixes(rewrittenQuotedRelative, absoluteExternalPrefix, localPathPrefix)
     return rewriteParenthesizedPathPrefixes(rewrittenParenthesizedAbsolute, externalPathPrefix, localPathPrefix)
   }, rewrittenBase)
 }

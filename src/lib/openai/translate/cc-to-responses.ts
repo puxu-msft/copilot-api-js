@@ -65,8 +65,7 @@ export function translateChatCompletionsToResponses(payload: ChatCompletionsPayl
       return maxOut !== undefined && maxOut !== null ? { max_output_tokens: maxOut } : {}
     })(),
     ...(payload.stream !== undefined && payload.stream !== null && { stream: payload.stream }),
-    ...(payload.parallel_tool_calls !== undefined
-      && payload.parallel_tool_calls !== null && { parallel_tool_calls: payload.parallel_tool_calls }),
+    ...(payload.parallel_tool_calls !== undefined && payload.parallel_tool_calls !== null && { parallel_tool_calls: payload.parallel_tool_calls }),
     ...(payload.user !== undefined && { user: payload.user }),
     ...(payload.service_tier !== undefined && { service_tier: payload.service_tier }),
     ...(payload.top_logprobs !== undefined && payload.top_logprobs !== null && { top_logprobs: payload.top_logprobs }),
@@ -177,8 +176,7 @@ function convertAssistantMessage(message: Message): Array<ResponsesInputItem> {
   // clients can be diagnosed without silently corrupting conversation flow.
   if (items.length === 0) {
     consola.warn(
-      "[cc-to-responses] assistant message has neither text nor tool_calls; "
-        + "injecting empty placeholder to preserve conversation turn structure",
+      "[cc-to-responses] assistant message has neither text nor tool_calls; " + "injecting empty placeholder to preserve conversation turn structure",
     )
     items.push({
       type: "message",

@@ -140,9 +140,7 @@ const rewrittenBlocks = computed(() => {
 })
 
 /** Whether the content actually differs (rewritten flag may be set but content identical) */
-const contentDiffers = computed(
-  () => props.isRewritten && props.rewrittenMessage && originalText.value !== rewrittenText.value,
-)
+const contentDiffers = computed(() => props.isRewritten && props.rewrittenMessage && originalText.value !== rewrittenText.value)
 
 /** Show toggle whenever rewritten data exists */
 const showViewToggle = computed(() => props.isRewritten && Boolean(props.rewrittenMessage))
@@ -164,11 +162,7 @@ const displayMessage = computed<MessageContent | undefined>(() => {
 
 function openRaw(event: Event) {
   event.stopPropagation()
-  openRawModal(
-    props.message,
-    `Raw — ${props.message.role} #${props.index + 1}`,
-    props.isRewritten ? props.rewrittenMessage : undefined,
-  )
+  openRawModal(props.message, `Raw — ${props.message.role} #${props.index + 1}`, props.isRewritten ? props.rewrittenMessage : undefined)
 }
 </script>
 

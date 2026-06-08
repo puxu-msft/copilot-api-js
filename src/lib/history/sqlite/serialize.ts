@@ -38,16 +38,7 @@ export interface EntryRow {
 }
 
 /** HistoryEntry keys represented in dedicated row columns — excluded from blob_gz. */
-const META_KEYS = new Set<string>([
-  "id",
-  "sessionId",
-  "startedAt",
-  "endedAt",
-  "durationMs",
-  "endpoint",
-  "transport",
-  "state",
-])
+const META_KEYS = new Set<string>(["id", "sessionId", "startedAt", "endedAt", "durationMs", "endpoint", "transport", "state"])
 
 export function serializeEntry(entry: HistoryEntry): { row: EntryRow; blob: Uint8Array } {
   const usage = entry.response?.usage

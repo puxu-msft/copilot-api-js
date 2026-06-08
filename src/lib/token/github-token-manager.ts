@@ -38,12 +38,7 @@ export class GitHubTokenManager {
     // Initialize providers in priority order
     // Note: GhCliTokenProvider is NOT included because GitHub CLI tokens
     // are obtained via a different OAuth app and cannot access Copilot internal APIs.
-    this.providers = [
-      new CLITokenProvider(options.cliToken),
-      new EnvTokenProvider(),
-      new FileTokenProvider(),
-      new DeviceAuthProvider(),
-    ]
+    this.providers = [new CLITokenProvider(options.cliToken), new EnvTokenProvider(), new FileTokenProvider(), new DeviceAuthProvider()]
 
     // Sort by priority (lower = higher priority)
     this.providers.sort((a, b) => a.priority - b.priority)

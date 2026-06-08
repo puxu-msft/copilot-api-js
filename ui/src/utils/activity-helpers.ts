@@ -54,3 +54,12 @@ export function truncPreview(entry: EntrySummary): string {
   if (text.length <= 120) return text
   return text.slice(0, 117) + "..."
 }
+
+/** 在途请求的诊断摘要(策略 / 重试 / 排队),用于在途区 Preview 列 */
+export function inflightDetail(entry: EntrySummary): string {
+  const parts: Array<string> = []
+  if (entry.currentStrategy) parts.push(entry.currentStrategy)
+  if (entry.attemptCount && entry.attemptCount > 1) parts.push(`attempt ${entry.attemptCount}`)
+  if (entry.queueWaitMs && entry.queueWaitMs > 0) parts.push(`queued ${Math.round(entry.queueWaitMs / 1000)}s`)
+  return parts.join(" · ")
+}

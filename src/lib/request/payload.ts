@@ -16,11 +16,7 @@ import { bytesToKB } from "~/lib/utils"
  *
  * @param precomputedBytes - Optional pre-computed payload byte size to avoid redundant JSON.stringify
  */
-export async function logPayloadSizeInfo(
-  payload: ChatCompletionsPayload,
-  model: Model | undefined,
-  precomputedBytes?: number,
-) {
+export async function logPayloadSizeInfo(payload: ChatCompletionsPayload, model: Model | undefined, precomputedBytes?: number) {
   const messageCount = payload.messages.length
   const bodySize = precomputedBytes ?? JSON.stringify(payload).length
   const bodySizeKB = bytesToKB(bodySize)
@@ -90,15 +86,13 @@ export function logPayloadSizeInfoAnthropic(payload: MessagesPayload, model: Mod
   const systemSize = payload.system ? JSON.stringify(payload.system).length : 0
 
   consola.info(
-    `[Anthropic 413] Payload size: ${bytesToKB(payloadSize)}KB, `
-      + `messages: ${messageCount}, tools: ${toolCount}, system: ${bytesToKB(systemSize)}KB`,
+    `[Anthropic 413] Payload size: ${bytesToKB(payloadSize)}KB, ` + `messages: ${messageCount}, tools: ${toolCount}, system: ${bytesToKB(systemSize)}KB`,
   )
 
   if (model?.capabilities?.limits) {
     const limits = model.capabilities.limits
     consola.info(
-      `[Anthropic 413] Model limits: context=${limits.max_context_window_tokens}, `
-        + `prompt=${limits.max_prompt_tokens}, output=${limits.max_output_tokens}`,
+      `[Anthropic 413] Model limits: context=${limits.max_context_window_tokens}, ` + `prompt=${limits.max_prompt_tokens}, output=${limits.max_output_tokens}`,
     )
   }
 }

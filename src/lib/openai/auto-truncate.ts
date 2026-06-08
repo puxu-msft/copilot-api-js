@@ -94,8 +94,7 @@ function calculateTokenLimit(model: Model, config: AutoTruncateConfig): number |
   }
 
   // Use model capabilities with static safety margin
-  const rawTokenLimit =
-    model.capabilities?.limits?.max_context_window_tokens ?? model.capabilities?.limits?.max_prompt_tokens
+  const rawTokenLimit = model.capabilities?.limits?.max_context_window_tokens ?? model.capabilities?.limits?.max_prompt_tokens
 
   if (rawTokenLimit === undefined) return undefined
 
@@ -171,10 +170,7 @@ interface TruncationContext {
   startTime: number
 }
 
-function buildTimedResult(
-  ctx: TruncationContext,
-  result: Omit<OpenAIAutoTruncateResult, "processingTimeMs">,
-): OpenAIAutoTruncateResult {
+function buildTimedResult(ctx: TruncationContext, result: Omit<OpenAIAutoTruncateResult, "processingTimeMs">): OpenAIAutoTruncateResult {
   return { ...result, processingTimeMs: Math.round(performance.now() - ctx.startTime) }
 }
 
@@ -191,11 +187,7 @@ async function tryCompressToolResults(
   }
 
   // Step 1a: Compress old tool messages
-  const compressionResult = smartCompressToolResults(
-    ctx.payload.messages,
-    ctx.tokenLimit,
-    ctx.cfg.preserveRecentPercent,
-  )
+  const compressionResult = smartCompressToolResults(ctx.payload.messages, ctx.tokenLimit, ctx.cfg.preserveRecentPercent)
   let workingMessages = compressionResult.messages
   let compressedCount = compressionResult.compressedCount
 
@@ -277,11 +269,7 @@ async function tryCompressToolResults(
  * Step 2: Remove messages to fit within limits using binary search.
  * Handles orphan cleanup, summary generation, and result assembly.
  */
-async function truncateByMessageRemoval(
-  ctx: TruncationContext,
-  workingMessages: Array<Message>,
-  compressedCount: number,
-): Promise<OpenAIAutoTruncateResult> {
+async function truncateByMessageRemoval(ctx: TruncationContext, workingMessages: Array<Message>, compressedCount: number): Promise<OpenAIAutoTruncateResult> {
   // Extract system messages from working messages
   const { systemMessages, conversationMessages } = extractOpenAISystemMessages(workingMessages)
 

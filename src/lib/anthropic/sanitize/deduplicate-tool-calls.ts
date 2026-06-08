@@ -117,9 +117,7 @@ export function deduplicateToolCalls(
         }
       }
     } else {
-      const newContent = msg.content.filter(
-        (block) => block.type !== "tool_result" || !removedIds.has(block.tool_use_id),
-      )
+      const newContent = msg.content.filter((block) => block.type !== "tool_result" || !removedIds.has(block.tool_use_id))
       if (newContent.length > 0) {
         if (newContent.length === msg.content.length) {
           filtered.push(msg)
@@ -139,8 +137,7 @@ export function deduplicateToolCalls(
         continue
       }
 
-      const prevContent =
-        typeof prev.content === "string" ? [{ type: "text" as const, text: prev.content }] : prev.content
+      const prevContent = typeof prev.content === "string" ? [{ type: "text" as const, text: prev.content }] : prev.content
       const currContent = typeof msg.content === "string" ? [{ type: "text" as const, text: msg.content }] : msg.content
       merged[merged.length - 1] = {
         ...prev,

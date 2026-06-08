@@ -29,36 +29,38 @@
 # Model
 # ============================================================================
 # Model name overrides: request model → target model.
+# This is the SOLE source of model-name mapping — there are no built-in
+# defaults. Short aliases (opus/sonnet/haiku) resolve ONLY if you map them here;
+# an unmapped alias is sent upstream as-is and rejected.
 #
-# Override values can be:
-#   - Full model names: "claude-opus-4.6", "claude-sonnet-4.5"
-#   - Short aliases: "opus", "sonnet", "haiku" (resolved to best available)
+# Override values can be full names ("claude-opus-4.6") or short aliases that
+# are themselves mapped here. Keys/values are spelling-insensitive: "4.6" and
+# "4-6" (and case) match the same model; listing both keys → the later wins
+# (with a warning).
 #
-# Matching order: raw request name checked first, then resolved (normalized) name.
+# Matching order:
+#   1. Whole name (e.g. "opus", "opus-1m", "claude-opus-4.6").
+#   2. Modifier suffix: "opus[1m]" → "opus-1m"; if no "opus-1m" mapping exists
+#      but "opus" is mapped, the base is redirected and "-1m" is re-attached.
+#   3. Hyphen/dot + date-suffix normalization, then a final override check.
 #
-# Built-in defaults (always active unless overridden):
-#   opus   → claude-opus-4.6
-#   sonnet → claude-sonnet-4.6
-#   haiku  → claude-haiku-4.5
-#
-# If the target model is not in the available models list, it is treated as an alias and resolved again.
-# If still unavailable, the best model in the same family is used as fallback.
+# Only the exact keys listed are affected — NO family-level propagation. To
+# redirect a whole family, list each canonical name. If a target isn't in the
+# available models list it's treated as an alias and resolved again; if still
+# unavailable it's passed through (the upstream then rejects it).
 
 model_overrides:
 
   # Use latest opus
   opus: claude-opus-4.8
+  opus-1m: claude-opus-4.8
   claude-opus-4.5: claude-opus-4.8
   claude-opus-4.6: claude-opus-4.8
   claude-opus-4.7: claude-opus-4.8
-  claude-opus-4-5: claude-opus-4.8
-  claude-opus-4-6: claude-opus-4.8
-  claude-opus-4-7: claude-opus-4.8
 
   # Use latest sonnet
   sonnet: claude-sonnet-4.6
   claude-sonnet-4.5: claude-sonnet-4.6
-  claude-sonnet-4-5: claude-sonnet-4.6
 
   # Redirect all sonnet requests to best opus
   # sonnet: claude-opus-4.6
@@ -71,34 +73,6 @@ model_overrides:
   # haiku: claude-haiku-4.5
   haiku: claude-sonnet-4.6
   claude-haiku-4.5: claude-sonnet-4.6
-
-# ============================================================================
-# Model Preference (per-family priority order)
-# ============================================================================
-# Per-family preferred-model order used when resolving short aliases
-# (opus/sonnet/haiku) and family-level fallbacks. The first entry that exists
-# in the live `/models` catalog wins; if none exist, the first entry is
-# returned as a best-effort fallback.
-#
-# Semantics: per-family REPLACEMENT. Supplying `opus: [...]` replaces the
-# built-in opus list entirely. Families omitted from this section keep their
-# built-in defaults (shown below).
-#
-# Use this to pick up newly released Claude models without recompiling, or to
-# demote a model that misbehaves on your account.
-
-model_preference:
-  opus:
-    - claude-opus-4.8
-    - claude-opus-4.7-1m-internal
-    - claude-opus-4.7
-    - claude-opus-4.6
-    - claude-opus-4.5
-  sonnet:
-    - claude-sonnet-4.6
-    - claude-sonnet-4.5
-  haiku:
-    - claude-haiku-4.5
 
 # ============================================================================
 # Disabled Models
@@ -329,6 +303,30 @@ anthropic:
   # reject_body_fields:
   #   "*": [some_global_field]
   #   claude-opus-4.7: [model_specific_field]
+
+  # ---------------------------------------------------------------------------
+  # tool_use input field decoding
+  # ---------------------------------------------------------------------------
+  # Upstream models occasionally serialize a tool_use input field that should be
+  # an array/object into a JSON string (e.g. AskUserQuestion with
+  # `questions: "[{...}]"` instead of `questions: [{...}]`). These options decode
+  # such fields back to structured form on the response wire (streaming +
+  # non-streaming) before forwarding to the client. History records keep the
+  # original stringified form — decode never touches sseEvents or the stored
+  # response, so the upstream anomaly stays visible in history.
+  #
+  # decode_tool_input_fields: per-tool list of top-level input fields to decode.
+  #   Keys are tool names, matched verbatim (no normalization). Replace semantic:
+  #   setting this key replaces the whole map (write {} to disable entirely).
+  #   Default: { AskUserQuestion: [questions] }.
+  decode_tool_input_fields:
+    AskUserQuestion:
+      - questions
+
+  # decode_all_tool_input_fields: when true, attempt to decode ALL top-level
+  #   string fields of every tool_use input (ignores the map above).
+  #   server_tool_use is never affected. Default: false.
+  decode_all_tool_input_fields: false
 
 # ============================================================================
 # Responses API

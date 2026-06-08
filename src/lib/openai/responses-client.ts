@@ -24,6 +24,7 @@ import {
   //
   createFetchSignal,
   captureHttpHeaders,
+  DISABLE_BUILTIN_FETCH_TIMEOUT,
   getHeaderCaseInsensitive,
   sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
@@ -70,12 +71,7 @@ interface CreateResponsesOptions {
  * Differences in these on a reused connection are worth logging.
  * (Excludes per-request tracking IDs like x-request-id / X-Agent-Task-Id.)
  */
-const HEADER_REUSE_INVARIANTS = [
-  "openai-intent",
-  "X-Interaction-Type",
-  "X-Initiator",
-  "copilot-vision-request",
-] as const
+const HEADER_REUSE_INVARIANTS = ["openai-intent", "X-Interaction-Type", "X-Initiator", "copilot-vision-request"] as const
 
 export { type PreparedOpenAIRequest, prepareResponsesRequest } from "./request-preparation"
 
@@ -117,10 +113,7 @@ function canUseUpstreamWebSocket(model: Model | undefined): boolean {
 
 type UpstreamWsAttempt = { kind: "ok"; generator: AsyncGenerator<ServerSentEventMessage> } | { kind: "fallback" }
 
-async function tryUpstreamWebSocket(
-  prepared: PreparedOpenAIRequest<ResponsesPayload>,
-  opts: CreateResponsesOptions | undefined,
-): Promise<UpstreamWsAttempt> {
+async function tryUpstreamWebSocket(prepared: PreparedOpenAIRequest<ResponsesPayload>, opts: CreateResponsesOptions | undefined): Promise<UpstreamWsAttempt> {
   const manager = getUpstreamWsManager()
   const { wire } = prepared
   const previousResponseId = typeof wire.previous_response_id === "string" ? wire.previous_response_id : undefined
@@ -143,9 +136,7 @@ async function tryUpstreamWebSocket(
   // the caller and the request would 500 instead of degrading to HTTP.
   let connection: UpstreamWsConnection
   try {
-    connection =
-      reusable
-      ?? (await manager.create({ headers: prepared.headers, model: wire.model, conversationId: opts?.conversationId }))
+    connection = reusable ?? (await manager.create({ headers: prepared.headers, model: wire.model, conversationId: opts?.conversationId }))
   } catch (error) {
     manager.recordFallback()
     consola.warn(
@@ -166,7 +157,7 @@ async function tryUpstreamWebSocket(
 
   // Forward external aborts into the local controller so finally-cleanup is consistent.
   const onExternalAbort = () => requestAbort.abort()
-  shutdownSignal?.addEventListener("abort", onExternalAbort, { once: true })
+  shutdownSignal.addEventListener("abort", onExternalAbort, { once: true })
   clientAbortSignal?.addEventListener("abort", onExternalAbort, { once: true })
 
   const fetchSignal = createFetchSignal()
@@ -176,7 +167,7 @@ async function tryUpstreamWebSocket(
   fetchSignal?.addEventListener("abort", onFetchTimeout, { once: true })
 
   const detachExternal = () => {
-    shutdownSignal?.removeEventListener("abort", onExternalAbort)
+    shutdownSignal.removeEventListener("abort", onExternalAbort)
     clientAbortSignal?.removeEventListener("abort", onExternalAbort)
     fetchSignal?.removeEventListener("abort", onFetchTimeout)
   }
@@ -207,7 +198,7 @@ async function tryUpstreamWebSocket(
         shutdownSignal,
         clientAbortSignal,
         onComplete: () => {
-          shutdownSignal?.removeEventListener("abort", onExternalAbort)
+          shutdownSignal.removeEventListener("abort", onExternalAbort)
           clientAbortSignal?.removeEventListener("abort", onExternalAbort)
         },
       }),
@@ -249,6 +240,15 @@ async function* streamWsEvents(opts: StreamWsEventsOptions): AsyncGenerator<Serv
         idleTimeoutMs,
         abortSignal: idleAbortSignal,
       })
+      // STREAM_ABORTED here returns a CLEAN done on purpose. This generator is
+      // never consumed bare — its output is always wrapped by an outer abort
+      // guard (`guardSseIterable` in responses/handler.ts & fallback.ts, or the
+      // hand-written race loop in responses/ws.ts) that owns shutdown vs. client
+      // distinction and throws StreamShutdownError on shutdown. The outer guard
+      // observes the shutdown signal first (its abort racer settles ahead of
+      // this generator resuming + returning), so this clean return is shadowed
+      // and never surfaces as a false "natural completion". Do NOT change this to
+      // throw: that would break bare-iteration callers and double-handle shutdown.
       if (result === STREAM_ABORTED) return
       if (result.done) return
       yield toSseMessage(result.value)
@@ -291,14 +291,18 @@ async function createResponsesViaHttp(
   headersCapture?: HeadersCapture,
 ): Promise<ResponsesResponse | AsyncGenerator<ServerSentEventMessage>> {
   const { wire, headers } = prepared
-  // Apply fetch timeout if configured (connection + response headers)
-  const fetchSignal = createFetchSignal()
+  // Apply fetch timeout if configured (connection + response headers). For
+  // non-streaming requests, also fold in the shutdown signal so a Phase 3 abort
+  // interrupts the (long) header-wait; streaming omits it (the stream guard in
+  // the handler owns shutdown for the streamed body).
+  const fetchSignal = combineAbortSignals(createFetchSignal(), wire.stream ? undefined : getShutdownSignal())
 
   const response = await fetch(`${copilotBaseUrl(state)}/responses`, {
     method: "POST",
     headers,
     body: JSON.stringify(wire),
     signal: fetchSignal,
+    ...DISABLE_BUILTIN_FETCH_TIMEOUT,
   })
 
   // Capture HTTP headers for history (before error check — capture even on failure)

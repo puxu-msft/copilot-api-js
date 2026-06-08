@@ -71,12 +71,7 @@ export function smartCompressToolResults(
   let compressedCount = 0
 
   for (const [i, msg] of messages.entries()) {
-    if (
-      i < thresholdIndex
-      && msg.role === "tool"
-      && typeof msg.content === "string"
-      && msg.content.length > LARGE_TOOL_RESULT_THRESHOLD
-    ) {
+    if (i < thresholdIndex && msg.role === "tool" && typeof msg.content === "string" && msg.content.length > LARGE_TOOL_RESULT_THRESHOLD) {
       compressedCount++
       result.push({
         ...msg,
@@ -168,8 +163,7 @@ export function generateRemovedMessagesSummary(removedMessages: Array<Message>):
 
   if (toolCalls.length > 0) {
     const uniqueTools = [...new Set(toolCalls)]
-    const displayTools =
-      uniqueTools.length > 5 ? [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`] : uniqueTools
+    const displayTools = uniqueTools.length > 5 ? [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`] : uniqueTools
     parts.push(`Tools used: ${displayTools.join(", ")}`)
   }
 
@@ -217,9 +211,7 @@ export function createTruncationSystemContext(removedCount: number, compressedCo
     context += `Summary of removed content: ${summary}\n`
   }
 
-  context +=
-    `If you need earlier context, ask the user or check available tools for conversation history access.\n`
-    + `[END CONTEXT]`
+  context += `If you need earlier context, ask the user or check available tools for conversation history access.\n` + `[END CONTEXT]`
 
   return context
 }

@@ -56,6 +56,7 @@ import {
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
+import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
   createStreamIdTracker,
@@ -67,8 +68,6 @@ import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
   //
-  StreamIdleTimeoutError,
-  combineAbortSignals,
   guardSseIterable,
   type SseFrame,
 } from "~/lib/stream"
@@ -118,9 +117,14 @@ export async function handleResponses(c: Context) {
   // when the model is on the force-list (e.g. Google — Copilot's /responses
   // upstream is broken for several Gemini SKUs).
   const selectedModel = state.modelIndex.get(payload.model)
-  const useFallback = !isResponsesSupported(selectedModel) || shouldForceChatCompletionsFallback(selectedModel)
+  const forceFallback = shouldForceChatCompletionsFallback(selectedModel)
+  const useFallback = !isResponsesSupported(selectedModel) || forceFallback
 
-  if (useFallback && !isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
+  // Reject only when fallback is needed AND the model can't take /chat/completions.
+  // Force-list vendors (e.g. Google) are exempt from this check: we force them off
+  // /responses precisely because Copilot's endpoint metadata for them is unreliable,
+  // so we trust they speak /chat/completions even when it isn't advertised.
+  if (useFallback && !forceFallback && !isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
     const msg = `Model "${payload.model}" does not support /responses or /chat/completions`
     throw new HTTPError(msg, 400, msg)
   }
@@ -275,7 +279,8 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
       try {
         const guarded = guardSseIterable(response as AsyncIterable<SseFrame>, {
           idleTimeoutMs,
-          getAbortSignal: () => combineAbortSignals(getShutdownSignal(), clientAbort.signal),
+          shutdownSignal: getShutdownSignal(),
+          clientSignal: clientAbort.signal,
         })
 
         for await (const rawEvent of guarded) {
@@ -300,10 +305,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
               // Tolerate occasional malformed frames (heartbeats, partial chunks,
               // upstream comment lines). Log at debug so we keep visibility
               // without spamming production logs.
-              consola.debug(
-                `[responses] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`,
-                eventData.slice(0, 200),
-              )
+              consola.debug(`[responses] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, eventData.slice(0, 200))
               continue
             }
 
@@ -332,7 +334,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
           data: JSON.stringify({
             error: {
               message: errorMessage,
-              type: error instanceof StreamIdleTimeoutError ? "timeout_error" : "server_error",
+              type: streamErrorToOpenAIErrorType(error),
             },
           }),
         })

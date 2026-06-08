@@ -16,38 +16,31 @@ import {
   //
   type CompiledRewriteRule,
   DEFAULT_MODEL_OVERRIDES,
-  DEFAULT_MODEL_PREFERENCE,
   setAnthropicBehavior,
   setDisabledModels,
   setHistoryConfig,
   setModelOverrides,
-  setModelPreference,
   setResponsesConfig,
   setShutdownConfig,
   setTimeoutConfig,
 } from "~/lib/state"
 
 import { syncModelRefreshLoop } from "../models/refresh-loop"
+import {
+  //
+  normalizeModelKeyedRecord,
+  normalizeModelNameList,
+} from "../models/resolver"
 import { PATHS } from "./paths"
 import { validateConfig } from "./validation"
 
 // Re-export Zod-inferred types so existing imports of these names keep working.
-export type {
-  AnthropicConfig,
-  Config,
-  HistoryConfig,
-  ModelPreferenceConfig,
-  RateLimiterConfig,
-  ResponsesConfig,
-  RewriteRule,
-  ShutdownConfig,
-} from "./schema"
+export type { AnthropicConfig, Config, HistoryConfig, RateLimiterConfig, ResponsesConfig, RewriteRule, ShutdownConfig } from "./schema"
 
 export {
   AnthropicConfigSchema,
   ConfigSchema,
   HistoryConfigSchema,
-  ModelPreferenceSchema,
   RateLimiterConfigSchema,
   ResponsesConfigSchema,
   RewriteRuleSchema,
@@ -198,7 +191,7 @@ export async function loadRawConfigFile(): Promise<Config> {
  * from the live Zod schema rather than a hand-maintained whitelist:
  *
  *   - **ZodObject (predefined keys)** — e.g. `anthropic`, `history`,
- *     `rate_limiter`, `model_preference`. Recurse field-by-field; each
+ *     `rate_limiter`. Recurse field-by-field; each
  *     declared sub-field gets its own merge strategy based on its schema.
  *   - **ZodRecord (custom keys)** — two sub-variants distinguished by a
  *     `mergeStrategy` meta tag on the schema:
@@ -405,15 +398,11 @@ export async function applyConfigToState(): Promise<Config> {
       // Normalize: true → "input" for backward compatibility, false → false
       setAnthropicBehavior({ dedupToolCalls: a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls })
     }
-    if (a.strip_read_tool_result_tags !== undefined)
-      setAnthropicBehavior({ stripReadToolResultTags: a.strip_read_tool_result_tags })
+    if (a.strip_read_tool_result_tags !== undefined) setAnthropicBehavior({ stripReadToolResultTags: a.strip_read_tool_result_tags })
     if (a.context_editing !== undefined) setAnthropicBehavior({ contextEditingMode: a.context_editing })
-    if (a.context_editing_trigger !== undefined)
-      setAnthropicBehavior({ contextEditingTrigger: a.context_editing_trigger })
-    if (a.context_editing_keep_tools !== undefined)
-      setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
-    if (a.context_editing_keep_thinking !== undefined)
-      setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
+    if (a.context_editing_trigger !== undefined) setAnthropicBehavior({ contextEditingTrigger: a.context_editing_trigger })
+    if (a.context_editing_keep_tools !== undefined) setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
+    if (a.context_editing_keep_thinking !== undefined) setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
     if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
     if (a.cache_control !== undefined) {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
@@ -424,9 +413,23 @@ export async function applyConfigToState(): Promise<Config> {
     // Collection fields: retain-on-absence semantic — a missing key keeps the
     // current runtime value; an explicit `{}` overwrites with empty. To revert
     // to built-in defaults, call resetConfigManagedState() (PUT /api/config).
-    if (a.efforts_overrides !== undefined) setAnthropicBehavior({ effortsOverrides: a.efforts_overrides })
-    if (a.strip_beta_headers !== undefined) setAnthropicBehavior({ stripBetaHeaders: a.strip_beta_headers })
-    if (a.reject_body_fields !== undefined) setAnthropicBehavior({ rejectBodyFields: a.reject_body_fields })
+    if (a.efforts_overrides !== undefined)
+      setAnthropicBehavior({
+        effortsOverrides: normalizeModelKeyedRecord(a.efforts_overrides, "anthropic.efforts_overrides"),
+      })
+    if (a.strip_beta_headers !== undefined)
+      setAnthropicBehavior({
+        stripBetaHeaders: normalizeModelKeyedRecord(a.strip_beta_headers, "anthropic.strip_beta_headers"),
+      })
+    if (a.reject_body_fields !== undefined)
+      setAnthropicBehavior({
+        rejectBodyFields: normalizeModelKeyedRecord(a.reject_body_fields, "anthropic.reject_body_fields"),
+      })
+    // Tool-name-keyed: keys are tool names, matched verbatim. Do NOT normalize
+    // (normalizeModelKeyedRecord folds case/separators and is model-specific).
+    // cloneStatePatch deep-clones the record, so passing the parsed value is safe.
+    if (a.decode_tool_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.decode_tool_input_fields })
+    if (a.decode_all_tool_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.decode_all_tool_input_fields })
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {
@@ -440,8 +443,7 @@ export async function applyConfigToState(): Promise<Config> {
   // System prompt overrides (collection: entire replacement)
   if (config.system_prompt_overrides !== undefined) {
     setAnthropicBehavior({
-      systemPromptOverrides:
-        config.system_prompt_overrides.length > 0 ? compileRewriteRules(config.system_prompt_overrides) : [],
+      systemPromptOverrides: config.system_prompt_overrides.length > 0 ? compileRewriteRules(config.system_prompt_overrides) : [],
     })
   }
 
@@ -449,24 +451,13 @@ export async function applyConfigToState(): Promise<Config> {
   // any present map) replaces the live override map merged on top of defaults;
   // omitting the key keeps the prior runtime value.
   if (config.model_overrides !== undefined) {
-    setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES, ...config.model_overrides })
-  }
-
-  // Model preference (collection: per-family replacement).
-  // User-provided family list replaces the built-in default for that family;
-  // families absent from config keep their built-in default list.
-  if (config.model_preference !== undefined) {
-    setModelPreference({
-      opus: config.model_preference.opus ?? DEFAULT_MODEL_PREFERENCE.opus,
-      sonnet: config.model_preference.sonnet ?? DEFAULT_MODEL_PREFERENCE.sonnet,
-      haiku: config.model_preference.haiku ?? DEFAULT_MODEL_PREFERENCE.haiku,
-    })
+    setModelOverrides(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_OVERRIDES, ...config.model_overrides }, "model_overrides"))
   }
 
   // Disabled models: retain-on-absence. An explicit empty list clears; missing
   // key keeps the prior runtime value. Re-filters `state.models` from cached raw.
   if (config.disabled_models !== undefined) {
-    setDisabledModels(config.disabled_models)
+    setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
   }
 
   // Other settings (scalar: override only when present)
@@ -496,21 +487,16 @@ export async function applyConfigToState(): Promise<Config> {
 
   // Stale request reaper max age (scalar: override only when present)
   if (config.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: config.stale_request_max_age })
-  if (config.model_refresh_interval !== undefined)
-    setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
+  if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 
   // Responses API settings (scalar: override only when present)
   const responsesConfig = config["openai-responses"]
-  if (responsesConfig && responsesConfig.normalize_call_ids !== undefined)
-    setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
-  if (responsesConfig && responsesConfig.upstream_websocket !== undefined)
-    setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_websocket })
-  if (responsesConfig && responsesConfig.fix_stream_ids !== undefined)
-    setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
+  if (responsesConfig && responsesConfig.normalize_call_ids !== undefined) setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
+  if (responsesConfig && responsesConfig.upstream_websocket !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_websocket })
+  if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
   if (responsesConfig && responsesConfig.client_websocket_keep_open !== undefined)
     setResponsesConfig({ clientWebsocketKeepOpen: responsesConfig.client_websocket_keep_open })
-  if (responsesConfig && responsesConfig.max_ws_frame_bytes !== undefined)
-    setResponsesConfig({ maxWsFrameBytes: responsesConfig.max_ws_frame_bytes })
+  if (responsesConfig && responsesConfig.max_ws_frame_bytes !== undefined) setResponsesConfig({ maxWsFrameBytes: responsesConfig.max_ws_frame_bytes })
   if (responsesConfig && responsesConfig.max_client_ws_connections !== undefined)
     setResponsesConfig({ maxClientWsConnections: responsesConfig.max_client_ws_connections })
   if (responsesConfig && responsesConfig.max_upstream_ws_connections !== undefined)

@@ -51,21 +51,12 @@ function highlightBlock(el: HTMLElement): void {
 }
 
 /** Orchestration composable for DetailPanel — extracts data derivation and scroll logic */
-export function useDetailOrchestration(
-  entry: Ref<HistoryEntry | null> | ComputedRef<HistoryEntry | null>,
-): DetailOrchestration {
+export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | ComputedRef<HistoryEntry | null>): DetailOrchestration {
   const detail = useDetailViewState()
 
   // Pipeline info
-  const {
-    truncationPoint,
-    hasRewrites,
-    rewriteSummary,
-    rewrittenIndexList,
-    getRewrittenMessage,
-    isMessageRewritten,
-    isMessageTruncated,
-  } = usePipelineInfo(entry)
+  const { truncationPoint, hasRewrites, rewriteSummary, rewrittenIndexList, getRewrittenMessage, isMessageRewritten, isMessageTruncated } =
+    usePipelineInfo(entry)
 
   // Merged tool maps — single pass over messages
   const toolMaps = computed(() => {

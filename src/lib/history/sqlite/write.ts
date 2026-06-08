@@ -127,16 +127,12 @@ export function insertCompletedEntry(entry: HistoryEntry): void {
           endpoint: string | null
         }>
         const models = modelRows.map((r) => r.model).filter((m): m is string => typeof m === "string" && m.length > 0)
-        const endpoints = endpointRows
-          .map((r) => r.endpoint)
-          .filter((e): e is string => typeof e === "string" && e.length > 0)
+        const endpoints = endpointRows.map((r) => r.endpoint).filter((e): e is string => typeof e === "string" && e.length > 0)
 
         // Preserve any tools_used_json the session already had — recompute only
         // covers entries-derivable aggregates; tools_used is set out-of-band
         // via upsertSessionMeta and must not be silently nulled on every insert.
-        const existing = db.prepare("SELECT tools_used_json FROM sessions WHERE id = ?").get(row.session_id) as
-          | { tools_used_json: string | null }
-          | undefined
+        const existing = db.prepare("SELECT tools_used_json FROM sessions WHERE id = ?").get(row.session_id) as { tools_used_json: string | null } | undefined
         const toolsUsedJson = existing?.tools_used_json ?? null
 
         db.prepare(UPSERT_SESSION_SQL).run(
@@ -179,9 +175,7 @@ export function clearAllEntries(): void {
 }
 
 export function upsertResponseSession(responseId: string, sessionId: string): void {
-  getDatabase()
-    .prepare("INSERT OR REPLACE INTO response_sessions (response_id, session_id) VALUES (?, ?)")
-    .run(responseId, sessionId)
+  getDatabase().prepare("INSERT OR REPLACE INTO response_sessions (response_id, session_id) VALUES (?, ?)").run(responseId, sessionId)
 }
 
 export function upsertSessionMeta(session: Session): void {

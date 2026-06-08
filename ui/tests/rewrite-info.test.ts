@@ -68,9 +68,7 @@ describe("truncationPoint", () => {
   })
 
   test("returns -1 when rewrites exist but no truncation", () => {
-    const entry = ref<HistoryEntry | null>(
-      makeEntry({ effectiveRequest: { messages: [] }, pipelineInfo: { messageMapping: [] } }),
-    )
+    const entry = ref<HistoryEntry | null>(makeEntry({ effectiveRequest: { messages: [] }, pipelineInfo: { messageMapping: [] } }))
     const { truncationPoint } = usePipelineInfo(entry)
     expect(truncationPoint.value).toBe(-1)
   })
@@ -208,13 +206,7 @@ describe("getRewrittenMessage", () => {
       makeEntry({
         request: {
           model: "test",
-          messages: [
-            msg("user", "a"),
-            msg("assistant", "b"),
-            msg("user", "c"),
-            msg("assistant", "d"),
-            msg("user", "e"),
-          ],
+          messages: [msg("user", "a"), msg("assistant", "b"), msg("user", "c"), msg("assistant", "d"), msg("user", "e")],
         },
         effectiveRequest: {
           messages: [rewritten2, rewritten4],

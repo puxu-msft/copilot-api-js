@@ -4,6 +4,8 @@ import type {
   ModelsResponse,
 } from "~/lib/models/client"
 
+import { normalizeForMatching } from "~/lib/models/model-name"
+
 import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
 import type {
   //
@@ -136,17 +138,6 @@ export interface State {
    * Defaults to DEFAULT_MODEL_OVERRIDES; config.yaml `model.model_overrides` replaces entirely.
    */
   readonly modelOverrides: Record<string, string>
-
-  /**
-   * Per-family preferred model order, highest priority first.
-   *
-   * Drives `findPreferredModel()` — resolves short aliases (opus/sonnet/haiku)
-   * and family fallbacks when an override target isn't directly available.
-   * Defaults to DEFAULT_MODEL_PREFERENCE; config.yaml `model_preference.<family>`
-   * replaces that family's list entirely. Families absent from config keep
-   * their built-in default list.
-   */
-  readonly modelPreference: Record<"opus" | "sonnet" | "haiku", ReadonlyArray<string>>
 
   /**
    * Model IDs to hide from the available models list, even when Copilot
@@ -392,6 +383,24 @@ export interface State {
    * the built-in defaults.
    */
   readonly rejectBodyFields: Record<string, Array<string>>
+
+  /**
+   * Per-tool list of top-level tool_use input fields to decode from
+   * stringified JSON back to structured form on the response wire. Keys are
+   * tool names (matched verbatim, no normalization); values are field-name
+   * lists. Built-in default: `{ AskUserQuestion: ["questions"] }`.
+   *
+   * Hot-reloadable: entirely replaced on config reload (replace semantic,
+   * like the other anthropic.* records).
+   */
+  readonly decodeToolInputFields: Record<string, Array<string>>
+
+  /**
+   * When true, decode ALL top-level string fields of every tool_use input
+   * (ignores `decodeToolInputFields`). Default false. server_tool_use is
+   * never affected.
+   */
+  readonly decodeAllToolInputFields: boolean
 }
 
 type MutableState = {
@@ -428,16 +437,6 @@ function cloneStripBetaHeaders(source: Record<string, Array<string>>): Record<st
   return out
 }
 
-function cloneModelPreference(
-  source: Record<"opus" | "sonnet" | "haiku", ReadonlyArray<string>>,
-): Record<"opus" | "sonnet" | "haiku", ReadonlyArray<string>> {
-  return {
-    opus: [...source.opus],
-    sonnet: [...source.sonnet],
-    haiku: [...source.haiku],
-  }
-}
-
 function cloneState(source: MutableState): MutableState {
   return {
     ...source,
@@ -446,10 +445,10 @@ function cloneState(source: MutableState): MutableState {
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
     modelOverrides: { ...source.modelOverrides },
-    modelPreference: cloneModelPreference(source.modelPreference),
     effortsOverrides: { ...source.effortsOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     rejectBodyFields: cloneStripBetaHeaders(source.rejectBodyFields),
+    decodeToolInputFields: cloneStripBetaHeaders(source.decodeToolInputFields),
     disabledModels: [...source.disabledModels],
     models: cloneModels(source.models),
     rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
@@ -476,15 +475,11 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("modelOverrides" in patch) {
     cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
   }
-  if ("modelPreference" in patch) {
-    cloned.modelPreference = patch.modelPreference ? cloneModelPreference(patch.modelPreference) : undefined
-  }
   if ("models" in patch) {
     cloned.models = cloneModels(patch.models)
   }
   if ("rewriteSystemReminders" in patch) {
-    cloned.rewriteSystemReminders =
-      patch.rewriteSystemReminders === undefined ? undefined : cloneRewriteRules(patch.rewriteSystemReminders)
+    cloned.rewriteSystemReminders = patch.rewriteSystemReminders === undefined ? undefined : cloneRewriteRules(patch.rewriteSystemReminders)
   }
   if ("systemPromptOverrides" in patch) {
     cloned.systemPromptOverrides = patch.systemPromptOverrides ? [...patch.systemPromptOverrides] : undefined
@@ -500,6 +495,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("rejectBodyFields" in patch) {
     cloned.rejectBodyFields = patch.rejectBodyFields ? cloneStripBetaHeaders(patch.rejectBodyFields) : undefined
+  }
+  if ("decodeToolInputFields" in patch) {
+    cloned.decodeToolInputFields = patch.decodeToolInputFields ? cloneStripBetaHeaders(patch.decodeToolInputFields) : undefined
   }
   if ("disabledModels" in patch) {
     cloned.disabledModels = patch.disabledModels ? [...patch.disabledModels] : undefined
@@ -520,9 +518,7 @@ export function setTokenState(patch: Partial<Pick<MutableState, "tokenInfo" | "c
   updateState(patch)
 }
 
-export function setCliState(
-  patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "autoTruncate" | "verbose">>,
-): void {
+export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "autoTruncate" | "verbose">>): void {
   updateState(patch)
 }
 
@@ -546,8 +542,10 @@ function applyDisabledFilter(models: ModelsResponse | undefined): ModelsResponse
   if (!models) return undefined
   const disabled = mutableState.disabledModels
   if (disabled.length === 0) return models
-  const disabledSet = new Set(disabled)
-  return { ...models, data: models.data.filter((m) => !disabledSet.has(m.id)) }
+  // Normalize both sides so a config entry like "claude-opus-4-8" disables the
+  // upstream id "claude-opus-4.8" (dot/hyphen/case spelling is irrelevant).
+  const disabledSet = new Set(disabled.map((id) => normalizeForMatching(id)))
+  return { ...models, data: models.data.filter((m) => !disabledSet.has(normalizeForMatching(m.id))) }
 }
 
 export function setModels(models: ModelsResponse | undefined): void {
@@ -595,6 +593,8 @@ export function setAnthropicBehavior(
       | "effortsOverrides"
       | "stripBetaHeaders"
       | "rejectBodyFields"
+      | "decodeToolInputFields"
+      | "decodeAllToolInputFields"
     >
   >,
 ): void {
@@ -605,13 +605,7 @@ export function setModelOverrides(modelOverrides: Record<string, string>): void 
   updateState({ modelOverrides })
 }
 
-export function setModelPreference(modelPreference: Record<"opus" | "sonnet" | "haiku", ReadonlyArray<string>>): void {
-  updateState({ modelPreference: cloneModelPreference(modelPreference) })
-}
-
-export function setHistoryConfig(
-  patch: Partial<Pick<MutableState, "historyLimit" | "historyReaperInterval" | "historyDbPath">>,
-): void {
+export function setHistoryConfig(patch: Partial<Pick<MutableState, "historyLimit" | "historyReaperInterval" | "historyDbPath">>): void {
   const limitChanged = patch.historyLimit !== undefined && patch.historyLimit !== mutableState.historyLimit
   updateState(patch)
   if (limitChanged) {
@@ -638,16 +632,12 @@ export function onHistoryLimitChange(listener: (limit: number) => void): () => v
   return () => historyLimitListeners.delete(listener)
 }
 
-export function setShutdownConfig(
-  patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>,
-): void {
+export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
   updateState(patch)
 }
 
 export function setTimeoutConfig(
-  patch: Partial<
-    Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval">
-  >,
+  patch: Partial<Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval">>,
 ): void {
   const transportChanged =
     (patch.fetchTimeout !== undefined && patch.fetchTimeout !== mutableState.fetchTimeout)
@@ -722,37 +712,14 @@ export function rebuildModelIndex(): void {
     modelIds: new Set(data.map((m) => m.id)),
   })
 }
-export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {
-  opus: "claude-opus-4.6",
-  sonnet: "claude-sonnet-4.6",
-  haiku: "claude-haiku-4.5",
-}
-
 /**
- * Default preferred-model order per family, highest priority first.
- *
- * Used as the built-in fallback for `state.modelPreference`. The config
- * key `model_preference.<family>` replaces a given family's list entirely;
- * families absent from config keep their default list here.
+ * Built-in model overrides. Intentionally EMPTY: model name mapping (short
+ * aliases like opus/sonnet/haiku, redirects) is owned exclusively by the
+ * bundled `config.yaml`, the single source of truth. If config.yaml can't be
+ * read, overrides stay empty and unknown aliases simply fail to resolve
+ * (the upstream rejects them) rather than falling back to hardcoded names.
  */
-export const DEFAULT_MODEL_PREFERENCE: Record<"opus" | "sonnet" | "haiku", ReadonlyArray<string>> = {
-  opus: [
-    // 4.7 takes precedence over 4.6. The -1m-internal variant ships at
-    // multiplier=1 (vs 4.6-1m at multiplier=6) on accounts that have access,
-    // so it's both newer and cheaper.
-    "claude-opus-4.7-1m-internal",
-    "claude-opus-4.7",
-    "claude-opus-4.6",
-    "claude-opus-4.5",
-    "claude-opus-41", // 4.1
-  ],
-  sonnet: [
-    "claude-sonnet-4.6",
-    "claude-sonnet-4.5",
-    // claude-sonnet-4 was delisted from the upstream catalog (2026-05).
-  ],
-  haiku: ["claude-haiku-4.5"],
-}
+export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
 
 /**
  * Default values for config-managed scalar/runtime fields.
@@ -796,6 +763,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   effortsOverrides: {} as Record<string, Array<string>>,
   stripBetaHeaders: {} as Record<string, Array<string>>,
   rejectBodyFields: {} as Record<string, Array<string>>,
+  decodeToolInputFields: { AskUserQuestion: ["questions"] } as Record<string, Array<string>>,
+  decodeAllToolInputFields: false,
   disabledModels: [] as ReadonlyArray<string>,
 }
 
@@ -821,9 +790,10 @@ export function resetConfigManagedState(): void {
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
     rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
+    decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
+    decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   })
   setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
-  setModelPreference(DEFAULT_MODEL_PREFERENCE)
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
   setTimeoutConfig({
     fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
@@ -875,7 +845,6 @@ const mutableState: MutableState = {
   modelIds: new Set(),
   modelIndex: new Map(),
   modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },
-  modelPreference: cloneModelPreference(DEFAULT_MODEL_PREFERENCE),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
@@ -897,6 +866,8 @@ const mutableState: MutableState = {
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
   stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
   rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
+  decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
+  decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],
   verbose: false,
 }

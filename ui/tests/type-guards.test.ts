@@ -89,9 +89,7 @@ describe("isToolResultBlock", () => {
 
 describe("isImageBlock", () => {
   test("returns true for image blocks", () => {
-    expect(
-      isImageBlock({ type: "image", source: { type: "base64", media_type: "image/png", data: "" } } as ContentBlock),
-    ).toBe(true)
+    expect(isImageBlock({ type: "image", source: { type: "base64", media_type: "image/png", data: "" } } as ContentBlock)).toBe(true)
   })
 
   test("returns false for text blocks", () => {

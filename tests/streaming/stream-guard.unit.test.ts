@@ -1,0 +1,433 @@
+/**
+ * `guardSseIterable` interruption + lifecycle.
+ *
+ * The shutdown signal is STABLE (created at process start, aborted once at
+ * Phase 3 — see src/lib/shutdown.ts). guardSseIterable forwards it (and the
+ * per-request client signal) into one local controller with explicit listener
+ * cleanup. Because the signal is stable, a `.next()` that is ALREADY blocked on
+ * a stalled upstream when the abort fires is still woken — the suite proves this
+ * directly (the "case b" the previous design could not handle).
+ */
+
+import {
+  //
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test"
+
+import {
+  //
+  StreamIdleTimeoutError,
+  StreamShutdownError,
+  guardSseIterable,
+} from "~/lib/stream"
+
+/** Async iterable that yields one frame, then blocks forever on the next */
+function blockingAfterFirst(): AsyncIterable<{ data: string }> {
+  let yielded = false
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next(): Promise<IteratorResult<{ data: string }>> {
+          if (!yielded) {
+            yielded = true
+            return { value: { data: "frame-1" }, done: false }
+          }
+          // Block forever — caller must rely on the abort signal to terminate.
+          return new Promise<IteratorResult<{ data: string }>>(() => {
+            // never resolves
+          })
+        },
+        async return(): Promise<IteratorResult<{ data: string }>> {
+          return { value: undefined, done: true }
+        },
+      }
+    },
+  }
+}
+
+/** Async iterable that yields a fixed sequence then ends normally */
+function fixedSequence<T>(items: ReadonlyArray<T>): AsyncIterable<T> {
+  let index = 0
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next(): Promise<IteratorResult<T>> {
+          if (index >= items.length) return { value: undefined as unknown as T, done: true }
+          const value = items[index]
+          index += 1
+          return { value, done: false }
+        },
+      }
+    },
+  }
+}
+
+/** Let the microtask/timer queue flush so a pending `.next()` is parked on the race. */
+function tick(ms = 20): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+describe("guardSseIterable — stable-signal interruption (case b)", () => {
+  test("shutdown abort wakes a .next() that was ALREADY blocked before the abort", async () => {
+    // The signal exists from the start (stable). The 2nd `.next()` parks on a
+    // stalled upstream; the abort fires AFTER it is already blocked. A design
+    // that only sampled the signal at `.next()`-start would hang here forever.
+    const shutdown = new AbortController()
+    const guarded = guardSseIterable(blockingAfterFirst(), {
+      idleTimeoutMs: 0,
+      shutdownSignal: shutdown.signal,
+    })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    const first = await iter.next()
+    expect(first.value).toEqual({ data: "frame-1" })
+
+    const secondPromise = iter.next()
+    await tick() // ensure the 2nd next() is parked on the abort race
+    shutdown.abort()
+
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamShutdownError)
+  })
+
+  test("client abort wakes an already-blocked .next() and ends cleanly", async () => {
+    const client = new AbortController()
+    const guarded = guardSseIterable(blockingAfterFirst(), {
+      idleTimeoutMs: 0,
+      clientSignal: client.signal,
+    })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    await tick()
+    client.abort()
+
+    const second = await secondPromise
+    expect(second.done).toBe(true)
+  })
+
+  test("a signal already aborted before the first .next() terminates immediately", async () => {
+    const shutdown = new AbortController()
+    shutdown.abort()
+    const guarded = guardSseIterable(blockingAfterFirst(), {
+      idleTimeoutMs: 0,
+      shutdownSignal: shutdown.signal,
+    })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await expect(iter.next()).rejects.toBeInstanceOf(StreamShutdownError)
+  })
+})
+
+describe("guardSseIterable — abort-source distinction", () => {
+  test("client abort → clean done (no throw)", async () => {
+    const client = new AbortController()
+    const guarded = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, clientSignal: client.signal })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    client.abort()
+
+    expect((await secondPromise).done).toBe(true)
+  })
+
+  test("shutdown abort → throws StreamShutdownError", async () => {
+    const shutdown = new AbortController()
+    const guarded = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, shutdownSignal: shutdown.signal })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    shutdown.abort()
+
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamShutdownError)
+  })
+
+  test("client abort takes precedence when both signals are aborted", async () => {
+    // Client gone → no one to notify, so a concurrent shutdown is moot.
+    const client = new AbortController()
+    const shutdown = new AbortController()
+    const guarded = guardSseIterable(blockingAfterFirst(), {
+      idleTimeoutMs: 0,
+      shutdownSignal: shutdown.signal,
+      clientSignal: client.signal,
+    })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    shutdown.abort()
+    client.abort()
+
+    expect((await secondPromise).done).toBe(true)
+  })
+})
+
+describe("guardSseIterable — lifecycle", () => {
+  test("propagates natural completion as { done: true }", async () => {
+    const guarded = guardSseIterable(fixedSequence([{ data: "a" }, { data: "b" }]), { idleTimeoutMs: 0 })
+
+    const collected: Array<{ data: string }> = []
+    for await (const ev of guarded) collected.push(ev)
+
+    expect(collected).toEqual([{ data: "a" }, { data: "b" }])
+  })
+
+  test("idle timeout rejects with StreamIdleTimeoutError when no event arrives in window", async () => {
+    const guarded = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 50 })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next() // first yields immediately
+
+    let caught: unknown
+    try {
+      await iter.next() // second blocks → idle timeout fires
+    } catch (err: unknown) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(StreamIdleTimeoutError)
+  })
+
+  test("return() forwards to underlying iterator for cleanup", async () => {
+    let returned = false
+    const source: AsyncIterable<{ data: string }> = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next(): Promise<IteratorResult<{ data: string }>> {
+            return { value: { data: "x" }, done: false }
+          },
+          async return(): Promise<IteratorResult<{ data: string }>> {
+            returned = true
+            return { value: undefined, done: true }
+          },
+        }
+      },
+    }
+
+    const guarded = guardSseIterable(source, { idleTimeoutMs: 0 })
+    const iter = guarded[Symbol.asyncIterator]()
+    await iter.next()
+    if (iter.return) await iter.return()
+
+    expect(returned).toBe(true)
+  })
+})
+
+describe("guardSseIterable — no listener leak on the long-lived shutdown signal", () => {
+  test("removes its abort listener on natural completion", async () => {
+    const shutdown = new AbortController()
+    const removeSpy = spyOn(shutdown.signal, "removeEventListener")
+    const guarded = guardSseIterable(fixedSequence([{ data: "a" }]), {
+      idleTimeoutMs: 0,
+      shutdownSignal: shutdown.signal,
+    })
+
+    for await (const _ of guarded) {
+      // drain to natural completion
+    }
+
+    expect(removeSpy).toHaveBeenCalled()
+  })
+
+  test("removes its abort listener on early return()", async () => {
+    const shutdown = new AbortController()
+    const removeSpy = spyOn(shutdown.signal, "removeEventListener")
+    const guarded = guardSseIterable(blockingAfterFirst(), {
+      idleTimeoutMs: 0,
+      shutdownSignal: shutdown.signal,
+    })
+    const iter = guarded[Symbol.asyncIterator]()
+    await iter.next()
+    if (iter.return) await iter.return()
+
+    expect(removeSpy).toHaveBeenCalled()
+  })
+
+  test("removes its abort listener after idle timeout", async () => {
+    const shutdown = new AbortController()
+    const removeSpy = spyOn(shutdown.signal, "removeEventListener")
+    const guarded = guardSseIterable(blockingAfterFirst(), {
+      idleTimeoutMs: 30,
+      shutdownSignal: shutdown.signal,
+    })
+    const iter = guarded[Symbol.asyncIterator]()
+    await iter.next()
+    await iter.next().catch(() => {
+      // idle timeout
+    })
+
+    expect(removeSpy).toHaveBeenCalled()
+  })
+})
+
+/**
+ * `for await` does NOT call our `return()` when our `next()` throws
+ * (idle-timeout / shutdown) or returns a synthetic `{ done: true }` (client gone).
+ * In those non-natural terminations the inner iterator is still live, so the
+ * guard must close it explicitly or the upstream connection leaks. Natural
+ * completion needs no close — the inner iterator already ended.
+ */
+describe("guardSseIterable — closes the inner iterator on non-natural termination", () => {
+  /** Yields one frame then blocks forever; counts how many times return() is called. */
+  function instrumentedBlocking(): { source: AsyncIterable<{ data: string }>; returnCalls: () => number } {
+    let returnCalls = 0
+    let yielded = false
+    const source: AsyncIterable<{ data: string }> = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next(): Promise<IteratorResult<{ data: string }>> {
+            if (!yielded) {
+              yielded = true
+              return { value: { data: "frame-1" }, done: false }
+            }
+            return new Promise<IteratorResult<{ data: string }>>(() => {
+              // never resolves
+            })
+          },
+          async return(): Promise<IteratorResult<{ data: string }>> {
+            returnCalls += 1
+            return { value: undefined, done: true }
+          },
+        }
+      },
+    }
+    return { source, returnCalls: () => returnCalls }
+  }
+
+  /** Yields a finite sequence then ends naturally; counts return() calls. */
+  function instrumentedFinite(items: ReadonlyArray<{ data: string }>): {
+    source: AsyncIterable<{ data: string }>
+    returnCalls: () => number
+  } {
+    let returnCalls = 0
+    let index = 0
+    const source: AsyncIterable<{ data: string }> = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next(): Promise<IteratorResult<{ data: string }>> {
+            if (index >= items.length) return { value: undefined as unknown as { data: string }, done: true }
+            const value = items[index]
+            index += 1
+            return { value, done: false }
+          },
+          async return(): Promise<IteratorResult<{ data: string }>> {
+            returnCalls += 1
+            return { value: undefined, done: true }
+          },
+        }
+      },
+    }
+    return { source, returnCalls: () => returnCalls }
+  }
+
+  test("shutdown throw closes the inner iterator exactly once", async () => {
+    const shutdown = new AbortController()
+    const { source, returnCalls } = instrumentedBlocking()
+    const guarded = guardSseIterable(source, { idleTimeoutMs: 0, shutdownSignal: shutdown.signal })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    await tick()
+    shutdown.abort()
+
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamShutdownError)
+    expect(returnCalls()).toBe(1)
+
+    // A redundant explicit return() after a terminating next() must not double-close.
+    if (iter.return) await iter.return()
+    expect(returnCalls()).toBe(1)
+  })
+
+  test("client clean-done closes the inner iterator", async () => {
+    const client = new AbortController()
+    const { source, returnCalls } = instrumentedBlocking()
+    const guarded = guardSseIterable(source, { idleTimeoutMs: 0, clientSignal: client.signal })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    await tick()
+    client.abort()
+
+    expect((await secondPromise).done).toBe(true)
+    expect(returnCalls()).toBe(1)
+  })
+
+  test("idle timeout closes the inner iterator", async () => {
+    const { source, returnCalls } = instrumentedBlocking()
+    const guarded = guardSseIterable(source, { idleTimeoutMs: 30 })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    await iter.next().catch(() => {
+      // idle timeout
+    })
+
+    expect(returnCalls()).toBe(1)
+  })
+
+  test("natural completion does NOT close the inner iterator", async () => {
+    const { source, returnCalls } = instrumentedFinite([{ data: "a" }, { data: "b" }])
+    const guarded = guardSseIterable(source, { idleTimeoutMs: 0 })
+
+    for await (const _ of guarded) {
+      // drain to natural completion
+    }
+
+    expect(returnCalls()).toBe(0)
+  })
+
+  test("a non-resolving inner.return() does NOT block termination (fire-and-forget)", async () => {
+    // The whole reason `next()` closes the inner iterator fire-and-forget: a real
+    // async generator stalled mid-`await` queues its `return()` behind the pending
+    // `next()`, so `return()` never settles. Awaiting it would re-introduce the
+    // hang the abort race exists to avoid. Here `return()` never resolves; the
+    // guard must still surface the shutdown promptly instead of hanging on it.
+    let yielded = false
+    const source: AsyncIterable<{ data: string }> = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next(): Promise<IteratorResult<{ data: string }>> {
+            if (!yielded) {
+              yielded = true
+              return { value: { data: "frame-1" }, done: false }
+            }
+            return new Promise<IteratorResult<{ data: string }>>(() => {
+              // never resolves
+            })
+          },
+          return(): Promise<IteratorResult<{ data: string }>> {
+            return new Promise<IteratorResult<{ data: string }>>(() => {
+              // never resolves — mimics return() queued behind a stalled next()
+            })
+          },
+        }
+      },
+    }
+
+    const shutdown = new AbortController()
+    const guarded = guardSseIterable(source, { idleTimeoutMs: 0, shutdownSignal: shutdown.signal })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    await tick()
+    shutdown.abort()
+
+    // The terminating next() must settle (throw) rather than hang on return().
+    const outcome = await Promise.race([
+      secondPromise.then(
+        () => "settled" as const,
+        () => "settled" as const,
+      ),
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 200)),
+    ])
+    expect(outcome).toBe("settled")
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamShutdownError)
+  })
+})

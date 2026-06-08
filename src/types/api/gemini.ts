@@ -36,10 +36,7 @@ export interface GenerateContentRequest {
  * `executableCode`, `codeExecutionResult`) so the type represents the wire
  * shape, not the SDK helper accessors.
  */
-export type GenerateContentResponse = Pick<
-  _GenerateContentResponse,
-  "candidates" | "promptFeedback" | "usageMetadata" | "modelVersion" | "responseId"
->
+export type GenerateContentResponse = Pick<_GenerateContentResponse, "candidates" | "promptFeedback" | "usageMetadata" | "modelVersion" | "responseId">
 
 /** Inbound `:countTokens` request body */
 export interface CountTokensRequest {

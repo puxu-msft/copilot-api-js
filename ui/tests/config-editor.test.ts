@@ -42,9 +42,7 @@ void mock.module("../src/composables/useToast", () => ({
   }),
 }))
 
-const { formatConfigErrorMessage, serializeEditableConfig, useConfigEditor } = await import(
-  "../src/composables/useConfigEditor"
-)
+const { formatConfigErrorMessage, serializeEditableConfig, useConfigEditor } = await import("../src/composables/useConfigEditor")
 
 describe("useConfigEditor", () => {
   beforeEach(() => {

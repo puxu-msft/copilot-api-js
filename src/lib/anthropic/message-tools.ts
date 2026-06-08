@@ -242,10 +242,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   const deferredCount = result.filter((t) => t.defer_loading === true).length
   const injectedCount = result.length - tools.length
   if (deferredCount > 0 || injectedCount > 0) {
-    consola.debug(
-      `[ToolPipeline] ${result.length} tools`
-        + ` (${deferredCount} deferred, ${injectedCount} injected, tool_search: ${toolSearchEnabled})`,
-    )
+    consola.debug(`[ToolPipeline] ${result.length} tools` + ` (${deferredCount} deferred, ${injectedCount} injected, tool_search: ${toolSearchEnabled})`)
   }
 
   return result
@@ -283,8 +280,7 @@ export function preprocessTools(payload: MessagesPayload): MessagesPayload {
     const historyToolNames = collectHistoryToolNames(messages)
     if (historyToolNames.size > 0) {
       consola.debug(
-        `[ToolPipeline] Injecting ${historyToolNames.size} tool stubs for`
-          + ` history references (no tools in request): ${[...historyToolNames].join(", ")}`,
+        `[ToolPipeline] Injecting ${historyToolNames.size} tool stubs for` + ` history references (no tools in request): ${[...historyToolNames].join(", ")}`,
       )
       processed = { ...payload, tools: buildHistoryToolStubs(historyToolNames) }
     } else {

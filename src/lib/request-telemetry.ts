@@ -391,9 +391,7 @@ export async function initRequestTelemetry(): Promise<void> {
     // two concurrent writers interleaving O_TRUNC writes (now prevented by the
     // serialized atomic-write path below — but old corrupted files can still
     // exist from prior versions).
-    consola.warn(
-      `[telemetry] resetting 7-day usage history: telemetry file is corrupted (${err instanceof Error ? err.message : String(err)})`,
-    )
+    consola.warn(`[telemetry] resetting 7-day usage history: telemetry file is corrupted (${err instanceof Error ? err.message : String(err)})`)
     const quarantine = `${telemetryFilePath}.corrupted.${Date.now()}`
     try {
       await fs.rename(telemetryFilePath, quarantine)
@@ -465,6 +463,15 @@ export function getRequestTelemetrySnapshot(now = Date.now()): RequestTelemetryS
   }
 }
 
+/**
+ * Debounce for persist-failure logging: warn once, then stay quiet until a
+ * successful write recovers. Periodic persistence runs every ~60s, so a
+ * sustained failure (ENOSPC / permissions) would otherwise spam one warn per
+ * minute. The asymmetry with the loader (which warns on corrupt files) is the
+ * gap this closes — a write failure silently drops the 7-day history on restart.
+ */
+let persistFailureLogged = false
+
 const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
   pruneBuckets()
   const file: RequestTelemetryFileV2 = {
@@ -495,8 +502,12 @@ const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
 
   try {
     await atomicWriteJson(telemetryFilePath, file)
+    persistFailureLogged = false
   } catch (err) {
-    consola.debug(`[telemetry] persist failed:`, err)
+    if (!persistFailureLogged) {
+      persistFailureLogged = true
+      consola.warn(`[telemetry] persist failed (7-day usage history may be stale on restart):`, err)
+    }
   }
 })
 

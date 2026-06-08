@@ -109,11 +109,7 @@ function collectStripBetas(modelName: string): Set<string> {
  *     `PrepareHints.excludeBetas`. Makes intra-retry exclusion deterministic
  *     without depending on cache having been written.
  */
-export function filterUnsupportedBetas(
-  modelName: string,
-  merged: string | undefined,
-  excludeBetas?: ReadonlyArray<string>,
-): string | undefined {
+export function filterUnsupportedBetas(modelName: string, merged: string | undefined, excludeBetas?: ReadonlyArray<string>): string | undefined {
   if (!merged) return undefined
   const configStrip = collectStripBetas(modelName)
   const hintStrip = new Set(excludeBetas ?? [])
@@ -134,10 +130,7 @@ export function filterUnsupportedBetas(
   return kept.length > 0 ? kept.join(",") : undefined
 }
 
-export function prepareAnthropicRequest(
-  payload: MessagesPayload,
-  opts?: PrepareAnthropicRequestOptions,
-): PreparedAnthropicRequest {
+export function prepareAnthropicRequest(payload: MessagesPayload, opts?: PrepareAnthropicRequestOptions): PreparedAnthropicRequest {
   const wire = buildWirePayload(payload, opts?.rejectFields)
   adjustThinkingBudget(wire, opts?.resolvedModel)
   clampEffortLevel(wire, opts?.resolvedModel)
@@ -159,8 +152,7 @@ export function prepareAnthropicRequest(
   // the matching beta header and any subsequent auto-injection by the contextEditingMode
   // logic. The signal source is the negotiation cache (config-driven strip implies
   // the operator already knows it's unsupported but is independent of the cache).
-  const contextManagementDisabled =
-    wire.context_management === null || isAnthropicFeatureUnsupported(model, "context_management")
+  const contextManagementDisabled = wire.context_management === null || isAnthropicFeatureUnsupported(model, "context_management")
 
   if (contextManagementDisabled) {
     delete wire.context_management
@@ -263,9 +255,7 @@ function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Mod
 
   if (adjusted !== budgetTokens) {
     ;(wire.thinking as { budget_tokens: number }).budget_tokens = adjusted
-    consola.debug(
-      `[DirectAnthropic] Capped thinking.budget_tokens: ${budgetTokens} → ${adjusted} (max_tokens=${maxTokens})`,
-    )
+    consola.debug(`[DirectAnthropic] Capped thinking.budget_tokens: ${budgetTokens} → ${adjusted} (max_tokens=${maxTokens})`)
   }
 }
 
@@ -316,13 +306,9 @@ export function learnEffortsFromError(responseText: string): boolean {
   if (!changed) return false
 
   if (isFirstLearn) {
-    consola.info(
-      `[DirectAnthropic] Learned supported efforts for ${parsed.modelName}: [${parsed.supported.join(", ")}]`,
-    )
+    consola.info(`[DirectAnthropic] Learned supported efforts for ${parsed.modelName}: [${parsed.supported.join(", ")}]`)
   } else {
-    consola.debug(
-      `[DirectAnthropic] Updated supported efforts for ${parsed.modelName}: [${parsed.supported.join(", ")}]`,
-    )
+    consola.debug(`[DirectAnthropic] Updated supported efforts for ${parsed.modelName}: [${parsed.supported.join(", ")}]`)
   }
   return true
 }
@@ -373,12 +359,7 @@ export function findSupportedEfforts(modelName: string, resolvedModel?: Model): 
  * when non-empty; otherwise falls back to the metadata list (or the original
  * whitelist if metadata is unavailable).
  */
-function reconcileWithMetadata(
-  whitelist: Array<string>,
-  metadataSet: Set<string> | undefined,
-  modelName: string,
-  source: "config" | "learned",
-): Array<string> {
+function reconcileWithMetadata(whitelist: Array<string>, metadataSet: Set<string> | undefined, modelName: string, source: "config" | "learned"): Array<string> {
   if (!metadataSet) return whitelist
   const kept: Array<string> = []
   const dropped: Array<string> = []
@@ -420,9 +401,7 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
   if (!supported) return
 
   // Compute min/max indices of supported efforts
-  const supportedIndices = supported
-    .map((e) => EFFORT_LEVELS.indexOf(e as (typeof EFFORT_LEVELS)[number]))
-    .filter((i) => i >= 0)
+  const supportedIndices = supported.map((e) => EFFORT_LEVELS.indexOf(e as (typeof EFFORT_LEVELS)[number])).filter((i) => i >= 0)
   if (supportedIndices.length === 0) return
 
   const minIndex = Math.min(...supportedIndices)
@@ -507,11 +486,7 @@ function addToolsAndSystemCacheControl(wire: Record<string, unknown>): void {
 }
 
 function countExistingCacheBreakpoints(wire: Record<string, unknown>): number {
-  return (
-    countCacheControlOccurrences(wire.messages)
-    + countCacheControlOccurrences(wire.system)
-    + countCacheControlOccurrences(wire.tools)
-  )
+  return countCacheControlOccurrences(wire.messages) + countCacheControlOccurrences(wire.system) + countCacheControlOccurrences(wire.tools)
 }
 
 function countCacheControlOccurrences(value: unknown): number {
@@ -535,10 +510,7 @@ function countCacheControlOccurrences(value: unknown): number {
   return count
 }
 
-function addToolCacheControl(
-  tools: Array<Tool> | undefined,
-  remaining: number,
-): { tools: Array<Tool> | undefined; remaining: number; changed: boolean } {
+function addToolCacheControl(tools: Array<Tool> | undefined, remaining: number): { tools: Array<Tool> | undefined; remaining: number; changed: boolean } {
   if (!tools || remaining <= 0) {
     return { tools, remaining, changed: false }
   }
@@ -593,10 +565,7 @@ function findLastIndex<T>(items: Array<T>, predicate: (item: T) => boolean): num
  * - undefined: delete the cache_control field
  * - an object: replace the cache_control field with this value
  */
-function walkCacheControl(
-  wire: Record<string, unknown>,
-  handler: (current: unknown) => { type: string } | undefined,
-): void {
+function walkCacheControl(wire: Record<string, unknown>, handler: (current: unknown) => { type: string } | undefined): void {
   for (const key of ["system", "messages", "tools"] as const) {
     if (Array.isArray(wire[key])) {
       walkCacheControlArray(wire[key] as Array<Record<string, unknown>>, handler)

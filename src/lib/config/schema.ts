@@ -164,6 +164,11 @@ export const AnthropicConfigSchema = z
     efforts_overrides: z.record(z.string(), z.array(z.string())).optional(),
     strip_beta_headers: z.record(z.string(), z.array(z.string())).optional(),
     reject_body_fields: z.record(z.string(), z.array(z.string())).optional(),
+    // Tool-name-keyed (NOT model-keyed): keys are matched verbatim against the
+    // tool name — must NOT go through normalizeModelKeyedRecord, which would
+    // fold case/separators and break lookups. Replace semantic (default).
+    decode_tool_input_fields: z.record(z.string(), z.array(z.string())).optional(),
+    decode_all_tool_input_fields: nullableBoolean(),
   })
   .strict()
 
@@ -232,26 +237,6 @@ const ModelOverridesSchema = z.record(z.string(), z.string()).superRefine((value
     }
   }
 })
-
-/**
- * Per-family preferred model order. Each family is optional; supplying a
- * family replaces its built-in default list entirely. Arrays must be
- * non-empty so `findPreferredModel()` always has a fallback candidate.
- */
-const FamilyPreferenceList = z
-  .array(z.string().nonempty("Must be a non-empty string"))
-  .nonempty("Preference list must contain at least one model ID")
-  .nullable()
-  .transform((v): Array<string> | undefined => v ?? undefined)
-  .optional()
-
-export const ModelPreferenceSchema = z
-  .object({
-    opus: FamilyPreferenceList,
-    sonnet: FamilyPreferenceList,
-    haiku: FamilyPreferenceList,
-  })
-  .strict()
 
 /**
  * Explicit upstream GHC API base URL. Overrides the URL derived from
@@ -330,7 +315,6 @@ export const ConfigSchema = z
     model_overrides: ModelOverridesSchema.nullable()
       .transform((v): z.infer<typeof ModelOverridesSchema> | undefined => v ?? undefined)
       .optional(),
-    model_preference: nullableSection(ModelPreferenceSchema),
     disabled_models: nullableNonemptyStringArray(),
     compress_tool_results_before_truncate: nullableBoolean(),
     history: nullableSection(HistoryConfigSchema),
@@ -372,8 +356,7 @@ export const DEPRECATED_KEYS: ReadonlyArray<DeprecatedKey> = [
     path: "anthropic.immutable_thinking_messages",
     parentPath: "anthropic",
     key: "immutable_thinking_messages",
-    message:
-      'anthropic.immutable_thinking_messages is removed; use thinking_block_message_policy ("immutable" | "stripped" | "fixed-index")',
+    message: 'anthropic.immutable_thinking_messages is removed; use thinking_block_message_policy ("immutable" | "stripped" | "fixed-index")',
     translate(legacy) {
       if (typeof legacy !== "boolean") return undefined
       return { anthropic: { thinking_block_message_policy: legacy ? "immutable" : "stripped" } }
@@ -383,8 +366,7 @@ export const DEPRECATED_KEYS: ReadonlyArray<DeprecatedKey> = [
     path: "anthropic.auto_cache_control",
     parentPath: "anthropic",
     key: "auto_cache_control",
-    message:
-      'anthropic.auto_cache_control is removed; use cache_control ("disabled" | "passthrough" | "sanitize" | "proxied")',
+    message: 'anthropic.auto_cache_control is removed; use cache_control ("disabled" | "passthrough" | "sanitize" | "proxied")',
     translate(legacy) {
       if (typeof legacy !== "boolean") return undefined
       return { anthropic: { cache_control: legacy ? "proxied" : "disabled" } }
@@ -440,5 +422,4 @@ export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
 export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
-export type ModelPreferenceConfig = z.infer<typeof ModelPreferenceSchema>
 export type Config = z.infer<typeof ConfigSchema>

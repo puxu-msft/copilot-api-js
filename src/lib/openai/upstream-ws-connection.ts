@@ -1,3 +1,4 @@
+import consola from "consola"
 import { WebSocket } from "undici"
 
 import type {
@@ -136,6 +137,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         finishRequest()
       }
     } catch (error) {
+      consola.warn(`[upstream-ws] Frame parse error; dropping connection (model=${opts.model}): ${error instanceof Error ? error.message : String(error)}`)
       failRequest(error instanceof Error ? error : new Error(String(error)))
       // Parse error implies the upstream protocol state is dirty — the next frame
       // is likely also malformed. Mark unusable synchronously so any same-tick
@@ -147,6 +149,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
   const handleError = () => {
     if (busy && currentQueue) {
+      consola.warn(`[upstream-ws] Socket error mid-request (model=${opts.model}); failing request and dropping connection`)
       failRequest(new Error("Upstream WebSocket error"))
     }
     // Even when idle, an error means the socket state is suspect. Mark unusable
@@ -175,6 +178,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     if (!busy || !currentQueue) return
 
     const closeEvent = event as CloseEvent
+    consola.warn(`[upstream-ws] Connection closed mid-request (${closeEvent.code}: ${closeEvent.reason || "unknown"}, model=${opts.model})`)
     failRequest(new Error(`Upstream WebSocket closed (${closeEvent.code}: ${closeEvent.reason || "unknown"})`))
   }
 
@@ -279,6 +283,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         const { stream: _stream, ...wire } = payload
         socket.send(JSON.stringify({ type: "response.create", ...wire }))
       } catch (error) {
+        consola.warn(`[upstream-ws] Send failed; dropping connection (model=${opts.model}): ${error instanceof Error ? error.message : String(error)}`)
         currentAbortCleanup()
         currentAbortCleanup = null
         failRequest(error instanceof Error ? error : new Error(String(error)))

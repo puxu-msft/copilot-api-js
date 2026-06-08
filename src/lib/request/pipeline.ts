@@ -109,8 +109,36 @@ export type RetryAction<TPayload> =
       meta?: Record<string, unknown>
       /** Format-specific preparation hints forwarded to the next adapter.execute() call. */
       prepareHints?: PrepareHints
+      /**
+       * Mark this as a **learning-type** retry — a deterministically converging
+       * probe (e.g. beta combination enumeration) that locates an upstream
+       * incompatibility. Learning retries draw from a separate budget and do
+       * NOT consume the main `maxRetries` allowance, so a strategy can iterate
+       * far enough to pinpoint the offending element without starving ordinary
+       * retries. Capped independently (`MAX_LEARNING_RETRIES`) to bound latency
+       * and prevent combinatorial runaway.
+       */
+      learning?: boolean
     }
   | { action: "abort"; error: ApiError }
+
+/**
+ * Context passed to a strategy's `onResolved` hook when one of its retry
+ * actions ultimately produced a successful response. Lets a strategy commit
+ * what it learned (e.g. persist the located offending betas to the negotiation
+ * cache) — keeping "who modified, who learns" cohesive inside the strategy
+ * instead of leaking demux logic into every handler.
+ */
+export interface ResolvedContext<TPayload> {
+  /** The effective payload that ultimately succeeded. */
+  payload: TPayload
+  /** Preparation hints carried by the successful attempt. */
+  prepareHints?: PrepareHints
+  /** Meta from the retry action that produced the successful attempt. */
+  meta?: Record<string, unknown>
+  /** 0-based execution index that succeeded (equals total retries). */
+  attempt: number
+}
 
 export interface RetryStrategy<TPayload> {
   readonly name: string
@@ -118,9 +146,25 @@ export interface RetryStrategy<TPayload> {
   canHandle(error: ApiError): boolean
   /** Handle the error and decide whether to retry or abort */
   handle(error: ApiError, payload: TPayload, context: RetryContext<TPayload>): Promise<RetryAction<TPayload>>
+  /**
+   * Called when a retry action produced by THIS strategy ultimately led to a
+   * successful response. Optional. Receives the successful payload, the hints
+   * and meta carried by that final attempt. Use it to commit learning (e.g.
+   * fixate the located offending betas into the negotiation cache).
+   */
+  onResolved?(context: ResolvedContext<TPayload>): void | Promise<void>
 }
 
 // --- Pipeline ---
+
+/**
+ * Hard cap on learning-type retries within a single pipeline run. Bounds
+ * latency and prevents combinatorial runaway when a learning strategy enumerates
+ * candidate combinations (e.g. beta subset enumeration is 2ⁿ−1 in the worst
+ * case). 32 covers full enumeration of up to 5 candidates and a generous prefix
+ * beyond that; learning strategies are expected to abort earlier on their own.
+ */
+const MAX_LEARNING_RETRIES = 32
 
 export interface PipelineResult {
   response: unknown
@@ -158,7 +202,9 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
   const { adapter, strategies, originalPayload, model, maxRetries = 3, requestContext, onBeforeAttempt, onRetry } = opts
 
   let effectivePayload = opts.payload
-  let lastError: unknown = null
+  // The loop only exits via `break` (always inside catch, after lastError is
+  // set) or `return`, so lastError is definitely assigned before any read.
+  let lastError: unknown
   let totalQueueWaitMs = 0
   let lastStrategyName: string | undefined
   // Preparation hints from the most recent retry action. Cleared on attempt 0.
@@ -170,12 +216,27 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
   // — exactly the implicit-state coupling H4 was designed to eliminate.
   let pendingPrepareHints: PrepareHints | undefined
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  // Strategy whose most recent retry produced the current effectivePayload —
+  // notified via onResolved when a later attempt succeeds, so it can commit
+  // what it learned (e.g. fixate located betas). Paired meta travels alongside.
+  let lastRetryStrategy: RetryStrategy<TPayload> | undefined
+  let lastRetryMeta: Record<string, unknown> | undefined
+
+  // Two independent retry budgets. Ordinary retries consume `maxRetries`;
+  // learning retries (deterministic probes, e.g. beta combination enumeration)
+  // consume a separate `MAX_LEARNING_RETRIES` allowance so they cannot starve
+  // ordinary retries and vice-versa. `execIndex` is the running execution
+  // counter used for attempt numbering / totalRetries, independent of which
+  // budget each retry drew from.
+  let execIndex = 0
+  let normalRetries = 0
+  let learningRetries = 0
+
+  for (;;) {
     // 1. Create attempt first (ensures currentAttempt is available for subsequent calls)
     requestContext?.beginAttempt({
-      strategy: attempt > 0 ? lastStrategyName : undefined,
+      strategy: execIndex > 0 ? lastStrategyName : undefined,
     })
-    lastStrategyName = undefined
 
     // 2. Auto-record effective payload on each attempt (covers all handlers)
     if (requestContext) {
@@ -190,7 +251,7 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
     }
 
     // 3. External callback (currentAttempt now exists)
-    onBeforeAttempt?.(attempt, effectivePayload)
+    onBeforeAttempt?.(execIndex, effectivePayload)
     requestContext?.transition("executing")
 
     try {
@@ -198,11 +259,23 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
       totalQueueWaitMs += queueWaitMs
       requestContext?.addQueueWaitMs(queueWaitMs)
 
+      // Notify the strategy that owns the final modification so it can commit
+      // its learning. Only fires when a retry actually produced this payload —
+      // `lastRetryStrategy` stays undefined on a first-attempt success.
+      if (lastRetryStrategy) {
+        await lastRetryStrategy.onResolved?.({
+          payload: effectivePayload,
+          prepareHints: pendingPrepareHints,
+          meta: lastRetryMeta,
+          attempt: execIndex,
+        })
+      }
+
       return {
         response,
         effectivePayload,
         queueWaitMs: totalQueueWaitMs,
-        totalRetries: attempt,
+        totalRetries: execIndex,
       }
     } catch (error) {
       lastError = error
@@ -211,16 +284,16 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
       const apiError = classifyError(error)
       requestContext?.setAttemptError(apiError)
 
-      // Don't retry if we've exhausted attempts
-      if (attempt >= maxRetries) break
-
-      // Find first strategy that can handle this error
-      let handled = false
+      // Find first strategy that can handle this error → decide retry/abort
+      let chosen: {
+        strategy: RetryStrategy<TPayload>
+        action: Extract<RetryAction<TPayload>, { action: "retry" }>
+      } | null = null
       for (const strategy of strategies) {
         if (!strategy.canHandle(apiError)) continue
 
         const retryContext: RetryContext<TPayload> = {
-          attempt,
+          attempt: execIndex,
           originalPayload,
           model,
           maxRetries,
@@ -228,35 +301,12 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
 
         try {
           const action = await strategy.handle(apiError, effectivePayload, retryContext)
-
-          if (action.action === "retry") {
-            consola.debug(
-              `[Pipeline] Strategy "${strategy.name}" requests retry ` + `(attempt ${attempt + 1}/${maxRetries + 1})`,
-            )
-
-            if (action.waitMs && action.waitMs > 0) {
-              totalQueueWaitMs += action.waitMs
-              requestContext?.addQueueWaitMs(action.waitMs)
-            }
-
-            // Auto-record sanitization from strategy meta (e.g. auto-truncate provides this)
-            if (action.meta?.sanitization && requestContext) {
-              requestContext.setAttemptSanitization(action.meta.sanitization as SanitizationInfo)
-            }
-
-            lastStrategyName = strategy.name
-            effectivePayload = action.payload
-            pendingPrepareHints = action.prepareHints
-            onRetry?.(attempt, strategy.name, action.payload, action.meta)
-            handled = true
-            break
-          }
-
-          // action === "abort": fall through to break
+          if (action.action === "retry") chosen = { strategy, action }
+          // retry chosen, or abort → stop scanning strategies
           break
         } catch (strategyError) {
           consola.warn(
-            `[Pipeline] Strategy "${strategy.name}" failed on attempt ${attempt + 1}:`,
+            `[Pipeline] Strategy "${strategy.name}" failed on attempt ${execIndex + 1}:`,
             strategyError instanceof Error ? strategyError.message : strategyError,
           )
           // Strategy itself failed, break out to throw original error
@@ -264,7 +314,49 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
         }
       }
 
-      if (!handled) break
+      if (!chosen) break
+
+      const { strategy, action } = chosen
+
+      // Budget gate: learning retries draw from a separate allowance so a
+      // deterministic probe can iterate far enough to pinpoint the offending
+      // element without starving ordinary retries — and is itself hard-capped
+      // to bound latency / prevent combinatorial runaway.
+      //
+      // NOTE: the gate runs AFTER `handle()`, because whether a retry is
+      // learning-type is only known from the action. So on the attempt that
+      // exhausts a budget, the chosen strategy's `handle()` has already run its
+      // side effects before the retry is discarded here. Strategy `handle()`
+      // side effects must therefore be idempotent / self-guarding (e.g.
+      // token-refresh sets `hasRefreshed` and its `canHandle` returns false
+      // afterwards, bounding it to a single refresh).
+      if (action.learning === true) {
+        if (learningRetries >= MAX_LEARNING_RETRIES) break
+        learningRetries++
+      } else {
+        if (normalRetries >= maxRetries) break
+        normalRetries++
+      }
+
+      consola.debug(`[Pipeline] Strategy "${strategy.name}" requests ${action.learning ? "learning " : ""}retry (exec ${execIndex + 1})`)
+
+      if (action.waitMs && action.waitMs > 0) {
+        totalQueueWaitMs += action.waitMs
+        requestContext?.addQueueWaitMs(action.waitMs)
+      }
+
+      // Auto-record sanitization from strategy meta (e.g. auto-truncate provides this)
+      if (action.meta?.sanitization && requestContext) {
+        requestContext.setAttemptSanitization(action.meta.sanitization as SanitizationInfo)
+      }
+
+      lastStrategyName = strategy.name
+      lastRetryStrategy = strategy
+      lastRetryMeta = action.meta
+      effectivePayload = action.payload
+      pendingPrepareHints = action.prepareHints
+      onRetry?.(execIndex, strategy.name, action.payload, action.meta)
+      execIndex++
     }
   }
 

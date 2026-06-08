@@ -33,12 +33,7 @@ export function extractRetryAfterFromBody(responseText: string): number | undefi
 
       if ("error" in parsed) {
         const err = (parsed as { error: unknown }).error
-        if (
-          err
-          && typeof err === "object"
-          && "retry_after" in err
-          && typeof (err as Record<string, unknown>).retry_after === "number"
-        ) {
+        if (err && typeof err === "object" && "retry_after" in err && typeof (err as Record<string, unknown>).retry_after === "number") {
           return (err as { retry_after: number }).retry_after
         }
       }
@@ -82,12 +77,7 @@ export function extractTokenLimitFromResponseText(responseText: string): {
     const parsed: unknown = JSON.parse(responseText)
     if (parsed && typeof parsed === "object" && "error" in parsed) {
       const err = (parsed as { error: unknown }).error
-      if (
-        err
-        && typeof err === "object"
-        && "message" in err
-        && typeof (err as Record<string, unknown>).message === "string"
-      ) {
+      if (err && typeof err === "object" && "message" in err && typeof (err as Record<string, unknown>).message === "string") {
         return parseTokenLimitError((err as { message: string }).message)
       }
     }

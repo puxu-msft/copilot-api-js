@@ -58,13 +58,7 @@ test.describe("Legacy Pages", () => {
       }
     })
 
-    const legacyRoutes = [
-      uiUrl("#/history"),
-      uiUrl("#/logs"),
-      uiUrl("#/dashboard"),
-      uiUrl("#/models"),
-      uiUrl("#/usage"),
-    ]
+    const legacyRoutes = [uiUrl("#/history"), uiUrl("#/logs"), uiUrl("#/dashboard"), uiUrl("#/models"), uiUrl("#/usage")]
 
     for (const route of legacyRoutes) {
       consoleErrors.length = 0
@@ -72,9 +66,7 @@ test.describe("Legacy Pages", () => {
       await page.waitForTimeout(1500)
 
       // Filter out expected/benign errors (e.g. WebSocket connection, network)
-      const realErrors = consoleErrors.filter(
-        (e) => !e.includes("WebSocket") && !e.includes("net::") && !e.includes("favicon"),
-      )
+      const realErrors = consoleErrors.filter((e) => !e.includes("WebSocket") && !e.includes("net::") && !e.includes("favicon"))
       expect(realErrors).toEqual([])
     }
   })

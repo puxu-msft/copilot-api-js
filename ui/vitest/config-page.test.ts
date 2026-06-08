@@ -211,9 +211,7 @@ describe("VConfigPage", () => {
 
     expect(mockState.editor?.discard).toHaveBeenCalledTimes(1)
     expect(mockState.editor?.config.value?.proxy).toBe("http://127.0.0.1:7890")
-    expect((wrapper.get('input[placeholder="http://127.0.0.1:7890"]').element as HTMLInputElement).value).toBe(
-      "http://127.0.0.1:7890",
-    )
+    expect((wrapper.get('input[placeholder="http://127.0.0.1:7890"]').element as HTMLInputElement).value).toBe("http://127.0.0.1:7890")
   })
 
   it("shows an error alert when save fails validation", async () => {

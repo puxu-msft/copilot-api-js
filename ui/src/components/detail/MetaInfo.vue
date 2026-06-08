@@ -229,8 +229,7 @@ defineProps<{
       <div class="meta-row">
         <span class="meta-label">Tokens</span>
         <span class="meta-value mono"
-          >{{ formatNumber(entry.pipelineInfo.truncation.originalTokens) }} ->
-          {{ formatNumber(entry.pipelineInfo.truncation.compactedTokens) }}</span
+          >{{ formatNumber(entry.pipelineInfo.truncation.originalTokens) }} -> {{ formatNumber(entry.pipelineInfo.truncation.compactedTokens) }}</span
         >
       </div>
     </div>
@@ -239,8 +238,7 @@ defineProps<{
     <div
       v-if="
         entry.pipelineInfo?.preprocessing
-        && (entry.pipelineInfo.preprocessing.strippedReadTagCount > 0
-          || entry.pipelineInfo.preprocessing.dedupedToolCallCount > 0)
+        && (entry.pipelineInfo.preprocessing.strippedReadTagCount > 0 || entry.pipelineInfo.preprocessing.dedupedToolCallCount > 0)
       "
       class="meta-section"
     >

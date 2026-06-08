@@ -5,9 +5,7 @@
 import type { ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 
 /** Type guard for non-streaming responses */
-export function isNonStreaming(
-  response: ChatCompletionResponse | AsyncIterable<unknown>,
-): response is ChatCompletionResponse {
+export function isNonStreaming(response: ChatCompletionResponse | AsyncIterable<unknown>): response is ChatCompletionResponse {
   return Object.hasOwn(response, "choices")
 }
 
@@ -29,10 +27,7 @@ export function safeParseJson(input: string | Record<string, unknown>): Record<s
 }
 
 /** Prepend a marker string to the first text content block of an Anthropic-format response */
-export function prependMarkerToResponse<T extends { content: Array<{ type: string; text?: string }> }>(
-  response: T,
-  marker: string,
-): T {
+export function prependMarkerToResponse<T extends { content: Array<{ type: string; text?: string }> }>(response: T, marker: string): T {
   if (!marker) return response
 
   // Find first text block and prepend, or add new text block at start

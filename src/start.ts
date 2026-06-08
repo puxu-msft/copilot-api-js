@@ -26,6 +26,7 @@ import { cacheVSCodeVersion } from "./lib/copilot-api"
 import { initHistory } from "./lib/history"
 import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
+import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initProxy } from "./lib/proxy"
 import { initRequestTelemetry } from "./lib/request-telemetry"
@@ -85,8 +86,7 @@ function formatModelInfo(model: Model, disabled = false): string {
   const disabledTag = disabled ? " [disabled]" : ""
   const label = `${model.id}${billingPart} (${model.vendor})${disabledTag}`
   const padded = label.length > 45 ? `${label.slice(0, 42)}...` : label.padEnd(45)
-  const mainLineRaw =
-    `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
+  const mainLineRaw = `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
   // Only the main line is recolored when disabled — features/endpoints stay
   // in their normal dim style so the disabled marker doesn't drown out the
   // surrounding section.
@@ -145,10 +145,7 @@ const VALID_ACCOUNT_TYPES = ["individual", "business", "enterprise"] as const
  *
  * Returns `undefined` when no field provides a usable signal.
  */
-function inferAccountTypeFromUsage(usage: {
-  copilot_plan?: string
-  access_type_sku?: string
-}): (typeof VALID_ACCOUNT_TYPES)[number] | undefined {
+function inferAccountTypeFromUsage(usage: { copilot_plan?: string; access_type_sku?: string }): (typeof VALID_ACCOUNT_TYPES)[number] | undefined {
   const haystack = `${usage.copilot_plan ?? ""} ${usage.access_type_sku ?? ""}`.toLowerCase()
   if (!haystack.trim()) return undefined
   if (haystack.includes("enterprise")) return "enterprise"
@@ -341,8 +338,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     if (options.accountType === undefined && !state.ghcApiBaseUrl) {
       const inferred = inferAccountTypeFromUsage(usage)
       if (inferred && inferred !== state.accountType) {
-        const sourceField =
-          usage.copilot_plan ? `copilot_plan="${usage.copilot_plan}"` : `access_type_sku="${usage.access_type_sku}"`
+        const sourceField = usage.copilot_plan ? `copilot_plan="${usage.copilot_plan}"` : `access_type_sku="${usage.access_type_sku}"`
         consola.info(`[account] Inferred account-type=${inferred} from ${sourceField}`)
         setCliState({ accountType: inferred })
       } else if (!inferred) {
@@ -353,8 +349,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     }
 
     // Billing mode badge — `(1x)` is meaningless when every model is PAYG.
-    const tokenBased =
-      usage.token_based_billing === true || usage.quota_snapshots?.premium_interactions?.token_based_billing === true
+    const tokenBased = usage.token_based_billing === true || usage.quota_snapshots?.premium_interactions?.token_based_billing === true
     setTokenBasedBilling(tokenBased)
   } catch (error) {
     consola.debug("[account] /copilot_internal/user probe failed; using defaults:", error)
@@ -368,8 +363,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     consola.error(
       state.ghcApiBaseUrl ?
         `Verify that --ghc-api-base-url "${state.ghcApiBaseUrl}" is reachable.`
-      : `Verify that --account-type "${state.accountType}" is correct. `
-          + `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
+      : `Verify that --account-type "${state.accountType}" is correct. ` + `Available types: ${VALID_ACCOUNT_TYPES.join(", ")}`,
     )
     process.exit(1)
   }
@@ -377,12 +371,17 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // List all upstream models, marking disabled entries so it's obvious which
   // ones have been filtered out by config.disabled_models.
   const rawList = getRawModels()?.data ?? state.models?.data ?? []
-  const disabledSet = new Set(state.disabledModels)
-  consola.info(`Available models:\n${rawList.map((m) => formatModelInfo(m, disabledSet.has(m.id))).join("\n")}`)
+  const disabledSet = new Set(state.disabledModels.map((id) => normalizeForMatching(id)))
+  consola.info(`Available models:\n${rawList.map((m) => formatModelInfo(m, disabledSet.has(normalizeForMatching(m.id)))).join("\n")}`)
   const stopModelRefreshLoop = startModelRefreshLoop()
 
-  // Load previously learned auto-truncate limits (calibration + token limits)
-  await loadPersistedLimits()
+  // Load previously learned auto-truncate limits (calibration + token limits).
+  // Gated on the feature flag: every learnedLimits consumer is behind
+  // `state.autoTruncate`, and the flag is fixed for the process lifetime
+  // (CLI-only, no hot-reload), so loading while disabled is pure dead weight.
+  if (state.autoTruncate) {
+    await loadPersistedLimits()
+  }
 
   // Load previously negotiated feature/beta-header support (states.json)
   await loadPersistedFeatureNegotiation()
@@ -489,9 +488,7 @@ export const start = defineCommand({
     },
     "ghc-api-base-url": {
       type: "string",
-      description:
-        "Explicit upstream GHC API base URL (e.g. https://api.githubcopilot.com)."
-        + " Overrides --account-type when set.",
+      description: "Explicit upstream GHC API base URL (e.g. https://api.githubcopilot.com)." + " Overrides --account-type when set.",
     },
     "rate-limit": {
       type: "boolean",
@@ -515,8 +512,7 @@ export const start = defineCommand({
     },
     proxy: {
       type: "string",
-      description:
-        "Proxy URL for all outgoing requests (http://, https://, socks5://, socks5h://). Overrides config.yaml and env vars.",
+      description: "Proxy URL for all outgoing requests (http://, https://, socks5://, socks5h://). Overrides config.yaml and env vars.",
     },
     "http-proxy-from-env": {
       type: "boolean",
@@ -526,8 +522,7 @@ export const start = defineCommand({
     "auto-truncate": {
       type: "boolean",
       default: false,
-      description:
-        "Reactive auto-truncate: retries with truncated payload on limit errors (off by default; enable with --auto-truncate)",
+      description: "Reactive auto-truncate: retries with truncated payload on limit errors (off by default; enable with --auto-truncate)",
     },
     "external-ui-url": {
       type: "string",

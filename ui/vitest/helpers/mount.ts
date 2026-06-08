@@ -61,11 +61,7 @@ export const VChipStub = defineComponent({
 export const VTooltipStub = defineComponent({
   name: "VTooltipStub",
   setup(_, { slots }) {
-    return () =>
-      h("div", { "data-testid": "v-tooltip" }, [
-        ...slotContent(slots.activator?.({ props: {} })),
-        ...slotChildren(slots.default?.()),
-      ])
+    return () => h("div", { "data-testid": "v-tooltip" }, [...slotContent(slots.activator?.({ props: {} })), ...slotChildren(slots.default?.())])
   },
 })
 

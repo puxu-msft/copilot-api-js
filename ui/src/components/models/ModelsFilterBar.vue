@@ -78,9 +78,7 @@ const billingRange = defineModel<[number, number]>("billingRange", { required: t
       <div class="billing-field">
         <div class="billing-head">
           <span class="billing-label">Billing Rate</span>
-          <span class="billing-value">
-            {{ formatBillingRate(billingRange[0]) }} - {{ formatBillingRate(billingRange[1]) }}
-          </span>
+          <span class="billing-value"> {{ formatBillingRate(billingRange[0]) }} - {{ formatBillingRate(billingRange[1]) }} </span>
         </div>
         <v-range-slider
           v-model="billingRange"

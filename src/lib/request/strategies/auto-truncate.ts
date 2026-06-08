@@ -63,11 +63,7 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
       return error.type === "payload_too_large" || error.type === "token_limit"
     },
 
-    async handle(
-      error: ApiError,
-      currentPayload: TPayload,
-      context: RetryContext<TPayload>,
-    ): Promise<RetryAction<TPayload>> {
+    async handle(error: ApiError, currentPayload: TPayload, context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
       const { attempt, originalPayload, model, maxRetries } = context
 
       if (!model) {
@@ -117,9 +113,7 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
       if (!parsed) {
         // For 413 errors without parseable limit info, still retry with truncation
         if (rawError.status === 413) {
-          consola.info(
-            `[${label}] Attempt ${attempt + 1}/${maxRetries + 1}: ` + `413 Body too large, retrying with truncation...`,
-          )
+          consola.info(`[${label}] Attempt ${attempt + 1}/${maxRetries + 1}: ` + `413 Body too large, retrying with truncation...`)
           return truncateAndBuildRetry(undefined)
         }
 

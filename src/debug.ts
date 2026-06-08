@@ -313,8 +313,7 @@ const debugUsage = defineCommand({
           quotaLines.push(`  ${summarizeQuota(label, snap)}`)
         }
       }
-      const quotaSection =
-        quotaLines.length > 0 ? `\nQuotas:\n${quotaLines.join("\n")}` : `\nQuotas: none reported by upstream`
+      const quotaSection = quotaLines.length > 0 ? `\nQuotas:\n${quotaLines.join("\n")}` : `\nQuotas: none reported by upstream`
 
       // Account-level facts. `organization_list` / `organization_login_list`
       // are typed as unknown[] so we only show counts; users who need details

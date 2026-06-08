@@ -153,10 +153,7 @@ export async function processOpenAIMessages(messages: Array<Message>, model?: st
  * Applies the same overrides, prepend, and append as Anthropic/OpenAI system prompts.
  * Preserves null/undefined pass-through — only processes non-empty strings.
  */
-export async function processResponsesInstructions(
-  instructions: string | null | undefined,
-  model?: string,
-): Promise<string | null | undefined> {
+export async function processResponsesInstructions(instructions: string | null | undefined, model?: string): Promise<string | null | undefined> {
   if (!instructions) return instructions
   return processSystemPromptText(instructions, model)
 }

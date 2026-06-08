@@ -6,20 +6,20 @@
  * and family-level fallbacks.
  */
 
-import {
-  //
-  DEFAULT_MODEL_OVERRIDES,
-  state,
-} from "~/lib/state"
+import consola from "consola"
+
+import { state } from "~/lib/state"
+
+import { normalizeForMatching } from "./model-name"
+
+// Re-exported so existing importers keep using `~/lib/models/resolver`.
+export { normalizeForMatching } from "./model-name"
 
 // ============================================================================
 // Types
 // ============================================================================
 
 export type ModelFamily = "opus" | "sonnet" | "haiku"
-
-/** Canonical list of known model families. Order is not significant. */
-export const MODEL_FAMILIES: ReadonlyArray<ModelFamily> = ["opus", "sonnet", "haiku"]
 
 // ============================================================================
 // Normalization and Detection
@@ -29,16 +29,74 @@ export const MODEL_FAMILIES: ReadonlyArray<ModelFamily> = ["opus", "sonnet", "ha
 const VERSIONED_RE = /^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})(?:-\d{8,})?$/
 
 /** Pre-compiled regex: claude-{family}-{major}-YYYYMMDD (date-only suffix) */
-const DATE_ONLY_RE = /^(claude-(opus|sonnet|haiku)-\d+)-\d{8,}$/
+const DATE_ONLY_RE = /^(claude-(?:opus|sonnet|haiku)-\d+)-\d{8,}$/
 
 /**
- * Normalize model ID for matching: lowercase and replace dots with dashes.
- * e.g. "claude-sonnet-4.5" → "claude-sonnet-4-5"
- *
- * Used for feature detection (startsWith matching), NOT for API calls.
+ * True when two model names refer to the SAME model written differently —
+ * i.e. they differ only by hyphen/dot/case normalization (e.g.
+ * "claude-opus-4-8" vs "claude-opus-4.8"), not a genuine alias→canonical remap
+ * (e.g. "haiku" → "claude-sonnet-4.6"). Used to suppress the noisy
+ * "client → resolved" arrow in logs when nothing actually changed.
  */
-export function normalizeForMatching(modelId: string): string {
-  return modelId.toLowerCase().replaceAll(".", "-")
+export function isSameModelName(clientModel: string, model: string): boolean {
+  return normalizeForMatching(clientModel) === normalizeForMatching(model)
+}
+
+/**
+ * Normalize the KEYS of a model-keyed config record via `normalizeForMatching`
+ * so that spelling variants (dot/hyphen/case) all match the same way. The
+ * wildcard key `"*"` is preserved verbatim. When two keys collapse to the same
+ * normalized model, the LATER one wins (Object insertion order) and a warning
+ * names both keys — so an operator who writes `claude-opus-4.8` and
+ * `claude-opus-4-8` doesn't silently get one of them ignored.
+ */
+export function normalizeModelKeyedRecord<T>(record: Record<string, T>, configLabel: string): Record<string, T> {
+  const out: Record<string, T> = {}
+  const sourceKey = new Map<string, string>()
+  for (const [key, value] of Object.entries(record)) {
+    const normalizedKey = key === "*" ? "*" : normalizeForMatching(key)
+    const prev = sourceKey.get(normalizedKey)
+    if (prev !== undefined) {
+      consola.warn(`[config] ${configLabel}: "${prev}" and "${key}" refer to the same model after normalization; "${key}" overrides "${prev}"`)
+    }
+    out[normalizedKey] = value
+    sourceKey.set(normalizedKey, key)
+  }
+  return out
+}
+
+/**
+ * Normalize the entries of a model-name list via `normalizeForMatching` and drop
+ * entries that collapse to an already-seen model (first occurrence wins for
+ * ordering; a duplicate triggers a warning naming both spellings).
+ */
+export function normalizeModelNameList(list: ReadonlyArray<string>, configLabel: string): Array<string> {
+  const out: Array<string> = []
+  const seen = new Map<string, string>()
+  for (const item of list) {
+    const normalized = normalizeForMatching(item)
+    const prev = seen.get(normalized)
+    if (prev !== undefined) {
+      consola.warn(`[config] ${configLabel}: "${prev}" and "${item}" refer to the same model after normalization; ignoring duplicate "${item}"`)
+      continue
+    }
+    seen.set(normalized, item)
+    out.push(normalized)
+  }
+  return out
+}
+
+/**
+ * Look up a model override by normalized model-name comparison, so spelling
+ * variants (dot/hyphen/case) of the same model all resolve to the same entry.
+ * Returns the first entry whose key normalizes equal to `name`.
+ */
+function lookupModelOverride(name: string): string | undefined {
+  const target = normalizeForMatching(name)
+  for (const [key, value] of Object.entries(state.modelOverrides)) {
+    if (normalizeForMatching(key) === target) return value
+  }
+  return undefined
 }
 
 /**
@@ -82,34 +140,6 @@ export function isOpusModel(modelId: string): boolean {
 // Model Resolution
 // ============================================================================
 
-/**
- * Find the best available model for a family by checking the preference list
- * against actually available models. Returns the first match, or the top
- * preference as fallback when state.models is unavailable. Returns the family
- * name as-is when the family is unknown or its preference list is empty.
- */
-export function findPreferredModel(family: string): string {
-  if (!isModelFamily(family)) return family
-  const preference = state.modelPreference[family]
-  if (preference.length === 0) return family
-
-  if (state.modelIds.size === 0) {
-    return preference[0]
-  }
-
-  for (const candidate of preference) {
-    if (state.modelIds.has(candidate)) {
-      return candidate
-    }
-  }
-
-  return preference[0]
-}
-
-function isModelFamily(value: string): value is ModelFamily {
-  return (MODEL_FAMILIES as ReadonlyArray<string>).includes(value)
-}
-
 /** Known model modifier suffixes (e.g., "-fast" for fast output mode, "-1m" for 1M context). */
 const KNOWN_MODIFIERS = ["-fast", "-1m"]
 
@@ -139,54 +169,59 @@ function normalizeBracketNotation(model: string): string {
 }
 
 /**
- * Resolve a model name to its canonical form, then apply overrides.
+ * Resolve a model name to its canonical form, applying model_overrides.
  *
- * Override matching order:
- * 1. Check the raw (original) model name against state.modelOverrides
- * 2. Resolve via alias/normalization (resolveModelNameCore)
- * 3. If resolved name differs from raw, check resolved name against overrides
- * 4. Check if the model's family (opus/sonnet/haiku) has an override
+ * Order:
+ * 1. Whole-name override (normalized): "opus", "opus-1m", "claude-opus-4.6" …
+ * 2. Modifier suffix ("-1m" / "-fast"): if the BASE has an override but the
+ *    whole name doesn't, redirect the base and re-attach the suffix.
+ *    e.g. "opus[1m]" → "opus-1m"; with no "opus-1m" override but an "opus"
+ *    override → "<opus-target>-1m" (falls back to the bare target if the
+ *    suffixed variant isn't available).
+ * 3. Alias / hyphen-dot / date normalization (resolveModelNameCore), then a
+ *    final override check on the normalized name.
  *
- * This is the main entry point for route handlers.
+ * No family-level propagation and no built-in defaults: short aliases resolve
+ * only if model_overrides defines them, otherwise the name is returned as-is
+ * and the upstream rejects it.
  */
 export function resolveModelName(model: string): string {
   // 0. Normalize bracket notation: "opus[1m]" → "opus-1m"
   const normalized = normalizeBracketNotation(model)
 
-  // 1. Check raw model name against overrides first
-  const rawOverride = state.modelOverrides[normalized]
+  // 1. Whole-name override first (exact "opus-1m" wins over the "opus" base).
+  const rawOverride = lookupModelOverride(normalized)
   if (rawOverride) {
     return resolveOverrideTarget(normalized, rawOverride)
   }
 
-  // 2. Normal alias/normalization resolution
-  const resolved = resolveModelNameCore(normalized)
+  // 2. Modifier suffix: redirect via the base override, then re-attach suffix.
+  //    e.g. "opus-1m" with no own override but "opus" → "<opus-target>-1m".
+  const { base, suffix } = extractModifierSuffix(normalized)
+  if (suffix) {
+    const baseOverride = lookupModelOverride(base)
+    if (baseOverride) {
+      const resolvedBase = resolveOverrideTarget(base, baseOverride)
+      const withSuffix = resolvedBase + suffix
+      if (state.modelIds.size === 0 || state.modelIds.has(withSuffix)) {
+        return withSuffix
+      }
+      return resolvedBase
+    }
+  }
 
-  // 3. If resolved name is different, check it against overrides too
+  // 3. Alias / normalization, then a final override check on the resolved name.
+  const resolved = resolveModelNameCore(normalized)
   if (resolved !== normalized) {
-    const resolvedOverride = state.modelOverrides[resolved]
+    const resolvedOverride = lookupModelOverride(resolved)
     if (resolvedOverride) {
       return resolveOverrideTarget(resolved, resolvedOverride)
     }
   }
 
-  // 4. Check if the model's family has a user-customized override
-  //    Last-resort fallback: only applies when steps 1-3 didn't match.
-  //    Propagates to ALL family members regardless of target family.
-  //    e.g., opus → claude-opus-4.6-1m: claude-opus-4-6 also redirects
-  //    e.g., sonnet → opus: claude-sonnet-4 also redirects (cross-family)
-  //    Only skipped when override equals the built-in default (pure alias, not redirection).
-  const family = getModelFamily(resolved)
-  if (family) {
-    const familyOverride = state.modelOverrides[family]
-    if (familyOverride && familyOverride !== DEFAULT_MODEL_OVERRIDES[family]) {
-      const familyResolved = resolveOverrideTarget(family, familyOverride)
-      if (familyResolved !== resolved) {
-        return familyResolved
-      }
-    }
-  }
-
+  // No family-level propagation: a short alias / family override only affects
+  // the exact keys defined in model_overrides (spelling variants are unified by
+  // normalization). To redirect a whole family, list each canonical name.
   return resolved
 }
 
@@ -204,7 +239,7 @@ function resolveOverrideTarget(source: string, target: string, seen?: Set<string
 
   // Check if target itself has an override (chained overrides: sonnet → opus → claude-opus-4.6-1m)
   const visited = seen ?? new Set([source])
-  const targetOverride = state.modelOverrides[target]
+  const targetOverride = lookupModelOverride(target)
   if (targetOverride && !visited.has(target)) {
     visited.add(target)
     return resolveOverrideTarget(target, targetOverride, visited)
@@ -216,16 +251,8 @@ function resolveOverrideTarget(source: string, target: string, seen?: Set<string
     return resolved
   }
 
-  // Still not resolved — check if target belongs to a known family and find best available
-  const family = getModelFamily(target)
-  if (family) {
-    const preferred = findPreferredModel(family)
-    if (preferred !== target) {
-      return preferred
-    }
-  }
-
-  // Can't resolve further — use target as-is
+  // Can't resolve further — use target as-is. The upstream rejects it if
+  // unavailable; there is no built-in family preference fallback.
   return target
 }
 
@@ -260,12 +287,7 @@ function resolveModelNameCore(model: string): string {
 
 /** Resolve a base model name (without modifier suffix) to its canonical form. */
 function resolveBase(model: string): string {
-  // 1. Short alias: "opus" → best opus
-  if (isModelFamily(model)) {
-    return findPreferredModel(model)
-  }
-
-  // 2. Hyphenated: claude-opus-4-6 or claude-opus-4-6-20250514 → claude-opus-4.6
+  // 1. Hyphenated: claude-opus-4-6 or claude-opus-4-6-20250514 → claude-opus-4.6
   // Pattern: claude-{family}-{major}-{minor}[-YYYYMMDD]
   // Minor version is 1-2 digits; date suffix is 8+ digits
   const versionedMatch = model.match(VERSIONED_RE)
@@ -276,16 +298,17 @@ function resolveBase(model: string): string {
     }
   }
 
-  // 3. Date-only suffix: claude-{family}-{major}-YYYYMMDD → base model or best family
+  // 2. Date-only suffix: claude-{family}-{major}-YYYYMMDD → base model (drop date).
+  // If the base isn't available, return it as-is and let the upstream reject —
+  // short aliases / families are resolved exclusively via model_overrides now.
   const dateOnlyMatch = model.match(DATE_ONLY_RE)
   if (dateOnlyMatch) {
-    const baseModel = dateOnlyMatch[1]
-    const family = dateOnlyMatch[2]
-    if (state.modelIds.has(baseModel)) {
-      return baseModel
-    }
-    return findPreferredModel(family)
+    return dateOnlyMatch[1]
   }
 
+  // Short aliases (opus/sonnet/haiku) and anything else are returned verbatim;
+  // they only resolve if model_overrides defines them, otherwise the upstream
+  // rejects the unknown model (resolution intentionally fails — no built-in
+  // family preference fallback).
   return model
 }

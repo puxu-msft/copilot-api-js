@@ -49,8 +49,8 @@ import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
   //
-  StreamIdleTimeoutError,
-  combineAbortSignals,
+  type StreamErrorKind,
+  classifyStreamError,
   guardSseIterable,
 } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
@@ -206,12 +206,7 @@ interface PreparedGeminiRequest {
  * register a `gemini-generate-content` request context. The returned bundle
  * is consumed by `runChatCompletionPipeline()`.
  */
-async function prepareGeminiRequest(
-  c: Context,
-  body: GenerateContentRequest,
-  modelId: string,
-  opts: { stream: boolean },
-): Promise<PreparedGeminiRequest> {
+async function prepareGeminiRequest(c: Context, body: GenerateContentRequest, modelId: string, opts: { stream: boolean }): Promise<PreparedGeminiRequest> {
   // Snapshot the inbound Gemini payload BEFORE any mutation so history sees
   // exactly what the client sent.
   const geminiSnapshot = structuredClone(body)
@@ -299,10 +294,7 @@ async function prepareGeminiRequest(
  * verbatim so the UI sees the same shape the client sent. Optional
  * `systemInstruction` is prepended as a synthetic role:"system" entry.
  */
-function projectGeminiContentsAsMessages(
-  contents: ReadonlyArray<GeminiContent>,
-  systemInstruction: GeminiContent | undefined,
-): Array<MessageContent> {
+function projectGeminiContentsAsMessages(contents: ReadonlyArray<GeminiContent>, systemInstruction: GeminiContent | undefined): Array<MessageContent> {
   const out: Array<MessageContent> = []
   if (systemInstruction) {
     out.push({ role: "system", content: systemInstruction.parts ?? [] } as unknown as MessageContent)
@@ -356,6 +348,21 @@ function renderGeminiNonStreaming(args: ChatCompletionRendererArgs, modelId: str
  * + client disconnect). Mirrors `handleStreamingResponse` in chat-completions
  * so Gemini clients get the same liveness guarantees as OpenAI clients.
  */
+/** Map a streaming error kind to the Gemini gRPC `status` string. Shutdown → retryable UNAVAILABLE. */
+function geminiStreamErrorStatus(kind: StreamErrorKind): string {
+  switch (kind) {
+    case "idle-timeout": {
+      return "DEADLINE_EXCEEDED"
+    }
+    case "shutdown": {
+      return "UNAVAILABLE"
+    }
+    default: {
+      return "INTERNAL"
+    }
+  }
+}
+
 function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string): Response {
   const { c, response, payload, reqCtx } = args
   if (isNonStreaming(response)) {
@@ -369,20 +376,18 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
     stream.onAbort(() => clientAbort.abort())
 
     const idleTimeoutMs = state.streamIdleTimeout * 1000
-    let usageMetadata: { promptTokenCount?: number; candidatesTokenCount?: number; cachedContentTokenCount?: number } =
-      {}
+    let usageMetadata: { promptTokenCount?: number; candidatesTokenCount?: number; cachedContentTokenCount?: number } = {}
     let finishReason: string | undefined
 
     try {
-      // Wrap the upstream SSE iterable with an abort/idle-timeout-aware
-      // adapter so the translator's `for await` cannot block indefinitely.
-      // The shutdown signal is recomputed per-iteration via a thunk because
-      // `getShutdownSignal()` returns `undefined` until Phase 1 begins —
-      // baking it in once at request start would leave already-in-flight
-      // requests deaf to the abort signal.
+      // Wrap the upstream SSE iterable with an abort/idle-timeout-aware adapter
+      // so the translator's `for await` cannot block indefinitely. The shutdown
+      // signal is stable (process-global), so even a `.next()` already blocked on
+      // a stalled upstream when shutdown begins observes the Phase 3 abort.
       const guarded = guardSseIterable(response, {
         idleTimeoutMs,
-        getAbortSignal: () => combineAbortSignals(getShutdownSignal(), clientAbort.signal),
+        shutdownSignal: getShutdownSignal(),
+        clientSignal: clientAbort.signal,
       })
 
       for await (const step of translateOpenAIStreamToGemini(guarded, modelId)) {
@@ -427,7 +432,10 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
       // every `data:` frame into `GenerateContentResponse`; named events
       // (`event: error`) are silently dropped by SDK consumers.
       const message = error instanceof Error ? error.message : String(error)
-      const isTimeout = error instanceof StreamIdleTimeoutError
+      const errorKind = classifyStreamError(error)
+      // Shutdown → retryable UNAVAILABLE/503 so the client backs off and retries.
+      const errorCode = errorKind === "shutdown" ? 503 : 500
+      const errorStatus = geminiStreamErrorStatus(errorKind)
       await stream.writeSSE({
         data: JSON.stringify({
           candidates: [
@@ -441,9 +449,9 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
           // visible candidate so clients that DO inspect the raw envelope
           // can still surface status + http code.
           error: {
-            code: 500,
+            code: errorCode,
             message,
-            status: isTimeout ? "DEADLINE_EXCEEDED" : "INTERNAL",
+            status: errorStatus,
           },
         }),
       })

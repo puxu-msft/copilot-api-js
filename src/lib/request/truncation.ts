@@ -26,8 +26,5 @@ export function createTruncationMarker(result: TruncateResultInfo): string {
   const reduction = originalTokens - compactedTokens
   const percentage = Math.round((reduction / originalTokens) * 100)
 
-  return (
-    `\n\n---\n[Auto-truncated: ${removedMessageCount} messages removed, `
-    + `${originalTokens} → ${compactedTokens} tokens (${percentage}% reduction)]`
-  )
+  return `\n\n---\n[Auto-truncated: ${removedMessageCount} messages removed, ` + `${originalTokens} → ${compactedTokens} tokens (${percentage}% reduction)]`
 }

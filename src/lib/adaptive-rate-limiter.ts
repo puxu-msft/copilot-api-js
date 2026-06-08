@@ -254,10 +254,7 @@ export class AdaptiveRateLimiter {
           this.completeRecovery()
         } else {
           const nextInterval = this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0
-          consola.info(
-            `[RateLimiter] Ramp-up step ${this.recoveryStepIndex}/${this.config.gradualRecoverySteps.length} `
-              + `(next interval: ${nextInterval}s)`,
-          )
+          consola.info(`[RateLimiter] Ramp-up step ${this.recoveryStepIndex}/${this.config.gradualRecoverySteps.length} ` + `(next interval: ${nextInterval}s)`)
         }
       }
 
@@ -293,8 +290,7 @@ export class AdaptiveRateLimiter {
     this.consecutiveSuccesses = 0
 
     consola.warn(
-      `[RateLimiter] Entering rate-limited mode. `
-        + `Requests will be queued with exponential backoff (base: ${this.config.baseRetryIntervalSeconds}s).`,
+      `[RateLimiter] Entering rate-limited mode. ` + `Requests will be queued with exponential backoff (base: ${this.config.baseRetryIntervalSeconds}s).`,
     )
     notifyRateLimiterChanged({
       mode: this.mode,
@@ -344,10 +340,7 @@ export class AdaptiveRateLimiter {
     this.recoveringNextAvailableAt = 0
 
     const firstInterval = this.config.gradualRecoverySteps[0] ?? 0
-    consola.info(
-      `[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, `
-        + `first interval: ${firstInterval}s)`,
-    )
+    consola.info(`[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, ` + `first interval: ${firstInterval}s)`)
     notifyRateLimiterChanged({
       mode: this.mode,
       previousMode,
@@ -441,8 +434,7 @@ export class AdaptiveRateLimiter {
       // Calculate wait time based on whether this is a retry or new request
       const now = Date.now()
       const elapsedMs = now - this.lastRequestTime
-      const intervalSeconds =
-        request.retryCount > 0 ? this.calculateRetryInterval(request) : this.config.requestIntervalSeconds
+      const intervalSeconds = request.retryCount > 0 ? this.calculateRetryInterval(request) : this.config.requestIntervalSeconds
       const requiredMs = intervalSeconds * 1000
 
       if (this.lastRequestTime > 0 && elapsedMs < requiredMs) {
@@ -467,9 +459,7 @@ export class AdaptiveRateLimiter {
         request.resolve({ result, queueWaitMs })
 
         if (this.mode === "rate-limited") {
-          consola.info(
-            `[RateLimiter] Request succeeded (${this.consecutiveSuccesses}/${this.config.consecutiveSuccessesForRecovery} for ramp-up)`,
-          )
+          consola.info(`[RateLimiter] Request succeeded (${this.consecutiveSuccesses}/${this.config.consecutiveSuccessesForRecovery} for ramp-up)`)
         }
       } catch (error) {
         const { isRateLimit, retryAfter } = this.isRateLimitError(error)
@@ -482,10 +472,7 @@ export class AdaptiveRateLimiter {
 
           const nextInterval = this.calculateRetryInterval(request)
           const source = retryAfter ? "server Retry-After" : "exponential backoff"
-          consola.warn(
-            `[RateLimiter] Request failed with 429 (retry #${request.retryCount}). `
-              + `Retrying in ${nextInterval}s (${source})...`,
-          )
+          consola.warn(`[RateLimiter] Request failed with 429 (retry #${request.retryCount}). ` + `Retrying in ${nextInterval}s (${source})...`)
         } else {
           // Other error, fail this request and continue with queue
           this.queue.shift()

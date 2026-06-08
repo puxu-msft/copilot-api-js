@@ -209,10 +209,7 @@ function rewriteReminder(content: string): string | null {
     // $0 replacement in regex mode = keep tag unchanged (identity)
     if (rule.method !== "line" && rule.to === "$0") return null
 
-    const result =
-      rule.method === "line" ?
-        content.replaceAll(rule.from as string, rule.to)
-      : content.replace(rule.from as RegExp, rule.to)
+    const result = rule.method === "line" ? content.replaceAll(rule.from as string, rule.to) : content.replace(rule.from as RegExp, rule.to)
 
     if (result === content) return null // replacement produced no change → keep
     return result

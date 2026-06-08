@@ -15,6 +15,20 @@ import { SCHEMA_SQL } from "./schema"
  */
 export type Database = SqliteDatabase
 
+/**
+ * Milliseconds SQLite will wait for a held lock before returning SQLITE_BUSY
+ * ("database is locked"). Defaults to 0 in SQLite, meaning the first writer
+ * that loses the race throws immediately and the history entry is dropped.
+ *
+ * Although the history store uses a single in-process connection (so its own
+ * transactions can never overlap on the single-threaded JS event loop), the
+ * WAL file on disk can still be locked by *another* connection: an overlapping
+ * old process during a restart/hot-reload, an accidental second instance, or
+ * an external tool inspecting the DB. With a non-zero timeout SQLite retries
+ * the lock internally instead of failing the write outright.
+ */
+const BUSY_TIMEOUT_MS = 5000
+
 let db: Database | null = null
 let openedPath: string | null = null
 
@@ -29,6 +43,7 @@ export function openDatabase(dbPath: string): Database {
   openedPath = dbPath
   db.exec("PRAGMA journal_mode = WAL;")
   db.exec("PRAGMA synchronous = NORMAL;")
+  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
   db.exec(SCHEMA_SQL)
   migrateEntriesSummaryColumns(db)

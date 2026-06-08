@@ -46,6 +46,12 @@ import {
   createAnthropicMessages,
   type AnthropicMessageResponse,
 } from "~/lib/anthropic/client"
+import {
+  //
+  createToolInputStreamDecoder,
+  decodeToolInputBlocksInResponse,
+  type ToolInputStreamDecoder,
+} from "~/lib/anthropic/decode-tool-input"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { preprocessTools } from "~/lib/anthropic/message-tools"
@@ -102,7 +108,10 @@ import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-ret
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { state } from "~/lib/state"
-import { StreamIdleTimeoutError } from "~/lib/stream"
+import {
+  //
+  classifyStreamError,
+} from "~/lib/stream"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
 
@@ -203,32 +212,26 @@ export async function handleMessages(c: Context) {
 // ============================================================================
 
 // Handle completion using direct Anthropic API (no translation needed)
-async function handleDirectAnthropicCompletion(
-  c: Context,
-  anthropicPayload: MessagesPayload,
-  reqCtx: RequestContext,
-  preprocessInfo: PreprocessInfo,
-) {
+async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: MessagesPayload, reqCtx: RequestContext, preprocessInfo: PreprocessInfo) {
   consola.debug("Using direct Anthropic API path for model:", anthropicPayload.model)
 
   // Find model for auto-truncate and usage adjustment
   const selectedModel = state.modelIndex.get(anthropicPayload.model)
 
-  const { initialSanitized, initialSanitizationInfo } = runInitialSanitizationAndRecord(
-    anthropicPayload,
-    reqCtx,
-    preprocessInfo,
-  )
+  const { initialSanitized, initialSanitizationInfo } = runInitialSanitizationAndRecord(anthropicPayload, reqCtx, preprocessInfo)
 
   const headersCapture: HeadersCapture = {}
+  const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
+  const betaProbe = createBetaProbe(clientAnthropicBeta)
   const adapter = buildAnthropicAdapter({
     payload: anthropicPayload,
     selectedModel,
     headersCapture,
-    clientAnthropicBeta: c.req.raw.headers.get("anthropic-beta") ?? undefined,
+    clientAnthropicBeta,
     reqCtx,
+    betaProbe,
   })
-  const strategies = buildAnthropicStrategies()
+  const strategies = buildAnthropicStrategies({ betaProbe })
 
   // Track truncation result for non-streaming response marker
   let truncateResult: AnthropicAutoTruncateResult | undefined
@@ -292,12 +295,7 @@ function runInitialSanitizationAndRecord(
 
   // Record sanitization/preprocessing if anything was modified
   const hasPreprocessing = preprocessInfo.dedupedToolCallCount > 0 || preprocessInfo.strippedReadTagCount > 0
-  if (
-    sanitizationStats.totalBlocksRemoved > 0
-    || sanitizationStats.systemReminderRemovals > 0
-    || sanitizationStats.fixedNameCount > 0
-    || hasPreprocessing
-  ) {
+  if (sanitizationStats.totalBlocksRemoved > 0 || sanitizationStats.systemReminderRemovals > 0 || sanitizationStats.fixedNameCount > 0 || hasPreprocessing) {
     const messageMapping = buildMessageMapping(anthropicPayload.messages, initialSanitized.messages)
     reqCtx.setPipelineInfo({
       preprocessing: preprocessInfo,
@@ -309,12 +307,48 @@ function runInitialSanitizationAndRecord(
   // Set initial tracking tags for log display
   if (reqCtx.tuiLogId) {
     const tags: Array<string> = []
-    if (initialSanitized.thinking && initialSanitized.thinking.type !== "disabled")
-      tags.push(`thinking:${initialSanitized.thinking.type}`)
+    if (initialSanitized.thinking && initialSanitized.thinking.type !== "disabled") tags.push(`thinking:${initialSanitized.thinking.type}`)
     if (tags.length > 0) tuiLogger.updateRequest(reqCtx.tuiLogId, { tags })
   }
 
   return { initialSanitized, initialSanitizationInfo }
+}
+
+/** Split a comma-separated `anthropic-beta` header into trimmed, non-empty tokens. */
+function splitBetaHeader(value: string | undefined): Array<string> {
+  if (!value) return []
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+/**
+ * Tracks the betas actually sent upstream on the latest attempt and exposes
+ * them as ordered probe candidates for the laconic `invalid beta flag` path.
+ * Candidates are ordered by suspicion priority — client-supplied betas first
+ * (they change most often and are the usual culprits), then locally-injected
+ * ones — each group preserving outbound order.
+ */
+interface BetaProbe {
+  recordOutbound(headers: Record<string, string>): void
+  getCandidates(): Array<string>
+}
+
+function createBetaProbe(clientAnthropicBeta: string | undefined): BetaProbe {
+  const clientSet = new Set(splitBetaHeader(clientAnthropicBeta))
+  let outbound: Array<string> = []
+  return {
+    recordOutbound(headers) {
+      outbound = splitBetaHeader(headers["anthropic-beta"])
+    },
+    getCandidates() {
+      return outbound
+        .map((beta, index) => ({ beta, index, clientRank: clientSet.has(beta) ? 0 : 1 }))
+        .sort((a, b) => a.clientRank - b.clientRank || a.index - b.index)
+        .map((e) => e.beta)
+    },
+  }
 }
 
 interface BuildAnthropicAdapterArgs {
@@ -323,11 +357,12 @@ interface BuildAnthropicAdapterArgs {
   headersCapture: HeadersCapture
   clientAnthropicBeta: string | undefined
   reqCtx: RequestContext
+  betaProbe: BetaProbe
 }
 
 /** Build the FormatAdapter used by executeRequestPipeline for Anthropic. */
 function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAdapter<MessagesPayload> {
-  const { payload: anthropicPayload, selectedModel, headersCapture, clientAnthropicBeta, reqCtx } = args
+  const { payload: anthropicPayload, selectedModel, headersCapture, clientAnthropicBeta, reqCtx, betaProbe } = args
   return {
     format: "anthropic-messages",
     sanitize: (p) => sanitizeAnthropicMessages(preprocessTools(p)),
@@ -344,6 +379,9 @@ function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAdapter<M
           excludeBetas: hints?.excludeBetas,
           rejectFields: hints?.rejectFields,
           onPrepared: ({ wire, headers }) => {
+            // Capture the betas actually sent so the beta-retry strategy can
+            // probe them if the upstream returns a laconic `invalid beta flag`.
+            betaProbe.recordOutbound(headers)
             reqCtx.setAttemptWireRequest({
               model: typeof wire.model === "string" ? wire.model : anthropicPayload.model,
               messages: Array.isArray(wire.messages) ? wire.messages : [],
@@ -359,12 +397,14 @@ function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAdapter<M
 }
 
 /** Build the retry strategy list for Anthropic completions. */
-function buildAnthropicStrategies() {
+function buildAnthropicStrategies(args: { betaProbe: BetaProbe }) {
   return [
     createNetworkRetryStrategy<MessagesPayload>(),
     createTokenRefreshStrategy<MessagesPayload>(),
     createBodyFieldRejectionStrategy<MessagesPayload>(),
-    createUnsupportedBetaRetryStrategy<MessagesPayload>(),
+    createUnsupportedBetaRetryStrategy<MessagesPayload>({
+      getProbeCandidates: () => args.betaProbe.getCandidates(),
+    }),
     createDeferredToolRetryStrategy<MessagesPayload>(),
     createAutoTruncateStrategy<MessagesPayload>({
       truncate: (p, model, opts) => autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,
@@ -387,14 +427,10 @@ interface RecordRetryPipelineStateArgs {
 
 /** Record sanitization / truncation / mapping for a retried payload. */
 function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
-  const { reqCtx, anthropicPayload, newPayload, meta, preprocessInfo, initialSanitizationInfo, retryTruncateResult } =
-    args
+  const { reqCtx, anthropicPayload, newPayload, meta, preprocessInfo, initialSanitizationInfo, retryTruncateResult } = args
 
   const retrySanitization = meta?.sanitization as SanitizationStats | undefined
-  const allSanitization = [
-    initialSanitizationInfo,
-    ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : []),
-  ]
+  const allSanitization = [initialSanitizationInfo, ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : [])]
   const retryMessageMapping = buildMessageMapping(anthropicPayload.messages, newPayload.messages)
   reqCtx.setPipelineInfo({
     preprocessing: preprocessInfo,
@@ -412,12 +448,14 @@ function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
     messageMapping: retryMessageMapping,
   })
 
-  // Update tracking tags
+  // Update tracking tags. Beta retries (probe / explicit-list) surface which
+  // betas were stripped this attempt; other retries keep existing labeling.
   if (reqCtx.tuiLogId) {
     const retryAttempt = (meta?.attempt as number | undefined) ?? 1
-    const retryTags = ["truncated", `retry-${retryAttempt}`]
-    if (newPayload.thinking && newPayload.thinking.type !== "disabled")
-      retryTags.push(`thinking:${newPayload.thinking.type}`)
+    const strippedBetas = (meta?.probedBetas ?? meta?.strippedBetas) as Array<string> | undefined
+    const retryTags =
+      strippedBetas && strippedBetas.length > 0 ? [`beta-strip:${strippedBetas.join(",")}`, `retry-${retryAttempt}`] : ["truncated", `retry-${retryAttempt}`]
+    if (newPayload.thinking && newPayload.thinking.type !== "disabled") retryTags.push(`thinking:${newPayload.thinking.type}`)
     tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: retryTags })
   }
 }
@@ -472,6 +510,21 @@ interface DirectAnthropicStreamHandlerOptions {
   clientAbortSignal?: AbortSignal
 }
 
+/** Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error. */
+function anthropicStreamErrorType(error: unknown): string {
+  switch (classifyStreamError(error)) {
+    case "idle-timeout": {
+      return "timeout_error"
+    }
+    case "shutdown": {
+      return "overloaded_error"
+    }
+    default: {
+      return "api_error"
+    }
+  }
+}
+
 /** Handle streaming direct Anthropic response (passthrough SSE events) */
 async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStreamHandlerOptions) {
   const { stream, response, anthropicPayload, reqCtx, clientAbortSignal } = opts
@@ -488,6 +541,14 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
   // artifacts that clients don't expect. The reference implementation (vscode-copilot-chat)
   // intercepts these unconditionally and never forwards raw blocks to the consumer.
   const serverToolFilter = createServerToolBlockFilter()
+
+  // Tool input decoder — rewrites stringified-JSON fields in selected tool_use
+  // blocks on the forwarded stream only. History (sseEvents + accumulator) keeps
+  // the original upstream form, so the anomaly stays visible.
+  const toolInputDecoder = createToolInputStreamDecoder({
+    fields: state.decodeToolInputFields,
+    all: state.decodeAllToolInputFields,
+  })
 
   const streamState: StreamPumpState = {
     streamStartMs: Date.now(),
@@ -507,14 +568,19 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
         reqCtx,
         checkRepetition,
         serverToolFilter,
+        toolInputDecoder,
         stream,
       })
     }
 
+    // Flush any tool_use input the decoder buffered but never saw a stop for
+    // (defensive — normal completion always emits content_block_stop).
+    for (const ev of toolInputDecoder.flush()) {
+      await forwardToClient(ev, undefined, serverToolFilter, stream)
+    }
+
     // Debug: stream completion summary
-    const summaryParts = [
-      `↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`,
-    ]
+    const summaryParts = [`↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`]
     if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
@@ -522,6 +588,12 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
     reqCtx.setSseEvents(sseEvents)
 
     if (acc.streamError) {
+      // Upstream reported an error mid-stream (e.g. overloaded_error, rate_limit,
+      // content filter). This is a terminal `error` SSE event, not a thrown/
+      // transport failure, so it never reaches the catch below — log it here for
+      // operator visibility, mirroring the catch block's console.error. Without
+      // this the failure would only land in history + the forwarded client frame.
+      consola.error(`[Stream] Upstream error for ${acc.model || anthropicPayload.model}: ${acc.streamError.type} — ${acc.streamError.message}`)
       reqCtx.fail(acc.model || anthropicPayload.model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
     } else {
       const responseData = buildAnthropicResponseData(acc, anthropicPayload.model)
@@ -531,8 +603,22 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
     consola.error("Direct Anthropic stream error:", error)
     reqCtx.fail(acc.model || anthropicPayload.model, error)
 
+    // Best-effort flush of buffered tool_use deltas before the error frame, so
+    // the client doesn't silently lose fragments the decoder was holding. The
+    // stream may already be broken (abort/shutdown); ignore failures here.
+    try {
+      for (const ev of toolInputDecoder.flush()) {
+        await forwardToClient(ev, undefined, serverToolFilter, stream)
+      }
+    } catch {
+      // stream already closed — nothing to recover
+    }
+
     const errorMessage = error instanceof Error ? error.message : String(error)
-    const errorType = error instanceof StreamIdleTimeoutError ? "timeout_error" : "api_error"
+    // Shutdown interruption is surfaced as a retryable `overloaded_error` so the
+    // client backs off and retries (succeeding against the restarted instance)
+    // instead of seeing a silently truncated stream.
+    const errorType = anthropicStreamErrorType(error)
     await stream.writeSSE({
       event: "error",
       data: JSON.stringify({
@@ -560,6 +646,7 @@ interface ProcessOneStreamEventArgs {
   reqCtx: RequestContext
   checkRepetition: (text: string) => void
   serverToolFilter: ReturnType<typeof createServerToolBlockFilter>
+  toolInputDecoder: ToolInputStreamDecoder
   stream: SSEStreamingApi
 }
 
@@ -569,14 +656,21 @@ interface ProcessOneStreamEventArgs {
  * `sseEvents`, and writes to `stream`.
  */
 async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<void> {
-  const { rawEvent, parsed, streamState, sseEvents, reqCtx, checkRepetition, serverToolFilter, stream } = args
+  const { rawEvent, parsed, streamState, sseEvents, reqCtx, checkRepetition, serverToolFilter, toolInputDecoder, stream } = args
 
   const dataLen = rawEvent.data?.length ?? 0
   streamState.bytesIn += dataLen
   streamState.eventsIn++
 
-  // Record non-delta SSE events for history debugging
-  if (parsed && parsed.type !== "content_block_delta" && parsed.type !== "ping") {
+  // Faithfully record every raw upstream event, including `ping` keepalives —
+  // their timing reveals upstream idle gaps (e.g. pings during long thinking).
+  // Deltas (input_json_delta / thinking_delta / text_delta / signature_delta)
+  // are the ONLY original record of what the upstream actually streamed — the
+  // accumulated `response.content` is a derived artifact (accumulate →
+  // mapAnthropicContentBlocks → safeParseJson) and cannot answer "was the tool_use
+  // input empty at the source?". Recording everything is required by 原则3
+  // (后端存储必须完整,不主动丢弃任何可观测原始数据).
+  if (parsed) {
     sseEvents.push({
       offsetMs: Date.now() - streamState.streamStartMs,
       type: parsed.type,
@@ -594,9 +688,7 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
   // Debug: log content block boundaries with timing
   if (parsed?.type === "content_block_start") {
     streamState.currentBlockType = (parsed.content_block as { type: string }).type
-    consola.debug(
-      `[Stream] Block #${parsed.index} start: ${streamState.currentBlockType} at +${Date.now() - streamState.streamStartMs}ms`,
-    )
+    consola.debug(`[Stream] Block #${parsed.index} start: ${streamState.currentBlockType} at +${Date.now() - streamState.streamStartMs}ms`)
 
     // Log server tool information (before filtering, so info is never lost)
     const block = parsed.content_block as unknown as Record<string, unknown> & { type: string }
@@ -626,15 +718,45 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
     }
   }
 
-  // Forward event to client, filtering server tool blocks
-  const forwardData = serverToolFilter.rewriteEvent(parsed, rawEvent.data ?? "")
+  // Forward to client: the tool-input decoder may buffer selected tool_use
+  // input deltas and emit a rewritten delta at content_block_stop (0/1/many
+  // events out). Each emitted event then passes through the server-tool filter.
+  // Pass-through events reuse `parsed`; decoder-emitted events are re-parsed.
+  for (const ev of toolInputDecoder.processEvent(parsed, rawEvent)) {
+    await forwardToClient(ev, ev === rawEvent ? parsed : undefined, serverToolFilter, stream)
+  }
+}
+
+/** Best-effort parse of an SSE data payload into a StreamEvent (undefined on failure / keepalive). */
+function parseStreamEventData(data: string | undefined): StreamEvent | undefined {
+  if (!data) return undefined
+  try {
+    return JSON.parse(data) as StreamEvent
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Forward one (possibly decoder-rewritten) SSE event to the client, applying
+ * the server-tool filter for index remapping / suppression. `knownParsed` is
+ * supplied for pass-through events to avoid a redundant re-parse.
+ */
+async function forwardToClient(
+  ev: ServerSentEventMessage,
+  knownParsed: StreamEvent | undefined,
+  serverToolFilter: ReturnType<typeof createServerToolBlockFilter>,
+  stream: SSEStreamingApi,
+): Promise<void> {
+  const evParsed = knownParsed ?? parseStreamEventData(ev.data)
+  const forwardData = serverToolFilter.rewriteEvent(evParsed, ev.data ?? "")
   if (forwardData === null) return
 
   await stream.writeSSE({
     data: forwardData,
-    event: rawEvent.event,
-    id: rawEvent.id !== undefined ? String(rawEvent.id) : undefined,
-    retry: rawEvent.retry,
+    event: ev.event,
+    id: ev.id !== undefined ? String(ev.id) : undefined,
+    retry: ev.retry,
   })
 }
 
@@ -668,6 +790,14 @@ function handleDirectAnthropicNonStreamingResponse(
   // Filter server tool blocks from non-streaming response (always active)
   logServerToolBlocks(finalResponse.content as unknown as Array<Record<string, unknown> & { type: string }>)
   finalResponse = filterServerToolBlocksFromResponse(finalResponse)
+
+  // Decode stringified-JSON tool_use input fields on the client-facing response
+  // only — reqCtx.complete() above already recorded the original (stringified)
+  // form for history.
+  finalResponse = decodeToolInputBlocksInResponse(finalResponse, {
+    fields: state.decodeToolInputFields,
+    all: state.decodeAllToolInputFields,
+  })
 
   return c.json(finalResponse)
 }

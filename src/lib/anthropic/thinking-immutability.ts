@@ -10,11 +10,7 @@ import { state } from "~/lib/state"
  * byte-for-byte identical when sent back in subsequent requests.
  */
 export function hasThinkingSignatureBlocks(msg: MessageParam): boolean {
-  return (
-    msg.role === "assistant"
-    && Array.isArray(msg.content)
-    && msg.content.some((block) => block.type === "thinking" || block.type === "redacted_thinking")
-  )
+  return msg.role === "assistant" && Array.isArray(msg.content) && msg.content.some((block) => block.type === "thinking" || block.type === "redacted_thinking")
 }
 
 /**

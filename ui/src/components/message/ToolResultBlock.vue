@@ -40,9 +40,7 @@ const summary = computed(() => {
 const copyText = computed(() => {
   if (typeof props.block.content === "string") return props.block.content
   if (Array.isArray(props.block.content)) {
-    return props.block.content
-      .map((b: { type: string; text?: string }) => (b.type === "text" ? (b.text ?? "") : JSON.stringify(b)))
-      .join("\n")
+    return props.block.content.map((b: { type: string; text?: string }) => (b.type === "text" ? (b.text ?? "") : JSON.stringify(b))).join("\n")
   }
   return ""
 })

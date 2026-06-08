@@ -1,5 +1,5 @@
 const prettierConfig = {
-  printWidth: 120,
+  printWidth: 160,
   semi: false,
   singleAttributePerLine: true,
   singleQuote: false,

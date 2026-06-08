@@ -6,15 +6,7 @@
 // Payload
 export { logPayloadSizeInfo, logPayloadSizeInfoAnthropic } from "./payload"
 // Pipeline
-export type {
-  FormatAdapter,
-  PipelineOptions,
-  PipelineResult,
-  RetryAction,
-  RetryContext,
-  RetryStrategy,
-  SanitizeResult,
-} from "./pipeline"
+export type { FormatAdapter, PipelineOptions, PipelineResult, RetryAction, RetryContext, RetryStrategy, SanitizeResult } from "./pipeline"
 
 export { executeRequestPipeline } from "./pipeline"
 // Recording

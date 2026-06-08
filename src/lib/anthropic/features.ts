@@ -158,11 +158,7 @@ function modelHasAdaptiveThinking(resolvedModel?: Model): boolean {
  * The resolvedModel parameter provides model metadata for capability-based
  * decisions. When unavailable, falls back to name-based detection.
  */
-export function buildAnthropicBetaHeaders(
-  modelId: string,
-  resolvedModel?: Model,
-  opts?: AnthropicBetaHeaderOptions,
-): AnthropicBetaHeaders {
+export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model, opts?: AnthropicBetaHeaderOptions): AnthropicBetaHeaders {
   const headers: AnthropicBetaHeaders = {}
   const betaFeatures: Array<string> = []
 

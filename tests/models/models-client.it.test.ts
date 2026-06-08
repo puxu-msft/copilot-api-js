@@ -1,0 +1,193 @@
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import { HTTPError } from "~/lib/error"
+import {
+  //
+  cacheModels,
+  getModels,
+  resetModelsEtagForTests,
+} from "~/lib/models/client"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  state,
+} from "~/lib/state"
+
+import {
+  //
+  restoreFetch,
+  setFetchMock,
+} from "../helpers/mock-fetch"
+
+describe("models client", () => {
+  const originalState = snapshotStateForTests()
+
+  beforeEach(() => {
+    resetModelsEtagForTests()
+    setStateForTests({
+      accountType: "individual",
+      copilotToken: "copilot-test-token",
+      vsCodeVersion: "1.100.0",
+      fetchTimeout: 0,
+      models: undefined,
+    })
+  })
+
+  afterEach(() => {
+    restoreFetch()
+    restoreStateForTests(originalState)
+    resetModelsEtagForTests()
+  })
+
+  test("getModels fetches models from Copilot", async () => {
+    const fetchMock = setFetchMock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            object: "list",
+            data: [
+              {
+                id: "gpt-4o",
+                name: "GPT-4o",
+                vendor: "OpenAI",
+                object: "model",
+                model_picker_enabled: true,
+                preview: false,
+                version: "gpt-4o",
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    )
+
+    const result = await getModels()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls.length).toBe(1)
+    if (!result) throw new Error("Expected defined result")
+    expect(result.object).toBe("list")
+    expect(result.data[0]?.id).toBe("gpt-4o")
+  })
+
+  test("cacheModels updates global model state and indexes", async () => {
+    setFetchMock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            object: "list",
+            data: [
+              {
+                id: "claude-sonnet-4.6",
+                name: "Claude Sonnet 4.6",
+                vendor: "Anthropic",
+                object: "model",
+                model_picker_enabled: true,
+                preview: false,
+                version: "claude-sonnet-4.6",
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    )
+
+    await cacheModels()
+
+    expect(state.models?.data[0]?.id).toBe("claude-sonnet-4.6")
+    expect(state.modelIndex.get("claude-sonnet-4.6")?.vendor).toBe("Anthropic")
+  })
+
+  test("getModels throws HTTPError when Copilot returns a failure response", async () => {
+    setFetchMock(async () => new Response("upstream failed", { status: 502 }))
+
+    await expect(getModels()).rejects.toBeInstanceOf(HTTPError)
+  })
+
+  test("getModels sends If-None-Match after a 200 with ETag and returns undefined on 304", async () => {
+    // First call returns 200 + ETag
+    const firstResponse = new Response(
+      JSON.stringify({
+        object: "list",
+        data: [
+          {
+            id: "m",
+            name: "m",
+            vendor: "v",
+            object: "model",
+            model_picker_enabled: true,
+            preview: false,
+            version: "v1",
+          },
+        ],
+      }),
+      { status: 200, headers: { "content-type": "application/json", etag: '"abc123"' } },
+    )
+    // Second call returns 304
+    const secondResponse = new Response(null, { status: 304 })
+
+    const calls: Array<{ headers: Record<string, string> }> = []
+    let callCount = 0
+    setFetchMock((_url, init) => {
+      const headers = init?.headers as Record<string, string> | undefined
+      calls.push({ headers: headers ?? {} })
+      callCount += 1
+      return Promise.resolve(callCount === 1 ? firstResponse : secondResponse)
+    })
+
+    const first = await getModels()
+    if (!first) throw new Error("Expected first call to return data")
+    expect(first.data[0]?.id).toBe("m")
+
+    const second = await getModels()
+    expect(second).toBeUndefined()
+    expect(calls[1]?.headers["If-None-Match"]).toBe('"abc123"')
+  })
+
+  test("cacheModels preserves previously cached state on 304", async () => {
+    // First load
+    setFetchMock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            object: "list",
+            data: [
+              {
+                id: "model-a",
+                name: "A",
+                vendor: "v",
+                object: "model",
+                model_picker_enabled: true,
+                preview: false,
+                version: "1",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json", etag: '"v1"' } },
+        ),
+      ),
+    )
+    await cacheModels()
+    expect(state.models?.data[0]?.id).toBe("model-a")
+
+    // Second load returns 304 — cache should remain intact
+    setFetchMock(() => Promise.resolve(new Response(null, { status: 304 })))
+    await cacheModels()
+    expect(state.models?.data[0]?.id).toBe("model-a")
+  })
+})

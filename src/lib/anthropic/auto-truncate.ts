@@ -124,8 +124,7 @@ export async function autoTruncateAnthropic(
     if (strippedTokens <= tokenLimit) {
       const elapsedMs = Math.round(performance.now() - startTime)
       consola.info(
-        `[AutoTruncate:Anthropic] tokens: ${originalTokens}→${strippedTokens} `
-          + `(stripped ${thinkingStrippedCount} thinking blocks) [${elapsedMs}ms]`,
+        `[AutoTruncate:Anthropic] tokens: ${originalTokens}→${strippedTokens} ` + `(stripped ${thinkingStrippedCount} thinking blocks) [${elapsedMs}ms]`,
       )
 
       return buildResult({
@@ -153,10 +152,7 @@ export async function autoTruncateAnthropic(
 
     if (compressedTokens <= tokenLimit) {
       const elapsedMs = Math.round(performance.now() - startTime)
-      consola.info(
-        `[AutoTruncate:Anthropic] tokens: ${originalTokens}→${compressedTokens} `
-          + `(compressed ${compressedCount} tool_results) [${elapsedMs}ms]`,
-      )
+      consola.info(`[AutoTruncate:Anthropic] tokens: ${originalTokens}→${compressedTokens} ` + `(compressed ${compressedCount} tool_results) [${elapsedMs}ms]`)
 
       // Add compression notice to system prompt
       const compressedPayload = { ...payload, messages: workingMessages }
@@ -302,10 +298,7 @@ export async function autoTruncateAnthropic(
   const actionInfo = actions.length > 0 ? ` (${actions.join(", ")})` : ""
 
   const elapsedMs = Math.round(performance.now() - startTime)
-  consola.info(
-    `[AutoTruncate:Anthropic] tokens: ${originalTokens}→${newTokens}, `
-      + `${bytesToKB(newBytes)}KB${actionInfo} [${elapsedMs}ms]`,
-  )
+  consola.info(`[AutoTruncate:Anthropic] tokens: ${originalTokens}→${newTokens}, ` + `${bytesToKB(newBytes)}KB${actionInfo} [${elapsedMs}ms]`)
 
   // Warn if still over token limit
   if (newTokens > tokenLimit) {

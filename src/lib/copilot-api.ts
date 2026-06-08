@@ -40,9 +40,7 @@ const INTERACTION_ID = randomUUID()
  */
 export const copilotBaseUrl = (state: State) => {
   if (state.ghcApiBaseUrl) return state.ghcApiBaseUrl.replace(/\/+$/u, "")
-  return state.accountType === "individual" ?
-      "https://api.githubcopilot.com"
-    : `https://api.${state.accountType}.githubcopilot.com`
+  return state.accountType === "individual" ? "https://api.githubcopilot.com" : `https://api.${state.accountType}.githubcopilot.com`
 }
 
 export const copilotWsUrl = (state: State) => {
@@ -56,9 +54,7 @@ export const copilotWsUrl = (state: State) => {
   } else if (url.protocol === "http:") {
     url.protocol = "ws:"
   } else {
-    throw new Error(
-      `copilotWsUrl: cannot derive a WebSocket URL from base "${url.toString()}" (protocol "${url.protocol}")`,
-    )
+    throw new Error(`copilotWsUrl: cannot derive a WebSocket URL from base "${url.toString()}" (protocol "${url.protocol}")`)
   }
   url.pathname = "/responses"
   url.search = ""

@@ -52,10 +52,7 @@ const runtimeStatEntries = computed(() => {
     {
       label: "Queue Depth",
       value: props.formatNumber(props.rateLimiter.queueLength),
-      foot:
-        props.rateLimiter.queueLength > 0 ?
-          "Queued requests are waiting for their next release slot."
-        : "No requests are waiting in the limiter queue.",
+      foot: props.rateLimiter.queueLength > 0 ? "Queued requests are waiting for their next release slot." : "No requests are waiting in the limiter queue.",
     },
     {
       label: "Recovery threshold",
@@ -98,8 +95,7 @@ const configEntries = computed(() => {
     { label: "Recovery Timeout", value: formatMinutes(recoveryTimeoutMinutes.value) },
     {
       label: "Gradual Recovery",
-      value:
-        gradualRecoverySteps.value.length > 0 ? gradualRecoverySteps.value.map((step) => `${step}s`).join(" -> ") : "-",
+      value: gradualRecoverySteps.value.length > 0 ? gradualRecoverySteps.value.map((step) => `${step}s`).join(" -> ") : "-",
     },
   ]
 })
@@ -162,8 +158,7 @@ const configEntries = computed(() => {
       <div class="config-column">
         <div class="config-title">Limiter policy</div>
         <div class="config-copy text-caption text-medium-emphasis">
-          This is the effective limiter configuration for the current process. Config changes only apply here after a
-          restart.
+          This is the effective limiter configuration for the current process. Config changes only apply here after a restart.
         </div>
 
         <div class="config-stack">

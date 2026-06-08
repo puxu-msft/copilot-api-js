@@ -254,10 +254,7 @@ export function toAnthropicModelInfo(model: Model): AnthropicModelInfo {
  * Anthropic-shaped endpoint is meant to mirror the upstream Anthropic catalog;
  * pass `vendorFilter: "all"` to disable the filter.
  */
-export function buildAnthropicModelsList(
-  models: ReadonlyArray<Model>,
-  opts?: { vendorFilter?: "Anthropic" | "all" },
-): AnthropicModelsListResponse {
+export function buildAnthropicModelsList(models: ReadonlyArray<Model>, opts?: { vendorFilter?: "Anthropic" | "all" }): AnthropicModelsListResponse {
   const vendorFilter = opts?.vendorFilter ?? "Anthropic"
   const filtered = vendorFilter === "all" ? [...models] : models.filter((m) => m.vendor === "Anthropic")
   const data = filtered.map((m) => toAnthropicModelInfo(m))

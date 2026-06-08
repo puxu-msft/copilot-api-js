@@ -35,11 +35,7 @@ const encodingCache = new Map<string, Encoder>()
 /**
  * Calculate tokens for tool calls
  */
-const calculateToolCallsTokens = (
-  toolCalls: Array<ToolCall>,
-  encoder: Encoder,
-  constants: ReturnType<typeof getModelConstants>,
-): number => {
+const calculateToolCallsTokens = (toolCalls: Array<ToolCall>, encoder: Encoder, constants: ReturnType<typeof getModelConstants>): number => {
   let tokens = 0
   for (const toolCall of toolCalls) {
     tokens += constants.funcInit
@@ -69,11 +65,7 @@ const calculateContentPartsTokens = (contentParts: Array<ContentPart>, encoder: 
 /**
  * Calculate tokens for a single message
  */
-const calculateMessageTokens = (
-  message: Message,
-  encoder: Encoder,
-  constants: ReturnType<typeof getModelConstants>,
-): number => {
+const calculateMessageTokens = (message: Message, encoder: Encoder, constants: ReturnType<typeof getModelConstants>): number => {
   // Each message incurs 3 tokens overhead for role/metadata framing
   // Based on OpenAI's token counting methodology
   const tokensPerMessage = 3
@@ -100,11 +92,7 @@ const calculateMessageTokens = (
 /**
  * Calculate tokens using custom algorithm
  */
-const calculateTokens = (
-  messages: Array<Message>,
-  encoder: Encoder,
-  constants: ReturnType<typeof getModelConstants>,
-): number => {
+const calculateTokens = (messages: Array<Message>, encoder: Encoder, constants: ReturnType<typeof getModelConstants>): number => {
   if (messages.length === 0) {
     return 0
   }
@@ -129,8 +117,7 @@ const getEncodeChatFunction = async (encoding: string): Promise<Encoder> => {
   }
 
   const supportedEncoding = encoding as SupportedEncoding
-  const rawModule =
-    supportedEncoding in ENCODING_MAP ? await ENCODING_MAP[supportedEncoding]() : await ENCODING_MAP.o200k_base()
+  const rawModule = supportedEncoding in ENCODING_MAP ? await ENCODING_MAP[supportedEncoding]() : await ENCODING_MAP.o200k_base()
 
   // Wrap encode to disable special token checks.
   // gpt-tokenizer defaults to disallowedSpecial='all', which throws on
@@ -255,11 +242,7 @@ const calculateParameterTokens = (
 /**
  * Calculate tokens for function parameters
  */
-const calculateParametersTokens = (
-  parameters: unknown,
-  encoder: Encoder,
-  constants: ReturnType<typeof getModelConstants>,
-): number => {
+const calculateParametersTokens = (parameters: unknown, encoder: Encoder, constants: ReturnType<typeof getModelConstants>): number => {
   if (!parameters || typeof parameters !== "object") {
     return 0
   }
@@ -311,11 +294,7 @@ const calculateToolTokens = (tool: Tool, encoder: Encoder, constants: ReturnType
 /**
  * Calculate token count for tools based on model
  */
-export const numTokensForTools = (
-  tools: Array<Tool>,
-  encoder: Encoder,
-  constants: ReturnType<typeof getModelConstants>,
-): number => {
+export const numTokensForTools = (tools: Array<Tool>, encoder: Encoder, constants: ReturnType<typeof getModelConstants>): number => {
   let funcTokenCount = 0
   for (const tool of tools) {
     funcTokenCount += calculateToolTokens(tool, encoder, constants)
@@ -333,10 +312,7 @@ export const numTokensForTools = (
  * Uses the tokenizer specified by the GitHub Copilot API model info.
  * All models (including Claude) use GPT tokenizers (o200k_base or cl100k_base).
  */
-export const getTokenCount = async (
-  payload: ChatCompletionsPayload,
-  model: Model,
-): Promise<{ input: number; output: number }> => {
+export const getTokenCount = async (payload: ChatCompletionsPayload, model: Model): Promise<{ input: number; output: number }> => {
   // Use the tokenizer specified by the API (defaults to o200k_base)
   const tokenizer = getTokenizerFromModel(model)
   const encoder = await getEncodeChatFunction(tokenizer)

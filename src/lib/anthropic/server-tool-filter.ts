@@ -62,9 +62,7 @@ export function logServerToolBlock(block: Record<string, unknown> & { type: stri
   if (contentType === "tool_search_tool_search_result") {
     const refs = content.tool_references as Array<{ tool_name?: string }> | undefined
     const toolNames = refs?.map((r) => r.tool_name).filter(Boolean) ?? []
-    consola.debug(
-      `[ServerTool] tool_search result: discovered ${toolNames.length} tools${toolNames.length > 0 ? ` [${toolNames.join(", ")}]` : ""}`,
-    )
+    consola.debug(`[ServerTool] tool_search result: discovered ${toolNames.length} tools${toolNames.length > 0 ? ` [${toolNames.join(", ")}]` : ""}`)
   } else if (contentType === "tool_search_tool_result_error") {
     consola.warn(`[ServerTool] tool_search error: ${content.error_code as string}`)
   } else {

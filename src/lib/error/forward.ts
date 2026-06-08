@@ -65,8 +65,7 @@ function formatTokenLimitErrorAnthropic(current: number, limit: number) {
     type: "error",
     error: {
       type: "invalid_request_error",
-      message:
-        `prompt is too long: ${current} tokens > ${limit} maximum ` + `(${excess} tokens over, ${percentage}% excess)`,
+      message: `prompt is too long: ${current} tokens > ${limit} maximum ` + `(${excess} tokens over, ${percentage}% excess)`,
     },
   }
 }
@@ -262,11 +261,7 @@ function formatTokenLimitErrorGemini(current: number, limit: number) {
 }
 
 function formatRequestTooLargeErrorGemini() {
-  return geminiEnvelope(
-    413,
-    "Request payload size exceeds the limit. Try reducing the conversation history or removing large content.",
-    "INVALID_ARGUMENT",
-  )
+  return geminiEnvelope(413, "Request payload size exceeds the limit. Try reducing the conversation history or removing large content.", "INVALID_ARGUMENT")
 }
 
 function formatRateLimitErrorGemini(message?: string) {
@@ -276,11 +271,7 @@ function formatRateLimitErrorGemini(message?: string) {
 function formatQuotaExceededErrorGemini(retryAfter?: number) {
   const retryInfo = retryAfter ? ` Quota resets in approximately ${retryAfter} seconds.` : ""
   return {
-    ...geminiEnvelope(
-      402,
-      `You have exceeded your usage quota. Please try again later.${retryInfo}`,
-      "RESOURCE_EXHAUSTED",
-    ),
+    ...geminiEnvelope(402, `You have exceeded your usage quota. Please try again later.${retryInfo}`, "RESOURCE_EXHAUSTED"),
     ...(retryAfter !== undefined && { retry_after: retryAfter }),
   }
 }
@@ -406,9 +397,7 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
 
       if (error.status === 503 && isUpstreamRateLimited(error.responseText)) {
         const retryAfter = parseRetryAfterHeader(error.responseHeaders)
-        const formattedError = helpers.rateLimit(
-          errorObj.error?.message ?? "Upstream provider rate limited. Please try again later.",
-        )
+        const formattedError = helpers.rateLimit(errorObj.error?.message ?? "Upstream provider rate limited. Please try again later.")
         if (retryAfter) {
           formattedError.retry_after = retryAfter
         }
@@ -429,10 +418,7 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       consola.error(`HTTP ${error.status}:`, errorJson)
     }
 
-    return c.json(
-      helpers.defaultError(error.responseText, error.status >= 500, error.status),
-      error.status as ContentfulStatusCode,
-    )
+    return c.json(helpers.defaultError(error.responseText, error.status >= 500, error.status), error.status as ContentfulStatusCode)
   }
 
   const errorMessage = error instanceof Error ? formatErrorWithCause(error) : String(error)

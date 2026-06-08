@@ -13,7 +13,13 @@
  *     would otherwise leak into stricter variant models).
  *   - strip-list (additive): collect from every matching key, including "*",
  *     so operators can compose a baseline with per-model additions.
+ *
+ * Matching is normalization-insensitive: both the model name and each key are
+ * passed through `normalizeForMatching` (dot/hyphen/case) before the substring
+ * test, so `claude-opus-4.8` and `claude-opus-4-8` match the same entry.
  */
+
+import { normalizeForMatching } from "~/lib/models/resolver"
 
 /**
  * Return the value for the most-specific (longest) key whose substring matches
@@ -25,10 +31,11 @@
  * first key encountered (insertion order), which matches Object.keys behavior.
  */
 export function findMostSpecific<T>(modelName: string, patterns: Record<string, T>): T | undefined {
+  const normalizedModel = normalizeForMatching(modelName)
   let bestKey: string | undefined
   for (const key of Object.keys(patterns)) {
     if (key === "*") continue
-    if (!modelName.includes(key)) continue
+    if (!normalizedModel.includes(normalizeForMatching(key))) continue
     if (bestKey === undefined || key.length > bestKey.length) {
       bestKey = key
     }
@@ -44,9 +51,10 @@ export function findMostSpecific<T>(modelName: string, patterns: Record<string, 
  * set union (e.g. by feeding each element into a Set).
  */
 export function collectAllMatching<T>(modelName: string, patterns: Record<string, T>): Array<T> {
+  const normalizedModel = normalizeForMatching(modelName)
   const out: Array<T> = []
   for (const [key, value] of Object.entries(patterns)) {
-    if (key === "*" || modelName.includes(key)) {
+    if (key === "*" || normalizedModel.includes(normalizeForMatching(key))) {
       out.push(value)
     }
   }

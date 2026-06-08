@@ -17,6 +17,7 @@ import { getModels } from "~/lib/models/client"
 import { resolveModelName } from "~/lib/models/resolver"
 import {
   //
+  setModelOverrides,
   setModels,
   setStateForTests,
   state,
@@ -48,11 +49,13 @@ describeWithToken("Model Name Resolution", () => {
     const models = await getModels()
 
     if (!models?.data) {
-      throw new Error(
-        "Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.",
-      )
+      throw new Error("Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.")
     }
     setModels(models)
+    // Short aliases resolve ONLY via model_overrides now (no built-in family
+    // preference). Simulate the bundled config's alias mappings so the alias
+    // resolution assertions below stay meaningful.
+    setModelOverrides({ opus: "claude-opus-4.8", sonnet: "claude-sonnet-4.6", haiku: "claude-haiku-4.5" })
 
     console.log(
       "[Setup] Available Claude models:",

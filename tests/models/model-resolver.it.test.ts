@@ -1,0 +1,398 @@
+import {
+  //
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type { Model } from "~/lib/models/client"
+
+import {
+  //
+  getModelFamily,
+  isSameModelName,
+  normalizeForMatching,
+  normalizeModelKeyedRecord,
+  normalizeModelNameList,
+  resolveModelName,
+} from "~/lib/models/resolver"
+import {
+  //
+  setDisabledModels,
+  setModelOverrides,
+  setModels as setCachedModels,
+  state,
+} from "~/lib/state"
+
+import { autoRestoreState } from "../helpers/state-fixture"
+
+autoRestoreState()
+
+function mockModel(id: string): Model {
+  return {
+    id,
+    name: id,
+    vendor: "Anthropic",
+    object: "model",
+    model_picker_enabled: true,
+    preview: false,
+    version: id,
+    is_chat_default: false,
+    is_chat_fallback: false,
+  }
+}
+
+/** Set state.models and rebuild indexes for testing */
+function setModels(models: typeof state.models): void {
+  setCachedModels(models)
+}
+
+describe("Model Name Translation", () => {
+  beforeEach(() => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.5"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-sonnet-4"),
+        mockModel("claude-haiku-4.5"),
+        mockModel("claude-haiku-3.5"),
+      ],
+    })
+    // Short aliases resolve ONLY via model_overrides now (no built-in family
+    // preference). Simulate the bundled config's alias mappings.
+    setModelOverrides({
+      opus: "claude-opus-4.6",
+      sonnet: "claude-sonnet-4.5",
+      haiku: "claude-haiku-4.5",
+    })
+  })
+
+  test("resolves short aliases via overrides", () => {
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6")
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4.5")
+  })
+
+  test("short alias without an override is returned as-is (upstream then rejects)", () => {
+    setModelOverrides({})
+    expect(resolveModelName("opus")).toBe("opus")
+    expect(resolveModelName("sonnet")).toBe("sonnet")
+  })
+
+  test("normalizes hyphenated versions to canonical dot form", () => {
+    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
+    expect(resolveModelName("claude-opus-4-5")).toBe("claude-opus-4.5")
+    expect(resolveModelName("claude-sonnet-4-5")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-haiku-4-5")).toBe("claude-haiku-4.5")
+    expect(resolveModelName("claude-haiku-3-5")).toBe("claude-haiku-3.5")
+  })
+
+  test("strips date suffix to the base version (no family fallback)", () => {
+    expect(resolveModelName("claude-sonnet-4-5-20250514")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4-20250514")).toBe("claude-sonnet-4")
+    expect(resolveModelName("claude-opus-4-5-20250514")).toBe("claude-opus-4.5")
+    expect(resolveModelName("claude-opus-4-6-20250514")).toBe("claude-opus-4.6")
+    // Date-only on the major version → base name (claude-opus-4), NOT "best opus".
+    expect(resolveModelName("claude-opus-4-20250514")).toBe("claude-opus-4")
+    expect(resolveModelName("claude-haiku-4-5-20250514")).toBe("claude-haiku-4.5")
+  })
+
+  test("passes through direct / unknown model names unchanged", () => {
+    expect(resolveModelName("claude-opus-4.6")).toBe("claude-opus-4.6")
+    expect(resolveModelName("claude-sonnet-4")).toBe("claude-sonnet-4")
+    expect(resolveModelName("gpt-4")).toBe("gpt-4")
+    expect(resolveModelName("custom-model")).toBe("custom-model")
+  })
+})
+
+describe("normalizeForMatching", () => {
+  test("should lowercase and replace dots with dashes", () => {
+    expect(normalizeForMatching("claude-sonnet-4.5")).toBe("claude-sonnet-4-5")
+    expect(normalizeForMatching("Claude-Opus-4.6")).toBe("claude-opus-4-6")
+  })
+
+  test("should handle names without dots", () => {
+    expect(normalizeForMatching("claude-sonnet-4")).toBe("claude-sonnet-4")
+    expect(normalizeForMatching("gpt-4")).toBe("gpt-4")
+  })
+})
+
+describe("isSameModelName", () => {
+  test("treats hyphen/dot/case spelling differences as the same model", () => {
+    // The real case from the TUI log: client sent "claude-opus-4-8",
+    // resolved name is "claude-opus-4.8" — same model, written differently.
+    expect(isSameModelName("claude-opus-4-8", "claude-opus-4.8")).toBe(true)
+    expect(isSameModelName("Claude-Opus-4.8", "claude-opus-4-8")).toBe(true)
+    expect(isSameModelName("claude-opus-4.8", "claude-opus-4.8")).toBe(true)
+  })
+
+  test("treats a genuine alias→canonical remap as different models", () => {
+    // e.g. the client alias "haiku" resolving to "claude-sonnet-4.6"
+    expect(isSameModelName("haiku", "claude-sonnet-4.6")).toBe(false)
+    expect(isSameModelName("claude-opus-4.8", "claude-sonnet-4.6")).toBe(false)
+  })
+})
+
+describe("normalizeModelKeyedRecord", () => {
+  test("normalizes keys and lowercases", () => {
+    expect(normalizeModelKeyedRecord({ "Claude-Opus-4.8": "y" }, "test")).toEqual({ "claude-opus-4-8": "y" })
+  })
+
+  test("later key wins when two keys normalize to the same model", () => {
+    expect(normalizeModelKeyedRecord({ "claude-opus-4.8": "A", "claude-opus-4-8": "B" }, "test")).toEqual({
+      "claude-opus-4-8": "B",
+    })
+  })
+
+  test("preserves the wildcard '*' key untouched", () => {
+    expect(normalizeModelKeyedRecord({ "*": "w", "claude-opus-4.8": "y" }, "test")).toEqual({
+      "*": "w",
+      "claude-opus-4-8": "y",
+    })
+  })
+})
+
+describe("normalizeModelNameList", () => {
+  test("normalizes entries and drops normalized duplicates", () => {
+    expect(normalizeModelNameList(["claude-opus-4.8", "claude-opus-4-8", "Haiku"], "test")).toEqual(["claude-opus-4-8", "haiku"])
+  })
+})
+
+describe("getModelFamily", () => {
+  test("should detect model families", () => {
+    expect(getModelFamily("claude-opus-4.6")).toBe("opus")
+    expect(getModelFamily("claude-sonnet-4.5")).toBe("sonnet")
+    expect(getModelFamily("claude-haiku-3.5")).toBe("haiku")
+  })
+
+  test("should return undefined for non-Claude models", () => {
+    expect(getModelFamily("gpt-4")).toBeUndefined()
+    expect(getModelFamily("custom-model")).toBeUndefined()
+  })
+})
+
+describe("model overrides", () => {
+  beforeEach(() => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.6-fast"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-sonnet-4"),
+        mockModel("claude-haiku-4.5"),
+      ],
+    })
+  })
+
+  test("should override exact model name to available target", () => {
+    setModelOverrides({ "claude-sonnet-4.5": "claude-opus-4.6" })
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
+  })
+
+  test("should override short alias to specific model", () => {
+    setModelOverrides({ sonnet: "claude-opus-4.6" })
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.6")
+  })
+
+  test("matches an override key across dot/hyphen spelling differences", () => {
+    // Operator wrote the hyphen form; client requests the canonical dot form.
+    setModelOverrides({ "claude-sonnet-4-5": "claude-opus-4.6" })
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
+  })
+
+  test("matches an override key case-insensitively", () => {
+    setModelOverrides({ "Claude-Sonnet-4.5": "claude-opus-4.6" })
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
+  })
+
+  test("override target that is itself an undefined alias is returned as-is", () => {
+    // "opus" has no override of its own → no built-in resolution → as-is.
+    setModelOverrides({ sonnet: "opus" })
+    expect(resolveModelName("sonnet")).toBe("opus")
+  })
+
+  test("should match resolved model name when raw name has no override", () => {
+    // "claude-sonnet-4-5" resolves to "claude-sonnet-4.5", then check override
+    setModelOverrides({ "claude-sonnet-4.5": "claude-opus-4.6" })
+    expect(resolveModelName("claude-sonnet-4-5")).toBe("claude-opus-4.6")
+  })
+
+  test("should not apply override to non-matching models", () => {
+    setModelOverrides({ sonnet: "claude-opus-4.6" })
+    expect(resolveModelName("claude-opus-4.6")).toBe("claude-opus-4.6")
+    expect(resolveModelName("gpt-4")).toBe("gpt-4")
+  })
+
+  test("should pass through when no overrides configured", () => {
+    setModelOverrides({})
+    // Canonical name passes through; a bare alias has no override and is
+    // returned as-is (no built-in alias resolution anymore).
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("sonnet")).toBe("sonnet")
+  })
+
+  test("should handle override to unknown model as passthrough", () => {
+    setModelOverrides({ sonnet: "my-custom-model" })
+    // my-custom-model is not available and not a known family — passed through
+    expect(resolveModelName("sonnet")).toBe("my-custom-model")
+  })
+
+  test("should follow chained overrides (sonnet → opus → specific model)", () => {
+    setModels({
+      object: "list",
+      data: [mockModel("claude-opus-4.6"), mockModel("claude-opus-4.6-1m"), mockModel("claude-sonnet-4.5"), mockModel("claude-haiku-4.5")],
+    })
+    setModelOverrides({ opus: "claude-opus-4.6-1m", sonnet: "opus" })
+    // sonnet → opus (override) → claude-opus-4.6-1m (chained override)
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.6-1m")
+    // opus → claude-opus-4.6-1m (direct override)
+    expect(resolveModelName("opus")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("normalizes a hyphenated full name (no override) to dot form", () => {
+    setModelOverrides({})
+    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
+  })
+
+  test("should handle circular override chains gracefully", () => {
+    setModelOverrides({ sonnet: "opus", opus: "sonnet" })
+    // Should not infinite loop — falls back to alias resolution
+    const result = resolveModelName("sonnet")
+    expect(result).toBeDefined()
+  })
+
+  test("only the listed override keys are affected (no family propagation)", () => {
+    setModelOverrides({ sonnet: "claude-opus-4.6", "claude-sonnet-4.5": "claude-opus-4.6" })
+    expect(resolveModelName("sonnet")).toBe("claude-opus-4.6")
+    expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
+    // A sonnet variant NOT listed is left untouched.
+    expect(resolveModelName("claude-sonnet-4")).toBe("claude-sonnet-4")
+  })
+})
+
+describe("Modifier suffix handling (-fast)", () => {
+  beforeEach(() => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.6-fast"),
+        mockModel("claude-opus-4.5"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-sonnet-4"),
+        mockModel("claude-haiku-4.5"),
+      ],
+    })
+    // Short aliases resolve via overrides; the modifier suffix is re-attached.
+    setModelOverrides({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
+  })
+
+  test("should pass through direct -fast model names", () => {
+    expect(resolveModelName("claude-opus-4.6-fast")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should resolve hyphenated -fast model names", () => {
+    // Claude Code sends hyphens instead of dots
+    expect(resolveModelName("claude-opus-4-6-fast")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should resolve short alias with -fast suffix", () => {
+    // opus-fast → best opus + -fast
+    expect(resolveModelName("opus-fast")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should fall back to base model when -fast variant is unavailable", () => {
+    // No claude-sonnet-4.5-fast in available models
+    expect(resolveModelName("sonnet-fast")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4-5-fast")).toBe("claude-sonnet-4.5")
+  })
+
+  test("should handle date suffix with -fast modifier", () => {
+    expect(resolveModelName("claude-opus-4-6-20250514-fast")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should not strip -fast from non-Claude models", () => {
+    // Non-Claude model ending in -fast: suffix is extracted but re-attached
+    // Since "gpt-4-fast" is not available, falls back to "gpt-4"
+    expect(resolveModelName("gpt-4-fast")).toBe("gpt-4")
+  })
+})
+
+describe("Bracket notation handling [1m]", () => {
+  beforeEach(() => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.6-1m"),
+        mockModel("claude-opus-4.6-fast"),
+        mockModel("claude-opus-4.5"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-sonnet-4"),
+        mockModel("claude-haiku-4.5"),
+      ],
+    })
+    // Short aliases resolve via overrides; the bracket/modifier suffix is re-attached.
+    setModelOverrides({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
+  })
+
+  test("should resolve short alias with bracket notation", () => {
+    // opus[1m] → opus-1m; no "opus-1m" override → base "opus" override + "-1m"
+    expect(resolveModelName("opus[1m]")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("explicit opus-1m override wins over the opus base", () => {
+    // opus[1m] → opus-1m which HAS its own override → use it directly.
+    setModelOverrides({ opus: "claude-opus-4.6", "opus-1m": "claude-opus-4.5" })
+    expect(resolveModelName("opus[1m]")).toBe("claude-opus-4.5")
+  })
+
+  test("should resolve full model name with bracket notation", () => {
+    // claude-opus-4.6[1m] → claude-opus-4.6-1m
+    expect(resolveModelName("claude-opus-4.6[1m]")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should resolve hyphenated model name with bracket notation", () => {
+    // claude-opus-4-6[1m] → claude-opus-4-6-1m → claude-opus-4.6-1m
+    expect(resolveModelName("claude-opus-4-6[1m]")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should handle case-insensitive bracket content", () => {
+    expect(resolveModelName("opus[1M]")).toBe("claude-opus-4.6-1m")
+    expect(resolveModelName("claude-opus-4.6[1M]")).toBe("claude-opus-4.6-1m")
+  })
+
+  test("should fall back to base model when bracket variant is unavailable", () => {
+    // No claude-sonnet-4.5-1m available
+    expect(resolveModelName("sonnet[1m]")).toBe("claude-sonnet-4.5")
+    expect(resolveModelName("claude-sonnet-4-5[1m]")).toBe("claude-sonnet-4.5")
+  })
+
+  test("should resolve bracket [fast] notation", () => {
+    expect(resolveModelName("opus[fast]")).toBe("claude-opus-4.6-fast")
+  })
+
+  test("should handle date-suffixed model with bracket notation", () => {
+    // claude-opus-4-6-20250514[1m] → claude-opus-4-6-20250514-1m
+    // extractModifierSuffix strips -1m → resolveBase handles date suffix → re-attach -1m
+    expect(resolveModelName("claude-opus-4-6-20250514[1m]")).toBe("claude-opus-4.6-1m")
+  })
+})
+
+describe("disabled_models normalization", () => {
+  test("disables an upstream id whose spelling differs from the config entry", () => {
+    // Config uses the hyphen form; upstream advertises the canonical dot form.
+    setDisabledModels(["claude-opus-4-8"])
+    setCachedModels({
+      object: "list",
+      data: [mockModel("claude-opus-4.8"), mockModel("claude-sonnet-4.6")],
+    })
+    const ids = state.models?.data.map((m) => m.id) ?? []
+    expect(ids).not.toContain("claude-opus-4.8")
+    expect(ids).toContain("claude-sonnet-4.6")
+  })
+})

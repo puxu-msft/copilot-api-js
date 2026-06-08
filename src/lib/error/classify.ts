@@ -262,7 +262,7 @@ const NETWORK_ERROR_PATTERNS = [
  * We check name first (cheap, exact) then fall back to message keywords so
  * project-internal aborts are also caught.
  */
-function isAbortError(error: Error): boolean {
+export function isAbortError(error: Error): boolean {
   if (error.name === "AbortError" || error.name === "TimeoutError") return true
   const msg = error.message.toLowerCase()
   if (msg.includes("aborted") || msg.includes(" abort ") || msg.endsWith(" abort") || msg.startsWith("abort")) {

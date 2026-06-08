@@ -36,8 +36,7 @@ const schemaWithMeta = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: "https://github.com/puxu-msft/copilot-api-js/blob/main/config.schema.json",
   title: "copilot-api config.yaml",
-  description:
-    "Schema for copilot-api's config.yaml — auto-generated from ConfigSchema (src/lib/config/schema.ts). Do not edit by hand.",
+  description: "Schema for copilot-api's config.yaml — auto-generated from ConfigSchema (src/lib/config/schema.ts). Do not edit by hand.",
   ...jsonSchema,
 }
 

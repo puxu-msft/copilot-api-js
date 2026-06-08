@@ -32,12 +32,7 @@ const detailBodyRef = ref<HTMLElement>()
 const entry = computed(() => store.selectedEntry)
 
 // Shared RawJsonModal — single instance for all child components
-const {
-  visible: rawModalVisible,
-  data: rawModalData,
-  rewrittenData: rawModalRewrittenData,
-  title: rawModalTitle,
-} = provideRawModal()
+const { visible: rawModalVisible, data: rawModalData, rewrittenData: rawModalRewrittenData, title: rawModalTitle } = provideRawModal()
 
 // Orchestration: tool maps, filtered messages, pipeline info, scroll helpers
 const {

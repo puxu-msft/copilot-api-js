@@ -33,6 +33,28 @@ function eventSummary(event: SseEventRecord): string {
     case "content_block_stop": {
       return `index=${d.index}`
     }
+    case "content_block_delta": {
+      const delta = d.delta as Record<string, unknown> | undefined
+      const prefix = `index=${d.index}`
+      switch (delta?.type) {
+        case "input_json_delta": {
+          // Tool-call argument fragment — the most diagnostically valuable delta
+          return `${prefix} input_json: ${String(delta.partial_json ?? "")}`
+        }
+        case "text_delta": {
+          return `${prefix} text: ${String(delta.text ?? "")}`
+        }
+        case "thinking_delta": {
+          return `${prefix} thinking: ${String(delta.thinking ?? "")}`
+        }
+        case "signature_delta": {
+          return `${prefix} signature(${String(delta.signature ?? "").length} chars)`
+        }
+        default: {
+          return delta?.type ? `${prefix} ${String(delta.type)}` : prefix
+        }
+      }
+    }
     case "message_delta": {
       const delta = d.delta as Record<string, unknown> | undefined
       const parts: Array<string> = []
@@ -67,6 +89,10 @@ function eventColor(type: string): string {
       return "cyan"
     }
     case "content_block_stop": {
+      return "dim"
+    }
+    case "content_block_delta": {
+      // Low-key color: deltas are numerous, keep them visually quiet
       return "dim"
     }
     case "error": {

@@ -9,6 +9,7 @@ import { useHistoryStore } from "@/composables/useHistoryStore"
 import {
   //
   endpointLabel,
+  inflightDetail,
   modelName,
   requestState,
   statusColor,
@@ -25,7 +26,7 @@ import {
 
 const router = useRouter()
 const store = useHistoryStore()
-const { activeRequests, requestStateColor } = useDashboardStatus()
+const { activeRequests } = useDashboardStatus()
 
 const endpointOptions = [
   { title: "Anthropic Messages", value: "anthropic-messages" },
@@ -39,44 +40,36 @@ const statusOptions = [
   { title: "Failed", value: "false" },
 ]
 
-/** Merge active requests (as synthetic EntrySummary) with history entries */
-const mergedEntries = computed<Array<{ entry: EntrySummary; isActive: boolean }>>(() => {
+/**
+ * 在途请求是 dashboard WebSocket 推送的全局实时状态,与历史列表的游标分页是两条
+ * 独立的数据流,因此它们各自渲染为独立的列表(在途区常驻顶部,历史区分页),不再合并。
+ * 此处把 ActiveRequestInfo 适配成 EntrySummary 形状以复用同一套行渲染 helper。
+ * 去重已进入当前历史页的请求(完成后会延迟 3s 才从 activeRequests 移除),避免重复行。
+ */
+const inflightRows = computed<Array<EntrySummary>>(() => {
   const historyIds = new Set(store.entries.map((e) => e.id))
-
-  // Active requests not yet in history, filtered by current endpoint/status selection
-  const activeRows = activeRequests.value
+  return activeRequests.value
     .filter((req) => !historyIds.has(req.id))
-    .filter((req) => !store.filterEndpoint || req.endpoint === store.filterEndpoint)
-    .filter(() => store.filterSuccess === null || store.filterSuccess === undefined)
-    .map((req) => ({
-      entry: {
-        id: req.id,
-        startedAt: req.startTime,
-        endpoint: req.endpoint as EntrySummary["endpoint"],
-        rawPath: req.rawPath,
-        state: req.state as EntrySummary["state"],
-        active: true,
-        requestModel: req.model,
-        stream: req.stream,
-        messageCount: 0,
-        durationMs: req.durationMs,
-        attemptCount: req.attemptCount,
-        currentStrategy: req.currentStrategy,
-        queueWaitMs: req.queueWaitMs,
-        previewText: "",
-        searchText: "",
-      } satisfies EntrySummary,
-      isActive: true,
-    }))
-
-  const historyRows = store.entries.map((entry) => ({
-    entry,
-    isActive:
-      entry.active === true
-      || (entry.state !== null && entry.state !== undefined && entry.state !== "completed" && entry.state !== "failed"),
-  }))
-
-  return [...activeRows, ...historyRows]
+    .map(
+      (req) =>
+        ({
+          id: req.id,
+          startedAt: req.startTime,
+          endpoint: req.endpoint as EntrySummary["endpoint"],
+          rawPath: req.rawPath,
+          state: req.state as EntrySummary["state"],
+          active: true,
+          requestModel: req.model,
+          stream: req.stream,
+          messageCount: 0,
+          durationMs: req.durationMs,
+          attemptCount: req.attemptCount,
+          currentStrategy: req.currentStrategy,
+          queueWaitMs: req.queueWaitMs,
+          previewText: "",
+          searchText: "",
+        }) satisfies EntrySummary,
+    )
 })
 
 function openDetail(id: string): void {
@@ -100,9 +93,7 @@ function onStatusFilter(value: string | null): void {
         <div class="page-toolbar">
           <div class="toolbar-copy">
             <div class="toolbar-title">Activity</div>
-            <div class="toolbar-meta text-caption text-medium-emphasis">
-              {{ store.total }} total · {{ mergedEntries.filter((r) => r.isActive).length }} active
-            </div>
+            <div class="toolbar-meta text-caption text-medium-emphasis">{{ store.total }} total · {{ inflightRows.length }} active</div>
           </div>
 
           <div class="toolbar-controls">
@@ -125,7 +116,89 @@ function onStatusFilter(value: string | null): void {
           </div>
         </div>
 
-        <!-- Request table -->
+        <!-- In-flight requests (实时全局状态,常驻顶部,不参与分页/过滤) -->
+        <v-sheet
+          v-if="inflightRows.length > 0"
+          class="panel"
+          color="surface"
+          border
+        >
+          <div class="section-label">In-flight ({{ inflightRows.length }})</div>
+          <div class="table-wrap">
+            <v-table
+              density="compact"
+              hover
+              class="activity-table bg-transparent"
+            >
+              <thead>
+                <tr>
+                  <th class="table-head col-status"></th>
+                  <th class="table-head col-time">Time</th>
+                  <th class="table-head col-model">Model</th>
+                  <th class="table-head col-endpoint">Endpoint</th>
+                  <th class="table-head col-state">State</th>
+                  <th class="table-head text-right col-dur">Dur</th>
+                  <th class="table-head text-right col-token">In</th>
+                  <th class="table-head text-right col-token">Out</th>
+                  <th class="table-head col-preview">Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="entry in inflightRows"
+                  :key="entry.id"
+                  class="clickable-row active-row"
+                  @click="openDetail(entry.id)"
+                >
+                  <td class="col-status">
+                    <v-icon
+                      :icon="statusIcon(entry)"
+                      :color="statusColor(entry)"
+                      size="x-small"
+                    />
+                  </td>
+                  <td class="col-time font-mono dense-cell text-medium-emphasis">
+                    {{ formatTime(entry.startedAt) }}
+                  </td>
+                  <td class="col-model font-mono dense-cell">
+                    <span
+                      class="truncate-inline"
+                      :title="modelName(entry)"
+                    >
+                      {{ modelName(entry) }}
+                    </span>
+                  </td>
+                  <td class="col-endpoint dense-cell text-medium-emphasis">
+                    {{ endpointLabel(entry) }}
+                  </td>
+                  <td class="col-state dense-cell">
+                    <span
+                      class="status-pill"
+                      :class="`status-pill-${requestState(entry)}`"
+                    >
+                      {{ requestState(entry) }}
+                    </span>
+                  </td>
+                  <td class="font-mono dense-cell text-right col-dur">
+                    {{ formatDuration(entry.durationMs) }}
+                  </td>
+                  <td class="font-mono dense-cell text-right col-token">-</td>
+                  <td class="font-mono dense-cell text-right col-token">-</td>
+                  <td class="col-preview dense-cell">
+                    <span
+                      class="preview-text"
+                      :title="inflightDetail(entry) || undefined"
+                    >
+                      {{ inflightDetail(entry) }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+          </div>
+        </v-sheet>
+
+        <!-- History (游标分页,受 endpoint/status 过滤) -->
         <v-sheet
           class="panel"
           color="surface"
@@ -155,10 +228,10 @@ function onStatusFilter(value: string | null): void {
           </div>
 
           <div
-            v-else-if="mergedEntries.length === 0"
+            v-else-if="store.entries.length === 0"
             class="state-shell"
           >
-            <span class="text-medium-emphasis">No activity entries yet</span>
+            <span class="text-medium-emphasis">No history entries yet</span>
           </div>
 
           <div
@@ -186,16 +259,15 @@ function onStatusFilter(value: string | null): void {
               </thead>
               <tbody>
                 <tr
-                  v-for="{ entry, isActive } in mergedEntries"
+                  v-for="entry in store.entries"
                   :key="entry.id"
-                  :class="{ 'active-row': isActive }"
                   class="clickable-row"
                   @click="openDetail(entry.id)"
                 >
                   <td class="col-status">
                     <v-icon
                       :icon="statusIcon(entry)"
-                      :color="isActive ? requestStateColor(requestState(entry)) : statusColor(entry)"
+                      :color="statusColor(entry)"
                       size="x-small"
                     />
                   </td>
@@ -257,9 +329,7 @@ function onStatusFilter(value: string | null): void {
               <v-icon icon="mdi-chevron-left" />
               Newer
             </v-btn>
-            <span class="text-caption text-medium-emphasis font-mono">
-              {{ store.entries.length }} of {{ store.total }}
-            </span>
+            <span class="text-caption text-medium-emphasis font-mono"> {{ store.entries.length }} of {{ store.total }} </span>
             <v-btn
               variant="text"
               size="small"
@@ -312,6 +382,16 @@ function onStatusFilter(value: string | null): void {
   padding: 0;
   border-color: rgb(var(--v-theme-surface-variant));
   background: rgb(var(--v-theme-surface));
+}
+
+.section-label {
+  padding: 8px 12px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgb(var(--v-theme-secondary));
+  border-bottom: 1px solid rgb(var(--v-theme-surface-variant));
 }
 
 .table-wrap {

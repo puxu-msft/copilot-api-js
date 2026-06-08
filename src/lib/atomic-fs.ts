@@ -50,10 +50,7 @@ let tmpSeq = 0
 export async function atomicWriteJson(targetPath: string, data: unknown): Promise<void> {
   const dir = path.dirname(targetPath)
   const base = path.basename(targetPath)
-  const tmpPath = path.join(
-    dir,
-    `${base}.tmp.${process.pid}.${Date.now()}.${tmpSeq++}.${Math.random().toString(36).slice(2, 8)}`,
-  )
+  const tmpPath = path.join(dir, `${base}.tmp.${process.pid}.${Date.now()}.${tmpSeq++}.${Math.random().toString(36).slice(2, 8)}`)
   try {
     await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), "utf8")
     await fs.rename(tmpPath, targetPath)
@@ -77,9 +74,7 @@ export async function atomicWriteJson(targetPath: string, data: unknown): Promis
  * serialization, two snapshots taken at different moments can land in any
  * order on disk, last-writer-wins is non-deterministic.
  */
-export function createSerializedAsyncFn<Args extends ReadonlyArray<unknown>, R>(
-  fn: (...args: Args) => Promise<R>,
-): (...args: Args) => Promise<R> {
+export function createSerializedAsyncFn<Args extends ReadonlyArray<unknown>, R>(fn: (...args: Args) => Promise<R>): (...args: Args) => Promise<R> {
   let chain: Promise<unknown> = Promise.resolve()
   return (...args: Args): Promise<R> => {
     const next = chain.then(() => fn(...args))

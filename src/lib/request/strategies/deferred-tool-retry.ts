@@ -63,9 +63,7 @@ export function parseToolReferenceError(message: string): string | null {
  * negotiation cache so future requests pre-emptively un-defer the tool
  * via `applyStickyUndeferredTools` during preprocessing.
  */
-export function createDeferredToolRetryStrategy<
-  TPayload extends { model: string; tools?: Array<Tool> },
->(): RetryStrategy<TPayload> {
+export function createDeferredToolRetryStrategy<TPayload extends { model: string; tools?: Array<Tool> }>(): RetryStrategy<TPayload> {
   return {
     name: "deferred-tool-retry",
 
@@ -126,10 +124,7 @@ export function createDeferredToolRetryStrategy<
       const newTools = [...currentPayload.tools]
       newTools[toolIndex] = { ...newTools[toolIndex], defer_loading: false }
 
-      consola.info(
-        `[DeferredToolRetry] Attempt ${context.attempt + 1}/${context.maxRetries + 1}: `
-          + `Un-deferring tool "${toolName}" and retrying`,
-      )
+      consola.info(`[DeferredToolRetry] Attempt ${context.attempt + 1}/${context.maxRetries + 1}: ` + `Un-deferring tool "${toolName}" and retrying`)
 
       return Promise.resolve({
         action: "retry",

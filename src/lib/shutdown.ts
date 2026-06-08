@@ -14,6 +14,7 @@
  */
 
 import consola from "consola"
+import { setMaxListeners } from "node:events"
 
 import type { AdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import type { ServerInstance } from "./serve"
@@ -50,7 +51,36 @@ export const DRAIN_PROGRESS_INTERVAL_MS = 5_000
 let serverInstance: ServerInstance | null = null
 let _isShuttingDown = false
 let shutdownResolve: (() => void) | null = null
-let shutdownAbortController: AbortController | null = null
+
+/**
+ * Create the process-global shutdown AbortController.
+ *
+ * Listener bookkeeping: every in-flight stream/fetch registers an `abort`
+ * listener on this signal so a Phase 3 abort can wake it. With many concurrent
+ * streams that exceeds Node's default 10-listener warning threshold, so we lift
+ * the cap. `setMaxListeners` works on EventTargets (incl. AbortSignal) under
+ * Node; under Bun it may be a no-op — that's fine, correctness never depends on
+ * it (consumers remove their listeners explicitly), it only silences a warning.
+ */
+function createShutdownController(): AbortController {
+  const controller = new AbortController()
+  try {
+    setMaxListeners(0, controller.signal)
+  } catch {
+    // Runtime without setMaxListeners support for EventTargets — non-fatal.
+  }
+  return controller
+}
+
+/**
+ * Process-global shutdown signal, created EAGERLY (not lazily at Phase 1) and
+ * aborted exactly once at Phase 3. Being stable from process start means a
+ * request that blocks on `iterator.next()` / `fetch()` BEFORE shutdown begins
+ * still has this signal registered in its abort race, so the Phase 3 abort wakes
+ * it. (A lazily-created signal would leave such already-blocked waits deaf to a
+ * signal that only materialized later.)
+ */
+let shutdownAbortController: AbortController = createShutdownController()
 let shutdownDrainAbortController: AbortController | null = null
 let shutdownPhase: "idle" | "phase1" | "phase2" | "phase3" | "phase4" | "finalized" = "idle"
 let shutdownPromise: Promise<void> | null = null
@@ -98,12 +128,15 @@ export function getShutdownPhase(): typeof shutdownPhase {
 }
 
 /**
- * Get the shutdown abort signal.
- * Returns undefined before shutdown starts. During Phase 1–2 the signal is
- * not aborted; it fires at Phase 3 to tell handlers to wrap up.
+ * Get the process-global shutdown abort signal.
+ *
+ * Stable from process start (never undefined). It is NOT aborted during normal
+ * operation or Phase 1–2; it fires at Phase 3 to tell in-flight handlers to wrap
+ * up. To test "are we shutting down?", use {@link getIsShuttingDown} (set at
+ * Phase 1) — NOT this signal's existence.
  */
-export function getShutdownSignal(): AbortSignal | undefined {
-  return shutdownAbortController?.signal
+export function getShutdownSignal(): AbortSignal {
+  return shutdownAbortController.signal
 }
 
 /**
@@ -252,7 +285,10 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
   // ── Phase 1: Stop accepting new requests ──────────────────────────────
   _isShuttingDown = true
-  shutdownAbortController = new AbortController()
+  // NOTE: do NOT recreate shutdownAbortController here. It is created eagerly at
+  // module load and reused for the whole process lifetime, so requests that
+  // began (and possibly blocked on a stalled upstream) BEFORE this point already
+  // hold its signal in their abort race and will observe the Phase 3 abort.
   // Fire-and-forget: phase1/2/3 don't precede force-close, so we don't need
   // to await the broadcast drain. Phase4 + finalized DO await (see below).
   setPhaseFireAndForget("phase1")
@@ -321,10 +357,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
     // ── Phase 3: Abort signal + extended wait ─────────────────────────────
     const remaining = tracker.getActiveRequests().length
-    consola.info(
-      `Phase 3: Sending abort signal to ${remaining} remaining request(s), `
-        + `waiting up to ${abortWaitMs / 1000}s...`,
-    )
+    consola.info(`Phase 3: Sending abort signal to ${remaining} remaining request(s), ` + `waiting up to ${abortWaitMs / 1000}s...`)
 
     setPhaseFireAndForget("phase3")
     shutdownDrainAbortController = new AbortController()
@@ -502,7 +535,10 @@ export function setupShutdownHandlers(): void {
 export function _resetShutdownState(): void {
   _isShuttingDown = false
   shutdownResolve = null
-  shutdownAbortController = null
+  // Fresh, un-aborted controller so the next test starts clean. Tests MUST
+  // ensure their in-flight streams have ended before resetting, otherwise a
+  // stream holding the previous signal reference would never see an abort.
+  shutdownAbortController = createShutdownController()
   shutdownDrainAbortController = null
   shutdownPhase = "idle"
   shutdownPromise = null

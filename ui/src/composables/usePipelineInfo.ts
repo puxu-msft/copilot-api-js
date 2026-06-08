@@ -50,10 +50,7 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: array index access
       if (!original) continue
       // Quick reference check before expensive serialization
-      if (
-        original.content !== rewritten.content
-        && JSON.stringify(original.content) !== JSON.stringify(rewritten.content)
-      ) {
+      if (original.content !== rewritten.content && JSON.stringify(original.content) !== JSON.stringify(rewritten.content)) {
         indices.add(idx)
       }
     }

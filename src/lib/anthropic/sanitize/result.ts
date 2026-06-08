@@ -30,10 +30,7 @@ export function finalizeAnthropicSanitization(
   const finalMessages = filterEmptyAnthropicTextBlocks(messages)
   const finalSystem = filterEmptySystemTextBlocks(system)
   const totalBlocksRemoved = Math.max(0, originalBlockCount - countAnthropicContentBlocks(finalMessages))
-  const emptyTextBlocksRemoved = Math.max(
-    0,
-    totalBlocksRemoved - toolStats.orphanedToolUseCount - toolStats.orphanedToolResultCount,
-  )
+  const emptyTextBlocksRemoved = Math.max(0, totalBlocksRemoved - toolStats.orphanedToolUseCount - toolStats.orphanedToolResultCount)
 
   if (toolStats.fixedNameCount > 0) {
     consola.debug(`[Sanitizer:Anthropic] Fixed ${toolStats.fixedNameCount} tool name casing mismatches`)

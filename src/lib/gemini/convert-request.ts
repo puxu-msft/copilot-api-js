@@ -68,10 +68,7 @@ export interface ConvertedGeminiRequest {
 }
 
 /** Convert a Gemini `GenerateContentRequest` to an OpenAI ChatCompletionsPayload */
-export function convertGeminiRequestToOpenAI(
-  body: GenerateContentRequest,
-  opts: ConvertRequestOptions,
-): ConvertedGeminiRequest {
+export function convertGeminiRequestToOpenAI(body: GenerateContentRequest, opts: ConvertRequestOptions): ConvertedGeminiRequest {
   const messages: Array<Message> = []
 
   // 1. systemInstruction → leading system message
@@ -111,9 +108,7 @@ export function convertGeminiRequestToOpenAI(
   if (toolChoice !== undefined) payload.tool_choice = toolChoice
   if (opts.stream) payload.stream_options = { include_usage: true }
 
-  const droppedParams = LOSSY_TOP_LEVEL_KEYS.filter(
-    (key) => (body as Record<string, unknown>)[key] !== undefined,
-  ) as Array<string>
+  const droppedParams = LOSSY_TOP_LEVEL_KEYS.filter((key) => (body as Record<string, unknown>)[key] !== undefined) as Array<string>
 
   return { payload, droppedParams }
 }
@@ -168,8 +163,7 @@ function convertContentToMessages(content: Content, pairing: PairingResult): Arr
     if (part.functionResponse) {
       const callId = resolveResponseId(part, pairing)
       if (!callId) continue
-      const responseText =
-        part.functionResponse.response !== undefined ? JSON.stringify(part.functionResponse.response) : ""
+      const responseText = part.functionResponse.response !== undefined ? JSON.stringify(part.functionResponse.response) : ""
       out.push({
         role: "tool",
         tool_call_id: callId,
@@ -198,9 +192,7 @@ function convertAssistantContent(parts: ReadonlyArray<Part>, pairing: PairingRes
     if (part.text !== undefined) {
       textBuffer += part.text
     } else if (part.functionCall?.name) {
-      const id =
-        resolveCallId(part, pairing)
-        ?? `${SYNTHETIC_CALL_ID_PREFIX}fallback:${toolCalls.length}:${part.functionCall.name}`
+      const id = resolveCallId(part, pairing) ?? `${SYNTHETIC_CALL_ID_PREFIX}fallback:${toolCalls.length}:${part.functionCall.name}`
       toolCalls.push({
         id,
         type: "function",

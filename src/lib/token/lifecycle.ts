@@ -85,10 +85,7 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   } catch (error) {
     if (isExplicitToken) {
       const source = tokenInfo.source === "cli" ? "--github-token" : "environment variable"
-      consola.error(
-        `The GitHub token provided via ${source} is invalid or expired.`,
-        error instanceof Error ? error.message : error,
-      )
+      consola.error(`The GitHub token provided via ${source} is invalid or expired.`, error instanceof Error ? error.message : error)
       process.exit(1)
     }
     throw error
@@ -107,10 +104,7 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   } catch (error) {
     if (isExplicitToken) {
       const source = tokenInfo.source === "cli" ? "--github-token" : "environment variable"
-      consola.error(
-        `The GitHub token provided via ${source} does not have Copilot access.`,
-        error instanceof Error ? error.message : error,
-      )
+      consola.error(`The GitHub token provided via ${source} does not have Copilot access.`, error instanceof Error ? error.message : error)
       process.exit(1)
     }
     throw error

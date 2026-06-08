@@ -31,13 +31,7 @@ import {
   upsertResponseSession,
 } from "./sqlite/write"
 
-const SESSION_HEADER_CANDIDATES = [
-  "x-session-id",
-  "x-conversation-id",
-  "x-chat-session-id",
-  "x-thread-id",
-  "x-interaction-id",
-] as const
+const SESSION_HEADER_CANDIDATES = ["x-session-id", "x-conversation-id", "x-chat-session-id", "x-thread-id", "x-interaction-id"] as const
 
 function normalizeSessionId(value: string | null | undefined): string | undefined {
   if (typeof value !== "string") return undefined
@@ -90,10 +84,7 @@ export function getSession(id: string): Session | undefined {
   return getSessionById(id)
 }
 
-export function getSessionEntries(
-  sessionId: string,
-  options: { cursor?: string; limit?: number } = {},
-): CursorResult<HistoryEntry> {
+export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
   const all = queryEntries({ sessionId, limit: 1_000_000 }).sort((a, b) => a.startedAt - b.startedAt)
 

@@ -195,9 +195,7 @@ function handleMessageStart(message: RawMessageStartEvent["message"], acc: Anthr
     acc.cacheCreationTokens = message.usage.cache_creation_input_tokens
   }
   // Server-side tool search usage
-  const serverToolUse = (message.usage as unknown as Record<string, unknown>).server_tool_use as
-    | { tool_search_requests?: number }
-    | undefined
+  const serverToolUse = (message.usage as unknown as Record<string, unknown>).server_tool_use as { tool_search_requests?: number } | undefined
   if (serverToolUse?.tool_search_requests) {
     acc.toolSearchRequests = serverToolUse.tool_search_requests
   }
@@ -269,40 +267,52 @@ function handleContentBlockStart(index: number, block: AccContentBlock, acc: Ant
   acc.contentBlocks[index] = newBlock
 }
 
-function handleContentBlockDelta(
-  index: number,
-  delta: AccDelta,
-  acc: AnthropicStreamAccumulator,
-  copilotAnnotations?: CopilotAnnotations,
-) {
+function handleContentBlockDelta(index: number, delta: AccDelta, acc: AnthropicStreamAccumulator, copilotAnnotations?: CopilotAnnotations) {
   const block = acc.contentBlocks[index]
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: index from untrusted SSE data
   if (!block) return
 
   switch (delta.type) {
     case "text_delta": {
+      // Defensive: a well-formed stream only sends text_delta for a text block.
+      // A mismatch (malformed / out-of-order upstream) would inject a `text`
+      // field onto the wrong block type and corrupt the accumulated structure.
+      if (block.type !== "text") {
+        warnDeltaBlockMismatch(delta.type, block.type)
+        break
+      }
       const b = block as { text: string }
       b.text += delta.text
       acc.rawContent += delta.text // Sync BaseStreamAccumulator.rawContent for error fallback
       break
     }
     case "thinking_delta": {
+      if (block.type !== "thinking") {
+        warnDeltaBlockMismatch(delta.type, block.type)
+        break
+      }
       const b = block as { thinking: string }
       b.thinking += delta.thinking
       break
     }
     case "input_json_delta": {
+      if (block.type !== "tool_use" && block.type !== "server_tool_use") {
+        warnDeltaBlockMismatch(delta.type, block.type)
+        break
+      }
       const b = block as { input: string }
       b.input += delta.partial_json
       break
     }
     case "signature_delta": {
       // signature_delta is part of the thinking block integrity, it's not accumulated actually (it, not content)
+      if (block.type !== "thinking") {
+        warnDeltaBlockMismatch(delta.type, block.type)
+        break
+      }
       const b = block as { signature?: string }
       if (b.signature) {
-        consola.error(
-          "[stream-accumulator] Received unexpected signature_delta for a block that already has a signature. Overwriting existing signature.",
-        )
+        consola.error("[stream-accumulator] Received unexpected signature_delta for a block that already has a signature. Overwriting existing signature.")
       }
       b.signature = delta.signature
       break
@@ -317,6 +327,11 @@ function handleContentBlockDelta(
   if (copilotAnnotations?.ip_code_citations?.length) {
     acc.copilotAnnotations.push(copilotAnnotations)
   }
+}
+
+/** Warn when a content_block_delta targets a block whose type can't accept it (malformed upstream). */
+function warnDeltaBlockMismatch(deltaType: string, blockType: string) {
+  consola.warn(`[stream-accumulator] ${deltaType} for a ${blockType} block — skipping (malformed/out-of-order upstream)`)
 }
 
 // ============================================================================
@@ -342,11 +357,7 @@ interface MessageDeltaUsage {
  * output_tokens is the final count here (replaces message_start's 0).
  * input_tokens may or may not be present — only update if provided.
  */
-function handleMessageDelta(
-  delta: MessageDelta,
-  usage: MessageDeltaUsage | undefined,
-  acc: AnthropicStreamAccumulator,
-) {
+function handleMessageDelta(delta: MessageDelta, usage: MessageDeltaUsage | undefined, acc: AnthropicStreamAccumulator) {
   if (delta.stop_reason) acc.stopReason = delta.stop_reason
   if (usage) {
     // output_tokens in message_delta is the final output count

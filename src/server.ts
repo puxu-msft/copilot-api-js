@@ -24,15 +24,7 @@ export interface ServerOptions {
  */
 function detectErrorWireFormat(path: string): ErrorWireFormat {
   if (path.startsWith("/v1beta")) return "gemini"
-  const openaiPrefixes = [
-    "/chat/completions",
-    "/v1/chat/completions",
-    "/openai",
-    "/responses",
-    "/v1/responses",
-    "/embeddings",
-    "/v1/embeddings",
-  ]
+  const openaiPrefixes = ["/chat/completions", "/v1/chat/completions", "/openai", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings"]
   if (openaiPrefixes.some((p) => path.startsWith(p))) return "openai"
   return "anthropic"
 }

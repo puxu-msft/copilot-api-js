@@ -111,12 +111,7 @@ function suppressNodeSqliteExperimentalWarning(): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- process.emit signature is variadic and overloaded; we just forward through.
   process.emit = function patchedEmit(name: any, ...args: Array<any>): boolean {
     const data = args[0]
-    if (
-      name === "warning"
-      && data instanceof Error
-      && data.name === "ExperimentalWarning"
-      && /SQLite/i.test(data.message)
-    ) {
+    if (name === "warning" && data instanceof Error && data.name === "ExperimentalWarning" && /SQLite/i.test(data.message)) {
       return false
     }
     return originalEmit(name, ...args)

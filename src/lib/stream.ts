@@ -17,6 +17,40 @@ export class StreamIdleTimeoutError extends Error {
   }
 }
 
+/**
+ * Error thrown when an in-flight stream is interrupted by server shutdown
+ * (the Phase 3 abort signal). Distinct from a client disconnect: the downstream
+ * client is still connected and waiting, so handlers MUST surface this as a
+ * terminal `error` event rather than closing the stream silently.
+ *
+ * Each handler's `catch` maps this to its protocol's transient/retryable error
+ * shape so the client backs off and retries against the restarted instance:
+ * Anthropic → `overloaded_error`, Gemini → `UNAVAILABLE`/503, OpenAI (Chat
+ * Completions / Responses) → `server_error` (a 5xx-class transient type).
+ */
+export class StreamShutdownError extends Error {
+  constructor() {
+    super("Server is shutting down")
+    this.name = "StreamShutdownError"
+  }
+}
+
+/** Coarse classification of a stream lifecycle error, protocol-agnostic. */
+export type StreamErrorKind = "idle-timeout" | "shutdown" | "other"
+
+/**
+ * Classify a streaming error into a protocol-agnostic kind. Every SSE handler
+ * branches on this kind to pick its own protocol's error shape — Anthropic
+ * (`overloaded_error`), Gemini (`UNAVAILABLE`), and the OpenAI surfaces (via
+ * `streamErrorToOpenAIErrorType`) — so the `instanceof` checks live here in one
+ * place instead of being repeated in each handler.
+ */
+export function classifyStreamError(error: unknown): StreamErrorKind {
+  if (error instanceof StreamIdleTimeoutError) return "idle-timeout"
+  if (error instanceof StreamShutdownError) return "shutdown"
+  return "other"
+}
+
 // ============================================================================
 // Abort signal utilities
 // ============================================================================
@@ -125,43 +159,116 @@ export function iterateSseEvents(response: unknown): AsyncIterator<SseFrame> {
 
 /**
  * Wrap an async-iterable SSE source so each `.next()` is raced against an
- * idle-timeout + abort signal recomputed PER ITERATION.
+ * idle-timeout and abort signals.
  *
- * `getAbortSignal` is a thunk recomputed per iteration. The shutdown signal
- * starts out `undefined` and only materializes when Phase 1 of graceful
- * shutdown begins; baking it in at construction time would leave already-in-
- * flight requests deaf to the abort signal. Each `.next()` therefore re-asks
- * for the live signal composition (typically
- * `combineAbortSignals(getShutdownSignal(), clientAbortSignal)`).
+ * `shutdownSignal` is the process-global, long-lived shutdown signal (stable
+ * from process start, aborted at Phase 3). `clientSignal` is the per-request
+ * downstream-disconnect signal. Both are forwarded into a single per-stream
+ * local `AbortController` via explicit `addEventListener`/`removeEventListener`
+ * (NOT `AbortSignal.any`): this keeps exactly one listener on the long-lived
+ * shutdown signal per stream and removes it deterministically on every exit
+ * path, rather than leaving cleanup to GC.
+ *
+ * Because the shutdown signal is stable (never undefined, never replaced
+ * mid-stream), a `.next()` already blocked on a stalled upstream when shutdown
+ * begins is still woken by the Phase 3 abort — no per-iteration recomputation
+ * is needed.
  *
  * On idle timeout: rejects with `StreamIdleTimeoutError`.
- * On abort: yields `{ done: true }` cleanly (no exception). The `STREAM_ABORTED`
- * sentinel from `raceIteratorNext` is translated here so callers can use a
- * plain `for await` loop without sentinel-comparison branches.
+ * On abort, the two signals have OPPOSITE semantics:
+ * - **client abort** (downstream disconnected): yields `{ done: true }` cleanly —
+ *   nobody is listening, so there is no one to notify.
+ * - **shutdown abort** (server closing, client still connected): throws
+ *   `StreamShutdownError` so the consumer's `catch` can emit a terminal error
+ *   event instead of silently truncating the stream.
+ * The abort source is resolved by querying the two ORIGINAL signals directly;
+ * `client` is checked first (if the client is gone, a concurrent shutdown is
+ * moot).
  *
- * `return()` is forwarded to the underlying iterator so resource cleanup
- * (e.g. closing the upstream connection on early break) still works.
+ * Inner-iterator cleanup: `for await` only calls our `return()` when the
+ * consumer `break`s or throws — NOT when our `next()` throws (idle-timeout /
+ * shutdown) or returns the synthetic client-gone `{ done: true }`. On those
+ * non-natural terminations the guard closes the underlying iterator itself
+ * (idempotent) so the upstream connection is released. Natural completion needs
+ * no close — the inner iterator has already ended. `return()` also forwards to
+ * the underlying iterator for the early-break path.
  */
 export function guardSseIterable<T>(
   source: AsyncIterable<T>,
-  opts: { idleTimeoutMs: number; getAbortSignal?: () => AbortSignal | undefined },
+  opts: {
+    idleTimeoutMs: number
+    shutdownSignal?: AbortSignal
+    clientSignal?: AbortSignal
+  },
 ): AsyncIterable<T> {
+  const { idleTimeoutMs, shutdownSignal, clientSignal } = opts
   return {
     [Symbol.asyncIterator](): AsyncIterator<T> {
       const inner = source[Symbol.asyncIterator]()
+
+      const local = new AbortController()
+      const onAbort = () => local.abort()
+      shutdownSignal?.addEventListener("abort", onAbort, { once: true })
+      clientSignal?.addEventListener("abort", onAbort, { once: true })
+      // Fast-path: a source was already aborted before the first next().
+      if (shutdownSignal?.aborted || clientSignal?.aborted) local.abort()
+
+      let detached = false
+      const detach = () => {
+        if (detached) return
+        detached = true
+        shutdownSignal?.removeEventListener("abort", onAbort)
+        clientSignal?.removeEventListener("abort", onAbort)
+      }
+
+      // Close the underlying source. `for await` does NOT call our `return()`
+      // when our `next()` throws (idle-timeout / shutdown) or returns a synthetic
+      // `{ done: true }` (client gone) — in those cases the inner iterator is
+      // still live and must be closed here, or its upstream connection leaks.
+      //
+      // CRITICAL: on those paths a stalled `inner.next()` is still pending, and
+      // calling `return()` on a generator suspended mid-`await` queues behind that
+      // next() — so `closeInner` is fire-and-forget on the next() paths (awaiting
+      // would re-introduce the very hang the abort race exists to avoid). The
+      // early-`break` path (consumer-driven `return()`) has no pending next(), so
+      // there it is awaited to preserve return-value forwarding. Idempotent so the
+      // two callers can't double-close.
+      let innerClosed = false
+      const closeInner = async (value?: T): Promise<IteratorResult<T> | undefined> => {
+        if (innerClosed) return undefined
+        innerClosed = true
+        try {
+          return await inner.return?.(value)
+        } catch {
+          // Source cleanup failed (already torn down) — nothing to recover.
+          return undefined
+        }
+      }
+
       return {
         async next(): Promise<IteratorResult<T>> {
-          const abortSignal = opts.getAbortSignal?.()
-          const result = await raceIteratorNext(inner.next(), {
-            idleTimeoutMs: opts.idleTimeoutMs,
-            abortSignal,
-          })
-          if (result === STREAM_ABORTED) return { value: undefined as unknown as T, done: true }
+          let result: IteratorResult<T> | typeof STREAM_ABORTED
+          try {
+            result = await raceIteratorNext(inner.next(), { idleTimeoutMs, abortSignal: local.signal })
+          } catch (error) {
+            detach() // idle timeout (or other rejection) — the stream is over
+            void closeInner() // fire-and-forget: inner.next() is still pending
+            throw error
+          }
+          if (result === STREAM_ABORTED) {
+            detach()
+            void closeInner() // fire-and-forget: inner.next() is still pending
+            if (clientSignal?.aborted) return { value: undefined as unknown as T, done: true }
+            if (shutdownSignal?.aborted) throw new StreamShutdownError()
+            return { value: undefined as unknown as T, done: true }
+          }
+          if (result.done) detach() // natural completion — inner already ended, no close needed
           return result
         },
         async return(value?: T): Promise<IteratorResult<T>> {
-          if (inner.return) return inner.return(value)
-          return { value: value as T, done: true }
+          detach()
+          const closed = await closeInner(value)
+          return closed ?? { value: value as T, done: true }
         },
       }
     },

@@ -63,16 +63,7 @@ export function buildHistoryActivityPatch(
   context: RequestContext,
 ): Pick<
   HistoryEntry,
-  | "rawPath"
-  | "startedAt"
-  | "state"
-  | "active"
-  | "lastUpdatedAt"
-  | "queueWaitMs"
-  | "attemptCount"
-  | "currentStrategy"
-  | "durationMs"
-  | "transport"
+  "rawPath" | "startedAt" | "state" | "active" | "lastUpdatedAt" | "queueWaitMs" | "attemptCount" | "currentStrategy" | "durationMs" | "transport"
 > {
   const snapshot = summarizeRequestContext(context)
 

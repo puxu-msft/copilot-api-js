@@ -152,10 +152,7 @@ export function createRequestContextManager(): RequestContextManager {
             + `, age: ${Math.round(ctx.durationMs / 1000)}s`
             + `, max: ${state.staleRequestMaxAge}s)`,
         )
-        ctx.fail(
-          ctx.originalRequest?.model ?? "unknown",
-          new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`),
-        )
+        ctx.fail(ctx.originalRequest?.model ?? "unknown", new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`))
       }
     }
   }
@@ -184,8 +181,7 @@ export function createRequestContextManager(): RequestContextManager {
         const endpoint = event.context.endpoint
         const model = event.context.originalRequest?.model
         consola.warn(
-          `[context] listener threw for event "${event.type}" `
-            + `(request ${event.context.id}, endpoint ${endpoint}${model ? `, model ${model}` : ""}):`,
+          `[context] listener threw for event "${event.type}" ` + `(request ${event.context.id}, endpoint ${endpoint}${model ? `, model ${model}` : ""}):`,
           err instanceof Error ? err.message : err,
         )
       }

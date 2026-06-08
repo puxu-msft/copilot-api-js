@@ -39,6 +39,7 @@ import {
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
+import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
   createStreamIdTracker,
@@ -50,10 +51,8 @@ import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
   //
-  STREAM_ABORTED,
-  combineAbortSignals,
-  iterateSseEvents,
-  raceIteratorNext,
+  guardSseIterable,
+  type SseFrame,
 } from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
@@ -243,23 +242,23 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
     const response = pipelineResult.response
 
-    // Stream SSE events → WebSocket JSON frames
-    const iterator = iterateSseEvents(response)
+    // Stream SSE events → WebSocket JSON frames. `guardSseIterable` owns the
+    // stable-signal abort race (so a Phase 3 shutdown is observed even while
+    // blocked on a stalled upstream) and the shutdown-vs-client distinction: a
+    // shutdown throws StreamShutdownError (→ catch → sendErrorAndClose with a
+    // retryable frame), while a client disconnect ends the loop cleanly.
     const acc = createResponsesStreamAccumulator()
     const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
     const idTracker = state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
     let eventsReceived = 0
 
-    while (true) {
-      const shutdownSignal = getShutdownSignal()
-      const result = await raceIteratorNext(iterator.next(), {
-        idleTimeoutMs,
-        abortSignal: combineAbortSignals(shutdownSignal, clientAbort.signal),
-      })
+    const guarded = guardSseIterable(response as AsyncIterable<SseFrame>, {
+      idleTimeoutMs,
+      shutdownSignal: getShutdownSignal(),
+      clientSignal: clientAbort.signal,
+    })
 
-      if (result === STREAM_ABORTED || result.done) break
-
-      const sseEvent = result.value
+    for await (const sseEvent of guarded) {
       if (!sseEvent.data || sseEvent.data === "[DONE]") continue
 
       try {
@@ -302,7 +301,10 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
-    sendErrorAndClose(ws, message)
+    // Map stream lifecycle errors to the OpenAI error type (idle-timeout →
+    // timeout_error, shutdown/other → server_error) for parity with the HTTP
+    // Responses path; non-stream errors fall through to server_error.
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
   }
 }
 
@@ -448,11 +450,7 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
       // Extract and validate payload
       const payload = extractPayload(message)
       if (!payload) {
-        sendErrorAndClose(
-          ws,
-          'Invalid message: expected { type: "response.create", response: { model, input, ... } }',
-          "invalid_request_error",
-        )
+        sendErrorAndClose(ws, 'Invalid message: expected { type: "response.create", response: { model, input, ... } }', "invalid_request_error")
         return
       }
 

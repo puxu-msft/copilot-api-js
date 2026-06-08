@@ -232,12 +232,7 @@ export interface RequestContext {
   setHttpHeaders(capture: HeadersCapture): void
   setInboundRequestHeaders(headers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void
-  beginAttempt(opts: {
-    strategy?: string
-    waitMs?: number
-    truncation?: TruncationInfo
-    transport?: RequestTransport
-  }): void
+  beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void
   setAttemptSanitization(info: SanitizationInfo): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
   setAttemptWireRequest(req: WireRequest): void

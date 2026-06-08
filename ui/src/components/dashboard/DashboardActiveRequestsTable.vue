@@ -13,9 +13,7 @@ defineProps<{
     class="px-4 pb-4"
   >
     <v-divider class="mb-3" />
-    <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase mb-2">
-      Active Requests ({{ activeRequests.length }})
-    </div>
+    <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase mb-2">Active Requests ({{ activeRequests.length }})</div>
     <v-table
       density="compact"
       class="active-req-table"

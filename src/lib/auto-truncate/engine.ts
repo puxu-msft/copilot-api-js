@@ -91,12 +91,7 @@ export function hasKnownLimits(modelId: string): boolean {
  * Called when a token limit error (400) occurs.
  * Records the learned limit and optionally updates calibration.
  */
-export function onTokenLimitExceeded(
-  modelId: string,
-  reportedLimit: number,
-  reportedCurrent?: number,
-  estimatedTokens?: number,
-): void {
+export function onTokenLimitExceeded(modelId: string, reportedLimit: number, reportedCurrent?: number, estimatedTokens?: number): void {
   // Update learned limits (with calibration data for future pre-checks)
   const existing = learnedLimits.get(modelId)
 
@@ -216,6 +211,9 @@ export function schedulePersist(): void {
   }, PERSIST_DEBOUNCE_MS)
 }
 
+/** Debounce for persist-failure logging — warn once, reset on a successful write. */
+let persistFailureLogged = false
+
 /**
  * Write learned limits to disk. Serialized + atomic — see `~/lib/atomic-fs`.
  *
@@ -225,15 +223,21 @@ export function schedulePersist(): void {
  * `catch{}` silently zeroes every model's learned token limit — each model
  * then needs one extra failed round-trip to relearn its cap.
  */
+
 export const persistLimits = createSerializedAsyncFn(async () => {
   if (learnedLimits.size === 0) return
   const data: LearnedLimitsFile = { version: 1, limits: Object.fromEntries(learnedLimits) }
   try {
     await atomicWriteJson(PATHS.LEARNED_LIMITS, data)
+    persistFailureLogged = false
   } catch (err) {
     // Re-learnable on next error, but persistent ENOSPC / permission failures
-    // still warrant a trail. Matches feature-negotiation / telemetry log level.
-    consola.debug("[AutoTruncate] persist failed:", err)
+    // still warrant a trail. Warn once until a write recovers (avoids repeating
+    // on every subsequent learning event while the disk stays broken).
+    if (!persistFailureLogged) {
+      persistFailureLogged = true
+      consola.warn("[AutoTruncate] persist failed (learned limits will re-learn but won't survive restart):", err)
+    }
   }
 })
 
@@ -252,8 +256,13 @@ export async function loadPersistedLimits(): Promise<void> {
     if (learnedLimits.size > 0) {
       consola.info(`[AutoTruncate] Loaded learned limits for ${learnedLimits.size} model(s)`)
     }
-  } catch {
-    // File doesn't exist or is corrupted — start fresh
+  } catch (err) {
+    // A missing file is the normal first-run case — stay silent. A present-but-
+    // corrupt file (JSON parse error / read error) is worth surfacing, mirroring
+    // the telemetry loader, before we start fresh.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      consola.warn("[AutoTruncate] learned-limits file unreadable/corrupted, starting fresh:", err)
+    }
   }
 }
 
@@ -288,12 +297,7 @@ export interface LimitErrorInfo {
  *
  * Returns error info if the error is a retryable token limit error, null otherwise.
  */
-export function tryParseAndLearnLimit(
-  error: HTTPError,
-  modelId: string,
-  learn = true,
-  estimatedTokens?: number,
-): LimitErrorInfo | null {
+export function tryParseAndLearnLimit(error: HTTPError, modelId: string, learn = true, estimatedTokens?: number): LimitErrorInfo | null {
   // 400 → try to parse token limit
   if (error.status === 400) {
     let errorJson: CopilotErrorBody | undefined
@@ -308,8 +312,7 @@ export function tryParseAndLearnLimit(
 
     // Check OpenAI format (code: "model_max_prompt_tokens_exceeded")
     // or Anthropic format (type: "invalid_request_error")
-    const isTokenError =
-      errorJson.error.code === "model_max_prompt_tokens_exceeded" || errorJson.error.type === "invalid_request_error"
+    const isTokenError = errorJson.error.code === "model_max_prompt_tokens_exceeded" || errorJson.error.type === "invalid_request_error"
 
     if (!isTokenError) return null
 
@@ -433,10 +436,5 @@ export function compressCompactedReadResult(text: string): string | null {
   const firstLines = innerContent.split(String.raw`\n`).slice(0, 3)
   const preview = firstLines.join(" | ").slice(0, 150)
 
-  return (
-    `${OPEN_TAG}\n`
-    + `[Compressed] ${toolName} tool result (${innerContent.length.toLocaleString()} chars). `
-    + `Preview: ${preview}\n`
-    + CLOSE_TAG
-  )
+  return `${OPEN_TAG}\n` + `[Compressed] ${toolName} tool result (${innerContent.length.toLocaleString()} chars). ` + `Preview: ${preview}\n` + CLOSE_TAG
 }

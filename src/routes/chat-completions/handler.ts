@@ -53,6 +53,7 @@ import {
   createOpenAIStreamAccumulator,
   accumulateOpenAIStreamEvent,
 } from "~/lib/openai/stream-accumulator"
+import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
   createStreamTranslator,
@@ -82,8 +83,6 @@ import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
   //
-  StreamIdleTimeoutError,
-  combineAbortSignals,
   guardSseIterable,
 } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
@@ -93,8 +92,7 @@ import { isNullish } from "~/lib/utils"
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 export async function handleChatCompletion(c: Context) {
-  const originalPayload =
-    (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
+  const originalPayload = (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
 
   // Snapshot the inbound payload BEFORE any mutation so the recorded
   // "original" reflects what the client actually sent — handlers below
@@ -379,9 +377,7 @@ async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
 function recordDroppedCcParamsWarning(reqCtx: RequestContext, model: string, droppedParams: Array<string>) {
   const paramsText = droppedParams.join(", ")
   const message = `Chat Completions -> Responses translation dropped unsupported params: ${paramsText}`
-  const alreadyRecorded = reqCtx.warningMessages.some(
-    (warning) => warning.code === DROPPED_CC_PARAMS_WARNING_CODE && warning.message === message,
-  )
+  const alreadyRecorded = reqCtx.warningMessages.some((warning) => warning.code === DROPPED_CC_PARAMS_WARNING_CODE && warning.message === message)
 
   if (alreadyRecorded) return
 
@@ -401,8 +397,7 @@ function createChatCompletionsStrategies(label: string): Array<RetryStrategy<Cha
     createNetworkRetryStrategy<ChatCompletionsPayload>(),
     createTokenRefreshStrategy<ChatCompletionsPayload>(),
     createAutoTruncateStrategy<ChatCompletionsPayload>({
-      truncate: (p, model, truncOpts) =>
-        autoTruncateOpenAI(p, model, truncOpts) as Promise<TruncateResult<ChatCompletionsPayload>>,
+      truncate: (p, model, truncOpts) => autoTruncateOpenAI(p, model, truncOpts) as Promise<TruncateResult<ChatCompletionsPayload>>,
       resanitize: (p) => sanitizeOpenAIMessages(p),
       isEnabled: () => state.autoTruncate,
       label,
@@ -500,10 +495,7 @@ function handleNonStreamingResponse(
     const firstChoice = response.choices[0]
     response = {
       ...response,
-      choices: [
-        { ...firstChoice, message: { ...firstChoice.message, content: `${marker}${firstChoice.message.content}` } },
-        ...response.choices.slice(1),
-      ],
+      choices: [{ ...firstChoice, message: { ...firstChoice.message, content: `${marker}${firstChoice.message.content}` } }, ...response.choices.slice(1)],
     }
   }
 
@@ -575,7 +567,8 @@ async function handleStreamingResponse(opts: StreamingOptions) {
 
     const guarded = guardSseIterable(response, {
       idleTimeoutMs,
-      getAbortSignal: () => combineAbortSignals(getShutdownSignal(), clientAbortSignal),
+      shutdownSignal: getShutdownSignal(),
+      clientSignal: clientAbortSignal,
     })
 
     for await (const rawEvent of guarded) {
@@ -595,8 +588,14 @@ async function handleStreamingResponse(opts: StreamingOptions) {
         try {
           const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
           accumulateOpenAIStreamEvent(chunk, acc)
-        } catch {
-          // Ignore parse errors
+        } catch (err) {
+          // Unparseable frame: forwarding is unaffected (raw frame still passes
+          // through), but it's dropped from history/token accounting. Log at
+          // debug for parity with the Responses/Gemini SSE paths.
+          consola.debug(
+            `[ChatCompletions] skipping unparseable SSE frame for accumulation (${err instanceof Error ? err.message : String(err)}):`,
+            rawEvent.data.slice(0, 200),
+          )
         }
       }
 
@@ -621,7 +620,7 @@ async function handleStreamingResponse(opts: StreamingOptions) {
       data: JSON.stringify({
         error: {
           message: errorMessage,
-          type: error instanceof StreamIdleTimeoutError ? "timeout_error" : "server_error",
+          type: streamErrorToOpenAIErrorType(error),
         },
       }),
       event: "error",

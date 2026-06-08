@@ -24,14 +24,21 @@ import type {
 } from "~/types/api/anthropic"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
-import { HTTPError } from "~/lib/error"
+import {
+  //
+  HTTPError,
+  isAbortError,
+} from "~/lib/error"
 import {
   //
   createFetchSignal,
   captureHttpHeaders,
+  DISABLE_BUILTIN_FETCH_TIMEOUT,
   sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
+import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
+import { combineAbortSignals } from "~/lib/stream"
 
 import {
   //
@@ -95,14 +102,37 @@ export async function createAnthropicMessages(
 
     consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
 
-    const fetchSignal = createFetchSignal()
+    // For NON-streaming requests, fold the shutdown signal into the fetch signal
+    // so a Phase 3 abort interrupts the (long) header-wait instead of hanging
+    // until fetchTimeout / Phase 4 force-close. Streaming requests deliberately
+    // omit it: the stream guard in processAnthropicStream owns shutdown
+    // for the streamed body, and aborting the fetch mid-body would tear down the
+    // ReadableStream underneath that guard.
+    const upstreamSignal = combineAbortSignals(createFetchSignal(), payload.stream ? undefined : getShutdownSignal())
 
-    const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(wire),
-      signal: fetchSignal,
-    })
+    let response: Response
+    try {
+      response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(wire),
+        signal: upstreamSignal,
+        ...DISABLE_BUILTIN_FETCH_TIMEOUT,
+      })
+    } catch (error) {
+      // A shutdown-caused abort becomes a retryable 529 (overloaded) so the
+      // client backs off and retries against the restarted instance, rather than
+      // surfacing a raw AbortError as a generic 500.
+      if (getShutdownSignal().aborted && error instanceof Error && isAbortError(error)) {
+        throw new HTTPError(
+          "Server is shutting down",
+          529,
+          JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Server is shutting down" } }),
+          model,
+        )
+      }
+      throw error
+    }
 
     if (opts?.headersCapture) {
       captureHttpHeaders(opts.headersCapture, headers, response)

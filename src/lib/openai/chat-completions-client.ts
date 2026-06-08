@@ -17,9 +17,12 @@ import {
   //
   createFetchSignal,
   captureHttpHeaders,
+  DISABLE_BUILTIN_FETCH_TIMEOUT,
   sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
+import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
+import { combineAbortSignals } from "~/lib/stream"
 
 import {
   //
@@ -48,14 +51,18 @@ export const createChatCompletions = async (
   })
   const { wire, headers } = prepared
 
-  // Apply fetch timeout if configured (connection + response headers)
-  const fetchSignal = createFetchSignal()
+  // Apply fetch timeout if configured (connection + response headers). For
+  // non-streaming requests, also fold in the shutdown signal so a Phase 3 abort
+  // interrupts the (long) header-wait; streaming omits it (the stream guard in
+  // the handler owns shutdown for the streamed body).
+  const fetchSignal = combineAbortSignals(createFetchSignal(), wire.stream ? undefined : getShutdownSignal())
 
   const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
     method: "POST",
     headers,
     body: JSON.stringify(wire),
     signal: fetchSignal,
+    ...DISABLE_BUILTIN_FETCH_TIMEOUT,
   })
 
   // Capture HTTP headers for history (before error check — capture even on failure)

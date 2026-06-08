@@ -18,9 +18,7 @@ defineProps<{
 <template>
   <div class="two-col pa-4">
     <div class="d-flex flex-column ga-1">
-      <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase px-2 pt-2">
-        Authentication
-      </div>
+      <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase px-2 pt-2">Authentication</div>
       <v-list
         density="compact"
         class="bg-transparent py-0"
@@ -67,9 +65,7 @@ defineProps<{
 
       <v-divider class="my-1" />
 
-      <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase px-2 pt-1">
-        Rate Limiter
-      </div>
+      <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase px-2 pt-1">Rate Limiter</div>
       <v-list
         density="compact"
         class="bg-transparent py-0"
@@ -103,18 +99,14 @@ defineProps<{
 
       <v-divider class="my-1" />
 
-      <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase px-2 pt-1">
-        Memory
-      </div>
+      <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase px-2 pt-1">Memory</div>
       <div
         v-if="memory"
         class="px-2 pb-2"
       >
         <div class="d-flex justify-space-between text-caption mb-1">
           <span class="text-medium-emphasis">Heap</span>
-          <span class="font-mono">
-            {{ memory.heapUsedMB }} MB{{ memory.heapLimitMB ? ` / ${memory.heapLimitMB} MB` : "" }}
-          </span>
+          <span class="font-mono"> {{ memory.heapUsedMB }} MB{{ memory.heapLimitMB ? ` / ${memory.heapLimitMB} MB` : "" }} </span>
         </div>
         <v-progress-linear
           v-if="memory.heapLimitMB"
@@ -145,9 +137,7 @@ defineProps<{
     </div>
 
     <div class="d-flex flex-column ga-1">
-      <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase px-2 pt-2">
-        Quota
-      </div>
+      <div class="section-header text-caption font-weight-bold text-medium-emphasis text-uppercase px-2 pt-2">Quota</div>
       <div
         v-if="quotaItems.length > 0"
         class="px-2 pb-2"

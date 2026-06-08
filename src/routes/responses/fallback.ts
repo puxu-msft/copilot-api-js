@@ -43,6 +43,7 @@ import {
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
+import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
   translateCCStreamToResponsesStream,
@@ -55,8 +56,6 @@ import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
   //
-  StreamIdleTimeoutError,
-  combineAbortSignals,
   guardSseIterable,
   type SseFrame,
 } from "~/lib/stream"
@@ -159,10 +158,7 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
         }
       }
 
-      const translatedStream = translateCCStreamToResponsesStream(
-        ccResult.result as AsyncIterable<ServerSentEventMessage>,
-        { responseId, itemId, clientModel },
-      )
+      const translatedStream = translateCCStreamToResponsesStream(ccResult.result as AsyncIterable<ServerSentEventMessage>, { responseId, itemId, clientModel })
       return { result: translatedStream, queueWaitMs }
     },
   }
@@ -223,7 +219,8 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
       try {
         const guarded = guardSseIterable(response as AsyncIterable<SseFrame>, {
           idleTimeoutMs,
-          getAbortSignal: () => combineAbortSignals(getShutdownSignal(), clientAbort.signal),
+          shutdownSignal: getShutdownSignal(),
+          clientSignal: clientAbort.signal,
         })
 
         for await (const rawEvent of guarded) {
@@ -265,7 +262,7 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
           data: JSON.stringify({
             error: {
               message: errorMessage,
-              type: error instanceof StreamIdleTimeoutError ? "timeout_error" : "server_error",
+              type: streamErrorToOpenAIErrorType(error),
             },
           }),
         })

@@ -105,8 +105,7 @@ export function translateResponsesToChatCompletions(payload: ResponsesPayload): 
     ...(payload.stream !== undefined && payload.stream !== null && { stream: payload.stream }),
     ...(payload.temperature !== undefined && payload.temperature !== null && { temperature: payload.temperature }),
     ...(payload.top_p !== undefined && payload.top_p !== null && { top_p: payload.top_p }),
-    ...(payload.max_output_tokens !== undefined
-      && payload.max_output_tokens !== null && { max_tokens: payload.max_output_tokens }),
+    ...(payload.max_output_tokens !== undefined && payload.max_output_tokens !== null && { max_tokens: payload.max_output_tokens }),
     ...(payload.parallel_tool_calls !== undefined && { parallel_tool_calls: payload.parallel_tool_calls }),
     ...(payload.user !== undefined && { user: payload.user }),
     ...(payload.service_tier !== undefined && { service_tier: payload.service_tier }),
@@ -141,22 +140,14 @@ function buildStreamOptions(payload: ResponsesPayload): { include_usage?: boolea
  * response. IDs are injected by the caller so they align with the streaming
  * path and session registration.
  */
-export function translateCCToResponsesResponse(
-  ccResponse: ChatCompletionResponse,
-  ctx: TranslateExchangeContext,
-): ResponsesResponse {
+export function translateCCToResponsesResponse(ccResponse: ChatCompletionResponse, ctx: TranslateExchangeContext): ResponsesResponse {
   const choice = ccResponse.choices[0]
   // Defensive: TS sees Array<NonStreamingChoice> as guaranteed-defined at [0],
   // but real upstreams can return `choices: []` (content filter, certain
   // errored stream flushes) — fail loud rather than crash downstream.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (!choice) {
-    throw new HTTPError(
-      "Upstream chat-completions returned empty choices array",
-      502,
-      JSON.stringify({ upstream: ccResponse }),
-      ctx.clientModel,
-    )
+    throw new HTTPError("Upstream chat-completions returned empty choices array", 502, JSON.stringify({ upstream: ccResponse }), ctx.clientModel)
   }
 
   const message = choice.message
@@ -541,10 +532,7 @@ function translateInputItemToMessages(item: ResponsesInputItem): Array<Message> 
   return [{ role, content }]
 }
 
-function translateContentParts(
-  content: ResponsesInputItem["content"],
-  role: ResponsesInputItem["role"] = "user",
-): string | Array<ContentPart> | null {
+function translateContentParts(content: ResponsesInputItem["content"], role: ResponsesInputItem["role"] = "user"): string | Array<ContentPart> | null {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return null
 

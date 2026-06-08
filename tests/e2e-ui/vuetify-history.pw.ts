@@ -33,9 +33,7 @@ test.describe("Vuetify History And Activity", () => {
     await expect(page.locator(".stream-table")).toContainText("sess-abc")
 
     await expect(page.locator("main")).toContainText("2 recent events")
-    await expect(page.locator(".stream-table")).toContainText(
-      "Fresh websocket activity arrived after the initial page load.",
-    )
+    await expect(page.locator(".stream-table")).toContainText("Fresh websocket activity arrived after the initial page load.")
   })
 
   test("opens request detail in a wide desktop dialog and keeps Activity selected", async ({ page }) => {
@@ -71,20 +69,18 @@ test.describe("Vuetify History And Activity", () => {
     expect(box).not.toBeNull()
     expect(box?.width ?? 0).toBeGreaterThan(2100)
 
-    const detailScrollState = await page
-      .locator("[data-testid='activity-detail-card'] .detail-panel .detail-body")
-      .evaluate((node) => {
-        const element = node as HTMLDivElement
-        const before = element.scrollTop
-        element.scrollTop = 400
-        return {
-          before,
-          after: element.scrollTop,
-          scrollHeight: element.scrollHeight,
-          clientHeight: element.clientHeight,
-          overflowY: getComputedStyle(element).overflowY,
-        }
-      })
+    const detailScrollState = await page.locator("[data-testid='activity-detail-card'] .detail-panel .detail-body").evaluate((node) => {
+      const element = node as HTMLDivElement
+      const before = element.scrollTop
+      element.scrollTop = 400
+      return {
+        before,
+        after: element.scrollTop,
+        scrollHeight: element.scrollHeight,
+        clientHeight: element.clientHeight,
+        overflowY: getComputedStyle(element).overflowY,
+      }
+    })
 
     expect(detailScrollState.overflowY).toBe("auto")
     expect(detailScrollState.scrollHeight).toBeGreaterThan(detailScrollState.clientHeight)
@@ -103,10 +99,7 @@ test.describe("Vuetify History And Activity", () => {
     expect(nestedVerticalScrollables).toContain("detail-body")
     expect(
       nestedVerticalScrollables.some(
-        (className) =>
-          className.includes("msg-body")
-          || className.includes("system-body")
-          || className.includes("content-block-body"),
+        (className) => className.includes("msg-body") || className.includes("system-body") || className.includes("content-block-body"),
       ),
     ).toBe(true)
   })

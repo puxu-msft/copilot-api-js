@@ -36,16 +36,8 @@ const DEFAULT_MAX_CONNECTIONS = 32
 let connectionFactory: (opts: CreateUpstreamWsConnectionOptions) => UpstreamWsConnection = createUpstreamWsConnection
 
 export interface UpstreamWsManager {
-  findReusable(opts: {
-    previousResponseId?: string
-    conversationId?: string
-    model: string
-  }): UpstreamWsConnection | undefined
-  create(opts: {
-    headers: Record<string, string>
-    model: string
-    conversationId?: string
-  }): Promise<UpstreamWsConnection>
+  findReusable(opts: { previousResponseId?: string; conversationId?: string; model: string }): UpstreamWsConnection | undefined
+  create(opts: { headers: Record<string, string>; model: string; conversationId?: string }): Promise<UpstreamWsConnection>
   stopNew(): void
   closeAll(): void
   resetRuntimeState(): void
@@ -111,8 +103,7 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
       // counter and could disable WS under sustained load); instead we warn so
       // operators can detect chronic over-provisioning.
       consola.warn(
-        `[upstream-ws] Pool cap (${cap}) reached but all connections are busy; `
-          + `creating overflow connection (size will be ${connections.size + 1})`,
+        `[upstream-ws] Pool cap (${cap}) reached but all connections are busy; ` + `creating overflow connection (size will be ${connections.size + 1})`,
       )
       return
     }
@@ -299,8 +290,6 @@ export function resetUpstreamWsManagerForTests(options?: CreateUpstreamWsManager
   return manager
 }
 
-export function setUpstreamWsConnectionFactoryForTests(
-  factory: ((opts: CreateUpstreamWsConnectionOptions) => UpstreamWsConnection) | null,
-): void {
+export function setUpstreamWsConnectionFactoryForTests(factory: ((opts: CreateUpstreamWsConnectionOptions) => UpstreamWsConnection) | null): void {
   connectionFactory = factory ?? createUpstreamWsConnection
 }

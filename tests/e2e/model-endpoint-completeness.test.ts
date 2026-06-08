@@ -69,10 +69,7 @@ describeWithToken("Model endpoint completeness", () => {
   test("every chat model is reachable via at least one endpoint", () => {
     const unreachable: Array<string> = []
     for (const model of chatModels) {
-      const canReach =
-        isEndpointSupported(model, ENDPOINT.MESSAGES)
-        || isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)
-        || isResponsesSupported(model)
+      const canReach = isEndpointSupported(model, ENDPOINT.MESSAGES) || isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS) || isResponsesSupported(model)
       if (!canReach) {
         unreachable.push(`${model.id} (endpoints: ${JSON.stringify(model.supported_endpoints)})`)
       }
@@ -112,10 +109,7 @@ describeWithToken("Model endpoint completeness", () => {
 
   test("no model supports only /v1/messages without /chat/completions", () => {
     const messagesOnly = chatModels.filter(
-      (m) =>
-        m.supported_endpoints
-        && m.supported_endpoints.includes(ENDPOINT.MESSAGES)
-        && !m.supported_endpoints.includes(ENDPOINT.CHAT_COMPLETIONS),
+      (m) => m.supported_endpoints && m.supported_endpoints.includes(ENDPOINT.MESSAGES) && !m.supported_endpoints.includes(ENDPOINT.CHAT_COMPLETIONS),
     )
     expect(messagesOnly.map((m) => m.id)).toEqual([])
   })
@@ -128,20 +122,12 @@ describeWithToken("Model endpoint completeness", () => {
       expect(isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)).toBe(true)
     }
     if (legacyModels.length > 0) {
-      console.log(
-        `[Legacy] ${legacyModels.length} models without supported_endpoints: ${legacyModels.map((m) => m.id).join(", ")}`,
-      )
+      console.log(`[Legacy] ${legacyModels.length} models without supported_endpoints: ${legacyModels.map((m) => m.id).join(", ")}`)
     }
   })
 
   test("every model lists only known endpoints", () => {
-    const knownEndpoints = new Set([
-      ENDPOINT.MESSAGES,
-      ENDPOINT.CHAT_COMPLETIONS,
-      ENDPOINT.RESPONSES,
-      ENDPOINT.WS_RESPONSES,
-      ENDPOINT.EMBEDDINGS,
-    ])
+    const knownEndpoints = new Set([ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES, ENDPOINT.EMBEDDINGS])
     const unknownEndpoints: Array<{ model: string; endpoint: string }> = []
 
     for (const model of allModels) {
@@ -165,8 +151,7 @@ describeWithToken("Model endpoint completeness", () => {
   test("model distribution by endpoint pattern", () => {
     const patterns = new Map<string, Array<string>>()
     for (const model of chatModels) {
-      const key =
-        model.supported_endpoints ? model.supported_endpoints.slice().sort().join(" + ") || "(empty)" : "(legacy)"
+      const key = model.supported_endpoints ? model.supported_endpoints.slice().sort().join(" + ") || "(empty)" : "(legacy)"
       if (!patterns.has(key)) patterns.set(key, [])
       patterns.get(key)!.push(model.id)
     }

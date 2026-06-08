@@ -48,9 +48,7 @@ mock.module("../src/api/ws", () => ({
   },
 }))
 
-const mockFetchEntries = mock<() => Promise<SummaryResult>>(() =>
-  Promise.resolve({ entries: [], total: 0, nextCursor: null, prevCursor: null }),
-)
+const mockFetchEntries = mock<() => Promise<SummaryResult>>(() => Promise.resolve({ entries: [], total: 0, nextCursor: null, prevCursor: null }))
 const mockFetchEntry = mock<(id: string) => Promise<HistoryEntry>>(() => Promise.resolve(makeFullEntry("e1")))
 const mockDeleteEntries = mock<() => Promise<void>>(() => Promise.resolve())
 const mockFetchSessions = mock<() => Promise<SessionResult>>(() => Promise.resolve({ sessions: [], total: 0 }))

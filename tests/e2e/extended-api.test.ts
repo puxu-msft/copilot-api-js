@@ -38,6 +38,7 @@ import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import { createEmbeddings } from "~/lib/openai/embeddings"
 import {
   //
+  setModelOverrides,
   setModels,
   setStateForTests,
   state,
@@ -86,15 +87,23 @@ describeWithToken("Extended Copilot API Integration", () => {
     }
     setModels(models)
 
+    // Short aliases resolve ONLY via model_overrides now. Map each family to an
+    // actually-available model so alias-translation assertions stay meaningful.
+    const firstOf = (fam: string): string | undefined => models.data.find((m) => m.id.includes("claude") && m.id.includes(fam))?.id
+    setModelOverrides(
+      Object.fromEntries(
+        (["opus", "sonnet", "haiku"] as const)
+          .map((fam) => [fam, firstOf(fam)] as const)
+          .filter((pair): pair is readonly ["opus" | "sonnet" | "haiku", string] => pair[1] !== undefined),
+      ),
+    )
+
     // Prefer the project's current defaults. For GPT, require upstream to
     // advertise /chat/completions — many newer SKUs (e.g. gpt-5.5) are
     // catalog-listed but not accessible on this endpoint for some accounts.
     claudeModel =
-      models.data.find((m) => m.id === "claude-sonnet-4.6")?.id
-      ?? models.data.find((m) => m.id.startsWith("claude-sonnet-"))?.id
-      ?? "claude-sonnet-4.6"
-    const gptSupportsChat = (id: string) =>
-      models.data.find((m) => m.id === id)?.supported_endpoints?.includes("/chat/completions") ?? false
+      models.data.find((m) => m.id === "claude-sonnet-4.6")?.id ?? models.data.find((m) => m.id.startsWith("claude-sonnet-"))?.id ?? "claude-sonnet-4.6"
+    const gptSupportsChat = (id: string) => models.data.find((m) => m.id === id)?.supported_endpoints?.includes("/chat/completions") ?? false
     const gptPreferred = ["gpt-5.5", "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4o", "gpt-4.1"]
     gptModel =
       gptPreferred.find(gptSupportsChat)
@@ -233,8 +242,7 @@ describeWithToken("Extended Copilot API Integration", () => {
         messages: [
           {
             role: "user",
-            content:
-              "This is a much longer message that contains many more words and should result in a higher token count than the short message above.",
+            content: "This is a much longer message that contains many more words and should result in a higher token count than the short message above.",
           },
         ],
         max_tokens: 100,

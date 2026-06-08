@@ -143,10 +143,7 @@ export function handleClientMessage(ws: WebSocket, data: string): void {
  * (closed or threw). Mutating `clients` mid-iteration works in current V8 but
  * reads as a foot-gun — collecting first is the safer pattern.
  */
-function sendToEach(
-  data: string,
-  shouldSend: (client: WSClient) => boolean,
-): { delivered: Array<WebSocket>; dead: Array<WebSocket> } {
+function sendToEach(data: string, shouldSend: (client: WSClient) => boolean): { delivered: Array<WebSocket>; dead: Array<WebSocket> } {
   const delivered: Array<WebSocket> = []
   const dead: Array<WebSocket> = []
   for (const [rawWs, client] of clients) {
@@ -230,8 +227,7 @@ export async function broadcastAndFlush(
   if (clients.size === 0) return { stillBuffering: 0 }
 
   const data = JSON.stringify(message)
-  const shouldSend =
-    topic === "*" ? () => true : (client: WSClient) => client.topics.size === 0 || client.topics.has(topic)
+  const shouldSend = topic === "*" ? () => true : (client: WSClient) => client.topics.size === 0 || client.topics.has(topic)
 
   const { delivered, dead } = sendToEach(data, shouldSend)
   dropClients(dead)
@@ -380,10 +376,7 @@ export function notifyShutdownPhaseChanged(data: unknown): void {
  * client's TCP buffer drains. Use this when the next step will force-close
  * sockets and we MUST guarantee the phase frame leaves the box.
  */
-export function notifyShutdownPhaseChangedAndFlush(
-  data: unknown,
-  opts?: { deadlineMs?: number },
-): Promise<{ stillBuffering: number }> {
+export function notifyShutdownPhaseChangedAndFlush(data: unknown, opts?: { deadlineMs?: number }): Promise<{ stillBuffering: number }> {
   return broadcastAndFlush(
     {
       type: "shutdown_phase_changed",

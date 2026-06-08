@@ -57,13 +57,23 @@ export function rebuildConversationMessages(sessionId: string | undefined): Arra
   // Overscan: filter may drop entries; load enough to fill MAX_REPLAY_ENTRIES
   // after filtering out non-Responses / failed entries.
   const session = getSessionEntries(sessionId, { limit: MAX_REPLAY_ENTRIES + REPLAY_QUERY_BUFFER })
-  if (session.entries.length === 0) return []
+  return rebuildMessagesFromEntries(session.entries, sessionId)
+}
 
-  const replayable = session.entries.filter((entry) => isReplayableEntry(entry))
+/**
+ * Pure core of conversation rebuild: filter the stored entries down to
+ * replayable Responses turns, cap by recency, and flatten into CC messages.
+ * Separated from `rebuildConversationMessages` (which adds the history fetch)
+ * so the transformation logic is testable with controlled entry lists.
+ */
+export function rebuildMessagesFromEntries(entries: Array<HistoryEntry>, sessionId?: string): Array<Message> {
+  if (entries.length === 0) return []
+
+  const replayable = entries.filter((entry) => isReplayableEntry(entry))
   const capped = replayable.slice(-MAX_REPLAY_ENTRIES)
 
   if (capped.length === 0) {
-    consola.debug(`[responses-fallback] session ${sessionId} has no replayable entries`)
+    consola.debug(`[responses-fallback] session ${sessionId ?? "?"} has no replayable entries`)
     return []
   }
 

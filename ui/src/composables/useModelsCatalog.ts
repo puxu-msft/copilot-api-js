@@ -70,17 +70,13 @@ export function useModelsCatalog() {
   const typeOptions = computed(() =>
     [
       ...new Set(
-        models.value
-          .map((m) => m.capabilities?.type as string | undefined)
-          .filter((value): value is string => typeof value === "string" && value.length > 0),
+        models.value.map((m) => m.capabilities?.type as string | undefined).filter((value): value is string => typeof value === "string" && value.length > 0),
       ),
     ].sort(),
   )
 
   const billingBounds = computed(() => {
-    const values = models.value
-      .map((model) => model.billing?.multiplier)
-      .filter((value): value is number => typeof value === "number")
+    const values = models.value.map((model) => model.billing?.multiplier).filter((value): value is number => typeof value === "number")
 
     if (values.length === 0) return { min: 0, max: 0 }
 
@@ -120,9 +116,7 @@ export function useModelsCatalog() {
     }
     const feature = featureFilter.value
     if (feature) {
-      result = result.filter(
-        (m) => (m.capabilities?.supports as Record<string, unknown> | undefined)?.[feature] === true,
-      )
+      result = result.filter((m) => (m.capabilities?.supports as Record<string, unknown> | undefined)?.[feature] === true)
     }
     if (typeFilter.value) {
       result = result.filter((m) => m.capabilities?.type === typeFilter.value)
@@ -134,11 +128,7 @@ export function useModelsCatalog() {
     })
     if (searchQuery.value) {
       const query = searchQuery.value.toLowerCase()
-      result = result.filter(
-        (m) =>
-          (m.id as string).toLowerCase().includes(query)
-          || (m.name as string | undefined)?.toLowerCase().includes(query),
-      )
+      result = result.filter((m) => (m.id as string).toLowerCase().includes(query) || (m.name as string | undefined)?.toLowerCase().includes(query))
     }
     return result
   })
@@ -239,8 +229,7 @@ export function useModelsCatalog() {
     if (limits.max_context_window_tokens) result.push(["Context Window", fmtNum(limits.max_context_window_tokens)])
     if (limits.max_prompt_tokens) result.push(["Max Prompt", fmtNum(limits.max_prompt_tokens)])
     if (limits.max_output_tokens) result.push(["Max Output", fmtNum(limits.max_output_tokens)])
-    if (limits.max_non_streaming_output_tokens)
-      result.push(["Non-stream Output", fmtNum(limits.max_non_streaming_output_tokens)])
+    if (limits.max_non_streaming_output_tokens) result.push(["Non-stream Output", fmtNum(limits.max_non_streaming_output_tokens)])
     return result
   }
 
@@ -257,8 +246,7 @@ export function useModelsCatalog() {
     if (vision.max_prompt_images !== null && vision.max_prompt_images !== undefined)
       result.push(["Max images", String(vision.max_prompt_images as number | string)])
     if (vision.max_prompt_image_size) result.push(["Max size", fmtNum(vision.max_prompt_image_size)])
-    if (vision.supported_media_types)
-      result.push(["Formats", (vision.supported_media_types as Array<string>).join(", ")])
+    if (vision.supported_media_types) result.push(["Formats", (vision.supported_media_types as Array<string>).join(", ")])
     return result.length > 0 ? result : null
   }
 

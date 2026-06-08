@@ -19,6 +19,8 @@
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
+import consola from "consola"
+
 import type {
   //
   GenerateContentResponse,
@@ -59,10 +61,7 @@ export interface GeminiStreamStep {
  * any structured metadata extracted at the same time (usage / finishReason)
  * without re-parsing the JSON body.
  */
-export async function* translateOpenAIStreamToGemini(
-  source: AsyncIterable<ServerSentEventMessage>,
-  modelId: string,
-): AsyncGenerator<GeminiStreamStep> {
+export async function* translateOpenAIStreamToGemini(source: AsyncIterable<ServerSentEventMessage>, modelId: string): AsyncGenerator<GeminiStreamStep> {
   const acc = createOpenAIStreamAccumulator()
   /** Index of last tool call already flushed as a Gemini functionCall frame */
   const flushedToolIndices = new Set<number>()
@@ -76,6 +75,9 @@ export async function* translateOpenAIStreamToGemini(
     try {
       chunk = JSON.parse(ev.data) as ChatCompletionChunk
     } catch {
+      // Unparseable upstream frame — skip it. Debug-level for parity with the
+      // Responses→CC translator, which logs the same condition.
+      consola.debug("[gemini←openai] skipping unparseable upstream SSE frame:", ev.data.slice(0, 200))
       continue
     }
     accumulateOpenAIStreamEvent(chunk, acc)
@@ -175,19 +177,13 @@ export async function* translateOpenAIStreamToGemini(
   }
 
   // Terminal frame: finishReason + usageMetadata only (no content parts).
-  const geminiFinishReason = openAIFinishToGemini(
-    (lastFinishReason || acc.finishReason || undefined) as Parameters<typeof openAIFinishToGemini>[0],
-  )
+  const geminiFinishReason = openAIFinishToGemini((lastFinishReason || acc.finishReason || undefined) as Parameters<typeof openAIFinishToGemini>[0])
   const usageMetadata =
-    lastUsage ?
-      extractUsageMetadata(lastUsage)
-    : ({ promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 } satisfies GeminiUsageMetadata)
+    lastUsage ? extractUsageMetadata(lastUsage) : ({ promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 } satisfies GeminiUsageMetadata)
 
   const finalCandidate: NonNullable<GenerateContentResponse["candidates"]>[number] = {
     content: { role: "model", parts: [] },
-    finishReason: geminiFinishReason as NonNullable<
-      NonNullable<GenerateContentResponse["candidates"]>[number]["finishReason"]
-    >,
+    finishReason: geminiFinishReason as NonNullable<NonNullable<GenerateContentResponse["candidates"]>[number]["finishReason"]>,
     index: 0,
   }
 
@@ -210,10 +206,7 @@ function sseFrame(payload: GenerateContentResponse): ServerSentEventMessage {
  * it as flushed. Used to ensure each tool call emits exactly one Gemini
  * `functionCall` frame even when called from multiple paths.
  */
-function drainToolCalls(
-  acc: OpenAIStreamAccumulator,
-  flushed: Set<number>,
-): Array<{ id: string; name: string; arguments: string }> {
+function drainToolCalls(acc: OpenAIStreamAccumulator, flushed: Set<number>): Array<{ id: string; name: string; arguments: string }> {
   const out: Array<{ id: string; name: string; arguments: string }> = []
   const indices = Array.from(acc.toolCallMap.keys()).sort((a, b) => a - b)
   for (const idx of indices) {

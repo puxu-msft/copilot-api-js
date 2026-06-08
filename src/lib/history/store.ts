@@ -1,12 +1,4 @@
-export {
-  clearHistory,
-  finalizeEntry,
-  getInFlightEntry,
-  insertEntry,
-  listInFlightEntries,
-  listInFlightSummaries,
-  updateEntry,
-} from "./entries"
+export { clearHistory, finalizeEntry, getInFlightEntry, insertEntry, listInFlightEntries, listInFlightSummaries, updateEntry } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
 export {
   deleteSession,

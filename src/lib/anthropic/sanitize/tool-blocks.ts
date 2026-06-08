@@ -136,10 +136,7 @@ export function processToolBlocks(
             newContent.push(block)
           }
         } else {
-          if (
-            isServerToolResultBlock(block)
-            && (!toolUseIds.has(block.tool_use_id) || filteredToolUseIds.has(block.tool_use_id))
-          ) {
+          if (isServerToolResultBlock(block) && (!toolUseIds.has(block.tool_use_id) || filteredToolUseIds.has(block.tool_use_id))) {
             orphanedToolResultCount++
             modified = true
             continue

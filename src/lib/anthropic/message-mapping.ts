@@ -17,10 +17,7 @@ export function messagesMatch(orig: MessageParam, rewritten: MessageParam): bool
 
   // String content: compare prefix
   if (typeof orig.content === "string" && typeof rewritten.content === "string")
-    return (
-      rewritten.content.startsWith(orig.content.slice(0, 100))
-      || orig.content.startsWith(rewritten.content.slice(0, 100))
-    )
+    return rewritten.content.startsWith(orig.content.slice(0, 100)) || orig.content.startsWith(rewritten.content.slice(0, 100))
 
   // Array content: compare first block's type and id
   const origBlocks = Array.isArray(orig.content) ? orig.content : []

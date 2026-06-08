@@ -108,9 +108,7 @@ function detectRepetition(text: string, minPatternLength: number, minRepetitions
 
   // Check the tail of the text with increasing window sizes
   // Use a few strategic window sizes rather than checking every size
-  const windowSizes = [minWindow, Math.floor(maxWindow * 0.5), maxWindow].filter(
-    (w) => w >= minWindow && w <= text.length,
-  )
+  const windowSizes = [minWindow, Math.floor(maxWindow * 0.5), maxWindow].filter((w) => w >= minWindow && w <= text.length)
 
   for (const windowSize of windowSizes) {
     const window = text.slice(-windowSize)
@@ -174,10 +172,7 @@ function findRepeatingPeriod(s: string): number {
  * Create a repetition detector callback for use in stream processing.
  * Returns a function that accepts text deltas and logs a warning on first detection.
  */
-export function createStreamRepetitionChecker(
-  label: string,
-  config?: Partial<RepetitionDetectorConfig>,
-): (textDelta: string) => boolean {
+export function createStreamRepetitionChecker(label: string, config?: Partial<RepetitionDetectorConfig>): (textDelta: string) => boolean {
   const detector = new RepetitionDetector(config)
   let warned = false
 

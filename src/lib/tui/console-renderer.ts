@@ -6,6 +6,8 @@
 import consola from "consola"
 import pc from "picocolors"
 
+import { isSameModelName } from "~/lib/models/resolver"
+
 import type {
   //
   RequestUpdate,
@@ -296,13 +298,12 @@ export class ConsoleRenderer implements TuiRenderer {
     const coloredMethod = pc.white(method)
     const coloredPath = pc.white(path)
 
-    // Show "clientModel → model" when client requested a different model name
+    // Show "clientModel → model" only on a genuine remap. Suppress the arrow
+    // when the client name and resolved name are the same model spelled
+    // differently (e.g. "claude-opus-4-8" vs "claude-opus-4.8").
     let coloredModel = ""
     if (model) {
-      coloredModel =
-        clientModel && clientModel !== model ?
-          ` ${pc.dim(clientModel)} → ${pc.magenta(model)}`
-        : pc.magenta(` ${model}`)
+      coloredModel = clientModel && !isSameModelName(clientModel, model) ? ` ${pc.dim(clientModel)} → ${pc.magenta(model)}` : pc.magenta(` ${model}`)
     }
     const coloredMultiplier = pc.dim(formatBillingLabel(multiplier))
     const coloredDuration = duration ? ` ${pc.yellow(duration)}` : ""
@@ -354,8 +355,7 @@ export class ConsoleRenderer implements TuiRenderer {
         method: request.method,
         path: request.path,
         model: request.model,
-        extra:
-          request.queuePosition !== undefined && request.queuePosition > 0 ? `[q#${request.queuePosition}]` : undefined,
+        extra: request.queuePosition !== undefined && request.queuePosition > 0 ? `[q#${request.queuePosition}]` : undefined,
         isDim: true,
       })
       this.printLog(message)

@@ -62,8 +62,7 @@ function nodeColor(attempt: AttemptInfo): string {
             v-if="attempt.truncation?.wasTruncated"
             class="node-truncation"
           >
-            Truncated: {{ formatNumber(attempt.truncation.originalTokens) }} ->
-            {{ formatNumber(attempt.truncation.compactedTokens) }} tokens,
+            Truncated: {{ formatNumber(attempt.truncation.originalTokens) }} -> {{ formatNumber(attempt.truncation.compactedTokens) }} tokens,
             {{ attempt.truncation.removedMessageCount }} msg removed
           </div>
           <div

@@ -216,9 +216,7 @@ describe("config field components", () => {
     expect(rulesWrapper.find('input[data-label="Model regex"]').exists()).toBe(true)
 
     rulesWrapper.getComponent(VSelectStub).vm.$emit("update:modelValue", "line")
-    expect(rulesWrapper.emitted("update:modelValue")?.[0]).toEqual([
-      [{ from: "foo", to: "bar", method: "line", model: "claude" }],
-    ])
+    expect(rulesWrapper.emitted("update:modelValue")?.[0]).toEqual([[{ from: "foo", to: "bar", method: "line", model: "claude" }]])
 
     const addRuleButton = rulesWrapper.findAll("button").find((node) => node.text().includes("Add rule"))
     if (!addRuleButton) {

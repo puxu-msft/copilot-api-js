@@ -79,14 +79,7 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
 
   const toolResult = processToolBlocks(messages, payload.tools)
   messages = toolResult.messages
-  return finalizeAnthropicSanitization(
-    payload,
-    messages,
-    sanitizedSystem,
-    originalBlocks,
-    toolResult,
-    systemReminderRemovals,
-  )
+  return finalizeAnthropicSanitization(payload, messages, sanitizedSystem, originalBlocks, toolResult, systemReminderRemovals)
 }
 
 export { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"

@@ -25,10 +25,7 @@ import { ensureAnthropicStartsWithUser } from "./tool-utils"
 /**
  * Strip thinking/redacted_thinking blocks from old assistant messages.
  */
-export function stripThinkingBlocks(
-  messages: Array<MessageParam>,
-  preserveRecentCount: number,
-): { messages: Array<MessageParam>; strippedCount: number } {
+export function stripThinkingBlocks(messages: Array<MessageParam>, preserveRecentCount: number): { messages: Array<MessageParam>; strippedCount: number } {
   const n = messages.length
   const stripBefore = Math.max(0, n - preserveRecentCount)
   let strippedCount = 0
@@ -64,11 +61,7 @@ export function stripThinkingBlocks(
 }
 
 function compressToolResultBlock(block: ContentBlockParam): ContentBlockParam {
-  if (
-    block.type === "tool_result"
-    && typeof block.content === "string"
-    && block.content.length > LARGE_TOOL_RESULT_THRESHOLD
-  ) {
+  if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > LARGE_TOOL_RESULT_THRESHOLD) {
     return {
       ...block,
       content: compressToolResultContent(block.content),
@@ -118,11 +111,7 @@ export function smartCompressToolResults(
     if (i < thresholdIndex && msg.role === "user" && Array.isArray(msg.content)) {
       let hadCompression = false as boolean
       const compressedContent = msg.content.map((block) => {
-        if (
-          block.type === "tool_result"
-          && typeof block.content === "string"
-          && block.content.length > LARGE_TOOL_RESULT_THRESHOLD
-        ) {
+        if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > LARGE_TOOL_RESULT_THRESHOLD) {
           compressedCount++
           hadCompression = true
           return compressToolResultBlock(block)
@@ -166,8 +155,7 @@ export function calculateTokenLimit(model: Model, config: AutoTruncateConfig): n
     return Math.floor(learned.tokenLimit * (1 - margin))
   }
 
-  const rawTokenLimit =
-    model.capabilities?.limits?.max_context_window_tokens ?? model.capabilities?.limits?.max_prompt_tokens
+  const rawTokenLimit = model.capabilities?.limits?.max_context_window_tokens ?? model.capabilities?.limits?.max_prompt_tokens
 
   if (rawTokenLimit === undefined) return undefined
 
@@ -249,8 +237,7 @@ export function generateRemovedMessagesSummary(removedMessages: Array<MessagePar
 
   if (toolCalls.length > 0) {
     const uniqueTools = [...new Set(toolCalls)]
-    const displayTools =
-      uniqueTools.length > 5 ? [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`] : uniqueTools
+    const displayTools = uniqueTools.length > 5 ? [...uniqueTools.slice(0, 5), `+${uniqueTools.length - 5} more`] : uniqueTools
     parts.push(`Tools used: ${displayTools.join(", ")}`)
   }
 
@@ -292,9 +279,7 @@ export function createTruncationSystemContext(removedCount: number, compressedCo
     context += `Summary of removed content: ${summary}\n`
   }
 
-  context +=
-    `If you need earlier context, ask the user or check available tools for conversation history access.\n`
-    + `[END CONTEXT]\n\n`
+  context += `If you need earlier context, ask the user or check available tools for conversation history access.\n` + `[END CONTEXT]\n\n`
 
   return context
 }

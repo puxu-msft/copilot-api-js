@@ -64,9 +64,7 @@ export function queryEntries(opts?: QueryOptions): Array<HistoryEntry> {
   const db = getDatabase()
   const { sql, params } = applyWhere(opts)
   const limit = opts?.limit ?? 100
-  const rows = db
-    .prepare(`SELECT * FROM entries ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`)
-    .all(...params, limit, 0) as Array<EntryRow>
+  const rows = db.prepare(`SELECT * FROM entries ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...params, limit, 0) as Array<EntryRow>
   return rows.map((r) => deserializeEntry(r))
 }
 
@@ -181,8 +179,6 @@ export function getSessionById(id: string): Session | undefined {
 
 export function resolveResponseSession(responseId: string): string | undefined {
   const db = getDatabase()
-  const row = db.prepare("SELECT session_id FROM response_sessions WHERE response_id = ?").get(responseId) as
-    | { session_id: string }
-    | undefined
+  const row = db.prepare("SELECT session_id FROM response_sessions WHERE response_id = ?").get(responseId) as { session_id: string } | undefined
   return row?.session_id
 }

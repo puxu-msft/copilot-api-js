@@ -233,12 +233,7 @@ function setScalar(doc: ConfigDocument, path: Array<string>, value: unknown): vo
   doc.setIn(path, value)
 }
 
-function setNestedScalarContainer(
-  doc: ConfigDocument,
-  path: Array<string>,
-  value: unknown,
-  options?: { excludeKeys?: Set<string> },
-): void {
+function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, value: unknown, options?: { excludeKeys?: Set<string> }): void {
   if (value === null || value === undefined) {
     doc.deleteIn(path)
     return

@@ -53,10 +53,7 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
     })
 
     if (!response.ok) {
-      consola.warn(
-        `[count_tokens] Anthropic API failed: ${response.status} `
-          + `${await response.text().catch(() => "")} — falling back to local estimation`,
-      )
+      consola.warn(`[count_tokens] Anthropic API failed: ${response.status} ` + `${await response.text().catch(() => "")} — falling back to local estimation`)
       return null
     }
 
@@ -142,10 +139,7 @@ export async function handleCountTokens(c: Context) {
     // Excludes thinking blocks from assistant messages per Anthropic spec
     const inputTokens = await countTotalInputTokens(anthropicPayload, selectedModel)
 
-    consola.debug(
-      `[count_tokens] ${inputTokens} tokens (native Anthropic) `
-        + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`,
-    )
+    consola.debug(`[count_tokens] ${inputTokens} tokens (native Anthropic) ` + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`)
 
     if (tuiLogId) {
       tuiLogger.updateRequest(tuiLogId, { inputTokens })

@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import {
+  //
+  decodeToolUseInput,
+  type DecodeToolInputConfig,
+} from "~backend/lib/anthropic/decode-tool-input-core"
 import { computed } from "vue"
 import VueJsonPretty from "vue-json-pretty"
 
@@ -47,9 +52,23 @@ const inputJson = computed(() => {
   }
 })
 
+/**
+ * Display-only decode: upstream may serialize a tool_use input field (e.g.
+ * AskUserQuestion `questions`) into a JSON string. For readability we decode
+ * ALL top-level string fields back to structured form for the JSON tree, while
+ * leaving the store data and the copy text (`inputJson`) on the original form —
+ * history stays faithful, only the rendering is friendlier. The parseError
+ * branch is short-circuited so the `_rawInput` marker is never decoded.
+ */
+const DISPLAY_DECODE_CONFIG: DecodeToolInputConfig = { fields: {}, all: true }
+const displayInput = computed(() => {
+  if (parseError.value) return props.block.input
+  return decodeToolUseInput(props.block.name, props.block.input, DISPLAY_DECODE_CONFIG)
+})
+
 const isObjectInput = computed(() => {
   if (parseError.value) return false
-  return props.block.input !== null && typeof props.block.input === "object"
+  return displayInput.value !== null && typeof displayInput.value === "object"
 })
 
 const resultBlock = computed(() => {
@@ -77,16 +96,14 @@ const hasResult = computed(() => Boolean(resultBlock.value))
 
     <VueJsonPretty
       v-if="isObjectInput"
-      :data="block.input as any"
+      :data="displayInput as any"
       :deep="3"
       :show-icon="true"
       :show-line-number="true"
       :collapsed-on-click-brackets="true"
     />
     <template v-else-if="parseError">
-      <div class="parse-error-banner">
-        ⚠ Failed to parse tool input as JSON — showing raw streamed text (may be truncated)
-      </div>
+      <div class="parse-error-banner">⚠ Failed to parse tool input as JSON — showing raw streamed text (may be truncated)</div>
       <pre class="tool-input parse-error-raw">{{ parseError._rawInput }}</pre>
     </template>
     <pre
