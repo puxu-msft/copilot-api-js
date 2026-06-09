@@ -57,6 +57,7 @@ import {
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
+import { stripImageGenerationTool } from "~/lib/openai/responses-tool-filter"
 import {
   //
   createStreamIdTracker,
@@ -91,6 +92,10 @@ import {
 /** Handle an inbound Responses API request */
 export async function handleResponses(c: Context) {
   let payload = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
+
+  // Strip the image_generation builtin tool when configured — the Copilot
+  // upstream rejects it, failing the whole request (Codex CLI auto-injects it).
+  stripImageGenerationTool(payload)
 
   // Snapshot inbound payload BEFORE mutation (model resolution, instructions
   // processing, call_id normalization) so history "original" reflects what

@@ -34,6 +34,7 @@ import {
 import { isResponsesSupported } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { responsesInputToMessages } from "~/lib/openai/responses-conversion"
+import { stripImageGenerationTool } from "~/lib/openai/responses-tool-filter"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -152,6 +153,11 @@ function sendErrorAndClose(ws: WSContext, message: string, code?: string): void 
 /** Handle a response.create message over WebSocket */
 async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload): Promise<void> {
   let payload = rawPayload
+
+  // Strip the image_generation builtin tool when configured — parity with the
+  // HTTP handler (Copilot upstream rejects it, failing the whole request).
+  stripImageGenerationTool(payload)
+
   const requestedModel = payload.model
   // Snapshot BEFORE any mutation so history "original" reflects the client's
   // raw frame, not the half-processed in-flight version (model resolution,
