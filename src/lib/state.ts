@@ -320,6 +320,14 @@ export interface State {
   readonly fixResponsesStreamIds: boolean
 
   /**
+   * Strip the `image_generation` builtin tool from inbound Responses requests.
+   * The Copilot upstream rejects it (failing the whole request); some clients
+   * (e.g. Codex CLI) auto-inject it. Default false; enable with config
+   * openai-responses.strip_image_generation_tool.
+   */
+  readonly stripImageGenerationTool: boolean
+
+  /**
    * Hard cap on inbound WebSocket frame bytes for the client-side /responses WS.
    * Default 1 MiB; set to 0 to disable. Bounds heap pressure from oversized
    * `response.create` payloads on a public deployment.
@@ -667,6 +675,7 @@ export function setResponsesConfig(
       | "normalizeResponsesCallIds"
       | "upstreamWebSocket"
       | "fixResponsesStreamIds"
+      | "stripImageGenerationTool"
       | "clientWebsocketKeepOpen"
       | "maxWsFrameBytes"
       | "maxClientWsConnections"
@@ -754,6 +763,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
   fixResponsesStreamIds: true,
+  stripImageGenerationTool: false,
   clientWebsocketKeepOpen: false,
   maxWsFrameBytes: 1024 * 1024,
   maxClientWsConnections: 256,
@@ -814,6 +824,7 @@ export function resetConfigManagedState(): void {
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
     fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+    stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
     clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
     maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
     maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
@@ -857,6 +868,7 @@ const mutableState: MutableState = {
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
   upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
   fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+  stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
   clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
   maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
   maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,

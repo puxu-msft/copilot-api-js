@@ -350,6 +350,12 @@ openai-responses:
   # upstream stream. Required by `@ai-sdk/openai` which validates ID continuity. Default: true.
   fix_stream_ids: true
 
+  # Strip the `image_generation` builtin tool from inbound /responses requests. The Copilot
+  # upstream rejects `image_generation` and fails the ENTIRE request; some clients (e.g. the
+  # OpenAI Codex CLI) auto-inject it. Enable to drop it so the rest of the request succeeds.
+  # Default: false.
+  strip_image_generation_tool: false
+
   # Keep the client-side WebSocket open after `response.completed` so the client can issue
   # follow-up `response.create` frames on the same socket. When false (default), the socket
   # closes with code 1000 after each request (HTTP-like one-shot semantics).
