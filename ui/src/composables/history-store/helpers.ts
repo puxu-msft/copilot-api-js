@@ -7,7 +7,7 @@ import type {
 } from "@/types"
 
 export function getPreviewText(entry: HistoryEntry): string {
-  const messages = entry.request.messages ?? []
+  const messages = entry.inboundRequest.messages ?? []
   if (messages.length === 0) return ""
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -58,13 +58,13 @@ export function getStatusClass(entry: HistoryEntry | EntrySummary): "success" | 
     if (entry.responseSuccess) return "success"
     return "error"
   }
-  if (!entry.response) return "pending"
-  if (entry.response.success) return "success"
+  if (!entry.outboundResponse) return "pending"
+  if (entry.outboundResponse.success) return "success"
   return "error"
 }
 
 export function getMessageSummary(entry: HistoryEntry): string {
-  const messages = entry.request.messages ?? []
+  const messages = entry.inboundRequest.messages ?? []
   const msgCount = messages.length
   const toolCount = messages.filter((m: MessageContent) => {
     if (m.tool_calls && m.tool_calls.length > 0) return true

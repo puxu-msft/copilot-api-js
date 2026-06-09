@@ -596,6 +596,70 @@ describe("signature_delta", () => {
     expect(block.thinking).toBe("Thinking...")
     expect(block.signature).toBe("sig123abc")
   })
+
+  test("preserves signature embedded directly in content_block_start (no signature_delta)", () => {
+    // Some Copilot upstreams put the full signature on content_block_start with
+    // NO trailing signature_delta (encrypted thinking: empty text + valid sig).
+    // The accumulator must seed from the block_start, not discard it.
+    const acc = createAnthropicStreamAccumulator()
+
+    accumulateAnthropicStreamEvent(
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "EoAQ-embedded-sig-3404" } } as any,
+      acc,
+    )
+    accumulateAnthropicStreamEvent({ type: "content_block_stop", index: 0 } as any, acc)
+
+    const block = acc.contentBlocks[0] as { type: "thinking"; thinking: string; signature?: string }
+    expect(block.thinking).toBe("")
+    expect(block.signature).toBe("EoAQ-embedded-sig-3404")
+  })
+
+  test("seeds non-empty thinking text from content_block_start (no deltas)", () => {
+    // Boundary of the superset claim: a block_start may carry both thinking text
+    // AND signature with no following deltas — both must be preserved verbatim.
+    const acc = createAnthropicStreamAccumulator()
+
+    accumulateAnthropicStreamEvent(
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "pre-filled", signature: "sig-pre" } } as any,
+      acc,
+    )
+    accumulateAnthropicStreamEvent({ type: "content_block_stop", index: 0 } as any, acc)
+
+    const block = acc.contentBlocks[0] as { type: "thinking"; thinking: string; signature?: string }
+    expect(block.thinking).toBe("pre-filled")
+    expect(block.signature).toBe("sig-pre")
+  })
+
+  test("a later thinking_delta appends to a seeded thinking; seeded signature survives", () => {
+    const acc = createAnthropicStreamAccumulator()
+
+    accumulateAnthropicStreamEvent(
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "seed", signature: "seedsig" } } as any,
+      acc,
+    )
+    accumulateAnthropicStreamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "+more" } } as any, acc)
+    accumulateAnthropicStreamEvent({ type: "content_block_stop", index: 0 } as any, acc)
+
+    const block = acc.contentBlocks[0] as { type: "thinking"; thinking: string; signature?: string }
+    expect(block.thinking).toBe("seed+more")
+    expect(block.signature).toBe("seedsig")
+  })
+
+  test("a later signature_delta overwrites a seeded signature (delta wins)", () => {
+    // If an upstream both embeds a signature on block_start AND sends a
+    // signature_delta, the delta overwrites the seed (logs once, applies).
+    const acc = createAnthropicStreamAccumulator()
+
+    accumulateAnthropicStreamEvent(
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "seedsig" } } as any,
+      acc,
+    )
+    accumulateAnthropicStreamEvent({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "delta-wins" } } as any, acc)
+    accumulateAnthropicStreamEvent({ type: "content_block_stop", index: 0 } as any, acc)
+
+    const block = acc.contentBlocks[0] as { type: "thinking"; thinking: string; signature?: string }
+    expect(block.signature).toBe("delta-wins")
+  })
 })
 
 // ─── Convenience extractors ───

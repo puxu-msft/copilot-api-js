@@ -44,7 +44,7 @@ defineProps<{
     </div>
     <div class="meta-row">
       <span class="meta-label">Model</span>
-      <span class="meta-value">{{ entry.response?.model || entry.request.model || "-" }}</span>
+      <span class="meta-value">{{ entry.outboundResponse?.model || entry.inboundRequest.model || "-" }}</span>
     </div>
     <div class="meta-row">
       <span class="meta-label">Endpoint</span>
@@ -62,23 +62,23 @@ defineProps<{
       </span>
     </div>
     <div
-      v-if="entry.response?.status"
+      v-if="entry.outboundResponse?.status"
       class="meta-row"
     >
       <span class="meta-label">HTTP Status</span>
       <span
         class="meta-value"
         :class="{
-          'text-error': entry.response.status >= 400,
-          'text-success': entry.response.status < 300,
+          'text-error': entry.outboundResponse.status >= 400,
+          'text-success': entry.outboundResponse.status < 300,
         }"
       >
-        {{ entry.response.status }}
+        {{ entry.outboundResponse.status }}
       </span>
     </div>
     <div class="meta-row">
       <span class="meta-label">Stream</span>
-      <span class="meta-value">{{ entry.request.stream === true ? "Yes" : "No" }}</span>
+      <span class="meta-value">{{ entry.inboundRequest.stream === true ? "Yes" : "No" }}</span>
     </div>
     <div
       v-if="entry.transport"
@@ -109,18 +109,18 @@ defineProps<{
       <span class="meta-value">{{ formatDuration(entry.queueWaitMs) }}</span>
     </div>
     <div
-      v-if="entry.request.max_tokens"
+      v-if="entry.inboundRequest.max_tokens"
       class="meta-row"
     >
       <span class="meta-label">Max Tokens</span>
-      <span class="meta-value">{{ formatNumber(entry.request.max_tokens) }}</span>
+      <span class="meta-value">{{ formatNumber(entry.inboundRequest.max_tokens) }}</span>
     </div>
     <div
-      v-if="entry.request.temperature !== undefined"
+      v-if="entry.inboundRequest.temperature !== undefined"
       class="meta-row"
     >
       <span class="meta-label">Temperature</span>
-      <span class="meta-value">{{ entry.request.temperature }}</span>
+      <span class="meta-value">{{ entry.inboundRequest.temperature }}</span>
     </div>
     <div
       v-if="entry.durationMs"
@@ -130,11 +130,11 @@ defineProps<{
       <span class="meta-value">{{ formatDuration(entry.durationMs) }}</span>
     </div>
     <div
-      v-if="entry.response?.stop_reason"
+      v-if="entry.outboundResponse?.stop_reason"
       class="meta-row"
     >
       <span class="meta-label">Stop Reason</span>
-      <span class="meta-value">{{ entry.response.stop_reason }}</span>
+      <span class="meta-value">{{ entry.outboundResponse.stop_reason }}</span>
     </div>
     <div
       v-if="entry.lastUpdatedAt"
@@ -146,50 +146,50 @@ defineProps<{
 
     <!-- Token Usage -->
     <div
-      v-if="entry.response?.usage"
+      v-if="entry.outboundResponse?.usage"
       class="meta-section"
     >
       <div class="meta-section-title">Token Usage</div>
       <div class="meta-row">
         <span class="meta-label">Input</span>
-        <span class="meta-value mono">{{ formatNumber(entry.response.usage.input_tokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(entry.outboundResponse.usage.input_tokens) }}</span>
       </div>
       <div class="meta-row">
         <span class="meta-label">Output</span>
-        <span class="meta-value mono">{{ formatNumber(entry.response.usage.output_tokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(entry.outboundResponse.usage.output_tokens) }}</span>
       </div>
       <div
-        v-if="entry.response?.usage?.cache_read_input_tokens"
+        v-if="entry.outboundResponse?.usage?.cache_read_input_tokens"
         class="meta-row"
       >
         <span class="meta-label">Cache Read</span>
-        <span class="meta-value mono">{{ formatNumber(entry.response.usage.cache_read_input_tokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(entry.outboundResponse.usage.cache_read_input_tokens) }}</span>
       </div>
       <div
-        v-if="entry.response?.usage?.cache_creation_input_tokens"
+        v-if="entry.outboundResponse?.usage?.cache_creation_input_tokens"
         class="meta-row"
       >
         <span class="meta-label">Cache Create</span>
-        <span class="meta-value mono">{{ formatNumber(entry.response.usage.cache_creation_input_tokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(entry.outboundResponse.usage.cache_creation_input_tokens) }}</span>
       </div>
     </div>
 
     <!-- Error -->
     <div
-      v-if="entry.response?.error"
+      v-if="entry.outboundResponse?.error"
       class="meta-row meta-error"
     >
       <span class="meta-label">Error</span>
-      <span class="meta-value error-text">{{ entry.response.error }}</span>
+      <span class="meta-value error-text">{{ entry.outboundResponse.error }}</span>
     </div>
 
     <!-- Raw Body (shown when error + rawBody exists) -->
     <div
-      v-if="entry.response?.error && entry.response?.rawBody"
+      v-if="entry.outboundResponse?.error && entry.outboundResponse?.rawBody"
       class="meta-section"
     >
       <div class="meta-section-title">Raw Response Body</div>
-      <pre class="raw-body">{{ entry.response.rawBody }}</pre>
+      <pre class="raw-body">{{ entry.outboundResponse.rawBody }}</pre>
     </div>
 
     <div
@@ -209,11 +209,11 @@ defineProps<{
 
     <!-- Tools -->
     <div
-      v-if="entry.request.tools?.length"
+      v-if="entry.inboundRequest.tools?.length"
       class="meta-row"
     >
       <span class="meta-label">Tools</span>
-      <span class="meta-value">{{ entry.request.tools.length }} defined</span>
+      <span class="meta-value">{{ entry.inboundRequest.tools.length }} defined</span>
     </div>
 
     <!-- Truncation -->
@@ -302,6 +302,13 @@ defineProps<{
         >
           <span class="meta-label">Empty text</span>
           <span class="meta-value">{{ san.emptyTextBlocksRemoved }}</span>
+        </div>
+        <div
+          v-if="san.emptyThinkingBlocksRemoved"
+          class="meta-row"
+        >
+          <span class="meta-label">Corrupt thinking</span>
+          <span class="meta-value">{{ san.emptyThinkingBlocksRemoved }}</span>
         </div>
         <div
           v-if="san.systemReminderRemovals"

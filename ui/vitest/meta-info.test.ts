@@ -16,12 +16,12 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     sessionId: "session-1",
     startedAt: Date.now(),
     endpoint: "openai-chat-completions",
-    request: {
+    inboundRequest: {
       model: "gpt-5-resp",
       messages: [{ role: "user", content: "hello" }],
       stream: false,
     },
-    response: {
+    outboundResponse: {
       success: true,
       model: "gpt-5-resp",
       usage: { input_tokens: 10, output_tokens: 5 },

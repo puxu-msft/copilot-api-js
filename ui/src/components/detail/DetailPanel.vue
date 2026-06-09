@@ -144,15 +144,39 @@ function exportEntry() {
           <SseEventsSection
             v-if="entry.sseEvents?.length"
             :events="entry.sseEvents"
+            title="SSE Events (upstream → proxy)"
           />
+        </ErrorBoundary>
+
+        <!-- Forwarded SSE Events (proxy → client) — compare against upstream above -->
+        <ErrorBoundary label="Forwarded SSE events">
+          <SseEventsSection
+            v-if="entry.inboundResponse?.sseEvents?.length"
+            :events="entry.inboundResponse.sseEvents"
+            title="SSE Events (proxy → client)"
+          />
+        </ErrorBoundary>
+
+        <!-- Forwarded content (proxy → client) for non-streaming — heterogeneous
+             shape across endpoints, shown as raw JSON for an honest upstream-vs-client diff -->
+        <ErrorBoundary label="Forwarded response">
+          <SectionBlock
+            v-if="entry.inboundResponse?.content != null"
+            title="Forwarded Response (proxy → client)"
+            :default-collapsed="true"
+            :raw-data="entry.inboundResponse.content"
+            raw-title="Forwarded Response"
+          >
+            <pre class="forwarded-content-json">{{ JSON.stringify(entry.inboundResponse.content, null, 2) }}</pre>
+          </SectionBlock>
         </ErrorBoundary>
 
         <!-- HTTP HEADERS (unified comparison view) -->
         <HeadersComparisonSection
-          v-if="entry.httpHeaders || (entry.wireRequest as any)?.headers || (entry.response as any)?.headers"
+          v-if="entry.httpHeaders || (entry.outboundRequest as any)?.headers || (entry.outboundResponse as any)?.headers"
           :inbound-request="entry.httpHeaders?.inboundRequest"
-          :outbound-request="entry.httpHeaders?.outboundRequest ?? (entry.wireRequest as any)?.headers"
-          :outbound-response="entry.httpHeaders?.outboundResponse ?? (entry.response as any)?.headers"
+          :outbound-request="entry.httpHeaders?.outboundRequest ?? (entry.outboundRequest as any)?.headers"
+          :outbound-response="entry.httpHeaders?.outboundResponse ?? (entry.outboundResponse as any)?.headers"
         />
 
         <!-- ATTEMPTS TIMELINE (when multiple attempts) -->
@@ -221,5 +245,14 @@ function exportEntry() {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding: var(--spacing-sm);
+}
+
+.forwarded-content-json {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
 }
 </style>

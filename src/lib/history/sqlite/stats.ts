@@ -31,7 +31,7 @@ export function computeStats(): HistoryStats {
               COALESCE(SUM(input_tokens), 0)  AS total_input,
               COALESCE(SUM(output_tokens), 0) AS total_output,
               COALESCE(AVG(duration_ms), 0)   AS avg_duration
-         FROM entries`,
+         FROM entries_v2`,
     )
     .get() as {
     total: number
@@ -45,14 +45,14 @@ export function computeStats(): HistoryStats {
   const perModel = db
     .prepare(
       `SELECT model, COUNT(*) AS count
-         FROM entries WHERE model IS NOT NULL GROUP BY model`,
+         FROM entries_v2 WHERE model IS NOT NULL GROUP BY model`,
     )
     .all() as Array<{ model: string; count: number }>
 
   const perEndpoint = db
     .prepare(
       `SELECT endpoint, COUNT(*) AS count
-         FROM entries WHERE endpoint IS NOT NULL GROUP BY endpoint`,
+         FROM entries_v2 WHERE endpoint IS NOT NULL GROUP BY endpoint`,
     )
     .all() as Array<{ endpoint: string; count: number }>
 
@@ -60,7 +60,7 @@ export function computeStats(): HistoryStats {
     .prepare(
       `SELECT strftime('%Y-%m-%dT%H:00:00Z', started_at / 1000, 'unixepoch') AS hour,
               COUNT(*) AS count
-         FROM entries
+         FROM entries_v2
         WHERE started_at >= ?
         GROUP BY hour
         ORDER BY hour ASC`,

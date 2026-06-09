@@ -103,6 +103,8 @@ export interface SanitizationInfo {
   orphanedToolResultCount: number
   fixedNameCount: number
   emptyTextBlocksRemoved: number
+  /** Corrupt (unsigned) thinking blocks dropped by the thinking_block_sanitize_check pass */
+  emptyThinkingBlocksRemoved: number
   systemReminderRemovals: number
 }
 
@@ -111,10 +113,34 @@ export interface PreprocessInfo {
   dedupedToolCallCount: number
 }
 
+/**
+ * One recorded SSE frame. `raw` is the original upstream `data:` payload bytes
+ * (verbatim string), so nothing is lost to a parse round-trip. `type` is derived
+ * for indexing/coloring: the parsed event type, or the SSE `event:` name /
+ * "keepalive" for frames without a parseable JSON body.
+ */
 export interface SseEventRecord {
   offsetMs: number
   type: string
-  data: unknown
+  raw: string
+}
+
+/**
+ * The response as actually forwarded to the client (proxy→client), AFTER
+ * server-tool filtering, tool-name restoration, and tool-input decoding. The
+ * upstream-original response lives in `HistoryEntry.response` / `sseEvents`;
+ * this is the client-visible variant. Recording both gives the "what upstream
+ * sent vs what the client received" diff that diagnoses forwarding bugs.
+ */
+export interface ForwardedResponse {
+  /**
+   * Non-streaming: the rewritten content actually returned to the client. Shape
+   * varies by endpoint (Anthropic message / OpenAI message / Gemini response),
+   * so this is intentionally `unknown` — consumers normalize per endpoint.
+   */
+  content?: unknown
+  /** Streaming: the SSE frames actually written to the client. */
+  sseEvents?: Array<SseEventRecord>
 }
 
 export interface PipelineInfo {
@@ -159,7 +185,8 @@ export interface HistoryEntry {
   durationMs?: number
   transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
-  request: {
+  /** Client → Proxy: the client's raw inbound request. */
+  inboundRequest: {
     model?: string
     messages?: Array<MessageContent>
     stream?: boolean
@@ -177,7 +204,8 @@ export interface HistoryEntry {
     system?: string | Array<SystemBlock>
     payload?: unknown
   }
-  wireRequest?: {
+  /** Proxy → Upstream: the final wire request sent upstream. */
+  outboundRequest?: {
     model?: string
     format?: EndpointType
     messageCount?: number
@@ -185,7 +213,8 @@ export interface HistoryEntry {
     system?: string | Array<SystemBlock>
     payload?: unknown
   }
-  response?: {
+  /** Upstream → Proxy: the upstream-original response. */
+  outboundResponse?: {
     success: boolean
     model: string
     usage: UsageData
@@ -195,6 +224,8 @@ export interface HistoryEntry {
     content: MessageContent | null
     rawBody?: string
   }
+  /** Proxy → Client: response as actually forwarded to the client, post-rewrite. */
+  inboundResponse?: ForwardedResponse
   /** HTTP headers captured at each leg of the proxy pipeline */
   httpHeaders?: {
     /** Client → Proxy (inbound request) */

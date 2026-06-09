@@ -63,10 +63,16 @@ import {
 } from "~/lib/anthropic/sanitize"
 import {
   //
+  applyAnthropicToolNameSanitization,
+  buildAnthropicToolNameMapper,
+} from "~/lib/anthropic/sanitize/tool-name-sanitize"
+import {
+  //
   createServerToolBlockFilter,
   filterServerToolBlocksFromResponse,
   logServerToolBlock,
   logServerToolBlocks,
+  restoreToolNamesInResponse,
 } from "~/lib/anthropic/server-tool-filter"
 import {
   //
@@ -78,6 +84,7 @@ import {
   handleWarmupRequest,
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
+import { payloadHasWebSearch } from "~/lib/anthropic/web-search"
 import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
@@ -114,6 +121,8 @@ import {
 } from "~/lib/stream"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
+
+import { handleWebSearchCompletion } from "./web-search-handler"
 
 // ============================================================================
 // Main entry point — Anthropic /v1/messages completion
@@ -188,6 +197,14 @@ export async function handleMessages(c: Context) {
   })
   reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
 
+  // Build the per-request tool-name sanitization mapper from the client's
+  // ORIGINAL custom tools — before preprocessTools injects stubs/tool_search,
+  // so injected stubs and server tools are never renamed. No-op (null) when the
+  // feature is disabled or no name needs rewriting. Response handlers read this
+  // back from reqCtx to restore upstream names to the client's originals.
+  const selectedModelForMapper = state.modelIndex.get(anthropicPayload.model)
+  reqCtx.setToolNameMapper(buildAnthropicToolNameMapper(anthropicPayload.tools, anthropicPayload.model, selectedModelForMapper?.vendor))
+
   // Update TUI tracker with model info (immediate feedback, don't wait for event loop)
   if (tuiLogId) {
     tuiLogger.updateRequest(tuiLogId, {
@@ -202,6 +219,17 @@ export async function handleMessages(c: Context) {
   const preprocessInfo = {
     strippedReadTagCount: preprocessed.strippedReadTagCount,
     dedupedToolCallCount: preprocessed.dedupedToolCallCount,
+  }
+
+  // Web search double-hop interception — only when enabled AND the request
+  // carries a native web_search server tool (or Claude Code's WebSearch). When
+  // disabled this is a single boolean check (fully short-circuited, zero behavior
+  // change). The orchestrator runs two non-streaming model hops + a real search
+  // and emits a synthesized response with visible server_tool_use + result blocks.
+  if (state.webSearchEnabled && payloadHasWebSearch(anthropicPayload)) {
+    consola.debug("[WebSearch] Intercepting request with native web_search tool")
+    const selectedModel = state.modelIndex.get(anthropicPayload.model)
+    return handleWebSearchCompletion(c, anthropicPayload, reqCtx, selectedModel)
   }
 
   return handleDirectAnthropicCompletion(c, anthropicPayload, reqCtx, preprocessInfo)
@@ -231,7 +259,7 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
     reqCtx,
     betaProbe,
   })
-  const strategies = buildAnthropicStrategies({ betaProbe })
+  const strategies = buildAnthropicStrategies({ betaProbe, reqCtx })
 
   // Track truncation result for non-streaming response marker
   let truncateResult: AnthropicAutoTruncateResult | undefined
@@ -289,8 +317,13 @@ function runInitialSanitizationAndRecord(
   // the tools array to validate tool_use references in messages.
   const toolPreprocessed = preprocessTools(anthropicPayload)
 
+  // Apply tool-name sanitization (rename client-original custom tool names to
+  // their upstream form) BEFORE sanitize, so processToolBlocks' name-casing fix
+  // sees the already-renamed (upstream) names and the two rewrites don't fight.
+  const toolNameSanitized = applyAnthropicToolNameSanitization(toolPreprocessed, reqCtx.toolNameMapper)
+
   // Always sanitize messages to filter orphaned tool_result/tool_use blocks
-  const { payload: initialSanitized, stats: sanitizationStats } = sanitizeAnthropicMessages(toolPreprocessed)
+  const { payload: initialSanitized, stats: sanitizationStats } = sanitizeAnthropicMessages(toolNameSanitized)
   const initialSanitizationInfo = toSanitizationInfo(sanitizationStats)
 
   // Record sanitization/preprocessing if anything was modified
@@ -365,7 +398,7 @@ function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAdapter<M
   const { payload: anthropicPayload, selectedModel, headersCapture, clientAnthropicBeta, reqCtx, betaProbe } = args
   return {
     format: "anthropic-messages",
-    sanitize: (p) => sanitizeAnthropicMessages(preprocessTools(p)),
+    sanitize: (p) => sanitizeAnthropicMessages(applyAnthropicToolNameSanitization(preprocessTools(p), reqCtx.toolNameMapper)),
     execute: (p, hints) =>
       executeWithAdaptiveRateLimit(() =>
         createAnthropicMessages(p, {
@@ -397,7 +430,7 @@ function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAdapter<M
 }
 
 /** Build the retry strategy list for Anthropic completions. */
-function buildAnthropicStrategies(args: { betaProbe: BetaProbe }) {
+function buildAnthropicStrategies(args: { betaProbe: BetaProbe; reqCtx: RequestContext }) {
   return [
     createNetworkRetryStrategy<MessagesPayload>(),
     createTokenRefreshStrategy<MessagesPayload>(),
@@ -408,7 +441,7 @@ function buildAnthropicStrategies(args: { betaProbe: BetaProbe }) {
     createDeferredToolRetryStrategy<MessagesPayload>(),
     createAutoTruncateStrategy<MessagesPayload>({
       truncate: (p, model, opts) => autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,
-      resanitize: (p) => sanitizeAnthropicMessages(preprocessTools(p)),
+      resanitize: (p) => sanitizeAnthropicMessages(applyAnthropicToolNameSanitization(preprocessTools(p), args.reqCtx.toolNameMapper)),
       isEnabled: () => state.autoTruncate,
       label: "Anthropic",
     }),
@@ -533,14 +566,20 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
   // Repetition detection — feed text deltas and log warning on first detection
   const checkRepetition = createStreamRepetitionChecker(anthropicPayload.model)
 
-  // SSE event recording for debugging (excludes high-volume content_block_delta and ping)
+  // Upstream SSE event recording (verbatim raw frames + keepalives) for history.
   const sseEvents: Array<SseEventRecord> = []
+  // Forwarded SSE frames — what the client ACTUALLY received after server-tool
+  // filtering / tool-name restoration / tool-input decoding. Compared against
+  // `sseEvents` (upstream-original) this is the "sent vs received" diagnostic.
+  const forwardedSseEvents: Array<SseEventRecord> = []
 
   // Server tool block filter — always active, matching vscode-copilot-chat behavior.
   // Server tool blocks (server_tool_use, tool_search_tool_result, etc.) are server-side
   // artifacts that clients don't expect. The reference implementation (vscode-copilot-chat)
   // intercepts these unconditionally and never forwards raw blocks to the consumer.
-  const serverToolFilter = createServerToolBlockFilter()
+  // When tool-name sanitization is active, this filter also restores client
+  // tool_use names (upstream → original) on the forwarded stream.
+  const serverToolFilter = createServerToolBlockFilter(reqCtx.toolNameMapper)
 
   // Tool input decoder — rewrites stringified-JSON fields in selected tool_use
   // blocks on the forwarded stream only. History (sseEvents + accumulator) keeps
@@ -565,6 +604,7 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
         parsed,
         streamState,
         sseEvents,
+        forwardedSseEvents,
         reqCtx,
         checkRepetition,
         serverToolFilter,
@@ -576,7 +616,7 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
     // Flush any tool_use input the decoder buffered but never saw a stop for
     // (defensive — normal completion always emits content_block_stop).
     for (const ev of toolInputDecoder.flush()) {
-      await forwardToClient(ev, undefined, serverToolFilter, stream)
+      await forwardToClient(ev, undefined, serverToolFilter, stream, forwardedSseEvents, streamState.streamStartMs)
     }
 
     // Debug: stream completion summary
@@ -586,6 +626,7 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
 
     // Record SSE events for history debugging (must be before complete/fail which calls toHistoryEntry)
     reqCtx.setSseEvents(sseEvents)
+    reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
 
     if (acc.streamError) {
       // Upstream reported an error mid-stream (e.g. overloaded_error, rate_limit,
@@ -601,6 +642,10 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
     }
   } catch (error) {
     consola.error("Direct Anthropic stream error:", error)
+    // Record what was streamed/forwarded so far BEFORE fail() finalizes history,
+    // so a thrown mid-stream error still leaves the partial wire timeline (原则3).
+    reqCtx.setSseEvents(sseEvents)
+    reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
     reqCtx.fail(acc.model || anthropicPayload.model, error)
 
     // Best-effort flush of buffered tool_use deltas before the error frame, so
@@ -608,7 +653,7 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
     // stream may already be broken (abort/shutdown); ignore failures here.
     try {
       for (const ev of toolInputDecoder.flush()) {
-        await forwardToClient(ev, undefined, serverToolFilter, stream)
+        await forwardToClient(ev, undefined, serverToolFilter, stream, forwardedSseEvents, streamState.streamStartMs)
       }
     } catch {
       // stream already closed — nothing to recover
@@ -643,6 +688,7 @@ interface ProcessOneStreamEventArgs {
   parsed: StreamEvent | undefined
   streamState: StreamPumpState
   sseEvents: Array<SseEventRecord>
+  forwardedSseEvents: Array<SseEventRecord>
   reqCtx: RequestContext
   checkRepetition: (text: string) => void
   serverToolFilter: ReturnType<typeof createServerToolBlockFilter>
@@ -653,10 +699,10 @@ interface ProcessOneStreamEventArgs {
 /**
  * Process a single upstream SSE event: update counters, record debug info,
  * filter server-tool blocks, and forward to the client. Mutates `streamState`,
- * `sseEvents`, and writes to `stream`.
+ * `sseEvents`, `forwardedSseEvents`, and writes to `stream`.
  */
 async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<void> {
-  const { rawEvent, parsed, streamState, sseEvents, reqCtx, checkRepetition, serverToolFilter, toolInputDecoder, stream } = args
+  const { rawEvent, parsed, streamState, sseEvents, forwardedSseEvents, reqCtx, checkRepetition, serverToolFilter, toolInputDecoder, stream } = args
 
   const dataLen = rawEvent.data?.length ?? 0
   streamState.bytesIn += dataLen
@@ -668,15 +714,17 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
   // are the ONLY original record of what the upstream actually streamed — the
   // accumulated `response.content` is a derived artifact (accumulate →
   // mapAnthropicContentBlocks → safeParseJson) and cannot answer "was the tool_use
-  // input empty at the source?". Recording everything is required by 原则3
+  // input empty at the source?". `raw` stores the verbatim upstream `data:` bytes
+  // (no parse round-trip); `type` is derived for indexing. Keepalive / unparseable
+  // frames are recorded too (timing matters — a signature_delta closing an
+  // encrypted thinking block can arrive seconds after content_block_start, a gap
+  // only visible if the bracketing keepalives are kept). Required by 原则3
   // (后端存储必须完整,不主动丢弃任何可观测原始数据).
-  if (parsed) {
-    sseEvents.push({
-      offsetMs: Date.now() - streamState.streamStartMs,
-      type: parsed.type,
-      data: parsed,
-    })
-  }
+  sseEvents.push({
+    offsetMs: Date.now() - streamState.streamStartMs,
+    type: parsed?.type ?? rawEvent.event ?? "keepalive",
+    raw: rawEvent.data ?? "",
+  })
 
   // Debug: log first event arrival (measures TTFB from stream perspective)
   if (!streamState.firstEventLogged) {
@@ -723,7 +771,7 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
   // events out). Each emitted event then passes through the server-tool filter.
   // Pass-through events reuse `parsed`; decoder-emitted events are re-parsed.
   for (const ev of toolInputDecoder.processEvent(parsed, rawEvent)) {
-    await forwardToClient(ev, ev === rawEvent ? parsed : undefined, serverToolFilter, stream)
+    await forwardToClient(ev, ev === rawEvent ? parsed : undefined, serverToolFilter, stream, forwardedSseEvents, streamState.streamStartMs)
   }
 }
 
@@ -740,17 +788,30 @@ function parseStreamEventData(data: string | undefined): StreamEvent | undefined
 /**
  * Forward one (possibly decoder-rewritten) SSE event to the client, applying
  * the server-tool filter for index remapping / suppression. `knownParsed` is
- * supplied for pass-through events to avoid a redundant re-parse.
+ * supplied for pass-through events to avoid a redundant re-parse. The frame
+ * actually written is also appended to `forwardedSseEvents` (the proxy→client
+ * record); suppressed frames (rewriteEvent → null) are recorded by neither.
  */
 async function forwardToClient(
   ev: ServerSentEventMessage,
   knownParsed: StreamEvent | undefined,
   serverToolFilter: ReturnType<typeof createServerToolBlockFilter>,
   stream: SSEStreamingApi,
+  forwardedSseEvents: Array<SseEventRecord>,
+  streamStartMs: number,
 ): Promise<void> {
   const evParsed = knownParsed ?? parseStreamEventData(ev.data)
   const forwardData = serverToolFilter.rewriteEvent(evParsed, ev.data ?? "")
   if (forwardData === null) return
+
+  // Record the exact frame the client receives (post-rewrite). evParsed reflects
+  // the pre-rewrite parse; the type is stable enough for indexing, and `raw` holds
+  // the actual forwarded bytes.
+  forwardedSseEvents.push({
+    offsetMs: Date.now() - streamStartMs,
+    type: evParsed?.type ?? ev.event ?? "keepalive",
+    raw: forwardData,
+  })
 
   await stream.writeSSE({
     data: forwardData,
@@ -767,6 +828,35 @@ function handleDirectAnthropicNonStreamingResponse(
   reqCtx: RequestContext,
   truncateResult: AnthropicAutoTruncateResult | undefined,
 ) {
+  // Compute the client-facing (rewritten) response first so we can record it as
+  // the forwarded state BEFORE complete() finalizes history. complete() itself
+  // records the UPSTREAM-original response (response.content), so history keeps
+  // both the upstream form and what the client actually received.
+  let finalResponse = response
+
+  // Add truncation marker to response if verbose mode and truncation occurred
+  if (state.verbose && truncateResult?.wasTruncated) {
+    const marker = createTruncationMarker(truncateResult)
+    finalResponse = prependMarkerToResponse(response, marker)
+  }
+
+  // Filter server tool blocks from non-streaming response (always active)
+  logServerToolBlocks(finalResponse.content as unknown as Array<Record<string, unknown> & { type: string }>)
+  finalResponse = filterServerToolBlocksFromResponse(finalResponse)
+
+  // Restore client tool_use names (upstream → original) on the client-facing response only.
+  finalResponse = restoreToolNamesInResponse(finalResponse, reqCtx.toolNameMapper)
+
+  // Decode stringified-JSON tool_use input fields on the client-facing response only.
+  finalResponse = decodeToolInputBlocksInResponse(finalResponse, {
+    fields: state.decodeToolInputFields,
+    all: state.decodeAllToolInputFields,
+  })
+
+  // Record the forwarded (client-facing) content, then complete() with the
+  // upstream-original — both before returning. setForwardedResponse must precede
+  // complete() (which emits + builds the history entry).
+  reqCtx.setForwardedResponse({ content: { role: "assistant", content: finalResponse.content } })
   reqCtx.complete({
     success: true,
     model: response.model,
@@ -778,25 +868,6 @@ function handleDirectAnthropicNonStreamingResponse(
     },
     stop_reason: response.stop_reason ?? undefined,
     content: { role: "assistant", content: response.content },
-  })
-
-  // Add truncation marker to response if verbose mode and truncation occurred
-  let finalResponse = response
-  if (state.verbose && truncateResult?.wasTruncated) {
-    const marker = createTruncationMarker(truncateResult)
-    finalResponse = prependMarkerToResponse(response, marker)
-  }
-
-  // Filter server tool blocks from non-streaming response (always active)
-  logServerToolBlocks(finalResponse.content as unknown as Array<Record<string, unknown> & { type: string }>)
-  finalResponse = filterServerToolBlocksFromResponse(finalResponse)
-
-  // Decode stringified-JSON tool_use input fields on the client-facing response
-  // only — reqCtx.complete() above already recorded the original (stringified)
-  // form for history.
-  finalResponse = decodeToolInputBlocksInResponse(finalResponse, {
-    fields: state.decodeToolInputFields,
-    all: state.decodeAllToolInputFields,
   })
 
   return c.json(finalResponse)
@@ -814,6 +885,7 @@ function toSanitizationInfo(stats: SanitizationStats) {
     orphanedToolResultCount: stats.orphanedToolResultCount,
     fixedNameCount: stats.fixedNameCount,
     emptyTextBlocksRemoved: stats.emptyTextBlocksRemoved,
+    emptyThinkingBlocksRemoved: stats.emptyThinkingBlocksRemoved,
     systemReminderRemovals: stats.systemReminderRemovals,
   }
 }

@@ -60,7 +60,7 @@ import { autoRestoreState } from "../helpers/state-fixture"
 function completeEntry(entryId: string, overrides: Partial<Parameters<typeof updateEntry>[1]> = {}): void {
   updateEntry(entryId, {
     state: "completed",
-    response: {
+    outboundResponse: {
       success: true,
       model: "test-model",
       usage: { input_tokens: 0, output_tokens: 0 },
@@ -158,7 +158,7 @@ describe("insertEntry", () => {
       sessionId,
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      request: {
+      inboundRequest: {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "hello" }],
         stream: true,
@@ -182,14 +182,14 @@ describe("insertEntry", () => {
     const stored = getEntry(entry.id)
     expect(stored).toBeDefined()
     expect(stored!.endpoint).toBe("anthropic-messages")
-    expect(stored!.request.model).toBe("claude-sonnet-4-20250514")
-    expect(stored!.request.messages).toHaveLength(1)
-    expect(stored!.request.stream).toBe(true)
-    expect(stored!.request.system).toBe("You are helpful")
-    expect(stored!.request.max_tokens).toBe(1024)
-    expect(stored!.request.temperature).toBe(0.5)
-    expect(stored!.request.tools).toHaveLength(1)
-    expect(stored!.response).toBeUndefined()
+    expect(stored!.inboundRequest.model).toBe("claude-sonnet-4-20250514")
+    expect(stored!.inboundRequest.messages).toHaveLength(1)
+    expect(stored!.inboundRequest.stream).toBe(true)
+    expect(stored!.inboundRequest.system).toBe("You are helpful")
+    expect(stored!.inboundRequest.max_tokens).toBe(1024)
+    expect(stored!.inboundRequest.temperature).toBe(0.5)
+    expect(stored!.inboundRequest.tools).toHaveLength(1)
+    expect(stored!.outboundResponse).toBeUndefined()
   })
 
   test("keeps an explicit sessionId on the entry", () => {
@@ -228,7 +228,7 @@ describe("insertEntry", () => {
       sessionId,
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      request: {
+      inboundRequest: {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "2" }],
         stream: true,
@@ -245,7 +245,7 @@ describe("insertEntry", () => {
       id: generateId(),
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      request: {
+      inboundRequest: {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "no session" }],
         stream: true,
@@ -270,7 +270,7 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 100, output_tokens: 50 },
@@ -281,12 +281,12 @@ describe("updateEntry (response)", () => {
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.response).toBeDefined()
-    expect(stored!.response!.success).toBe(true)
-    expect(stored!.response!.model).toBe("claude-sonnet-4-20250514")
-    expect(stored!.response!.usage.input_tokens).toBe(100)
-    expect(stored!.response!.usage.output_tokens).toBe(50)
-    expect(stored!.response!.stop_reason).toBe("end_turn")
+    expect(stored!.outboundResponse).toBeDefined()
+    expect(stored!.outboundResponse!.success).toBe(true)
+    expect(stored!.outboundResponse!.model).toBe("claude-sonnet-4-20250514")
+    expect(stored!.outboundResponse!.usage.input_tokens).toBe(100)
+    expect(stored!.outboundResponse!.usage.output_tokens).toBe(50)
+    expect(stored!.outboundResponse!.stop_reason).toBe("end_turn")
     expect(stored!.durationMs).toBe(500)
   })
 
@@ -297,7 +297,7 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: {
@@ -312,8 +312,8 @@ describe("updateEntry (response)", () => {
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.response!.usage.cache_read_input_tokens).toBe(80)
-    expect(stored!.response!.usage.cache_creation_input_tokens).toBe(20)
+    expect(stored!.outboundResponse!.usage.cache_read_input_tokens).toBe(80)
+    expect(stored!.outboundResponse!.usage.cache_creation_input_tokens).toBe(20)
   })
 
   test("records error response", () => {
@@ -323,7 +323,7 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: false,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 0, output_tokens: 0 },
@@ -334,14 +334,14 @@ describe("updateEntry (response)", () => {
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.response!.success).toBe(false)
-    expect(stored!.response!.error).toBe("Rate limited")
+    expect(stored!.outboundResponse!.success).toBe(false)
+    expect(stored!.outboundResponse!.error).toBe("Rate limited")
   })
 
   test("does nothing when disabled", () => {
     initHistory(false, 100)
     updateEntry("nonexistent", {
-      response: {
+      outboundResponse: {
         success: true,
         model: "test",
         usage: { input_tokens: 0, output_tokens: 0 },
@@ -359,7 +359,7 @@ describe("updateEntry (response)", () => {
 
     updateEntry(entry.id, {
       state: "completed",
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 100, output_tokens: 50 },
@@ -392,6 +392,7 @@ describe("updateEntry (rewrites)", () => {
             orphanedToolResultCount: 1,
             fixedNameCount: 0,
             emptyTextBlocksRemoved: 0,
+            emptyThinkingBlocksRemoved: 0,
             systemReminderRemovals: 1,
           },
         ],
@@ -446,7 +447,7 @@ describe("updateEntry (rewrites)", () => {
           max_tokens: 4096,
         },
       },
-      wireRequest: {
+      outboundRequest: {
         model: "claude-sonnet-4-20250514",
         format: "anthropic-messages",
         messageCount: 1,
@@ -472,7 +473,7 @@ describe("updateEntry (rewrites)", () => {
       messages: [{ role: "user", content: "truncated" }],
       max_tokens: 4096,
     })
-    expect(stored!.wireRequest).toEqual({
+    expect(stored!.outboundRequest).toEqual({
       model: "claude-sonnet-4-20250514",
       format: "anthropic-messages",
       messageCount: 1,
@@ -547,7 +548,7 @@ describe("updateEntry (rewrites)", () => {
     const entry = insertHistoryEntry("anthropic-messages", { model: "m", messages: undefined })
 
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: false,
         model: "claude-sonnet-4",
         usage: { input_tokens: 0, output_tokens: 0 },
@@ -562,8 +563,8 @@ describe("updateEntry (rewrites)", () => {
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.response!.status).toBe(400)
-    expect(stored!.response!.rawBody).toBe('{"error":"thinking blocks cannot be modified"}')
+    expect(stored!.outboundResponse!.status).toBe(400)
+    expect(stored!.outboundResponse!.rawBody).toBe('{"error":"thinking blocks cannot be modified"}')
     expect(stored!.httpHeaders!.outboundResponse).toEqual({ "x-request-id": "xyz" })
   })
 })
@@ -616,7 +617,7 @@ describe("getHistory", () => {
 
     const result = getHistory({ model: "claude" })
     expect(result.total).toBe(1)
-    expect(result.entries[0].request.model).toContain("claude")
+    expect(result.entries[0].inboundRequest.model).toContain("claude")
   })
 
   test("filters by endpoint", () => {
@@ -664,7 +665,7 @@ describe("getHistory", () => {
 
     const result = getHistory({ search: "web_search" })
     expect(result.total).toBe(1)
-    expect(result.entries[0].request.model).toBe("gpt-4o")
+    expect(result.entries[0].inboundRequest.model).toBe("gpt-4o")
   })
 
   test.skip("search finds OpenAI tool_calls by function arguments", () => {
@@ -699,7 +700,7 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      request: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
+      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
     }
     insertEntry(old)
 
@@ -708,7 +709,7 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      request: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
+      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
     }
     insertEntry(recent)
 
@@ -726,7 +727,7 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 20000,
       endpoint: "anthropic-messages",
-      request: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
+      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
     }
     insertEntry(old)
 
@@ -735,7 +736,7 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      request: { model: "test", messages: [{ role: "user", content: "mid" }], stream: true },
+      inboundRequest: { model: "test", messages: [{ role: "user", content: "mid" }], stream: true },
     }
     insertEntry(mid)
 
@@ -744,7 +745,7 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      request: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
+      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
     }
     insertEntry(recent)
 
@@ -764,9 +765,9 @@ describe("updateEntry stores sseEvents", () => {
     })
 
     const sseEvents = [
-      { offsetMs: 0, type: "message_start", data: { type: "message_start" } },
-      { offsetMs: 50, type: "content_block_delta", data: { type: "content_block_delta" } },
-      { offsetMs: 100, type: "message_stop", data: { type: "message_stop" } },
+      { offsetMs: 0, type: "message_start", raw: JSON.stringify({ type: "message_start" }) },
+      { offsetMs: 50, type: "content_block_delta", raw: JSON.stringify({ type: "content_block_delta" }) },
+      { offsetMs: 100, type: "message_stop", raw: JSON.stringify({ type: "message_stop" }) },
     ]
 
     updateEntry(entry.id, { sseEvents })
@@ -783,18 +784,18 @@ describe("updateEntry stores sseEvents", () => {
     })
 
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "test",
         usage: { input_tokens: 10, output_tokens: 5 },
         content: null,
       },
-      sseEvents: [{ offsetMs: 0, type: "message_start", data: {} }],
+      sseEvents: [{ offsetMs: 0, type: "message_start", raw: "{}" }],
       durationMs: 100,
     })
 
     const updated = getEntry(entry.id)
-    expect(updated?.response?.success).toBe(true)
+    expect(updated?.outboundResponse?.success).toBe(true)
     expect(updated?.sseEvents).toHaveLength(1)
     expect(updated?.durationMs).toBe(100)
   })
@@ -823,7 +824,7 @@ describe("Session.endpoints tracking", () => {
         sessionId,
         startedAt: Date.now() + i,
         endpoint: "anthropic-messages",
-        request: { model: "test", messages: [{ role: "user", content: `m${i}` }], stream: true },
+        inboundRequest: { model: "test", messages: [{ role: "user", content: `m${i}` }], stream: true },
       })
       completeEntry(id)
     }
@@ -840,7 +841,7 @@ describe("Session.endpoints tracking", () => {
       sessionId,
       startedAt: Date.now(),
       endpoint: "openai-chat-completions",
-      request: { model: "test", messages: [{ role: "user", content: "hi" }], stream: true },
+      inboundRequest: { model: "test", messages: [{ role: "user", content: "hi" }], stream: true },
     })
     completeEntry(id)
 
@@ -861,7 +862,7 @@ describe("getSessionEntries pagination", () => {
         sessionId,
         startedAt: Date.now() + i,
         endpoint: "anthropic-messages",
-        request: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
+        inboundRequest: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
       }
       insertEntry(entry)
       completeEntry(entry.id)
@@ -882,7 +883,7 @@ describe("getSessionEntries pagination", () => {
         sessionId,
         startedAt: Date.now() + i,
         endpoint: "anthropic-messages",
-        request: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
+        inboundRequest: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
       }
       insertEntry(entry)
       completeEntry(entry.id)
@@ -952,7 +953,7 @@ describe("getStats", () => {
 
     updateEntry(entry.id, {
       state: "completed",
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 100, output_tokens: 50 },
@@ -986,7 +987,7 @@ describe("Max entries enforcement", () => {
         sessionId: `session-${i}`,
         startedAt: baseTime + i,
         endpoint: "anthropic-messages",
-        request: {
+        inboundRequest: {
           model: "test",
           messages: [{ role: "user", content: `msg-${i}` }],
           stream: true,

@@ -81,10 +81,10 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     const nodes: Array<TocNode> = []
 
     // ── request ──
-    const messages = entry.value.request.messages ?? []
+    const messages = entry.value.inboundRequest.messages ?? []
     const requestChildren: Array<TocNode> = []
 
-    if (entry.value.request.system) {
+    if (entry.value.inboundRequest.system) {
       requestChildren.push({ id: "request", label: "system", icon: "mdi-cog" })
     }
 
@@ -116,13 +116,13 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     })
 
     // ── response ──
-    const hasResponse = entry.value.response?.content || entry.value.response?.error
+    const hasResponse = entry.value.outboundResponse?.content || entry.value.outboundResponse?.error
     if (hasResponse) {
       const responseChildren: Array<TocNode> = []
-      if (entry.value.response?.error) {
+      if (entry.value.outboundResponse?.error) {
         responseChildren.push({ id: "response", label: "error", icon: "mdi-alert-circle" })
       }
-      if (entry.value.response?.content) {
+      if (entry.value.outboundResponse?.content) {
         responseChildren.push({ id: "response.content", label: "content", icon: "mdi-robot" })
       }
       nodes.push({

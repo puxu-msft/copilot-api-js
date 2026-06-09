@@ -60,12 +60,12 @@ function handleHistoryEvent(event: RequestContextEvent): void {
           ...(ctx.rawPath ? { rawPath: ctx.rawPath } : {}),
           endpoint: ctx.endpoint,
           ...buildHistoryActivityPatch(ctx),
-          request: {
+          inboundRequest: {
             model: orig.model,
             messages: orig.messages as Array<MessageContent> | undefined,
             stream: orig.stream,
-            tools: orig.tools as HistoryEntry["request"]["tools"],
-            system: orig.system as HistoryEntry["request"]["system"],
+            tools: orig.tools as HistoryEntry["inboundRequest"]["tools"],
+            system: orig.system as HistoryEntry["inboundRequest"]["system"],
           },
         }
 
@@ -102,12 +102,13 @@ function handleHistoryEvent(event: RequestContextEvent): void {
         queueWaitMs: entryData.queueWaitMs,
         attemptCount: entryData.attemptCount,
         currentStrategy: entryData.currentStrategy,
-        response,
+        outboundResponse: response,
         startedAt: entryData.startedAt,
         endedAt: entryData.endedAt,
         durationMs: entryData.durationMs,
         transport: entryData.transport,
         sseEvents: entryData.sseEvents,
+        ...(entryData.inboundResponse && { inboundResponse: entryData.inboundResponse }),
         ...(entryData.warningMessages && { warningMessages: entryData.warningMessages }),
         ...(entryData.effectiveRequest && {
           effectiveRequest: {
@@ -119,14 +120,14 @@ function handleHistoryEvent(event: RequestContextEvent): void {
             payload: entryData.effectiveRequest.payload,
           },
         }),
-        ...(entryData.wireRequest && {
-          wireRequest: {
-            model: entryData.wireRequest.model,
-            format: entryData.wireRequest.format,
-            messageCount: entryData.wireRequest.messageCount,
-            messages: entryData.wireRequest.messages as NonNullable<HistoryEntry["wireRequest"]>["messages"],
-            system: entryData.wireRequest.system as NonNullable<HistoryEntry["wireRequest"]>["system"],
-            payload: entryData.wireRequest.payload,
+        ...(entryData.outboundRequest && {
+          outboundRequest: {
+            model: entryData.outboundRequest.model,
+            format: entryData.outboundRequest.format,
+            messageCount: entryData.outboundRequest.messageCount,
+            messages: entryData.outboundRequest.messages as NonNullable<HistoryEntry["outboundRequest"]>["messages"],
+            system: entryData.outboundRequest.system as NonNullable<HistoryEntry["outboundRequest"]>["system"],
+            payload: entryData.outboundRequest.payload,
           },
         }),
         ...(entryData.httpHeaders && {
@@ -231,10 +232,10 @@ function handleTuiEvent(event: RequestContextEvent): void {
 
 // ─── Helpers ───
 
-function toHistoryResponse(entryData: HistoryEntryData): HistoryEntry["response"] | undefined {
-  if (!entryData.response) return undefined
+function toHistoryResponse(entryData: HistoryEntryData): HistoryEntry["outboundResponse"] | undefined {
+  if (!entryData.outboundResponse) return undefined
 
-  const r: ResponseData = entryData.response
+  const r: ResponseData = entryData.outboundResponse
   return {
     success: r.success,
     model: r.model,

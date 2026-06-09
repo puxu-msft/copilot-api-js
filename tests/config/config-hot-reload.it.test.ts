@@ -200,6 +200,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: false,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   },
+  {
+    configKey: "sanitize_tool_names",
+    stateKey: "sanitizeToolNames",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+  },
 
   // ── system_prompt_overrides (array; sample is a single rule) ────────
   {
@@ -233,6 +240,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: "stripped",
     expectedStateValue: "stripped",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
+  },
+  {
+    configKey: "anthropic.thinking_block_sanitize_check",
+    stateKey: "thinkingBlockSanitizeCheck",
+    sampleYamlValue: "empty_any",
+    expectedStateValue: "empty_any",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   },
   {
     configKey: "anthropic.dedup_tool_calls",
@@ -397,6 +411,22 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: '"/tmp/custom.db"',
     expectedStateValue: "/tmp/custom.db",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  },
+
+  // ── web_search.* ───────────────────────────────────────────────────
+  {
+    configKey: "web_search.enabled",
+    stateKey: "webSearchEnabled",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
+  },
+  {
+    configKey: "web_search.backend",
+    stateKey: "webSearchBackend",
+    sampleYamlValue: '"searxng"',
+    expectedStateValue: "searxng",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
   },
 
   // ── shutdown.* ─────────────────────────────────────────────────────

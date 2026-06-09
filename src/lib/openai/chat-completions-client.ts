@@ -23,6 +23,7 @@ import {
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
+import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
 
 import {
   //
@@ -72,7 +73,10 @@ export const createChatCompletions = async (
 
   if (!response.ok) {
     consola.error("Failed to create chat completions", response)
-    throw await HTTPError.fromResponse("Failed to create chat completions", response, wire.model)
+    // On opaque 400s, scan the wire tools for schema keywords / names the
+    // upstream commonly rejects, and attach hint-only diagnostics.
+    const diagnostics = response.status === 400 ? summarizeToolsForDiagnostics(wire.tools) : undefined
+    throw await HTTPError.fromResponse("Failed to create chat completions", response, wire.model, diagnostics)
   }
 
   if (wire.stream) {

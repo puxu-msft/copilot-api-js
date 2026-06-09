@@ -38,7 +38,7 @@ function baseEntry(id: string): HistoryEntry {
     state: "pending",
     active: true,
     lastUpdatedAt: Date.now(),
-    request: { model: "claude-opus-4-7" },
+    inboundRequest: { model: "claude-opus-4-7" },
   } as HistoryEntry
 }
 
@@ -75,7 +75,7 @@ describe("history persistence boundary", () => {
       active: false,
       lastUpdatedAt: Date.now(),
       endedAt: Date.now(),
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-opus-4-7",
         usage: { input_tokens: 1, output_tokens: 1 },
@@ -101,7 +101,7 @@ describe("history persistence boundary", () => {
       active: false,
       lastUpdatedAt: Date.now(),
       endedAt: Date.now(),
-      response: {
+      outboundResponse: {
         success: false,
         model: "claude-opus-4-7",
         usage: { input_tokens: 0, output_tokens: 0 },

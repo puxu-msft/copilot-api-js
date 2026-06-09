@@ -28,7 +28,7 @@ import { generateId } from "~/lib/utils"
  */
 export function insertHistoryEntry(
   endpoint: EndpointType,
-  request: Partial<HistoryEntry["request"]> & { model: string; messages: HistoryEntry["request"]["messages"] },
+  request: Partial<HistoryEntry["inboundRequest"]> & { model: string; messages: HistoryEntry["inboundRequest"]["messages"] },
 ): HistoryEntry {
   const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
@@ -36,7 +36,7 @@ export function insertHistoryEntry(
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    request: {
+    inboundRequest: {
       model: request.model,
       messages: request.messages,
       stream: request.stream ?? true,

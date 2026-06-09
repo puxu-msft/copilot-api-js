@@ -10,9 +10,14 @@ import {
 
 import type { RequestContext } from "~/lib/context/request"
 import type { HeadersCapture } from "~/lib/context/request"
-import type { MessageContent } from "~/lib/history"
+import type {
+  //
+  MessageContent,
+  SseEventRecord,
+} from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type {
   //
   ChatCompletionChunk,
@@ -56,6 +61,13 @@ import {
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
+  applyChatCompletionsToolNameSanitization,
+  buildChatCompletionsToolNameMapper,
+  restoreChatCompletionsChunkToolNames,
+  restoreChatCompletionsToolNames,
+} from "~/lib/openai/tool-name-sanitize"
+import {
+  //
   createStreamTranslator,
   translateChatCompletionsToResponses,
   translateResponsesResponseToCC,
@@ -90,6 +102,23 @@ import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
 
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
+
+/**
+ * Restore tool-call names (upstream → original) in a single Chat Completions
+ * SSE `data` frame. Best-effort: returns the input unchanged on `[DONE]`,
+ * empty data, unparseable JSON, or when no name changed (so a malformed frame
+ * never aborts the forward loop). No-op when `mapper` is null.
+ */
+function restoreStreamToolNames(data: string | undefined, mapper: ToolNameMapper | null): string {
+  if (!mapper || !data || data === "[DONE]") return data ?? ""
+  let chunk: unknown
+  try {
+    chunk = JSON.parse(data)
+  } catch {
+    return data
+  }
+  return restoreChatCompletionsChunkToolNames(chunk, mapper) ? JSON.stringify(chunk) : data
+}
 
 export async function handleChatCompletion(c: Context) {
   const originalPayload = (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
@@ -145,6 +174,16 @@ export async function handleChatCompletion(c: Context) {
     payload: originalSnapshot,
   })
   reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
+
+  // Build the per-request tool-name sanitization mapper from the client's tool
+  // definitions, then rename tool names to their upstream form on the working
+  // payload. The original snapshot above keeps the client's original names for
+  // history; response handlers restore upstream → original via this mapper.
+  const toolNameMapper = buildChatCompletionsToolNameMapper(originalPayload, selectedModel?.vendor)
+  reqCtx.setToolNameMapper(toolNameMapper)
+  const renamedPayload = applyChatCompletionsToolNameSanitization(originalPayload, toolNameMapper)
+  originalPayload.messages = renamedPayload.messages
+  originalPayload.tools = renamedPayload.tools
 
   // Update TUI tracker with model info (immediate feedback)
   if (tuiLogId) {
@@ -502,6 +541,12 @@ function handleNonStreamingResponse(
   const choice = response.choices[0]
   const usage = response.usage
 
+  // Restore tool_call names (upstream → original) on the client-facing response.
+  // Computed before complete() so the forwarded (client-facing) message can be
+  // recorded; complete() records the upstream-original message for history.
+  const clientResponse = restoreChatCompletionsToolNames(response, reqCtx.toolNameMapper)
+
+  reqCtx.setForwardedResponse({ content: clientResponse.choices[0]?.message })
   reqCtx.complete({
     success: true,
     model: response.model,
@@ -516,7 +561,7 @@ function handleNonStreamingResponse(
     content: choice.message,
   })
 
-  return c.json(response)
+  return c.json(clientResponse)
 }
 
 /** Options for handleStreamingResponse */
@@ -535,6 +580,10 @@ async function handleStreamingResponse(opts: StreamingOptions) {
   const { stream, response, payload, reqCtx, truncateResult, clientAbortSignal } = opts
   const acc = createOpenAIStreamAccumulator()
   const idleTimeoutMs = state.streamIdleTimeout * 1000
+
+  // Forwarded SSE frames — what the client actually received (tool-name restored).
+  const forwardedSseEvents: Array<SseEventRecord> = []
+  const streamStartMs = Date.now()
 
   // Streaming metrics for TUI footer
   let bytesIn = 0
@@ -562,6 +611,7 @@ async function handleStreamingResponse(opts: StreamingOptions) {
         data: JSON.stringify(markerChunk),
         event: "message",
       })
+      forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: "message", raw: JSON.stringify(markerChunk) })
       acc.rawContent += marker
     }
 
@@ -599,9 +649,13 @@ async function handleStreamingResponse(opts: StreamingOptions) {
         }
       }
 
-      // Forward every event to client — proxy preserves upstream data
+      // Forward every event to client — proxy preserves upstream data, except
+      // tool-call names are restored (upstream → original) when sanitization is
+      // active. History keeps the upstream names (accumulated above).
+      const forwardData = restoreStreamToolNames(rawEvent.data, reqCtx.toolNameMapper)
+      forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: rawEvent.event ?? "message", raw: forwardData })
       await stream.writeSSE({
-        data: rawEvent.data ?? "",
+        data: forwardData,
         event: rawEvent.event,
         id: rawEvent.id !== undefined ? String(rawEvent.id) : undefined,
         retry: rawEvent.retry,
@@ -609,9 +663,11 @@ async function handleStreamingResponse(opts: StreamingOptions) {
     }
 
     const responseData = buildOpenAIResponseData(acc, payload.model)
+    reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
     reqCtx.complete(responseData)
   } catch (error) {
     consola.error("[ChatCompletions] Stream error:", error)
+    reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
     reqCtx.fail(acc.model || payload.model, error)
 
     // Send error to client as final SSE event (consistent with Anthropic path)

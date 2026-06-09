@@ -18,6 +18,7 @@ export type {
   CursorResult,
   EndpointType,
   EntrySummary,
+  ForwardedResponse,
   HistoryEntry,
   HistoryResult,
   HistoryState,

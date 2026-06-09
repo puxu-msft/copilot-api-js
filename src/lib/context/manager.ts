@@ -195,11 +195,11 @@ export function createRequestContextManager(): RequestContextManager {
    * to true, failed defaults to false).
    */
   function recordSettledFromEntry(entry: HistoryEntryData, defaultSuccess: boolean): void {
-    recordSettledRequest(entry.response?.model ?? entry.request.model ?? "unknown", {
+    recordSettledRequest(entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown", {
       startedAt: entry.startedAt,
       endedAt: entry.endedAt,
-      success: entry.response?.success ?? defaultSuccess,
-      usage: entry.response?.usage,
+      success: entry.outboundResponse?.success ?? defaultSuccess,
+      usage: entry.outboundResponse?.usage,
     })
   }
 

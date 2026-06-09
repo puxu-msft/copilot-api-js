@@ -19,6 +19,7 @@ import type {
 import consola from "consola"
 
 import type { HeadersCapture } from "~/lib/context/request"
+import type { SseEventRecord } from "~/lib/history/store"
 import type {
   //
   ResponsesPayload,
@@ -225,6 +226,11 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   )
   const strategies = createResponsesStrategies()
 
+  // Forwarded frames — what the client actually received over the WebSocket.
+  // Hoisted above the try so the catch can still record the partial timeline.
+  const forwardedSseEvents: Array<SseEventRecord> = []
+  const streamStartMs = Date.now()
+
   try {
     // Execute pipeline (model resolution, token refresh, rate limiting)
     const pipelineResult = await executeRequestPipeline({
@@ -269,6 +275,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
         // Forward (possibly ID-corrected) event as WebSocket JSON frame
         ws.send(eventData)
+        forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: parsed.type, raw: eventData })
         eventsReceived++
 
         // Update TUI with stream progress
@@ -287,6 +294,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     }
     registerResponseSession(acc.responseId, reqCtx.sessionId)
     const responseData = buildResponsesResponseData(acc, resolvedModel)
+    reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
     reqCtx.complete(responseData)
 
     // Close WebSocket unless the client has opted into long-lived sessions.
@@ -297,6 +305,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     }
   } catch (error) {
     reqCtx.setHttpHeaders(headersCapture)
+    reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
     reqCtx.fail(resolvedModel, error)
 
     const message = error instanceof Error ? error.message : String(error)

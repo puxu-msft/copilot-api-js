@@ -37,9 +37,9 @@ function makeEntry(id: string, messageCount: number): HistoryEntry {
     id,
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    request: {
+    inboundRequest: {
       model: "claude-sonnet-4.6",
-      messages: messages as unknown as HistoryEntry["request"]["messages"],
+      messages: messages as unknown as HistoryEntry["inboundRequest"]["messages"],
     },
   }
 }
@@ -102,9 +102,9 @@ describe("toEntrySummary memoization (M4)", () => {
       id: "heavy",
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      request: {
+      inboundRequest: {
         model: "claude-sonnet-4.6",
-        messages: messages as unknown as HistoryEntry["request"]["messages"],
+        messages: messages as unknown as HistoryEntry["inboundRequest"]["messages"],
       },
     }
     putInFlight(heavy)

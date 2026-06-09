@@ -321,7 +321,7 @@ const SERVER_TOOL_TYPE_PREFIXES = [
 ]
 
 /** Check if a tool's type field matches a known server tool prefix. */
-function isServerToolType(type: string | undefined): boolean {
+export function isServerToolType(type: string | undefined): boolean {
   if (!type) return false
   return SERVER_TOOL_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix))
 }

@@ -18,7 +18,11 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import type { RequestContext } from "~/lib/context/request"
-import type { MessageContent } from "~/lib/history"
+import type {
+  //
+  MessageContent,
+  SseEventRecord,
+} from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type {
   //
@@ -323,6 +327,9 @@ function renderGeminiNonStreaming(args: ChatCompletionRendererArgs, modelId: str
   // response (mirrors handleNonStreamingResponse in chat-completions).
   const choice = chat.choices[0]
   const usage = chat.usage
+  // The client receives the Gemini-translated response; complete() records the
+  // upstream OpenAI-shape message for history.
+  reqCtx.setForwardedResponse({ content: gemini })
   reqCtx.complete({
     success: true,
     model: chat.model,
@@ -378,6 +385,9 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
     const idleTimeoutMs = state.streamIdleTimeout * 1000
     let usageMetadata: { promptTokenCount?: number; candidatesTokenCount?: number; cachedContentTokenCount?: number } = {}
     let finishReason: string | undefined
+    // Forwarded frames — the Gemini-translated SSE the client actually received.
+    const forwardedSseEvents: Array<SseEventRecord> = []
+    const streamStartMs = Date.now()
 
     try {
       // Wrap the upstream SSE iterable with an abort/idle-timeout-aware adapter
@@ -391,7 +401,9 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
       })
 
       for await (const step of translateOpenAIStreamToGemini(guarded, modelId)) {
-        await stream.writeSSE({ data: step.frame.data ?? "" })
+        const frameData = step.frame.data ?? ""
+        forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: "generateContent", raw: frameData })
+        await stream.writeSSE({ data: frameData })
         if (step.meta?.usageMetadata) {
           usageMetadata = step.meta.usageMetadata
         }
@@ -400,6 +412,7 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
         }
       }
 
+      reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
       reqCtx.complete({
         success: true,
         model: payload.model,
@@ -418,6 +431,7 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
       // Preserve whatever partial usage / finishReason we accumulated before
       // the failure so the history layer doesn't show all-zero diagnostics
       // for a partially-streamed request.
+      reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
       reqCtx.fail(payload.model, error, {
         usage: {
           input_tokens: usageMetadata.promptTokenCount ?? 0,

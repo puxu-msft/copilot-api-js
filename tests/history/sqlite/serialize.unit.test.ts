@@ -26,11 +26,11 @@ describe("sqlite/serialize", () => {
       active: false,
       lastUpdatedAt: 1_700_000_001_000,
       transport: "http",
-      request: {
+      inboundRequest: {
         model: "claude-opus-4-7",
         messages: [{ role: "user", content: "hi" }],
       },
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-opus-4-7",
         usage: {
@@ -72,11 +72,11 @@ describe("sqlite/serialize", () => {
     expect(restored.state).toBe("completed")
     expect(restored.endpoint).toBe("anthropic-messages")
     expect(restored.transport).toBe("http")
-    expect(restored.request.model).toBe("claude-opus-4-7")
-    expect(restored.request.messages?.[0].role).toBe("user")
-    expect(restored.response?.usage.input_tokens).toBe(10)
-    expect(restored.response?.stop_reason).toBe("end_turn")
-    expect((restored.response?.content as { role: string; content: string }).content).toBe("hello")
+    expect(restored.inboundRequest.model).toBe("claude-opus-4-7")
+    expect(restored.inboundRequest.messages?.[0].role).toBe("user")
+    expect(restored.outboundResponse?.usage.input_tokens).toBe(10)
+    expect(restored.outboundResponse?.stop_reason).toBe("end_turn")
+    expect((restored.outboundResponse?.content as { role: string; content: string }).content).toBe("hello")
   })
 
   test("handles missing optional fields", () => {
@@ -87,7 +87,7 @@ describe("sqlite/serialize", () => {
       state: "failed",
       active: false,
       lastUpdatedAt: 1,
-      request: { model: "m" },
+      inboundRequest: { model: "m" },
     }
 
     const { row, blob } = serializeEntry(minimal)
@@ -107,7 +107,7 @@ describe("sqlite/serialize", () => {
 
     const restored = deserializeEntry(row, blob)
     expect(restored.id).toBe("x")
-    expect(restored.request.model).toBe("m")
+    expect(restored.inboundRequest.model).toBe("m")
     expect(restored.endpoint).toBe("openai-chat-completions")
     expect(restored.sessionId).toBeUndefined()
     expect(restored.endedAt).toBeUndefined()
@@ -121,15 +121,15 @@ describe("sqlite/serialize", () => {
       state: "completed",
       active: false,
       lastUpdatedAt: 200,
-      request: { model: "opus" },
-      sseEvents: [{ offsetMs: 5, type: "message_start", data: { foo: "bar" } }],
+      inboundRequest: { model: "opus" },
+      sseEvents: [{ offsetMs: 5, type: "message_start", raw: JSON.stringify({ foo: "bar" }) }],
       pipelineInfo: { messageMapping: [0, 1, 2] },
       warningMessages: [{ code: "W1", message: "warn" }],
     }
 
     const { row, blob } = serializeEntry(entry)
     const restored = deserializeEntry(row, blob)
-    expect(restored.sseEvents).toEqual([{ offsetMs: 5, type: "message_start", data: { foo: "bar" } }])
+    expect(restored.sseEvents).toEqual([{ offsetMs: 5, type: "message_start", raw: JSON.stringify({ foo: "bar" }) }])
     expect(restored.pipelineInfo?.messageMapping).toEqual([0, 1, 2])
     expect(restored.warningMessages).toEqual([{ code: "W1", message: "warn" }])
   })
@@ -142,8 +142,8 @@ describe("sqlite/serialize", () => {
       state: "failed",
       active: false,
       lastUpdatedAt: 1,
-      request: { model: "m" },
-      response: {
+      inboundRequest: { model: "m" },
+      outboundResponse: {
         success: false,
         model: "m",
         usage: { input_tokens: 0, output_tokens: 0 },

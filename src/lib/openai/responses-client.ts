@@ -37,6 +37,7 @@ import {
   raceIteratorNext,
   STREAM_ABORTED,
 } from "~/lib/stream"
+import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
 
 import type { UpstreamWsConnection } from "./upstream-ws-connection"
 
@@ -312,7 +313,10 @@ async function createResponsesViaHttp(
 
   if (!response.ok) {
     consola.error("Failed to create responses", response)
-    throw await HTTPError.fromResponse("Failed to create responses", response, wire.model)
+    // On opaque 400s, scan the wire tools for schema keywords / names the
+    // upstream commonly rejects, and attach hint-only diagnostics.
+    const diagnostics = response.status === 400 ? summarizeToolsForDiagnostics(wire.tools) : undefined
+    throw await HTTPError.fromResponse("Failed to create responses", response, wire.model, diagnostics)
   }
 
   if (wire.stream) {

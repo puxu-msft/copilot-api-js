@@ -29,7 +29,7 @@ describe("History barrel type exports", () => {
     const event: SseEventRecord = {
       offsetMs: 25,
       type: "content_block_delta",
-      data: { delta: "hello" },
+      raw: JSON.stringify({ delta: "hello" }),
     }
 
     expect(event.type).toBe("content_block_delta")

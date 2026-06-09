@@ -18,19 +18,19 @@ defineProps<{
 
 <template>
   <SectionBlock
-    v-if="responseMessage || entry.response?.error"
+    v-if="responseMessage || entry.outboundResponse?.error"
     title="Response"
     anchor="response"
     :badge="responseMessage ? '1 message' : ''"
-    :raw-data="entry.response"
+    :raw-data="entry.outboundResponse"
     raw-title="Response"
   >
     <div
-      v-if="entry.response?.error"
+      v-if="entry.outboundResponse?.error"
       class="response-error"
     >
       <span class="error-label">Error</span>
-      <span class="error-text">{{ entry.response.error }}</span>
+      <span class="error-text">{{ entry.outboundResponse.error }}</span>
     </div>
 
     <ErrorBoundary label="Response message">

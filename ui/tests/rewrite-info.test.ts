@@ -32,7 +32,7 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     sessionId: "session-1",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    request: {
+    inboundRequest: {
       model: "claude-sonnet-4-20250514",
       messages: [
         { role: "user", content: "hello" },
@@ -204,7 +204,7 @@ describe("getRewrittenMessage", () => {
 
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        request: {
+        inboundRequest: {
           model: "test",
           messages: [msg("user", "a"), msg("assistant", "b"), msg("user", "c"), msg("assistant", "d"), msg("user", "e")],
         },
@@ -258,7 +258,7 @@ describe("isMessageRewritten", () => {
 
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        request: {
+        inboundRequest: {
           model: "test",
           messages: [msg("user", original0), msg("assistant", original1), msg("user", original2)],
         },
@@ -293,7 +293,7 @@ describe("isMessageRewritten", () => {
 
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        request: {
+        inboundRequest: {
           model: "test",
           messages: [{ role: "assistant", content: originalContent } as MessageContent],
         },
@@ -314,7 +314,7 @@ describe("isMessageRewritten", () => {
 
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        request: {
+        inboundRequest: {
           model: "test",
           messages: [{ role: "user", content: [...content] } as MessageContent],
         },
@@ -336,7 +336,7 @@ describe("isMessageRewritten", () => {
 
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        request: {
+        inboundRequest: {
           model: "test",
           messages: [sharedMsg],
         },
@@ -355,7 +355,7 @@ describe("isMessageRewritten", () => {
   test("handles out-of-bounds originalIndex gracefully", () => {
     const entry = ref<HistoryEntry | null>(
       makeEntry({
-        request: {
+        inboundRequest: {
           model: "test",
           messages: [msg("user", "only one message")],
         },
@@ -391,7 +391,7 @@ describe("reactivity", () => {
 
     // Set entry with rewrites
     entry.value = makeEntry({
-      request: {
+      inboundRequest: {
         model: "test",
         messages: [msg("user", "a"), msg("assistant", "b"), msg("user", "c")],
       },

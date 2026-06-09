@@ -13,6 +13,7 @@ import { initConsolaReporter } from "./lib/tui"
 import { listClaudeCode } from "./list-claude-code"
 import { logout } from "./logout"
 import { setupClaudeCode } from "./setup-claude-code"
+import { setupCodex } from "./setup-codex"
 import { start } from "./start"
 
 // Initialize console reporter before any logging
@@ -42,6 +43,7 @@ const main = defineCommand({
     debug,
     "list-claude-code": listClaudeCode,
     "setup-claude-code": setupClaudeCode,
+    "setup-codex": setupCodex,
   },
 })
 

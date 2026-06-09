@@ -8,7 +8,7 @@ import { getDatabase } from "./connection"
 import { serializeEntry } from "./serialize"
 
 const INSERT_ENTRY_SQL = `
-INSERT OR REPLACE INTO entries (
+INSERT OR REPLACE INTO entries_v2 (
   id, session_id, started_at, ended_at, duration_ms,
   model, endpoint, transport, status,
   input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
@@ -57,7 +57,7 @@ SELECT
   COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
   MIN(started_at) AS start_time,
   COALESCE(MAX(ended_at), MAX(started_at)) AS last_activity
-FROM entries
+FROM entries_v2
 WHERE session_id = ?
 `
 
@@ -68,10 +68,10 @@ WHERE session_id = ?
  * scalar aggregates above in a single non-GROUP-BY SELECT in SQLite.
  */
 const RECOMPUTE_SESSION_MODELS_SQL = `
-SELECT DISTINCT model FROM entries WHERE session_id = ? AND model IS NOT NULL ORDER BY model
+SELECT DISTINCT model FROM entries_v2 WHERE session_id = ? AND model IS NOT NULL ORDER BY model
 `
 const RECOMPUTE_SESSION_ENDPOINTS_SQL = `
-SELECT DISTINCT endpoint FROM entries WHERE session_id = ? AND endpoint IS NOT NULL ORDER BY endpoint
+SELECT DISTINCT endpoint FROM entries_v2 WHERE session_id = ? AND endpoint IS NOT NULL ORDER BY endpoint
 `
 
 export function insertCompletedEntry(entry: HistoryEntry): void {
@@ -156,7 +156,7 @@ export function deleteSession(sessionId: string): number {
   const db = getDatabase()
   let deleted = 0
   const tx = db.transaction(() => {
-    const r = db.prepare("DELETE FROM entries WHERE session_id = ?").run(sessionId)
+    const r = db.prepare("DELETE FROM entries_v2 WHERE session_id = ?").run(sessionId)
     deleted = r.changes
     db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId)
   })
@@ -167,7 +167,7 @@ export function deleteSession(sessionId: string): number {
 export function clearAllEntries(): void {
   const db = getDatabase()
   const tx = db.transaction(() => {
-    db.prepare("DELETE FROM entries").run()
+    db.prepare("DELETE FROM entries_v2").run()
     db.prepare("DELETE FROM sessions").run()
     db.prepare("DELETE FROM response_sessions").run()
   })

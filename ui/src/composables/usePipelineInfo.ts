@@ -44,7 +44,7 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
     const indices = new Set<number>()
     const e = entry.value
     if (!e?.effectiveRequest?.messages) return indices
-    const messages = e.request.messages ?? []
+    const messages = e.inboundRequest.messages ?? []
     for (const [idx, rewritten] of rewrittenMessageMap.value) {
       const original = messages[idx]
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: array index access
@@ -68,7 +68,7 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const isSystemRewritten = computed(() => {
     const e = entry.value
     if (!e?.effectiveRequest?.system) return false
-    const origSystem = e.request.system
+    const origSystem = e.inboundRequest.system
     const rwSystem = e.effectiveRequest.system
     if (!origSystem || !rwSystem) return Boolean(rwSystem)
     return JSON.stringify(origSystem) !== JSON.stringify(rwSystem)

@@ -151,7 +151,7 @@ describe("registerContextConsumers", () => {
       expect(insertEntrySpy).toHaveBeenCalledTimes(1)
       const entry = insertEntrySpy.mock.calls[0][0]
       expect(entry.id).toBe("req_1")
-      expect(entry.request.model).toBe("claude-sonnet-4")
+      expect(entry.inboundRequest.model).toBe("claude-sonnet-4")
       expect(entry.state).toBe("pending")
       expect(entry.active).toBe(true)
     })
@@ -304,7 +304,7 @@ describe("registerContextConsumers", () => {
           queueWaitMs: 0,
           attemptCount: 1,
           durationMs: 1500,
-          response: {
+          outboundResponse: {
             success: true,
             model: "claude-sonnet-4",
             usage: { input_tokens: 100, output_tokens: 50 },
@@ -319,8 +319,8 @@ describe("registerContextConsumers", () => {
       expect(id).toBe("req_1")
       expect(data.state).toBe("completed")
       expect(data.active).toBe(false)
-      expect(data.response.success).toBe(true)
-      expect(data.response.model).toBe("claude-sonnet-4")
+      expect(data.outboundResponse.success).toBe(true)
+      expect(data.outboundResponse.model).toBe("claude-sonnet-4")
       expect(data.durationMs).toBe(1500)
       // Subagent review M1: explicit finalize is now the persistence
       // boundary — a missed call would silently leave the entry in-flight
@@ -342,7 +342,7 @@ describe("registerContextConsumers", () => {
           attemptCount: 1,
           durationMs: 1500,
           transport: "upstream-ws-fallback",
-          response: {
+          outboundResponse: {
             success: true,
             model: "gpt-5.2",
             usage: { input_tokens: 100, output_tokens: 50 },
@@ -362,7 +362,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_2",
           durationMs: 2000,
-          response: {
+          outboundResponse: {
             success: true,
             model: "claude-sonnet-4",
             usage: {
@@ -379,8 +379,8 @@ describe("registerContextConsumers", () => {
 
       expect(updateEntrySpy).toHaveBeenCalledTimes(1)
       const [, data] = updateEntrySpy.mock.calls[0]
-      expect(data.response.usage.output_tokens_details).toEqual({ reasoning_tokens: 30 })
-      expect(data.response.usage.cache_read_input_tokens).toBe(50)
+      expect(data.outboundResponse.usage.output_tokens_details).toEqual({ reasoning_tokens: 30 })
+      expect(data.outboundResponse.usage.cache_read_input_tokens).toBe(50)
     })
 
     test("propagates warningMessages on completed", () => {
@@ -390,7 +390,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_1",
           durationMs: 1000,
-          response: {
+          outboundResponse: {
             success: true,
             model: "gpt-5-resp",
             usage: { input_tokens: 50, output_tokens: 25 },
@@ -421,7 +421,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_1",
           durationMs: 500,
-          response: {
+          outboundResponse: {
             success: false,
             model: "claude-sonnet-4",
             usage: { input_tokens: 0, output_tokens: 0 },
@@ -433,7 +433,7 @@ describe("registerContextConsumers", () => {
       expect(updateEntrySpy).toHaveBeenCalledTimes(1)
       const [id, data] = updateEntrySpy.mock.calls[0]
       expect(id).toBe("req_1")
-      expect(data.response.success).toBe(false)
+      expect(data.outboundResponse.success).toBe(false)
       // Subagent review M1: failed path must also call finalizeEntry —
       // mirror the completed-path contract.
       expect(finalizeEntrySpy).toHaveBeenCalledTimes(1)
@@ -447,7 +447,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_1",
           durationMs: 1000,
-          response: {
+          outboundResponse: {
             success: true,
             model: "claude-sonnet-4",
             usage: { input_tokens: 50, output_tokens: 25 },
@@ -464,7 +464,7 @@ describe("registerContextConsumers", () => {
               max_tokens: 4096,
             },
           },
-          wireRequest: {
+          outboundRequest: {
             model: "claude-sonnet-4-20250514",
             format: "anthropic-messages",
             messageCount: 3,
@@ -493,7 +493,7 @@ describe("registerContextConsumers", () => {
         messages: [{ role: "user", content: "hi" }],
         max_tokens: 4096,
       })
-      expect(data.wireRequest).toEqual({
+      expect(data.outboundRequest).toEqual({
         model: "claude-sonnet-4-20250514",
         format: "anthropic-messages",
         messageCount: 3,
@@ -519,7 +519,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_1",
           durationMs: 1000,
-          response: {
+          outboundResponse: {
             success: true,
             model: "m",
             usage: { input_tokens: 50, output_tokens: 25 },
@@ -544,7 +544,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_1",
           durationMs: 200,
-          response: {
+          outboundResponse: {
             success: false,
             model: "m",
             usage: { input_tokens: 0, output_tokens: 0 },
@@ -560,8 +560,8 @@ describe("registerContextConsumers", () => {
       } as unknown as RequestContextEvent)
 
       const [, data] = updateEntrySpy.mock.calls[0]
-      expect(data.response.status).toBe(400)
-      expect(data.response.rawBody).toBe('{"error":{"message":"thinking blocks cannot be modified"}}')
+      expect(data.outboundResponse.status).toBe(400)
+      expect(data.outboundResponse.rawBody).toBe('{"error":{"message":"thinking blocks cannot be modified"}}')
       expect(data.httpHeaders).toEqual({
         outboundRequest: { authorization: "***" },
         outboundResponse: { "x-request-id": "xyz" },
@@ -575,7 +575,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_1",
           durationMs: 100,
-          response: {
+          outboundResponse: {
             success: true,
             model: "m",
             usage: { input_tokens: 10, output_tokens: 5 },
@@ -586,7 +586,7 @@ describe("registerContextConsumers", () => {
 
       const [, data] = updateEntrySpy.mock.calls[0]
       expect(data.effectiveRequest).toBeUndefined()
-      expect(data.wireRequest).toBeUndefined()
+      expect(data.outboundRequest).toBeUndefined()
       expect(data.attempts).toBeUndefined()
     })
   })
@@ -633,7 +633,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_1",
           durationMs: 1000,
-          response: { success: true, model: "claude-sonnet-4", usage: { input_tokens: 100, output_tokens: 50 } },
+          outboundResponse: { success: true, model: "claude-sonnet-4", usage: { input_tokens: 100, output_tokens: 50 } },
         },
       } as unknown as RequestContextEvent)
 
@@ -659,7 +659,7 @@ describe("registerContextConsumers", () => {
         entry: {
           id: "req_1",
           durationMs: 200,
-          response: {
+          outboundResponse: {
             success: false,
             model: "gpt-4o",
             usage: { input_tokens: 0, output_tokens: 0 },

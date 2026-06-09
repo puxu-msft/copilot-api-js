@@ -7,13 +7,13 @@ let timer: ReturnType<typeof setInterval> | null = null
 export function runReaperOnce(limit: number): number {
   if (limit <= 0) return 0
   const db = getDatabase()
-  const { n } = db.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }
+  const { n } = db.prepare("SELECT COUNT(*) AS n FROM entries_v2").get() as { n: number }
   if (n <= limit) return 0
   const excess = n - limit
   const result = db
     .prepare(
-      `DELETE FROM entries WHERE id IN (
-         SELECT id FROM entries ORDER BY started_at ASC LIMIT ?
+      `DELETE FROM entries_v2 WHERE id IN (
+         SELECT id FROM entries_v2 ORDER BY started_at ASC LIMIT ?
        )`,
     )
     .run(excess)

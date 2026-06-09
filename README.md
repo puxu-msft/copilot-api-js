@@ -124,18 +124,22 @@ export OPENAI_API_KEY=dummy
 codex  # or any OpenAI SDK client
 ```
 
-Or create and modify `~/.openai/config.toml`:
+Or create and modify `~/.codex/config.toml` (honors `$CODEX_HOME`):
 
 ```toml
 model_provider = "ghc"
-
-[model_providers]
 
 [model_providers.ghc]
 name = "ghc"
 base_url = "http://localhost:4141/v1"
 wire_api = "responses"
 preferred_auth_method = "apikey"
+```
+
+Or let the proxy write this managed block for you:
+
+```sh
+npx copilot-api setup-codex
 ```
 
 ### Using with Gemini CLI

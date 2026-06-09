@@ -43,14 +43,14 @@ const collapseThreshold = computed(() => {
     title="Request"
     anchor="request"
     :badge="requestBadge"
-    :raw-data="entry.request"
+    :raw-data="entry.inboundRequest"
     :rewritten-raw-data="rewrittenRequest"
     raw-title="Request"
   >
     <ErrorBoundary label="System prompt">
       <SystemMessage
-        v-if="entry.request.system"
-        :system="entry.request.system"
+        v-if="entry.inboundRequest.system"
+        :system="entry.inboundRequest.system"
         :rewritten-system="entry.effectiveRequest?.system"
         :search-query="searchQuery"
         :global-view-mode="detailViewMode"

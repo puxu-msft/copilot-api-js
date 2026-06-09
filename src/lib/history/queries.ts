@@ -27,8 +27,8 @@ function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.to !== undefined && entry.startedAt > opts.to) return false
   if (opts.model) {
     const needle = opts.model.toLowerCase()
-    const req = entry.request.model?.toLowerCase() ?? ""
-    const res = entry.response?.model.toLowerCase() ?? ""
+    const req = entry.inboundRequest.model?.toLowerCase() ?? ""
+    const res = entry.outboundResponse?.model.toLowerCase() ?? ""
     if (!req.includes(needle) && !res.includes(needle)) return false
   }
   if (opts.success === true && entry.state !== "completed") return false

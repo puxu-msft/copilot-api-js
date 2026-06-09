@@ -14,6 +14,15 @@ const APP_DIR = computeAppDir()
 const GITHUB_TOKEN_PATH = path.join(APP_DIR, "github_token")
 
 /**
+ * Resolve the Codex CLI home directory, honoring `CODEX_HOME` when set
+ * (mirrors Codex's own resolution), falling back to `~/.codex`.
+ */
+function computeCodexHome(): string {
+  const override = process.env.CODEX_HOME
+  return override && override.length > 0 ? override : path.join(os.homedir(), ".codex")
+}
+
+/**
  * Locate the bundled default `config.yaml` shipped inside the npm package.
  *
  * Walks up from the current module file looking for `config.yaml`. Works in
@@ -55,6 +64,8 @@ export const PATHS = {
   REQUEST_TELEMETRY: path.join(APP_DIR, "request-telemetry.json"),
   NEGOTIATION_STATES: path.join(APP_DIR, "negotiation-states.json"),
   HISTORY_DB: path.join(APP_DIR, "history.db"),
+  /** Codex CLI config file (`$CODEX_HOME/config.toml`, default `~/.codex/config.toml`). */
+  CODEX_CONFIG_TOML: path.join(computeCodexHome(), "config.toml"),
 }
 
 export async function ensurePaths(): Promise<void> {

@@ -57,7 +57,7 @@ export function openDatabase(dbPath: string): Database {
  * uses PRAGMA table_info to detect existing columns before ALTER.
  */
 function migrateEntriesSummaryColumns(database: Database): void {
-  const columns = database.prepare("PRAGMA table_info(entries)").all() as Array<{ name: string }>
+  const columns = database.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>
   const existing = new Set(columns.map((c) => c.name))
 
   const wanted: Array<{ name: string; type: string }> = [
@@ -68,7 +68,7 @@ function migrateEntriesSummaryColumns(database: Database): void {
 
   for (const col of wanted) {
     if (!existing.has(col.name)) {
-      database.exec(`ALTER TABLE entries ADD COLUMN ${col.name} ${col.type}`)
+      database.exec(`ALTER TABLE entries_v2 ADD COLUMN ${col.name} ${col.type}`)
     }
   }
 }

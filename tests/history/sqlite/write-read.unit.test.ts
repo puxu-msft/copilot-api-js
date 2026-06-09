@@ -41,8 +41,8 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     active: false,
     lastUpdatedAt: Date.now() + 100,
     transport: "http",
-    request: { model: "claude-opus-4-7" },
-    response: {
+    inboundRequest: { model: "claude-opus-4-7" },
+    outboundResponse: {
       success: true,
       model: "claude-opus-4-7",
       usage: { input_tokens: 1, output_tokens: 2 },
@@ -63,15 +63,15 @@ describe("sqlite write/read", () => {
     insertCompletedEntry(entry)
     const got = getEntryById("e1")
     expect(got?.id).toBe("e1")
-    expect(got?.response?.usage.input_tokens).toBe(1)
+    expect(got?.outboundResponse?.usage.input_tokens).toBe(1)
   })
 
   test("queryEntries filters by model", () => {
     insertCompletedEntry(
       makeEntry({
         id: "a",
-        request: { model: "m1" },
-        response: {
+        inboundRequest: { model: "m1" },
+        outboundResponse: {
           success: true,
           model: "m1",
           usage: { input_tokens: 1, output_tokens: 1 },
@@ -82,8 +82,8 @@ describe("sqlite write/read", () => {
     insertCompletedEntry(
       makeEntry({
         id: "b",
-        request: { model: "m2" },
-        response: {
+        inboundRequest: { model: "m2" },
+        outboundResponse: {
           success: true,
           model: "m2",
           usage: { input_tokens: 1, output_tokens: 1 },
@@ -106,7 +106,7 @@ describe("sqlite write/read", () => {
     insertCompletedEntry(
       makeEntry({
         id: "s-summary",
-        request: {
+        inboundRequest: {
           model: "claude-opus-4-7",
           messages: [
             { role: "user", content: "first user message" },
@@ -167,7 +167,7 @@ describe("sqlite write/read", () => {
     const entry = makeEntry({
       id: "stable-id",
       sessionId: "session-1",
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-opus-4-7",
         usage: { input_tokens: 100, output_tokens: 50 },
@@ -191,7 +191,7 @@ describe("sqlite write/read", () => {
       makeEntry({
         id: "a",
         sessionId: "shared",
-        response: {
+        outboundResponse: {
           success: true,
           model: "claude-opus-4-7",
           usage: { input_tokens: 30, output_tokens: 20 },
@@ -203,7 +203,7 @@ describe("sqlite write/read", () => {
       makeEntry({
         id: "b",
         sessionId: "shared",
-        response: {
+        outboundResponse: {
           success: true,
           model: "claude-opus-4-7",
           usage: { input_tokens: 70, output_tokens: 40 },
@@ -227,8 +227,8 @@ describe("sqlite write/read", () => {
       makeEntry({
         id: "m1",
         sessionId: "multi-model",
-        request: { model: "claude-opus-4-7" },
-        response: {
+        inboundRequest: { model: "claude-opus-4-7" },
+        outboundResponse: {
           success: true,
           model: "claude-opus-4-7",
           usage: { input_tokens: 10, output_tokens: 5 },
@@ -240,8 +240,8 @@ describe("sqlite write/read", () => {
       makeEntry({
         id: "m2",
         sessionId: "multi-model",
-        request: { model: "claude-sonnet-4-6" },
-        response: {
+        inboundRequest: { model: "claude-sonnet-4-6" },
+        outboundResponse: {
           success: true,
           model: "claude-sonnet-4-6",
           usage: { input_tokens: 20, output_tokens: 10 },

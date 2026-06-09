@@ -63,7 +63,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
     const resultMap: Record<string, ContentBlock> = {}
     const nameMap: Record<string, string> = {}
     if (!entry.value) return { resultMap, nameMap }
-    for (const msg of entry.value.request.messages ?? []) {
+    for (const msg of entry.value.inboundRequest.messages ?? []) {
       // Anthropic format: content is ContentBlock[]
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
@@ -92,7 +92,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
   // Filter messages by role, with pre-computed original indices
   const filteredMessages = computed(() => {
     if (!entry.value) return []
-    const messages = entry.value.request.messages ?? []
+    const messages = entry.value.inboundRequest.messages ?? []
     let indexed = messages.map((msg, i) => ({ msg, originalIndex: i }))
     if (detail.detailFilterRole) {
       indexed = indexed.filter(({ msg }) => msg.role === detail.detailFilterRole)
@@ -104,13 +104,13 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
   })
 
   const responseMessage = computed<MessageContent | null>(() => {
-    if (!entry.value?.response?.content) return null
-    return entry.value.response.content
+    if (!entry.value?.outboundResponse?.content) return null
+    return entry.value.outboundResponse.content
   })
 
   const requestBadge = computed(() => {
     if (!entry.value) return ""
-    return `${(entry.value.request.messages ?? []).length} messages`
+    return `${(entry.value.inboundRequest.messages ?? []).length} messages`
   })
 
   /** Rewritten request payload for the Raw modal */
@@ -119,7 +119,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
     const eff = entry.value.effectiveRequest
     if (!eff.messages && !eff.system) return undefined
     return {
-      ...entry.value.request,
+      ...entry.value.inboundRequest,
       ...(eff.messages && { messages: eff.messages }),
       ...(eff.system !== undefined && { system: eff.system }),
     }

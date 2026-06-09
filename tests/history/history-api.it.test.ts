@@ -57,20 +57,20 @@ app.delete("/api/sessions/:id", handleDeleteSession)
 
 // ─── Helpers ───
 
-function createEntry(endpoint: EndpointType, model: string, messages: HistoryEntry["request"]["messages"], extra?: Partial<HistoryEntry>): HistoryEntry {
+function createEntry(endpoint: EndpointType, model: string, messages: HistoryEntry["inboundRequest"]["messages"], extra?: Partial<HistoryEntry>): HistoryEntry {
   const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    request: { model, messages, stream: true },
+    inboundRequest: { model, messages, stream: true },
     ...extra,
   }
   insertEntry(entry)
   updateEntry(entry.id, {
     state: "completed",
-    response: {
+    outboundResponse: {
       success: true,
       model,
       usage: { input_tokens: 0, output_tokens: 0 },
@@ -195,7 +195,7 @@ describe("GET /api/entries/:id", () => {
           max_tokens: 4096,
         },
       },
-      wireRequest: {
+      outboundRequest: {
         model: "claude-sonnet-4-20250514",
         format: "anthropic-messages",
         messageCount: 1,
@@ -218,14 +218,14 @@ describe("GET /api/entries/:id", () => {
     expect(res.status).toBe(200)
     const body = await json<HistoryEntry>(res)
     expect(body.id).toBe(entry.id)
-    expect(body.request.model).toBe("claude-sonnet-4-20250514")
-    expect(body.request.messages).toHaveLength(1)
+    expect(body.inboundRequest.model).toBe("claude-sonnet-4-20250514")
+    expect(body.inboundRequest.messages).toHaveLength(1)
     expect(body.effectiveRequest?.payload).toEqual({
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
       max_tokens: 4096,
     })
-    expect(body.wireRequest).toEqual({
+    expect(body.outboundRequest).toEqual({
       model: "claude-sonnet-4-20250514",
       format: "anthropic-messages",
       messageCount: 1,

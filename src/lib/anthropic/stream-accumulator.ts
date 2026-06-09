@@ -228,7 +228,20 @@ function handleContentBlockStart(index: number, block: AccContentBlock, acc: Ant
       break
     }
     case "thinking": {
-      newBlock = { type: "thinking", thinking: "", signature: undefined }
+      // Seed from the block_start's own fields. The standard Anthropic stream
+      // sends an empty thinking block and fills `thinking`/`signature` via
+      // subsequent thinking_delta/signature_delta. But some Copilot upstreams
+      // embed the FULL signature (and occasionally thinking text) directly in
+      // content_block_start with NO trailing signature_delta — discarding them
+      // here loses the signature from the accumulated `response.content` (history
+      // + any downstream rebuild), even though the raw forwarded stream keeps it.
+      // Seeding is a strict superset: streamed blocks carry "" / no signature, so
+      // this matches the old behavior; embedded blocks are now preserved.
+      newBlock = {
+        type: "thinking",
+        thinking: typeof block.thinking === "string" ? block.thinking : "",
+        signature: typeof block.signature === "string" ? block.signature : undefined,
+      }
       break
     }
     case "redacted_thinking": {

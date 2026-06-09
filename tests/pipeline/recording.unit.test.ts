@@ -10,6 +10,11 @@ import type { OpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 
 import {
   //
+  accumulateAnthropicStreamEvent,
+  createAnthropicStreamAccumulator,
+} from "~/lib/anthropic/stream-accumulator"
+import {
+  //
   buildAnthropicResponseData,
   buildOpenAIResponseData,
 } from "~/lib/request/recording"
@@ -147,6 +152,23 @@ describe("buildAnthropicResponseData", () => {
       thinking: "Reasoning step",
       signature: "sig-abc-123",
     })
+  })
+
+  test("end-to-end: signature embedded in content_block_start survives into response content", () => {
+    // Regression for the real failure path: a Copilot upstream that puts the full
+    // signature on content_block_start with NO signature_delta. Feed actual events
+    // through the accumulator (not a pre-built block) so the seed-from-block_start
+    // origin is exercised all the way into the recorded response.content.
+    const acc = createAnthropicStreamAccumulator()
+    accumulateAnthropicStreamEvent(
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "EoAQ-embedded-3404" } } as never,
+      acc,
+    )
+    accumulateAnthropicStreamEvent({ type: "content_block_stop", index: 0 } as never, acc)
+
+    const result = buildAnthropicResponseData(acc, "fallback")
+    const content = result.content as { role: string; content: Array<unknown> }
+    expect(content.content[0]).toEqual({ type: "thinking", thinking: "", signature: "EoAQ-embedded-3404" })
   })
 
   test("maps redacted_thinking content blocks preserving data", () => {

@@ -23,6 +23,8 @@ import type {
   HeadersCapture,
   RequestContext,
 } from "~/lib/context/request"
+import type { SseEventRecord } from "~/lib/history/store"
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type {
   //
   ResponsesPayload,
@@ -62,6 +64,14 @@ import {
   createStreamIdTracker,
   fixStreamEventIds,
 } from "~/lib/openai/stream-id-sync"
+import {
+  //
+  applyResponsesToolNameSanitization,
+  buildResponsesToolNameMapper,
+  RESPONSES_NAME_BEARING_EVENTS,
+  restoreResponsesEventToolNames,
+  restoreResponsesOutputToolNames,
+} from "~/lib/openai/tool-name-sanitize"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { getShutdownSignal } from "~/lib/shutdown"
@@ -161,6 +171,14 @@ export async function handleResponses(c: Context) {
   })
   reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
 
+  // Build the per-request tool-name sanitization mapper from the client's tool
+  // definitions, then rename tool names to their upstream form on the working
+  // payload. The original snapshot above keeps the client's original names for
+  // history; both dispatch paths restore upstream → original on the response.
+  const toolNameMapper = buildResponsesToolNameMapper(payload, selectedModel?.vendor)
+  reqCtx.setToolNameMapper(toolNameMapper)
+  payload = applyResponsesToolNameSanitization(payload, toolNameMapper)
+
   // Update TUI tracker with model info
   if (tuiLogId) {
     tuiLogger.updateRequest(tuiLogId, {
@@ -240,6 +258,12 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
       registerResponseSession(responsesResponse.id, reqCtx.sessionId)
       const content = responsesOutputToContent(responsesResponse.output)
 
+      // Restore function_call names (upstream → original) on the client-facing
+      // response. Computed before complete() so the forwarded (client-facing)
+      // content can be recorded; complete() records the upstream-original content.
+      const clientResponse = restoreResponsesOutputToolNames(responsesResponse, reqCtx.toolNameMapper)
+      reqCtx.setForwardedResponse({ content: responsesOutputToContent(clientResponse.output) })
+
       reqCtx.complete({
         success: true,
         model: responsesResponse.model,
@@ -258,7 +282,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
         stop_reason: responsesResponse.status,
         content,
       })
-      return c.json(responsesResponse)
+      return c.json(clientResponse)
     }
 
     // Streaming response — forward Responses SSE events directly
@@ -271,6 +295,10 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
       const acc = createResponsesStreamAccumulator()
       const idleTimeoutMs = state.streamIdleTimeout * 1000
       const idTracker = state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
+
+      // Forwarded SSE frames — what the client actually received (ID-fixed + names restored).
+      const forwardedSseEvents: Array<SseEventRecord> = []
+      const streamStartMs = Date.now()
 
       // Streaming metrics for TUI footer
       let bytesIn = 0
@@ -311,8 +339,12 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
 
             accumulateResponsesStreamEvent(event, acc)
 
-            // Forward the (possibly ID-corrected) event
-            await stream.writeSSE({ event: rawEvent.event ?? event.type, data: eventData })
+            // Forward the (possibly ID-corrected) event, restoring function_call
+            // names (upstream → original) when sanitization is active. History
+            // keeps the upstream names (accumulated above).
+            const forwardData = restoreResponsesStreamData(eventData, event, reqCtx.toolNameMapper)
+            forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: rawEvent.event ?? event.type, raw: forwardData })
+            await stream.writeSSE({ event: rawEvent.event ?? event.type, data: forwardData })
           }
         }
 
@@ -322,9 +354,11 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
         }
         registerResponseSession(acc.responseId, reqCtx.sessionId)
         const responseData = buildResponsesResponseData(acc, payload.model)
+        reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
         reqCtx.complete(responseData)
       } catch (error) {
         consola.error("[Responses] Stream error:", error)
+        reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
         reqCtx.fail(acc.model || payload.model, error)
 
         // Send error to client as final SSE event
@@ -348,3 +382,26 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
 }
 
 export { responsesInputToMessages, responsesOutputToContent } from "~/lib/openai/responses-conversion"
+
+/**
+ * Restore function_call names (upstream → original) in a single Responses SSE
+ * data frame for forwarding. Re-parses `eventData` (rather than mutating the
+ * already-accumulated `event`) so history keeps the upstream names. Best-effort:
+ * returns the input unchanged on parse failure or when nothing changed. No-op
+ * when `mapper` is null.
+ */
+function restoreResponsesStreamData(eventData: string, event: ResponsesStreamEvent, mapper: ToolNameMapper | null): string {
+  if (!mapper) return eventData
+  // function names appear on `item` (output_item.added/done) AND inside the full
+  // `response.output[]` of lifecycle events (created/in_progress/completed/
+  // failed/incomplete) — clients reconstruct from the terminal `completed`, so
+  // both must be restored. Other event types never carry a name.
+  if (!RESPONSES_NAME_BEARING_EVENTS.has(event.type)) return eventData
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(eventData)
+  } catch {
+    return eventData
+  }
+  return restoreResponsesEventToolNames(parsed, mapper) ? JSON.stringify(parsed) : eventData
+}

@@ -7,7 +7,7 @@ export function downloadEntryAsJson(entry: HistoryEntry): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
-  const model = entry.response?.model || entry.request.model || "unknown"
+  const model = entry.outboundResponse?.model || entry.inboundRequest.model || "unknown"
   a.download = `${entry.id}_${model}.json`
   a.click()
   URL.revokeObjectURL(url)

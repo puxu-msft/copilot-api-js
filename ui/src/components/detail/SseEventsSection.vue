@@ -7,6 +7,7 @@ import SectionBlock from "./SectionBlock.vue"
 
 const props = defineProps<{
   events: Array<SseEventRecord>
+  title?: string
 }>()
 
 /** Format offset as seconds with ms precision */
@@ -17,7 +18,15 @@ function formatOffset(ms: number): string {
 
 /** Extract a short summary from the event data for collapsed view */
 function eventSummary(event: SseEventRecord): string {
-  const d = event.data as Record<string, unknown>
+  // `raw` is the verbatim upstream `data:` payload. Parse on demand; keepalive /
+  // unparseable / legacy rows (no `raw`) fall back to a raw snippet.
+  const raw = event.raw ?? ""
+  let d: Record<string, unknown>
+  try {
+    d = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return raw.slice(0, 80)
+  }
   switch (event.type) {
     case "message_start": {
       const msg = d.message as Record<string, unknown> | undefined
@@ -109,7 +118,7 @@ const badge = computed(() => `${props.events.length} events`)
 
 <template>
   <SectionBlock
-    title="SSE Events"
+    :title="props.title ?? 'SSE Events'"
     :badge="badge"
     :default-collapsed="true"
     :raw-data="events"

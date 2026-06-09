@@ -140,6 +140,22 @@ export const AnthropicConfigSchema = z
      */
     inject_claude_code_tools: nullableBoolean(),
     thinking_block_message_policy: nullableEnum(["stripped", "immutable", "fixed-index"] as const),
+    /**
+     * Drop corrupt thinking blocks before sending upstream. Validity is decided
+     * by the SIGNATURE, not the thinking text — a legitimate *encrypted* thinking
+     * block has empty text but a valid signature, and is always kept.
+     * `"empty_thinking"` (default) removes only double-empty blocks (both `thinking`
+     * text AND `signature` empty, e.g. a `{thinking:"", signature:""}` block a client
+     * echoed back), which upstream rejects with "each thinking block must contain
+     * thinking". `"empty_any"` removes any thinking block with an empty signature,
+     * regardless of text. `false` disables the pass.
+     */
+    thinking_block_sanitize_check: z
+      .union([z.literal(false), z.literal("empty_thinking"), z.literal("empty_any"), z.null()], {
+        error: "Must be one of: false, empty_thinking, empty_any",
+      })
+      .optional()
+      .transform((v) => v ?? undefined),
     dedup_tool_calls: z
       .union([z.boolean(), z.literal("input"), z.literal("result"), z.null()], {
         error: "Must be one of: false, true, input, result",
@@ -199,6 +215,20 @@ export const HistoryConfigSchema = z
     limit: nullableNonnegativeInt(),
     reaper_interval: nullableNonnegativeInt(),
     db_path: nullableString(),
+  })
+  .strict()
+
+export const WebSearchConfigSchema = z
+  .object({
+    /** Enable the double-hop web_search server-tool implementation (Anthropic path only). Default false. */
+    enabled: nullableBoolean(),
+    /**
+     * Search backend selector:
+     *   ""        — not configured / disabled (default)
+     *   "searxng" — local SearXNG instance at http://localhost:8080
+     *   other     — treated as a Copilot Responses search model id (e.g. "gpt-5.5")
+     */
+    backend: nullableString(),
   })
   .strict()
 
@@ -317,7 +347,16 @@ export const ConfigSchema = z
       .optional(),
     disabled_models: nullableNonemptyStringArray(),
     compress_tool_results_before_truncate: nullableBoolean(),
+    /**
+     * Sanitize tool names that violate the target model's constraints (illegal
+     * characters like dots, over-length, collisions) into legal names before
+     * sending upstream, restoring the client's original names in the response.
+     * Spans Anthropic + Chat Completions + Responses paths. Default false.
+     * Top-level (not under `anthropic.*`) because it is cross-protocol.
+     */
+    sanitize_tool_names: nullableBoolean(),
     history: nullableSection(HistoryConfigSchema),
+    web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     stream_idle_timeout: nullableNonnegativeInt(),
     fetch_timeout: nullableNonnegativeInt(),
@@ -422,4 +461,5 @@ export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
 export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
+export type WebSearchConfig = z.infer<typeof WebSearchConfigSchema>
 export type Config = z.infer<typeof ConfigSchema>

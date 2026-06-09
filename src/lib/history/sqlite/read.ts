@@ -64,7 +64,7 @@ export function queryEntries(opts?: QueryOptions): Array<HistoryEntry> {
   const db = getDatabase()
   const { sql, params } = applyWhere(opts)
   const limit = opts?.limit ?? 100
-  const rows = db.prepare(`SELECT * FROM entries ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...params, limit, 0) as Array<EntryRow>
+  const rows = db.prepare(`SELECT * FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...params, limit, 0) as Array<EntryRow>
   return rows.map((r) => deserializeEntry(r))
 }
 
@@ -81,7 +81,7 @@ export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
               input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
               stop_reason, error_message,
               message_count, preview_text, search_text
-         FROM entries ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+         FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, 0) as Array<SummaryRow>
   return rows.map((r) => rowToSummary(r))
@@ -127,7 +127,7 @@ function rowToSummary(r: SummaryRow): EntrySummary {
 
 export function getEntryById(id: string): HistoryEntry | undefined {
   const db = getDatabase()
-  const row = db.prepare("SELECT * FROM entries WHERE id = ?").get(id) as EntryRow | undefined
+  const row = db.prepare("SELECT * FROM entries_v2 WHERE id = ?").get(id) as EntryRow | undefined
   if (!row) return undefined
   return deserializeEntry(row)
 }
@@ -135,7 +135,7 @@ export function getEntryById(id: string): HistoryEntry | undefined {
 export function queryEntryCount(opts?: QueryOptions): number {
   const db = getDatabase()
   const { sql, params } = applyWhere(opts)
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM entries ${sql}`).get(...params) as { n: number }
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM entries_v2 ${sql}`).get(...params) as { n: number }
   return row.n
 }
 

@@ -23,6 +23,7 @@ import {
   setResponsesConfig,
   setShutdownConfig,
   setTimeoutConfig,
+  setWebSearchConfig,
 } from "~/lib/state"
 
 import { syncModelRefreshLoop } from "../models/refresh-loop"
@@ -394,6 +395,9 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.thinking_block_message_policy !== undefined) {
       setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
     }
+    if (a.thinking_block_sanitize_check !== undefined) {
+      setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize_check })
+    }
     if (a.dedup_tool_calls !== undefined) {
       // Normalize: true → "input" for backward compatibility, false → false
       setAnthropicBehavior({ dedupToolCalls: a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls })
@@ -464,6 +468,9 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.compress_tool_results_before_truncate !== undefined)
     setAnthropicBehavior({ compressToolResultsBeforeTruncate: config.compress_tool_results_before_truncate })
 
+  // Tool-name sanitization (cross-protocol top-level toggle; scalar override)
+  if (config.sanitize_tool_names !== undefined) setAnthropicBehavior({ sanitizeToolNames: config.sanitize_tool_names })
+
   // History settings (nested: override only when present)
   if (config.history) {
     const h = config.history
@@ -472,6 +479,13 @@ export async function applyConfigToState(): Promise<Config> {
     }
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
+  }
+
+  // Web search settings (nested: override only when present)
+  if (config.web_search) {
+    const w = config.web_search
+    if (w.enabled !== undefined) setWebSearchConfig({ webSearchEnabled: w.enabled })
+    if (w.backend !== undefined) setWebSearchConfig({ webSearchBackend: w.backend })
   }
 
   // Shutdown timing (scalar: override only when present)

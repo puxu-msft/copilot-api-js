@@ -38,7 +38,7 @@ function makeEntry(opts: Partial<HistoryEntry> & { id: string; startedAt: number
   return {
     endpoint: "openai-responses",
     state: "completed",
-    request: { messages: [] },
+    inboundRequest: { messages: [] },
     ...opts,
   } as HistoryEntry
 }
@@ -58,8 +58,8 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e1",
         startedAt: 1,
-        request: { messages: [{ role: "user", content: "first" }] },
-        response: {
+        inboundRequest: { messages: [{ role: "user", content: "first" }] },
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -69,8 +69,8 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e2",
         startedAt: 2,
-        request: { messages: [{ role: "user", content: "second" }] },
-        response: {
+        inboundRequest: { messages: [{ role: "user", content: "second" }] },
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -92,8 +92,8 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e1",
         startedAt: 1,
-        request: { messages: [{ role: "user", content: "u1" }] },
-        response: {
+        inboundRequest: { messages: [{ role: "user", content: "u1" }] },
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -104,14 +104,14 @@ describe("rebuildConversationMessages", () => {
         id: "e2",
         startedAt: 2,
         // Client echoed full history; extractTurnIncrement should yield only ["u2"].
-        request: {
+        inboundRequest: {
           messages: [
             { role: "user", content: "u1" },
             { role: "assistant", content: "a1" },
             { role: "user", content: "u2" },
           ],
         },
-        response: {
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -134,13 +134,13 @@ describe("rebuildConversationMessages", () => {
         id: "e1",
         startedAt: 1,
         state: "executing",
-        request: { messages: [{ role: "user", content: "in-flight" }] },
+        inboundRequest: { messages: [{ role: "user", content: "in-flight" }] },
       }),
       makeEntry({
         id: "e2",
         startedAt: 2,
-        request: { messages: [{ role: "user", content: "good" }] },
-        response: {
+        inboundRequest: { messages: [{ role: "user", content: "good" }] },
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -160,8 +160,8 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e1",
         startedAt: 1,
-        request: { messages: [{ role: "user", content: "failed turn" }] },
-        response: {
+        inboundRequest: { messages: [{ role: "user", content: "failed turn" }] },
+        outboundResponse: {
           success: false,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -172,8 +172,8 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e2",
         startedAt: 2,
-        request: { messages: [{ role: "user", content: "ok turn" }] },
-        response: {
+        inboundRequest: { messages: [{ role: "user", content: "ok turn" }] },
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -194,8 +194,8 @@ describe("rebuildConversationMessages", () => {
         id: "e1",
         startedAt: 1,
         endpoint: "anthropic-messages",
-        request: { messages: [{ role: "user", content: "ant-only" }] },
-        response: {
+        inboundRequest: { messages: [{ role: "user", content: "ant-only" }] },
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -205,8 +205,8 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e2",
         startedAt: 2,
-        request: { messages: [{ role: "user", content: "resp-only" }] },
-        response: {
+        inboundRequest: { messages: [{ role: "user", content: "resp-only" }] },
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -226,13 +226,13 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e1",
         startedAt: 1,
-        request: {
+        inboundRequest: {
           messages: [
             { role: "user", content: "u1" },
             { role: "assistant", content: "[reasoning: rs_x]" },
           ],
         },
-        response: {
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -254,7 +254,7 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e1",
         startedAt: 1,
-        request: {
+        inboundRequest: {
           messages: [
             {
               role: "user",
@@ -265,7 +265,7 @@ describe("rebuildConversationMessages", () => {
             },
           ],
         },
-        response: {
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -288,10 +288,10 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e1",
         startedAt: 1,
-        request: {
+        inboundRequest: {
           messages: [{ role: "user", content: "use it" }],
         },
-        response: {
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },
@@ -305,10 +305,10 @@ describe("rebuildConversationMessages", () => {
       makeEntry({
         id: "e2",
         startedAt: 2,
-        request: {
+        inboundRequest: {
           messages: [{ role: "tool", tool_call_id: "c1", content: "result" }],
         },
-        response: {
+        outboundResponse: {
           success: true,
           model: "m",
           usage: { input_tokens: 0, output_tokens: 0 },

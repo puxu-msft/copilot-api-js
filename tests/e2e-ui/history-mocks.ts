@@ -115,7 +115,7 @@ export function createHistoryUiScenario(): HistoryUiScenario {
         message: "The request payload was rewritten before the retry attempt.",
       },
     ],
-    request: {
+    inboundRequest: {
       model: "gpt-5.4",
       stream: true,
       max_tokens: 2000,
@@ -195,7 +195,7 @@ export function createHistoryUiScenario(): HistoryUiScenario {
         },
       ],
     },
-    wireRequest: {
+    outboundRequest: {
       model: "gpt-5.4",
       format: "openai-responses",
       messageCount: 3,
@@ -204,7 +204,7 @@ export function createHistoryUiScenario(): HistoryUiScenario {
         "x-request-id": "wire-req-123",
       },
     },
-    response: {
+    outboundResponse: {
       success: true,
       model: "gpt-5.4-2026-03-05",
       usage: {
@@ -270,7 +270,7 @@ export function createHistoryUiScenario(): HistoryUiScenario {
     currentStrategy: "direct",
     durationMs: 620,
     transport: "http",
-    request: {
+    inboundRequest: {
       model: "claude-sonnet-4.6",
       stream: false,
       messages: [
@@ -280,7 +280,7 @@ export function createHistoryUiScenario(): HistoryUiScenario {
         },
       ],
     },
-    response: {
+    outboundResponse: {
       success: true,
       model: "claude-sonnet-4.6",
       usage: {

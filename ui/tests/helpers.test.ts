@@ -27,7 +27,7 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     sessionId: "session-1",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    request: {
+    inboundRequest: {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Hello" }],
       stream: false,
@@ -40,19 +40,19 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
 
 describe("getPreviewText", () => {
   test("returns empty string when messages is undefined", () => {
-    const entry = makeEntry({ request: { model: "test" } as any })
+    const entry = makeEntry({ inboundRequest: { model: "test" } as any })
     // messages is undefined — should NOT crash
     expect(getPreviewText(entry)).toBe("")
   })
 
   test("returns empty string when messages is empty array", () => {
-    const entry = makeEntry({ request: { model: "test", messages: [], stream: false } })
+    const entry = makeEntry({ inboundRequest: { model: "test", messages: [], stream: false } })
     expect(getPreviewText(entry)).toBe("")
   })
 
   test("extracts text from last user message with Anthropic format", () => {
     const entry = makeEntry({
-      request: {
+      inboundRequest: {
         model: "test",
         messages: [
           { role: "user", content: [{ type: "text", text: "First question" }] },
@@ -67,7 +67,7 @@ describe("getPreviewText", () => {
 
   test("extracts text from OpenAI string content", () => {
     const entry = makeEntry({
-      request: {
+      inboundRequest: {
         model: "gpt-4o",
         messages: [{ role: "user", content: "Hello OpenAI" }],
         stream: false,
@@ -79,7 +79,7 @@ describe("getPreviewText", () => {
   test("truncates preview to 100 chars", () => {
     const longText = "A".repeat(200)
     const entry = makeEntry({
-      request: {
+      inboundRequest: {
         model: "test",
         messages: [{ role: "user", content: longText }],
         stream: false,
@@ -90,7 +90,7 @@ describe("getPreviewText", () => {
 
   test("falls back to last message when no user message", () => {
     const entry = makeEntry({
-      request: {
+      inboundRequest: {
         model: "test",
         messages: [{ role: "assistant", content: "Just an assistant" }],
         stream: false,
@@ -102,7 +102,7 @@ describe("getPreviewText", () => {
   test("skips OpenAI tool response messages (role=tool) to find user message", () => {
     const entry = makeEntry({
       endpoint: "openai-chat-completions",
-      request: {
+      inboundRequest: {
         model: "gpt-4o",
         messages: [
           { role: "user", content: "Calculate something" },
@@ -122,7 +122,7 @@ describe("getPreviewText", () => {
   test("shows tool_call name when only assistant tool_calls exist", () => {
     const entry = makeEntry({
       endpoint: "openai-chat-completions",
-      request: {
+      inboundRequest: {
         model: "gpt-4o",
         messages: [
           {
@@ -142,7 +142,7 @@ describe("getPreviewText", () => {
   test("shows tool_result when last message is role=tool", () => {
     const entry = makeEntry({
       endpoint: "openai-chat-completions",
-      request: {
+      inboundRequest: {
         model: "gpt-4o",
         messages: [{ role: "tool", content: "result", tool_call_id: "call_1" }],
         stream: false,
@@ -155,7 +155,7 @@ describe("getPreviewText", () => {
 
   test("skips Anthropic user messages with only tool_result blocks", () => {
     const entry = makeEntry({
-      request: {
+      inboundRequest: {
         model: "test",
         messages: [
           { role: "user", content: [{ type: "text", text: "Original question" }] },
@@ -173,14 +173,14 @@ describe("getPreviewText", () => {
 
 describe("getMessageSummary", () => {
   test("returns 0 msg when messages is undefined", () => {
-    const entry = makeEntry({ request: { model: "test" } as any })
+    const entry = makeEntry({ inboundRequest: { model: "test" } as any })
     // messages is undefined — should NOT crash
     expect(getMessageSummary(entry)).toBe("0 msg")
   })
 
   test("counts messages and tool uses", () => {
     const entry = makeEntry({
-      request: {
+      inboundRequest: {
         model: "test",
         messages: [
           { role: "user", content: "hi" },
@@ -194,14 +194,14 @@ describe("getMessageSummary", () => {
   })
 
   test("handles empty messages array", () => {
-    const entry = makeEntry({ request: { model: "test", messages: [], stream: false } })
+    const entry = makeEntry({ inboundRequest: { model: "test", messages: [], stream: false } })
     expect(getMessageSummary(entry)).toBe("0 msg")
   })
 
   test("counts OpenAI-style tool_calls", () => {
     const entry = makeEntry({
       endpoint: "openai-chat-completions",
-      request: {
+      inboundRequest: {
         model: "gpt-4o",
         messages: [
           { role: "user", content: "search for cats" },
@@ -220,7 +220,7 @@ describe("getMessageSummary", () => {
 
   test("counts both Anthropic tool_use and OpenAI tool_calls in mixed conversations", () => {
     const entry = makeEntry({
-      request: {
+      inboundRequest: {
         model: "test",
         messages: [
           { role: "user", content: "hi" },
@@ -280,7 +280,7 @@ describe("getStatusClass", () => {
 
   test("returns success when response.success is true", () => {
     const entry = makeEntry({
-      response: {
+      outboundResponse: {
         success: true,
         model: "test",
         usage: { input_tokens: 10, output_tokens: 5 },
@@ -292,7 +292,7 @@ describe("getStatusClass", () => {
 
   test("returns error when response.success is false", () => {
     const entry = makeEntry({
-      response: {
+      outboundResponse: {
         success: false,
         model: "test",
         usage: { input_tokens: 10, output_tokens: 0 },

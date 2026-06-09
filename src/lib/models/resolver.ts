@@ -21,6 +21,21 @@ export { normalizeForMatching } from "./model-name"
 
 export type ModelFamily = "opus" | "sonnet" | "haiku"
 
+/**
+ * Coarse model class used to pick tool-name sanitization rules. Distinguishes
+ * upstreams by their tool-name constraints (dot support, max length) rather
+ * than by exact model identity.
+ */
+export type ModelClass = "gemini" | "gpt" | "claude" | "default"
+
+/** Per-class tool-name constraints for the sanitize-tool-names feature. */
+export interface ToolNameRules {
+  /** Whether the upstream accepts dots (`.`) in tool names. */
+  allowDots: boolean
+  /** Maximum permitted tool-name length. */
+  maxNameLength: number
+}
+
 // ============================================================================
 // Normalization and Detection
 // ============================================================================
@@ -311,4 +326,49 @@ function resolveBase(model: string): string {
   // rejects the unknown model (resolution intentionally fails — no built-in
   // family preference fallback).
   return model
+}
+
+// ============================================================================
+// Tool-name sanitization classification
+// ============================================================================
+
+/** Per-class tool-name rules. claude/default share the strict (no-dots, 64) rule. */
+const TOOL_NAME_RULES_BY_CLASS: Record<ModelClass, ToolNameRules> = {
+  gemini: { allowDots: true, maxNameLength: 128 },
+  gpt: { allowDots: true, maxNameLength: 128 },
+  claude: { allowDots: false, maxNameLength: 64 },
+  default: { allowDots: false, maxNameLength: 64 },
+}
+
+/**
+ * Classify a model into a coarse class for tool-name sanitization rules.
+ *
+ * Resolution order:
+ * 1. Runtime `vendor` (from `Model.vendor`, e.g. "OpenAI"/"Google"/"Anthropic")
+ *    when supplied — the authoritative signal.
+ * 2. Name heuristics on the model id (`gpt-*`, `gemini`, `claude`) as a fallback
+ *    when the model isn't in the index / vendor is unknown.
+ * 3. `"default"` when nothing matches.
+ */
+export function getModelClass(modelId: string, vendor?: string): ModelClass {
+  const v = vendor?.trim().toLowerCase()
+  if (v) {
+    if (v.includes("google")) return "gemini"
+    if (v.includes("openai")) return "gpt"
+    if (v.includes("anthropic")) return "claude"
+  }
+
+  const id = modelId.trim().toLowerCase()
+  if (id.includes("gemini")) return "gemini"
+  if (id.startsWith("gpt-")) return "gpt"
+  if (id.includes("claude")) return "claude"
+  return "default"
+}
+
+/**
+ * Resolve the tool-name sanitization rules (dot support + length cap) for a
+ * model, classifying via `getModelClass`.
+ */
+export function getToolNameRulesForModel(modelId: string, vendor?: string): ToolNameRules {
+  return TOOL_NAME_RULES_BY_CLASS[getModelClass(modelId, vendor)]
 }

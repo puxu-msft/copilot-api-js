@@ -39,6 +39,7 @@ import {
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
+import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
 
 import {
   //
@@ -51,7 +52,8 @@ import {
 export type AnthropicMessageResponse = AnthropicResponse
 export { prepareAnthropicRequest, type PreparedAnthropicRequest } from "./request-preparation"
 
-interface CreateAnthropicMessagesOptions {
+/** Options for {@link createAnthropicMessages}. */
+export interface CreateAnthropicMessagesOptions {
   resolvedModel?: Model
   headersCapture?: HeadersCapture
   onPrepared?: (request: PreparedAnthropicRequest) => void
@@ -70,6 +72,14 @@ interface CreateAnthropicMessagesOptions {
    */
   excludeBetas?: ReadonlyArray<string>
   rejectFields?: ReadonlyArray<string>
+  /**
+   * Aborts the upstream fetch when the downstream client disconnects. The normal
+   * route wires this from `streamSSE`'s `stream.onAbort`; callers that run their
+   * own orchestration outside the streaming handler (e.g. the web_search double-
+   * hop) pass it so a client cancel terminates the upstream hop instead of
+   * letting it run to `fetch_timeout`. Folded into the upstream fetch signal.
+   */
+  clientAbortSignal?: AbortSignal
 }
 
 // ============================================================================
@@ -108,7 +118,10 @@ export async function createAnthropicMessages(
     // omit it: the stream guard in processAnthropicStream owns shutdown
     // for the streamed body, and aborting the fetch mid-body would tear down the
     // ReadableStream underneath that guard.
-    const upstreamSignal = combineAbortSignals(createFetchSignal(), payload.stream ? undefined : getShutdownSignal())
+    // `clientAbortSignal` (when supplied) is always folded in: a client
+    // disconnect should terminate the upstream call on both stream and
+    // non-stream paths.
+    const upstreamSignal = combineAbortSignals(createFetchSignal(), payload.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
 
     let response: Response
     try {
@@ -153,7 +166,11 @@ export async function createAnthropicMessages(
         thinking,
         messageCount: messages.length,
       })
-      throw new HTTPError("Failed to create Anthropic messages", response.status, responseText, model, response.headers)
+      // On opaque 400s, scan the wire tools for schema keywords / names the
+      // upstream commonly rejects, and attach hint-only diagnostics. Logging is
+      // the consumer's job (forwardError) — the client only generates + attaches.
+      const diagnostics = response.status === 400 ? summarizeToolsForDiagnostics(tools) : undefined
+      throw new HTTPError("Failed to create Anthropic messages", response.status, responseText, model, response.headers, diagnostics)
     }
 
     if (payload.stream) {

@@ -3,6 +3,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
+import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
+
 import { HTTPError } from "./http-error"
 import {
   //
@@ -418,7 +420,19 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       consola.error(`HTTP ${error.status}:`, errorJson)
     }
 
-    return c.json(helpers.defaultError(error.responseText, error.status >= 500, error.status), error.status as ContentfulStatusCode)
+    // Hint-only tool-schema diagnostics attached by the client on suspicious
+    // 400s. Warn + surface as a sibling field so the standard error envelope
+    // (`error: {...}`) is left untouched. Note: already-classified 400s
+    // (token-limit / 413 / 422) return earlier via their specialized envelopes
+    // and intentionally do not carry tool_diagnostics here (their root cause is
+    // already known); the diagnostics are still persisted to History via
+    // RequestContext.fail().
+    const body = helpers.defaultError(error.responseText, error.status >= 500, error.status)
+    if (error.diagnostics) {
+      logToolDiagnostics(error.modelId ?? "unknown", error.diagnostics)
+      body.tool_diagnostics = error.diagnostics
+    }
+    return c.json(body, error.status as ContentfulStatusCode)
   }
 
   const errorMessage = error instanceof Error ? formatErrorWithCause(error) : String(error)

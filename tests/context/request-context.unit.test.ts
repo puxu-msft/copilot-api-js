@@ -127,6 +127,7 @@ describe("createRequestContext - attempt lifecycle", () => {
       orphanedToolResultCount: 0,
       fixedNameCount: 0,
       emptyTextBlocksRemoved: 0,
+      emptyThinkingBlocksRemoved: 0,
     })
 
     expect(ctx.currentAttempt!.sanitization).toEqual({
@@ -136,6 +137,7 @@ describe("createRequestContext - attempt lifecycle", () => {
       orphanedToolResultCount: 0,
       fixedNameCount: 0,
       emptyTextBlocksRemoved: 0,
+      emptyThinkingBlocksRemoved: 0,
     })
   })
 
@@ -312,12 +314,12 @@ describe("createRequestContext - toHistoryEntry", () => {
     const entry = ctx.toHistoryEntry()
     expect(entry.id).toBe(ctx.id)
     expect(entry.endpoint).toBe("anthropic-messages")
-    expect(entry.request.model).toBe("claude-sonnet-4")
+    expect(entry.inboundRequest.model).toBe("claude-sonnet-4")
     expect(entry.state).toBe("completed")
     expect(entry.active).toBe(false)
     expect(entry.attemptCount).toBe(1)
     expect(entry.queueWaitMs).toBe(0)
-    expect(entry.response!.success).toBe(true)
+    expect(entry.outboundResponse!.success).toBe(true)
   })
 
   test("serializes lifecycle activity fields", () => {
@@ -431,9 +433,9 @@ describe("createRequestContext - toHistoryEntry", () => {
     })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.request.max_tokens).toBe(4096)
-    expect(entry.request.temperature).toBe(0.7)
-    expect(entry.request.thinking).toEqual({ type: "enabled", budget_tokens: 10000 })
+    expect(entry.inboundRequest.max_tokens).toBe(4096)
+    expect(entry.inboundRequest.temperature).toBe(0.7)
+    expect(entry.inboundRequest.thinking).toEqual({ type: "enabled", budget_tokens: 10000 })
   })
 
   test("omits max_tokens/temperature/thinking when not in payload", () => {
@@ -443,9 +445,9 @@ describe("createRequestContext - toHistoryEntry", () => {
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.request.max_tokens).toBeUndefined()
-    expect(entry.request.temperature).toBeUndefined()
-    expect(entry.request.thinking).toBeUndefined()
+    expect(entry.inboundRequest.max_tokens).toBeUndefined()
+    expect(entry.inboundRequest.temperature).toBeUndefined()
+    expect(entry.inboundRequest.thinking).toBeUndefined()
   })
 
   test("includes effectiveRequest from final attempt", () => {
@@ -513,8 +515,8 @@ describe("createRequestContext - toHistoryEntry", () => {
       model: "claude-opus-4-6",
       messages: [{ role: "user", content: "logical" }],
     })
-    expect(entry.wireRequest).toBeDefined()
-    expect(entry.wireRequest!.payload).toEqual({
+    expect(entry.outboundRequest).toBeDefined()
+    expect(entry.outboundRequest!.payload).toEqual({
       model: "claude-opus-4-6",
       messages: [{ role: "user", content: "logical" }],
       context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
@@ -579,6 +581,7 @@ describe("createRequestContext - toHistoryEntry", () => {
       orphanedToolResultCount: 0,
       fixedNameCount: 0,
       emptyTextBlocksRemoved: 1,
+      emptyThinkingBlocksRemoved: 0,
       systemReminderRemovals: 0,
     })
     ctx.setAttemptEffectiveRequest({
@@ -601,7 +604,7 @@ describe("createRequestContext - toHistoryEntry", () => {
   test("includes sseEvents and httpHeaders in entry", () => {
     const { ctx } = makeContext()
     ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
-    ctx.setSseEvents([{ offsetMs: 0, type: "message_start", data: {} }])
+    ctx.setSseEvents([{ offsetMs: 0, type: "message_start", raw: "{}" }])
     ctx.setHttpHeaders({ request: { "x-req": "1" }, response: { "x-res": "2" } })
     ctx.beginAttempt({})
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })

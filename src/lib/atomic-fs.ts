@@ -3,11 +3,12 @@
  *
  * Two complementary tools used together by every consumer:
  *
- *   1. `atomicWriteJson(path, data)` — writes via a sibling temp file then
- *      `rename()` into place. POSIX `rename` is atomic on the same filesystem,
- *      so a crash mid-write leaves the previous file intact instead of leaving
- *      a truncated JSON that `JSON.parse` would later reject (and the loader's
- *      catch{} would silently wipe).
+ *   1. `atomicWriteText(path, content)` / `atomicWriteJson(path, data)` — write
+ *      via a sibling temp file then `rename()` into place. POSIX `rename` is
+ *      atomic on the same filesystem, so a crash mid-write leaves the previous
+ *      file intact instead of leaving a truncated file that a parser would
+ *      later reject (and a loader's catch{} would silently wipe).
+ *      `atomicWriteJson` is a thin JSON serializer over `atomicWriteText`.
  *
  *   2. `createSerializedAsyncFn(fn)` — wraps an async function so concurrent
  *      callers run in turn instead of overlapping. Each call captures the
@@ -35,29 +36,38 @@ import path from "node:path"
 let tmpSeq = 0
 
 /**
- * Atomically replace `targetPath` with the JSON-encoded `data`.
+ * Atomically replace `targetPath` with `content` (an already-serialized string).
  *
  * Uses a sibling tmp path with `<pid>.<ts>.<seq>.<random>` so multiple
  * processes / same-process concurrent calls never collide. On any failure the
- * temp file is best-effort unlinked (fire-and-forget — the unlink runs after
- * this function's promise has settled) and the error is re-thrown. Callers
- * decide whether to log or swallow.
+ * temp file is best-effort unlinked (fire-and-forget) and the error is
+ * re-thrown. Callers decide whether to log or swallow.
  *
  * The temp file lives in the same directory as `targetPath` so the final
  * `rename()` stays within one filesystem and remains atomic. Caller is
  * responsible for ensuring the target directory exists.
  */
-export async function atomicWriteJson(targetPath: string, data: unknown): Promise<void> {
+export async function atomicWriteText(targetPath: string, content: string): Promise<void> {
   const dir = path.dirname(targetPath)
   const base = path.basename(targetPath)
   const tmpPath = path.join(dir, `${base}.tmp.${process.pid}.${Date.now()}.${tmpSeq++}.${Math.random().toString(36).slice(2, 8)}`)
   try {
-    await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), "utf8")
+    await fs.writeFile(tmpPath, content, "utf8")
     await fs.rename(tmpPath, targetPath)
   } catch (err) {
     void fs.unlink(tmpPath).catch(() => undefined)
     throw err
   }
+}
+
+/**
+ * Atomically replace `targetPath` with the JSON-encoded `data`.
+ *
+ * Thin serializer over `atomicWriteText`: encodes `data` as pretty JSON then
+ * delegates the temp-write + atomic `rename()`. Signature/behavior unchanged.
+ */
+export async function atomicWriteJson(targetPath: string, data: unknown): Promise<void> {
+  await atomicWriteText(targetPath, JSON.stringify(data, null, 2))
 }
 
 /**

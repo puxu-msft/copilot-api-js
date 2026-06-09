@@ -79,10 +79,10 @@ export function rebuildMessagesFromEntries(entries: Array<HistoryEntry>, session
 
   const messages: Array<Message> = []
   for (const entry of capped) {
-    const turnIncrement = extractTurnIncrement(entry.request.messages ?? [])
+    const turnIncrement = extractTurnIncrement(entry.inboundRequest.messages ?? [])
     for (const stored of turnIncrement) messages.push(toCCMessage(stored))
-    if (entry.response?.content) {
-      messages.push(toCCMessage(entry.response.content))
+    if (entry.outboundResponse?.content) {
+      messages.push(toCCMessage(entry.outboundResponse.content))
     }
   }
   return messages
@@ -94,7 +94,7 @@ export function rebuildMessagesFromEntries(entries: Array<HistoryEntry>, session
  * corrupt the conversation shape.
  */
 function isReplayableEntry(entry: HistoryEntry): boolean {
-  return entry.endpoint === "openai-responses" && entry.state === "completed" && entry.response?.success !== false
+  return entry.endpoint === "openai-responses" && entry.state === "completed" && entry.outboundResponse?.success !== false
 }
 
 /**

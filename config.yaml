@@ -168,6 +168,23 @@ history:
   limit: 50
 
 # ============================================================================
+# Web Search (double-hop)
+# ============================================================================
+# Real web_search server-tool implementation for the Anthropic/Claude path.
+# When enabled and a request carries a native web_search server tool (or Claude
+# Code's WebSearch tool), the proxy intercepts it, runs a real search, and feeds
+# the results back to the model for a second-pass answer (double-hop). Default off.
+
+web_search:
+  # Enable the double-hop web_search implementation (default: false)
+  enabled: false
+  # Search backend:
+  #   ""        — disabled / not configured (default)
+  #   "searxng" — local SearXNG instance at http://localhost:8080
+  #   other     — a Copilot Responses search model id (e.g. "gpt-5.5")
+  backend: ""
+
+# ============================================================================
 # Anthropic
 # ============================================================================
 # Settings for Anthropic API tool handling and timeouts.
@@ -185,6 +202,13 @@ anthropic:
   #   immutable:   entire message is immutable — keep or truncate as a whole (default)
   #   fixed-index: allow editing non-thinking blocks, but preserve array structure
   thinking_block_message_policy: fixed-index
+
+  # Drop corrupt thinking blocks before sending upstream — validity decided by SIGNATURE,
+  # not text (encrypted thinking has empty text + valid signature, kept).
+  #   empty_thinking: remove double-empty blocks (text AND signature empty) (default)
+  #   empty_any:      remove any thinking block with empty signature
+  #   false:          disable
+  thinking_block_sanitize_check: empty_thinking
 
   # Strip <system-reminder> tags from Read tool results
   strip_read_tool_result_tags: false
@@ -378,6 +402,15 @@ rate_limiter:
 # Compress old tool_result content before truncating messages. When enabled, large tool_result content blocks
 # are compressed to reduce context size before resorting to message removal. Default: true.
 # compress_tool_results_before_truncate: false
+
+# ============================================================================
+# Tool Name Sanitization
+# ============================================================================
+# Sanitize tool names that violate the target model's constraints (illegal characters like dots, over-length,
+# or collisions) into legal names before sending upstream, then restore the client's original names in the
+# response. Deterministic and stateless (rebuilt per request). Spans Anthropic + Chat Completions + Responses
+# paths. Top-level (cross-protocol), not under anthropic.*. Default: false.
+# sanitize_tool_names: true
 
 # ============================================================================
 # System Prompt

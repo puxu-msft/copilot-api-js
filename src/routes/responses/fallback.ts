@@ -21,8 +21,10 @@ import type {
   HeadersCapture,
   RequestContext,
 } from "~/lib/context/request"
+import type { SseEventRecord } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { FormatAdapter } from "~/lib/request/pipeline"
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type {
   //
   ChatCompletionResponse,
@@ -44,6 +46,12 @@ import {
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
+import {
+  //
+  RESPONSES_NAME_BEARING_EVENTS,
+  restoreResponsesEventToolNames,
+  restoreResponsesOutputToolNames,
+} from "~/lib/openai/tool-name-sanitize"
 import {
   //
   translateCCStreamToResponsesStream,
@@ -77,6 +85,26 @@ const FORCE_CC_VENDORS = new Set<string>(["Google"])
 
 export function shouldForceChatCompletionsFallback(model: Model | undefined): boolean {
   return Boolean(model?.vendor && FORCE_CC_VENDORS.has(model.vendor))
+}
+
+/**
+ * Restore function_call names (upstream → original) in a single Responses-shape
+ * SSE data frame on the fallback path. Re-parses the frame (rather than mutating
+ * the accumulated `event`) so history keeps upstream names. Best-effort: returns
+ * input unchanged on parse failure / no change. No-op when `mapper` is null.
+ */
+function restoreFallbackStreamData(data: string, event: ResponsesStreamEvent, mapper: ToolNameMapper | null): string {
+  if (!mapper) return data
+  // Restore on per-item frames AND lifecycle frames whose `response.output[]`
+  // carries function_call names (the synthesized terminal `response.completed`).
+  if (!RESPONSES_NAME_BEARING_EVENTS.has(event.type)) return data
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(data)
+  } catch {
+    return data
+  }
+  return restoreResponsesEventToolNames(parsed, mapper) ? JSON.stringify(parsed) : data
 }
 
 /** Generate a short, collision-safe ID using crypto.randomUUID. */
@@ -184,6 +212,12 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
       if (!reqCtx.sessionId) reqCtx.setSessionId(responsesResponse.id)
       registerResponseSession(responsesResponse.id, reqCtx.sessionId)
 
+      // Restore function_call names (upstream → original) on the client-facing
+      // response. Computed before complete() so the forwarded content can be
+      // recorded; complete() records the upstream-original content.
+      const clientResponse = restoreResponsesOutputToolNames(responsesResponse, reqCtx.toolNameMapper)
+      reqCtx.setForwardedResponse({ content: responsesOutputToContent(clientResponse.output) })
+
       reqCtx.complete({
         success: true,
         model: responsesResponse.model,
@@ -194,7 +228,7 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
         stop_reason: responsesResponse.status,
         content: responsesOutputToContent(responsesResponse.output),
       })
-      return c.json(responsesResponse)
+      return c.json(clientResponse)
     }
 
     // Stream path — register session eagerly so a follow-up request using
@@ -215,6 +249,9 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
       const idleTimeoutMs = state.streamIdleTimeout * 1000
       let bytesIn = 0
       let eventsIn = 0
+      // Forwarded frames — what the client actually received (names restored).
+      const forwardedSseEvents: Array<SseEventRecord> = []
+      const streamStartMs = Date.now()
 
       try {
         const guarded = guardSseIterable(response as AsyncIterable<SseFrame>, {
@@ -247,13 +284,19 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
           }
 
           accumulateResponsesStreamEvent(event, acc)
-          await stream.writeSSE({ event: rawEvent.event ?? event.type, data: rawEvent.data })
+          // Restore function_call names (upstream → original) on the forwarded
+          // frame only; history keeps upstream names (accumulated above).
+          const forwardData = restoreFallbackStreamData(rawEvent.data, event, reqCtx.toolNameMapper)
+          forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: rawEvent.event ?? event.type, raw: forwardData })
+          await stream.writeSSE({ event: rawEvent.event ?? event.type, data: forwardData })
         }
 
         const responseData = buildResponsesResponseData(acc, payload.model)
+        reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
         reqCtx.complete(responseData)
       } catch (error) {
         consola.error("[Responses-fallback] Stream error:", error)
+        reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
         reqCtx.fail(acc.model || payload.model, error)
 
         const errorMessage = error instanceof Error ? error.message : String(error)

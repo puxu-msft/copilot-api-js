@@ -2,6 +2,7 @@ import type { ApiError } from "~/lib/error"
 import type {
   //
   EndpointType,
+  ForwardedResponse,
   PipelineInfo,
   RequestLifecycleState,
   RequestTransport,
@@ -11,6 +12,7 @@ import type {
   WarningMessage,
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
 // ─── Request State Machine ───
@@ -130,7 +132,8 @@ export interface HistoryEntryData {
   transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
 
-  request: {
+  /** Client → Proxy: the client's raw inbound request. */
+  inboundRequest: {
     model?: string
     messages?: Array<unknown>
     stream?: boolean
@@ -150,7 +153,8 @@ export interface HistoryEntryData {
     payload?: unknown
   }
 
-  wireRequest?: {
+  /** Proxy → Upstream: the final wire request sent upstream. */
+  outboundRequest?: {
     model?: string
     format?: EndpointType
     messageCount?: number
@@ -159,7 +163,10 @@ export interface HistoryEntryData {
     payload?: unknown
   }
 
-  response?: ResponseData
+  /** Upstream → Proxy: the upstream-original response. */
+  outboundResponse?: ResponseData
+  /** Proxy → Client: response as actually forwarded to the client, post-rewrite. */
+  inboundResponse?: ForwardedResponse
   truncation?: TruncationInfo
   pipelineInfo?: PipelineInfo
   sseEvents?: Array<SseEventRecord>
@@ -211,6 +218,8 @@ export interface RequestContext {
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
+  /** Response as actually forwarded to the client (proxy→client), post-rewrite. */
+  readonly forwardedResponse: ForwardedResponse | null
   readonly pipelineInfo: PipelineInfo | null
   readonly httpHeaders: {
     inboundRequest?: Record<string, string>
@@ -225,10 +234,23 @@ export interface RequestContext {
   readonly queueWaitMs: number
   readonly warningMessages: ReadonlyArray<WarningMessage>
 
+  /**
+   * Bidirectional tool-name sanitization mapper for this request, when the
+   * `sanitizeToolNames` feature is enabled and the request carries custom
+   * tools. Built once at request entry from the client-original tool names;
+   * response handlers read it back to restore upstream (sanitized) tool names
+   * to the client's original names. `null` when the feature is off or there
+   * are no tools to map.
+   */
+  readonly toolNameMapper: ToolNameMapper | null
+
   setSessionId(sessionId: string | undefined): void
   setOriginalRequest(req: OriginalRequest): void
+  setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
   setSseEvents(events: Array<SseEventRecord>): void
+  /** Record the response as forwarded to the client (proxy→client). Must be called before complete()/fail(). */
+  setForwardedResponse(forwarded: ForwardedResponse): void
   setHttpHeaders(capture: HeadersCapture): void
   setInboundRequestHeaders(headers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void

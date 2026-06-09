@@ -29,8 +29,8 @@ function seed(n: number): void {
       active: false,
       lastUpdatedAt: 1_000 + i,
       transport: "http",
-      request: { model: "m" },
-      response: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null },
+      inboundRequest: { model: "m" },
+      outboundResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null },
     } as HistoryEntry)
   }
 }

@@ -41,7 +41,7 @@ export interface EntryRow {
 const META_KEYS = new Set<string>(["id", "sessionId", "startedAt", "endedAt", "durationMs", "endpoint", "transport", "state"])
 
 export function serializeEntry(entry: HistoryEntry): { row: EntryRow; blob: Uint8Array } {
-  const usage = entry.response?.usage
+  const usage = entry.outboundResponse?.usage
   const blobPayload = extractBlobPayload(entry)
   const blob = gzipJson(blobPayload)
 
@@ -51,7 +51,7 @@ export function serializeEntry(entry: HistoryEntry): { row: EntryRow; blob: Uint
     started_at: entry.startedAt,
     ended_at: entry.endedAt ?? null,
     duration_ms: entry.durationMs ?? null,
-    model: entry.response?.model ?? entry.request.model ?? null,
+    model: entry.outboundResponse?.model ?? entry.inboundRequest.model ?? null,
     endpoint: entry.endpoint,
     transport: entry.transport ?? null,
     status: entry.state ?? "unknown",
@@ -60,9 +60,9 @@ export function serializeEntry(entry: HistoryEntry): { row: EntryRow; blob: Uint
     cache_read: usage?.cache_read_input_tokens ?? null,
     cache_creation: usage?.cache_creation_input_tokens ?? null,
     reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
-    stop_reason: entry.response?.stop_reason ?? null,
-    error_message: entry.response?.error ?? null,
-    message_count: entry.request.messages?.length ?? null,
+    stop_reason: entry.outboundResponse?.stop_reason ?? null,
+    error_message: entry.outboundResponse?.error ?? null,
+    message_count: entry.inboundRequest.messages?.length ?? null,
     preview_text: extractPreviewText(entry),
     search_text: extractSearchText(entry),
     blob_gz: blob,

@@ -601,9 +601,9 @@ describe("Gemini streaming partial usage (L-new-2)", () => {
 
     const { getRequestContextManager } = await import("~/lib/context/manager")
     const captured: Array<{ usage: { input_tokens: number; output_tokens: number }; stop_reason?: string }> = []
-    const listener = (evt: { type: string; entry?: { response?: unknown } }): void => {
+    const listener = (evt: { type: string; entry?: { outboundResponse?: unknown } }): void => {
       if (evt.type === "failed" && evt.entry) {
-        const r = evt.entry.response as { usage: { input_tokens: number; output_tokens: number }; stop_reason?: string } | undefined
+        const r = evt.entry.outboundResponse as { usage: { input_tokens: number; output_tokens: number }; stop_reason?: string } | undefined
         if (r) captured.push({ usage: r.usage, stop_reason: r.stop_reason })
       }
     }

@@ -12,12 +12,14 @@ import type { ApiError } from "~/lib/error"
 import type {
   //
   EndpointType,
+  ForwardedResponse,
   PipelineInfo,
   SanitizationInfo,
   SseEventRecord,
   TruncationInfo,
   WarningMessage,
 } from "~/lib/history/store"
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
@@ -80,6 +82,7 @@ export function createRequestContext(opts: {
   let _sessionId = opts.sessionId
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
+  let _forwardedResponse: ForwardedResponse | null = null
   let _pipelineInfo: PipelineInfo | null = null
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: {
@@ -90,6 +93,7 @@ export function createRequestContext(opts: {
   } | null = null
   let _queueWaitMs = 0
   const _warningMessages: Array<WarningMessage> = []
+  let _toolNameMapper: ToolNameMapper | null = null
   const _attempts: Array<Attempt> = []
   let _endTime: number | null = null
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
@@ -138,6 +142,9 @@ export function createRequestContext(opts: {
     get response() {
       return _response
     },
+    get forwardedResponse() {
+      return _forwardedResponse
+    },
     get pipelineInfo() {
       return _pipelineInfo
     },
@@ -159,6 +166,9 @@ export function createRequestContext(opts: {
     get warningMessages() {
       return _warningMessages
     },
+    get toolNameMapper() {
+      return _toolNameMapper
+    },
 
     setSessionId(sessionId: string | undefined) {
       _sessionId = sessionId
@@ -169,6 +179,10 @@ export function createRequestContext(opts: {
       emit({ type: "updated", context: ctx, field: "originalRequest" })
     },
 
+    setToolNameMapper(mapper: ToolNameMapper | null) {
+      _toolNameMapper = mapper
+    },
+
     setPipelineInfo(info: PipelineInfo) {
       // Direct assignment — caller assembles the complete PipelineInfo
       _pipelineInfo = info
@@ -177,6 +191,13 @@ export function createRequestContext(opts: {
 
     setSseEvents(events: Array<SseEventRecord>) {
       _sseEvents = events.length > 0 ? events : null
+    },
+
+    setForwardedResponse(forwarded: ForwardedResponse) {
+      // Keep only non-empty signal: content present, or at least one forwarded frame.
+      const hasContent = forwarded.content !== undefined
+      const hasEvents = (forwarded.sseEvents?.length ?? 0) > 0
+      _forwardedResponse = hasContent || hasEvents ? forwarded : null
     },
 
     setHttpHeaders(capture: HeadersCapture) {
@@ -326,6 +347,12 @@ export function createRequestContext(opts: {
           _response.responseText = error.responseText
         }
         _response.status = error.status
+
+        // Persist hint-only tool-schema diagnostics (attached by the client on
+        // suspicious 400s) into History as a warning message.
+        if (error.diagnostics) {
+          ctx.addWarningMessage({ code: "upstream_schema_diagnostic", message: JSON.stringify(error.diagnostics) })
+        }
       }
 
       // Drive state via transition() so `state_changed` fires for the
@@ -358,7 +385,7 @@ export function createRequestContext(opts: {
         durationMs: endedAt - startTime,
         ...(ctx.transport ? { transport: ctx.transport } : {}),
         ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
-        request: {
+        inboundRequest: {
           model: _originalRequest?.model,
           messages: _originalRequest?.messages,
           stream: _originalRequest?.stream,
@@ -372,7 +399,11 @@ export function createRequestContext(opts: {
       }
 
       if (_response) {
-        entry.response = _response
+        entry.outboundResponse = _response
+      }
+
+      if (_forwardedResponse) {
+        entry.inboundResponse = _forwardedResponse
       }
 
       // Find truncation from the last attempt that had one
@@ -405,7 +436,7 @@ export function createRequestContext(opts: {
 
       if (finalAttempt?.wireRequest) {
         const wp = finalAttempt.wireRequest
-        entry.wireRequest = {
+        entry.outboundRequest = {
           model: wp.model,
           format: wp.format,
           messageCount: wp.messages.length,

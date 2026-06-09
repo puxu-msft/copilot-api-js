@@ -61,7 +61,7 @@ export function clearInFlight(): void {
 
 /** Extract a preview from the last user message (first 100 chars) */
 export function extractPreviewText(entry: HistoryEntry): string {
-  const messages = entry.request.messages
+  const messages = entry.inboundRequest.messages
   if (!messages || messages.length === 0) return ""
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -104,12 +104,12 @@ export function extractPreviewText(entry: HistoryEntry): string {
 /** Build a searchable text blob from request/response fields */
 export function extractSearchText(entry: HistoryEntry): string {
   const parts: Array<string> = []
-  if (entry.request.model) parts.push(entry.request.model)
-  if (entry.response?.model) parts.push(entry.response.model)
+  if (entry.inboundRequest.model) parts.push(entry.inboundRequest.model)
+  if (entry.outboundResponse?.model) parts.push(entry.outboundResponse.model)
   parts.push(entry.endpoint)
-  if (entry.response?.error) parts.push(entry.response.error)
+  if (entry.outboundResponse?.error) parts.push(entry.outboundResponse.error)
 
-  const system = entry.request.system
+  const system = entry.inboundRequest.system
   if (typeof system === "string") parts.push(system)
   else if (Array.isArray(system)) {
     for (const block of system) {
@@ -119,7 +119,7 @@ export function extractSearchText(entry: HistoryEntry): string {
     }
   }
 
-  const messages = entry.request.messages ?? []
+  const messages = entry.inboundRequest.messages ?? []
   for (const msg of messages) {
     if (typeof msg.content === "string") {
       parts.push(msg.content)
@@ -163,13 +163,13 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     queueWaitMs: entry.queueWaitMs,
     attemptCount: entry.attemptCount,
     currentStrategy: entry.currentStrategy,
-    requestModel: entry.request.model,
-    stream: entry.request.stream,
-    messageCount: entry.request.messages?.length ?? 0,
-    responseModel: entry.response?.model,
-    responseSuccess: entry.response?.success,
-    responseError: entry.response?.error,
-    usage: entry.response?.usage,
+    requestModel: entry.inboundRequest.model,
+    stream: entry.inboundRequest.stream,
+    messageCount: entry.inboundRequest.messages?.length ?? 0,
+    responseModel: entry.outboundResponse?.model,
+    responseSuccess: entry.outboundResponse?.success,
+    responseError: entry.outboundResponse?.error,
+    usage: entry.outboundResponse?.usage,
     durationMs: entry.durationMs,
     previewText: cached.preview,
     searchText: cached.search,

@@ -59,21 +59,21 @@ function getLastSentMessageOfType(ws: WebSocket, type: string): WSMessage {
 }
 
 /** Helper: create and insert a minimal history entry */
-function createEntry(endpoint: EndpointType, request: Partial<HistoryEntry["request"]> & { model: string }): HistoryEntry {
+function createEntry(endpoint: EndpointType, inboundRequest: Partial<HistoryEntry["inboundRequest"]> & { model: string }): HistoryEntry {
   const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    request: {
-      model: request.model,
-      messages: request.messages ?? [{ role: "user", content: "Hello" }],
-      stream: request.stream ?? false,
-      tools: request.tools,
-      max_tokens: request.max_tokens,
-      temperature: request.temperature,
-      system: request.system,
+    inboundRequest: {
+      model: inboundRequest.model,
+      messages: inboundRequest.messages ?? [{ role: "user", content: "Hello" }],
+      stream: inboundRequest.stream ?? false,
+      tools: inboundRequest.tools,
+      max_tokens: inboundRequest.max_tokens,
+      temperature: inboundRequest.temperature,
+      system: inboundRequest.system,
     },
   }
   insertEntry(entry)
@@ -173,7 +173,7 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 10, output_tokens: 20 },
@@ -199,7 +199,7 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 10, output_tokens: 20 },
@@ -247,7 +247,7 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: false,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 10, output_tokens: 0 },
@@ -288,6 +288,7 @@ describe("updateEntry (pipelineInfo) triggers WS notification", () => {
           orphanedToolResultCount: 1,
           fixedNameCount: 0,
           emptyTextBlocksRemoved: 0,
+          emptyThinkingBlocksRemoved: 0,
           systemReminderRemovals: 1,
         },
       ],
@@ -328,7 +329,7 @@ describe("full request lifecycle", () => {
 
     // 3. Update with response
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 10, output_tokens: 20 },
@@ -361,7 +362,7 @@ describe("full request lifecycle", () => {
 
     const entry1 = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry1.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 10, output_tokens: 20 },
@@ -372,7 +373,7 @@ describe("full request lifecycle", () => {
 
     const entry2 = createEntry("openai-chat-completions", { model: "gpt-4o" })
     updateEntry(entry2.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "gpt-4o",
         usage: { input_tokens: 10, output_tokens: 20 },
@@ -401,7 +402,7 @@ describe("full request lifecycle", () => {
 
     // Update with response - client should only see this
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 10, output_tokens: 20 },
@@ -427,7 +428,7 @@ describe("full request lifecycle", () => {
     ;(ws as unknown as { readyState: number }).readyState = WebSocket.CLOSED
 
     updateEntry(entry.id, {
-      response: {
+      outboundResponse: {
         success: true,
         model: "claude-sonnet-4-20250514",
         usage: { input_tokens: 10, output_tokens: 20 },
@@ -457,7 +458,7 @@ describe("history disabled", () => {
       sessionId,
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      request: {
+      inboundRequest: {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "Hello" }],
         stream: false,

@@ -12,6 +12,7 @@
 
 import consola from "consola"
 
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import type { AnthropicMessageResponse } from "./client"
@@ -93,8 +94,12 @@ export function logServerToolBlocks(content: Array<Record<string, unknown> & { t
  * server_tool_use and *_tool_result blocks unconditionally. These are server-side
  * artifacts (e.g. tool_search injected by copilot-api, web_search) that clients
  * don't expect and most SDKs can't validate.
+ *
+ * When a `toolNameMapper` is supplied (tool-name sanitization feature), the
+ * filter also restores client tool_use block names from their upstream
+ * (sanitized) form back to the client's original names on `content_block_start`.
  */
-export function createServerToolBlockFilter() {
+export function createServerToolBlockFilter(toolNameMapper?: ToolNameMapper | null) {
   const filteredIndices = new Set<number>()
   const clientIndexMap = new Map<number, number>()
   let nextClientIndex = 0
@@ -108,6 +113,21 @@ export function createServerToolBlockFilter() {
     return idx
   }
 
+  /**
+   * Restore a client tool_use block's name (upstream → original). Returns the
+   * possibly-rewritten raw data; falls back to the input when nothing changes.
+   * Only `tool_use` blocks are touched (never `server_tool_use`).
+   */
+  function restoreToolUseName(blockType: string, rawData: string): string {
+    if (!toolNameMapper || blockType !== "tool_use") return rawData
+    const obj = JSON.parse(rawData) as { content_block?: { name?: string } } & Record<string, unknown>
+    const name = obj.content_block?.name
+    if (typeof name !== "string") return rawData
+    const restored = toolNameMapper.toClient(name)
+    if (restored === name) return rawData
+    return JSON.stringify({ ...obj, content_block: { ...obj.content_block, name: restored } })
+  }
+
   return {
     /** Returns rewritten data to forward, or null to suppress the event */
     rewriteEvent(parsed: StreamEvent | undefined, rawData: string): string | null {
@@ -119,13 +139,16 @@ export function createServerToolBlockFilter() {
           filteredIndices.add(parsed.index)
           return null
         }
+        // Restore client tool_use name (upstream → original) before index remap,
+        // so both transforms compose on the same JSON object.
+        const named = restoreToolUseName(block.type, rawData)
         if (filteredIndices.size === 0) {
           getClientIndex(parsed.index)
-          return rawData
+          return named
         }
         const clientIndex = getClientIndex(parsed.index)
-        if (clientIndex === parsed.index) return rawData
-        const obj = JSON.parse(rawData) as Record<string, unknown>
+        if (clientIndex === parsed.index) return named
+        const obj = JSON.parse(named) as Record<string, unknown>
         obj.index = clientIndex
         return JSON.stringify(obj)
       }
@@ -155,4 +178,23 @@ export function filterServerToolBlocksFromResponse(response: AnthropicMessageRes
 
   if (filtered.length === response.content.length) return response
   return { ...response, content: filtered }
+}
+
+/**
+ * Restore client tool_use block names (upstream → original) in a non-streaming
+ * response. Only `tool_use` blocks are touched; `server_tool_use` is left as-is.
+ * No-op when `mapper` is null. Returns a new response (never mutates input).
+ */
+export function restoreToolNamesInResponse(response: AnthropicMessageResponse, mapper: ToolNameMapper | null): AnthropicMessageResponse {
+  if (!mapper) return response
+  const source = response.content
+  const content = source.map((block: { type: string; name?: string }) => {
+    if (block.type === "tool_use" && typeof block.name === "string") {
+      const restored = mapper.toClient(block.name)
+      if (restored !== block.name) return { ...block, name: restored }
+    }
+    return block
+  })
+  const modified = content.some((block, i) => block !== source[i])
+  return modified ? { ...response, content: content as AnthropicMessageResponse["content"] } : response
 }

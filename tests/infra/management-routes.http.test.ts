@@ -175,12 +175,12 @@ function createHistoryEntry(overrides?: Partial<HistoryEntry>): HistoryEntry {
     sessionId: overrides?.sessionId ?? getCurrentSession(endpoint, generateId()),
     startedAt: overrides?.startedAt ?? Date.now(),
     endpoint,
-    request: overrides?.request ?? {
+    inboundRequest: overrides?.inboundRequest ?? {
       model: "claude-sonnet-4.6",
       messages: [{ role: "user", content: "Hello history" }],
       stream: false,
     },
-    response: overrides?.response,
+    outboundResponse: overrides?.outboundResponse,
     durationMs: overrides?.durationMs,
   }
 }
@@ -314,7 +314,7 @@ describe("management and history HTTP routes", () => {
   test("GET /history/api/stats returns history stats through the full app route", async () => {
     insertEntry(
       createHistoryEntry({
-        response: {
+        outboundResponse: {
           success: true,
           model: "claude-sonnet-4.6",
           usage: {
@@ -347,6 +347,6 @@ describe("management and history HTTP routes", () => {
     expect(res.status).toBe(200)
     expect(body.id).toBe(entry.id)
     expect(body.sessionId).toBe(entry.sessionId)
-    expect(body.request.model).toBe("claude-sonnet-4.6")
+    expect(body.inboundRequest.model).toBe("claude-sonnet-4.6")
   })
 })

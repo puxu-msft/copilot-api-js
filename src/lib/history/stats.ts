@@ -41,13 +41,13 @@ export function getStats(): HistoryStats {
   let failed = base.failedRequests
 
   for (const entry of inFlight) {
-    const model = entry.response?.model ?? entry.request.model
+    const model = entry.outboundResponse?.model ?? entry.inboundRequest.model
     if (model) modelDistribution[model] = (modelDistribution[model] ?? 0) + 1
     endpointDistribution[entry.endpoint] = (endpointDistribution[entry.endpoint] ?? 0) + 1
-    totalInputTokens += entry.response?.usage.input_tokens ?? 0
-    totalOutputTokens += entry.response?.usage.output_tokens ?? 0
-    if (entry.response?.success === true) successful += 1
-    else if (entry.response?.success === false) failed += 1
+    totalInputTokens += entry.outboundResponse?.usage.input_tokens ?? 0
+    totalOutputTokens += entry.outboundResponse?.usage.output_tokens ?? 0
+    if (entry.outboundResponse?.success === true) successful += 1
+    else if (entry.outboundResponse?.success === false) failed += 1
   }
 
   return {
@@ -92,16 +92,16 @@ export function exportHistory(format: "json" | "csv" = "json"): string {
     entry.sessionId ?? "",
     formatLocalTimestamp(entry.startedAt),
     entry.endpoint,
-    entry.request.model,
-    entry.request.messages?.length,
-    entry.request.stream,
-    entry.response?.success,
-    entry.response?.model,
-    entry.response?.usage.input_tokens,
-    entry.response?.usage.output_tokens,
+    entry.inboundRequest.model,
+    entry.inboundRequest.messages?.length,
+    entry.inboundRequest.stream,
+    entry.outboundResponse?.success,
+    entry.outboundResponse?.model,
+    entry.outboundResponse?.usage.input_tokens,
+    entry.outboundResponse?.usage.output_tokens,
     entry.durationMs,
-    entry.response?.stop_reason,
-    entry.response?.error,
+    entry.outboundResponse?.stop_reason,
+    entry.outboundResponse?.error,
   ])
 
   return [headers.join(","), ...rows.map((row) => row.map((value) => escapeCsvValue(value)).join(","))].join("\n")

@@ -109,6 +109,15 @@ export interface State {
    */
   readonly compressToolResultsBeforeTruncate: boolean
 
+  /**
+   * Sanitize tool names that violate the target model's constraints (illegal
+   * characters, over-length, collisions) into legal names before sending
+   * upstream, restoring the client's original names in the response. Applies
+   * across all three protocol paths (Anthropic, Chat Completions, Responses).
+   * Deterministic + stateless (rebuilt per request). Default false.
+   */
+  readonly sanitizeToolNames: boolean
+
   /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
   readonly stripServerTools: boolean
 
@@ -129,6 +138,26 @@ export interface State {
    * blocks, or `"fixed-index"` to allow edits while preserving array structure.
    */
   readonly thinkingBlockMessagePolicy: ThinkingBlockMessagePolicy
+  /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize_check`) */
+  readonly thinkingBlockSanitizeCheck: false | "empty_thinking" | "empty_any"
+
+  /**
+   * Legacy thinking normalization: rewrite `thinking.type="enabled"` to
+   * `"adaptive"` when the target model only supports adaptive thinking
+   * (e.g. opus 4.6/4.7/4.8). Solves the upstream 400 raised when an old
+   * client sends `enabled` + `budget_tokens` to an adaptive-only model
+   * (`"thinking.type.enabled" is not supported for this model`).
+   *
+   * - `false`      — disabled; pass the client config through unchanged.
+   * - `"adaptive"` — rewrite to plain `{ type: "adaptive" }`, dropping
+   *                  `budget_tokens` (default; mirrors GHC, which never
+   *                  derives effort from budget).
+   * - `"effort"`   — rewrite to adaptive AND derive `output_config.effort`
+   *                  from `budget_tokens`, but only when the client did not
+   *                  already send an explicit effort (heuristic enhancement
+   *                  beyond GHC; see request-preparation.ts:budgetToEffort).
+   */
+  readonly normalizeLegacyThinking: false | "adaptive" | "effort"
 
   /**
    * Model name overrides: request model → target model.
@@ -239,6 +268,24 @@ export interface State {
    * Default: "".
    */
   readonly historyDbPath: string
+
+  /**
+   * Enable the double-hop web_search server-tool implementation.
+   * When true and a request carries a native Anthropic web_search server tool
+   * (or Claude Code's `WebSearch` tool), the Anthropic path intercepts the
+   * request, runs a real search via `webSearchBackend`, and synthesizes a
+   * standard Anthropic response. Default false (fully short-circuited when off).
+   */
+  readonly webSearchEnabled: boolean
+
+  /**
+   * Web search backend selector:
+   *   ""        — not configured / disabled
+   *   "searxng" — local SearXNG instance at http://localhost:8080
+   *   other     — treated as a Copilot Responses search model id (e.g. "gpt-5.5")
+   * Default "".
+   */
+  readonly webSearchBackend: string
 
   /**
    * Fetch timeout in seconds.
@@ -576,6 +623,7 @@ export function setAnthropicBehavior(
       | "stripServerTools"
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
+      | "thinkingBlockSanitizeCheck"
       | "dedupToolCalls"
       | "stripReadToolResultTags"
       | "contextEditingMode"
@@ -588,6 +636,7 @@ export function setAnthropicBehavior(
       | "rewriteSystemReminders"
       | "systemPromptOverrides"
       | "compressToolResultsBeforeTruncate"
+      | "sanitizeToolNames"
       | "anthropicApiKey"
       | "warmupPolicy"
       | "effortsOverrides"
@@ -633,6 +682,10 @@ export function onHistoryLimitChange(listener: (limit: number) => void): () => v
 }
 
 export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
+  updateState(patch)
+}
+
+export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchEnabled" | "webSearchBackend">>): void {
   updateState(patch)
 }
 
@@ -730,6 +783,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "immutable" as ThinkingBlockMessagePolicy,
+  thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
   contextEditingMode: "off" as const,
@@ -742,6 +796,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   rewriteSystemReminders: false as const,
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
   compressToolResultsBeforeTruncate: true,
+  sanitizeToolNames: false,
   fetchTimeout: 300,
   streamIdleTimeout: 300,
   staleRequestMaxAge: 600,
@@ -751,6 +806,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
+  webSearchEnabled: false,
+  webSearchBackend: "",
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
   fixResponsesStreamIds: true,
@@ -773,6 +830,7 @@ export function resetConfigManagedState(): void {
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
+    thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
     contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
@@ -785,6 +843,7 @@ export function resetConfigManagedState(): void {
     rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
+    sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
@@ -810,6 +869,10 @@ export function resetConfigManagedState(): void {
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   })
+  setWebSearchConfig({
+    webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
+    webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
+  })
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
@@ -827,6 +890,7 @@ const mutableState: MutableState = {
   autoTruncate: false,
   tokenBasedBilling: false,
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
+  sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
   contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
   contextEditingKeepTools: CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools,
@@ -837,11 +901,14 @@ const mutableState: MutableState = {
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
+  thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
   historyLimit: CONFIG_MANAGED_DEFAULTS.historyLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
+  webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
   modelIds: new Set(),
   modelIndex: new Map(),
   modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },

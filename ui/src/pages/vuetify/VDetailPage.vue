@@ -39,7 +39,7 @@ const loadError = shallowRef<string | null>(null)
 
 const title = computed(() => {
   if (!entry.value) return "Loading..."
-  return entry.value.response?.model || entry.value.request.model || "Request"
+  return entry.value.outboundResponse?.model || entry.value.inboundRequest.model || "Request"
 })
 
 const subtitle = computed(() => {
@@ -47,7 +47,7 @@ const subtitle = computed(() => {
   const parts: Array<string> = []
   if (entry.value.startedAt) parts.push(formatDate(entry.value.startedAt))
   if (entry.value.durationMs) parts.push(formatDuration(entry.value.durationMs))
-  const usage = entry.value.response?.usage
+  const usage = entry.value.outboundResponse?.usage
   if (usage) {
     parts.push(`${formatNumber(usage.input_tokens)} in / ${formatNumber(usage.output_tokens)} out`)
   }
