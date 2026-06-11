@@ -11,7 +11,6 @@ import type { AutoTruncateConfig } from "../../auto-truncate"
 
 import {
   //
-  LARGE_TOOL_RESULT_THRESHOLD,
   compressCompactedReadResult,
   compressToolResultContent,
   computeSafetyMargin,
@@ -19,7 +18,6 @@ import {
 } from "../../auto-truncate"
 import { processToolBlocks } from "../sanitize"
 import { shouldPreserveThinkingBlocks } from "../thinking-immutability"
-import { estimateMessageTokens } from "./token-counting"
 import { ensureAnthropicStartsWithUser } from "./tool-utils"
 
 /**
@@ -60,11 +58,11 @@ export function stripThinkingBlocks(messages: Array<MessageParam>, preserveRecen
   return { messages: result, strippedCount }
 }
 
-function compressToolResultBlock(block: ContentBlockParam): ContentBlockParam {
-  if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > LARGE_TOOL_RESULT_THRESHOLD) {
+function compressToolResultBlock(block: ContentBlockParam, threshold: number): ContentBlockParam {
+  if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > threshold) {
     return {
       ...block,
-      content: compressToolResultContent(block.content),
+      content: compressToolResultContent(block.content, threshold),
     }
   }
   return block
@@ -77,6 +75,8 @@ export function smartCompressToolResults(
   messages: Array<MessageParam>,
   tokenLimit: number,
   preservePercent: number,
+  perMessageTokens: Array<number>,
+  threshold: number,
 ): {
   messages: Array<MessageParam>
   compressedCount: number
@@ -86,7 +86,7 @@ export function smartCompressToolResults(
   const cumTokens: Array<number> = Array.from({ length: n + 1 }, () => 0)
 
   for (let i = n - 1; i >= 0; i--) {
-    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(messages[i])
+    cumTokens[i] = cumTokens[i + 1] + (perMessageTokens[i] ?? 0)
   }
 
   const preserveTokenLimit = Math.floor(tokenLimit * preservePercent)
@@ -111,12 +111,12 @@ export function smartCompressToolResults(
     if (i < thresholdIndex && msg.role === "user" && Array.isArray(msg.content)) {
       let hadCompression = false as boolean
       const compressedContent = msg.content.map((block) => {
-        if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > LARGE_TOOL_RESULT_THRESHOLD) {
+        if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > threshold) {
           compressedCount++
           hadCompression = true
-          return compressToolResultBlock(block)
+          return compressToolResultBlock(block, threshold)
         }
-        if (block.type === "text" && block.text.length > LARGE_TOOL_RESULT_THRESHOLD) {
+        if (block.type === "text" && block.text.length > threshold) {
           const compressed = compressCompactedReadResult(block.text)
           if (compressed) {
             compressedCount++
@@ -164,17 +164,37 @@ export function calculateTokenLimit(model: Model, config: AutoTruncateConfig): n
 
 interface PreserveSearchParams {
   messages: Array<MessageParam>
-  systemTokens: number
+  /**
+   * Fixed (non-message) token overhead that always ships with the request —
+   * system prompt + tools. Subtracted from the limit alongside the marker so the
+   * preserve boundary accounts for tools too (a 50-tool payload can be 20k+ tokens
+   * of fixed overhead; ignoring it leaves the truncated result over the limit).
+   */
+  fixedOverheadTokens: number
   tokenLimit: number
+  /**
+   * Per-message token counts in the SAME caliber as `tokenLimit` (gpt tokenizer).
+   * The caller precomputes these via `countPerMessageTokens`. Passing them in
+   * (rather than estimating char/4 here) keeps the binary search's cumulative
+   * sums caliber-consistent with the limit — otherwise a char/4 undercount can
+   * place the preserve boundary at 0 ("everything fits") when the real gpt count
+   * still exceeds the limit, yielding a phantom no-op truncation.
+   */
+  perMessageTokens: Array<number>
 }
 
 export function findOptimalPreserveIndex(params: PreserveSearchParams): number {
-  const { messages, systemTokens, tokenLimit } = params
+  const { messages, fixedOverheadTokens, tokenLimit, perMessageTokens } = params
 
   if (messages.length === 0) return 0
 
-  const markerTokens = 50
-  const availableTokens = tokenLimit - systemTokens - markerTokens
+  // Reserve headroom for the truncation context/marker that gets injected AFTER
+  // this search (createTruncationSystemContext / createTruncationMarker). Measured
+  // upper bound is ~84 gpt tokens for a large removed-message summary; 160 leaves
+  // margin so the post-injection result stays under the target rather than relying
+  // on the strategy's outer retry factor to absorb the overflow.
+  const contextReserveTokens = 160
+  const availableTokens = tokenLimit - fixedOverheadTokens - contextReserveTokens
 
   if (availableTokens <= 0) {
     return messages.length
@@ -184,7 +204,7 @@ export function findOptimalPreserveIndex(params: PreserveSearchParams): number {
   const cumTokens: Array<number> = Array.from({ length: n + 1 }, () => 0)
 
   for (let i = n - 1; i >= 0; i--) {
-    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(messages[i])
+    cumTokens[i] = cumTokens[i + 1] + (perMessageTokens[i] ?? 0)
   }
 
   let left = 0
@@ -308,10 +328,18 @@ export function createTruncationMarker(removedCount: number, compressedCount: nu
  * Clean up truncated messages after preserve slicing.
  */
 export function cleanupMessages(messages: Array<MessageParam>): Array<MessageParam> {
-  let cleanedMessages = messages
-  let pass = processToolBlocks(cleanedMessages, undefined)
-  cleanedMessages = pass.messages
-  cleanedMessages = ensureAnthropicStartsWithUser(cleanedMessages)
-  pass = processToolBlocks(cleanedMessages, undefined)
-  return pass.messages
+  // Converge to a fixpoint: processToolBlocks may drop a leading message that
+  // ensureAnthropicStartsWithUser just exposed (and vice-versa), so iterate until
+  // the message count stabilizes. Both steps only delete (never add) and are
+  // idempotent, so length is monotonically decreasing → terminates. (Mirrors the
+  // OpenAI cleanupMessages do-while.) The strengthened ensure also drops leading
+  // pure-tool_result user turns, so the result is a legal `messages[0]`.
+  let result = messages
+  let prevLength: number
+  do {
+    prevLength = result.length
+    result = processToolBlocks(result, undefined).messages
+    result = ensureAnthropicStartsWithUser(result)
+  } while (result.length !== prevLength)
+  return result
 }

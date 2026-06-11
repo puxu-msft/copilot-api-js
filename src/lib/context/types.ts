@@ -185,6 +185,24 @@ export interface HistoryEntryData {
     truncation?: TruncationInfo
     sanitization?: SanitizationInfo
     effectiveMessageCount?: number
+    /** Full per-attempt bodies (Bug 3): preserved for every attempt, not just the final one. */
+    effectiveRequest?: {
+      model?: string
+      format?: EndpointType
+      messageCount?: number
+      messages?: Array<unknown>
+      system?: unknown
+      payload?: unknown
+    }
+    wireRequest?: {
+      model?: string
+      format?: EndpointType
+      messageCount?: number
+      messages?: Array<unknown>
+      system?: unknown
+      payload?: unknown
+    }
+    response?: ResponseData
   }>
 }
 
@@ -270,5 +288,11 @@ export interface RequestContext {
    * history doesn't show all-zero diagnostics for partially-streamed requests.
    */
   fail(model: string, error: unknown, partial?: PartialResponseInfo): void
+  /**
+   * Settle the request as `aborted` — the downstream client disconnected
+   * mid-stream. Distinct terminal state from complete/fail. `partial` preserves
+   * usage / stop_reason observed before the disconnect.
+   */
+  abort(model: string, partial?: PartialResponseInfo): void
   toHistoryEntry(): HistoryEntryData
 }

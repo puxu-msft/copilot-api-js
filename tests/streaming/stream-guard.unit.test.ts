@@ -19,6 +19,7 @@ import {
 
 import {
   //
+  StreamClientAbortError,
   StreamIdleTimeoutError,
   StreamShutdownError,
   guardSseIterable,
@@ -92,7 +93,7 @@ describe("guardSseIterable — stable-signal interruption (case b)", () => {
     await expect(secondPromise).rejects.toBeInstanceOf(StreamShutdownError)
   })
 
-  test("client abort wakes an already-blocked .next() and ends cleanly", async () => {
+  test("client abort wakes an already-blocked .next() and throws StreamClientAbortError", async () => {
     const client = new AbortController()
     const guarded = guardSseIterable(blockingAfterFirst(), {
       idleTimeoutMs: 0,
@@ -105,8 +106,7 @@ describe("guardSseIterable — stable-signal interruption (case b)", () => {
     await tick()
     client.abort()
 
-    const second = await secondPromise
-    expect(second.done).toBe(true)
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamClientAbortError)
   })
 
   test("a signal already aborted before the first .next() terminates immediately", async () => {
@@ -123,7 +123,7 @@ describe("guardSseIterable — stable-signal interruption (case b)", () => {
 })
 
 describe("guardSseIterable — abort-source distinction", () => {
-  test("client abort → clean done (no throw)", async () => {
+  test("client abort → throws StreamClientAbortError", async () => {
     const client = new AbortController()
     const guarded = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, clientSignal: client.signal })
     const iter = guarded[Symbol.asyncIterator]()
@@ -132,7 +132,7 @@ describe("guardSseIterable — abort-source distinction", () => {
     const secondPromise = iter.next()
     client.abort()
 
-    expect((await secondPromise).done).toBe(true)
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamClientAbortError)
   })
 
   test("shutdown abort → throws StreamShutdownError", async () => {
@@ -147,8 +147,9 @@ describe("guardSseIterable — abort-source distinction", () => {
     await expect(secondPromise).rejects.toBeInstanceOf(StreamShutdownError)
   })
 
-  test("client abort takes precedence when both signals are aborted", async () => {
-    // Client gone → no one to notify, so a concurrent shutdown is moot.
+  test("shutdown takes precedence when both signals are aborted", async () => {
+    // Shutdown is process-level + retryable; surface it even if the client also
+    // disconnected in the same tick, so the client gets its retry cue.
     const client = new AbortController()
     const shutdown = new AbortController()
     const guarded = guardSseIterable(blockingAfterFirst(), {
@@ -163,7 +164,7 @@ describe("guardSseIterable — abort-source distinction", () => {
     shutdown.abort()
     client.abort()
 
-    expect((await secondPromise).done).toBe(true)
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamShutdownError)
   })
 })
 
@@ -343,7 +344,7 @@ describe("guardSseIterable — closes the inner iterator on non-natural terminat
     expect(returnCalls()).toBe(1)
   })
 
-  test("client clean-done closes the inner iterator", async () => {
+  test("client abort closes the inner iterator (cleanup runs before the throw)", async () => {
     const client = new AbortController()
     const { source, returnCalls } = instrumentedBlocking()
     const guarded = guardSseIterable(source, { idleTimeoutMs: 0, clientSignal: client.signal })
@@ -354,7 +355,7 @@ describe("guardSseIterable — closes the inner iterator on non-natural terminat
     await tick()
     client.abort()
 
-    expect((await secondPromise).done).toBe(true)
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamClientAbortError)
     expect(returnCalls()).toBe(1)
   })
 

@@ -149,7 +149,8 @@ statusRoutes.get("/", async (c) => {
     memory: {
       historyBackend: "sqlite",
       historyEntryCount,
-      historyLimit: state.historyLimit,
+      historySuccessLimit: state.historySuccessLimit,
+      historyFailureLimit: state.historyFailureLimit,
       inFlightCount,
     },
 

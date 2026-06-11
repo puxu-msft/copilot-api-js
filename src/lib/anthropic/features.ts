@@ -2,7 +2,9 @@
  * Anthropic model feature detection and request header construction.
  *
  * Mirrors VSCode Copilot Chat's feature detection logic from:
- * - anthropic.ts: modelSupportsInterleavedThinking, modelSupportsContextEditing, modelSupportsToolSearch
+ * - anthropic.ts: modelSupportsInterleavedThinking, modelSupportsContextEditing
+ *   (tool search lives upstream as isAnthropicToolSearchEnabled + the
+ *   TOOL_SEARCH_SUPPORTED_MODELS constant; mirrored here as modelSupportsToolSearch)
  * - chatEndpoint.ts: getExtraHeaders (anthropic-beta headers)
  * - anthropic.ts: buildContextManagement
  */
@@ -131,20 +133,35 @@ export interface AnthropicBetaHeaderOptions {
 }
 
 /**
- * Check if a model supports adaptive thinking (from model metadata).
+ * Check if a model supports adaptive thinking.
  *
- * Models with adaptive thinking (e.g. opus 4.6) use `thinking: { type: 'adaptive' }`
+ * Models with adaptive thinking (e.g. opus 4.6/4.7/4.8) use `thinking: { type: 'adaptive' }`
  * and do NOT need the interleaved-thinking beta header. Models without adaptive
  * thinking still need the beta header to enable interleaved thinking.
  *
- * Uses model metadata `capabilities.supports.adaptive_thinking` field.
- * Falls back to false when metadata is unavailable, which is safe because
- * adding the interleaved-thinking beta to an adaptive model is harmless
- * (the server ignores unknown betas), while omitting it from a non-adaptive
- * model that needs it would break thinking.
+ * Detection precedence:
+ *   1. Metadata `supports.adaptive_thinking === true` → adaptive.
+ *   2. Positive enabled-thinking signal: `supports.max_thinking_budget > 0`
+ *      without an adaptive flag means the model declares budget-based (enabled)
+ *      thinking — trust that and report NOT adaptive. Predictive normalization
+ *      must not override a positive metadata signal; if the upstream still
+ *      rejects `enabled`, the reactive `legacy-thinking-retry` strategy converts.
+ *   3. Metadata silent (no thinking fields): fall back to a model-name allowlist,
+ *      mirroring modelSupportsToolSearch / modelSupportsContextEditing. This
+ *      fills the gap when an upstream `/models` payload lags a new release.
+ *
+ * The beta-header decision shares this function, so a false result (cases 2/3
+ * fall-through) keeps interleaved-thinking — harmless if the model is in fact
+ * adaptive (the server ignores unknown betas).
  */
-function modelHasAdaptiveThinking(resolvedModel?: Model): boolean {
-  return resolvedModel?.capabilities?.supports?.adaptive_thinking === true
+export function modelHasAdaptiveThinking(modelId: string, resolvedModel?: Model): boolean {
+  const supports = resolvedModel?.capabilities?.supports
+  if (supports?.adaptive_thinking === true) return true
+  // Positive enabled-thinking declaration → respect metadata, don't name-fallback.
+  if (typeof supports?.max_thinking_budget === "number" && supports.max_thinking_budget > 0) return false
+
+  const normalized = normalizeForMatching(modelId)
+  return normalized.startsWith("claude-opus-4-6") || normalized.startsWith("claude-opus-4-7") || normalized.startsWith("claude-opus-4-8")
 }
 
 /**
@@ -162,9 +179,9 @@ export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model
   const headers: AnthropicBetaHeaders = {}
   const betaFeatures: Array<string> = []
 
-  // Adaptive thinking models (e.g. opus 4.6) don't need the interleaved-thinking beta.
+  // Adaptive thinking models (e.g. opus 4.6/4.7/4.8) don't need the interleaved-thinking beta.
   // All other models that support interleaved thinking need it explicitly enabled.
-  if (!modelHasAdaptiveThinking(resolvedModel)) {
+  if (!modelHasAdaptiveThinking(modelId, resolvedModel)) {
     betaFeatures.push("interleaved-thinking-2025-05-14")
   }
 

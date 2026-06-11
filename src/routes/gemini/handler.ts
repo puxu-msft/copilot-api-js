@@ -49,6 +49,7 @@ import { resolveModelName } from "~/lib/models/resolver"
 import { countTextTokens } from "~/lib/models/tokenizer"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { isNonStreaming } from "~/lib/request"
+import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
@@ -427,12 +428,11 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
         content: null,
       })
     } catch (error) {
-      consola.error("[gemini] Stream error:", error)
       // Preserve whatever partial usage / finishReason we accumulated before
       // the failure so the history layer doesn't show all-zero diagnostics
       // for a partially-streamed request.
       reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-      reqCtx.fail(payload.model, error, {
+      const partial = {
         usage: {
           input_tokens: usageMetadata.promptTokenCount ?? 0,
           output_tokens: usageMetadata.candidatesTokenCount ?? 0,
@@ -441,7 +441,14 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
           }),
         },
         ...(finishReason !== undefined && { stop_reason: finishReason }),
-      })
+      }
+      // Uniform terminal settle: client disconnect → `aborted` (return, no
+      // frame); else → `fail()` and emit the Gemini-shape error frame.
+      if (settleStreamingFailure({ reqCtx, error, model: payload.model, partial })) {
+        consola.debug("[gemini] Client disconnected mid-stream — recording aborted")
+        return
+      }
+      consola.error("[gemini] Stream error:", error)
       // Emit a Gemini-shape data-only frame. Real Gemini SDK clients parse
       // every `data:` frame into `GenerateContentResponse`; named events
       // (`event: error`) are silently dropped by SDK consumers.

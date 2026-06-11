@@ -22,13 +22,3 @@ export function estimateMessageTokens(msg: Message): number {
 
   return Math.ceil(charCount / 4) + 10
 }
-
-/** Calculate cumulative token sums from the end of the message array */
-export function calculateCumulativeSums(messages: Array<Message>): { cumTokens: Array<number> } {
-  const n = messages.length
-  const cumTokens = Array.from<number>({ length: n + 1 }).fill(0)
-  for (let i = n - 1; i >= 0; i--) {
-    cumTokens[i] = cumTokens[i + 1] + estimateMessageTokens(messages[i])
-  }
-  return { cumTokens }
-}

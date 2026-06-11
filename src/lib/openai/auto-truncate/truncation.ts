@@ -4,11 +4,7 @@ import type {
   Message,
 } from "~/types/api/openai-chat-completions"
 
-import {
-  //
-  LARGE_TOOL_RESULT_THRESHOLD,
-  compressToolResultContent,
-} from "../../auto-truncate"
+import { compressToolResultContent } from "../../auto-truncate"
 import {
   //
   ensureOpenAIStartsWithUser,
@@ -16,11 +12,7 @@ import {
   filterOpenAIOrphanedToolResults,
   filterOpenAIOrphanedToolUse,
 } from "../orphan-filter"
-import {
-  //
-  calculateCumulativeSums,
-  estimateMessageTokens,
-} from "./token-counting"
+import { estimateMessageTokens } from "./token-counting"
 
 /**
  * Clean up orphaned tool messages and ensure valid conversation start.
@@ -39,19 +31,33 @@ export function cleanupMessages(messages: Array<Message>): Array<Message> {
 }
 
 /**
+ * Build cumulative-from-end token sums from precomputed per-message counts.
+ * `cum[i]` = sum of tokens for messages[i..n-1]; `cum[n]` = 0.
+ */
+function cumulativeFromPerMessage(perMessageTokens: Array<number>, n: number): Array<number> {
+  const cumTokens = Array.from<number>({ length: n + 1 }).fill(0)
+  for (let i = n - 1; i >= 0; i--) {
+    cumTokens[i] = cumTokens[i + 1] + (perMessageTokens[i] ?? 0)
+  }
+  return cumTokens
+}
+
+/**
  * Smart compression strategy for OpenAI format.
  */
 export function smartCompressToolResults(
   messages: Array<Message>,
   tokenLimit: number,
   preservePercent: number,
+  perMessageTokens: Array<number>,
+  threshold: number,
 ): {
   messages: Array<Message>
   compressedCount: number
   compressThresholdIndex: number
 } {
   const n = messages.length
-  const { cumTokens } = calculateCumulativeSums(messages)
+  const cumTokens = cumulativeFromPerMessage(perMessageTokens, n)
   const preserveTokenLimit = Math.floor(tokenLimit * preservePercent)
 
   let thresholdIndex = n
@@ -71,11 +77,11 @@ export function smartCompressToolResults(
   let compressedCount = 0
 
   for (const [i, msg] of messages.entries()) {
-    if (i < thresholdIndex && msg.role === "tool" && typeof msg.content === "string" && msg.content.length > LARGE_TOOL_RESULT_THRESHOLD) {
+    if (i < thresholdIndex && msg.role === "tool" && typeof msg.content === "string" && msg.content.length > threshold) {
       compressedCount++
       result.push({
         ...msg,
-        content: compressToolResultContent(msg.content),
+        content: compressToolResultContent(msg.content, threshold),
       })
       continue
     }
@@ -91,8 +97,19 @@ export function smartCompressToolResults(
 
 interface PreserveSearchParams {
   messages: Array<Message>
-  systemTokens: number
+  /**
+   * Fixed (non-conversation) token overhead — system messages + tools. Subtracted
+   * from the limit so the preserve boundary accounts for tools too (see the
+   * Anthropic twin). Ignoring tools leaves a many-tool payload over the limit.
+   */
+  fixedOverheadTokens: number
   tokenLimit: number
+  /**
+   * Per-message token counts in the SAME caliber as `tokenLimit` (gpt tokenizer).
+   * Precomputed by the caller via `getPerMessageTokenCounts`. See the Anthropic
+   * twin for the rationale — char/4 here would misplace the preserve boundary.
+   */
+  perMessageTokens: Array<number>
 }
 
 /**
@@ -100,19 +117,21 @@ interface PreserveSearchParams {
  * Uses binary search with pre-calculated cumulative sums.
  */
 export function findOptimalPreserveIndex(params: PreserveSearchParams): number {
-  const { messages, systemTokens, tokenLimit } = params
+  const { messages, fixedOverheadTokens, tokenLimit, perMessageTokens } = params
 
   if (messages.length === 0) return 0
 
-  const markerTokens = 50
-  const availableTokens = tokenLimit - systemTokens - markerTokens
+  // Reserve headroom for the truncation context/marker injected after this search
+  // (see the Anthropic twin). 160 tokens covers the measured upper bound with margin.
+  const contextReserveTokens = 160
+  const availableTokens = tokenLimit - fixedOverheadTokens - contextReserveTokens
 
   if (availableTokens <= 0) {
     return messages.length
   }
 
   const n = messages.length
-  const { cumTokens } = calculateCumulativeSums(messages)
+  const cumTokens = cumulativeFromPerMessage(perMessageTokens, n)
 
   let left = 0
   let right = n

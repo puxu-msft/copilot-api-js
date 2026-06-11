@@ -43,6 +43,19 @@ function nullableNonnegativeInt() {
     .optional()
 }
 
+const UNIT_FLOAT_MSG = "Must be a number in (0, 1] or null"
+
+/** A float in the half-open interval (0, 1] — e.g. auto_truncate.target_factor (0 would zero the limit). */
+function nullableUnitFloat() {
+  return z
+    .number({ error: UNIT_FLOAT_MSG })
+    .gt(0, UNIT_FLOAT_MSG)
+    .lte(1, UNIT_FLOAT_MSG)
+    .nullable()
+    .transform((v): number | undefined => v ?? undefined)
+    .optional()
+}
+
 function nullableBoolean() {
   return z
     .boolean({ error: BOOLEAN_MSG })
@@ -156,6 +169,41 @@ export const AnthropicConfigSchema = z
       })
       .optional()
       .transform((v) => v ?? undefined),
+    /**
+     * Coerce legacy `thinking.type="enabled"` to `"adaptive"` for models that
+     * only support adaptive thinking (opus 4.6/4.7/4.8). Solves the upstream
+     * 400 when an old client sends `enabled` + `budget_tokens` to such a model.
+     *   basic:       coerce to { type: "adaptive" }, drop budget_tokens (default)
+     *   best_effort: also map budget_tokens to output_config.effort (only when
+     *                the client did not send an explicit effort)
+     *   false:       disabled — pass the client config through unchanged
+     */
+    coerce_adaptive_thinking: z
+      .union([z.literal(false), z.literal("basic"), z.literal("best_effort"), z.null()], {
+        error: "Must be one of: false, basic, best_effort",
+      })
+      .optional()
+      .transform((v) => v ?? undefined),
+    /**
+     * Client compatibility shim for the streaming thinking frame some Copilot
+     * upstreams emit — `content_block_start {type:"thinking", thinking:"",
+     * signature:S}` with NO trailing `signature_delta`. The upstream is the
+     * protocol authority; standard clients just ignore a signature on
+     * content_block_start (taking it only from signature_delta), so they drop it
+     * and echo back a corrupt `{thinking:"", signature:""}` block which the
+     * upstream then rejects. Applies to the client-facing stream only (history
+     * keeps the raw upstream frames).
+     *   "signature_delta" (default): emit an empty thinking start + a synthesized
+     *                                 signature_delta (standard protocol shape).
+     *   "redacted_thinking":         rewrite as redacted_thinking{data:S}.
+     *   false:                       passthrough (no compat shim).
+     */
+    thinking_signature_compat: z
+      .union([z.literal(false), z.literal("signature_delta"), z.literal("redacted_thinking"), z.null()], {
+        error: "Must be one of: false, signature_delta, redacted_thinking",
+      })
+      .optional()
+      .transform((v) => v ?? undefined),
     dedup_tool_calls: z
       .union([z.boolean(), z.literal("input"), z.literal("result"), z.null()], {
         error: "Must be one of: false, true, input, result",
@@ -212,7 +260,12 @@ export const ResponsesConfigSchema = z
 
 export const HistoryConfigSchema = z
   .object({
+    /** @deprecated 兼容旧配置;缺省的 success_limit/failure_limit 回退到它 */
     limit: nullableNonnegativeInt(),
+    /** Max successful (non-failed) entries kept in SQLite (0 = unlimited). */
+    success_limit: nullableNonnegativeInt(),
+    /** Max failed entries kept in SQLite (0 = unlimited). */
+    failure_limit: nullableNonnegativeInt(),
     reaper_interval: nullableNonnegativeInt(),
     db_path: nullableString(),
   })
@@ -229,6 +282,19 @@ export const WebSearchConfigSchema = z
      *   other     — treated as a Copilot Responses search model id (e.g. "gpt-5.5")
      */
     backend: nullableString(),
+  })
+  .strict()
+
+export const AutoTruncateConfigSchema = z
+  .object({
+    /** Enable reactive auto-truncate (retry with a truncated payload on upstream token-limit errors). Default false. Also settable via CLI --auto-truncate, which wins when explicitly passed. */
+    enabled: nullableBoolean(),
+    /** Truncation target as a fraction of the upstream-reported limit (target = limit × factor). (0, 1]; smaller = safer/more removed, larger = leaner. Default 0.9. */
+    target_factor: nullableUnitFloat(),
+    /** Max reactive auto-truncate retries per request. 0 = a single attempt, no retry. Default 5. */
+    max_retries: nullableNonnegativeInt(),
+    /** Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress everything. Default 10000. */
+    compress_threshold: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -346,6 +412,16 @@ export const ConfigSchema = z
       .transform((v): z.infer<typeof ModelOverridesSchema> | undefined => v ?? undefined)
       .optional(),
     disabled_models: nullableNonemptyStringArray(),
+    /**
+     * Reactive auto-truncate settings (nested section). When `enabled`, an upstream
+     * token-limit error (400/413) triggers a retry with a truncated payload instead
+     * of surfacing the error. Top-level (not under `anthropic.*`) because it spans
+     * both the Anthropic and Chat Completions retry pipelines. `enabled` is also
+     * settable via the CLI `--auto-truncate` flag, which takes precedence when
+     * explicitly passed. `target_factor` / `max_retries` / `compress_threshold` tune
+     * the truncation behavior (config-only).
+     */
+    auto_truncate: nullableSection(AutoTruncateConfigSchema),
     compress_tool_results_before_truncate: nullableBoolean(),
     /**
      * Sanitize tool names that violate the target model's constraints (illegal
@@ -462,4 +538,6 @@ export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type WebSearchConfig = z.infer<typeof WebSearchConfigSchema>
+/** Config-file shape of the `auto_truncate` section (distinct from the engine's runtime `AutoTruncateConfig`). */
+export type AutoTruncateConfigSection = z.infer<typeof AutoTruncateConfigSchema>
 export type Config = z.infer<typeof ConfigSchema>

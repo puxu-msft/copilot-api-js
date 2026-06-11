@@ -26,6 +26,7 @@ import {
   buildContextManagement,
   isContextEditingEnabled,
   mergeAnthropicBeta,
+  modelHasAdaptiveThinking,
 } from "./features"
 import { stripServerTools } from "./message-tools"
 import {
@@ -132,6 +133,12 @@ export function filterUnsupportedBetas(modelName: string, merged: string | undef
 
 export function prepareAnthropicRequest(payload: MessagesPayload, opts?: PrepareAnthropicRequestOptions): PreparedAnthropicRequest {
   const wire = buildWirePayload(payload, opts?.rejectFields)
+  // Thinking transforms run in a fixed order: coerce the SHAPE first
+  // (enabled→adaptive for adaptive-only models), then clamp the budget (a no-op
+  // once adaptive), then clamp the mapped/forwarded effort against the model
+  // whitelist. Keep this ordering — clampEffortLevel must see any effort that
+  // coerceAdaptiveThinking maps so an out-of-range value can't reach upstream.
+  coerceAdaptiveThinking(wire, opts?.resolvedModel)
   adjustThinkingBudget(wire, opts?.resolvedModel)
   clampEffortLevel(wire, opts?.resolvedModel)
   applyCacheControlMode(wire)
@@ -227,6 +234,76 @@ function buildWirePayload(payload: MessagesPayload, rejectFields?: ReadonlyArray
   }
 
   return wire
+}
+
+// ============================================================================
+// Adaptive thinking coercion
+// ============================================================================
+
+/**
+ * Heuristic mapping from a legacy `budget_tokens` to an effort level.
+ *
+ * GHC does NOT derive effort from budget (the two are independent dimensions);
+ * this is a copilot-api enhancement to preserve the "thinking intensity" intent
+ * of old clients that only had `budget_tokens` to express it. Thresholds carry
+ * no semantic guarantee — they are an opt-in best effort (config
+ * `anthropic.coerce_adaptive_thinking: best_effort`).
+ *
+ * Only low/medium/high are produced (GHC's construction side accepts only these
+ * three); clampEffortLevel later fits the value to the model's actual whitelist.
+ */
+const EFFORT_BUDGET_THRESHOLDS = [
+  { maxBudget: 8_192, effort: "low" },
+  { maxBudget: 24_576, effort: "medium" },
+] as const
+
+function budgetToEffort(budget?: number): "low" | "medium" | "high" | undefined {
+  if (typeof budget !== "number" || budget <= 0) return undefined
+  for (const threshold of EFFORT_BUDGET_THRESHOLDS) {
+    if (budget <= threshold.maxBudget) return threshold.effort
+  }
+  return "high"
+}
+
+/**
+ * Coerce a legacy `thinking: { type: "enabled", budget_tokens }` to
+ * `{ type: "adaptive" }` when the target model only supports adaptive thinking.
+ *
+ * Old clients (e.g. older Claude Code CLI) send the pre-adaptive shape, which
+ * adaptive-only models (opus 4.6/4.7/4.8) reject with HTTP 400
+ * (`"thinking.type.enabled" is not supported for this model`). GHC constructs
+ * `{ type: "adaptive" }` (no budget_tokens) for these models, so coercing to
+ * the same shape matches the upstream contract.
+ *
+ * - Only touches `type: "enabled"`; adaptive/disabled are left as-is (no-op).
+ * - Gated on modelHasAdaptiveThinking (metadata + name fallback).
+ * - Preserves the `display` field (summarized/omitted) for multi-turn signature
+ *   continuity.
+ * - In `"best_effort"` mode, maps budget_tokens to output_config.effort, but
+ *   only when the client did not already send an explicit effort.
+ */
+function coerceAdaptiveThinking(wire: Record<string, unknown>, resolvedModel?: Model): void {
+  if (state.coerceAdaptiveThinking === false) return
+
+  const thinking = wire.thinking as MessagesPayload["thinking"]
+  if (!thinking || thinking.type !== "enabled") return
+
+  const model = wire.model as string
+  if (!modelHasAdaptiveThinking(model, resolvedModel)) return
+
+  // Map budget→effort BEFORE clampEffortLevel runs, and only when the client did
+  // not send an explicit effort (never override the client's intent).
+  if (state.coerceAdaptiveThinking === "best_effort") {
+    const outputConfig = wire.output_config as OutputConfig | undefined
+    if (!outputConfig?.effort) {
+      const effort = budgetToEffort(thinking.budget_tokens)
+      if (effort) wire.output_config = { ...outputConfig, effort }
+    }
+  }
+
+  const display = (thinking as { display?: string }).display
+  wire.thinking = { type: "adaptive", ...(display ? { display } : {}) }
+  consola.debug(`[DirectAnthropic] Coerced legacy thinking enabled→adaptive (model=${model})`)
 }
 
 function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Model): void {

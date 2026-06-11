@@ -91,9 +91,25 @@ export interface State {
 
   /**
    * Auto-truncate: reactively truncate on limit errors and pre-check for known limits.
-   * Disabled by default; enable with --auto-truncate.
+   * Disabled by default; enable with --auto-truncate or `auto_truncate.enabled`.
    */
   readonly autoTruncate: boolean
+
+  /**
+   * Truncation target as a fraction of the upstream-reported token limit
+   * (target = reportedLimit × factor). In (0, 1]; smaller removes more / safer,
+   * larger is leaner but closer to the limit. Config `auto_truncate.target_factor`.
+   */
+  readonly autoTruncateTargetFactor: number
+
+  /** Max reactive auto-truncate retries per request. Config `auto_truncate.max_retries`. */
+  readonly autoTruncateMaxRetries: number
+
+  /**
+   * Character-length threshold (NOT tokens) above which a tool_result block is
+   * compressed during truncation. Config `auto_truncate.compress_threshold`.
+   */
+  readonly autoTruncateCompressThreshold: number
 
   /**
    * Account is on token-based (PAYG) billing rather than premium-request
@@ -142,22 +158,37 @@ export interface State {
   readonly thinkingBlockSanitizeCheck: false | "empty_thinking" | "empty_any"
 
   /**
-   * Legacy thinking normalization: rewrite `thinking.type="enabled"` to
-   * `"adaptive"` when the target model only supports adaptive thinking
-   * (e.g. opus 4.6/4.7/4.8). Solves the upstream 400 raised when an old
-   * client sends `enabled` + `budget_tokens` to an adaptive-only model
-   * (`"thinking.type.enabled" is not supported for this model`).
+   * Coerce legacy `thinking.type="enabled"` to `"adaptive"` when the target
+   * model only supports adaptive thinking (e.g. opus 4.6/4.7/4.8). Solves the
+   * upstream 400 raised when an old client sends `enabled` + `budget_tokens` to
+   * an adaptive-only model (`"thinking.type.enabled" is not supported for this
+   * model`).
    *
-   * - `false`      — disabled; pass the client config through unchanged.
-   * - `"adaptive"` — rewrite to plain `{ type: "adaptive" }`, dropping
-   *                  `budget_tokens` (default; mirrors GHC, which never
-   *                  derives effort from budget).
-   * - `"effort"`   — rewrite to adaptive AND derive `output_config.effort`
-   *                  from `budget_tokens`, but only when the client did not
-   *                  already send an explicit effort (heuristic enhancement
-   *                  beyond GHC; see request-preparation.ts:budgetToEffort).
+   * - `false`         — disabled; pass the client config through unchanged.
+   * - `"basic"`       — coerce to plain `{ type: "adaptive" }`, dropping
+   *                     `budget_tokens` (default; mirrors GHC, which never
+   *                     derives effort from budget).
+   * - `"best_effort"` — coerce to adaptive AND map `budget_tokens` to
+   *                     `output_config.effort`, but only when the client did not
+   *                     already send an explicit effort (heuristic enhancement
+   *                     beyond GHC; see request-preparation.ts:budgetToEffort).
    */
-  readonly normalizeLegacyThinking: false | "adaptive" | "effort"
+  readonly coerceAdaptiveThinking: false | "basic" | "best_effort"
+
+  /**
+   * Client compatibility shim for the thinking frame some Copilot upstreams emit
+   * — `content_block_start {type:"thinking", thinking:"", signature:S}` with NO
+   * trailing signature_delta. The upstream is the protocol authority; standard
+   * clients (Claude Code, Anthropic SDK) just ignore a signature on
+   * content_block_start (taking it only from signature_delta), so they drop it
+   * and echo back a corrupt `{thinking:"", signature:""}` block. This re-shapes
+   * the frame on the client-facing stream only (history keeps the raw upstream).
+   *   "signature_delta" (default): emit an empty thinking start + a synthesized
+   *                                 signature_delta (standard protocol shape).
+   *   "redacted_thinking":         rewrite the block as redacted_thinking{data:S}.
+   *   false:                       passthrough (no compat shim).
+   */
+  readonly thinkingSignatureCompat: false | "signature_delta" | "redacted_thinking"
 
   /**
    * Model name overrides: request model → target model.
@@ -250,14 +281,24 @@ export interface State {
   readonly systemPromptOverrides: Array<CompiledRewriteRule>
 
   /**
-   * Maximum number of history entries to keep in memory.
-   * 0 = unlimited. Default: 200.
+   * Maximum number of successful (non-failed) history entries to keep in SQLite.
+   * The reaper trims the success bucket (status != 'failed') to this size.
+   * 0 = unlimited. Default: 50.
    */
-  readonly historyLimit: number
+  readonly historySuccessLimit: number
+
+  /**
+   * Maximum number of failed history entries to keep in SQLite.
+   * The reaper trims the failure bucket (status = 'failed') to this size.
+   * Kept larger than the success limit by default — failures carry more
+   * diagnostic value. 0 = unlimited. Default: 200.
+   */
+  readonly historyFailureLimit: number
 
   /**
    * Interval in seconds between history reaper passes.
-   * The reaper periodically trims the SQLite history table to `historyLimit`.
+   * The reaper periodically trims the SQLite history table to the per-status
+   * limits (`historySuccessLimit` / `historyFailureLimit`).
    * Default: 600.
    */
   readonly historyReaperInterval: number
@@ -624,6 +665,8 @@ export function setAnthropicBehavior(
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
+      | "coerceAdaptiveThinking"
+      | "thinkingSignatureCompat"
       | "dedupToolCalls"
       | "stripReadToolResultTags"
       | "contextEditingMode"
@@ -654,30 +697,39 @@ export function setModelOverrides(modelOverrides: Record<string, string>): void 
   updateState({ modelOverrides })
 }
 
-export function setHistoryConfig(patch: Partial<Pick<MutableState, "historyLimit" | "historyReaperInterval" | "historyDbPath">>): void {
-  const limitChanged = patch.historyLimit !== undefined && patch.historyLimit !== mutableState.historyLimit
+export function setHistoryConfig(
+  patch: Partial<Pick<MutableState, "historySuccessLimit" | "historyFailureLimit" | "historyReaperInterval" | "historyDbPath">>,
+): void {
+  // Any of the three reaper inputs (both limits + interval) must retune the
+  // running timer, else changing only reaper_interval on hot-reload would
+  // update state but leave the timer firing at the old cadence.
+  const reaperConfigChanged =
+    (patch.historySuccessLimit !== undefined && patch.historySuccessLimit !== mutableState.historySuccessLimit)
+    || (patch.historyFailureLimit !== undefined && patch.historyFailureLimit !== mutableState.historyFailureLimit)
+    || (patch.historyReaperInterval !== undefined && patch.historyReaperInterval !== mutableState.historyReaperInterval)
   updateState(patch)
-  if (limitChanged) {
-    for (const listener of historyLimitListeners) listener(mutableState.historyLimit)
+  if (reaperConfigChanged) {
+    for (const listener of historyLimitListeners) listener()
   }
 }
 
 /**
- * Listeners notified when `historyLimit` changes.
- * Used by the history module to retune its reaper without a circular import.
+ * Listeners notified when any reaper config (success/failure limit or interval)
+ * changes. Used by the history module to retune its reaper without a circular
+ * import. Invoked with no arguments — the listener re-reads state.
  */
-const historyLimitListeners = new Set<(limit: number) => void>()
+const historyLimitListeners = new Set<() => void>()
 
 /**
- * Subscribe to `historyLimit` changes.
+ * Subscribe to reaper config changes (success/failure limit or interval).
  *
- * The listener is invoked synchronously once on registration with the current
- * value, so subscribers that register after `resetConfigManagedState()` still
- * pick up the initial limit. Returns an unsubscribe function.
+ * The listener is invoked synchronously once on registration, so subscribers
+ * that register after `resetConfigManagedState()` still pick up the initial
+ * values. Returns an unsubscribe function.
  */
-export function onHistoryLimitChange(listener: (limit: number) => void): () => void {
+export function onHistoryLimitChange(listener: () => void): () => void {
   historyLimitListeners.add(listener)
-  listener(mutableState.historyLimit)
+  listener()
   return () => historyLimitListeners.delete(listener)
 }
 
@@ -686,6 +738,12 @@ export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGra
 }
 
 export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchEnabled" | "webSearchBackend">>): void {
+  updateState(patch)
+}
+
+export function setAutoTruncateConfig(
+  patch: Partial<Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold">>,
+): void {
   updateState(patch)
 }
 
@@ -784,6 +842,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "immutable" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
+  coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
+  thinkingSignatureCompat: "signature_delta" as false | "signature_delta" | "redacted_thinking",
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
   contextEditingMode: "off" as const,
@@ -795,6 +855,13 @@ export const CONFIG_MANAGED_DEFAULTS = {
   nonDeferredTools: [] as ReadonlyArray<string>,
   rewriteSystemReminders: false as const,
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
+  autoTruncate: false,
+  // Defaults mirror the engine constants AUTO_TRUNCATE_RETRY_FACTOR / MAX_AUTO_TRUNCATE_RETRIES /
+  // LARGE_TOOL_RESULT_THRESHOLD. Inlined (not imported) to avoid a state ↔ auto-truncate ↔
+  // system-prompt import cycle; kept in sync by a guard in auto-truncate-common.unit.test.ts.
+  autoTruncateTargetFactor: 0.9,
+  autoTruncateMaxRetries: 5,
+  autoTruncateCompressThreshold: 10000,
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
   fetchTimeout: 300,
@@ -803,7 +870,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
-  historyLimit: 200,
+  historySuccessLimit: 50,
+  historyFailureLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
   webSearchEnabled: false,
@@ -831,6 +899,8 @@ export function resetConfigManagedState(): void {
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+    coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
+    thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
     contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
@@ -865,7 +935,8 @@ export function resetConfigManagedState(): void {
     shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   })
   setHistoryConfig({
-    historyLimit: CONFIG_MANAGED_DEFAULTS.historyLimit,
+    historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
+    historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   })
@@ -882,12 +953,23 @@ export function resetConfigManagedState(): void {
     maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
     maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
+  // auto-truncate is a top-level toggle (CLI flag + config.yaml `auto_truncate.enabled`)
+  // plus three tuning fields, all reset via setAutoTruncateConfig.
+  setAutoTruncateConfig({
+    autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
+    autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
+    autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
+    autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+  })
 }
 
 const mutableState: MutableState = {
   accountType: "individual",
   ghcApiBaseUrl: "",
-  autoTruncate: false,
+  autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
+  autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
+  autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
+  autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
   tokenBasedBilling: false,
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
@@ -902,9 +984,12 @@ const mutableState: MutableState = {
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+  coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
+  thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
-  historyLimit: CONFIG_MANAGED_DEFAULTS.historyLimit,
+  historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
+  historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,

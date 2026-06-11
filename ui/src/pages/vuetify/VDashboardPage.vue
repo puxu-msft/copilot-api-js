@@ -56,6 +56,22 @@ const sessionTokens = computed(() => {
   }
 })
 
+const requestOutcomes = computed(() => {
+  const stats = store.stats
+  if (!stats) return null
+  // Distinct terminal outcomes. aborted (client disconnect) and interrupted
+  // (crash orphan) are NOT failures — shown as their own categories so the
+  // breakdown is self-consistent: total = sum of the four rows.
+  const rows = [
+    { key: "completed", label: "Completed", count: stats.successfulRequests, color: "success" },
+    { key: "failed", label: "Failed", count: stats.failedRequests, color: "error" },
+    { key: "aborted", label: "Aborted", count: stats.abortedRequests, color: "warning" },
+    { key: "interrupted", label: "Interrupted", count: stats.interruptedRequests, color: "secondary" },
+  ]
+  const total = rows.reduce((sum, row) => sum + row.count, 0)
+  return { rows, total }
+})
+
 const memorySummary = computed(() => {
   if (!memory.value) return null
   return {
@@ -338,6 +354,59 @@ const {
             class="empty-panel text-caption text-medium-emphasis"
           >
             No memory data available.
+          </div>
+        </v-sheet>
+
+        <v-sheet
+          class="panel panel-outcomes"
+          color="surface"
+          border
+        >
+          <div class="panel-head">
+            <div>
+              <div class="panel-eyebrow text-caption text-medium-emphasis text-uppercase">Disposition</div>
+              <div class="panel-title">Request Outcomes</div>
+            </div>
+            <div class="text-caption text-medium-emphasis">{{ formatNumber(requestOutcomes?.total) }} terminal</div>
+          </div>
+
+          <div
+            v-if="requestOutcomes && requestOutcomes.total > 0"
+            class="quota-stack"
+          >
+            <div
+              v-for="row in requestOutcomes.rows"
+              :key="row.key"
+              class="quota-row"
+            >
+              <div class="d-flex justify-space-between text-caption mb-1">
+                <span>
+                  <v-icon
+                    :color="row.color"
+                    size="x-small"
+                    icon="mdi-circle"
+                    class="mr-1"
+                  />
+                  {{ row.label }}
+                </span>
+                <span class="font-mono">
+                  {{ formatNumber(row.count) }}
+                  <span class="text-medium-emphasis">({{ Math.round((row.count / requestOutcomes.total) * 100) }}%)</span>
+                </span>
+              </div>
+              <v-progress-linear
+                :model-value="(row.count / requestOutcomes.total) * 100"
+                :color="row.color"
+                bg-color="surface-variant"
+                height="10"
+              />
+            </div>
+          </div>
+          <div
+            v-else
+            class="empty-panel text-caption text-medium-emphasis"
+          >
+            No completed requests yet.
           </div>
         </v-sheet>
 

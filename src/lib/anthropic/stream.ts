@@ -19,6 +19,7 @@ import {
   //
   raceIteratorNext,
   STREAM_ABORTED,
+  StreamClientAbortError,
   StreamShutdownError,
 } from "~/lib/stream"
 
@@ -77,12 +78,15 @@ export async function* processAnthropicStream(
       const result = await raceIteratorNext(iterator.next(), { idleTimeoutMs, abortSignal: local.signal })
 
       // An abort fired while waiting for the next event. Query the original
-      // signals to learn the source — they have opposite semantics. Client gone →
-      // terminate quietly. Shutdown with the client still connected → throw so
-      // the consumer's catch can emit a terminal error event.
+      // signals to learn the source — they have opposite semantics. Check
+      // SHUTDOWN FIRST: shutdown is a process-level event that should surface
+      // as a retryable error even if the client also disconnected in the same
+      // tick (otherwise a shutdown gets misrecorded as a client abort and the
+      // client loses its retry cue). Client gone (and not shutting down) →
+      // throw StreamClientAbortError so the consumer settles it as `aborted`.
       if (result === STREAM_ABORTED) {
-        if (clientAbortSignal?.aborted) return
         if (shutdownSignal.aborted) throw new StreamShutdownError()
+        if (clientAbortSignal?.aborted) throw new StreamClientAbortError()
         return
       }
 

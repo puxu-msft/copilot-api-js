@@ -32,9 +32,11 @@ import {
   //
   countFixedTokens,
   countMessagesTokens,
+  countPerMessageTokens,
   countSystemTokens,
   countTotalTokens,
 } from "./auto-truncate/token-counting"
+import { isLegalLeadingUserMessage } from "./auto-truncate/tool-utils"
 import {
   //
   addCompressionNotice,
@@ -142,7 +144,16 @@ export async function autoTruncateAnthropic(
   let compressedCount = 0
 
   if (state.compressToolResultsBeforeTruncate) {
-    const compressionResult = smartCompressToolResults(workingMessages, tokenLimit, cfg.preserveRecentPercent)
+    // Per-message gpt-caliber counts for the compression threshold scan — same
+    // caliber as tokenLimit so the preserve boundary lands correctly.
+    const compressPerMessage = await countPerMessageTokens(workingMessages, model)
+    const compressionResult = smartCompressToolResults(
+      workingMessages,
+      tokenLimit,
+      cfg.preserveRecentPercent,
+      compressPerMessage,
+      state.autoTruncateCompressThreshold,
+    )
     workingMessages = compressionResult.messages
     compressedCount = compressionResult.compressedCount
 
@@ -172,10 +183,13 @@ export async function autoTruncateAnthropic(
     // Step 2.5: Compress ALL tool_results (including recent ones)
     // If compressing only old tool_results wasn't enough, try compressing all of them
     // before resorting to message removal
+    const allCompressPerMessage = await countPerMessageTokens(workingMessages, model)
     const allCompression = smartCompressToolResults(
       workingMessages,
       tokenLimit,
       0.0, // preservePercent=0 means compress all messages
+      allCompressPerMessage,
+      state.autoTruncateCompressThreshold,
     )
     if (allCompression.compressedCount > 0) {
       workingMessages = allCompression.messages
@@ -214,12 +228,30 @@ export async function autoTruncateAnthropic(
   // Calculate system tokens for the binary search
   const systemTokens = await countSystemTokens(payload.system, model)
 
-  // Find optimal preserve index on working messages
-  const preserveIndex = findOptimalPreserveIndex({
+  // Per-message gpt-caliber counts so the binary search shares the limit's caliber.
+  const preservePerMessage = await countPerMessageTokens(workingMessages, model)
+
+  // Find optimal preserve index on working messages. Pass the FULL fixed overhead
+  // (system + tools = fixedTokens), not just system — otherwise the tools' tokens
+  // (large for many-tool payloads) are unaccounted and the result stays over limit.
+  let preserveIndex = findOptimalPreserveIndex({
     messages: workingMessages,
-    systemTokens,
+    fixedOverheadTokens: fixedTokens,
     tokenLimit,
+    perMessageTokens: preservePerMessage,
   })
+
+  // Root-cause fix: the binary search is a pure token cut and doesn't align to
+  // tool/turn boundaries, so it can land between a tool_use and its tool_result —
+  // leaving an orphaned tool_result as the first preserved message. Anthropic
+  // rejects messages[0] that isn't a legal user turn. Advance the boundary to the
+  // next LEGAL leading user message so the slice starts clean (also avoids slicing
+  // a complete tool_use/tool_result pair only to have cleanup drop it). The few
+  // extra removed messages would have become orphans anyway, and the result is
+  // smaller (safer).
+  while (preserveIndex < workingMessages.length && !isLegalLeadingUserMessage(workingMessages[preserveIndex])) {
+    preserveIndex++
+  }
 
   // Check if we can compact
   if (preserveIndex >= workingMessages.length) {
@@ -276,6 +308,24 @@ export async function autoTruncateAnthropic(
     newMessages = [marker, ...preserved]
   }
 
+  // Final guard (depth defense): boundary-alignment + cleanup should already
+  // guarantee a legal `messages[0]`, but never ship a protocol-illegal payload.
+  // If the first message still isn't a legal leading user turn (extreme case:
+  // the preserved window collapsed to nothing but tool-result turns), report
+  // not-truncated so the strategy aborts. This is a real degradation — the
+  // request stays oversized and the upstream will 400 on context-length — but a
+  // wrong-shape 400 (`messages.0`) is worse than an honest context-length one.
+  if (newMessages.length === 0 || !isLegalLeadingUserMessage(newMessages[0])) {
+    consola.warn("[AutoTruncate:Anthropic] No legal leading user message after truncation — reporting not truncated")
+    return buildResult({
+      payload,
+      wasTruncated: false,
+      originalTokens,
+      compactedTokens: originalTokens,
+      removedMessageCount: 0,
+    })
+  }
+
   const newPayload: MessagesPayload = {
     ...payload,
     system: newSystem,
@@ -303,6 +353,24 @@ export async function autoTruncateAnthropic(
   // Warn if still over token limit
   if (newTokens > tokenLimit) {
     consola.warn(`[AutoTruncate:Anthropic] Result still over token limit (${newTokens} > ${tokenLimit})`)
+  }
+
+  // Defense against phantom truncation: only treat this as a real truncation if
+  // the token count actually dropped. We deliberately do NOT trust removed/strip/
+  // compress COUNTS as proof of reduction — a "compressed" block that didn't
+  // shrink, or a removal offset by added truncation context, must not be reported
+  // as success. `newTokens < originalTokens` is the only honest signal; reporting
+  // wasTruncated=false here lets the retry strategy abort cleanly instead of
+  // looping on a payload that's still oversized.
+  if (newTokens >= originalTokens) {
+    consola.warn("[AutoTruncate:Anthropic] No-op truncation (size did not shrink) — reporting not truncated")
+    return buildResult({
+      payload,
+      wasTruncated: false,
+      originalTokens,
+      compactedTokens: originalTokens,
+      removedMessageCount: 0,
+    })
   }
 
   return buildResult({

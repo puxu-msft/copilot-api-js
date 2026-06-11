@@ -60,6 +60,7 @@ import {
 } from "~/lib/openai/translate"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { buildResponsesResponseData } from "~/lib/request/recording"
+import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
@@ -295,9 +296,15 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
         reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
         reqCtx.complete(responseData)
       } catch (error) {
-        consola.error("[Responses-fallback] Stream error:", error)
         reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-        reqCtx.fail(acc.model || payload.model, error)
+        // Uniform terminal settle: client disconnect → `aborted` (return, no
+        // frame); else → `fail()` and emit the OpenAI error frame.
+        const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } }
+        if (settleStreamingFailure({ reqCtx, error, model: acc.model || payload.model, partial })) {
+          consola.debug("[Responses-fallback] Client disconnected mid-stream — recording aborted")
+          return
+        }
+        consola.error("[Responses-fallback] Stream error:", error)
 
         const errorMessage = error instanceof Error ? error.message : String(error)
         await stream.writeSSE({

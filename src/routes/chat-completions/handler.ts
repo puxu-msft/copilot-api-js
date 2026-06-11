@@ -27,7 +27,6 @@ import type {
 import type { ResponsesResponse } from "~/types/api/openai-responses"
 
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
-import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
@@ -39,6 +38,7 @@ import {
   isResponsesSupported,
 } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
+import { getTokenCount } from "~/lib/models/tokenizer"
 import {
   //
   autoTruncateOpenAI,
@@ -91,6 +91,7 @@ import {
 } from "~/lib/request/strategies/auto-truncate"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
+import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
@@ -438,6 +439,13 @@ function createChatCompletionsStrategies(label: string): Array<RetryStrategy<Cha
     createAutoTruncateStrategy<ChatCompletionsPayload>({
       truncate: (p, model, truncOpts) => autoTruncateOpenAI(p, model, truncOpts) as Promise<TruncateResult<ChatCompletionsPayload>>,
       resanitize: (p) => sanitizeOpenAIMessages(p),
+      // Use `.input` to match autoTruncateOpenAI's internal counter (which also
+      // counts `.input`, excluding assistant history). This makes ratio slightly
+      // conservative — the upstream-reported current includes assistant tokens
+      // while `.input` does not, so the derived target is a bit small and truncate
+      // removes marginally more than strictly necessary. Kept `.input` for caliber
+      // consistency with the internal comparison; it converges in one extra retry.
+      countTokens: async (p, model) => (await getTokenCount(p, model)).input,
       isEnabled: () => state.autoTruncate,
       label,
     }),
@@ -463,7 +471,7 @@ async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions)
       payload,
       originalPayload,
       model: selectedModel,
-      maxRetries: MAX_AUTO_TRUNCATE_RETRIES,
+      maxRetries: state.autoTruncateMaxRetries,
       requestContext: reqCtx,
       onRetry: (attempt, _strategyName, _newPayload, meta) => {
         // Capture truncation result for response marker
@@ -666,9 +674,15 @@ async function handleStreamingResponse(opts: StreamingOptions) {
     reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
     reqCtx.complete(responseData)
   } catch (error) {
-    consola.error("[ChatCompletions] Stream error:", error)
     reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    reqCtx.fail(acc.model || payload.model, error)
+    // Uniform terminal settle: client disconnect → `aborted` (return, no frame);
+    // else → `fail()` and emit the OpenAI error frame.
+    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } }
+    if (settleStreamingFailure({ reqCtx, error, model: acc.model || payload.model, partial })) {
+      consola.debug("[ChatCompletions] Client disconnected mid-stream — recording aborted")
+      return
+    }
+    consola.error("[ChatCompletions] Stream error:", error)
 
     // Send error to client as final SSE event (consistent with Anthropic path)
     const errorMessage = error instanceof Error ? error.message : String(error)

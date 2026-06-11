@@ -66,6 +66,29 @@ function extractMaxTokens(p: { max_tokens?: unknown; max_completion_tokens?: unk
   return undefined
 }
 
+/** Project an effective/wire request into the history leg shape (model/format/messages/system/payload). */
+export function legFromEffective(ep: EffectiveRequest): NonNullable<HistoryEntryData["effectiveRequest"]> {
+  return {
+    model: ep.model,
+    format: ep.format,
+    messageCount: ep.messages.length,
+    messages: ep.messages,
+    system: (ep.payload as Record<string, unknown> | undefined)?.system,
+    payload: ep.payload,
+  }
+}
+
+export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outboundRequest"]> {
+  return {
+    model: wp.model,
+    format: wp.format,
+    messageCount: wp.messages.length,
+    messages: wp.messages,
+    system: (wp.payload as Record<string, unknown> | undefined)?.system,
+    payload: wp.payload,
+  }
+}
+
 export function createRequestContext(opts: {
   endpoint: EndpointType
   sessionId?: string
@@ -365,6 +388,29 @@ export function createRequestContext(opts: {
       emit({ type: "failed", context: ctx, entry })
     },
 
+    abort(model: string, partial?: PartialResponseInfo) {
+      if (settled) return
+      settled = true
+      _endTime = Date.now()
+
+      // Client disconnected mid-stream: record a distinct `aborted` terminal
+      // state (NOT completed/failed) with whatever partial usage/stop_reason was
+      // observed, so history neither inflates success metrics nor masquerades a
+      // truncated response as a normal completion (Bug 2).
+      _response = {
+        success: false,
+        model: normalizeModelId(model),
+        usage: partial?.usage ?? { input_tokens: 0, output_tokens: 0 },
+        error: "client disconnected",
+        content: null,
+        ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+      }
+
+      ctx.transition("aborted")
+      const entry = ctx.toHistoryEntry()
+      emit({ type: "aborted", context: ctx, entry })
+    },
+
     toHistoryEntry(): HistoryEntryData {
       // Extract request metadata from the original payload
       const p = _originalRequest?.payload as Record<string, unknown> | undefined
@@ -423,27 +469,12 @@ export function createRequestContext(opts: {
       // Extract effective request from the final attempt
       const finalAttempt = _attempts.at(-1)
       if (finalAttempt?.effectiveRequest) {
-        const ep = finalAttempt.effectiveRequest
-        entry.effectiveRequest = {
-          model: ep.model,
-          format: ep.format,
-          messageCount: ep.messages.length,
-          messages: ep.messages,
-          system: (ep.payload as Record<string, unknown>).system,
-          payload: ep.payload,
-        }
+        entry.effectiveRequest = legFromEffective(finalAttempt.effectiveRequest)
       }
 
       if (finalAttempt?.wireRequest) {
         const wp = finalAttempt.wireRequest
-        entry.outboundRequest = {
-          model: wp.model,
-          format: wp.format,
-          messageCount: wp.messages.length,
-          messages: wp.messages,
-          system: (wp.payload as Record<string, unknown>).system,
-          payload: wp.payload,
-        }
+        entry.outboundRequest = legFromWire(wp)
         // wp.headers is non-optional in WireRequest; only migrate when the
         // shape is sensible (truthy + non-empty would be defensive but the
         // type guarantees a Record<string, string>).
@@ -455,7 +486,9 @@ export function createRequestContext(opts: {
         entry.httpHeaders = _httpHeaders
       }
 
-      // Always include attempt details (even for single attempts)
+      // Always include attempt details (even for single attempts). Each attempt
+      // now carries its FULL bodies (Bug 3), so retries preserve every wire
+      // payload + upstream response, not only the final attempt's.
       if (_attempts.length > 0) {
         entry.attempts = _attempts.map((a) => ({
           index: a.index,
@@ -466,6 +499,9 @@ export function createRequestContext(opts: {
           truncation: a.truncation,
           sanitization: a.sanitization,
           effectiveMessageCount: a.effectiveRequest?.messages.length,
+          effectiveRequest: a.effectiveRequest ? legFromEffective(a.effectiveRequest) : undefined,
+          wireRequest: a.wireRequest ? legFromWire(a.wireRequest) : undefined,
+          response: a.response ?? undefined,
         }))
       }
 

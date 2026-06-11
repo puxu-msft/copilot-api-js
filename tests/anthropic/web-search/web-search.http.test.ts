@@ -19,6 +19,7 @@ import {
   test,
 } from "bun:test"
 
+import { getHistory } from "~/lib/history/store"
 import {
   //
   setModels,
@@ -32,6 +33,7 @@ import {
   applyFetchMock,
   autoRestoreFetch,
 } from "../../helpers/mock-fetch"
+import { createSseResponse } from "../../helpers/sse"
 import { autoTestRuntime } from "../../helpers/test-bootstrap"
 
 // ============================================================================
@@ -40,9 +42,26 @@ import { autoTestRuntime } from "../../helpers/test-bootstrap"
 
 let messagesHits = 0
 let responsesHits = 0
+// Pass-through re-dispatch hits (the original request re-issued through the
+// normal direct path when the probe chose not to search).
+let redispatchHits = 0
+// When true, the re-dispatch upstream streams a malformed embedded-signature
+// thinking frame (signature on content_block_start, no signature_delta), so the
+// end-to-end test can assert the direct path's thinking-signature shim repairs
+// it for the client.
+let redispatchThinkingStream = false
 let firstHopToolUse = true
 let firstHopMultiSearch = false
 let firstHopStatus = 200
+// When set, scripts the HTTP status of successive FIRST-hop attempts (retries).
+// e.g. [400, 200] → first attempt 400 (token_limit), retry attempt 200. Consumed
+// per first-hop fetch; once exhausted, falls back to `firstHopStatus`. The second
+// hop + search are unaffected. Used to exercise pipeline retries (auto-truncate,
+// token-refresh) on the web_search hop.
+let firstHopStatusScript: Array<number> = []
+let firstHopAttempts = 0
+// Body returned for a scripted non-200 first-hop attempt (token_limit / auth error).
+let firstHopErrorBody = JSON.stringify({ error: { message: "upstream boom", type: "api_error" } })
 
 function firstHopBody(model: string): string {
   // First hop: the model calls the plain `web_search(query)` function tool.
@@ -111,25 +130,84 @@ function responsesSearchBody(): string {
   })
 }
 
+// Streaming frames for the re-dispatch end-to-end test: the malformed
+// embedded-signature thinking block (signature on content_block_start, NO
+// signature_delta) — the exact upstream shape the direct path's shim repairs.
+const EMBEDDED_SIG = "EoAQ-redispatch-embedded-sig"
+
+function buildEmbeddedSigThinkingFrames(model: string): Array<string> {
+  return [
+    `event: message_start\ndata: ${JSON.stringify({
+      type: "message_start",
+      message: {
+        id: "msg_rd",
+        type: "message",
+        role: "assistant",
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 0 },
+      },
+    })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: EMBEDDED_SIG } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Answer." } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 1 })}\n\n`,
+    `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } })}\n\n`,
+    `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
+    "data: [DONE]\n\n",
+  ]
+}
+
 const upstreamFetchMock = mock(async (input: string | URL | Request, init?: RequestInit) => {
   const url =
     typeof input === "string" ? input
     : input instanceof URL ? input.href
     : input.url
-  const payload = typeof init?.body === "string" ? (JSON.parse(init.body) as { model?: string }) : {}
+  const payload =
+    typeof init?.body === "string" ?
+      (JSON.parse(init.body) as { model?: string; tools?: Array<{ type?: string }>; messages?: Array<{ content?: unknown }> })
+    : {}
   const model = payload.model ?? "unknown"
 
   if (url.endsWith("/v1/messages")) {
     messagesHits += 1
-    // hop 1 then hop 2 (search branch always does two messages calls)
-    if (messagesHits === 1 && firstHopStatus !== 200) {
-      return new Response(JSON.stringify({ error: { message: "upstream boom", type: "api_error" } }), {
-        status: firstHopStatus,
-        headers: { "content-type": "application/json" },
-      })
+    // Distinguish the calls by REQUEST FEATURES, not call order:
+    //   - SECOND HOP (searched): messages include the injected tool_result turn.
+    //   - PROBE (first hop): tools carry the downgraded plain `web_search(query)`
+    //     function tool (toFirstHopTools strips the server `type`), so NO tool
+    //     has a `type` field; messages have no tool_result.
+    //   - RE-DISPATCH (pass-through) / closed-state direct: the ORIGINAL request
+    //     with the native web_search server tool (has `type: web_search_*`).
+    const hasToolResult = (payload.messages ?? []).some(
+      (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some((b) => b.type === "tool_result"),
+    )
+    if (hasToolResult) return new Response(secondHopBody(model), { status: 200, headers: { "content-type": "application/json" } })
+
+    const hasNativeWebSearchTool = (payload.tools ?? []).some((t) => typeof t.type === "string" && t.type.startsWith("web_search_"))
+    if (hasNativeWebSearchTool) {
+      // Re-dispatch (pass-through) or the closed-state normal path. Both forward
+      // the request through the direct path; return the first-hop body verbatim.
+      redispatchHits += 1
+      // When exercising the corrupt-thinking fix end-to-end, the re-dispatch
+      // upstream streams the malformed embedded-signature thinking frame so we
+      // can assert the direct path's shim repairs it for the client.
+      if (redispatchThinkingStream) {
+        return createSseResponse(buildEmbeddedSigThinkingFrames(model))
+      }
+      return new Response(firstHopBody(model), { status: 200, headers: { "content-type": "application/json" } })
     }
-    const body = messagesHits === 1 ? firstHopBody(model) : secondHopBody(model)
-    return new Response(body, { status: 200, headers: { "content-type": "application/json" } })
+
+    // Probe (downgraded tools, no tool_result). May retry via the pipeline
+    // (auto-truncate / token-refresh) before returning 200.
+    firstHopAttempts += 1
+    const scripted = firstHopStatusScript.length > 0 ? firstHopStatusScript.shift()! : firstHopStatus
+    if (scripted !== 200) {
+      return new Response(firstHopErrorBody, { status: scripted, headers: { "content-type": "application/json" } })
+    }
+    return new Response(firstHopBody(model), { status: 200, headers: { "content-type": "application/json" } })
   }
 
   if (url.endsWith("/responses")) {
@@ -160,9 +238,14 @@ describe("POST /v1/messages — web_search double-hop", () => {
   beforeEach(() => {
     messagesHits = 0
     responsesHits = 0
+    redispatchHits = 0
+    redispatchThinkingStream = false
     firstHopToolUse = true
     firstHopMultiSearch = false
     firstHopStatus = 200
+    firstHopStatusScript = []
+    firstHopAttempts = 0
+    firstHopErrorBody = JSON.stringify({ error: { message: "upstream boom", type: "api_error" } })
     upstreamFetchMock.mockClear()
     setStateForTests({
       copilotToken: "test-token",
@@ -241,7 +324,7 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(responsesHits).toBe(1)
   })
 
-  test("first hop without a search returns the direct response (no synthesis, no search)", async () => {
+  test("pass-through (first hop without a search) re-dispatches through the normal direct path", async () => {
     firstHopToolUse = false
     const res = await app.request("/v1/messages", {
       method: "POST",
@@ -257,9 +340,67 @@ describe("POST /v1/messages — web_search double-hop", () => {
 
     expect(res.status).toBe(200)
     const body = (await res.json()) as SynthesizedBody
+    // The client receives the direct path's answer, NOT a synthesized one.
     expect(body.content).toEqual([{ type: "text", text: "Direct answer, no search." }])
-    expect(messagesHits).toBe(1) // only the first hop
+    // Probe (downgraded tool) + re-dispatch (original native web_search tool).
+    expect(messagesHits).toBe(2)
+    expect(redispatchHits).toBe(1)
     expect(responsesHits).toBe(0) // no search ran
+  })
+
+  test("pass-through + streaming: corrupt-thinking is FIXED — re-dispatch runs the direct path's signature shim", async () => {
+    // This is the direct end-to-end proof of the bug fix: web_search is on,
+    // Claude Code declares WebSearch, the probe does NOT search, so the request
+    // re-dispatches through the direct path. The re-dispatch upstream streams the
+    // malformed embedded-signature thinking frame; the client MUST receive a
+    // synthesized signature_delta (the shim ran) and NEVER the embedded-sig start.
+    firstHopToolUse = false
+    redispatchThinkingStream = true
+    setStateForTests({ thinkingSignatureCompat: "signature_delta" })
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-opus-4.6",
+        messages: [{ role: "user", content: "think then answer" }],
+        max_tokens: 256,
+        tools: [webSearchTool],
+        stream: true,
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toContain("text/event-stream")
+    const text = await res.text()
+
+    // The thinking content_block_start the client gets must NOT carry the signature inline.
+    const thinkingStarts = dataFramesOfType(text, "content_block_start").filter((f) => (f.content_block as Record<string, unknown>).type === "thinking")
+    expect(thinkingStarts).toHaveLength(1)
+    expect((thinkingStarts[0].content_block as Record<string, unknown>).signature).toBe("")
+
+    // A synthesized signature_delta carrying the signature must be present (proves the shim ran).
+    const sigDeltas = dataFramesOfType(text, "content_block_delta").filter((f) => (f.delta as Record<string, unknown>).type === "signature_delta")
+    expect(sigDeltas).toHaveLength(1)
+    expect((sigDeltas[0].delta as Record<string, unknown>).signature).toBe(EMBEDDED_SIG)
+
+    // Real token-by-token streaming survived (text forwarded), and it went through
+    // the direct path (probe + re-dispatch).
+    expect(text).toContain("Answer.")
+    expect(messagesHits).toBe(2)
+    expect(redispatchHits).toBe(1)
+    expect(responsesHits).toBe(0)
+
+    // History records a single entry whose forwarded SSE contains the shim's
+    // signature_delta (proves the request was served by processOneStreamEvent).
+    const entry = getHistory({ endpoint: "anthropic-messages", limit: 5 }).entries[0]
+    expect(entry).toBeDefined()
+    const fwdHasSigDelta = (entry.inboundResponse?.sseEvents ?? [])
+      .map((e) => safeParse(e.raw))
+      .some((x) => (x?.delta as Record<string, unknown> | undefined)?.type === "signature_delta")
+    expect(fwdHasSigDelta).toBe(true)
+    // The pass-through probe's token cost is surfaced as a warning (原则3).
+    expect((entry.warningMessages ?? []).some((w) => w.code === "web_search_probe")).toBe(true)
   })
 
   test("closed state (webSearchEnabled=false) short-circuits — request goes through the normal path", async () => {
@@ -307,7 +448,7 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(responsesHits).toBe(0)
   })
 
-  test("hard first-hop failure: streaming emits a terminal error SSE event (headers already sent)", async () => {
+  test("hard first-hop (probe) failure: surfaced as an HTTP error before any stream is opened", async () => {
     firstHopStatus = 500
     const res = await app.request("/v1/messages", {
       method: "POST",
@@ -321,13 +462,14 @@ describe("POST /v1/messages — web_search double-hop", () => {
       }),
     })
 
-    // Streaming: 200 + SSE headers were already flushed (via the leading ping),
-    // so the failure is surfaced as a terminal `error` event, not an HTTP status.
-    expect(res.status).toBe(200)
-    const text = await res.text()
-    expect(text).toContain("event: ping")
-    expect(text).toContain("event: error")
-    expect(text).toContain('"type":"error"')
+    // The probe runs BEFORE the SSE stream is opened (so a no-search outcome can
+    // re-dispatch). A probe failure therefore happens before any client bytes
+    // are owed and is surfaced as a clean HTTP error status — not a fake-200
+    // with an in-stream error event (the old behavior, when the ping was sent
+    // before the first hop). Cleaner: no headers committed yet.
+    expect(res.status).toBeGreaterThanOrEqual(400)
+    expect(messagesHits).toBe(1) // failed on the probe, no second hop or search
+    expect(responsesHits).toBe(0)
   })
 
   test("multiple parallel searches: still synthesizes a valid response (M3 dropped-search path)", async () => {
@@ -352,4 +494,75 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(messagesHits).toBe(2) // first hop (multi) + second hop
     expect(responsesHits).toBe(1) // exactly one search executed
   })
+
+  // ── Pipeline integration: the web_search hops now run through executeRequestPipeline ──
+
+  test("auto-truncate: first hop 400 token_limit triggers truncation + retry, then succeeds", async () => {
+    setStateForTests({ autoTruncate: true })
+    // First hop: 400 token-limit, then 200 on the truncated retry.
+    firstHopStatusScript = [400, 200]
+    firstHopErrorBody = JSON.stringify({
+      error: { code: "model_max_prompt_tokens_exceeded", message: "prompt is too long: 200000 tokens > 100000 maximum", type: "invalid_request_error" },
+    })
+    // A large message array so auto-truncate has something to remove (above the
+    // reported 100000 limit × 0.9 target once converted to gpt caliber).
+    const messages = Array.from({ length: 60 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: "x".repeat(8000) }))
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-opus-4.6", messages, max_tokens: 256, tools: [webSearchTool], stream: false }),
+    })
+
+    expect(res.status).toBe(200)
+    // First hop was attempted twice (400 → truncate → retry 200), proving the
+    // hop ran through the retry pipeline (the whole point of this fix).
+    expect(firstHopAttempts).toBe(2)
+    // Then the second hop + search ran normally → full synthesized response.
+    const body = (await res.json()) as SynthesizedBody
+    expect(body.content.map((b) => b.type)).toEqual(["server_tool_use", "web_search_tool_result", "text"])
+    expect(responsesHits).toBe(1)
+  })
+
+  test("auto-truncate DISABLED: first hop 400 token_limit passes through (no retry, no synthesis)", async () => {
+    setStateForTests({ autoTruncate: false })
+    firstHopStatusScript = [400]
+    firstHopErrorBody = JSON.stringify({
+      error: { code: "model_max_prompt_tokens_exceeded", message: "prompt is too long: 200000 tokens > 100000 maximum", type: "invalid_request_error" },
+    })
+    const messages = Array.from({ length: 60 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: "x".repeat(8000) }))
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-opus-4.6", messages, max_tokens: 256, tools: [webSearchTool], stream: false }),
+    })
+
+    // auto-truncate off → strategy short-circuits → 400 propagates, hop fails.
+    expect(res.status).toBeGreaterThanOrEqual(400)
+    expect(firstHopAttempts).toBe(1) // no retry
+    expect(responsesHits).toBe(0) // never reached the search
+  })
 })
+
+/** Extract parsed `data:` JSON objects of a given event type from a forwarded SSE text. */
+function dataFramesOfType(sse: string, type: string): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = []
+  for (const line of sse.split("\n")) {
+    if (!line.startsWith("data: ")) continue
+    const body = line.slice(6)
+    if (body === "[DONE]") continue
+    const obj = safeParse(body)
+    if (obj?.type === type) out.push(obj)
+  }
+  return out
+}
+
+/** Parse an SSE `data:` payload to an object, or undefined when not JSON. */
+function safeParse(raw: string): Record<string, unknown> | undefined {
+  try {
+    return JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}

@@ -58,6 +58,8 @@ function createMockStats(overrides: Partial<HistoryStats> = {}): HistoryStats {
     totalRequests: 10,
     successfulRequests: 8,
     failedRequests: 2,
+    abortedRequests: 0,
+    interruptedRequests: 0,
     totalInputTokens: 1000,
     totalOutputTokens: 500,
     averageDurationMs: 200,

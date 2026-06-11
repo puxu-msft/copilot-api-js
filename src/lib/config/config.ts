@@ -17,6 +17,7 @@ import {
   type CompiledRewriteRule,
   DEFAULT_MODEL_OVERRIDES,
   setAnthropicBehavior,
+  setAutoTruncateConfig,
   setDisabledModels,
   setHistoryConfig,
   setModelOverrides,
@@ -24,8 +25,10 @@ import {
   setShutdownConfig,
   setTimeoutConfig,
   setWebSearchConfig,
+  state,
 } from "~/lib/state"
 
+import { loadPersistedLimits } from "../auto-truncate"
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
   //
@@ -398,6 +401,12 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.thinking_block_sanitize_check !== undefined) {
       setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize_check })
     }
+    if (a.coerce_adaptive_thinking !== undefined) {
+      setAnthropicBehavior({ coerceAdaptiveThinking: a.coerce_adaptive_thinking })
+    }
+    if (a.thinking_signature_compat !== undefined) {
+      setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
+    }
     if (a.dedup_tool_calls !== undefined) {
       // Normalize: true → "input" for backward compatibility, false → false
       setAnthropicBehavior({ dedupToolCalls: a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls })
@@ -464,6 +473,23 @@ export async function applyConfigToState(): Promise<Config> {
     setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
   }
 
+  // Auto-truncate (nested section: override only fields that are present).
+  // When `enabled` flips off→on at runtime (hot-reload), lazily load persisted
+  // learned limits so the calibration cache is available — the boot-time load in
+  // start.ts only runs when the CLI flag enabled it at startup. The map merge is
+  // idempotent, so a double load (CLI + config) is harmless.
+  if (config.auto_truncate) {
+    const a = config.auto_truncate
+    if (a.enabled !== undefined) {
+      const wasEnabled = state.autoTruncate
+      setAutoTruncateConfig({ autoTruncate: a.enabled })
+      if (!wasEnabled && a.enabled) void loadPersistedLimits()
+    }
+    if (a.target_factor !== undefined) setAutoTruncateConfig({ autoTruncateTargetFactor: a.target_factor })
+    if (a.max_retries !== undefined) setAutoTruncateConfig({ autoTruncateMaxRetries: a.max_retries })
+    if (a.compress_threshold !== undefined) setAutoTruncateConfig({ autoTruncateCompressThreshold: a.compress_threshold })
+  }
+
   // Other settings (scalar: override only when present)
   if (config.compress_tool_results_before_truncate !== undefined)
     setAnthropicBehavior({ compressToolResultsBeforeTruncate: config.compress_tool_results_before_truncate })
@@ -474,9 +500,15 @@ export async function applyConfigToState(): Promise<Config> {
   // History settings (nested: override only when present)
   if (config.history) {
     const h = config.history
-    if (h.limit !== undefined) {
-      setHistoryConfig({ historyLimit: h.limit })
-    }
+    // Split success/failure limits; legacy `limit` is the fallback for either
+    // bucket when the dedicated key is absent (backward compat). Reading the
+    // deprecated key here is the whole point of the shim, so the rule is off.
+    /* eslint-disable @typescript-eslint/no-deprecated */
+    const successLimit = h.success_limit ?? h.limit
+    const failureLimit = h.failure_limit ?? h.limit
+    /* eslint-enable @typescript-eslint/no-deprecated */
+    if (successLimit !== undefined) setHistoryConfig({ historySuccessLimit: successLimit })
+    if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
   }

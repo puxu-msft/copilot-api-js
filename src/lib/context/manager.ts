@@ -45,6 +45,7 @@ export type RequestContextEvent =
   | { type: "updated"; context: RequestContext; field: string }
   | { type: "completed"; context: RequestContext; entry: HistoryEntryData }
   | { type: "failed"; context: RequestContext; entry: HistoryEntryData }
+  | { type: "aborted"; context: RequestContext; entry: HistoryEntryData }
 
 // ─── Manager Interface ───
 
@@ -262,6 +263,27 @@ export function createRequestContextManager(): RequestContextManager {
         activeContexts.delete(context.id)
         notifyActiveRequestChanged({
           action: "failed",
+          requestId: context.id,
+          activeCount: activeContexts.size,
+        })
+        break
+      }
+      case "aborted": {
+        if (rawEvent.entry) {
+          // Deliberately NOT recorded into request-telemetry: a client
+          // disconnect is not a verdict on the model/upstream (it neither
+          // succeeded nor failed on the service's account), so counting it
+          // would skew the per-model success rate. History still keeps the
+          // full `aborted` record via the history consumer.
+          emit({
+            type: "aborted",
+            context,
+            entry: rawEvent.entry,
+          })
+        }
+        activeContexts.delete(context.id)
+        notifyActiveRequestChanged({
+          action: "aborted",
           requestId: context.id,
           activeCount: activeContexts.size,
         })

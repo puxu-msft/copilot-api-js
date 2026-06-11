@@ -73,8 +73,9 @@ const upstreamWebSocket = nestedField("openai-responses", "upstream_websocket", 
 const shutdownGracefulWait = nestedField("shutdown", "graceful_wait", null)
 const shutdownAbortWait = nestedField("shutdown", "abort_wait", null)
 
-const historyLimit = nestedField("history", "limit", null)
-const historyMinEntries = nestedField("history", "min_entries", null)
+const historySuccessLimit = nestedField("history", "success_limit", null)
+const historyFailureLimit = nestedField("history", "failure_limit", null)
+const historyReaperInterval = nestedField("history", "reaper_interval", null)
 
 const rateLimiterRetryInterval = nestedField("rate_limiter", "retry_interval", null)
 const rateLimiterRequestInterval = nestedField("rate_limiter", "request_interval", null)
@@ -409,16 +410,22 @@ function nestedField<
 
           <ConfigSection
             title="History"
-            description="Retention limits for in-memory request history."
+            description="Per-status retention limits for the SQLite request history. Each status bucket is trimmed independently."
           >
             <ConfigNumber
-              v-model="historyLimit"
-              label="History Limit"
+              v-model="historySuccessLimit"
+              label="Success Limit"
               :min="0"
             />
             <ConfigNumber
-              v-model="historyMinEntries"
-              label="History Min Entries"
+              v-model="historyFailureLimit"
+              label="Failure Limit"
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="historyReaperInterval"
+              label="Reaper Interval"
+              suffix="s"
               :min="0"
             />
           </ConfigSection>

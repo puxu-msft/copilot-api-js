@@ -59,7 +59,8 @@ configRoutes.get("/", (c) => {
     shutdownAbortWait: state.shutdownAbortWait,
 
     // ─── History ───
-    historyLimit: state.historyLimit,
+    historySuccessLimit: state.historySuccessLimit,
+    historyFailureLimit: state.historyFailureLimit,
     historyReaperInterval: state.historyReaperInterval,
     historyDbPath: state.historyDbPath,
 

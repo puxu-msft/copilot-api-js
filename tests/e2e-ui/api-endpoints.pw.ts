@@ -46,7 +46,8 @@ test.describe("API Endpoints", () => {
     expect(body).toHaveProperty("autoTruncate")
     expect(body).toHaveProperty("fetchTimeout")
     expect(body).toHaveProperty("streamIdleTimeout")
-    expect(body).toHaveProperty("historyLimit")
+    expect(body).toHaveProperty("historySuccessLimit")
+    expect(body).toHaveProperty("historyFailureLimit")
     expect(body).toHaveProperty("shutdownGracefulWait")
     expect(body).toHaveProperty("shutdownAbortWait")
 

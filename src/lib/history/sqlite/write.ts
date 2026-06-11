@@ -4,18 +4,48 @@ import type {
   Session,
 } from "~/lib/history/types"
 
+import { gzipJson } from "./compression"
 import { getDatabase } from "./connection"
-import { serializeEntry } from "./serialize"
+import {
+  //
+  type EntryRow,
+  serializeHeadEntry,
+  type StagePayload,
+} from "./serialize"
 
+/**
+ * Head-row upsert. MUST be `ON CONFLICT DO UPDATE`, NOT `INSERT OR REPLACE`:
+ * the latter does DELETE+INSERT, which fires `entry_stages` ON DELETE CASCADE
+ * and would wipe all stage rows on every incremental status update. DO UPDATE
+ * mutates the row in place, leaving the child stage rows intact.
+ */
 const INSERT_ENTRY_SQL = `
-INSERT OR REPLACE INTO entries_v2 (
+INSERT INTO entries_v2 (
   id, session_id, started_at, ended_at, duration_ms,
   model, endpoint, transport, status,
   input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
   stop_reason, error_message,
   message_count, preview_text, search_text,
+  pid, boot_time, git_sha,
   blob_gz
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET
+  session_id = excluded.session_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
+  duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint,
+  transport = excluded.transport, status = excluded.status,
+  input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+  cache_read = excluded.cache_read, cache_creation = excluded.cache_creation,
+  reasoning_tokens = excluded.reasoning_tokens, stop_reason = excluded.stop_reason,
+  error_message = excluded.error_message, message_count = excluded.message_count,
+  preview_text = excluded.preview_text, search_text = excluded.search_text,
+  pid = excluded.pid, boot_time = excluded.boot_time, git_sha = excluded.git_sha,
+  blob_gz = excluded.blob_gz
+`
+
+/** Stage-row upsert. Plain `INSERT OR REPLACE` is safe — entry_stages has no children, so REPLACE cascades nothing. */
+const INSERT_STAGE_SQL = `
+INSERT OR REPLACE INTO entry_stages (entry_id, stage, attempt_index, created_at, blob_gz)
+VALUES (?,?,?,?,?)
 `
 
 /**
@@ -50,6 +80,15 @@ ON CONFLICT(id) DO UPDATE SET
   tools_used_json = excluded.tools_used_json
 `
 
+/**
+ * Active (non-terminal) statuses. Eager persistence writes a head row at
+ * request start (status=pending) and on each transition, so the entries table
+ * now contains in-progress rows. Session/stats aggregates must EXCLUDE these —
+ * otherwise request_count/token sums count requests that have not finished,
+ * shifting their meaning from "completed" to "received".
+ */
+const ACTIVE_STATUS_SQL = `status IN ('pending','executing','streaming')`
+
 const RECOMPUTE_SESSION_AGGREGATES_SQL = `
 SELECT
   COUNT(*) AS request_count,
@@ -58,7 +97,7 @@ SELECT
   MIN(started_at) AS start_time,
   COALESCE(MAX(ended_at), MAX(started_at)) AS last_activity
 FROM entries_v2
-WHERE session_id = ?
+WHERE session_id = ? AND NOT (${ACTIVE_STATUS_SQL})
 `
 
 /**
@@ -74,90 +113,129 @@ const RECOMPUTE_SESSION_ENDPOINTS_SQL = `
 SELECT DISTINCT endpoint FROM entries_v2 WHERE session_id = ? AND endpoint IS NOT NULL ORDER BY endpoint
 `
 
+/** Bind + run the head-row upsert for one EntryRow. */
+function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void {
+  db.prepare(INSERT_ENTRY_SQL).run(
+    row.id,
+    row.session_id,
+    row.started_at,
+    row.ended_at,
+    row.duration_ms,
+    row.model,
+    row.endpoint,
+    row.transport,
+    row.status,
+    row.input_tokens,
+    row.output_tokens,
+    row.cache_read,
+    row.cache_creation,
+    row.reasoning_tokens,
+    row.stop_reason,
+    row.error_message,
+    row.message_count,
+    row.preview_text,
+    row.search_text,
+    row.pid,
+    row.boot_time,
+    row.git_sha,
+    row.blob_gz,
+  )
+}
+
+/** Persist one stage payload (gzip + upsert). Head row MUST already exist (FK). */
+function runStageInsert(db: ReturnType<typeof getDatabase>, entryId: string, stage: StagePayload, now: number): void {
+  db.prepare(INSERT_STAGE_SQL).run(entryId, stage.stage, stage.attemptIndex, now, gzipJson(stage.payload))
+}
+
+/** Recompute and upsert the session aggregate row from terminal entries only. */
+function recomputeSession(db: ReturnType<typeof getDatabase>, sessionId: string): void {
+  const agg = db.prepare(RECOMPUTE_SESSION_AGGREGATES_SQL).get(sessionId) as {
+    request_count: number
+    total_input_tokens: number
+    total_output_tokens: number
+    start_time: number
+    last_activity: number
+  } | null
+  if (!agg || agg.request_count <= 0) return
+
+  const modelRows = db.prepare(RECOMPUTE_SESSION_MODELS_SQL).all(sessionId) as Array<{ model: string | null }>
+  const endpointRows = db.prepare(RECOMPUTE_SESSION_ENDPOINTS_SQL).all(sessionId) as Array<{ endpoint: string | null }>
+  const models = modelRows.map((r) => r.model).filter((m): m is string => typeof m === "string" && m.length > 0)
+  const endpoints = endpointRows.map((r) => r.endpoint).filter((e): e is string => typeof e === "string" && e.length > 0)
+
+  // Preserve any tools_used_json the session already had — recompute only
+  // covers entries-derivable aggregates; tools_used is set out-of-band via
+  // upsertSessionMeta and must not be silently nulled on every insert.
+  const existing = db.prepare("SELECT tools_used_json FROM sessions WHERE id = ?").get(sessionId) as { tools_used_json: string | null } | undefined
+  const toolsUsedJson = existing?.tools_used_json ?? null
+
+  db.prepare(UPSERT_SESSION_SQL).run(
+    sessionId,
+    agg.start_time,
+    agg.last_activity,
+    agg.request_count,
+    agg.total_input_tokens,
+    agg.total_output_tokens,
+    JSON.stringify(models),
+    JSON.stringify(endpoints),
+    toolsUsedJson,
+  )
+}
+
+/**
+ * Finalize a terminal entry: upsert the head row (terminal status), replace all
+ * its stage rows, and recompute the session aggregate — atomically. Replacing
+ * stage rows (DELETE + re-insert) keeps re-finalization idempotent.
+ */
 export function insertCompletedEntry(entry: HistoryEntry): void {
   const db = getDatabase()
-  const { row } = serializeEntry(entry)
+  const { row, stages } = serializeHeadEntry(entry)
+  const now = Date.now()
 
   const tx = db.transaction(() => {
-    db.prepare(INSERT_ENTRY_SQL).run(
-      row.id,
-      row.session_id,
-      row.started_at,
-      row.ended_at,
-      row.duration_ms,
-      row.model,
-      row.endpoint,
-      row.transport,
-      row.status,
-      row.input_tokens,
-      row.output_tokens,
-      row.cache_read,
-      row.cache_creation,
-      row.reasoning_tokens,
-      row.stop_reason,
-      row.error_message,
-      row.message_count,
-      row.preview_text,
-      row.search_text,
-      row.blob_gz,
-    )
-
-    if (row.session_id) {
-      // Recompute session aggregates from the entries table — this is the
-      // single source of truth. Avoids the double-count failure mode that
-      // would arise if a future code path called insertCompletedEntry twice
-      // for the same id (entries row would just be replaced; sessions would
-      // tick request_count + tokens again under incremental upsert).
-      const agg = db.prepare(RECOMPUTE_SESSION_AGGREGATES_SQL).get(row.session_id) as {
-        request_count: number
-        total_input_tokens: number
-        total_output_tokens: number
-        start_time: number
-        last_activity: number
-      } | null
-      if (agg && agg.request_count > 0) {
-        // Recompute distinct model / endpoint sets. Previously sessions.models_json
-        // was a single-element array of the latest entry's model, silently dropping
-        // historical models for a session that touched multiple — that broke any
-        // downstream UI that filtered or counted sessions by model diversity.
-        const modelRows = db.prepare(RECOMPUTE_SESSION_MODELS_SQL).all(row.session_id) as Array<{
-          model: string | null
-        }>
-        const endpointRows = db.prepare(RECOMPUTE_SESSION_ENDPOINTS_SQL).all(row.session_id) as Array<{
-          endpoint: string | null
-        }>
-        const models = modelRows.map((r) => r.model).filter((m): m is string => typeof m === "string" && m.length > 0)
-        const endpoints = endpointRows.map((r) => r.endpoint).filter((e): e is string => typeof e === "string" && e.length > 0)
-
-        // Preserve any tools_used_json the session already had — recompute only
-        // covers entries-derivable aggregates; tools_used is set out-of-band
-        // via upsertSessionMeta and must not be silently nulled on every insert.
-        const existing = db.prepare("SELECT tools_used_json FROM sessions WHERE id = ?").get(row.session_id) as { tools_used_json: string | null } | undefined
-        const toolsUsedJson = existing?.tools_used_json ?? null
-
-        db.prepare(UPSERT_SESSION_SQL).run(
-          row.session_id,
-          agg.start_time,
-          agg.last_activity,
-          agg.request_count,
-          agg.total_input_tokens,
-          agg.total_output_tokens,
-          JSON.stringify(models),
-          JSON.stringify(endpoints),
-          toolsUsedJson,
-        )
-      }
-    }
+    runHeadInsert(db, row)
+    db.prepare("DELETE FROM entry_stages WHERE entry_id = ?").run(row.id)
+    for (const stage of stages) runStageInsert(db, row.id, stage, now)
+    if (row.session_id) recomputeSession(db, row.session_id)
   })
   tx()
+}
+
+/**
+ * Incremental head-row upsert (eager + on each transition). Does NOT recompute
+ * the session aggregate — active rows are excluded from aggregates, and the
+ * recompute happens at finalize. `statusOverride` sets pending/streaming without
+ * mutating the entry object. Optionally writes stage rows in the SAME
+ * transaction (used by the eager first write so head + inbound_request land
+ * together, never leaving the head pointing at a missing stage).
+ */
+export function upsertHeadRow(entry: HistoryEntry, statusOverride?: string, stagesToWrite?: Array<StagePayload>): void {
+  const db = getDatabase()
+  const { row } = serializeHeadEntry(entry, statusOverride)
+  const now = Date.now()
+  const tx = db.transaction(() => {
+    runHeadInsert(db, row)
+    if (stagesToWrite) for (const stage of stagesToWrite) runStageInsert(db, row.id, stage, now)
+  })
+  tx()
+}
+
+/** Incremental single stage-row upsert. Head row MUST already exist (FK). */
+export function upsertStageRow(entryId: string, stage: StagePayload): void {
+  const db = getDatabase()
+  runStageInsert(db, entryId, stage, Date.now())
 }
 
 export function deleteSession(sessionId: string): number {
   const db = getDatabase()
   let deleted = 0
   const tx = db.transaction(() => {
-    const r = db.prepare("DELETE FROM entries_v2 WHERE session_id = ?").run(sessionId)
-    deleted = r.changes
+    // Count head rows BEFORE delete: with entry_stages ON DELETE CASCADE,
+    // `run().changes` would include cascade-deleted stage rows, so it can't be
+    // used as the entry count.
+    const { n } = db.prepare("SELECT COUNT(*) AS n FROM entries_v2 WHERE session_id = ?").get(sessionId) as { n: number }
+    deleted = n
+    db.prepare("DELETE FROM entries_v2 WHERE session_id = ?").run(sessionId)
     db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId)
   })
   tx()
@@ -167,6 +245,10 @@ export function deleteSession(sessionId: string): number {
 export function clearAllEntries(): void {
   const db = getDatabase()
   const tx = db.transaction(() => {
+    // entry_stages cascades from entries_v2 on row delete, but a bare
+    // `DELETE FROM entries_v2` (no WHERE) still fires per-row cascade; the
+    // explicit delete is belt-and-suspenders and clearer intent.
+    db.prepare("DELETE FROM entry_stages").run()
     db.prepare("DELETE FROM entries_v2").run()
     db.prepare("DELETE FROM sessions").run()
     db.prepare("DELETE FROM response_sessions").run()

@@ -89,6 +89,7 @@
 - 使用 `@echristian/eslint-config` + Prettier。运行 `eslint --fix` 自动格式化（不要直接使用 `prettier --write`）。
 - 不使用分号。三元运算符放在行首。
 - Prettier `printWidth` 设为 160。**不要为了迁就 prettier 换行而缩短或扭曲代码措辞**——长字符串/错误消息/注释超宽时，调整 `printWidth` 或对该处用 `// prettier-ignore`，而非改写内容（呼应原则8 "Lint 服务于可读性"）。
+- 散文（代码注释、`.yaml`/`.md` 文档等 prettier 不管辖的手写文本）按**语义换行**：每个完整句子或逻辑单元独占一行；**绝不为迁就某个固定列宽把一个句子硬折成多行**（软换行交给编辑器，源文件里不硬折）。保留有意义的换行——多个独立句子、枚举值/列表项、分隔符各占其行。
 - 严格 TypeScript（`strict: true`）。避免 `any`。
 - ESNext 模块，不用 CommonJS。
 - 路径别名：后端 `~/*` 映射到 `src/*`，前端 `@/*` 映射到 `src/*`，前端引用后端 `~backend/*` 映射到 `../../src/*`。

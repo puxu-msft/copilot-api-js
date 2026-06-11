@@ -20,8 +20,9 @@ export interface ConfigYamlResponse {
     abort_wait?: number
   }
   history?: {
-    limit?: number
-    min_entries?: number
+    success_limit?: number
+    failure_limit?: number
+    reaper_interval?: number
   }
   anthropic?: {
     strip_server_tools?: boolean
@@ -65,8 +66,9 @@ export interface EditableConfig {
     abort_wait?: number | null
   } | null
   history?: {
-    limit?: number | null
-    min_entries?: number | null
+    success_limit?: number | null
+    failure_limit?: number | null
+    reaper_interval?: number | null
   } | null
   anthropic?: {
     strip_server_tools?: boolean | null

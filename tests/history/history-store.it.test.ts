@@ -83,7 +83,7 @@ function totalEntryCount(): number {
 }
 
 // Snapshot global state once and restore after every test so per-test mutations
-// (e.g. setStateForTests({ historyLimit: 50 })) can't leak into other test files.
+// (e.g. setStateForTests({ historySuccessLimit: 50 })) can't leak into other test files.
 autoRestoreState()
 
 // Reset history state before each test
@@ -112,9 +112,9 @@ describe("initHistory", () => {
   })
 
   test("tracks history limit from state", () => {
-    setStateForTests({ historyLimit: 50 })
+    setStateForTests({ historySuccessLimit: 50 })
     initHistory(true, 50)
-    expect(state.historyLimit).toBe(50)
+    expect(state.historySuccessLimit).toBe(50)
   })
 
   test("resets entries and sessions", () => {
@@ -1001,8 +1001,8 @@ describe("Max entries enforcement", () => {
 
     expect(queryEntryCount()).toBe(5)
 
-    // Run reaper with limit=3 — should evict 2 oldest
-    runReaperOnce(3)
+    // Run reaper with success-limit=3 — should evict 2 oldest successes
+    runReaperOnce(3, 0)
 
     expect(queryEntryCount()).toBe(3)
     // Oldest entries should be removed (FIFO by startedAt)

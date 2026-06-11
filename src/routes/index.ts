@@ -11,6 +11,7 @@ import { initWebSocket } from "~/lib/ws"
 import { azureDeploymentRoutes } from "./azure-openai/route"
 import { chatCompletionRoutes } from "./chat-completions/route"
 import { configRoutes } from "./config/route"
+import { debugRoutes } from "./debug/route"
 import { embeddingsRoutes } from "./embeddings/route"
 import { eventLoggingRoutes } from "./event-logging/route"
 import { geminiRoutes } from "./gemini/route"
@@ -77,6 +78,7 @@ export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
   app.route("/api/config", configRoutes)
   app.route("/api/logs", logsRoutes)
   app.route("/api/models", internalModelsRoutes)
+  app.route("/api/debug", debugRoutes)
 
   // History API and standalone Web UI entry
   app.route("/history", historyRoutes)

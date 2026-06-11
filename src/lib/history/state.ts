@@ -36,7 +36,7 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   if (!enable) return
   const dbPath = state.historyDbPath || PATHS.HISTORY_DB
   openDatabase(dbPath)
-  startReaper(state.historyLimit, state.historyReaperInterval)
+  startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
   // Subscribe to live limit changes from config hot-reload.
   // `onHistoryLimitChange` invokes the listener synchronously once with the
   // current value, so we don't miss any reset that happened before this point.
@@ -52,6 +52,6 @@ export function shutdownHistory(): void {
   enabled = false
 }
 
-export function setHistoryMaxEntries(limit: number): void {
-  startReaper(limit, state.historyReaperInterval)
+export function setHistoryMaxEntries(): void {
+  startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
 }

@@ -109,6 +109,24 @@ export async function countMessagesTokens(messages: Array<MessageParam>, model: 
 }
 
 /**
+ * Count tokens per message using the model's gpt tokenizer.
+ * Returns an array where index i holds the token count for messages[i].
+ *
+ * Used by the truncation binary search so its cumulative sums share the SAME
+ * caliber as the gpt-derived token limit. Using the char/4 `estimateMessageTokens`
+ * here instead would under/over-count relative to the limit and mis-place the
+ * preserve boundary (e.g. char/4 undercount → "everything fits" → no removal
+ * → phantom truncation that doesn't shrink the payload).
+ */
+export async function countPerMessageTokens(messages: Array<MessageParam>, model: Model): Promise<Array<number>> {
+  const counts: Array<number> = []
+  for (const msg of messages) {
+    counts.push(await countMessageTokens(msg, model))
+  }
+  return counts
+}
+
+/**
  * Count tokens for system + tools (the parts that don't change during truncation).
  * Returns the combined fixed overhead token count.
  */

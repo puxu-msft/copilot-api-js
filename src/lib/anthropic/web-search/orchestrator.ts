@@ -41,13 +41,15 @@ import type {
 
 import {
   //
-  createAnthropicMessages,
   type AnthropicMessageResponse,
-  type CreateAnthropicMessagesOptions,
 } from "~/lib/anthropic/client"
+import {
+  //
+  type AnthropicSanitizeFn,
+  expectNonStreamingResponse,
+  runAnthropicPipeline,
+} from "~/lib/anthropic/pipeline"
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
-import { HTTPError } from "~/lib/error"
-import { getCopilotTokenManager } from "~/lib/token"
 
 import type { SearchExecutionResult } from "./backends"
 
@@ -242,25 +244,42 @@ function mergeUsage(first: AnthropicMessageResponse, second: AnthropicMessageRes
 }
 
 // ============================================================================
-// Main-model call with one-shot token refresh
+// Main-model call via the shared retry pipeline
 // ============================================================================
 
+/** Per-hop context needed to run a hop through the shared Anthropic pipeline. */
+interface HopPipelineContext {
+  selectedModel: Model | undefined
+  clientAnthropicBeta: string | undefined
+  clientAbortSignal?: AbortSignal
+}
+
 /**
- * Call the main model, refreshing the Copilot token once on a 401/403 and
- * retrying — mirroring the pipeline's token-refresh strategy, which the hops
- * would otherwise miss (they don't run through `executeRequestPipeline`).
+ * Call the main model for one hop through `runAnthropicPipeline`, so each hop
+ * gets auto-truncate, network-retry, token-refresh (replacing the old hand-rolled
+ * one-shot 401/403 refresh), beta negotiation, and adaptive rate-limiting.
+ *
+ * `requestContext: undefined` — the hops deliberately do NOT record attempts on
+ * the outer request context (that would leave unclosed/empty attempt shells and
+ * flap the streaming→executing state machine); the web-search handler owns
+ * finalization. Sanitize is the plain `sanitizeAnthropicMessages` (NOT the full
+ * preprocessTools pipeline), so the first-hop tool downgrade (native server tool
+ * → plain function tool) is not reverted by tool_search re-injection.
  */
-async function callMainModel(payload: MessagesPayload, opts: CreateAnthropicMessagesOptions): Promise<AnthropicMessageResponse> {
-  try {
-    return (await createAnthropicMessages(payload, opts)) as AnthropicMessageResponse
-  } catch (error) {
-    if (!(error instanceof HTTPError) || (error.status !== 401 && error.status !== 403)) throw error
-    const manager = getCopilotTokenManager()
-    const refreshed = manager ? await manager.refresh() : null
-    if (refreshed === null) throw error
-    consola.debug("[WebSearch] Refreshed Copilot token after 401/403, retrying hop")
-    return (await createAnthropicMessages(payload, opts)) as AnthropicMessageResponse
-  }
+async function callMainModel(payload: MessagesPayload, ctx: HopPipelineContext): Promise<AnthropicMessageResponse> {
+  const sanitize: AnthropicSanitizeFn = (p) => sanitizeAnthropicMessages(p)
+  const result = await runAnthropicPipeline({
+    payload,
+    originalPayload: payload,
+    selectedModel: ctx.selectedModel,
+    clientAnthropicBeta: ctx.clientAnthropicBeta,
+    sanitize,
+    resanitize: sanitize,
+    headersCapture: {},
+    requestContext: undefined,
+    clientAbortSignal: ctx.clientAbortSignal,
+  })
+  return expectNonStreamingResponse(result)
 }
 
 // ============================================================================
@@ -291,10 +310,31 @@ export interface OrchestrateWebSearchArgs {
  * failure (propagated to the caller's catch for `reqCtx.fail`); search failures
  * are absorbed into a structured `web_search_tool_result_error` block.
  */
-export async function orchestrateWebSearch(args: OrchestrateWebSearchArgs): Promise<WebSearchOrchestrationResult> {
-  const { payload, resolvedModel, clientAnthropicBeta, backend, clientAbortSignal } = args
+/**
+ * Outcome of the first hop ("probe"): the main model's response to the request
+ * with web_search downgraded to a plain function tool, plus the decision of
+ * whether (and what) to search. Carried into `completeWebSearch` when a search
+ * is needed, or used by the caller to route a pass-through (no-search) request
+ * back through the normal direct path.
+ */
+export interface WebSearchProbeResult {
+  /** The first-hop main-model response (against the substituted toolset). */
+  firstResponse: AnthropicMessageResponse
+  /** The web_search tool_use the model chose to act on, or undefined when it did not search. */
+  toolUse?: { id: string; query: string }
+  /** Total web_search tool_use blocks the first hop emitted (round limit = 1; extras dropped). */
+  searchCount: number
+}
 
-  // ── First hop: let the main model decide whether/what to search ──────────
+/**
+ * First hop: call the main model with web_search downgraded to a plain function
+ * tool so it can decide whether/what to search. Non-streaming. Does NOT touch
+ * the outer request context (callMainModel uses `requestContext: undefined`), so
+ * the caller can re-dispatch the original request on a no-search outcome.
+ */
+export async function runFirstHopProbe(args: OrchestrateWebSearchArgs): Promise<WebSearchProbeResult> {
+  const { payload, resolvedModel, clientAnthropicBeta, clientAbortSignal } = args
+
   // Sanitize like the normal path so historical orphan tool blocks don't 400.
   const firstHopBase: MessagesPayload = {
     ...payload,
@@ -305,14 +345,28 @@ export async function orchestrateWebSearch(args: OrchestrateWebSearchArgs): Prom
     ...firstHopBase,
     messages: sanitizeAnthropicMessages(firstHopBase).payload.messages,
   }
-  const firstResponse = await callMainModel(firstHopPayload, { resolvedModel, clientAnthropicBeta, clientAbortSignal })
+  const firstResponse = await callMainModel(firstHopPayload, { selectedModel: resolvedModel, clientAnthropicBeta, clientAbortSignal })
 
   const { first: toolUse, total: searchCount } = findWebSearchToolUse(firstResponse)
+  return { firstResponse, toolUse, searchCount }
+}
+
+/**
+ * Complete the double-hop AFTER a probe that decided to search: run the search,
+ * feed results back for a second hop, and synthesize the canonical
+ * server_tool_use → web_search_tool_result → text response.
+ *
+ * Precondition: `probe.toolUse` is defined (the caller handles the no-search
+ * pass-through before calling this).
+ */
+export async function completeWebSearch(args: OrchestrateWebSearchArgs, probe: WebSearchProbeResult): Promise<WebSearchOrchestrationResult> {
+  const { payload, resolvedModel, clientAnthropicBeta, backend, clientAbortSignal } = args
+  const { firstResponse, toolUse, searchCount } = probe
   if (!toolUse) {
-    // Model answered directly without searching — return the first-hop response.
-    consola.debug("[WebSearch] First hop did not request a search; returning direct response")
+    // Defensive: callers must branch on the pass-through case themselves.
     return { response: firstResponse, searched: false }
   }
+
   const droppedSearchCount = Math.max(0, searchCount - 1)
   if (droppedSearchCount > 0) {
     consola.warn(`[WebSearch] First hop requested ${searchCount} searches; round limit is 1, dropping ${droppedSearchCount} (v1 limitation)`)
@@ -345,7 +399,7 @@ export async function orchestrateWebSearch(args: OrchestrateWebSearchArgs): Prom
     tools: toFirstHopTools(payload.tools),
     messages: sanitizeAnthropicMessages({ ...payload, messages: secondHopMessages }).payload.messages,
   }
-  const secondResponse = await callMainModel(secondHopPayload, { resolvedModel, clientAnthropicBeta, clientAbortSignal })
+  const secondResponse = await callMainModel(secondHopPayload, { selectedModel: resolvedModel, clientAnthropicBeta, clientAbortSignal })
 
   const finalText = collectText(secondResponse) || search.text
 
@@ -359,4 +413,22 @@ export async function orchestrateWebSearch(args: OrchestrateWebSearchArgs): Prom
   })
 
   return { response, searched: true, search, ...(droppedSearchCount > 0 && { droppedSearchCount }) }
+}
+
+/**
+ * Run the full double-hop web_search orchestration (thin composition of
+ * `runFirstHopProbe` + `completeWebSearch`).
+ *
+ * Both model hops are forced non-streaming. Throws only on a hard model-call
+ * failure (propagated to the caller's catch for `reqCtx.fail`); search failures
+ * are absorbed into a structured `web_search_tool_result_error` block.
+ */
+export async function orchestrateWebSearch(args: OrchestrateWebSearchArgs): Promise<WebSearchOrchestrationResult> {
+  const probe = await runFirstHopProbe(args)
+  if (!probe.toolUse) {
+    // Model answered directly without searching — return the first-hop response.
+    consola.debug("[WebSearch] First hop did not request a search; returning direct response")
+    return { response: probe.firstResponse, searched: false }
+  }
+  return completeWebSearch(args, probe)
 }

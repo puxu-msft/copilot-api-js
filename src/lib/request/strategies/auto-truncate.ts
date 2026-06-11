@@ -11,10 +11,10 @@ import type { Model } from "~/lib/models/client"
 
 import {
   //
-  AUTO_TRUNCATE_RETRY_FACTOR,
   tryParseAndLearnLimit,
 } from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
+import { state } from "~/lib/state"
 
 import type {
   //
@@ -50,10 +50,18 @@ export interface TruncateOptions {
 export function createAutoTruncateStrategy<TPayload>(opts: {
   truncate: (payload: TPayload, model: Model, options: TruncateOptions) => Promise<TruncateResult<TPayload>>
   resanitize: (payload: TPayload) => SanitizeResult<TPayload>
+  /**
+   * Count the payload's tokens with the SAME tokenizer the format-specific
+   * `truncate` uses internally (gpt-tokenizer). Injected per-format because the
+   * counter is format-specific, while the unit-conversion math below is shared.
+   * This is what lets the strategy convert the upstream-reported limit (Anthropic
+   * token caliber) into the gpt caliber that `truncate` actually compares against.
+   */
+  countTokens: (payload: TPayload, model: Model) => Promise<number>
   isEnabled: () => boolean
   label: string
 }): RetryStrategy<TPayload> {
-  const { truncate, resanitize, isEnabled, label } = opts
+  const { truncate, resanitize, countTokens, isEnabled, label } = opts
 
   return {
     name: "auto-truncate",
@@ -76,11 +84,15 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
         return { action: "abort", error }
       }
 
-      // Estimate tokens using GPT tokenizer for calibration feedback
-      const payloadJson = JSON.stringify(currentPayload)
-      const estimatedTokens = Math.ceil(payloadJson.length / 4)
+      // Count the failing payload with the same gpt-tokenizer `truncate` uses
+      // internally — NOT char/4. Three calibers are in play: the upstream-reported
+      // current/limit (Anthropic token caliber), this gpt-tokenizer count, and the
+      // old char/4 estimate. Feeding gpt count here makes calibration learn
+      // `factor = reportedCurrent / gptCount` — exactly the factor `calibrate()`
+      // multiplies a gpt estimate by in the pre-check paths, so both paths agree.
+      const gptCount = await countTokens(currentPayload, model)
 
-      const parsed = tryParseAndLearnLimit(rawError, model.id, true, estimatedTokens)
+      const parsed = tryParseAndLearnLimit(rawError, model.id, true, gptCount)
 
       // Helper closure: run truncation + re-sanitize and assemble a RetryAction.
       // Used by both branches below (parsed token limit + 413 fallback).
@@ -124,11 +136,26 @@ export function createAutoTruncateStrategy<TPayload>(opts: {
       let targetTokenLimit: number | undefined
 
       if (parsed.limit) {
-        targetTokenLimit = Math.floor(parsed.limit * AUTO_TRUNCATE_RETRY_FACTOR)
+        // Convert the reported target into the gpt caliber that `truncate`
+        // compares against. `ratio = reportedCurrent / gptCount` is this request's
+        // measured Anthropic→gpt token ratio (~2x for Claude models); dividing the
+        // reported target by it yields the equivalent gpt-caliber target:
+        //   targetGpt = limit × FACTOR × gptCount / reportedCurrent
+        // Without this conversion the reported target (Anthropic caliber, ~900k)
+        // sits far above truncate's internal gpt count (~480k), so truncate decides
+        // "no truncation needed" and the request fails again. The ratio is measured
+        // on currentPayload but applied to originalPayload inside truncate; both are
+        // the same conversation so their tokenizer ratios match closely, and the
+        // FACTOR margin absorbs the residual. When reportedCurrent is missing
+        // we fall back to the raw reported target (pre-fix behavior).
+        const reportedTarget = parsed.limit * state.autoTruncateTargetFactor
+        const ratio = parsed.current && parsed.current > 0 && gptCount > 0 ? parsed.current / gptCount : undefined
+        targetTokenLimit = ratio !== undefined ? Math.floor(reportedTarget / ratio) : Math.floor(reportedTarget)
         consola.info(
           `[${label}] Attempt ${attempt + 1}/${maxRetries + 1}: `
-            + `Token limit error (${parsed.current}>${parsed.limit}), `
-            + `retrying with limit ${targetTokenLimit}...`,
+            + `Token limit error (${parsed.current}>${parsed.limit}), gptCount=${gptCount}`
+            + `${ratio !== undefined ? `, ratio=${ratio.toFixed(3)}` : ""}, `
+            + `retrying with gpt-caliber limit ${targetTokenLimit}...`,
         )
       }
 

@@ -45,6 +45,7 @@ import {
   //
   CONFIG_MANAGED_DEFAULTS,
   DEFAULT_MODEL_OVERRIDES,
+  onHistoryLimitChange,
   resetConfigManagedState,
   restoreStateForTests,
   setStateForTests,
@@ -207,6 +208,34 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   },
+  {
+    configKey: "auto_truncate.enabled",
+    stateKey: "autoTruncate",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncate,
+  },
+  {
+    configKey: "auto_truncate.target_factor",
+    stateKey: "autoTruncateTargetFactor",
+    sampleYamlValue: "0.5",
+    expectedStateValue: 0.5,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
+  },
+  {
+    configKey: "auto_truncate.max_retries",
+    stateKey: "autoTruncateMaxRetries",
+    sampleYamlValue: "7",
+    expectedStateValue: 7,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
+  },
+  {
+    configKey: "auto_truncate.compress_threshold",
+    stateKey: "autoTruncateCompressThreshold",
+    sampleYamlValue: "5000",
+    expectedStateValue: 5000,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+  },
 
   // ── system_prompt_overrides (array; sample is a single rule) ────────
   {
@@ -247,6 +276,20 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: "empty_any",
     expectedStateValue: "empty_any",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+  },
+  {
+    configKey: "anthropic.coerce_adaptive_thinking",
+    stateKey: "coerceAdaptiveThinking",
+    sampleYamlValue: "best_effort",
+    expectedStateValue: "best_effort",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
+  },
+  {
+    configKey: "anthropic.thinking_signature_compat",
+    stateKey: "thinkingSignatureCompat",
+    sampleYamlValue: "redacted_thinking",
+    expectedStateValue: "redacted_thinking",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   },
   {
     configKey: "anthropic.dedup_tool_calls",
@@ -392,11 +435,18 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── history.* ──────────────────────────────────────────────────────
   {
-    configKey: "history.limit",
-    stateKey: "historyLimit",
+    configKey: "history.success_limit",
+    stateKey: "historySuccessLimit",
     sampleYamlValue: "500",
     expectedStateValue: 500,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyLimit,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
+  },
+  {
+    configKey: "history.failure_limit",
+    stateKey: "historyFailureLimit",
+    sampleYamlValue: "300",
+    expectedStateValue: 300,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   },
   {
     configKey: "history.reaper_interval",
@@ -503,6 +553,11 @@ interface ExemptField {
 }
 
 const EXEMPT: ReadonlyArray<ExemptField> = [
+  {
+    configKey: "history.limit",
+    reason:
+      "Deprecated legacy key; no dedicated state field — falls back to success_limit/failure_limit (covered by the 'legacy history.limit falls back' test)",
+  },
   {
     configKey: "proxy",
     reason: "initProxy() runs once in start.ts before any network requests; changes require restart",
@@ -719,14 +774,43 @@ system_prompt_overrides:
     expect(state.systemPromptOverrides[1].from).toBe("exact line")
   })
 
-  test("history.limit also syncs setHistoryMaxEntries (side effect)", async () => {
-    // initHistory at 200; apply changes to 50.
+  test("history.success_limit also syncs setHistoryMaxEntries (side effect)", async () => {
+    // initHistory at default; apply changes success limit to 50.
     initHistory(true, 200)
-    expect(state.historyLimit).toBe(200)
-    await writeConfig("history:\n  limit: 50\n")
+    await writeConfig("history:\n  success_limit: 50\n")
     await applyConfigToState()
-    expect(state.historyLimit).toBe(50)
-    // setHistoryMaxEntries effect verified indirectly — historyLimit reflects it.
+    expect(state.historySuccessLimit).toBe(50)
+    // setHistoryMaxEntries effect verified indirectly — historySuccessLimit reflects it.
+  })
+
+  test("legacy history.limit falls back to both success and failure limits", async () => {
+    initHistory(true, 200)
+    await writeConfig("history:\n  limit: 77\n")
+    await applyConfigToState()
+    expect(state.historySuccessLimit).toBe(77)
+    expect(state.historyFailureLimit).toBe(77)
+  })
+
+  test("dedicated limits override legacy history.limit fallback", async () => {
+    await writeConfig("history:\n  limit: 77\n  success_limit: 10\n  failure_limit: 20\n")
+    await applyConfigToState()
+    expect(state.historySuccessLimit).toBe(10)
+    expect(state.historyFailureLimit).toBe(20)
+  })
+
+  test("changing only reaper_interval retunes the reaper (listener fires)", async () => {
+    // Register a listener AFTER the initial sync so we only observe the
+    // interval-triggered notification, not the synchronous registration call.
+    let fired = 0
+    const unsubscribe = onHistoryLimitChange(() => {
+      fired++
+    })
+    fired = 0 // discard the synchronous on-register invocation
+    await writeConfig("history:\n  reaper_interval: 999\n")
+    await applyConfigToState()
+    unsubscribe()
+    expect(state.historyReaperInterval).toBe(999)
+    expect(fired).toBeGreaterThan(0)
   })
 
   test("model_refresh_interval: 0 disables the refresh loop", async () => {
@@ -740,7 +824,7 @@ system_prompt_overrides:
       fetchTimeout: 99,
       modelOverrides: { opus: "custom-model" },
       systemPromptOverrides: [{ from: /test/, to: "keep" }],
-      historyLimit: 500,
+      historySuccessLimit: 500,
       disabledModels: ["foo"],
     })
     await writeConfig("")
@@ -749,7 +833,7 @@ system_prompt_overrides:
     expect(state.fetchTimeout).toBe(99)
     expect(state.modelOverrides.opus).toBe("custom-model")
     expect(state.systemPromptOverrides).toHaveLength(1)
-    expect(state.historyLimit).toBe(500)
+    expect(state.historySuccessLimit).toBe(500)
     expect(state.disabledModels).toEqual(["foo"])
   })
 
@@ -786,6 +870,7 @@ system_prompt_overrides:
     expect(state.thinkingBlockMessagePolicy).toBe(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy)
     expect(state.fetchTimeout).toBe(CONFIG_MANAGED_DEFAULTS.fetchTimeout)
     expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)
-    expect(state.historyLimit).toBe(CONFIG_MANAGED_DEFAULTS.historyLimit)
+    expect(state.historySuccessLimit).toBe(CONFIG_MANAGED_DEFAULTS.historySuccessLimit)
+    expect(state.historyFailureLimit).toBe(CONFIG_MANAGED_DEFAULTS.historyFailureLimit)
   })
 })

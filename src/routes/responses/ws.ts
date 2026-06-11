@@ -48,6 +48,7 @@ import {
 } from "~/lib/openai/stream-id-sync"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { buildResponsesResponseData } from "~/lib/request/recording"
+import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
@@ -230,6 +231,8 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   // Hoisted above the try so the catch can still record the partial timeline.
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
+  // Hoisted so the catch can read partial usage for an aborted record.
+  const acc = createResponsesStreamAccumulator()
 
   try {
     // Execute pipeline (model resolution, token refresh, rate limiting)
@@ -253,7 +256,6 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     // blocked on a stalled upstream) and the shutdown-vs-client distinction: a
     // shutdown throws StreamShutdownError (→ catch → sendErrorAndClose with a
     // retryable frame), while a client disconnect ends the loop cleanly.
-    const acc = createResponsesStreamAccumulator()
     const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
     const idTracker = state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
     let eventsReceived = 0
@@ -306,7 +308,14 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   } catch (error) {
     reqCtx.setHttpHeaders(headersCapture)
     reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    reqCtx.fail(resolvedModel, error)
+
+    // Uniform terminal settle: client disconnect → `aborted` (return, don't
+    // send/close the gone socket); else → `fail()` and send an error frame.
+    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } }
+    if (settleStreamingFailure({ reqCtx, error, model: resolvedModel, partial })) {
+      consola.debug("[WS] Client disconnected mid-stream — recording aborted")
+      return
+    }
 
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)

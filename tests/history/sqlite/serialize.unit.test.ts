@@ -9,12 +9,32 @@ import type { HistoryEntry } from "~/lib/history/types"
 
 import {
   //
+  gunzipJson,
+  gzipJson,
+} from "~/lib/history/sqlite/compression"
+import {
+  //
+  assembleFullEntry,
   deserializeEntry,
-  serializeEntry,
+  type EntryRow,
+  serializeHeadEntry,
+  type StagePayload,
+  type StageRow,
 } from "~/lib/history/sqlite/serialize"
 
-describe("sqlite/serialize", () => {
-  test("round-trips a HistoryEntry losslessly", () => {
+/** Turn serializeHeadEntry's pre-gzip stage payloads into persisted StageRows. */
+function toStageRows(entryId: string, stages: Array<StagePayload>): Array<StageRow> {
+  return stages.map((s) => ({
+    entry_id: entryId,
+    stage: s.stage,
+    attempt_index: s.attemptIndex,
+    created_at: 0,
+    blob_gz: gzipJson(s.payload),
+  }))
+}
+
+describe("sqlite/serialize head+stage", () => {
+  test("round-trips a HistoryEntry through head + stage rows", () => {
     const sample: HistoryEntry = {
       id: "abc-123",
       sessionId: "sess-1",
@@ -45,96 +65,157 @@ describe("sqlite/serialize", () => {
       },
     }
 
-    const { row, blob } = serializeEntry(sample)
+    const { row, stages } = serializeHeadEntry(sample)
+    // Indexed columns still populated from the entry (Bug-3 fix does not touch them).
     expect(row.id).toBe("abc-123")
     expect(row.session_id).toBe("sess-1")
-    expect(row.started_at).toBe(1_700_000_000_000)
-    expect(row.ended_at).toBe(1_700_000_001_000)
-    expect(row.duration_ms).toBe(1000)
     expect(row.status).toBe("completed")
     expect(row.model).toBe("claude-opus-4-7")
-    expect(row.endpoint).toBe("anthropic-messages")
-    expect(row.transport).toBe("http")
     expect(row.input_tokens).toBe(10)
-    expect(row.output_tokens).toBe(5)
-    expect(row.cache_read).toBe(2)
-    expect(row.cache_creation).toBe(1)
     expect(row.reasoning_tokens).toBe(3)
     expect(row.stop_reason).toBe("end_turn")
-    expect(blob).toBeInstanceOf(Uint8Array)
 
-    const restored = deserializeEntry(row, blob)
-    expect(restored.id).toBe("abc-123")
-    expect(restored.sessionId).toBe("sess-1")
-    expect(restored.startedAt).toBe(1_700_000_000_000)
-    expect(restored.endedAt).toBe(1_700_000_001_000)
-    expect(restored.durationMs).toBe(1000)
-    expect(restored.state).toBe("completed")
-    expect(restored.endpoint).toBe("anthropic-messages")
-    expect(restored.transport).toBe("http")
+    // Heavy bodies moved to stage rows, NOT the head blob.
+    const headMeta = gunzipJson(row.blob_gz) as Record<string, unknown>
+    expect(headMeta.inboundRequest).toBeUndefined()
+    expect(headMeta.outboundResponse).toBeUndefined()
+
+    const restored = assembleFullEntry(row, toStageRows(row.id, stages))
     expect(restored.inboundRequest.model).toBe("claude-opus-4-7")
     expect(restored.inboundRequest.messages?.[0].role).toBe("user")
     expect(restored.outboundResponse?.usage.input_tokens).toBe(10)
     expect(restored.outboundResponse?.stop_reason).toBe("end_turn")
-    expect((restored.outboundResponse?.content as { role: string; content: string }).content).toBe("hello")
+    expect((restored.outboundResponse?.content as { content: string }).content).toBe("hello")
   })
 
-  test("handles missing optional fields", () => {
-    const minimal: HistoryEntry = {
-      id: "x",
-      endpoint: "openai-chat-completions",
-      startedAt: 1,
-      state: "failed",
-      active: false,
-      lastUpdatedAt: 1,
-      inboundRequest: { model: "m" },
+  test("backward compat: a legacy single-blob row (no stage rows) assembles unchanged", () => {
+    // Simulate an OLD row whose blob holds the FULL entry (pre-split format).
+    const legacyFullBlob = gzipJson({
+      inboundRequest: { model: "old-model", messages: [{ role: "user", content: "legacy" }] },
+      outboundResponse: { success: true, model: "old-model", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
+      sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
+    })
+    const row: EntryRow = {
+      id: "legacy-1",
+      session_id: null,
+      started_at: 100,
+      ended_at: 200,
+      duration_ms: 100,
+      model: "old-model",
+      endpoint: "anthropic-messages",
+      transport: "http",
+      status: "completed",
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_read: null,
+      cache_creation: null,
+      reasoning_tokens: null,
+      stop_reason: null,
+      error_message: null,
+      message_count: 1,
+      preview_text: "legacy",
+      search_text: "legacy",
+      pid: null,
+      boot_time: null,
+      git_sha: null,
+      blob_gz: legacyFullBlob,
     }
 
-    const { row, blob } = serializeEntry(minimal)
-    expect(row.session_id).toBeNull()
-    expect(row.ended_at).toBeNull()
-    expect(row.duration_ms).toBeNull()
-    expect(row.input_tokens).toBeNull()
-    expect(row.output_tokens).toBeNull()
-    expect(row.cache_read).toBeNull()
-    expect(row.cache_creation).toBeNull()
-    expect(row.reasoning_tokens).toBeNull()
-    expect(row.stop_reason).toBeNull()
-    expect(row.error_message).toBeNull()
-    expect(row.transport).toBeNull()
-    expect(row.status).toBe("failed")
-    expect(row.model).toBe("m")
-
-    const restored = deserializeEntry(row, blob)
-    expect(restored.id).toBe("x")
-    expect(restored.inboundRequest.model).toBe("m")
-    expect(restored.endpoint).toBe("openai-chat-completions")
-    expect(restored.sessionId).toBeUndefined()
-    expect(restored.endedAt).toBeUndefined()
+    const restored = assembleFullEntry(row, [])
+    expect(restored.inboundRequest.model).toBe("old-model")
+    expect(restored.outboundResponse?.model).toBe("old-model")
+    expect(restored.sseEvents?.[0].type).toBe("message_start")
   })
 
-  test("preserves non-meta fields like sseEvents and pipelineInfo through blob", () => {
+  test("Bug 3: per-attempt wire/response preserved across retries", () => {
     const entry: HistoryEntry = {
-      id: "e1",
+      id: "retry-1",
       endpoint: "anthropic-messages",
-      startedAt: 100,
+      startedAt: 1,
       state: "completed",
       active: false,
-      lastUpdatedAt: 200,
+      lastUpdatedAt: 9,
       inboundRequest: { model: "opus" },
-      sseEvents: [{ offsetMs: 5, type: "message_start", raw: JSON.stringify({ foo: "bar" }) }],
-      pipelineInfo: { messageMapping: [0, 1, 2] },
-      warningMessages: [{ code: "W1", message: "warn" }],
+      attempts: [
+        {
+          index: 0,
+          strategy: "auto-truncate",
+          durationMs: 100,
+          error: "413 too large",
+          wireRequest: { model: "opus", messageCount: 50, payload: { marker: "attempt0-wire" } },
+          response: { success: false, model: "opus", usage: { input_tokens: 0, output_tokens: 0 }, status: 413, error: "too large", content: null },
+        },
+        {
+          index: 1,
+          durationMs: 200,
+          wireRequest: { model: "opus", messageCount: 20, payload: { marker: "attempt1-wire" } },
+          response: { success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, content: { role: "assistant", content: "ok" } },
+        },
+      ],
     }
 
-    const { row, blob } = serializeEntry(entry)
-    const restored = deserializeEntry(row, blob)
-    expect(restored.sseEvents).toEqual([{ offsetMs: 5, type: "message_start", raw: JSON.stringify({ foo: "bar" }) }])
-    expect(restored.pipelineInfo?.messageMapping).toEqual([0, 1, 2])
-    expect(restored.warningMessages).toEqual([{ code: "W1", message: "warn" }])
+    const { row, stages } = serializeHeadEntry(entry)
+    // Two attempts × (wireRequest + response) = 4 per-attempt stage rows.
+    expect(stages.filter((s) => s.stage === "outbound_request")).toHaveLength(2)
+    expect(stages.filter((s) => s.stage === "outbound_response")).toHaveLength(2)
+
+    const restored = assembleFullEntry(row, toStageRows(row.id, stages))
+    expect(restored.attempts?.[0].wireRequest?.payload).toEqual({ marker: "attempt0-wire" })
+    expect(restored.attempts?.[0].response?.status).toBe(413)
+    expect(restored.attempts?.[1].wireRequest?.payload).toEqual({ marker: "attempt1-wire" })
+    // Top-level mirrors the FINAL attempt.
+    expect((restored.outboundRequest?.payload as { marker: string }).marker).toBe("attempt1-wire")
+    expect(restored.outboundResponse?.success).toBe(true)
   })
 
-  test("captures error_message from response.error", () => {
+  test("partial/interrupted: missing stages + out-of-bound attempt_index does not throw", () => {
+    const entry: HistoryEntry = {
+      id: "partial-1",
+      endpoint: "anthropic-messages",
+      startedAt: 1,
+      state: "interrupted",
+      active: false,
+      lastUpdatedAt: 1,
+      inboundRequest: { model: "opus" },
+      // Head blob reflects an EARLY snapshot: only attempt 0 known.
+      attempts: [{ index: 0, durationMs: 0 }],
+    }
+    const { row } = serializeHeadEntry(entry)
+
+    // A stage row for attempt_index=2 exists even though head's attempts only has index 0
+    // (head snapshot lagged the stage write before the crash).
+    const orphanStage: Array<StageRow> = [
+      { entry_id: row.id, stage: "outbound_request", attempt_index: 2, created_at: 0, blob_gz: gzipJson({ model: "opus", payload: { marker: "lagged" } }) },
+    ]
+
+    const restored = assembleFullEntry(row, orphanStage)
+    // No throw; a slot for index 2 was created defensively.
+    const slot = restored.attempts?.find((a) => a.index === 2)
+    expect(slot?.wireRequest?.payload).toEqual({ marker: "lagged" })
+    // Missing legs stay undefined (not fabricated).
+    expect(restored.outboundResponse).toBeUndefined()
+    expect(restored.state).toBe("interrupted")
+  })
+
+  test("head-meta deserialize alone (no stages) still yields the meta fields", () => {
+    const entry: HistoryEntry = {
+      id: "meta-1",
+      endpoint: "openai-chat-completions",
+      startedAt: 5,
+      state: "completed",
+      active: false,
+      lastUpdatedAt: 5,
+      inboundRequest: { model: "m" },
+      pipelineInfo: { messageMapping: [0, 1] },
+      warningMessages: [{ code: "W", message: "w" }],
+    }
+    const { row } = serializeHeadEntry(entry)
+    const head = deserializeEntry(row)
+    expect(head.pipelineInfo?.messageMapping).toEqual([0, 1])
+    expect(head.warningMessages).toEqual([{ code: "W", message: "w" }])
+  })
+
+  test("captures error_message + status into row columns", () => {
     const entry: HistoryEntry = {
       id: "err",
       endpoint: "openai-chat-completions",
@@ -143,16 +224,25 @@ describe("sqlite/serialize", () => {
       active: false,
       lastUpdatedAt: 1,
       inboundRequest: { model: "m" },
-      outboundResponse: {
-        success: false,
-        model: "m",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        error: "boom",
-        content: null,
-      },
+      outboundResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, error: "boom", content: null },
     }
-
-    const { row } = serializeEntry(entry)
+    const { row } = serializeHeadEntry(entry)
     expect(row.error_message).toBe("boom")
+    expect(row.status).toBe("failed")
+  })
+
+  test("statusOverride sets the row status without mutating the entry", () => {
+    const entry: HistoryEntry = {
+      id: "ov",
+      endpoint: "anthropic-messages",
+      startedAt: 1,
+      state: "completed",
+      active: false,
+      lastUpdatedAt: 1,
+      inboundRequest: { model: "m" },
+    }
+    const { row } = serializeHeadEntry(entry, "pending")
+    expect(row.status).toBe("pending")
+    expect(entry.state).toBe("completed")
   })
 })

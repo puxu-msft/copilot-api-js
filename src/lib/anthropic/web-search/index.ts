@@ -25,9 +25,12 @@ export {
 // Orchestration
 export {
   //
+  completeWebSearch,
   orchestrateWebSearch,
   type OrchestrateWebSearchArgs,
+  runFirstHopProbe,
   type WebSearchOrchestrationResult,
+  type WebSearchProbeResult,
 } from "./orchestrator"
 
 // Synthesis

@@ -28,6 +28,7 @@ import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
+import { initProcessIdentity } from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
 import { initRequestTelemetry } from "./lib/request-telemetry"
 import { startServer } from "./lib/serve"
@@ -178,7 +179,8 @@ interface RunServerOptions {
   /** Explicit proxy URL (CLI --proxy). Takes precedence over config.yaml and env vars. */
   proxy?: string
   httpProxyFromEnv: boolean
-  autoTruncate: boolean
+  /** Reactive auto-truncate (CLI --auto-truncate / --no-auto-truncate). `undefined` when omitted → config.yaml `auto_truncate` stands. */
+  autoTruncate?: boolean
   externalUiUrl?: string
 }
 
@@ -226,15 +228,20 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   consola.info(`copilot-api v${packageJson.version}`)
 
+  // Capture the process identity (pid + boot time + git sha) once, before any
+  // request can be served, so every history record can self-describe which
+  // process produced it. Printed to the boot banner for at-a-glance attribution.
+  const procId = initProcessIdentity(packageJson.version)
+  consola.info(`Process: pid=${procId.pid}${procId.gitSha ? ` sha=${procId.gitSha}${procId.gitDirty ? "-dirty" : ""}` : ""}`)
+
   // Set global state from CLI options. accountType is only set here when
   // the user passed it explicitly — otherwise we leave the state default
   // ("individual") in place until inference runs after authentication,
-  // which may override it. ghcApiBaseUrl is applied below (after config
-  // load) so CLI takes precedence over config.yaml.
+  // which may override it. ghcApiBaseUrl and autoTruncate are applied below
+  // (after config load) so CLI takes precedence over config.yaml.
   setCliState({
     ...(options.accountType !== undefined && { accountType: options.accountType }),
     showGitHubToken: options.showGitHubToken,
-    autoTruncate: options.autoTruncate,
   })
 
   // ===========================================================================
@@ -252,6 +259,15 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const resolvedBaseUrl = options.ghcApiBaseUrl ?? config.ghc_api_base_url
   if (resolvedBaseUrl) {
     setCliState({ ghcApiBaseUrl: resolvedBaseUrl })
+  }
+
+  // Auto-truncate — CLI > config.yaml, but unlike ghcApiBaseUrl this IS
+  // hot-reloadable (applyConfigToState sets it from config; a later reload can
+  // flip it). The CLI flag only overrides when explicitly passed
+  // (--auto-truncate / --no-auto-truncate); when omitted, options.autoTruncate
+  // is undefined and the config value (already applied above) stands.
+  if (options.autoTruncate !== undefined) {
+    setCliState({ autoTruncate: options.autoTruncate })
   }
 
   // ===========================================================================
@@ -287,7 +303,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     setMockRateLimiterThrottled(true)
   }
 
-  initHistory(true, state.historyLimit)
+  initHistory(true)
   await initRequestTelemetry()
 
   // Initialize request context manager and register event consumers
@@ -377,8 +393,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   // Load previously learned auto-truncate limits (calibration + token limits).
   // Gated on the feature flag: every learnedLimits consumer is behind
-  // `state.autoTruncate`, and the flag is fixed for the process lifetime
-  // (CLI-only, no hot-reload), so loading while disabled is pure dead weight.
+  // `state.autoTruncate`, so loading while disabled is pure dead weight. The flag
+  // can now be toggled at runtime via config.yaml hot-reload — applyConfigToState
+  // lazily calls loadPersistedLimits() on an off→on transition, so this boot-time
+  // load only covers the CLI-first path. Double load (CLI + config) is idempotent.
   if (state.autoTruncate) {
     await loadPersistedLimits()
   }
@@ -521,8 +539,8 @@ export const start = defineCommand({
     },
     "auto-truncate": {
       type: "boolean",
-      default: false,
-      description: "Reactive auto-truncate: retries with truncated payload on limit errors (off by default; enable with --auto-truncate)",
+      description:
+        "Reactive auto-truncate: retries with truncated payload on limit errors. Overrides config.yaml `auto_truncate` when passed; omit to use config (default off). Disable with --no-auto-truncate.",
     },
     "external-ui-url": {
       type: "string",

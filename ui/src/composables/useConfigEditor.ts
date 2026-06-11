@@ -48,7 +48,7 @@ export function normalizeConfigForEditor(input: ConfigYamlResponse | EditableCon
     ...(input.stale_request_max_age !== undefined ? { stale_request_max_age: input.stale_request_max_age } : {}),
     ...(input.model_refresh_interval !== undefined ? { model_refresh_interval: input.model_refresh_interval } : {}),
     ...(input.shutdown !== undefined ? { shutdown: normalizeScalarSection(input.shutdown, ["graceful_wait", "abort_wait"]) } : {}),
-    ...(input.history !== undefined ? { history: normalizeScalarSection(input.history, ["limit", "min_entries"]) } : {}),
+    ...(input.history !== undefined ? { history: normalizeScalarSection(input.history, ["success_limit", "failure_limit", "reaper_interval"]) } : {}),
     ...(input.anthropic !== undefined ? { anthropic: normalizeAnthropic(input.anthropic) } : {}),
     ...(input["openai-responses"] !== undefined ?
       {

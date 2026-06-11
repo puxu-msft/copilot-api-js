@@ -333,3 +333,33 @@ export const getTokenCount = async (payload: ChatCompletionsPayload, model: Mode
     output: outputTokens,
   }
 }
+
+/**
+ * Count tokens per message using the model's gpt tokenizer.
+ * Returns an array where index i holds the token count for `messages[i]`.
+ *
+ * Used by the OpenAI auto-truncate binary search so its cumulative sums share
+ * the SAME caliber as the gpt-derived token limit (mirrors the Anthropic
+ * `countPerMessageTokens`). Using the char/4 `estimateMessageTokens` here would
+ * misplace the preserve boundary relative to a gpt-caliber limit.
+ */
+export const getPerMessageTokenCounts = async (messages: Array<Message>, model: Model): Promise<Array<number>> => {
+  const tokenizer = getTokenizerFromModel(model)
+  const encoder = await getEncodeChatFunction(tokenizer)
+  const constants = getModelConstants(model)
+  return messages.map((message) => calculateMessageTokens(message, encoder, constants))
+}
+
+/**
+ * Count the gpt-caliber token overhead of a payload's tools array (0 if none).
+ * Used by the OpenAI auto-truncate binary search so the preserve boundary accounts
+ * for tool definitions — a many-tool payload carries 20k+ fixed tool tokens that
+ * would otherwise be ignored, leaving the truncated result over the limit.
+ */
+export const getToolsTokenCount = async (payload: ChatCompletionsPayload, model: Model): Promise<number> => {
+  if (!payload.tools || payload.tools.length === 0) return 0
+  const tokenizer = getTokenizerFromModel(model)
+  const encoder = await getEncodeChatFunction(tokenizer)
+  const constants = getModelConstants(model)
+  return numTokensForTools(payload.tools, encoder, constants)
+}

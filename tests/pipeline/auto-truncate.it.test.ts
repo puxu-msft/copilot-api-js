@@ -13,6 +13,7 @@ import {
   test,
 } from "bun:test"
 
+import type { ApiError } from "~/lib/error"
 import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
@@ -41,6 +42,11 @@ import {
   autoTruncateOpenAI,
   checkNeedsCompactionOpenAI,
 } from "~/lib/openai/auto-truncate"
+import {
+  //
+  createAutoTruncateStrategy,
+  type TruncateResult,
+} from "~/lib/request/strategies/auto-truncate"
 import {
   //
   state,
@@ -115,6 +121,154 @@ describe("Auto-Truncate Anthropic", () => {
     expect(result.removedMessageCount).toBeGreaterThan(0)
     expect(result.payload.messages.length).toBeLessThan(100)
     expect(result.compactedTokens).toBeLessThan(result.originalTokens)
+  })
+
+  test("caliber conversion: gpt-caliber target truncates where raw Anthropic-caliber target would not", async () => {
+    // Regression anchor for the three-caliber bug. The real strategy counts the
+    // failing payload with countTotalTokens (gpt caliber) and converts the
+    // upstream-reported Anthropic-caliber limit into gpt caliber before truncating.
+    // 80 messages * ~1254 tokens ≈ 100k gpt. Simulate an upstream 400 reporting
+    // ~2x those numbers (Anthropic caliber), exceeding a 1M cap.
+    const messages: MessagesPayload["messages"] = []
+    for (let i = 0; i < 80; i++) {
+      messages.push({ role: i % 2 === 0 ? "user" : "assistant", content: createLargeMessage(10000) })
+    }
+    const original: MessagesPayload = { model: "claude-sonnet-4", max_tokens: 1024, messages }
+
+    const gptCount = await countTotalTokens(original, mockModel)
+    // Anthropic caliber ≈ 2x gpt. Reported current slightly exceeds the reported
+    // limit (a real over-limit 400), while both are ~2x the gpt count — so the gpt
+    // count itself sits well BELOW the reported limit. This is the exact shape of
+    // the production bug (gpt ~480k vs Anthropic limit 1M).
+    const reportedLimit = Math.round(gptCount * 2.0)
+    const reportedCurrent = Math.round(gptCount * 2.05)
+
+    const body = JSON.stringify({
+      error: { code: "model_max_prompt_tokens_exceeded", message: `prompt token count of ${reportedCurrent} exceeds the limit of ${reportedLimit}` },
+    })
+    const error: ApiError = { type: "token_limit", status: 400, raw: new HTTPError("Token limit", 400, body), message: "token limit" }
+
+    const strategy = createAutoTruncateStrategy<MessagesPayload>({
+      truncate: (p, model, opts) => autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,
+      resanitize: (p) => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 }),
+      countTokens: (p, model) => countTotalTokens(p, model),
+      isEnabled: () => true,
+      label: "caliber-test",
+    })
+
+    const action = await strategy.handle(error, original, {
+      attempt: 0,
+      originalPayload: original,
+      model: mockModel,
+      maxRetries: 5,
+    })
+
+    // With conversion: gpt-caliber target = limit*0.9/2.05 ≈ gptCount*0.878 < gptCount
+    // → truncation proceeds.
+    expect(action.action).toBe("retry")
+    if (action.action === "retry") {
+      const tr = (action.meta as { truncateResult?: { wasTruncated: boolean } }).truncateResult
+      expect(tr?.wasTruncated).toBe(true)
+    }
+
+    // Counter-check the bug: the OLD behavior used the raw Anthropic-caliber target
+    // (limit*0.9 ≈ gptCount*1.8) directly against the gpt count → no truncation.
+    const rawTargetResult = await autoTruncateAnthropic(original, mockModel, { checkTokenLimit: true, targetTokenLimit: Math.floor(reportedLimit * 0.9) })
+    expect(rawTargetResult.wasTruncated).toBe(false)
+  })
+
+  test("binary search uses gpt caliber + counts tools overhead — result drops below target (no phantom no-op)", async () => {
+    // Regression for the production failure: char/4 binary search undercounted vs a
+    // gpt-caliber target AND ignored tools overhead, so it removed too few (or zero)
+    // messages and the result stayed over limit while falsely reporting wasTruncated.
+    const messages: MessagesPayload["messages"] = []
+    for (let i = 0; i < 120; i++) {
+      messages.push({ role: i % 2 === 0 ? "user" : "assistant", content: createLargeMessage(8000) })
+    }
+    // Many tools → significant fixed overhead that must be subtracted in the search.
+    const tools = Array.from({ length: 40 }, (_, i) => ({
+      name: `tool_${i}`,
+      description: createLargeMessage(400),
+      input_schema: { type: "object" as const, properties: {} },
+    }))
+    const payload: MessagesPayload = { model: "claude-sonnet-4", max_tokens: 1024, messages, tools }
+
+    const target = 60000
+    const result = await autoTruncateAnthropic(payload, mockModel, { checkTokenLimit: true, targetTokenLimit: target })
+
+    expect(result.wasTruncated).toBe(true)
+    expect(result.removedMessageCount).toBeGreaterThan(0)
+    // The whole point: the compacted total (messages + system + tools) lands at/below
+    // the target, not merely "claimed truncated" while still over.
+    expect(result.compactedTokens).toBeLessThanOrEqual(target)
+  })
+
+  test("phantom-truncation guard: a no-op truncation reports wasTruncated=false", async () => {
+    // If the search can't reduce anything (target so generous everything fits, but
+    // pre-check forced a truncate attempt), the result must not falsely claim success.
+    const payload: MessagesPayload = {
+      model: "claude-sonnet-4",
+      max_tokens: 1024,
+      messages: [
+        { role: "user", content: "short" },
+        { role: "assistant", content: "reply" },
+      ],
+    }
+    // Target far above the tiny payload → nothing to remove → not truncated.
+    const result = await autoTruncateAnthropic(payload, mockModel, { checkTokenLimit: true, targetTokenLimit: 1_000_000 })
+    expect(result.wasTruncated).toBe(false)
+    expect(result.removedMessageCount).toBe(0)
+  })
+
+  test("message-removal truncation always yields a legal messages[0] (user, not orphan/system)", async () => {
+    // Reproduce the production shape: inline system messages mixed into the array
+    // (Claude Code client) + tool_use/tool_result pairs. The binary-search cut can
+    // land between a pair, leaving an orphan tool_result or a system message at
+    // messages[0] — Anthropic rejects that with `messages.0: use the top-level
+    // 'system' parameter`. Boundary alignment + cleanup must prevent it.
+    const messages: MessagesPayload["messages"] = []
+    for (let i = 0; i < 80; i++) {
+      const turn = i % 4
+      switch (turn) {
+        case 0: {
+          messages.push({ role: "user", content: createLargeMessage(6000) })
+          break
+        }
+        case 1: {
+          messages.push({ role: "assistant", content: [{ type: "tool_use", id: `t${i}`, name: "read", input: {} }] })
+          break
+        }
+        case 2: {
+          messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `t${i - 1}`, content: createLargeMessage(6000) }] })
+          break
+        }
+        default: {
+          messages.push({ role: "system", content: "inline system reminder " + createLargeMessage(2000) } as MessagesPayload["messages"][number])
+        }
+      }
+    }
+    const payload: MessagesPayload = { model: "claude-sonnet-4", max_tokens: 1024, system: "top-level system", messages }
+
+    // Truncate hard enough to force message removal at various boundaries.
+    for (const target of [40000, 25000, 15000]) {
+      const result = await autoTruncateAnthropic(payload, mockModel, { checkTokenLimit: true, targetTokenLimit: target })
+      if (!result.wasTruncated) continue
+      const first = result.payload.messages[0]
+      // messages[0] must be a legal user turn — never system/assistant, never a pure tool_result.
+      expect(first.role).toBe("user")
+      const isPureToolResult =
+        Array.isArray(first.content) && first.content.length > 0 && first.content.every((b) => b.type === "tool_result" || b.type === "tool_use")
+      expect(isPureToolResult).toBe(false)
+    }
+
+    // Same payload WITHOUT top-level system → truncation takes the marker-message
+    // branch (prepends a synthetic user marker). messages[0] must still be a legal user.
+    const noSystemPayload: MessagesPayload = { model: "claude-sonnet-4", max_tokens: 1024, messages }
+    for (const target of [40000, 20000]) {
+      const result = await autoTruncateAnthropic(noSystemPayload, mockModel, { checkTokenLimit: true, targetTokenLimit: target })
+      if (!result.wasTruncated) continue
+      expect(result.payload.messages[0].role).toBe("user")
+    }
   })
 
   test("checkNeedsCompactionAnthropic should detect when compaction is needed", async () => {
@@ -927,6 +1081,20 @@ describe("Tiered compression (Step 2.5 / Step 1.5)", () => {
     } finally {
       setStateForTests({ compressToolResultsBeforeTruncate: origCompress })
     }
+  })
+
+  test("compressToolResultContent honors the threshold parameter (config-driven gate)", async () => {
+    const { compressToolResultContent } = await import("~/lib/auto-truncate")
+    const content = "x".repeat(8000)
+
+    // Default threshold (10000): 8000-char content is below the gate → returned as-is.
+    expect(compressToolResultContent(content)).toBe(content)
+    expect(compressToolResultContent(content, 10000)).toBe(content)
+
+    // Lowered threshold (5000): same content now exceeds the gate → compressed (shorter).
+    const compressed = compressToolResultContent(content, 5000)
+    expect(compressed.length).toBeLessThan(content.length)
+    expect(compressed).toContain("omitted for brevity")
   })
 })
 

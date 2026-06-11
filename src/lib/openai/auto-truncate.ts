@@ -19,7 +19,12 @@ import type {
   Message,
 } from "~/types/api/openai-chat-completions"
 
-import { getTokenCount } from "~/lib/models/tokenizer"
+import {
+  //
+  getPerMessageTokenCounts,
+  getTokenCount,
+  getToolsTokenCount,
+} from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
 import { bytesToKB } from "~/lib/utils"
 
@@ -32,7 +37,6 @@ import {
   computeSafetyMargin,
   getLearnedLimits,
 } from "../auto-truncate"
-import { estimateMessageTokens } from "./auto-truncate/token-counting"
 import {
   //
   addCompressionNotice,
@@ -187,7 +191,14 @@ async function tryCompressToolResults(
   }
 
   // Step 1a: Compress old tool messages
-  const compressionResult = smartCompressToolResults(ctx.payload.messages, ctx.tokenLimit, ctx.cfg.preserveRecentPercent)
+  const compressPerMessage = await getPerMessageTokenCounts(ctx.payload.messages, ctx.model)
+  const compressionResult = smartCompressToolResults(
+    ctx.payload.messages,
+    ctx.tokenLimit,
+    ctx.cfg.preserveRecentPercent,
+    compressPerMessage,
+    state.autoTruncateCompressThreshold,
+  )
   let workingMessages = compressionResult.messages
   let compressedCount = compressionResult.compressedCount
 
@@ -222,10 +233,13 @@ async function tryCompressToolResults(
   }
 
   // Step 1b: Compress ALL tool messages (including recent ones)
+  const allCompressPerMessage = await getPerMessageTokenCounts(workingMessages, ctx.model)
   const allCompression = smartCompressToolResults(
     workingMessages,
     ctx.tokenLimit,
     0.0, // preservePercent=0 means compress all messages
+    allCompressPerMessage,
+    state.autoTruncateCompressThreshold,
   )
   if (allCompression.compressedCount > 0) {
     workingMessages = allCompression.messages
@@ -268,19 +282,35 @@ async function tryCompressToolResults(
 /**
  * Step 2: Remove messages to fit within limits using binary search.
  * Handles orphan cleanup, summary generation, and result assembly.
+ *
+ * KNOWN LIMITATION (deferred): the binary search counts ALL conversation messages
+ * (including assistant) via getPerMessageTokenCounts, but `ctx.tokenLimit` is
+ * derived from `getTokenCount(...).input`, which EXCLUDES assistant messages
+ * (tokenizer.ts filters role==="assistant" into the output bucket). For
+ * assistant-heavy conversations this makes the search over-remove (safe direction —
+ * it never leaves the payload over the limit — but it can drop more history than
+ * strictly necessary). A fully caliber-consistent fix would split the limit/search
+ * on the same input/output boundary; left as-is because the current behavior is
+ * conservative and the pre-existing char/4 path had the same asymmetry.
  */
 async function truncateByMessageRemoval(ctx: TruncationContext, workingMessages: Array<Message>, compressedCount: number): Promise<OpenAIAutoTruncateResult> {
   // Extract system messages from working messages
   const { systemMessages, conversationMessages } = extractOpenAISystemMessages(workingMessages)
 
-  // Calculate system message token sizes
-  const systemTokens = systemMessages.reduce((sum, m) => sum + estimateMessageTokens(m), 0)
+  // System + per-conversation-message token sizes in gpt caliber (same as tokenLimit),
+  // so the binary search boundary lands consistently with the limit. Tools count
+  // toward fixed overhead too — omitting them leaves many-tool payloads over limit.
+  const systemPerMessage = await getPerMessageTokenCounts(systemMessages, ctx.model)
+  const systemTokens = systemPerMessage.reduce((sum, t) => sum + t, 0)
+  const toolsTokens = await getToolsTokenCount(ctx.payload, ctx.model)
+  const conversationPerMessage = await getPerMessageTokenCounts(conversationMessages, ctx.model)
 
   // Find optimal preserve index
   const preserveIndex = findOptimalPreserveIndex({
     messages: conversationMessages,
-    systemTokens,
+    fixedOverheadTokens: systemTokens + toolsTokens,
     tokenLimit: ctx.tokenLimit,
+    perMessageTokens: conversationPerMessage,
   })
 
   // Check if we can compact
@@ -362,6 +392,20 @@ async function truncateByMessageRemoval(ctx: TruncationContext, workingMessages:
   // Warn if still over token limit
   if (newTokenCount.input > ctx.tokenLimit) {
     consola.warn(`[AutoTruncate:OpenAI] Result still over token limit (${newTokenCount.input} > ${ctx.tokenLimit})`)
+  }
+
+  // Defense against phantom truncation: trust only the actual token drop, not the
+  // removed/compressed counts (a no-shrink "compression" or a removal cancelled by
+  // added context must not report success). See the Anthropic twin for rationale.
+  if (newTokenCount.input >= ctx.originalTokens) {
+    consola.warn("[AutoTruncate:OpenAI] No-op truncation (size did not shrink) — reporting not truncated")
+    return buildTimedResult(ctx, {
+      payload: ctx.payload,
+      wasTruncated: false,
+      originalTokens: ctx.originalTokens,
+      compactedTokens: ctx.originalTokens,
+      removedMessageCount: 0,
+    })
   }
 
   return buildTimedResult(ctx, {

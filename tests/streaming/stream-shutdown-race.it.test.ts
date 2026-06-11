@@ -36,6 +36,7 @@ import {
 import {
   //
   STREAM_ABORTED,
+  StreamClientAbortError,
   StreamIdleTimeoutError,
   StreamShutdownError,
   combineAbortSignals,
@@ -493,7 +494,7 @@ describe("processAnthropicStream + shutdown signal", () => {
     expect(thrown).toBeInstanceOf(StreamShutdownError)
   })
 
-  test("client abort (not shutdown) ends the stream cleanly without throwing", async () => {
+  test("client abort (not shutdown) throws StreamClientAbortError so the caller settles it as aborted", async () => {
     setStateForTests({ streamIdleTimeout: 0 })
 
     const { stream, unstall } = createStallingStream([
@@ -533,9 +534,59 @@ describe("processAnthropicStream + shutdown signal", () => {
       unstall()
     }
 
-    // Client disconnect → terminate quietly (no one to notify), no exception.
+    // Client disconnect → throw StreamClientAbortError (distinct from shutdown),
+    // so the handler records the request as `aborted` rather than completed (Bug 2).
     expect(events).toHaveLength(1)
-    expect(thrown).toBeUndefined()
+    expect(thrown).toBeInstanceOf(StreamClientAbortError)
+  })
+
+  test("shutdown takes precedence over a concurrent client abort", async () => {
+    setStateForTests({ streamIdleTimeout: 0 })
+
+    const { stream, unstall } = createStallingStream([
+      makeSseMsg(
+        JSON.stringify({
+          type: "message_start",
+          message: {
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            content: [],
+            model: "claude-opus-4.6",
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 0 },
+          },
+        }),
+      ),
+    ])
+
+    const acc = createAnthropicStreamAccumulator()
+    const clientAbort = new AbortController()
+    const shutdown = new AbortController()
+    const events: Array<ProcessedAnthropicEvent> = []
+
+    let thrown: unknown
+    try {
+      for await (const event of processAnthropicStream(stream, acc, clientAbort.signal, shutdown.signal)) {
+        events.push(event)
+        if (events.length === 1) {
+          setTimeout(() => {
+            // Both fire in the same tick; shutdown must win (retryable) so a
+            // process restart isn't misrecorded as a client disconnect.
+            shutdown.abort()
+            clientAbort.abort()
+          }, 50)
+        }
+      }
+    } catch (error) {
+      thrown = error
+    } finally {
+      unstall()
+    }
+
+    expect(events).toHaveLength(1)
+    expect(thrown).toBeInstanceOf(StreamShutdownError)
   })
 
   // ── Upstream iterator cleanup (best-effort, fire-and-forget) ──────────────

@@ -248,4 +248,66 @@ describe("webSearchResponseToEvents", () => {
     expect(acc.outputTokens).toBe(5)
     expect(acc.stopReason).toBe("end_turn")
   })
+
+  // Defensive coverage: buildWebSearchResponse never emits a thinking block
+  // today (the double-hop synthesis only assembles server_tool_use / result /
+  // text), but if a thinking block is ever handed to webSearchResponseToEvents
+  // it MUST emit a protocol-correct frame sequence — NOT the malformed
+  // "embedded-signature on content_block_start, no signature_delta" shape that
+  // corrupts thinking blocks on the client. These tests assert that contract by
+  // synthesizing a response that carries a thinking block directly.
+  function responseWithThinking(thinking: string, signature: string) {
+    return {
+      id: "msg-think",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-4.6",
+      content: [
+        { type: "thinking", thinking, signature },
+        { type: "text", text: "Answer." },
+      ],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 5 },
+    } as unknown as Parameters<typeof webSearchResponseToEvents>[0]
+  }
+
+  test("thinking block: start carries NO signature; signature arrives via a synthesized signature_delta", () => {
+    const events = webSearchResponseToEvents(responseWithThinking("reasoning…", "SIG-abc-123"))
+
+    const thinkingStart = events.find(
+      (e) => e.type === "content_block_start" && (e as { content_block?: { type?: string } }).content_block?.type === "thinking",
+    ) as { content_block: Record<string, unknown> } | undefined
+    expect(thinkingStart).toBeDefined()
+    // Must NOT embed the signature on the start (standard clients ignore it there).
+    expect(thinkingStart!.content_block.signature).toBeUndefined()
+    expect(thinkingStart!.content_block.thinking).toBe("")
+
+    const deltas = events.filter((e) => e.type === "content_block_delta") as unknown as Array<{ index: number; delta: Record<string, unknown> }>
+    const thinkingDelta = deltas.find((d) => (d.delta as { type?: string }).type === "thinking_delta")
+    const sigDelta = deltas.find((d) => (d.delta as { type?: string }).type === "signature_delta")
+    expect(thinkingDelta?.delta.thinking).toBe("reasoning…")
+    expect(sigDelta?.delta.signature).toBe("SIG-abc-123")
+    expect(sigDelta?.index).toBe(0)
+  })
+
+  test("thinking block: round-trips through the accumulator with its signature intact", () => {
+    const events = webSearchResponseToEvents(responseWithThinking("deep thought", "SIG-xyz-789"))
+    const acc = createAnthropicStreamAccumulator()
+    for (const event of events) accumulateAnthropicStreamEvent(event, acc)
+
+    expect(acc.contentBlocks[0]).toMatchObject({ type: "thinking", thinking: "deep thought", signature: "SIG-xyz-789" })
+    expect(acc.contentBlocks[1]).toMatchObject({ type: "text", text: "Answer." })
+  })
+
+  test("thinking block with empty text but a signature emits only a signature_delta", () => {
+    const events = webSearchResponseToEvents(responseWithThinking("", "SIG-only"))
+    const deltas = events.filter((e) => e.type === "content_block_delta") as unknown as Array<{ delta: Record<string, unknown> }>
+    expect(deltas.some((d) => (d.delta as { type?: string }).type === "thinking_delta")).toBe(false)
+    expect(deltas.some((d) => (d.delta as { type?: string }).type === "signature_delta")).toBe(true)
+    // Round-trip keeps the signature.
+    const acc = createAnthropicStreamAccumulator()
+    for (const event of events) accumulateAnthropicStreamEvent(event, acc)
+    expect(acc.contentBlocks[0]).toMatchObject({ type: "thinking", signature: "SIG-only" })
+  })
 })

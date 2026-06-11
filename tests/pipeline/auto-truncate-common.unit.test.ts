@@ -16,12 +16,14 @@ import {
 import {
   //
   AUTO_TRUNCATE_RETRY_FACTOR,
+  LARGE_TOOL_RESULT_THRESHOLD,
   MAX_AUTO_TRUNCATE_RETRIES,
   getLearnedLimits,
   resetAllLimitsForTesting,
   tryParseAndLearnLimit,
 } from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
+import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state"
 
 // ─── Constants ───
 
@@ -32,6 +34,16 @@ describe("auto-truncate constants", () => {
 
   test("AUTO_TRUNCATE_RETRY_FACTOR is 0.9", () => {
     expect(AUTO_TRUNCATE_RETRY_FACTOR).toBe(0.9)
+  })
+
+  // CONFIG_MANAGED_DEFAULTS inlines these values (state.ts) instead of importing
+  // the engine constants, to avoid a state ↔ auto-truncate ↔ system-prompt import
+  // cycle. This guard keeps the inlined literals in sync with the engine constants
+  // so they can't silently drift apart.
+  test("CONFIG_MANAGED_DEFAULTS mirror the engine auto-truncate constants", () => {
+    expect(CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor).toBe(AUTO_TRUNCATE_RETRY_FACTOR)
+    expect(CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries).toBe(MAX_AUTO_TRUNCATE_RETRIES)
+    expect(CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold).toBe(LARGE_TOOL_RESULT_THRESHOLD)
   })
 })
 

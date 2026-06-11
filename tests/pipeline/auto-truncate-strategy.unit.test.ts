@@ -25,11 +25,17 @@ import type {
   TruncateResult,
 } from "~/lib/request/strategies/auto-truncate"
 
-import { resetAllLimitsForTesting } from "~/lib/auto-truncate"
+import {
+  //
+  getLearnedLimits,
+  resetAllLimitsForTesting,
+} from "~/lib/auto-truncate"
 import { HTTPError } from "~/lib/error"
 import { createAutoTruncateStrategy } from "~/lib/request/strategies/auto-truncate"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { autoRestoreState } from "../helpers/state-fixture"
 
 type TestPayload = { messages: Array<{ role: string; content: string }> }
 
@@ -37,6 +43,7 @@ function makeStrategy(overrides?: {
   isEnabled?: () => boolean
   truncateResult?: Partial<TruncateResult<TestPayload>>
   sanitizeResult?: Partial<SanitizeResult<TestPayload>>
+  gptCount?: number
 }) {
   const defaultPayload: TestPayload = { messages: [{ role: "user", content: "truncated" }] }
 
@@ -61,14 +68,19 @@ function makeStrategy(overrides?: {
     }),
   )
 
+  // gpt-tokenizer count of the failing payload — the strategy uses this both as
+  // the calibration sample and to convert the reported limit into gpt caliber.
+  const countTokens = mock(async (_p: TestPayload, _m: any): Promise<number> => overrides?.gptCount ?? 5000)
+
   const strategy = createAutoTruncateStrategy<TestPayload>({
     truncate,
     resanitize,
+    countTokens,
     isEnabled: overrides?.isEnabled ?? (() => true),
     label: "test",
   })
 
-  return { strategy, truncate, resanitize }
+  return { strategy, truncate, resanitize, countTokens }
 }
 
 function make413Error(): ApiError {
@@ -77,8 +89,10 @@ function make413Error(): ApiError {
 }
 
 function makeTokenLimitError(): ApiError {
+  // Body must carry the OpenAI `code` (or Anthropic `type`) for tryParseAndLearnLimit
+  // to recognize it as a learnable token-limit error and enter the conversion branch.
   const body = JSON.stringify({
-    error: { message: "prompt token count of 135355 exceeds the limit of 128000" },
+    error: { code: "model_max_prompt_tokens_exceeded", message: "prompt token count of 135355 exceeds the limit of 128000" },
   })
   const raw = new HTTPError("Token limit", 400, body)
   return { type: "token_limit", status: 400, raw, message: "token limit", tokenLimit: 128000, tokenCurrent: 135355 }
@@ -227,5 +241,70 @@ describe("createAutoTruncateStrategy - handle", () => {
     if (result.action === "retry") {
       expect((result as any).meta!.attempt).toBe(3) // attempt + 1
     }
+  })
+})
+
+// ─── caliber conversion (the core口径 fix) ───
+
+describe("createAutoTruncateStrategy - token caliber conversion", () => {
+  // RETRY_FACTOR (0.9) lives in engine; assert against the formula, not a literal.
+  const FACTOR = 0.9
+
+  test("converts reported limit into gpt caliber using ratio = current/gptCount", async () => {
+    // reported: current=135355, limit=128000 (from makeTokenLimitError, OpenAI format)
+    // gptCount stub = 64000 → ratio ≈ 2.115 → target = floor(128000*0.9 / ratio)
+    const gptCount = 64000
+    const { strategy, truncate } = makeStrategy({ gptCount })
+    await strategy.handle(makeTokenLimitError(), { messages: [{ role: "user", content: "x" }] }, makeContext())
+
+    const opts = truncate.mock.calls[0][2]
+    const ratio = 135355 / gptCount
+    const expected = Math.floor((128000 * FACTOR) / ratio)
+    expect(opts.targetTokenLimit).toBe(expected)
+    // Sanity: converted target is in gpt caliber, well below the raw reported target.
+    expect(opts.targetTokenLimit!).toBeLessThan(Math.floor(128000 * FACTOR))
+  })
+
+  test("counts the FAILING (current) payload, not the original, for the ratio", async () => {
+    const { strategy, countTokens } = makeStrategy({ gptCount: 64000 })
+    const current: TestPayload = { messages: [{ role: "user", content: "current failing" }] }
+    const original: TestPayload = { messages: [{ role: "user", content: "original" }] }
+    await strategy.handle(makeTokenLimitError(), current, makeContext({ originalPayload: original }))
+
+    expect(countTokens).toHaveBeenCalledTimes(1)
+    expect(countTokens.mock.calls[0][0]).toBe(current)
+  })
+
+  test("learns calibration factor = reportedCurrent / gptCount", async () => {
+    const gptCount = 64000
+    const { strategy } = makeStrategy({ gptCount })
+    await strategy.handle(makeTokenLimitError(), { messages: [{ role: "user", content: "x" }] }, makeContext())
+
+    const learned = getLearnedLimits("claude-sonnet-4")
+    expect(learned).toBeDefined()
+    // EWMA seeds the first sample with the raw (clamped) factor; 135355/64000 ≈ 2.115.
+    expect(learned!.calibrationFactor).toBeCloseTo(135355 / gptCount, 2)
+    expect(learned!.sampleCount).toBe(1)
+  })
+
+  test("falls back to raw reported target when gptCount is 0", async () => {
+    const { strategy, truncate } = makeStrategy({ gptCount: 0 })
+    await strategy.handle(makeTokenLimitError(), { messages: [{ role: "user", content: "x" }] }, makeContext())
+
+    const opts = truncate.mock.calls[0][2]
+    expect(opts.targetTokenLimit).toBe(Math.floor(128000 * FACTOR))
+  })
+
+  test("uses state.autoTruncateTargetFactor (config-driven), not a hardcoded 0.9", async () => {
+    autoRestoreState()
+    setStateForTests({ autoTruncateTargetFactor: 0.8 })
+
+    const gptCount = 64000
+    const { strategy, truncate } = makeStrategy({ gptCount })
+    await strategy.handle(makeTokenLimitError(), { messages: [{ role: "user", content: "x" }] }, makeContext())
+
+    const opts = truncate.mock.calls[0][2]
+    const ratio = 135355 / gptCount
+    expect(opts.targetTokenLimit).toBe(Math.floor((128000 * 0.8) / ratio))
   })
 })

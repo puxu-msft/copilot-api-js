@@ -35,8 +35,23 @@ export class StreamShutdownError extends Error {
   }
 }
 
+/**
+ * Error thrown when an in-flight stream is interrupted by the DOWNSTREAM CLIENT
+ * disconnecting (client abort signal). Distinct from shutdown: there is no
+ * client left to receive a terminal `error` frame, so handlers MUST settle the
+ * request as `aborted` and must NOT attempt to write to the (closed) stream.
+ * This separates a client-gone truncation from a genuine upstream failure so
+ * history records it honestly rather than as a successful completion.
+ */
+export class StreamClientAbortError extends Error {
+  constructor() {
+    super("Client disconnected")
+    this.name = "StreamClientAbortError"
+  }
+}
+
 /** Coarse classification of a stream lifecycle error, protocol-agnostic. */
-export type StreamErrorKind = "idle-timeout" | "shutdown" | "other"
+export type StreamErrorKind = "idle-timeout" | "shutdown" | "client-abort" | "other"
 
 /**
  * Classify a streaming error into a protocol-agnostic kind. Every SSE handler
@@ -48,6 +63,7 @@ export type StreamErrorKind = "idle-timeout" | "shutdown" | "other"
 export function classifyStreamError(error: unknown): StreamErrorKind {
   if (error instanceof StreamIdleTimeoutError) return "idle-timeout"
   if (error instanceof StreamShutdownError) return "shutdown"
+  if (error instanceof StreamClientAbortError) return "client-abort"
   return "other"
 }
 
@@ -258,8 +274,13 @@ export function guardSseIterable<T>(
           if (result === STREAM_ABORTED) {
             detach()
             void closeInner() // fire-and-forget: inner.next() is still pending
-            if (clientSignal?.aborted) return { value: undefined as unknown as T, done: true }
+            // Check SHUTDOWN FIRST (process-level, retryable) so a concurrent
+            // client disconnect can't mask it. Client gone → throw
+            // StreamClientAbortError so the handler records the request as
+            // `aborted` (distinct from completed) instead of settling a
+            // truncated stream as success (Bug 2, uniform across endpoints).
             if (shutdownSignal?.aborted) throw new StreamShutdownError()
+            if (clientSignal?.aborted) throw new StreamClientAbortError()
             return { value: undefined as unknown as T, done: true }
           }
           if (result.done) detach() // natural completion — inner already ended, no close needed

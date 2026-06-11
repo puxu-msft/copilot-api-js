@@ -139,8 +139,7 @@ export function webSearchResponseToEvents(response: AnthropicMessageResponse): A
   for (const [index, block] of raw.content.entries()) {
     events.push(buildContentBlockStart(block, index))
 
-    const delta = buildContentBlockDelta(block, index)
-    if (delta) events.push(delta)
+    for (const delta of buildContentBlockDeltas(block, index)) events.push(delta)
 
     events.push({ type: "content_block_stop", index } as unknown as StreamEvent)
   }
@@ -170,26 +169,57 @@ function buildContentBlockStart(block: Record<string, unknown>, index: number): 
 function buildStartContentBlock(type: string, block: Record<string, unknown>): Record<string, unknown> {
   if (type === "text") return { type: "text", text: "" }
   if (type === "server_tool_use" || type === "tool_use") return { ...block, input: {} }
+  // Defensive (not reached by the current double-hop synthesis, which only
+  // assembles server_tool_use / web_search_tool_result / text — see
+  // buildWebSearchResponse): if a thinking block is ever synthesized, it MUST
+  // start empty with NO embedded signature. A standard client reads the
+  // signature only from a later signature_delta and ignores one on the start;
+  // embedding it here would (a) make the client drop it → corrupt
+  // {thinking:"",signature:""} echo, and (b) trip the accumulator's
+  // "signature already set" guard when the delta arrives. The signature is
+  // carried by buildContentBlockDeltas instead.
+  if (type === "thinking") return { type: "thinking", thinking: "" }
+  // redacted_thinking carries its opaque payload as `data` and completes at start
+  // (no deltas), mirroring the real Anthropic shape.
   return block
 }
 
-/** Build the content_block_delta event for a synthesized block (undefined for result blocks). */
-function buildContentBlockDelta(block: Record<string, unknown>, index: number): StreamEvent | undefined {
+/**
+ * Build the content_block_delta events for a synthesized block (0/1/2 events).
+ *
+ * Returns an array because a thinking block needs up to two deltas
+ * (thinking_delta + signature_delta). All other block kinds emit 0 or 1.
+ */
+function buildContentBlockDeltas(block: Record<string, unknown>, index: number): Array<StreamEvent> {
   const type = block.type as string
   if (type === "text") {
     const text = (block.text as string | undefined) ?? ""
-    if (!text) return undefined
-    return { type: "content_block_delta", index, delta: { type: "text_delta", text } } as unknown as StreamEvent
+    if (!text) return []
+    return [{ type: "content_block_delta", index, delta: { type: "text_delta", text } } as unknown as StreamEvent]
   }
   if (type === "server_tool_use" || type === "tool_use") {
-    return {
-      type: "content_block_delta",
-      index,
-      delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input ?? {}) },
-    } as unknown as StreamEvent
+    return [
+      {
+        type: "content_block_delta",
+        index,
+        delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input ?? {}) },
+      } as unknown as StreamEvent,
+    ]
+  }
+  if (type === "thinking") {
+    // Mirror a correct Anthropic thinking stream: thinking_delta (if any text)
+    // then signature_delta carrying the signature. The start frame is empty (see
+    // buildStartContentBlock), so the accumulator and standard clients rebuild
+    // the block from these deltas. Defensive — see buildStartContentBlock.
+    const deltas: Array<StreamEvent> = []
+    const thinking = typeof block.thinking === "string" ? block.thinking : ""
+    if (thinking) deltas.push({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking } } as unknown as StreamEvent)
+    const signature = typeof block.signature === "string" ? block.signature : ""
+    if (signature) deltas.push({ type: "content_block_delta", index, delta: { type: "signature_delta", signature } } as unknown as StreamEvent)
+    return deltas
   }
   // web_search_tool_result and other server-tool result blocks complete at start.
-  return undefined
+  return []
 }
 
 // ============================================================================

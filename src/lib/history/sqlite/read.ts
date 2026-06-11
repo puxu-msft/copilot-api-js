@@ -9,12 +9,29 @@ import type {
 import { getDatabase } from "./connection"
 import {
   //
-  deserializeEntry,
+  assembleFullEntry,
   type EntryRow,
+  type StageRow,
 } from "./serialize"
 
 /** Portable bind-parameter type for SQLite (matches better-sqlite3 and bun:sqlite). */
 type SqlBinding = string | number | bigint | Buffer | null
+
+/** Batch-load stage rows for a set of entry ids, grouped by entry_id (avoids N+1). */
+function loadStagesFor(db: ReturnType<typeof getDatabase>, ids: Array<string>): Map<string, Array<StageRow>> {
+  const map = new Map<string, Array<StageRow>>()
+  if (ids.length === 0) return map
+  const placeholders = ids.map(() => "?").join(",")
+  const rows = db
+    .prepare(`SELECT entry_id, stage, attempt_index, created_at, blob_gz FROM entry_stages WHERE entry_id IN (${placeholders})`)
+    .all(...ids) as Array<StageRow>
+  for (const r of rows) {
+    const list = map.get(r.entry_id)
+    if (list) list.push(r)
+    else map.set(r.entry_id, [r])
+  }
+  return map
+}
 
 interface WhereClause {
   sql: string
@@ -56,6 +73,10 @@ function applyWhere(opts: QueryOptions | undefined): WhereClause {
     const pattern = `%${opts.search}%`
     params.push(pattern, pattern)
   }
+  if (opts?.pid !== undefined) {
+    where.push("pid = ?")
+    params.push(opts.pid)
+  }
   const sql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""
   return { sql, params }
 }
@@ -65,7 +86,11 @@ export function queryEntries(opts?: QueryOptions): Array<HistoryEntry> {
   const { sql, params } = applyWhere(opts)
   const limit = opts?.limit ?? 100
   const rows = db.prepare(`SELECT * FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...params, limit, 0) as Array<EntryRow>
-  return rows.map((r) => deserializeEntry(r))
+  const stagesById = loadStagesFor(
+    db,
+    rows.map((r) => r.id),
+  )
+  return rows.map((r) => assembleFullEntry(r, stagesById.get(r.id) ?? []))
 }
 
 type SummaryRow = Omit<EntryRow, "blob_gz">
@@ -129,7 +154,8 @@ export function getEntryById(id: string): HistoryEntry | undefined {
   const db = getDatabase()
   const row = db.prepare("SELECT * FROM entries_v2 WHERE id = ?").get(id) as EntryRow | undefined
   if (!row) return undefined
-  return deserializeEntry(row)
+  const stages = loadStagesFor(db, [id]).get(id) ?? []
+  return assembleFullEntry(row, stages)
 }
 
 export function queryEntryCount(opts?: QueryOptions): number {

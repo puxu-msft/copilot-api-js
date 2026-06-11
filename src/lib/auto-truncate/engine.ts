@@ -352,8 +352,8 @@ const COMPRESSED_SUMMARY_LENGTH = 500
  * with a truncated summary of their content, instead of letting them
  * get sliced into broken XML fragments by character-level truncation.
  */
-export function compressToolResultContent(content: string): string {
-  if (content.length <= LARGE_TOOL_RESULT_THRESHOLD) {
+export function compressToolResultContent(content: string, threshold: number = LARGE_TOOL_RESULT_THRESHOLD): string {
+  if (content.length <= threshold) {
     return content
   }
 

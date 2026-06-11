@@ -71,6 +71,7 @@ function realAutoTruncateStrategy() {
       blocksRemoved: 0,
       systemReminderRemovals: 0,
     }),
+    countTokens: async (payload): Promise<number> => payload.messages.length * 100,
     isEnabled: () => true,
     label: "test-integration",
   })

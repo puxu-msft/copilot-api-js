@@ -25,8 +25,15 @@ import {
 } from "./in-flight"
 import {
   //
+  extractStagePayloads,
+  type StagePayload,
+} from "./sqlite/serialize"
+import {
+  //
   clearAllEntries,
   insertCompletedEntry,
+  upsertHeadRow,
+  upsertStageRow,
 } from "./sqlite/write"
 import { historyState } from "./state"
 import { getStats } from "./stats"
@@ -107,6 +114,44 @@ export function finalizeEntry(id: string): void {
   removeInFlight(id)
   notifyEntryUpdated(toEntrySummary(entry))
   notifyStatsUpdated(getStats())
+}
+
+/**
+ * Eager incremental persistence: write the head row (+ whatever stage rows are
+ * available, typically inbound_request) at request START, in one transaction so
+ * the head exists before any stage row (FK). This is what makes a SIGKILL /
+ * crash leave a discoverable SQLite row (status=pending) instead of nothing.
+ * Best-effort: a persistence error must never break request handling.
+ */
+export function persistEntryEager(entry: HistoryEntry): void {
+  if (!historyState.enabled) return
+  try {
+    upsertHeadRow(entry, entry.state, extractStagePayloads(entry))
+  } catch (err: unknown) {
+    consola.warn("[history] eager head persist failed", err)
+  }
+}
+
+/** Incremental head-row status update (on each lifecycle transition). Best-effort. */
+export function persistEntryStatus(id: string): void {
+  if (!historyState.enabled) return
+  const entry = getInFlight(id)
+  if (!entry) return
+  try {
+    upsertHeadRow(entry, entry.state)
+  } catch (err: unknown) {
+    consola.warn("[history] head status persist failed", err)
+  }
+}
+
+/** Incremental per-attempt stage persistence (head row must already exist). Best-effort. */
+export function persistEntryStages(id: string, stages: Array<StagePayload>): void {
+  if (!historyState.enabled || stages.length === 0) return
+  try {
+    for (const stage of stages) upsertStageRow(id, stage)
+  } catch (err: unknown) {
+    consola.warn("[history] stage persist failed", err)
+  }
 }
 
 export function clearHistory(): void {

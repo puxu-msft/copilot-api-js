@@ -10,6 +10,8 @@ const EMPTY_STATS: HistoryStats = {
   totalRequests: 0,
   successfulRequests: 0,
   failedRequests: 0,
+  abortedRequests: 0,
+  interruptedRequests: 0,
   totalInputTokens: 0,
   totalOutputTokens: 0,
   averageDurationMs: 0,
@@ -19,6 +21,14 @@ const EMPTY_STATS: HistoryStats = {
   activeSessions: 0,
 }
 
+/**
+ * Eager persistence writes in-progress head rows (pending/executing/streaming).
+ * Stats count terminal requests only, so totalRequests stays consistent with
+ * "completed + failed (+ aborted + interrupted)" rather than counting requests
+ * still in flight.
+ */
+const NOT_ACTIVE = `status NOT IN ('pending','executing','streaming')`
+
 export function computeStats(): HistoryStats {
   if (!isDatabaseOpen()) return EMPTY_STATS
   const db = getDatabase()
@@ -26,17 +36,21 @@ export function computeStats(): HistoryStats {
   const totals = db
     .prepare(
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-              SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
+              SUM(CASE WHEN status = 'completed'   THEN 1 ELSE 0 END) AS completed,
+              SUM(CASE WHEN status = 'failed'      THEN 1 ELSE 0 END) AS failed,
+              SUM(CASE WHEN status = 'aborted'     THEN 1 ELSE 0 END) AS aborted,
+              SUM(CASE WHEN status = 'interrupted' THEN 1 ELSE 0 END) AS interrupted,
               COALESCE(SUM(input_tokens), 0)  AS total_input,
               COALESCE(SUM(output_tokens), 0) AS total_output,
               COALESCE(AVG(duration_ms), 0)   AS avg_duration
-         FROM entries_v2`,
+         FROM entries_v2 WHERE ${NOT_ACTIVE}`,
     )
     .get() as {
     total: number
     completed: number | null
     failed: number | null
+    aborted: number | null
+    interrupted: number | null
     total_input: number
     total_output: number
     avg_duration: number
@@ -45,14 +59,14 @@ export function computeStats(): HistoryStats {
   const perModel = db
     .prepare(
       `SELECT model, COUNT(*) AS count
-         FROM entries_v2 WHERE model IS NOT NULL GROUP BY model`,
+         FROM entries_v2 WHERE model IS NOT NULL AND ${NOT_ACTIVE} GROUP BY model`,
     )
     .all() as Array<{ model: string; count: number }>
 
   const perEndpoint = db
     .prepare(
       `SELECT endpoint, COUNT(*) AS count
-         FROM entries_v2 WHERE endpoint IS NOT NULL GROUP BY endpoint`,
+         FROM entries_v2 WHERE endpoint IS NOT NULL AND ${NOT_ACTIVE} GROUP BY endpoint`,
     )
     .all() as Array<{ endpoint: string; count: number }>
 
@@ -61,7 +75,7 @@ export function computeStats(): HistoryStats {
       `SELECT strftime('%Y-%m-%dT%H:00:00Z', started_at / 1000, 'unixepoch') AS hour,
               COUNT(*) AS count
          FROM entries_v2
-        WHERE started_at >= ?
+        WHERE started_at >= ? AND ${NOT_ACTIVE}
         GROUP BY hour
         ORDER BY hour ASC`,
     )
@@ -79,6 +93,8 @@ export function computeStats(): HistoryStats {
     totalRequests: totals.total,
     successfulRequests: totals.completed ?? 0,
     failedRequests: totals.failed ?? 0,
+    abortedRequests: totals.aborted ?? 0,
+    interruptedRequests: totals.interrupted ?? 0,
     totalInputTokens: totals.total_input,
     totalOutputTokens: totals.total_output,
     averageDurationMs: Math.round(totals.avg_duration),

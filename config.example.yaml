@@ -17,9 +17,7 @@
 # ============================================================================
 # GHC API base URL
 # ============================================================================
-# Explicit upstream GitHub Copilot API base URL. When set, this overrides the
-# URL derived from --account-type. Useful for self-hosted GHC proxies or
-# unusual deployments. Must be http:// or https://.
+# Explicit upstream GitHub Copilot API base URL. When set, this overrides the URL derived from --account-type. Useful for self-hosted GHC proxies or unusual deployments. Must be http:// or https://.
 # CLI --ghc-api-base-url takes precedence over this setting.
 # NOT hot-reloadable (requires restart).
 
@@ -29,43 +27,37 @@
 # Model
 # ============================================================================
 # Model name overrides: request model → target model.
+# This is the SOLE source of model-name mapping — there are no built-in defaults.
+# Short aliases (opus/sonnet/haiku) resolve ONLY if you map them here; an unmapped alias is sent upstream as-is and rejected.
 #
-# Override values can be:
-#   - Full model names: "claude-opus-4.6", "claude-sonnet-4.5"
-#   - Short aliases: "opus", "sonnet", "haiku" (resolved to best available)
+# Override values can be full names ("claude-opus-4.6") or short aliases that are themselves mapped here.
+# Keys/values are spelling-insensitive: "4.6" and "4-6" (and case) match the same model; listing both keys → the later wins (with a warning).
 #
-# Matching order: raw request name checked first, then resolved (normalized) name.
+# Matching order:
+#   1. Whole name (e.g. "opus", "opus-1m", "claude-opus-4.6").
+#   2. Modifier suffix: "opus[1m]" → "opus-1m"; if no "opus-1m" mapping exists but "opus" is mapped, the base is redirected and "-1m" is re-attached.
+#   3. Hyphen/dot + date-suffix normalization, then a final override check.
 #
-# Built-in defaults (always active unless overridden):
-#   opus   → claude-opus-4.6
-#   sonnet → claude-sonnet-4.6
-#   haiku  → claude-haiku-4.5
-#
-# If the target model is not in the available models list, it is treated as an alias and resolved again.
-# If still unavailable, the best model in the same family is used as fallback.
+# Only the exact keys listed are affected — NO family-level propagation. To redirect a whole family, list each canonical name.
+# If a target isn't in the available models list it's treated as an alias and resolved again; if still unavailable it's passed through (the upstream then rejects it).
 
 model_overrides:
 
   # Use latest opus
   opus: claude-opus-4.8
+  opus-1m: claude-opus-4.8
   claude-opus-4.5: claude-opus-4.8
   claude-opus-4.6: claude-opus-4.8
   claude-opus-4.7: claude-opus-4.8
-  claude-opus-4-5: claude-opus-4.8
-  claude-opus-4-6: claude-opus-4.8
-  claude-opus-4-7: claude-opus-4.8
 
   # Use latest sonnet
   sonnet: claude-sonnet-4.6
   claude-sonnet-4.5: claude-sonnet-4.6
-  claude-sonnet-4-5: claude-sonnet-4.6
 
   # Redirect all sonnet requests to best opus
   # sonnet: claude-opus-4.6
   # claude-sonnet-4.5: claude-opus-4.6
   # claude-sonnet-4.6: claude-opus-4.6
-  # claude-sonnet-4-5: claude-opus-4.6
-  # claude-sonnet-4-6: claude-opus-4.6
 
   # Upgrade haiku to sonnet
   # haiku: claude-haiku-4.5
@@ -73,39 +65,10 @@ model_overrides:
   claude-haiku-4.5: claude-sonnet-4.6
 
 # ============================================================================
-# Model Preference (per-family priority order)
-# ============================================================================
-# Per-family preferred-model order used when resolving short aliases
-# (opus/sonnet/haiku) and family-level fallbacks. The first entry that exists
-# in the live `/models` catalog wins; if none exist, the first entry is
-# returned as a best-effort fallback.
-#
-# Semantics: per-family REPLACEMENT. Supplying `opus: [...]` replaces the
-# built-in opus list entirely. Families omitted from this section keep their
-# built-in defaults (shown below).
-#
-# Use this to pick up newly released Claude models without recompiling, or to
-# demote a model that misbehaves on your account.
-
-model_preference:
-  opus:
-    - claude-opus-4.8
-    - claude-opus-4.7-1m-internal
-    - claude-opus-4.7
-    - claude-opus-4.6
-    - claude-opus-4.5
-  sonnet:
-    - claude-sonnet-4.6
-    - claude-sonnet-4.5
-  haiku:
-    - claude-haiku-4.5
-
-# ============================================================================
 # Disabled Models
 # ============================================================================
-# Hide specific models from the available list by ID, even when Copilot
-# advertises them. Use this to suppress deprecated/legacy models so they
-# don't show up in `/models`, the UI picker, or model resolution fallbacks.
+# Hide specific models from the available list by ID, even when Copilot advertises them.
+# Use this to suppress deprecated/legacy models so they don't show up in `/models`, the UI picker, or model resolution fallbacks.
 # Match is exact against `Model.id`. Empty/omitted = nothing disabled.
 
 disabled_models:
@@ -163,7 +126,7 @@ stream_idle_timeout: 300
 
 # Max seconds from request start to HTTP response headers (0 = no timeout).
 # Applies to all upstream API clients.
-fetch_timeout: 300
+fetch_timeout: 900
 
 # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
 # Safety net for requests that never complete/fail normally.
@@ -180,7 +143,7 @@ model_refresh_interval: 900
 
 shutdown:
   # Phase 2: seconds to wait for in-flight requests to complete naturally (default: 60)
-  graceful_wait: 60
+  graceful_wait: 300
   # Phase 3: seconds to wait after abort signal for handlers to wrap up (default: 120)
   abort_wait: 120
 
@@ -190,8 +153,15 @@ shutdown:
 # Control history recording behavior.
 
 history:
-  # Maximum number of entries to keep in SQLite (0 = unlimited, default: 200)
-  limit: 50
+  # Successful (non-failed) entries kept in SQLite (0 = unlimited, default: 50).
+  # The reaper trims each status bucket independently, so a burst of failures
+  # never evicts useful successful history (and vice versa).
+  success_limit: 50
+  # Failed entries kept in SQLite — larger by default since failures carry more
+  # diagnostic value (0 = unlimited, default: 200).
+  failure_limit: 200
+  # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600).
+  reaper_interval: 600
 
 # ============================================================================
 # Web Search (double-hop)
@@ -239,6 +209,27 @@ anthropic:
   #   empty_any:      remove any thinking block with an empty signature, regardless of text
   #   false:          disable the pass (pass corrupt blocks through unchanged)
   thinking_block_sanitize_check: empty_thinking
+
+  # Coerce legacy thinking params for adaptive-only models (opus 4.6/4.7/4.8).
+  # Old clients send thinking:{type:enabled,budget_tokens} which these models reject
+  # with a 400 demanding type:adaptive. This rewrites enabled→adaptive on the wire.
+  #   basic:       coerce to {type:adaptive}, drop budget_tokens (default, mirrors GHC)
+  #   best_effort: also map budget_tokens to output_config.effort (only if the client
+  #                didn't send an explicit effort) — heuristic, GHC doesn't do this
+  #   false:       disable — pass client thinking config through unchanged
+  coerce_adaptive_thinking: basic
+
+  # Client compatibility shim for the streaming thinking frame some Copilot upstreams emit:
+  # content_block_start {type:thinking, thinking:"", signature:S} with NO signature_delta.
+  # The upstream is the protocol authority; standard clients (Claude Code, Anthropic SDK)
+  # take a thinking block's signature ONLY from a signature_delta, so they drop the embedded
+  # signature and echo back a corrupt {thinking:"", signature:""} block that the upstream then
+  # rejects. This re-shapes the frame on the client-facing stream only (history keeps the raw
+  # upstream frames).
+  #   signature_delta:   emit an empty thinking start + a synthesized signature_delta (default, standard shape)
+  #   redacted_thinking: rewrite the block as redacted_thinking{data:S}
+  #   false:             passthrough (no compat shim)
+  thinking_signature_compat: signature_delta
 
   # Strip <system-reminder> tags from Read tool results
   strip_read_tool_result_tags: false
@@ -404,6 +395,22 @@ rate_limiter:
 # Auto-Truncate
 # ============================================================================
 # Control auto-truncation behavior when context limits are hit.
+
+# Reactive auto-truncate (nested section). When `enabled` and an upstream token-limit error (400/413) is
+# returned, retry with a truncated payload instead of surfacing the error. Spans both the Anthropic and Chat
+# Completions retry pipelines. Hot-reloadable. The CLI flag --auto-truncate / --no-auto-truncate overrides
+# `enabled` when passed. The tuning fields below are config-only.
+# auto_truncate:
+#   # Enable reactive auto-truncate. Default: false.
+#   enabled: true
+#   # Truncation target as a fraction of the upstream-reported limit (target = limit × factor). Range (0, 1];
+#   # smaller = safer / removes more, larger = leaner but closer to the limit. 0 is invalid. Default: 0.9.
+#   target_factor: 0.9
+#   # Max reactive auto-truncate retries per request. 0 = a single attempt, no retry. Default: 5.
+#   max_retries: 5
+#   # Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress
+#   # everything. Default: 10000.
+#   compress_threshold: 10000
 
 # Compress old tool_result content before truncating messages. When enabled, large tool_result content blocks
 # are compressed to reduce context size before resorting to message removal. Default: true.

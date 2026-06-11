@@ -35,15 +35,12 @@ import type {
   StreamEvent,
 } from "~/types/api/anthropic"
 
-import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import {
   //
   type AnthropicAutoTruncateResult,
-  autoTruncateAnthropic,
 } from "~/lib/anthropic/auto-truncate"
 import {
   //
-  createAnthropicMessages,
   type AnthropicMessageResponse,
 } from "~/lib/anthropic/client"
 import {
@@ -55,6 +52,11 @@ import {
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { preprocessTools } from "~/lib/anthropic/message-tools"
+import {
+  //
+  type AnthropicSanitizeFn,
+  runAnthropicPipeline,
+} from "~/lib/anthropic/pipeline"
 import {
   //
   preprocessAnthropicMessages,
@@ -79,13 +81,13 @@ import {
   processAnthropicStream,
 } from "~/lib/anthropic/stream"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { applyThinkingSignatureCompat } from "~/lib/anthropic/thinking-signature-compat"
 import {
   //
   handleWarmupRequest,
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search"
-import { MAX_AUTO_TRUNCATE_RETRIES } from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
@@ -98,22 +100,7 @@ import {
   createTruncationMarker,
   prependMarkerToResponse,
 } from "~/lib/request"
-import { logPayloadSizeInfoAnthropic } from "~/lib/request/payload"
-import {
-  //
-  executeRequestPipeline,
-  type FormatAdapter,
-} from "~/lib/request/pipeline"
-import {
-  //
-  createAutoTruncateStrategy,
-  type TruncateResult,
-} from "~/lib/request/strategies/auto-truncate"
-import { createBodyFieldRejectionStrategy } from "~/lib/request/strategies/context-management-retry"
-import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferred-tool-retry"
-import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
-import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
-import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
+import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { state } from "~/lib/state"
 import {
   //
@@ -229,7 +216,7 @@ export async function handleMessages(c: Context) {
   if (state.webSearchEnabled && payloadHasWebSearch(anthropicPayload)) {
     consola.debug("[WebSearch] Intercepting request with native web_search tool")
     const selectedModel = state.modelIndex.get(anthropicPayload.model)
-    return handleWebSearchCompletion(c, anthropicPayload, reqCtx, selectedModel)
+    return handleWebSearchCompletion(c, anthropicPayload, reqCtx, selectedModel, preprocessInfo)
   }
 
   return handleDirectAnthropicCompletion(c, anthropicPayload, reqCtx, preprocessInfo)
@@ -240,7 +227,7 @@ export async function handleMessages(c: Context) {
 // ============================================================================
 
 // Handle completion using direct Anthropic API (no translation needed)
-async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: MessagesPayload, reqCtx: RequestContext, preprocessInfo: PreprocessInfo) {
+export async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: MessagesPayload, reqCtx: RequestContext, preprocessInfo: PreprocessInfo) {
   consola.debug("Using direct Anthropic API path for model:", anthropicPayload.model)
 
   // Find model for auto-truncate and usage adjustment
@@ -250,29 +237,25 @@ async function handleDirectAnthropicCompletion(c: Context, anthropicPayload: Mes
 
   const headersCapture: HeadersCapture = {}
   const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
-  const betaProbe = createBetaProbe(clientAnthropicBeta)
-  const adapter = buildAnthropicAdapter({
-    payload: anthropicPayload,
-    selectedModel,
-    headersCapture,
-    clientAnthropicBeta,
-    reqCtx,
-    betaProbe,
-  })
-  const strategies = buildAnthropicStrategies({ betaProbe, reqCtx })
+
+  // Direct path sanitize: full pipeline (preprocessTools + tool-name + sanitize),
+  // shared by the adapter's sanitize and auto-truncate's resanitize.
+  const directSanitize: AnthropicSanitizeFn = (p) => sanitizeAnthropicMessages(applyAnthropicToolNameSanitization(preprocessTools(p), reqCtx.toolNameMapper))
 
   // Track truncation result for non-streaming response marker
   let truncateResult: AnthropicAutoTruncateResult | undefined
 
   try {
-    const result = await executeRequestPipeline({
-      adapter,
-      strategies,
+    const result = await runAnthropicPipeline({
       payload: initialSanitized,
       originalPayload: anthropicPayload,
-      model: selectedModel,
-      maxRetries: MAX_AUTO_TRUNCATE_RETRIES,
+      selectedModel,
+      clientAnthropicBeta,
+      sanitize: directSanitize,
+      resanitize: directSanitize,
+      headersCapture,
       requestContext: reqCtx,
+      maxRetries: state.autoTruncateMaxRetries,
       onRetry: (_attempt, _strategyName, newPayload, meta) => {
         const retryTruncateResult = meta?.truncateResult as AnthropicAutoTruncateResult | undefined
         if (retryTruncateResult) {
@@ -345,107 +328,6 @@ function runInitialSanitizationAndRecord(
   }
 
   return { initialSanitized, initialSanitizationInfo }
-}
-
-/** Split a comma-separated `anthropic-beta` header into trimmed, non-empty tokens. */
-function splitBetaHeader(value: string | undefined): Array<string> {
-  if (!value) return []
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-}
-
-/**
- * Tracks the betas actually sent upstream on the latest attempt and exposes
- * them as ordered probe candidates for the laconic `invalid beta flag` path.
- * Candidates are ordered by suspicion priority — client-supplied betas first
- * (they change most often and are the usual culprits), then locally-injected
- * ones — each group preserving outbound order.
- */
-interface BetaProbe {
-  recordOutbound(headers: Record<string, string>): void
-  getCandidates(): Array<string>
-}
-
-function createBetaProbe(clientAnthropicBeta: string | undefined): BetaProbe {
-  const clientSet = new Set(splitBetaHeader(clientAnthropicBeta))
-  let outbound: Array<string> = []
-  return {
-    recordOutbound(headers) {
-      outbound = splitBetaHeader(headers["anthropic-beta"])
-    },
-    getCandidates() {
-      return outbound
-        .map((beta, index) => ({ beta, index, clientRank: clientSet.has(beta) ? 0 : 1 }))
-        .sort((a, b) => a.clientRank - b.clientRank || a.index - b.index)
-        .map((e) => e.beta)
-    },
-  }
-}
-
-interface BuildAnthropicAdapterArgs {
-  payload: MessagesPayload
-  selectedModel: ReturnType<typeof state.modelIndex.get>
-  headersCapture: HeadersCapture
-  clientAnthropicBeta: string | undefined
-  reqCtx: RequestContext
-  betaProbe: BetaProbe
-}
-
-/** Build the FormatAdapter used by executeRequestPipeline for Anthropic. */
-function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAdapter<MessagesPayload> {
-  const { payload: anthropicPayload, selectedModel, headersCapture, clientAnthropicBeta, reqCtx, betaProbe } = args
-  return {
-    format: "anthropic-messages",
-    sanitize: (p) => sanitizeAnthropicMessages(applyAnthropicToolNameSanitization(preprocessTools(p), reqCtx.toolNameMapper)),
-    execute: (p, hints) =>
-      executeWithAdaptiveRateLimit(() =>
-        createAnthropicMessages(p, {
-          resolvedModel: selectedModel,
-          headersCapture,
-          clientAnthropicBeta,
-          // PrepareHints from the previous retry attempt — forwarded into
-          // request preparation so the next wire payload deterministically
-          // excludes the offending fields/betas, without depending on the
-          // negotiation cache as the sole communication channel.
-          excludeBetas: hints?.excludeBetas,
-          rejectFields: hints?.rejectFields,
-          onPrepared: ({ wire, headers }) => {
-            // Capture the betas actually sent so the beta-retry strategy can
-            // probe them if the upstream returns a laconic `invalid beta flag`.
-            betaProbe.recordOutbound(headers)
-            reqCtx.setAttemptWireRequest({
-              model: typeof wire.model === "string" ? wire.model : anthropicPayload.model,
-              messages: Array.isArray(wire.messages) ? wire.messages : [],
-              payload: wire,
-              headers,
-              format: "anthropic-messages",
-            })
-          },
-        }),
-      ),
-    logPayloadSize: (p) => logPayloadSizeInfoAnthropic(p, selectedModel),
-  }
-}
-
-/** Build the retry strategy list for Anthropic completions. */
-function buildAnthropicStrategies(args: { betaProbe: BetaProbe; reqCtx: RequestContext }) {
-  return [
-    createNetworkRetryStrategy<MessagesPayload>(),
-    createTokenRefreshStrategy<MessagesPayload>(),
-    createBodyFieldRejectionStrategy<MessagesPayload>(),
-    createUnsupportedBetaRetryStrategy<MessagesPayload>({
-      getProbeCandidates: () => args.betaProbe.getCandidates(),
-    }),
-    createDeferredToolRetryStrategy<MessagesPayload>(),
-    createAutoTruncateStrategy<MessagesPayload>({
-      truncate: (p, model, opts) => autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,
-      resanitize: (p) => sanitizeAnthropicMessages(applyAnthropicToolNameSanitization(preprocessTools(p), args.reqCtx.toolNameMapper)),
-      isEnabled: () => state.autoTruncate,
-      label: "Anthropic",
-    }),
-  ]
 }
 
 interface RecordRetryPipelineStateArgs {
@@ -558,8 +440,8 @@ function anthropicStreamErrorType(error: unknown): string {
   }
 }
 
-/** Handle streaming direct Anthropic response (passthrough SSE events) */
-async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStreamHandlerOptions) {
+/** Handle streaming direct Anthropic response (passthrough SSE events). Exported for handler-level abort/settle tests. */
+export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStreamHandlerOptions) {
   const { stream, response, anthropicPayload, reqCtx, clientAbortSignal } = opts
   const acc = createAnthropicStreamAccumulator()
 
@@ -641,12 +523,20 @@ async function handleDirectAnthropicStreamingResponse(opts: DirectAnthropicStrea
       reqCtx.complete(responseData)
     }
   } catch (error) {
-    consola.error("Direct Anthropic stream error:", error)
-    // Record what was streamed/forwarded so far BEFORE fail() finalizes history,
-    // so a thrown mid-stream error still leaves the partial wire timeline (原则3).
+    // Record what was streamed/forwarded so far BEFORE settling history, so a
+    // mid-stream interruption still leaves the partial wire timeline (原则3).
     reqCtx.setSseEvents(sseEvents)
     reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    reqCtx.fail(acc.model || anthropicPayload.model, error)
+
+    // Uniform terminal settle: client disconnect → `aborted` (return, don't
+    // write to the closed stream); else → `fail()` and emit the error frame.
+    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined }
+    if (settleStreamingFailure({ reqCtx, error, model: acc.model || anthropicPayload.model, partial })) {
+      consola.debug("[Stream] Client disconnected mid-stream — recording aborted")
+      return
+    }
+
+    consola.error("Direct Anthropic stream error:", error)
 
     // Best-effort flush of buffered tool_use deltas before the error frame, so
     // the client doesn't silently lose fragments the decoder was holding. The
@@ -763,6 +653,25 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
     const delta = parsed.delta as { type: string; text?: string }
     if (delta.type === "text_delta" && delta.text) {
       checkRepetition(delta.text)
+    }
+  }
+
+  // Apply the thinking-signature compatibility shim for the "signature embedded
+  // in content_block_start" frame some Copilot upstreams send with no
+  // signature_delta — re-shaped on the CLIENT-FACING stream only so standard
+  // clients keep the signature. The upstream raw frame was already recorded into
+  // `sseEvents` above, so history keeps it; only what we forward changes. Thinking
+  // frames pass through the tool-input decoder untouched (it only buffers
+  // tool_use), so bypassing it for the replacement frames is safe; they still go
+  // through forwardToClient for server-tool index remapping consistency.
+  if (parsed) {
+    const compatFrames = applyThinkingSignatureCompat(parsed, state.thinkingSignatureCompat)
+    if (compatFrames) {
+      for (const repl of compatFrames) {
+        const replRaw: ServerSentEventMessage = { ...rawEvent, data: JSON.stringify(repl) }
+        await forwardToClient(replRaw, repl, serverToolFilter, stream, forwardedSseEvents, streamState.streamStartMs)
+      }
+      return
     }
   }
 

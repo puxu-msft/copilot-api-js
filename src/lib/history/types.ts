@@ -12,11 +12,23 @@ import type {
   WebSearchToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages"
 
+import type { ProcessIdentity } from "~/lib/process-identity"
+
 /** Supported API endpoint types */
 export type EndpointType = "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content"
 
 export type RequestTransport = "http" | "upstream-ws" | "upstream-ws-fallback"
-export type RequestLifecycleState = "pending" | "executing" | "streaming" | "completed" | "failed"
+/**
+ * Lifecycle state of a request, also used as the persisted `status` column.
+ *
+ * Terminal states: `completed` (upstream 200), `failed` (error), `aborted`
+ * (client disconnected mid-stream — distinct from a real upstream failure),
+ * `interrupted` (a non-terminal row left by a dead process, reclassified on
+ * the next startup / by the runtime stale sweep — see history reaper).
+ * Non-terminal (active) states: `pending`, `executing`, `streaming` — these
+ * are deliberately excluded from reaper buckets and aggregate counts.
+ */
+export type RequestLifecycleState = "pending" | "executing" | "streaming" | "completed" | "failed" | "aborted" | "interrupted"
 
 /** Message types for full content storage */
 export interface MessageContent {
@@ -169,6 +181,33 @@ export interface SystemBlock {
   cache_control?: { type: string } | null
 }
 
+/**
+ * A request leg as recorded in history (effectiveRequest / outboundRequest, and
+ * the per-attempt variants). `payload` is the full wire/effective body; the
+ * other fields are projected for convenience. Authoritative single definition —
+ * top-level and per-attempt both reference this (principle 9).
+ */
+export interface RequestLegData {
+  model?: string
+  format?: EndpointType
+  messageCount?: number
+  messages?: Array<MessageContent>
+  system?: string | Array<SystemBlock>
+  payload?: unknown
+}
+
+/** Upstream → Proxy response as recorded in history (top-level and per-attempt). */
+export interface OutboundResponseData {
+  success: boolean
+  model: string
+  usage: UsageData
+  stop_reason?: string
+  error?: string
+  status?: number
+  content: MessageContent | null
+  rawBody?: string
+}
+
 export interface HistoryEntry {
   id: string
   sessionId?: string
@@ -185,6 +224,13 @@ export interface HistoryEntry {
   durationMs?: number
   transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
+  /**
+   * Which process (and code version) served this request. Injected once at
+   * insert time; survives the in-flight merge chain to persistence. Lets every
+   * record self-describe its origin process, so cross-restart attribution never
+   * relies on comparing timestamps against process start times.
+   */
+  process?: ProcessIdentity
   /** Client → Proxy: the client's raw inbound request. */
   inboundRequest: {
     model?: string
@@ -196,34 +242,11 @@ export interface HistoryEntry {
     temperature?: number
     thinking?: unknown
   }
-  effectiveRequest?: {
-    model?: string
-    format?: EndpointType
-    messageCount?: number
-    messages?: Array<MessageContent>
-    system?: string | Array<SystemBlock>
-    payload?: unknown
-  }
-  /** Proxy → Upstream: the final wire request sent upstream. */
-  outboundRequest?: {
-    model?: string
-    format?: EndpointType
-    messageCount?: number
-    messages?: Array<MessageContent>
-    system?: string | Array<SystemBlock>
-    payload?: unknown
-  }
-  /** Upstream → Proxy: the upstream-original response. */
-  outboundResponse?: {
-    success: boolean
-    model: string
-    usage: UsageData
-    stop_reason?: string
-    error?: string
-    status?: number
-    content: MessageContent | null
-    rawBody?: string
-  }
+  effectiveRequest?: RequestLegData
+  /** Proxy → Upstream: the final wire request sent upstream (final attempt). */
+  outboundRequest?: RequestLegData
+  /** Upstream → Proxy: the upstream-original response (final attempt). */
+  outboundResponse?: OutboundResponseData
   /** Proxy → Client: response as actually forwarded to the client, post-rewrite. */
   inboundResponse?: ForwardedResponse
   /** HTTP headers captured at each leg of the proxy pipeline */
@@ -248,6 +271,17 @@ export interface HistoryEntry {
     truncation?: TruncationInfo
     sanitization?: SanitizationInfo
     effectiveMessageCount?: number
+    /**
+     * Full per-attempt request/response bodies (Bug 3 fix). Reconstructed from
+     * per-attempt stage rows (effective_request / outbound_request /
+     * outbound_response with attempt_index = this attempt's index). Optional:
+     * absent on legacy single-blob entries and on partially-persisted
+     * (interrupted) attempts. The top-level outboundRequest/outboundResponse/
+     * effectiveRequest mirror the FINAL attempt; these preserve every attempt.
+     */
+    effectiveRequest?: RequestLegData
+    wireRequest?: RequestLegData
+    response?: OutboundResponseData
   }>
 }
 
@@ -278,6 +312,8 @@ export interface QueryOptions {
   to?: number
   search?: string
   sessionId?: string
+  /** Filter to records produced by a specific process (uses the pid SQL column). */
+  pid?: number
 }
 
 export interface HistoryResult {
@@ -304,6 +340,10 @@ export interface HistoryStats {
   totalRequests: number
   successfulRequests: number
   failedRequests: number
+  /** Client disconnected mid-stream (distinct from a service failure). */
+  abortedRequests: number
+  /** Non-terminal rows reclaimed from a dead/stuck process (crash orphans). */
+  interruptedRequests: number
   totalInputTokens: number
   totalOutputTokens: number
   averageDurationMs: number

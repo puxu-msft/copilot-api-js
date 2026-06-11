@@ -40,6 +40,12 @@ export function bootstrapTestRuntime() {
 
 export function resetTestRuntime() {
   _resetShutdownState()
+  // Re-initialize history (idempotent reopen of the SQLite DB) before clearing.
+  // A preceding test that called shutdownHistory()/closeDatabase() would otherwise
+  // leave the shared DB closed, so the next file's getHistory()/queryEntries()
+  // throws "database not initialized". initHistory() reopens it; clearHistory()
+  // then empties both the in-flight map and the table for a clean slate.
+  initHistory(true, 100)
   clearHistory()
   tuiLogger.clear()
   resetAdaptiveRateLimiter()

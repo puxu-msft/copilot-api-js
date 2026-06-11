@@ -58,6 +58,8 @@ function makeStats(overrides: Partial<HistoryStats> = {}): HistoryStats {
     totalRequests: 0,
     successfulRequests: 0,
     failedRequests: 0,
+    abortedRequests: 0,
+    interruptedRequests: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
     averageDurationMs: 0,
