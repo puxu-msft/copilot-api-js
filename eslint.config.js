@@ -121,4 +121,72 @@ export default defineConfigWithVueTs(
       "no-useless-assignment": "off",
     },
   },
+
+  // ── Observability subsystem dependency direction (RFC docs/rfc/observability-rewrite.md §2.2) ──
+  //
+  // Low-level subsystems mutate RequestContext and emit via injected scoped
+  // publishers received by DI; they never reach into the observability
+  // surface. Route handlers mutate ctx exclusively; sinks are off-limits.
+  // Sinks may not import each other. Only src/start.ts may construct the
+  // bus or mint scoped publishers (enforced by allow-list comment, not
+  // ESLint, since the patterns below already cover the access points).
+  //
+  // Notes:
+  // - `lib/context/*` is intentionally exempt — it owns the
+  //   `ScopedPublisher<"request">` injection point.
+  // - `lib/history/*` is exempt for the same reason (owns
+  //   `ScopedPublisher<"history">`).
+  // - `lib/shutdown.ts` and `lib/adaptive-rate-limiter.ts` are exempt for
+  //   `ScopedPublisher<"system">`.
+  {
+    files: ["src/lib/request/**/*.ts", "src/lib/anthropic/**/*.ts", "src/lib/openai/**/*.ts", "src/lib/gemini/**/*.ts", "src/lib/ws/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["~/lib/observability", "~/lib/observability/*"],
+              message:
+                "Low-level subsystems must not import ~/lib/observability/*. Mutate the injected RequestContext or accept a ScopedPublisher via DI — see RFC docs/rfc/observability-rewrite.md §2.2.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/routes/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["~/lib/observability/sinks", "~/lib/observability/sinks/*", "~/lib/observability/bus"],
+              message:
+                "Route handlers must mutate RequestContext exclusively — sinks and the bus are off-limits. Re-introducing direct route→sink calls would resurrect debt D2.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/lib/observability/sinks/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["~/lib/observability/sinks/*"],
+              message:
+                "Sinks must not import each other — cross-sink coupling must go through bus events. See RFC docs/rfc/observability-rewrite.md §2.2.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 )
