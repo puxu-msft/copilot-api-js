@@ -28,8 +28,8 @@ export interface AdaptiveRateLimiterConfig {
   maxRetryIntervalSeconds: number
   /** Interval between requests in rate-limited mode (default: 10s) */
   requestIntervalSeconds: number
-  /** Time after which to attempt recovery to normal mode (default: 10 minutes) */
-  recoveryTimeoutMinutes: number
+  /** Time after which to attempt recovery to normal mode (default: 600 seconds) */
+  recoveryTimeoutSeconds: number
   /** Number of consecutive successes needed to recover (default: 5) */
   consecutiveSuccessesForRecovery: number
   /** Gradual recovery steps: intervals to use before full speed (default: [5, 2, 1, 0]) */
@@ -40,7 +40,7 @@ const DEFAULT_CONFIG: AdaptiveRateLimiterConfig = {
   baseRetryIntervalSeconds: 10,
   maxRetryIntervalSeconds: 120,
   requestIntervalSeconds: 10,
-  recoveryTimeoutMinutes: 10,
+  recoveryTimeoutSeconds: 600,
   consecutiveSuccessesForRecovery: 5,
   gradualRecoverySteps: [5, 2, 1, 0], // 5s → 2s → 1s → full speed
 }
@@ -314,9 +314,9 @@ export class AdaptiveRateLimiter {
     // Check timeout
     if (this.rateLimitedAt) {
       const elapsed = Date.now() - this.rateLimitedAt
-      const timeout = this.config.recoveryTimeoutMinutes * 60 * 1000
+      const timeout = this.config.recoveryTimeoutSeconds * 1000
       if (elapsed >= timeout) {
-        consola.info(`[RateLimiter] ${this.config.recoveryTimeoutMinutes} minutes elapsed. Starting ramp-up.`)
+        consola.info(`[RateLimiter] ${this.config.recoveryTimeoutSeconds} seconds elapsed. Starting ramp-up.`)
         return true
       }
     }
@@ -595,13 +595,13 @@ export function initAdaptiveRateLimiter(config: Partial<AdaptiveRateLimiterConfi
   const baseRetry = config.baseRetryIntervalSeconds ?? DEFAULT_CONFIG.baseRetryIntervalSeconds
   const maxRetry = config.maxRetryIntervalSeconds ?? DEFAULT_CONFIG.maxRetryIntervalSeconds
   const interval = config.requestIntervalSeconds ?? DEFAULT_CONFIG.requestIntervalSeconds
-  const recovery = config.recoveryTimeoutMinutes ?? DEFAULT_CONFIG.recoveryTimeoutMinutes
+  const recovery = config.recoveryTimeoutSeconds ?? DEFAULT_CONFIG.recoveryTimeoutSeconds
   const successes = config.consecutiveSuccessesForRecovery ?? DEFAULT_CONFIG.consecutiveSuccessesForRecovery
   const steps = config.gradualRecoverySteps ?? DEFAULT_CONFIG.gradualRecoverySteps
 
   consola.info(
     `[RateLimiter] Initialized (backoff: ${baseRetry}s-${maxRetry}s, `
-      + `interval: ${interval}s, recovery: ${recovery}min or ${successes} successes, `
+      + `interval: ${interval}s, recovery: ${recovery}s or ${successes} successes, `
       + `gradual: [${steps.join("s, ")}s])`,
   )
 }

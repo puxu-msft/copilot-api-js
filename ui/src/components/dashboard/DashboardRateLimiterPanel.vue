@@ -19,16 +19,11 @@ function formatSeconds(value: number | null): string {
   return `${value}s`
 }
 
-function formatMinutes(value: number | null): string {
-  if (value === null) return "-"
-  return `${value} min`
-}
-
 const limiterConfig = computed(() => props.rateLimiter?.config ?? null)
 const retryBaseSeconds = computed(() => asNumber(limiterConfig.value?.baseRetryIntervalSeconds))
 const retryMaxSeconds = computed(() => asNumber(limiterConfig.value?.maxRetryIntervalSeconds))
 const requestIntervalSeconds = computed(() => asNumber(limiterConfig.value?.requestIntervalSeconds))
-const recoveryTimeoutMinutes = computed(() => asNumber(limiterConfig.value?.recoveryTimeoutMinutes))
+const recoveryTimeoutSeconds = computed(() => asNumber(limiterConfig.value?.recoveryTimeoutSeconds))
 const recoverySuccessTarget = computed(() => asNumber(limiterConfig.value?.consecutiveSuccessesForRecovery))
 const gradualRecoverySteps = computed(() => {
   const value = limiterConfig.value?.gradualRecoverySteps
@@ -66,7 +61,7 @@ const runtimeStatEntries = computed(() => {
         : "No explicit recovery-success threshold is exposed.",
       progress: recoveryProgress.value,
       progressFoot:
-        `Timeout fallback: ${formatMinutes(recoveryTimeoutMinutes.value)}. `
+        `Timeout fallback: ${formatSeconds(recoveryTimeoutSeconds.value)}. `
         + `Gradual release: ${gradualRecoverySteps.value.length > 0 ? gradualRecoverySteps.value.map((step) => `${step}s`).join(" -> ") : "-"}.`,
     },
     {
@@ -92,7 +87,7 @@ const configEntries = computed(() => {
           `${formatSeconds(retryBaseSeconds.value)} -> ${formatSeconds(retryMaxSeconds.value)}`
         : "-",
     },
-    { label: "Recovery Timeout", value: formatMinutes(recoveryTimeoutMinutes.value) },
+    { label: "Recovery Interval", value: formatSeconds(recoveryTimeoutSeconds.value) },
     {
       label: "Gradual Recovery",
       value: gradualRecoverySteps.value.length > 0 ? gradualRecoverySteps.value.map((step) => `${step}s`).join(" -> ") : "-",

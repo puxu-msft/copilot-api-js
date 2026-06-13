@@ -10,7 +10,6 @@ import {
   countAnthropicContentBlocks,
   filterEmptyAnthropicTextBlocks,
   filterEmptySystemTextBlocks,
-  filterEmptyThinkingBlocks,
 } from "./content-blocks"
 
 export interface SanitizationStats {
@@ -18,9 +17,11 @@ export interface SanitizationStats {
   orphanedToolResultCount: number
   fixedNameCount: number
   emptyTextBlocksRemoved: number
-  /** Corrupt (unsigned) thinking blocks dropped by the thinking_block_sanitize_check pass */
+  /** Corrupt (unsigned) thinking blocks dropped by the thinking_block_sanitize pass */
   emptyThinkingBlocksRemoved: number
   systemReminderRemovals: number
+  /** Inline `role:"system"` messages converted/dropped by system_messages_sanitize (NOT a block-removal count) */
+  inlineSystemConverted: number
   totalBlocksRemoved: number
 }
 
@@ -31,17 +32,13 @@ export function finalizeAnthropicSanitization(
   originalBlockCount: number,
   toolStats: Pick<SanitizationStats, "fixedNameCount" | "orphanedToolUseCount" | "orphanedToolResultCount">,
   systemReminderRemovals: number,
+  inlineSystemConverted: number,
+  emptyThinkingBlocksRemoved: number,
 ): SanitizeResult<MessagesPayload> & { stats: SanitizationStats } {
-  // Drop corrupt thinking blocks before the upstream rejects the whole request.
-  // Validity is decided by the SIGNATURE, not the (often legitimately empty)
-  // thinking text — see filterEmptyThinkingBlocks. "empty_thinking" removes only
-  // double-empty blocks; "empty_any" removes any unsigned thinking block.
-  const sanitizeCheck = state.thinkingBlockSanitizeCheck
-  const thinkingChecked = sanitizeCheck === "empty_thinking" || sanitizeCheck === "empty_any" ? filterEmptyThinkingBlocks(messages, sanitizeCheck) : messages
-  // Count thinking removals separately so they are not mislabeled as empty-text removals below.
-  const emptyThinkingBlocksRemoved =
-    thinkingChecked === messages ? 0 : Math.max(0, countAnthropicContentBlocks(messages) - countAnthropicContentBlocks(thinkingChecked))
-  const finalMessages = filterEmptyAnthropicTextBlocks(thinkingChecked)
+  // Corrupt thinking blocks were dropped earlier in sanitize.ts (before processToolBlocks)
+  // so its empty-message cleanup handles any message left empty by the removal. The count
+  // arrives here as a parameter solely for stats / log accounting.
+  const finalMessages = filterEmptyAnthropicTextBlocks(messages)
   const finalSystem = filterEmptySystemTextBlocks(system)
   const totalBlocksRemoved = Math.max(0, originalBlockCount - countAnthropicContentBlocks(finalMessages))
   const emptyTextBlocksRemoved = Math.max(
@@ -62,6 +59,10 @@ export function finalizeAnthropicSanitization(
     consola.info(`[Sanitizer:Anthropic] Removed ${totalBlocksRemoved} content blocks (${parts.join(", ")})`)
   }
 
+  if (inlineSystemConverted > 0) {
+    consola.info(`[Sanitizer:Anthropic] Handled ${inlineSystemConverted} inline system message(s) [${state.systemMessagesSanitize}]`)
+  }
+
   return {
     payload: { ...payload, system: finalSystem, messages: finalMessages },
     blocksRemoved: totalBlocksRemoved,
@@ -71,6 +72,7 @@ export function finalizeAnthropicSanitization(
       emptyTextBlocksRemoved,
       emptyThinkingBlocksRemoved,
       systemReminderRemovals,
+      inlineSystemConverted,
       totalBlocksRemoved,
     },
   }

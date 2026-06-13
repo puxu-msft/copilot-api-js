@@ -11,7 +11,7 @@ function formatBillingRate(value: number): string {
 defineProps<{
   vendorOptions: Array<string>
   endpointOptions: Array<string>
-  featureOptions: Array<FeatureOption>
+  featureOptions: ReadonlyArray<FeatureOption>
   typeOptions: Array<string>
   billingBounds: { min: number; max: number }
   activeFilterCount: number
@@ -20,7 +20,7 @@ defineProps<{
 const searchQuery = defineModel<string>("searchQuery", { required: true })
 const vendorFilter = defineModel<string | null>("vendorFilter", { required: true })
 const endpointFilter = defineModel<string | null>("endpointFilter", { required: true })
-const featureFilter = defineModel<string | null>("featureFilter", { required: true })
+const featureFilters = defineModel<Array<string>>("featureFilters", { required: true })
 const typeFilter = defineModel<string | null>("typeFilter", { required: true })
 const billingRange = defineModel<[number, number]>("billingRange", { required: true })
 </script>
@@ -61,11 +61,14 @@ const billingRange = defineModel<[number, number]>("billingRange", { required: t
         label="Endpoint"
       />
       <v-select
-        v-model="featureFilter"
+        v-model="featureFilters"
         :items="featureOptions"
-        placeholder="All features"
+        placeholder="Any capability"
         clearable
-        label="Capability"
+        multiple
+        chips
+        closable-chips
+        label="Capabilities (all)"
       />
       <v-select
         v-model="typeFilter"

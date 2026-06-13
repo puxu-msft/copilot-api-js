@@ -33,7 +33,7 @@ export default defineConfig(({ command }) => {
       }),
     ],
     optimizeDeps: {
-      include: ["vue-json-pretty", "diff", "diff2html"],
+      include: ["vue-json-pretty"],
     },
     resolve: {
       alias: {
@@ -50,7 +50,7 @@ export default defineConfig(({ command }) => {
         output: {
           manualChunks: {
             vue: ["vue", "vue-router"],
-            vendor: ["vue-json-pretty", "diff", "diff2html"],
+            vendor: ["vue-json-pretty"],
           },
         },
       },

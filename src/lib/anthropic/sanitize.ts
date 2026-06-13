@@ -15,10 +15,16 @@ import type {
 
 import { state } from "~/lib/state"
 
-import { countAnthropicContentBlocks } from "./sanitize/content-blocks"
+import {
+  //
+  countAnthropicContentBlocks,
+  filterEmptyThinkingBlocks,
+} from "./sanitize/content-blocks"
 import { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"
 import { stripReadToolResultTags } from "./sanitize/read-tool-result-tags"
 import { finalizeAnthropicSanitization } from "./sanitize/result"
+import { rewriteServerToolHistory } from "./sanitize/rewrite-server-tool-history"
+import { sanitizeInlineSystemMessages } from "./sanitize/system-messages"
 import { sanitizeAnthropicSystemPrompt } from "./sanitize/system-prompt"
 import { removeAnthropicSystemReminders } from "./sanitize/system-reminders"
 import { processToolBlocks } from "./sanitize/tool-blocks"
@@ -77,9 +83,51 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   messages = reminderResult.messages
   const systemReminderRemovals = reminderResult.modifiedCount
 
+  // Handle inline `role:"system"` messages (illegal for the Anthropic API) AFTER
+  // reminder stripping, so reminders are cleaned in their original system form
+  // first. May rewrite messages and/or fold text into the top-level system.
+  // Discount any content blocks the inline-system step removes (merge/drop) from
+  // the original baseline so `totalBlocksRemoved` reflects only genuine block
+  // cleanup (orphan tool / empty text / corrupt thinking) — inline-system moves
+  // are reported separately via `inlineSystemConverted`, not as removed blocks.
+  const beforeInlineBlocks = countAnthropicContentBlocks(messages)
+  const inlineSystem = sanitizeInlineSystemMessages(messages, sanitizedSystem, state.systemMessagesSanitize)
+  messages = inlineSystem.messages
+  const inlineBlocksRemoved = beforeInlineBlocks - countAnthropicContentBlocks(messages)
+
+  // Downgrade native server-tool blocks left in history by the web_search
+  // double-hop (server_tool_use{web_search} + *_tool_result) into plain
+  // tool_use + tool_result. MUST run BEFORE processToolBlocks so the tool
+  // reference validation sees the already-downgraded (plain) blocks. No-op when
+  // disabled. See rewrite-server-tool-history.ts for the self-poisoning loop.
+  messages = rewriteServerToolHistory(messages, state.rewriteHistoryServerTools).messages
+
+  // Drop corrupt (unsigned) thinking blocks BEFORE processToolBlocks so its existing
+  // empty-message cleanup (content.length === 0 → drop the whole message) handles any
+  // message left empty after corrupt-block removal — no extra drop logic needed, no
+  // adjacent same-role risk introduced beyond what processToolBlocks already produces.
+  // Validity is decided by the SIGNATURE (see filterEmptyThinkingBlocks); a legitimate
+  // encrypted thinking block has empty `thinking` text but a valid `signature` and is
+  // kept. Gated by `thinkingBlockSanitizeCheck` (off / empty_thinking / empty_any).
+  const sanitizeCheck = state.thinkingBlockSanitizeCheck
+  const beforeThinkingBlocks = countAnthropicContentBlocks(messages)
+  if (sanitizeCheck === "empty_thinking" || sanitizeCheck === "empty_any") {
+    messages = filterEmptyThinkingBlocks(messages, sanitizeCheck)
+  }
+  const emptyThinkingBlocksRemoved = Math.max(0, beforeThinkingBlocks - countAnthropicContentBlocks(messages))
+
   const toolResult = processToolBlocks(messages, payload.tools)
   messages = toolResult.messages
-  return finalizeAnthropicSanitization(payload, messages, sanitizedSystem, originalBlocks, toolResult, systemReminderRemovals)
+  return finalizeAnthropicSanitization(
+    payload,
+    messages,
+    inlineSystem.system,
+    originalBlocks - inlineBlocksRemoved,
+    toolResult,
+    systemReminderRemovals,
+    inlineSystem.convertedCount,
+    emptyThinkingBlocksRemoved,
+  )
 }
 
 export { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"

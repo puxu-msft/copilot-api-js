@@ -17,6 +17,7 @@ import TruncationDivider from "./TruncationDivider.vue"
 const props = defineProps<{
   entry: HistoryEntry
   requestBadge: string
+  title?: string
   rewrittenRequest?: unknown
   filteredMessages: Array<{ msg: MessageContent; originalIndex: number }>
   truncationPoint: number | null
@@ -27,6 +28,14 @@ const props = defineProps<{
   isMessageTruncated: (index: number) => boolean
   isMessageRewritten: (index: number) => boolean
   getRewrittenMessage: (index: number) => MessageContent | null
+  /**
+   * Messages split off an original turn during rewrite (e.g. the user
+   * tool_result a downgraded web_search turn produces). Rendered read-only right
+   * after the originating message in the Effective stage so the full rewritten
+   * shape is visible. Omitted by the Inbound stage (split-outs are an
+   * effective-side artifact with no inbound counterpart).
+   */
+  getSplitMessages?: (index: number) => Array<MessageContent>
 }>()
 
 /** Only expand the last 5 messages by default — older messages start collapsed */
@@ -40,7 +49,7 @@ const collapseThreshold = computed(() => {
 
 <template>
   <SectionBlock
-    title="Request"
+    :title="title ?? 'Request'"
     anchor="request"
     :badge="requestBadge"
     :raw-data="entry.inboundRequest"
@@ -76,6 +85,22 @@ const collapseThreshold = computed(() => {
             :is-rewritten="isMessageRewritten(item.originalIndex)"
             :rewritten-message="getRewrittenMessage(item.originalIndex)"
             :global-view-mode="detailViewMode"
+            :default-collapsed="listIndex < collapseThreshold"
+          />
+        </ErrorBoundary>
+
+        <!-- Messages split off this turn during rewrite (e.g. a downgraded
+             web_search turn's injected user tool_result). Read-only — they have
+             no inbound counterpart, so no diff/rewrite overlay. -->
+        <ErrorBoundary
+          v-for="(splitMsg, splitIndex) in getSplitMessages?.(item.originalIndex) ?? []"
+          :key="item.originalIndex + '-split-' + splitIndex"
+          :label="'Message #' + item.originalIndex + ' (split ' + (splitIndex + 1) + ')'"
+        >
+          <MessageBlock
+            v-show="!detailFilterType || hasMatchingBlockType(splitMsg, detailFilterType)"
+            :message="splitMsg"
+            :index="item.originalIndex"
             :default-collapsed="listIndex < collapseThreshold"
           />
         </ErrorBoundary>

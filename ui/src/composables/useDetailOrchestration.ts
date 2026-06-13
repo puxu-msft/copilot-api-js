@@ -28,6 +28,7 @@ export interface DetailOrchestration {
   rewriteSummary: ComputedRef<{ msgCount: number; sysRewritten: boolean; truncated: boolean; truncatedCount: number }>
   rewrittenIndexList: ComputedRef<Array<number>>
   getRewrittenMessage: (index: number) => MessageContent | null
+  getSplitMessages: (index: number) => Array<MessageContent>
   isMessageRewritten: (index: number) => boolean
   isMessageTruncated: (index: number) => boolean
 
@@ -55,7 +56,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
   const detail = useDetailViewState()
 
   // Pipeline info
-  const { truncationPoint, hasRewrites, rewriteSummary, rewrittenIndexList, getRewrittenMessage, isMessageRewritten, isMessageTruncated } =
+  const { truncationPoint, hasRewrites, rewriteSummary, rewrittenIndexList, getRewrittenMessage, getSplitMessages, isMessageRewritten, isMessageTruncated } =
     usePipelineInfo(entry)
 
   // Merged tool maps — single pass over messages
@@ -157,6 +158,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
     rewriteSummary,
     rewrittenIndexList,
     getRewrittenMessage,
+    getSplitMessages,
     isMessageRewritten,
     isMessageTruncated,
     toolMaps,

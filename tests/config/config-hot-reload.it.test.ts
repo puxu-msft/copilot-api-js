@@ -167,21 +167,28 @@ function yamlForField(f: FieldSpec): string {
 const FIELDS: ReadonlyArray<FieldSpec> = [
   // ── Top-level scalars ───────────────────────────────────────────────
   {
-    configKey: "fetch_timeout",
+    configKey: "timeouts.response_header",
     stateKey: "fetchTimeout",
     sampleYamlValue: "30",
     expectedStateValue: 30,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
   },
   {
-    configKey: "stream_idle_timeout",
+    configKey: "timeouts.stream_idle",
     stateKey: "streamIdleTimeout",
     sampleYamlValue: "60",
     expectedStateValue: 60,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   },
   {
-    configKey: "stale_request_max_age",
+    configKey: "timeouts.upstream_keepalive",
+    stateKey: "upstreamKeepaliveDelay",
+    sampleYamlValue: "20",
+    expectedStateValue: 20,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+  },
+  {
+    configKey: "timeouts.stale_request_max_age",
     stateKey: "staleRequestMaxAge",
     sampleYamlValue: "1234",
     expectedStateValue: 1234,
@@ -195,7 +202,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   },
   {
-    configKey: "compress_tool_results_before_truncate",
+    configKey: "auto_truncate.compress_tool_results",
     stateKey: "compressToolResultsBeforeTruncate",
     sampleYamlValue: "false",
     expectedStateValue: false,
@@ -257,6 +264,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   },
   {
+    configKey: "anthropic.fake_sse_heartbeat",
+    stateKey: "anthropicFakeSseHeartbeat",
+    sampleYamlValue: "15",
+    expectedStateValue: 15,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
+  },
+  {
     configKey: "anthropic.inject_claude_code_tools",
     stateKey: "injectClaudeCodeOfficialTools",
     sampleYamlValue: "false",
@@ -271,7 +285,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   },
   {
-    configKey: "anthropic.thinking_block_sanitize_check",
+    configKey: "anthropic.thinking_block_sanitize",
     stateKey: "thinkingBlockSanitizeCheck",
     sampleYamlValue: "empty_any",
     expectedStateValue: "empty_any",
@@ -283,6 +297,20 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: "best_effort",
     expectedStateValue: "best_effort",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
+  },
+  {
+    configKey: "anthropic.system_messages_sanitize",
+    stateKey: "systemMessagesSanitize",
+    sampleYamlValue: "merge",
+    expectedStateValue: "merge",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
+  },
+  {
+    configKey: "anthropic.rewrite_history_server_tools",
+    stateKey: "rewriteHistoryServerTools",
+    sampleYamlValue: "downgrade",
+    expectedStateValue: "downgrade",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
   },
   {
     configKey: "anthropic.thinking_signature_compat",
@@ -379,7 +407,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── anthropic.* free-form Records (whole-map leaves) ───────────────
   {
-    configKey: "anthropic.efforts_overrides",
+    configKey: "anthropic.effort_overrides",
     stateKey: "effortsOverrides",
     sampleYamlValue: `\n  "claude-opus-*":\n    - high`,
     expectedStateValue: { "claude-opus-*": ["high"] },
@@ -495,51 +523,51 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   },
 
-  // ── openai-responses.* ─────────────────────────────────────────────
+  // ── openai_responses.* ─────────────────────────────────────────────
   {
-    configKey: "openai-responses.normalize_call_ids",
+    configKey: "openai_responses.normalize_call_ids",
     stateKey: "normalizeResponsesCallIds",
     sampleYamlValue: "false",
     expectedStateValue: false,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
   },
   {
-    configKey: "openai-responses.upstream_websocket",
+    configKey: "openai_responses.upstream_ws",
     stateKey: "upstreamWebSocket",
     sampleYamlValue: "true",
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
   },
   {
-    configKey: "openai-responses.fix_stream_ids",
+    configKey: "openai_responses.fix_stream_ids",
     stateKey: "fixResponsesStreamIds",
     sampleYamlValue: "false",
     expectedStateValue: false,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
   },
   {
-    configKey: "openai-responses.client_websocket_keep_open",
+    configKey: "openai_responses.client_ws_keep_open",
     stateKey: "clientWebsocketKeepOpen",
     sampleYamlValue: "true",
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
   },
   {
-    configKey: "openai-responses.max_ws_frame_bytes",
+    configKey: "openai_responses.max_ws_frame_bytes",
     stateKey: "maxWsFrameBytes",
     sampleYamlValue: "2097152",
     expectedStateValue: 2097152,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
   },
   {
-    configKey: "openai-responses.max_client_ws_connections",
+    configKey: "openai_responses.max_client_ws_connections",
     stateKey: "maxClientWsConnections",
     sampleYamlValue: "128",
     expectedStateValue: 128,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
   },
   {
-    configKey: "openai-responses.max_upstream_ws_connections",
+    configKey: "openai_responses.max_upstream_ws_connections",
     stateKey: "maxUpstreamWsConnections",
     sampleYamlValue: "16",
     expectedStateValue: 16,
@@ -575,7 +603,7 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
     reason: "see rate_limiter.retry_interval",
   },
   {
-    configKey: "rate_limiter.recovery_timeout",
+    configKey: "rate_limiter.recovery_interval",
     reason: "see rate_limiter.retry_interval",
   },
   {
@@ -851,7 +879,7 @@ system_prompt_overrides:
     expect(state.disabledModels).toEqual(["foo"])
 
     resetConfigCache()
-    await writeConfig("fetch_timeout: 30\n")
+    await writeConfig("timeouts:\n  response_header: 30\n")
     await applyConfigToState()
 
     expect(state.fetchTimeout).toBe(30)

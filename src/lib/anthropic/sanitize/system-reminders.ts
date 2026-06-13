@@ -9,11 +9,6 @@ import type {
 
 import { removeSystemReminderTags } from "~/lib/system-prompt"
 
-import {
-  //
-  isFixedIndexThinkingMessage,
-  isImmutableThinkingMessage,
-} from "../thinking-immutability"
 import { sanitizeTextBlocksInArray } from "./text-blocks"
 
 /**
@@ -78,29 +73,11 @@ function sanitizeMessageParamContent(msg: MessageParam): MessageParam {
     return modified ? ({ role: "user", content: blocks } as UserMessage) : msg
   }
 
-  // immutable: skip the entire message
-  if (isImmutableThinkingMessage(msg)) {
-    return msg
-  }
-
-  // fixed-index: sanitize text content but never add or remove blocks
-  if (isFixedIndexThinkingMessage(msg)) {
-    let modified = false as boolean
-    const blocks = msg.content.map((block) => {
-      if (block.type === "text" && "text" in block) {
-        const text = (block as { text: string }).text
-        const sanitized = removeSystemReminderTags(text)
-        if (sanitized !== text) {
-          modified = true
-          return { ...block, text: sanitized || " " } as ContentBlock
-        }
-      }
-      return block
-    })
-    return modified ? ({ role: "assistant", content: blocks } as AssistantMessage) : msg
-  }
-
-  // stripped: normal sanitize (may delete empty text blocks)
+  // Assistant message: edit system-reminder tags out of non-thinking text blocks
+  // and drop blocks that become empty. thinking / redacted_thinking blocks have no
+  // `text` field (getText returns undefined) so sanitizeTextBlocksInArray passes
+  // them through verbatim — block-level thinking protection without freezing the
+  // whole message (the `preserve` model: clean around thinking, never touch it).
   const { blocks, modified } = sanitizeTextBlocksInArray(
     msg.content,
     (block) => (block.type === "text" && "text" in block ? (block as { text: string }).text : undefined),

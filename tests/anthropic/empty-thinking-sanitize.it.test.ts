@@ -126,7 +126,7 @@ describe("filterEmptyThinkingBlocks (pure)", () => {
   })
 })
 
-describe("sanitizeAnthropicMessages thinking_block_sanitize_check gating", () => {
+describe("sanitizeAnthropicMessages thinking_block_sanitize gating", () => {
   function payloadWithBlocks(blocks: Array<Record<string, unknown>>): MessagesPayload {
     return {
       model: "claude-opus-4.8",

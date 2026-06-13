@@ -26,6 +26,10 @@
   --error-muted: rgb(var(--v-theme-error) / 15%);
   --warning: rgb(var(--v-theme-warning));
   --warning-muted: rgb(var(--v-theme-warning) / 15%);
+  --aborted: rgb(var(--v-theme-aborted));
+  --aborted-muted: rgb(var(--v-theme-aborted) / 15%);
+  --interrupted: rgb(var(--v-theme-interrupted));
+  --interrupted-muted: rgb(var(--v-theme-interrupted) / 15%);
 }
 
 /* ═══ Custom variables — no Vuetify equivalent ═══ */

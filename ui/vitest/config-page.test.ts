@@ -124,7 +124,7 @@ describe("VConfigPage", () => {
   beforeEach(() => {
     mockState.editor = createEditorMock({
       proxy: "http://127.0.0.1:7890",
-      fetch_timeout: 300,
+      timeouts: { response_header: 300 },
       model_refresh_interval: 600,
       anthropic: {
         strip_server_tools: true,
@@ -134,7 +134,7 @@ describe("VConfigPage", () => {
         non_deferred_tools: ["custom_tool"],
         rewrite_system_reminders: false,
       },
-      "openai-responses": {
+      openai_responses: {
         normalize_call_ids: true,
       },
       model_overrides: {
@@ -219,7 +219,7 @@ describe("VConfigPage", () => {
       if (!mockState.editor) {
         return Promise.resolve(false)
       }
-      mockState.editor.error.value = "fetch_timeout: Must be a non-negative integer or null"
+      mockState.editor.error.value = "model_refresh_interval: Must be a non-negative integer or null"
       return Promise.resolve(false)
     })
 
@@ -237,6 +237,6 @@ describe("VConfigPage", () => {
     await saveButton.trigger("click")
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain("fetch_timeout: Must be a non-negative integer or null")
+    expect(wrapper.get('[role="alert"]').text()).toContain("model_refresh_interval: Must be a non-negative integer or null")
   })
 })

@@ -43,26 +43,24 @@ export function normalizeConfigForEditor(input: ConfigYamlResponse | EditableCon
   return {
     ...(input.proxy !== undefined ? { proxy: input.proxy } : {}),
     ...(input.model_overrides !== undefined ? { model_overrides: normalizeStringMap(input.model_overrides) } : {}),
-    ...(input.stream_idle_timeout !== undefined ? { stream_idle_timeout: input.stream_idle_timeout } : {}),
-    ...(input.fetch_timeout !== undefined ? { fetch_timeout: input.fetch_timeout } : {}),
-    ...(input.stale_request_max_age !== undefined ? { stale_request_max_age: input.stale_request_max_age } : {}),
+    ...(input.timeouts !== undefined ? { timeouts: normalizeScalarSection(input.timeouts, ["stream_idle", "response_header", "stale_request_max_age"]) } : {}),
     ...(input.model_refresh_interval !== undefined ? { model_refresh_interval: input.model_refresh_interval } : {}),
     ...(input.shutdown !== undefined ? { shutdown: normalizeScalarSection(input.shutdown, ["graceful_wait", "abort_wait"]) } : {}),
     ...(input.history !== undefined ? { history: normalizeScalarSection(input.history, ["success_limit", "failure_limit", "reaper_interval"]) } : {}),
     ...(input.anthropic !== undefined ? { anthropic: normalizeAnthropic(input.anthropic) } : {}),
-    ...(input["openai-responses"] !== undefined ?
+    ...(input.openai_responses !== undefined ?
       {
-        "openai-responses": normalizeScalarSection(input["openai-responses"], ["normalize_call_ids", "upstream_websocket"]),
+        openai_responses: normalizeScalarSection(input.openai_responses, ["normalize_call_ids", "upstream_ws"]),
       }
     : {}),
     ...(input.rate_limiter !== undefined ?
       {
-        rate_limiter: normalizeScalarSection(input.rate_limiter, ["retry_interval", "request_interval", "recovery_timeout", "consecutive_successes"]),
+        rate_limiter: normalizeScalarSection(input.rate_limiter, ["retry_interval", "request_interval", "recovery_interval", "consecutive_successes"]),
       }
     : {}),
-    ...(input.compress_tool_results_before_truncate !== undefined ?
+    ...(input.auto_truncate !== undefined ?
       {
-        compress_tool_results_before_truncate: input.compress_tool_results_before_truncate,
+        auto_truncate: normalizeScalarSection(input.auto_truncate, ["compress_tool_results"]),
       }
     : {}),
     ...(input.system_prompt_overrides !== undefined ? { system_prompt_overrides: normalizePromptOverrideRules(input.system_prompt_overrides) } : {}),
@@ -181,7 +179,7 @@ function normalizeAnthropic(value: EditableConfig["anthropic"] | ConfigYamlRespo
   const normalized = {
     ...(value.strip_server_tools !== undefined ? { strip_server_tools: value.strip_server_tools } : {}),
     ...(value.dedup_tool_calls !== undefined ? { dedup_tool_calls: value.dedup_tool_calls } : {}),
-    ...(value.immutable_thinking_messages !== undefined ? { immutable_thinking_messages: value.immutable_thinking_messages } : {}),
+    ...(value.thinking_block_message_policy !== undefined ? { thinking_block_message_policy: value.thinking_block_message_policy } : {}),
     ...(value.strip_read_tool_result_tags !== undefined ? { strip_read_tool_result_tags: value.strip_read_tool_result_tags } : {}),
     ...(value.context_editing !== undefined ? { context_editing: value.context_editing } : {}),
     ...(value.context_editing_trigger !== undefined ? { context_editing_trigger: value.context_editing_trigger } : {}),

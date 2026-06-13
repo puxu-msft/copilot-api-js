@@ -50,15 +50,34 @@ function scaleTimeout(seconds: number): number {
 }
 
 /**
- * Build undici Agent timeout options from current runtime state.
+ * Upstream TCP keepalive initial-probe delay in milliseconds.
+ *
+ * Derived from `state.upstreamKeepaliveDelay` (seconds). Returns `undefined`
+ * when 0 (use undici's built-in default of 60s). Lowering this below the path's
+ * idle-reaper window (NAT/firewall/LB, commonly ~30s) keeps the GHC connection
+ * alive through long upstream silences — e.g. opus adaptive thinking that goes
+ * quiet for tens of seconds after `content_block_start`. undici's 60s default
+ * is too long: the first probe never fires before a ~30s reaper culls the idle
+ * socket, surfacing as `terminated (cause: other side closed)`.
+ */
+export function getUpstreamKeepAliveDelayMs(): number | undefined {
+  const sec = state.upstreamKeepaliveDelay
+  return sec > 0 ? Math.ceil(sec * 1000) : undefined
+}
+
+/**
+ * Build undici Agent options from current runtime state.
  *
  * - `headersTimeout` follows `fetchTimeout` (time to first response headers)
  * - `bodyTimeout`    follows `streamIdleTimeout` (gap between body chunks)
+ * - `connect.keepAliveInitialDelay` follows `upstreamKeepaliveDelay` (TCP probe)
  */
-function getUndiciTimeoutOptions(): { headersTimeout: number; bodyTimeout: number } {
+function getUndiciAgentOptions(): Agent.Options {
+  const keepAliveInitialDelay = getUpstreamKeepAliveDelayMs()
   return {
     headersTimeout: scaleTimeout(state.fetchTimeout),
     bodyTimeout: scaleTimeout(state.streamIdleTimeout),
+    ...(keepAliveInitialDelay !== undefined && { connect: { keepAlive: true, keepAliveInitialDelay } }),
   }
 }
 
@@ -152,7 +171,7 @@ function installGlobalDispatcher(options: ProxyOptions): void {
   // No proxy: still install a configured global Agent so undici's default
   // 300s headers/body timeouts do not pre-empt our application-level
   // streamIdleTimeout / fetchTimeout.
-  setGlobalDispatcher(new Agent(getUndiciTimeoutOptions()))
+  setGlobalDispatcher(new Agent(getUndiciAgentOptions()))
   consola.debug(`Undici timeouts: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`)
 }
 
@@ -160,7 +179,7 @@ function installGlobalDispatcher(options: ProxyOptions): void {
 export function createDispatcherForUrl(proxyUrl: string): Dispatcher {
   const url = new URL(proxyUrl)
   const protocol = url.protocol.toLowerCase()
-  const timeouts = getUndiciTimeoutOptions()
+  const timeouts = getUndiciAgentOptions()
 
   if (protocol === "http:" || protocol === "https:") {
     return new ProxyAgent({ uri: proxyUrl, ...timeouts })
@@ -198,7 +217,9 @@ function createSocksAgent(proxyUrl: URL): Agent {
   }
 
   return new Agent({
-    ...getUndiciTimeoutOptions(),
+    // The spread's `connect` object is overridden by the explicit connector
+    // below; keepalive is applied manually on the SOCKS-tunneled socket instead.
+    ...getUndiciAgentOptions(),
     connect(opts, callback) {
       const destPort = Number(opts.port) || (opts.protocol === "https:" ? 443 : 80)
 
@@ -211,6 +232,13 @@ function createSocksAgent(proxyUrl: URL): Agent {
         },
       })
         .then(({ socket }) => {
+          // Apply the same TCP keepalive as the non-proxy path so middlebox idle
+          // reapers don't sever the tunnel during long upstream silences. TLS
+          // (below) wraps this same underlying socket, so setting it here covers
+          // both HTTP and HTTPS destinations.
+          const keepAliveDelayMs = getUpstreamKeepAliveDelayMs()
+          if (keepAliveDelayMs !== undefined) socket.setKeepAlive(true, keepAliveDelayMs)
+
           if (opts.protocol === "https:") {
             // Upgrade to TLS for HTTPS destinations
             const tlsSocket = tls.connect({
@@ -239,10 +267,10 @@ function createSocksAgent(proxyUrl: URL): Agent {
  */
 class EnvProxyDispatcher extends Agent {
   private proxies = new Map<string, ProxyAgent>()
-  private readonly timeoutOptions = getUndiciTimeoutOptions()
+  private readonly timeoutOptions = getUndiciAgentOptions()
 
   constructor() {
-    super(getUndiciTimeoutOptions())
+    super(getUndiciAgentOptions())
   }
 
   dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler): boolean {

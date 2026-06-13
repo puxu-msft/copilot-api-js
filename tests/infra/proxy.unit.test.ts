@@ -15,8 +15,12 @@ import {
   //
   createDispatcherForUrl,
   formatProxyDisplay,
+  getUpstreamKeepAliveDelayMs,
   initProxy,
 } from "~/lib/proxy"
+import { setStateForTests } from "~/lib/state"
+
+import { autoRestoreState } from "../helpers/state-fixture"
 
 const originalHttpProxy = process.env.HTTP_PROXY
 const originalHttpsProxy = process.env.HTTPS_PROXY
@@ -81,5 +85,24 @@ describe("proxy utilities", () => {
         fromEnv: false,
       }),
     ).toThrow("SOCKS5 proxy is not supported on Bun runtime. Use Node.js or an HTTP proxy instead.")
+  })
+})
+
+describe("getUpstreamKeepAliveDelayMs", () => {
+  autoRestoreState()
+
+  test("converts a positive delay (seconds) to milliseconds", () => {
+    setStateForTests({ upstreamKeepaliveDelay: 15 })
+    expect(getUpstreamKeepAliveDelayMs()).toBe(15_000)
+  })
+
+  test("returns undefined for 0 (use undici's built-in default)", () => {
+    setStateForTests({ upstreamKeepaliveDelay: 0 })
+    expect(getUpstreamKeepAliveDelayMs()).toBeUndefined()
+  })
+
+  test("rounds up sub-second / fractional delays", () => {
+    setStateForTests({ upstreamKeepaliveDelay: 0.5 })
+    expect(getUpstreamKeepAliveDelayMs()).toBe(500)
   })
 })

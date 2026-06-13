@@ -68,6 +68,25 @@ interface WSClient {
 const clients = new Map<WebSocket, WSClient>()
 
 /**
+ * Hard cap on per-client TCP send buffer. When `bufferedAmount` exceeds this,
+ * the client is dropped (socket force-closed, entry removed from `clients`).
+ *
+ * Rationale: `ws.send()` in Node/Bun WS implementations does NOT block or
+ * throw when the peer is slow — it queues bytes into an internal JS-heap
+ * buffer with no upper bound. A single tab in the background (browser tab
+ * throttling), a suspended laptop, or a degraded network can let our high-
+ * frequency broadcasts (every state_changed / updated → ~5 frames/s per
+ * active request) pile up in that buffer indefinitely, retained by a strong
+ * reference from `WebSocket._sender` — GC cannot reclaim it. Observed in
+ * the wild: a 4GB heap OOM after ~5.5 hours with the History UI open.
+ *
+ * 4 MB matches a typical OS socket buffer size and is generous enough that
+ * a brief stall (a few seconds of TCP-window collapse) does NOT drop a
+ * healthy client. Sustained slow consumption WILL — that's the point.
+ */
+const MAX_BUFFERED_PER_CLIENT_BYTES = 4 * 1024 * 1024
+
+/**
  * Factory for building the `connected` message data.
  * Set by start.ts after RequestContextManager is initialized.
  * Returns active requests snapshot for the connected event.
@@ -140,14 +159,27 @@ export function handleClientMessage(ws: WebSocket, data: string): void {
 /**
  * Send `data` to every client matching `shouldSend` and split the result into
  * `delivered` (send returned without error and socket is OPEN) and `dead`
- * (closed or threw). Mutating `clients` mid-iteration works in current V8 but
- * reads as a foot-gun — collecting first is the safer pattern.
+ * (closed, threw, or buffer over the per-client cap). Mutating `clients`
+ * mid-iteration works in current V8 but reads as a foot-gun — collecting
+ * first is the safer pattern.
+ *
+ * Slow-client backpressure: any client whose `bufferedAmount` exceeds
+ * `MAX_BUFFERED_PER_CLIENT_BYTES` is moved to `dead` BEFORE attempting another
+ * send. Without this, `ws.send()` accumulates frames in an unbounded JS-heap
+ * buffer (Node/Bun WS implementations don't apply backpressure) and a single
+ * slow consumer can OOM the proxy in hours under normal load.
  */
 function sendToEach(data: string, shouldSend: (client: WSClient) => boolean): { delivered: Array<WebSocket>; dead: Array<WebSocket> } {
   const delivered: Array<WebSocket> = []
   const dead: Array<WebSocket> = []
   for (const [rawWs, client] of clients) {
     if (!shouldSend(client)) continue
+    const buffered = getBufferedAmount(rawWs)
+    if (buffered > MAX_BUFFERED_PER_CLIENT_BYTES) {
+      consola.warn(`[WS] Dropping slow client (bufferedAmount=${buffered} > ${MAX_BUFFERED_PER_CLIENT_BYTES})`)
+      dead.push(rawWs)
+      continue
+    }
     try {
       if (rawWs.readyState === WebSocket.OPEN) {
         rawWs.send(data)
@@ -163,8 +195,27 @@ function sendToEach(data: string, shouldSend: (client: WSClient) => boolean): { 
   return { delivered, dead }
 }
 
+/**
+ * Remove dead clients from the `clients` Map AND force-close their sockets.
+ * The close is best-effort — onClose may have already fired (Map.delete is
+ * idempotent on the consumer side, and broken sockets often throw on close);
+ * we swallow errors so one bad client cannot stall the broadcast loop.
+ *
+ * Closing matters because for the slow-client backpressure path the socket
+ * is still OPEN with megabytes queued; without close() the JS buffer keeps
+ * growing until onClose finally fires (which may take minutes on a TCP
+ * timeout). 1011 (internal error) + reason makes the reason observable to
+ * the client too.
+ */
 function dropClients(dead: ReadonlyArray<WebSocket>): void {
-  for (const ws of dead) clients.delete(ws)
+  for (const ws of dead) {
+    clients.delete(ws)
+    try {
+      ws.close(1011, "Backpressure: client too slow")
+    } catch {
+      // Already closing/closed — fine
+    }
+  }
 }
 
 /**

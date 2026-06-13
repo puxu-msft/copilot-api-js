@@ -3,7 +3,7 @@
  * overrides. The merge rules:
  *   - Top-level nested sections (anthropic, history, …): field-by-field
  *     merge (user keys win).
- *   - Free-form maps (model_overrides, anthropic.efforts_overrides, …):
+ *   - Free-form maps (model_overrides, anthropic.effort_overrides, …):
  *     per-key shallow merge.
  *   - model_preference: per-family replacement.
  *   - Top-level arrays / scalars: replace-on-presence.
@@ -65,28 +65,28 @@ afterEach(async () => {
 describe("loadConfig() — bundled + user merge", () => {
   test("returns bundled defaults when no user config exists", async () => {
     setBundledConfigForTests({
-      fetch_timeout: 999,
+      model_refresh_interval: 999,
       anthropic: { tool_search: true },
     })
     await removeUserConfig()
     const cfg = await loadConfig()
-    expect(cfg.fetch_timeout).toBe(999)
+    expect(cfg.model_refresh_interval).toBe(999)
     expect(cfg.anthropic?.tool_search).toBe(true)
   })
 
   test("user scalars override bundled scalars", async () => {
-    setBundledConfigForTests({ fetch_timeout: 100 })
-    await writeUserConfig("fetch_timeout: 42\n")
+    setBundledConfigForTests({ model_refresh_interval: 100 })
+    await writeUserConfig("model_refresh_interval: 42\n")
     const cfg = await loadConfig()
-    expect(cfg.fetch_timeout).toBe(42)
+    expect(cfg.model_refresh_interval).toBe(42)
   })
 
   test("user keys not in bundled are preserved", async () => {
-    setBundledConfigForTests({ fetch_timeout: 100 })
-    await writeUserConfig("stream_idle_timeout: 77\n")
+    setBundledConfigForTests({ model_refresh_interval: 100 })
+    await writeUserConfig("sanitize_tool_names: true\n")
     const cfg = await loadConfig()
-    expect(cfg.fetch_timeout).toBe(100)
-    expect(cfg.stream_idle_timeout).toBe(77)
+    expect(cfg.model_refresh_interval).toBe(100)
+    expect(cfg.sanitize_tool_names).toBe(true)
   })
 
   test("anthropic section merges field-by-field", async () => {
@@ -119,42 +119,42 @@ describe("loadConfig() — bundled + user merge", () => {
     expect(cfg.disabled_models).toEqual(["user-only"])
   })
 
-  test("anthropic.efforts_overrides is wholesale replaced when user sets it", async () => {
-    // efforts_overrides is a strategy table — when the user declares it,
+  test("anthropic.effort_overrides is wholesale replaced when user sets it", async () => {
+    // effort_overrides is a strategy table — when the user declares it,
     // they take full ownership; the bundled table is fully discarded.
     setBundledConfigForTests({
       anthropic: {
-        efforts_overrides: { "claude-foo": ["medium"], "claude-bar": ["high"] },
+        effort_overrides: { "claude-foo": ["medium"], "claude-bar": ["high"] },
       },
     })
     await writeUserConfig(`
 anthropic:
-  efforts_overrides:
+  effort_overrides:
     claude-foo:
       - high
 `)
     const cfg = await loadConfig()
-    expect(cfg.anthropic?.efforts_overrides).toEqual({
+    expect(cfg.anthropic?.effort_overrides).toEqual({
       "claude-foo": ["high"], // user's table — bundled "claude-bar" entry dropped
     })
   })
 
-  test("anthropic.efforts_overrides bundled value survives when user omits it", async () => {
+  test("anthropic.effort_overrides bundled value survives when user omits it", async () => {
     setBundledConfigForTests({
       anthropic: {
-        efforts_overrides: { "claude-foo": ["medium"] },
+        effort_overrides: { "claude-foo": ["medium"] },
       },
     })
     await writeUserConfig("anthropic:\n  tool_search: false\n")
     const cfg = await loadConfig()
-    expect(cfg.anthropic?.efforts_overrides).toEqual({ "claude-foo": ["medium"] })
+    expect(cfg.anthropic?.effort_overrides).toEqual({ "claude-foo": ["medium"] })
     expect(cfg.anthropic?.tool_search).toBe(false)
   })
 
   test("missing user config does not throw and merges bundled-only", async () => {
-    setBundledConfigForTests({ fetch_timeout: 555 })
+    setBundledConfigForTests({ model_refresh_interval: 555 })
     await removeUserConfig()
     const cfg = await loadConfig()
-    expect(cfg.fetch_timeout).toBe(555)
+    expect(cfg.model_refresh_interval).toBe(555)
   })
 })

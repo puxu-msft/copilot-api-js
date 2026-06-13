@@ -26,15 +26,25 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
     return removed
   })
 
-  /** Pre-computed map: original message index → rewritten message (O(1) lookup) */
+  /**
+   * Pre-computed map: original message index → rewritten message(s).
+   *
+   * Usually 1:1, but `rewriteServerToolHistory` (downgrade) splits ONE original
+   * assistant turn into TWO rewritten messages (assistant tool_use+text, then an
+   * injected user tool_result) — both map to the same original index. The array
+   * preserves rewritten order: `[0]` is the head (shares the original's role/
+   * identity), `[1..]` are injected split-out messages.
+   */
   const rewrittenMessageMap = computed(() => {
-    const map = new Map<number, MessageContent>()
+    const map = new Map<number, Array<MessageContent>>()
     const e = entry.value
     if (!e?.effectiveRequest?.messages || !e.pipelineInfo?.messageMapping) return map
     const rewrittenMessages = e.effectiveRequest.messages
     const messageMapping = e.pipelineInfo.messageMapping
     for (const [i, originalIdx] of messageMapping.entries()) {
-      map.set(originalIdx, rewrittenMessages[i])
+      const bucket = map.get(originalIdx)
+      if (bucket) bucket.push(rewrittenMessages[i])
+      else map.set(originalIdx, [rewrittenMessages[i]])
     }
     return map
   })
@@ -45,12 +55,16 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
     const e = entry.value
     if (!e?.effectiveRequest?.messages) return indices
     const messages = e.inboundRequest.messages ?? []
-    for (const [idx, rewritten] of rewrittenMessageMap.value) {
+    for (const [idx, rewrittenBucket] of rewrittenMessageMap.value) {
       const original = messages[idx]
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: array index access
       if (!original) continue
-      // Quick reference check before expensive serialization
-      if (original.content !== rewritten.content && JSON.stringify(original.content) !== JSON.stringify(rewritten.content)) {
+      // Compare against the head (the message that retains the original's
+      // identity); a split also injects extra messages, which alone count as a
+      // rewrite even when the head content is unchanged.
+      const head = rewrittenBucket[0]
+      const split = rewrittenBucket.length > 1
+      if (split || (original.content !== head.content && JSON.stringify(original.content) !== JSON.stringify(head.content))) {
         indices.add(idx)
       }
     }
@@ -88,8 +102,20 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
     return [...rewrittenIndices.value].sort((a, b) => a - b)
   })
 
+  /** The rewritten head for an original index (the message retaining its identity), or null. */
   function getRewrittenMessage(index: number): MessageContent | null {
-    return rewrittenMessageMap.value.get(index) ?? null
+    return rewrittenMessageMap.value.get(index)?.[0] ?? null
+  }
+
+  /**
+   * Messages SPLIT OFF an original turn during rewrite (e.g. the user tool_result
+   * a downgraded web_search turn produces). Empty for the common 1:1 case. The
+   * Effective stage renders these right after the head so the full rewritten
+   * shape is visible without leaving the detail view.
+   */
+  function getSplitMessages(index: number): Array<MessageContent> {
+    const bucket = rewrittenMessageMap.value.get(index)
+    return bucket && bucket.length > 1 ? bucket.slice(1) : []
   }
 
   function isMessageRewritten(index: number): boolean {
@@ -110,6 +136,7 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
     rewrittenIndices,
     rewrittenIndexList,
     getRewrittenMessage,
+    getSplitMessages,
     isMessageRewritten,
     isMessageTruncated,
   }

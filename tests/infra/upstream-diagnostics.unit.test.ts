@@ -10,10 +10,16 @@ import {
   //
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
-import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
+import {
+  //
+  logUpstreamStreamDisconnect,
+  summarizeToolsForDiagnostics,
+} from "~/lib/upstream-diagnostics"
 
 describe("summarizeToolsForDiagnostics", () => {
   describe("non-tool inputs", () => {
@@ -237,5 +243,68 @@ describe("summarizeToolsForDiagnostics", () => {
       // Act + Assert — depth guard prevents runaway recursion
       expect(() => summarizeToolsForDiagnostics([{ name: "deep", input_schema: deep }])).not.toThrow()
     })
+  })
+})
+
+describe("logUpstreamStreamDisconnect", () => {
+  // consola's LogFn requires both a call signature and a `.raw` property.
+  const noop = Object.assign((..._: Array<any>) => {}, { raw: (..._: Array<any>) => {} })
+
+  test("surfaces the silence gap (elapsed − last-frame offset) — the stall signature", () => {
+    // Arrange — opus went silent after content_block_start@201ms, cut at 31523ms
+    const spy = spyOn(consola, "error").mockImplementation(noop)
+    try {
+      logUpstreamStreamDisconnect({
+        model: "claude-opus-4.8",
+        kindLabel: "transport-close",
+        detail: "terminated (cause: other side closed)",
+        elapsedMs: 31_523,
+        frames: 2,
+        bytes: 3072,
+        lastFrameType: "content_block_start",
+        lastFrameOffsetMs: 201,
+        stuckBlockType: "thinking",
+        inputTokens: 202_331,
+        outputTokens: 4,
+      })
+
+      // Assert — one line carrying the diagnostic, with silence = 31523 − 201
+      expect(spy).toHaveBeenCalledTimes(1)
+      const line = spy.mock.calls[0]?.[0] as string
+      expect(line).toContain("model=claude-opus-4.8")
+      expect(line).toContain("kind=transport-close")
+      expect(line).toContain("terminated (cause: other side closed)")
+      expect(line).toContain("last-frame=content_block_start@201ms")
+      expect(line).toContain("silence=31322ms")
+      expect(line).toContain("stuck-block=thinking")
+      expect(line).toContain("tokens(in/out)=202331/4")
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  test("renders 'none' placeholders when no frame arrived before the cut", () => {
+    const spy = spyOn(consola, "error").mockImplementation(noop)
+    try {
+      logUpstreamStreamDisconnect({
+        model: "claude-opus-4.8",
+        kindLabel: "idle-timeout",
+        detail: "Stream idle timeout",
+        elapsedMs: 600_000,
+        frames: 0,
+        bytes: 0,
+        lastFrameOffsetMs: 0,
+        stuckBlockType: "",
+        inputTokens: 0,
+        outputTokens: 0,
+      })
+
+      const line = spy.mock.calls[0]?.[0] as string
+      expect(line).toContain("last-frame=none@0ms")
+      expect(line).toContain("silence=600000ms")
+      expect(line).toContain("stuck-block=none")
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

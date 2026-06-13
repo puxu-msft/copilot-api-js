@@ -15,61 +15,74 @@ import {
 import { PATHS } from "~/lib/config/paths"
 import {
   //
+  CONFIG_MANAGED_DEFAULTS,
   resetConfigManagedState,
   state,
 } from "~/lib/state"
 
 export const configRoutes = new Hono()
 
+/**
+ * Config-managed keys that must NEVER be emitted verbatim via /api/config — they
+ * are secrets. Exposed instead as a `<key>Set` boolean so operators can see
+ * whether one is configured without leaking the value.
+ *
+ * Adding a new secret to CONFIG_MANAGED_DEFAULTS requires registering it here.
+ * This is NOT enforced by the completeness guard (which only checks a key is
+ * present, not that it is masked) — it is enforced by the `secret-named` guard
+ * test in config-effective-route.http.test.ts, which fails if any field whose
+ * NAME looks like a credential (key/token/secret/password/credential) is emitted
+ * verbatim. That makes the secrecy contract machine-checkable rather than
+ * dependent on remembering to sync two lists.
+ */
+const SENSITIVE_CONFIG_KEYS = new Set<string>(["anthropicApiKey"])
+
+/**
+ * Build the effective runtime configuration snapshot.
+ *
+ * Hot-reloadable fields are derived AUTOMATICALLY from the authoritative
+ * `CONFIG_MANAGED_DEFAULTS` key set — so any field added there appears here with
+ * zero extra maintenance (the previous hand-maintained allowlist silently
+ * drifted, omitting web_search / thinking_signature_compat / etc.). Secrets are
+ * masked, derived fields reshaped, and startup-phase config fields (not
+ * hot-reloadable, so absent from CONFIG_MANAGED_DEFAULTS) are appended
+ * explicitly. A completeness guard test keeps this honest.
+ */
+function buildEffectiveConfig(): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const snapshot = state as unknown as Record<string, unknown>
+
+  // ─── Hot-reloadable fields: auto-derived from the single source of truth ───
+  for (const key of Object.keys(CONFIG_MANAGED_DEFAULTS)) {
+    if (SENSITIVE_CONFIG_KEYS.has(key)) {
+      out[`${key}Set`] = Boolean(snapshot[key])
+      continue
+    }
+    if (key === "systemPromptOverrides") {
+      out.systemPromptOverridesCount = state.systemPromptOverrides.length
+      continue
+    }
+    if (key === "rewriteSystemReminders") {
+      out.rewriteSystemReminders = serializeRewriteSystemReminders(state.rewriteSystemReminders)
+      continue
+    }
+    out[key] = snapshot[key]
+  }
+
+  // ─── Startup-phase config fields (not hot-reloadable; not in CONFIG_MANAGED_DEFAULTS) ───
+  out.accountType = state.accountType
+  out.ghcApiBaseUrl = state.ghcApiBaseUrl
+  out.verbose = state.verbose
+  out.showGitHubToken = state.showGitHubToken
+  out.tokenBasedBilling = state.tokenBasedBilling
+  out.modelOverrides = state.modelOverrides
+  out.rateLimiter = state.adaptiveRateLimitConfig ?? null
+
+  return out
+}
+
 configRoutes.get("/", (c) => {
-  return c.json({
-    // ─── General ───
-    verbose: state.verbose,
-
-    // ─── Anthropic pipeline ───
-    autoTruncate: state.autoTruncate,
-    compressToolResultsBeforeTruncate: state.compressToolResultsBeforeTruncate,
-    stripServerTools: state.stripServerTools,
-    thinkingBlockMessagePolicy: state.thinkingBlockMessagePolicy,
-    dedupToolCalls: state.dedupToolCalls,
-    contextEditingMode: state.contextEditingMode,
-    contextEditingTrigger: state.contextEditingTrigger,
-    contextEditingKeepTools: state.contextEditingKeepTools,
-    contextEditingKeepThinking: state.contextEditingKeepThinking,
-    toolSearchEnabled: state.toolSearchEnabled,
-    cacheControlMode: state.cacheControlMode,
-    nonDeferredTools: state.nonDeferredTools,
-    rewriteSystemReminders: serializeRewriteSystemReminders(state.rewriteSystemReminders),
-    stripReadToolResultTags: state.stripReadToolResultTags,
-    systemPromptOverridesCount: state.systemPromptOverrides.length,
-
-    // ─── OpenAI Responses ───
-    normalizeResponsesCallIds: state.normalizeResponsesCallIds,
-    upstreamWebSocket: state.upstreamWebSocket,
-    clientWebsocketKeepOpen: state.clientWebsocketKeepOpen,
-
-    // ─── Timeouts ───
-    fetchTimeout: state.fetchTimeout,
-    streamIdleTimeout: state.streamIdleTimeout,
-    staleRequestMaxAge: state.staleRequestMaxAge,
-    modelRefreshInterval: state.modelRefreshInterval,
-
-    // ─── Shutdown ───
-    shutdownGracefulWait: state.shutdownGracefulWait,
-    shutdownAbortWait: state.shutdownAbortWait,
-
-    // ─── History ───
-    historySuccessLimit: state.historySuccessLimit,
-    historyFailureLimit: state.historyFailureLimit,
-    historyReaperInterval: state.historyReaperInterval,
-    historyDbPath: state.historyDbPath,
-
-    // ─── Model overrides ───
-    modelOverrides: state.modelOverrides,
-
-    // ─── Rate limiter (config snapshot, not live state) ───
-    rateLimiter: state.adaptiveRateLimitConfig ?? null,
-  })
+  return c.json(buildEffectiveConfig())
 })
 
 configRoutes.get("/yaml", async (c) => {
@@ -189,13 +202,9 @@ function parseExistingDocument(content: string): ConfigDocument {
 
 function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "proxy")) setScalar(doc, ["proxy"], body.proxy)
-  if (hasOwn(body, "stream_idle_timeout")) setScalar(doc, ["stream_idle_timeout"], body.stream_idle_timeout)
-  if (hasOwn(body, "fetch_timeout")) setScalar(doc, ["fetch_timeout"], body.fetch_timeout)
-  if (hasOwn(body, "stale_request_max_age")) setScalar(doc, ["stale_request_max_age"], body.stale_request_max_age)
+  if (hasOwn(body, "timeouts")) setNestedScalarContainer(doc, ["timeouts"], body.timeouts)
   if (hasOwn(body, "model_refresh_interval")) setScalar(doc, ["model_refresh_interval"], body.model_refresh_interval)
-  if (hasOwn(body, "compress_tool_results_before_truncate")) {
-    setScalar(doc, ["compress_tool_results_before_truncate"], body.compress_tool_results_before_truncate)
-  }
+  if (hasOwn(body, "auto_truncate")) setNestedScalarContainer(doc, ["auto_truncate"], body.auto_truncate)
   if (hasOwn(body, "system_prompt_prepend")) setScalar(doc, ["system_prompt_prepend"], body.system_prompt_prepend)
   if (hasOwn(body, "system_prompt_append")) setScalar(doc, ["system_prompt_append"], body.system_prompt_append)
   if (hasOwn(body, "model_overrides")) replaceCollection(doc, ["model_overrides"], body.model_overrides)
@@ -205,7 +214,7 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "rate_limiter")) setNestedScalarContainer(doc, ["rate_limiter"], body.rate_limiter)
   if (hasOwn(body, "shutdown")) setNestedScalarContainer(doc, ["shutdown"], body.shutdown)
   if (hasOwn(body, "history")) setNestedScalarContainer(doc, ["history"], body.history)
-  if (hasOwn(body, "openai-responses")) setNestedScalarContainer(doc, ["openai-responses"], body["openai-responses"])
+  if (hasOwn(body, "openai_responses")) setNestedScalarContainer(doc, ["openai_responses"], body.openai_responses)
 
   if (hasOwn(body, "anthropic")) {
     const anthropic = body.anthropic as Config["anthropic"] | null

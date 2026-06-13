@@ -61,7 +61,12 @@ function applyWhere(opts: QueryOptions | undefined): WhereClause {
     where.push("started_at <= ?")
     params.push(opts.to)
   }
-  if (opts?.success === true) {
+  // `state` is the granular filter (exact status); `success` is the coarse
+  // completed-vs-failed one. When `state` is given it wins (skip `success`).
+  if (opts?.state) {
+    where.push("status = ?")
+    params.push(opts.state)
+  } else if (opts?.success === true) {
     where.push("status = ?")
     params.push("completed")
   } else if (opts?.success === false) {
@@ -105,7 +110,7 @@ export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
               model, endpoint, transport, status,
               input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
               stop_reason, error_message,
-              message_count, preview_text, search_text
+              message_count, preview_text, search_text, pid
          FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, 0) as Array<SummaryRow>
@@ -130,6 +135,7 @@ function rowToSummary(r: SummaryRow): EntrySummary {
     state: (r.status as EntrySummary["state"]) ?? undefined,
     active: false,
     lastUpdatedAt: r.ended_at ?? r.started_at,
+    pid: r.pid ?? undefined,
     requestModel: r.model ?? undefined,
     responseModel: r.model ?? undefined,
     responseSuccess,

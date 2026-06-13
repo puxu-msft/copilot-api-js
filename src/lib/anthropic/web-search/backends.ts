@@ -305,7 +305,7 @@ async function searchViaSearxng(query: string, clientAbortSignal?: AbortSignal):
 
   const response = await fetch(searxngUrl(query), {
     headers: { accept: "application/json" },
-    // createFetchSignal applies the configured fetch_timeout (and proxy via global fetch);
+    // createFetchSignal applies the configured timeouts.response_header (and proxy via global fetch);
     // fall back to a fixed cap so a hung SearXNG can't stall the request indefinitely.
     // A client disconnect (clientAbortSignal) terminates the search immediately.
     signal: combineAbortSignals(clientAbortSignal, createFetchSignal() ?? AbortSignal.timeout(SEARXNG_TIMEOUT_MS)),

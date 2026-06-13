@@ -19,10 +19,10 @@ import consola from "consola"
 
 import type { Config } from "./schema"
 
+import { CONFIG_MIGRATIONS } from "./compat"
 import {
   //
   ConfigSchema,
-  DEPRECATED_KEYS,
 } from "./schema"
 
 // ============================================================================
@@ -57,13 +57,18 @@ export function _resetConfigValidationWarnTrackingForTests(): void {
 function extractAndTranslateDeprecated(raw: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = deepCloneJsonSafe(raw)
 
-  for (const dep of DEPRECATED_KEYS) {
+  for (const dep of CONFIG_MIGRATIONS) {
     const parent = dep.parentPath === "" ? out : navigate(out, dep.parentPath.split("."))
     if (!parent || typeof parent !== "object") continue
     const parentObj = parent as Record<string, unknown>
     if (!(dep.key in parentObj)) continue
 
     const legacyValue = parentObj[dep.key]
+    // Value-gated migrations (migrateValue) fire only for legacy values; an
+    // already-valid value must pass through WITHOUT delete or warn. Migrations
+    // without a gate (renameLeaf/removeKey/renameSection) treat key-presence as
+    // legacy, so this is a no-op for them.
+    if (dep.isLegacyValue && !dep.isLegacyValue(legacyValue)) continue
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- key comes from DEPRECATED_KEYS constant
     delete parentObj[dep.key]
     warnDeprecatedKeyOnce(dep.path, dep.message)
@@ -194,7 +199,9 @@ export function validateConfig(raw: unknown): Config {
 //
 // `validateConfigInput` (below) is for `PUT /api/config/yaml`: the caller
 // expects a hard-fail with structured error details so the UI can show
-// per-field validation messages. No translation, no stripping, no warns.
+// per-field validation messages. It DOES run the legacy→current migration
+// first (so old-key bodies are normalized, not hard-rejected), then strict-
+// parses — no stripping of remaining invalid fields.
 // ============================================================================
 
 export interface ConfigValidationDetail {
@@ -218,10 +225,14 @@ export function validateConfigInput(input: unknown): ConfigValidationResult {
     }
   }
 
-  const result = ConfigSchema.safeParse(input)
+  // Normalize legacy key names first (same migration as file load), so PUT
+  // bodies carrying old keys are migrated rather than 400'd. Remaining invalid
+  // fields still hard-fail with structured details.
+  const processed = extractAndTranslateDeprecated(input as Record<string, unknown>)
+  const result = ConfigSchema.safeParse(processed)
   if (result.success) return { valid: true, value: result.data }
 
-  const details = result.error.issues.flatMap((issue) => zodIssueToDetails(issue, input))
+  const details = result.error.issues.flatMap((issue) => zodIssueToDetails(issue, processed))
   return { valid: false, details }
 }
 

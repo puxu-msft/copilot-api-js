@@ -281,8 +281,8 @@ describe("deduplicateToolCalls", () => {
     expect(firstAssistant).toBeDefined()
   })
 
-  it("should not merge an immutable thinking assistant with adjacent assistant messages", () => {
-    setStateForTests({ thinkingBlockMessagePolicy: "immutable" })
+  it("should not merge a preserved thinking assistant with adjacent assistant messages", () => {
+    setStateForTests({ thinkingBlockMessagePolicy: "preserve" })
 
     const immutableAssistant = {
       role: "assistant",

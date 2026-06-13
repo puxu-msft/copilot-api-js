@@ -3,14 +3,19 @@ import { computed } from "vue"
 
 import SectionBlock from "./SectionBlock.vue"
 
-const props = defineProps<{
-  /** Client → Proxy request headers */
-  inboundRequest?: Record<string, string>
-  /** Proxy → Upstream request headers */
-  outboundRequest?: Record<string, string>
-  /** Upstream → Proxy response headers */
-  outboundResponse?: Record<string, string>
-}>()
+const props = withDefaults(
+  defineProps<{
+    /** Client → Proxy request headers */
+    inboundRequest?: Record<string, string>
+    /** Proxy → Upstream request headers */
+    outboundRequest?: Record<string, string>
+    /** Upstream → Proxy response headers */
+    outboundResponse?: Record<string, string>
+    /** Collapsed by default. False when shown inside a selected stage (headers are core there). */
+    defaultCollapsed?: boolean
+  }>(),
+  { defaultCollapsed: false },
+)
 
 interface HeaderRow {
   name: string
@@ -31,6 +36,10 @@ const responseRows = computed<Array<HeaderRow>>(() => {
 
 const hasRequest = computed(() => props.inboundRequest || props.outboundRequest)
 const hasResponse = computed(() => Boolean(props.outboundResponse))
+// Per-stage usage passes a single leg → render only the present columns (avoids
+// a comparison table with one permanently-empty "—" column).
+const showInbound = computed(() => Boolean(props.inboundRequest))
+const showOutbound = computed(() => Boolean(props.outboundRequest))
 
 /** Merge two header sets, sorted by name, with diff flags */
 function mergeHeaders(left?: Record<string, string>, right?: Record<string, string>): Array<HeaderRow> {
@@ -48,7 +57,7 @@ function mergeHeaders(left?: Record<string, string>, right?: Record<string, stri
     v-if="hasRequest || hasResponse"
     title="HTTP Headers"
     anchor="httpHeaders"
-    default-collapsed
+    :default-collapsed="defaultCollapsed"
   >
     <!-- Request headers comparison -->
     <div
@@ -60,8 +69,16 @@ function mergeHeaders(left?: Record<string, string>, right?: Record<string, stri
       <div class="headers-table">
         <div class="headers-thead">
           <span class="col-name">Header</span>
-          <span class="col-value">Client → Proxy</span>
-          <span class="col-value">Proxy → Upstream</span>
+          <span
+            v-if="showInbound"
+            class="col-value"
+            >Client → Proxy</span
+          >
+          <span
+            v-if="showOutbound"
+            class="col-value"
+            >Proxy → Upstream</span
+          >
         </div>
         <div
           v-for="row in requestRows"
@@ -70,8 +87,16 @@ function mergeHeaders(left?: Record<string, string>, right?: Record<string, stri
           :class="{ diff: row.diff }"
         >
           <span class="col-name">{{ row.name }}</span>
-          <span class="col-value">{{ row.inbound ?? "—" }}</span>
-          <span class="col-value">{{ row.outbound ?? "—" }}</span>
+          <span
+            v-if="showInbound"
+            class="col-value"
+            >{{ row.inbound ?? "—" }}</span
+          >
+          <span
+            v-if="showOutbound"
+            class="col-value"
+            >{{ row.outbound ?? "—" }}</span
+          >
         </div>
       </div>
     </div>

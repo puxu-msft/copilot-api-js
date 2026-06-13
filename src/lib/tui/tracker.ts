@@ -6,6 +6,7 @@ import { generateId } from "~/lib/utils"
 import type {
   //
   RequestUpdate,
+  RetryInfo,
   TuiLogEntry,
   TuiRenderer,
 } from "./types"
@@ -104,6 +105,20 @@ export class TuiLogger {
     }
 
     this.renderer?.onRequestUpdate(id, update)
+  }
+
+  /**
+   * Notify the renderer that an attempt failed and the pipeline decided to
+   * retry. Does NOT transition entry state — the entry stays in-flight and
+   * the eventual `finishRequest()` still drives the final outcome line.
+   *
+   * Safe to call multiple times (one per retry); each is a distinct event.
+   * No-op if the id is unknown (e.g. entry was already completed).
+   */
+  logRetry(id: string, info: RetryInfo): void {
+    const entry = this.entries.get(id)
+    if (!entry) return
+    this.renderer?.onRequestRetry?.(entry, info)
   }
 
   /**

@@ -77,7 +77,7 @@ export interface CreateAnthropicMessagesOptions {
    * route wires this from `streamSSE`'s `stream.onAbort`; callers that run their
    * own orchestration outside the streaming handler (e.g. the web_search double-
    * hop) pass it so a client cancel terminates the upstream hop instead of
-   * letting it run to `fetch_timeout`. Folded into the upstream fetch signal.
+   * letting it run to `timeouts.response_header`. Folded into the upstream fetch signal.
    */
   clientAbortSignal?: AbortSignal
 }

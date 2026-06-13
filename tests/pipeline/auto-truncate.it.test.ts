@@ -377,7 +377,7 @@ describe("Auto-Truncate Anthropic", () => {
     expect(hasOrphanedToolResult).toBe(false)
   })
 
-  test("immutable_thinking_messages should prevent client-side thinking stripping", async () => {
+  test("preserve policy should prevent client-side thinking stripping", async () => {
     const originalPolicy = state.thinkingBlockMessagePolicy
 
     try {
@@ -424,7 +424,7 @@ describe("Auto-Truncate Anthropic", () => {
         expect(mutableAssistant.content.some((block) => block.type === "thinking")).toBe(false)
       }
 
-      setStateForTests({ thinkingBlockMessagePolicy: "immutable" })
+      setStateForTests({ thinkingBlockMessagePolicy: "preserve" })
       const immutableResult = await autoTruncateAnthropic(payload, mockModel, { targetTokenLimit })
       const oldAssistant = immutableResult.payload.messages.find(
         (message) =>

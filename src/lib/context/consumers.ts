@@ -205,13 +205,9 @@ function handleTuiEvent(event: RequestContextEvent): void {
       const tuiLogId = event.context.tuiLogId
       if (!tuiLogId) return
 
-      // When attempts are updated, add retry tags
-      if (event.field === "attempts" && event.context.attempts.length > 1) {
-        const attempt = event.context.currentAttempt
-        if (attempt?.strategy) {
-          tuiLogger.updateRequest(tuiLogId, { tags: [attempt.strategy] })
-        }
-      }
+      // Per-attempt retry strategy is surfaced as [RETRY-n] lines by
+      // `executeRequestPipeline`; no need to also push it as a sticky tag on
+      // the final outcome line.
       if (event.field === "attempts") {
         const transportTag = toTransportTag(event.context.currentAttempt?.transport)
         if (transportTag) {

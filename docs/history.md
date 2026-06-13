@@ -4,51 +4,139 @@
 
 History 系统记录所有 API 请求的完整对话历史，提供 REST API 查询和 WebSocket 实时推送，以及 Web UI 查看界面。
 
+存储方式：基于 SQLite + gzip 压缩的磁盘持久化，跨重启可见。采用**增量持久化**——请求一进来即落 head 行，各阶段数据增量写入独立 stage 子行；进程崩溃时未完成请求仍留有可发现记录（标为 `interrupted`）。进行中请求同时保留在内存 in-flight 映射，用于 WebSocket 实时推送。
+
 ## 数据模型
 
 ### Session
 
-一个服务器进程生命周期内的所有请求归入同一个 session（单会话模式）。
+客户端通过 HTTP header（`x-session-id`、`x-conversation-id` 等）或 Responses API 的 `previous_response_id` 标识会话。同一 sessionId 的请求归入同一 Session。
 
-```
-Session {
+```typescript
+interface Session {
   id: string
-  startedAt: Date
-  entries: HistoryEntry[]
+  startTime: number
+  lastActivity: number
+  requestCount: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  models: string[]
+  endpoints: EndpointType[]
+  toolsUsed?: string[]
 }
 ```
 
-**设计决策**：由于 Anthropic/OpenAI 协议是无状态的，客户端不传递会话标识符，无法从请求中区分会话。保留完整的 Session 框架，未来客户端支持 session header 时可直接接入。
+Session header 候选（按优先级）：`x-session-id` → `x-conversation-id` → `x-chat-session-id` → `x-thread-id` → `x-interaction-id`。
 
 ### HistoryEntry
 
-每个请求对应一个 entry，记录请求 payload、响应、时间线事件等。
+每个请求对应一个 entry，记录请求 payload、响应、时间线事件等。关键时间字段：
 
-## Memory Pressure 管理
+- `startedAt: number` — 请求开始时间戳（ms），必填，用于排序和时间范围过滤
+- `endedAt?: number` — 请求结束时间戳
+- `durationMs?: number` — `endedAt - startedAt`
 
-`MemoryPressureManager`（`src/lib/history/memory-pressure.ts`）监控 Node.js 堆内存使用：
+**代理管线四段命名**（与 `httpHeaders` 的 inbound/outbound 术语对齐）：
 
-- 当堆使用率超过阈值时，按 LRU 淘汰旧的 history entries
-- `state.historyLimit` 控制最大条目数（默认 200，0 = 无限制）
-- `state.historyMinEntries` 控制内存压力下保留的最少条目数（默认 50）
+- `inboundRequest` — client → proxy：客户端原始入站请求
+- `effectiveRequest?` — sanitize/truncate 后的逻辑载荷（不在物理传输轴上，保留原名）
+- `outboundRequest?` — proxy → upstream：发往上游的最终 wire 请求（含 payload）
+- `outboundResponse?` — upstream → proxy：上游原始响应
+- `inboundResponse?` — proxy → client：实际转发给客户端的响应（经 server-tool 过滤 / tool-name 还原 / tool-input decode 改写后）。`{ content?, sseEvents? }`——非流式存改写后 content，流式存转发帧序列。与 `sseEvents`（上游原始流）并存，构成"上游发了什么 vs 客户端收到什么"对照视图
+
+`sseEvents: Array<SseEventRecord>` 记录上游原始 SSE 流，`SseEventRecord = { offsetMs, type, raw }`——`raw` 为上游 `data:` 原始字节串（含 keepalive，无 parse 往返丢失），`type` 供索引。
+
+运行时表示（`RequestContext` 的 `response`/`forwardedResponse` getter、`Attempt.wireRequest`、`HeadersCapture`）保留旧名，仅持久化 schema 采用上述命名。完整类型定义见 `src/lib/history/types.ts`。
+
+### EntrySummary
+
+HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。字段与 HistoryEntry 对齐，使用 `startedAt` 作为时间字段。
+
+## 容量管理 (Reaper)
+
+`src/lib/history/sqlite/reaper.ts` 定期清理 `entries_v2`，按**状态分桶**独立维持上限——成功历史与失败历史互不挤占。
+
+- `history.success_limit` — 成功（`completed`）条目上限（默认 50，0 = 无限制）
+- `history.failure_limit` — 失败诊断条目上限（默认 200，0 = 无限制）。`failed`/`aborted`/`interrupted` 三种终态进入此桶
+- `history.reaper_interval` — 定期清理秒数（默认 600 = 10 分钟，0 = 禁用）
+- 旧 `history.limit` 仍作兼容键：缺省 success/failure 时回退到它
+
+每桶按 `started_at ASC, id ASC` 删除最旧条目，保留最新的对应 `limit` 条。**活跃态（`pending`/`executing`/`streaming`）落在两桶之外**——reaper 既不计数也不淘汰进行中请求的 head 行；它们的回收由下文的孤儿/stale 回收负责。删除 head 行时，其 `entry_stages` 子行经 `ON DELETE CASCADE` 一并删除。
+
+### 崩溃回收（pending → interrupted）
+
+由于请求一进来即落盘（见下文增量持久化），进程崩溃会在 SQLite 留下停在非终态的 head 行。两条回收路径把它们标为 `interrupted`（失败桶终态，可被淘汰）：
+
+- **启动期**（`connection.ts::reclaimOrphanedActiveRows`）：`openDatabase` 时把所有**非本进程**（pid/boot_time 不匹配）的 `pending`/`executing`/`streaming` 行标为 `interrupted`——上一个已死进程的孤儿。
+- **运行期**（`reaper.ts::reclaimStaleActiveRows`）：reaper 周期内把**本进程**中 `started_at` 超过 `timeouts.stale_request_max_age` 的活跃行标为 `interrupted`——防御同进程内未正常 settle 的 head 行无限堆积。
+
+## 数据库位置
+
+默认路径：`$XDG_DATA_HOME/copilot-api/history.db`，未设置 `XDG_DATA_HOME` 时回退到 `~/.local/share/copilot-api/history.db`。
+
+可通过 `config.yaml` 中的 `history.db_path` 覆盖。
+
+## 进行中 vs 持久化（增量持久化）
+
+- **进行中请求** —— 存在于内存 in-flight 映射（`src/lib/history/in-flight.ts`），通过 WebSocket 推送 `entry_added` / `entry_updated` 给前端。**in-flight 是前端实时视图的权威源**。
+- **持久化（增量）** —— 不再只在终态一次性写盘。请求生命周期的各阶段**增量**写入 SQLite：
+  - 请求进入（`originalRequest`）→ eager 写 head 行（`status=pending`）+ `inbound_request` stage（同一事务，FK 安全）
+  - 每次状态转换（`state_changed`）→ 更新 head 行 status
+  - 每次 attempt 更新 → 增量写该 attempt 已具备的 stage（`outbound_request` 在**发请求前**写，崩溃也留下"发了什么"）
+  - 终态（`completed`/`failed`/`aborted`）→ 写齐所有 stage + 终态 head，单事务（`insertCompletedEntry`）
+- 这样进程被 SIGKILL/OOM/崩溃时，未达终态的请求**仍在 SQLite 留有可发现的记录**（不再零落盘）。
+
+**双源一致性契约**：active 请求同时有 in-flight 内存对象与 SQLite 的 head + 部分 stage 行。读取优先 in-flight（`getEntry = getInFlight(id) ?? getEntryById(id)`），故 active 请求恒读内存全量、不读半截 SQLite。SQLite 仅作持久化、WS 仅作实时，二者 schema 不同、互不校验。崩溃后 in-flight 消失，SQLite 半截行经回收为 `interrupted` 才被读取。
+
+REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedAt` DESC 排序，按 id 去重）。
+
+## 表结构（Head 表 + Stage 子表）
+
+SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重数据从单表单 blob 拆为 **head 表 + stage 子表**的 1:N 模型，使 reaper 分桶 / stats 聚合 / 游标分页 / session 重算继续只作用于 head 表 `entries_v2`（每请求恰一行）。
+
+**`entries_v2`（HEAD，每请求一行）** 主要列：
+
+- `id TEXT PRIMARY KEY`、`session_id TEXT`、`started_at`/`ended_at INTEGER`
+- `model`/`endpoint`/`status TEXT` — 基础元数据（`status` 即 `RequestLifecycleState`）
+- token 计数、`duration_ms`、`pid`/`boot_time`/`git_sha`（进程身份镜像列，供 SQL 过滤）
+- `preview_text`/`search_text` — 列表/搜索用
+- `blob_gz BLOB NOT NULL` — gzip 的 **head-meta** JSON（`process`/`pipelineInfo`/`warningMessages`/`attempts` 摘要/`httpHeaders` 等；**不含**被拆到 stage 行的重字段）
+
+**`entry_stages`（1:N 子表）** —— 重 blob 按腿/按 attempt 分行：
+
+- 主键 `(entry_id, stage, attempt_index)`；`FOREIGN KEY(entry_id) REFERENCES entries_v2(id) ON DELETE CASCADE`
+- `stage` ∈ `inbound_request` | `effective_request` | `outbound_request` | `outbound_response` | `inbound_response` | `sse_events`
+- `attempt_index` — 腿无关阶段（inbound/forwarded/sse）为 `-1`；per-attempt 阶段为 `0..N`
+- `blob_gz` — 该阶段的重数据（每次重试的真实 wire payload + 上游响应各占一行 → 保全重试全过程）
+
+**读取**：`assembleFullEntry(headRow, stageRows[])` 把 head-meta 与各 stage blob 层叠重组成完整 `HistoryEntry`；per-attempt 行还原 `attempts[i].wireRequest/response`，顶层 outbound/effective 镜像最终 attempt。**向后兼容**：旧的单 blob 行无 stage 行 → 整 blob 即完整 entry，零数据迁移。
+
+**写入**：head 行用 `ON CONFLICT(id) DO UPDATE`（**不是** `INSERT OR REPLACE`——后者 DELETE+INSERT 会触发 CASCADE 清掉 stage 子行）。
+
+索引：`started_at DESC`、`session_id`、`status`、`pid` 等；`entry_stages(entry_id)`。
 
 ## REST API
 
 | 端点 | 说明 |
 |------|------|
+| `GET /history/api/entries` | 分页查询 entries（支持 model、endpoint、from/to 等过滤） |
+| `GET /history/api/entries/:id` | 获取单个 entry |
 | `GET /history/api/sessions` | 列出所有 sessions |
 | `GET /history/api/sessions/:id` | 获取 session 详情 |
 | `GET /history/api/sessions/:id/entries` | 获取 session 的所有 entries |
-| `GET /history/api/entries/:id` | 获取单个 entry |
 | `DELETE /history/api/sessions/:id` | 删除 session |
+| `GET /history/api/stats` | 聚合统计数据 |
+| `GET /history/api/export` | 导出历史（JSON/CSV） |
 
 ## WebSocket 实时推送
 
-`/ws` 提供实时事件流：
+`/ws` 提供实时事件流，支持主题订阅（`history`、`requests`、`status`）：
 
-- `entry:created` — 新请求开始
-- `entry:updated` — 请求状态更新（流式内容、完成、失败等）
-- `entry:deleted` — 条目删除
+- `entry_added` — 新请求开始
+- `entry_updated` — 请求状态更新（流式内容、完成、失败等）
+- `stats_updated` — 聚合统计变更
+- `history_cleared` — 历史清空
+- `session_deleted` — 会话删除
 
 ## Web UI
 
@@ -59,4 +147,13 @@ Session {
 
 前端类型统一从后端 re-export（`~backend/lib/history/store`），不重复定义。
 
-相关代码：`src/lib/history/`、`src/routes/history/`、`ui/history-v3/`
+相关代码：`src/lib/history/`、`src/routes/history/`、`ui/`
+
+## 已知暂缓项
+
+增量持久化 + 分阶段重构刻意留下的边界（非缺陷，记录以备后续决策）：
+
+- **流中途崩溃丢部分 SSE 帧**：`sse_events` 在流结束前快照一次（非节流增量 append），故 SIGKILL-mid-stream 会丢失断点前已流出的帧。但 head 行 `status=streaming` 仍使该请求可发现（降级而非静默丢失）。若需零丢帧，可在 `processOneStreamEvent` 加节流 append 落盘。
+- **中间失败 attempt 的上游响应体**：重试中失败的非最终 attempt 只在 `attempts[].error`（message）保留，完整 `responseText`/`status` 未逐 attempt 持久化（最终失败的响应体经 `outboundResponse.rawBody` 完整保留）。`outbound_request`（每次重试的 wire payload）已逐 attempt 保全。
+
+> Bug 2（客户端断连记 `aborted`）已统一覆盖**所有**流式 endpoint：Anthropic Messages 经 `processAnthropicStream`，其余（Chat Completions / Responses / Responses-WS / Gemini）经通用 `guardSseIterable`——两者均 shutdown 优先、client-abort 抛 `StreamClientAbortError`，handler 据此记 `aborted` 并跳过向已关闭流写错误帧。

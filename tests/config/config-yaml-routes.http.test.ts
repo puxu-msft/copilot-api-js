@@ -80,7 +80,8 @@ describe("config yaml routes", () => {
 
   test("GET /api/config/yaml returns structured config from file", async () => {
     await writeConfig(`
-fetch_timeout: 600
+timeouts:
+  response_header: 600
 history:
   limit: 20
 anthropic:
@@ -91,7 +92,7 @@ anthropic:
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      fetch_timeout: 600,
+      timeouts: { response_header: 600 },
       history: { limit: 20 },
       anthropic: { strip_server_tools: true },
     })
@@ -102,9 +103,10 @@ anthropic:
 proxy: "http://127.0.0.1:7890"
 model_overrides:
   sonnet: claude-sonnet-4.7
-stream_idle_timeout: 301
-fetch_timeout: 600
-stale_request_max_age: 900
+timeouts:
+  stream_idle: 301
+  response_header: 600
+  stale_request_max_age: 900
 model_refresh_interval: 0
 shutdown:
   graceful_wait: 12
@@ -115,7 +117,7 @@ history:
 anthropic:
   strip_server_tools: true
   dedup_tool_calls: result
-  thinking_block_message_policy: immutable
+  thinking_block_message_policy: preserve
   strip_read_tool_result_tags: true
   context_editing: clear-both
   context_editing_trigger: 200000
@@ -130,15 +132,16 @@ anthropic:
     - from: '(?i)warning'
       to: ''
       method: regex
-openai-responses:
+openai_responses:
   normalize_call_ids: false
-  upstream_websocket: true
+  upstream_ws: true
 rate_limiter:
   retry_interval: 15
   request_interval: 30
-  recovery_timeout: 60
+  recovery_interval: 60
   consecutive_successes: 3
-compress_tool_results_before_truncate: false
+auto_truncate:
+  compress_tool_results: false
 system_prompt_overrides:
   - from: danger
     to: safe
@@ -156,9 +159,11 @@ system_prompt_append: "append"
       model_overrides: {
         sonnet: "claude-sonnet-4.7",
       },
-      stream_idle_timeout: 301,
-      fetch_timeout: 600,
-      stale_request_max_age: 900,
+      timeouts: {
+        stream_idle: 301,
+        response_header: 600,
+        stale_request_max_age: 900,
+      },
       model_refresh_interval: 0,
       shutdown: {
         graceful_wait: 12,
@@ -171,7 +176,7 @@ system_prompt_append: "append"
       anthropic: {
         strip_server_tools: true,
         dedup_tool_calls: "result",
-        thinking_block_message_policy: "immutable",
+        thinking_block_message_policy: "preserve",
         strip_read_tool_result_tags: true,
         context_editing: "clear-both",
         context_editing_trigger: 200000,
@@ -188,17 +193,19 @@ system_prompt_append: "append"
           },
         ],
       },
-      "openai-responses": {
+      openai_responses: {
         normalize_call_ids: false,
-        upstream_websocket: true,
+        upstream_ws: true,
       },
       rate_limiter: {
         retry_interval: 15,
         request_interval: 30,
-        recovery_timeout: 60,
+        recovery_interval: 60,
         consecutive_successes: 3,
       },
-      compress_tool_results_before_truncate: false,
+      auto_truncate: {
+        compress_tool_results: false,
+      },
       system_prompt_overrides: [
         {
           from: "danger",
@@ -213,7 +220,7 @@ system_prompt_append: "append"
   })
 
   test("GET /api/config/yaml returns structured error details for invalid YAML", async () => {
-    await writeConfig("fetch_timeout: [\n")
+    await writeConfig("model_refresh_interval: [\n")
 
     const res = await app.request("/api/config/yaml")
 
@@ -255,8 +262,8 @@ system_prompt_append: "append"
 
   test("PUT /api/config/yaml updates scalar fields while preserving surrounding comments", async () => {
     await writeConfig(`
-# timeout comment
-fetch_timeout: 600
+# refresh comment
+model_refresh_interval: 600
 
 shutdown:
   graceful_wait: 30
@@ -266,21 +273,21 @@ shutdown:
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        fetch_timeout: 300,
+        model_refresh_interval: 300,
       }),
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      fetch_timeout: 300,
+      model_refresh_interval: 300,
       shutdown: {
         graceful_wait: 30,
       },
     })
 
     const written = await readConfig()
-    expect(written).toContain("# timeout comment")
-    expect(written).toContain("fetch_timeout: 300")
+    expect(written).toContain("# refresh comment")
+    expect(written).toContain("model_refresh_interval: 300")
     expect(written).toContain("shutdown:")
     expect(written).toContain("graceful_wait: 30")
   })
@@ -288,7 +295,7 @@ shutdown:
   test("PUT /api/config/yaml deletes optional scalar keys instead of writing null", async () => {
     await writeConfig(`
 proxy: "http://127.0.0.1:7890"
-fetch_timeout: 600
+model_refresh_interval: 600
 `)
 
     const res = await app.request("/api/config/yaml", {
@@ -301,7 +308,7 @@ fetch_timeout: 600
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      fetch_timeout: 600,
+      model_refresh_interval: 600,
     })
 
     const written = await readConfig()
@@ -314,33 +321,33 @@ fetch_timeout: 600
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        fetch_timeout: 90,
+        model_refresh_interval: 90,
       }),
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      fetch_timeout: 90,
+      model_refresh_interval: 90,
     })
-    expect(await readConfig()).toContain("fetch_timeout: 90")
+    expect(await readConfig()).toContain("model_refresh_interval: 90")
   })
 
   test("PUT /api/config/yaml resets deleted runtime fields to defaults before reload", async () => {
-    await writeConfig("fetch_timeout: 123\n")
+    await writeConfig("model_refresh_interval: 123\n")
     await applyConfigToState()
-    expect(state.fetchTimeout).toBe(123)
+    expect(state.modelRefreshInterval).toBe(123)
 
     const res = await app.request("/api/config/yaml", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        fetch_timeout: null,
+        model_refresh_interval: null,
       }),
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({})
-    expect(state.fetchTimeout).toBe(300)
+    expect(state.modelRefreshInterval).toBe(600)
   })
 
   test("PUT /api/config/yaml bypasses loadConfig debounce by resetting cache before reload", async () => {
@@ -348,21 +355,21 @@ fetch_timeout: 600
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        fetch_timeout: 111,
+        model_refresh_interval: 111,
       }),
     })
     expect(first.status).toBe(200)
-    expect(state.fetchTimeout).toBe(111)
+    expect(state.modelRefreshInterval).toBe(111)
 
     const second = await app.request("/api/config/yaml", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        fetch_timeout: 222,
+        model_refresh_interval: 222,
       }),
     })
     expect(second.status).toBe(200)
-    expect(state.fetchTimeout).toBe(222)
+    expect(state.modelRefreshInterval).toBe(222)
   })
 
   test("PUT /api/config/yaml accepts valid inline-flag regex rules", async () => {
@@ -424,9 +431,11 @@ fetch_timeout: 600
         sonnet: "claude-sonnet-4.7",
         custom: "gpt-4.1",
       },
-      stream_idle_timeout: 301,
-      fetch_timeout: 600,
-      stale_request_max_age: 900,
+      timeouts: {
+        stream_idle: 301,
+        response_header: 600,
+        stale_request_max_age: 900,
+      },
       model_refresh_interval: 0,
       shutdown: {
         graceful_wait: 12,
@@ -439,7 +448,7 @@ fetch_timeout: 600
       anthropic: {
         strip_server_tools: true,
         dedup_tool_calls: "result",
-        thinking_block_message_policy: "immutable",
+        thinking_block_message_policy: "preserve",
         strip_read_tool_result_tags: true,
         context_editing: "clear-both",
         context_editing_trigger: 200000,
@@ -456,17 +465,19 @@ fetch_timeout: 600
           },
         ],
       },
-      "openai-responses": {
+      openai_responses: {
         normalize_call_ids: false,
-        upstream_websocket: true,
+        upstream_ws: true,
       },
       rate_limiter: {
         retry_interval: 15,
         request_interval: 30,
-        recovery_timeout: 60,
+        recovery_interval: 60,
         consecutive_successes: 3,
       },
-      compress_tool_results_before_truncate: false,
+      auto_truncate: {
+        compress_tool_results: false,
+      },
       system_prompt_overrides: [
         {
           from: "danger",
@@ -491,8 +502,8 @@ fetch_timeout: 600
     const written = await readConfig()
     expect(written).toContain("proxy: http://127.0.0.1:7890")
     expect(written).toContain("model_overrides:")
-    expect(written).toContain("stream_idle_timeout: 301")
-    expect(written).toContain("fetch_timeout: 600")
+    expect(written).toContain("stream_idle: 301")
+    expect(written).toContain("response_header: 600")
     expect(written).toContain("stale_request_max_age: 900")
     expect(written).toContain("model_refresh_interval: 0")
     expect(written).toContain("shutdown:")
@@ -501,7 +512,7 @@ fetch_timeout: 600
     expect(written).toContain("context_editing_trigger: 200000")
     expect(written).toContain("tool_search: false")
     expect(written).toContain("non_deferred_tools:")
-    expect(written).toContain("openai-responses:")
+    expect(written).toContain("openai_responses:")
     expect(written).toContain("rate_limiter:")
     expect(written).toContain("system_prompt_overrides:")
 
@@ -629,7 +640,7 @@ shutdown:
   })
 
   test("PUT /api/config/yaml keeps file unchanged when deleting an absent optional scalar", async () => {
-    const original = "# keep comment\nfetch_timeout: 600\n"
+    const original = "# keep comment\nmodel_refresh_interval: 600\n"
     await writeConfig(original)
 
     const res = await app.request("/api/config/yaml", {
@@ -642,7 +653,7 @@ shutdown:
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      fetch_timeout: 600,
+      model_refresh_interval: 600,
     })
     expect(await readConfig()).toBe(original)
   })
@@ -756,7 +767,7 @@ anthropic:
 rate_limiter:
   retry_interval: 15
   request_interval: 30
-  recovery_timeout: 60
+  recovery_interval: 60
 `)
 
     const res = await app.request("/api/config/yaml", {
@@ -774,14 +785,14 @@ rate_limiter:
       rate_limiter: {
         retry_interval: 15,
         request_interval: 45,
-        recovery_timeout: 60,
+        recovery_interval: 60,
       },
     })
 
     const written = await readConfig()
     expect(written).toContain("retry_interval: 15")
     expect(written).toContain("request_interval: 45")
-    expect(written).toContain("recovery_timeout: 60")
+    expect(written).toContain("recovery_interval: 60")
   })
 
   test("PUT /api/config/yaml replaces model_overrides collections instead of merging old keys", async () => {
@@ -865,7 +876,7 @@ anthropic:
   test("PUT /api/config/yaml with empty body keeps config semantics and comment structure intact", async () => {
     await writeConfig(`
 # keep comment
-fetch_timeout: 600
+model_refresh_interval: 600
 history:
   limit: 20
 `)
@@ -878,7 +889,7 @@ history:
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      fetch_timeout: 600,
+      model_refresh_interval: 600,
       history: {
         limit: 20,
       },
@@ -886,17 +897,19 @@ history:
 
     const written = await readConfig()
     expect(written).toContain("# keep comment")
-    expect(written).toContain("fetch_timeout: 600")
+    expect(written).toContain("model_refresh_interval: 600")
     expect(written).toContain("history:")
     expect(written).toContain("limit: 20")
   })
 
-  test("PUT /api/config/yaml rejects negative timeout values", async () => {
+  test("PUT /api/config/yaml rejects negative nested timeout values", async () => {
     const res = await app.request("/api/config/yaml", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        fetch_timeout: -1,
+        timeouts: {
+          response_header: -1,
+        },
       }),
     })
 
@@ -905,7 +918,7 @@ history:
       error: "Config validation failed",
       details: [
         {
-          field: "fetch_timeout",
+          field: "timeouts.response_header",
           message: "Must be a non-negative integer or null",
           value: -1,
         },

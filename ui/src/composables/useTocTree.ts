@@ -143,19 +143,13 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     }
 
     // ── httpHeaders ──
+    // Single node (no leg children): headers render per-stage as a single leg,
+    // so the outline entry just links to that stage's headers section.
     if (entry.value.httpHeaders) {
-      const headersChildren: Array<TocNode> = []
-      if (entry.value.httpHeaders.inboundRequest || entry.value.httpHeaders.outboundRequest) {
-        headersChildren.push({ id: "httpHeaders.request", label: "request headers", icon: "mdi-arrow-up" })
-      }
-      if (entry.value.httpHeaders.outboundResponse) {
-        headersChildren.push({ id: "httpHeaders.response", label: "response headers", icon: "mdi-arrow-down" })
-      }
       nodes.push({
         id: "httpHeaders",
-        label: "httpHeaders",
+        label: "http headers",
         icon: "mdi-web",
-        children: headersChildren.length > 0 ? headersChildren : undefined,
       })
     }
 

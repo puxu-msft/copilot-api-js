@@ -218,6 +218,19 @@ function collectText(response: AnthropicMessageResponse): string {
     .trim()
 }
 
+/**
+ * Collect signed thinking / redacted_thinking blocks from a response, verbatim.
+ *
+ * Used by the second hop to inject the model's reasoning blocks into the synthesized
+ * web_search response. The signature is self-contained (encrypts the thinking content
+ * itself); blocks are echoed byte-for-byte so the upstream still accepts them on the
+ * client's next turn. Returns `[]` when no thinking blocks are present (typical when
+ * thinking is disabled or the second hop happened not to think).
+ */
+function collectThinkingBlocks(response: AnthropicMessageResponse): Array<Record<string, unknown>> {
+  return (response.content as unknown as Array<Record<string, unknown>>).filter((block) => block.type === "thinking" || block.type === "redacted_thinking")
+}
+
 // ============================================================================
 // Usage merging
 // ============================================================================
@@ -298,7 +311,7 @@ export interface OrchestrateWebSearchArgs {
   /**
    * Aborts when the downstream client disconnects. Threaded into both model
    * hops and the search so a client cancel terminates upstream work instead of
-   * letting the (non-streaming) hops run to `fetch_timeout`.
+   * letting the (non-streaming) hops run to `timeouts.response_header`.
    */
   clientAbortSignal?: AbortSignal
 }
@@ -336,14 +349,18 @@ export async function runFirstHopProbe(args: OrchestrateWebSearchArgs): Promise<
   const { payload, resolvedModel, clientAnthropicBeta, clientAbortSignal } = args
 
   // Sanitize like the normal path so historical orphan tool blocks don't 400.
+  // Take back BOTH messages and system — `merge` mode folds inline system text
+  // into the top-level system, so dropping it here would lose that content.
   const firstHopBase: MessagesPayload = {
     ...payload,
     stream: false,
     tools: toFirstHopTools(payload.tools),
   }
+  const firstHopSanitized = sanitizeAnthropicMessages(firstHopBase).payload
   const firstHopPayload: MessagesPayload = {
     ...firstHopBase,
-    messages: sanitizeAnthropicMessages(firstHopBase).payload.messages,
+    system: firstHopSanitized.system,
+    messages: firstHopSanitized.messages,
   }
   const firstResponse = await callMainModel(firstHopPayload, { selectedModel: resolvedModel, clientAnthropicBeta, clientAbortSignal })
 
@@ -391,23 +408,28 @@ export async function completeWebSearch(args: OrchestrateWebSearchArgs, probe: W
 
   // ── Second hop: feed results back for the final answer ───────────────────
   const secondHopMessages = buildSecondHopMessages(payload.messages, toolUse.id, toolUse.query, search)
+  const secondHopSanitized = sanitizeAnthropicMessages({ ...payload, messages: secondHopMessages }).payload
   const secondHopPayload: MessagesPayload = {
     ...payload,
     stream: false,
     // Keep the plain function web_search tool available; the model normally
     // won't search again (round limit = 1) but tool_use references must resolve.
     tools: toFirstHopTools(payload.tools),
-    messages: sanitizeAnthropicMessages({ ...payload, messages: secondHopMessages }).payload.messages,
+    // Take back system too (merge mode folds inline system into it).
+    system: secondHopSanitized.system,
+    messages: secondHopSanitized.messages,
   }
   const secondResponse = await callMainModel(secondHopPayload, { selectedModel: resolvedModel, clientAnthropicBeta, clientAbortSignal })
 
   const finalText = collectText(secondResponse) || search.text
+  const thinkingBlocks = collectThinkingBlocks(secondResponse)
 
   // ── Synthesis ─────────────────────────────────────────────────────────────
   const response = buildWebSearchResponse({
     query: toolUse.query,
     results: search.results,
     text: finalText,
+    thinking: thinkingBlocks,
     model: payload.model,
     usage: mergeUsage(firstResponse, secondResponse, search),
   })

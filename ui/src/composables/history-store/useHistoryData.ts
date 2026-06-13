@@ -1,6 +1,7 @@
 import {
   //
   computed,
+  reactive,
   ref,
   shallowRef,
   type ComputedRef,
@@ -13,20 +14,42 @@ import type {
   EntrySummary,
   HistoryEntry,
   HistoryStats,
+  RequestLifecycleState,
   Session,
 } from "@/types"
 
 import { api } from "@/api/http"
+
+/**
+ * All Activity list filter dimensions in one object — the single source of
+ * truth. Mutate ONLY via `setFilter` (resets cursors + refetches). Adding a new
+ * filter dimension = add a field here + a UI control; no new state ref / setter
+ * needed (the old per-dimension setter sprawl is what let dimensions drift).
+ */
+export interface ActivityFilters {
+  search: string
+  endpoint: string | null
+  /** "true" | "false" | null — coarse success filter. No UI control anymore (the 7-state `state` filter replaced it); kept as an API-compat surface + WS/legacy callers. */
+  success: string | null
+  /** Exact lifecycle state (7-state filter); wins over `success` server-side. */
+  state: RequestLifecycleState | null
+  model: string | null
+  sessionId: string | null
+  pid: number | null
+  from: number | null
+  to: number | null
+}
 
 export interface HistoryDataState {
   entries: Ref<Array<EntrySummary>>
   selectedEntry: Ref<HistoryEntry | null>
   sessions: Ref<Array<Session>>
   stats: Ref<HistoryStats | null>
-  searchQuery: Ref<string>
-  filterEndpoint: Ref<string | null>
-  filterSuccess: Ref<string | null>
-  selectedSessionId: Ref<string | null>
+  filters: ActivityFilters
+  searchQuery: ComputedRef<string>
+  filterEndpoint: ComputedRef<string | null>
+  filterSuccess: ComputedRef<string | null>
+  selectedSessionId: ComputedRef<string | null>
   nextCursor: Ref<string | null>
   prevCursor: Ref<string | null>
   total: Ref<number>
@@ -46,6 +69,10 @@ export interface HistoryDataState {
   refresh: () => Promise<void>
   loadNext: () => void
   loadPrev: () => void
+  /** Single canonical filter mutation — sets one dimension, resets cursors, refetches. */
+  setFilter: <K extends keyof ActivityFilters>(key: K, value: ActivityFilters[K]) => void
+  clearFilter: (key: keyof ActivityFilters) => void
+  clearFilters: () => void
   setSessionFilter: (id: string | null) => void
   setEndpointFilter: (ep: string | null) => void
   setSuccessFilter: (s: string | null) => void
@@ -58,10 +85,22 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
   const sessions = ref<Array<Session>>([])
   const stats = ref<HistoryStats | null>(null)
 
-  const searchQuery = shallowRef("")
-  const filterEndpoint = shallowRef<string | null>(null)
-  const filterSuccess = shallowRef<string | null>(null)
-  const selectedSessionId = shallowRef<string | null>(null)
+  const filters = reactive<ActivityFilters>({
+    search: "",
+    endpoint: null,
+    success: null,
+    state: null,
+    model: null,
+    sessionId: null,
+    pid: null,
+    from: null,
+    to: null,
+  })
+  // Backward-compat named refs over the single filters source.
+  const searchQuery = computed(() => filters.search)
+  const filterEndpoint = computed(() => filters.endpoint)
+  const filterSuccess = computed(() => filters.success)
+  const selectedSessionId = computed(() => filters.sessionId)
 
   const nextCursor = shallowRef<string | null>(null)
   const prevCursor = shallowRef<string | null>(null)
@@ -77,7 +116,13 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     return entries.value.findIndex((e) => e.id === selectedEntry.value?.id)
   })
 
+  // Monotonic fetch token: a slow/early response (e.g. store.init()'s unfiltered
+  // refresh racing a deep-link's filtered hydrate, or rapid setFilter calls) must
+  // not overwrite the result of a newer request.
+  let fetchSeq = 0
+
   async function fetchEntries(cursor?: string, direction?: "older" | "newer"): Promise<void> {
+    const seq = ++fetchSeq
     loading.value = true
     error.value = null
     try {
@@ -85,26 +130,33 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
         cursor,
         direction,
         limit: pageSize,
-        endpoint: filterEndpoint.value as EndpointType | undefined,
-        success: filterSuccess.value === null ? undefined : filterSuccess.value === "true",
-        search: searchQuery.value || undefined,
-        sessionId: selectedSessionId.value || undefined,
+        endpoint: filters.endpoint as EndpointType | undefined,
+        success: filters.success === null ? undefined : filters.success === "true",
+        state: filters.state ?? undefined,
+        model: filters.model ?? undefined,
+        search: filters.search || undefined,
+        sessionId: filters.sessionId ?? undefined,
+        pid: filters.pid ?? undefined,
+        from: filters.from ?? undefined,
+        to: filters.to ?? undefined,
       })
+      if (seq !== fetchSeq) return // superseded by a newer fetch — drop this result
       entries.value = result.entries
       nextCursor.value = result.nextCursor
       prevCursor.value = result.prevCursor
       total.value = result.total
       hasMore.value = result.nextCursor !== null
-
-      if (selectedEntry.value === null && entries.value.length > 0) {
-        await selectEntry(entries.value[0].id)
-      }
+      // NOTE: deliberately do NOT auto-select entries[0] here. The list page
+      // doesn't need a selection (it only highlights the detail-page's current
+      // entry), and auto-selecting fired a wasted fetchEntry on every load/
+      // page-turn. The detail page drives selection explicitly via selectEntry.
     } catch (err) {
+      if (seq !== fetchSeq) return
       const msg = err instanceof Error ? err.message : "Failed to load entries"
       error.value = msg
       showToast(msg, "error")
     } finally {
-      loading.value = false
+      if (seq === fetchSeq) loading.value = false
     }
   }
 
@@ -196,35 +248,38 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     prevCursor.value = null
   }
 
-  function setSessionFilter(id: string | null): void {
-    selectedSessionId.value = id
+  function setFilter<K extends keyof ActivityFilters>(key: K, value: ActivityFilters[K]): void {
+    filters[key] = value
     resetCursors()
     void fetchEntries()
   }
 
-  function setEndpointFilter(ep: string | null): void {
-    filterEndpoint.value = ep
+  /** Reset one filter dimension to its default (search→"", others→null). */
+  function clearFilter(key: keyof ActivityFilters): void {
+    ;(filters as Record<string, unknown>)[key] = key === "search" ? "" : null
     resetCursors()
     void fetchEntries()
   }
 
-  function setSuccessFilter(s: string | null): void {
-    filterSuccess.value = s
+  /** Reset all filters, then refetch ONCE (avoids N refetches). */
+  function clearFilters(): void {
+    Object.assign(filters, { search: "", endpoint: null, success: null, state: null, model: null, sessionId: null, pid: null, from: null, to: null })
     resetCursors()
     void fetchEntries()
   }
 
-  function setSearch(q: string): void {
-    searchQuery.value = q
-    resetCursors()
-    void fetchEntries()
-  }
+  // Named setters delegate to the single setFilter path (no per-dimension logic).
+  const setSessionFilter = (id: string | null) => setFilter("sessionId", id)
+  const setEndpointFilter = (ep: string | null) => setFilter("endpoint", ep)
+  const setSuccessFilter = (s: string | null) => setFilter("success", s)
+  const setSearch = (q: string) => setFilter("search", q)
 
   return {
     entries,
     selectedEntry,
     sessions,
     stats,
+    filters,
     searchQuery,
     filterEndpoint,
     filterSuccess,
@@ -248,6 +303,9 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     refresh,
     loadNext,
     loadPrev,
+    setFilter,
+    clearFilter,
+    clearFilters,
     setSessionFilter,
     setEndpointFilter,
     setSuccessFilter,

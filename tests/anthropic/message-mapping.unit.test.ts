@@ -12,11 +12,22 @@ import {
   test,
 } from "bun:test"
 
+import type { MessageParam } from "~/types/api/anthropic"
+
 import {
   //
   buildMessageMapping,
   messagesMatch,
 } from "~/lib/anthropic/message-mapping"
+
+/** Cast a loose fixture array to MessageParam[] (server_tool_use literals don't fit the narrow SDK union). */
+function asMessages(messages: Array<unknown>): Array<MessageParam> {
+  return messages as Array<MessageParam>
+}
+/** Cast a loose fixture to MessageParam. */
+function asMessage(message: unknown): MessageParam {
+  return message as MessageParam
+}
 
 // ─── buildMessageMapping ───
 
@@ -58,6 +69,58 @@ describe("buildMessageMapping", () => {
   test("handles empty original array", () => {
     const mapping = buildMessageMapping([], [])
     expect(mapping).toEqual([])
+  })
+
+  test("maps a split turn (1 original → 2 rewritten) back to the source original index", () => {
+    // rewriteServerToolHistory splits one assistant (server_tool_use + result + text)
+    // into assistant(tool_use + text) + a NEW user(tool_result). Both derive from
+    // the single original assistant, so both must map to its index.
+    const original = [
+      { role: "user" as const, content: "search" },
+      {
+        role: "assistant" as const,
+        content: [
+          { type: "server_tool_use" as const, id: "srvtoolu_1", name: "web_search", input: { query: "q" } },
+          { type: "web_search_tool_result" as const, tool_use_id: "srvtoolu_1", content: [] },
+          { type: "text" as const, text: "answer" },
+        ],
+      },
+    ]
+    const rewritten = [
+      { role: "user" as const, content: "search" },
+      {
+        role: "assistant" as const,
+        content: [
+          { type: "tool_use" as const, id: "srvtoolu_1", name: "web_search", input: { query: "q" } },
+          { type: "text" as const, text: "answer" },
+        ],
+      },
+      { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: "srvtoolu_1", content: "answer" }] },
+    ]
+    const mapping = buildMessageMapping(asMessages(original), asMessages(rewritten))
+    expect(mapping).toEqual([0, 1, 1])
+  })
+
+  test("split combined with a deletion still maps correctly", () => {
+    const original = [
+      { role: "user" as const, content: "m0" },
+      { role: "user" as const, content: "m1-removed" },
+      {
+        role: "assistant" as const,
+        content: [
+          { type: "server_tool_use" as const, id: "s2", name: "web_search", input: {} },
+          { type: "web_search_tool_result" as const, tool_use_id: "s2", content: [] },
+        ],
+      },
+    ]
+    const rewritten = [
+      { role: "user" as const, content: "m0" },
+      { role: "assistant" as const, content: [{ type: "tool_use" as const, id: "s2", name: "web_search", input: {} }] },
+      { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: "s2", content: "" }] },
+    ]
+    // m0 → 0; split assistant → 2 (m1 deleted); split-out user → 2 (same source)
+    const mapping = buildMessageMapping(asMessages(original), asMessages(rewritten))
+    expect(mapping).toEqual([0, 2, 2])
   })
 })
 
@@ -122,5 +185,31 @@ describe("messagesMatch", () => {
     const orig = { role: "user" as const, content: [] as Array<any> }
     const rewritten = { role: "user" as const, content: [] as Array<any> }
     expect(messagesMatch(orig, rewritten)).toBe(true)
+  })
+
+  test("matches a downgraded server_tool_use against the original tool_use by id", () => {
+    // rewriteServerToolHistory turns server_tool_use into a plain tool_use; the
+    // mapping must still recognize the assistant as the same original message.
+    const orig = {
+      role: "assistant" as const,
+      content: [{ type: "server_tool_use" as const, id: "srvtoolu_1", name: "web_search", input: {} }],
+    }
+    const rewritten = {
+      role: "assistant" as const,
+      content: [{ type: "tool_use" as const, id: "srvtoolu_1", name: "web_search", input: {} }],
+    }
+    expect(messagesMatch(asMessage(orig), asMessage(rewritten))).toBe(true)
+  })
+
+  test("does not match a downgraded server_tool_use against a different id", () => {
+    const orig = {
+      role: "assistant" as const,
+      content: [{ type: "server_tool_use" as const, id: "srvtoolu_1", name: "web_search", input: {} }],
+    }
+    const rewritten = {
+      role: "assistant" as const,
+      content: [{ type: "tool_use" as const, id: "srvtoolu_2", name: "web_search", input: {} }],
+    }
+    expect(messagesMatch(asMessage(orig), asMessage(rewritten))).toBe(false)
   })
 })

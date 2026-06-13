@@ -11,6 +11,7 @@ import { isSameModelName } from "~/lib/models/resolver"
 import type {
   //
   RequestUpdate,
+  RetryInfo,
   TuiLogEntry,
   TuiRenderer,
 } from "./types"
@@ -237,6 +238,11 @@ export class ConsoleRenderer implements TuiRenderer {
    * Format a complete log line with colored parts
    *
    * Format: [xxxx] HH:mm:ss <status> <method> <path> <model> (<multiplier>x) <duration> ↑<reqSize> ↓<respSize> ↑<inTokens>+<cache> ↓<outTokens>
+   *
+   * For retry lines (`isRetry: true`), `prefix` is rendered as yellow, status
+   * is red (it's a failure code), and `retryableMeta` (the `(retryable: ...)`
+   * segment) is dimmed and appended after `extra` so it reads as metadata
+   * rather than part of the upstream error message.
    */
   private formatLogLine(parts: {
     prefix: string
@@ -257,7 +263,10 @@ export class ConsoleRenderer implements TuiRenderer {
     cacheCreationInputTokens?: number
     queueWait?: string
     extra?: string
+    /** Dim metadata appended at the end (e.g. "(retryable: network-retry, wait 1.0s)") */
+    retryableMeta?: string
     isError?: boolean
+    isRetry?: boolean
     isDim?: boolean
   }): string {
     const {
@@ -278,7 +287,9 @@ export class ConsoleRenderer implements TuiRenderer {
       cacheCreationInputTokens,
       queueWait,
       extra,
+      retryableMeta,
       isError,
+      isRetry,
       isDim,
     } = parts
 
@@ -289,11 +300,18 @@ export class ConsoleRenderer implements TuiRenderer {
     }
 
     // Colored lines: each part has its own color
-    const coloredPrefix = isError ? pc.red(prefix) : pc.green(prefix)
+    let coloredPrefix: string
+    if (isRetry) {
+      coloredPrefix = pc.yellow(prefix)
+    } else {
+      coloredPrefix = isError ? pc.red(prefix) : pc.green(prefix)
+    }
     const coloredTime = pc.dim(time)
     let coloredStatus: string | undefined
     if (status !== undefined) {
-      coloredStatus = isError ? pc.red(String(status)) : pc.green(String(status))
+      // Retry lines carry a failure status; render red like [FAIL].
+      const statusIsFailure = isError || isRetry
+      coloredStatus = statusIsFailure ? pc.red(String(status)) : pc.green(String(status))
     }
     const coloredMethod = pc.white(method)
     const coloredPath = pc.white(path)
@@ -326,12 +344,16 @@ export class ConsoleRenderer implements TuiRenderer {
 
     let extraPart = ""
     if (extra) {
-      extraPart = isError ? pc.red(extra) : extra
+      // Retry lines reuse the same red coloring as [FAIL] for the error message.
+      extraPart = isError || isRetry ? pc.red(extra) : extra
     }
+
+    // Dim metadata (e.g. retry strategy info) appended after the error message.
+    const retryableMetaPart = retryableMeta ? ` ${pc.dim(retryableMeta)}` : ""
 
     const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
 
-    return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}`
+    return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}${retryableMetaPart}`
   }
 
   /**
@@ -367,6 +389,39 @@ export class ConsoleRenderer implements TuiRenderer {
     if (!request) return
 
     Object.assign(request, update)
+  }
+
+  onRequestRetry(request: TuiLogEntry, info: RetryInfo): void {
+    // Build the dim "(retryable: <strategy>[, wait Ns][, learning])" metadata.
+    const metaParts: Array<string> = [`retryable: ${info.strategyName}`]
+    if (info.waitMs && info.waitMs > 0) {
+      metaParts.push(`wait ${formatDuration(info.waitMs)}`)
+    }
+    if (info.learning) {
+      metaParts.push("learning")
+    }
+    const retryableMeta = `(${metaParts.join(", ")})`
+
+    const elapsed = formatDuration(Date.now() - request.startTime)
+    const errorStr = info.error ? `: ${info.error}` : ""
+
+    const message = this.formatLogLine({
+      prefix: `[RETRY-${info.attempt}]`,
+      time: formatTime(),
+      method: request.method,
+      path: request.path,
+      model: request.model,
+      clientModel: request.clientModel,
+      multiplier: request.multiplier,
+      status: info.statusCode,
+      duration: elapsed,
+      requestBodySize: request.requestBodySize,
+      responseBodySize: request.streamBytesIn,
+      extra: errorStr || undefined,
+      retryableMeta,
+      isRetry: true,
+    })
+    this.printLog(message)
   }
 
   onRequestComplete(request: TuiLogEntry): void {

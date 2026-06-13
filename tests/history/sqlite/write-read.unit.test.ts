@@ -95,6 +95,29 @@ describe("sqlite write/read", () => {
     expect(byM1.map((e) => e.id)).toEqual(["a"])
   })
 
+  test("queryEntries filters by exact state (granular, beats coarse success); pid filter works", () => {
+    insertCompletedEntry(makeEntry({ id: "c", state: "completed", process: { pid: 100, bootTime: 1, version: "v" } }))
+    insertCompletedEntry(makeEntry({ id: "f", state: "failed", process: { pid: 100, bootTime: 1, version: "v" } }))
+    insertCompletedEntry(makeEntry({ id: "ab", state: "aborted", process: { pid: 200, bootTime: 1, version: "v" } }))
+    insertCompletedEntry(makeEntry({ id: "intr", state: "interrupted", process: { pid: 200, bootTime: 1, version: "v" } }))
+
+    // state filter is exact (not just completed/failed like `success`).
+    expect(queryEntries({ state: "aborted", limit: 10 }).map((e) => e.id)).toEqual(["ab"])
+    expect(queryEntries({ state: "interrupted", limit: 10 }).map((e) => e.id)).toEqual(["intr"])
+    // state wins over success when both given.
+    expect(queryEntries({ state: "failed", success: true, limit: 10 }).map((e) => e.id)).toEqual(["f"])
+    // pid filter.
+    expect(
+      queryEntries({ pid: 200, limit: 10 })
+        .map((e) => e.id)
+        .sort(),
+    ).toEqual(["ab", "intr"])
+    // querySummaries carries pid for in-flight-consistent filtering.
+    const sums = querySummaries({ pid: 100, limit: 10 })
+    expect(sums.map((s) => s.id).sort()).toEqual(["c", "f"])
+    expect(sums.every((s) => s.pid === 100)).toBe(true)
+  })
+
   test("querySummaries does not decompress blob but returns meta", () => {
     insertCompletedEntry(makeEntry({ id: "s-a" }))
     const summaries = querySummaries({ limit: 10 })

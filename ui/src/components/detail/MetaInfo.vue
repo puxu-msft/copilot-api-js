@@ -8,6 +8,7 @@ import {
   formatDuration,
   formatNumber,
 } from "@/utils/formatters"
+import { statusMeta } from "@/utils/status-meta"
 
 defineProps<{
   entry: HistoryEntry
@@ -40,7 +41,25 @@ defineProps<{
     </div>
     <div class="meta-row">
       <span class="meta-label">State</span>
-      <span class="meta-value">{{ entry.state ?? "pending" }}</span>
+      <span class="meta-value">
+        <v-chip
+          :color="statusMeta(entry.state).color"
+          size="x-small"
+          variant="tonal"
+          label
+          >{{ statusMeta(entry.state).label }}</v-chip
+        >
+      </span>
+    </div>
+    <div
+      v-if="entry.process"
+      class="meta-row"
+    >
+      <span class="meta-label">Process</span>
+      <span class="meta-value mono">
+        pid {{ entry.process.pid }}<template v-if="entry.process.version"> · {{ entry.process.version }}</template
+        ><template v-if="entry.process.gitSha"> · {{ entry.process.gitSha }}</template>
+      </span>
     </div>
     <div class="meta-row">
       <span class="meta-label">Model</span>
@@ -53,7 +72,7 @@ defineProps<{
           :color="
             entry.endpoint === 'anthropic-messages' ? 'purple'
             : entry.endpoint === 'openai-responses' ? 'green'
-            : entry.endpoint === 'gemini-generate-content' ? 'orange'
+            : entry.endpoint === 'gemini-generate-content' ? 'pink'
             : 'cyan'
           "
         >

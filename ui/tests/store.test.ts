@@ -313,12 +313,81 @@ describe("filter setters", () => {
 
   test("setSessionFilter with null clears filter", () => {
     const store = useHistoryStore()
-    store.selectedSessionId = "session-42"
+    store.setSessionFilter("session-42")
+    expect(store.selectedSessionId).toBe("session-42")
 
     store.setSessionFilter(null)
 
     expect(store.selectedSessionId).toBeNull()
     expect(mockFetchEntries).toHaveBeenCalled()
+  })
+
+  test("setFilter is the single canonical path (state / pid / model dimensions)", () => {
+    const store = useHistoryStore()
+    store.setFilter("state", "aborted")
+    store.setFilter("pid", 1234)
+    store.setFilter("model", "opus")
+    expect(store.filters.state).toBe("aborted")
+    expect(store.filters.pid).toBe(1234)
+    expect(store.filters.model).toBe("opus")
+    expect(mockFetchEntries).toHaveBeenCalled()
+    // state/pid/model reach the API query options (not just local state).
+    const lastOpts = (mockFetchEntries.mock.calls.at(-1) as Array<unknown> | undefined)?.[0] as Record<string, unknown> | undefined
+    expect(lastOpts).toMatchObject({ state: "aborted", pid: 1234, model: "opus" })
+  })
+
+  test("clearFilters resets every dimension and refetches once", () => {
+    const store = useHistoryStore()
+    store.setFilter("state", "failed")
+    store.setFilter("search", "boom")
+    mockFetchEntries.mockClear()
+    store.clearFilters()
+    expect(store.filters.state).toBeNull()
+    expect(store.filters.search).toBe("")
+    expect(store.filters.pid).toBeNull()
+    expect(mockFetchEntries).toHaveBeenCalledTimes(1) // single refetch, not one-per-field
+  })
+
+  test("clearFilter resets one dimension (search → '', others → null)", () => {
+    const store = useHistoryStore()
+    store.setFilter("endpoint", "anthropic-messages")
+    store.setFilter("search", "x")
+    store.clearFilter("endpoint")
+    expect(store.filters.endpoint).toBeNull()
+    expect(store.filters.search).toBe("x") // untouched
+    store.clearFilter("search")
+    expect(store.filters.search).toBe("")
+  })
+
+  test("fetchEntries sequence guard: a stale (late) response cannot overwrite a newer one", async () => {
+    const store = useHistoryStore()
+    let resolveStale: ((v: SummaryResult) => void) | undefined
+    const stalePromise = new Promise<SummaryResult>((res) => (resolveStale = res))
+    // 1st call hangs; 2nd resolves immediately with the "newer" result.
+    mockFetchEntries.mockImplementationOnce(() => stalePromise)
+    mockFetchEntries.mockImplementationOnce(() =>
+      Promise.resolve({
+        entries: [{ id: "NEW", startedAt: 1, endpoint: "anthropic-messages", messageCount: 0, previewText: "", searchText: "" }],
+        total: 1,
+        nextCursor: null,
+        prevCursor: null,
+      }),
+    )
+    const p1 = store.fetchEntries() // seq=1 (hangs)
+    const p2 = store.fetchEntries() // seq=2 (newer, resolves now)
+    await p2
+    expect(store.entries.map((e) => e.id)).toEqual(["NEW"])
+    // Now the stale seq=1 resolves LATE — it must be discarded, not applied.
+    resolveStale?.({
+      entries: [{ id: "OLD", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "", searchText: "" }],
+      total: 99,
+      nextCursor: null,
+      prevCursor: null,
+    })
+    await p1
+    expect(store.entries.map((e) => e.id)).toEqual(["NEW"]) // stale OLD dropped
+    expect(store.total).toBe(1)
+    expect(store.loading).toBe(false)
   })
 })
 
@@ -520,7 +589,7 @@ describe("detail panel state", () => {
     expect(detail.detailFilterRole).toBe("")
     expect(detail.detailFilterType).toBe("")
     expect(detail.aggregateTools).toBe(true)
-    expect(detail.detailViewMode).toBeNull()
+    expect(detail.activeStage).toBe("inbound")
     expect(detail.showOnlyRewritten).toBe(false)
   })
 
@@ -531,14 +600,14 @@ describe("detail panel state", () => {
     detail.detailFilterRole = "user"
     detail.detailFilterType = "tool_use"
     detail.aggregateTools = false
-    detail.detailViewMode = "diff"
+    detail.activeStage = "effective"
     detail.showOnlyRewritten = true
 
     expect(detail.detailSearch).toBe("search term")
     expect(detail.detailFilterRole).toBe("user")
     expect(detail.detailFilterType).toBe("tool_use")
     expect(detail.aggregateTools).toBe(false)
-    expect(detail.detailViewMode).toBe("diff")
+    expect(detail.activeStage).toBe("effective")
     expect(detail.showOnlyRewritten).toBe(true)
   })
 })

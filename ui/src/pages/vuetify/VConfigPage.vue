@@ -36,6 +36,11 @@ const dedupOptions = [
   { value: "result", label: "Result" },
 ] as const
 
+const thinkingPolicyOptions = [
+  { value: "preserve", label: "Preserve (default)" },
+  { value: "stripped", label: "Stripped" },
+] as const
+
 const contextEditingOptions = [
   { value: "off", label: "Off" },
   { value: "clear-thinking", label: "Thinking" },
@@ -48,16 +53,16 @@ onMounted(() => {
 })
 
 const proxy = topLevelField("proxy", null)
-const compressToolResultsBeforeTruncate = topLevelField("compress_tool_results_before_truncate", false)
-const fetchTimeout = topLevelField("fetch_timeout", null)
-const streamIdleTimeout = topLevelField("stream_idle_timeout", null)
-const staleRequestMaxAge = topLevelField("stale_request_max_age", null)
+const compressToolResultsBeforeTruncate = nestedField("auto_truncate", "compress_tool_results", false)
+const fetchTimeout = nestedField("timeouts", "response_header", null)
+const streamIdleTimeout = nestedField("timeouts", "stream_idle", null)
+const staleRequestMaxAge = nestedField("timeouts", "stale_request_max_age", null)
 const modelRefreshInterval = topLevelField("model_refresh_interval", null)
 const systemPromptPrepend = topLevelField("system_prompt_prepend", null)
 const systemPromptAppend = topLevelField("system_prompt_append", null)
 
 const stripServerTools = nestedField("anthropic", "strip_server_tools", false)
-const immutableThinkingMessages = nestedField("anthropic", "immutable_thinking_messages", false)
+const thinkingBlockMessagePolicy = nestedField("anthropic", "thinking_block_message_policy", "preserve")
 const dedupToolCalls = nestedField("anthropic", "dedup_tool_calls", false)
 const stripReadToolResultTags = nestedField("anthropic", "strip_read_tool_result_tags", false)
 const contextEditingMode = nestedField("anthropic", "context_editing", "off")
@@ -67,8 +72,8 @@ const contextEditingKeepThinking = nestedField("anthropic", "context_editing_kee
 const toolSearchEnabled = nestedField("anthropic", "tool_search", true)
 const autoCacheControl = nestedField("anthropic", "auto_cache_control", true)
 
-const normalizeCallIds = nestedField("openai-responses", "normalize_call_ids", true)
-const upstreamWebSocket = nestedField("openai-responses", "upstream_websocket", false)
+const normalizeCallIds = nestedField("openai_responses", "normalize_call_ids", true)
+const upstreamWebSocket = nestedField("openai_responses", "upstream_ws", false)
 
 const shutdownGracefulWait = nestedField("shutdown", "graceful_wait", null)
 const shutdownAbortWait = nestedField("shutdown", "abort_wait", null)
@@ -79,7 +84,7 @@ const historyReaperInterval = nestedField("history", "reaper_interval", null)
 
 const rateLimiterRetryInterval = nestedField("rate_limiter", "retry_interval", null)
 const rateLimiterRequestInterval = nestedField("rate_limiter", "request_interval", null)
-const rateLimiterRecoveryTimeout = nestedField("rate_limiter", "recovery_timeout", null)
+const rateLimiterRecoveryTimeout = nestedField("rate_limiter", "recovery_interval", null)
 const rateLimiterConsecutiveSuccesses = nestedField("rate_limiter", "consecutive_successes", null)
 
 const modelOverridesEntries = computed<Array<KeyValueEntry>>({
@@ -143,7 +148,7 @@ function setTopLevel<K extends keyof EditableConfig>(key: K, value: EditableConf
 }
 
 function setNested<
-  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai-responses" | "rate_limiter">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts" | "auto_truncate">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, value: NonNullable<EditableConfig[P]>[K]): void {
   const config = ensureConfig()
@@ -165,7 +170,7 @@ function topLevelField<K extends keyof EditableConfig>(key: K, fallback: NonNull
 }
 
 function nestedField<
-  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai-responses" | "rate_limiter">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts" | "auto_truncate">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, fallback: NonNullable<EditableConfig[P]>[K]) {
   return computed({
@@ -281,10 +286,11 @@ function nestedField<
               description="How many recent thinking turns to retain after clearing."
               :min="0"
             />
-            <ConfigToggle
-              v-model="immutableThinkingMessages"
-              label="Immutable Thinking Messages"
-              description="Preserve assistant thinking/redacted_thinking blocks during rewrites."
+            <ConfigEnum
+              v-model="thinkingBlockMessagePolicy"
+              label="Thinking Block Message Policy"
+              description="preserve (default): keep thinking blocks verbatim, allow surrounding cleanup. stripped: actively delete thinking blocks from old messages."
+              :options="[...thinkingPolicyOptions]"
             />
             <ConfigToggle
               v-model="stripReadToolResultTags"

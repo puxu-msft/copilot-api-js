@@ -163,6 +163,7 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     queueWaitMs: entry.queueWaitMs,
     attemptCount: entry.attemptCount,
     currentStrategy: entry.currentStrategy,
+    pid: entry.process?.pid,
     requestModel: entry.inboundRequest.model,
     stream: entry.inboundRequest.stream,
     messageCount: entry.inboundRequest.messages?.length ?? 0,

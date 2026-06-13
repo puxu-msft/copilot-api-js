@@ -13,7 +13,5 @@ describe("vite config", () => {
     const include = config.optimizeDeps?.include ?? []
 
     expect(include).toContain("vue-json-pretty")
-    expect(include).toContain("diff")
-    expect(include).toContain("diff2html")
   })
 })

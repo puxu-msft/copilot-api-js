@@ -35,6 +35,7 @@ import type {
   StreamEvent,
 } from "~/types/api/anthropic"
 
+import { bridgeClientAbort } from "~/lib/abort-bridge"
 import {
   //
   type AnthropicAutoTruncateResult,
@@ -89,7 +90,11 @@ import {
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { HTTPError } from "~/lib/error"
+import {
+  //
+  formatErrorWithCause,
+  HTTPError,
+} from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { resolveModelName } from "~/lib/models/resolver"
@@ -108,6 +113,7 @@ import {
 } from "~/lib/stream"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { tuiLogger } from "~/lib/tui"
+import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
 
 import { handleWebSearchCompletion } from "./web-search-handler"
 
@@ -238,6 +244,14 @@ export async function handleDirectAnthropicCompletion(c: Context, anthropicPaylo
   const headersCapture: HeadersCapture = {}
   const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
 
+  // Hoisted client-abort: fires on inbound HTTP disconnect AND (for the
+  // streaming branch in dispatchAnthropicResponse) on `streamSSE`'s onAbort.
+  // Passed into the pipeline so non-streaming requests also tear down the
+  // upstream fetch when the client disconnects — without this bridge an
+  // abandoned non-stream request runs to `timeouts.response_header`.
+  const clientAbort = new AbortController()
+  const detachClientAbort = bridgeClientAbort(c, clientAbort)
+
   // Direct path sanitize: full pipeline (preprocessTools + tool-name + sanitize),
   // shared by the adapter's sanitize and auto-truncate's resanitize.
   const directSanitize: AnthropicSanitizeFn = (p) => sanitizeAnthropicMessages(applyAnthropicToolNameSanitization(preprocessTools(p), reqCtx.toolNameMapper))
@@ -255,6 +269,7 @@ export async function handleDirectAnthropicCompletion(c: Context, anthropicPaylo
       resanitize: directSanitize,
       headersCapture,
       requestContext: reqCtx,
+      clientAbortSignal: clientAbort.signal,
       maxRetries: state.autoTruncateMaxRetries,
       onRetry: (_attempt, _strategyName, newPayload, meta) => {
         const retryTruncateResult = meta?.truncateResult as AnthropicAutoTruncateResult | undefined
@@ -276,10 +291,11 @@ export async function handleDirectAnthropicCompletion(c: Context, anthropicPaylo
     // Capture HTTP headers from the final attempt for history recording
     reqCtx.setHttpHeaders(headersCapture)
 
-    return dispatchAnthropicResponse(c, result, reqCtx, truncateResult)
+    return dispatchAnthropicResponse(c, result, reqCtx, truncateResult, clientAbort, detachClientAbort)
   } catch (error) {
     reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(anthropicPayload.model, error)
+    detachClientAbort()
     throw error
   }
 }
@@ -363,13 +379,14 @@ function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
     messageMapping: retryMessageMapping,
   })
 
-  // Update tracking tags. Beta retries (probe / explicit-list) surface which
-  // betas were stripped this attempt; other retries keep existing labeling.
+  // Update tracking tags. Beta retries surface which betas were stripped this
+  // attempt as a sticky feature tag; truncation is a sticky feature tag.
+  // Retry counter / per-attempt diagnostics are emitted as [RETRY-n] lines
+  // by `executeRequestPipeline` — kept out of the final outcome's tag list
+  // to avoid duplicating the same information.
   if (reqCtx.tuiLogId) {
-    const retryAttempt = (meta?.attempt as number | undefined) ?? 1
     const strippedBetas = (meta?.probedBetas ?? meta?.strippedBetas) as Array<string> | undefined
-    const retryTags =
-      strippedBetas && strippedBetas.length > 0 ? [`beta-strip:${strippedBetas.join(",")}`, `retry-${retryAttempt}`] : ["truncated", `retry-${retryAttempt}`]
+    const retryTags = strippedBetas && strippedBetas.length > 0 ? [`beta-strip:${strippedBetas.join(",")}`] : ["truncated"]
     if (newPayload.thinking && newPayload.thinking.type !== "disabled") retryTags.push(`thinking:${newPayload.thinking.type}`)
     tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: retryTags })
   }
@@ -385,6 +402,8 @@ function dispatchAnthropicResponse(
   result: { response: unknown; effectivePayload: unknown },
   reqCtx: RequestContext,
   truncateResult: AnthropicAutoTruncateResult | undefined,
+  clientAbort: AbortController,
+  detachClientAbort: () => void,
 ) {
   const response = result.response
   const effectivePayload = result.effectivePayload as MessagesPayload
@@ -395,20 +414,30 @@ function dispatchAnthropicResponse(
     reqCtx.transition("streaming")
 
     return streamSSE(c, async (stream) => {
-      const clientAbort = new AbortController()
+      // streamSSE's onAbort is the second trigger source (the first is the
+      // inbound HTTP signal already bridged in the caller). Both flip the
+      // same controller, so any disconnect path tears down upstream.
       stream.onAbort(() => clientAbort.abort())
 
-      await handleDirectAnthropicStreamingResponse({
-        stream,
-        response: response as AsyncIterable<ServerSentEventMessage>,
-        anthropicPayload: effectivePayload,
-        reqCtx,
-        clientAbortSignal: clientAbort.signal,
-      })
+      try {
+        await handleDirectAnthropicStreamingResponse({
+          stream,
+          response: response as AsyncIterable<ServerSentEventMessage>,
+          anthropicPayload: effectivePayload,
+          reqCtx,
+          clientAbortSignal: clientAbort.signal,
+        })
+      } finally {
+        detachClientAbort()
+      }
     })
   }
 
-  return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, reqCtx, truncateResult)
+  try {
+    return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, reqCtx, truncateResult)
+  } finally {
+    detachClientAbort()
+  }
 }
 
 // ============================================================================
@@ -438,6 +467,41 @@ function anthropicStreamErrorType(error: unknown): string {
       return "api_error"
     }
   }
+}
+
+/**
+ * Extract live-stream signals and emit a detailed upstream-disconnect log.
+ *
+ * Pulls the diagnostic signals out of the handler-internal stream state and
+ * delegates formatting/emission to `logUpstreamStreamDisconnect`. The `silence`
+ * it surfaces (gap between the last upstream frame and the disconnect) is the
+ * smoking gun for "died during a silent thinking stall".
+ */
+function logUpstreamStreamError(
+  error: unknown,
+  ctx: {
+    model: string
+    streamState: StreamPumpState
+    acc: ReturnType<typeof createAnthropicStreamAccumulator>
+    sseEvents: Array<SseEventRecord>
+  },
+): void {
+  const { model, streamState, acc, sseEvents } = ctx
+  const last = sseEvents.at(-1)
+  const kind = classifyStreamError(error)
+  logUpstreamStreamDisconnect({
+    model,
+    kindLabel: kind === "other" ? "transport-close" : kind,
+    detail: error instanceof Error ? formatErrorWithCause(error) : String(error),
+    elapsedMs: Date.now() - streamState.streamStartMs,
+    frames: sseEvents.length,
+    bytes: streamState.bytesIn,
+    lastFrameType: last?.type,
+    lastFrameOffsetMs: last?.offsetMs ?? 0,
+    stuckBlockType: streamState.currentBlockType,
+    inputTokens: acc.inputTokens,
+    outputTokens: acc.outputTokens,
+  })
 }
 
 /** Handle streaming direct Anthropic response (passthrough SSE events). Exported for handler-level abort/settle tests. */
@@ -479,6 +543,22 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
     firstEventLogged: false,
   }
 
+  // Synthetic SSE keepalive (anthropic.fake_sse_heartbeat, seconds; 0 = off).
+  // Emits Anthropic-protocol `event: ping` whenever no real frame has been
+  // forwarded for >= intervalMs, so clients (e.g. Claude Code ~258s) don't
+  // disconnect while upstream stalls mid-stream (e.g. opus-4.8 adaptive
+  // thinking that goes silent after content_block_start). Heartbeats are
+  // proxy-originated: they do NOT reset the upstream idle-timeout (a dead
+  // upstream still fails via `timeouts.stream_idle`), and they are recorded
+  // ONLY in `forwardedSseEvents`, never in the raw upstream `sseEvents`.
+  const heartbeat = startForwardedSseHeartbeat({
+    intervalSec: state.anthropicFakeSseHeartbeat,
+    stream,
+    forwardedSseEvents,
+    streamState,
+    clientAbortSignal,
+  })
+
   try {
     for await (const { raw: rawEvent, parsed } of processAnthropicStream(response, acc, clientAbortSignal)) {
       await processOneStreamEvent({
@@ -491,14 +571,14 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
         checkRepetition,
         serverToolFilter,
         toolInputDecoder,
-        stream,
+        heartbeat,
       })
     }
 
     // Flush any tool_use input the decoder buffered but never saw a stop for
     // (defensive — normal completion always emits content_block_stop).
     for (const ev of toolInputDecoder.flush()) {
-      await forwardToClient(ev, undefined, serverToolFilter, stream, forwardedSseEvents, streamState.streamStartMs)
+      await forwardToClient(ev, undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
     }
 
     // Debug: stream completion summary
@@ -536,14 +616,14 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
       return
     }
 
-    consola.error("Direct Anthropic stream error:", error)
+    logUpstreamStreamError(error, { model: acc.model || anthropicPayload.model, streamState, acc, sseEvents })
 
     // Best-effort flush of buffered tool_use deltas before the error frame, so
     // the client doesn't silently lose fragments the decoder was holding. The
     // stream may already be broken (abort/shutdown); ignore failures here.
     try {
       for (const ev of toolInputDecoder.flush()) {
-        await forwardToClient(ev, undefined, serverToolFilter, stream, forwardedSseEvents, streamState.streamStartMs)
+        await forwardToClient(ev, undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
       }
     } catch {
       // stream already closed — nothing to recover
@@ -554,13 +634,15 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
     // client backs off and retries (succeeding against the restarted instance)
     // instead of seeing a silently truncated stream.
     const errorType = anthropicStreamErrorType(error)
-    await stream.writeSSE({
+    await heartbeat.writeSerialized({
       event: "error",
       data: JSON.stringify({
         type: "error",
         error: { type: errorType, message: errorMessage },
       }),
     })
+  } finally {
+    heartbeat.stop()
   }
 }
 
@@ -583,7 +665,7 @@ interface ProcessOneStreamEventArgs {
   checkRepetition: (text: string) => void
   serverToolFilter: ReturnType<typeof createServerToolBlockFilter>
   toolInputDecoder: ToolInputStreamDecoder
-  stream: SSEStreamingApi
+  heartbeat: ForwardedSseHeartbeat
 }
 
 /**
@@ -592,7 +674,7 @@ interface ProcessOneStreamEventArgs {
  * `sseEvents`, `forwardedSseEvents`, and writes to `stream`.
  */
 async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<void> {
-  const { rawEvent, parsed, streamState, sseEvents, forwardedSseEvents, reqCtx, checkRepetition, serverToolFilter, toolInputDecoder, stream } = args
+  const { rawEvent, parsed, streamState, sseEvents, forwardedSseEvents, reqCtx, checkRepetition, serverToolFilter, toolInputDecoder, heartbeat } = args
 
   const dataLen = rawEvent.data?.length ?? 0
   streamState.bytesIn += dataLen
@@ -669,7 +751,7 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
     if (compatFrames) {
       for (const repl of compatFrames) {
         const replRaw: ServerSentEventMessage = { ...rawEvent, data: JSON.stringify(repl) }
-        await forwardToClient(replRaw, repl, serverToolFilter, stream, forwardedSseEvents, streamState.streamStartMs)
+        await forwardToClient(replRaw, repl, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
       }
       return
     }
@@ -680,7 +762,7 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
   // events out). Each emitted event then passes through the server-tool filter.
   // Pass-through events reuse `parsed`; decoder-emitted events are re-parsed.
   for (const ev of toolInputDecoder.processEvent(parsed, rawEvent)) {
-    await forwardToClient(ev, ev === rawEvent ? parsed : undefined, serverToolFilter, stream, forwardedSseEvents, streamState.streamStartMs)
+    await forwardToClient(ev, ev === rawEvent ? parsed : undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
   }
 }
 
@@ -705,9 +787,9 @@ async function forwardToClient(
   ev: ServerSentEventMessage,
   knownParsed: StreamEvent | undefined,
   serverToolFilter: ReturnType<typeof createServerToolBlockFilter>,
-  stream: SSEStreamingApi,
   forwardedSseEvents: Array<SseEventRecord>,
   streamStartMs: number,
+  heartbeat: ForwardedSseHeartbeat,
 ): Promise<void> {
   const evParsed = knownParsed ?? parseStreamEventData(ev.data)
   const forwardData = serverToolFilter.rewriteEvent(evParsed, ev.data ?? "")
@@ -722,12 +804,114 @@ async function forwardToClient(
     raw: forwardData,
   })
 
-  await stream.writeSSE({
+  // Note real-frame activity BEFORE awaiting the write — even if the timer
+  // fires while we're awaiting `writeSerialized`, it will see a fresh
+  // `lastRealMs` and skip emitting a redundant ping. Serialized via the
+  // heartbeat's writer to interleave-protect against the timer callback.
+  heartbeat.noteRealFrame()
+  await heartbeat.writeSerialized({
     data: forwardData,
     event: ev.event,
     id: ev.id !== undefined ? String(ev.id) : undefined,
     retry: ev.retry,
   })
+}
+
+// ============================================================================
+// Synthetic SSE heartbeat (anthropic.fake_sse_heartbeat)
+// ============================================================================
+
+export interface ForwardedSseHeartbeat {
+  /** Serialize a write with any pending heartbeat write, so SSE frame bytes never interleave. */
+  writeSerialized: (msg: Parameters<SSEStreamingApi["writeSSE"]>[0]) => Promise<void>
+  /** Mark that a real upstream-originated frame was just forwarded (resets the keepalive countdown). */
+  noteRealFrame: () => void
+  /** Stop the timer. Idempotent. */
+  stop: () => void
+}
+
+export interface StartHeartbeatOpts {
+  intervalSec: number
+  stream: SSEStreamingApi
+  forwardedSseEvents: Array<SseEventRecord>
+  streamState: StreamPumpState
+  clientAbortSignal: AbortSignal | undefined
+}
+
+/**
+ * Start the forwarded-SSE keepalive. When `intervalSec <= 0` this is a no-op
+ * pass-through (writes go straight to `stream.writeSSE`, no timer). When > 0,
+ * a self-rescheduling timer checks every interval whether at least that many
+ * seconds have passed since the last real forwarded frame; if so, it injects
+ * an Anthropic-protocol `event: ping` so the client doesn't time out while
+ * upstream is silent. Heartbeats are recorded ONLY in `forwardedSseEvents`
+ * (the proxy→client diagnostic), never in `sseEvents` (raw upstream record),
+ * preserving 原则3 — the upstream timeline stays untouched.
+ *
+ * All writes (real + heartbeat) go through one shared promise chain so the
+ * timer callback and the main pump never interleave their SSE frame bytes.
+ * `noteRealFrame()` is called BEFORE awaiting the real write, so a timer
+ * firing mid-write sees the fresh timestamp and skips redundant pings.
+ */
+export function startForwardedSseHeartbeat(opts: StartHeartbeatOpts): ForwardedSseHeartbeat {
+  const { intervalSec, stream, forwardedSseEvents, streamState, clientAbortSignal } = opts
+  let writeChain: Promise<void> = Promise.resolve()
+  const writeSerialized = (msg: Parameters<SSEStreamingApi["writeSSE"]>[0]): Promise<void> => {
+    const next = writeChain.then(() => stream.writeSSE(msg))
+    writeChain = next.catch(() => undefined)
+    return next
+  }
+
+  if (intervalSec <= 0) {
+    return { writeSerialized, noteRealFrame: () => undefined, stop: () => undefined }
+  }
+
+  const intervalMs = intervalSec * 1000
+  let lastRealMs = Date.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+
+  const noteRealFrame = (): void => {
+    lastRealMs = Date.now()
+  }
+
+  const tick = (): void => {
+    if (stopped || clientAbortSignal?.aborted) return
+    const elapsed = Date.now() - lastRealMs
+    if (elapsed >= intervalMs) {
+      // Inject one Anthropic-protocol `ping` keepalive. Standard SDKs treat
+      // this as a benign no-op; clients that don't know `ping` still keep the
+      // TCP connection alive on byte arrival.
+      const pingData = JSON.stringify({ type: "ping" })
+      forwardedSseEvents.push({
+        offsetMs: Date.now() - streamState.streamStartMs,
+        type: "ping",
+        raw: pingData,
+      })
+      // Serialized write — the heartbeat may race the main pump; the shared
+      // chain guarantees byte-level non-interleaving. Errors (closed stream)
+      // are swallowed: the main pump's next write will hit the same error
+      // and route through the existing settle path.
+      void writeSerialized({ event: "ping", data: pingData }).catch(() => undefined)
+      lastRealMs = Date.now()
+      timer = setTimeout(tick, intervalMs)
+    } else {
+      // Real frame arrived since last check — reschedule for when the
+      // remaining gap would reach intervalMs.
+      timer = setTimeout(tick, intervalMs - elapsed)
+    }
+  }
+  timer = setTimeout(tick, intervalMs)
+
+  return {
+    writeSerialized,
+    noteRealFrame,
+    stop: () => {
+      if (stopped) return
+      stopped = true
+      if (timer) clearTimeout(timer)
+    },
+  }
 }
 
 /** Handle non-streaming direct Anthropic response */

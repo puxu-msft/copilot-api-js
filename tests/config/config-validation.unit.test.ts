@@ -49,8 +49,8 @@ describe("validateConfig — happy paths", () => {
       proxy: "http://p:8080",
       anthropic: {
         cache_control: "proxied",
-        thinking_block_message_policy: "immutable",
-        efforts_overrides: { "claude-opus-4.7": ["medium"] },
+        thinking_block_message_policy: "preserve",
+        effort_overrides: { "claude-opus-4.7": ["medium"] },
       },
       history: { limit: 100, reaper_interval: 600 },
       model_overrides: { foo: "bar" },
@@ -84,10 +84,10 @@ describe("validateConfig — unknown keys", () => {
   test("free-form Record fields accept arbitrary user-defined keys", () => {
     const result = validateConfig({
       model_overrides: { "claude-3-opus": "claude-opus-4.7", "weird.dots": "x" },
-      anthropic: { efforts_overrides: { "claude-opus-4.7-1m-internal": ["medium", "high"] } },
+      anthropic: { effort_overrides: { "claude-opus-4.7-1m-internal": ["medium", "high"] } },
     })
     expect(result.model_overrides?.["claude-3-opus"]).toBe("claude-opus-4.7")
-    expect(result.anthropic?.efforts_overrides?.["claude-opus-4.7-1m-internal"]).toEqual(["medium", "high"])
+    expect(result.anthropic?.effort_overrides?.["claude-opus-4.7-1m-internal"]).toEqual(["medium", "high"])
     expect(warnSpy).not.toHaveBeenCalled()
   })
 })
@@ -114,11 +114,11 @@ describe("validateConfig — type errors", () => {
 })
 
 describe("validateConfig — deprecated keys", () => {
-  test("anthropic.immutable_thinking_messages: true → translates to immutable + warns once", () => {
+  test("anthropic.immutable_thinking_messages: true → translates to preserve + warns once", () => {
     const r1 = validateConfig({ anthropic: { immutable_thinking_messages: true } })
     const r2 = validateConfig({ anthropic: { immutable_thinking_messages: true } })
-    expect(r1.anthropic?.thinking_block_message_policy).toBe("immutable")
-    expect(r2.anthropic?.thinking_block_message_policy).toBe("immutable")
+    expect(r1.anthropic?.thinking_block_message_policy).toBe("preserve")
+    expect(r2.anthropic?.thinking_block_message_policy).toBe("preserve")
     const calls = warnedMessages().filter((m) => m.includes("immutable_thinking_messages"))
     expect(calls.length).toBe(1)
     expect(calls[0]).toContain("thinking_block_message_policy")
@@ -129,16 +129,42 @@ describe("validateConfig — deprecated keys", () => {
     expect(result.anthropic?.thinking_block_message_policy).toBe("stripped")
   })
 
-  test("new key takes precedence over deprecated key", () => {
+  test("explicit valid policy takes precedence over deprecated bool", () => {
     const result = validateConfig({
       anthropic: {
-        immutable_thinking_messages: true, // would translate to "immutable"
-        thinking_block_message_policy: "fixed-index",
+        immutable_thinking_messages: true, // would translate to "preserve"
+        thinking_block_message_policy: "stripped", // explicit valid value wins
       },
     })
-    expect(result.anthropic?.thinking_block_message_policy).toBe("fixed-index")
-    // Deprecation warning still fires
+    expect(result.anthropic?.thinking_block_message_policy).toBe("stripped")
+    // Deprecation warning still fires for the bool
     expect(warnedMessages().some((m) => m.includes("immutable_thinking_messages"))).toBe(true)
+  })
+
+  test('thinking_block_message_policy "immutable" → consolidated to "preserve" + warns once', () => {
+    const r1 = validateConfig({ anthropic: { thinking_block_message_policy: "immutable" } })
+    const r2 = validateConfig({ anthropic: { thinking_block_message_policy: "immutable" } })
+    expect(r1.anthropic?.thinking_block_message_policy).toBe("preserve")
+    expect(r2.anthropic?.thinking_block_message_policy).toBe("preserve")
+    const calls = warnedMessages().filter((m) => m.includes("thinking_block_message_policy"))
+    expect(calls.length).toBe(1)
+  })
+
+  test('thinking_block_message_policy "fixed-index" → consolidated to "preserve"', () => {
+    const result = validateConfig({ anthropic: { thinking_block_message_policy: "fixed-index" } })
+    expect(result.anthropic?.thinking_block_message_policy).toBe("preserve")
+  })
+
+  test('thinking_block_message_policy "preserve" passes through with NO warn', () => {
+    const result = validateConfig({ anthropic: { thinking_block_message_policy: "preserve" } })
+    expect(result.anthropic?.thinking_block_message_policy).toBe("preserve")
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  test('thinking_block_message_policy "stripped" passes through with NO warn', () => {
+    const result = validateConfig({ anthropic: { thinking_block_message_policy: "stripped" } })
+    expect(result.anthropic?.thinking_block_message_policy).toBe("stripped")
+    expect(warnSpy).not.toHaveBeenCalled()
   })
 
   test("anthropic.auto_cache_control: true → translates to proxied", () => {

@@ -10,7 +10,7 @@ export const vuetify = createVuetify({
   theme: {
     defaultTheme: "system",
     variations: {
-      colors: ["primary", "secondary", "success", "error", "warning"],
+      colors: ["primary", "secondary", "success", "error", "warning", "aborted", "interrupted"],
       lighten: 2,
       darken: 2,
     },
@@ -36,6 +36,12 @@ export const vuetify = createVuetify({
           "on-warning": "#111115",
           info: "#d4a04a",
           "on-info": "#111115",
+          // Lifecycle terminal states distinct from success/error (see status-meta.ts):
+          // aborted = client disconnected (violet), interrupted = crash orphan (rose).
+          aborted: "#a07ed8",
+          "on-aborted": "#111115",
+          interrupted: "#c86090",
+          "on-interrupted": "#111115",
         },
       },
       light: {
@@ -59,6 +65,10 @@ export const vuetify = createVuetify({
           "on-warning": "#faf8f5",
           info: "#a07020",
           "on-info": "#faf8f5",
+          aborted: "#7052b0",
+          "on-aborted": "#faf8f5",
+          interrupted: "#a04070",
+          "on-interrupted": "#faf8f5",
         },
       },
     },

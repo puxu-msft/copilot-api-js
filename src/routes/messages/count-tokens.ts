@@ -7,6 +7,7 @@ import {
   checkNeedsCompactionAnthropic,
   countTotalInputTokens,
 } from "~/lib/anthropic/auto-truncate"
+import { sanitizeInlineSystemMessages } from "~/lib/anthropic/sanitize/system-messages"
 import { hasKnownLimits } from "~/lib/auto-truncate"
 import { createFetchSignal } from "~/lib/fetch-utils"
 import { resolveModelName } from "~/lib/models/resolver"
@@ -39,6 +40,12 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
   // Copilot uses dotted names (claude-opus-4.6) but Anthropic requires dashes (claude-opus-4-6)
   const model = payload.model.replaceAll(".", "-")
 
+  // Strip inline role:"system" messages the same way the request path does —
+  // otherwise the real Anthropic endpoint rejects them with `Unexpected role
+  // "system"` and we waste a failed upstream request before falling back.
+  const inlineSystem = sanitizeInlineSystemMessages(payload.messages, payload.system, state.systemMessagesSanitize)
+  const countPayload = { ...payload, model, system: inlineSystem.system, messages: inlineSystem.messages }
+
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
       method: "POST",
@@ -48,7 +55,7 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
         "anthropic-version": "2023-06-01",
         "anthropic-beta": "token-counting-2024-11-01",
       },
-      body: JSON.stringify({ ...payload, model }),
+      body: JSON.stringify(countPayload),
       signal: createFetchSignal(),
     })
 

@@ -61,10 +61,12 @@ export const api = {
     if (options.model) params.set("model", options.model)
     if (options.endpoint) params.set("endpoint", options.endpoint)
     if (options.success !== undefined) params.set("success", String(options.success))
+    if (options.state) params.set("state", options.state)
     if (options.from) params.set("from", String(options.from))
     if (options.to) params.set("to", String(options.to))
     if (options.search) params.set("search", options.search)
     if (options.sessionId) params.set("sessionId", options.sessionId)
+    if (options.pid !== undefined) params.set("pid", String(options.pid))
     const qs = params.toString()
     return request<SummaryResult>("/entries" + (qs ? "?" + qs : ""))
   },

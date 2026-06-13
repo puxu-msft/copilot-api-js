@@ -39,12 +39,18 @@ export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
 /**
  * Policy for assistant messages that contain `thinking` / `redacted_thinking` blocks.
  *
- * - `stripped`    — Delete thinking blocks from old messages; delete the message if empty after stripping.
- * - `immutable`   — Treat the entire assistant message as immutable (keep or truncate as a whole).
- * - `fixed-index` — Allow editing non-thinking blocks, but preserve the content array structure
- *                   (skip empty-block filtering so thinking block indices stay stable).
+ * Empirically, Anthropic thinking `signature`s are self-contained — they encrypt the
+ * thinking content itself (the upstream decrypts and rebuilds it) and do NOT bind to
+ * surrounding context or array position. The only real constraint is that thinking blocks
+ * must be echoed verbatim and consecutive thinking sequences must not be reordered.
+ *
+ * - `preserve` — Keep thinking blocks verbatim and don't reorder consecutive thinking, but
+ *                allow all surrounding cleanup (drop orphan tools, downgrade server tools,
+ *                edit/drop non-thinking blocks).
+ * - `stripped` — Actively delete thinking blocks from old messages; delete the message if
+ *                empty after stripping.
  */
-export type ThinkingBlockMessagePolicy = "stripped" | "immutable" | "fixed-index"
+export type ThinkingBlockMessagePolicy = "preserve" | "stripped"
 
 /** A compiled rewrite rule (regex pre-compiled from config string) */
 export interface CompiledRewriteRule {
@@ -138,6 +144,22 @@ export interface State {
   readonly stripServerTools: boolean
 
   /**
+   * Synthetic SSE keepalive interval (seconds) for the client-facing Anthropic
+   * stream. `0` disables (default). When positive, the handler injects an
+   * Anthropic-protocol `event: ping` frame whenever no real upstream event has
+   * been forwarded for this many seconds, preventing clients (e.g. Claude
+   * Code, which gives up around 258s) from disconnecting while upstream is
+   * silently thinking. Heartbeats are PROXY-originated and DO NOT reset the
+   * upstream idle-timeout — a genuinely dead upstream still fails per
+   * `timeouts.stream_idle`. Recorded in `forwardedSseEvents` (the diagnostic
+   * "what the client received"), never in the raw upstream `sseEvents`.
+   *
+   * Hot-reload note: the interval is captured at stream-start. In-flight
+   * streams keep their original value; new streams pick up the new value.
+   */
+  readonly anthropicFakeSseHeartbeat: number
+
+  /**
    * Inject stub definitions for Claude Code's official tool set (Bash, Read,
    * Write, …) when they appear in message history but not in the request's
    * tools array. Required for Claude Code clients that drop tool definitions
@@ -150,11 +172,11 @@ export interface State {
   /**
    * Policy for assistant messages containing `thinking` / `redacted_thinking`.
    *
-   * Default: `"immutable"`. Set to `"stripped"` to aggressively remove thinking
-   * blocks, or `"fixed-index"` to allow edits while preserving array structure.
+   * Default: `"preserve"` — keep thinking blocks verbatim while allowing surrounding
+   * cleanup. Set to `"stripped"` to aggressively remove thinking blocks from old messages.
    */
   readonly thinkingBlockMessagePolicy: ThinkingBlockMessagePolicy
-  /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize_check`) */
+  /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize`) */
   readonly thinkingBlockSanitizeCheck: false | "empty_thinking" | "empty_any"
 
   /**
@@ -174,6 +196,31 @@ export interface State {
    *                     beyond GHC; see request-preparation.ts:budgetToEffort).
    */
   readonly coerceAdaptiveThinking: false | "basic" | "best_effort"
+
+  /**
+   * Handle `role:"system"` messages mixed into the `messages` array (illegal for
+   * the Anthropic Messages API — system must be top-level). See config
+   * `anthropic.system_messages_sanitize`.
+   *
+   * - `false`         — passthrough (default; upstream will 400 if present).
+   * - `"drop_invalid"`— remove every inline system message.
+   * - `"merge"`       — append their text to the top-level `system`, drop the messages.
+   * - `"as_user"`     — rewrite role to `"user"` (recommended; preserves position).
+   * - `"as_assistant"`— rewrite role to `"assistant"` (experimental, not recommended).
+   */
+  readonly systemMessagesSanitize: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
+
+  /**
+   * Rewrite native server-tool blocks left in inbound message history before
+   * sending upstream. The web_search double-hop surfaces a synthesized
+   * `server_tool_use{web_search}` + `web_search_tool_result` pair to the client
+   * (so results are visible); the client echoes it back next turn, but the
+   * downgraded `tools` array no longer declares `web_search` as a server tool,
+   * so upstream 400s. `"downgrade"` rewrites the pair into a plain
+   * `tool_use` + `tool_result` (splitting the assistant turn so the tool_result
+   * lands in a user message, per protocol). `false` passes through (default).
+   */
+  readonly rewriteHistoryServerTools: false | "downgrade"
 
   /**
    * Client compatibility shim for the thinking frame some Copilot upstreams emit
@@ -346,6 +393,20 @@ export interface State {
   readonly streamIdleTimeout: number
 
   /**
+   * Upstream TCP keepalive initial-probe delay in seconds.
+   * Sets `keepAliveInitialDelay` on the undici socket connecting to GHC, so the
+   * kernel emits TCP keepalive probes after this much idle time (and every such
+   * interval thereafter while idle). Prevents NAT/firewall/load-balancer idle
+   * reapers from severing the connection during long upstream silences (e.g.
+   * opus adaptive thinking that goes quiet for tens of seconds after
+   * `content_block_start`). undici's default is 60s — too long for ~30s idle
+   * reapers, so the first probe never fires before the connection is culled.
+   * 0 = use undici's default (do not override). Default: 15.
+   * Node-only (undici dispatcher); Bun's fetch is unaffected.
+   */
+  readonly upstreamKeepaliveDelay: number
+
+  /**
    * Shutdown Phase 2 timeout in seconds.
    * Wait for in-flight requests to complete naturally before sending abort signal.
    * Default: 60.
@@ -380,13 +441,13 @@ export interface State {
    * Useful when clients send conversation history containing tool call IDs
    * generated by Chat Completions API to the Responses API endpoint.
    *
-   * Enabled by default; disable with config openai-responses.normalize_call_ids: false.
+   * Enabled by default; disable with config openai_responses.normalize_call_ids: false.
    */
   readonly normalizeResponsesCallIds: boolean
 
   /**
    * Enable upstream WebSocket transport for Responses API when supported.
-   * Disabled by default; enable with config openai-responses.upstream_websocket: true.
+   * Disabled by default; enable with config openai_responses.upstream_ws: true.
    */
   readonly upstreamWebSocket: boolean
 
@@ -395,7 +456,7 @@ export interface State {
    * terminates, allowing the client to send a follow-up `response.create` on the
    * same socket (Phase 2 long-lived client WS). When false (default), the
    * socket is closed with code 1000 after each request, mirroring HTTP semantics.
-   * Enable with config openai-responses.client_websocket_keep_open: true.
+   * Enable with config openai_responses.client_ws_keep_open: true.
    */
   readonly clientWebsocketKeepOpen: boolean
 
@@ -403,7 +464,7 @@ export interface State {
    * Fix inconsistent item IDs between output_item.added and output_item.done events
    * from GitHub Copilot's Responses API. Without this fix, @ai-sdk/openai breaks
    * because it expects consistent IDs across the stream lifecycle.
-   * Enabled by default; disable with config openai-responses.fix_stream_ids: false.
+   * Enabled by default; disable with config openai_responses.fix_stream_ids: false.
    */
   readonly fixResponsesStreamIds: boolean
 
@@ -417,7 +478,7 @@ export interface State {
   /**
    * Max concurrent client WebSocket connections to the proxy. Default 256;
    * set to 0 to disable. Bounds file-descriptor usage when
-   * `client_websocket_keep_open` is true.
+   * `client_ws_keep_open` is true.
    */
   readonly maxClientWsConnections: number
 
@@ -662,10 +723,13 @@ export function setAnthropicBehavior(
     Pick<
       MutableState,
       | "stripServerTools"
+      | "anthropicFakeSseHeartbeat"
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
       | "coerceAdaptiveThinking"
+      | "systemMessagesSanitize"
+      | "rewriteHistoryServerTools"
       | "thinkingSignatureCompat"
       | "dedupToolCalls"
       | "stripReadToolResultTags"
@@ -748,11 +812,12 @@ export function setAutoTruncateConfig(
 }
 
 export function setTimeoutConfig(
-  patch: Partial<Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval">>,
+  patch: Partial<Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval" | "upstreamKeepaliveDelay">>,
 ): void {
   const transportChanged =
     (patch.fetchTimeout !== undefined && patch.fetchTimeout !== mutableState.fetchTimeout)
     || (patch.streamIdleTimeout !== undefined && patch.streamIdleTimeout !== mutableState.streamIdleTimeout)
+    || (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
   updateState(patch)
   if (transportChanged) {
     for (const listener of transportTimeoutListeners) listener()
@@ -760,8 +825,9 @@ export function setTimeoutConfig(
 }
 
 /**
- * Listeners notified when `fetchTimeout` or `streamIdleTimeout` change.
- * Used by transport layer (undici dispatcher) to rebuild with new timeouts.
+ * Listeners notified when `fetchTimeout`, `streamIdleTimeout`, or
+ * `upstreamKeepaliveDelay` change.
+ * Used by transport layer (undici dispatcher) to rebuild with new options.
  */
 const transportTimeoutListeners = new Set<() => void>()
 
@@ -839,10 +905,13 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
  */
 export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
+  anthropicFakeSseHeartbeat: 0,
   injectClaudeCodeOfficialTools: true,
-  thinkingBlockMessagePolicy: "immutable" as ThinkingBlockMessagePolicy,
+  thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
   coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
+  systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
+  rewriteHistoryServerTools: false as false | "downgrade",
   thinkingSignatureCompat: "signature_delta" as false | "signature_delta" | "redacted_thinking",
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
@@ -866,6 +935,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   sanitizeToolNames: false,
   fetchTimeout: 300,
   streamIdleTimeout: 300,
+  upstreamKeepaliveDelay: 15,
   staleRequestMaxAge: 600,
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
@@ -896,10 +966,13 @@ export const CONFIG_MANAGED_DEFAULTS = {
 export function resetConfigManagedState(): void {
   setAnthropicBehavior({
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+    anthropicFakeSseHeartbeat: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
     coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
+    systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
+    rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
     thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
@@ -927,6 +1000,7 @@ export function resetConfigManagedState(): void {
   setTimeoutConfig({
     fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
+    upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   })
@@ -981,10 +1055,13 @@ const mutableState: MutableState = {
   cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+  anthropicFakeSseHeartbeat: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
+  systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
+  rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
@@ -1004,6 +1081,7 @@ const mutableState: MutableState = {
   staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
+  upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,

@@ -674,7 +674,7 @@ describe("registerContextConsumers", () => {
       })
     })
 
-    test("adds retry tags on attempts update", () => {
+    test("does NOT add retry strategy as a sticky tag (now surfaced as [RETRY-n] lines by the pipeline)", () => {
       manager.emit({
         type: "updated",
         field: "attempts",
@@ -685,7 +685,10 @@ describe("registerContextConsumers", () => {
         },
       } as unknown as RequestContextEvent)
 
-      expect(tuiUpdateSpy).toHaveBeenCalledWith("tui_1", { tags: ["token-refresh"] })
+      // Previously this emitted `{ tags: ["token-refresh"] }`; per-attempt retry
+      // info now ships as [RETRY-n] lines from executeRequestPipeline, so the
+      // strategy name should NOT be pushed onto the final outcome's tag list.
+      expect(tuiUpdateSpy).not.toHaveBeenCalledWith("tui_1", { tags: ["token-refresh"] })
     })
 
     test("adds websocket transport tag on attempts update", () => {

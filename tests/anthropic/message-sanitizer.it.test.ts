@@ -1616,60 +1616,77 @@ describe("Server Tool Use Support", () => {
       }
     })
 
-    test("immutable_thinking_messages should preserve a thinking assistant message unchanged", () => {
-      setStateForTests({ thinkingBlockMessagePolicy: "immutable" })
+    test("preserve policy: thinking block byte-frozen while surrounding blocks ARE cleaned up", () => {
+      // Under the empirical two-level model, `preserve` is BLOCK-level — it pins the
+      // thinking block but lets the rest of the message be cleaned (tool name casing,
+      // stringified tool_use input parsing, etc.). Old `immutable` behavior of freezing
+      // the entire message protected nothing real and blocked these necessary fixes.
+      setStateForTests({ thinkingBlockMessagePolicy: "preserve" })
 
-      const immutableAssistant = {
+      const thinkingBlock = { type: "thinking" as const, thinking: "reasoning", signature: "sig_1" }
+      const inputAssistant = {
         role: "assistant" as const,
         content: [
-          { type: "thinking" as const, thinking: "reasoning", signature: "sig_1" },
-          {
-            type: "text" as const,
-            text: "<system-reminder>\nremove me normally\n</system-reminder>\nkeep original",
-          },
+          thinkingBlock,
+          { type: "text" as const, text: "kept text" },
           {
             type: "tool_use" as const,
-            id: "tu_immutable",
+            id: "tu_preserve",
             name: "bash",
-            input: "not valid json" as unknown as Record<string, unknown>,
+            input: '{"cmd":"ls"}' as unknown as Record<string, unknown>,
           },
         ],
       }
 
-      const payload = makePayload([{ role: "user", content: "hello" }, immutableAssistant, { role: "user", content: "continue" }], [{ name: "Bash" }])
+      const payload = makePayload(
+        [{ role: "user", content: "hello" }, inputAssistant, { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_preserve", content: "ok" }] }],
+        [{ name: "Bash" }],
+      )
 
       const result = sanitizeAnthropicMessages(payload)
-
-      expect(result.payload.messages[1]).toBe(immutableAssistant)
       const assistantMsg = result.payload.messages[1]
+      expect(typeof assistantMsg.content === "string").toBe(false)
       if (typeof assistantMsg.content !== "string") {
-        expect(assistantMsg.content).toHaveLength(3)
-        expect(assistantMsg.content[1]).toEqual(immutableAssistant.content[1])
-        expect(assistantMsg.content[2]).toEqual(immutableAssistant.content[2])
+        // thinking block echoed byte-for-byte.
+        expect(assistantMsg.content[0]).toEqual(thinkingBlock)
+        // surrounding text kept verbatim (no transformation expected here).
+        const textBlock = assistantMsg.content[1] as { type: "text"; text: string }
+        expect(textBlock.type).toBe("text")
+        expect(textBlock.text).toBe("kept text")
+        // tool_use ACTUALLY cleaned: name casing fixed ("bash" → registered "Bash") and
+        // stringified input parsed into a proper object — both impossible under the old
+        // `immutable` policy that froze the entire message.
+        const toolUse = assistantMsg.content[2] as { type: "tool_use"; name: string; input: unknown }
+        expect(toolUse.type).toBe("tool_use")
+        expect(toolUse.name).toBe("Bash")
+        expect(toolUse.input).toEqual({ cmd: "ls" })
       }
     })
 
-    test("immutable_thinking_messages should keep adjacent empty text blocks in thinking assistant messages", () => {
-      setStateForTests({ thinkingBlockMessagePolicy: "immutable" })
+    test("preserve policy: empty text blocks ARE dropped while the thinking block stays verbatim", () => {
+      // Old `immutable` kept the empty text block to preserve array length. Empirically,
+      // signatures are self-contained and don't bind to position — so empty text blocks
+      // around a thinking block are safely dropped. The thinking block itself is untouched.
+      setStateForTests({ thinkingBlockMessagePolicy: "preserve" })
 
-      const immutableAssistant = {
+      const thinkingBlock = { type: "thinking" as const, thinking: "reasoning", signature: "sig_2" }
+      const inputAssistant = {
         role: "assistant" as const,
-        content: [
-          { type: "thinking" as const, thinking: "reasoning", signature: "sig_2" },
-          { type: "text" as const, text: "   " },
-          { type: "text" as const, text: "visible" },
-        ],
+        content: [thinkingBlock, { type: "text" as const, text: "   " }, { type: "text" as const, text: "visible" }],
       }
 
-      const payload = makePayload([{ role: "user", content: "hello" }, immutableAssistant, { role: "user", content: "continue" }])
+      const payload = makePayload([{ role: "user", content: "hello" }, inputAssistant, { role: "user", content: "continue" }])
 
       const result = sanitizeAnthropicMessages(payload)
-
-      expect(result.payload.messages[1]).toBe(immutableAssistant)
       const assistantMsg = result.payload.messages[1]
+      expect(typeof assistantMsg.content === "string").toBe(false)
       if (typeof assistantMsg.content !== "string") {
-        expect(assistantMsg.content).toHaveLength(3)
-        expect(assistantMsg.content[1]).toEqual({ type: "text", text: "   " })
+        // Empty " " text block dropped; thinking + visible text remain.
+        expect(assistantMsg.content).toHaveLength(2)
+        // thinking still byte-identical.
+        expect(assistantMsg.content[0]).toEqual(thinkingBlock)
+        const remainingText = assistantMsg.content[1] as { type: "text"; text: string }
+        expect(remainingText.text).toBe("visible")
       }
     })
   })

@@ -17,7 +17,7 @@ import {
   getLearnedLimits,
 } from "../../auto-truncate"
 import { processToolBlocks } from "../sanitize"
-import { shouldPreserveThinkingBlocks } from "../thinking-immutability"
+import { shouldPreserveThinkingBlocks } from "../thinking-protection"
 import { ensureAnthropicStartsWithUser } from "./tool-utils"
 
 /**
@@ -338,6 +338,10 @@ export function cleanupMessages(messages: Array<MessageParam>): Array<MessagePar
   let prevLength: number
   do {
     prevLength = result.length
+    // NOTE: processToolBlocks here does NOT run rewriteServerToolHistory (that
+    // lives only in sanitizeAnthropicMessages). Auto-truncate always runs on an
+    // already-sanitized payload, so any historical server_tool_use has already
+    // been downgraded to tool_use upstream — nothing for this pass to rewrite.
     result = processToolBlocks(result, undefined).messages
     result = ensureAnthropicStartsWithUser(result)
   } while (result.length !== prevLength)

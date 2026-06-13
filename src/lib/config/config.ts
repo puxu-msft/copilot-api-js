@@ -134,32 +134,42 @@ let cachedBundledConfig: Config | null = null
 
 /**
  * Load the bundled default `config.yaml` shipped inside the package.
- * Cached forever after first successful load. On parse/validate failure
- * (which would indicate a broken install), logs and returns `{}` so the
- * server can still start with hardcoded safety-net defaults.
+ * Cached forever after first successful load. Parses strictly (parseDocument +
+ * uniqueKeys) — the bundled config is a shipped repo artifact, so a parse
+ * failure is a build/packaging defect, not a user-recoverable condition. The
+ * resulting `ConfigParseError` propagates to boot so the install is fixed
+ * rather than silently running on the hardcoded safety-net defaults.
  */
 export async function loadBundledDefaultConfig(): Promise<Config> {
   if (cachedBundledConfig) return cachedBundledConfig
+  let content: string
   try {
-    const content = await fs.readFile(PATHS.BUNDLED_CONFIG_YAML, "utf8")
-    const { parse } = await import("yaml")
-    const parsed = parse(content)
-
-    if (parsed === null || parsed === undefined) {
-      cachedBundledConfig = {}
-      return cachedBundledConfig
-    }
-    if (typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new TypeError("bundled config.yaml must contain a top-level mapping")
-    }
-
-    cachedBundledConfig = validateConfig(parsed)
-    return cachedBundledConfig
+    content = await fs.readFile(PATHS.BUNDLED_CONFIG_YAML, "utf8")
   } catch (err: unknown) {
-    consola.error("[config] Failed to load bundled config.yaml — falling back to hardcoded defaults:", err)
+    // File missing from a packaged install is a real packaging defect — log
+    // and degrade to hardcoded safety-net defaults so the server can still
+    // start. Parse errors below are NOT degraded (they propagate).
+    consola.error("[config] Failed to read bundled config.yaml — falling back to hardcoded defaults:", err)
     cachedBundledConfig = {}
     return cachedBundledConfig
   }
+
+  const { parseDocument } = await import("yaml")
+  const doc = parseDocument(content, { strict: true, uniqueKeys: true })
+  if (doc.errors.length > 0) {
+    const summary = doc.errors.map((e) => formatYamlIssue(e)).join("; ")
+    throw new ConfigParseError(`bundled config.yaml has YAML parse errors: ${summary}`, doc.errors, doc.warnings)
+  }
+  const parsed = doc.toJS()
+  if (parsed === null || parsed === undefined) {
+    cachedBundledConfig = {}
+    return cachedBundledConfig
+  }
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ConfigParseError("bundled config.yaml must contain a top-level mapping", [], [])
+  }
+  cachedBundledConfig = validateConfig(parsed)
+  return cachedBundledConfig
 }
 
 /**
@@ -169,23 +179,84 @@ export async function loadBundledDefaultConfig(): Promise<Config> {
  *
  * Returns `{}` when the file is absent.
  */
+/**
+ * Read the user's `config.yaml` (override file) without merging in bundled
+ * defaults. Used by `/api/config/yaml` GET so the editor surface only shows
+ * the user's overrides, and the PUT round-trip stays sparse.
+ *
+ * Uses `parseDocument` so we can inspect `doc.errors` ourselves and throw a
+ * typed `ConfigParseError` that boot-time abort vs hot-reload warn-and-fall-back
+ * can distinguish via `instanceof`. The simpler `parse()` also fails on
+ * duplicate keys (yaml's default is `uniqueKeys: true`), but it raises a bare
+ * `YAMLParseError` that carries no boot-vs-hot-reload contract — wrapping in a
+ * domain error class lets callers branch deterministically. `strict` + explicit
+ * `uniqueKeys` pin the contract across yaml minor versions.
+ *
+ * Returns `{}` when the file is absent.
+ */
 export async function loadRawConfigFile(): Promise<Config> {
+  let content: string
   try {
-    const content = await fs.readFile(PATHS.CONFIG_YAML, "utf8")
-    const { parse } = await import("yaml")
-    const parsed = parse(content)
-
-    if (parsed === null || parsed === undefined) return {}
-    if (typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new TypeError("config.yaml must contain a top-level mapping")
-    }
-
-    return validateConfig(parsed)
+    content = await fs.readFile(PATHS.CONFIG_YAML, "utf8")
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return {}
-    }
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {}
     throw err
+  }
+
+  const { parseDocument } = await import("yaml")
+  const doc = parseDocument(content, { strict: true, uniqueKeys: true })
+
+  if (doc.errors.length > 0) {
+    const summary = doc.errors.map((e) => formatYamlIssue(e)).join("; ")
+    throw new ConfigParseError(`config.yaml has YAML parse errors: ${summary}`, doc.errors, doc.warnings)
+  }
+  // Defensive: in yaml@2.9 duplicate keys are reported as errors and the branch
+  // above already covers them. This cross-version guard catches a hypothetical
+  // future where dup is downgraded to a warning, so the contract stays consistent.
+  const dupWarnings = doc.warnings.filter((w) => isDuplicateKeyWarning(w))
+  if (dupWarnings.length > 0) {
+    const summary = dupWarnings.map((w) => formatYamlIssue(w)).join("; ")
+    throw new ConfigParseError(`config.yaml has duplicate keys: ${summary}`, [], dupWarnings)
+  }
+
+  const parsed = doc.toJS()
+  if (parsed === null || parsed === undefined) return {}
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    // Promote to ConfigParseError so the boot-time abort path treats this the
+    // same as a YAML-level error (consistent operator dialog).
+    throw new ConfigParseError("config.yaml must contain a top-level mapping", [], [])
+  }
+
+  return validateConfig(parsed)
+}
+
+/** Format a YAML library error/warning into a one-line `Line:Col message` summary. */
+function formatYamlIssue(issue: { message: string; linePos?: ReadonlyArray<{ line: number; col: number }> }): string {
+  const pos = issue.linePos?.[0]
+  const where = pos ? `${pos.line}:${pos.col} ` : ""
+  return `${where}${issue.message}`
+}
+
+function isDuplicateKeyWarning(warn: { code?: string; message: string }): boolean {
+  if (warn.code === "DUPLICATE_KEY") return true
+  return /duplicate.*key/i.test(warn.message)
+}
+
+/**
+ * Raised when the user's `config.yaml` cannot be parsed losslessly — duplicate
+ * keys, YAML spec violations, etc. Loaders throw it; callers decide whether to
+ * abort (boot) or warn-and-fall-back (hot reload).
+ */
+export class ConfigParseError extends Error {
+  readonly issues: ReadonlyArray<{ message: string; linePos?: ReadonlyArray<{ line: number; col: number }> }>
+  constructor(
+    message: string,
+    errors: ReadonlyArray<{ message: string; linePos?: ReadonlyArray<{ line: number; col: number }> }>,
+    warnings: ReadonlyArray<{ message: string; linePos?: ReadonlyArray<{ line: number; col: number }> }>,
+  ) {
+    super(message)
+    this.name = "ConfigParseError"
+    this.issues = [...errors, ...warnings]
   }
 }
 
@@ -202,7 +273,7 @@ export async function loadRawConfigFile(): Promise<Config> {
  *       · `"per-key"` (e.g. `model_overrides`): shallow merge at the key
  *         level — user keys add/replace, bundled keys without a user
  *         counterpart remain. Values are atomic (replaced wholesale).
- *       · `"replace"` (default — e.g. `anthropic.efforts_overrides`,
+ *       · `"replace"` (default — e.g. `anthropic.effort_overrides`,
  *         `strip_beta_headers`, `reject_body_fields`): the user's map
  *         wholly replaces the bundled map. Once the user takes ownership
  *         of the table, the bundled table is fully discarded.
@@ -392,17 +463,24 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.anthropic) {
     const a = config.anthropic
     if (a.strip_server_tools !== undefined) setAnthropicBehavior({ stripServerTools: a.strip_server_tools })
+    if (a.fake_sse_heartbeat !== undefined) setAnthropicBehavior({ anthropicFakeSseHeartbeat: a.fake_sse_heartbeat })
     if (a.inject_claude_code_tools !== undefined) {
       setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.inject_claude_code_tools })
     }
     if (a.thinking_block_message_policy !== undefined) {
       setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
     }
-    if (a.thinking_block_sanitize_check !== undefined) {
-      setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize_check })
+    if (a.thinking_block_sanitize !== undefined) {
+      setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize })
     }
     if (a.coerce_adaptive_thinking !== undefined) {
       setAnthropicBehavior({ coerceAdaptiveThinking: a.coerce_adaptive_thinking })
+    }
+    if (a.system_messages_sanitize !== undefined) {
+      setAnthropicBehavior({ systemMessagesSanitize: a.system_messages_sanitize })
+    }
+    if (a.rewrite_history_server_tools !== undefined) {
+      setAnthropicBehavior({ rewriteHistoryServerTools: a.rewrite_history_server_tools })
     }
     if (a.thinking_signature_compat !== undefined) {
       setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
@@ -426,9 +504,9 @@ export async function applyConfigToState(): Promise<Config> {
     // Collection fields: retain-on-absence semantic — a missing key keeps the
     // current runtime value; an explicit `{}` overwrites with empty. To revert
     // to built-in defaults, call resetConfigManagedState() (PUT /api/config).
-    if (a.efforts_overrides !== undefined)
+    if (a.effort_overrides !== undefined)
       setAnthropicBehavior({
-        effortsOverrides: normalizeModelKeyedRecord(a.efforts_overrides, "anthropic.efforts_overrides"),
+        effortsOverrides: normalizeModelKeyedRecord(a.effort_overrides, "anthropic.effort_overrides"),
       })
     if (a.strip_beta_headers !== undefined)
       setAnthropicBehavior({
@@ -488,11 +566,8 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.target_factor !== undefined) setAutoTruncateConfig({ autoTruncateTargetFactor: a.target_factor })
     if (a.max_retries !== undefined) setAutoTruncateConfig({ autoTruncateMaxRetries: a.max_retries })
     if (a.compress_threshold !== undefined) setAutoTruncateConfig({ autoTruncateCompressThreshold: a.compress_threshold })
+    if (a.compress_tool_results !== undefined) setAnthropicBehavior({ compressToolResultsBeforeTruncate: a.compress_tool_results })
   }
-
-  // Other settings (scalar: override only when present)
-  if (config.compress_tool_results_before_truncate !== undefined)
-    setAnthropicBehavior({ compressToolResultsBeforeTruncate: config.compress_tool_results_before_truncate })
 
   // Tool-name sanitization (cross-protocol top-level toggle; scalar override)
   if (config.sanitize_tool_names !== undefined) setAnthropicBehavior({ sanitizeToolNames: config.sanitize_tool_names })
@@ -527,21 +602,22 @@ export async function applyConfigToState(): Promise<Config> {
     if (s.abort_wait !== undefined) setShutdownConfig({ shutdownAbortWait: s.abort_wait })
   }
 
-  // Top-level timeouts
-  if (config.fetch_timeout !== undefined) setTimeoutConfig({ fetchTimeout: config.fetch_timeout })
-  if (config.stream_idle_timeout !== undefined) setTimeoutConfig({ streamIdleTimeout: config.stream_idle_timeout })
-
-  // Stale request reaper max age (scalar: override only when present)
-  if (config.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: config.stale_request_max_age })
+  // Timeouts section (scalar: override only when present)
+  if (config.timeouts) {
+    const t = config.timeouts
+    if (t.response_header !== undefined) setTimeoutConfig({ fetchTimeout: t.response_header })
+    if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
+    if (t.upstream_keepalive !== undefined) setTimeoutConfig({ upstreamKeepaliveDelay: t.upstream_keepalive })
+    if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
+  }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 
   // Responses API settings (scalar: override only when present)
-  const responsesConfig = config["openai-responses"]
+  const responsesConfig = config.openai_responses
   if (responsesConfig && responsesConfig.normalize_call_ids !== undefined) setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
-  if (responsesConfig && responsesConfig.upstream_websocket !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_websocket })
+  if (responsesConfig && responsesConfig.upstream_ws !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_ws })
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
-  if (responsesConfig && responsesConfig.client_websocket_keep_open !== undefined)
-    setResponsesConfig({ clientWebsocketKeepOpen: responsesConfig.client_websocket_keep_open })
+  if (responsesConfig && responsesConfig.client_ws_keep_open !== undefined) setResponsesConfig({ clientWebsocketKeepOpen: responsesConfig.client_ws_keep_open })
   if (responsesConfig && responsesConfig.max_ws_frame_bytes !== undefined) setResponsesConfig({ maxWsFrameBytes: responsesConfig.max_ws_frame_bytes })
   if (responsesConfig && responsesConfig.max_client_ws_connections !== undefined)
     setResponsesConfig({ maxClientWsConnections: responsesConfig.max_client_ws_connections })

@@ -36,6 +36,7 @@ import type {
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
+import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { registerResponseSession } from "~/lib/history"
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
@@ -147,6 +148,12 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
   const clientModel = payload.model
   const headersCapture: HeadersCapture = {}
 
+  // Bridge inbound client disconnect to the upstream fetch. Hoisted so it
+  // covers the non-streaming branch too (which never enters `streamSSE`'s
+  // onAbort); streamSSE.onAbort is wired below as the second trigger source.
+  const clientAbort = new AbortController()
+  const detachClientAbort = bridgeClientAbort(c, clientAbort)
+
   // 5. Build adapter — translation happens INSIDE execute() so the pipeline's
   //    error handling cleanly covers translation failures (e.g. empty choices).
   const adapter: FormatAdapter<ResponsesPayload> = {
@@ -163,6 +170,7 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
         createChatCompletions(ccPayload, {
           resolvedModel: selectedModel,
           headersCapture,
+          clientAbortSignal: clientAbort.signal,
           onPrepared: ({ wire, headers }) => {
             reqCtx.setAttemptWireRequest({
               model: typeof wire.model === "string" ? wire.model : payload.model,
@@ -229,6 +237,7 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
         stop_reason: responsesResponse.status,
         content: responsesOutputToContent(responsesResponse.output),
       })
+      detachClientAbort()
       return c.json(clientResponse)
     }
 
@@ -243,7 +252,8 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
     reqCtx.transition("streaming")
 
     return streamSSE(c, async (stream) => {
-      const clientAbort = new AbortController()
+      // streamSSE's onAbort is the second trigger source — the inbound HTTP
+      // signal bridge installed at the top of this function is the first.
       stream.onAbort(() => clientAbort.abort())
 
       const acc = createResponsesStreamAccumulator()
@@ -316,11 +326,14 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
             },
           }),
         })
+      } finally {
+        detachClientAbort()
       }
     })
   } catch (error) {
     reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(payload.model, error)
+    detachClientAbort()
     throw error
   }
 }

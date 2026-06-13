@@ -122,18 +122,29 @@ disabled_models:
 
 # Max seconds between SSE events (0 = no timeout).
 # Applies to all streaming paths (Anthropic, Chat Completions, Responses).
-stream_idle_timeout: 300
+timeouts:
+  stream_idle: 300
 
-# Max seconds from request start to HTTP response headers (0 = no timeout).
-# Applies to all upstream API clients.
-fetch_timeout: 900
+  # Max seconds from request start to receiving HTTP response headers (0 = no timeout).
+  # Applies to all upstream API clients.
+  response_header: 900
 
-# Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
-# Safety net for requests that never complete/fail normally.
-stale_request_max_age: 300
+  # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
+  # The kernel emits TCP keepalive probes after this much idle time (and every such
+  # interval while idle), keeping the GHC connection alive through long upstream
+  # silences — e.g. opus adaptive thinking that goes quiet for tens of seconds after
+  # content_block_start. undici's 60s default is too long for ~30s NAT/firewall idle
+  # reapers (the first probe never fires before the socket is culled, surfacing as
+  # "terminated (cause: other side closed)"). Node-only; Bun's fetch is unaffected.
+  upstream_keepalive: 15
+
+  # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
+  # Safety net for requests that never complete/fail normally.
+  stale_request_max_age: 300
 
 # Seconds between background model list refreshes (0 = disabled).
 # Keeps /models cache fresh for long-running instances without requiring a restart.
+# (Stays top-level — a refresh interval, not a timeout.)
 model_refresh_interval: 900
 
 # ============================================================================
@@ -189,15 +200,28 @@ anthropic:
   # Strip server-side tools (web_search, etc.) from requests
   strip_server_tools: false
 
+  # Synthetic SSE keepalive interval (seconds) for the client-facing stream.
+  # 0 = disabled (default). A positive integer N injects an Anthropic-protocol
+  # `event: ping` frame whenever no real upstream event has been forwarded for
+  # >= N seconds, preventing clients (e.g. Claude Code, which gives up around
+  # 258s) from disconnecting while upstream is silent — notably opus-4.8
+  # adaptive thinking that emits `content_block_start` then stalls. Heartbeats
+  # are PROXY-originated and DO NOT reset the upstream idle-timeout, so a
+  # genuinely dead upstream still fails via `timeouts.stream_idle`. Recorded
+  # only in `forwardedSseEvents`, never in the raw upstream `sseEvents`.
+  fake_sse_heartbeat: 0
+
   # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
   # "input": dedup by (name, input); "result": also require identical result
   dedup_tool_calls: false
 
   # Policy for assistant messages containing thinking/redacted_thinking blocks.
-  #   stripped:    delete thinking blocks (delete message if empty after stripping)
-  #   immutable:   entire message is immutable — keep or truncate as a whole (default)
-  #   fixed-index: allow editing non-thinking blocks, but preserve array structure
-  thinking_block_message_policy: fixed-index
+  # Thinking signatures are self-contained (encrypt the thinking content itself; no
+  # context/position binding — empirically verified), so block-level protection suffices.
+  #   preserve: keep thinking blocks verbatim + don't reorder consecutive thinking,
+  #             but allow all surrounding cleanup (default)
+  #   stripped: actively delete thinking blocks from old messages
+  thinking_block_message_policy: preserve
 
   # Drop corrupt thinking blocks before sending upstream. Validity is decided by
   # the SIGNATURE, not the thinking text — a legitimate *encrypted* thinking block
@@ -208,7 +232,7 @@ anthropic:
   #   empty_thinking: remove only double-empty blocks — text AND signature both empty (default)
   #   empty_any:      remove any thinking block with an empty signature, regardless of text
   #   false:          disable the pass (pass corrupt blocks through unchanged)
-  thinking_block_sanitize_check: empty_thinking
+  thinking_block_sanitize: empty_thinking
 
   # Coerce legacy thinking params for adaptive-only models (opus 4.6/4.7/4.8).
   # Old clients send thinking:{type:enabled,budget_tokens} which these models reject
@@ -218,6 +242,35 @@ anthropic:
   #                didn't send an explicit effort) — heuristic, GHC doesn't do this
   #   false:       disable — pass client thinking config through unchanged
   coerce_adaptive_thinking: basic
+
+  # Handle role:"system" messages mixed into the `messages` array. The Anthropic
+  # Messages API rejects them with `Unexpected role "system"` — system must be the
+  # top-level `system` parameter. They come from OpenAI-habit clients, or from
+  # Claude Code injecting mid-conversation context (SessionStart hook output, rule
+  # files, "TodoWrite tool hasn't been used" reminders) as system-role messages.
+  #   as_user:      rewrite role to "user" — preserves the original conversation
+  #                 position; most faithful for position-bearing context (recommended)
+  #   merge:        pull the text out, append it to the top-level system, drop the
+  #                 messages. Loses positional ordering and bloats system, which
+  #                 significantly lowers prompt-cache hit rate — prefer as_user
+  #   drop_invalid: remove the inline system messages entirely (loses the context)
+  #   as_assistant: rewrite role to "assistant" — EXPERIMENTAL, not recommended:
+  #                 disguises injected context as the model's own output and may
+  #                 fold text into a tool-call turn
+  #   false:        passthrough unchanged (default — upstream will 400 if present)
+  system_messages_sanitize: false
+
+  # Rewrite native server-tool blocks left in message history before sending upstream.
+  # The web_search double-hop surfaces a synthesized server_tool_use{web_search} +
+  # web_search_tool_result pair to the client (so results are visible); the client
+  # echoes it back next turn, but the downgraded tools array no longer declares
+  # web_search as a server tool, so upstream returns 400. Recommended ON together
+  # with web_search.enabled.
+  #   downgrade: rewrite the pair into plain tool_use + tool_result (splits the
+  #              assistant turn so the tool_result lands in a user message)
+  #   false:     passthrough (default — will 400 upstream when a historical
+  #              server_tool_use survives without a matching server-tool definition)
+  rewrite_history_server_tools: false
 
   # Client compatibility shim for the streaming thinking frame some Copilot upstreams emit:
   # content_block_start {type:thinking, thinking:"", signature:S} with NO signature_delta.
@@ -306,7 +359,7 @@ anthropic:
   # persisted to negotiation-states.json). Config-sourced entries take precedence
   # over runtime-learned, which in turn take precedence over model metadata.
   # Default: no constraints (all effort levels declared by the model pass through).
-  # efforts_overrides:
+  # effort_overrides:
   #   claude-opus-4.7: [medium]
   #   claude-opus-4.7-1m-internal: [medium]
 
@@ -354,7 +407,7 @@ anthropic:
 # ============================================================================
 # Settings for OpenAI Responses API (/v1/responses) endpoint.
 
-openai-responses:
+openai_responses:
   # Convert `call_xxx` IDs to `fc_xxx` in input. Required when clients send conversation history with
   # Chat Completions-format tool call IDs to the Responses API (which requires `fc_` prefix). Default: true.
   normalize_call_ids: true
@@ -363,7 +416,7 @@ openai-responses:
   # Connections are reused across tool-call rounds via `previous_response_id` or session header.
   # WS failures fall back to HTTP transparently; 3 consecutive fallbacks temporarily disable WS
   # for 5 minutes (single half-open probe on expiry). Default: false.
-  upstream_websocket: true
+  upstream_ws: true
 
   # Fix inconsistent item IDs across `output_item.added` / `output_item.done` events from Copilot's
   # upstream stream. Required by `@ai-sdk/openai` which validates ID continuity. Default: true.
@@ -373,7 +426,7 @@ openai-responses:
   # follow-up `response.create` frames on the same socket. When false (default), the socket
   # closes with code 1000 after each request (HTTP-like one-shot semantics).
   # Concurrent `response.create` on the same socket is rejected with an error frame.
-  client_websocket_keep_open: false
+  client_ws_keep_open: false
 
 # ============================================================================
 # Rate Limiter
@@ -386,8 +439,8 @@ rate_limiter:
   retry_interval: 10
   # Seconds between requests in rate-limited mode
   request_interval: 10
-  # Minutes before attempting recovery from rate-limited mode
-  recovery_timeout: 10
+  # Seconds before attempting recovery from rate-limited mode
+  recovery_interval: 600
   # Consecutive successes needed to exit rate-limited mode
   consecutive_successes: 5
 
@@ -414,7 +467,8 @@ rate_limiter:
 
 # Compress old tool_result content before truncating messages. When enabled, large tool_result content blocks
 # are compressed to reduce context size before resorting to message removal. Default: true.
-# compress_tool_results_before_truncate: false
+# auto_truncate:
+#   compress_tool_results: false
 
 # ============================================================================
 # Tool Name Sanitization

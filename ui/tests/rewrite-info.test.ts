@@ -240,6 +240,57 @@ describe("getRewrittenMessage", () => {
     const { getRewrittenMessage } = usePipelineInfo(entry)
     expect(getRewrittenMessage(0)).toBeNull()
   })
+
+  test("returns the HEAD (not the split-out tail) when one original maps to multiple rewritten", () => {
+    // rewriteServerToolHistory splits one assistant turn into assistant(tool_use)
+    // + an injected user(tool_result). Both map to original index 1. The diff
+    // overlay must show the assistant head, not the overwriting tool_result.
+    const head = msg("assistant", "downgraded assistant")
+    const splitOut = msg("user", "tool result")
+    const entry = ref<HistoryEntry | null>(
+      makeEntry({
+        inboundRequest: {
+          model: "test",
+          messages: [msg("user", "search"), msg("assistant", "original assistant")],
+        },
+        effectiveRequest: { messages: [msg("user", "search"), head, splitOut] },
+        pipelineInfo: { messageMapping: [0, 1, 1] },
+      }),
+    )
+    const { getRewrittenMessage } = usePipelineInfo(entry)
+    expect(getRewrittenMessage(1)).toEqual(head)
+  })
+})
+
+// ─── getSplitMessages ───
+
+describe("getSplitMessages", () => {
+  test("returns [] for a 1:1 mapping", () => {
+    const entry = ref<HistoryEntry | null>(
+      makeEntry({
+        effectiveRequest: { messages: [msg("user", "a"), msg("assistant", "b"), msg("user", "c")] },
+        pipelineInfo: { messageMapping: [0, 1, 2] },
+      }),
+    )
+    const { getSplitMessages } = usePipelineInfo(entry)
+    expect(getSplitMessages(0)).toEqual([])
+    expect(getSplitMessages(1)).toEqual([])
+  })
+
+  test("returns the injected tail message(s) for a split turn", () => {
+    const head = msg("assistant", "downgraded assistant")
+    const splitOut = msg("user", "tool result")
+    const entry = ref<HistoryEntry | null>(
+      makeEntry({
+        inboundRequest: { model: "test", messages: [msg("user", "search"), msg("assistant", "orig")] },
+        effectiveRequest: { messages: [msg("user", "search"), head, splitOut] },
+        pipelineInfo: { messageMapping: [0, 1, 1] },
+      }),
+    )
+    const { getSplitMessages } = usePipelineInfo(entry)
+    expect(getSplitMessages(0)).toEqual([])
+    expect(getSplitMessages(1)).toEqual([splitOut])
+  })
 })
 
 // ─── isMessageRewritten ───
@@ -373,6 +424,22 @@ describe("isMessageRewritten", () => {
     const { isMessageRewritten } = usePipelineInfo(entry)
     expect(isMessageRewritten(0)).toBe(true)
     expect(isMessageRewritten(5)).toBe(false) // no original to compare → skipped
+  })
+
+  test("marks a turn rewritten when it was SPLIT even if the head content is unchanged", () => {
+    // A split injects an extra message; that alone is a rewrite of the turn,
+    // even if the assistant head text is byte-identical to the original.
+    const head = msg("assistant", "same text")
+    const splitOut = msg("user", "injected tool result")
+    const entry = ref<HistoryEntry | null>(
+      makeEntry({
+        inboundRequest: { model: "test", messages: [msg("user", "q"), msg("assistant", "same text")] },
+        effectiveRequest: { messages: [msg("user", "q"), head, splitOut] },
+        pipelineInfo: { messageMapping: [0, 1, 1] },
+      }),
+    )
+    const { isMessageRewritten } = usePipelineInfo(entry)
+    expect(isMessageRewritten(1)).toBe(true)
   })
 })
 

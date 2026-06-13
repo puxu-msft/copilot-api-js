@@ -50,6 +50,14 @@ import type {
 
 import type { Model } from "./client"
 
+import {
+  //
+  asBoolean,
+  asNumber,
+  asStringArray,
+  getSupports,
+} from "./capabilities"
+
 /**
  * Epoch placeholder used when Copilot does not expose a release date.
  * Copilot's models API has no `created_at` / `release_date` field, so we emit a
@@ -134,24 +142,9 @@ export interface AnthropicModelsListResponse {
 }
 
 // ============================================================================
-// Helpers
+// Helpers — supports-readers live in ./capabilities (single source, shared with
+// the pure deriveCapabilities used by the frontend) to prevent derivation drift.
 // ============================================================================
-
-function getSupports(model: Model): Record<string, boolean | number | Array<string> | undefined> {
-  return model.capabilities?.supports ?? {}
-}
-
-function asBoolean(v: unknown): boolean {
-  return v === true
-}
-
-function asNumber(v: unknown): number | undefined {
-  return typeof v === "number" ? v : undefined
-}
-
-function asStringArray(v: unknown): ReadonlyArray<string> | undefined {
-  return Array.isArray(v) && v.every((x) => typeof x === "string") ? v : undefined
-}
 
 // ============================================================================
 // Mappers

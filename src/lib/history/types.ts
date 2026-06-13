@@ -115,7 +115,7 @@ export interface SanitizationInfo {
   orphanedToolResultCount: number
   fixedNameCount: number
   emptyTextBlocksRemoved: number
-  /** Corrupt (unsigned) thinking blocks dropped by the thinking_block_sanitize_check pass */
+  /** Corrupt (unsigned) thinking blocks dropped by the thinking_block_sanitize pass */
   emptyThinkingBlocksRemoved: number
   systemReminderRemovals: number
 }
@@ -308,6 +308,13 @@ export interface QueryOptions {
   model?: string
   endpoint?: EndpointType
   success?: boolean
+  /**
+   * Filter to an exact lifecycle state (e.g. `aborted`/`interrupted`). More
+   * granular than `success` (which is just completed-vs-failed); when both are
+   * given, `state` wins. Maps to the `status` SQL column, so it filters at the
+   * source and stays correct across cursor pagination.
+   */
+  state?: RequestLifecycleState
   from?: number
   to?: number
   search?: string
@@ -366,6 +373,8 @@ export interface EntrySummary {
   queueWaitMs?: number
   attemptCount?: number
   currentStrategy?: string
+  /** Serving process id (mirrors `process.pid`) — supports the pid filter. */
+  pid?: number
   requestModel?: string
   stream?: boolean
   messageCount: number

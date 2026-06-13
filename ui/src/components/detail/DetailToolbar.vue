@@ -40,18 +40,8 @@ const typeOptions = [
   { value: "image", label: "Image" },
 ]
 
-const viewModeOptions: Array<{ value: string; label: string }> = [
-  { value: "original", label: "All Original" },
-  { value: "rewritten", label: "All Rewritten" },
-  { value: "diff", label: "All Diff" },
-]
-
 /** Current navigation index within the rewritten message list */
 const navIndex = ref(-1)
-
-function setGlobalViewMode(value: string | null) {
-  detail.detailViewMode = value as "original" | "rewritten" | "diff" | null
-}
 
 function scrollToRewrittenMessage(index: number) {
   // Find the message block by data-msg-index attribute
@@ -141,14 +131,6 @@ function navigateRewritten(direction: "prev" | "next") {
       </div>
 
       <div class="rewrite-controls">
-        <!-- Global view mode -->
-        <BaseSelect
-          :model-value="detail.detailViewMode"
-          :options="viewModeOptions"
-          placeholder="Per-message"
-          @update:model-value="setGlobalViewMode($event)"
-        />
-
         <!-- Show only rewritten filter -->
         <BaseCheckbox
           :model-value="detail.showOnlyRewritten"

@@ -75,12 +75,12 @@ const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "respo
 
 /**
  * Default client-side WebSocket frame cap (1 MiB) is enforced via
- * `state.maxWsFrameBytes` (config `openai-responses.max_ws_frame_bytes`).
+ * `state.maxWsFrameBytes` (config `openai_responses.max_ws_frame_bytes`).
  * 0 means unlimited. See onMessage for enforcement.
  */
 
 /**
- * Client-side idle timeout when `client_websocket_keep_open` is true (5 min).
+ * Client-side idle timeout when `client_ws_keep_open` is true (5 min).
  * Without this, a client that opens the socket, sends one `response.create`,
  * and then walks away would pin a WSContext and file descriptor indefinitely.
  * Mirrors the 5-min idle close on the upstream side.
@@ -151,8 +151,36 @@ function sendErrorAndClose(ws: WSContext, message: string, code?: string): void 
 // Core handler
 // ============================================================================
 
+// ============================================================================
+// Per-socket client-abort registry
+// ============================================================================
+
+/**
+ * Per-socket in-flight client-abort controller. `handleResponseCreate`
+ * registers the controller via `registerClientAbort` before driving the
+ * pipeline; the WebSocket route's `onClose` / `onError` fire `abort()` so
+ * the upstream fetch / WS sendRequest tears down the moment the client goes
+ * away. Without this, an abandoned long response keeps the upstream
+ * connection (and the full SSE accumulator + forwardedSseEvents buffer)
+ * alive until the upstream naturally completes — exactly the heap-residency
+ * pattern blamed for the 4GB OOM observed in the wild.
+ *
+ * Module-level WeakMap so entries are GC'd with the WSContext; we also call
+ * `abort()` explicitly in onClose/onError so the controller fires
+ * deterministically rather than waiting for finalization.
+ */
+const wsClientAborts = new WeakMap<WSContext, AbortController>()
+
 /** Handle a response.create message over WebSocket */
 async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload): Promise<void> {
+  // Create + register the abort controller BEFORE any await — onClose / onError
+  // can fire at any point while we're awaiting downstream work, and a late
+  // registration would let an inbound disconnect slip past unobserved (the
+  // exact OOM-vector this PR is closing). Registration via WeakMap is cheap,
+  // and the controller is harmless if never aborted.
+  const clientAbort = new AbortController()
+  wsClientAborts.set(ws, clientAbort)
+
   let payload = rawPayload
   const requestedModel = payload.model
   // Snapshot BEFORE any mutation so history "original" reflects the client's
@@ -166,6 +194,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   const selectedModel = state.modelIndex.get(resolvedModel)
   if (!isResponsesSupported(selectedModel)) {
     sendErrorAndClose(ws, `Model "${resolvedModel}" does not support the Responses API`, "invalid_request_error")
+    wsClientAborts.delete(ws)
     return
   }
 
@@ -212,7 +241,10 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
   // Build pipeline adapter and strategies (shared with HTTP handler)
   const headersCapture: HeadersCapture = {}
-  const clientAbort = new AbortController()
+  // `clientAbort` was created + registered in `wsClientAborts` at the top of
+  // this function — see the comment there. We reuse it here when wiring the
+  // adapter so the upstream WS connection sees the same controller the
+  // socket-level handlers (onClose / onError) will fire.
   const adapter = createResponsesAdapter(
     selectedModel,
     headersCapture,
@@ -441,6 +473,11 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
       releaseConnection(ws)
       consola.debug(`[WS] Responses API WebSocket disconnected (active: ${liveConnectionCount})`)
       clearIdleTimer(ws)
+      // Tear down any in-flight upstream work tied to this socket. abort() is
+      // idempotent, so a request that already completed (and cleared the
+      // WeakMap entry in onMessage.finally) is a no-op here.
+      wsClientAborts.get(ws)?.abort()
+      wsClientAborts.delete(ws)
     },
 
     async onMessage(event: MessageEvent, ws: WSContext) {
@@ -498,6 +535,10 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
       // request on the same socket (when keep-open is enabled) is serialized.
       const work = handleResponseCreate(ws, payload).finally(() => {
         inFlight.delete(ws)
+        // Request settled normally — drop the abort registration so a later
+        // onClose doesn't try to abort an already-finished controller. (abort()
+        // is idempotent, but the WeakMap entry would otherwise sit until GC.)
+        wsClientAborts.delete(ws)
         // After completion, re-arm the idle timer when keep-open is on. When
         // keep-open is off the socket has already been closed by handleResponseCreate.
         armIdleTimer(ws)
@@ -512,6 +553,8 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
       // onClose. releaseConnection is idempotent, so a subsequent onClose is safe.
       releaseConnection(ws)
       clearIdleTimer(ws)
+      wsClientAborts.get(ws)?.abort()
+      wsClientAborts.delete(ws)
       try {
         ws.close(1011, "Internal error")
       } catch {

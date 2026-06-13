@@ -7,29 +7,62 @@ import {
   nextTick,
 } from "vue"
 
-import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import type { MessageContent } from "@/types"
+
+import DiffModal from "@/components/detail/DiffModal.vue"
 import RawJsonModal from "@/components/ui/RawJsonModal.vue"
 import { provideContentContext } from "@/composables/useContentContext"
 import { useDetailOrchestration } from "@/composables/useDetailOrchestration"
 import { useDetailViewState } from "@/composables/useDetailViewState"
 import { useHistoryStore } from "@/composables/useHistoryStore"
+import { provideMessageActions } from "@/composables/useMessageActions"
 import { provideRawModal } from "@/composables/useRawModal"
 import { downloadEntryAsJson } from "@/utils/export-entry"
 
-import AttemptsTimeline from "./AttemptsTimeline.vue"
-import DetailRequestSection from "./DetailRequestSection.vue"
-import DetailResponseSection from "./DetailResponseSection.vue"
 import DetailToolbar from "./DetailToolbar.vue"
-import HeadersComparisonSection from "./HeadersComparisonSection.vue"
-import MetaInfo from "./MetaInfo.vue"
-import SectionBlock from "./SectionBlock.vue"
-import SseEventsSection from "./SseEventsSection.vue"
+import StageAttempts from "./stages/StageAttempts.vue"
+import StageEffective from "./stages/StageEffective.vue"
+import StageForwarded from "./stages/StageForwarded.vue"
+import StageInbound from "./stages/StageInbound.vue"
+import StageMeta from "./stages/StageMeta.vue"
+import StageUpstream from "./stages/StageUpstream.vue"
+import StageWire from "./stages/StageWire.vue"
 
 const store = useHistoryStore()
 const detail = useDetailViewState()
 const detailBodyRef = ref<HTMLElement>()
 
 const entry = computed(() => store.selectedEntry)
+
+// Active stage is owned (validated) by VDetailPage which renders StageTabs;
+// here we only read it to route to the right stage component. Toolbar controls
+// (search / filter) only apply to message-rendering stages.
+const activeStage = computed(() => detail.activeStage)
+const showToolbar = computed(() => activeStage.value === "inbound" || activeStage.value === "effective" || activeStage.value === "upstream")
+
+// ── Rich diff modal + inbound↔effective jump (provided to MessageBlock) ──
+const diffVisible = ref(false)
+const diffOriginal = ref<MessageContent | null>(null)
+const diffEffective = ref<MessageContent | null>(null)
+const diffLabel = ref("")
+provideMessageActions({
+  openDiff: (original, effective, label) => {
+    diffOriginal.value = original
+    diffEffective.value = effective
+    diffLabel.value = label
+    diffVisible.value = true
+  },
+  jumpToCounterpart: (index) => {
+    detail.activeStage = activeStage.value === "effective" ? "inbound" : "effective"
+    void nextTick(() => {
+      const el = document.querySelector(`#request\\.messages\\.${index}`)
+      if (!el) return
+      el.scrollIntoView({ behavior: "smooth", block: "start" })
+      // Expand the target message if collapsed (MessageBlock listens for this).
+      el.dispatchEvent(new CustomEvent("toc-navigate", { bubbles: false }))
+    })
+  },
+})
 
 // Shared RawJsonModal — single instance for all child components
 const { visible: rawModalVisible, data: rawModalData, rewrittenData: rawModalRewrittenData, title: rawModalTitle } = provideRawModal()
@@ -41,6 +74,7 @@ const {
   rewriteSummary,
   rewrittenIndexList,
   getRewrittenMessage,
+  getSplitMessages,
   isMessageRewritten,
   isMessageTruncated,
   toolMaps,
@@ -64,6 +98,14 @@ provideContentContext({
   scrollToCall,
 })
 
+// Search/filter are scoped to the current stage: reset them when the stage
+// changes so a query typed in one stage doesn't silently carry into another
+// (and the toolbar only exists in message stages anyway).
+watch(activeStage, () => {
+  detail.detailSearch = ""
+  detail.detailFilterType = ""
+})
+
 // Watch detailSearch -> scroll to first match
 watch(
   () => detail.detailSearch,
@@ -78,13 +120,13 @@ watch(
   },
 )
 
-// Watch selectedEntry -> scroll detail body to bottom
+// Watch selectedEntry -> scroll detail body to TOP (request/error first). Prev:
+// auto-scrolled to bottom, which buried the inbound request + error on open and
+// on every prev/next navigation — the opposite of what diagnosis needs.
 watch(entry, (e) => {
   if (e) {
     void nextTick(() => {
-      if (detailBodyRef.value) {
-        detailBodyRef.value.scrollTo(0, detailBodyRef.value.scrollHeight)
-      }
+      detailBodyRef.value?.scrollTo(0, 0)
     })
   }
 })
@@ -106,9 +148,10 @@ function exportEntry() {
       <p class="detail-hint">Use up/down or j/k to navigate, / to search</p>
     </div>
 
-    <!-- Detail content -->
+    <!-- Detail content (DiagnosticSummary + StageTabs live at page level above) -->
     <template v-else-if="entry">
       <DetailToolbar
+        v-if="showToolbar"
         :has-rewrites="hasRewrites"
         :rewrite-summary="rewriteSummary"
         :rewritten-index-list="rewrittenIndexList"
@@ -119,7 +162,10 @@ function exportEntry() {
         ref="detailBodyRef"
         class="detail-body"
       >
-        <DetailRequestSection
+        <!-- Active pipeline stage (selected via the page-level StageTabs). Each
+             stage component groups its own facets (parsed blocks / SSE / HTTP). -->
+        <StageInbound
+          v-if="activeStage === 'inbound'"
           :entry="entry"
           :request-badge="requestBadge"
           :rewritten-request="rewrittenRequest"
@@ -127,78 +173,47 @@ function exportEntry() {
           :truncation-point="truncationPoint"
           :search-query="detail.detailSearch"
           :detail-filter-type="detail.detailFilterType"
-          :detail-view-mode="detail.detailViewMode"
           :has-matching-block-type="hasMatchingBlockType"
           :is-message-truncated="isMessageTruncated"
           :is-message-rewritten="isMessageRewritten"
           :get-rewritten-message="getRewrittenMessage"
         />
-
-        <DetailResponseSection
+        <StageEffective
+          v-else-if="activeStage === 'effective'"
+          :entry="entry"
+          :request-badge="requestBadge"
+          :rewritten-request="rewrittenRequest"
+          :filtered-messages="filteredMessages"
+          :truncation-point="truncationPoint"
+          :search-query="detail.detailSearch"
+          :detail-filter-type="detail.detailFilterType"
+          :has-matching-block-type="hasMatchingBlockType"
+          :is-message-truncated="isMessageTruncated"
+          :is-message-rewritten="isMessageRewritten"
+          :get-rewritten-message="getRewrittenMessage"
+          :get-split-messages="getSplitMessages"
+        />
+        <StageWire
+          v-else-if="activeStage === 'wire'"
+          :entry="entry"
+        />
+        <StageUpstream
+          v-else-if="activeStage === 'upstream'"
           :entry="entry"
           :response-message="responseMessage"
         />
-
-        <!-- SSE EVENTS Section (only for streaming requests) -->
-        <ErrorBoundary label="SSE events">
-          <SseEventsSection
-            v-if="entry.sseEvents?.length"
-            :events="entry.sseEvents"
-            title="SSE Events (upstream → proxy)"
-          />
-        </ErrorBoundary>
-
-        <!-- Forwarded SSE Events (proxy → client) — compare against upstream above -->
-        <ErrorBoundary label="Forwarded SSE events">
-          <SseEventsSection
-            v-if="entry.inboundResponse?.sseEvents?.length"
-            :events="entry.inboundResponse.sseEvents"
-            title="SSE Events (proxy → client)"
-          />
-        </ErrorBoundary>
-
-        <!-- Forwarded content (proxy → client) for non-streaming — heterogeneous
-             shape across endpoints, shown as raw JSON for an honest upstream-vs-client diff -->
-        <ErrorBoundary label="Forwarded response">
-          <SectionBlock
-            v-if="entry.inboundResponse?.content != null"
-            title="Forwarded Response (proxy → client)"
-            :default-collapsed="true"
-            :raw-data="entry.inboundResponse.content"
-            raw-title="Forwarded Response"
-          >
-            <pre class="forwarded-content-json">{{ JSON.stringify(entry.inboundResponse.content, null, 2) }}</pre>
-          </SectionBlock>
-        </ErrorBoundary>
-
-        <!-- HTTP HEADERS (unified comparison view) -->
-        <HeadersComparisonSection
-          v-if="entry.httpHeaders || (entry.outboundRequest as any)?.headers || (entry.outboundResponse as any)?.headers"
-          :inbound-request="entry.httpHeaders?.inboundRequest"
-          :outbound-request="entry.httpHeaders?.outboundRequest ?? (entry.outboundRequest as any)?.headers"
-          :outbound-response="entry.httpHeaders?.outboundResponse ?? (entry.outboundResponse as any)?.headers"
+        <StageForwarded
+          v-else-if="activeStage === 'forwarded'"
+          :entry="entry"
         />
-
-        <!-- ATTEMPTS TIMELINE (when multiple attempts) -->
-        <SectionBlock
-          v-if="entry.attempts && entry.attempts.length > 1"
-          title="Retry Timeline"
-          anchor="attempts"
-        >
-          <AttemptsTimeline :attempts="entry.attempts" />
-        </SectionBlock>
-
-        <!-- META Section -->
-        <SectionBlock
-          title="Meta"
-          anchor="meta"
-          :raw-data="entry"
-          raw-title="Entry"
-        >
-          <ErrorBoundary label="Meta info">
-            <MetaInfo :entry="entry" />
-          </ErrorBoundary>
-        </SectionBlock>
+        <StageAttempts
+          v-else-if="activeStage === 'attempts'"
+          :entry="entry"
+        />
+        <StageMeta
+          v-else-if="activeStage === 'meta'"
+          :entry="entry"
+        />
       </div>
     </template>
 
@@ -209,6 +224,15 @@ function exportEntry() {
       :data="rawModalData"
       :rewritten-data="rawModalRewrittenData"
       @update:visible="rawModalVisible = $event"
+    />
+
+    <!-- Rich diff modal (original vs effective), opened from a message's "diff". -->
+    <DiffModal
+      :visible="diffVisible"
+      :original="diffOriginal"
+      :effective="diffEffective"
+      :label="diffLabel"
+      @update:visible="diffVisible = $event"
     />
   </div>
 </template>
@@ -245,14 +269,5 @@ function exportEntry() {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding: var(--spacing-sm);
-}
-
-.forwarded-content-json {
-  margin: 0;
-  font-family: var(--font-mono, monospace);
-  font-size: var(--font-size-xs);
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-x: auto;
 }
 </style>

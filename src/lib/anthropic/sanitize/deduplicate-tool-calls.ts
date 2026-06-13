@@ -4,7 +4,7 @@ import {
   //
   hasThinkingSignatureBlocks,
   shouldPreserveThinkingBlocks,
-} from "../thinking-immutability"
+} from "../thinking-protection"
 
 /**
  * Remove duplicate tool_use/tool_result pairs, keeping only the last occurrence

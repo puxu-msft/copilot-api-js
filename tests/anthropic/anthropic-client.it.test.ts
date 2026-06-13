@@ -124,7 +124,7 @@ describe("anthropic client", () => {
   test("disables Bun's built-in fetch timeout on the upstream request", async () => {
     // Bun's native fetch enforces a 300s built-in timeout that ignores our
     // AbortSignal-based fetchTimeout; the upstream call must pass timeout:false
-    // so `fetch_timeout` is the single source of truth. See DISABLE_BUILTIN_FETCH_TIMEOUT.
+    // so `timeouts.response_header` is the single source of truth. See DISABLE_BUILTIN_FETCH_TIMEOUT.
     const fetchMock = setFetchMock(
       async () =>
         new Response(

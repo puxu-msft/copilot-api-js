@@ -1,30 +1,43 @@
 <script setup lang="ts">
-import { computed } from "vue"
-import { useRouter } from "vue-router"
+import { watchDebounced } from "@vueuse/core"
+import {
+  //
+  computed,
+  onActivated,
+  onMounted,
+  ref,
+  watch,
+} from "vue"
+import {
+  //
+  useRoute,
+  useRouter,
+} from "vue-router"
 
-import type { EntrySummary } from "@/types"
+import type {
+  //
+  ActivityFilters,
+} from "@/composables/history-store/useHistoryData"
+import type {
+  //
+  EntrySummary,
+  RequestLifecycleState,
+} from "@/types"
 
+import ActivityRow from "@/components/activity/ActivityRow.vue"
 import { useDashboardStatus } from "@/composables/useDashboardStatus"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import {
   //
-  endpointLabel,
-  inflightDetail,
-  modelName,
-  requestState,
-  statusColor,
-  statusIcon,
-  tokenIn,
-  tokenOut,
-  truncPreview,
-} from "@/utils/activity-helpers"
-import {
-  //
-  formatDuration,
-  formatTime,
-} from "@/utils/formatters"
+  LIFECYCLE_STATES,
+  statusMeta,
+} from "@/utils/status-meta"
+
+// Named for <keep-alive include="VActivityPage"> in App.vue.
+defineOptions({ name: "VActivityPage" })
 
 const router = useRouter()
+const route = useRoute()
 const store = useHistoryStore()
 const { activeRequests } = useDashboardStatus()
 
@@ -35,16 +48,70 @@ const endpointOptions = [
   { title: "Gemini Generate Content", value: "gemini-generate-content" },
 ]
 
-const statusOptions = [
-  { title: "Success", value: "true" },
-  { title: "Failed", value: "false" },
-]
+const stateOptions = LIFECYCLE_STATES.map((s) => ({ title: statusMeta(s).label, value: s }))
+
+// Local inputs for debounced text filters (search / model / pid).
+const searchInput = ref(store.filters.search)
+const modelInput = ref(store.filters.model ?? "")
+const pidInput = ref<string>(store.filters.pid !== null ? String(store.filters.pid) : "")
+
+watchDebounced(searchInput, (v) => store.setFilter("search", v), { debounce: 300 })
+watchDebounced(modelInput, (v) => store.setFilter("model", v.trim() || null), { debounce: 300 })
+watchDebounced(
+  pidInput,
+  (v) => {
+    const n = v.trim() ? Number.parseInt(v.trim(), 10) : Number.NaN
+    store.setFilter("pid", Number.isNaN(n) ? null : n)
+  },
+  { debounce: 300 },
+)
+
+// Keep local inputs in sync if filters are cleared elsewhere (chips / reset).
+watch(
+  () => store.filters.search,
+  (v) => {
+    if (v !== searchInput.value) searchInput.value = v
+  },
+)
+watch(
+  () => store.filters.model,
+  (v) => {
+    if ((v ?? "") !== modelInput.value) modelInput.value = v ?? ""
+  },
+)
+watch(
+  () => store.filters.pid,
+  (v) => {
+    const s = v !== null ? String(v) : ""
+    if (s !== pidInput.value) pidInput.value = s
+  },
+)
+
+/** Active filter chips for the "clear" summary bar. */
+const activeFilterChips = computed(() => {
+  const f = store.filters
+  const chips: Array<{ key: keyof typeof f; label: string }> = []
+  if (f.search) chips.push({ key: "search", label: `search: ${f.search}` })
+  if (f.endpoint) chips.push({ key: "endpoint", label: `endpoint: ${f.endpoint}` })
+  if (f.state) chips.push({ key: "state", label: `state: ${f.state}` })
+  if (f.model) chips.push({ key: "model", label: `model: ${f.model}` })
+  if (f.sessionId) chips.push({ key: "sessionId", label: `session: ${f.sessionId.slice(0, 12)}…` })
+  if (f.pid !== null) chips.push({ key: "pid", label: `pid: ${f.pid}` })
+  return chips
+})
+
+function clearFilter(key: keyof typeof store.filters): void {
+  store.clearFilter(key)
+}
+
+function clearAllFilters(): void {
+  store.clearFilters()
+}
 
 /**
- * 在途请求是 dashboard WebSocket 推送的全局实时状态,与历史列表的游标分页是两条
- * 独立的数据流,因此它们各自渲染为独立的列表(在途区常驻顶部,历史区分页),不再合并。
- * 此处把 ActiveRequestInfo 适配成 EntrySummary 形状以复用同一套行渲染 helper。
- * 去重已进入当前历史页的请求(完成后会延迟 3s 才从 activeRequests 移除),避免重复行。
+ * In-flight requests come from the dashboard WS (a separate realtime stream from
+ * the cursor-paginated history). Render them in their own top section using the
+ * SAME ActivityRow; dedupe ids already in the current history page.
  */
 const inflightRows = computed<Array<EntrySummary>>(() => {
   const historyIds = new Set(store.entries.map((e) => e.id))
@@ -73,16 +140,66 @@ const inflightRows = computed<Array<EntrySummary>>(() => {
 })
 
 function openDetail(id: string): void {
-  void router.push(`/activity/${id}`)
+  void router.push({ name: "activity-detail", params: { id } })
 }
 
-function onEndpointFilter(value: string | null): void {
-  store.setEndpointFilter(value)
+// ── URL ↔ filters sync (deep-link / refresh / share) ──
+// keep-alive means onMounted runs once (first visit); the Pinia store retains
+// filters across navigation, so this only hydrates on a genuine first load.
+let hydrating = true
+onMounted(() => {
+  const q = route.query
+  const patch: Partial<ActivityFilters> = {}
+  if (typeof q.search === "string") patch.search = q.search
+  if (typeof q.endpoint === "string") patch.endpoint = q.endpoint
+  if (typeof q.state === "string") patch.state = q.state as RequestLifecycleState
+  if (typeof q.model === "string") patch.model = q.model
+  if (typeof q.sessionId === "string") patch.sessionId = q.sessionId
+  if (typeof q.pid === "string") {
+    const n = Number.parseInt(q.pid, 10)
+    if (!Number.isNaN(n)) patch.pid = n
+  }
+  if (Object.keys(patch).length > 0) {
+    Object.assign(store.filters, patch)
+    searchInput.value = store.filters.search
+    modelInput.value = store.filters.model ?? ""
+    pidInput.value = store.filters.pid !== null ? String(store.filters.pid) : ""
+    void store.fetchEntries()
+  }
+  hydrating = false
+})
+
+// Reflect filters into the URL query (replace → shareable, no history spam).
+// Guarded by route name: this component stays alive (keep-alive) while the user
+// is on the DETAIL page, where a store.setFilter (e.g. session drill) would
+// otherwise fire this watch and `router.replace` would stamp the query onto the
+// detail URL (cross-talk). Only sync when Activity is the active route.
+function syncUrlFromFilters(): void {
+  if (route.name !== "activity") return
+  const f = store.filters
+  const query: Record<string, string> = {}
+  if (f.search) query.search = f.search
+  if (f.endpoint) query.endpoint = f.endpoint
+  if (f.state) query.state = f.state
+  if (f.model) query.model = f.model
+  if (f.sessionId) query.sessionId = f.sessionId
+  if (f.pid !== null) query.pid = String(f.pid)
+  void router.replace({ query })
 }
 
-function onStatusFilter(value: string | null): void {
-  store.setSuccessFilter(value)
-}
+watch(
+  () => ({ ...store.filters }),
+  () => {
+    if (hydrating) return
+    syncUrlFromFilters()
+  },
+)
+
+// On re-activation (returning from detail, incl. after a session drill that set
+// filters while cached), resync the URL so the filtered view stays shareable.
+onActivated(() => {
+  if (!hydrating) syncUrlFromFilters()
+})
 </script>
 
 <template>
@@ -97,26 +214,69 @@ function onStatusFilter(value: string | null): void {
           </div>
 
           <div class="toolbar-controls">
+            <v-text-field
+              v-model="searchInput"
+              placeholder="Search…"
+              prepend-inner-icon="mdi-magnify"
+              clearable
+              style="min-width: 200px"
+            />
+            <v-text-field
+              v-model="modelInput"
+              placeholder="Model"
+              clearable
+              style="max-width: 150px"
+            />
             <v-select
-              :model-value="store.filterEndpoint"
+              :model-value="store.filters.endpoint"
               :items="endpointOptions"
               placeholder="Endpoint"
               clearable
-              style="max-width: 220px"
-              @update:model-value="onEndpointFilter"
+              style="max-width: 200px"
+              @update:model-value="(v: string | null) => store.setFilter('endpoint', v)"
             />
             <v-select
-              :model-value="store.filterSuccess"
-              :items="statusOptions"
-              placeholder="Status"
+              :model-value="store.filters.state"
+              :items="stateOptions"
+              placeholder="State"
               clearable
               style="max-width: 140px"
-              @update:model-value="onStatusFilter"
+              @update:model-value="(v: RequestLifecycleState | null) => store.setFilter('state', v)"
+            />
+            <v-text-field
+              v-model="pidInput"
+              placeholder="pid"
+              type="number"
+              clearable
+              style="max-width: 92px"
             />
           </div>
         </div>
 
-        <!-- In-flight requests (实时全局状态,常驻顶部,不参与分页/过滤) -->
+        <!-- Active filter chips -->
+        <div
+          v-if="activeFilterChips.length > 0"
+          class="filter-chips"
+        >
+          <v-chip
+            v-for="chip in activeFilterChips"
+            :key="chip.key"
+            size="x-small"
+            closable
+            variant="tonal"
+            @click:close="clearFilter(chip.key)"
+          >
+            {{ chip.label }}
+          </v-chip>
+          <v-btn
+            variant="text"
+            size="x-small"
+            @click="clearAllFilters"
+            >Clear all</v-btn
+          >
+        </div>
+
+        <!-- In-flight requests -->
         <v-sheet
           v-if="inflightRows.length > 0"
           class="panel"
@@ -133,72 +293,30 @@ function onStatusFilter(value: string | null): void {
               <thead>
                 <tr>
                   <th class="table-head col-status"></th>
-                  <th class="table-head col-time">Time</th>
-                  <th class="table-head col-model">Model</th>
-                  <th class="table-head col-endpoint">Endpoint</th>
-                  <th class="table-head col-state">State</th>
-                  <th class="table-head text-right col-dur">Dur</th>
-                  <th class="table-head text-right col-token">In</th>
-                  <th class="table-head text-right col-token">Out</th>
-                  <th class="table-head col-preview">Detail</th>
+                  <th class="table-head">Time</th>
+                  <th class="table-head">Model</th>
+                  <th class="table-head">Endpoint</th>
+                  <th class="table-head">State</th>
+                  <th class="table-head text-right">Dur</th>
+                  <th class="table-head text-right">In</th>
+                  <th class="table-head text-right">Out</th>
+                  <th class="table-head text-right">Cache</th>
+                  <th class="table-head">Detail</th>
                 </tr>
               </thead>
               <tbody>
-                <tr
+                <ActivityRow
                   v-for="entry in inflightRows"
                   :key="entry.id"
-                  class="clickable-row active-row"
-                  @click="openDetail(entry.id)"
-                >
-                  <td class="col-status">
-                    <v-icon
-                      :icon="statusIcon(entry)"
-                      :color="statusColor(entry)"
-                      size="x-small"
-                    />
-                  </td>
-                  <td class="col-time font-mono dense-cell text-medium-emphasis">
-                    {{ formatTime(entry.startedAt) }}
-                  </td>
-                  <td class="col-model font-mono dense-cell">
-                    <span
-                      class="truncate-inline"
-                      :title="modelName(entry)"
-                    >
-                      {{ modelName(entry) }}
-                    </span>
-                  </td>
-                  <td class="col-endpoint dense-cell text-medium-emphasis">
-                    {{ endpointLabel(entry) }}
-                  </td>
-                  <td class="col-state dense-cell">
-                    <span
-                      class="status-pill"
-                      :class="`status-pill-${requestState(entry)}`"
-                    >
-                      {{ requestState(entry) }}
-                    </span>
-                  </td>
-                  <td class="font-mono dense-cell text-right col-dur">
-                    {{ formatDuration(entry.durationMs) }}
-                  </td>
-                  <td class="font-mono dense-cell text-right col-token">-</td>
-                  <td class="font-mono dense-cell text-right col-token">-</td>
-                  <td class="col-preview dense-cell">
-                    <span
-                      class="preview-text"
-                      :title="inflightDetail(entry) || undefined"
-                    >
-                      {{ inflightDetail(entry) }}
-                    </span>
-                  </td>
-                </tr>
+                  :entry="entry"
+                  @open="openDetail"
+                />
               </tbody>
             </v-table>
           </div>
         </v-sheet>
 
-        <!-- History (游标分页,受 endpoint/status 过滤) -->
+        <!-- History (cursor-paginated, filtered) -->
         <v-sheet
           class="panel"
           color="surface"
@@ -229,9 +347,16 @@ function onStatusFilter(value: string | null): void {
 
           <div
             v-else-if="store.entries.length === 0"
-            class="state-shell"
+            class="state-shell flex-column"
           >
-            <span class="text-medium-emphasis">No history entries yet</span>
+            <span class="text-medium-emphasis mb-2">No matching requests</span>
+            <v-btn
+              v-if="activeFilterChips.length > 0"
+              variant="tonal"
+              size="small"
+              @click="clearAllFilters"
+              >Clear filters</v-btn
+            >
           </div>
 
           <div
@@ -247,75 +372,29 @@ function onStatusFilter(value: string | null): void {
               <thead>
                 <tr>
                   <th class="table-head col-status"></th>
-                  <th class="table-head col-time">Time</th>
-                  <th class="table-head col-model">Model</th>
-                  <th class="table-head col-endpoint">Endpoint</th>
-                  <th class="table-head col-state">State</th>
-                  <th class="table-head text-right col-dur">Dur</th>
-                  <th class="table-head text-right col-token">In</th>
-                  <th class="table-head text-right col-token">Out</th>
-                  <th class="table-head col-preview">Preview</th>
+                  <th class="table-head">Time</th>
+                  <th class="table-head">Model</th>
+                  <th class="table-head">Endpoint</th>
+                  <th class="table-head">State</th>
+                  <th class="table-head text-right">Dur</th>
+                  <th class="table-head text-right">In</th>
+                  <th class="table-head text-right">Out</th>
+                  <th class="table-head text-right">Cache</th>
+                  <th class="table-head">Preview</th>
                 </tr>
               </thead>
               <tbody>
-                <tr
+                <ActivityRow
                   v-for="entry in store.entries"
                   :key="entry.id"
-                  class="clickable-row"
-                  @click="openDetail(entry.id)"
-                >
-                  <td class="col-status">
-                    <v-icon
-                      :icon="statusIcon(entry)"
-                      :color="statusColor(entry)"
-                      size="x-small"
-                    />
-                  </td>
-                  <td class="col-time font-mono dense-cell text-medium-emphasis">
-                    {{ formatTime(entry.startedAt) }}
-                  </td>
-                  <td class="col-model font-mono dense-cell">
-                    <span
-                      class="truncate-inline"
-                      :title="modelName(entry)"
-                    >
-                      {{ modelName(entry) }}
-                    </span>
-                  </td>
-                  <td class="col-endpoint dense-cell text-medium-emphasis">
-                    {{ endpointLabel(entry) }}
-                  </td>
-                  <td class="col-state dense-cell">
-                    <span
-                      class="status-pill"
-                      :class="`status-pill-${requestState(entry)}`"
-                    >
-                      {{ requestState(entry) }}
-                    </span>
-                  </td>
-                  <td class="font-mono dense-cell text-right col-dur">
-                    {{ formatDuration(entry.durationMs) }}
-                  </td>
-                  <td class="font-mono dense-cell text-right col-token">
-                    {{ tokenIn(entry) }}
-                  </td>
-                  <td class="font-mono dense-cell text-right col-token">
-                    {{ tokenOut(entry) }}
-                  </td>
-                  <td class="col-preview dense-cell">
-                    <span
-                      class="preview-text"
-                      :title="entry.previewText || entry.responseError || undefined"
-                    >
-                      {{ truncPreview(entry) }}
-                    </span>
-                  </td>
-                </tr>
+                  :entry="entry"
+                  :selected="entry.id === store.selectedEntry?.id"
+                  @open="openDetail"
+                />
               </tbody>
             </v-table>
           </div>
 
-          <!-- Pagination -->
           <div
             v-if="store.total > 0"
             class="pagination-bar"
@@ -329,7 +408,7 @@ function onStatusFilter(value: string | null): void {
               <v-icon icon="mdi-chevron-left" />
               Newer
             </v-btn>
-            <span class="text-caption text-medium-emphasis font-mono"> {{ store.entries.length }} of {{ store.total }} </span>
+            <span class="text-caption text-medium-emphasis font-mono">{{ store.entries.length }} of {{ store.total }}</span>
             <v-btn
               variant="text"
               size="small"
@@ -355,7 +434,7 @@ function onStatusFilter(value: string | null): void {
 
 .page-toolbar {
   display: flex;
-  align-items: center;
+  align-items: start;
   justify-content: space-between;
   gap: 16px;
 }
@@ -375,7 +454,15 @@ function onStatusFilter(value: string | null): void {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: end;
+}
+
+.filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .panel {
@@ -398,12 +485,8 @@ function onStatusFilter(value: string | null): void {
   overflow-x: auto;
 }
 
-.activity-table :deep(th),
-.activity-table :deep(td) {
-  padding-top: 6px;
-  padding-bottom: 6px;
-  padding-left: 8px;
-  padding-right: 8px;
+.activity-table :deep(th) {
+  padding: 6px 8px;
 }
 
 .table-head {
@@ -414,86 +497,8 @@ function onStatusFilter(value: string | null): void {
   white-space: nowrap;
 }
 
-.dense-cell {
-  font-size: 0.76rem;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.clickable-row {
-  cursor: pointer;
-}
-
-.active-row {
-  background: rgb(var(--v-theme-primary) / 6%);
-}
-
 .col-status {
   width: 28px;
-}
-.col-time {
-  width: 68px;
-}
-.col-model {
-  width: 200px;
-  max-width: 200px;
-}
-.col-endpoint {
-  width: 92px;
-}
-.col-state {
-  width: 80px;
-}
-.col-dur,
-.col-token {
-  width: 56px;
-}
-.col-preview {
-  max-width: 0;
-}
-
-.truncate-inline,
-.preview-text {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.preview-text {
-  color: rgb(var(--v-theme-secondary));
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 18px;
-  padding: 0 6px;
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.status-pill-completed {
-  background: rgb(var(--v-theme-success) / 14%);
-  color: rgb(var(--v-theme-success));
-}
-.status-pill-failed {
-  background: rgb(var(--v-theme-error) / 14%);
-  color: rgb(var(--v-theme-error));
-}
-.status-pill-pending {
-  background: rgb(var(--v-theme-secondary) / 14%);
-  color: rgb(var(--v-theme-secondary));
-}
-.status-pill-executing {
-  background: rgb(var(--v-theme-warning) / 14%);
-  color: rgb(var(--v-theme-warning));
-}
-.status-pill-streaming {
-  background: rgb(var(--v-theme-info) / 14%);
-  color: rgb(var(--v-theme-info));
 }
 
 .pagination-bar {
@@ -512,14 +517,18 @@ function onStatusFilter(value: string | null): void {
   justify-content: center;
 }
 
+.state-shell.flex-column {
+  flex-direction: column;
+}
+
 @media (max-width: 780px) {
   .page-toolbar {
     flex-direction: column;
-    align-items: start;
+    align-items: stretch;
   }
 
   .toolbar-controls {
-    flex-wrap: wrap;
+    justify-content: start;
   }
 }
 </style>

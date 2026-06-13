@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onKeyStroke } from "@vueuse/core"
 import {
   //
   computed,
@@ -12,8 +13,12 @@ import {
 } from "vue-router"
 
 import DetailPanel from "@/components/detail/DetailPanel.vue"
+import DiagnosticSummary from "@/components/detail/DiagnosticSummary.vue"
+import StageTabs from "@/components/detail/StageTabs.vue"
 import TocTree from "@/components/detail/TocTree.vue"
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import { useDetailStages } from "@/composables/useDetailStages"
+import { useDetailViewState } from "@/composables/useDetailViewState"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { useTocTree } from "@/composables/useTocTree"
 import { downloadEntryAsJson } from "@/utils/export-entry"
@@ -54,8 +59,21 @@ const subtitle = computed(() => {
   return parts.join(" · ") || entryId.value
 })
 
-// ─── TOC tree ───
+// ─── TOC tree (scoped to the active pipeline stage) ───
 const { tocTree, activeId, expandedNodes, scrollTo, toggleNode } = useTocTree(entry)
+const detail = useDetailViewState()
+const activeStage = computed({
+  get: () => detail.activeStage,
+  set: (v: string) => {
+    detail.activeStage = v
+  },
+})
+const { activeTocIds, stages } = useDetailStages(entry, activeStage, { manageActiveStage: true })
+// Show only the active stage's outline nodes, in the stage's declared order
+// (headers-before-messages), not the global tree's push order.
+const stageTocTree = computed(() =>
+  activeTocIds.value.map((id) => tocTree.value.find((n) => n.id === id)).filter((n): n is NonNullable<typeof n> => n !== undefined),
+)
 
 /** Load entry when route param changes */
 watch(
@@ -87,6 +105,79 @@ function goBack(): void {
 function exportEntry(): void {
   if (entry.value) downloadEntryAsJson(entry.value)
 }
+
+/**
+ * Drill into this request's session sequence. Sets the sessionId filter on the
+ * (singleton) store then navigates to Activity — the keep-alive'd list reacts to
+ * the store filter change (no URL-hydration-on-nav needed), and the filters→URL
+ * watch makes the result shareable.
+ */
+function viewSession(): void {
+  const sid = entry.value?.sessionId
+  if (!sid) return
+  store.setFilter("sessionId", sid)
+  void router.push("/activity")
+}
+
+// ── prev/next navigation within the loaded list (crosses page boundaries) ──
+const entryIndex = computed(() => store.entries.findIndex((e) => e.id === entryId.value))
+const positionLabel = computed(() => {
+  const i = entryIndex.value
+  return i >= 0 ? `${i + 1}/${store.total}` : ""
+})
+const canPrev = computed(() => entryIndex.value > 0 || (entryIndex.value === 0 && Boolean(store.prevCursor)))
+const canNext = computed(
+  () => (entryIndex.value >= 0 && entryIndex.value < store.entries.length - 1) || (entryIndex.value === store.entries.length - 1 && Boolean(store.nextCursor)),
+)
+
+// prev/next REPLACE the current history entry (not push): browsing siblings
+// with j/k shouldn't bloat the back-stack — one Back from any sibling returns to
+// the Activity list. Object location form lets the router encode the id param.
+function goToEntry(id: string): void {
+  void router.replace({ name: "activity-detail", params: { id } })
+}
+
+async function goAdjacent(dir: "next" | "prev"): Promise<void> {
+  const i = entryIndex.value
+  if (i === -1) return
+  if (dir === "next") {
+    if (i < store.entries.length - 1) {
+      goToEntry(store.entries[i + 1].id)
+      return
+    }
+    if (store.nextCursor) {
+      await store.fetchEntries(store.nextCursor, "older")
+      if (store.entries[0]) goToEntry(store.entries[0].id)
+    }
+  } else {
+    if (i > 0) {
+      goToEntry(store.entries[i - 1].id)
+      return
+    }
+    if (store.prevCursor) {
+      await store.fetchEntries(store.prevCursor, "newer")
+      const last = store.entries.at(-1)
+      if (last) goToEntry(last.id)
+    }
+  }
+}
+
+/** Ignore keyboard shortcuts while typing in an input/textarea. */
+function isTyping(): boolean {
+  const el = document.activeElement
+  if (!el) return false
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || (el as HTMLElement).isContentEditable
+}
+
+onKeyStroke("j", () => {
+  if (!isTyping()) void goAdjacent("next")
+})
+onKeyStroke("k", () => {
+  if (!isTyping()) void goAdjacent("prev")
+})
+onKeyStroke("Escape", () => {
+  if (!isTyping()) goBack()
+})
 </script>
 
 <template>
@@ -111,6 +202,30 @@ function exportEntry(): void {
 
       <v-spacer />
 
+      <div class="detail-nav">
+        <v-btn
+          variant="text"
+          size="small"
+          icon="mdi-chevron-up"
+          :disabled="!canPrev"
+          title="Newer (k)"
+          @click="goAdjacent('prev')"
+        />
+        <span
+          v-if="positionLabel"
+          class="detail-position font-mono text-caption text-medium-emphasis"
+          >{{ positionLabel }}</span
+        >
+        <v-btn
+          variant="text"
+          size="small"
+          icon="mdi-chevron-down"
+          :disabled="!canNext"
+          title="Older (j)"
+          @click="goAdjacent('next')"
+        />
+      </div>
+
       <v-btn
         v-if="entry"
         variant="outlined"
@@ -119,6 +234,16 @@ function exportEntry(): void {
         @click="exportEntry"
       >
         Export
+      </v-btn>
+      <v-btn
+        v-if="entry?.sessionId"
+        variant="text"
+        size="small"
+        prepend-icon="mdi-link-variant"
+        title="Filter Activity to this session"
+        @click="viewSession"
+      >
+        Session
       </v-btn>
     </div>
 
@@ -155,27 +280,36 @@ function exportEntry(): void {
       </v-btn>
     </div>
 
+    <!-- Loaded: page-level diagnostic band + stage filter, then outline | content -->
     <div
       v-else
-      class="detail-layout"
+      class="detail-loaded"
     >
-      <!-- TOC Sidebar -->
-      <nav class="toc-sidebar">
-        <div class="toc-title text-caption text-medium-emphasis text-uppercase">Outline</div>
-        <TocTree
-          :nodes="tocTree"
-          :active-id="activeId"
-          :expanded-nodes="expandedNodes"
-          @navigate="scrollTo"
-          @toggle="toggleNode"
-        />
-      </nav>
+      <DiagnosticSummary :entry="entry" />
+      <StageTabs
+        v-model:active="activeStage"
+        :stages="stages"
+      />
 
-      <!-- Detail content -->
-      <div class="detail-body">
-        <ErrorBoundary label="Request detail">
-          <DetailPanel />
-        </ErrorBoundary>
+      <div class="detail-layout">
+        <!-- TOC Sidebar (scoped to the active stage) -->
+        <nav class="toc-sidebar">
+          <div class="toc-title text-caption text-medium-emphasis text-uppercase">Outline</div>
+          <TocTree
+            :nodes="stageTocTree"
+            :active-id="activeId"
+            :expanded-nodes="expandedNodes"
+            @navigate="scrollTo"
+            @toggle="toggleNode"
+          />
+        </nav>
+
+        <!-- Detail content (active stage) -->
+        <div class="detail-body">
+          <ErrorBoundary label="Request detail">
+            <DetailPanel />
+          </ErrorBoundary>
+        </div>
       </div>
     </div>
   </div>
@@ -203,6 +337,17 @@ function exportEntry(): void {
   min-width: 0;
 }
 
+.detail-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.detail-position {
+  min-width: 48px;
+  text-align: center;
+}
+
 .detail-title {
   font-size: 1rem;
   font-weight: 700;
@@ -215,6 +360,14 @@ function exportEntry(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.detail-loaded {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 12px 16px 0;
 }
 
 .detail-layout {

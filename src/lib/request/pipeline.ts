@@ -17,6 +17,7 @@ import type {
 import type { Model } from "~/lib/models/client"
 
 import { classifyError } from "~/lib/error"
+import { tuiLogger } from "~/lib/tui"
 
 // --- FormatAdapter ---
 
@@ -336,6 +337,20 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
       } else {
         if (normalRetries >= maxRetries) break
         normalRetries++
+      }
+
+      // Surface the failed attempt in the TUI as a [RETRY-n] line. Runs AFTER
+      // the budget gate so retries about to be discarded don't produce noise.
+      // Web-search internal hops naturally skip — they pass `requestContext: undefined`.
+      if (requestContext?.tuiLogId) {
+        tuiLogger.logRetry(requestContext.tuiLogId, {
+          attempt: execIndex + 1, // 1-based: "the Nth attempt just failed"
+          strategyName: strategy.name,
+          statusCode: apiError.status,
+          error: apiError.message,
+          waitMs: action.waitMs,
+          learning: action.learning === true,
+        })
       }
 
       consola.debug(`[Pipeline] Strategy "${strategy.name}" requests ${action.learning ? "learning " : ""}retry (exec ${execIndex + 1})`)

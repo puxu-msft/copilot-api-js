@@ -6,7 +6,7 @@ import {
 } from "vue"
 
 import ModelsFilterBar from "@/components/models/ModelsFilterBar.vue"
-import ModelsGrid from "@/components/models/ModelsGrid.vue"
+import ModelsTable from "@/components/models/ModelsTable.vue"
 import ModelsToolbar from "@/components/models/ModelsToolbar.vue"
 import JsonViewerSurface from "@/components/ui/JsonViewerSurface.vue"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
@@ -15,16 +15,13 @@ import { useModelsCatalog } from "@/composables/useModelsCatalog"
 const {
   billingBounds,
   billingRange,
+  caps,
   endpointFilter,
   endpointOptions,
-  featureFilter,
+  featureFilters,
   featureOptions,
   filteredModels,
-  getCapabilities,
-  getLimits,
-  getPrimaryLimits,
-  getThinkingBudget,
-  getVision,
+  fmtNum,
   loading,
   error: modelsError,
   rawApiResponse,
@@ -44,7 +41,7 @@ const activeFilterCount = computed(() => {
   if (searchQuery.value.trim()) count += 1
   if (vendorFilter.value) count += 1
   if (endpointFilter.value) count += 1
-  if (featureFilter.value) count += 1
+  if (featureFilters.value.length > 0) count += 1
   if (typeFilter.value) count += 1
   if (billingRange.value[0] > billingBounds.value.min || billingRange.value[1] < billingBounds.value.max) count += 1
   return count
@@ -76,7 +73,7 @@ function copyModelsJson(): void {
             v-model:search-query="searchQuery"
             v-model:vendor-filter="vendorFilter"
             v-model:endpoint-filter="endpointFilter"
-            v-model:feature-filter="featureFilter"
+            v-model:feature-filters="featureFilters"
             v-model:type-filter="typeFilter"
             v-model:billing-range="billingRange"
             :vendor-options="vendorOptions"
@@ -122,15 +119,12 @@ function copyModelsJson(): void {
             </div>
           </div>
 
-          <ModelsGrid
+          <ModelsTable
             v-else
-            :filtered-models="filteredModels"
+            :models="filteredModels"
+            :caps="caps"
             :vendor-color="vendorColor"
-            :get-limits="getLimits"
-            :get-primary-limits="getPrimaryLimits"
-            :get-thinking-budget="getThinkingBudget"
-            :get-capabilities="getCapabilities"
-            :get-vision="getVision"
+            :fmt-num="fmtNum"
           />
         </section>
       </section>

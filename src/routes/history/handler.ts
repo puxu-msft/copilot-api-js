@@ -29,10 +29,12 @@ export function handleGetEntries(c: Context) {
     model: query.model || undefined,
     endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,
+    state: (query.state as QueryOptions["state"]) || undefined,
     from: query.from ? Number.parseInt(query.from, 10) : undefined,
     to: query.to ? Number.parseInt(query.to, 10) : undefined,
     search: query.search || undefined,
     sessionId: query.sessionId || undefined,
+    pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
   }
 
   const result = getHistorySummaries(options)

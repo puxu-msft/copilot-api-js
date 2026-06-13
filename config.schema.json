@@ -15,6 +15,16 @@
         }
       ]
     },
+    "ghc_api_base_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "system_prompt_overrides": {
       "anyOf": [
         {
@@ -101,7 +111,7 @@
                 }
               ]
             },
-            "recovery_timeout": {
+            "recovery_interval": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -148,15 +158,123 @@
                 }
               ]
             },
+            "inject_claude_code_tools": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "thinking_block_message_policy": {
               "anyOf": [
                 {
                   "type": "string",
                   "enum": [
-                    "stripped",
-                    "immutable",
-                    "fixed-index"
+                    "preserve",
+                    "stripped"
                   ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "thinking_block_sanitize": {
+              "anyOf": [
+                {
+                  "type": "boolean",
+                  "const": false
+                },
+                {
+                  "type": "string",
+                  "const": "empty_thinking"
+                },
+                {
+                  "type": "string",
+                  "const": "empty_any"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "coerce_adaptive_thinking": {
+              "anyOf": [
+                {
+                  "type": "boolean",
+                  "const": false
+                },
+                {
+                  "type": "string",
+                  "const": "basic"
+                },
+                {
+                  "type": "string",
+                  "const": "best_effort"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "system_messages_sanitize": {
+              "anyOf": [
+                {
+                  "type": "boolean",
+                  "const": false
+                },
+                {
+                  "type": "string",
+                  "const": "drop_invalid"
+                },
+                {
+                  "type": "string",
+                  "const": "merge"
+                },
+                {
+                  "type": "string",
+                  "const": "as_user"
+                },
+                {
+                  "type": "string",
+                  "const": "as_assistant"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "thinking_signature_compat": {
+              "anyOf": [
+                {
+                  "type": "boolean",
+                  "const": false
+                },
+                {
+                  "type": "string",
+                  "const": "signature_delta"
+                },
+                {
+                  "type": "string",
+                  "const": "redacted_thinking"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "rewrite_history_server_tools": {
+              "anyOf": [
+                {
+                  "type": "boolean",
+                  "const": false
+                },
+                {
+                  "type": "string",
+                  "const": "downgrade"
                 },
                 {
                   "type": "null"
@@ -349,7 +467,7 @@
                 }
               ]
             },
-            "efforts_overrides": {
+            "effort_overrides": {
               "type": "object",
               "propertyNames": {
                 "type": "string"
@@ -384,6 +502,40 @@
                   "type": "string"
                 }
               }
+            },
+            "decode_tool_input_fields": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "decode_all_tool_input_fields": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fake_sse_heartbeat": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "additionalProperties": false
@@ -393,7 +545,7 @@
         }
       ]
     },
-    "openai-responses": {
+    "openai_responses": {
       "anyOf": [
         {
           "type": "object",
@@ -408,7 +560,7 @@
                 }
               ]
             },
-            "upstream_websocket": {
+            "upstream_ws": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -428,7 +580,7 @@
                 }
               ]
             },
-            "client_websocket_keep_open": {
+            "client_ws_keep_open": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -498,64 +650,6 @@
         }
       ]
     },
-    "model_preference": {
-      "anyOf": [
-        {
-          "type": "object",
-          "properties": {
-            "opus": {
-              "anyOf": [
-                {
-                  "minItems": 1,
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "sonnet": {
-              "anyOf": [
-                {
-                  "minItems": 1,
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "haiku": {
-              "anyOf": [
-                {
-                  "minItems": 1,
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
     "disabled_models": {
       "anyOf": [
         {
@@ -570,7 +664,76 @@
         }
       ]
     },
-    "compress_tool_results_before_truncate": {
+    "auto_truncate": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "target_factor": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_retries": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "compress_tool_results": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "compress_threshold": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sanitize_tool_names": {
       "anyOf": [
         {
           "type": "boolean"
@@ -597,6 +760,30 @@
                 }
               ]
             },
+            "success_limit": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "failure_limit": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "reaper_interval": {
               "anyOf": [
                 {
@@ -610,6 +797,39 @@
               ]
             },
             "db_path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "web_search": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "backend": {
               "anyOf": [
                 {
                   "type": "string"
@@ -664,36 +884,61 @@
         }
       ]
     },
-    "stream_idle_timeout": {
+    "timeouts": {
       "anyOf": [
         {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "fetch_timeout": {
-      "anyOf": [
-        {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "stale_request_max_age": {
-      "anyOf": [
-        {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
+          "type": "object",
+          "properties": {
+            "stream_idle": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "response_header": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "upstream_keepalive": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stale_request_max_age": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
         },
         {
           "type": "null"

@@ -167,3 +167,60 @@ export function logToolDiagnostics(model: string, diagnostics: ToolDiagnostics |
   }
   consola.warn(`[upstream-diagnostics] HTTP 400 for ${model}: ${parts.join(" | ")}`)
 }
+
+// ============================================================================
+// Stream disconnect diagnostics
+// ============================================================================
+
+/**
+ * Operator-facing detail for an upstream stream disconnect/error.
+ *
+ * Pure formatting input: the caller (which owns the live stream state) supplies
+ * the already-classified `kindLabel` and `detail` so this module stays free of
+ * error/stream-classification dependencies (avoids an import cycle with
+ * `~/lib/error`, which already imports this module).
+ */
+export interface UpstreamStreamDisconnectInfo {
+  /** Resolved/effective model id. */
+  model: string
+  /** Classified failure kind: `transport-close` | `idle-timeout` | `shutdown`. */
+  kindLabel: string
+  /** Human-readable error detail (e.g. `terminated (cause: other side closed)`). */
+  detail: string
+  /** Total stream wall-time (ms) before the failure. */
+  elapsedMs: number
+  /** Upstream frames received before the failure. */
+  frames: number
+  /** Upstream bytes received before the failure. */
+  bytes: number
+  /** Last upstream frame type (e.g. `content_block_start`), or undefined if none arrived. */
+  lastFrameType?: string
+  /** Offset (ms) of the last upstream frame. */
+  lastFrameOffsetMs: number
+  /** Content block we were mid-stream in (e.g. `thinking`), or "" if none. */
+  stuckBlockType: string
+  /** Input tokens reported by the upstream at the moment of failure. */
+  inputTokens: number
+  /** Output tokens accumulated at the moment of failure. */
+  outputTokens: number
+}
+
+/**
+ * Emit a single detailed log line for an upstream stream disconnect.
+ *
+ * The bare error (`terminated (cause: other side closed)`) says nothing about
+ * WHY. This surfaces the signals already held so a drop is diagnosable from the
+ * log alone — without pulling the history entry. The key field is `silence`
+ * (gap between the last upstream frame and the disconnect): a large silence
+ * after a `content_block_start` frame is the signature of "died during a silent
+ * thinking stall" (e.g. last-frame=content_block_start@201ms, silence≈31s).
+ */
+export function logUpstreamStreamDisconnect(info: UpstreamStreamDisconnectInfo): void {
+  const silence = info.elapsedMs - info.lastFrameOffsetMs
+  consola.error(
+    `[upstream-diagnostics] STREAM DISCONNECT model=${info.model} kind=${info.kindLabel}: ${info.detail}`
+      + ` | elapsed=${info.elapsedMs}ms frames=${info.frames} bytes=${info.bytes}`
+      + ` | last-frame=${info.lastFrameType ?? "none"}@${info.lastFrameOffsetMs}ms silence=${silence}ms`
+      + ` | stuck-block=${info.stuckBlockType || "none"} tokens(in/out)=${info.inputTokens}/${info.outputTokens}`,
+  )
+}

@@ -6,8 +6,6 @@ import type {
 
 import { isServerToolResultBlock } from "~/types/api/anthropic"
 
-import { isImmutableThinkingMessage } from "../thinking-immutability"
-
 /**
  * Parse a potentially stringified JSON input into a proper object.
  * Handles double-serialized strings (e.g., "\"{ ... }\"") by parsing iteratively.
@@ -86,11 +84,6 @@ export function processToolBlocks(
     }
 
     if (msg.role === "assistant") {
-      if (isImmutableThinkingMessage(msg)) {
-        result.push(msg)
-        continue
-      }
-
       const newContent: Array<ContentBlockParam> = []
       let modified = false
 

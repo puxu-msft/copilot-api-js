@@ -23,7 +23,14 @@ onUnmounted(() => store.destroy())
   <v-app>
     <NavBar />
     <v-main>
-      <router-view />
+      <!-- keep-alive the Activity LIST so returning from a detail page preserves
+           its scroll position + filter inputs without a re-render/re-fetch.
+           The detail page (/activity/:id) is intentionally NOT cached. -->
+      <router-view v-slot="{ Component }">
+        <keep-alive include="VActivityPage">
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
     </v-main>
   </v-app>
 

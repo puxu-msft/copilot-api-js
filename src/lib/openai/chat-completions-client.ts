@@ -35,6 +35,16 @@ interface CreateChatCompletionsOptions {
   resolvedModel?: Model
   headersCapture?: HeadersCapture
   onPrepared?: (request: PreparedOpenAIRequest<ChatCompletionsPayload>) => void
+  /**
+   * Aborts the upstream fetch when the downstream client disconnects. The
+   * route bridges this from `c.req.raw.signal` (and, on the streaming branch,
+   * also from `streamSSE`'s `onAbort`). Folded into the upstream fetch signal
+   * so a client cancel terminates BOTH stream and non-stream paths — without
+   * it, an abandoned non-streaming request runs to the configured
+   * `timeouts.response_header` (default 300s) while accumulating response
+   * buffer the client will never read.
+   */
+  clientAbortSignal?: AbortSignal
 }
 
 export { prepareChatCompletionsRequest, type PreparedOpenAIRequest } from "./request-preparation"
@@ -56,7 +66,11 @@ export const createChatCompletions = async (
   // non-streaming requests, also fold in the shutdown signal so a Phase 3 abort
   // interrupts the (long) header-wait; streaming omits it (the stream guard in
   // the handler owns shutdown for the streamed body).
-  const fetchSignal = combineAbortSignals(createFetchSignal(), wire.stream ? undefined : getShutdownSignal())
+  // `clientAbortSignal` (when supplied) is always folded in: a client
+  // disconnect should terminate the upstream call on both stream and
+  // non-stream paths — without it, an abandoned non-stream request would run
+  // to `timeouts.response_header` while the response body is no longer wanted.
+  const fetchSignal = combineAbortSignals(createFetchSignal(), wire.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
 
   const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
     method: "POST",

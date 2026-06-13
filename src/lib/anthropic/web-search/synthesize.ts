@@ -37,6 +37,12 @@ export interface BuildWebSearchResponseArgs {
   results: Array<SearchResult>
   /** Final assistant text (from the second model hop). */
   text: string
+  /**
+   * Signed thinking / redacted_thinking blocks emitted by the second hop, echoed
+   * verbatim into the synthesized response. Empty/undefined when the second hop
+   * did not think. See `collectThinkingBlocks` in `orchestrator.ts`.
+   */
+  thinking?: Array<Record<string, unknown>>
   /** Model id to attribute the response to (the main model). */
   model: string
   /** Merged usage. */
@@ -72,13 +78,18 @@ function buildSearchResultContent(results: Array<SearchResult>): Array<WebSearch
  * text (defensive — a well-formed second hop always answers).
  */
 export function buildWebSearchResponse(args: BuildWebSearchResponseArgs): AnthropicMessageResponse {
-  const { query, results, text, model, usage } = args
+  const { query, results, text, thinking, model, usage } = args
   const toolUseId = `srvtoolu_${randomUUID().replaceAll("-", "")}`
 
+  // Order: server_tool_use → web_search_tool_result → ...thinking → text. Thinking
+  // blocks live AFTER the result and BEFORE the final text so they document the
+  // reasoning over the search results that produced the text — matching the natural
+  // ordering of a real Anthropic web_search turn.
   const content: Array<Record<string, unknown>> = [
     { type: "server_tool_use", id: toolUseId, name: "web_search", input: { query } },
     { type: "web_search_tool_result", tool_use_id: toolUseId, content: buildSearchResultContent(results) },
   ]
+  if (thinking && thinking.length > 0) content.push(...thinking)
   if (text) content.push({ type: "text", text })
 
   const response = {

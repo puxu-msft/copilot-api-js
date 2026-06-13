@@ -14,7 +14,12 @@ import {
 } from "./lib/adaptive-rate-limiter"
 import { loadPersistedFeatureNegotiation } from "./lib/anthropic/feature-negotiation"
 import { loadPersistedLimits } from "./lib/auto-truncate"
-import { applyConfigToState } from "./lib/config/config"
+import {
+  //
+  applyConfigToState,
+  ConfigParseError,
+  loadRawConfigFile,
+} from "./lib/config/config"
 import {
   //
   PATHS,
@@ -251,6 +256,25 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await ensurePaths()
   consola.info(`Data directory: ${PATHS.APP_DIR}`)
 
+  // Boot-time strict parse of the user's config.yaml. A malformed file (duplicate
+  // keys, YAML spec violations) is silently lossy with the default permissive
+  // parser — `parse()` keeps the last value on a duplicate key, so the operator's
+  // intent is corrupted invisibly. Boot aborts here so the user fixes the file
+  // before serving any traffic. Hot reload (per-request applyConfigToState) only
+  // warns and falls back to bundled defaults, so a mid-flight edit can't take the
+  // server down. ENOENT (no user config) is fine — bundled defaults stand.
+  try {
+    await loadRawConfigFile()
+  } catch (err: unknown) {
+    if (err instanceof ConfigParseError) {
+      consola.error(`Refusing to start: user config.yaml is malformed (${PATHS.CONFIG_YAML}).`)
+      consola.error(err.message)
+      consola.error("Fix the YAML and restart. (Hot reload tolerates this; boot does not.)")
+      process.exit(1)
+    }
+    throw err
+  }
+
   const config = await applyConfigToState()
 
   // GHC API base URL — CLI > config.yaml. Not hot-reloadable: changing
@@ -281,7 +305,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const rlConfig = config.rate_limiter
   const rlRetryInterval = rlConfig?.retry_interval ?? 10
   const rlRequestInterval = rlConfig?.request_interval ?? 10
-  const rlRecoveryTimeout = rlConfig?.recovery_timeout ?? 10
+  const rlRecoveryInterval = rlConfig?.recovery_interval ?? 600
   const rlConsecutiveSuccesses = rlConfig?.consecutive_successes ?? 5
 
   // ===========================================================================
@@ -291,7 +315,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     initAdaptiveRateLimiter({
       baseRetryIntervalSeconds: rlRetryInterval,
       requestIntervalSeconds: rlRequestInterval,
-      recoveryTimeoutMinutes: rlRecoveryTimeout,
+      recoveryTimeoutSeconds: rlRecoveryInterval,
       consecutiveSuccessesForRecovery: rlConsecutiveSuccesses,
     })
   }

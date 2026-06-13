@@ -19,7 +19,7 @@
  *
  * Strictness: top-level and section objects use `.strict()` so any
  * unknown key triggers a validation issue. Free-form `Record<string, T>`
- * fields (model_overrides, efforts_overrides, …) are NOT strict —
+ * fields (model_overrides, effort_overrides, …) are NOT strict —
  * their keys are user-defined.
  */
 
@@ -137,7 +137,8 @@ export const RateLimiterConfigSchema = z
   .object({
     retry_interval: nullableNonnegativeInt(),
     request_interval: nullableNonnegativeInt(),
-    recovery_timeout: nullableNonnegativeInt(),
+    /** Seconds before attempting recovery from rate-limited mode (legacy `recovery_timeout` was minutes; compat layer migrates ×60). */
+    recovery_interval: nullableNonnegativeInt(),
     consecutive_successes: nullableNonnegativeInt(),
   })
   .strict()
@@ -152,7 +153,7 @@ export const AnthropicConfigSchema = z
      * prompt budget and avoid biasing the model toward tool calls.
      */
     inject_claude_code_tools: nullableBoolean(),
-    thinking_block_message_policy: nullableEnum(["stripped", "immutable", "fixed-index"] as const),
+    thinking_block_message_policy: nullableEnum(["preserve", "stripped"] as const),
     /**
      * Drop corrupt thinking blocks before sending upstream. Validity is decided
      * by the SIGNATURE, not the thinking text — a legitimate *encrypted* thinking
@@ -163,7 +164,7 @@ export const AnthropicConfigSchema = z
      * thinking". `"empty_any"` removes any thinking block with an empty signature,
      * regardless of text. `false` disables the pass.
      */
-    thinking_block_sanitize_check: z
+    thinking_block_sanitize: z
       .union([z.literal(false), z.literal("empty_thinking"), z.literal("empty_any"), z.null()], {
         error: "Must be one of: false, empty_thinking, empty_any",
       })
@@ -185,6 +186,25 @@ export const AnthropicConfigSchema = z
       .optional()
       .transform((v) => v ?? undefined),
     /**
+     * Handle `role:"system"` messages mixed into the `messages` array — illegal for
+     * the Anthropic Messages API (system must be the top-level `system` param),
+     * which rejects them with `Unexpected role "system"`. Such inline system
+     * messages come from OpenAI-habit clients or Claude Code's mid-conversation
+     * context injections (hook output / rules / reminders).
+     *   drop_invalid:  remove every inline system message
+     *   merge:         pull their text out, append to the top-level `system`, drop the messages
+     *   as_user:       rewrite role to "user" (keeps position — recommended)
+     *   as_assistant:  rewrite role to "assistant" (experimental, not recommended —
+     *                  disguises context as model output, highest risk)
+     *   false:         passthrough unchanged (default — will 400 upstream if present)
+     */
+    system_messages_sanitize: z
+      .union([z.literal(false), z.literal("drop_invalid"), z.literal("merge"), z.literal("as_user"), z.literal("as_assistant"), z.null()], {
+        error: "Must be one of: false, drop_invalid, merge, as_user, as_assistant",
+      })
+      .optional()
+      .transform((v) => v ?? undefined),
+    /**
      * Client compatibility shim for the streaming thinking frame some Copilot
      * upstreams emit — `content_block_start {type:"thinking", thinking:"",
      * signature:S}` with NO trailing `signature_delta`. The upstream is the
@@ -201,6 +221,22 @@ export const AnthropicConfigSchema = z
     thinking_signature_compat: z
       .union([z.literal(false), z.literal("signature_delta"), z.literal("redacted_thinking"), z.null()], {
         error: "Must be one of: false, signature_delta, redacted_thinking",
+      })
+      .optional()
+      .transform((v) => v ?? undefined),
+    /**
+     * Rewrite native server-tool blocks left in inbound message history before
+     * sending upstream. The web_search double-hop surfaces a synthesized
+     * `server_tool_use{web_search}` + `web_search_tool_result` pair to the client
+     * (so results are visible); the client echoes it back, but the downgraded
+     * `tools` array no longer declares `web_search` as a server tool → upstream 400.
+     *   "downgrade": rewrite the pair into plain tool_use + tool_result, splitting
+     *                the assistant turn so the tool_result lands in a user message.
+     *   false:       passthrough (default).
+     */
+    rewrite_history_server_tools: z
+      .union([z.literal(false), z.literal("downgrade"), z.null()], {
+        error: "Must be one of: false, downgrade",
       })
       .optional()
       .transform((v) => v ?? undefined),
@@ -225,7 +261,7 @@ export const AnthropicConfigSchema = z
     api_key: nullableString(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
     // Free-form Records — key = model-name pattern, value = list
-    efforts_overrides: z.record(z.string(), z.array(z.string())).optional(),
+    effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     strip_beta_headers: z.record(z.string(), z.array(z.string())).optional(),
     reject_body_fields: z.record(z.string(), z.array(z.string())).optional(),
     // Tool-name-keyed (NOT model-keyed): keys are matched verbatim against the
@@ -233,6 +269,20 @@ export const AnthropicConfigSchema = z
     // fold case/separators and break lookups. Replace semantic (default).
     decode_tool_input_fields: z.record(z.string(), z.array(z.string())).optional(),
     decode_all_tool_input_fields: nullableBoolean(),
+    /**
+     * Synthetic SSE keepalive interval for the client-facing Anthropic stream.
+     * `0` disables (default). Any positive integer is the minimum seconds
+     * between forwarded events that must pass before the proxy injects an
+     * Anthropic-protocol `event: ping` frame to prevent the client from
+     * timing out while upstream stalls (e.g. opus-4.8 adaptive thinking that
+     * goes silent after `content_block_start`). Heartbeats are
+     * PROXY-originated and do NOT reset the upstream idle-timeout (so a
+     * genuinely dead upstream still fails). Recorded in `forwardedSseEvents`
+     * (visible diagnostic), never in the raw upstream `sseEvents`. The
+     * interval is captured at stream start — in-flight streams keep their
+     * original value across hot-reload; new streams pick up the new value.
+     */
+    fake_sse_heartbeat: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -246,9 +296,9 @@ export const ShutdownConfigSchema = z
 export const ResponsesConfigSchema = z
   .object({
     normalize_call_ids: nullableBoolean(),
-    upstream_websocket: nullableBoolean(),
+    upstream_ws: nullableBoolean(),
     fix_stream_ids: nullableBoolean(),
-    client_websocket_keep_open: nullableBoolean(),
+    client_ws_keep_open: nullableBoolean(),
     /** Hard cap on inbound WS frame bytes (default 1 MiB; 0 = unlimited). */
     max_ws_frame_bytes: nullableNonnegativeInt(),
     /** Max concurrent client WS connections (default 256; 0 = unlimited). */
@@ -293,8 +343,23 @@ export const AutoTruncateConfigSchema = z
     target_factor: nullableUnitFloat(),
     /** Max reactive auto-truncate retries per request. 0 = a single attempt, no retry. Default 5. */
     max_retries: nullableNonnegativeInt(),
+    /** Compress old tool_result content before truncating messages. Default true. (Was top-level `compress_tool_results_before_truncate`.) */
+    compress_tool_results: nullableBoolean(),
     /** Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress everything. Default 10000. */
     compress_threshold: nullableNonnegativeInt(),
+  })
+  .strict()
+
+export const TimeoutsConfigSchema = z
+  .object({
+    /** Max seconds between SSE events (0 = no timeout). Was top-level `stream_idle_timeout`. */
+    stream_idle: nullableNonnegativeInt(),
+    /** Max seconds from request start to receiving HTTP response headers (0 = no timeout). Was top-level `fetch_timeout`. */
+    response_header: nullableNonnegativeInt(),
+    /** Upstream TCP keepalive initial-probe delay in seconds (0 = use undici default 60s). Keeps GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it. Node-only. */
+    upstream_keepalive: nullableNonnegativeInt(),
+    /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled). Was top-level `stale_request_max_age`. */
+    stale_request_max_age: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -407,7 +472,7 @@ export const ConfigSchema = z
     system_prompt_append: nullableString(),
     rate_limiter: nullableSection(RateLimiterConfigSchema),
     anthropic: nullableSection(AnthropicConfigSchema),
-    "openai-responses": nullableSection(ResponsesConfigSchema),
+    openai_responses: nullableSection(ResponsesConfigSchema),
     model_overrides: ModelOverridesSchema.nullable()
       .transform((v): z.infer<typeof ModelOverridesSchema> | undefined => v ?? undefined)
       .optional(),
@@ -422,7 +487,6 @@ export const ConfigSchema = z
      * the truncation behavior (config-only).
      */
     auto_truncate: nullableSection(AutoTruncateConfigSchema),
-    compress_tool_results_before_truncate: nullableBoolean(),
     /**
      * Sanitize tool names that violate the target model's constraints (illegal
      * characters like dots, over-length, collisions) into legal names before
@@ -434,66 +498,15 @@ export const ConfigSchema = z
     history: nullableSection(HistoryConfigSchema),
     web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
-    stream_idle_timeout: nullableNonnegativeInt(),
-    fetch_timeout: nullableNonnegativeInt(),
-    stale_request_max_age: nullableNonnegativeInt(),
+    timeouts: nullableSection(TimeoutsConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
   })
   .strict()
 
 // ============================================================================
-// Deprecated keys — preserved for back-compat detection only.
-//
-// These are NOT part of `ConfigSchema` (so `.strict()` would normally flag
-// them as unknown). `validateConfig()` removes them from the raw payload
-// before strict parsing and emits the dedicated migration warning instead
-// of the generic "unknown key" message.
+// Legacy key migrations (renames / relocations / removals) live in ./compat.ts
+// (see CONFIG_MIGRATIONS). schema.ts owns only the CURRENT valid shape.
 // ============================================================================
-
-export interface DeprecatedKey {
-  /** Dot-path of the deprecated key in the raw YAML object */
-  path: string
-  /** Parent path to look the key up from ("" for top-level) */
-  parentPath: string
-  /** Leaf key name */
-  key: string
-  /** User-facing migration message (without `[Config] ` prefix) */
-  message: string
-  /**
-   * Optional translator: receives the legacy value, returns a partial
-   * Config patch to merge in (e.g. `auto_cache_control: true` → `{ anthropic: { cache_control: "proxied" } }`).
-   */
-  translate?: (legacy: unknown) => Record<string, unknown> | undefined
-}
-
-export const DEPRECATED_KEYS: ReadonlyArray<DeprecatedKey> = [
-  {
-    path: "anthropic.immutable_thinking_messages",
-    parentPath: "anthropic",
-    key: "immutable_thinking_messages",
-    message: 'anthropic.immutable_thinking_messages is removed; use thinking_block_message_policy ("immutable" | "stripped" | "fixed-index")',
-    translate(legacy) {
-      if (typeof legacy !== "boolean") return undefined
-      return { anthropic: { thinking_block_message_policy: legacy ? "immutable" : "stripped" } }
-    },
-  },
-  {
-    path: "anthropic.auto_cache_control",
-    parentPath: "anthropic",
-    key: "auto_cache_control",
-    message: 'anthropic.auto_cache_control is removed; use cache_control ("disabled" | "passthrough" | "sanitize" | "proxied")',
-    translate(legacy) {
-      if (typeof legacy !== "boolean") return undefined
-      return { anthropic: { cache_control: legacy ? "proxied" : "disabled" } }
-    },
-  },
-  {
-    path: "history.min_entries",
-    parentPath: "history",
-    key: "min_entries",
-    message: "history.min_entries is removed (was tied to the deleted in-memory history store); ignoring",
-  },
-]
 
 // ============================================================================
 // Merge-strategy registry — schema-driven, business-semantic merge behavior
@@ -506,7 +519,7 @@ export const DEPRECATED_KEYS: ReadonlyArray<DeprecatedKey> = [
 // All overrides are **business-driven**: the schema alone (record vs object,
 // array vs scalar) cannot distinguish, for example, "user adds one alias on
 // top of bundled" (`model_overrides`) from "user takes full ownership of
-// this strategy table" (`anthropic.efforts_overrides`). We make those
+// this strategy table" (`anthropic.effort_overrides`). We make those
 // choices here as deliberate product decisions, not as type inferences.
 
 /** Merge strategy for a `ZodRecord` schema node. */
@@ -525,7 +538,7 @@ export type RecordMergeStrategy = "per-key" | "replace"
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
 RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
-// efforts_overrides / strip_beta_headers / reject_body_fields intentionally
+// effort_overrides / strip_beta_headers / reject_body_fields intentionally
 // omitted — they default to "replace": when the user sets one of these
 // tables, they take responsibility for the entire policy.
 
@@ -538,6 +551,7 @@ export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type WebSearchConfig = z.infer<typeof WebSearchConfigSchema>
+export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 /** Config-file shape of the `auto_truncate` section (distinct from the engine's runtime `AutoTruncateConfig`). */
 export type AutoTruncateConfigSection = z.infer<typeof AutoTruncateConfigSchema>
 export type Config = z.infer<typeof ConfigSchema>

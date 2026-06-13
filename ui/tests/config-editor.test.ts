@@ -53,7 +53,7 @@ describe("useConfigEditor", () => {
 
   test("load populates config and original with normalized data", async () => {
     mockFetchConfigYaml.mockResolvedValue({
-      fetch_timeout: 300,
+      timeouts: { response_header: 300 },
       model_refresh_interval: 600,
       anthropic: {
         context_editing_trigger: 100000,
@@ -69,7 +69,7 @@ describe("useConfigEditor", () => {
     expect(editor.loading.value).toBe(false)
     expect(editor.error.value).toBeNull()
     expect(editor.config.value).toEqual({
-      fetch_timeout: 300,
+      timeouts: { response_header: 300 },
       model_refresh_interval: 600,
       anthropic: {
         context_editing_trigger: 100000,
@@ -96,7 +96,7 @@ describe("useConfigEditor", () => {
 
   test("isDirty and discard reflect local edits", async () => {
     mockFetchConfigYaml.mockResolvedValue({
-      fetch_timeout: 300,
+      model_refresh_interval: 300,
     })
 
     const editor = useConfigEditor()
@@ -106,7 +106,7 @@ describe("useConfigEditor", () => {
 
     editor.config.value = {
       ...editor.config.value,
-      fetch_timeout: 600,
+      model_refresh_interval: 600,
     }
 
     expect(editor.isDirty.value).toBe(true)
@@ -114,14 +114,14 @@ describe("useConfigEditor", () => {
     editor.discard()
 
     expect(editor.config.value).toEqual({
-      fetch_timeout: 300,
+      model_refresh_interval: 300,
     })
     expect(editor.isDirty.value).toBe(false)
   })
 
   test("isDirty returns to false when a field is restored to its original value", async () => {
     mockFetchConfigYaml.mockResolvedValue({
-      fetch_timeout: 300,
+      model_refresh_interval: 300,
       anthropic: {
         strip_server_tools: true,
       },
@@ -132,20 +132,20 @@ describe("useConfigEditor", () => {
 
     editor.config.value = {
       ...editor.config.value,
-      fetch_timeout: 600,
+      model_refresh_interval: 600,
     }
     expect(editor.isDirty.value).toBe(true)
 
     editor.config.value = {
       ...editor.config.value,
-      fetch_timeout: 300,
+      model_refresh_interval: 300,
     }
     expect(editor.isDirty.value).toBe(false)
   })
 
   test("hasRestartFields only tracks proxy and rate_limiter changes", async () => {
     mockFetchConfigYaml.mockResolvedValue({
-      fetch_timeout: 300,
+      timeouts: { response_header: 300 },
       model_refresh_interval: 600,
     })
 
@@ -156,7 +156,7 @@ describe("useConfigEditor", () => {
 
     editor.config.value = {
       ...editor.config.value,
-      fetch_timeout: 600,
+      model_refresh_interval: 600,
     }
     expect(editor.hasRestartFields.value).toBe(false)
 
@@ -245,7 +245,7 @@ describe("useConfigEditor", () => {
           error: "Config validation failed",
           details: [
             {
-              field: "fetch_timeout",
+              field: "model_refresh_interval",
               message: "Must be a non-negative integer or null",
             },
           ],
@@ -255,14 +255,14 @@ describe("useConfigEditor", () => {
 
     const editor = useConfigEditor()
     await editor.load()
-    editor.config.value = { fetch_timeout: -1 }
+    editor.config.value = { model_refresh_interval: -1 }
 
     const saved = await editor.save()
 
     expect(saved).toBe(false)
-    expect(editor.error.value).toBe("fetch_timeout: Must be a non-negative integer or null")
-    expect(editor.config.value).toEqual({ fetch_timeout: -1 })
-    expect(toastShow).toHaveBeenCalledWith("fetch_timeout: Must be a non-negative integer or null", "error")
+    expect(editor.error.value).toBe("model_refresh_interval: Must be a non-negative integer or null")
+    expect(editor.config.value).toEqual({ model_refresh_interval: -1 })
+    expect(toastShow).toHaveBeenCalledWith("model_refresh_interval: Must be a non-negative integer or null", "error")
   })
 
   test("save keeps edit state on network failure and surfaces the error message", async () => {
@@ -271,13 +271,13 @@ describe("useConfigEditor", () => {
 
     const editor = useConfigEditor()
     await editor.load()
-    editor.config.value = { fetch_timeout: 30 }
+    editor.config.value = { model_refresh_interval: 30 }
 
     const saved = await editor.save()
 
     expect(saved).toBe(false)
     expect(editor.error.value).toBe("network down")
-    expect(editor.config.value).toEqual({ fetch_timeout: 30 })
+    expect(editor.config.value).toEqual({ model_refresh_interval: 30 })
     expect(editor.original.value).toEqual({})
     expect(toastShow).toHaveBeenCalledWith("network down", "error")
   })

@@ -315,37 +315,41 @@ function projectGeminiContentsAsMessages(contents: ReadonlyArray<GeminiContent>,
 
 /** Non-streaming render: emit a single JSON GenerateContentResponse */
 function renderGeminiNonStreaming(args: ChatCompletionRendererArgs, modelId: string): Response | Promise<Response> {
-  const { c, response, reqCtx } = args
+  const { c, response, reqCtx, detachClientAbort } = args
   if (!isNonStreaming(response)) {
     // Shouldn't happen — we set stream:false on the payload — but keep the
     // type-system honest with a runtime guard.
     throw new HTTPError("Expected non-streaming response", 500, "Internal: streaming response on non-stream path")
   }
-  const chat = response
-  const gemini: GenerateContentResponse = convertOpenAIResponseToGemini(chat, modelId)
+  try {
+    const chat = response
+    const gemini: GenerateContentResponse = convertOpenAIResponseToGemini(chat, modelId)
 
-  // Settle the request context with usage info derived from the upstream
-  // response (mirrors handleNonStreamingResponse in chat-completions).
-  const choice = chat.choices[0]
-  const usage = chat.usage
-  // The client receives the Gemini-translated response; complete() records the
-  // upstream OpenAI-shape message for history.
-  reqCtx.setForwardedResponse({ content: gemini })
-  reqCtx.complete({
-    success: true,
-    model: chat.model,
-    usage: {
-      input_tokens: usage?.prompt_tokens ?? 0,
-      output_tokens: usage?.completion_tokens ?? 0,
-      ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && {
-        cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens,
-      }),
-    },
-    stop_reason: choice.finish_reason ?? undefined,
-    content: choice.message,
-  })
+    // Settle the request context with usage info derived from the upstream
+    // response (mirrors handleNonStreamingResponse in chat-completions).
+    const choice = chat.choices[0]
+    const usage = chat.usage
+    // The client receives the Gemini-translated response; complete() records the
+    // upstream OpenAI-shape message for history.
+    reqCtx.setForwardedResponse({ content: gemini })
+    reqCtx.complete({
+      success: true,
+      model: chat.model,
+      usage: {
+        input_tokens: usage?.prompt_tokens ?? 0,
+        output_tokens: usage?.completion_tokens ?? 0,
+        ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && {
+          cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens,
+        }),
+      },
+      stop_reason: choice.finish_reason ?? undefined,
+      content: choice.message,
+    })
 
-  return c.json(gemini)
+    return c.json(gemini)
+  } finally {
+    detachClientAbort()
+  }
 }
 
 /**
@@ -372,7 +376,7 @@ function geminiStreamErrorStatus(kind: StreamErrorKind): string {
 }
 
 function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string): Response {
-  const { c, response, payload, reqCtx } = args
+  const { c, response, payload, reqCtx, clientAbort, detachClientAbort } = args
   if (isNonStreaming(response)) {
     throw new HTTPError("Expected streaming response", 500, "Internal: non-streaming response on stream path")
   }
@@ -380,7 +384,8 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
   reqCtx.transition("streaming")
 
   return streamSSE(c, async (stream) => {
-    const clientAbort = new AbortController()
+    // streamSSE.onAbort is the second trigger source — the inbound HTTP
+    // signal bridge installed in runChatCompletionPipeline is the first.
     stream.onAbort(() => clientAbort.abort())
 
     const idleTimeoutMs = state.streamIdleTimeout * 1000
@@ -476,6 +481,8 @@ function renderGeminiStreaming(args: ChatCompletionRendererArgs, modelId: string
           },
         }),
       })
+    } finally {
+      detachClientAbort()
     }
   })
 }

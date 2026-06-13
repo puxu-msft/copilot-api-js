@@ -32,6 +32,7 @@ import type {
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
+import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
@@ -215,7 +216,13 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
   const conversationId = getSessionIdFromHeaders(c.req.raw.headers)
   // Hoisted so streamSSE.onAbort below can trigger it and the WS path can react
   // to client disconnects at the lowest level (connect / sendRequest).
+  // Also bridged to the inbound HTTP signal here so non-streaming requests
+  // (which never call streamSSE) still tear down the upstream fetch on client
+  // disconnect — otherwise an abandoned non-stream request runs to the
+  // configured `timeouts.response_header` (default 300s) and accumulates a
+  // response buffer that will never be read.
   const clientAbort = new AbortController()
+  const detachClientAbort = bridgeClientAbort(c, clientAbort)
   const adapter = createResponsesAdapter(
     selectedModel,
     headersCapture,
@@ -283,6 +290,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
         stop_reason: responsesResponse.status,
         content,
       })
+      detachClientAbort()
       return c.json(clientResponse)
     }
 
@@ -379,11 +387,17 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
             },
           }),
         })
+      } finally {
+        // Bridge listener installed at the top of handleDirectResponses must
+        // be removed once we exit the stream path — without this the inbound
+        // raw.signal retains one strong reference per request until GC.
+        detachClientAbort()
       }
     })
   } catch (error) {
     reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(payload.model, error)
+    detachClientAbort()
     throw error
   }
 }

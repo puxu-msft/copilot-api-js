@@ -1,15 +1,16 @@
 import { defineStore } from "pinia"
 import { shallowRef } from "vue"
 
-/** Detail panel view state: search, filters, and display mode */
+/** Detail panel view state: search, filters, display mode, and active stage. */
 export const useDetailViewState = defineStore("detailView", () => {
   return {
     detailSearch: shallowRef(""),
     detailFilterRole: shallowRef(""),
     detailFilterType: shallowRef(""),
     aggregateTools: shallowRef(true),
-    detailViewMode: shallowRef<"original" | "rewritten" | "diff" | null>(null),
     showOnlyRewritten: shallowRef(false),
+    /** First-level pipeline-stage filter (inbound | effective | wire | upstream | forwarded | attempts | meta). */
+    activeStage: shallowRef<string>("inbound"),
   }
 })
 

@@ -19,6 +19,14 @@
  * web_search_tool_result blocks are sent DIRECTLY to the client, bypassing the
  * unconditional server-tool-filter applied on the normal `handleDirectAnthropic*`
  * paths — so the search results are visible to the client.
+ *
+ * Consequence: the client echoes that server_tool_use{web_search} pair back in
+ * its history next turn. Since the hops downgrade the `tools` array (native
+ * web_search → plain function tool), the historical server_tool_use has no
+ * matching server-tool definition and upstream 400s. The
+ * `anthropic.rewrite_history_server_tools: "downgrade"` config closes that loop
+ * by rewriting the historical pair into plain tool_use + tool_result inside
+ * sanitizeAnthropicMessages (see sanitize/rewrite-server-tool-history.ts).
  */
 
 import type { Context } from "hono"
@@ -35,6 +43,7 @@ import type {
 import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
+import { bridgeClientAbort } from "~/lib/abort-bridge"
 import {
   //
   accumulateAnthropicStreamEvent,
@@ -52,7 +61,11 @@ import {
 import { buildAnthropicResponseData } from "~/lib/request"
 import { state } from "~/lib/state"
 
-import { handleDirectAnthropicCompletion } from "./handler"
+import {
+  //
+  handleDirectAnthropicCompletion,
+  startForwardedSseHeartbeat,
+} from "./handler"
 
 /**
  * Handle an Anthropic completion via the web_search double-hop.
@@ -70,10 +83,17 @@ export async function handleWebSearchCompletion(
 ) {
   const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
   const isStream = payload.stream ?? false
-  // The inbound request's own abort signal fires on client disconnect, ending
-  // the (long, non-streaming) probe/hop upstream work. The streaming search path
-  // wires a per-stream controller inside streamSSE below.
-  const inboundAbortSignal = c.req.raw.signal
+
+  // Single client-abort controller for the entire web-search lifecycle (probe +
+  // optional second hop + synthesis). Bridged from the inbound HTTP signal so a
+  // client disconnect at ANY point tears down the in-flight upstream call —
+  // mirrors the pattern used by handler.ts / responses/handler.ts /
+  // responses/fallback.ts. The streaming branch also wires `stream.onAbort`
+  // below as a second trigger source (different runtime / proxy paths surface
+  // the disconnect via one or the other).
+  const clientAbort = new AbortController()
+  const detachClientAbort = bridgeClientAbort(c, clientAbort)
+  const inboundAbortSignal = clientAbort.signal
 
   // ── First-hop probe (non-streaming): decide whether to search ────────────
   // Runs BEFORE any client bytes are owed, so a no-search outcome can re-dispatch
@@ -85,6 +105,7 @@ export async function handleWebSearchCompletion(
     probe = await runFirstHopProbe({ payload, resolvedModel, clientAnthropicBeta, backend: state.webSearchBackend, clientAbortSignal: inboundAbortSignal })
   } catch (error) {
     reqCtx.fail(payload.model, error)
+    detachClientAbort()
     throw error
   }
 
@@ -95,6 +116,10 @@ export async function handleWebSearchCompletion(
     // (requestContext:undefined) is observable (原则3). The re-dispatch records
     // its own usage as the entry's primary usage.
     recordProbeWarning(reqCtx, probe)
+    // The downstream `handleDirectAnthropicCompletion` installs its OWN
+    // bridge from `c.req.raw.signal`. Detach ours first to avoid two
+    // listeners racing on the same inbound signal.
+    detachClientAbort()
     return handleDirectAnthropicCompletion(c, payload, reqCtx, preprocessInfo)
   }
 
@@ -108,9 +133,11 @@ export async function handleWebSearchCompletion(
       )
     } catch (error) {
       reqCtx.fail(payload.model, error)
+      detachClientAbort()
       throw error
     }
     accumulateAndComplete(reqCtx, result, payload.model)
+    detachClientAbort()
     return c.json(result.response)
   }
 
@@ -119,29 +146,55 @@ export async function handleWebSearchCompletion(
   // client's idle/body timeout clock resets while the second hop + search run.
   reqCtx.transition("streaming")
   return streamSSE(c, async (stream) => {
-    // Abort the remaining upstream work when the client disconnects mid-stream.
-    const clientAbort = new AbortController()
+    // streamSSE.onAbort is the second trigger source — the inbound HTTP
+    // signal bridge installed above is the first. Both flip the same
+    // controller; the second call is a no-op per AbortController spec.
     stream.onAbort(() => clientAbort.abort())
 
-    await stream.writeSSE({ event: "ping", data: JSON.stringify({ type: "ping" }) })
+    // Pings emitted on this client-facing stream (the upfront flush below +
+    // any synthetic keepalives from `fake_sse_heartbeat` during the second
+    // hop) are collected here and merged into the final forwardedSseEvents
+    // so history reflects exactly what the client received. Indices use
+    // `streamStartMs` so the timeline lines up with the synthesized event
+    // sequence emitted at the end.
+    const streamStartMs = Date.now()
+    const prefixForwardedSse: Array<SseEventRecord> = []
+    const heartbeat = startForwardedSseHeartbeat({
+      intervalSec: state.anthropicFakeSseHeartbeat,
+      stream,
+      forwardedSseEvents: prefixForwardedSse,
+      streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false },
+      clientAbortSignal: clientAbort.signal,
+    })
 
-    let result
     try {
-      result = await completeWebSearch(
-        { payload, resolvedModel, clientAnthropicBeta, backend: state.webSearchBackend, clientAbortSignal: clientAbort.signal },
-        probe,
-      )
-    } catch (error) {
-      // Headers are already sent — surface as an Anthropic error event, then end.
-      reqCtx.fail(payload.model, error)
-      const message = error instanceof Error ? error.message : String(error)
-      await stream.writeSSE({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message } }) })
-      return
-    }
+      const upfrontPing = JSON.stringify({ type: "ping" })
+      prefixForwardedSse.push({ offsetMs: 0, type: "ping", raw: upfrontPing })
+      heartbeat.noteRealFrame()
+      await heartbeat.writeSerialized({ event: "ping", data: upfrontPing })
 
-    const { events } = accumulateAndComplete(reqCtx, result, payload.model)
-    for (const event of events) {
-      await stream.writeSSE({ event: event.type, data: JSON.stringify(event) })
+      let result
+      try {
+        result = await completeWebSearch(
+          { payload, resolvedModel, clientAnthropicBeta, backend: state.webSearchBackend, clientAbortSignal: clientAbort.signal },
+          probe,
+        )
+      } catch (error) {
+        // Headers are already sent — surface as an Anthropic error event, then end.
+        reqCtx.fail(payload.model, error)
+        const message = error instanceof Error ? error.message : String(error)
+        await heartbeat.writeSerialized({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message } }) })
+        return
+      }
+
+      const { events } = accumulateAndComplete(reqCtx, result, payload.model, prefixForwardedSse)
+      for (const event of events) {
+        heartbeat.noteRealFrame()
+        await heartbeat.writeSerialized({ event: event.type, data: JSON.stringify(event) })
+      }
+    } finally {
+      heartbeat.stop()
+      detachClientAbort()
     }
   })
 }
@@ -149,11 +202,18 @@ export async function handleWebSearchCompletion(
 /**
  * Record the search sub-request, accumulate the synthesized events for History,
  * and finalize the request context. Returns the synthesized event sequence.
+ *
+ * `prefixForwardedSse` (streaming path only) carries any frames the client
+ * already received before the synthesized events fire — currently the upfront
+ * `ping` (always) plus any `fake_sse_heartbeat` pings emitted during the
+ * second hop. They are prepended to the forwarded record so history reflects
+ * what the client actually received, in order.
  */
 function accumulateAndComplete(
   reqCtx: RequestContext,
   result: WebSearchOrchestrationResult,
   model: string,
+  prefixForwardedSse?: ReadonlyArray<SseEventRecord>,
 ): { events: ReturnType<typeof webSearchResponseToEvents> } {
   // Record the search sub-request (query, backend outcome, result count) into
   // history as a structured warning so the search step is observable (原则3).
@@ -181,8 +241,10 @@ function accumulateAndComplete(
   }
   reqCtx.setSseEvents(sseEvents)
   // The synthesized events ARE exactly what the client receives (no upstream/forward
-  // divergence on this double-hop path), so the forwarded record mirrors them.
-  reqCtx.setForwardedResponse({ sseEvents })
+  // divergence on this double-hop path), so the forwarded record mirrors them —
+  // with any pre-synthesis frames (upfront ping + heartbeat keepalives) prepended.
+  const forwarded = prefixForwardedSse ? [...prefixForwardedSse, ...sseEvents] : sseEvents
+  reqCtx.setForwardedResponse({ sseEvents: forwarded })
   reqCtx.complete(buildAnthropicResponseData(acc, model))
   return { events }
 }

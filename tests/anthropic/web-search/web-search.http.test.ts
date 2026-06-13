@@ -19,7 +19,12 @@ import {
   test,
 } from "bun:test"
 
-import { getHistory } from "~/lib/history/store"
+import { getEntryById } from "~/lib/history/sqlite/read"
+import {
+  //
+  getHistory,
+  listInFlightEntries,
+} from "~/lib/history/store"
 import {
   //
   setModels,
@@ -401,6 +406,20 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(fwdHasSigDelta).toBe(true)
     // The pass-through probe's token cost is surfaced as a warning (原则3).
     expect((entry.warningMessages ?? []).some((w) => w.code === "web_search_probe")).toBe(true)
+
+    // PERSISTENCE GUARD: assert the SQLite-PERSISTED row is complete after a
+    // re-dispatch. getHistory returns the in-flight entry first, so this uses
+    // getEntryById (which reassembles the head row + entry_stages sub-rows) to
+    // verify the heavy fields (inboundRequest / sseEvents / inboundResponse /
+    // outboundResponse — all stored as STAGE_TOP_KEYS in entry_stages, not the
+    // head blob) survive finalization for the re-dispatch path.
+    expect(listInFlightEntries().some((e) => e.id === entry.id)).toBe(false) // finalized
+    const persisted = getEntryById(entry.id)
+    expect(persisted).toBeDefined()
+    expect(persisted!.inboundRequest?.messages?.length ?? 0).toBeGreaterThan(0)
+    expect((persisted!.sseEvents ?? []).length).toBeGreaterThan(0)
+    expect((persisted!.inboundResponse?.sseEvents ?? []).length).toBeGreaterThan(0)
+    expect(persisted!.outboundResponse).toBeDefined()
   })
 
   test("closed state (webSearchEnabled=false) short-circuits — request goes through the normal path", async () => {

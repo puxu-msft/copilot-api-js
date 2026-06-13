@@ -22,6 +22,8 @@ export default defineConfigWithVueTs(
       "tsdown.config.ts",
       "playwright.config.ts",
       "prettier.config.mjs",
+      // Local debug probe scripts at repo root (not in tsconfig project graph).
+      "mutation-probe.mjs",
       // Local ESLint rule sources — not part of the TS project graph.
       "scripts/eslint-rules/**",
       // Generated declaration files — not in tsconfig either.

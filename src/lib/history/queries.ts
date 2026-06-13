@@ -49,6 +49,8 @@ function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boole
   }
   if (opts.success === true && summary.responseSuccess !== true) return false
   if (opts.success === false && summary.responseSuccess !== false) return false
+  if (opts.state && summary.state !== opts.state) return false
+  if (opts.pid !== undefined && summary.pid !== opts.pid) return false
   if (opts.search) {
     const needle = opts.search.toLowerCase()
     const preview = summary.previewText.toLowerCase()

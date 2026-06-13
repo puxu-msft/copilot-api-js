@@ -11,9 +11,11 @@ export interface PromptOverrideRule extends ReminderRewriteRule {
 export interface ConfigYamlResponse {
   proxy?: string
   model_overrides?: Record<string, string>
-  stream_idle_timeout?: number
-  fetch_timeout?: number
-  stale_request_max_age?: number
+  timeouts?: {
+    stream_idle?: number
+    response_header?: number
+    stale_request_max_age?: number
+  }
   model_refresh_interval?: number
   shutdown?: {
     graceful_wait?: number
@@ -27,7 +29,7 @@ export interface ConfigYamlResponse {
   anthropic?: {
     strip_server_tools?: boolean
     dedup_tool_calls?: boolean | "input" | "result"
-    immutable_thinking_messages?: boolean
+    thinking_block_message_policy?: "preserve" | "stripped"
     strip_read_tool_result_tags?: boolean
     context_editing?: "off" | "clear-thinking" | "clear-tooluse" | "clear-both"
     context_editing_trigger?: number
@@ -38,17 +40,19 @@ export interface ConfigYamlResponse {
     non_deferred_tools?: Array<string>
     rewrite_system_reminders?: boolean | Array<ReminderRewriteRule>
   }
-  "openai-responses"?: {
+  openai_responses?: {
     normalize_call_ids?: boolean
-    upstream_websocket?: boolean
+    upstream_ws?: boolean
   }
   rate_limiter?: {
     retry_interval?: number
     request_interval?: number
-    recovery_timeout?: number
+    recovery_interval?: number
     consecutive_successes?: number
   }
-  compress_tool_results_before_truncate?: boolean
+  auto_truncate?: {
+    compress_tool_results?: boolean
+  }
   system_prompt_overrides?: Array<PromptOverrideRule>
   system_prompt_prepend?: string
   system_prompt_append?: string
@@ -57,9 +61,11 @@ export interface ConfigYamlResponse {
 export interface EditableConfig {
   proxy?: string | null
   model_overrides?: Record<string, string> | null
-  stream_idle_timeout?: number | null
-  fetch_timeout?: number | null
-  stale_request_max_age?: number | null
+  timeouts?: {
+    stream_idle?: number | null
+    response_header?: number | null
+    stale_request_max_age?: number | null
+  } | null
   model_refresh_interval?: number | null
   shutdown?: {
     graceful_wait?: number | null
@@ -73,7 +79,7 @@ export interface EditableConfig {
   anthropic?: {
     strip_server_tools?: boolean | null
     dedup_tool_calls?: boolean | "input" | "result" | null
-    immutable_thinking_messages?: boolean | null
+    thinking_block_message_policy?: "preserve" | "stripped" | null
     strip_read_tool_result_tags?: boolean | null
     context_editing?: "off" | "clear-thinking" | "clear-tooluse" | "clear-both" | null
     context_editing_trigger?: number | null
@@ -84,17 +90,19 @@ export interface EditableConfig {
     non_deferred_tools?: Array<string> | null
     rewrite_system_reminders?: boolean | Array<ReminderRewriteRule> | null
   } | null
-  "openai-responses"?: {
+  openai_responses?: {
     normalize_call_ids?: boolean | null
-    upstream_websocket?: boolean | null
+    upstream_ws?: boolean | null
   } | null
   rate_limiter?: {
     retry_interval?: number | null
     request_interval?: number | null
-    recovery_timeout?: number | null
+    recovery_interval?: number | null
     consecutive_successes?: number | null
   } | null
-  compress_tool_results_before_truncate?: boolean | null
+  auto_truncate?: {
+    compress_tool_results?: boolean | null
+  } | null
   system_prompt_overrides?: Array<PromptOverrideRule> | null
   system_prompt_prepend?: string | null
   system_prompt_append?: string | null

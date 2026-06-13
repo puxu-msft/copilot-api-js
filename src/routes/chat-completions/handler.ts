@@ -26,6 +26,7 @@ import type {
 } from "~/types/api/openai-chat-completions"
 import type { ResponsesResponse } from "~/types/api/openai-responses"
 
+import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
@@ -233,6 +234,11 @@ export async function handleChatCompletion(c: Context) {
  * - Calling `setOriginalRequest()` on `reqCtx` BEFORE invoking the pipeline
  * - Providing a `render` callback that serializes the raw upstream response
  *   to the protocol-specific wire format.
+ *
+ * Client-disconnect abort is bridged from `c.req.raw.signal` INSIDE this
+ * function so every caller (handleChatCompletion + Gemini handler) gets it
+ * uniformly. The cleanup function is invoked in `finally` on both the
+ * non-streaming and streaming paths.
  */
 export interface RunChatCompletionPipelineOptions {
   c: Context
@@ -261,6 +267,19 @@ export interface ChatCompletionRendererArgs {
   payload: ChatCompletionsPayload
   reqCtx: RequestContext
   truncateResult: OpenAIAutoTruncateResult | undefined
+  /**
+   * Abort signal fed by the inbound HTTP request's disconnect. Renderers that
+   * open a `streamSSE` MUST wire `stream.onAbort(() => clientAbort.abort())`
+   * so the streamSSE-side disconnect is also captured.
+   */
+  clientAbort: AbortController
+  /**
+   * Renderer MUST invoke this exactly once — synchronously before returning
+   * (non-streaming) or in a `finally` inside the `streamSSE` callback
+   * (streaming). The bridge holds one inbound-signal listener per request;
+   * forgetting to detach leaks it until the (short-lived) raw.signal is GC'd.
+   */
+  detachClientAbort: () => void
 }
 
 /**
@@ -273,34 +292,43 @@ export interface ChatCompletionRendererArgs {
 export async function runChatCompletionPipeline(opts: RunChatCompletionPipelineOptions): Promise<Response> {
   const { selectedModel, payload, c } = opts
 
+  // Bridge inbound HTTP disconnect → clientAbort. Owned here (single creation
+  // point per request) so non-streaming branches in renderers also benefit
+  // without each one re-deriving its own controller. Detached in finally.
+  const clientAbort = new AbortController()
+  const detachClientAbort = bridgeClientAbort(c, clientAbort)
+  const optsWithAbort: ExecuteRequestOptions = { ...opts, clientAbort, detachClientAbort }
+
   if (isEndpointSupported(selectedModel, ENDPOINT.CHAT_COMPLETIONS)) {
-    return executeRequest(opts)
+    return executeRequest(optsWithAbort)
   }
 
   if (isResponsesSupported(selectedModel)) {
     if (opts.reqCtx.tuiLogId) {
       tuiLogger.updateRequest(opts.reqCtx.tuiLogId, { tags: ["via-responses"] })
     }
-    return executeRequestViaResponses(opts)
+    return executeRequestViaResponses(optsWithAbort)
   }
 
-  // No-op reference: forces the unused `c` binding to be tree-shake-visible
-  // when only this branch runs (kept as one statement to avoid touching
-  // unrelated logic in this refactor).
-  void c
+  // `c` is already referenced above (bridgeClientAbort + tuiLogger), so no
+  // need to dance around tree-shake visibility here.
+  detachClientAbort()
   const msg = `Model "${payload.model}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint`
   throw new HTTPError(msg, 400, msg)
 }
 
-/** Options for executeRequest */
-type ExecuteRequestOptions = RunChatCompletionPipelineOptions
+/** Options for executeRequest — adds the inbound-bridged client abort. */
+type ExecuteRequestOptions = RunChatCompletionPipelineOptions & {
+  clientAbort: AbortController
+  detachClientAbort: () => void
+}
 
 /**
  * Execute the API call with reactive retry pipeline.
  * Handles 413 and token limit errors with auto-truncation.
  */
 async function executeRequest(opts: ExecuteRequestOptions) {
-  const { c, payload, originalPayload, selectedModel, reqCtx } = opts
+  const { c, payload, originalPayload, selectedModel, reqCtx, clientAbort } = opts
 
   // Build adapter and strategy for the pipeline
   const headersCapture: HeadersCapture = {}
@@ -317,6 +345,7 @@ async function executeRequest(opts: ExecuteRequestOptions) {
         createChatCompletions(p, {
           resolvedModel: selectedModel,
           headersCapture,
+          clientAbortSignal: clientAbort.signal,
           onPrepared: ({ wire, headers }) => {
             reqCtx.setAttemptWireRequest({
               model: typeof wire.model === "string" ? wire.model : payload.model,
@@ -343,11 +372,13 @@ async function executeRequest(opts: ExecuteRequestOptions) {
     adapter,
     strategies,
     headersCapture,
+    clientAbort,
+    detachClientAbort: opts.detachClientAbort,
   })
 }
 
 async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
-  const { c, payload, originalPayload, selectedModel, reqCtx } = opts
+  const { c, payload, originalPayload, selectedModel, reqCtx, clientAbort } = opts
   const headersCapture: HeadersCapture = {}
   const adapter: FormatAdapter<ChatCompletionsPayload> = {
     format: "openai-chat-completions",
@@ -367,6 +398,7 @@ async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
         createResponses(finalPayload, {
           resolvedModel: selectedModel,
           headersCapture,
+          clientAbortSignal: clientAbort.signal,
           onPrepared: ({ wire, headers }) => {
             reqCtx.setAttemptWireRequest({
               model: typeof wire.model === "string" ? wire.model : ccPayload.model,
@@ -411,6 +443,8 @@ async function executeRequestViaResponses(opts: ExecuteRequestOptions) {
     adapter,
     strategies,
     headersCapture,
+    clientAbort,
+    detachClientAbort: opts.detachClientAbort,
   })
 }
 
@@ -459,7 +493,7 @@ type ExecuteRequestWithAdapterOptions = ExecuteRequestOptions & {
 }
 
 async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions) {
-  const { c, payload, originalPayload, selectedModel, reqCtx, adapter, strategies, headersCapture, render } = opts
+  const { c, payload, originalPayload, selectedModel, reqCtx, adapter, strategies, headersCapture, render, clientAbort, detachClientAbort } = opts
 
   // Track truncation result for non-streaming response marker
   let truncateResult: OpenAIAutoTruncateResult | undefined
@@ -473,16 +507,18 @@ async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions)
       model: selectedModel,
       maxRetries: state.autoTruncateMaxRetries,
       requestContext: reqCtx,
-      onRetry: (attempt, _strategyName, _newPayload, meta) => {
+      onRetry: (_attempt, _strategyName, _newPayload, meta) => {
         // Capture truncation result for response marker
         const retryTruncateResult = meta?.truncateResult as OpenAIAutoTruncateResult | undefined
         if (retryTruncateResult) {
           truncateResult = retryTruncateResult
         }
 
-        // Update tracking tags
+        // Update tracking tags. Retry counter / per-attempt info is emitted
+        // as [RETRY-n] lines by `executeRequestPipeline`; here we only sticky
+        // the "truncated" feature tag for the final outcome line.
         if (reqCtx.tuiLogId) {
-          tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: ["truncated", `retry-${attempt + 1}`] })
+          tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: ["truncated"] })
         }
       },
     })
@@ -491,10 +527,12 @@ async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions)
     reqCtx.setHttpHeaders(headersCapture)
 
     const response = result.response as ChatCompletionResponse | AsyncIterable<ServerSentEventMessage>
-    return await Promise.resolve(render({ c, response, payload, reqCtx, truncateResult }))
+    // Detach ownership transfers to the renderer (see ChatCompletionRendererArgs.detachClientAbort).
+    return await Promise.resolve(render({ c, response, payload, reqCtx, truncateResult, clientAbort, detachClientAbort }))
   } catch (error) {
     reqCtx.setHttpHeaders(headersCapture)
     reqCtx.fail(payload.model, error)
+    detachClientAbort()
     throw error
   }
 }
@@ -505,26 +543,35 @@ async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions)
  * forwarded one-to-one.
  */
 function defaultChatCompletionRenderer(args: ChatCompletionRendererArgs): Response | Promise<Response> {
-  const { c, response, payload, reqCtx, truncateResult } = args
+  const { c, response, payload, reqCtx, truncateResult, clientAbort, detachClientAbort } = args
   if (isNonStreaming(response)) {
-    return handleNonStreamingResponse(c, response, reqCtx, truncateResult)
+    try {
+      return handleNonStreamingResponse(c, response, reqCtx, truncateResult)
+    } finally {
+      detachClientAbort()
+    }
   }
 
   consola.debug("Streaming response")
   reqCtx.transition("streaming")
 
   return streamSSE(c, async (stream) => {
-    const clientAbort = new AbortController()
+    // streamSSE.onAbort is the second trigger source — the inbound HTTP
+    // signal bridge installed in runChatCompletionPipeline is the first.
     stream.onAbort(() => clientAbort.abort())
 
-    await handleStreamingResponse({
-      stream,
-      response,
-      payload,
-      reqCtx,
-      truncateResult,
-      clientAbortSignal: clientAbort.signal,
-    })
+    try {
+      await handleStreamingResponse({
+        stream,
+        response,
+        payload,
+        reqCtx,
+        truncateResult,
+        clientAbortSignal: clientAbort.signal,
+      })
+    } finally {
+      detachClientAbort()
+    }
   })
 }
 
