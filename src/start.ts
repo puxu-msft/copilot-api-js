@@ -33,6 +33,11 @@ import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
+import { initBus } from "./lib/observability"
+import { attachConsoleSink } from "./lib/observability/sinks/console"
+import { attachHistorySink } from "./lib/observability/sinks/history"
+import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
+import { attachWsSink } from "./lib/observability/sinks/ws"
 import { initProcessIdentity } from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
 import { initRequestTelemetry } from "./lib/request-telemetry"
@@ -329,6 +334,22 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   initHistory(true)
   await initRequestTelemetry()
+
+  // Observability bus + sinks (RFC docs/rfc/observability-rewrite.md §2.4-2.5).
+  // Sinks attach idle in this commit: the bus carries no events yet because
+  // no producer has cut over. The legacy `tuiLogger` / `notifyActiveRequestChanged`
+  // / `notifyEntry*` paths remain authoritative; sinks become authoritative in
+  // commit 3b when the manager + history modules atomically swap their emit
+  // targets. Attach order is contract: HistorySink → TelemetrySink → WsSink
+  // → ConsoleSink (so history persists before WS broadcasts, etc.).
+  const bus = initBus()
+  attachHistorySink(bus, { publisher: bus.scope("history") })
+  attachTelemetrySink(bus)
+  attachWsSink(bus)
+  // hijackConsola:false during commits 2-3a — the legacy ConsoleRenderer
+  // installed by main.ts:initConsolaReporter still owns consola's reporter
+  // chain. Commit 3b/4 flips this to true once ConsoleRenderer is removed.
+  attachConsoleSink(bus, { hijackConsola: false })
 
   // Initialize request context manager and register event consumers
   // Must be after initHistory so history store is ready to receive events

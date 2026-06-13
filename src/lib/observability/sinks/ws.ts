@@ -1,0 +1,227 @@
+/**
+ * WebSocket sink — translates observability events into outbound WS
+ * messages on the existing `history` / `status` topics.
+ *
+ * Replaces the inlined `notifyActiveRequestChanged(...)` calls in
+ * `lib/context/manager.ts` and the inlined `notifyEntry*` calls in
+ * `lib/history/entries.ts` / `sessions.ts`. The WS wire protocol (the
+ * shape of each broadcast message) is unchanged — front-end Vue UI does
+ * not need to know that the source moved.
+ *
+ * Per RFC §6 Q2 the sink also forwards two new event types as broadcast
+ * messages: `request.attempt_failed` (for future retry visualization) and
+ * `request.feature_applied` (for future feature badges). The current Vue
+ * front-end ignores unknown `action` values gracefully, so this is a
+ * backward-compatible addition.
+ *
+ * Commit 2: subscribed but idle — the bus carries no events yet. The
+ * existing `notifyActiveRequestChanged` / `notifyEntry*` callers in
+ * manager.ts / entries.ts continue to drive broadcasts. Commit 3b /
+ * commit 3d switch the producers atomically.
+ */
+
+import {
+  //
+  notifyActiveRequestChanged,
+  notifyEntryAdded,
+  notifyEntryUpdated,
+  notifyHistoryCleared,
+  notifyRateLimiterChanged,
+  notifySessionDeleted,
+  notifyShutdownPhaseChanged,
+  notifyStatsUpdated,
+} from "~/lib/ws"
+
+import type {
+  //
+  ObservabilityBus,
+  ObservabilityEvent,
+  RequestContextSnapshot,
+} from "../index"
+
+import { assertNever } from "../index"
+
+export class WsSink {
+  /**
+   * Active request count derived from observed events. Used to populate
+   * the `activeCount` field of `notifyActiveRequestChanged` payloads,
+   * which today comes from `manager.activeContexts.size`. Commit 3b
+   * removes that call site and lets this sink be the sole source.
+   */
+  private activeCount = 0
+  private readonly unsubscribe: () => void
+
+  constructor(bus: ObservabilityBus) {
+    this.unsubscribe = bus.subscribe(
+      (event) => {
+        this.handle(event)
+      },
+      // WS cares about every namespace.
+      (event) => event.kind.startsWith("request.") || event.kind.startsWith("history.") || event.kind.startsWith("system."),
+    )
+  }
+
+  destroy(): void {
+    this.unsubscribe()
+  }
+
+  private handle(event: ObservabilityEvent): void {
+    switch (event.kind) {
+      case "request.created": {
+        this.activeCount++
+        notifyActiveRequestChanged({
+          action: "created",
+          request: summarizeForWs(event.ctx),
+          activeCount: this.activeCount,
+        })
+        return
+      }
+      case "request.state_changed": {
+        notifyActiveRequestChanged({
+          action: "state_changed",
+          request: summarizeForWs(event.ctx),
+          activeCount: this.activeCount,
+        })
+        return
+      }
+      case "request.completed":
+      case "request.failed":
+      case "request.aborted": {
+        this.activeCount = Math.max(0, this.activeCount - 1)
+        notifyActiveRequestChanged({
+          action: event.kind.slice("request.".length),
+          requestId: event.ctx.id,
+          activeCount: this.activeCount,
+        })
+        return
+      }
+
+      // Per RFC §6 Q2: forward attempt_failed and feature_applied as new
+      // WS message types. Front-end ignores unknown `action` values.
+      case "request.attempt_failed": {
+        notifyActiveRequestChanged({
+          action: "attempt_failed",
+          requestId: event.ctx.id,
+          attempt: event.attempt.attemptIndex + 1,
+          strategy: event.attempt.strategy,
+          willRetry: event.willRetry,
+          nextStrategy: event.nextStrategy,
+          waitMs: event.waitMs,
+          learning: event.learning,
+          error: event.attempt.error,
+        })
+        return
+      }
+      case "request.feature_applied": {
+        notifyActiveRequestChanged({
+          action: "feature_applied",
+          requestId: event.ctx.id,
+          feature: event.feature,
+          detail: event.detail,
+        })
+        return
+      }
+
+      // model_resolved / attempt_started / stream_progress are mid-flight
+      // signals that the current WS protocol does not surface. Reserved
+      // for future use; intentionally silent today.
+      case "request.model_resolved":
+      case "request.attempt_started":
+      case "request.stream_progress": {
+        return
+      }
+
+      case "history.entry_added": {
+        notifyEntryAdded(event.summary)
+        return
+      }
+      case "history.entry_updated": {
+        notifyEntryUpdated(event.summary)
+        return
+      }
+      case "history.stats_changed": {
+        notifyStatsUpdated(event.stats)
+        return
+      }
+      case "history.cleared": {
+        notifyHistoryCleared()
+        return
+      }
+      case "history.session_deleted": {
+        notifySessionDeleted(event.sessionId)
+        return
+      }
+
+      case "system.rate_limit_state": {
+        notifyRateLimiterChanged({
+          mode: event.mode,
+          queuedCount: event.queuedCount,
+          ...event.detail,
+        })
+        return
+      }
+      case "system.shutdown_phase_changed": {
+        notifyShutdownPhaseChanged({
+          phase: event.phase,
+          previousPhase: event.previousPhase,
+          needsFlush: event.needsFlush,
+        })
+        return
+      }
+      case "system.shutdown_completed": {
+        notifyShutdownPhaseChanged({ phase: "finalized", previousPhase: null, needsFlush: false })
+        return
+      }
+      default: {
+        // Exhaustiveness check.
+        assertNever(event)
+      }
+    }
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Project a RequestContextSnapshot into the shape `summarizeRequestContext`
+ * produces today (used by the front-end activity view).
+ *
+ * Today's `summarizeRequestContext` (`lib/context/activity-summary.ts`)
+ * reads from the live RequestContext and includes fields not present on
+ * the snapshot (e.g. effective model, attempt count). For commit 2 the
+ * fields we have on the snapshot are sufficient because no producer
+ * actually publishes these events yet. Commit 3b extends the snapshot
+ * type (or the event payload) with whatever extra context the front-end
+ * needs once the swap is live.
+ */
+function summarizeForWs(ctx: RequestContextSnapshot): Record<string, unknown> {
+  return {
+    id: ctx.id,
+    endpoint: ctx.endpoint,
+    rawPath: ctx.rawPath,
+    state: ctx.state,
+    startTime: ctx.startTime,
+    clientModel: ctx.clientModel,
+    resolvedModel: ctx.resolvedModel,
+    method: ctx.method,
+    path: ctx.path,
+  }
+}
+
+// Re-export types for sink-internal use (helps with downstream consumer typing
+// in WsSink-aware tests).
+
+// ============================================================================
+// Attachment helper
+// ============================================================================
+
+export function attachWsSink(bus: ObservabilityBus): () => void {
+  const sink = new WsSink(bus)
+  return () => {
+    sink.destroy()
+  }
+}
+
+export { type EntrySummary, type HistoryStats } from "~/lib/history/store"
