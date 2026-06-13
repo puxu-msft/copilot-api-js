@@ -351,9 +351,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // chain. Commit 3b/4 flips this to true once ConsoleRenderer is removed.
   attachConsoleSink(bus, { hijackConsola: false })
 
-  // Initialize request context manager and register event consumers
-  // Must be after initHistory so history store is ready to receive events
-  const contextManager = initRequestContextManager()
+  // Initialize request context manager and register event consumers.
+  // Must be after initHistory so history store is ready to receive events.
+  // Inject the observability `request.*` publisher so the new ctx emit
+  // methods (setResolvedModel/recordFeature/... added in commit 3a) reach
+  // the bus. No-op until commit 3b/3c switches callers from the legacy
+  // tuiLogger API to ctx methods.
+  const contextManager = initRequestContextManager({ publisher: bus.scope("request") })
   registerContextConsumers(contextManager)
 
   // Provide active requests snapshot for WS connected events

@@ -12,6 +12,7 @@ import type {
   WarningMessage,
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
+import type { FeatureKind } from "~/lib/observability"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
@@ -226,6 +227,43 @@ export interface RequestContext {
   readonly sessionId: string | undefined
   readonly tuiLogId: string | undefined
   readonly rawPath: string | undefined
+  /**
+   * HTTP method of the inbound request (or "WS"/"STDIO" for non-HTTP entry
+   * points like the upstream WebSocket route in responses/ws.ts).
+   *
+   * Carried on the snapshot in every `request.*` ObservabilityEvent so
+   * sinks (ConsoleSink, WsSink) can render `POST /v1/messages` columns
+   * without dereferencing the live context.
+   *
+   * Defaults to `"UNKNOWN"` when a context is created without a method
+   * (legacy tests / direct manager.create calls during commits 2-3a);
+   * commit 3e's middleware swap supplies it for all real HTTP requests.
+   */
+  readonly method: string
+  /**
+   * HTTP path (or its WS/STDIO equivalent). See `method` for defaulting
+   * rules.
+   */
+  readonly path: string
+  /**
+   * Inbound HTTP `Content-Length` header value, if present. Used by the
+   * console sink to display the request body size in the [ OK ] / [FAIL]
+   * line. Optional — undefined when the entry point does not carry one.
+   */
+  readonly requestBodySize: number | undefined
+  /**
+   * Model name as resolved by the routing/sanitize layers (post-alias,
+   * post-override). `null` before `setResolvedModel` is called. The
+   * snapshot emitted on events carries this for display purposes.
+   */
+  readonly resolvedModel: string | null
+  /**
+   * Model name as it appeared in the inbound client request (pre-alias).
+   * Set by handlers via `setResolvedModel({ resolved, client })` when the
+   * client name differs from the resolved one — sinks show `client → resolved`
+   * for genuine remaps and just `resolved` otherwise.
+   */
+  readonly clientModel: string | null
   readonly startTime: number
   readonly endTime: number | null
   readonly endpoint: EndpointType
@@ -295,4 +333,54 @@ export interface RequestContext {
    */
   abort(model: string, partial?: PartialResponseInfo): void
   toHistoryEntry(): HistoryEntryData
+
+  // ─── Observability emit surface (added in commit 3a; callers wired in 3b-3d) ───
+
+  /**
+   * Record the resolved model name (post-alias/override) and optionally the
+   * original client-supplied name. Publishes `request.model_resolved` on the
+   * bus when the publisher is wired (commit 3a onward; no-op until then for
+   * tests that omit the publisher).
+   */
+  setResolvedModel(args: { resolved: string; client?: string }): void
+  /**
+   * Record an applied feature (truncate / thinking / beta-strip / transport /
+   * via-X-fallback / dropped-params). Replaces the legacy `tags: string[]`
+   * channel on the TUI logger. Publishes `request.feature_applied`.
+   */
+  recordFeature(feature: FeatureKind, detail?: Record<string, unknown>): void
+  /**
+   * Mid-stream progress signal (bytes/events received from upstream, current
+   * content_block_type for thinking/text/tool_use). Publishes
+   * `request.stream_progress`. All fields optional — pass what you have.
+   */
+  recordStreamProgress(progress: { bytesIn?: number; eventsIn?: number; blockType?: string }): void
+  /**
+   * Record that an attempt has started. Mirrors `beginAttempt` but emits the
+   * dedicated `request.attempt_started` event with an AttemptSnapshot.
+   * Commit 3b replaces `beginAttempt` callers with this where appropriate.
+   */
+  recordAttemptStart(attempt: { attemptIndex: number; strategy?: string; transport?: RequestTransport }): void
+  /**
+   * Record that an attempt failed and the pipeline decided whether to retry.
+   * Publishes `request.attempt_failed` carrying the AttemptSnapshot, the
+   * retry decision, and the strategy / backoff details. Replaces the
+   * `tuiLogger.logRetry` call site in `lib/request/pipeline.ts:346`.
+   */
+  recordAttemptFailure(args: { willRetry: boolean; nextStrategy?: string; waitMs?: number; learning?: boolean }): void
+  /**
+   * Idempotent variant of `fail()` — middleware fallback for handlers that
+   * throw without calling complete/fail/abort themselves. No-op if already
+   * settled. Preserves the immediate error visibility that today's
+   * middleware try/catch (`lib/tui/middleware.ts:85-91`) provides.
+   */
+  failIfNotFinalized(err: unknown): void
+  /**
+   * Idempotent variant of `complete()` for non-streaming HTTP responses —
+   * called by the middleware after `await next()` returns successfully when
+   * the handler did not call `complete()` itself. No-op if already settled.
+   * Uses the HTTP status from `c.res.status` to decide success/failure;
+   * delegates to `fail()` for statusCode >= 400.
+   */
+  completeFromHttpStatus(statusCode: number): void
 }

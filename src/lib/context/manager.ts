@@ -17,6 +17,7 @@
 import { consola } from "consola"
 
 import type { EndpointType } from "~/lib/history/store"
+import type { ScopedPublisher } from "~/lib/observability"
 
 import {
   //
@@ -51,7 +52,21 @@ export type RequestContextEvent =
 
 export interface RequestContextManager {
   /** Create and register a new active request context */
-  create(opts: { endpoint: EndpointType; sessionId?: string; tuiLogId?: string; rawPath?: string }): RequestContext
+  create(opts: {
+    endpoint: EndpointType
+    sessionId?: string
+    tuiLogId?: string
+    rawPath?: string
+    /**
+     * HTTP method of the inbound request. Stored on RequestContext.method
+     * for sinks to render. Default "UNKNOWN" if omitted.
+     */
+    method?: string
+    /** Inbound URL path. Default "/" if omitted. */
+    path?: string
+    /** Inbound Content-Length header value, if present. */
+    requestBodySize?: number
+  }): RequestContext
 
   /** Get an active request by ID */
   get(id: string): RequestContext | undefined
@@ -84,8 +99,19 @@ export interface RequestContextManager {
 
 let _manager: RequestContextManager | null = null
 
-export function initRequestContextManager(): RequestContextManager {
-  _manager = createRequestContextManager()
+export interface RequestContextManagerOptions {
+  /**
+   * Scoped publisher for `request.*` ObservabilityEvent emissions, passed
+   * through to every `createRequestContext` call so the new emit methods
+   * (`setResolvedModel`, `recordFeature`, etc. — added in commit 3a)
+   * publish to the bus. Optional during commits 3a/3b; required from
+   * commit 3b onward when the producer fully cuts over.
+   */
+  publisher?: ScopedPublisher<"request">
+}
+
+export function initRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
+  _manager = createRequestContextManager(options)
   return _manager
 }
 
@@ -94,17 +120,18 @@ export function getRequestContextManager(): RequestContextManager {
   return _manager
 }
 
-export function resetRequestContextManagerForTests(): RequestContextManager {
+export function resetRequestContextManagerForTests(options?: RequestContextManagerOptions): RequestContextManager {
   _manager?.stopReaper()
-  _manager = createRequestContextManager()
+  _manager = createRequestContextManager(options)
   return _manager
 }
 
 // ─── Factory ───
 
-export function createRequestContextManager(): RequestContextManager {
+export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
   const listeners = new Set<(event: RequestContextEvent) => void>()
+  const publisher = options?.publisher
 
   // ─── Stale Request Reaper ───
 
@@ -302,7 +329,11 @@ export function createRequestContextManager(): RequestContextManager {
         sessionId: opts.sessionId,
         tuiLogId: opts.tuiLogId,
         rawPath: opts.rawPath,
+        method: opts.method,
+        path: opts.path,
+        requestBodySize: opts.requestBodySize,
         onEvent: handleContextEvent,
+        publisher,
       })
       recordAcceptedRequest(ctx.startTime)
       activeContexts.set(ctx.id, ctx)

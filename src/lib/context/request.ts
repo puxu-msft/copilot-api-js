@@ -19,11 +19,19 @@ import type {
   TruncationInfo,
   WarningMessage,
 } from "~/lib/history/store"
+import type {
+  //
+  AttemptSnapshot,
+  FeatureKind,
+  RequestContextSnapshot,
+  ScopedPublisher,
+} from "~/lib/observability"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
 import { normalizeModelId } from "~/lib/models/resolver"
+import { state as appState } from "~/lib/state"
 
 import type {
   //
@@ -94,15 +102,34 @@ export function createRequestContext(opts: {
   sessionId?: string
   tuiLogId?: string
   rawPath?: string
+  /** HTTP method (or "WS" / "STDIO" for non-HTTP entry points). Default "UNKNOWN". */
+  method?: string
+  /** Inbound URL path. Default "/". */
+  path?: string
+  /** Inbound Content-Length, if present. */
+  requestBodySize?: number
   onEvent: RequestContextEventCallback
+  /**
+   * Scoped publisher for `request.*` ObservabilityEvent emissions. Optional —
+   * tests and existing call sites that haven't been wired through commit 3b
+   * yet pass nothing, in which case the new emit methods only mutate state
+   * and do not publish to the bus.
+   */
+  publisher?: ScopedPublisher<"request">
 }): RequestContext {
   const id = `req_${Date.now()}_${++idCounter}`
   const startTime = Date.now()
   const onEvent = opts.onEvent
+  const publisher = opts.publisher
+  const method = opts.method ?? "UNKNOWN"
+  const path = opts.path ?? "/"
+  const requestBodySize = opts.requestBodySize
 
   // Mutable internal state
   let _state: RequestState = "pending"
   let _sessionId = opts.sessionId
+  let _resolvedModel: string | null = null
+  let _clientModel: string | null = null
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
   let _forwardedResponse: ForwardedResponse | null = null
@@ -137,6 +164,33 @@ export function createRequestContext(opts: {
     }
   }
 
+  /**
+   * Build an ObservabilityEvent-compatible snapshot of the current ctx state.
+   * Used by the new emit methods (commit 3a onward) so sinks don't close over
+   * mutable ctx. Pre-resolves the billing multiplier from `state.modelIndex`
+   * so ConsoleSink doesn't have to (and so it stays correct if the model
+   * gets unregistered mid-flight).
+   */
+  function snapshot(): RequestContextSnapshot {
+    const resolvedForLookup = _resolvedModel ?? undefined
+    const billing = resolvedForLookup ? appState.modelIndex.get(resolvedForLookup)?.billing : undefined
+    return {
+      id,
+      endpoint: opts.endpoint,
+      ...(opts.sessionId !== undefined && { sessionId: opts.sessionId }),
+      ...(opts.rawPath !== undefined && { rawPath: opts.rawPath }),
+      method,
+      path,
+      ...(_clientModel !== null && { clientModel: _clientModel }),
+      ...(_resolvedModel !== null && { resolvedModel: _resolvedModel }),
+      state: _state,
+      startTime,
+      queueWaitMs: _queueWaitMs,
+      ...(requestBodySize !== undefined && { requestBodySize }),
+      ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+    }
+  }
+
   const ctx: RequestContext = {
     id,
     get sessionId() {
@@ -144,6 +198,17 @@ export function createRequestContext(opts: {
     },
     tuiLogId: opts.tuiLogId,
     rawPath: opts.rawPath,
+    method,
+    path,
+    get requestBodySize() {
+      return requestBodySize
+    },
+    get resolvedModel() {
+      return _resolvedModel
+    },
+    get clientModel() {
+      return _clientModel
+    },
     startTime,
     get endTime() {
       return _endTime
@@ -506,6 +571,108 @@ export function createRequestContext(opts: {
       }
 
       return entry
+    },
+
+    // ─── Observability emit surface (added in commit 3a) ───
+    //
+    // Each method mutates ctx state AND (when a publisher was injected)
+    // publishes the corresponding `request.*` ObservabilityEvent on the
+    // bus. When `publisher` is undefined (legacy call sites + unit tests
+    // not yet wired through commit 3b), the methods only mutate state.
+    //
+    // The legacy `setAttempt*` / `transition` / `complete` / `fail` /
+    // `abort` methods remain authoritative through commit 3b. Commit 3c-3d
+    // migrate callers route-by-route; commit 3b's manager rewires
+    // `onEvent` to ALSO publish to the bus so the new event-stream model
+    // is complete the moment producers cut over.
+
+    setResolvedModel(args: { resolved: string; client?: string }) {
+      _resolvedModel = args.resolved
+      if (args.client !== undefined) _clientModel = args.client
+      publisher?.publish({ kind: "request.model_resolved", ctx: snapshot() })
+    },
+
+    recordFeature(feature: FeatureKind, detail?: Record<string, unknown>) {
+      publisher?.publish({
+        kind: "request.feature_applied",
+        ctx: snapshot(),
+        feature,
+        ...(detail !== undefined && { detail }),
+      })
+    },
+
+    recordStreamProgress(progress: { bytesIn?: number; eventsIn?: number; blockType?: string }) {
+      publisher?.publish({
+        kind: "request.stream_progress",
+        ctx: snapshot(),
+        ...(progress.bytesIn !== undefined && { bytesIn: progress.bytesIn }),
+        ...(progress.eventsIn !== undefined && { eventsIn: progress.eventsIn }),
+        ...(progress.blockType !== undefined && { blockType: progress.blockType }),
+      })
+    },
+
+    recordAttemptStart(args: { attemptIndex: number; strategy?: string; transport?: Attempt["transport"] }) {
+      const snap: AttemptSnapshot = {
+        attemptIndex: args.attemptIndex,
+        ...(args.strategy !== undefined && { strategy: args.strategy }),
+        ...(args.transport !== undefined && { transport: args.transport }),
+      }
+      publisher?.publish({ kind: "request.attempt_started", ctx: snapshot(), attempt: snap })
+    },
+
+    recordAttemptFailure(args: { willRetry: boolean; nextStrategy?: string; waitMs?: number; learning?: boolean }) {
+      const a = ctx.currentAttempt
+      const snap: AttemptSnapshot = {
+        attemptIndex: a?.index ?? 0,
+        ...(a?.strategy !== undefined && { strategy: a.strategy }),
+        ...(a?.transport !== undefined && { transport: a.transport }),
+        // a?.wireRequest is `WireRequest | null | undefined` (null when not yet
+        // set, undefined when no current attempt). Project rule forbids `!=`;
+        // both checks are needed because `a?.x` propagates undefined when a is
+        // undefined and null when a.x is null.
+        ...(a?.wireRequest !== null && a?.wireRequest !== undefined && { wireRequest: a.wireRequest }),
+        ...(a?.effectiveRequest !== null && a?.effectiveRequest !== undefined && { effectiveRequest: a.effectiveRequest }),
+        ...(a?.response !== null && a?.response !== undefined && { partialResponse: a.response }),
+        ...(a?.error && { error: { status: a.error.status, message: a.error.message, type: a.error.type } }),
+      }
+      publisher?.publish({
+        kind: "request.attempt_failed",
+        ctx: snapshot(),
+        attempt: snap,
+        willRetry: args.willRetry,
+        ...(args.nextStrategy !== undefined && { nextStrategy: args.nextStrategy }),
+        ...(args.waitMs !== undefined && { waitMs: args.waitMs }),
+        ...(args.learning !== undefined && { learning: args.learning }),
+      })
+    },
+
+    failIfNotFinalized(err: unknown) {
+      if (settled) return
+      // Use the resolved model if known, else the inbound model, else "unknown"
+      // — mirrors the precedence the legacy `recordSettledFromEntry` uses.
+      const model = _resolvedModel ?? _originalRequest?.model ?? "unknown"
+      ctx.fail(model, err)
+    },
+
+    completeFromHttpStatus(statusCode: number) {
+      if (settled) return
+      // Non-2xx routes go through fail() so telemetry / history record an
+      // error. 2xx / 3xx go through a minimal-shape complete() — sinks read
+      // usage from event.entry.outboundResponse if it was populated by the
+      // handler before middleware fallback fired, else the entry shows
+      // zero usage which is honest for "handler returned a status code
+      // but did not produce a structured response payload".
+      const model = _resolvedModel ?? _originalRequest?.model ?? "unknown"
+      if (statusCode >= 400) {
+        ctx.fail(model, new HTTPError(`HTTP ${statusCode}`, statusCode, ""))
+        return
+      }
+      ctx.complete({
+        success: true,
+        model: normalizeModelId(model),
+        usage: { input_tokens: 0, output_tokens: 0 },
+        content: null,
+      })
     },
   }
 
