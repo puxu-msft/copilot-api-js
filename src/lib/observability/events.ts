@@ -33,7 +33,12 @@
 
 import type {
   //
+  RequestActivitySnapshot,
+} from "~/lib/context/activity-summary"
+import type {
+  //
   HistoryEntryData,
+  RequestContext,
   RequestState,
 } from "~/lib/context/types"
 import type {
@@ -42,6 +47,20 @@ import type {
   HistoryStats,
 } from "~/lib/history/store"
 import type { EndpointType } from "~/lib/history/types"
+
+// Re-export the single source of truth so consumers of the observability
+// barrel get the type without reaching into context internals.
+export type { RequestActivitySnapshot } from "~/lib/context/activity-summary"
+
+/**
+ * Opaque reference to a live RequestContext. Used only by the
+ * `request.context_updated` event for HistorySink (the only synchronous
+ * field-update consumer). Typed via `import type` from `~/lib/context/types`
+ * — TypeScript's type-only import does NOT create a runtime dependency, so
+ * the apparent `context → observability → context` cycle is type-erased
+ * at compile time and doesn't exist at runtime.
+ */
+export type RequestContextLive = RequestContext
 
 /** Immutable snapshot of a RequestContext at the moment the event is emitted. */
 export interface RequestContextSnapshot {
@@ -60,7 +79,18 @@ export interface RequestContextSnapshot {
   requestBodySize?: number
   /** Pre-resolved billing multiplier (from state.modelIndex) for display. */
   multiplier?: number
+  /**
+   * Activity summary (the `summarizeRequestContext(ctx)` shape used by the
+   * front-end's WS activity view). Populated by the producer (manager.ts)
+   * for lifecycle/state-change events so WsSink can forward it to clients
+   * without re-deriving from a live ctx. Undefined for events where the
+   * full activity summary isn't meaningful (e.g. `feature_applied`).
+   */
+  summary?: RequestActivitySnapshot
 }
+
+// (RequestActivitySnapshot is re-exported above from ~/lib/context/activity-summary
+// — single source of truth, no duplication.)
 
 /**
  * Partial attempt snapshot — carried on attempt-level events so debugging-level
@@ -114,6 +144,23 @@ export type ObservabilityEvent =
   | { kind: "request.created"; ctx: RequestContextSnapshot }
   | { kind: "request.model_resolved"; ctx: RequestContextSnapshot }
   | { kind: "request.state_changed"; ctx: RequestContextSnapshot; previousState: RequestState; meta?: Record<string, unknown> }
+
+  // ── Internal field mutation signal for HistorySink (synchronous consumers only) ──
+  //
+  // This event is the bus equivalent of the legacy
+  // `RequestContextEvent.updated { field }` signal in `lib/context/manager.ts`.
+  // HistorySink consumes it synchronously to mirror originalRequest / attempts
+  // / queueWaitMs / pipelineInfo / warningMessages updates into SQLite. It
+  // carries the **live RequestContextRef** (not just the snapshot) because
+  // `buildHistoryActivityPatch(context)` and `collectAttemptStages(context)`
+  // need the full mutable shape.
+  //
+  // CONTRACT: subscribers MUST read `contextRef` synchronously and not retain
+  // the reference. Async sinks should ignore this event and subscribe to the
+  // strongly-typed signals (`feature_applied`, `attempt_started`,
+  // `state_changed`, etc.) instead. WsSink does not subscribe to this event.
+  // ConsoleSink does not subscribe to it. Only HistorySink does.
+  | { kind: "request.context_updated"; ctx: RequestContextSnapshot; field: string; contextRef: RequestContextLive }
 
   // ── Attempt-level (replaces pipeline.logRetry + consumers.attempts update) ──
   | { kind: "request.attempt_started"; ctx: RequestContextSnapshot; attempt: AttemptSnapshot }

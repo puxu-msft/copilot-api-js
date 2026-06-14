@@ -25,10 +25,13 @@ import {
   PATHS,
   ensurePaths,
 } from "./lib/config/paths"
-import { registerContextConsumers } from "./lib/context/consumers"
 import { initRequestContextManager } from "./lib/context/manager"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
-import { initHistory } from "./lib/history"
+import {
+  //
+  initHistory,
+  setHistoryPublisher,
+} from "./lib/history"
 import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { normalizeForMatching } from "./lib/models/model-name"
@@ -336,29 +339,28 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await initRequestTelemetry()
 
   // Observability bus + sinks (RFC docs/rfc/observability-rewrite.md §2.4-2.5).
-  // Sinks attach idle in this commit: the bus carries no events yet because
-  // no producer has cut over. The legacy `tuiLogger` / `notifyActiveRequestChanged`
-  // / `notifyEntry*` paths remain authoritative; sinks become authoritative in
-  // commit 3b when the manager + history modules atomically swap their emit
-  // targets. Attach order is contract: HistorySink → TelemetrySink → WsSink
+  // Sinks are now AUTHORITATIVE as of commit 3b — manager.ts publishes
+  // request.* events; entries.ts/sessions.ts publish history.* events
+  // via the publisher installed by setHistoryPublisher; sinks subscribe
+  // and own the WS broadcast / SQLite persist / TUI render contracts.
+  // Attach order is contract: HistorySink → TelemetrySink → WsSink
   // → ConsoleSink (so history persists before WS broadcasts, etc.).
   const bus = initBus()
-  attachHistorySink(bus, { publisher: bus.scope("history") })
+  const historyPublisher = bus.scope("history")
+  setHistoryPublisher(historyPublisher)
+  attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
   attachWsSink(bus)
-  // hijackConsola:false during commits 2-3a — the legacy ConsoleRenderer
+  // hijackConsola:false during commits 3b-3d — the legacy ConsoleRenderer
   // installed by main.ts:initConsolaReporter still owns consola's reporter
-  // chain. Commit 3b/4 flips this to true once ConsoleRenderer is removed.
+  // chain. Commit 4 flips this to true once ConsoleRenderer is removed.
   attachConsoleSink(bus, { hijackConsola: false })
 
-  // Initialize request context manager and register event consumers.
-  // Must be after initHistory so history store is ready to receive events.
-  // Inject the observability `request.*` publisher so the new ctx emit
-  // methods (setResolvedModel/recordFeature/... added in commit 3a) reach
-  // the bus. No-op until commit 3b/3c switches callers from the legacy
-  // tuiLogger API to ctx methods.
+  // Initialize request context manager with the request.* publisher so
+  // every lifecycle / context_updated event reaches HistorySink + WsSink +
+  // ConsoleSink + TelemetrySink. consumers.ts is deleted as of commit 3b;
+  // the bus is the only path for these signals now.
   const contextManager = initRequestContextManager({ publisher: bus.scope("request") })
-  registerContextConsumers(contextManager)
 
   // Provide active requests snapshot for WS connected events
   setConnectedDataFactory(() =>

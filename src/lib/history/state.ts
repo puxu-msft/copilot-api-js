@@ -1,3 +1,5 @@
+import type { ScopedPublisher } from "~/lib/observability"
+
 import { PATHS } from "~/lib/config/paths"
 import {
   //
@@ -19,11 +21,33 @@ import {
 
 let enabled = false
 let unsubscribeHistoryLimit: (() => void) | undefined
+let _publisher: ScopedPublisher<"history"> | undefined
 
 export const historyState = {
   get enabled(): boolean {
     return enabled
   },
+  /**
+   * Scoped publisher for `history.*` events. Set once at start.ts via
+   * `setHistoryPublisher`. Read by entries.ts / sessions.ts to publish
+   * `history.entry_added/updated/stats_changed/cleared/session_deleted`
+   * after every SQLite write. Undefined in test runs that don't set it —
+   * write paths then silently skip the publish step (the WS broadcast is
+   * a sink concern, not a correctness concern).
+   */
+  get publisher(): ScopedPublisher<"history"> | undefined {
+    return _publisher
+  },
+}
+
+/**
+ * Install the bus publisher used by the history subsystem to emit
+ * `history.*` events. Called once at `start.ts` after `initBus()`.
+ * Tests that need WS broadcast behavior call this themselves; tests
+ * that only need persistence can leave it unset.
+ */
+export function setHistoryPublisher(publisher: ScopedPublisher<"history"> | undefined): void {
+  _publisher = publisher
 }
 
 export function isHistoryEnabled(): boolean {

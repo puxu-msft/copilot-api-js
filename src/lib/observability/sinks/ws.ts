@@ -71,7 +71,7 @@ export class WsSink {
         this.activeCount++
         notifyActiveRequestChanged({
           action: "created",
-          request: summarizeForWs(event.ctx),
+          request: requestPayload(event.ctx),
           activeCount: this.activeCount,
         })
         return
@@ -79,7 +79,7 @@ export class WsSink {
       case "request.state_changed": {
         notifyActiveRequestChanged({
           action: "state_changed",
-          request: summarizeForWs(event.ctx),
+          request: requestPayload(event.ctx),
           activeCount: this.activeCount,
         })
         return
@@ -125,9 +125,14 @@ export class WsSink {
       // model_resolved / attempt_started / stream_progress are mid-flight
       // signals that the current WS protocol does not surface. Reserved
       // for future use; intentionally silent today.
+      //
+      // request.context_updated is HistorySink-only (see events.ts) —
+      // ignored here to avoid double-broadcasting; WS already sees the
+      // higher-fidelity lifecycle events.
       case "request.model_resolved":
       case "request.attempt_started":
-      case "request.stream_progress": {
+      case "request.stream_progress":
+      case "request.context_updated": {
         return
       }
 
@@ -185,28 +190,36 @@ export class WsSink {
 // ============================================================================
 
 /**
- * Project a RequestContextSnapshot into the shape `summarizeRequestContext`
- * produces today (used by the front-end activity view).
- *
- * Today's `summarizeRequestContext` (`lib/context/activity-summary.ts`)
- * reads from the live RequestContext and includes fields not present on
- * the snapshot (e.g. effective model, attempt count). For commit 2 the
- * fields we have on the snapshot are sufficient because no producer
- * actually publishes these events yet. Commit 3b extends the snapshot
- * type (or the event payload) with whatever extra context the front-end
- * needs once the swap is live.
+ * Build the WS `request` payload from a ctx snapshot. Prefers the full
+ * activity `summary` populated by manager.ts at lifecycle-event publish
+ * time — that mirror the legacy `summarizeRequestContext(ctx)` shape the
+ * front-end's `ActiveRequestInfo` type expects (model/durationMs/
+ * attemptCount/queueWaitMs/transport/etc). Falls back to a minimal
+ * snapshot subset when `summary` is unavailable (defensive — shouldn't
+ * happen for created/state_changed which always carry summary).
  */
-function summarizeForWs(ctx: RequestContextSnapshot): Record<string, unknown> {
+function requestPayload(ctx: RequestContextSnapshot): Record<string, unknown> {
+  if (ctx.summary) {
+    return {
+      ...ctx.summary,
+      // Carry through commit 3a's snapshot extensions so future front-end
+      // consumers (retry visualization etc) have direct access.
+      method: ctx.method,
+      path: ctx.path,
+      ...(ctx.clientModel !== undefined && { clientModel: ctx.clientModel }),
+      ...(ctx.resolvedModel !== undefined && { resolvedModel: ctx.resolvedModel }),
+    }
+  }
   return {
     id: ctx.id,
     endpoint: ctx.endpoint,
-    rawPath: ctx.rawPath,
+    ...(ctx.rawPath !== undefined && { rawPath: ctx.rawPath }),
     state: ctx.state,
     startTime: ctx.startTime,
-    clientModel: ctx.clientModel,
-    resolvedModel: ctx.resolvedModel,
     method: ctx.method,
     path: ctx.path,
+    ...(ctx.clientModel !== undefined && { clientModel: ctx.clientModel }),
+    ...(ctx.resolvedModel !== undefined && { resolvedModel: ctx.resolvedModel }),
   }
 }
 

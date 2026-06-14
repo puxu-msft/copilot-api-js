@@ -8,13 +8,6 @@ import type {
 
 import {
   //
-  notifyEntryAdded,
-  notifyEntryUpdated,
-  notifyHistoryCleared,
-  notifyStatsUpdated,
-} from "../ws"
-import {
-  //
   clearInFlight,
   getInFlight,
   listInFlight,
@@ -38,12 +31,31 @@ import {
 import { historyState } from "./state"
 import { getStats } from "./stats"
 
+/**
+ * Publish a `history.*` ObservabilityEvent via the publisher installed at
+ * start.ts (`setHistoryPublisher(bus.scope("history"))`). When no publisher
+ * is installed (tests that don't need WS broadcast), it's a no-op — the
+ * SQLite write already happened by the time we reach this function.
+ */
+function publishEntryAdded(summary: EntrySummary): void {
+  historyState.publisher?.publish({ kind: "history.entry_added", summary })
+}
+function publishEntryUpdated(summary: EntrySummary): void {
+  historyState.publisher?.publish({ kind: "history.entry_updated", summary })
+}
+function publishStatsChanged(): void {
+  historyState.publisher?.publish({ kind: "history.stats_changed", stats: getStats() })
+}
+function publishHistoryCleared(): void {
+  historyState.publisher?.publish({ kind: "history.cleared" })
+}
+
 export function insertEntry(entry: HistoryEntry): void {
   if (!historyState.enabled) return
 
   putInFlight(entry)
-  notifyEntryAdded(toEntrySummary(entry))
-  notifyStatsUpdated(getStats())
+  publishEntryAdded(toEntrySummary(entry))
+  publishStatsChanged()
 }
 
 export function updateEntry(
@@ -81,8 +93,8 @@ export function updateEntry(
   const merged = updateInFlight(id, update)
   if (!merged) return
 
-  notifyEntryUpdated(toEntrySummary(merged))
-  notifyStatsUpdated(getStats())
+  publishEntryUpdated(toEntrySummary(merged))
+  publishStatsChanged()
 }
 
 /**
@@ -112,8 +124,8 @@ export function finalizeEntry(id: string): void {
     consola.warn("[history] failed to persist completed entry", err)
   }
   removeInFlight(id)
-  notifyEntryUpdated(toEntrySummary(entry))
-  notifyStatsUpdated(getStats())
+  publishEntryUpdated(toEntrySummary(entry))
+  publishStatsChanged()
 }
 
 /**
@@ -163,8 +175,8 @@ export function clearHistory(): void {
       consola.warn("[history] failed to clear sqlite entries", err)
     }
   }
-  notifyHistoryCleared()
-  notifyStatsUpdated(getStats())
+  publishHistoryCleared()
+  publishStatsChanged()
 }
 
 export function listInFlightEntries(): Array<HistoryEntry> {

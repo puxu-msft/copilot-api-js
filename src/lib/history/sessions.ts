@@ -9,11 +9,6 @@ import type {
 
 import {
   //
-  notifySessionDeleted,
-  notifyStatsUpdated,
-} from "../ws"
-import {
-  //
   listInFlight,
   removeInFlight,
 } from "./in-flight"
@@ -30,6 +25,7 @@ import {
   deleteSession as sqliteDeleteSession,
   upsertResponseSession,
 } from "./sqlite/write"
+import { historyState } from "./state"
 
 const SESSION_HEADER_CANDIDATES = ["x-session-id", "x-conversation-id", "x-chat-session-id", "x-thread-id", "x-interaction-id"] as const
 
@@ -114,7 +110,7 @@ export function deleteSession(sessionId: string): boolean {
     return false
   }
 
-  notifySessionDeleted(sessionId)
-  notifyStatsUpdated(computeStats())
+  historyState.publisher?.publish({ kind: "history.session_deleted", sessionId })
+  historyState.publisher?.publish({ kind: "history.stats_changed", stats: computeStats() })
   return true
 }

@@ -1,28 +1,31 @@
 /**
- * History sink — translates `request.*` terminal events into SQLite writes
- * via the existing `lib/history/*` API, and forwards history-level signals
- * (entry persistence, stats deltas, cleared/session_deleted) onto the bus
- * for WsSink to broadcast.
+ * History sink — translates `request.*` lifecycle events into SQLite writes
+ * via the existing `lib/history/*` API, and is the upstream of `history.*`
+ * events (entry persistence, stats deltas, cleared/session_deleted) which
+ * `lib/history/entries.ts` and `sessions.ts` publish via the injected
+ * `historyState.publisher`.
  *
- * Replaces the `handleHistoryEvent` consumer in `lib/context/consumers.ts`.
+ * Replaces the `handleHistoryEvent` consumer in `lib/context/consumers.ts`
+ * (deleted in commit 3b).
  *
- * Commit 2 (this commit): subscribed but idle — bus carries no events
- * yet because the producer in `manager.ts` still calls `consumers.ts`.
- * Commit 3b atomically swaps the producer over and deletes `consumers.ts`,
- * at which point this sink becomes authoritative.
+ * Subscribes to:
+ * - `request.created` — no-op (waits for originalRequest)
+ * - `request.context_updated` — synchronous mirror of the legacy `updated`
+ *   field branch; inserts/updates the in-flight entry and persists each
+ *   stage (eager head row at `originalRequest`, per-attempt bodies at
+ *   `attempts`, head status on state changes).
+ * - `request.state_changed` — head-row state update + persistEntryStatus.
+ * - `request.completed`/`failed`/`aborted` — terminal write + finalizeEntry.
  *
- * `history.*` event emission (via the injected publisher) is **not yet
- * wired here** — `lib/history/entries.ts` and `lib/history/sessions.ts`
- * still call the legacy `notifyEntry...`, `notifyStatsUpdated`,
- * `notifyHistoryCleared`, and `notifySessionDeleted` functions directly.
- * They will be switched to publish via `historyState.publisher` in
- * commit 3b alongside the producer cutover (so the two halves of D9
- * collapse together).
+ * Does NOT subscribe to `history.*` (it would receive its own emissions
+ * via entries.ts — pointless and noisy). The subscription filter at
+ * construction time strips them.
  */
 
 import type {
   //
   HistoryEntryData,
+  RequestContext,
   ResponseData,
 } from "~/lib/context/types"
 import type {
@@ -31,12 +34,28 @@ import type {
   MessageContent,
 } from "~/lib/history"
 
+import { buildHistoryActivityPatch } from "~/lib/context/activity-summary"
+import {
+  //
+  legFromEffective,
+  legFromWire,
+} from "~/lib/context/request"
+import {
+  //
+  STAGE,
+  type StagePayload,
+} from "~/lib/history/sqlite/serialize"
 import {
   //
   finalizeEntry,
+  insertEntry,
   isHistoryEnabled,
+  persistEntryEager,
+  persistEntryStages,
+  persistEntryStatus,
   updateEntry,
 } from "~/lib/history/store"
+import { getProcessIdentity } from "~/lib/process-identity"
 
 import type {
   //
@@ -47,11 +66,14 @@ import type {
 
 export interface HistorySinkOptions {
   /**
-   * Scoped publisher for `history.*` events. Injected by `start.ts`; in
-   * commit 3b `lib/history/entries.ts` and `sessions.ts` will receive
-   * this same publisher via `historyState.publisher` to emit
-   * `history.entry_added/updated/stats_changed/cleared/session_deleted`.
-   * For commit 2 it is unused (no producer publishes terminal events yet).
+   * Scoped publisher for `history.*` events. NOT consumed by HistorySink
+   * itself — it's the publisher reference HistorySink hands off to
+   * `historyState.publisher` (set via `setHistoryPublisher` at start.ts).
+   * The actual `history.*` emissions originate in `lib/history/entries.ts`
+   * / `sessions.ts` after each SQLite write completes.
+   *
+   * Optional in tests: when omitted, history writes still happen but no
+   * `history.*` bus events fire (so WsSink doesn't broadcast).
    */
   publisher?: ScopedPublisher<"history">
 }
@@ -65,9 +87,8 @@ export class HistorySink {
         this.handle(event)
       },
       // Filter at subscribe time so we don't even materialize history.* /
-      // system.* events. This is the §2.3 #9 contract: HistorySink subscribes
-      // only to request.* and does NOT see its own emitted history.* events
-      // (which avoids a noisy assertNever path).
+      // system.* events. HistorySink subscribes only to request.* and does
+      // NOT see its own emitted history.* events (avoids noisy default-case).
       (event) => event.kind.startsWith("request."),
     )
   }
@@ -81,27 +102,42 @@ export class HistorySink {
 
     switch (event.kind) {
       case "request.created": {
-        // No-op — original behavior waits for originalRequest to be set.
+        // Don't insert yet — wait for originalRequest. (Mirrors the
+        // consumers.ts handleHistoryEvent "created" branch.)
         return
       }
-      case "request.model_resolved":
+      case "request.context_updated": {
+        this.onContextUpdated(event.contextRef, event.field)
+        return
+      }
       case "request.state_changed": {
-        // Translate state changes to head-row updates. The event payload
-        // does not carry `originalRequest` / `attempts` so we cannot fully
-        // mirror `handleHistoryEvent`'s "updated" branch yet. Commit 3b
-        // either threads the full ctx through these events or replaces this
-        // sink's body with a richer translation. For commit 2 this is a
-        // no-op because no producer publishes these events.
-        return
-      }
-      case "request.attempt_started":
-      case "request.attempt_failed":
-      case "request.stream_progress":
-      case "request.feature_applied": {
-        // Per RFC §2.3 these are mid-flight signals. History persistence
-        // for attempts/streaming is currently driven by ctx.field
-        // updates ("attempts"/"queueWaitMs"); commit 3b will move that
-        // logic here. For commit 2: idle.
+        // Mirror the legacy consumers.ts state_changed branch — apply the
+        // full activity patch (rawPath/startedAt/state/active/lastUpdatedAt/
+        // queueWaitMs/attemptCount/currentStrategy/durationMs/transport)
+        // so a head-row read during a long-running request shows up-to-date
+        // duration / attempt count, not the stale insert-time values.
+        const s = event.ctx.summary
+        if (s) {
+          updateEntry(event.ctx.id, {
+            ...(s.rawPath ? { rawPath: s.rawPath } : {}),
+            startedAt: s.startTime,
+            state: s.state,
+            active: s.active,
+            lastUpdatedAt: s.lastUpdatedAt,
+            queueWaitMs: s.queueWaitMs,
+            attemptCount: s.attemptCount,
+            currentStrategy: s.currentStrategy,
+            durationMs: s.durationMs,
+            ...(s.transport ? { transport: s.transport } : {}),
+          })
+        } else {
+          updateEntry(event.ctx.id, {
+            state: event.ctx.state,
+            active: event.ctx.state !== "completed" && event.ctx.state !== "failed" && event.ctx.state !== "aborted",
+            lastUpdatedAt: Date.now(),
+          })
+        }
+        persistEntryStatus(event.ctx.id)
         return
       }
       case "request.completed":
@@ -110,9 +146,16 @@ export class HistorySink {
         this.onTerminal(event.entry)
         return
       }
-      // We filtered these out at subscribe time, but include the cases so
-      // adding a new request.* kind to the union still fails tsc until
-      // this sink decides what to do.
+      // Mid-flight bus events we don't need (history is driven via
+      // `request.context_updated` instead — same data, one channel).
+      case "request.model_resolved":
+      case "request.attempt_started":
+      case "request.attempt_failed":
+      case "request.stream_progress":
+      case "request.feature_applied": {
+        return
+      }
+      // Filtered out at subscribe time but listed for exhaustive check.
       default: {
         return
       }
@@ -120,9 +163,67 @@ export class HistorySink {
   }
 
   /**
+   * Mirror the legacy `handleHistoryEvent` "updated" branch:
+   * - First `originalRequest` set → insertEntry + persistEntryEager
+   * - `attempts`/`queueWaitMs` → updateEntry activity patch; for attempts,
+   *   incrementally persist the current attempt's bodies
+   * - `warningMessages` → updateEntry warningMessages
+   * - `pipelineInfo` → updateEntry pipelineInfo
+   *
+   * Reads the live `contextRef` synchronously (this method is on the
+   * subscriber path; sink runs to completion before bus.publish returns).
+   * The contract is documented on the `request.context_updated` event in
+   * events.ts.
+   */
+  private onContextUpdated(ctx: RequestContext, field: string): void {
+    if (field === "originalRequest") {
+      const orig = ctx.originalRequest
+      if (!orig) return
+      const entry: HistoryEntry = {
+        id: ctx.id,
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+        ...(ctx.rawPath ? { rawPath: ctx.rawPath } : {}),
+        endpoint: ctx.endpoint,
+        // Process identity injected once at insert. The in-flight merge chain
+        // ({...existing, ...patch}) preserves it through every subsequent
+        // updateEntry to finalization, so it lands in the persisted blob + the
+        // pid column without needing to be re-supplied on each update (and it
+        // is intentionally absent from updateEntry's Pick<> allowlist).
+        process: getProcessIdentity(),
+        ...buildHistoryActivityPatch(ctx),
+        inboundRequest: {
+          model: orig.model,
+          messages: orig.messages as Array<MessageContent> | undefined,
+          stream: orig.stream,
+          tools: orig.tools as HistoryEntry["inboundRequest"]["tools"],
+          system: orig.system as HistoryEntry["inboundRequest"]["system"],
+        },
+      }
+      insertEntry(entry)
+      persistEntryEager(entry)
+      return
+    }
+    if (field === "attempts" || field === "queueWaitMs") {
+      updateEntry(ctx.id, buildHistoryActivityPatch(ctx))
+      if (field === "attempts") persistEntryStages(ctx.id, collectAttemptStages(ctx))
+      return
+    }
+    if (field === "warningMessages" && ctx.warningMessages.length > 0) {
+      updateEntry(ctx.id, { warningMessages: [...ctx.warningMessages] })
+      return
+    }
+    if (field === "pipelineInfo" && ctx.pipelineInfo) {
+      updateEntry(ctx.id, { pipelineInfo: ctx.pipelineInfo })
+      return
+    }
+    // Other field names (e.g. future additions) are intentionally ignored —
+    // adding a new mirror-to-history field is an explicit choice.
+  }
+
+  /**
    * Write a terminal entry to SQLite. Mirrors the body of
    * `handleHistoryEvent`'s `completed/failed/aborted` branch in
-   * `consumers.ts` so commit 3b can delete that file 1:1.
+   * `consumers.ts` 1:1.
    */
   private onTerminal(entryData: HistoryEntryData): void {
     const response = toHistoryResponse(entryData)
@@ -171,8 +272,18 @@ export class HistorySink {
 }
 
 // ============================================================================
-// Helpers (kept in sync with consumers.ts — commit 3b deletes the duplicate)
+// Helpers (kept in sync with the legacy consumers.ts — single source now)
 // ============================================================================
+
+function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
+  const a = ctx.currentAttempt
+  if (!a) return []
+  const stages: Array<StagePayload> = []
+  if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: a.index, payload: legFromEffective(a.effectiveRequest) })
+  if (a.wireRequest) stages.push({ stage: STAGE.outboundRequest, attemptIndex: a.index, payload: legFromWire(a.wireRequest) })
+  if (a.response) stages.push({ stage: STAGE.outboundResponse, attemptIndex: a.index, payload: responseDataToHistory(a.response) })
+  return stages
+}
 
 function toHistoryResponse(entryData: HistoryEntryData): HistoryEntry["outboundResponse"] | undefined {
   if (!entryData.outboundResponse) return undefined
@@ -213,12 +324,6 @@ function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry
     response: a.response ? responseDataToHistory(a.response) : undefined,
   }))
 }
-
-// `insertEntry / persistEntryEager / persistEntryStatus / persistEntryStages
-// / buildHistoryActivityPatch / collectAttemptStages / STAGE / legFromEffective
-// / legFromWire / getProcessIdentity` are still referenced by the original
-// `consumers.ts` flow in commits 1-3a. Commit 3b moves their call sites here
-// and adds the corresponding imports back.
 
 // ============================================================================
 // Attachment helper

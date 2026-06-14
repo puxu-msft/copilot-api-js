@@ -17,15 +17,14 @@
 import { consola } from "consola"
 
 import type { EndpointType } from "~/lib/history/store"
-import type { ScopedPublisher } from "~/lib/observability"
-
-import {
+import type {
   //
-  recordAcceptedRequest,
-  recordSettledRequest,
-} from "~/lib/request-telemetry"
+  RequestContextSnapshot,
+  ScopedPublisher,
+} from "~/lib/observability"
+
+import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
-import { notifyActiveRequestChanged } from "~/lib/ws"
 
 import type {
   //
@@ -217,18 +216,30 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
   }
 
   /**
-   * Mirror a settled history entry into request-telemetry. Used by both the
-   * "completed" and "failed" paths; defaultSuccess flips the assumed success
-   * value when the entry's `response.success` is missing (completed defaults
-   * to true, failed defaults to false).
+   * Build a RequestContextSnapshot enriched with the front-end activity
+   * summary. Used by the lifecycle publishes below so WsSink can broadcast
+   * `summarizeRequestContext`-shape payloads without re-deriving from a
+   * live ctx. `feature_applied` / `stream_progress` / `attempt_*` events
+   * intentionally omit the summary (they don't carry lifecycle deltas).
    */
-  function recordSettledFromEntry(entry: HistoryEntryData, defaultSuccess: boolean): void {
-    recordSettledRequest(entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown", {
-      startedAt: entry.startedAt,
-      endedAt: entry.endedAt,
-      success: entry.outboundResponse?.success ?? defaultSuccess,
-      usage: entry.outboundResponse?.usage,
-    })
+  function snapshotWithSummary(context: RequestContext): RequestContextSnapshot {
+    const billing = context.resolvedModel ? state.modelIndex.get(context.resolvedModel)?.billing : undefined
+    return {
+      id: context.id,
+      endpoint: context.endpoint,
+      ...(context.sessionId !== undefined && { sessionId: context.sessionId }),
+      ...(context.rawPath !== undefined && { rawPath: context.rawPath }),
+      method: context.method,
+      path: context.path,
+      ...(context.clientModel !== null && { clientModel: context.clientModel }),
+      ...(context.resolvedModel !== null && { resolvedModel: context.resolvedModel }),
+      state: context.state,
+      startTime: context.startTime,
+      queueWaitMs: context.queueWaitMs,
+      ...(context.requestBodySize !== undefined && { requestBodySize: context.requestBodySize }),
+      ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+      summary: summarizeRequestContext(context),
+    }
   }
 
   function handleContextEvent(rawEvent: RequestContextEventData) {
@@ -243,10 +254,12 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
             previousState: rawEvent.previousState,
             meta: rawEvent.meta,
           })
-          notifyActiveRequestChanged({
-            action: "state_changed",
-            request: summarizeRequestContext(context),
-            activeCount: activeContexts.size,
+          // Bus: WsSink picks this up and broadcasts to the front-end.
+          publisher?.publish({
+            kind: "request.state_changed",
+            ctx: snapshotWithSummary(context),
+            previousState: rawEvent.previousState,
+            ...(rawEvent.meta !== undefined && { meta: rawEvent.meta }),
           })
         }
         break
@@ -258,41 +271,54 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
             context,
             field: rawEvent.field,
           })
+          // HistorySink consumes this synchronously to mirror the legacy
+          // `handleHistoryEvent` "updated" branch (originalRequest insert,
+          // attempts/queueWaitMs/pipelineInfo/warningMessages updates).
+          // See events.ts `request.context_updated` doc — synchronous-only,
+          // contextRef must not be retained.
+          publisher?.publish({
+            kind: "request.context_updated",
+            ctx: snapshotWithSummary(context),
+            field: rawEvent.field,
+            contextRef: context,
+          })
         }
         break
       }
       case "completed": {
         if (rawEvent.entry) {
-          recordSettledFromEntry(rawEvent.entry, true)
           emit({
             type: "completed",
             context,
             entry: rawEvent.entry,
           })
+          // Bus: HistorySink persists, TelemetrySink records success,
+          // WsSink broadcasts the lifecycle change.
+          publisher?.publish({
+            kind: "request.completed",
+            ctx: snapshotWithSummary(context),
+            entry: rawEvent.entry,
+          })
         }
         activeContexts.delete(context.id)
-        notifyActiveRequestChanged({
-          action: "completed",
-          requestId: context.id,
-          activeCount: activeContexts.size,
-        })
         break
       }
       case "failed": {
         if (rawEvent.entry) {
-          recordSettledFromEntry(rawEvent.entry, false)
           emit({
             type: "failed",
             context,
             entry: rawEvent.entry,
           })
+          publisher?.publish({
+            kind: "request.failed",
+            ctx: snapshotWithSummary(context),
+            entry: rawEvent.entry,
+            error: rawEvent.entry.outboundResponse?.error ?? "Unknown error",
+            ...(rawEvent.entry.outboundResponse?.status !== undefined && { statusCode: rawEvent.entry.outboundResponse.status }),
+          })
         }
         activeContexts.delete(context.id)
-        notifyActiveRequestChanged({
-          action: "failed",
-          requestId: context.id,
-          activeCount: activeContexts.size,
-        })
         break
       }
       case "aborted": {
@@ -300,20 +326,20 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
           // Deliberately NOT recorded into request-telemetry: a client
           // disconnect is not a verdict on the model/upstream (it neither
           // succeeded nor failed on the service's account), so counting it
-          // would skew the per-model success rate. History still keeps the
-          // full `aborted` record via the history consumer.
+          // would skew the per-model success rate. TelemetrySink filters
+          // these out at subscribe time.
           emit({
             type: "aborted",
             context,
             entry: rawEvent.entry,
           })
+          publisher?.publish({
+            kind: "request.aborted",
+            ctx: snapshotWithSummary(context),
+            entry: rawEvent.entry,
+          })
         }
         activeContexts.delete(context.id)
-        notifyActiveRequestChanged({
-          action: "aborted",
-          requestId: context.id,
-          activeCount: activeContexts.size,
-        })
         break
       }
       default: {
@@ -338,11 +364,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
       recordAcceptedRequest(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
       emit({ type: "created", context: ctx })
-      notifyActiveRequestChanged({
-        action: "created",
-        request: summarizeRequestContext(ctx),
-        activeCount: activeContexts.size,
-      })
+      publisher?.publish({ kind: "request.created", ctx: snapshotWithSummary(ctx) })
       return ctx
     },
 

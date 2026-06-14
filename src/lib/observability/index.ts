@@ -28,6 +28,8 @@ export type {
   FeatureKind,
   ObservabilityEvent,
   RateLimitMode,
+  RequestActivitySnapshot,
+  RequestContextLive,
   RequestContextSnapshot,
   ShutdownPhase,
   TransportKind,

@@ -30,6 +30,7 @@ export {
   registerResponseSession,
   resolveResponseSessionId,
   setHistoryMaxEntries,
+  setHistoryPublisher,
   shutdownHistory,
   updateEntry,
 } from "./store"

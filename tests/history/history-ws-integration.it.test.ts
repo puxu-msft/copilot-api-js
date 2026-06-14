@@ -34,8 +34,11 @@ import {
   getCurrentSession,
   initHistory,
   insertEntry,
+  setHistoryPublisher,
   updateEntry,
 } from "~/lib/history"
+import { resetBusForTests } from "~/lib/observability"
+import { attachWsSink } from "~/lib/observability/sinks/ws"
 import { generateId } from "~/lib/utils"
 import {
   //
@@ -82,13 +85,25 @@ function createEntry(endpoint: EndpointType, inboundRequest: Partial<HistoryEntr
 
 // ─── Setup / Teardown ───
 
+let detachWsSink: (() => void) | undefined
+
 beforeEach(() => {
   initHistory(true, 200)
+  // Wire the bus chain that ws/broadcast.ts depends on after commit 3b:
+  // entries.ts publishes history.* via historyState.publisher → WsSink
+  // subscribes → calls notifyEntryAdded/etc → broadcasts to addClient'd WSes.
+  const bus = resetBusForTests()
+  const historyPub = bus.scope("history")
+  setHistoryPublisher(historyPub)
+  detachWsSink = attachWsSink(bus)
 })
 
 afterEach(() => {
   closeAllClients()
   clearHistory()
+  detachWsSink?.()
+  detachWsSink = undefined
+  setHistoryPublisher(undefined)
 })
 
 // ─── insertEntry → entry_added (EntrySummary) ───

@@ -21,7 +21,7 @@ export {
   registerResponseSession,
   resolveResponseSessionId,
 } from "./sessions"
-export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries, shutdownHistory } from "./state"
+export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries, setHistoryPublisher, shutdownHistory } from "./state"
 export { exportHistory, getStats } from "./stats"
 
 export type {
