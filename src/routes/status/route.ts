@@ -163,7 +163,7 @@ statusRoutes.get("/", async (c) => {
       availableCount: state.modelIds.size,
     },
 
-    upstream_websocket: {
+    upstream_ws: {
       enabled: state.upstreamWebSocket,
       active_connections: upstreamWs?.activeCount ?? 0,
       consecutive_fallbacks: upstreamWs?.consecutiveFallbacks ?? 0,

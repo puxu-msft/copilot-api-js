@@ -212,7 +212,7 @@ gemini -p "hello"
 - `model_preference` — 用于 `opus` / `sonnet` / `haiku` 解析的每个 family 的优先级列表。
 - `disabled_models` — 在 `/models`、UI 选择器和回退解析中屏蔽已弃用/遗留模型。
 - `anthropic.*` — cache-control 模式、tool 去重、thinking-block 策略、剥离服务端工具、上下文编辑、`tool_search`、`efforts_overrides`、`strip_beta_headers`、`reject_body_fields`、warmup 策略、system-reminder 重写。
-- `openai-responses.*` — `normalize_call_ids`、`upstream_websocket`、`fix_stream_ids`、`client_websocket_keep_open`。
+- `openai-responses.*` — `normalize_call_ids`、`upstream_ws`、`fix_stream_ids`、`client_ws_keep_open`、`strip_image_generation_tool`、`max_ws_frame_bytes`、`max_client_ws_connections`、`max_upstream_ws_connections`。
 - `rate_limiter.*` — 重试间隔、请求间隔、恢复超时、连续成功阈值。**需要重启。**
 - `system_prompt_prepend` / `system_prompt_append` / `system_prompt_overrides` — 完整的 system prompt 修改管道（line 或 regex 替换，可选 `model` 过滤）。
 - `history.limit` / `history.reaper_interval` / `history.db_path` — SQLite history 保留策略。
