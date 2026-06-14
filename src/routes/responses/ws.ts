@@ -40,6 +40,7 @@ import {
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
+import { stripImageGenerationTool } from "~/lib/openai/responses-tool-filter"
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
@@ -181,6 +182,11 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   wsClientAborts.set(ws, clientAbort)
 
   let payload = rawPayload
+
+  // Strip the image_generation builtin tool when configured — parity with the
+  // HTTP handler (Copilot upstream rejects it, failing the whole request).
+  stripImageGenerationTool(payload)
+
   const requestedModel = payload.model
   // Snapshot BEFORE any mutation so history "original" reflects the client's
   // raw frame, not the half-processed in-flight version (model resolution,

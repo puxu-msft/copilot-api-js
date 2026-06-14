@@ -299,6 +299,12 @@ export const ResponsesConfigSchema = z
     upstream_ws: nullableBoolean(),
     fix_stream_ids: nullableBoolean(),
     client_ws_keep_open: nullableBoolean(),
+    /**
+     * Strip the `image_generation` builtin tool from inbound Responses
+     * requests. The Copilot upstream rejects it (failing the whole request),
+     * and some clients (e.g. Codex CLI) auto-inject it. Default false.
+     */
+    strip_image_generation_tool: nullableBoolean(),
     /** Hard cap on inbound WS frame bytes (default 1 MiB; 0 = unlimited). */
     max_ws_frame_bytes: nullableNonnegativeInt(),
     /** Max concurrent client WS connections (default 256; 0 = unlimited). */

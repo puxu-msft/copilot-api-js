@@ -617,6 +617,8 @@ export async function applyConfigToState(): Promise<Config> {
   if (responsesConfig && responsesConfig.normalize_call_ids !== undefined) setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
   if (responsesConfig && responsesConfig.upstream_ws !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_ws })
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
+  if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
+    setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })
   if (responsesConfig && responsesConfig.client_ws_keep_open !== undefined) setResponsesConfig({ clientWebsocketKeepOpen: responsesConfig.client_ws_keep_open })
   if (responsesConfig && responsesConfig.max_ws_frame_bytes !== undefined) setResponsesConfig({ maxWsFrameBytes: responsesConfig.max_ws_frame_bytes })
   if (responsesConfig && responsesConfig.max_client_ws_connections !== undefined)
