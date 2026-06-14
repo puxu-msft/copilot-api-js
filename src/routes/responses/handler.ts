@@ -104,14 +104,16 @@ import {
 export async function handleResponses(c: Context) {
   let payload = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
 
-  // Strip the image_generation builtin tool when configured — the Copilot
-  // upstream rejects it, failing the whole request (Codex CLI auto-injects it).
-  stripImageGenerationTool(payload)
-
   // Snapshot inbound payload BEFORE mutation (model resolution, instructions
   // processing, call_id normalization) so history "original" reflects what
   // the client sent, not the half-processed in-flight version.
   const originalSnapshot = structuredClone(payload)
+
+  // Strip the image_generation builtin tool when configured — the Copilot
+  // upstream rejects it, failing the whole request (Codex CLI auto-injects it).
+  // Runs AFTER the snapshot so history retains evidence the client sent it
+  // (CLAUDE.md 原则7: 不主动丢弃任何可能有诊断价值的信息).
+  stripImageGenerationTool(payload)
 
   // Azure deployment routes pass deployment-name via this channel instead
   // of mutating body.model. Apply AFTER snapshotting so history sees raw body.

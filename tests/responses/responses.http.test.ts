@@ -11,6 +11,7 @@ import {
 
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
+import { getHistory } from "~/lib/history"
 import {
   //
   type StateSnapshot,
@@ -411,5 +412,47 @@ describe("POST /responses", () => {
         code: null,
       },
     })
+  })
+
+  test("strip_image_generation_tool: drops image_generation from wire payload but keeps it in history.inboundRequest", async () => {
+    // Regression for the merge of PR #4 (strip_image_generation_tool). The strip
+    // must run AFTER the history snapshot so history retains evidence that the
+    // client originally sent image_generation, while the wire payload sent
+    // upstream has it stripped. See CLAUDE.md 原则7: History 系统应记录请求/响应
+    // 生命周期中所有可观测的原始数据.
+    setModels({
+      object: "list",
+      data: [
+        mockModel("gpt-5.5", {
+          vendor: "OpenAI",
+          supported_endpoints: ["/chat/completions", "/responses"],
+        }),
+      ],
+    })
+    setStateForTests({ stripImageGenerationTool: true })
+
+    const res = await app.request("/responses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: "Hello",
+        tools: [{ type: "function", name: "lookup_weather" }, { type: "image_generation" }, { type: "web_search" }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(upstreamFetchMock).toHaveBeenCalledTimes(1)
+
+    // Wire payload: image_generation stripped, other tools preserved.
+    const wireToolTypes = (capturedPayload?.tools ?? []).map((t) => (t as { type?: string }).type)
+    expect(wireToolTypes).toEqual(["function", "web_search"])
+
+    // History inboundRequest: client's original tools array intact, including
+    // image_generation — operators debugging the strip must be able to see the
+    // raw client input, not the half-processed in-flight version.
+    const historyEntry = getHistory({ endpoint: "openai-responses" }).entries[0]
+    const inboundToolTypes = (historyEntry?.inboundRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
+    expect(inboundToolTypes).toEqual(["function", "image_generation", "web_search"])
   })
 })

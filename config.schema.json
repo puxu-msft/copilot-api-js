@@ -590,6 +590,16 @@
                 }
               ]
             },
+            "strip_image_generation_tool": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "max_ws_frame_bytes": {
               "anyOf": [
                 {

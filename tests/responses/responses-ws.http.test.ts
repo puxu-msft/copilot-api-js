@@ -21,6 +21,7 @@ import type {
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
+import { getHistory } from "~/lib/history"
 import { gracefulShutdown } from "~/lib/shutdown"
 import {
   //
@@ -451,5 +452,50 @@ describe("Responses WebSocket transport", () => {
     expect((result.messages[0] as { error: { type: string } }).error.type).toBe("server_overloaded")
 
     first.close()
+  })
+
+  test("strip_image_generation_tool: drops image_generation from wire payload but keeps it in history.inboundRequest", async () => {
+    // Regression for the merge of PR #4 (strip_image_generation_tool). Parity
+    // with the HTTP handler — strip must run AFTER the history snapshot so
+    // history retains evidence the client originally sent image_generation.
+    // See CLAUDE.md 原则7: History 系统应记录请求/响应生命周期中所有可观测的原始数据.
+    setStateForTests({ stripImageGenerationTool: true })
+    setModels({
+      object: "list",
+      data: [
+        mockModel("gpt-4o", {
+          vendor: "OpenAI",
+          supported_endpoints: ["/chat/completions", "/responses"],
+        }),
+      ],
+    })
+
+    server = startWsServer()
+
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+
+    await waitForOpen(ws)
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          model: "gpt-4o",
+          input: "Hello",
+          tools: [{ type: "function", name: "lookup_weather" }, { type: "image_generation" }, { type: "web_search" }],
+        },
+      }),
+    )
+
+    await closePromise
+
+    // Wire payload sent upstream: image_generation stripped, others preserved.
+    const wireToolTypes = (capturedPayload?.tools ?? []).map((t) => (t as { type?: string }).type)
+    expect(wireToolTypes).toEqual(["function", "web_search"])
+
+    // History inboundRequest: client's original tools array intact.
+    const historyEntry = getHistory({ endpoint: "openai-responses" }).entries[0]
+    const inboundToolTypes = (historyEntry?.inboundRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
+    expect(inboundToolTypes).toEqual(["function", "image_generation", "web_search"])
   })
 })

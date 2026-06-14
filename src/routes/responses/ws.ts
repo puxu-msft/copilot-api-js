@@ -183,15 +183,18 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 
   let payload = rawPayload
 
-  // Strip the image_generation builtin tool when configured — parity with the
-  // HTTP handler (Copilot upstream rejects it, failing the whole request).
-  stripImageGenerationTool(payload)
-
   const requestedModel = payload.model
   // Snapshot BEFORE any mutation so history "original" reflects the client's
   // raw frame, not the half-processed in-flight version (model resolution,
   // instructions processing, call_id normalization all mutate payload below).
   const originalSnapshot = structuredClone(payload)
+
+  // Strip the image_generation builtin tool when configured — parity with the
+  // HTTP handler (Copilot upstream rejects it, failing the whole request).
+  // Runs AFTER the snapshot so history retains evidence the client sent it
+  // (CLAUDE.md 原则7: 不主动丢弃任何可能有诊断价值的信息).
+  stripImageGenerationTool(payload)
+
   const resolvedModel = resolveModelName(requestedModel)
   payload.model = resolvedModel
 
