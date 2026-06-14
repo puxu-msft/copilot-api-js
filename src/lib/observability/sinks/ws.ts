@@ -22,6 +22,7 @@
 
 import {
   //
+  broadcastAndFlush,
   notifyActiveRequestChanged,
   notifyEntryAdded,
   notifyEntryUpdated,
@@ -53,9 +54,7 @@ export class WsSink {
 
   constructor(bus: ObservabilityBus) {
     this.unsubscribe = bus.subscribe(
-      (event) => {
-        this.handle(event)
-      },
+      (event) => this.handle(event),
       // WS cares about every namespace.
       (event) => event.kind.startsWith("request.") || event.kind.startsWith("history.") || event.kind.startsWith("system."),
     )
@@ -65,7 +64,13 @@ export class WsSink {
     this.unsubscribe()
   }
 
-  private handle(event: ObservabilityEvent): void {
+  /**
+   * Handle an event. Returns `void` for sync broadcasts and `Promise<void>`
+   * for `system.shutdown_phase_changed { needsFlush: true }` — the bus's
+   * `publishAndFlush` awaits this promise so shutdown phase frames are
+   * guaranteed to leave the box before the next phase advances.
+   */
+  private handle(event: ObservabilityEvent): void | Promise<void> {
     switch (event.kind) {
       case "request.created": {
         this.activeCount++
@@ -166,6 +171,23 @@ export class WsSink {
         return
       }
       case "system.shutdown_phase_changed": {
+        if (event.needsFlush) {
+          // Returning the promise lets bus.publishAndFlush await the TCP
+          // drain. shutdown.ts polls phases that immediately force-close
+          // sockets; without flushing here, the phase frame can be lost
+          // mid-send and operators see a phase gap in the dashboard.
+          return broadcastAndFlush(
+            {
+              type: "shutdown_phase_changed",
+              data: { phase: event.phase, previousPhase: event.previousPhase, needsFlush: event.needsFlush },
+              timestamp: Date.now(),
+            },
+            "status",
+          ).then(() => {
+            /* discard stillBuffering — bus's pendingWsBuffer is a fixed-shape
+               placeholder; shutdown only cares that the drain wait happened. */
+          })
+        }
         notifyShutdownPhaseChanged({
           phase: event.phase,
           previousPhase: event.previousPhase,

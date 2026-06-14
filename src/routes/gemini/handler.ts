@@ -235,14 +235,12 @@ async function prepareGeminiRequest(c: Context, body: GenerateContentRequest, mo
   //    request payload field holds the raw Gemini snapshot — UI shows the
   //    client's actual input — while the wire-request side captures the
   //    translated OpenAI payload as the adapter sends each attempt.
-  const tuiLogId = c.get("tuiLogId") as string | undefined
   const manager = getRequestContextManager()
   const contentLengthHeader = c.req.header("content-length")
   const reqBodySize = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : undefined
   const ctx = manager.create({
     endpoint: "gemini-generate-content",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers),
-    tuiLogId,
     rawPath: c.req.path,
     method: c.req.method,
     path: c.req.path,

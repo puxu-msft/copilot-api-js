@@ -153,7 +153,6 @@ export async function handleChatCompletion(c: Context) {
   originalPayload.messages = await processOpenAIMessages(originalPayload.messages, originalPayload.model)
 
   // Get tracking ID
-  const tuiLogId = c.get("tuiLogId") as string | undefined
 
   // Create request context — triggers "created" event → history consumer inserts entry
   const manager = getRequestContextManager()
@@ -162,7 +161,6 @@ export async function handleChatCompletion(c: Context) {
   const reqCtx = manager.create({
     endpoint: "openai-chat-completions",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers),
-    tuiLogId,
     rawPath: c.req.path,
     method: c.req.method,
     path: c.req.path,

@@ -57,7 +57,6 @@ import {
   type SseFrame,
 } from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
-import { tuiLogger } from "~/lib/tui"
 
 import {
   //
@@ -206,23 +205,13 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     payload = normalizeCallIds(payload)
   }
 
-  // TUI logging — use "WS" as method indicator. The legacy tuiLogger entry
-  // is still needed through commits 3d-3e because lib/tui/console-renderer.ts
-  // and lib/tui/middleware.ts still install consola hijacks driven by it.
-  // Commit 4 deletes both and this startRequest call goes away.
-  const tuiLogId = tuiLogger.startRequest({
-    method: "WS",
-    path: "/v1/responses",
-    model: resolvedModel,
-  })
-
   // Create request context for tracking. Per RFC §2.9 the WS entry point
   // passes method="WS" so sinks render the activity line consistently
-  // with HTTP routes.
+  // with HTTP routes. ConsoleSink reads ctx via the bus `request.created`
+  // event — no separate tuiLogger entry needed (commit 4 deleted lib/tui).
   const reqCtx = getRequestContextManager().create({
     endpoint: "openai-responses",
     sessionId: resolveResponseSessionId(payload.previous_response_id),
-    tuiLogId,
     rawPath: "/v1/responses",
     method: "WS",
     path: "/v1/responses",

@@ -150,7 +150,6 @@ export async function handleResponses(c: Context) {
   }
 
   // Get tracking ID
-  const tuiLogId = c.get("tuiLogId") as string | undefined
 
   // Create request context (Responses API is a distinct OpenAI-format endpoint)
   const manager = getRequestContextManager()
@@ -159,7 +158,6 @@ export async function handleResponses(c: Context) {
   const reqCtx = manager.create({
     endpoint: "openai-responses",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers) ?? resolveResponseSessionId(payload.previous_response_id),
-    tuiLogId,
     rawPath: c.req.path,
     method: c.req.method,
     path: c.req.path,

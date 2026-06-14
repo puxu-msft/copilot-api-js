@@ -225,7 +225,6 @@ export type RequestContextEventCallback = (event: RequestContextEventData) => vo
 export interface RequestContext {
   readonly id: string
   readonly sessionId: string | undefined
-  readonly tuiLogId: string | undefined
   readonly rawPath: string | undefined
   /**
    * HTTP method of the inbound request (or "WS"/"STDIO" for non-HTTP entry

@@ -17,8 +17,13 @@ import consola from "consola"
 import { setMaxListeners } from "node:events"
 
 import type { AdaptiveRateLimiter } from "./adaptive-rate-limiter"
+import type { RequestContext } from "./context/request"
+import type {
+  //
+  ScopedPublisher,
+  ShutdownPhase,
+} from "./observability"
 import type { ServerInstance } from "./serve"
-import type { TuiLogEntry } from "./tui"
 
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { getRequestContextManager } from "./context/manager"
@@ -27,12 +32,10 @@ import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { shutdownRequestTelemetry } from "./request-telemetry"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
-import { tuiLogger } from "./tui"
 import {
   //
   closeAllClients,
   getClientCount,
-  notifyShutdownPhaseChangedAndFlush,
 } from "./ws"
 
 // ============================================================================
@@ -86,17 +89,71 @@ let shutdownPhase: "idle" | "phase1" | "phase2" | "phase3" | "phase4" | "finaliz
 let shutdownPromise: Promise<void> | null = null
 
 /**
- * Transition shutdown phase and broadcast via WebSocket. Returns a promise
- * that resolves once the broadcast frame has actually drained on every
- * status-subscribed client (or the deadline elapses). Callers that are about
- * to force-close sockets MUST await this; callers in the middle of a normal
- * phase progression can fire-and-forget via `setPhaseFireAndForget`.
+ * Scoped publisher for `system.shutdown_phase_changed` events. Set once at
+ * start.ts via `setShutdownPublisher(bus.scope('system'))`. When unset
+ * (tests / early init), phase transitions are silent — the legacy WS
+ * `notifyShutdownPhaseChangedAndFlush` direct broadcast is gone (commit 4),
+ * so without a publisher there's no operator-visible signal but the
+ * shutdown sequence still completes correctly.
+ */
+let _shutdownPublisher: ScopedPublisher<"system"> | undefined
+
+export function setShutdownPublisher(publisher: ScopedPublisher<"system"> | undefined): void {
+  _shutdownPublisher = publisher
+}
+
+/**
+ * Map the internal phase enum (`phase1`/`phase2`/`phase3`/`phase4`/
+ * `finalized`/`idle`) to the bus-visible ShutdownPhase enum
+ * (`draining`/`aborting`/`finalized`) per RFC §2.3. WS clients receive
+ * the simpler 3-state taxonomy; the internal 5-state remains for code
+ * clarity (drain → drain-with-abort-signal → force-cleanup → finalize).
+ */
+function toBusPhase(p: typeof shutdownPhase): ShutdownPhase | null {
+  switch (p) {
+    case "phase1":
+    case "phase2": {
+      return "draining"
+    }
+    case "phase3":
+    case "phase4": {
+      return "aborting"
+    }
+    case "finalized": {
+      return "finalized"
+    }
+    default: {
+      return null
+    }
+  }
+}
+
+/**
+ * Transition shutdown phase and publish to the observability bus. Returns
+ * a promise that resolves once WsSink (and other async subscribers) have
+ * drained the broadcast — `publishAndFlush` mirrors the legacy
+ * `notifyShutdownPhaseChangedAndFlush` `stillBuffering` semantics via
+ * `pendingWsBuffer`. Callers that are about to force-close sockets MUST
+ * await this; normal phase progressions can fire-and-forget via
+ * `setPhaseFireAndForget`.
  */
 function setPhase(phase: typeof shutdownPhase): Promise<{ stillBuffering: number }> {
   const prev = shutdownPhase
   shutdownPhase = phase
   if (prev === phase) return Promise.resolve({ stillBuffering: 0 })
-  return notifyShutdownPhaseChangedAndFlush({ phase, previousPhase: prev })
+  const newBusPhase = toBusPhase(phase)
+  const prevBusPhase = toBusPhase(prev)
+  if (!newBusPhase || !_shutdownPublisher) {
+    return Promise.resolve({ stillBuffering: 0 })
+  }
+  return _shutdownPublisher
+    .publishAndFlush({
+      kind: "system.shutdown_phase_changed",
+      phase: newBusPhase,
+      previousPhase: prevBusPhase,
+      needsFlush: true,
+    })
+    .then((res) => ({ stillBuffering: res.pendingWsBuffer }))
 }
 
 /**
@@ -160,10 +217,12 @@ export function setServerInstance(server: ServerInstance): void {
 
 /** Dependencies that can be injected for testing */
 export interface ShutdownDeps {
-  tracker?: {
-    getActiveRequests: () => Array<TuiLogEntry>
-    destroy: () => void
-  }
+  /**
+   * Source of active RequestContexts for drain progress / count.
+   * Production passes the RequestContextManager (via getRequestContextManager()).
+   * Tests pass a controllable fake.
+   */
+  tracker?: ShutdownDrainSource
   server?: {
     close: (force?: boolean) => Promise<void>
   }
@@ -185,13 +244,12 @@ export interface ShutdownDeps {
 // ============================================================================
 
 /** Format a summary of active requests for logging */
-export function formatActiveRequestsSummary(requests: Array<TuiLogEntry>): string {
+export function formatActiveRequestsSummary(requests: Array<RequestContext>): string {
   const now = Date.now()
   const lines = requests.map((req) => {
     const age = Math.round((now - req.startTime) / 1000)
-    const model = req.model || "unknown"
-    const tags = req.tags?.length ? ` [${req.tags.join(", ")}]` : ""
-    return `  ${req.method} ${req.path} ${model} (${req.status}, ${age}s)${tags}`
+    const model = req.resolvedModel ?? req.originalRequest?.model ?? "unknown"
+    return `  ${req.method} ${req.path} ${model} (${req.state}, ${age}s)`
   })
   return `Waiting for ${requests.length} active request(s):\n${lines.join("\n")}`
 }
@@ -200,9 +258,19 @@ export function formatActiveRequestsSummary(requests: Array<TuiLogEntry>): strin
  * Wait for all active requests to complete, with periodic progress logging.
  * Returns "drained" when all requests finish, "timeout" if deadline is reached.
  */
+/**
+ * Drain interface — replaces the legacy `{ getActiveRequests: () =>
+ * TuiLogEntry[] }` shape. Tracks active RequestContexts via the
+ * RequestContextManager. Production passes the manager directly; tests
+ * pass a controllable fake.
+ */
+export interface ShutdownDrainSource {
+  getActive: () => Array<RequestContext>
+}
+
 export async function drainActiveRequests(
   timeoutMs: number,
-  tracker: { getActiveRequests: () => Array<TuiLogEntry> },
+  tracker: ShutdownDrainSource,
   opts?: { pollIntervalMs?: number; progressIntervalMs?: number; abortSignal?: AbortSignal },
 ): Promise<"drained" | "timeout" | "aborted"> {
   const pollInterval = opts?.pollIntervalMs ?? DRAIN_POLL_INTERVAL_MS
@@ -214,7 +282,7 @@ export async function drainActiveRequests(
   while (Date.now() < deadline) {
     if (abortSignal?.aborted) return "aborted"
 
-    const active = tracker.getActiveRequests()
+    const active = tracker.getActive()
     if (active.length === 0) return "drained"
 
     // Log progress periodically
@@ -268,7 +336,9 @@ export async function drainActiveRequests(
  * @param deps - Optional dependency injection for testing
  */
 export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Promise<void> {
-  const tracker = deps?.tracker ?? tuiLogger
+  const tracker: ShutdownDrainSource = deps?.tracker ?? {
+    getActive: () => getRequestContextManager().getAll(),
+  }
   const server = deps?.server ?? serverInstance
   const rateLimiter = deps?.rateLimiter !== undefined ? deps.rateLimiter : getAdaptiveRateLimiter()
   const stopRefresh = deps?.stopTokenRefreshFn ?? stopTokenRefresh
@@ -335,7 +405,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   }
 
   // ── Phase 2: Wait for natural completion ──────────────────────────────
-  const activeCount = tracker.getActiveRequests().length
+  const activeCount = tracker.getActive().length
   if (activeCount > 0) {
     consola.info(`Phase 2: Waiting up to ${gracefulWaitMs / 1000}s for ${activeCount} active request(s)...`)
     setPhaseFireAndForget("phase2")
@@ -348,7 +418,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase2Result === "drained") {
         consola.info("All requests completed naturally")
-        await finalize(tracker, { closeWsClients, getWsClientCount })
+        await finalize({ closeWsClients, getWsClientCount })
         return
       }
     } catch (error) {
@@ -356,7 +426,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     }
 
     // ── Phase 3: Abort signal + extended wait ─────────────────────────────
-    const remaining = tracker.getActiveRequests().length
+    const remaining = tracker.getActive().length
     consola.info(`Phase 3: Sending abort signal to ${remaining} remaining request(s), ` + `waiting up to ${abortWaitMs / 1000}s...`)
 
     setPhaseFireAndForget("phase3")
@@ -370,7 +440,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase3Result === "drained") {
         consola.info("All requests completed after abort signal")
-        await finalize(tracker, { closeWsClients, getWsClientCount })
+        await finalize({ closeWsClients, getWsClientCount })
         return
       }
     } catch (error) {
@@ -383,7 +453,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     // here means the dashboard is guaranteed to see "phase4" before we yank
     // the sockets in the next step.
     await setPhase("phase4")
-    const forceRemaining = tracker.getActiveRequests().length
+    const forceRemaining = tracker.getActive().length
     consola.warn(`Phase 4: Force-closing ${forceRemaining} remaining request(s)`)
 
     // Close upstream WS connections BEFORE force-closing the downstream server.
@@ -410,7 +480,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     }
   }
 
-  await finalize(tracker, { closeWsClients, getWsClientCount })
+  await finalize({ closeWsClients, getWsClientCount })
 }
 
 interface FinalizeDeps {
@@ -419,7 +489,7 @@ interface FinalizeDeps {
 }
 
 /** Final cleanup after drain/force-close */
-async function finalize(tracker: { destroy: () => void }, deps: FinalizeDeps): Promise<void> {
+async function finalize(deps: FinalizeDeps): Promise<void> {
   // Await the broadcast drain so dashboards reliably see "finalized" before we
   // close their sockets in the graceful (drained) path. Force-close path has
   // already broadcast phase4 with the same drain semantics.
@@ -439,7 +509,10 @@ async function finalize(tracker: { destroy: () => void }, deps: FinalizeDeps): P
     consola.info(`Disconnected ${remaining} WebSocket client(s) at finalize`)
   }
 
-  tracker.destroy()
+  // (Legacy `tracker.destroy()` removed in commit 4 — ConsoleSink owns
+  // stdout lifecycle now and is torn down by the Node process exit hook;
+  // sinks holding subscriptions are unsubscribed when the bus singleton
+  // is garbage-collected. No explicit destroy needed during shutdown.)
   // shutdownRequestTelemetry awaits the serialized persist chain in atomic-fs,
   // so any timer-fired or ad-hoc persist already enqueued runs to completion
   // before `.finally` resolves shutdownResolve. fire-and-forget is intentional:

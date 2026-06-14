@@ -100,7 +100,6 @@ export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outb
 export function createRequestContext(opts: {
   endpoint: EndpointType
   sessionId?: string
-  tuiLogId?: string
   rawPath?: string
   /** HTTP method (or "WS" / "STDIO" for non-HTTP entry points). Default "UNKNOWN". */
   method?: string
@@ -196,7 +195,6 @@ export function createRequestContext(opts: {
     get sessionId() {
       return _sessionId
     },
-    tuiLogId: opts.tuiLogId,
     rawPath: opts.rawPath,
     method,
     path,

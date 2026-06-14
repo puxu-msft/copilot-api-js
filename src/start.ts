@@ -11,6 +11,7 @@ import {
   //
   initAdaptiveRateLimiter,
   setMockRateLimiterThrottled,
+  setRateLimitPublisher,
 } from "./lib/adaptive-rate-limiter"
 import { loadPersistedFeatureNegotiation } from "./lib/anthropic/feature-negotiation"
 import { loadPersistedLimits } from "./lib/auto-truncate"
@@ -37,6 +38,7 @@ import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initBus } from "./lib/observability"
+import { formatBillingLabel } from "./lib/observability/projections/format"
 import { attachConsoleSink } from "./lib/observability/sinks/console"
 import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
@@ -48,6 +50,7 @@ import { startServer } from "./lib/serve"
 import {
   //
   setServerInstance,
+  setShutdownPublisher,
   setupShutdownHandlers,
   waitForShutdown,
 } from "./lib/shutdown"
@@ -61,11 +64,6 @@ import {
 } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { getCopilotUsage } from "./lib/token/copilot-client"
-import {
-  //
-  formatBillingLabel,
-  initTuiLogger,
-} from "./lib/tui"
 import {
   //
   createWebSocketAdapter,
@@ -339,32 +337,26 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await initRequestTelemetry()
 
   // Observability bus + sinks (RFC docs/rfc/observability-rewrite.md §2.4-2.5).
-  // Sinks are now AUTHORITATIVE as of commit 3b — manager.ts publishes
-  // request.* events; entries.ts/sessions.ts publish history.* events
-  // via the publisher installed by setHistoryPublisher; sinks subscribe
-  // and own the WS broadcast / SQLite persist / TUI render contracts.
-  // Attach order is contract: HistorySink → TelemetrySink → WsSink
+  // Sinks are AUTHORITATIVE — manager.ts publishes request.* events;
+  // entries.ts/sessions.ts publish history.* events via the publisher
+  // installed by setHistoryPublisher; shutdown.ts and adaptive-rate-limiter.ts
+  // publish system.* events via setShutdownPublisher / setRateLimitPublisher.
+  // Sinks subscribe and own the WS broadcast / SQLite persist / TUI render
+  // contracts. Attach order is contract: HistorySink → TelemetrySink → WsSink
   // → ConsoleSink (so history persists before WS broadcasts, etc.).
   const bus = initBus()
   const historyPublisher = bus.scope("history")
+  const systemPublisher = bus.scope("system")
   setHistoryPublisher(historyPublisher)
+  setShutdownPublisher(systemPublisher)
+  setRateLimitPublisher(systemPublisher)
   attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
   attachWsSink(bus)
-  // hijackConsola+silent both default-off-during-transition (commits 3b-3e):
-  //
-  // - hijackConsola:false — main.ts:initConsolaReporter already owns
-  //   consola's reporter chain via the legacy ConsoleRenderer; letting
-  //   ConsoleSink also hijack would shadow it.
-  // - silent:true — the legacy ConsoleRenderer (driven by
-  //   middleware.finishRequest + tuiLogger.update*) is still rendering
-  //   `[ OK ]` / `[FAIL]` / footer lines. Without silent, every request
-  //   produces TWO completion lines (one from ConsoleRenderer, one from
-  //   ConsoleSink reading request.completed off the bus).
-  //
-  // Commit 4 deletes lib/tui/ entirely and flips both back to default-on,
-  // making ConsoleSink the sole stdout renderer.
-  attachConsoleSink(bus, { hijackConsola: false, silent: true })
+  // ConsoleSink is now authoritative — owns stdout footer + consola hijack.
+  // The legacy lib/tui/ subsystem and its initConsolaReporter / tuiMiddleware
+  // / ConsoleRenderer / TuiLogger are deleted in commit 4.
+  attachConsoleSink(bus)
 
   // Initialize request context manager with the request.* publisher so
   // every lifecycle / context_updated event reaches HistorySink + WsSink +
@@ -389,8 +381,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Start stale request reaper (periodic cleanup of stuck active contexts)
   contextManager.startReaper()
 
-  // Initialize TUI request tracking (renderer was created in main.ts via initConsolaReporter)
-  initTuiLogger()
+  // ConsoleSink is attached above via attachConsoleSink — no separate
+  // tuiLogger init needed (commit 4 deleted lib/tui).
 
   // ===========================================================================
   // Phase 4: External Dependencies (network)

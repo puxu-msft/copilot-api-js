@@ -20,7 +20,7 @@ import {
   test,
 } from "bun:test"
 
-import type { TuiLogEntry } from "~/lib/tui/types"
+import type { RequestContext } from "~/lib/context/request"
 
 import {
   //
@@ -143,12 +143,11 @@ describe("formatActiveRequestsSummary", () => {
         id: "req-1",
         method: "POST",
         path: "/v1/messages",
-        status: "streaming" as const,
+        state: "streaming" as const,
         startTime: Date.now() - 5000,
-        model: "claude-sonnet-4",
-        tags: [],
+        resolvedModel: "claude-sonnet-4",
       },
-    ] as Array<TuiLogEntry>
+    ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
     expect(result).toContain("Waiting for 1 active request(s)")
@@ -156,31 +155,29 @@ describe("formatActiveRequestsSummary", () => {
     expect(result).toContain("streaming")
   })
 
-  test("formats multiple requests with tags", () => {
+  test("formats multiple requests", () => {
     const requests = [
       {
         id: "req-1",
         method: "POST",
         path: "/v1/messages",
-        status: "streaming" as const,
+        state: "streaming" as const,
         startTime: Date.now() - 10000,
-        model: "claude-sonnet-4",
-        tags: ["thinking:adaptive"],
+        resolvedModel: "claude-sonnet-4",
       },
       {
         id: "req-2",
         method: "POST",
         path: "/v1/chat/completions",
-        status: "executing" as const,
+        state: "executing" as const,
         startTime: Date.now() - 2000,
-        model: "gpt-4o",
-        tags: [],
+        resolvedModel: "gpt-4o",
       },
-    ] as Array<TuiLogEntry>
+    ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
     expect(result).toContain("Waiting for 2 active request(s)")
-    expect(result).toContain("[thinking:adaptive]")
+    expect(result).toContain("claude-sonnet-4")
     expect(result).toContain("gpt-4o")
   })
 
@@ -190,12 +187,12 @@ describe("formatActiveRequestsSummary", () => {
         id: "req-1",
         method: "POST",
         path: "/v1/messages",
-        status: "executing" as const,
+        state: "executing" as const,
         startTime: Date.now(),
-        model: undefined,
-        tags: [],
+        resolvedModel: undefined,
+        originalRequest: null,
       },
-    ] as Array<TuiLogEntry>
+    ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
     expect(result).toContain("unknown")
@@ -236,7 +233,7 @@ describe("drainActiveRequests", () => {
     await drainActiveRequests(200, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
 
     // Should have polled multiple times (not just once)
-    expect(tracker.getActiveRequests.mock.calls.length).toBeGreaterThan(1)
+    expect(tracker.getActive.mock.calls.length).toBeGreaterThan(1)
   })
 
   test("returns 'aborted' when phase is externally escalated", async () => {
@@ -319,8 +316,6 @@ describe("Phase 2: natural drain", () => {
 
     // No abort signal fired (Phases 2/3 skipped)
     expect(getShutdownSignal().aborted).toBe(false)
-    // destroy() called exactly once (finalize)
-    expect(tracker.destroy).toHaveBeenCalledTimes(1)
   })
 
   test("completes when requests drain within gracefulWaitMs", async () => {
@@ -331,7 +326,6 @@ describe("Phase 2: natural drain", () => {
 
     // Should NOT have aborted (drained naturally in Phase 2)
     expect(getShutdownSignal().aborted).toBe(false)
-    expect(tracker.destroy).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -345,8 +339,8 @@ describe("Phase 3: abort signal", () => {
 
     // Request persists through Phase 2, then clears in Phase 3
     let phase2Done = false
-    const origGetActive = tracker.getActiveRequests
-    tracker.getActiveRequests = mock(() => {
+    const origGetActive = tracker.getActive
+    tracker.getActive = mock(() => {
       const result = origGetActive()
       if (result.length > 0 && phase2Done) {
         // Once abort signal has fired, clear requests
@@ -374,7 +368,6 @@ describe("Phase 3: abort signal", () => {
 
     // Abort signal was fired (Phase 3 was entered)
     expect(getShutdownSignal().aborted).toBe(true)
-    expect(tracker.destroy).toHaveBeenCalledTimes(1)
   })
 
   test("completes when requests drain after abort signal", async () => {
@@ -382,8 +375,8 @@ describe("Phase 3: abort signal", () => {
 
     // Requests persist through Phase 2, then clear shortly after Phase 3 begins
     let abortFired = false
-    const origGetActive = tracker.getActiveRequests
-    tracker.getActiveRequests = mock(() => {
+    const origGetActive = tracker.getActive
+    tracker.getActive = mock(() => {
       const result = origGetActive()
       if (result.length > 0 && abortFired) {
         tracker._clearRequests()
@@ -408,7 +401,6 @@ describe("Phase 3: abort signal", () => {
     await shutdownPromise
 
     expect(getShutdownSignal().aborted).toBe(true)
-    expect(tracker.destroy).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -430,8 +422,6 @@ describe("Phase 4: force close", () => {
     expect(server.close.mock.calls[1]).toEqual([true])
     // Abort signal was fired in Phase 3
     expect(getShutdownSignal().aborted).toBe(true)
-    // destroy() called in finalize
-    expect(tracker.destroy).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -463,8 +453,6 @@ describe("error resilience", () => {
     }
 
     await gracefulShutdown("SIGINT", createNoopDeps({ tracker, server }))
-
-    expect(tracker.destroy).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -660,7 +648,6 @@ describe("signal escalation", () => {
     // Should NOT have called exitFn — Phase 4 ran to completion
     expect(exitFn).not.toHaveBeenCalled()
     expect(getShutdownSignal().aborted).toBe(true)
-    expect(tracker.destroy).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -707,7 +694,7 @@ describe("upstream WebSocket cleanup", () => {
     })
 
     // Tracker reports a stuck request so we reach Phase 4 force-close.
-    const tracker = createMockTracker([{ id: "stuck", state: "executing", model: "x", startedAt: Date.now() } as unknown as TuiLogEntry])
+    const tracker = createMockTracker([{ id: "stuck", state: "executing", resolvedModel: "x" }])
 
     try {
       await gracefulShutdown(

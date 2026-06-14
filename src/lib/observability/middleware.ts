@@ -26,11 +26,8 @@
  *   - WebSocket upgrades: ctx terminal state is owned by ws.ts; the
  *     middleware doesn't finalize.
  *
- * Coexistence with the legacy `lib/tui/middleware.ts` through commit
- * 3e: both run, legacy first → this one. tuiLogger.startRequest/
- * finishRequest drives ConsoleRenderer (still the authoritative
- * renderer until commit 4 deletes lib/tui/). This middleware only
- * operates on the new RequestContext / bus path.
+ * Coexistence with the legacy `lib/tui/middleware.ts`: gone as of commit 4.
+ * This middleware is the sole HTTP-layer observability touch point now.
  *
  * Why no try/catch wrapping `await next()`:
  *   Earlier drafts wrapped `next()` in try/catch and called

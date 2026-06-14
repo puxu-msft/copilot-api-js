@@ -28,7 +28,7 @@ import { waitUntil } from "../helpers/wait-until"
 describe("createRequestContextManager", () => {
   test("create() returns RequestContext and tracks it", () => {
     const manager = createRequestContextManager()
-    const ctx = manager.create({ endpoint: "anthropic-messages", tuiLogId: "t1" })
+    const ctx = manager.create({ endpoint: "anthropic-messages" })
 
     expect(ctx.id).toMatch(/^req_/)
     expect(ctx.endpoint).toBe("anthropic-messages")

@@ -9,15 +9,15 @@ import consola from "consola"
 
 import { login } from "./auth"
 import { debug } from "./debug"
-import { initConsolaReporter } from "./lib/tui"
 import { listClaudeCode } from "./list-claude-code"
 import { logout } from "./logout"
 import { setupClaudeCode } from "./setup-claude-code"
 import { setupCodex } from "./setup-codex"
 import { start } from "./start"
 
-// Initialize console reporter before any logging
-initConsolaReporter()
+// Console rendering: initialized inside `start` via ConsoleSink (commit 4).
+// One-shot commands (debug, auth, etc.) use consola's default reporter — no
+// observability bus is set up for them.
 
 // Global error handlers - catch errors from timers, callbacks, etc.
 // that would otherwise cause a silent process exit

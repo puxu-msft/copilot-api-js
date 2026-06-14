@@ -1,7 +1,35 @@
 import consola from "consola"
 
 import { HTTPError } from "~/lib/error"
-import { notifyRateLimiterChanged } from "~/lib/ws"
+
+import type {
+  //
+  RateLimitMode,
+  ScopedPublisher,
+} from "./observability"
+
+/**
+ * Scoped publisher for `system.rate_limit_state` events. Set once at
+ * start.ts via `setRateLimitPublisher(bus.scope('system'))`. When unset
+ * (tests / early init), state transitions are silent — the legacy WS
+ * `notifyRateLimiterChanged` broadcast is gone (commit 4), so without
+ * a publisher there's no operator-visible signal but the rate-limiter
+ * still functions correctly.
+ */
+let _rateLimitPublisher: ScopedPublisher<"system"> | undefined
+
+export function setRateLimitPublisher(publisher: ScopedPublisher<"system"> | undefined): void {
+  _rateLimitPublisher = publisher
+}
+
+function publishRateLimitState(detail: Record<string, unknown> & { mode: RateLimitMode; queueLength: number }): void {
+  _rateLimitPublisher?.publish({
+    kind: "system.rate_limit_state",
+    mode: detail.mode,
+    queuedCount: detail.queueLength,
+    detail,
+  })
+}
 
 /**
  * Adaptive Rate Limiter
@@ -292,7 +320,7 @@ export class AdaptiveRateLimiter {
     consola.warn(
       `[RateLimiter] Entering rate-limited mode. ` + `Requests will be queued with exponential backoff (base: ${this.config.baseRetryIntervalSeconds}s).`,
     )
-    notifyRateLimiterChanged({
+    publishRateLimitState({
       mode: this.mode,
       previousMode,
       queueLength: this.queue.length,
@@ -341,7 +369,7 @@ export class AdaptiveRateLimiter {
 
     const firstInterval = this.config.gradualRecoverySteps[0] ?? 0
     consola.info(`[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, ` + `first interval: ${firstInterval}s)`)
-    notifyRateLimiterChanged({
+    publishRateLimitState({
       mode: this.mode,
       previousMode,
       queueLength: this.queue.length,
@@ -359,7 +387,7 @@ export class AdaptiveRateLimiter {
     this.recoveryStepIndex = 0
 
     consola.success("[RateLimiter] Exiting rate-limited mode.")
-    notifyRateLimiterChanged({
+    publishRateLimitState({
       mode: this.mode,
       previousMode,
       queueLength: this.queue.length,
@@ -560,7 +588,7 @@ export class AdaptiveRateLimiter {
     this.consecutiveSuccesses = 0
 
     consola.warn("[RateLimiter] Forced into rate-limited mode (mock throttle enabled)")
-    notifyRateLimiterChanged({
+    publishRateLimitState({
       mode: this.mode,
       previousMode,
       queueLength: this.queue.length,

@@ -18,11 +18,10 @@ import type { EndpointType } from "~/lib/history/store"
 import { createRequestContext } from "~/lib/context/request"
 import { HTTPError } from "~/lib/error"
 
-function makeContext(overrides?: { endpoint?: EndpointType; tuiLogId?: string }) {
+function makeContext(overrides?: { endpoint?: EndpointType }) {
   const onEvent = mock(() => {})
   const ctx = createRequestContext({
     endpoint: overrides?.endpoint ?? "anthropic-messages",
-    tuiLogId: overrides?.tuiLogId ?? "track-1",
     onEvent,
   })
   return { ctx, onEvent }
@@ -47,11 +46,6 @@ describe("createRequestContext - initialization", () => {
   test("stores endpoint type", () => {
     const { ctx } = makeContext({ endpoint: "openai-chat-completions" })
     expect(ctx.endpoint).toBe("openai-chat-completions")
-  })
-
-  test("stores tuiLogId", () => {
-    const { ctx } = makeContext({ tuiLogId: "my-tracking" })
-    expect(ctx.tuiLogId).toBe("my-tracking")
   })
 
   test("initializes with null data fields and empty attempts", () => {

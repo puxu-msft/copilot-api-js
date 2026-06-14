@@ -14,18 +14,8 @@
  * - `system.shutdown_phase_changed` / `system.rate_limit_state` — non-line
  *   side effects (no console output currently; reserved for future UX).
  *
- * Replaces `lib/tui/console-renderer.ts` once commit 3b activates the
- * producer and commit 4 deletes the old renderer. Until then this sink
- * attaches idle (the bus is empty in commits 1-3a; commit 3b makes it
- * authoritative; commits 3c-3e mop up direct tuiLogger callers).
- *
- * Notes:
- * - **Consola hijack is preserved here**. Replacing every `consola.warn`
- *   call site with a bus event is out of scope (RFC §5). ConsoleSink
- *   internalizes the hijack to one file so its `destroy()` restores
- *   the original reporters cleanly for tests.
- * - The sink does NOT touch RequestContext directly. Everything comes
- *   from event payloads (`ctx` snapshot + `entry` on terminal events).
+ * Replaces `lib/tui/console-renderer.ts` (deleted in commit 4). ConsoleSink
+ * is the authoritative stdout renderer for request lifecycle lines + footer.
  */
 
 import consola from "consola"

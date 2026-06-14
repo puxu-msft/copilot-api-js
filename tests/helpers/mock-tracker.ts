@@ -1,45 +1,47 @@
 /**
- * Mock request tracker for shutdown tests.
+ * Mock drain source for shutdown tests. Replaces the legacy TuiLogEntry-
+ * shaped mock with a RequestContext-shaped one matching `ShutdownDrainSource`.
  */
 
 import { mock } from "bun:test"
 
-import type { TuiLogEntry } from "~/lib/tui/types"
+import type { RequestContext } from "~/lib/context/request"
 
-export function createMockTracker(initialRequests: Array<Partial<TuiLogEntry>> = []) {
-  let requests = initialRequests.map(
-    (r) =>
-      ({
-        id: r.id ?? `req-${Math.random().toString(36).slice(2, 8)}`,
-        method: r.method ?? "POST",
-        path: r.path ?? "/v1/messages",
-        status: r.status ?? "executing",
-        startTime: r.startTime ?? Date.now(),
-        model: r.model ?? "claude-sonnet-4",
-        tags: r.tags ?? [],
-        ...r,
-      }) as TuiLogEntry,
-  )
+/** Minimal RequestContext stub for shutdown drain tests. */
+type FakeRequest = Partial<Pick<RequestContext, "id" | "method" | "path" | "state" | "startTime" | "resolvedModel">> & {
+  /** Legacy field — accepted for back-compat with older test fixtures; mapped to `resolvedModel`. */
+  model?: string
+  /** Legacy field — accepted for back-compat; mapped to `state`. */
+  status?: string
+  /** Legacy field — accepted for back-compat; ignored (tags are gone post-RFC). */
+  tags?: Array<string>
+}
+
+function buildContextStub(r: FakeRequest): RequestContext {
+  const id = r.id ?? `req-${Math.random().toString(36).slice(2, 8)}`
+  // Tests only read id/method/path/state/startTime/resolvedModel; the
+  // rest of the RequestContext surface isn't exercised by shutdown drain
+  // code, so we stub with no-op/null values and assert the shape via
+  // `as unknown as RequestContext` (no behavioural surface to honor).
+  return {
+    id,
+    method: r.method ?? "POST",
+    path: r.path ?? "/v1/messages",
+    state: (r.state ?? r.status ?? "executing") as RequestContext["state"],
+    startTime: r.startTime ?? Date.now(),
+    resolvedModel: r.resolvedModel ?? r.model ?? "claude-sonnet-4",
+  } as unknown as RequestContext
+}
+
+export function createMockTracker(initialRequests: Array<FakeRequest> = []) {
+  let requests = initialRequests.map(buildContextStub)
 
   return {
-    getActiveRequests: mock(() => [...requests]),
-    destroy: mock(() => {
-      requests = []
-    }),
-    _setActiveRequests: (r: Array<Partial<TuiLogEntry>>) => {
-      requests = r.map(
-        (req) =>
-          ({
-            id: req.id ?? `req-${Math.random().toString(36).slice(2, 8)}`,
-            method: req.method ?? "POST",
-            path: req.path ?? "/v1/messages",
-            status: req.status ?? "executing",
-            startTime: req.startTime ?? Date.now(),
-            model: req.model ?? "claude-sonnet-4",
-            tags: req.tags ?? [],
-            ...req,
-          }) as TuiLogEntry,
-      )
+    /** ShutdownDrainSource interface — production passes manager.getAll(). */
+    getActive: mock(() => [...requests]),
+    /** Test-only: replace the active set. */
+    _setActiveRequests: (r: Array<FakeRequest>) => {
+      requests = r.map(buildContextStub)
     },
     _clearRequests: () => {
       requests = []

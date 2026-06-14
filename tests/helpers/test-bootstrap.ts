@@ -31,7 +31,6 @@ import {
   restoreStateForTests,
   snapshotStateForTests,
 } from "~/lib/state"
-import { tuiLogger } from "~/lib/tui"
 
 let initialized = false
 let detachSinks: Array<() => void> = []
@@ -70,7 +69,6 @@ export function resetTestRuntime() {
   // then empties both the in-flight map and the table for a clean slate.
   initHistory(true, 100)
   clearHistory()
-  tuiLogger.clear()
   resetAdaptiveRateLimiter()
 
   // Tear down old sinks BEFORE swapping the bus, otherwise their

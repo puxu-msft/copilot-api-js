@@ -422,22 +422,12 @@ export function notifyShutdownPhaseChanged(data: unknown): void {
   )
 }
 
-/**
- * Like `notifyShutdownPhaseChanged` but waits until every status-subscribed
- * client's TCP buffer drains. Use this when the next step will force-close
- * sockets and we MUST guarantee the phase frame leaves the box.
- */
-export function notifyShutdownPhaseChangedAndFlush(data: unknown, opts?: { deadlineMs?: number }): Promise<{ stillBuffering: number }> {
-  return broadcastAndFlush(
-    {
-      type: "shutdown_phase_changed",
-      data,
-      timestamp: Date.now(),
-    },
-    "status",
-    opts,
-  )
-}
+// `notifyShutdownPhaseChangedAndFlush` was deleted in the observability
+// rewrite (commit 4): shutdown.ts now publishes via the bus's
+// `publishAndFlush`, which drives the same WS broadcast through WsSink +
+// the synchronous `notifyShutdownPhaseChanged` above. Keeping the
+// non-flush primitive remains useful for general phase transitions; the
+// flush variant became a one-call dead export and was removed per 原则9.
 
 // ============================================================================
 // WebSocket route registration

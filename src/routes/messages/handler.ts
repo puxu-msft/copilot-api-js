@@ -158,7 +158,6 @@ export async function handleMessages(c: Context) {
   }
 
   // Get tracking ID
-  const tuiLogId = c.get("tuiLogId") as string | undefined
 
   // Route validation BEFORE creating RequestContext — prevents dangling history entries
   // when routing fails (reqCtx.create() triggers history insertion, and a subsequent throw
@@ -177,7 +176,6 @@ export async function handleMessages(c: Context) {
   const reqCtx = manager.create({
     endpoint: "anthropic-messages",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers),
-    tuiLogId,
     rawPath: c.req.path,
     method: c.req.method,
     path: c.req.path,
