@@ -546,6 +546,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
   },
   {
+    configKey: "openai_responses.strip_image_generation_tool",
+    stateKey: "stripImageGenerationTool",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
+  },
+  {
     configKey: "openai_responses.client_ws_keep_open",
     stateKey: "clientWebsocketKeepOpen",
     sampleYamlValue: "true",
