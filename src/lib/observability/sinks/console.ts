@@ -75,13 +75,26 @@ export interface ConsoleSinkOptions {
   showActive?: boolean
   /**
    * Whether to hijack `consola.setReporters` so log lines coordinate with
-   * the footer. Default `true`. **Set `false` in commits 2-3a** to avoid
+   * the footer. Default `true`. **Set `false` in commits 3b-3e** to avoid
    * shadowing the legacy `ConsoleRenderer`'s reporter (which also hijacks
    * consola) and producing a TTY footer-flicker regression during the
-   * transition window. Commit 3b sets this back to `true` once
-   * `ConsoleRenderer` is no longer installed.
+   * transition window. Commit 4 flips this back to `true` once
+   * `ConsoleRenderer` is removed.
    */
   hijackConsola?: boolean
+  /**
+   * When `true`, the sink subscribes and tracks state internally but
+   * writes nothing to stdout. **Set `true` in commits 3b-3e** because the
+   * legacy `ConsoleRenderer` (installed by main.ts:initConsolaReporter)
+   * still owns rendering — each lifecycle event would otherwise produce
+   * one `[ OK ]` line from each renderer. Commit 4 deletes
+   * ConsoleRenderer and flips this back to `false`.
+   *
+   * The subscription stays alive so the sink-ordering integration test
+   * (tests/observability/sink-ordering.unit.test.ts) still pins the
+   * History → Telemetry → Ws → Console attach contract.
+   */
+  silent?: boolean
 }
 
 interface ConsolaReporter {
@@ -93,6 +106,7 @@ export class ConsoleSink {
   private readonly isTTY: boolean
   private readonly showActive: boolean
   private readonly hijackConsola: boolean
+  private readonly silent: boolean
   private readonly active = new Map<string, ActiveRequest>()
   private footerVisible = false
   private footerTimer: ReturnType<typeof setInterval> | null = null
@@ -104,6 +118,7 @@ export class ConsoleSink {
     this.isTTY = options?.isTTY ?? process.stdout.isTTY
     this.showActive = options?.showActive ?? true
     this.hijackConsola = options?.hijackConsola ?? true
+    this.silent = options?.silent ?? false
 
     if (this.hijackConsola) {
       // Preserve original reporters BEFORE installing ours so destroy() can restore.
@@ -377,6 +392,7 @@ export class ConsoleSink {
   }
 
   private renderFooter(): void {
+    if (this.silent) return
     if (!this.isTTY) return
     const footer = this.buildFooter()
     if (footer) {
@@ -419,6 +435,7 @@ export class ConsoleSink {
   // ============================================================================
 
   private printLog(message: string): void {
+    if (this.silent) return
     this.clearFooterForLog()
     this.stdout.write(message + "\n")
     this.renderFooter()

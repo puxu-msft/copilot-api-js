@@ -12,7 +12,6 @@ import { hasKnownLimits } from "~/lib/auto-truncate"
 import { createFetchSignal } from "~/lib/fetch-utils"
 import { resolveModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
-import { tuiLogger } from "~/lib/tui"
 import { type MessagesPayload } from "~/types/api/anthropic"
 
 // ============================================================================
@@ -83,18 +82,17 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
  * - The count is an estimate
  */
 export async function handleCountTokens(c: Context) {
-  const tuiLogId = c.get("tuiLogId") as string | undefined
-
   try {
     const anthropicPayload = await c.req.json<MessagesPayload>()
 
     // Resolve model name aliases and date-suffixed versions
     anthropicPayload.model = resolveModelName(anthropicPayload.model)
 
-    // Update tracker with model name
-    if (tuiLogId) {
-      tuiLogger.updateRequest(tuiLogId, { model: anthropicPayload.model })
-    }
+    // Note: count-tokens is intentionally OUT of observability per RFC §6 Q1.
+    // No RequestContext, no bus events, no TUI line, no history entry. The
+    // route's own `consola.info("[count_tokens] N tokens")` lines below are
+    // the sole operator signal. The middleware will skip ctx creation for
+    // this path entirely in commit 3e (SYNTHETIC_PATHS).
 
     const selectedModel = state.modelIndex.get(anthropicPayload.model)
 
@@ -102,11 +100,6 @@ export async function handleCountTokens(c: Context) {
     const anthropicCount = await countTokensViaAnthropic(anthropicPayload)
     if (anthropicCount !== null) {
       consola.info(`[count_tokens] ${anthropicCount} tokens (Anthropic API)`)
-
-      if (tuiLogId) {
-        tuiLogger.updateRequest(tuiLogId, { inputTokens: anthropicCount })
-      }
-
       return c.json({ input_tokens: anthropicCount })
     }
 
@@ -134,10 +127,6 @@ export async function handleCountTokens(c: Context) {
             + `returning inflated count ${inflatedTokens} to trigger client-side compaction`,
         )
 
-        if (tuiLogId) {
-          tuiLogger.updateRequest(tuiLogId, { inputTokens: inflatedTokens })
-        }
-
         return c.json({ input_tokens: inflatedTokens })
       }
     }
@@ -147,10 +136,6 @@ export async function handleCountTokens(c: Context) {
     const inputTokens = await countTotalInputTokens(anthropicPayload, selectedModel)
 
     consola.debug(`[count_tokens] ${inputTokens} tokens (native Anthropic) ` + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`)
-
-    if (tuiLogId) {
-      tuiLogger.updateRequest(tuiLogId, { inputTokens })
-    }
 
     return c.json({ input_tokens: inputTokens })
   } catch (error) {

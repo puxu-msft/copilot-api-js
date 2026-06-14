@@ -351,10 +351,20 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
   attachWsSink(bus)
-  // hijackConsola:false during commits 3b-3d — the legacy ConsoleRenderer
-  // installed by main.ts:initConsolaReporter still owns consola's reporter
-  // chain. Commit 4 flips this to true once ConsoleRenderer is removed.
-  attachConsoleSink(bus, { hijackConsola: false })
+  // hijackConsola+silent both default-off-during-transition (commits 3b-3e):
+  //
+  // - hijackConsola:false — main.ts:initConsolaReporter already owns
+  //   consola's reporter chain via the legacy ConsoleRenderer; letting
+  //   ConsoleSink also hijack would shadow it.
+  // - silent:true — the legacy ConsoleRenderer (driven by
+  //   middleware.finishRequest + tuiLogger.update*) is still rendering
+  //   `[ OK ]` / `[FAIL]` / footer lines. Without silent, every request
+  //   produces TWO completion lines (one from ConsoleRenderer, one from
+  //   ConsoleSink reading request.completed off the bus).
+  //
+  // Commit 4 deletes lib/tui/ entirely and flips both back to default-on,
+  // making ConsoleSink the sole stdout renderer.
+  attachConsoleSink(bus, { hijackConsola: false, silent: true })
 
   // Initialize request context manager with the request.* publisher so
   // every lifecycle / context_updated event reaches HistorySink + WsSink +

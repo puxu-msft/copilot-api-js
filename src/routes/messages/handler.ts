@@ -112,7 +112,6 @@ import {
   classifyStreamError,
 } from "~/lib/stream"
 import { processAnthropicSystem } from "~/lib/system-prompt"
-import { tuiLogger } from "~/lib/tui"
 import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
 
 import { handleWebSearchCompletion } from "./web-search-handler"
@@ -198,13 +197,15 @@ export async function handleMessages(c: Context) {
   const selectedModelForMapper = state.modelIndex.get(anthropicPayload.model)
   reqCtx.setToolNameMapper(buildAnthropicToolNameMapper(anthropicPayload.tools, anthropicPayload.model, selectedModelForMapper?.vendor))
 
-  // Update TUI tracker with model info (immediate feedback, don't wait for event loop)
-  if (tuiLogId) {
-    tuiLogger.updateRequest(tuiLogId, {
-      model: anthropicPayload.model,
-      ...(clientModelName && { clientModel: clientModelName }),
-    })
-  }
+  // Publish model resolution to the observability bus. Replaces the legacy
+  // `tuiLogger.updateRequest({ model, clientModel })` direct call — sinks
+  // (ConsoleSink / WsSink) receive `request.model_resolved` via the bus and
+  // update their renderings. The legacy tuiLogger track is still kept by
+  // main.ts:initConsolaReporter for now; commit 4 deletes it.
+  reqCtx.setResolvedModel({
+    resolved: anthropicPayload.model,
+    ...(clientModelName !== undefined && { client: clientModelName }),
+  })
 
   // Phase 1: One-time preprocessing (idempotent, before routing)
   const preprocessed = preprocessAnthropicMessages(anthropicPayload.messages)
@@ -336,11 +337,12 @@ function runInitialSanitizationAndRecord(
     })
   }
 
-  // Set initial tracking tags for log display
-  if (reqCtx.tuiLogId) {
-    const tags: Array<string> = []
-    if (initialSanitized.thinking && initialSanitized.thinking.type !== "disabled") tags.push(`thinking:${initialSanitized.thinking.type}`)
-    if (tags.length > 0) tuiLogger.updateRequest(reqCtx.tuiLogId, { tags })
+  // Publish "thinking" feature when enabled. Replaces the legacy
+  // `tuiLogger.updateRequest({ tags: ["thinking:..."] })` direct call —
+  // ConsoleSink renders it as the same `(thinking:adaptive)` suffix on
+  // the [ OK ] line via `renderFeatureTag` in observability/sinks/console.ts.
+  if (initialSanitized.thinking && initialSanitized.thinking.type !== "disabled") {
+    reqCtx.recordFeature("thinking", { type: initialSanitized.thinking.type })
   }
 
   return { initialSanitized, initialSanitizationInfo }
@@ -384,11 +386,19 @@ function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
   // Retry counter / per-attempt diagnostics are emitted as [RETRY-n] lines
   // by `executeRequestPipeline` — kept out of the final outcome's tag list
   // to avoid duplicating the same information.
-  if (reqCtx.tuiLogId) {
-    const strippedBetas = (meta?.probedBetas ?? meta?.strippedBetas) as Array<string> | undefined
-    const retryTags = strippedBetas && strippedBetas.length > 0 ? [`beta-strip:${strippedBetas.join(",")}`] : ["truncated"]
-    if (newPayload.thinking && newPayload.thinking.type !== "disabled") retryTags.push(`thinking:${newPayload.thinking.type}`)
-    tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: retryTags })
+  // Publish features observed on this retry attempt. Replaces the legacy
+  // `tuiLogger.updateRequest({ tags: [...] })` direct call. Per-attempt
+  // retry counter / diagnostics are emitted as [RETRY-n] lines by
+  // `executeRequestPipeline` — kept out of feature events to avoid
+  // duplicating the same information.
+  const strippedBetas = (meta?.probedBetas ?? meta?.strippedBetas) as Array<string> | undefined
+  if (strippedBetas && strippedBetas.length > 0) {
+    reqCtx.recordFeature("beta-stripped", { betas: strippedBetas })
+  } else {
+    reqCtx.recordFeature("truncated")
+  }
+  if (newPayload.thinking && newPayload.thinking.type !== "disabled") {
+    reqCtx.recordFeature("thinking", { type: newPayload.thinking.type })
   }
 }
 
@@ -721,14 +731,15 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
     streamState.currentBlockType = ""
   }
 
-  // Update TUI footer with streaming progress
-  if (reqCtx.tuiLogId) {
-    tuiLogger.updateRequest(reqCtx.tuiLogId, {
-      streamBytesIn: streamState.bytesIn,
-      streamEventsIn: streamState.eventsIn,
-      streamBlockType: streamState.currentBlockType,
-    })
-  }
+  // Publish streaming progress to the observability bus. Replaces the
+  // legacy `tuiLogger.updateRequest({ streamBytesIn/streamEventsIn/...
+  // })` direct call — ConsoleSink's footer reads bytesIn/eventsIn/blockType
+  // from `request.stream_progress` and renders ` ↓12KB 42ev [thinking]`.
+  reqCtx.recordStreamProgress({
+    bytesIn: streamState.bytesIn,
+    eventsIn: streamState.eventsIn,
+    blockType: streamState.currentBlockType,
+  })
 
   // Check for repetitive output in text deltas
   if (parsed?.type === "content_block_delta") {
