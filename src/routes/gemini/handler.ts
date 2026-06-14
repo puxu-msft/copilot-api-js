@@ -59,7 +59,6 @@ import {
   guardSseIterable,
 } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
-import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
 import {
   //
@@ -267,17 +266,13 @@ async function prepareGeminiRequest(c: Context, body: GenerateContentRequest, mo
     const message = `Gemini → ChatCompletions translation dropped unsupported params: ${droppedParams.join(", ")}`
     consola.warn(`[gemini] model=${resolvedModel} ${message}`)
     ctx.addWarningMessage({ code: DROPPED_GEMINI_PARAMS_WARNING_CODE, message })
-    if (tuiLogId) {
-      tuiLogger.updateRequest(tuiLogId, { tags: ["dropped-params"] })
-    }
+    ctx.recordFeature("dropped-params")
   }
 
-  if (tuiLogId) {
-    tuiLogger.updateRequest(tuiLogId, {
-      model: resolvedModel,
-      ...(modelId !== resolvedModel && { clientModel: modelId }),
-    })
-  }
+  ctx.setResolvedModel({
+    resolved: resolvedModel,
+    ...(modelId !== resolvedModel && { client: modelId }),
+  })
 
   // 5. Sanitize and auto-fill max_completion_tokens (mirrors handleChatCompletion)
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(openaiPayload)

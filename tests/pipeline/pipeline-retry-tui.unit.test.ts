@@ -1,22 +1,28 @@
 /**
- * Unit tests for the [RETRY-n] TUI emission from `executeRequestPipeline`.
+ * Unit tests for `request.attempt_failed` bus emission from
+ * `executeRequestPipeline`.
  *
- * Verifies that:
- *   - Every retry-eligible failure triggers `TuiRenderer.onRequestRetry` once
- *     with the correct `RetryInfo` (attempt index, strategy, status, error,
- *     waitMs, learning flag).
- *   - Emission happens AFTER the budget gate — a budget-exhausted attempt
- *     produces no retry line for the discarded action.
- *   - Aborted strategies, first-attempt successes, and pipelines without a
- *     `requestContext` do NOT trigger the hook.
+ * Verifies that the pipeline calls `ctx.recordAttemptFailure` (which
+ * publishes `request.attempt_failed { willRetry: true, ... }` on the bus)
+ * for every retry-eligible failure AFTER the budget gate accepts the
+ * retry. Sinks (ConsoleSink) render this as `[RETRY-n]` lines.
  *
- * The TUI renderer is the seam — we install a recording renderer via
- * `tuiLogger.setRenderer()` and assert against the captured events.
+ * Covers:
+ *  - Single retry → one attempt_failed event with correct
+ *    strategy/status/error/waitMs/learning.
+ *  - Multiple retries across distinct strategies → one event each, indices
+ *    in order.
+ *  - Learning-probe retries carry `learning: true`.
+ *  - First-attempt success → zero attempt_failed events.
+ *  - Abort action → zero attempt_failed events (no retry was decided).
+ *  - Pipeline run without a RequestContext → zero events (web_search hop).
+ *  - Budget-exhausted retry → no extra event for the discarded action.
+ *
+ * Tests use a per-test bus + recording subscriber. No singleton mutation.
  */
 
 import {
   //
-  afterEach,
   beforeEach,
   describe,
   expect,
@@ -26,48 +32,40 @@ import {
 
 import type {
   //
+  ObservabilityBus,
+  ObservabilityEvent,
+} from "~/lib/observability"
+import type {
+  //
   FormatAdapter,
   RetryStrategy,
 } from "~/lib/request/pipeline"
-import type {
-  //
-  RetryInfo,
-  TuiLogEntry,
-  TuiRenderer,
-} from "~/lib/tui"
 
 import { createRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
+import { createBus } from "~/lib/observability"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
-import { tuiLogger } from "~/lib/tui"
 
 interface TestPayload {
   model: string
   marker?: string
 }
 
-interface RecordedRetry {
-  entryId: string
-  info: RetryInfo
-}
+type AttemptFailedEvent = Extract<ObservabilityEvent, { kind: "request.attempt_failed" }>
 
-interface RecordingRenderer extends TuiRenderer {
-  retries: Array<RecordedRetry>
-}
+let bus: ObservabilityBus
+let captured: Array<AttemptFailedEvent>
 
-function createRecordingRenderer(): RecordingRenderer {
-  const retries: Array<RecordedRetry> = []
-  return {
-    retries,
-    onRequestStart: () => {},
-    onRequestUpdate: () => {},
-    onRequestRetry: (entry: TuiLogEntry, info: RetryInfo) => {
-      retries.push({ entryId: entry.id, info: { ...info } })
+beforeEach(() => {
+  bus = createBus()
+  captured = []
+  bus.subscribe(
+    (event) => {
+      captured.push(event as AttemptFailedEvent)
     },
-    onRequestComplete: () => {},
-    destroy: () => {},
-  }
-}
+    (event) => event.kind === "request.attempt_failed",
+  )
+})
 
 function makeAdapter(executeFn: FormatAdapter<TestPayload>["execute"]): FormatAdapter<TestPayload> {
   return {
@@ -103,33 +101,16 @@ function alwaysAbort(name: string): RetryStrategy<TestPayload> {
 
 const basePayload: TestPayload = { model: "gpt-test" }
 
-// ─── Fixture setup ───
+function newCtxWithPublisher() {
+  const manager = createRequestContextManager({ publisher: bus.scope("request") })
+  const ctx = manager.create({ endpoint: "anthropic-messages" })
+  ctx.setOriginalRequest({ model: "gpt-test", messages: [], stream: false, payload: {} })
+  return ctx
+}
 
-let recording: RecordingRenderer
-let priorRenderer: TuiRenderer | null = null
-
-beforeEach(() => {
-  recording = createRecordingRenderer()
-  // Hold onto whatever renderer was installed (test harness may have one) and
-  // restore in afterEach so we don't leak between tests.
-  priorRenderer = (tuiLogger as unknown as { renderer: TuiRenderer | null }).renderer
-  tuiLogger.setRenderer(recording)
-})
-
-afterEach(() => {
-  tuiLogger.clear()
-  tuiLogger.setRenderer(priorRenderer)
-})
-
-// ─── Tests ───
-
-describe("executeRequestPipeline → [RETRY-n] TUI emission", () => {
-  test("emits a single retry event with correct RetryInfo when one retry succeeds", async () => {
-    const manager = createRequestContextManager()
-    const tuiLogId = tuiLogger.startRequest({ method: "POST", path: "/v1/messages", model: "gpt-test" })
-    const reqCtx = manager.create({ endpoint: "anthropic-messages", tuiLogId })
-    reqCtx.setOriginalRequest({ model: "gpt-test", messages: [], stream: false, payload: {} })
-
+describe("executeRequestPipeline → request.attempt_failed bus emission", () => {
+  test("emits a single attempt_failed event with correct fields when one retry succeeds", async () => {
+    const reqCtx = newCtxWithPublisher()
     let callCount = 0
     const adapter = makeAdapter(
       mock(async (p: TestPayload) => {
@@ -150,37 +131,28 @@ describe("executeRequestPipeline → [RETRY-n] TUI emission", () => {
     })
 
     expect(result.totalRetries).toBe(1)
-    expect(recording.retries).toHaveLength(1)
-    const [evt] = recording.retries
-    expect(evt.entryId).toBe(tuiLogId)
-    expect(evt.info).toEqual({
-      attempt: 1,
-      strategyName: "network-retry",
-      statusCode: 502,
-      error: expect.stringContaining("Network reset"),
-      waitMs: 1000,
-      learning: false,
-    })
+    expect(captured).toHaveLength(1)
+    const evt = captured[0]
+    expect(evt.willRetry).toBe(true)
+    expect(evt.nextStrategy).toBe("network-retry")
+    expect(evt.waitMs).toBe(1000)
+    expect(evt.learning).toBe(false)
+    expect(evt.attempt.error?.status).toBe(502)
+    expect(evt.attempt.error?.message).toContain("Network reset")
   })
 
-  test("emits one retry event per attempt across multiple distinct strategies", async () => {
-    const manager = createRequestContextManager()
-    const tuiLogId = tuiLogger.startRequest({ method: "POST", path: "/v1/messages", model: "gpt-test" })
-    const reqCtx = manager.create({ endpoint: "anthropic-messages", tuiLogId })
-    reqCtx.setOriginalRequest({ model: "gpt-test", messages: [], stream: false, payload: {} })
-
+  test("emits one event per attempt across multiple distinct strategies", async () => {
+    const reqCtx = newCtxWithPublisher()
     let callCount = 0
     const adapter = makeAdapter(
       mock(async () => {
         callCount++
-        // First two attempts fail with different errors; third succeeds.
         if (callCount === 1) throw new HTTPError("ECONNRESET", 502, "")
         if (callCount === 2) throw new HTTPError("Too large", 413, "")
         return { result: "ok", queueWaitMs: 0 }
       }),
     )
 
-    // Strategy 1 handles only 502; strategy 2 handles only 413. Each fires once.
     const strat1: RetryStrategy<TestPayload> = {
       name: "network-retry",
       canHandle: (e) => e.status === 502,
@@ -203,21 +175,15 @@ describe("executeRequestPipeline → [RETRY-n] TUI emission", () => {
     })
 
     expect(result.totalRetries).toBe(2)
-    expect(recording.retries).toHaveLength(2)
-    expect(recording.retries[0].info.attempt).toBe(1)
-    expect(recording.retries[0].info.strategyName).toBe("network-retry")
-    expect(recording.retries[0].info.statusCode).toBe(502)
-    expect(recording.retries[1].info.attempt).toBe(2)
-    expect(recording.retries[1].info.strategyName).toBe("auto-truncate")
-    expect(recording.retries[1].info.statusCode).toBe(413)
+    expect(captured).toHaveLength(2)
+    expect(captured[0].nextStrategy).toBe("network-retry")
+    expect(captured[0].attempt.error?.status).toBe(502)
+    expect(captured[1].nextStrategy).toBe("auto-truncate")
+    expect(captured[1].attempt.error?.status).toBe(413)
   })
 
   test("learning-probe retries carry learning:true", async () => {
-    const manager = createRequestContextManager()
-    const tuiLogId = tuiLogger.startRequest({ method: "POST", path: "/v1/messages", model: "gpt-test" })
-    const reqCtx = manager.create({ endpoint: "anthropic-messages", tuiLogId })
-    reqCtx.setOriginalRequest({ model: "gpt-test", messages: [], stream: false, payload: {} })
-
+    const reqCtx = newCtxWithPublisher()
     let callCount = 0
     const adapter = makeAdapter(
       mock(async () => {
@@ -237,17 +203,13 @@ describe("executeRequestPipeline → [RETRY-n] TUI emission", () => {
       requestContext: reqCtx,
     })
 
-    expect(recording.retries).toHaveLength(1)
-    expect(recording.retries[0].info.learning).toBe(true)
-    expect(recording.retries[0].info.strategyName).toBe("unsupported-beta-retry")
+    expect(captured).toHaveLength(1)
+    expect(captured[0].learning).toBe(true)
+    expect(captured[0].nextStrategy).toBe("unsupported-beta-retry")
   })
 
-  test("first-attempt success emits no retry event", async () => {
-    const manager = createRequestContextManager()
-    const tuiLogId = tuiLogger.startRequest({ method: "POST", path: "/v1/messages", model: "gpt-test" })
-    const reqCtx = manager.create({ endpoint: "anthropic-messages", tuiLogId })
-    reqCtx.setOriginalRequest({ model: "gpt-test", messages: [], stream: false, payload: {} })
-
+  test("first-attempt success emits no attempt_failed event", async () => {
+    const reqCtx = newCtxWithPublisher()
     const adapter = makeAdapter(mock(async () => ({ result: "ok", queueWaitMs: 0 })))
 
     await executeRequestPipeline({
@@ -260,15 +222,11 @@ describe("executeRequestPipeline → [RETRY-n] TUI emission", () => {
       requestContext: reqCtx,
     })
 
-    expect(recording.retries).toHaveLength(0)
+    expect(captured).toHaveLength(0)
   })
 
-  test("abort action emits no retry event", async () => {
-    const manager = createRequestContextManager()
-    const tuiLogId = tuiLogger.startRequest({ method: "POST", path: "/v1/messages", model: "gpt-test" })
-    const reqCtx = manager.create({ endpoint: "anthropic-messages", tuiLogId })
-    reqCtx.setOriginalRequest({ model: "gpt-test", messages: [], stream: false, payload: {} })
-
+  test("abort action emits no attempt_failed event", async () => {
+    const reqCtx = newCtxWithPublisher()
     const adapter = makeAdapter(
       mock(async () => {
         throw new HTTPError("Forbidden", 403, "")
@@ -287,10 +245,10 @@ describe("executeRequestPipeline → [RETRY-n] TUI emission", () => {
       }),
     ).rejects.toThrow("Forbidden")
 
-    expect(recording.retries).toHaveLength(0)
+    expect(captured).toHaveLength(0)
   })
 
-  test("missing requestContext suppresses retry events", async () => {
+  test("missing requestContext suppresses attempt_failed events", async () => {
     let callCount = 0
     const adapter = makeAdapter(
       mock(async () => {
@@ -311,20 +269,11 @@ describe("executeRequestPipeline → [RETRY-n] TUI emission", () => {
     })
 
     expect(result.totalRetries).toBe(1)
-    expect(recording.retries).toHaveLength(0)
+    expect(captured).toHaveLength(0)
   })
 
-  test("budget-exhausted retry produces no extra retry event", async () => {
-    // Strategy always wants to retry, but maxRetries=1 lets exactly 1 retry through.
-    // We send 3 failing executes:
-    //   exec 0: fails → strategy says retry, budget allows (normalRetries 0→1) → emit [RETRY-1]
-    //   exec 1: fails → strategy says retry, budget exhausted → break, NO emit
-    // So we expect exactly 1 emission, and the final error propagates.
-    const manager = createRequestContextManager()
-    const tuiLogId = tuiLogger.startRequest({ method: "POST", path: "/v1/messages", model: "gpt-test" })
-    const reqCtx = manager.create({ endpoint: "anthropic-messages", tuiLogId })
-    reqCtx.setOriginalRequest({ model: "gpt-test", messages: [], stream: false, payload: {} })
-
+  test("budget-exhausted retry produces no extra attempt_failed event", async () => {
+    const reqCtx = newCtxWithPublisher()
     const executeFn = mock(async () => {
       throw new HTTPError("Network reset", 502, "")
     })
@@ -345,7 +294,6 @@ describe("executeRequestPipeline → [RETRY-n] TUI emission", () => {
     // 1 initial + 1 retry = 2 calls (budget exhausted before a 3rd)
     expect(executeFn).toHaveBeenCalledTimes(2)
     // Only the accepted retry emitted; the budget-rejected one did not.
-    expect(recording.retries).toHaveLength(1)
-    expect(recording.retries[0].info.attempt).toBe(1)
+    expect(captured).toHaveLength(1)
   })
 })

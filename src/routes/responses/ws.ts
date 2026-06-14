@@ -206,19 +206,26 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     payload = normalizeCallIds(payload)
   }
 
-  // TUI logging — use "WS" as method indicator
+  // TUI logging — use "WS" as method indicator. The legacy tuiLogger entry
+  // is still needed through commits 3d-3e because lib/tui/console-renderer.ts
+  // and lib/tui/middleware.ts still install consola hijacks driven by it.
+  // Commit 4 deletes both and this startRequest call goes away.
   const tuiLogId = tuiLogger.startRequest({
     method: "WS",
     path: "/v1/responses",
     model: resolvedModel,
   })
 
-  // Create request context for tracking
+  // Create request context for tracking. Per RFC §2.9 the WS entry point
+  // passes method="WS" so sinks render the activity line consistently
+  // with HTTP routes.
   const reqCtx = getRequestContextManager().create({
     endpoint: "openai-responses",
     sessionId: resolveResponseSessionId(payload.previous_response_id),
     tuiLogId,
     rawPath: "/v1/responses",
+    method: "WS",
+    path: "/v1/responses",
   })
 
   reqCtx.setOriginalRequest({
@@ -231,13 +238,14 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   })
   // WS transport: no inbound HTTP headers to capture
 
-  // Update TUI with resolved model (if different from requested)
-  if (requestedModel !== resolvedModel) {
-    tuiLogger.updateRequest(tuiLogId, {
-      model: resolvedModel,
-      clientModel: requestedModel,
-    })
-  }
+  // Publish resolved model to the observability bus. Always emit so the
+  // snapshot's resolvedModel is populated for sinks; include clientModel
+  // only on a genuine remap (avoids unnecessary `requested → resolved`
+  // arrow when they're the same).
+  reqCtx.setResolvedModel({
+    resolved: resolvedModel,
+    ...(requestedModel !== resolvedModel && { client: requestedModel }),
+  })
 
   // Build pipeline adapter and strategies (shared with HTTP handler)
   const headersCapture: HeadersCapture = {}
@@ -312,8 +320,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
         forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: parsed.type, raw: eventData })
         eventsReceived++
 
-        // Update TUI with stream progress
-        tuiLogger.updateRequest(tuiLogId, { streamEventsIn: eventsReceived })
+        reqCtx.recordStreamProgress({ eventsIn: eventsReceived })
 
         // Check for terminal events
         if (TERMINAL_EVENTS.has(parsed.type)) break

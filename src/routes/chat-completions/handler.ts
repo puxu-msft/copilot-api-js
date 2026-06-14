@@ -100,7 +100,6 @@ import {
   guardSseIterable,
 } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
-import { tuiLogger } from "~/lib/tui"
 import { isNullish } from "~/lib/utils"
 
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
@@ -187,13 +186,13 @@ export async function handleChatCompletion(c: Context) {
   originalPayload.messages = renamedPayload.messages
   originalPayload.tools = renamedPayload.tools
 
-  // Update TUI tracker with model info (immediate feedback)
-  if (tuiLogId) {
-    tuiLogger.updateRequest(tuiLogId, {
-      model: originalPayload.model,
-      ...(clientModel !== originalPayload.model && { clientModel }),
-    })
-  }
+  // Publish model resolution to the observability bus (replaces
+  // tuiLogger.updateRequest direct call). See messages/handler.ts for the
+  // matching pattern.
+  reqCtx.setResolvedModel({
+    resolved: originalPayload.model,
+    ...(clientModel !== originalPayload.model && { client: clientModel }),
+  })
 
   // Sanitize messages (filter orphaned tool blocks, system-reminders)
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(originalPayload)
@@ -304,9 +303,7 @@ export async function runChatCompletionPipeline(opts: RunChatCompletionPipelineO
   }
 
   if (isResponsesSupported(selectedModel)) {
-    if (opts.reqCtx.tuiLogId) {
-      tuiLogger.updateRequest(opts.reqCtx.tuiLogId, { tags: ["via-responses"] })
-    }
+    opts.reqCtx.recordFeature("via-responses")
     return executeRequestViaResponses(optsWithAbort)
   }
 
@@ -461,9 +458,7 @@ function recordDroppedCcParamsWarning(reqCtx: RequestContext, model: string, dro
     message,
   })
 
-  if (reqCtx.tuiLogId) {
-    tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: ["dropped-params"] })
-  }
+  reqCtx.recordFeature("dropped-params")
 }
 
 function createChatCompletionsStrategies(label: string): Array<RetryStrategy<ChatCompletionsPayload>> {
@@ -517,9 +512,7 @@ async function executeRequestWithAdapter(opts: ExecuteRequestWithAdapterOptions)
         // Update tracking tags. Retry counter / per-attempt info is emitted
         // as [RETRY-n] lines by `executeRequestPipeline`; here we only sticky
         // the "truncated" feature tag for the final outcome line.
-        if (reqCtx.tuiLogId) {
-          tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: ["truncated"] })
-        }
+        reqCtx.recordFeature("truncated")
       },
     })
 
@@ -681,12 +674,7 @@ async function handleStreamingResponse(opts: StreamingOptions) {
       eventsIn++
 
       // Update TUI footer with streaming progress
-      if (reqCtx.tuiLogId) {
-        tuiLogger.updateRequest(reqCtx.tuiLogId, {
-          streamBytesIn: bytesIn,
-          streamEventsIn: eventsIn,
-        })
-      }
+      reqCtx.recordStreamProgress({ bytesIn, eventsIn })
 
       // Parse and accumulate for history/tracking (skip [DONE] and empty data)
       if (rawEvent.data && rawEvent.data !== "[DONE]") {

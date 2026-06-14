@@ -84,7 +84,6 @@ import {
   type SseFrame,
 } from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
-import { tuiLogger } from "~/lib/tui"
 
 import {
   //
@@ -181,16 +180,13 @@ export async function handleResponses(c: Context) {
   reqCtx.setToolNameMapper(toolNameMapper)
   payload = applyResponsesToolNameSanitization(payload, toolNameMapper)
 
-  // Update TUI tracker with model info
-  if (tuiLogId) {
-    tuiLogger.updateRequest(tuiLogId, {
-      model: payload.model,
-      ...(clientModel !== payload.model && { clientModel }),
-    })
-  }
+  reqCtx.setResolvedModel({
+    resolved: payload.model,
+    ...(clientModel !== payload.model && { client: clientModel }),
+  })
 
   if (useFallback) {
-    if (tuiLogId) tuiLogger.updateRequest(tuiLogId, { tags: ["via-chat-completions-fallback"] })
+    reqCtx.recordFeature("via-chat-completions-fallback")
     return executeResponsesViaChatCompletions({ c, payload, reqCtx, selectedModel })
   }
 
@@ -325,13 +321,7 @@ async function handleDirectResponses(opts: ResponsesHandlerOptions) {
             bytesIn += rawEvent.data.length
             eventsIn++
 
-            // Update TUI footer with streaming progress
-            if (reqCtx.tuiLogId) {
-              tuiLogger.updateRequest(reqCtx.tuiLogId, {
-                streamBytesIn: bytesIn,
-                streamEventsIn: eventsIn,
-              })
-            }
+            reqCtx.recordStreamProgress({ bytesIn, eventsIn })
 
             // Fix inconsistent IDs from upstream before processing
             const eventData = idTracker ? fixStreamEventIds(rawEvent.data, rawEvent.event, idTracker) : rawEvent.data

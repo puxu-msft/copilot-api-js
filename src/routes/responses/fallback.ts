@@ -69,7 +69,6 @@ import {
   guardSseIterable,
   type SseFrame,
 } from "~/lib/stream"
-import { tuiLogger } from "~/lib/tui"
 
 import { rebuildConversationMessages } from "./conversation-rebuild"
 import { createResponsesStrategies } from "./pipeline"
@@ -276,12 +275,7 @@ export async function executeResponsesViaChatCompletions(opts: FallbackOptions) 
 
           bytesIn += rawEvent.data.length
           eventsIn++
-          if (reqCtx.tuiLogId) {
-            tuiLogger.updateRequest(reqCtx.tuiLogId, {
-              streamBytesIn: bytesIn,
-              streamEventsIn: eventsIn,
-            })
-          }
+          reqCtx.recordStreamProgress({ bytesIn, eventsIn })
 
           let event: ResponsesStreamEvent
           try {

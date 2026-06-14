@@ -51,7 +51,6 @@ import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-ret
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { state } from "~/lib/state"
-import { tuiLogger } from "~/lib/tui"
 
 /** A sanitize step usable as both the adapter's `sanitize` and auto-truncate's `resanitize`. */
 export type AnthropicSanitizeFn = (payload: MessagesPayload) => SanitizeResult<MessagesPayload>
@@ -143,8 +142,8 @@ export function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAd
             // so when coerceAdaptiveThinking rewrites enabled→adaptive on the
             // wire, only this tag reflects what upstream really received.
             const wireThinking = wire.thinking as { type?: string } | undefined
-            if (reqCtx?.tuiLogId && wireThinking?.type && wireThinking.type !== "disabled") {
-              tuiLogger.updateRequest(reqCtx.tuiLogId, { tags: [`thinking-wire:${wireThinking.type}`] })
+            if (wireThinking?.type && wireThinking.type !== "disabled") {
+              reqCtx?.recordFeature("thinking-wire", { type: wireThinking.type })
             }
             reqCtx?.setAttemptWireRequest({
               model: typeof wire.model === "string" ? wire.model : anthropicPayload.model,
