@@ -157,12 +157,18 @@ export async function handleChatCompletion(c: Context) {
 
   // Create request context — triggers "created" event → history consumer inserts entry
   const manager = getRequestContextManager()
+  const contentLengthHeader = c.req.header("content-length")
+  const reqBodySize = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : undefined
   const reqCtx = manager.create({
     endpoint: "openai-chat-completions",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers),
     tuiLogId,
     rawPath: c.req.path,
+    method: c.req.method,
+    path: c.req.path,
+    ...(reqBodySize !== undefined && Number.isFinite(reqBodySize) && { requestBodySize: reqBodySize }),
   })
+  c.set("requestContext", reqCtx)
   reqCtx.setOriginalRequest({
     // Use client's original model name (before resolution/overrides)
     model: clientModel,

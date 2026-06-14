@@ -237,12 +237,18 @@ async function prepareGeminiRequest(c: Context, body: GenerateContentRequest, mo
   //    translated OpenAI payload as the adapter sends each attempt.
   const tuiLogId = c.get("tuiLogId") as string | undefined
   const manager = getRequestContextManager()
+  const contentLengthHeader = c.req.header("content-length")
+  const reqBodySize = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : undefined
   const ctx = manager.create({
     endpoint: "gemini-generate-content",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers),
     tuiLogId,
     rawPath: c.req.path,
+    method: c.req.method,
+    path: c.req.path,
+    ...(reqBodySize !== undefined && Number.isFinite(reqBodySize) && { requestBodySize: reqBodySize }),
   })
+  c.set("requestContext", ctx)
   ctx.setOriginalRequest({
     model: modelId,
     // `messages` MUST reflect the original wire shape (Gemini contents),

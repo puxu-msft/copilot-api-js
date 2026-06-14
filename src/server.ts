@@ -7,6 +7,7 @@ import type { ErrorWireFormat } from "./lib/error"
 
 import { applyConfigToState } from "./lib/config/config"
 import { forwardError } from "./lib/error"
+import { observabilityMiddleware } from "./lib/observability/middleware"
 import { state } from "./lib/state"
 import { ensureValidCopilotToken } from "./lib/token"
 import { tuiMiddleware } from "./lib/tui"
@@ -71,6 +72,13 @@ export function createServer(options: ServerOptions = {}) {
   })
 
   server.use(tuiMiddleware())
+  // observabilityMiddleware runs AFTER tuiMiddleware in the chain (Hono
+  // runs middlewares in registration order). Both coexist through commit
+  // 3e: tuiMiddleware drives the legacy ConsoleRenderer (still the
+  // authoritative renderer), observabilityMiddleware ensures the new
+  // RequestContext reaches a terminal state via the bus path. Commit 4
+  // deletes tui/middleware.ts and lib/tui/ entirely.
+  server.use(observabilityMiddleware())
   server.use(cors())
   server.use(trimTrailingSlash())
 

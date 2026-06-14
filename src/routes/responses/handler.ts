@@ -154,12 +154,18 @@ export async function handleResponses(c: Context) {
 
   // Create request context (Responses API is a distinct OpenAI-format endpoint)
   const manager = getRequestContextManager()
+  const contentLengthHeader = c.req.header("content-length")
+  const reqBodySize = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : undefined
   const reqCtx = manager.create({
     endpoint: "openai-responses",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers) ?? resolveResponseSessionId(payload.previous_response_id),
     tuiLogId,
     rawPath: c.req.path,
+    method: c.req.method,
+    path: c.req.path,
+    ...(reqBodySize !== undefined && Number.isFinite(reqBodySize) && { requestBodySize: reqBodySize }),
   })
+  c.set("requestContext", reqCtx)
 
   // Record original request for history
   reqCtx.setOriginalRequest({

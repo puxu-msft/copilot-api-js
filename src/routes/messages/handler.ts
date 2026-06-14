@@ -172,12 +172,20 @@ export async function handleMessages(c: Context) {
 
   // Create request context — this triggers the "created" event → history consumer inserts entry
   const manager = getRequestContextManager()
+  const contentLengthHeader = c.req.header("content-length")
+  const reqBodySize = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : undefined
   const reqCtx = manager.create({
     endpoint: "anthropic-messages",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers),
     tuiLogId,
     rawPath: c.req.path,
+    method: c.req.method,
+    path: c.req.path,
+    ...(reqBodySize !== undefined && Number.isFinite(reqBodySize) && { requestBodySize: reqBodySize }),
   })
+  // Expose ctx so observabilityMiddleware can fail-safe finalize on
+  // uncaught throws and completeFromHttpStatus on non-streaming returns.
+  c.set("requestContext", reqCtx)
   reqCtx.setOriginalRequest({
     // Use client's original model name (before resolution/overrides)
     model: clientModelName ?? originalSnapshot.model,
