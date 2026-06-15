@@ -15,7 +15,11 @@ import {
   type EndpointType,
   type QueryOptions,
 } from "~/lib/history"
-import { getLineage } from "~/lib/history/lineage"
+import {
+  //
+  getLineage,
+  listConversations,
+} from "~/lib/history/lineage"
 
 export function handleGetEntries(c: Context) {
   if (!isHistoryEnabled()) {
@@ -82,6 +86,24 @@ export function handleGetLineage(c: Context) {
     return c.json({ error: "Entry not found" }, 404)
   }
   return c.json(getLineage(id))
+}
+
+/**
+ * GET /history/api/conversations — list rootHash-clustered conversations,
+ * newest activity first. Pagination via opaque `cursor` (the latestAt of
+ * the last item). `limit` capped at 500.
+ *
+ * Only Anthropic entries appear here (v1 scope — see RFC §8.1). Entries
+ * without a lineage row (pre-backfill, non-Anthropic) are excluded.
+ */
+export function handleGetConversations(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+  const q = c.req.query()
+  const limit = q.limit ? Number.parseInt(q.limit, 10) : undefined
+  const cursor = q.cursor || undefined
+  return c.json(listConversations({ limit, cursor }))
 }
 
 export function handleDeleteEntries(c: Context) {

@@ -220,6 +220,152 @@ function loadRootSummary(rootHash: string): RootSummary | null {
   return { rootHash, count: row.n, earliestAt: row.e_at, latestAt: row.l_at }
 }
 
+/**
+ * One row in the conversations list — aggregated per `rootHash`.
+ *
+ * Built from `entry_lineage JOIN entries_v2`, so non-Anthropic / pre-backfill
+ * entries (no lineage row) are excluded. Token totals come from entries_v2's
+ * pre-projected `input_tokens` / `output_tokens` columns (no stage-row scan).
+ */
+export interface ConversationSummary {
+  rootHash: string
+  count: number
+  earliestAt: number
+  latestAt: number
+  firstEntryId: string
+  lastEntryId: string
+  models: Array<string>
+  totalInputTokens: number
+  totalOutputTokens: number
+}
+
+export interface ConversationsListOptions {
+  /** Page size; default 50. */
+  limit?: number
+  /** Opaque cursor; max-`latestAt` of last batch. */
+  cursor?: string
+}
+
+export interface ConversationsListResult {
+  conversations: Array<ConversationSummary>
+  cursor?: string
+}
+
+interface ConversationRow {
+  root_hash: string
+  count: number
+  earliest_at: number
+  latest_at: number
+  first_entry_id: string
+  last_entry_id: string
+  total_input_tokens: number | null
+  total_output_tokens: number | null
+}
+
+interface ConversationModelRow {
+  root_hash: string
+  model: string
+}
+
+/**
+ * List conversation roots (rootHash-clustered entries), newest activity first.
+ *
+ * For UI sidebars / "all my conversations" views. One query for the
+ * aggregates + one for the per-root distinct model list (avoids GROUP_CONCAT
+ * ordering ambiguities); results joined in memory by rootHash.
+ *
+ * Pagination uses a composite cursor `<latestAt>:<rootHash>` to handle
+ * ties cleanly — when two roots share `latestAt` (likely in fast tests
+ * or bursty traffic) a strict `<` cursor on `latestAt` alone would drop
+ * one of them.
+ */
+export function listConversations(opts: ConversationsListOptions = {}): ConversationsListResult {
+  const db = getDatabase()
+  const limit = Math.max(1, Math.min(opts.limit ?? 50, 500))
+
+  let cursorAt: number | null = null
+  let cursorRootHash: string | null = null
+  if (opts.cursor) {
+    const colon = opts.cursor.indexOf(":")
+    if (colon > 0) {
+      cursorAt = Number.parseInt(opts.cursor.slice(0, colon), 10)
+      cursorRootHash = opts.cursor.slice(colon + 1)
+      if (!Number.isFinite(cursorAt)) {
+        cursorAt = null
+        cursorRootHash = null
+      }
+    }
+  }
+  const havingClause = cursorAt !== null && cursorRootHash !== null ? "HAVING latest_at < ? OR (latest_at = ? AND root_hash < ?)" : ""
+
+  // Aggregate roots. first_entry_id / last_entry_id picked via correlated
+  // ORDER BY trick on the projected MIN/MAX timestamp — SQLite returns
+  // the row with the matching min/max within the group.
+  const aggSql = `
+    SELECT
+      el.root_hash AS root_hash,
+      COUNT(*) AS count,
+      MIN(e.started_at) AS earliest_at,
+      MAX(e.started_at) AS latest_at,
+      (SELECT inner_e.id FROM entry_lineage inner_el
+         JOIN entries_v2 inner_e ON inner_e.id = inner_el.entry_id
+        WHERE inner_el.root_hash = el.root_hash
+        ORDER BY inner_e.started_at ASC LIMIT 1) AS first_entry_id,
+      (SELECT inner_e.id FROM entry_lineage inner_el
+         JOIN entries_v2 inner_e ON inner_e.id = inner_el.entry_id
+        WHERE inner_el.root_hash = el.root_hash
+        ORDER BY inner_e.started_at DESC LIMIT 1) AS last_entry_id,
+      SUM(e.input_tokens) AS total_input_tokens,
+      SUM(e.output_tokens) AS total_output_tokens
+    FROM entry_lineage el
+    JOIN entries_v2 e ON e.id = el.entry_id
+    GROUP BY el.root_hash
+    ${havingClause}
+    ORDER BY latest_at DESC, root_hash DESC
+    LIMIT ?
+  `
+  const params: Array<number | string> = cursorAt !== null && cursorRootHash !== null ? [cursorAt, cursorAt, cursorRootHash, limit] : [limit]
+  const aggRows = db.prepare(aggSql).all(...params) as Array<ConversationRow>
+
+  if (aggRows.length === 0) return { conversations: [] }
+
+  // Distinct models per root, scoped to the page we just fetched.
+  const rootHashes = aggRows.map((r) => r.root_hash)
+  const placeholders = rootHashes.map(() => "?").join(",")
+  const modelRows = db
+    .prepare(
+      `SELECT DISTINCT el.root_hash, e.model
+         FROM entry_lineage el
+         JOIN entries_v2 e ON e.id = el.entry_id
+        WHERE el.root_hash IN (${placeholders}) AND e.model IS NOT NULL
+        ORDER BY el.root_hash, e.model`,
+    )
+    .all(...rootHashes) as Array<ConversationModelRow>
+
+  const modelsByRoot = new Map<string, Array<string>>()
+  for (const r of modelRows) {
+    const existing = modelsByRoot.get(r.root_hash) ?? []
+    existing.push(r.model)
+    modelsByRoot.set(r.root_hash, existing)
+  }
+
+  const conversations: Array<ConversationSummary> = aggRows.map((r) => ({
+    rootHash: r.root_hash,
+    count: r.count,
+    earliestAt: r.earliest_at,
+    latestAt: r.latest_at,
+    firstEntryId: r.first_entry_id,
+    lastEntryId: r.last_entry_id,
+    models: modelsByRoot.get(r.root_hash) ?? [],
+    totalInputTokens: r.total_input_tokens ?? 0,
+    totalOutputTokens: r.total_output_tokens ?? 0,
+  }))
+
+  const last = aggRows.at(-1)
+  const cursor = aggRows.length === limit && last ? `${last.latest_at}:${last.root_hash}` : undefined
+  return cursor === undefined ? { conversations } : { conversations, cursor }
+}
+
 /** Top-level entry point — see LineageResponse. */
 export function getLineage(entryId: string): LineageResponse {
   const self = loadDigest(entryId)

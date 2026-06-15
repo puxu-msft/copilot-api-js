@@ -5,6 +5,7 @@ import {
   handleDeleteEntries,
   handleDeleteSession,
   handleExport,
+  handleGetConversations,
   handleGetEntries,
   handleGetEntry,
   handleGetLineage,
@@ -25,6 +26,7 @@ historyRoutes.get("/api/entries/:id/lineage", handleGetLineage)
 historyRoutes.delete("/api/entries", handleDeleteEntries)
 historyRoutes.get("/api/stats", handleGetStats)
 historyRoutes.get("/api/export", handleExport)
+historyRoutes.get("/api/conversations", handleGetConversations)
 
 /** Session endpoints */
 historyRoutes.get("/api/sessions", handleGetSessions)
