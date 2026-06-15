@@ -18,6 +18,11 @@ import {
 } from "./in-flight"
 import {
   //
+  computeLineageDigest,
+  type LineageDigest,
+} from "./lineage"
+import {
+  //
   extractStagePayloads,
   type StagePayload,
 } from "./sqlite/serialize"
@@ -118,8 +123,21 @@ export function finalizeEntry(id: string): void {
   if (!historyState.enabled) return
   const entry = getInFlight(id)
   if (!entry) return
+
+  // Compute the lineage digest OUTSIDE the transaction (RFC §11). A throw
+  // here logs + persists the entry without a lineage row — the backfill
+  // script can recover it later. The check below tolerates the "this entry
+  // is not an Anthropic request" / "this entry has no messages" cases via
+  // computeLineageDigest returning null.
+  let digest: LineageDigest | undefined
   try {
-    insertCompletedEntry(entry)
+    digest = computeLineageDigest(entry) ?? undefined
+  } catch (err: unknown) {
+    consola.warn("[lineage] digest compute failed for", id, err)
+  }
+
+  try {
+    insertCompletedEntry(entry, digest)
   } catch (err: unknown) {
     consola.warn("[history] failed to persist completed entry", err)
   }
