@@ -7,6 +7,7 @@ import {
   handleExport,
   handleGetEntries,
   handleGetEntry,
+  handleGetLineage,
   handleGetSession,
   handleGetSessions,
   handleGetStats,
@@ -20,6 +21,7 @@ historyRoutes.all("/", (c) => c.json({ error: "Not Found" }, 404))
 /** API endpoints */
 historyRoutes.get("/api/entries", handleGetEntries)
 historyRoutes.get("/api/entries/:id", handleGetEntry)
+historyRoutes.get("/api/entries/:id/lineage", handleGetLineage)
 historyRoutes.delete("/api/entries", handleDeleteEntries)
 historyRoutes.get("/api/stats", handleGetStats)
 historyRoutes.get("/api/export", handleExport)

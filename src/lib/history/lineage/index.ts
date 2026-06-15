@@ -8,4 +8,14 @@
 
 export { canonicalizeMessages, canonicalJson, sha256Hex } from "./canonicalize"
 export { computeLineageDigest, computePostResponseHash, computeRootHash, computeTurnHashes, packTurnHashes, unpackTurnHashes } from "./digest"
+export {
+  getLineage,
+  type LineageChild,
+  type LineageNeighbor,
+  type LineageParent,
+  type LineageResponse,
+  type LineageSibling,
+  type RootSummary,
+  type SiblingKind,
+} from "./query"
 export { LINEAGE_SCHEMA_VERSION, type LineageDigest } from "./types"
