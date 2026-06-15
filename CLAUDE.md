@@ -19,8 +19,32 @@
 
 违反此规则是**最严重的错误**，没有任何理由可以豁免。
 
-原则2：**禁止**在未经用户明确同意的情况下修改 Git 暂存区（暂存或取消暂存）。
-  除非用户明确要求提交，否则不要运行 `git add`、`git reset`、`git restore --staged` 或任何修改 git 暂存区的命令。所有暂存决策交给用户。
+原则2：**Git 暂存区与本地 commit 默认允许，但远端推送与改写历史需用户明确同意。**
+
+  **默认允许**（不必每次问）：
+  - `git add` / `git add -p` —— 暂存改动
+  - `git restore --staged <file>` —— 取消暂存（不动工作区）
+  - `git commit` / `git commit --amend`（仅当 commit 未推送到远端）
+  - `git stash push` —— 暂存压栈（可恢复）
+  - 创建/切换本地分支：`git branch`、`git switch -c`、`git checkout -b`
+
+  **必须用户明确同意**：
+  - `git push`（任何远端推送，包括 `--force` / `--force-with-lease`）
+  - `gh pr create` / 任何把内容发到 GitHub/远端的操作
+  - 改写已推送到远端的 commit（rebase、amend after push、reset）
+  - 删除分支：`git branch -D`、`git push --delete`
+  - `git tag` 推送
+
+  **永远禁止**（已在原则1）：覆盖工作区/丢失未暂存修改的操作。`git restore --staged` 是安全的（仅动 index）；`git restore <file>`（无 --staged）会覆盖工作区，归原则1 禁止。
+
+  操作前自检：
+  1. 是否动远端？→ 问用户
+  2. 是否动用户工作区文件？→ 原则1 接管
+  3. 仅 index / 仅本地 commit / 仅本地分支？→ 默认允许
+
+  Commit message 写完即可提交；用户若不满意可 `git commit --amend` 改（本地未推送前完全可逆）。
+
+  历史背景：旧版本要求每次 git add 都征求同意，是因为早期管理混乱（误覆盖、错暂存）。现在通过原则1 锁死真正的破坏性操作 + 本原则锁死远端操作，本地暂存/commit 是 reversible 的常规工作流，无需仪式化询问。
 
 原则3：**不要自动启动服务器或杀死进程。**
   不要运行 `bun run dev`、`bun run start` 或任何会启动服务器的命令。如需验证服务器行为，请让用户来启动。可以运行 `bun run typecheck`、`bun run lint:all`、`bun test` 等非服务器命令。不要使用 `kill`、`pkill`、`killall` 或类似命令终止本项目的运行实例。如需重启，请让用户手动操作。
