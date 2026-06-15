@@ -51,7 +51,7 @@
 | I3 | 右侧上下两区：上=选中切片，下=Related Tabs (Pair/Cross-stage/JSON) | brainstorming |
 | I4 | Pair = tool_use ↔ tool_result | brainstorming |
 | I5 | Cross-stage = 两两对，自动高亮 | brainstorming |
-| I6 | **Entry 加载自动选中**：`entry.meta?.error != null` → `{kind:'metaError'}`；否则 → `{kind:'stage', stage:'inbound'}`（若 inbound 缺，按 effective/wire/upstream/forwarded 顺序退）；都无 → `null` 占位 | R5 + user re-confirm + R5' F4 |
+| I6 | **Entry 加载自动选中**：`entry.state === 'failed'` → `{kind:'metaError'}`（SliceMetaError 显示 `outboundResponse?.error` 或最后一个 `attempts[].error`，二者皆无则 fallback 到 lifecycle state + duration）；否则 → `{kind:'stage', stage:'inbound'}`（若 inbound 缺，按 effective/wire/upstream/forwarded 顺序退）；都无 → `null` 占位 | R5 + user re-confirm + R5' F4 + plan-time correction (HistoryEntry has no `meta` field) |
 | I7 | 滚动单向（树→详情） | brainstorming |
 | I8 | 非消息内容也归 outline 叶子 + Slice* | brainstorming |
 | I9 | "不将就" | user |
@@ -269,8 +269,8 @@ export type ResolvedSelection =
   | { kind: 'headers';         selection: ...; headers: HeadersRecord }
   | { kind: 'attempts';        selection: ...; attempts: Array<Attempt> }
   | { kind: 'attempt';         selection: ...; attempt: Attempt }
-  | { kind: 'meta';            selection: ...; meta: EntryMeta }
-  | { kind: 'metaError';       selection: ...; error: NonNullable<EntryMeta['error']> }
+  | { kind: 'meta';            selection: ...; entry: HistoryEntry }                                                                          // SliceMeta reads state/durationMs/attemptCount/transport/queueWaitMs etc directly from entry
+  | { kind: 'metaError';       selection: ...; error: string; source: 'outboundResponse' | 'lastAttempt' | 'lifecycleState' }                  // outboundResponse.error || attempts[last].error || `state=${state}`
   | { kind: 'absent';          original: Selection }                              // discriminated null (R2' Focus 3)
 ```
 
@@ -408,7 +408,7 @@ watch(activeStage, (newStage: StageId) => {
 
 function pickAutoSelect(entry: HistoryEntry | null): Selection | null {
   if (!entry) return null
-  if (entry.meta?.error != null) return { kind: 'metaError' }            // I6 precise (R5' F4)
+  if (entry.state === 'failed') return { kind: 'metaError' }              // I6 precise (R5' F4 + HistoryEntry has no `meta` field)
   if (entry.inboundRequest) return { kind: 'stage', stage: 'inbound' }
   for (const s of ['effective', 'wire', 'upstream', 'forwarded'] as const) {
     if (entry[`${s}Request` as keyof HistoryEntry] || entry[`${s}Response` as keyof HistoryEntry]) {
@@ -769,7 +769,7 @@ OutlineTree 的 keydown 对 `event.key === 'j' || 'k'` 直接 `return`（让 pag
 | 2026-06-15 | SliceStage 单独组件（不 inline） | R1' F22 |
 | 2026-06-15 | headers entry-global（不绑 stage） | R5' F8 / I14 |
 | 2026-06-15 | sticky-degrade ghost outline 取代 toast；一次性 teaching toast | R5' F2 |
-| 2026-06-15 | failure = `entry.meta?.error != null` | R5' F4 |
+| 2026-06-15 | failure = `entry.state === 'failed'` (HistoryEntry has no `meta` field; lifecycle state is the canonical signal) | R5' F4 + plan-time correction |
 | 2026-06-15 | `?noauto=1` URL query，per-URL，无 localStorage | R5' F6 + R5 |
 | 2026-06-15 | DetailToolbar role-filter/showOnlyRewritten/rewrite-nav deferred；OutlineHeader 只 search | R6' MEDIUM + user |
 | 2026-06-15 | useSharedResizeObserver 删（runtime dead） | R1' F21 |
