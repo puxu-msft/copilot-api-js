@@ -32,7 +32,7 @@
 | # | commit | 状态 | invariant 验证 | 备注 |
 |---|---|---|---|---|
 | P1.1 | rewrite-registry.ts 接口 + 装配器 | ✅ | 纯新增；8 unit pass/100% cov；typecheck+eslint 绿；subagent review 无 CRITICAL/HIGH（3 前瞻缺口已处置，见下） | 接口忠实 spec §1/§2；createState? + DI registry 参数两处刻意补充已文档化；M1/M3 钉进 JSDoc，M2 记入遗留 |
-| P1.2 | Anthropic 请求改写注册（T*/A*） | ⬜ | sanitize golden 逐字节 | |
+| P1.2 | Anthropic 请求改写注册（T*/A*） | ✅ | sanitize 输出 golden 逐字节（"装配==手写组合 oracle"自洽，10 scenario pass，5 带 didWork 反假绿）；全 offline 套件 2506 pass/0 fail；typecheck+eslint 绿；subagent review 无 CRITICAL/HIGH | 按**内聚函数边界**拆 3 模块（非 §4 sub-step）：sanitizeAnthropicMessages(A3-9) 被 web_search 复用 + stats 是整链残差，故不再细拆。模块在 MessagesPayload 层（P2 driver 用 env adapter 包成 RequestRewrite）。web_search 路径未动 |
 | P1.3 | Anthropic prepare 子步骤注册（B*） | ⬜ | wire+headers golden 逐字节 | |
 | P1.4 | OpenAI CC/Responses 请求改写注册（O*） | ⬜ | wire golden | |
 | P1.5 | 响应改写注册（A1-4/C1-2/P1-2） | ⬜ | forwarded SSE golden | |
@@ -77,7 +77,20 @@
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
 
-_（暂无）_
+### P2-MUSTFIX1 — sanitize 模块 `changed` 信号不完整（P2 消费 rewrite_applied 前必修）
+
+- **发现于**：P1.2（subagent review MEDIUM-1）
+- **根因**：`request-rewrites.ts` 的 `sanitize-messages` 模块用 stats 信号推 `changed`（`totalBlocksRemoved>0 || systemReminderRemovals>0 || fixedNameCount>0 || inlineSystemConverted>0`）。但**改 payload 却不增删 block、不计入这四项**的改写（如 `rewriteHistoryServerTools:"downgrade"` 把 server_tool_use→tool_use 并拆分 assistant turn——block 总数不变）会被误报为 `changed:false`。
+- **当前行为**：无功能影响——`changed` 在 P1.2 **不被消费**（JSDoc 已标 best-effort；`request.rewrite_applied` 事件化是 P2/P3）。
+- **理想架构**：P2 用 `changed` 喂 `request.rewrite_applied{name, changed, stats}` 前，sanitize 模块的 `changed` 须准确。两条路：① `sanitizeAnthropicMessages` 多透一个 `changed`/`mutated` 信号（在它内部已知是否改过 messages）；② runner 对 sanitize 模块做 `result.payload` vs 输入 payload 的结构比较。倾向 ①（避免每请求 deep-compare 成本）。
+- **为何暂缓**：P1.2 不消费 `changed`，准确化无当前收益且需改 sanitize 返回契约或加 deep-compare 成本。
+- **若做需改什么**：P2 driver 接 rewrite_applied 时，按 ① 给 `sanitizeAnthropicMessages` 返回加 `changed` 字段并在 sanitize 模块透传；tool 模块的 `next !== payload` 已准确（preprocessTools/applyToolName 在 no-op 时返回同引用）。
+
+### P2-CHECKPOINT1 — env-adapter 落地验证（pre-env transform 模块的回收保险）
+
+- **发现于**：P1.2（subagent review MEDIUM-2）
+- **背景**：P1.2 的 Anthropic 请求改写在 **MessagesPayload 层**（pre-env 形态），注册表 + appliesTo + order 是为 P2 driver 的 env-based `RequestRewrite` 铺路（trivial adapter：`apply(env) => env.with({body: module.apply(env.body, ctx).payload})`）。
+- **checkpoint**：P2 落地 driver 时必须真正用上这层（payload 模块 → env adapter），否则注册表/appliesTo/order 对 3 个静态模块（2 个 `appliesTo:()=>true`）是投机性泛化（YAGNI），需回收为直接函数组合。CC/Responses（P1.4）的同形模块同此约束。
 
 ### P1.5-OQ1 — heartbeat 定时器注入无法用 per-frame `transform` 表达（待 P1.5 裁决）
 
@@ -88,10 +101,10 @@ _（暂无）_
 - **为何暂缓**：P1.1 只定义接口、registry 为空、无消费者；heartbeat 的接入机制是 P1.5 响应改写注册时才需裁决的。`truncation-marker(C2, order 000)` 是首帧触发，**可**用当前 transform 表达，不受影响。
 - **若做需改什么**：选 ② 则改 `ResponseRewrite` 加 hook + driver S5 流式循环在 idle race 点调用；选 ① 则 P1.5 注册响应改写时跳过 heartbeat，保留 handler 定时器旁路并在 spec §4 标注。
 
-### P1.2-INV1 — system-prompt override 须经 `env.body` 表达（P1.2 落地时钉成显式不变量）
+### P1.2-INV1 — system-prompt override 须经 `env.body` 表达（注册 system-override 时钉成显式不变量）
 
 - **发现于**：P1.1（subagent review L2）
-- **背景**：spec §4 把 `system-override`（S1/S2/S3，order 000）列为 `RequestRewrite`，而 `RewriteResult.apply` 返回新 env、`RequestEnvelope.with()` 只 patch `body/targetEndpoint/prepareHints`。能表达的前提是 **system prompt 在 `env.body` 内**——Anthropic Messages API 的 `system` 是顶层 body 参数、OpenAI 的 system 是 `messages[0]`，均在 wire body JSON 内，故 `with({body})` 足够，**非 blocker**。
+- **背景**：spec §4 把 `system-override`（S1/S2/S3，order 000）列为 `RequestRewrite`。**注**：P1.2 只注册 T/A（tool + sanitize）；system-override 是独立 group，现在 handler 入口 `processAnthropicSystem`（messages/handler.ts:159）一次性跑（**非幂等**，prepend/append 每次都加），尚未注册化。待它注册时，能表达的前提是 **system prompt 在 `env.body` 内**——Anthropic 顶层 `system` / OpenAI `messages[0]` 均在 wire body JSON 内，故 `with({body})` 足够，**非 blocker**。
 - **行动**：P1.2 落地 `system-override` 时用一条测试确证「system 改写经 `with({body})` 表达」，把这个隐式假设钉成显式不变量。S1-S3 **非幂等**（prepend/append 每次都加），只能 S3 入口跑一次，**绝不**进 S4 attempt 循环。
 
 ### R1 — `WireRequest` 同名两类型 ✅ 已解决（2026-06-16）

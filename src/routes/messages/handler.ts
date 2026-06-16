@@ -52,7 +52,6 @@ import {
 } from "~/lib/anthropic/decode-tool-input"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
-import { preprocessTools } from "~/lib/anthropic/message-tools"
 import {
   //
   type AnthropicSanitizeFn,
@@ -65,17 +64,13 @@ import {
   recoverToolCallTextInResponse,
   type ToolCallTextRecoverer,
 } from "~/lib/anthropic/recover-tool-call"
+import { runAnthropicRequestRewrites } from "~/lib/anthropic/request-rewrites"
 import {
   //
   preprocessAnthropicMessages,
-  sanitizeAnthropicMessages,
   type SanitizationStats,
 } from "~/lib/anthropic/sanitize"
-import {
-  //
-  applyAnthropicToolNameSanitization,
-  buildAnthropicToolNameMapper,
-} from "~/lib/anthropic/sanitize/tool-name-sanitize"
+import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import {
   //
   createServerToolBlockFilter,
@@ -266,9 +261,10 @@ export async function handleDirectAnthropicCompletion(c: Context, anthropicPaylo
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
 
-  // Direct path sanitize: full pipeline (preprocessTools + tool-name + sanitize),
-  // shared by the adapter's sanitize and auto-truncate's resanitize.
-  const directSanitize: AnthropicSanitizeFn = (p) => sanitizeAnthropicMessages(applyAnthropicToolNameSanitization(preprocessTools(p), reqCtx.toolNameMapper))
+  // Direct path sanitize: the ordered Anthropic request-rewrite chain
+  // (tool-preprocess + tool-name + sanitize), shared by the adapter's sanitize
+  // and auto-truncate's resanitize. Returns the canonical SanitizeResult.
+  const directSanitize: AnthropicSanitizeFn = (p) => runAnthropicRequestRewrites(p, { toolNameMapper: reqCtx.toolNameMapper }).sanitizeResult
 
   // Track truncation result for non-streaming response marker
   let truncateResult: AnthropicAutoTruncateResult | undefined
@@ -325,18 +321,13 @@ function runInitialSanitizationAndRecord(
   reqCtx: RequestContext,
   preprocessInfo: PreprocessInfo,
 ): { initialSanitized: MessagesPayload; initialSanitizationInfo: ReturnType<typeof toSanitizationInfo> } {
-  // Preprocess tools: inject stubs for history-referenced tools, set defer_loading,
-  // add tool_search. Must run BEFORE sanitize — processToolBlocks (in sanitize) uses
-  // the tools array to validate tool_use references in messages.
-  const toolPreprocessed = preprocessTools(anthropicPayload)
-
-  // Apply tool-name sanitization (rename client-original custom tool names to
-  // their upstream form) BEFORE sanitize, so processToolBlocks' name-casing fix
-  // sees the already-renamed (upstream) names and the two rewrites don't fight.
-  const toolNameSanitized = applyAnthropicToolNameSanitization(toolPreprocessed, reqCtx.toolNameMapper)
-
-  // Always sanitize messages to filter orphaned tool_result/tool_use blocks
-  const { payload: initialSanitized, stats: sanitizationStats } = sanitizeAnthropicMessages(toolNameSanitized)
+  // Run the ordered Anthropic request-rewrite chain (tool-preprocess → tool-name
+  // → sanitize). Preprocess must precede sanitize — processToolBlocks (in
+  // sanitize) validates tool_use references against the tools array — and
+  // tool-name precedes sanitize so processToolBlocks' name-casing fix sees the
+  // already-renamed upstream names. The registry's `order` keys encode this.
+  const { payload: initialSanitized, sanitizeResult } = runAnthropicRequestRewrites(anthropicPayload, { toolNameMapper: reqCtx.toolNameMapper })
+  const sanitizationStats = sanitizeResult.stats
   const initialSanitizationInfo = toSanitizationInfo(sanitizationStats)
 
   // Record sanitization/preprocessing if anything was modified
