@@ -16,7 +16,12 @@
  */
 
 import type { ApiError } from "~/lib/error"
-import type { SseFrame } from "~/lib/stream"
+import type {
+  //
+  BaseStreamAccumulator,
+  SseFrame,
+  StreamErrorKind,
+} from "~/lib/stream"
 
 import type {
   //
@@ -187,8 +192,67 @@ export interface PipelineDriver {
 /**
  * The result of `runRequest`. `ok:false` covers decideRoute reject / parse
  * failure — no dangling history entry is created (aligns with current
- * messages:165 rejecting before context creation).
+ * messages:165 rejecting before context creation). `reason` is the raw rejection
+ * reason; the route/codec shapes the per-format error envelope (the driver does
+ * NOT pre-shape it — format differences stay in the codec, codec.md §1).
  */
 export type DriverRequestResult =
   | { ok: true; upstream: UpstreamStream; env: RequestEnvelope }
-  | { ok: false; rejection: { status: number; body: unknown; format: ClientFormat } }
+  | { ok: false; rejection: { status: number; reason: string; format: ClientFormat } }
+
+// ============================================================================
+// FormatCodec
+// ============================================================================
+
+/**
+ * Per-request response accumulator handle (the codec's format-specific stream
+ * accumulator). Consumed by the HistorySink to rebuild the response double-track
+ * (docs/v4/03-spec/codec.md §1, envelope-driver.md §4). Aliases the shared base
+ * the existing `create*StreamAccumulator` factories already extend.
+ */
+export type ResponseAccumulator = BaseStreamAccumulator
+
+/**
+ * The classified stream-lifecycle error a codec shapes into a protocol error
+ * frame (idle-timeout / shutdown / client-abort / other). Shared classification
+ * core is `classifyStreamError` (stream.ts).
+ */
+export type ClassifiedStreamError = StreamErrorKind
+
+/**
+ * One format's codec — encapsulates all "this format vs inbound/upstream"
+ * differences (docs/v4/03-spec/codec.md §1). The driver consumes it at the
+ * stage boundaries; each format implements one (P2.2–P2.6). The driver treats it
+ * as an opaque dependency, so P2.1's skeleton + tests use a mock codec.
+ */
+export interface FormatCodec {
+  readonly format: ClientFormat
+
+  /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). */
+  parse(raw: RawHttpRequest): RequestEnvelope
+
+  /** S2: passthrough / translate / reject decision (unifies the 4 scattered checks). */
+  decideRoute(env: RequestEnvelope): RouteDecision
+
+  /** S2: translate body to the target-endpoint format (passthrough = identity). */
+  translateOut(env: RequestEnvelope): RequestEnvelope
+
+  /**
+   * S4 last-mile: derive the wire (header + body trim) for one attempt from env
+   * (consumes prepareHints + negotiation cache + model + config). Idempotent for
+   * a given env; does NOT write back to env.body (retry-transport.md §3).
+   */
+  prepareWire(env: RequestEnvelope): PreparedRequest
+
+  /** S6: translate one upstream frame back to the client protocol (passthrough = identity). */
+  renderResponse(frame: UpstreamFrame, env: RequestEnvelope): ClientFrame | Array<ClientFrame>
+
+  /** S6 non-streaming: translate the whole upstream response back to the client. */
+  renderResponseNonStreaming(upstream: unknown, env: RequestEnvelope): unknown
+
+  /** S7: shape a mid-stream lifecycle error into this protocol's error frame. */
+  formatError(err: ClassifiedStreamError, env: RequestEnvelope): ClientFrame
+
+  /** observability: the format's response accumulator factory (HistorySink rebuild). */
+  createResponseAccumulator(): ResponseAccumulator
+}

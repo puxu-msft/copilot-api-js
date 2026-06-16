@@ -14,7 +14,7 @@
 | P0 地基 | 4 | 4/4 | ✅ |
 | P1 改写 registry 化（请求侧） | 4 | 4/4 | ✅ |
 | P1.5/P1.6（响应侧）→ 折入 P2 | — | — | ↪ 见 P1.5-SCOPE |
-| P2 driver + 逐格式 | 6 | 0/6 | ⬜ |
+| P2 driver + 逐格式 | 6 | 1/6 | 🟡 |
 | P3 统一收尾 | 4 | 0/4 | ⬜ |
 
 > **P1 范围修订（2026-06-16，调研后）**：P1 原计划 6 commit。请求侧 4 个（P1.1 接口 + P1.2/P1.3 Anthropic full + P1.4 OpenAI focused）有干净 seam，已全部完成、字节等价、subagent reviewed。**响应侧 P1.5（响应改写注册）/ P1.6（错误帧→codec.formatError）经调研判定折入 P2**——其消费者（P1.5 的 S5 per-frame chain、P1.6 的 codec）是 P2 的交付物，强塞进 P1 = 半重构 byte-critical 流式 pump（forwarded SSE 字节风险）+ 过早造 codec stub，且与 P2.6 重叠。详见 P1.5-SCOPE / P1.5-OQ1（heartbeat 已裁决 option ①）。P1.1 的 `ResponseRewrite` 接口已前瞻定义 + 测试，P2 落地即消费。
@@ -45,7 +45,7 @@
 
 | # | commit | 状态 | invariant 验证 | 备注 |
 |---|---|---|---|---|
-| P2.1 | driver.ts + stages/* 骨架 | ⬜ | driver 单测（mock codec） | |
+| P2.1 | driver.ts + stages/* 骨架 | ✅ | driver 单测 mock codec/transport 15 pass（编排 S1-S7 + 重试循环 + S3/S5 改写链 + buffer/flush + 非流式）；全 offline 2532 pass/0 fail；typecheck+eslint 绿；subagent review（逐行对照 retry-transport §2 + budget off-by-one 与 legacy 等价）无 CRITICAL/HIGH | `createPipelineDriver(deps)`：consume codec/transport/strategies/registry 为 opaque deps。FormatCodec 接口追加 types.ts。abort 抛原始 error（legacy parity，非 spec 草案的 action.error）；strategy.handle 抛错降级原始 error（try/catch）；reject carry reason 由 route/codec 成形（不在 driver 做格式决策）。observability 自动采样占位待 P3.2 |
 | P2.2 | codec/openai-cc.ts | ⬜ | codec 单测 | |
 | P2.3 | **CC 切 driver**（flag 可回切） | ⬜ | CC e2e+golden 等价；CC 现也记上游 sseEvents | |
 | P2.4 | codec/openai-responses.ts + Responses 切 driver | ⬜ | Responses 等价（含 ws/force-fallback/stream-id） | |
@@ -79,6 +79,14 @@
 ## 遗留与决策追踪
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
+
+### P2.1-M2 — 多 buffering rewrite 链的 flush 顺序未定义（P2.6 接响应改写前锁定）
+
+- **发现于**：P2.1（subagent review M2）
+- **根因**：driver 的 `flushChain`（driver.ts）按 rewrite index 升序 drain，flushed 帧穿过其后的 rewrites。当**两个** rewrite 都 buffering 时，「靠后 buffer 自己累积的帧」vs「靠前 buffer flush 后被靠后 rewrite emit 的迟到帧」的相对顺序未定义。
+- **当前行为**：S5 响应改写 registry 在 P2 才填充；现实场景**至多一个 buffering rewrite**（tool-input-decode 独此一家），单 buffer 链的 buffer+flush + flush-threading 已测覆盖且正确。
+- **为何暂缓**：P2.1 是骨架、registry 为空、无多 buffer 链；该顺序契约要等 P2.6 注册真实响应改写时才需锁定。JSDoc（flushChain）已注明此假设。
+- **若做需改什么**：P2.6 注册响应改写时，若出现多个 buffering rewrite，补一条 buffer→buffer 链测试明确顺序契约（或保证设计上至多一个 buffering rewrite）。
 
 ### P1.4-SCOPE — OpenAI 请求改写为何不强推单一链 registry（聚焦抽取 O10）
 
