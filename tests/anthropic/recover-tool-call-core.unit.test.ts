@@ -5,7 +5,11 @@ import {
   test,
 } from "bun:test"
 
-import { validateInvokeRegion } from "~/lib/anthropic/recover-tool-call/core"
+import {
+  //
+  findDowngradeMarkPos,
+  validateInvokeRegion,
+} from "~/lib/anthropic/recover-tool-call/core"
 
 describe("validateInvokeRegion (whitespace-tolerant 位置不变量)", () => {
   test("真实 entry210 形态（标签间含换行）→ 通过，非贪婪取值", () => {
@@ -38,5 +42,30 @@ describe("validateInvokeRegion (whitespace-tolerant 位置不变量)", () => {
 
   test("无 invoke 包裹 → 拒绝", () => {
     expect(validateInvokeRegion("just prose").ok).toBe(false)
+  })
+})
+
+describe("findDowngradeMarkPos", () => {
+  const tools = new Set(["Write", "Bash"])
+
+  test(String.raw`真实 entry210 形态：散文 + call\n<invoke> → markPos 指向 call`, () => {
+    const text = `分析…纯拓扑数据模型）。\n\ncall\n<invoke name="Write">\n<parameter name="file_path">x</parameter>\n</invoke>\n`
+    const pos = findDowngradeMarkPos(text, tools)
+    expect(pos).toBeGreaterThan(0)
+    expect(text.slice(pos)).toMatch(/^call\s*<invoke/)
+  })
+
+  test("英文散文 call the function … <invoke>（实义词间隔）→ markPos 退回 <invoke> 起点", () => {
+    const text = `you can call the function <invoke name="Bash"><parameter name="command">ls</parameter></invoke>`
+    const pos = findDowngradeMarkPos(text, tools)
+    expect(text.slice(pos)).toMatch(/^<invoke name="Bash"/)
+  })
+
+  test("invoke 工具名不在工具集 → -1", () => {
+    expect(findDowngradeMarkPos(`call<invoke name="Unknown"></invoke>`, tools)).toBe(-1)
+  })
+
+  test("无 invoke → -1", () => {
+    expect(findDowngradeMarkPos("just talking about calling tools", tools)).toBe(-1)
   })
 })

@@ -37,3 +37,34 @@ export function validateInvokeRegion(region: string): InvokeParseResult {
   if (opens !== closes) return { ok: false }
   return { ok: true, name: m[1], params }
 }
+
+const RESIDUE_TOKENS = ["<function_calls>", "function_calls", "call"] as const
+
+/**
+ * 找降级 tool-call 区的切点（markPos），无则 -1。tier-agnostic（决定缓冲/切散文用，
+ * 最终档 A/B 判定由门控谓词在 COMMIT 时做）。
+ *
+ * 规则：找第一个 `<invoke name="X">` 且 X∈toolNames；若其紧前（仅空白间隔）有降级残留
+ * token（call/function_calls/<function_calls>），markPos = 残留 token 起点（使 `call`
+ * 不被转发）；否则 markPos = `<invoke` 起点。
+ */
+export function findDowngradeMarkPos(text: string, toolNames: ReadonlySet<string>): number {
+  const re = /<invoke name="([^"]+)">/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    if (!toolNames.has(m[1])) continue
+    const invokePos = m.index
+    const before = text.slice(0, invokePos)
+    const wsLen = /\s*$/.exec(before)?.[0].length ?? 0
+    const beforeWs = before.slice(0, before.length - wsLen)
+    for (const token of RESIDUE_TOKENS) {
+      if (beforeWs.endsWith(token)) {
+        const tokenStart = beforeWs.length - token.length
+        const charBefore = tokenStart > 0 ? beforeWs[tokenStart - 1] : ""
+        if (charBefore === "" || /[\s。.,:;)】\]>]/.test(charBefore)) return tokenStart
+      }
+    }
+    return invokePos
+  }
+  return -1
+}
