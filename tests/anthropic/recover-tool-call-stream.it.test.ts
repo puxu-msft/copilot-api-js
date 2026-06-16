@@ -118,4 +118,60 @@ describe("createToolCallTextRecoverer", () => {
     expect(out).toHaveLength(4)
     expect(out[0]).toEqual(normal[0])
   })
+
+  test("lookahead 跨 delta 切分（marker 被拆成两帧）→ 不泄漏 <invoke/call 残留 + 合成 tool_use", () => {
+    // 把降级文本拆成多个 text_delta，marker `<invoke` 恰好跨 delta 边界（delta1 尾="…\n<in"，delta2 头="voke …"）。
+    // 32 字符 lookahead 应阻止半截 marker 泄漏给客户端。
+    const prose = "这是一段足够长的散文，超过三十二个字符以确保 lookahead 窗口被填满后才开始转发。\n\n"
+    const tail = 'call\n<invoke name="Write">\n<parameter name="file_path">/a</parameter>\n<parameter name="content">x</parameter>\n</invoke>\n'
+    const full = prose + tail
+    const splitAt = full.indexOf("<invoke") + 3 // "<in" | "voke …"
+    const stream = [
+      { type: "content_block_start", index: 1, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: full.slice(0, splitAt) } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: full.slice(splitAt) } },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" } },
+      { type: "message_stop" },
+    ]
+    const out = drive(createToolCallTextRecoverer(deps), stream)
+    const proseDeltas = out
+      .filter((e) => e.type === "content_block_delta" && (e.delta as { type?: string })?.type === "text_delta")
+      .map((e) => (e.delta as { text?: string }).text ?? "")
+      .join("")
+    expect(proseDeltas).not.toContain("<invoke")
+    expect(proseDeltas).not.toContain("call")
+    expect(proseDeltas).toContain("这是一段足够长的散文")
+    const tuStart = out.find((e) => e.type === "content_block_start" && (e.content_block as { type?: string })?.type === "tool_use")
+    expect(tuStart).toBeDefined()
+    expect((tuStart!.content_block as { name?: string }).name).toBe("Write")
+    const md = out.find((e) => e.type === "message_delta")
+    expect((md!.delta as { stop_reason?: string }).stop_reason).toBe("tool_use")
+  })
+
+  test("tier A 成功（stop_reason=tool_use、无真实 tool_use block、降级文本无 call 残留）→ 重建 + stop_reason 保持 tool_use", () => {
+    // tier A 不要求残留 token：纯 `<invoke name="Write">…</invoke>`，stop_reason=tool_use 即可命中。
+    const tail = '<invoke name="Write">\n<parameter name="file_path">/a</parameter>\n<parameter name="content">x</parameter>\n</invoke>'
+    const stream = [
+      { type: "content_block_start", index: 1, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "先输出一段普通散文足够长超过三十二个字符以触发 lookahead。\n" + tail } },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" } },
+      { type: "message_stop" },
+    ]
+    const out = drive(createToolCallTextRecoverer(deps), stream)
+    const tuStart = out.find((e) => e.type === "content_block_start" && (e.content_block as { type?: string })?.type === "tool_use")
+    expect(tuStart).toBeDefined()
+    expect((tuStart!.content_block as { name?: string }).name).toBe("Write")
+    const tuDelta = out.find((e) => e.type === "content_block_delta" && (e.delta as { type?: string })?.type === "input_json_delta")
+    expect(JSON.parse((tuDelta!.delta as { partial_json: string }).partial_json)).toEqual({ file_path: "/a", content: "x" })
+    const proseDeltas = out
+      .filter((e) => e.type === "content_block_delta" && (e.delta as { type?: string })?.type === "text_delta")
+      .map((e) => (e.delta as { text?: string }).text ?? "")
+      .join("")
+    expect(proseDeltas).not.toContain("<invoke")
+    const md = out.find((e) => e.type === "message_delta")
+    // stop_reason 本就是 tool_use，commitTier 命中 "A"，不应被改写也不应回退
+    expect((md!.delta as { stop_reason?: string }).stop_reason).toBe("tool_use")
+  })
 })
