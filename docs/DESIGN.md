@@ -47,7 +47,8 @@ src/lib/
 │   ├── message-mapping.ts # 消息映射（原消息 ↔ 清洗后消息索引对应）
 │   ├── message-tools.ts   # Tool 预处理管道（注入、defer_loading、server tool 剥离）
 │   ├── stream-accumulator.ts # Anthropic SSE 事件累积器
-│   └── features.ts        # 模型特性检测（thinking 支持等）
+│   ├── features.ts        # 模型特性检测（thinking 支持等）
+│   └── recover-tool-call/      # 上游 tool-call 文本降级的透明恢复（core 纯函数 + SSE transform + 非流式 helper）
 ├── auto-truncate/
 │   └── index.ts           # 响应式 auto-truncate（token 限制学习 + 预检查）
 ├── config/
@@ -254,6 +255,7 @@ ui/
 | `compressToolResultsBeforeTruncate` | config `auto_truncate.compress_tool_results` | boolean | `true` | 截断消息前先压缩旧的 tool_result 内容 |
 | `sanitizeToolNames` | config `sanitize_tool_names` | boolean | `false` | 按目标模型约束清洗非法/超长/冲突 tool name 发往上游，响应里还原客户端原始名（跨 Anthropic + Chat Completions + Responses 三条路径，顶层标量） |
 | `stripServerTools` | config `anthropic.strip_server_tools` | boolean | `false` | 从请求中剥离服务端工具（web_search 等） |
+| `recoverToolCallText` | config `anthropic.recover_tool_call_text` | boolean | `false` | 透明恢复上游 tool-call 文本降级（`call<invoke>…` 纯文本无 tool_use block）：检测后重建为标准 tool_use block 转发给客户端。流式（CANDIDATE/COMMIT 两阶段）+ 非流式双路径；仅作用于 forwarded 流（history 保留上游降级原貌）。按 stop_reason 分两档检测（A=tool_use 协议矛盾强信号 / B=end_turn 弱信号需残留+终结门控）+ whitespace-tolerant 位置不变量防 content 含 `</parameter>` 字面量腰斩。详见 [tool-call-text-recovery.md](tool-call-text-recovery.md)。注：合成 tool_use 经下游 serverToolFilter 还原 name |
 | `anthropicFakeSseHeartbeat` | config `anthropic.fake_sse_heartbeat` | number | `0` | 客户端方向 SSE 合成心跳间隔秒数（0=禁用）。>0 时若距上次真实转发帧 ≥N 秒,handler 主动注入一帧 Anthropic `event: ping`,避免客户端（如 Claude Code ~258s）在上游静默期（典型:opus-4.8 adaptive thinking 在 `content_block_start` 后停滞）超时断开。**不重置上游 idle-timeout**——上游真死仍按 `timeouts.stream_idle` 失败。心跳只记入 `forwardedSseEvents`(客户端实收侧),不污染原始 `sseEvents`。所有写入(真实帧 + 心跳)通过单一 Promise chain 串行化,避免帧字节交错 |
 | `thinkingBlockMessagePolicy` | config `anthropic.thinking_block_message_policy` | `"preserve" \| "stripped"` | `"preserve"` | 含 thinking blocks 的 assistant 消息处理策略。Anthropic thinking signature **自包含**(加密 thinking 内容本身,与上下文/位置无关——已通过 opus-4.8 实测验证),故保护是**块级**而非消息级。`preserve`=保留 thinking 块逐字不变 + 不重排连续 thinking,但允许周围一切清理(删孤儿 tool、降级 server tool、编辑/删非 thinking 块);`stripped`=主动从旧消息删 thinking 块。旧值 `immutable`/`fixed-index` 由 [compat.ts](../src/lib/config/compat.ts) 自动迁移到 `preserve` |
 | `thinkingBlockSanitizeCheck` | config `anthropic.thinking_block_sanitize` | `false \| "empty_thinking" \| "empty_any"` | `"empty_thinking"` | 发送上游前剥离损坏的 thinking block。有效性由 **signature** 判定（合法加密 thinking 文本为空但有有效 signature，永远保留）。`empty_thinking`=仅移除双空块（thinking 文本与 signature 都空）；`empty_any`=移除任何 signature 为空的 thinking block |
