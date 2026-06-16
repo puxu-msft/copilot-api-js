@@ -56,20 +56,26 @@ export interface UpstreamStream {
 // ============================================================================
 
 /**
- * The final bytes sent upstream for one attempt, produced by `prepareWire(env)`
- * (the per-attempt "last-mile" header/body trim). Does NOT write back to
- * `env.body` — `env.body` stays the rewritten logical request (effectiveRequest),
- * `wire` is the outboundRequest (the two history tracks).
+ * The final HTTP request bytes for one attempt, produced by `prepareWire(env)`
+ * (the per-attempt "last-mile" header/body trim). Carries the actual wire shape
+ * the transport sends: `{ url, headers, body, stream }`.
  *
- * NOT the same as the history-side `WireRequest` in `~/lib/context/types`: that
- * one is the per-attempt outbound *snapshot* recorded for history
- * (`{ model, messages, payload, headers, format }`), this one is the *actual*
- * bytes transport sends (`{ url, headers, body, stream }`). Distinct concepts,
- * distinct tracks; they only share a name today. Convergence (rename one) is
- * deferred to P2 when transport lands and both may co-exist in one file — see
- * docs/v4/05-progress.md 遗留与决策追踪.
+ * Does NOT write back to `env.body` — `env.body` stays the rewritten logical
+ * request (effectiveRequest); this is the outboundRequest (the two history tracks).
+ *
+ * Distinct from the history-side `WireRequest` in `~/lib/context/types`, which is
+ * a structured per-attempt *record snapshot* (`{ model, messages, payload, headers,
+ * format }`) sitting alongside `EffectiveRequest`/`ResponseData` in `Attempt`. That
+ * one is the recorded view; this `PreparedRequest` is the actual bytes — distinct
+ * concepts, no longer sharing a name (R1 resolved by renaming the transport side,
+ * the zero-consumer newcomer, leaving history's symmetric triple intact).
+ *
+ * P2 target: the driver derives the history snapshot FROM this `PreparedRequest` +
+ * env (model←env, messages/payload←body, format←env, headers←headers), removing the
+ * handlers' manual `setAttemptWireRequest` construction (envelope-driver.md §4
+ * auto-sampling, 06-inherited-issues DI-3).
  */
-export interface WireRequest {
+export interface PreparedRequest {
   url: string
   headers: Headers
   body: unknown
@@ -84,7 +90,7 @@ export interface WireRequest {
  * the call site (kept, see retry-transport.md §5).
  */
 export interface Transport {
-  send(wire: WireRequest, env: RequestEnvelope): Promise<UpstreamStream>
+  send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream>
 }
 
 // ============================================================================

@@ -22,7 +22,7 @@
 
 | # | commit | 状态 | invariant 验证 | 备注 |
 |---|---|---|---|---|
-| P0.1 | pipeline/envelope.ts + types.ts 接口定义 | ✅ | typecheck 绿；无消费者（grep 确认）；subagent review 无 CRITICAL/HIGH | 见遗留 R1（WireRequest 撞名）；RouteDecision 采 codec.md 版（无 from） |
+| P0.1 | pipeline/envelope.ts + types.ts 接口定义 | ✅ | typecheck 绿；无消费者（grep 确认）；subagent review 无 CRITICAL/HIGH | R1 已解决（transport 侧 `WireRequest`→`PreparedRequest`）；RouteDecision 采 codec.md 版（无 from） |
 | P0.2 | transport/send.ts 提取，client 改调用 | ✅ | 字节等价（手工逐行 + subagent review + 复核 combineAbortSignals 过滤 undefined）；全 offline 套件 2480 pass/0 fail；typecheck+eslint 绿 | 范围限定 OpenAI 两 client（关键坑）；Anthropic 待 P0.4 |
 | P0.3 | observability 双轨收敛为单 bus 通道 | ⬜ | bus 事件集 + sink 输出不变 | |
 | P0.4 | Anthropic effort 内循环 → effort-learning strategy | ⬜ | effort fixture 连跑等价 | |
@@ -79,11 +79,10 @@
 
 _（暂无）_
 
-### R1 — `WireRequest` 同名两类型待 P2 收敛
+### R1 — `WireRequest` 同名两类型 ✅ 已解决（2026-06-16）
 
 - **发现于**：P0.1（subagent review）
-- **根因**：P0.1 按 retry-transport.md §3 新增 `src/lib/pipeline/types.ts` 的 transport 侧 `WireRequest`（`{ url, headers: Headers, body, stream }`，transport 实际发送字节）。`src/lib/context/types.ts:46` 已存在一个**不同形状**的 history 侧 `WireRequest`（`{ model, messages, payload, headers: Record<string,string>, format }`，per-attempt outboundRequest 快照，被 `setAttemptWireRequest` 消费）。
-- **当前行为**：两者在不同模块、无交叉 import，typecheck 绿、不冲突。pipeline 侧已加 JSDoc 注明区分。
-- **理想架构**：二者是不同概念（实际 wire vs history 快照），不是同一数据的重复定义，故并非 strict 单一权威违规；但**同名不同形**在 P2 transport 落地、两者可能同文件 import 时会造成混淆/需 alias。
-- **为何暂缓**：P0.1 阶段哪个名字"胜出"取决于 P2 transport 的最终形态（transport 侧的 wire 是否就是 history 记录的 outboundRequest 源），此刻定夺为时过早。spec 用 `WireRequest` 命名 transport 侧，history 侧是既有有消费者的类型。
-- **若做需改什么**：P2 transport 落地时，要么把 history 侧 `WireRequest` 改名（如 `WireRequestSnapshot`，touch `context/types.ts` + `setAttemptWireRequest` 消费点），要么让 transport 侧用别名导入；同时评估能否让 history 快照从 transport 侧 `WireRequest` 派生（消除重复构造，呼应原则7"统一数据源"）。
+- **根因**：P0.1 按 retry-transport.md §3 新增 `src/lib/pipeline/types.ts` 的 transport 侧 `WireRequest`（`{ url, headers: Headers, body, stream }`，transport 实际发送字节）。`src/lib/context/types.ts:46` 已存在一个**不同形状**的 history 侧 `WireRequest`（`{ model, messages, payload, headers: Record<string,string>, format }`，per-attempt 记录快照，与 `EffectiveRequest`/`ResponseData` 构成 `Attempt` 对称三元组，被 `setAttemptWireRequest` 消费）。
+- **决策**：改 **transport 侧**（新、零消费者、零风险）为 `PreparedRequest`，而非破坏 history 的对称三元组。理由：① transport 侧无消费者，改名零破坏（P0.2 的 `transport/send.ts` 尚未 adopt Transport 契约，无引用）；② history 侧 `WireRequest` 与 `EffectiveRequest` 在 attempt 记录语境对称、9+ 消费者、是合理既有设计；③ `PreparedRequest` 精确表达"`prepareWire` 产出的待发送 HTTP 请求"，与 `prepareWire` 呼应。
+- **实施**：`pipeline/types.ts` 的 `WireRequest`→`PreparedRequest`（interface + `Transport.send` 签名 + JSDoc）；同步 `retry-transport.md`、`P0-foundation.md`。typecheck 绿，全 src 无残留引用（grep 确认）。
+- **P2 派生方向（保留）**：transport 落地后，driver 从 `PreparedRequest` + env 派生 history 快照（model←env、messages/payload←body、format←env、headers←headers），消除 6 处 handler 手动 `setAttemptWireRequest` 构造（呼应 envelope-driver §4 自动采样 + 06-inherited-issues DI-3、原则7 统一数据源）。已写入 `PreparedRequest` 的 JSDoc。

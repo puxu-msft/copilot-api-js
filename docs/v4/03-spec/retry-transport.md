@@ -94,9 +94,9 @@ type RetryAction =
 ```ts
 interface FormatCodec {
   // ... (codec.md 的其它方法)
-  prepareWire(env: RequestEnvelope): WireRequest   // B 组改写：header + body 裁剪
+  prepareWire(env: RequestEnvelope): PreparedRequest   // B 组改写：header + body 裁剪
 }
-interface WireRequest { url: string; headers: Headers; body: unknown; stream: boolean }
+interface PreparedRequest { url: string; headers: Headers; body: unknown; stream: boolean }
 ```
 
 - 消费 `env.prepareHints`（excludeBetas/rejectFields）+ negotiation cache + model metadata + config。
@@ -110,7 +110,7 @@ interface WireRequest { url: string; headers: Headers; body: unknown; stream: bo
 
 ```ts
 interface Transport {
-  send(wire: WireRequest, env: RequestEnvelope): Promise<UpstreamStream>
+  send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream>
 }
 ```
 

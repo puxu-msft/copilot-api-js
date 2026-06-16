@@ -16,7 +16,7 @@
 **四个 commit（每个结束 typecheck+test 绿、行为不变、可独立 revert）**：
 
 ### P0.1 — 接口定义（纯新增，零运行时）
-新建 `src/lib/pipeline/envelope.ts` + `src/lib/pipeline/types.ts`，按 `03-spec/envelope-driver.md` 定义 `RequestEnvelope`、`LazyMessageView`、`ClientFormat`、`UpstreamEndpoint`、`RequestStage`/`ResponseStage`/`ExchangeStage`、`PipelineDriver`、`DriverRequestResult`、`RouteDecision`。按 `03-spec/retry-transport.md` 定义 `RetryStrategy`(新版 env-based)、`RetryAction`、`Transport`、`WireRequest`、`UpstreamStream`。**无消费者**。`PrepareHints` 复用现有定义（`request/pipeline.ts:91`）。invariant：typecheck 绿。
+新建 `src/lib/pipeline/envelope.ts` + `src/lib/pipeline/types.ts`，按 `03-spec/envelope-driver.md` 定义 `RequestEnvelope`、`LazyMessageView`、`ClientFormat`、`UpstreamEndpoint`、`RequestStage`/`ResponseStage`/`ExchangeStage`、`PipelineDriver`、`DriverRequestResult`、`RouteDecision`。按 `03-spec/retry-transport.md` 定义 `RetryStrategy`(新版 env-based)、`RetryAction`、`Transport`、`PreparedRequest`（transport 侧待发送字节；history 侧既有 `WireRequest` 不同概念，勿撞名）、`UpstreamStream`。**无消费者**。`PrepareHints` 复用现有定义（`request/pipeline.ts:91`）。invariant：typecheck 绿。
 
 ### P0.2 — 提取 transport（纯收发）
 按 `03-spec/retry-transport.md` §4 新建 `src/lib/transport/send.ts`，提取三个 client（`02 §6.1`）的共性骨架：token 检查 → combineAbortSignals → fetch(DISABLE_BUILTIN_FETCH_TIMEOUT) → captureHttpHeaders → !ok 抛 HTTPError → stream?guardSseIterable(events):json。**保留** rate-limiter 包裹。现有三个 client **改为调用 `transport.send`**（prepare 仍在 client 内，本 commit 不动 prepare）。invariant：client 行为**字节不变**，现有 client/transport 测试全绿。注意 Anthropic client 此 commit 仍保留其 2-attempt 内循环（P0.4 才提升）。
