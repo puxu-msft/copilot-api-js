@@ -22,7 +22,7 @@
 原则2：**Git 暂存区与本地 commit 默认允许，但远端推送与改写历史需用户明确同意。**
 
   **默认允许**（不必每次问）：
-  - `git add` / `git add -p` —— 暂存改动
+  - `git add -p` / 按文件 + 行范围精确暂存改动（见下「暂存纪律」）
   - `git restore --staged <file>` —— 取消暂存（不动工作区）
   - `git commit` / `git commit --amend`（仅当 commit 未推送到远端）
   - `git stash push` —— 暂存压栈（可恢复）
@@ -42,7 +42,9 @@
   2. 是否动用户工作区文件？→ 原则1 接管
   3. 仅 index / 仅本地 commit / 仅本地分支？→ 默认允许
 
-  Commit message 写完即可提交；用户若不满意可 `git commit --amend` 改（本地未推送前完全可逆）。
+  **主动提交**：完成一个工作阶段（一个功能/修复/重构的可独立成立的检查点）即应**主动提交**，无需等用户开口。一阶段一 commit，保持历史可读、每个 commit 自洽。Commit message 写完即可提交；用户若不满意可 `git commit --amend` 改（本地未推送前完全可逆）。
+
+  **暂存纪律（严格 file-line range-based）**：只暂存本阶段相关的文件与**行范围**，按 hunk 逐一核对——用 `git add -p` 或显式 pathspec（必要时配合 `git apply --cached` 暂存指定行范围），**绝不** `git add -A` / `git add .` 一把梭。提交前必用 `git diff --cached --stat`（必要时 `git diff --cached`）复核暂存内容仅含本次改动，不裹入工作区里既有的无关改动（别人的未提交修改、其它任务的半成品、lint 噪声）。当某文件同时含本次与无关改动时，按行范围只暂存本次 hunk；当整文件的工作区 diff 已 100% 是本次改动时，整文件 add 与逐 hunk 等价，但仍须 `git diff --cached` 核对后再提交。
 
   历史背景：旧版本要求每次 git add 都征求同意，是因为早期管理混乱（误覆盖、错暂存）。现在通过原则1 锁死真正的破坏性操作 + 本原则锁死远端操作，本地暂存/commit 是 reversible 的常规工作流，无需仪式化询问。
 
