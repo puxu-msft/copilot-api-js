@@ -8,6 +8,8 @@ import {
 import {
   //
   findDowngradeMarkPos,
+  recoverDowngradeTail,
+  type ToolParamTypes,
   validateInvokeRegion,
 } from "~/lib/anthropic/recover-tool-call/core"
 
@@ -67,5 +69,54 @@ describe("findDowngradeMarkPos", () => {
 
   test("无 invoke → -1", () => {
     expect(findDowngradeMarkPos("just talking about calling tools", tools)).toBe(-1)
+  })
+})
+
+describe("recoverDowngradeTail", () => {
+  const schemas = new Map<string, ToolParamTypes>([
+    ["Write", { file_path: "string", content: "string" }],
+    ["AskUserQuestion", { questions: "array" }],
+    ["Bash", { command: "string", timeout: "number" }],
+  ])
+
+  test(String.raw`真实形态：call\n<invoke> 尾部 → 1 tool_use，参数为字符串`, () => {
+    const tail = `call\n<invoke name="Write">\n<parameter name="file_path">/tmp/a.ts</parameter>\n<parameter name="content">x</parameter>\n</invoke>\n`
+    const r = recoverDowngradeTail(tail, schemas)
+    expect(r.recovered).toBe(true)
+    expect(r.blocks).toHaveLength(1)
+    const b = r.blocks[0]
+    expect(b.type).toBe("tool_use")
+    if (b.type === "tool_use") {
+      expect(b.name).toBe("Write")
+      expect(b.input).toEqual({ file_path: "/tmp/a.ts", content: "x" })
+    }
+  })
+
+  test("array 参数按 schema JSON.parse 成结构化", () => {
+    const tail = `call<invoke name="AskUserQuestion"><parameter name="questions">[{"q":"x"}]</parameter></invoke>`
+    const r = recoverDowngradeTail(tail, schemas)
+    expect(r.recovered).toBe(true)
+    if (r.blocks[0].type === "tool_use") expect(r.blocks[0].input.questions).toEqual([{ q: "x" }])
+  })
+
+  test("number 参数 → Number；非法 JSON array → 回退字符串", () => {
+    const tail1 = `call<invoke name="Bash"><parameter name="command">ls</parameter><parameter name="timeout">30</parameter></invoke>`
+    const r1 = recoverDowngradeTail(tail1, schemas)
+    if (r1.blocks[0].type === "tool_use") expect(r1.blocks[0].input.timeout).toBe(30)
+    const tail2 = `call<invoke name="AskUserQuestion"><parameter name="questions">not json</parameter></invoke>`
+    const r2 = recoverDowngradeTail(tail2, schemas)
+    if (r2.blocks[0].type === "tool_use") expect(r2.blocks[0].input.questions).toBe("not json")
+  })
+
+  test("腰斩（content 含 </parameter> 字面量）→ recovered:false", () => {
+    const tail = `call<invoke name="Write"><parameter name="content">见 </parameter> 残</parameter></invoke>`
+    expect(recoverDowngradeTail(tail, schemas).recovered).toBe(false)
+  })
+
+  test("schema 缺失工具 → 全字段字符串", () => {
+    const tail = `call<invoke name="Bash"><parameter name="command">ls</parameter></invoke>`
+    const r = recoverDowngradeTail(tail, new Map())
+    expect(r.recovered).toBe(true)
+    if (r.blocks[0].type === "tool_use") expect(r.blocks[0].input).toEqual({ command: "ls" })
   })
 })

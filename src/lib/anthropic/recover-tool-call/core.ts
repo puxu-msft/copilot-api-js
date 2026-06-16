@@ -1,3 +1,11 @@
+import type {
+  //
+  ParamType,
+  ToolParamTypes,
+} from "./schema-extract"
+
+export type { ToolParamTypes } from "./schema-extract"
+
 /** validateInvokeRegion 的结果：解析成功带 name + 顶层参数原始字符串值。 */
 export type InvokeParseResult = { ok: true; name: string; params: Record<string, string> } | { ok: false }
 
@@ -67,4 +75,68 @@ export function findDowngradeMarkPos(text: string, toolNames: ReadonlySet<string
     return invokePos
   }
   return -1
+}
+
+/** 重建产物：text/tool_use（id 由调用方注入，core 不生成 id 以保持纯粹无随机）。 */
+export type RecoveredBlock = { type: "text"; text: string } | { type: "tool_use"; name: string; input: Record<string, unknown> }
+
+export interface RecoverResult {
+  recovered: boolean
+  blocks: Array<RecoveredBlock>
+}
+
+/** 按 schema 定型单个参数原始字符串值（失败回退字符串）。 */
+function typeParamValue(raw: string, type: ParamType | undefined): unknown {
+  switch (type) {
+    case "number":
+    case "integer": {
+      const n = Number(raw)
+      return Number.isNaN(n) ? raw : n
+    }
+    case "boolean": {
+      if (raw === "true") return true
+      if (raw === "false") return false
+      return raw
+    }
+    case "array":
+    case "object": {
+      try {
+        return JSON.parse(raw) as unknown
+      } catch {
+        return raw
+      }
+    }
+    default: {
+      return raw
+    }
+  }
+}
+
+const INVOKE_REGION = /<invoke name="[^"]+">[\s\S]*?<\/invoke>/g
+
+/**
+ * 解析 markPos 起的尾部文本，位置不变量校验 + schema 定型，产出 block 序列。
+ * 任一 invoke 区间校验失败 → 整体 recovered:false（绝不部分成功）。
+ */
+export function recoverDowngradeTail(tail: string, toolSchemas: Map<string, ToolParamTypes>): RecoverResult {
+  let body = tail
+  for (const token of RESIDUE_TOKENS) {
+    const t = body.trimStart()
+    if (t.startsWith(token)) {
+      body = t.slice(token.length)
+      break
+    }
+  }
+  const regions = body.match(INVOKE_REGION)
+  if (!regions || regions.length === 0) return { recovered: false, blocks: [] }
+  const blocks: Array<RecoveredBlock> = []
+  for (const region of regions) {
+    const parsed = validateInvokeRegion(region)
+    if (!parsed.ok) return { recovered: false, blocks: [] }
+    const schema = toolSchemas.get(parsed.name)
+    const input: Record<string, unknown> = {}
+    for (const [k, raw] of Object.entries(parsed.params)) input[k] = typeParamValue(raw, schema?.[k])
+    blocks.push({ type: "tool_use", name: parsed.name, input })
+  }
+  return { recovered: true, blocks }
 }
