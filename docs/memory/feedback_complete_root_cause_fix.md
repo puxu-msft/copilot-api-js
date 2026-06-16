@@ -20,7 +20,7 @@ User explicitly stated (this session):
 
 1. **Decision rule for fixing**: "is this a real problem in the architecture I'm trying to leave behind me?" — if yes, fix completely. Do not propose "small fix now, structural fix later" — the structural fix IS the right fix.
 
-2. **No tradeoff framing**: never present "minimal fix vs complete fix" choices. Pick the complete one and execute. Don't pre-negotiate scope down.
+2. **No tradeoff framing**: never present "minimal fix vs complete fix" choices. Pick the complete one and execute. Don't pre-negotiate scope down. 分阶段**交付**(基础阶段先落地、高级阶段后续)是允许的;但绝不为"最小化"砍掉让功能真正能用的核心——phasing ≠ cutting the usable core。
 
 3. **Cost is irrelevant**: time, churn, code volume, blast radius — all acceptable. Only quality of end state matters.
 
