@@ -60,6 +60,42 @@ export function shouldDecodeToolInput(name: string, cfg: DecodeToolInputConfig):
   return Object.hasOwn(cfg.fields, name) && cfg.fields[name].length > 0
 }
 
+/** Tool name whose `questions[].question` may be backfilled from `header`. */
+export const ASK_USER_QUESTION_TOOL = "AskUserQuestion"
+
+/**
+ * Backfill a missing `question` from `header` in an `AskUserQuestion` tool_use input.
+ *
+ * Claude Code clients reject a `questions[]` item that carries a `header` but no `question` field ("must have a question"). Upstream models occasionally emit such items.
+ * For each item that is **missing** the `question` key (present-but-empty is left untouched) and whose `header` is a non-empty string, the item gets `question = header`.
+ *
+ * AskUserQuestion-specific: a no-op for any other tool name. Non-plain-object input, or a non-array `questions`, is returned unchanged.
+ * Returns a NEW input object when at least one item changed, otherwise the original `input` reference — callers may use `===` to detect whether a rewrite occurred (enabling zero-perturbation pass-through, mirroring `decodeToolUseInput`).
+ */
+export function backfillAskUserQuestionHeaders(name: string, input: unknown): unknown {
+  if (name !== ASK_USER_QUESTION_TOOL) return input
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input
+
+  const obj = input as Record<string, unknown>
+  const questions = obj.questions
+  if (!Array.isArray(questions)) return input
+
+  let result: Array<unknown> | undefined
+  for (let i = 0; i < questions.length; i++) {
+    const item = questions[i]
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue
+    const q = item as Record<string, unknown>
+    // Only backfill when `question` is absent — present-but-empty is the client's own (valid-shape) choice and must not be overwritten.
+    if (Object.hasOwn(q, "question")) continue
+    const header = q.header
+    if (typeof header !== "string" || header.length === 0) continue
+    if (!result) result = [...questions]
+    result[i] = { ...q, question: header }
+  }
+
+  return result ? { ...obj, questions: result } : input
+}
+
 /**
  * Decode stringified-JSON fields in a tool_use input object.
  *

@@ -558,6 +558,13 @@ export interface State {
    * never affected.
    */
   readonly decodeAllToolInputFields: boolean
+
+  /**
+   * When true, backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item that has a header but no question).
+   * Only items missing the `question` key are touched; present-but-empty is left alone. History keeps the upstream-original form.
+   * Default true. Runs after `decodeToolInputFields` (so a stringified `questions` array is structured first).
+   */
+  readonly backfillQuestionFromHeader: boolean
 }
 
 type MutableState = {
@@ -759,6 +766,7 @@ export function setAnthropicBehavior(
       | "rejectBodyFields"
       | "decodeToolInputFields"
       | "decodeAllToolInputFields"
+      | "backfillQuestionFromHeader"
     >
   >,
 ): void {
@@ -970,6 +978,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   rejectBodyFields: {} as Record<string, Array<string>>,
   decodeToolInputFields: { AskUserQuestion: ["questions"] } as Record<string, Array<string>>,
   decodeAllToolInputFields: false,
+  backfillQuestionFromHeader: true,
   disabledModels: [] as ReadonlyArray<string>,
 }
 
@@ -1004,6 +1013,7 @@ export function resetConfigManagedState(): void {
     rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
     decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
+    backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
   })
   setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
@@ -1110,6 +1120,7 @@ const mutableState: MutableState = {
   rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
   decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
   decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
+  backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
   disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],
   verbose: false,
 }

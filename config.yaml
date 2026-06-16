@@ -354,6 +354,11 @@ anthropic:
   #   server_tool_use is never affected. Default: false.
   decode_all_tool_input_fields: false
 
+  # backfill_question_from_header: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").
+  #   Upstream models occasionally emit such items. When true, each item that is MISSING the `question` key (present-but-empty is left untouched) and whose `header` is a non-empty string gets `question = header`.
+  #   Applies on the response wire only (streaming + non-streaming), after decode_tool_input_fields; history keeps the upstream-original form. Default: true.
+  backfill_question_from_header: true
+
 # ============================================================================
 # Responses API
 # ============================================================================

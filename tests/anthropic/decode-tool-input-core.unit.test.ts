@@ -7,6 +7,8 @@ import {
 
 import {
   //
+  ASK_USER_QUESTION_TOOL,
+  backfillAskUserQuestionHeaders,
   decodeToolUseInput,
   shouldDecodeToolInput,
   tryDecodeJsonString,
@@ -138,5 +140,92 @@ describe("decodeToolUseInput", () => {
     const out = decodeToolUseInput("T", input, cfg({ T: ["a"] })) as Record<string, unknown>
     expect(out.a).toEqual([1])
     expect(out.b).toBe("[2]")
+  })
+})
+
+describe("backfillAskUserQuestionHeaders", () => {
+  test("ASK_USER_QUESTION_TOOL is the AskUserQuestion tool name", () => {
+    expect(ASK_USER_QUESTION_TOOL).toBe("AskUserQuestion")
+  })
+
+  test("backfills question from header when question is absent", () => {
+    const input = { questions: [{ header: "Pick a color", options: [{ label: "Red" }] }] }
+    const out = backfillAskUserQuestionHeaders("AskUserQuestion", input) as { questions: Array<Record<string, unknown>> }
+    expect(out.questions[0].question).toBe("Pick a color")
+    expect(out.questions[0].header).toBe("Pick a color")
+    expect(out.questions[0].options).toEqual([{ label: "Red" }])
+  })
+
+  test("backfills each missing item independently, leaving present ones intact", () => {
+    const input = {
+      questions: [{ header: "A" }, { header: "B", question: "Keep me" }, { header: "C" }],
+    }
+    const out = backfillAskUserQuestionHeaders("AskUserQuestion", input) as { questions: Array<Record<string, unknown>> }
+    expect(out.questions[0].question).toBe("A")
+    expect(out.questions[1].question).toBe("Keep me")
+    expect(out.questions[2].question).toBe("C")
+  })
+
+  test("leaves a present-but-empty question untouched (only absence triggers)", () => {
+    const input = { questions: [{ header: "H", question: "" }] }
+    const out = backfillAskUserQuestionHeaders("AskUserQuestion", input)
+    expect(out).toBe(input)
+  })
+
+  test("skips an item whose header is missing", () => {
+    const input = { questions: [{ options: [] }] }
+    const out = backfillAskUserQuestionHeaders("AskUserQuestion", input)
+    expect(out).toBe(input)
+  })
+
+  test("skips an item whose header is an empty string", () => {
+    const input = { questions: [{ header: "" }] }
+    const out = backfillAskUserQuestionHeaders("AskUserQuestion", input)
+    expect(out).toBe(input)
+  })
+
+  test("skips an item whose header is non-string", () => {
+    const input = { questions: [{ header: 42 }] }
+    const out = backfillAskUserQuestionHeaders("AskUserQuestion", input)
+    expect(out).toBe(input)
+  })
+
+  test("no-op for a non-AskUserQuestion tool (returns same reference)", () => {
+    const input = { questions: [{ header: "H" }] }
+    const out = backfillAskUserQuestionHeaders("OtherTool", input)
+    expect(out).toBe(input)
+  })
+
+  test("returns same reference when questions is not an array", () => {
+    const input = { questions: "not an array" }
+    expect(backfillAskUserQuestionHeaders("AskUserQuestion", input)).toBe(input)
+  })
+
+  test("returns same reference when input has no questions field", () => {
+    const input = { other: 1 }
+    expect(backfillAskUserQuestionHeaders("AskUserQuestion", input)).toBe(input)
+  })
+
+  test("skips non-object items inside questions", () => {
+    const input = { questions: ["string", 5, null, { header: "ok" }] }
+    const out = backfillAskUserQuestionHeaders("AskUserQuestion", input) as { questions: Array<unknown> }
+    expect(out.questions[0]).toBe("string")
+    expect(out.questions[3]).toEqual({ header: "ok", question: "ok" })
+  })
+
+  test("returns string / null / array input unchanged", () => {
+    expect(backfillAskUserQuestionHeaders("AskUserQuestion", "s")).toBe("s")
+    expect(backfillAskUserQuestionHeaders("AskUserQuestion", null)).toBeNull()
+    const arr = [1, 2]
+    expect(backfillAskUserQuestionHeaders("AskUserQuestion", arr)).toBe(arr)
+  })
+
+  test("does not mutate the original input or its items on change", () => {
+    const item = { header: "H" }
+    const input = { questions: [item] }
+    const out = backfillAskUserQuestionHeaders("AskUserQuestion", input)
+    expect(out).not.toBe(input)
+    expect(item).toEqual({ header: "H" }) // original item untouched
+    expect(Object.hasOwn(item, "question")).toBe(false)
   })
 })

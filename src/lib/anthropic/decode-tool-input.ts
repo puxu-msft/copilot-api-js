@@ -11,7 +11,7 @@
  *     `input_json_delta` fragments and rewrites them at `content_block_stop`.
  *   - Non-streaming: a helper that rewrites tool_use blocks in a full response.
  *
- * Both are no-ops unless the tool is selected by `DecodeToolInputConfig`.
+ * Both are no-ops unless a tool is selected by `DecodeToolInputConfig`, or — for the `AskUserQuestion` question/header backfill — by `ToolInputRewriteOptions`.
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -22,10 +22,21 @@ import type { AnthropicMessageResponse } from "./client"
 
 import {
   //
+  ASK_USER_QUESTION_TOOL,
+  backfillAskUserQuestionHeaders,
   decodeToolUseInput,
   shouldDecodeToolInput,
   type DecodeToolInputConfig,
 } from "./decode-tool-input-core"
+
+/** Optional per-call rewrites layered on top of field decoding. */
+export interface ToolInputRewriteOptions {
+  /**
+   * When true, backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the forwarded wire (see `backfillAskUserQuestionHeaders`).
+   * Runs after field decoding, so a stringified `questions` array is decoded first and then backfilled. Default false.
+   */
+  backfillAskUserQuestionHeader?: boolean
+}
 
 // ============================================================================
 // Streaming decoder
@@ -75,13 +86,11 @@ function buildInputJsonDelta(template: ServerSentEventMessage | undefined, index
 /**
  * Create a stateful decoder for an Anthropic SSE stream.
  *
- * Only `tool_use` blocks whose name is selected by `cfg` are buffered;
- * `server_tool_use` and every other block pass through untouched (the
- * `block.type === "tool_use"` guard hard-excludes server tools even when
- * `cfg.all` is set, avoiding conflicts with the server-tool filter).
+ * Only `tool_use` blocks whose name is selected by `cfg` (or, when `opts.backfillAskUserQuestionHeader` is set, the `AskUserQuestion` block) are buffered; `server_tool_use` and every other block pass through untouched (the `block.type === "tool_use"` guard hard-excludes server tools even when `cfg.all` is set, avoiding conflicts with the server-tool filter).
  */
-export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig): ToolInputStreamDecoder {
+export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: ToolInputRewriteOptions = {}): ToolInputStreamDecoder {
   const buffering = new Map<number, BufferedToolUse>()
+  const backfill = opts.backfillAskUserQuestionHeader === true
 
   function finalize(buf: BufferedToolUse, stopRaw: ServerSentEventMessage): Array<ServerSentEventMessage> {
     const full = buf.chunks.join("")
@@ -93,13 +102,15 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig): ToolIn
       return [...buf.rawDeltas, stopRaw]
     }
 
+    // Decode stringified fields first, then backfill — so a stringified `questions` array is structured before its items are inspected.
     const decoded = decodeToolUseInput(buf.name, inputObj, cfg)
-    if (decoded === inputObj) {
+    const normalized = backfill ? backfillAskUserQuestionHeaders(buf.name, decoded) : decoded
+    if (normalized === inputObj) {
       // Nothing changed — zero-perturbation pass-through of the original bytes.
       return [...buf.rawDeltas, stopRaw]
     }
 
-    const delta = buildInputJsonDelta(buf.rawDeltas[0], buf.index, JSON.stringify(decoded))
+    const delta = buildInputJsonDelta(buf.rawDeltas[0], buf.index, JSON.stringify(normalized))
     return [delta, stopRaw]
   }
 
@@ -109,7 +120,11 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig): ToolIn
 
       if (parsed.type === "content_block_start") {
         const block = parsed.content_block as { type: string; name?: string }
-        if (block.type === "tool_use" && block.name !== undefined && shouldDecodeToolInput(block.name, cfg)) {
+        if (
+          block.type === "tool_use"
+          && block.name !== undefined
+          && (shouldDecodeToolInput(block.name, cfg) || (backfill && block.name === ASK_USER_QUESTION_TOOL))
+        ) {
           buffering.set(parsed.index, { name: block.name, index: parsed.index, chunks: [], rawDeltas: [] })
         }
         return [raw]
@@ -151,16 +166,21 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig): ToolIn
 // ============================================================================
 
 /**
- * Decode stringified-JSON fields in tool_use blocks of a non-streaming
- * response. Returns a new response object when any block changed, otherwise
- * the original reference (immutable — never mutates `response`).
+ * Decode stringified-JSON fields in tool_use blocks of a non-streaming response, then optionally backfill `AskUserQuestion` headers (`opts.backfillAskUserQuestionHeader`).
+ * Returns a new response object when any block changed, otherwise the original reference (immutable — never mutates `response`).
  */
-export function decodeToolInputBlocksInResponse(response: AnthropicMessageResponse, cfg: DecodeToolInputConfig): AnthropicMessageResponse {
+export function decodeToolInputBlocksInResponse(
+  response: AnthropicMessageResponse,
+  cfg: DecodeToolInputConfig,
+  opts: ToolInputRewriteOptions = {},
+): AnthropicMessageResponse {
+  const backfill = opts.backfillAskUserQuestionHeader === true
   const content = response.content.map((block) => {
     const b = block as { type?: string; name?: string; input?: unknown }
     if (b.type !== "tool_use" || b.name === undefined) return block
     const decoded = decodeToolUseInput(b.name, b.input, cfg)
-    return decoded === b.input ? block : ({ ...b, input: decoded } as typeof block)
+    const normalized = backfill ? backfillAskUserQuestionHeaders(b.name, decoded) : decoded
+    return normalized === b.input ? block : ({ ...b, input: normalized } as typeof block)
   })
   // Reference-equality check (not a closure flag — keeps the lint flow analysis
   // honest): every untouched block returns its original reference.

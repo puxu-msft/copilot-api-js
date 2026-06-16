@@ -441,6 +441,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   },
+  {
+    configKey: "anthropic.backfill_question_from_header",
+    stateKey: "backfillQuestionFromHeader",
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+  },
 
   // ── model_overrides / model_preference / disabled_models ───────────
   {
