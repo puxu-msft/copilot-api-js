@@ -44,7 +44,6 @@ import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
 import {
   //
   prepareAnthropicRequest,
-  learnEffortsFromError,
   type PreparedAnthropicRequest,
 } from "./request-preparation"
 
@@ -96,89 +95,82 @@ export async function createAnthropicMessages(
 ): Promise<AnthropicMessageResponse | AsyncGenerator<ServerSentEventMessage>> {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
-  // Up to 2 attempts: first normal, second after learning invalid_reasoning_effort
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const prepared = prepareAnthropicRequest(payload, opts)
-    opts?.onPrepared?.({
-      wire: prepared.wire,
-      headers: sanitizeHeadersForHistory(prepared.headers),
+  const prepared = prepareAnthropicRequest(payload, opts)
+  opts?.onPrepared?.({
+    wire: prepared.wire,
+    headers: sanitizeHeadersForHistory(prepared.headers),
+  })
+
+  const { wire, headers } = prepared
+  const model = wire.model as string
+  const messages = wire.messages as MessagesPayload["messages"]
+  const tools = wire.tools as Array<Tool> | undefined
+  const thinking = wire.thinking as MessagesPayload["thinking"]
+
+  consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
+
+  // For NON-streaming requests, fold the shutdown signal into the fetch signal
+  // so a Phase 3 abort interrupts the (long) header-wait instead of hanging
+  // until fetchTimeout / Phase 4 force-close. Streaming requests deliberately
+  // omit it: the stream guard in processAnthropicStream owns shutdown
+  // for the streamed body, and aborting the fetch mid-body would tear down the
+  // ReadableStream underneath that guard.
+  // `clientAbortSignal` (when supplied) is always folded in: a client
+  // disconnect should terminate the upstream call on both stream and
+  // non-stream paths.
+  const upstreamSignal = combineAbortSignals(createFetchSignal(), payload.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
+
+  let response: Response
+  try {
+    response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(wire),
+      signal: upstreamSignal,
+      ...DISABLE_BUILTIN_FETCH_TIMEOUT,
     })
-
-    const { wire, headers } = prepared
-    const model = wire.model as string
-    const messages = wire.messages as MessagesPayload["messages"]
-    const tools = wire.tools as Array<Tool> | undefined
-    const thinking = wire.thinking as MessagesPayload["thinking"]
-
-    consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
-
-    // For NON-streaming requests, fold the shutdown signal into the fetch signal
-    // so a Phase 3 abort interrupts the (long) header-wait instead of hanging
-    // until fetchTimeout / Phase 4 force-close. Streaming requests deliberately
-    // omit it: the stream guard in processAnthropicStream owns shutdown
-    // for the streamed body, and aborting the fetch mid-body would tear down the
-    // ReadableStream underneath that guard.
-    // `clientAbortSignal` (when supplied) is always folded in: a client
-    // disconnect should terminate the upstream call on both stream and
-    // non-stream paths.
-    const upstreamSignal = combineAbortSignals(createFetchSignal(), payload.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
-
-    let response: Response
-    try {
-      response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(wire),
-        signal: upstreamSignal,
-        ...DISABLE_BUILTIN_FETCH_TIMEOUT,
-      })
-    } catch (error) {
-      // A shutdown-caused abort becomes a retryable 529 (overloaded) so the
-      // client backs off and retries against the restarted instance, rather than
-      // surfacing a raw AbortError as a generic 500.
-      if (getShutdownSignal().aborted && error instanceof Error && isAbortError(error)) {
-        throw new HTTPError(
-          "Server is shutting down",
-          529,
-          JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Server is shutting down" } }),
-          model,
-        )
-      }
-      throw error
-    }
-
-    if (opts?.headersCapture) {
-      captureHttpHeaders(opts.headersCapture, headers, response)
-    }
-
-    if (!response.ok) {
-      const responseText = await response.text()
-      // Learn supported efforts from upstream error and retry once
-      if (attempt === 0 && response.status === 400 && learnEffortsFromError(responseText)) {
-        consola.debug("Retrying Anthropic request after learning supported efforts")
-        continue
-      }
-      consola.debug("Request failed:", {
+  } catch (error) {
+    // A shutdown-caused abort becomes a retryable 529 (overloaded) so the
+    // client backs off and retries against the restarted instance, rather than
+    // surfacing a raw AbortError as a generic 500.
+    if (getShutdownSignal().aborted && error instanceof Error && isAbortError(error)) {
+      throw new HTTPError(
+        "Server is shutting down",
+        529,
+        JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Server is shutting down" } }),
         model,
-        max_tokens: wire.max_tokens,
-        stream: wire.stream,
-        toolCount: tools?.length ?? 0,
-        thinking,
-        messageCount: messages.length,
-      })
-      // On opaque 400s, scan the wire tools for schema keywords / names the
-      // upstream commonly rejects, and attach hint-only diagnostics. Logging is
-      // the consumer's job (forwardError) — the client only generates + attaches.
-      const diagnostics = response.status === 400 ? summarizeToolsForDiagnostics(tools) : undefined
-      throw new HTTPError("Failed to create Anthropic messages", response.status, responseText, model, response.headers, diagnostics)
+      )
     }
-
-    if (payload.stream) {
-      return events(response)
-    }
-
-    return (await response.json()) as AnthropicMessageResponse
+    throw error
   }
-  // Unreachable (loop always returns or throws)
-  throw new Error("createAnthropicMessages: unreachable state")
+
+  if (opts?.headersCapture) {
+    captureHttpHeaders(opts.headersCapture, headers, response)
+  }
+
+  if (!response.ok) {
+    const responseText = await response.text()
+    consola.debug("Request failed:", {
+      model,
+      max_tokens: wire.max_tokens,
+      stream: wire.stream,
+      toolCount: tools?.length ?? 0,
+      thinking,
+      messageCount: messages.length,
+    })
+    // The `invalid_reasoning_effort` learn-then-retry that used to live here as a
+    // 2-attempt inner loop is now the pipeline's `effort-learning` strategy
+    // (P0.4) — this client is single-shot. On opaque 400s, scan the wire tools
+    // for schema keywords / names the upstream commonly rejects, and attach
+    // hint-only diagnostics. Logging is the consumer's job (forwardError) — the
+    // client only generates + attaches.
+    const diagnostics = response.status === 400 ? summarizeToolsForDiagnostics(tools) : undefined
+    throw new HTTPError("Failed to create Anthropic messages", response.status, responseText, model, response.headers, diagnostics)
+  }
+
+  if (payload.stream) {
+    return events(response)
+  }
+
+  return (await response.json()) as AnthropicMessageResponse
 }

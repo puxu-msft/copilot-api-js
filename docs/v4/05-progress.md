@@ -11,7 +11,7 @@
 | 阶段 | commits | 完成 | 状态 |
 |---|---|---|---|
 | 设计文档 | — | — | ✅ |
-| P0 地基 | 4 | 0/4 | ⬜ |
+| P0 地基 | 4 | 4/4 | ✅ |
 | P1 改写 registry 化 | 6 | 0/6 | ⬜ |
 | P2 driver + 逐格式 | 6 | 0/6 | ⬜ |
 | P3 统一收尾 | 4 | 0/4 | ⬜ |
@@ -25,7 +25,7 @@
 | P0.1 | pipeline/envelope.ts + types.ts 接口定义 | ✅ | typecheck 绿；无消费者（grep 确认）；subagent review 无 CRITICAL/HIGH | R1 已解决（transport 侧 `WireRequest`→`PreparedRequest`）；RouteDecision 采 codec.md 版（无 from） |
 | P0.2 | transport/send.ts 提取，client 改调用 | ✅ | 字节等价（手工逐行 + subagent review + 复核 combineAbortSignals 过滤 undefined）；全 offline 套件 2480 pass/0 fail；typecheck+eslint 绿 | 范围限定 OpenAI 两 client（关键坑）；Anthropic 待 P0.4 |
 | P0.3 | observability 双轨收敛为单 bus 通道 | ✅ | golden fixture（context-bus-stream，改前改后皆过 + 连跑 10×）守 bus 事件流字节等价；全 offline 套件 2480 pass/0 fail；subagent review（git diff 逐项对照）无 CRITICAL/HIGH | ctx 直接 publish 所有 request.*；删 handleContextEvent/listeners/on/off；activeContexts 经 onSettled 回调；snapshotWithSummary 抽入 activity-summary 共享 |
-| P0.4 | Anthropic effort 内循环 → effort-learning strategy | ⬜ | effort fixture 连跑等价 | |
+| P0.4 | Anthropic effort 内循环 → effort-learning strategy | ✅ | strategy 单测连跑 15× 确定性；全 offline 套件 2489 pass/0 fail；subagent review（git diff 对照）结果等价、client 单次收发字节不变、无 CRITICAL/HIGH | client 删 2-attempt 循环（纯 dedent）；strategy 用 DI 注入 learn 避免 cache 污染；挂 token-refresh 后/body-field 前，与其它 400 策略消息互斥 |
 
 ## P1 — 改写 registry 化
 

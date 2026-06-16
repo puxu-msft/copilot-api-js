@@ -46,6 +46,7 @@ import {
 } from "~/lib/request/strategies/auto-truncate"
 import { createBodyFieldRejectionStrategy } from "~/lib/request/strategies/context-management-retry"
 import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferred-tool-retry"
+import { createEffortLearningRetryStrategy } from "~/lib/request/strategies/effort-learning-retry"
 import { createLegacyThinkingRetryStrategy } from "~/lib/request/strategies/legacy-thinking-retry"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
@@ -164,6 +165,11 @@ export function buildAnthropicStrategies(args: { betaProbe: BetaProbe; resanitiz
   return [
     createNetworkRetryStrategy<MessagesPayload>(),
     createTokenRefreshStrategy<MessagesPayload>(),
+    // effort-learning sits between token-refresh and the other 400-class
+    // strategies (lifted from the client's inner loop in P0.4). Its
+    // `invalid_reasoning_effort` body match is mutually exclusive with the
+    // others' 400 messages, so the relative order is safe.
+    createEffortLearningRetryStrategy<MessagesPayload>(),
     createBodyFieldRejectionStrategy<MessagesPayload>(),
     createLegacyThinkingRetryStrategy<MessagesPayload>(),
     createUnsupportedBetaRetryStrategy<MessagesPayload>({
