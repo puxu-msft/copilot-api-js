@@ -31,7 +31,7 @@
 
 | # | commit | 状态 | invariant 验证 | 备注 |
 |---|---|---|---|---|
-| P1.1 | rewrite-registry.ts 接口 + 装配器 | ⬜ | 纯新增 | |
+| P1.1 | rewrite-registry.ts 接口 + 装配器 | ✅ | 纯新增；8 unit pass/100% cov；typecheck+eslint 绿；subagent review 无 CRITICAL/HIGH（3 前瞻缺口已处置，见下） | 接口忠实 spec §1/§2；createState? + DI registry 参数两处刻意补充已文档化；M1/M3 钉进 JSDoc，M2 记入遗留 |
 | P1.2 | Anthropic 请求改写注册（T*/A*） | ⬜ | sanitize golden 逐字节 | |
 | P1.3 | Anthropic prepare 子步骤注册（B*） | ⬜ | wire+headers golden 逐字节 | |
 | P1.4 | OpenAI CC/Responses 请求改写注册（O*） | ⬜ | wire golden | |
@@ -78,6 +78,21 @@
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
 
 _（暂无）_
+
+### P1.5-OQ1 — heartbeat 定时器注入无法用 per-frame `transform` 表达（待 P1.5 裁决）
+
+- **发现于**：P1.1（subagent review M2）
+- **根因**：spec §4 把 `heartbeat(A4, order 999)` 列进 `ResponseRewrite` 表，但它由**独立定时器**触发——上游静默期（opus adaptive thinking 在 `content_block_start` 后停滞几十秒~数百秒）**没有上游帧到达**，而 heartbeat 恰恰要在静默期注入 `event: ping`。`ResponseRewrite.transform(frame, state)` 是严格「每来一个上游帧调用一次」模型，无法被定时器/idle 驱动。
+- **当前行为**：现状 heartbeat 是 `messages/handler.ts` 用独立定时器 + 串行 Promise chain 注入 `forwardedSseEvents`（与逐帧 transform 是两套机制）。
+- **理想架构 / 两个选项**：① heartbeat 保留 handler-side 旁路，spec §4 表里那行降级为「概念归类」而非「真走此接口」；② 扩 `ResponseRewrite` 接口加 idle/timer hook（如 `onIdle?(elapsedMs, state): FrameAction`），让 driver 在 race idle-timeout 时调用。
+- **为何暂缓**：P1.1 只定义接口、registry 为空、无消费者；heartbeat 的接入机制是 P1.5 响应改写注册时才需裁决的。`truncation-marker(C2, order 000)` 是首帧触发，**可**用当前 transform 表达，不受影响。
+- **若做需改什么**：选 ② 则改 `ResponseRewrite` 加 hook + driver S5 流式循环在 idle race 点调用；选 ① 则 P1.5 注册响应改写时跳过 heartbeat，保留 handler 定时器旁路并在 spec §4 标注。
+
+### P1.2-INV1 — system-prompt override 须经 `env.body` 表达（P1.2 落地时钉成显式不变量）
+
+- **发现于**：P1.1（subagent review L2）
+- **背景**：spec §4 把 `system-override`（S1/S2/S3，order 000）列为 `RequestRewrite`，而 `RewriteResult.apply` 返回新 env、`RequestEnvelope.with()` 只 patch `body/targetEndpoint/prepareHints`。能表达的前提是 **system prompt 在 `env.body` 内**——Anthropic Messages API 的 `system` 是顶层 body 参数、OpenAI 的 system 是 `messages[0]`，均在 wire body JSON 内，故 `with({body})` 足够，**非 blocker**。
+- **行动**：P1.2 落地 `system-override` 时用一条测试确证「system 改写经 `with({body})` 表达」，把这个隐式假设钉成显式不变量。S1-S3 **非幂等**（prepend/append 每次都加），只能 S3 入口跑一次，**绝不**进 S4 attempt 循环。
 
 ### R1 — `WireRequest` 同名两类型 ✅ 已解决（2026-06-16）
 
