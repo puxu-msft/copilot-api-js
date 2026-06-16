@@ -23,7 +23,7 @@
 | # | commit | 状态 | invariant 验证 | 备注 |
 |---|---|---|---|---|
 | P0.1 | pipeline/envelope.ts + types.ts 接口定义 | ✅ | typecheck 绿；无消费者（grep 确认）；subagent review 无 CRITICAL/HIGH | 见遗留 R1（WireRequest 撞名）；RouteDecision 采 codec.md 版（无 from） |
-| P0.2 | transport/send.ts 提取，client 改调用 | ⬜ | client 测试绿、字节不变 | 范围限定 OpenAI 两 client（关键坑）；Anthropic 待 P0.4 |
+| P0.2 | transport/send.ts 提取，client 改调用 | ✅ | 字节等价（手工逐行 + subagent review + 复核 combineAbortSignals 过滤 undefined）；全 offline 套件 2480 pass/0 fail；typecheck+eslint 绿 | 范围限定 OpenAI 两 client（关键坑）；Anthropic 待 P0.4 |
 | P0.3 | observability 双轨收敛为单 bus 通道 | ⬜ | bus 事件集 + sink 输出不变 | |
 | P0.4 | Anthropic effort 内循环 → effort-learning strategy | ⬜ | effort fixture 连跑等价 | |
 

@@ -6,7 +6,6 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import consola from "consola"
-import { events } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
 import type { RequestTransport } from "~/lib/history"
@@ -18,13 +17,9 @@ import type {
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
-import { copilotBaseUrl } from "~/lib/copilot-api"
-import { HTTPError } from "~/lib/error"
 import {
   //
   createFetchSignal,
-  captureHttpHeaders,
-  DISABLE_BUILTIN_FETCH_TIMEOUT,
   getHeaderCaseInsensitive,
   sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
@@ -37,7 +32,7 @@ import {
   raceIteratorNext,
   STREAM_ABORTED,
 } from "~/lib/stream"
-import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
+import { sendUpstreamHttp } from "~/lib/transport/send"
 
 import type { UpstreamWsConnection } from "./upstream-ws-connection"
 
@@ -292,38 +287,22 @@ async function createResponsesViaHttp(
   headersCapture?: HeadersCapture,
 ): Promise<ResponsesResponse | AsyncGenerator<ServerSentEventMessage>> {
   const { wire, headers } = prepared
-  // Apply fetch timeout if configured (connection + response headers). For
-  // non-streaming requests, also fold in the shutdown signal so a Phase 3 abort
-  // interrupts the (long) header-wait; streaming omits it (the stream guard in
-  // the handler owns shutdown for the streamed body).
-  const fetchSignal = combineAbortSignals(createFetchSignal(), wire.stream ? undefined : getShutdownSignal())
 
-  const response = await fetch(`${copilotBaseUrl(state)}/responses`, {
-    method: "POST",
+  // Pure send/receive lives in transport/send.ts (shared with the Chat
+  // Completions client). The Responses HTTP path historically did NOT fold the
+  // client-abort signal into the upstream fetch, so it is omitted here to stay
+  // byte-equivalent (streaming still omits the shutdown signal — the stream
+  // guard in the handler owns shutdown for the streamed body).
+  return (await sendUpstreamHttp({
+    endpointPath: "/responses",
     headers,
-    body: JSON.stringify(wire),
-    signal: fetchSignal,
-    ...DISABLE_BUILTIN_FETCH_TIMEOUT,
-  })
-
-  // Capture HTTP headers for history (before error check — capture even on failure)
-  if (headersCapture) {
-    captureHttpHeaders(headersCapture, headers, response)
-  }
-
-  if (!response.ok) {
-    consola.error("Failed to create responses", response)
-    // On opaque 400s, scan the wire tools for schema keywords / names the
-    // upstream commonly rejects, and attach hint-only diagnostics.
-    const diagnostics = response.status === 400 ? summarizeToolsForDiagnostics(wire.tools) : undefined
-    throw await HTTPError.fromResponse("Failed to create responses", response, wire.model, diagnostics)
-  }
-
-  if (wire.stream) {
-    return events(response)
-  }
-
-  return (await response.json()) as ResponsesResponse
+    body: wire,
+    stream: wire.stream,
+    errorLabel: "Failed to create responses",
+    modelId: wire.model,
+    diagnosticsTools: wire.tools,
+    headersCapture,
+  })) as ResponsesResponse | AsyncGenerator<ServerSentEventMessage>
 }
 
 function toSseMessage(event: ResponsesStreamEvent): ServerSentEventMessage {
