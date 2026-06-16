@@ -140,6 +140,9 @@ export interface State {
    */
   readonly sanitizeToolNames: boolean
 
+  /** 透明恢复上游 tool-call 文本降级（RFC tool-call-text-recovery）。默认 false。 */
+  readonly recoverToolCallText: boolean
+
   /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
   readonly stripServerTools: boolean
 
@@ -752,6 +755,7 @@ export function setAnthropicBehavior(
       | "systemPromptOverrides"
       | "compressToolResultsBeforeTruncate"
       | "sanitizeToolNames"
+      | "recoverToolCallText"
       | "anthropicApiKey"
       | "warmupPolicy"
       | "effortsOverrides"
@@ -942,6 +946,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   autoTruncateCompressThreshold: 10000,
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
+  recoverToolCallText: false,
   fetchTimeout: 300,
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
@@ -997,6 +1002,7 @@ export function resetConfigManagedState(): void {
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+    recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
     anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
@@ -1058,6 +1064,7 @@ const mutableState: MutableState = {
   tokenBasedBilling: false,
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+  recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
   contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
   contextEditingKeepTools: CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools,

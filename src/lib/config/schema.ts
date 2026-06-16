@@ -269,6 +269,7 @@ export const AnthropicConfigSchema = z
     // fold case/separators and break lookups. Replace semantic (default).
     decode_tool_input_fields: z.record(z.string(), z.array(z.string())).optional(),
     decode_all_tool_input_fields: nullableBoolean(),
+    recover_tool_call_text: nullableBoolean(),
     /**
      * Synthetic SSE keepalive interval for the client-facing Anthropic stream.
      * `0` disables (default). Any positive integer is the minimum seconds
