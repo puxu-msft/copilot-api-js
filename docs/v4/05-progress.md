@@ -12,9 +12,12 @@
 |---|---|---|---|
 | 设计文档 | — | — | ✅ |
 | P0 地基 | 4 | 4/4 | ✅ |
-| P1 改写 registry 化 | 6 | 0/6 | ⬜ |
+| P1 改写 registry 化（请求侧） | 4 | 4/4 | ✅ |
+| P1.5/P1.6（响应侧）→ 折入 P2 | — | — | ↪ 见 P1.5-SCOPE |
 | P2 driver + 逐格式 | 6 | 0/6 | ⬜ |
 | P3 统一收尾 | 4 | 0/4 | ⬜ |
+
+> **P1 范围修订（2026-06-16，调研后）**：P1 原计划 6 commit。请求侧 4 个（P1.1 接口 + P1.2/P1.3 Anthropic full + P1.4 OpenAI focused）有干净 seam，已全部完成、字节等价、subagent reviewed。**响应侧 P1.5（响应改写注册）/ P1.6（错误帧→codec.formatError）经调研判定折入 P2**——其消费者（P1.5 的 S5 per-frame chain、P1.6 的 codec）是 P2 的交付物，强塞进 P1 = 半重构 byte-critical 流式 pump（forwarded SSE 字节风险）+ 过早造 codec stub，且与 P2.6 重叠。详见 P1.5-SCOPE / P1.5-OQ1（heartbeat 已裁决 option ①）。P1.1 的 `ResponseRewrite` 接口已前瞻定义 + 测试，P2 落地即消费。
 
 ---
 
@@ -35,8 +38,8 @@
 | P1.2 | Anthropic 请求改写注册（T*/A*） | ✅ | sanitize 输出 golden 逐字节（"装配==手写组合 oracle"自洽，10 scenario pass，5 带 didWork 反假绿）；全 offline 套件 2506 pass/0 fail；typecheck+eslint 绿；subagent review 无 CRITICAL/HIGH | 按**内聚函数边界**拆 3 模块（非 §4 sub-step）：sanitizeAnthropicMessages(A3-9) 被 web_search 复用 + stats 是整链残差，故不再细拆。模块在 MessagesPayload 层（P2 driver 用 env adapter 包成 RequestRewrite）。web_search 路径未动 |
 | P1.3 | Anthropic prepare 子步骤注册（B*） | ✅ | wire+headers 字节等价由既有 prepare 套件守（anthropic-request-preparation.it + coerce-adaptive-thinking.it 共 46 scenario 全 pass）；新增 step-order + runner↔STEPS 耦合 4 unit pass；全 offline 2510 pass/0 fail；typecheck+eslint 绿；subagent review（逐行 diff 对照确认 buildAnthropicHeaders 逐字抽取）无 CRITICAL/HIGH | prepare 是**固定无过滤管线**→用数组声明序而非 P1.2 的 order-keys+appliesTo+sort（去 cargo-cult）。`PrepareStep`+`PrepareContext`；body B3-6 为 4 命名 step + buildWirePayload(B1-2) 作 ctx init + buildHeaders(B7-12) 内聚末 step（B8<B9<B10 留其内，同 A6<A8）。`steps` DI 参数（P2 prepareWire 复用 + rewrite_applied） |
 | P1.4 | OpenAI CC/Responses 请求改写注册（O*） | ✅（聚焦） | O10 抽取为 `fillMaxCompletionTokens` + oracle 对比 5 unit pass；既有 CC/Responses 套件守 sanitize/prepare 字节等价；全 offline 2519 tests/0 fail；typecheck+eslint 绿；subagent review 无 CRITICAL/HIGH | **范围决策见下 P1.4-SCOPE**：OpenAI 改写已是命名函数 + handler 分散点应用 + prepare 极简，无单一组合可注册化；P1.4 只抽唯一内联的 O10，不强推单一链 registry（会改 cadence/byte），注册化下沉 P2 driver |
-| P1.5 | 响应改写注册（A1-4/C1-2/P1-2） | ⬜ | forwarded SSE golden | |
-| P1.6 | 错误帧 formatter → codec.formatError | ⬜ | 错误帧 golden | |
+| P1.5 | 响应改写注册（A1-4/C1-2/P1-2） | ↪ 折入 P2 | — | **调研后折入 P2 的 S5 chain 重建**（P1.5-SCOPE）：响应改写已是命名 factory，应用在 byte-critical 交织流式 pump（raw-record/repetition/accumulate + A1/A2/A3 + setTimeout heartbeat），强推 run-registry = forwarded SSE 字节风险 + heartbeat misfit（P1.5-OQ1 裁决 option ①）。per-frame ResponseRewrite 接口由 P2 driver 真正消费 |
+| P1.6 | 错误帧 formatter → codec.formatError | ↪ 折入 P2 | — | **折入 P2**：`codec.formatError` 需 P2 的 codec 存在（codec 是 P2 交付物）。三协议错误帧 formatter（`anthropicStreamErrorType`/`streamErrorToOpenAIErrorType`/`geminiStreamErrorStatus`）已共享 `classifyStreamError`、已是命名函数；P2 建 codec 时一并收进各 codec.formatError |
 
 ## P2 — driver + 逐格式迁移
 
@@ -102,14 +105,22 @@
 - **背景**：P1.2 的 Anthropic 请求改写在 **MessagesPayload 层**（pre-env 形态），注册表 + appliesTo + order 是为 P2 driver 的 env-based `RequestRewrite` 铺路（trivial adapter：`apply(env) => env.with({body: module.apply(env.body, ctx).payload})`）。
 - **checkpoint**：P2 落地 driver 时必须真正用上这层（payload 模块 → env adapter），否则注册表/appliesTo/order 对 3 个静态模块（2 个 `appliesTo:()=>true`）是投机性泛化（YAGNI），需回收为直接函数组合。CC/Responses（P1.4）的同形模块同此约束。
 
-### P1.5-OQ1 — heartbeat 定时器注入无法用 per-frame `transform` 表达（待 P1.5 裁决）
+### P1.5-OQ1 — heartbeat 定时器注入无法用 per-frame `transform` 表达 ✅ 已裁决（option ①，2026-06-16）
 
-- **发现于**：P1.1（subagent review M2）
+- **发现于**：P1.1（subagent review M2）；**裁决于** P1.5 调研（实读 `startForwardedSseHeartbeat` 的 `setTimeout` 注入代码 handler.ts:935-970 坐实）
 - **根因**：spec §4 把 `heartbeat(A4, order 999)` 列进 `ResponseRewrite` 表，但它由**独立定时器**触发——上游静默期（opus adaptive thinking 在 `content_block_start` 后停滞几十秒~数百秒）**没有上游帧到达**，而 heartbeat 恰恰要在静默期注入 `event: ping`。`ResponseRewrite.transform(frame, state)` 是严格「每来一个上游帧调用一次」模型，无法被定时器/idle 驱动。
-- **当前行为**：现状 heartbeat 是 `messages/handler.ts` 用独立定时器 + 串行 Promise chain 注入 `forwardedSseEvents`（与逐帧 transform 是两套机制）。
-- **理想架构 / 两个选项**：① heartbeat 保留 handler-side 旁路，spec §4 表里那行降级为「概念归类」而非「真走此接口」；② 扩 `ResponseRewrite` 接口加 idle/timer hook（如 `onIdle?(elapsedMs, state): FrameAction`），让 driver 在 race idle-timeout 时调用。
-- **为何暂缓**：P1.1 只定义接口、registry 为空、无消费者；heartbeat 的接入机制是 P1.5 响应改写注册时才需裁决的。`truncation-marker(C2, order 000)` 是首帧触发，**可**用当前 transform 表达，不受影响。
-- **若做需改什么**：选 ② 则改 `ResponseRewrite` 加 hook + driver S5 流式循环在 idle race 点调用；选 ① 则 P1.5 注册响应改写时跳过 heartbeat，保留 handler 定时器旁路并在 spec §4 标注。
+- **裁决：option ①**——heartbeat **保留 handler-side 定时器旁路**，spec §4 表里那行降级为「概念归类」而非「真走 `ResponseRewrite` 接口」。理由：option ②（扩接口加 `onIdle` hook）为一个本质上是传输层 keepalive 的关注点污染响应改写接口；heartbeat 与「逐帧改写转发字节」是正交的两套机制（前者是 idle-driven keepalive、后者是 frame-driven transform），强行统一不健康。`truncation-marker(C2)` 是首帧触发，**可**用 transform 表达，不受影响。
+- **P2 落地**：driver 的 S5 流式循环保留对 heartbeat 的独立装配（在 race idle-timeout 点注入），不进 ResponseRewrite chain。
+
+### P1.5-SCOPE — 响应改写侧缺乏 P1 干净 seam，注册化下沉 P2 的 S5 chain 重建
+
+- **背景**：P1.2/P1.3（Anthropic 请求侧）有干净的单一组合/固定管线可注册化（directSanitize / prepare steps）。
+- **响应侧结构现实**（实测 messages/handler.ts:530-650 流式 pump、:995-1026 非流式序列、chat-completions/responses handler 同形）：
+  - 流式：`processOneStreamEvent` 是 **byte-critical 手写 pump**，把 raw-record + token 计数 + repetition 检测 + A3(thinking-sig) + A2(tool-input-decode buffer/flush) + A1(server-tool-filter suppress/emit) + heartbeat(setTimeout) **交织**在一起。响应改写已是命名 factory（`createServerToolBlockFilter`/`createToolInputStreamDecoder`/`applyThinkingSignatureCompat`/`restoreStreamToolNames`/`fixStreamEventIds`）。
+  - heartbeat（A4）定时器注入**不适配** per-frame `ResponseRewrite.transform`（见 P1.5-OQ1）。
+  - 非流式：handler:995-1026 是清晰内联序列（marker→filterServerTool→recoverToolCallText→restoreNames→decodeToolInput），但与 P1.1 的 per-frame `ResponseRewrite` 是**不同 shape**（whole-response vs per-frame）。
+- **决策**：把 per-frame 响应改写**强行重组进 run-registry** 会改 byte-critical 流式 pump（forwarded SSE 字节等价回归面极大）、撞 heartbeat misfit、且对已命名 factory 是投机泛化——与 P1.4 OpenAI 请求侧同一判定，但因 pump 交织 + timer 更甚。故响应改写注册化**下沉 P2 的 S5 chain 重建**：P2 driver 把 pump 拆成 S5（per-frame ResponseRewrite chain）+ 旁路观测（accumulator→subscriber）+ heartbeat 独立装配，届时 P1.1 的 `ResponseRewrite` 接口被真正消费。P1 阶段的 registry 化价值集中在**请求侧**（已完成：P1.2/P1.3 full + P1.4 focused）。
+- **P1.1 接口已被前瞻验证**：buffer/flush（tool-input-decode）、suppress/emit（server-tool-filter）、createState 均已在 P1.1 JSDoc + rewrite-registry.unit.test 覆盖语义；P2 落地即消费。
 
 ### P1.2-INV1 — system-prompt override 须经 `env.body` 表达（注册 system-override 时钉成显式不变量）
 
