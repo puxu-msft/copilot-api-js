@@ -60,8 +60,10 @@ import {
 } from "~/lib/anthropic/pipeline"
 import {
   //
+  createToolCallTextRecoverer,
   extractToolParamTypes,
   recoverToolCallTextInResponse,
+  type ToolCallTextRecoverer,
 } from "~/lib/anthropic/recover-tool-call"
 import {
   //
@@ -556,12 +558,19 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
     all: state.decodeAllToolInputFields,
   })
 
+  const toolCallTextRecoverer = createToolCallTextRecoverer({
+    enabled: state.recoverToolCallText,
+    toolNames: new Set((anthropicPayload.tools ?? []).map((t) => t.name)),
+    toolSchemas: extractToolParamTypes(anthropicPayload.tools),
+  })
+
   const streamState: StreamPumpState = {
     streamStartMs: Date.now(),
     bytesIn: 0,
     eventsIn: 0,
     currentBlockType: "",
     firstEventLogged: false,
+    recoverFeatureLogged: false,
   }
 
   // Synthetic SSE keepalive (anthropic.fake_sse_heartbeat, seconds; 0 = off).
@@ -592,12 +601,19 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
         checkRepetition,
         serverToolFilter,
         toolInputDecoder,
+        toolCallTextRecoverer,
         heartbeat,
       })
     }
 
     // Flush any tool_use input the decoder buffered but never saw a stop for
     // (defensive — normal completion always emits content_block_stop).
+    for (const rev of toolCallTextRecoverer.flush()) {
+      const rp = parseStreamEventData(rev.data)
+      for (const ev of toolInputDecoder.processEvent(rp, rev)) {
+        await forwardToClient(ev, ev === rev ? rp : undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
+      }
+    }
     for (const ev of toolInputDecoder.flush()) {
       await forwardToClient(ev, undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
     }
@@ -643,6 +659,12 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
     // the client doesn't silently lose fragments the decoder was holding. The
     // stream may already be broken (abort/shutdown); ignore failures here.
     try {
+      for (const rev of toolCallTextRecoverer.flush()) {
+        const rp = parseStreamEventData(rev.data)
+        for (const ev of toolInputDecoder.processEvent(rp, rev)) {
+          await forwardToClient(ev, ev === rev ? rp : undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
+        }
+      }
       for (const ev of toolInputDecoder.flush()) {
         await forwardToClient(ev, undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
       }
@@ -674,6 +696,7 @@ interface StreamPumpState {
   eventsIn: number
   currentBlockType: string
   firstEventLogged: boolean
+  recoverFeatureLogged: boolean
 }
 
 interface ProcessOneStreamEventArgs {
@@ -686,6 +709,7 @@ interface ProcessOneStreamEventArgs {
   checkRepetition: (text: string) => void
   serverToolFilter: ReturnType<typeof createServerToolBlockFilter>
   toolInputDecoder: ToolInputStreamDecoder
+  toolCallTextRecoverer: ToolCallTextRecoverer
   heartbeat: ForwardedSseHeartbeat
 }
 
@@ -695,7 +719,19 @@ interface ProcessOneStreamEventArgs {
  * `sseEvents`, `forwardedSseEvents`, and writes to `stream`.
  */
 async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<void> {
-  const { rawEvent, parsed, streamState, sseEvents, forwardedSseEvents, reqCtx, checkRepetition, serverToolFilter, toolInputDecoder, heartbeat } = args
+  const {
+    rawEvent,
+    parsed,
+    streamState,
+    sseEvents,
+    forwardedSseEvents,
+    reqCtx,
+    checkRepetition,
+    serverToolFilter,
+    toolInputDecoder,
+    toolCallTextRecoverer,
+    heartbeat,
+  } = args
 
   const dataLen = rawEvent.data?.length ?? 0
   streamState.bytesIn += dataLen
@@ -760,31 +796,45 @@ async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<v
     }
   }
 
-  // Apply the thinking-signature compatibility shim for the "signature embedded
-  // in content_block_start" frame some Copilot upstreams send with no
-  // signature_delta — re-shaped on the CLIENT-FACING stream only so standard
-  // clients keep the signature. The upstream raw frame was already recorded into
-  // `sseEvents` above, so history keeps it; only what we forward changes. Thinking
-  // frames pass through the tool-input decoder untouched (it only buffers
-  // tool_use), so bypassing it for the replacement frames is safe; they still go
-  // through forwardToClient for server-tool index remapping consistency.
-  if (parsed) {
-    const compatFrames = applyThinkingSignatureCompat(parsed, state.thinkingSignatureCompat)
-    if (compatFrames) {
-      for (const repl of compatFrames) {
-        const replRaw: ServerSentEventMessage = { ...rawEvent, data: JSON.stringify(repl) }
-        await forwardToClient(replRaw, repl, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
-      }
-      return
-    }
-  }
+  // Tool-call text recovery (text→tool_use) is the OUTERMOST response transform: it
+  // sees every upstream event (incl. message_start/message_delta) to keep its state,
+  // and emits 0/1/many frames (buffering during CANDIDATE, synthesizing on COMMIT).
+  // Each emitted frame then runs the existing thinking-signature-compat shim and the
+  // tool-input decoder, before forwardToClient (serverToolFilter restores synthesized
+  // wire-name tool_use names + remaps indices). Recoverer is a no-op when disabled.
+  for (const recovered of toolCallTextRecoverer.processEvent(parsed, rawEvent)) {
+    const recoveredParsed = recovered === rawEvent ? parsed : parseStreamEventData(recovered.data)
 
-  // Forward to client: the tool-input decoder may buffer selected tool_use
-  // input deltas and emit a rewritten delta at content_block_stop (0/1/many
-  // events out). Each emitted event then passes through the server-tool filter.
-  // Pass-through events reuse `parsed`; decoder-emitted events are re-parsed.
-  for (const ev of toolInputDecoder.processEvent(parsed, rawEvent)) {
-    await forwardToClient(ev, ev === rawEvent ? parsed : undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
+    // Synthesized tool_use content_block_start (fresh frame, not pass-through) signals
+    // a recovery happened — record a persistent, auditable feature once per response.
+    if (
+      !streamState.recoverFeatureLogged
+      && recovered !== rawEvent
+      && recoveredParsed?.type === "content_block_start"
+      && (recoveredParsed.content_block as { type?: string }).type === "tool_use"
+    ) {
+      streamState.recoverFeatureLogged = true
+      reqCtx.recordFeature("tool-call-recovered")
+      consola.info("[RECOVER] rebuilt tool_use from downgraded upstream text")
+    }
+
+    // thinking-signature compat shim (per recovered frame; bypasses decoder like before)
+    if (recoveredParsed) {
+      const compatFrames = applyThinkingSignatureCompat(recoveredParsed, state.thinkingSignatureCompat)
+      if (compatFrames) {
+        for (const repl of compatFrames) {
+          const replRaw: ServerSentEventMessage = { ...recovered, data: JSON.stringify(repl) }
+          await forwardToClient(replRaw, repl, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
+        }
+        continue
+      }
+    }
+
+    // tool-input decoder (buffers selected tool_use input; no-op on recoverer's
+    // already-typed synthesized tool_use via reference-equality)
+    for (const ev of toolInputDecoder.processEvent(recoveredParsed, recovered)) {
+      await forwardToClient(ev, ev === recovered ? recoveredParsed : undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
+    }
   }
 }
 

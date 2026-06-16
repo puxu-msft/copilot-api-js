@@ -102,7 +102,7 @@ describe("fake_sse_heartbeat", () => {
       intervalSec: 0,
       stream,
       forwardedSseEvents,
-      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false },
+      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
       clientAbortSignal: undefined,
     })
     hb.noteRealFrame() // safe no-op
@@ -121,7 +121,7 @@ describe("fake_sse_heartbeat", () => {
       intervalSec: 15,
       stream,
       forwardedSseEvents,
-      streamState: { streamStartMs: startMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false },
+      streamState: { streamStartMs: startMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
       clientAbortSignal: undefined,
     })
 
@@ -142,7 +142,7 @@ describe("fake_sse_heartbeat", () => {
       intervalSec: 15,
       stream,
       forwardedSseEvents: [],
-      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false },
+      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
       clientAbortSignal: undefined,
     })
 
@@ -168,7 +168,7 @@ describe("fake_sse_heartbeat", () => {
       intervalSec: 15,
       stream,
       forwardedSseEvents: [],
-      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false },
+      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
       clientAbortSignal: undefined,
     })
     await clock.advance(10_000)
@@ -184,7 +184,7 @@ describe("fake_sse_heartbeat", () => {
       intervalSec: 15,
       stream,
       forwardedSseEvents: [],
-      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false },
+      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
       clientAbortSignal: controller.signal,
     })
     controller.abort()
@@ -203,7 +203,7 @@ describe("fake_sse_heartbeat", () => {
       intervalSec: 15,
       stream,
       forwardedSseEvents: [],
-      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false },
+      streamState: { streamStartMs: clock.now, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
       clientAbortSignal: undefined,
     })
 

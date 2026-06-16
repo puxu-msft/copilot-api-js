@@ -127,6 +127,8 @@ export type FeatureKind =
   | "dropped-params"
   /** request used a non-default transport — `detail: { kind: TransportKind }` */
   | "transport"
+  /** streaming recoverer rebuilt a tool_use from downgraded upstream text */
+  | "tool-call-recovered"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 

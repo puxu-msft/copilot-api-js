@@ -163,7 +163,7 @@ export async function handleWebSearchCompletion(
       intervalSec: state.anthropicFakeSseHeartbeat,
       stream,
       forwardedSseEvents: prefixForwardedSse,
-      streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false },
+      streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
       clientAbortSignal: clientAbort.signal,
     })
 
