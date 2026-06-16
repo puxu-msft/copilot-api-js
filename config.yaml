@@ -357,6 +357,10 @@ anthropic:
   # 透明恢复上游偶发把工具调用降级成纯文本（call<invoke>…）的响应，重建为标准 tool_use block。
   # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/rfc/tool-call-text-recovery.md。
   recover_tool_call_text: false
+  # backfill_question_from_header: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").
+  #   Upstream models occasionally emit such items. When true, each item that is MISSING the `question` key (present-but-empty is left untouched) and whose `header` is a non-empty string gets `question = header`.
+  #   Applies on the response wire only (streaming + non-streaming), after decode_tool_input_fields; history keeps the upstream-original form. Default: true.
+  backfill_question_from_header: true
 
 # ============================================================================
 # Responses API

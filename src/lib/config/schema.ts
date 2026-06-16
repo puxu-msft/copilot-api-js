@@ -271,6 +271,11 @@ export const AnthropicConfigSchema = z
     decode_all_tool_input_fields: nullableBoolean(),
     recover_tool_call_text: nullableBoolean(),
     /**
+     * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
+     * Only items missing the `question` key are touched. Default true.
+     */
+    backfill_question_from_header: nullableBoolean(),
+    /**
      * Synthetic SSE keepalive interval for the client-facing Anthropic stream.
      * `0` disables (default). Any positive integer is the minimum seconds
      * between forwarded events that must pass before the proxy injects an

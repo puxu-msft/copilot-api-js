@@ -553,10 +553,13 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
   // Tool input decoder — rewrites stringified-JSON fields in selected tool_use
   // blocks on the forwarded stream only. History (sseEvents + accumulator) keeps
   // the original upstream form, so the anomaly stays visible.
-  const toolInputDecoder = createToolInputStreamDecoder({
-    fields: state.decodeToolInputFields,
-    all: state.decodeAllToolInputFields,
-  })
+  const toolInputDecoder = createToolInputStreamDecoder(
+    {
+      fields: state.decodeToolInputFields,
+      all: state.decodeAllToolInputFields,
+    },
+    { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
+  )
 
   const toolCallTextRecoverer = createToolCallTextRecoverer({
     enabled: state.recoverToolCallText,
@@ -1022,10 +1025,14 @@ function handleDirectAnthropicNonStreamingResponse(
   finalResponse = restoreToolNamesInResponse(finalResponse, reqCtx.toolNameMapper)
 
   // Decode stringified-JSON tool_use input fields on the client-facing response only.
-  finalResponse = decodeToolInputBlocksInResponse(finalResponse, {
-    fields: state.decodeToolInputFields,
-    all: state.decodeAllToolInputFields,
-  })
+  finalResponse = decodeToolInputBlocksInResponse(
+    finalResponse,
+    {
+      fields: state.decodeToolInputFields,
+      all: state.decodeAllToolInputFields,
+    },
+    { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
+  )
 
   // Record the forwarded (client-facing) content, then complete() with the
   // upstream-original — both before returning. setForwardedResponse must precede

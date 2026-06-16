@@ -187,3 +187,70 @@ describe("decodeToolInputBlocksInResponse", () => {
     expect(input.questions).toBe('[{"h":1}]')
   })
 })
+
+// ============================================================================
+// Backfill (ToolInputRewriteOptions)
+// ============================================================================
+
+describe("createToolInputStreamDecoder — backfill", () => {
+  const backfillOn = { backfillAskUserQuestionHeader: true }
+
+  test("buffers AskUserQuestion for backfill even when decode does not select it", () => {
+    const d = createToolInputStreamDecoder(cfg({}), backfillOn)
+    const out = run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":[{"header":"H"}'), delta(0, "]}"), stop(0)])
+    // start + single rewritten delta + stop
+    expect(out).toHaveLength(3)
+    const deltaOut = out[1] as { delta: { partial_json: string } }
+    expect(JSON.parse(deltaOut.delta.partial_json)).toEqual({ questions: [{ header: "H", question: "H" }] })
+  })
+
+  test("decodes a stringified questions array, then backfills", () => {
+    const d = createToolInputStreamDecoder(cfg({ AskUserQuestion: ["questions"] }), backfillOn)
+    const out = run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":'), delta(0, String.raw`"[{\"header\":\"H\"}]"}`), stop(0)])
+    expect(out).toHaveLength(3)
+    const deltaOut = out[1] as { delta: { partial_json: string } }
+    expect(JSON.parse(deltaOut.delta.partial_json)).toEqual({ questions: [{ header: "H", question: "H" }] })
+  })
+
+  test("no rewrite when backfill disabled and question already present", () => {
+    const d = createToolInputStreamDecoder(cfg({}), backfillOn)
+    const out = run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":[{"header":"H","question":"Q"}'), delta(0, "]}"), stop(0)])
+    // present question → nothing changes → original 2 deltas replayed
+    expect(out).toHaveLength(4)
+    expect(out[1]).toMatchObject({ delta: { partial_json: '{"questions":[{"header":"H","question":"Q"}' } })
+  })
+
+  test("backfill off (default): missing question is left untouched", () => {
+    const d = createToolInputStreamDecoder(cfg({}))
+    const out = run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":[{"header":"H"}'), delta(0, "]}"), stop(0)])
+    // not buffered at all → 1 start + 2 deltas + 1 stop
+    expect(out).toHaveLength(4)
+  })
+})
+
+describe("decodeToolInputBlocksInResponse — backfill", () => {
+  const baseResponse = (content: Array<Record<string, unknown>>) =>
+    ({ id: "msg_1", type: "message", role: "assistant", model: "m", content, stop_reason: "tool_use" }) as never
+  const backfillOn = { backfillAskUserQuestionHeader: true }
+
+  test("backfills missing question from header", () => {
+    const resp = baseResponse([{ type: "tool_use", id: "t1", name: "AskUserQuestion", input: { questions: [{ header: "H" }] } }])
+    const out = decodeToolInputBlocksInResponse(resp, cfg({}), backfillOn)
+    expect(out).not.toBe(resp)
+    const block = (out.content as Array<{ input?: { questions: Array<Record<string, unknown>> } }>)[0]
+    expect(block.input?.questions[0]).toEqual({ header: "H", question: "H" })
+  })
+
+  test("decodes stringified questions then backfills", () => {
+    const resp = baseResponse([{ type: "tool_use", id: "t1", name: "AskUserQuestion", input: { questions: '[{"header":"H"}]' } }])
+    const out = decodeToolInputBlocksInResponse(resp, cfg({ AskUserQuestion: ["questions"] }), backfillOn)
+    const block = (out.content as Array<{ input?: { questions: Array<Record<string, unknown>> } }>)[0]
+    expect(block.input?.questions[0]).toEqual({ header: "H", question: "H" })
+  })
+
+  test("backfill off (default): missing question left untouched, same reference", () => {
+    const resp = baseResponse([{ type: "tool_use", id: "t1", name: "AskUserQuestion", input: { questions: [{ header: "H" }] } }])
+    const out = decodeToolInputBlocksInResponse(resp, cfg({}))
+    expect(out).toBe(resp)
+  })
+})

@@ -522,6 +522,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.decode_tool_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.decode_tool_input_fields })
     if (a.decode_all_tool_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.decode_all_tool_input_fields })
     if (a.recover_tool_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.recover_tool_call_text })
+    if (a.backfill_question_from_header !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.backfill_question_from_header })
     if (a.rewrite_system_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.rewrite_system_reminders === "boolean") {
