@@ -99,6 +99,18 @@ export function createToolCallTextRecoverer(deps: RecoverStreamDeps): ToolCallTe
     processEvent(parsed, raw) {
       if (!deps.enabled || !parsed) return [raw]
 
+      // message_start = clean per-message slate. One Anthropic stream carries exactly
+      // one message, so this resets message-level state (sawToolUseBlock /
+      // maxUpstreamIndexSeen / any stale candidate) — keeping each message independent
+      // and making the per-message invariant self-enforcing for instance reuse.
+      if (parsed.type === "message_start") {
+        maxUpstreamIndexSeen = -1
+        sawToolUseBlock = false
+        candidate = null
+        resetBlock()
+        return [raw]
+      }
+
       if (
         (parsed.type === "content_block_start" || parsed.type === "content_block_delta" || parsed.type === "content_block_stop")
         && typeof parsed.index === "number"

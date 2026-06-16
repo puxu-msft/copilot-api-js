@@ -174,4 +174,42 @@ describe("createToolCallTextRecoverer", () => {
     // stop_reason 本就是 tool_use，commitTier 命中 "A"，不应被改写也不应回退
     expect((md!.delta as { stop_reason?: string }).stop_reason).toBe("tool_use")
   })
+
+  test("单实例跨 message：message_start 重置状态，第二个降级 message 仍能恢复", () => {
+    const r = createToolCallTextRecoverer(deps)
+    // message 1：含真实 tool_use block（会置 sawToolUseBlock=true），index 到 2
+    const msg1 = [
+      { type: "message_start", message: { id: "msg_1" } },
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_real", name: "Write" } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" } },
+      { type: "message_stop" },
+    ]
+    // message 2：干净降级（tier A：stop_reason=tool_use，无真实 tool_use block）
+    const msg2 = [
+      { type: "message_start", message: { id: "msg_2" } },
+      { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: `<invoke name="Write"><parameter name="file_path">/b</parameter><parameter name="content">y</parameter></invoke>` },
+      },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" } },
+      { type: "message_stop" },
+    ]
+    const out = drive(r, [...msg1, ...msg2])
+    // message_start 重置 sawToolUseBlock，故 message 2 的 tier A 门控不被 message 1 的 tool_use 污染
+    const synthesized = out.find(
+      (e) =>
+        e.type === "content_block_start"
+        && (e.content_block as { id?: string })?.id?.startsWith("toolu_")
+        && (e.content_block as { id?: string }).id !== "toolu_real",
+    )
+    expect(synthesized).toBeDefined()
+    expect((synthesized!.content_block as { name?: string }).name).toBe("Write")
+    // 合成 index 基于 message 2 自己的 maxSeen（重置后从 0 起），不被 message 1 的 index 污染
+    expect(synthesized!.index).toBe(1)
+  })
 })
