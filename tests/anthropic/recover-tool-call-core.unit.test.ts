@@ -8,7 +8,10 @@ import {
 import {
   //
   findDowngradeMarkPos,
+  isInvokeTerminal,
+  isResidueWhitespaceAdjacent,
   recoverDowngradeTail,
+  synthesizeToolUseId,
   type ToolParamTypes,
   validateInvokeRegion,
 } from "~/lib/anthropic/recover-tool-call/core"
@@ -118,5 +121,30 @@ describe("recoverDowngradeTail", () => {
     const r = recoverDowngradeTail(tail, new Map())
     expect(r.recovered).toBe(true)
     if (r.blocks[0].type === "tool_use") expect(r.blocks[0].input).toEqual({ command: "ls" })
+  })
+})
+
+describe("门控谓词", () => {
+  test(String.raw`isResidueWhitespaceAdjacent: call\n<invoke> → true；call the func <invoke> → false`, () => {
+    expect(isResidueWhitespaceAdjacent('x。\n\ncall\n<invoke name="Write">')).toBe(true)
+    expect(isResidueWhitespaceAdjacent('you call the func <invoke name="Bash">')).toBe(false)
+  })
+
+  test("isInvokeTerminal: </invoke> 后仅空白 → true；后有散文 → false", () => {
+    expect(isInvokeTerminal("…</invoke>\n")).toBe(true)
+    expect(isInvokeTerminal("…</invoke>\n然后我再解释一下")).toBe(false)
+  })
+})
+
+describe("synthesizeToolUseId", () => {
+  test("toolu_ + 24 base62，确定性", () => {
+    const id1 = synthesizeToolUseId("Write", 0, "tail-content")
+    const id2 = synthesizeToolUseId("Write", 0, "tail-content")
+    expect(id1).toBe(id2)
+    expect(id1).toMatch(/^toolu_[0-9A-Za-z]{24}$/)
+  })
+
+  test("不同序号 → 不同 id", () => {
+    expect(synthesizeToolUseId("Write", 0, "x")).not.toBe(synthesizeToolUseId("Write", 1, "x"))
   })
 })

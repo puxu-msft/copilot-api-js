@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+
 import type {
   //
   ParamType,
@@ -139,4 +141,40 @@ export function recoverDowngradeTail(tail: string, toolSchemas: Map<string, Tool
     blocks.push({ type: "tool_use", name: parsed.name, input })
   }
   return { recovered: true, blocks }
+}
+
+/** 档 B B2：至少一个 <invoke name=X> 紧前仅空白间隔有残留 token（区分英文散文 "call the func"）。 */
+export function isResidueWhitespaceAdjacent(text: string): boolean {
+  const re = /<invoke name="[^"]+">/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const before = text.slice(0, m.index)
+    const wsLen = /\s*$/.exec(before)?.[0].length ?? 0
+    const beforeWs = before.slice(0, before.length - wsLen)
+    for (const token of RESIDUE_TOKENS) {
+      if (beforeWs.endsWith(token)) {
+        const charBefore = beforeWs[beforeWs.length - token.length - 1] ?? ""
+        if (charBefore === "" || /[\s。.,:;)】\]>]/.test(charBefore)) return true
+      }
+    }
+  }
+  return false
+}
+
+/** 档 B B3：最后 </invoke> 之后仅空白（不推测容忍残留闭合包裹；遇变体再加）。 */
+export function isInvokeTerminal(text: string): boolean {
+  const lastClose = text.lastIndexOf("</invoke>")
+  if (lastClose === -1) return false
+  const trailing = text.slice(lastClose + "</invoke>".length)
+  return /^\s*$/.test(trailing)
+}
+
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+/** 合成 toolu_ + 24 base62 id（确定性，格式同构真实 id）。 */
+export function synthesizeToolUseId(name: string, seq: number, tail: string): string {
+  const hash = createHash("sha256").update(`${name} ${seq} ${tail}`).digest()
+  let out = ""
+  for (let i = 0; i < 24; i++) out += BASE62[hash[i] % 62]
+  return `toolu_${out}`
 }
