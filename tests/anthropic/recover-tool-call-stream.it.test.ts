@@ -212,4 +212,36 @@ describe("createToolCallTextRecoverer", () => {
     // 合成 index 基于 message 2 自己的 maxSeen（重置后从 0 起），不被 message 1 的 index 污染
     expect(synthesized!.index).toBe(1)
   })
+
+  test("长 MCP 工具名（>32 字符）逐字流式：lookahead 动态尺寸，不泄漏 call/<invoke 残留", () => {
+    // 检测发生在完整 `<invoke name="X">`（跨度 16+len(name)）。固定 32 lookahead 对长 MCP
+    // 工具名会在 markPos 检出前把 call+半截开标签转发出去。lookahead 须按最长工具名动态定。
+    const longName = "mcp__plugin_serena_serena__find_referencing_symbols" // 51 字符
+    const longDeps = {
+      enabled: true,
+      toolNames: new Set([longName]),
+      toolSchemas: extractToolParamTypes([{ name: longName, input_schema: { properties: { name_path: { type: "string" } } } }]),
+    }
+    const prose = "这是一段足够长的前置散文，用来确保 lookahead 窗口被填满后开始转发。\n\n"
+    const tail = `call\n<invoke name="${longName}">\n<parameter name="name_path">Foo/bar</parameter>\n</invoke>\n`
+    const full = prose + tail
+    // 逐字符喂 delta，最大化暴露泄漏
+    const stream: Array<Record<string, unknown>> = [{ type: "content_block_start", index: 0, content_block: { type: "text" } }]
+    for (const ch of full) stream.push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: ch } })
+    stream.push({ type: "content_block_stop", index: 0 }, { type: "message_delta", delta: { stop_reason: "end_turn" } }, { type: "message_stop" })
+
+    const out = drive(createToolCallTextRecoverer(longDeps), stream)
+    const proseDeltas = out
+      .filter((e) => e.type === "content_block_delta" && (e.delta as { type?: string })?.type === "text_delta")
+      .map((e) => (e.delta as { text?: string }).text ?? "")
+      .join("")
+    expect(proseDeltas).not.toContain("<invoke")
+    expect(proseDeltas).not.toContain("call")
+    expect(proseDeltas).toContain("这是一段足够长的前置散文")
+    const tuStart = out.find((e) => e.type === "content_block_start" && (e.content_block as { type?: string })?.type === "tool_use")
+    expect(tuStart).toBeDefined()
+    expect((tuStart!.content_block as { name?: string }).name).toBe(longName)
+    const md = out.find((e) => e.type === "message_delta")
+    expect((md!.delta as { stop_reason?: string }).stop_reason).toBe("tool_use")
+  })
 })

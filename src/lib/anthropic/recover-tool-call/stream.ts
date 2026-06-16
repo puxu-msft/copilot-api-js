@@ -24,7 +24,9 @@ export interface ToolCallTextRecoverer {
   flush: () => Array<ServerSentEventMessage>
 }
 
-const MARK_LOOKAHEAD = 32
+// Lookahead 下限。真正窗口在构造时按最长工具名动态放大（见 markLookahead）——检测发生在
+// 完整 `<invoke name="X">`（跨度 16+len(X)），固定窗口对长 MCP 工具名会泄漏 call/半截开标签。
+const MARK_LOOKAHEAD_FLOOR = 32
 
 function sse(obj: Record<string, unknown>): ServerSentEventMessage {
   return { data: JSON.stringify(obj) }
@@ -42,6 +44,12 @@ function sse(obj: Record<string, unknown>): ServerSentEventMessage {
  * text content_block_stop 时只持帧（CANDIDATE），message_delta 才发合成帧或回退（COMMIT）。
  */
 export function createToolCallTextRecoverer(deps: RecoverStreamDeps): ToolCallTextRecoverer {
+  // Lookahead 须 ≥ 从残留 token 到完整 `<invoke name="X">` 的最大跨度，否则逐字流式下
+  // markPos 检出前会把 call/半截开标签转发出去。跨度 = len(残留 `<function_calls>`=16)
+  // + 空白余量 + len(`<invoke name="">`=16) + 最长工具名。
+  const maxToolNameLen = deps.toolNames.size > 0 ? Math.max(...Array.from(deps.toolNames, (n) => n.length)) : 0
+  const markLookahead = Math.max(MARK_LOOKAHEAD_FLOOR, 48 + maxToolNameLen)
+
   let maxUpstreamIndexSeen = -1
   let sawToolUseBlock = false
   let inTextBlock = false
@@ -175,7 +183,7 @@ export function createToolCallTextRecoverer(deps: RecoverStreamDeps): ToolCallTe
           bufferedFrames.push(raw)
           return toForward.length > 0 ? [sse({ type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: toForward } })] : []
         }
-        const safeEnd = Math.max(forwardedLen, seen.length - MARK_LOOKAHEAD)
+        const safeEnd = Math.max(forwardedLen, seen.length - markLookahead)
         if (safeEnd > forwardedLen) {
           const chunk = seen.slice(forwardedLen, safeEnd)
           forwardedLen = safeEnd
