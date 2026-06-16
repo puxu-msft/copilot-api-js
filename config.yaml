@@ -354,6 +354,10 @@ anthropic:
   #   server_tool_use is never affected. Default: false.
   decode_all_tool_input_fields: false
 
+  # 透明恢复上游偶发把工具调用降级成纯文本（call<invoke>…）的响应，重建为标准 tool_use block。
+  # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/rfc/tool-call-text-recovery.md。
+  recover_tool_call_text: false
+
 # ============================================================================
 # Responses API
 # ============================================================================

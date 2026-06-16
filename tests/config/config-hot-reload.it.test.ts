@@ -441,6 +441,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   },
+  {
+    configKey: "anthropic.recover_tool_call_text",
+    stateKey: "recoverToolCallText",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+  },
 
   // ── model_overrides / model_preference / disabled_models ───────────
   {
