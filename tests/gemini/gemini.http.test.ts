@@ -599,15 +599,14 @@ describe("Gemini streaming partial usage (L-new-2)", () => {
         "stream blew up after usage",
       )
 
-    const { getRequestContextManager } = await import("~/lib/context/manager")
+    const { getBus } = await import("~/lib/observability")
     const captured: Array<{ usage: { input_tokens: number; output_tokens: number }; stop_reason?: string }> = []
-    const listener = (evt: { type: string; entry?: { outboundResponse?: unknown } }): void => {
-      if (evt.type === "failed" && evt.entry) {
-        const r = evt.entry.outboundResponse as { usage: { input_tokens: number; output_tokens: number }; stop_reason?: string } | undefined
+    const unsubscribe = getBus().subscribe((evt) => {
+      if (evt.kind === "request.failed") {
+        const r = evt.entry.outboundResponse
         if (r) captured.push({ usage: r.usage, stop_reason: r.stop_reason })
       }
-    }
-    getRequestContextManager().on("change", listener)
+    })
 
     try {
       const res = await app.request("/v1beta/models/gpt-4o:streamGenerateContent", {
@@ -618,7 +617,7 @@ describe("Gemini streaming partial usage (L-new-2)", () => {
       expect(res.status).toBe(200)
       await res.text()
     } finally {
-      getRequestContextManager().off("change", listener)
+      unsubscribe()
     }
 
     expect(captured).toHaveLength(1)

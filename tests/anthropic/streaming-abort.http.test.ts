@@ -71,7 +71,7 @@ describe("handleDirectAnthropicStreamingResponse — client abort settles aborte
       await new Promise<never>(() => {})
     }
 
-    const ctx = createRequestContext({ endpoint: "anthropic-messages", onEvent: () => {} })
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
     const payload = { model: "claude-opus-4.6", messages: [{ role: "user", content: "hi" }], max_tokens: 64 } as unknown as MessagesPayload
     ctx.setOriginalRequest({ model: payload.model, messages: payload.messages, stream: true, payload })
 

@@ -3,6 +3,9 @@ import type {
   HistoryEntry,
   RequestTransport,
 } from "~/lib/history/store"
+import type { RequestContextSnapshot } from "~/lib/observability"
+
+import { state } from "~/lib/state"
 
 import type {
   //
@@ -78,5 +81,37 @@ export function buildHistoryActivityPatch(
     currentStrategy: snapshot.currentStrategy,
     durationMs: snapshot.durationMs,
     ...(snapshot.transport ? { transport: snapshot.transport } : {}),
+  }
+}
+
+/**
+ * Build a `RequestContextSnapshot` enriched with the front-end activity summary
+ * for the lifecycle bus events (created / state_changed / context_updated /
+ * completed / failed / aborted). Shared single source for both the producer
+ * (`RequestContext` lifecycle publishes) and `RequestContextManager.create`
+ * (the `request.created` publish) so the snapshot shape stays identical across
+ * the two — no duplication (原则9).
+ *
+ * Pre-resolves the billing multiplier from `state.modelIndex` so ConsoleSink
+ * doesn't have to (and so it stays correct if the model is unregistered
+ * mid-flight). Reads only the public `RequestContext` getters.
+ */
+export function snapshotWithSummary(context: RequestContext): RequestContextSnapshot {
+  const billing = context.resolvedModel ? state.modelIndex.get(context.resolvedModel)?.billing : undefined
+  return {
+    id: context.id,
+    endpoint: context.endpoint,
+    ...(context.sessionId !== undefined && { sessionId: context.sessionId }),
+    ...(context.rawPath !== undefined && { rawPath: context.rawPath }),
+    method: context.method,
+    path: context.path,
+    ...(context.clientModel !== null && { clientModel: context.clientModel }),
+    ...(context.resolvedModel !== null && { resolvedModel: context.resolvedModel }),
+    state: context.state,
+    startTime: context.startTime,
+    queueWaitMs: context.queueWaitMs,
+    ...(context.requestBodySize !== undefined && { requestBodySize: context.requestBodySize }),
+    ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+    summary: summarizeRequestContext(context),
   }
 }

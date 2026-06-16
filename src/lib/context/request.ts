@@ -6,8 +6,6 @@
  * Each retry creates a new Attempt in the attempts array.
  */
 
-import { consola } from "consola"
-
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -42,12 +40,12 @@ import type {
   OriginalRequest,
   PartialResponseInfo,
   RequestContext,
-  RequestContextEventCallback,
-  RequestContextEventData,
   RequestState,
   ResponseData,
   WireRequest,
 } from "./types"
+
+import { snapshotWithSummary } from "./activity-summary"
 
 export type {
   Attempt,
@@ -57,8 +55,6 @@ export type {
   OriginalRequest,
   PartialResponseInfo,
   RequestContext,
-  RequestContextEventCallback,
-  RequestContextEventData,
   RequestState,
   ResponseData,
   WireRequest,
@@ -107,18 +103,23 @@ export function createRequestContext(opts: {
   path?: string
   /** Inbound Content-Length, if present. */
   requestBodySize?: number
-  onEvent: RequestContextEventCallback
+  /**
+   * Lifecycle hook invoked once when the request settles (complete/fail/abort),
+   * after the terminal `request.*` event is published. The manager passes this
+   * to remove the context from its active map. Pure resource management — NOT an
+   * event channel (the bus is the single event channel since P0.3).
+   */
+  onSettled?: (id: string) => void
   /**
    * Scoped publisher for `request.*` ObservabilityEvent emissions. Optional —
-   * tests and existing call sites that haven't been wired through commit 3b
-   * yet pass nothing, in which case the new emit methods only mutate state
-   * and do not publish to the bus.
+   * tests/call sites that omit it leave the emit methods state-only (no bus
+   * publish). Wired to `bus.scope("request")` in start.ts.
    */
   publisher?: ScopedPublisher<"request">
 }): RequestContext {
   const id = `req_${Date.now()}_${++idCounter}`
   const startTime = Date.now()
-  const onEvent = opts.onEvent
+  const onSettled = opts.onSettled
   const publisher = opts.publisher
   const method = opts.method ?? "UNKNOWN"
   const path = opts.path ?? "/"
@@ -148,27 +149,16 @@ export function createRequestContext(opts: {
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
   let settled = false
 
-  function emit(event: RequestContextEventData) {
-    try {
-      onEvent(event)
-    } catch (err) {
-      // The dispatcher error path. manager.ts:emit already logs per-listener
-      // failures with id+endpoint+model context; this catch fires only if
-      // the onEvent function itself throws (not a registered listener). Log
-      // with id + endpoint so the dispatcher crash is traceable.
-      consola.warn(
-        `[context.request] onEvent dispatcher threw for "${event.type}" ` + `(request ${id}, endpoint ${opts.endpoint}):`,
-        err instanceof Error ? err.message : err,
-      )
-    }
-  }
-
   /**
-   * Build an ObservabilityEvent-compatible snapshot of the current ctx state.
-   * Used by the new emit methods (commit 3a onward) so sinks don't close over
-   * mutable ctx. Pre-resolves the billing multiplier from `state.modelIndex`
-   * so ConsoleSink doesn't have to (and so it stays correct if the model
-   * gets unregistered mid-flight).
+   * Build an ObservabilityEvent-compatible snapshot of the current ctx state
+   * WITHOUT the activity summary. Used by the strongly-typed direct events
+   * (`model_resolved` / `feature_applied` / `stream_progress` / `attempt_*`),
+   * which don't carry a lifecycle delta. Lifecycle events (state_changed /
+   * context_updated / terminal) use the shared `snapshotWithSummary(ctx)`
+   * instead. Sinks read the value snapshot rather than closing over mutable ctx.
+   * Pre-resolves the billing multiplier from `state.modelIndex` so ConsoleSink
+   * doesn't have to (and so it stays correct if the model is unregistered
+   * mid-flight).
    */
   function snapshot(): RequestContextSnapshot {
     const resolvedForLookup = _resolvedModel ?? undefined
@@ -262,7 +252,7 @@ export function createRequestContext(opts: {
 
     setOriginalRequest(req: OriginalRequest) {
       _originalRequest = req
-      emit({ type: "updated", context: ctx, field: "originalRequest" })
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "originalRequest", contextRef: ctx })
     },
 
     setToolNameMapper(mapper: ToolNameMapper | null) {
@@ -272,7 +262,7 @@ export function createRequestContext(opts: {
     setPipelineInfo(info: PipelineInfo) {
       // Direct assignment — caller assembles the complete PipelineInfo
       _pipelineInfo = info
-      emit({ type: "updated", context: ctx, field: "pipelineInfo" })
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
 
     setSseEvents(events: Array<SseEventRecord>) {
@@ -305,7 +295,7 @@ export function createRequestContext(opts: {
       if (exists) return
 
       _warningMessages.push(warning)
-      emit({ type: "updated", context: ctx, field: "warningMessages" })
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "warningMessages", contextRef: ctx })
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
@@ -323,7 +313,7 @@ export function createRequestContext(opts: {
         durationMs: 0,
       }
       _attempts.push(attempt)
-      emit({ type: "updated", context: ctx, field: "attempts" })
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
     },
 
     setAttemptSanitization(info: SanitizationInfo) {
@@ -337,7 +327,7 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.effectiveRequest = req
-        emit({ type: "updated", context: ctx, field: "attempts" })
+        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -345,7 +335,7 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.wireRequest = req
-        emit({ type: "updated", context: ctx, field: "attempts" })
+        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -353,7 +343,7 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.transport = transport
-        emit({ type: "updated", context: ctx, field: "attempts" })
+        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -375,13 +365,13 @@ export function createRequestContext(opts: {
 
     addQueueWaitMs(ms: number) {
       _queueWaitMs += ms
-      emit({ type: "updated", context: ctx, field: "queueWaitMs" })
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "queueWaitMs", contextRef: ctx })
     },
 
     transition(newState: RequestState, meta?: Record<string, unknown>) {
       const previousState = _state
       _state = newState
-      emit({ type: "state_changed", context: ctx, previousState, meta })
+      publisher?.publish({ kind: "request.state_changed", ctx: snapshotWithSummary(ctx), previousState, ...(meta !== undefined && { meta }) })
     },
 
     complete(response: ResponseData) {
@@ -409,7 +399,8 @@ export function createRequestContext(opts: {
       // the `completed`/`failed` handler).
       ctx.transition("completed")
       const entry = ctx.toHistoryEntry()
-      emit({ type: "completed", context: ctx, entry })
+      publisher?.publish({ kind: "request.completed", ctx: snapshotWithSummary(ctx), entry })
+      onSettled?.(id)
     },
 
     fail(model: string, error: unknown, partial?: PartialResponseInfo) {
@@ -448,7 +439,14 @@ export function createRequestContext(opts: {
       // docstring), not a side effect of the state field.
       ctx.transition("failed")
       const entry = ctx.toHistoryEntry()
-      emit({ type: "failed", context: ctx, entry })
+      publisher?.publish({
+        kind: "request.failed",
+        ctx: snapshotWithSummary(ctx),
+        entry,
+        error: entry.outboundResponse?.error ?? "Unknown error",
+        ...(entry.outboundResponse?.status !== undefined && { statusCode: entry.outboundResponse.status }),
+      })
+      onSettled?.(id)
     },
 
     abort(model: string, partial?: PartialResponseInfo) {
@@ -471,7 +469,8 @@ export function createRequestContext(opts: {
 
       ctx.transition("aborted")
       const entry = ctx.toHistoryEntry()
-      emit({ type: "aborted", context: ctx, entry })
+      publisher?.publish({ kind: "request.aborted", ctx: snapshotWithSummary(ctx), entry })
+      onSettled?.(id)
     },
 
     toHistoryEntry(): HistoryEntryData {
@@ -571,18 +570,15 @@ export function createRequestContext(opts: {
       return entry
     },
 
-    // ─── Observability emit surface (added in commit 3a) ───
+    // ─── Observability emit surface ───
     //
-    // Each method mutates ctx state AND (when a publisher was injected)
-    // publishes the corresponding `request.*` ObservabilityEvent on the
-    // bus. When `publisher` is undefined (legacy call sites + unit tests
-    // not yet wired through commit 3b), the methods only mutate state.
-    //
-    // The legacy `setAttempt*` / `transition` / `complete` / `fail` /
-    // `abort` methods remain authoritative through commit 3b. Commit 3c-3d
-    // migrate callers route-by-route; commit 3b's manager rewires
-    // `onEvent` to ALSO publish to the bus so the new event-stream model
-    // is complete the moment producers cut over.
+    // Every state-changing method publishes its `request.*` ObservabilityEvent
+    // directly on the bus (when a publisher was injected) — the bus is the
+    // single event channel since P0.3 (the legacy `ctx.emit() → manager
+    // bridge` was removed). When `publisher` is undefined (some unit tests),
+    // the methods only mutate state. Lifecycle events (state_changed /
+    // context_updated / terminal) carry `snapshotWithSummary(ctx)`; the
+    // strongly-typed direct events below carry the lighter `snapshot()`.
 
     setResolvedModel(args: { resolved: string; client?: string }) {
       _resolvedModel = args.resolved

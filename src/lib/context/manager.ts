@@ -1,51 +1,37 @@
 /**
  * RequestContextManager — Active request management
  *
- * Manages all in-flight RequestContext instances. Publishes events for
- * WebSocket push and history persistence. The "active layer" complementing
- * the history store (persistence layer).
+ * Manages all in-flight RequestContext instances. The "active layer"
+ * complementing the history store (persistence layer). It tracks the live
+ * contexts and publishes `request.created` on the bus; every other lifecycle
+ * signal is published by the context itself (the bus is the single event
+ * channel since P0.3).
  *
  * Data flow:
- *   Handler creates RequestContext → manager.create() registers + emits "created"
- *   → pipeline processes request, calls ctx.transition()/setPipelineInfo()/etc
- *   → each change → manager emits events
- *   → ws receives events → pushes to browser
- *   → ctx.complete()/fail() → ctx.toHistoryEntry() → store.insert()
- *   → manager emits "completed"/"failed" → removes active context
+ *   Handler creates RequestContext → manager.create() registers it + publishes
+ *     `request.created` on the bus
+ *   → pipeline processes request, calls ctx.transition()/setPipelineInfo()/etc,
+ *     each of which publishes a `request.*` event on the bus directly
+ *   → sinks (HistorySink / WsSink / TelemetrySink / ConsoleSink) consume the bus
+ *   → ctx.complete()/fail()/abort() publishes the terminal event, then invokes
+ *     the manager's `onSettled` hook to remove the context from the active map
  */
 
 import { consola } from "consola"
 
 import type { EndpointType } from "~/lib/history/store"
-import type {
-  //
-  RequestContextSnapshot,
-  ScopedPublisher,
-} from "~/lib/observability"
+import type { ScopedPublisher } from "~/lib/observability"
 
 import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
 
 import type {
   //
-  HistoryEntryData,
   RequestContext,
-  RequestContextEventData,
-  RequestState,
 } from "./request"
 
-import { summarizeRequestContext } from "./activity-summary"
+import { snapshotWithSummary } from "./activity-summary"
 import { createRequestContext } from "./request"
-
-// ─── Event Types ───
-
-export type RequestContextEvent =
-  | { type: "created"; context: RequestContext }
-  | { type: "state_changed"; context: RequestContext; previousState: RequestState; meta?: Record<string, unknown> }
-  | { type: "updated"; context: RequestContext; field: string }
-  | { type: "completed"; context: RequestContext; entry: HistoryEntryData }
-  | { type: "failed"; context: RequestContext; entry: HistoryEntryData }
-  | { type: "aborted"; context: RequestContext; entry: HistoryEntryData }
 
 // ─── Manager Interface ───
 
@@ -75,12 +61,6 @@ export interface RequestContextManager {
   /** Number of active requests */
   readonly activeCount: number
 
-  /** Subscribe to context events */
-  on(event: "change", listener: (event: RequestContextEvent) => void): void
-
-  /** Unsubscribe from context events */
-  off(event: "change", listener: (event: RequestContextEvent) => void): void
-
   /** Start periodic cleanup of stale active contexts */
   startReaper(): void
 
@@ -100,10 +80,11 @@ let _manager: RequestContextManager | null = null
 export interface RequestContextManagerOptions {
   /**
    * Scoped publisher for `request.*` ObservabilityEvent emissions, passed
-   * through to every `createRequestContext` call so the new emit methods
-   * (`setResolvedModel`, `recordFeature`, etc. — added in commit 3a)
-   * publish to the bus. Optional during commits 3a/3b; required from
-   * commit 3b onward when the producer fully cuts over.
+   * through to every `createRequestContext` call so the context's emit methods
+   * (`setResolvedModel`, `transition`, `complete`, …) publish to the bus, and
+   * used directly for the `request.created` publish. Optional only in unit
+   * tests that don't assert on the bus; wired to `bus.scope("request")` in
+   * start.ts for the real runtime.
    */
   publisher?: ScopedPublisher<"request">
 }
@@ -128,7 +109,6 @@ export function resetRequestContextManagerForTests(options?: RequestContextManag
 
 export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
-  const listeners = new Set<(event: RequestContextEvent) => void>()
   const publisher = options?.publisher
 
   // ─── Stale Request Reaper ───
@@ -196,157 +176,6 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
     }
   }
 
-  function emit(event: RequestContextEvent) {
-    for (const listener of listeners) {
-      try {
-        listener(event)
-      } catch (err) {
-        // A consumer (history / TUI / metrics) bug must NOT take down the
-        // request lifecycle — but it also must not be invisible. Include
-        // endpoint and model so logs are actionable beyond a random request id.
-        const endpoint = event.context.endpoint
-        const model = event.context.originalRequest?.model
-        consola.warn(
-          `[context] listener threw for event "${event.type}" ` + `(request ${event.context.id}, endpoint ${endpoint}${model ? `, model ${model}` : ""}):`,
-          err instanceof Error ? err.message : err,
-        )
-      }
-    }
-  }
-
-  /**
-   * Build a RequestContextSnapshot enriched with the front-end activity
-   * summary. Used by the lifecycle publishes below so WsSink can broadcast
-   * `summarizeRequestContext`-shape payloads without re-deriving from a
-   * live ctx. `feature_applied` / `stream_progress` / `attempt_*` events
-   * intentionally omit the summary (they don't carry lifecycle deltas).
-   */
-  function snapshotWithSummary(context: RequestContext): RequestContextSnapshot {
-    const billing = context.resolvedModel ? state.modelIndex.get(context.resolvedModel)?.billing : undefined
-    return {
-      id: context.id,
-      endpoint: context.endpoint,
-      ...(context.sessionId !== undefined && { sessionId: context.sessionId }),
-      ...(context.rawPath !== undefined && { rawPath: context.rawPath }),
-      method: context.method,
-      path: context.path,
-      ...(context.clientModel !== null && { clientModel: context.clientModel }),
-      ...(context.resolvedModel !== null && { resolvedModel: context.resolvedModel }),
-      state: context.state,
-      startTime: context.startTime,
-      queueWaitMs: context.queueWaitMs,
-      ...(context.requestBodySize !== undefined && { requestBodySize: context.requestBodySize }),
-      ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
-      summary: summarizeRequestContext(context),
-    }
-  }
-
-  function handleContextEvent(rawEvent: RequestContextEventData) {
-    const { type, context } = rawEvent
-
-    switch (type) {
-      case "state_changed": {
-        if (rawEvent.previousState) {
-          emit({
-            type: "state_changed",
-            context,
-            previousState: rawEvent.previousState,
-            meta: rawEvent.meta,
-          })
-          // Bus: WsSink picks this up and broadcasts to the front-end.
-          publisher?.publish({
-            kind: "request.state_changed",
-            ctx: snapshotWithSummary(context),
-            previousState: rawEvent.previousState,
-            ...(rawEvent.meta !== undefined && { meta: rawEvent.meta }),
-          })
-        }
-        break
-      }
-      case "updated": {
-        if (rawEvent.field) {
-          emit({
-            type: "updated",
-            context,
-            field: rawEvent.field,
-          })
-          // HistorySink consumes this synchronously to mirror the legacy
-          // `handleHistoryEvent` "updated" branch (originalRequest insert,
-          // attempts/queueWaitMs/pipelineInfo/warningMessages updates).
-          // See events.ts `request.context_updated` doc — synchronous-only,
-          // contextRef must not be retained.
-          publisher?.publish({
-            kind: "request.context_updated",
-            ctx: snapshotWithSummary(context),
-            field: rawEvent.field,
-            contextRef: context,
-          })
-        }
-        break
-      }
-      case "completed": {
-        if (rawEvent.entry) {
-          emit({
-            type: "completed",
-            context,
-            entry: rawEvent.entry,
-          })
-          // Bus: HistorySink persists, TelemetrySink records success,
-          // WsSink broadcasts the lifecycle change.
-          publisher?.publish({
-            kind: "request.completed",
-            ctx: snapshotWithSummary(context),
-            entry: rawEvent.entry,
-          })
-        }
-        activeContexts.delete(context.id)
-        break
-      }
-      case "failed": {
-        if (rawEvent.entry) {
-          emit({
-            type: "failed",
-            context,
-            entry: rawEvent.entry,
-          })
-          publisher?.publish({
-            kind: "request.failed",
-            ctx: snapshotWithSummary(context),
-            entry: rawEvent.entry,
-            error: rawEvent.entry.outboundResponse?.error ?? "Unknown error",
-            ...(rawEvent.entry.outboundResponse?.status !== undefined && { statusCode: rawEvent.entry.outboundResponse.status }),
-          })
-        }
-        activeContexts.delete(context.id)
-        break
-      }
-      case "aborted": {
-        if (rawEvent.entry) {
-          // Deliberately NOT recorded into request-telemetry: a client
-          // disconnect is not a verdict on the model/upstream (it neither
-          // succeeded nor failed on the service's account), so counting it
-          // would skew the per-model success rate. TelemetrySink filters
-          // these out at subscribe time.
-          emit({
-            type: "aborted",
-            context,
-            entry: rawEvent.entry,
-          })
-          publisher?.publish({
-            kind: "request.aborted",
-            ctx: snapshotWithSummary(context),
-            entry: rawEvent.entry,
-          })
-        }
-        activeContexts.delete(context.id)
-        break
-      }
-      default: {
-        break
-      }
-    }
-  }
-
   return {
     create(opts) {
       const ctx = createRequestContext({
@@ -356,12 +185,17 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         method: opts.method,
         path: opts.path,
         requestBodySize: opts.requestBodySize,
-        onEvent: handleContextEvent,
+        // Pure resource-management hook — remove the context from the active
+        // map when it settles. Lifecycle events reach the bus via the context's
+        // own `publisher` (the single event channel since P0.3), not via a
+        // manager bridge.
+        onSettled: (id) => {
+          activeContexts.delete(id)
+        },
         publisher,
       })
       recordAcceptedRequest(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
-      emit({ type: "created", context: ctx })
       publisher?.publish({ kind: "request.created", ctx: snapshotWithSummary(ctx) })
       return ctx
     },
@@ -376,14 +210,6 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
 
     get activeCount() {
       return activeContexts.size
-    },
-
-    on(_event: "change", listener: (event: RequestContextEvent) => void) {
-      listeners.add(listener)
-    },
-
-    off(_event: "change", listener: (event: RequestContextEvent) => void) {
-      listeners.delete(listener)
     },
 
     startReaper,

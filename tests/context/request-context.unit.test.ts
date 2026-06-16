@@ -8,23 +8,33 @@ import {
   //
   describe,
   expect,
-  mock,
   test,
 } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
 import type { EndpointType } from "~/lib/history/store"
+import type { ObservabilityEvent } from "~/lib/observability"
 
 import { createRequestContext } from "~/lib/context/request"
 import { HTTPError } from "~/lib/error"
+import { createBus } from "~/lib/observability"
 
+/**
+ * Build a RequestContext wired to a fresh per-test bus + recording subscriber.
+ * Returns the recorded `request.*` events so tests assert on the bus stream
+ * (the single event channel since P0.3).
+ */
 function makeContext(overrides?: { endpoint?: EndpointType }) {
-  const onEvent = mock(() => {})
+  const bus = createBus()
+  const events: Array<ObservabilityEvent> = []
+  bus.subscribe((e) => {
+    events.push(e)
+  })
   const ctx = createRequestContext({
     endpoint: overrides?.endpoint ?? "anthropic-messages",
-    onEvent,
+    publisher: bus.scope("request"),
   })
-  return { ctx, onEvent }
+  return { ctx, events }
 }
 
 // ─── Initialization ───
@@ -79,14 +89,16 @@ describe("createRequestContext - state transitions", () => {
   })
 
   test("transition() fires state_changed event with previousState", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     ctx.transition("executing", { reason: "test" })
 
-    const lastCall = (onEvent.mock.calls.at(-1) as any)![0]
-    expect(lastCall.type).toBe("state_changed")
-    expect(lastCall.previousState).toBe("pending")
-    expect(lastCall.meta).toEqual({ reason: "test" })
-    expect(lastCall.context).toBe(ctx)
+    const lastCall = events.at(-1)!
+    expect(lastCall.kind).toBe("request.state_changed")
+    if (lastCall.kind === "request.state_changed") {
+      expect(lastCall.previousState).toBe("pending")
+      expect(lastCall.meta).toEqual({ reason: "test" })
+      expect(lastCall.ctx.id).toBe(ctx.id)
+    }
   })
 })
 
@@ -198,7 +210,7 @@ describe("createRequestContext - attempt lifecycle", () => {
 
 describe("createRequestContext - completion", () => {
   test("complete() stores response and fires completed event with entry", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     ctx.beginAttempt({})
 
     const response = {
@@ -213,16 +225,18 @@ describe("createRequestContext - completion", () => {
     expect(ctx.response).toEqual(response)
     expect(ctx.endTime).not.toBeNull()
 
-    const lastCall = (onEvent.mock.calls.at(-1) as any)![0]
-    expect(lastCall.type).toBe("completed")
-    expect(lastCall.entry).toBeDefined()
-    expect(lastCall.entry!.id).toBe(ctx.id)
-    expect(lastCall.entry!.startedAt).toBe(ctx.startTime)
-    expect(lastCall.entry!.endedAt).toBe(ctx.endTime)
+    const lastCall = events.at(-1)!
+    expect(lastCall.kind).toBe("request.completed")
+    if (lastCall.kind === "request.completed") {
+      expect(lastCall.entry).toBeDefined()
+      expect(lastCall.entry.id).toBe(ctx.id)
+      expect(lastCall.entry.startedAt).toBe(ctx.startTime)
+      expect(lastCall.entry.endedAt).toBe(ctx.endTime!)
+    }
   })
 
   test("fail() stores error response and fires failed event", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     ctx.beginAttempt({})
 
     ctx.fail("claude-sonnet-4", new Error("Something broke"))
@@ -232,9 +246,11 @@ describe("createRequestContext - completion", () => {
     expect(ctx.response!.error).toBe("Something broke")
     expect(ctx.endTime).not.toBeNull()
 
-    const lastCall = (onEvent.mock.calls.at(-1) as any)![0]
-    expect(lastCall.type).toBe("failed")
-    expect(lastCall.entry).toBeDefined()
+    const lastCall = events.at(-1)!
+    expect(lastCall.kind).toBe("request.failed")
+    if (lastCall.kind === "request.failed") {
+      expect(lastCall.entry).toBeDefined()
+    }
   })
 })
 
@@ -249,7 +265,7 @@ describe("createRequestContext - data setters", () => {
   })
 
   test("setOriginalRequest stores and emits", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     const req = {
       model: "gpt-4",
       messages: [{ role: "user", content: "hi" }],
@@ -258,21 +274,23 @@ describe("createRequestContext - data setters", () => {
     }
     ctx.setOriginalRequest(req)
     expect(ctx.originalRequest).toBe(req)
-    expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("originalRequest")
+    const last = events.at(-1)!
+    expect(last.kind === "request.context_updated" && last.field).toBe("originalRequest")
   })
 
   test("setPipelineInfo stores and emits", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     const pipeInfo = {
       messageMapping: [0],
     }
     ctx.setPipelineInfo(pipeInfo)
     expect(ctx.pipelineInfo).toEqual(pipeInfo)
-    expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("pipelineInfo")
+    const last = events.at(-1)!
+    expect(last.kind === "request.context_updated" && last.field).toBe("pipelineInfo")
   })
 
   test("addWarningMessage deduplicates and emits", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     const warning = {
       code: "cc_to_responses_dropped_params",
       message: "Dropped unsupported params: stop, seed",
@@ -282,7 +300,8 @@ describe("createRequestContext - data setters", () => {
     ctx.addWarningMessage(warning)
 
     expect(ctx.warningMessages).toEqual([warning])
-    expect((onEvent.mock.calls.at(-1) as any)![0].field).toBe("warningMessages")
+    const last = events.at(-1)!
+    expect(last.kind === "request.context_updated" && last.field).toBe("warningMessages")
   })
 })
 
@@ -675,7 +694,7 @@ describe("createRequestContext - settled guard", () => {
   })
 
   test("double complete() only fires event once", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     ctx.beginAttempt({})
 
     const response = {
@@ -685,27 +704,27 @@ describe("createRequestContext - settled guard", () => {
       content: "Hello!",
     }
     ctx.complete(response)
-    const eventsAfterFirst = onEvent.mock.calls.length
+    const eventsAfterFirst = events.length
 
     ctx.complete(response) // second call — should be no-op
-    expect(onEvent.mock.calls.length).toBe(eventsAfterFirst)
+    expect(events.length).toBe(eventsAfterFirst)
     expect(ctx.state).toBe("completed")
   })
 
   test("double fail() only fires event once", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     ctx.beginAttempt({})
 
     ctx.fail("claude-sonnet-4", new Error("err1"))
-    const eventsAfterFirst = onEvent.mock.calls.length
+    const eventsAfterFirst = events.length
 
     ctx.fail("claude-sonnet-4", new Error("err2")) // second call — should be no-op
-    expect(onEvent.mock.calls.length).toBe(eventsAfterFirst)
+    expect(events.length).toBe(eventsAfterFirst)
     expect(ctx.state).toBe("failed")
   })
 
   test("fail() after complete() is no-op", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     ctx.beginAttempt({})
 
     ctx.complete({
@@ -714,19 +733,19 @@ describe("createRequestContext - settled guard", () => {
       usage: { input_tokens: 1, output_tokens: 1 },
       content: "ok",
     })
-    const eventsAfterComplete = onEvent.mock.calls.length
+    const eventsAfterComplete = events.length
 
     ctx.fail("m", new Error("too late"))
-    expect(onEvent.mock.calls.length).toBe(eventsAfterComplete)
+    expect(events.length).toBe(eventsAfterComplete)
     expect(ctx.state).toBe("completed")
   })
 
   test("complete() after fail() is no-op", () => {
-    const { ctx, onEvent } = makeContext()
+    const { ctx, events } = makeContext()
     ctx.beginAttempt({})
 
     ctx.fail("m", new Error("failed"))
-    const eventsAfterFail = onEvent.mock.calls.length
+    const eventsAfterFail = events.length
 
     ctx.complete({
       success: true,
@@ -734,7 +753,7 @@ describe("createRequestContext - settled guard", () => {
       usage: { input_tokens: 1, output_tokens: 1 },
       content: "ok",
     })
-    expect(onEvent.mock.calls.length).toBe(eventsAfterFail)
+    expect(events.length).toBe(eventsAfterFail)
     expect(ctx.state).toBe("failed")
   })
 })

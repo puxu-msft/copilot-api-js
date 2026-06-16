@@ -207,19 +207,6 @@ export interface HistoryEntryData {
   }>
 }
 
-// ─── RequestContext Event ───
-
-export interface RequestContextEventData {
-  type: string
-  context: RequestContext
-  previousState?: RequestState
-  field?: string
-  meta?: Record<string, unknown>
-  entry?: HistoryEntryData
-}
-
-export type RequestContextEventCallback = (event: RequestContextEventData) => void
-
 // ─── RequestContext Interface ───
 
 export interface RequestContext {

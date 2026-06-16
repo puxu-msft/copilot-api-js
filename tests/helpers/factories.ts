@@ -246,7 +246,6 @@ export function mockApiError(type: ApiErrorType, overrides?: Partial<ApiError>):
 export function mockRequestContext(overrides?: Partial<RequestContext>): RequestContext {
   const ctx = createRequestContext({
     endpoint: overrides?.endpoint ?? "openai-chat-completions",
-    onEvent: overrides?.transition ? () => {} : () => {},
   })
 
   ctx.setOriginalRequest({

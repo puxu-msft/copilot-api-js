@@ -10,13 +10,13 @@ import {
   beforeEach,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test"
 
-import type { RequestContextEvent } from "~/lib/context/manager"
+import type { ObservabilityEvent } from "~/lib/observability"
 
 import { createRequestContextManager } from "~/lib/context/manager"
+import { createBus } from "~/lib/observability"
 import {
   //
   state,
@@ -24,6 +24,21 @@ import {
 } from "~/lib/state"
 
 import { waitUntil } from "../helpers/wait-until"
+
+/**
+ * Build a manager wired to a fresh per-test bus + recording subscriber, so
+ * tests can assert on the `request.*` bus stream (the single event channel
+ * since P0.3 — the manager no longer exposes its own `on("change")` listeners).
+ */
+function makeManager() {
+  const bus = createBus()
+  const events: Array<ObservabilityEvent> = []
+  bus.subscribe((e) => {
+    events.push(e)
+  })
+  const manager = createRequestContextManager({ publisher: bus.scope("request") })
+  return { manager, events }
+}
 
 describe("createRequestContextManager", () => {
   test("create() returns RequestContext and tracks it", () => {
@@ -58,30 +73,28 @@ describe("createRequestContextManager", () => {
     expect(all).toContain(ctx2)
   })
 
-  test("emits created event on create()", () => {
-    const manager = createRequestContextManager()
-    const listener = mock<(event: RequestContextEvent) => void>(() => {})
-    manager.on("change", listener)
+  test("publishes request.created on create()", () => {
+    const { manager, events } = makeManager()
 
     const ctx = manager.create({ endpoint: "anthropic-messages" })
 
-    expect(listener).toHaveBeenCalled()
-    const event = listener.mock.calls[0][0]
-    expect(event.type).toBe("created")
-    expect(event.context).toBe(ctx)
+    const created = events.filter((e) => e.kind === "request.created")
+    expect(created).toHaveLength(1)
+    expect(created[0].kind === "request.created" && created[0].ctx.id).toBe(ctx.id)
   })
 
-  test("forwards state_changed events from context", () => {
-    const manager = createRequestContextManager()
-    const events: Array<RequestContextEvent> = []
-    manager.on("change", (e) => events.push(e))
+  test("publishes state_changed events from context", () => {
+    const { manager, events } = makeManager()
+
+    manager.create({ endpoint: "anthropic-messages" })
+    const before = events.length
 
     const ctx = manager.create({ endpoint: "anthropic-messages" })
     ctx.transition("executing")
 
-    const stateEvents = events.filter((e) => e.type === "state_changed")
+    const stateEvents = events.slice(before).filter((e) => e.kind === "request.state_changed")
     expect(stateEvents).toHaveLength(1)
-    expect(stateEvents[0].type === "state_changed" && stateEvents[0].previousState).toBe("pending")
+    expect(stateEvents[0].kind === "request.state_changed" && stateEvents[0].previousState).toBe("pending")
   })
 
   test("removes context from active on complete", () => {
@@ -114,50 +127,6 @@ describe("createRequestContextManager", () => {
     expect(manager.activeCount).toBe(0)
     expect(manager.get(ctx.id)).toBeUndefined()
   })
-
-  test("on/off subscribes and unsubscribes", () => {
-    const manager = createRequestContextManager()
-    const listener = mock<(event: RequestContextEvent) => void>(() => {})
-
-    manager.on("change", listener)
-    manager.create({ endpoint: "anthropic-messages" }) // triggers "created"
-    expect(listener).toHaveBeenCalledTimes(1)
-
-    manager.off("change", listener)
-    manager.create({ endpoint: "openai-chat-completions" }) // should NOT trigger
-    expect(listener).toHaveBeenCalledTimes(1) // still 1
-  })
-
-  test("multiple listeners all receive events", () => {
-    const manager = createRequestContextManager()
-    const listener1 = mock<(event: RequestContextEvent) => void>(() => {})
-    const listener2 = mock<(event: RequestContextEvent) => void>(() => {})
-
-    manager.on("change", listener1)
-    manager.on("change", listener2)
-    manager.create({ endpoint: "anthropic-messages" })
-
-    expect(listener1).toHaveBeenCalledTimes(1)
-    expect(listener2).toHaveBeenCalledTimes(1)
-  })
-
-  test("swallows listener errors without crashing", () => {
-    const manager = createRequestContextManager()
-    const badListener = mock(() => {
-      throw new Error("listener crash")
-    })
-    const goodListener = mock<(event: RequestContextEvent) => void>(() => {})
-
-    manager.on("change", badListener)
-    manager.on("change", goodListener)
-
-    // Should not throw
-    manager.create({ endpoint: "anthropic-messages" })
-
-    // Both should have been called
-    expect(badListener).toHaveBeenCalledTimes(1)
-    expect(goodListener).toHaveBeenCalledTimes(1)
-  })
 })
 
 // ─── Stale Request Reaper ───
@@ -188,9 +157,7 @@ describe("stale request reaper", () => {
   test("_runReaperOnce force-fails contexts exceeding maxAge", async () => {
     setStateForTests({ staleRequestMaxAge: 0.05 })
 
-    const manager = createRequestContextManager()
-    const events: Array<RequestContextEvent> = []
-    manager.on("change", (e) => events.push(e))
+    const { manager, events } = makeManager()
 
     const ctx = manager.create({ endpoint: "anthropic-messages" })
     ctx.setOriginalRequest({ model: "test-model", messages: [], stream: true, payload: {} })
@@ -207,7 +174,7 @@ describe("stale request reaper", () => {
 
     expect(manager.activeCount).toBe(0)
     expect(ctx.settled).toBe(true)
-    const failEvents = events.filter((e) => e.type === "failed")
+    const failEvents = events.filter((e) => e.kind === "request.failed")
     expect(failEvents).toHaveLength(1)
   })
 

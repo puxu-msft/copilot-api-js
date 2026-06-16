@@ -28,20 +28,18 @@ import {
   test,
 } from "bun:test"
 
-import type { RequestContextEventData } from "~/lib/context/types"
 import type { ObservabilityEvent } from "~/lib/observability"
 
 import { createRequestContext } from "~/lib/context/request"
 import { createBus } from "~/lib/observability"
 
 /**
- * Build a RequestContext + bus + recording subscriber. Returns helpers
- * to inspect both ctx mutations and bus events.
+ * Build a RequestContext + bus + recording subscriber. Returns the recorded
+ * `request.*` bus events (the single event channel since P0.3).
  */
 function setup(opts?: { publisher?: boolean; method?: string; path?: string }) {
   const bus = createBus()
   const events: Array<ObservabilityEvent> = []
-  const ctxEvents: Array<RequestContextEventData> = []
   bus.subscribe((e) => {
     events.push(e)
   })
@@ -50,12 +48,9 @@ function setup(opts?: { publisher?: boolean; method?: string; path?: string }) {
     endpoint: "anthropic-messages",
     method: opts?.method ?? "POST",
     path: opts?.path ?? "/v1/messages",
-    onEvent: (e) => {
-      ctxEvents.push(e)
-    },
     publisher: opts?.publisher === false ? undefined : bus.scope("request"),
   })
-  return { bus, ctx, events, ctxEvents }
+  return { bus, ctx, events }
 }
 
 describe("RequestContext.setResolvedModel", () => {
@@ -176,45 +171,44 @@ describe("RequestContext.recordAttemptFailure", () => {
 
 describe("RequestContext.failIfNotFinalized", () => {
   test("calls fail() when not yet settled", () => {
-    const { ctx, ctxEvents } = setup()
+    const { ctx, events } = setup()
     ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
     ctx.failIfNotFinalized(new Error("handler threw"))
     expect(ctx.settled).toBe(true)
     expect(ctx.state).toBe("failed")
-    // ctxEvents should contain a "failed" event from the legacy fail() path
-    expect(ctxEvents.some((e) => e.type === "failed")).toBe(true)
+    expect(events.some((e) => e.kind === "request.failed")).toBe(true)
   })
 
   test("is a no-op when already settled", () => {
-    const { ctx, ctxEvents } = setup()
+    const { ctx, events } = setup()
     ctx.complete({
       success: true,
       model: "claude-opus-4.8",
       usage: { input_tokens: 1, output_tokens: 1 },
       content: null,
     })
-    const eventsBefore = ctxEvents.length
+    const eventsBefore = events.length
     ctx.failIfNotFinalized(new Error("late"))
-    expect(ctxEvents.length).toBe(eventsBefore) // no new emit
+    expect(events.length).toBe(eventsBefore) // no new emit
     expect(ctx.state).toBe("completed") // still completed, not flipped
   })
 })
 
 describe("RequestContext.completeFromHttpStatus", () => {
   test("2xx → complete()", () => {
-    const { ctx, ctxEvents } = setup()
+    const { ctx, events } = setup()
     ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
     ctx.completeFromHttpStatus(200)
     expect(ctx.state).toBe("completed")
-    expect(ctxEvents.some((e) => e.type === "completed")).toBe(true)
+    expect(events.some((e) => e.kind === "request.completed")).toBe(true)
   })
 
   test("4xx → fail()", () => {
-    const { ctx, ctxEvents } = setup()
+    const { ctx, events } = setup()
     ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
     ctx.completeFromHttpStatus(429)
     expect(ctx.state).toBe("failed")
-    expect(ctxEvents.some((e) => e.type === "failed")).toBe(true)
+    expect(events.some((e) => e.kind === "request.failed")).toBe(true)
   })
 
   test("is a no-op when already settled", () => {
@@ -242,9 +236,6 @@ describe("RequestContextSnapshot fields", () => {
       method: "POST",
       path: "/chat/completions",
       requestBodySize: 4096,
-      onEvent: () => {
-        /* ignore */
-      },
       publisher: bus.scope("request"),
     })
     expect(ctx.method).toBe("POST")
@@ -268,9 +259,6 @@ describe("RequestContextSnapshot fields", () => {
     })
     const ctx = createRequestContext({
       endpoint: "anthropic-messages",
-      onEvent: () => {
-        /* ignore */
-      },
       publisher: bus.scope("request"),
     })
     expect(ctx.method).toBe("UNKNOWN")
