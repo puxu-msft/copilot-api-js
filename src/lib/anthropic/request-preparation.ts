@@ -40,6 +40,23 @@ export interface PreparedAnthropicRequest {
   headers: Record<string, string>
 }
 
+/**
+ * The mutable prepare context threaded through the prepare steps: the wire body
+ * (built from the payload, then trimmed/clamped in place), the accumulating
+ * headers, and the per-attempt options (resolvedModel + PrepareHints).
+ */
+export interface PrepareContext {
+  wire: Record<string, unknown>
+  headers: Record<string, string>
+  opts: PrepareAnthropicRequestOptions
+}
+
+/** One named prepare step. Mutates `ctx.wire` and/or `ctx.headers` in place. */
+export interface PrepareStep {
+  readonly name: string
+  apply(ctx: PrepareContext): void
+}
+
 interface PrepareAnthropicRequestOptions {
   resolvedModel?: Model
   /**
@@ -131,18 +148,17 @@ export function filterUnsupportedBetas(modelName: string, merged: string | undef
   return kept.length > 0 ? kept.join(",") : undefined
 }
 
-export function prepareAnthropicRequest(payload: MessagesPayload, opts?: PrepareAnthropicRequestOptions): PreparedAnthropicRequest {
-  const wire = buildWirePayload(payload, opts?.rejectFields)
-  // Thinking transforms run in a fixed order: coerce the SHAPE first
-  // (enabled→adaptive for adaptive-only models), then clamp the budget (a no-op
-  // once adaptive), then clamp the mapped/forwarded effort against the model
-  // whitelist. Keep this ordering — clampEffortLevel must see any effort that
-  // coerceAdaptiveThinking maps so an out-of-range value can't reach upstream.
-  coerceAdaptiveThinking(wire, opts?.resolvedModel)
-  adjustThinkingBudget(wire, opts?.resolvedModel)
-  clampEffortLevel(wire, opts?.resolvedModel)
-  applyCacheControlMode(wire)
-
+/**
+ * Build the request headers from the prepared wire body (B7–B12). Kept cohesive
+ * as one step: `contextManagementDisabled` gates the context_management body
+ * delete, the beta-header build, AND the context_management auto-injection, and
+ * the beta sub-pipeline (build → merge → filter) threads a single local value —
+ * splitting them would scatter that shared intermediate state (the same honest
+ * in-step coupling as sanitize's A6<A8). Reads ctx.wire + ctx.opts, writes
+ * ctx.headers (and may add/remove ctx.wire.context_management).
+ */
+function buildAnthropicHeaders(ctx: PrepareContext): void {
+  const { wire, opts } = ctx
   const model = wire.model as string
   const messages = wire.messages as MessagesPayload["messages"]
   const thinking = wire.thinking as MessagesPayload["thinking"]
@@ -153,7 +169,7 @@ export function prepareAnthropicRequest(payload: MessagesPayload, opts?: Prepare
   })
 
   const isAgentCall = messages.some((msg) => msg.role === "assistant")
-  const modelSupportsVision = opts?.resolvedModel?.capabilities?.supports?.vision !== false
+  const modelSupportsVision = opts.resolvedModel?.capabilities?.supports?.vision !== false
   // context_management body field is stripped by buildWirePayload when the negotiation
   // cache or rejectBodyFields config marks it unsupported. We also need to suppress
   // the matching beta header and any subsequent auto-injection by the contextEditingMode
@@ -165,16 +181,16 @@ export function prepareAnthropicRequest(payload: MessagesPayload, opts?: Prepare
     delete wire.context_management
   }
 
-  const localBeta = buildAnthropicBetaHeaders(model, opts?.resolvedModel, {
+  const localBeta = buildAnthropicBetaHeaders(model, opts.resolvedModel, {
     disableContextManagement: contextManagementDisabled,
   })
-  const mergedBeta = mergeAnthropicBeta(opts?.clientAnthropicBeta, localBeta["anthropic-beta"])
-  const filteredBeta = filterUnsupportedBetas(model, mergedBeta, opts?.excludeBetas)
+  const mergedBeta = mergeAnthropicBeta(opts.clientAnthropicBeta, localBeta["anthropic-beta"])
+  const filteredBeta = filterUnsupportedBetas(model, mergedBeta, opts.excludeBetas)
 
   const headers: Record<string, string> = {
     ...copilotHeaders(state, {
       vision: enableVision && modelSupportsVision,
-      modelRequestHeaders: opts?.resolvedModel?.request_headers,
+      modelRequestHeaders: opts.resolvedModel?.request_headers,
       intent: isAgentCall ? "conversation-agent" : "conversation-panel",
     }),
     "X-Initiator": isAgentCall ? "agent" : "user",
@@ -191,7 +207,52 @@ export function prepareAnthropicRequest(payload: MessagesPayload, opts?: Prepare
     }
   }
 
-  return { wire, headers }
+  ctx.headers = headers
+}
+
+/**
+ * The Anthropic prepare pipeline — a FIXED ordered list of named steps (B3–B12).
+ * Unlike the S3 request rewrites (which filter via appliesTo + sort), prepare is
+ * an unfiltered fixed sequence: every step always runs and self-gates on config/
+ * model internally, so declaration order IS the contract (no order keys / sort).
+ * B1+B2 (buildWirePayload: reject-field strip + server-tool strip) is the ctx
+ * initializer that creates the wire the steps mutate.
+ *
+ * Thinking transforms keep their fixed order (B3<B4<B5): coerce the SHAPE first
+ * (enabled→adaptive for adaptive-only models), then clamp the budget (a no-op
+ * once adaptive), then clamp the effort against the model whitelist — so an
+ * out-of-range value coerceAdaptiveThinking maps can't reach upstream.
+ */
+export const ANTHROPIC_PREPARE_STEPS: ReadonlyArray<PrepareStep> = [
+  { name: "coerce-thinking", apply: (ctx) => coerceAdaptiveThinking(ctx.wire, ctx.opts.resolvedModel) },
+  { name: "adjust-budget", apply: (ctx) => adjustThinkingBudget(ctx.wire, ctx.opts.resolvedModel) },
+  { name: "clamp-effort", apply: (ctx) => clampEffortLevel(ctx.wire, ctx.opts.resolvedModel) },
+  { name: "cache-control", apply: (ctx) => applyCacheControlMode(ctx.wire) },
+  { name: "build-headers", apply: buildAnthropicHeaders },
+]
+
+/**
+ * Derive the final wire (body + headers) for one upstream attempt. Initializes
+ * the prepare context from the payload (buildWirePayload = B1+B2) then runs the
+ * ordered prepare steps. Called per-attempt — PrepareHints in opts (excludeBetas
+ * / rejectFields) vary per retry.
+ *
+ * `steps` defaults to {@link ANTHROPIC_PREPARE_STEPS}; the param is a DI seam for
+ * tests (assert the runner iterates the list) and P2's driver (which assembles
+ * the prepareWire chain and feeds per-step `request.rewrite_applied` events).
+ */
+export function prepareAnthropicRequest(
+  payload: MessagesPayload,
+  opts?: PrepareAnthropicRequestOptions,
+  steps: ReadonlyArray<PrepareStep> = ANTHROPIC_PREPARE_STEPS,
+): PreparedAnthropicRequest {
+  const ctx: PrepareContext = {
+    wire: buildWirePayload(payload, opts?.rejectFields),
+    headers: {},
+    opts: opts ?? {},
+  }
+  for (const step of steps) step.apply(ctx)
+  return { wire: ctx.wire, headers: ctx.headers }
 }
 
 function buildWirePayload(payload: MessagesPayload, rejectFields?: ReadonlyArray<string>): Record<string, unknown> {
