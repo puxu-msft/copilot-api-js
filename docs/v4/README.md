@@ -15,10 +15,11 @@ v4 把这七个阶段提升为一条 **driver 编排的管线**：每个阶段�
 | [00-decisions.md](./00-decisions.md) | 决策记录：本次设计的全部拍板 + 理由（读这里先理解"为什么这样设计"） | ✅ |
 | [01-architecture.md](./01-architecture.md) | 目标架构：6 个一等概念 / 7 阶段 / driver / event bus / 薄信封 / 错误驱动重试模型 | ✅ |
 | [02-current-state.md](./02-current-state.md) | 现状精确盘点：重试策略、请求改写、响应改写、codec、context+history、client 全清单（带 file:line） | ✅ |
-| [03-spec/](./03-spec/) | 各模块规格：接口契约、类型定义、行为规格 | 🚧 |
-| [04-migration-plan.md](./04-migration-plan.md) | 渐进迁移计划 + 每个 commit 的 invariant（每步不破坏系统） | 🚧 |
-| [05-progress.md](./05-progress.md) | 开发进度看板 | 🚧 |
-| [prompts/](./prompts/) | 给未来新会话的逐模块实现提示词（可直接粘贴启动实现会话） | 🚧 |
+| [03-spec/](./03-spec/) | 各模块规格：接口契约、类型定义、行为规格 | ✅ |
+| [04-migration-plan.md](./04-migration-plan.md) | 渐进迁移计划 + 每个 commit 的 invariant（每步不破坏系统） | ✅ |
+| [05-progress.md](./05-progress.md) | 开发进度看板 | ✅ |
+| [06-inherited-issues.md](./06-inherited-issues.md) | 继承问题台账：吸收 `docs/audits/` 历史审查，逐项实测复核 + v4 映射 + 处置 | ✅ |
+| [prompts/](./prompts/) | 给未来新会话的逐模块实现提示词（可直接粘贴启动实现会话） | ✅ |
 
 ## 核心设计速览
 
