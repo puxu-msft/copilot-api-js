@@ -34,7 +34,7 @@
 | P1.1 | rewrite-registry.ts 接口 + 装配器 | ✅ | 纯新增；8 unit pass/100% cov；typecheck+eslint 绿；subagent review 无 CRITICAL/HIGH（3 前瞻缺口已处置，见下） | 接口忠实 spec §1/§2；createState? + DI registry 参数两处刻意补充已文档化；M1/M3 钉进 JSDoc，M2 记入遗留 |
 | P1.2 | Anthropic 请求改写注册（T*/A*） | ✅ | sanitize 输出 golden 逐字节（"装配==手写组合 oracle"自洽，10 scenario pass，5 带 didWork 反假绿）；全 offline 套件 2506 pass/0 fail；typecheck+eslint 绿；subagent review 无 CRITICAL/HIGH | 按**内聚函数边界**拆 3 模块（非 §4 sub-step）：sanitizeAnthropicMessages(A3-9) 被 web_search 复用 + stats 是整链残差，故不再细拆。模块在 MessagesPayload 层（P2 driver 用 env adapter 包成 RequestRewrite）。web_search 路径未动 |
 | P1.3 | Anthropic prepare 子步骤注册（B*） | ✅ | wire+headers 字节等价由既有 prepare 套件守（anthropic-request-preparation.it + coerce-adaptive-thinking.it 共 46 scenario 全 pass）；新增 step-order + runner↔STEPS 耦合 4 unit pass；全 offline 2510 pass/0 fail；typecheck+eslint 绿；subagent review（逐行 diff 对照确认 buildAnthropicHeaders 逐字抽取）无 CRITICAL/HIGH | prepare 是**固定无过滤管线**→用数组声明序而非 P1.2 的 order-keys+appliesTo+sort（去 cargo-cult）。`PrepareStep`+`PrepareContext`；body B3-6 为 4 命名 step + buildWirePayload(B1-2) 作 ctx init + buildHeaders(B7-12) 内聚末 step（B8<B9<B10 留其内，同 A6<A8）。`steps` DI 参数（P2 prepareWire 复用 + rewrite_applied） |
-| P1.4 | OpenAI CC/Responses 请求改写注册（O*） | ⬜ | wire golden | |
+| P1.4 | OpenAI CC/Responses 请求改写注册（O*） | ✅（聚焦） | O10 抽取为 `fillMaxCompletionTokens` + oracle 对比 5 unit pass；既有 CC/Responses 套件守 sanitize/prepare 字节等价；全 offline 2519 tests/0 fail；typecheck+eslint 绿；subagent review 无 CRITICAL/HIGH | **范围决策见下 P1.4-SCOPE**：OpenAI 改写已是命名函数 + handler 分散点应用 + prepare 极简，无单一组合可注册化；P1.4 只抽唯一内联的 O10，不强推单一链 registry（会改 cadence/byte），注册化下沉 P2 driver |
 | P1.5 | 响应改写注册（A1-4/C1-2/P1-2） | ⬜ | forwarded SSE golden | |
 | P1.6 | 错误帧 formatter → codec.formatError | ⬜ | 错误帧 golden | |
 
@@ -76,6 +76,16 @@
 ## 遗留与决策追踪
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
+
+### P1.4-SCOPE — OpenAI 请求改写为何不强推单一链 registry（聚焦抽取 O10）
+
+- **背景**：P1.2 把 Anthropic 请求改写注册化，因为有干净的单一组合 `directSanitize = sanitize(toolName(preprocess(p)))`（per-request 复用）。
+- **OpenAI 侧结构现实**（实测 chat-completions/handler.ts:187-216、responses/handler.ts:116-192）：
+  - 改写**已是命名导出函数**（`applyChatCompletionsToolNameSanitization`/`sanitizeOpenAIMessages`/`stripImageGenerationTool`/`normalizeCallIds`/`applyResponsesToolNameSanitization`），唯一**内联**的是 CC 的 O10（max_completion_tokens 填充）。
+  - 它们**分散一次性点应用**于 handler 各处，与 snapshot / ctx 创建 / 模型解析 / system-prompt 交织（如 O7 tool-name `mutate originalPayload.messages/tools` 就地改 snapshot 源；O11 strip-image 在 snapshot 后 ctx 前；O12 normalize-call-ids 在 system-prompt 后）。**不存在单一组合**。
+  - prepare（O8 normalizeMaxTokens + O9/O14 headers）**极简**（2 步），不像 Anthropic 的 12 步 prepare。
+- **决策**（用户确认"聚焦抽取 O10 + 文档化"）：P1.4 只把唯一内联的 O10 抽为命名可测函数 `fillMaxCompletionTokens`。**不**把已命名的点应用改写强行重组进单一链 registry——那会：① 改变它们相对 snapshot/ctx 创建的执行时机 → 动 history snapshot/行为；② 字节等价回归面大；③ 对已命名函数是投机性泛化（原则8 YAGNI）。
+- **下沉 P2**：OpenAI 的 S3 请求改写注册化由 P2 driver 落地——driver 重构 handler 流程时本就要把这些点应用步骤归位到 S3 阶段，届时用 env adapter 包成统一 rewrite 链（与 P1.2 的 payload 模块 + env adapter 同构）。prepare（O8/O9/O14）极简，P2 prepareWire 直接调现有 `prepareChatCompletionsRequest`/`prepareResponsesRequest`，无需 step 列表（不同于 Anthropic B*）。
 
 ### P2-MUSTFIX1 — sanitize 模块 `changed` 信号不完整（P2 消费 rewrite_applied 前必修）
 

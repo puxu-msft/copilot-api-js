@@ -47,6 +47,7 @@ import {
   type OpenAIAutoTruncateResult,
 } from "~/lib/openai/auto-truncate"
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
+import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { createResponses } from "~/lib/openai/responses-client"
 import {
   //
@@ -100,7 +101,6 @@ import {
   guardSseIterable,
 } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
-import { isNullish } from "~/lib/utils"
 
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
@@ -201,19 +201,8 @@ export async function handleChatCompletion(c: Context) {
   // Sanitize messages (filter orphaned tool blocks, system-reminders)
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(originalPayload)
 
-  // Auto-fill max output tokens if neither max_tokens nor max_completion_tokens is provided
-  const hasMaxTokens = !isNullish(sanitizedPayload.max_tokens) || !isNullish(sanitizedPayload.max_completion_tokens)
-  const finalPayload =
-    hasMaxTokens ? sanitizedPayload : (
-      {
-        ...sanitizedPayload,
-        max_completion_tokens: selectedModel?.capabilities?.limits?.max_output_tokens,
-      }
-    )
-
-  if (!hasMaxTokens) {
-    consola.debug("Set max_completion_tokens to:", JSON.stringify(finalPayload.max_completion_tokens))
-  }
+  // O10: auto-fill max output tokens when the client provided neither field.
+  const finalPayload = fillMaxCompletionTokens(sanitizedPayload, selectedModel)
 
   return runChatCompletionPipeline({
     c,

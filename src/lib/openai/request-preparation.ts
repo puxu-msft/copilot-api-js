@@ -1,3 +1,5 @@
+import consola from "consola"
+
 import type { Model } from "~/lib/models/client"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 import type {
@@ -8,6 +10,7 @@ import type {
 
 import { copilotHeaders } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
+import { isNullish } from "~/lib/utils"
 
 export interface PreparedOpenAIRequest<TPayload> {
   wire: TPayload
@@ -16,6 +19,23 @@ export interface PreparedOpenAIRequest<TPayload> {
 
 interface PrepareOpenAIRequestOptions {
   resolvedModel?: Model
+}
+
+/**
+ * O10 — auto-fill `max_completion_tokens` when the client sent NEITHER
+ * `max_tokens` nor `max_completion_tokens`, using the model's declared max output
+ * limit. Returns the payload unchanged when either token field is already
+ * present. Extracted from the inline CC handler step (P1.4) so this rewrite is
+ * named and testable; the other OpenAI request rewrites are already named
+ * functions applied point-wise in the handlers (see docs/v4/05-progress.md for
+ * why the OpenAI side is not forced into a single-chain registry like Anthropic).
+ */
+export function fillMaxCompletionTokens(payload: ChatCompletionsPayload, selectedModel: Model | undefined): ChatCompletionsPayload {
+  const hasMaxTokens = !isNullish(payload.max_tokens) || !isNullish(payload.max_completion_tokens)
+  if (hasMaxTokens) return payload
+  const filled = { ...payload, max_completion_tokens: selectedModel?.capabilities?.limits?.max_output_tokens }
+  consola.debug("Set max_completion_tokens to:", JSON.stringify(filled.max_completion_tokens))
+  return filled
 }
 
 export function prepareChatCompletionsRequest(
