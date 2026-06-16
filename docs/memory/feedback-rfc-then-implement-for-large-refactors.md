@@ -1,30 +1,30 @@
 ---
 name: feedback-rfc-then-implement-for-large-refactors
-description: "For multi-thousand-line refactors, write an RFC + survive ≥3 rounds of subagent adversarial review BEFORE implementing — don't start coding from a \"we agreed\""
+description: "对于数千行级的重构，先写 RFC 并熬过 ≥3 轮 subagent 对抗式 review 再动手实现——不要从一句「我们说好了」就开始写代码"
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: 74cbbf78-f572-4505-b8b0-b822b5e0292e
 ---
 
-User preference (2026-06-13): when offering "一次性大重写 / 先出设计 RFC 再动手 / 仅做最高价值 70%", they chose RFC-first for an estimated ~2500-line observability rewrite.
+用户偏好（2026-06-13）：在提供「一次性大重写 / 先出设计 RFC 再动手 / 仅做最高价值 70%」时，他们为一个估计 ~2500 行的可观测性重写选了 RFC-first。
 
-**Why:** Big refactors that start from a verbal "we agreed" routinely turn out to have:
-- Missing event sources the design didn't account for (this session: subagent v1 review caught 4 missed broadcast namespaces — history.stats_changed, history.cleared, system.shutdown_phase_changed, system.rate_limit_state — that would have caused front-end regression if implementation started without them)
-- Inverted assumptions (this session: middleware finalization was going to be deleted; subagent caught that would balloon error-visibility latency from milliseconds to 200s)
-- Conflicting decisions across sections (this session: count-tokens-via-fake-completed (decision A) would have nullified the isolation goal (decision B))
+**Why:** 从一句口头「我们说好了」就开始的大重构，常常事后发现存在：
+- 设计没考虑到的遗漏事件源（本 session：subagent v1 review 抓出 4 个被漏掉的 broadcast 命名空间——history.stats_changed、history.cleared、system.shutdown_phase_changed、system.rate_limit_state——若实现时没有它们会导致前端回归）
+- 倒置的假设（本 session：原本要删掉中间件 finalization；subagent 抓到那会把错误可见性延迟从毫秒级膨胀到 200 秒）
+- 跨章节相互冲突的决策（本 session：count-tokens-via-fake-completed（决策 A）会让隔离目标（决策 B）失效）
 
-Each catch saves real implementation rework. Reaching "stable RFC" via 3 rounds of subagent adversarial review costs maybe 30-60 min and prevents the much larger rework on actual code.
+每一次抓住都省下真实的实现返工。通过 3 轮 subagent 对抗式 review 达到「稳定 RFC」大概花 30-60 分钟，却能避免在实际代码上大得多的返工。
 
-**How to apply (process):**
-1. **Brainstorm/audit first**: get a concrete debt list (file:line evidence) — don't start designing from "feels broken"
-2. **Write RFC** in `docs/rfc/<topic>.md`: problem statement, architecture, dependency direction, type union, sinks/modules, cutover plan (commits, NOT phases), out-of-scope, open questions for user, verification
-3. **Subagent adversarial review** with explicit prompt: "look for missed event sources, contradictions across sections, false self-claims, lurking bugs". Do NOT use a generic "review this RFC" prompt.
-4. **Verify subagent's findings** per [[feedback-subagent-feedback-also-critically-verify]]
-5. **Repeat** until subagent reports zero FAIL/WARN (usually 2-4 rounds)
-6. **Ask user** to resolve open questions in §6 BEFORE coding
-7. **Implement** with commit invariants per [[methodology-commit-invariants]]
+**How to apply（流程）：**
+1. **先 brainstorm/审计**：拿到一份具体的债务清单（file:line 证据）——别从「感觉坏了」开始设计
+2. **写 RFC** 到 `docs/rfc/<topic>.md`：问题陈述、架构、依赖方向、type union、sinks/模块、cutover 计划（commit，NOT phase）、范围外、给用户的开放问题、验证
+3. **subagent 对抗式 review**，用明确的 prompt：「找遗漏的事件源、跨章节矛盾、虚假的自我主张、潜伏的 bug」。不要用泛泛的「review this RFC」prompt。
+4. **查验 subagent 的发现**，按 [[feedback-subagent-feedback-also-critically-verify]]
+5. **重复**直到 subagent 报告零 FAIL/WARN（通常 2-4 轮）
+6. **请用户**在写代码前解答 §6 里的开放问题
+7. **实现**，带 commit invariants，按 [[methodology-commit-invariants]]
 
-**Don't skip even one round.** This session: v1 RFC had 4 FAIL + 8 WARN, v2 had 3 red + 4 yellow, v3 had 3 text-self-consistency issues. Each round genuinely improved the design — none felt redundant.
+**哪怕一轮都别跳过。** 本 session：v1 RFC 有 4 个 FAIL + 8 个 WARN，v2 有 3 个 red + 4 个 yellow，v3 有 3 个文本自洽性问题。每一轮都实打实地改进了设计——没有一轮是多余的。
 
-Related: [[feedback-architecture-health-is-user-need]], [[methodology-commit-invariants]], [[feedback-subagent-feedback-also-critically-verify]].
+Related: [[feedback-architecture-health-is-user-need]], [[methodology-commit-invariants]], [[feedback-subagent-feedback-also-critically-verify]]。

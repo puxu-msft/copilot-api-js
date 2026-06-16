@@ -1,6 +1,6 @@
 ---
 name: feedback_no_unilateral_action
-description: "When an instruction's scope is ambiguous (does 'remove X' include Y? how far does 'refactor this' go?), ask before acting — never expand a change because it 'seems related' or is 'convenient'"
+description: "当指令的范围存在歧义（「删除 X」是否包含 Y？「重构这个」边界到哪？）时，先问再动手——绝不因为某事「看起来相关」或「顺手」就扩大变更范围"
 metadata: 
   node_type: memory
   type: feedback

@@ -1,6 +1,6 @@
 ---
 name: empirical-probe-via-history-api
-description: "How to empirically test upstream/protocol behavior — pull real requests (incl. real thinking signatures) from the history API, splice minimal test requests, POST to the running backend on 4141"
+description: "如何实证测试上游/协议行为——从 history API 拉取真实请求（含真实 thinking signature），拼接最小测试请求，POST 到 4141 上运行的后端"
 metadata: 
   node_type: memory
   type: reference

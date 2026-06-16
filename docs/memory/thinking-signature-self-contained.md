@@ -1,6 +1,6 @@
 ---
 name: thinking-signature-self-contained
-description: Anthropic thinking signature is fully self-contained (encrypts the thinking content itself); empirically verified — cross-context / non-first-block / post-rewrite all return 200
+description: Anthropic thinking signature 完全自包含（加密的是 thinking 内容本身）；经实测验证——跨上下文 / 非首块 / 改写后均返回 200
 metadata: 
   node_type: memory
   type: project

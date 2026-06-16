@@ -1,6 +1,6 @@
 ---
 name: project_thinking_shim_runtime_mystery
-description: "FIXED — corrupt thinking blocks came from web_search double-hop bypassing the shim; pass-through now re-dispatches through the direct path"
+description: "已修复——损坏的 thinking block 源于 web_search 双跳绕过了 shim；pass-through 现已重派走 direct 路径"
 metadata: 
   node_type: memory
   type: project

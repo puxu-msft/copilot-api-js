@@ -1,6 +1,6 @@
 ---
 name: feedback_parallel_edit_different_files
-description: Always parallel-submit Edit/tool calls when modifying different files in a refactor; never serialize across-file edits
+description: 重构中修改不同文件时，始终并行提交 Edit/工具调用；绝不把跨文件的改动串行化
 metadata: 
   node_type: memory
   type: feedback

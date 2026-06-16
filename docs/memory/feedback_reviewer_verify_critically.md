@@ -1,6 +1,6 @@
 ---
 name: feedback_reviewer_verify_critically
-description: "Proactively run a subagent audit/review BEFORE ExitPlanMode or delivering any major output (plan/design/naming) — don't wait to be asked. And don't trust any 'voice authority' (executor, reviewer, docs, memory): adjudicate every claim by independent empirical test — rerun flaky tests 10–25×, write a probe when docs conflict with observation, re-check absolute assertions against code facts"
+description: "在 ExitPlanMode 或交付任何重大产出（计划/设计/命名）前，主动发起一轮 subagent audit/review——不等用户提醒。且不要信任任何「声音权威」（executor、reviewer、文档、记忆）：每条主张都用独立实测裁决——flaky 测试连跑 10–25 次、文档与观测冲突时写探针、对照代码事实复核绝对断言"
 metadata: 
   node_type: memory
   type: feedback

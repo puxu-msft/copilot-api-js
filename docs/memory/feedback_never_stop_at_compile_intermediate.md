@@ -1,6 +1,6 @@
 ---
 name: feedback_never_stop_at_compile_intermediate
-description: Never pause mid-refactor in a non-compiling intermediate state; finish to a buildable checkpoint unless truly blocked on user decision or environment
+description: 绝不在重构中途的不可编译态停下；推进到可构建的 checkpoint 再停，除非真正卡在需用户决策或环境阻塞上
 metadata: 
   node_type: memory
   type: feedback
