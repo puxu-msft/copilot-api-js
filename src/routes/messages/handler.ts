@@ -60,6 +60,11 @@ import {
 } from "~/lib/anthropic/pipeline"
 import {
   //
+  extractToolParamTypes,
+  recoverToolCallTextInResponse,
+} from "~/lib/anthropic/recover-tool-call"
+import {
+  //
   preprocessAnthropicMessages,
   sanitizeAnthropicMessages,
   type SanitizationStats,
@@ -450,7 +455,7 @@ function dispatchAnthropicResponse(
   }
 
   try {
-    return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, reqCtx, truncateResult)
+    return handleDirectAnthropicNonStreamingResponse(c, response as AnthropicMessageResponse, reqCtx, truncateResult, effectivePayload)
   } finally {
     detachClientAbort()
   }
@@ -937,6 +942,7 @@ function handleDirectAnthropicNonStreamingResponse(
   response: AnthropicMessageResponse,
   reqCtx: RequestContext,
   truncateResult: AnthropicAutoTruncateResult | undefined,
+  anthropicPayload: MessagesPayload,
 ) {
   // Compute the client-facing (rewritten) response first so we can record it as
   // the forwarded state BEFORE complete() finalizes history. complete() itself
@@ -953,6 +959,14 @@ function handleDirectAnthropicNonStreamingResponse(
   // Filter server tool blocks from non-streaming response (always active)
   logServerToolBlocks(finalResponse.content as unknown as Array<Record<string, unknown> & { type: string }>)
   finalResponse = filterServerToolBlocksFromResponse(finalResponse)
+
+  // Recover upstream tool-call text downgrade → standard tool_use blocks (client-facing only).
+  // Runs BEFORE restoreToolNames so synthesized wire-name tool_use gets name-restored too.
+  finalResponse = recoverToolCallTextInResponse(finalResponse, {
+    enabled: state.recoverToolCallText,
+    toolNames: new Set((anthropicPayload.tools ?? []).map((t) => t.name)),
+    toolSchemas: extractToolParamTypes(anthropicPayload.tools),
+  })
 
   // Restore client tool_use names (upstream → original) on the client-facing response only.
   finalResponse = restoreToolNamesInResponse(finalResponse, reqCtx.toolNameMapper)
