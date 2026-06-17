@@ -9,7 +9,7 @@
 | [P2-driver-and-codecs.md](./P2-driver-and-codecs.md) | driver + 逐格式迁移 | P1 完成 |
 | [P3-unify.md](./P3-unify.md) | 透传统一 + 采集下沉 + 删旧 handler | P2 完成 |
 
-> **▶ 当前位置（2026-06-17）**：**P2.4 全部 ✅**（Responses 已切 driver，flag `openai-responses`=**ON**，全套件经 v4 绿）。**下一步 = P2.5（Gemini 切 driver）**，粘 `P2-driver-and-codecs.md` 继续。**勿粘 P3**——P2.5-2.6 未完成，P3 会跑错（详见 `05-progress.md` 顶部「当前位置」）。排程已重排：P3.2 的 driver-采样半提前到各格式迁移点（CC=P2.3-S、Responses=P2.4 已落地请求侧），响应侧采样下沉统一在 P3.2b。
+> **▶ 当前位置（2026-06-17）**：**P2.5 全部 ✅**（Gemini 已切 driver，flag `gemini`=**ON**，全套件经 v4 绿）。**下一步 = P2.6（Anthropic 切 driver，最复杂）**，粘 `P2-driver-and-codecs.md` 继续。**勿粘 P3**——P2.6 未完成，P3 会跑错（详见 `05-progress.md` 顶部「当前位置」）。排程已重排：P3.2 的 driver-采样半提前到各格式迁移点（CC=P2.3-S、Responses=P2.4、Gemini=P2.5 复用 cc 采样），响应侧采样下沉统一在 P3.2b。
 
 ## 通用红线（每个会话都必须遵守）
 

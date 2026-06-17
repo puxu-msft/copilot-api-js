@@ -8,9 +8,9 @@
 
 ## ▶ 当前位置 / 下一步（防呆——每会话先看这里）
 
-- **已完成到**：**P2.4 全部 ✅（Responses 已切 driver，flag `openai-responses`=ON，全套件经 v4 绿）**。P0/P1/P2.1/P2.2/P2.3/P2.4 ✅。
-- **下一步**：**P2.5（Gemini 切 driver）**。粘 `prompts/P2-driver-and-codecs.md` 继续逐格式迁移。
-- **⚠️ 现在粘 `prompts/P3-unify.md` 会跑错**：P3 假设「4 格式全在 driver 上」，但 Gemini/Anthropic（P2.5-2.6）**未做**。P3.1（透传统一）需 4 codec 齐、P3.3（删 handler）会删仍在用的 handler。**P3 须等 P2.5-2.6 全完成。**
+- **已完成到**：**P2.5 全部 ✅（Gemini 已切 driver，flag `gemini`=ON，全套件经 v4 绿）**。P0/P1/P2.1-P2.5 ✅。
+- **下一步**：**P2.6（Anthropic 切 driver，最复杂）**。粘 `prompts/P2-driver-and-codecs.md` 继续。
+- **⚠️ 现在粘 `prompts/P3-unify.md` 会跑错**：P3 假设「4 格式全在 driver 上」，但 Anthropic（P2.6）**未做**。P3.1（透传统一）需 4 codec 齐、P3.3（删 handler）会删仍在用的 handler。**P3 须等 P2.6 完成。**
 - **排程已重排（2026-06-17，architect subagent 验证）**：原计划把「driver 自动采样」整体放 P3.2（所有格式迁完后）。重排为——**P3.2 拆两半**：`P3.2a`（driver 加采样，共享机件，**提前到 P2.3 收尾**做一次 4 格式同受益）+ `P3.2b`（删各 handler 手动 setter，**锚定各格式迁移点**，不可提前——删不了还在 legacy 的格式的 setter）。`P3.1`（透传统一）**不提前**（需 4 codec 齐）。**翻 flag ON 的硬 gate = L1 行为等价 ∧ L2 记录等价**，逐格式各过各的 gate。详见 P2.3-L1/L2。
 
 ### P2.3 收尾排程（重排后，已落地）
@@ -33,7 +33,7 @@
 | P0 地基 | 4 | 4/4 | ✅ |
 | P1 改写 registry 化（请求侧） | 4 | 4/4 | ✅ |
 | P1.5/P1.6（响应侧）→ 折入 P2 | — | — | ↪ 见 P1.5-SCOPE |
-| P2 driver + 逐格式 | 6 | 4/6 | 🟡 |
+| P2 driver + 逐格式 | 6 | 5/6 | 🟡 |
 | P3 统一收尾 | 4 | 0/4 | ⬜ |
 
 > **P1 范围修订（2026-06-16，调研后）**：P1 原计划 6 commit。请求侧 4 个（P1.1 接口 + P1.2/P1.3 Anthropic full + P1.4 OpenAI focused）有干净 seam，已全部完成、字节等价、subagent reviewed。**响应侧 P1.5（响应改写注册）/ P1.6（错误帧→codec.formatError）经调研判定折入 P2**——其消费者（P1.5 的 S5 per-frame chain、P1.6 的 codec）是 P2 的交付物，强塞进 P1 = 半重构 byte-critical 流式 pump（forwarded SSE 字节风险）+ 过早造 codec stub，且与 P2.6 重叠。详见 P1.5-SCOPE / P1.5-OQ1（heartbeat 已裁决 option ①）。P1.1 的 `ResponseRewrite` 接口已前瞻定义 + 测试，P2 落地即消费。
@@ -68,7 +68,7 @@
 | P2.2 | codec/openai-cc.ts | ✅ | codec 30 单测 pass（unit：decideRoute 矩阵/translateOut=identity/prepareWire 两分派+dropped 去重+normalizeCallIds gating/renderResponse 3 循环行为+function_call 跨帧+completed 双帧/formatError 三类型/createResponseAccumulator；it：parse env 字段+azure override+model 解析+tool-name mapper+orphan 过滤+未知模型）；全 offline 2561 pass/0 fail；typecheck+eslint 绿 | per-request 有状态工厂 `createOpenAiCcCodec()`（闭包持 translator 状态）；translateOut=identity + CC→Responses 落 prepareWire（auto-truncate strategy 契约强制，见 P2.2-D1）。stream-error.ts 抽 `streamErrorKindToOpenAIErrorType`（DRY）；RawHttpRequest +method/+path。**不接线**（旧 handler 仍在用）。5 条遗留见下 |
 | P2.3 | **CC 切 driver**（flag 可回切） | ✅ | v4 路径全接线 + 7 http 等价测试逐项 v4↔legacy 字节等价（client 输出 + outbound wire）；**收尾 S/H/ON 后 flag ON、全套件 2584 pass/0 fail 经 v4**；typecheck+eslint 绿 | 分 5 commit：transport adapter（fd6c637）+ env-strategy bridge（2d8967e）+ 路由接线（2790d50）+ ctx-settle review 修复（6dbe053）+ **P2.3-S 请求侧双轨采样（6cc8b9c）+ 本（隔离修复+翻 flag ON）**。driver +策略工厂+per-attempt 采样；codec +`getTruncateBaseline`/`getContext`/originalBodyForHistory/preResolved/`sampleRequest`；driver-flags **默认 ON**；handler-v4 含 D3/D6/D2/S5 tool-restore/失败 settle。收尾详情见顶部「P2.3 收尾排程」（S 请求侧✅响应侧→P3.2b / H 经全套件满足 / ON 默认 ON）|
 | P2.4 | codec/openai-responses.ts + Responses 切 driver | ✅ | v4 路径全接线 + 14 http 等价测试逐项 v4↔legacy 等价（直连流式/非流式 + fallback(Responses→CC) + Google force-fallback + stream-id-sync + normalizeCallIds + reject + network-retry + L2 双轨 + 上游 WS）；**flag ON、全套件 2598 pass/0 fail 经 v4**；流式/WS/fallback 连跑 15× 确定；typecheck+eslint 绿；subagent review + 亲自实测复核（C1 假阳性、M1 已修+回归测试） | per-request 工厂 `createOpenAiResponsesCodec()`；**translateOut=identity + Responses→CC fallback 落 prepareWire**（保 effective 轨=openai-responses，对齐 legacy pipeline，openai-cc P2.2-D1 同构）；上游 WS-attempt 抽 `upstream-ws-attempt.ts` 与 legacy `createResponses` 共享（字节等价，client it-test 守）；`translateCCStreamToResponsesStream` 重构为逐帧 `createCCToResponsesStreamTranslator`（translate+flush）供 codec 复用（oracle: responses-to-cc-request unit）；客户端 WS 复用同 driver（含 fallback，CC-only/Google 经 WS 现可用）。5 条遗留见下 |
-| P2.5 | codec/gemini.ts + Gemini 切 driver | ⬜ | Gemini 等价（dropped params/sidecar error） | |
+| P2.5 | codec/gemini.ts + Gemini 切 driver | ✅ | v4 全接线 + 7 http 等价测试（generateContent 非流/流 + via-responses(Gemini→CC→Responses) + Gemini-shape error frame + dropped-params 警告 + L2 双轨 + completed 终态）；**flag ON、全套件 2606 pass/0 fail 经 v4**；Gemini 流式连跑 12× 确定；typecheck+eslint 绿；subagent review + 亲自核验（HIGH stream.onAbort 已修+回归、2 LOW 已处理） | **薄翻译层委托范式**：gemini codec 持内部 `createOpenAiCcCodec()` 实例，decideRoute/translateOut/prepareWire/renderResponse/renderResponseNonStreaming/sampleRequest/createResponseAccumulator **全委托 cc**（不调 cc.parse——这些方法对 env 纯，唯一 cc 闭包态是 via-responses translator，lazily 建于 cc.renderResponse）；codec 只自做 parse(Gemini→CC + gemini-generate-content ctx + Gemini-shape original + O10 fill) + Gemini error。**renderResponse 产 CC 帧**（非 Gemini）——CC→Gemini 整流翻译留 handler-v4（`translateOpenAIStreamToGemini` 不重构、零字节风险，同 legacy）。countTokens 仍 legacy（本地 tokenizer，无管线）。复用 createUpstreamHttpTransport + CC strategies。3 条遗留见下 |
 | P2.6 | **codec/anthropic.ts + Anthropic 切 driver** | ⬜ | thinking signature 往返；web_search 双跳等价 | 最复杂 |
 
 ## P3 — 统一收尾
@@ -98,6 +98,27 @@
 ## 遗留与决策追踪
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
+
+### P2.5-D1 — Gemini codec 委托内部 cc codec（不调 cc.parse），renderResponse 产 CC 帧而非 Gemini 帧
+
+- **发现于**：P2.5 设计 + subagent review（重点核验「cc 委托无 parse 的健全性」，确认 sound）
+- **根因**：Gemini 是薄翻译层（codec.md §3「委托 openai-cc 处理 CC payload，自己只负责 parse/render 外壳」）。gemini codec 持 `createOpenAiCcCodec()` 实例，把 decideRoute/translateOut/prepareWire/renderResponse/renderResponseNonStreaming/sampleRequest/createResponseAccumulator **全转发给 cc**——但**不调 cc.parse**（自己的 parse 建 Gemini ctx + Gemini→CC）。
+- **当前行为**：健全。被委托的 cc 方法对 `env`（+wire/upstream/frame）纯；唯一用到的 cc 闭包态是 via-responses 的 Responses→CC stream translator，它 lazily 建于 `cc.renderResponse`（非 cc.parse），故 via-responses 流式在只调 cc.renderResponse 时正常工作。cc 自己的 truncateBaseline/requestContext 闭包态不被任何委托方法读取（gemini 提供自己的 getContext/getTruncateBaseline）。
+- **renderResponse 产 CC 帧的契约弯折**：`translateOpenAIStreamToGemini` 是有状态整流生成器（tool-call 配对 + usage/finishReason meta）。把它重构成逐帧 = 字节等价风险。故 codec.renderResponse/renderResponseNonStreaming **只归一到 CC**（cc 处理 via-responses 的 Responses→CC 腿），handler-v4 做最终 CC→Gemini 整流——与 legacy 同流（legacy renderGeminiStreaming 也是包 CC 流）。clientFormat=gemini 但 renderResponse 产 CC 是有意弯折，已在 codec 顶部文档化。
+- **理想架构**：P3 可评估把 cc codec 的可复用核（decideRoute/prepareWire/via-responses translator/sampleRequest）抽为共享纯函数，gemini 直接组合而非持 cc 实例；但当前「持实例 + 转发」DRY 且零风险，无需提前抽取。
+
+### P2.5-D2 — CC→Gemini stream-id/响应翻译仍在 handler，非 S5 registry（与 CC/Responses 同）
+
+- **根因**：同 P2.4-D2——响应侧 finishing（CC→Gemini 整流翻译 + forwarded 采样 + complete）留 handler-v4 `pumpGeminiStreamingV4`，非 driver S5 registry。Gemini 无 stream-id-sync（那是 Responses 直连专属）；CC→Gemini 翻译是整流的（`translateOpenAIStreamToGemini`），本就不适配逐帧 S5 ResponseRewrite。
+- **当前行为**：正确（全套件经 v4 绿）。
+- **理想架构**：响应侧采样下沉跨格式统一在 P3.2b。CC→Gemini 整流翻译因其整流 + meta 性质，大概率保持 handler-side（如 Anthropic heartbeat 的 handler-side 旁路 P1.5-OQ1），不强进逐帧 registry。
+
+### P2.5-D3 — Gemini 双重翻译 Gemini→CC（route 建 wire body + codec 重译取 droppedParams）
+
+- **根因**：codec.parse 同步，dropped-params 警告需 ctx（parse 建）+ droppedParams（Gemini→CC 翻译产）。route 已翻译（建 wire body + system-prompt），codec.parse 又翻译一次仅为取 droppedParams——避免给 RawHttpRequest 加 Gemini 专属字段穿透。
+- **当前行为**：droppedParams 是 `LOSSY_TOP_LEVEL_KEYS` 在 body 顶层键的存在性的纯函数（convert-request.ts:111），与 stream/顺序/ID 无关；`convertGeminiRequestToOpenAI` 非 mutating（subagent 核验）。两次翻译 args 一致（model + stream），droppedParams 一致。重译开销小、确定性。
+- **为何暂缓**：避免 RawHttpRequest 加格式专属字段（泄漏）。重译纯 + 廉价。
+- **若做需改什么**：若未来 Gemini→CC 翻译变重，可给 RawHttpRequest 加可选 `derivedDiagnostics`（route 填 droppedParams），或把警告记录移到 route 后置（route 持 codec.getContext()）。
 
 ### P2.4-D1 — 客户端 WS 复用 driver 带来两处「改进型」行为变化（fallback + tool-name restore）
 
