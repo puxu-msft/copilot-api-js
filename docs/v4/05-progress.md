@@ -9,7 +9,7 @@
 ## ▶ 当前位置 / 下一步（防呆——每会话先看这里）
 
 - **已完成到**：**P2.5 全部 ✅（Gemini 已切 driver，flag `gemini`=ON，全套件经 v4 绿）**。P0/P1/P2.1-P2.5 ✅。
-- **下一步**：**P2.6（Anthropic 切 driver，最复杂）**。粘 `prompts/P2-driver-and-codecs.md` 继续。
+- **下一步**：**P2.6（Anthropic 切 driver，最复杂）**。**RFC 已收敛**：[docs/rfc/p2.6-anthropic-driver-migration.md](../rfc/p2.6-anthropic-driver-migration.md)（3 轮对抗 review 完成，揪出 2 个 CRITICAL 共享 driver 契约 bug）。**实现先做 C0 共享 driver 前置**（runExchange 返回 post-retry env + widen env-`RetryAction.meta`/`onResolved(env,meta?)`），再 C1-C5。待用户确认后实现。
 - **⚠️ 现在粘 `prompts/P3-unify.md` 会跑错**：P3 假设「4 格式全在 driver 上」，但 Anthropic（P2.6）**未做**。P3.1（透传统一）需 4 codec 齐、P3.3（删 handler）会删仍在用的 handler。**P3 须等 P2.6 完成。**
 - **排程已重排（2026-06-17，architect subagent 验证）**：原计划把「driver 自动采样」整体放 P3.2（所有格式迁完后）。重排为——**P3.2 拆两半**：`P3.2a`（driver 加采样，共享机件，**提前到 P2.3 收尾**做一次 4 格式同受益）+ `P3.2b`（删各 handler 手动 setter，**锚定各格式迁移点**，不可提前——删不了还在 legacy 的格式的 setter）。`P3.1`（透传统一）**不提前**（需 4 codec 齐）。**翻 flag ON 的硬 gate = L1 行为等价 ∧ L2 记录等价**，逐格式各过各的 gate。详见 P2.3-L1/L2。
 
