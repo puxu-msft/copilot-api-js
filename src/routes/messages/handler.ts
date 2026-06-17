@@ -69,6 +69,7 @@ import {
   //
   preprocessAnthropicMessages,
   type SanitizationStats,
+  toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import {
@@ -1048,16 +1049,3 @@ function handleDirectAnthropicNonStreamingResponse(
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/** Convert SanitizationStats to the format expected by rewrites */
-function toSanitizationInfo(stats: SanitizationStats) {
-  return {
-    totalBlocksRemoved: stats.totalBlocksRemoved,
-    orphanedToolUseCount: stats.orphanedToolUseCount,
-    orphanedToolResultCount: stats.orphanedToolResultCount,
-    fixedNameCount: stats.fixedNameCount,
-    emptyTextBlocksRemoved: stats.emptyTextBlocksRemoved,
-    emptyThinkingBlocksRemoved: stats.emptyThinkingBlocksRemoved,
-    systemReminderRemovals: stats.systemReminderRemovals,
-  }
-}

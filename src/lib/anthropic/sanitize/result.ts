@@ -77,3 +77,21 @@ export function finalizeAnthropicSanitization(
     },
   }
 }
+
+/**
+ * Convert {@link SanitizationStats} to the history-facing `SanitizationInfo` shape
+ * (drops `inlineSystemConverted`, which is a role-conversion count, not a block
+ * removal). Shared by the legacy handler's `runInitialSanitizationAndRecord` and
+ * the v4 Anthropic codec so both record the identical sanitization envelope.
+ */
+export function toSanitizationInfo(stats: SanitizationStats) {
+  return {
+    totalBlocksRemoved: stats.totalBlocksRemoved,
+    orphanedToolUseCount: stats.orphanedToolUseCount,
+    orphanedToolResultCount: stats.orphanedToolResultCount,
+    fixedNameCount: stats.fixedNameCount,
+    emptyTextBlocksRemoved: stats.emptyTextBlocksRemoved,
+    emptyThinkingBlocksRemoved: stats.emptyThinkingBlocksRemoved,
+    systemReminderRemovals: stats.systemReminderRemovals,
+  }
+}

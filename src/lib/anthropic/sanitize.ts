@@ -133,6 +133,6 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
 export { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"
 
 export { stripReadToolResultTags } from "./sanitize/read-tool-result-tags"
-export { type SanitizationStats } from "./sanitize/result"
+export { type SanitizationStats, toSanitizationInfo } from "./sanitize/result"
 export { removeAnthropicSystemReminders } from "./sanitize/system-reminders"
 export { processToolBlocks } from "./sanitize/tool-blocks"

@@ -1,0 +1,599 @@
+/**
+ * v4 pipeline — anthropic-messages FormatCodec (P2.6 / C2).
+ *
+ * Anthropic /v1/messages is the "bypass direct" format: there is NO protocol
+ * translation — `translateOut` / `renderResponse` / `renderResponseNonStreaming`
+ * are all identity (the upstream IS the Anthropic Messages API). What makes it the
+ * heaviest codec is the request side: the ordered sanitize chain (tool-preprocess
+ * → tool-name → sanitize, B/A steps) and the B1-B12 wire preparation, plus the 8
+ * retry strategies (anthropic-strategies.ts) and the beta-probe negotiation.
+ *
+ * **Per-request stateful factory.** `createAnthropicCodec({ betaProbe, preprocessInfo })`
+ * is built once per request. The closure holds: the RequestContext (parse-created),
+ * the truncation/message-mapping baseline (preprocessed, pre-initial-sanitize), the
+ * client `anthropic-beta` header, the initial sanitization info, the resanitize
+ * closure, and the latest effective messages/thinking (updated by `sampleRequest`,
+ * read by the route to rebuild retry pipeline-info — RFC §12.4/§12.5).
+ *
+ * **betaProbe is a cross-component handle** (RFC §2.4): the handler builds it once
+ * and injects the SAME instance into both this codec (which records the outbound
+ * betas in `prepareWire`) and the strategies (the unsupported-beta strategy reads
+ * the candidates). The factory takes it as a parameter.
+ *
+ * **Scope (C2):** this commit builds + unit-tests the codec and strategies; it is
+ * NOT wired into any route (the legacy `handleMessages` stays in use; C3 switches
+ * the route to the driver behind the `anthropic` flag, default OFF). The invariant
+ * is "codec/strategy unit tests green + full suite unaffected".
+ *
+ * Mirrors the deferred markers of openai-cc (P2.2-D*): system-prompt injection is
+ * a route pre-step (parse is sync); `formatError` gets only the classified kind.
+ */
+
+import consola from "consola"
+
+import type {
+  //
+  AnthropicSanitizeFn,
+  BetaProbe,
+} from "~/lib/anthropic/pipeline"
+import type { RequestContext } from "~/lib/context/request"
+import type {
+  //
+  EffectiveRequest,
+  WireRequest,
+} from "~/lib/context/types"
+import type {
+  //
+  EndpointType,
+  PreprocessInfo,
+} from "~/lib/history/types"
+import type { Model } from "~/lib/models/client"
+import type {
+  //
+  ClientFormat,
+  LazyMessageView,
+  NeutralMessage,
+  NeutralSystem,
+  NeutralTool,
+  RequestEnvelope,
+  ResolvedModel,
+  UpstreamEndpoint,
+} from "~/lib/pipeline/envelope"
+import type {
+  //
+  ClassifiedStreamError,
+  ClientFrame,
+  FormatCodec,
+  PreparedRequest,
+  RawHttpRequest,
+  RequestSample,
+  ResponseAccumulator,
+  RouteDecision,
+} from "~/lib/pipeline/types"
+import type { PrepareHints } from "~/lib/request/pipeline"
+import type {
+  //
+  MessageParam,
+  MessagesPayload,
+} from "~/types/api/anthropic"
+
+import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
+import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
+import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
+import { runAnthropicRequestRewrites } from "~/lib/anthropic/request-rewrites"
+import {
+  //
+  toSanitizationInfo,
+} from "~/lib/anthropic/sanitize"
+import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
+import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { getRequestContextManager } from "~/lib/context/manager"
+import {
+  //
+  captureInboundHeaders,
+  sanitizeHeadersForHistory,
+} from "~/lib/fetch-utils"
+import { getSessionIdFromHeaders } from "~/lib/history/store"
+import { ENDPOINT } from "~/lib/models/endpoint"
+import { resolveModelName } from "~/lib/models/resolver"
+import { state } from "~/lib/state"
+
+const CLIENT_FORMAT: ClientFormat = "anthropic"
+const ENDPOINT_TYPE: EndpointType = "anthropic-messages"
+
+/** Sanitization-info envelope shape (the history-facing subset of SanitizationStats). */
+type SanitizationInfo = ReturnType<typeof toSanitizationInfo>
+
+/**
+ * The anthropic-messages codec, widened beyond {@link FormatCodec} with the
+ * per-request accessors the route/handler need to rebuild retry pipeline-info
+ * (RFC §12.4) + settle the ctx on a parse-period failure.
+ */
+export interface AnthropicCodec extends FormatCodec {
+  /** The RequestContext created by `parse` (route `c.set` + failure settle). */
+  getContext(): RequestContext | undefined
+  /** Truncation + message-mapping baseline: preprocessed, pre-initial-sanitize payload. */
+  getTruncateBaseline(): MessagesPayload | undefined
+  /** The initial sanitization-info envelope (first element of the retry `sanitization` list). */
+  getInitialSanitizationInfo(): SanitizationInfo | undefined
+  /** The route-supplied message-level preprocess info (for `setPipelineInfo.preprocessing`). */
+  getPreprocessInfo(): PreprocessInfo | undefined
+  /** The resanitize closure (= the direct sanitize chain) the strategies reuse. */
+  getResanitize(): AnthropicSanitizeFn | undefined
+  /** Latest attempt's effective `messages` (sampleRequest-captured; message-mapping rebuild). */
+  getLatestEffectiveMessages(): Array<unknown> | undefined
+  /** Latest attempt's effective `thinking` (sampleRequest-captured; `thinking` feature rebuild). */
+  getLatestEffectiveThinking(): unknown
+}
+
+/** Args for {@link createAnthropicCodec}. */
+export interface CreateAnthropicCodecArgs {
+  /** The shared per-request beta probe (also injected into the strategies). */
+  betaProbe: BetaProbe
+  /** Message-level preprocess info computed by the route (preprocessAnthropicMessages). */
+  preprocessInfo: PreprocessInfo
+}
+
+/**
+ * Build the anthropic-messages codec for one request. Holds the per-request
+ * baseline + ctx + resanitize closure (see module docstring).
+ */
+export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicCodec {
+  let requestContext: RequestContext | undefined
+  let truncateBaseline: MessagesPayload | undefined
+  let clientAnthropicBeta: string | undefined
+  let initialSanitizationInfo: SanitizationInfo | undefined
+  let resanitize: AnthropicSanitizeFn | undefined
+  let latestEffectiveMessages: Array<unknown> | undefined
+  let latestEffectiveThinking: unknown
+
+  return {
+    format: CLIENT_FORMAT,
+
+    parse(raw) {
+      const parsed = parseAnthropic(raw, args.preprocessInfo)
+      requestContext = parsed.env.ctx
+      truncateBaseline = parsed.baseline
+      clientAnthropicBeta = parsed.clientAnthropicBeta
+      initialSanitizationInfo = parsed.initialSanitizationInfo
+      resanitize = parsed.resanitize
+      return parsed.env
+    },
+
+    getContext() {
+      return requestContext
+    },
+    getTruncateBaseline() {
+      return truncateBaseline
+    },
+    getInitialSanitizationInfo() {
+      return initialSanitizationInfo
+    },
+    getPreprocessInfo() {
+      return args.preprocessInfo
+    },
+    getResanitize() {
+      return resanitize
+    },
+    getLatestEffectiveMessages() {
+      return latestEffectiveMessages
+    },
+    getLatestEffectiveThinking() {
+      return latestEffectiveThinking
+    },
+
+    decideRoute(env) {
+      return decideAnthropicRoute(env)
+    },
+
+    // S2/S6 are identity — Anthropic is a bypass-direct format (no translation).
+    translateOut(env) {
+      return env
+    },
+    renderResponse(frame) {
+      return frame
+    },
+    renderResponseNonStreaming(upstream) {
+      return upstream
+    },
+
+    prepareWire(env) {
+      return prepareAnthropicWire(env, { betaProbe: args.betaProbe, clientAnthropicBeta, requestContext })
+    },
+
+    sampleRequest(wire, env): RequestSample {
+      const sample = sampleAnthropicRequest(wire, env)
+      latestEffectiveMessages = sample.effectiveMessages
+      latestEffectiveThinking = sample.effectiveThinking
+      return sample.requestSample
+    },
+
+    formatError(err) {
+      return formatAnthropicError(err)
+    },
+
+    createResponseAccumulator(): ResponseAccumulator {
+      return createAnthropicStreamAccumulator()
+    },
+  }
+}
+
+// ============================================================================
+// S1 — parse
+// ============================================================================
+
+interface ParseAnthropicResult {
+  env: RequestEnvelope
+  baseline: MessagesPayload
+  clientAnthropicBeta: string | undefined
+  initialSanitizationInfo: SanitizationInfo
+  resanitize: AnthropicSanitizeFn
+}
+
+/**
+ * S1: inbound HTTP → envelope. **Synchronous** (FormatCodec.parse contract).
+ *
+ * Reproduces the request-side setup of the legacy `handleMessages` (ctx create →
+ * setOriginalRequest → tool-name mapper → setResolvedModel) + the
+ * `runInitialSanitizationAndRecord` (sanitize chain + initial pipeline-info +
+ * thinking feature). The route pre-step has already done warmup / model resolve /
+ * async system-prompt / message-level `preprocessAnthropicMessages` / web_search —
+ * so `raw.body` is the preprocessed + system-injected wire body, and
+ * `raw.originalBodyForHistory` is the client's raw pre-injection body.
+ */
+function parseAnthropic(raw: RawHttpRequest, preprocessInfo: PreprocessInfo): ParseAnthropicResult {
+  const incoming = raw.body as MessagesPayload
+  const clientBody = (raw.originalBodyForHistory ?? raw.body) as MessagesPayload
+  const originalSnapshot = structuredClone(clientBody)
+
+  const clientModel = raw.modelOverride ?? incoming.model
+  const resolvedName = raw.preResolved?.name ?? resolveModelName(clientModel)
+  if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
+  const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
+  const clientModelName = clientModel !== resolvedName ? clientModel : undefined
+
+  // The model-resolved payload (messages already preprocessed by the route). This
+  // is the truncation + message-mapping baseline: preprocessed, pre-initial-sanitize.
+  const anthropicPayload: MessagesPayload = { ...incoming, model: resolvedName }
+
+  // Create the request context (triggers "created" → history insert).
+  const manager = getRequestContextManager()
+  const reqBodySize = parseContentLength(raw.headers.get("content-length"))
+  const ctx = manager.create({
+    endpoint: ENDPOINT_TYPE,
+    sessionId: getSessionIdFromHeaders(raw.headers),
+    ...(raw.path !== undefined && { rawPath: raw.path, path: raw.path }),
+    ...(raw.method !== undefined && { method: raw.method }),
+    ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+  })
+
+  ctx.setOriginalRequest({
+    model: clientModelName ?? originalSnapshot.model,
+    messages: originalSnapshot.messages as unknown as Array<unknown>,
+    stream: originalSnapshot.stream ?? false,
+    tools: originalSnapshot.tools as unknown as Array<unknown> | undefined,
+    system: originalSnapshot.system,
+    payload: originalSnapshot,
+  })
+  ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+
+  // Tool-name mapper from the client's ORIGINAL tools (preprocess does not touch
+  // tools, so `incoming.tools` is still the client's set). Stored on ctx so the
+  // response-side restore reverses it.
+  const toolNameMapper = buildAnthropicToolNameMapper(incoming.tools, resolvedName, selectedModel?.vendor)
+  ctx.setToolNameMapper(toolNameMapper)
+
+  ctx.setResolvedModel({
+    resolved: resolvedName,
+    ...(clientModelName !== undefined && { client: clientModelName }),
+  })
+
+  // Initial sanitize + record (inlined runInitialSanitizationAndRecord).
+  const { payload: initialSanitized, sanitizeResult } = runAnthropicRequestRewrites(anthropicPayload, { toolNameMapper })
+  const stats = sanitizeResult.stats
+  const initialSanitizationInfo = toSanitizationInfo(stats)
+
+  const hasPreprocessing = preprocessInfo.dedupedToolCallCount > 0 || preprocessInfo.strippedReadTagCount > 0
+  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || hasPreprocessing) {
+    // Mapping baseline is the preprocessed, pre-initial-sanitize messages (RFC §12.9).
+    const messageMapping = buildMessageMapping(anthropicPayload.messages, initialSanitized.messages)
+    ctx.setPipelineInfo({
+      preprocessing: preprocessInfo,
+      sanitization: [initialSanitizationInfo],
+      messageMapping,
+    })
+  }
+
+  if (initialSanitized.thinking && initialSanitized.thinking.type !== "disabled") {
+    ctx.recordFeature("thinking", { type: initialSanitized.thinking.type })
+  }
+
+  // The direct sanitize chain — reused as the adapter's sanitize and auto-truncate's
+  // resanitize (the strategies read it via codec.getResanitize()).
+  const resanitize: AnthropicSanitizeFn = (p) => runAnthropicRequestRewrites(p, { toolNameMapper }).sanitizeResult
+
+  const env = makeEnvelope({
+    targetEndpoint: ENDPOINT.MESSAGES,
+    model: selectedModel as ResolvedModel,
+    stream: initialSanitized.stream ?? false,
+    body: initialSanitized,
+    ctx,
+  })
+
+  return {
+    env,
+    baseline: anthropicPayload,
+    clientAnthropicBeta: raw.headers.get("anthropic-beta") ?? undefined,
+    initialSanitizationInfo,
+    resanitize,
+  }
+}
+
+function parseContentLength(header: string | null): number | undefined {
+  if (header === null) return undefined
+  const n = Number.parseInt(header, 10)
+  return Number.isFinite(n) ? n : undefined
+}
+
+// ============================================================================
+// S2 — decideRoute
+// ============================================================================
+
+/**
+ * S2: passthrough `/v1/messages` or reject 400 — NO translate/fallback (the
+ * bypass-direct Anthropic endpoint has no downgrade path, RFC §2.2 / messages:167).
+ */
+function decideAnthropicRoute(env: RequestEnvelope): RouteDecision {
+  const id = (env.model as Model | undefined)?.id ?? (env.body as MessagesPayload).model
+  const decision = supportsDirectAnthropicApi(id)
+  if (!decision.supported) {
+    return { kind: "reject", status: 400, reason: `Model "${id}" does not support /v1/messages: ${decision.reason}` }
+  }
+  return { kind: "passthrough", endpoint: ENDPOINT.MESSAGES }
+}
+
+// ============================================================================
+// S4 — prepareWire
+// ============================================================================
+
+interface PrepareWireDeps {
+  betaProbe: BetaProbe
+  clientAnthropicBeta: string | undefined
+  requestContext: RequestContext | undefined
+}
+
+/**
+ * S4 last-mile: env → wire via `prepareAnthropicRequest` (B1-B12 — wire payload +
+ * reject/server-tool strip + coerce-thinking + clamp-effort + cache-control +
+ * headers). Records the outbound betas on the probe (replacing the legacy adapter's
+ * `onPrepared`) + surfaces the actual wire `thinking` shape as a feature.
+ *
+ * Idempotent (RFC §3): `prepareAnthropicRequest` deep-clones and does not write
+ * back to `env.body`, so the same env → the same wire.
+ */
+function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): PreparedRequest {
+  const model = env.model as Model | undefined
+  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
+    ...(model && { resolvedModel: model }),
+    ...(deps.clientAnthropicBeta !== undefined && { clientAnthropicBeta: deps.clientAnthropicBeta }),
+    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
+    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
+  })
+
+  // Record the betas actually sent (sanitized headers — same value the legacy
+  // adapter's onPrepared received) so unsupported-beta can probe them.
+  deps.betaProbe.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
+
+  // Surface the ACTUAL outbound thinking shape (post coerceAdaptiveThinking), not
+  // the sanitized client request's — matches legacy pipeline.ts onPrepared.
+  const wireThinking = prepared.wire.thinking as { type?: string } | undefined
+  if (wireThinking?.type && wireThinking.type !== "disabled") {
+    deps.requestContext?.recordFeature("thinking-wire", { type: wireThinking.type })
+  }
+
+  return {
+    url: ENDPOINT.MESSAGES,
+    headers: new Headers(prepared.headers),
+    body: prepared.wire,
+    stream: (prepared.wire.stream as boolean | undefined) ?? false,
+  }
+}
+
+// ============================================================================
+// S4 — sampleRequest (two-track observability)
+// ============================================================================
+
+interface SampleAnthropicResult {
+  requestSample: RequestSample
+  effectiveMessages: Array<unknown>
+  effectiveThinking: unknown
+}
+
+/**
+ * S4 observability (P2.3-S): the two history tracks. Both are `anthropic-messages`
+ * format (translateOut is identity, so env.body stays Anthropic-shaped):
+ *   - `effective` = the post-rewrite logical request (`env.body`).
+ *   - `wire` = the actual outbound bytes (`prepared.wire`, B1-B12 + sanitized headers).
+ *
+ * Captures the latest effective `messages` + `thinking` for the route to rebuild
+ * retry message-mapping + the `thinking` feature (RFC §12.4/§12.5). The §12.5
+ * invariant (`action.env.body === action.payload`) makes these the same objects
+ * the legacy `recordRetryPipelineState` reads from `newPayload`.
+ */
+function sampleAnthropicRequest(wire: PreparedRequest, env: RequestEnvelope): SampleAnthropicResult {
+  const effBody = env.body as MessagesPayload
+  const effectiveMessages: Array<unknown> = Array.isArray(effBody.messages) ? effBody.messages : []
+
+  const effective: EffectiveRequest = {
+    model: typeof effBody.model === "string" ? effBody.model : "",
+    resolvedModel: env.model as Model | undefined,
+    messages: effectiveMessages,
+    payload: env.body,
+    format: ENDPOINT_TYPE,
+  }
+
+  const wireBody = wire.body as { model?: unknown; messages?: unknown }
+  const wireRequest: WireRequest = {
+    model: typeof wireBody.model === "string" ? wireBody.model : "",
+    messages: Array.isArray(wireBody.messages) ? wireBody.messages : [],
+    payload: wire.body,
+    headers: sanitizeHeadersForHistory(Object.fromEntries(wire.headers.entries())),
+    format: ENDPOINT_TYPE,
+  }
+
+  return { requestSample: { effective, wire: wireRequest }, effectiveMessages, effectiveThinking: effBody.thinking }
+}
+
+// ============================================================================
+// S7 — formatError
+// ============================================================================
+
+/** Kind-derived error-frame messages (raw upstream message unavailable — see P2.2-D4). */
+const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
+  "idle-timeout": "Stream idle timeout",
+  shutdown: "Server is shutting down",
+  "client-abort": "Client disconnected",
+  other: "Stream error",
+}
+
+/** Map the classified kind to Anthropic's error `type` (mirrors legacy anthropicStreamErrorType). */
+function anthropicErrorType(err: ClassifiedStreamError): string {
+  switch (err) {
+    case "idle-timeout": {
+      return "timeout_error"
+    }
+    case "shutdown": {
+      return "overloaded_error"
+    }
+    default: {
+      return "api_error"
+    } // client-abort + other
+  }
+}
+
+/**
+ * Shape a classified stream-lifecycle error into an Anthropic SSE `error` frame.
+ * Anthropic's frame is double-typed: `{ type: "error", error: { type, message } }`
+ * (distinct from OpenAI's `{ error: { message, type } }`). The handler builds the
+ * mid-stream error frame inline with the raw message; this is the codec's fallback.
+ */
+function formatAnthropicError(err: ClassifiedStreamError): ClientFrame {
+  return { event: "error", data: JSON.stringify({ type: "error", error: { type: anthropicErrorType(err), message: STREAM_ERROR_MESSAGES[err] } }) }
+}
+
+// ============================================================================
+// Envelope construction + lazy view
+// ============================================================================
+
+interface EnvelopeInit {
+  targetEndpoint: UpstreamEndpoint
+  model: ResolvedModel
+  stream: boolean
+  body: unknown
+  ctx: RequestContext
+  prepareHints?: PrepareHints
+}
+
+/** Build a {@link RequestEnvelope}; `with()` shallow-copies + patches, `view` is a lazy Anthropic projection. */
+function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
+  const env: RequestEnvelope = {
+    clientFormat: CLIENT_FORMAT,
+    targetEndpoint: init.targetEndpoint,
+    model: init.model,
+    stream: init.stream,
+    body: init.body,
+    prepareHints: init.prepareHints ?? {},
+    ctx: init.ctx,
+    get view(): LazyMessageView {
+      return createAnthropicLazyView(env.body)
+    },
+    with(patch) {
+      return makeEnvelope({
+        targetEndpoint: env.targetEndpoint,
+        model: env.model,
+        stream: env.stream,
+        body: env.body,
+        ctx: env.ctx,
+        prepareHints: env.prepareHints,
+        ...patch,
+      })
+    },
+  }
+  return env
+}
+
+/** Block-type discriminant for the lazy projection (Anthropic content blocks). */
+interface ContentBlockLike {
+  type?: string
+}
+
+/**
+ * Lazy, read-only neutral projection of an Anthropic payload. Exposes just enough
+ * for routing / logging / gate decisions; rewrites that need byte fidelity operate
+ * on `env.body` directly. Computed lazily on access.
+ */
+function createAnthropicLazyView(body: unknown): LazyMessageView {
+  const payload = body as MessagesPayload
+  let messagesCache: ReadonlyArray<NeutralMessage> | undefined
+  let toolsCache: ReadonlyArray<NeutralTool> | undefined
+
+  const messages = (): ReadonlyArray<NeutralMessage> => (messagesCache ??= payload.messages.map((m) => projectMessage(m)))
+  const tools = (): ReadonlyArray<NeutralTool> => (toolsCache ??= (payload.tools ?? []).map((t) => ({ name: (t as { name: string }).name })))
+  const system = (): NeutralSystem | undefined => {
+    if (payload.system === undefined) return undefined
+    return { text: systemText(payload.system) }
+  }
+
+  return {
+    get messages() {
+      return messages()
+    },
+    get tools() {
+      return tools()
+    },
+    get system() {
+      return system()
+    },
+    get summary() {
+      const msgs = payload.messages
+      return {
+        messageCount: msgs.length,
+        hasTools: (payload.tools?.length ?? 0) > 0,
+        hasThinking: msgs.some((m) => messageHasThinking(m)),
+        hasImages: msgs.some((m) => messageHasImages(m)),
+      }
+    },
+  }
+}
+
+function blocksOf(msg: MessageParam): Array<ContentBlockLike> {
+  return Array.isArray(msg.content) ? (msg.content as Array<ContentBlockLike>) : []
+}
+
+function projectMessage(msg: MessageParam): NeutralMessage {
+  const blocks = blocksOf(msg)
+  return {
+    role: msg.role,
+    hasThinking: blocks.some((b) => b.type === "thinking" || b.type === "redacted_thinking"),
+    hasImages: blocks.some((b) => b.type === "image"),
+    toolUseCount: blocks.filter((b) => b.type === "tool_use").length,
+    toolResultCount: blocks.filter((b) => b.type === "tool_result").length,
+  }
+}
+
+function messageHasThinking(msg: MessageParam): boolean {
+  return blocksOf(msg).some((b) => b.type === "thinking" || b.type === "redacted_thinking")
+}
+
+function messageHasImages(msg: MessageParam): boolean {
+  return blocksOf(msg).some((b) => b.type === "image")
+}
+
+function systemText(system: MessagesPayload["system"]): string {
+  if (typeof system === "string") return system
+  if (!Array.isArray(system)) return ""
+  return system
+    .filter((part): part is { type: "text"; text: string } => (part as ContentBlockLike).type === "text")
+    .map((part) => part.text)
+    .join("")
+}
