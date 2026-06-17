@@ -22,7 +22,11 @@ import { events } from "fetch-event-stream"
 import type { HeadersCapture } from "~/lib/context/request"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
-import { HTTPError } from "~/lib/error"
+import {
+  //
+  HTTPError,
+  isAbortError,
+} from "~/lib/error"
 import {
   //
   captureHttpHeaders,
@@ -62,6 +66,17 @@ export interface SendUpstreamHttpParams {
    * to the call site that never folded it.
    */
   clientAbortSignal?: AbortSignal
+  /**
+   * When true, a SHUTDOWN-caused fetch abort (`getShutdownSignal().aborted` && the
+   * thrown error is an `AbortError`) is rewritten to a retryable `HTTPError` 529
+   * (overloaded), so the client backs off and retries against the restarted
+   * instance — parity with the legacy Anthropic client (client.ts:132-145). Off by
+   * default: every other caller (CC / Responses / Gemini) re-throws the ORIGINAL
+   * AbortError object unchanged, preserving its stack/identity for the existing
+   * abort classification. A client-disconnect abort NEVER becomes 529 (the global
+   * shutdown signal is not aborted for it). The Anthropic v4 transport opts in.
+   */
+  rewriteShutdownAbort?: boolean
 }
 
 /**
@@ -73,7 +88,7 @@ export interface SendUpstreamHttpParams {
  * attached on opaque 400s.
  */
 export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<unknown> {
-  const { endpointPath, headers, body, stream, errorLabel, modelId, diagnosticsTools, headersCapture, clientAbortSignal } = params
+  const { endpointPath, headers, body, stream, errorLabel, modelId, diagnosticsTools, headersCapture, clientAbortSignal, rewriteShutdownAbort } = params
 
   // For non-streaming requests, fold the shutdown signal into the fetch signal so
   // a Phase 3 abort interrupts the (long) header-wait; streaming omits it (the
@@ -82,13 +97,32 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
   // terminates both stream and non-stream paths.
   const fetchSignal = combineAbortSignals(createFetchSignal(), stream ? undefined : getShutdownSignal(), clientAbortSignal)
 
-  const response = await fetch(`${copilotBaseUrl(state)}${endpointPath}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: fetchSignal,
-    ...DISABLE_BUILTIN_FETCH_TIMEOUT,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${copilotBaseUrl(state)}${endpointPath}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: fetchSignal,
+      ...DISABLE_BUILTIN_FETCH_TIMEOUT,
+    })
+  } catch (error) {
+    // rewriteShutdownAbort (Anthropic v4 transport opt-in): a SHUTDOWN-caused abort
+    // becomes a retryable 529 (overloaded) — parity with the legacy Anthropic client
+    // (client.ts:132-145). Every other caller, and the client-disconnect case here,
+    // re-throws the ORIGINAL AbortError object unchanged (preserving stack/identity
+    // for the existing abort classification; a client disconnect must NEVER become
+    // 529 — `getShutdownSignal().aborted` is false for it).
+    if (rewriteShutdownAbort && getShutdownSignal().aborted && error instanceof Error && isAbortError(error)) {
+      throw new HTTPError(
+        "Server is shutting down",
+        529,
+        JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Server is shutting down" } }),
+        modelId,
+      )
+    }
+    throw error
+  }
 
   // Capture HTTP headers for history (before error check — capture even on failure)
   if (headersCapture) {

@@ -9,6 +9,7 @@
 
 import {
   //
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -24,6 +25,11 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { resetAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
+import {
+  //
+  _resetShutdownState,
+  gracefulShutdown,
+} from "~/lib/shutdown"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
 import {
@@ -31,6 +37,8 @@ import {
   autoRestoreFetch,
   setFetchMock,
 } from "../helpers/mock-fetch"
+import { createMockServer } from "../helpers/mock-server"
+import { createMockTracker } from "../helpers/mock-tracker"
 import { createSseResponse } from "../helpers/sse"
 import { autoRestoreState } from "../helpers/state-fixture"
 
@@ -104,5 +112,84 @@ describe("createUpstreamHttpTransport", () => {
     await expect(transport.send(makeWire({ url: "/responses", stream: false, body: { model: "gpt-5", input: [], stream: false } }), makeEnv())).rejects.toThrow(
       /Failed to create responses/,
     )
+  })
+})
+
+// ── C1: rewriteShutdownAbort 529 hook (RFC §12.1) ──────────────────────────
+// The Anthropic v4 transport opts in: a shutdown-caused non-streaming AbortError
+// becomes a retryable 529 (parity with the legacy Anthropic client). Every other
+// caller (and the client-disconnect case) re-throws the ORIGINAL AbortError.
+
+describe("createUpstreamHttpTransport — rewriteShutdownAbort 529 hook", () => {
+  autoRestoreState()
+  autoRestoreFetch()
+
+  beforeEach(() => {
+    resetAdaptiveRateLimiter()
+  })
+  afterEach(() => {
+    // gracefulShutdown aborts the shutdown controller; reset so it doesn't leak.
+    _resetShutdownState()
+  })
+
+  test("hook OFF (default): a fetch AbortError re-throws the ORIGINAL object unchanged (CC/Responses parity, identity preserved)", async () => {
+    const abortErr = new DOMException("The operation was aborted", "AbortError")
+    setFetchMock(() => new Promise<Response>((_resolve, reject) => reject(abortErr)))
+    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000 })
+
+    let caught: unknown
+    try {
+      await transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBe(abortErr) // same object — not rewritten to a 529 HTTPError
+  })
+
+  test("hook ON but NO shutdown (client-disconnect): AbortError NEVER becomes 529 — re-throws the original", async () => {
+    const abortErr = new DOMException("The operation was aborted", "AbortError")
+    setFetchMock(() => new Promise<Response>((_resolve, reject) => reject(abortErr)))
+    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000, rewriteShutdownAbort: true })
+
+    let caught: unknown
+    try {
+      await transport.send(makeWire({ stream: false, body: { model: "claude", messages: [], stream: false } }), makeEnv())
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBe(abortErr) // getShutdownSignal().aborted is false → original, not 529
+  })
+
+  test("hook ON + shutdown abort: a non-streaming AbortError → retryable HTTPError 529 (Anthropic parity)", async () => {
+    // Upstream rejects with AbortError once the (shutdown-folded) fetch signal aborts.
+    setFetchMock(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          const onAbort = (): void => reject(new DOMException("The operation was aborted", "AbortError"))
+          if (signal?.aborted) return onAbort()
+          signal?.addEventListener("abort", onAbort, { once: true })
+        }),
+    )
+    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000, rewriteShutdownAbort: true })
+
+    const shutdownPromise = gracefulShutdown("SIGTERM", {
+      tracker: createMockTracker([{ status: "streaming" }]),
+      server: createMockServer(),
+      rateLimiter: null,
+      stopTokenRefreshFn: () => {},
+      closeAllClientsFn: () => {},
+      getClientCountFn: () => 0,
+      contextManager: { stopReaper: () => {} },
+      gracefulWaitMs: 50,
+      abortWaitMs: 500,
+      drainPollIntervalMs: 10,
+      drainProgressIntervalMs: 50_000,
+    })
+
+    await expect(transport.send(makeWire({ stream: false, body: { model: "claude", messages: [], stream: false } }), makeEnv())).rejects.toMatchObject({
+      status: 529,
+    })
+    await shutdownPromise
   })
 })

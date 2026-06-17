@@ -51,6 +51,13 @@ export interface UpstreamHttpTransportDeps {
   clientAbortSignal?: AbortSignal
   /** Stream idle-timeout (ms) for `guardSseIterable` (`state.streamIdleTimeout * 1000`). */
   idleTimeoutMs: number
+  /**
+   * When true, a shutdown-caused non-streaming fetch abort is rewritten to a
+   * retryable 529 inside `sendUpstreamHttp` (parity with the legacy Anthropic
+   * client). The Anthropic v4 transport opts in; CC / Responses / Gemini leave it
+   * off (their AbortError flows through unchanged).
+   */
+  rewriteShutdownAbort?: boolean
 }
 
 /** Build an HTTP {@link Transport} for one request. */
@@ -71,6 +78,7 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
           diagnosticsTools: body.tools,
           headersCapture: deps.headersCapture,
           clientAbortSignal: deps.clientAbortSignal,
+          ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
         }),
       )
       // P2.3-S: record rate-limiter queue wait on the ctx (legacy parity —
