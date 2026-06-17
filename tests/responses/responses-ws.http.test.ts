@@ -49,6 +49,8 @@ import {
 } from "../helpers/test-bootstrap"
 
 let capturedPayload: ResponsesPayload | undefined
+/** When true, the mock upstream emits a real event AFTER response.completed (to test the terminal-event break). */
+let emitTrailingAfterCompleted = false
 
 const upstreamFetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
   if (typeof init?.body !== "string") {
@@ -56,7 +58,7 @@ const upstreamFetchMock = mock(async (_input: string | URL | Request, init?: Req
   }
   capturedPayload = JSON.parse(init.body) as ResponsesPayload
 
-  return createSseResponse([
+  const frames = [
     `event: response.created\ndata: ${JSON.stringify({
       type: "response.created",
       sequence_number: 0,
@@ -78,8 +80,14 @@ const upstreamFetchMock = mock(async (_input: string | URL | Request, init?: Req
         total_tokens: 8,
       }),
     })}\n\n`,
-    "data: [DONE]\n\n",
-  ])
+  ]
+  if (emitTrailingAfterCompleted) {
+    frames.push(
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "TRAILING", sequence_number: 3 })}\n\n`,
+    )
+  }
+  frames.push("data: [DONE]\n\n")
+  return createSseResponse(frames)
 })
 
 function createBaseResponsesResponse(model: string, status: ResponsesResponse["status"], usage: ResponsesResponse["usage"] = null): ResponsesResponse {
@@ -201,6 +209,7 @@ describe("Responses WebSocket transport", () => {
   beforeEach(() => {
     snapshot = snapshotStateForTests()
     capturedPayload = undefined
+    emitTrailingAfterCompleted = false
     upstreamFetchMock.mockClear()
     setStateForTests({
       accountType: "individual",
@@ -280,6 +289,27 @@ describe("Responses WebSocket transport", () => {
     expect(capturedPayload?.model).toBe("gpt-4o")
     expect(capturedPayload?.input).toBe("Hello from WS client")
     expect(capturedPayload?.stream).toBe(true)
+  })
+
+  test("stops at the terminal event — a frame after response.completed is not forwarded", async () => {
+    setModels({
+      object: "list",
+      data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] })],
+    })
+    emitTrailingAfterCompleted = true
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "hi" } }))
+
+    const result = await closePromise
+
+    // The trailing delta after response.completed must NOT reach the client.
+    expect(result.messages.map((m) => m.type)).toEqual(["response.created", "response.output_text.delta", "response.completed"])
+    expect(JSON.stringify(result.messages)).not.toContain("TRAILING")
+    expect(result.code).toBe(1000)
   })
 
   test("keeps socket open after response.completed when clientWebsocketKeepOpen is true", async () => {

@@ -489,15 +489,15 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const streamStartMs = Date.now()
   let eventsReceived = 0
 
-  /** Forward one rendered Responses frame as a WS JSON frame (fix-id direct → accumulate → restore names → send). */
-  const forwardWsFrame = (rawData: string, rawEvent: string | undefined): void => {
+  /** Forward one rendered Responses frame as a WS JSON frame; returns true on a terminal event. */
+  const forwardWsFrame = (rawData: string, rawEvent: string | undefined): boolean => {
     const eventData = idTracker ? fixStreamEventIds(rawData, rawEvent, idTracker) : rawData
     let event: ResponsesStreamEvent
     try {
       event = JSON.parse(eventData) as ResponsesStreamEvent
     } catch {
       consola.debug("[WS] Skipping unparseable SSE event")
-      return
+      return false
     }
     accumulateResponsesStreamEvent(event, acc)
     const forwardData = restoreWsStreamData(eventData, event, mapper)
@@ -505,12 +505,18 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: event.type, raw: forwardData })
     eventsReceived++
     env.ctx.recordStreamProgress({ eventsIn: eventsReceived })
+    return TERMINAL_EVENTS.has(event.type)
   }
 
   try {
     for await (const frame of driver.runResponse(upstream, env)) {
       if (!frame.data || frame.data === "[DONE]") continue
-      forwardWsFrame(frame.data, frame.event)
+      // Stop on a terminal event (response.completed/failed/incomplete/error) —
+      // parity with the legacy WS loop, which never reads past the terminal frame
+      // even if the upstream emits trailing frames or stalls without closing. The
+      // fallback's terminal (response.completed) comes from `flushResponse` below,
+      // not this loop, so this break only fires on the direct path.
+      if (forwardWsFrame(frame.data, frame.event)) break
     }
     // Fallback: drain the CC→Responses closing lifecycle events.
     if (viaFallback) {
