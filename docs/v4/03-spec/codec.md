@@ -38,6 +38,8 @@ type RouteDecision =
   | { kind: "reject"; status: 400; reason: string }
 ```
 
+> **per-request 有状态工厂（落地于 P2.2）**：codec 实例 = **一个请求的编解码会话**，由 `createXxxCodec()` 工厂每请求构造。FormatCodec 接口无 state 槽，故跨方法/跨帧的单请求状态（如 via-responses 的 Responses→CC `createStreamTranslator` 状态、tool-name mapper、dropped-params 去重标记）**由工厂闭包持有**——这是 codec 的设计契约，非 workaround。下游 codec（Responses/Gemini/Anthropic）同此范式；Gemini codec 在自己工厂内 `createOpenAiCcCodec()` 委托 CC 链（codec.md §3）。**绝不**把单请求状态外置到 `env.ctx`（ctx 是 observability 句柄，非 translator 工作内存，envelope-driver §5）或跨请求共享 map。
+
 ---
 
 ## 2. decideRoute — 统一透传矩阵（消除 4 处散点）

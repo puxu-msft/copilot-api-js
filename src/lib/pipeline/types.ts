@@ -171,6 +171,10 @@ export type ExchangeStage = (env: RequestEnvelope) => Promise<UpstreamStream>
 export interface RawHttpRequest {
   readonly body: unknown
   readonly headers: Headers
+  /** Inbound HTTP method (codec.parse forwards it to `manager.create`). */
+  readonly method?: string
+  /** Inbound URL path (codec.parse forwards it to `manager.create` as path + rawPath). */
+  readonly path?: string
   /** Model override injected by Azure deployment routing (codec.parse reads it). */
   readonly modelOverride?: string
   /** Downstream client-disconnect signal, folded into the upstream fetch signal. */

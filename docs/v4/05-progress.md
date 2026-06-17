@@ -46,7 +46,7 @@
 | # | commit | 状态 | invariant 验证 | 备注 |
 |---|---|---|---|---|
 | P2.1 | driver.ts + stages/* 骨架 | ✅ | driver 单测 mock codec/transport 15 pass（编排 S1-S7 + 重试循环 + S3/S5 改写链 + buffer/flush + 非流式）；全 offline 2532 pass/0 fail；typecheck+eslint 绿；subagent review（逐行对照 retry-transport §2 + budget off-by-one 与 legacy 等价）无 CRITICAL/HIGH | `createPipelineDriver(deps)`：consume codec/transport/strategies/registry 为 opaque deps。FormatCodec 接口追加 types.ts。abort 抛原始 error（legacy parity，非 spec 草案的 action.error）；strategy.handle 抛错降级原始 error（try/catch）；reject carry reason 由 route/codec 成形（不在 driver 做格式决策）。observability 自动采样占位待 P3.2 |
-| P2.2 | codec/openai-cc.ts | ⬜ | codec 单测 | |
+| P2.2 | codec/openai-cc.ts | ✅ | codec 30 单测 pass（unit：decideRoute 矩阵/translateOut=identity/prepareWire 两分派+dropped 去重+normalizeCallIds gating/renderResponse 3 循环行为+function_call 跨帧+completed 双帧/formatError 三类型/createResponseAccumulator；it：parse env 字段+azure override+model 解析+tool-name mapper+orphan 过滤+未知模型）；全 offline 2561 pass/0 fail；typecheck+eslint 绿 | per-request 有状态工厂 `createOpenAiCcCodec()`（闭包持 translator 状态）；translateOut=identity + CC→Responses 落 prepareWire（auto-truncate strategy 契约强制，见 P2.2-D1）。stream-error.ts 抽 `streamErrorKindToOpenAIErrorType`（DRY）；RawHttpRequest +method/+path。**不接线**（旧 handler 仍在用）。5 条遗留见下 |
 | P2.3 | **CC 切 driver**（flag 可回切） | ⬜ | CC e2e+golden 等价；CC 现也记上游 sseEvents | |
 | P2.4 | codec/openai-responses.ts + Responses 切 driver | ⬜ | Responses 等价（含 ws/force-fallback/stream-id） | |
 | P2.5 | codec/gemini.ts + Gemini 切 driver | ⬜ | Gemini 等价（dropped params/sidecar error） | |
@@ -79,6 +79,48 @@
 ## 遗留与决策追踪
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
+
+### P2.2-D1 — prepareWire 内做 CC→Responses 全翻译（偏离 retry-transport §3「裁剪」语义；P2.3 接 driver 时复核）
+
+- **发现于**：P2.2（codec 设计 + Plan agent 校验）
+- **根因**：driver 阶段序 `translateOut`(S2) 先于 `runRewriteIn`(S3)，而 auto-truncate strategy（retry-transport §2.2 表末行）truncate `env.body.messages` **假设 CC 形态**；strategy 接口 `handle(error, env)` 只拿到 env、够不到 CC-original。若 translateOut 在 S2 翻成 Responses，truncate 崩。故 CC→Responses 翻译被迫放进 `prepareWire`（S4）。
+- **当前行为**：openai-cc 的 `translateOut`=identity；`prepareWire` 在 targetEndpoint=`/responses` 时做 `translateChatCompletionsToResponses`+normalizeCallIds+`prepareResponsesRequest`。幂等性满足（§3）但「完整格式翻译」不属 §3 定义的「header+body 裁剪」。
+- **理想架构（选项 Y）**：CC→Responses 作为一条 S3 RequestRewrite（`appliesTo: targetEndpoint==="/responses"`），prepareWire 退回纯 O8-O10 裁剪。但 truncate strategy「重跑 S3 改写链」要能在 CC-original 上重新翻译——**需先给 strategy 持有 CC-original 的能力**（改 strategy 接口/env）。
+- **为何暂缓**：当前 strategy 接口下 prepareWire 是唯一不破坏 auto-truncate 的放置；选项 Y 要动 strategy 契约，超出 P2.2 范围。
+- **若做需改什么**：P2.3 接 driver + auto-truncate strategy 落地时评估选项 Y；若仍走 prepareWire，则在 retry-transport §3 显式登记此例外。
+
+### P2.2-D2 — via-responses 流末 `[DONE]` 合成不在 codec（P2.3 driver 流末补）
+
+- **根因**：逐帧 `renderResponse` 的闭包 translator **永不产** `[DONE]`——现状 `translateResponsesStream` 在上游循环**之后**无条件 yield `[DONE]`（translator 之外）。per-frame 模型无「流末」信号。
+- **当前行为**：codec via-responses renderResponse 只产 CC chunk，不产 `[DONE]`。passthrough 的 `[DONE]` 来自上游帧、identity 透传，不受影响。
+- **P2.3 落地**：driver 流末合成 `[DONE]`，候选 = 一条 S5 terminal ResponseRewrite（`appliesTo: clientFormat==="openai-cc" && targetEndpoint==="/responses"`，`flush()` 产 `[{data:"[DONE]"}]`，复用 driver `flushChain`）。
+- **若漏**：via-responses 客户端流缺尾 `[DONE]`，SDK 可能挂起等待终止——P2.3 golden 必覆盖。
+
+### P2.2-D3 — async system-prompt 注入归宿（P2.3 前置：route 在 parse 前 await 改 raw.body）
+
+- **根因**：`FormatCodec.parse` 签名**同步**，而 `processOpenAIMessages`（system-prompt override）是 async（`await applyConfigToState` 真 I/O 热重载）+ 非幂等。parse 物理上无法 await。
+- **当前行为**：P2.2 codec.parse **不含** system-prompt；env.body 缺 system-prompt 注入。**不接线所以不爆**（旧 handler 仍在用）。
+- **P2.3 前置**：route 在 `codec.parse(raw)` **之前** `await processOpenAIMessages` 改 `raw.body`（保 parse 同步纯）。否则 driver 的 runRequest 一气呵成无 async hook 可插。**P2.3 接 CC 路由时必须先解决此点**，否则上游 body 缺 system-prompt。
+
+### P2.2-D4 — formatError 锁定签名只给 kind、丢 raw error message（P2.3 driver S7 接线时复核）
+
+- **根因**：`FormatCodec.formatError(err: ClassifiedStreamError)` 只拿到分类后的 kind（idle-timeout/shutdown/client-abort/other），拿不到原始 error 的 `.message`。现状 CC handler 错误帧用 `rawError.message`。
+- **当前行为**：codec.formatError 产 kind 派生消息（"Stream idle timeout" 等）+ kind→type（共享 `streamErrorKindToOpenAIErrorType`）。type 等价，message 退化。
+- **为何暂缓**：driver S7（runResponse 错误处理）P2.1 尚未接线，formatError 当前无真实消费者。
+- **若做需改什么**：P2.3 接 driver S7（持有 raw error）时跨三协议统一裁决——大概率给 formatError 传 raw error/message，或 driver 在帧成形后注入 message。
+
+### P2.2-D5 — env.model 非可选 vs OpenAI 未知 gpt-* fallback 模型（P2.3 评估放宽）
+
+- **根因**：`RequestEnvelope.model: ResolvedModel`（非可选，Anthropic 中心假设），但 CC 支持索引外的未知 gpt-* fallback（`modelIndex.get` 返回 undefined）。
+- **当前行为**：parse 把（可能 undefined 的）selectedModel cast 为 ResolvedModel 存 env.model；所有消费者（decideRoute/prepareWire）传给接受 `Model | undefined` 的 helper（`isEndpointSupported` 等），运行时正确，仅静态类型 over-claim。
+- **若做需改什么**：P2.3 可评估把 envelope.model 放宽为 `ResolvedModel | undefined`（待 Anthropic 非可选假设一并复核）。
+
+### P2.2-D6 — decideRoute 是纯函数，`recordFeature("via-responses")` 须由 P2.3 driver/route 在 translate 决策时补发
+
+- **发现于**：P2.2（subagent review HIGH-1a，主线复核确认归属）
+- **根因**：现状 handler 在走 via-responses 分支时 `recordFeature("via-responses")`（handler.ts:299）。codec 的 `decideRoute` 按 spec 是**纯函数**（返回 RouteDecision，不碰 ctx；observability 归 driver/P3.2），故不发该特性标记。
+- **当前行为**：codec 不发 `via-responses` 标记（codec 未接线，无影响）。
+- **P2.3 落地**：driver/route 在 `decision.kind==="translate"`（→/responses）时补 `recordFeature("via-responses")`，否则 history/TUI 的 via-responses 标记对每个 Responses-bridged 请求静默消失（可观测性回归）。**P2.3 接 CC 路由的 golden/e2e 必须断言此标记存在。**
 
 ### P2.1-M2 — 多 buffering rewrite 链的 flush 顺序未定义（P2.6 接响应改写前锁定）
 
