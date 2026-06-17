@@ -137,6 +137,14 @@ async function runExchange(deps: DriverDeps, env: RequestEnvelope, strategies: R
   for (;;) {
     const wire = deps.codec.prepareWire(current)
     current.ctx.beginAttempt({ ...(activeStrategy && { strategy: activeStrategy.name }) })
+    // S4 per-attempt sampling (P2.3-S): the codec derives the history effective +
+    // wire request descriptors from the prepared wire + env (format-specific). The
+    // attempt record exists (beginAttempt above); record both tracks on it.
+    const sample = deps.codec.sampleRequest?.(wire, current)
+    if (sample) {
+      current.ctx.setAttemptEffectiveRequest(sample.effective)
+      current.ctx.setAttemptWireRequest(sample.wire)
+    }
     current.ctx.transition("executing")
     try {
       const upstream = await deps.transport.send(wire, current)
@@ -182,7 +190,12 @@ async function runExchange(deps: DriverDeps, env: RequestEnvelope, strategies: R
         ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
         ...(action.learning && { learning: action.learning }),
       })
-      if (action.waitMs) await delay(action.waitMs)
+      // Count the retry backoff in queueWaitMs (legacy parity — pipeline.ts adds
+      // action.waitMs to queueWaitMs in addition to the rate-limiter wait).
+      if (action.waitMs) {
+        current.ctx.addQueueWaitMs(action.waitMs)
+        await delay(action.waitMs)
+      }
     }
   }
 }

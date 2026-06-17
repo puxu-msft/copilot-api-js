@@ -60,7 +60,7 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
       const headers = Object.fromEntries(wire.headers.entries())
       const body = wire.body as { model?: unknown; tools?: unknown }
 
-      const { result } = await executeWithAdaptiveRateLimit(() =>
+      const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
         sendUpstreamHttp({
           endpointPath: wire.url,
           headers,
@@ -73,6 +73,9 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
           clientAbortSignal: deps.clientAbortSignal,
         }),
       )
+      // P2.3-S: record rate-limiter queue wait on the ctx (legacy parity —
+      // pipeline.ts `addQueueWaitMs`).
+      env.ctx.addQueueWaitMs(queueWaitMs)
 
       // `UpstreamStream.headers` = the captured upstream response headers (P3.2
       // consumer). `sendUpstreamHttp` already populated `headersCapture.response`.

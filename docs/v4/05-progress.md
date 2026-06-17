@@ -17,7 +17,7 @@
 
 | 步 | 内容 | flag-ON gate | 前置 |
 |---|---|---|---|
-| **P2.3-S**（=原 P3.2a，提前） | driver 自动采样下沉：driver.ts:119/:219 占位 → 真采样（per-attempt wireRequest/effectiveRequest、上游原始 sseEvents、forwarded、queueWaitMs）；删 **handler-v4** 对应手动 setter（仅 CC 在 driver 上） | — | 仅 CC 在 driver（driver+ctx 自足）。**验证：补 L2 双轨等价测试**（v4↔legacy 的 history effectiveRequest/outboundRequest/sseEvents/forwardedSseEvents/queueWaitMs 逐字等价）——否则用未验证采样做 canary 基线 |
+| **P2.3-S**（=原 P3.2a，提前） | driver 自动采样下沉：driver.ts:119/:219 占位 → 真采样（per-attempt wireRequest/effectiveRequest、上游原始 sseEvents、forwarded、queueWaitMs）；删 **handler-v4** 对应手动 setter（仅 CC 在 driver 上） | — | 仅 CC 在 driver（driver+ctx 自足）。**进度：请求侧双轨（effectiveRequest/wireRequest）+ queueWaitMs ✅**（codec `sampleRequest` + driver per-attempt + transport addQueueWaitMs；L2 双轨等价测试齐）；**响应侧上游原始 sseEvents（改进）+ 删 handler-v4 setter 待做**。**验证：双轨语义等价**（非 effective 轨逐字节——O10 `max_completion_tokens` 等 wire-trim 只落 wire 轨、effective=未裁剪逻辑请求；legacy 把 O10 泄漏进 effective，v4 修正；wire 轨完全等价）；queueWaitMs 须含重试退避（driver `addQueueWaitMs(action.waitMs)`，非仅限流） |
 | **P2.3-H**（=L1 边缘） | 格式无关「fake-timer + abort/idle/shutdown 信号注入 + driver 状态断言」harness 骨架（一次写、跨格式复用）+ CC 叶子 oracle（CC 错误帧/终态/partial）+ CC auto-truncate 标记等价 | L1 齐 | P2.3-S（错误路径也要记双轨）。**harness 断言 oracle 须格式特定**（Anthropic streamError vs CC 终态不同，否则假绿） |
 | **P2.3-ON** | `driver-flags.ts "openai-cc": false → true`（一行），CC canary | **L1 ∧ L2 齐** | 现有全套 CC 测试自动经 v4 = 宽 oracle 压实 driver；边缘测试连跑 10-25× |
 

@@ -15,6 +15,11 @@
  * the legacy one is replaced by this one as formats migrate (P2 / P0.4).
  */
 
+import type {
+  //
+  EffectiveRequest,
+  WireRequest,
+} from "~/lib/context/types"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -278,4 +283,22 @@ export interface FormatCodec {
 
   /** observability: the format's response accumulator factory (HistorySink rebuild). */
   createResponseAccumulator(): ResponseAccumulator
+
+  /**
+   * observability (S4 per-attempt): derive the history-side effective + wire
+   * request descriptors from the prepared wire + env. Optional — the driver
+   * records them when present (codecs opt in as they migrate; P2.3-S sampling
+   * sink-down). The format-specific message extraction (CC `messages` vs
+   * Responses `input`) and the wire `format` label (passthrough vs via-responses)
+   * live here, so the driver stays format-agnostic.
+   */
+  sampleRequest?(wire: PreparedRequest, env: RequestEnvelope): RequestSample
+}
+
+/** History-side request descriptors a codec derives per-attempt (envelope-driver.md §4). */
+export interface RequestSample {
+  /** The post-rewrite logical request (effectiveRequest track). */
+  effective: EffectiveRequest
+  /** The actual outbound wire bytes (outboundRequest track). */
+  wire: WireRequest
 }

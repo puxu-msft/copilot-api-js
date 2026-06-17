@@ -263,7 +263,7 @@ describe("CC v4 ↔ legacy equivalence", () => {
     expect(v4Text).toContain("[DONE]")
   })
 
-  test("network-retry: a transient upstream error retries once then succeeds (both paths, 2 hits)", async () => {
+  test("network-retry: a transient upstream error retries once then succeeds (both paths, 2 hits + queueWaitMs)", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
 
     setV4DriverEnabled("openai-cc", false)
@@ -272,6 +272,7 @@ describe("CC v4 ↔ legacy equivalence", () => {
     const legacy = (await (await post(body)).json()) as Record<string, unknown>
     expect(ccHits).toBe(2) // initial failure + 1 retry
     const legacyHits = ccHits
+    const legacyQueueWait = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.queueWaitMs
 
     setV4DriverEnabled("openai-cc", true)
     throwOnce = true
@@ -279,6 +280,11 @@ describe("CC v4 ↔ legacy equivalence", () => {
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     expect(ccHits).toBe(legacyHits)
     expect(v4).toEqual(legacy)
+    // queueWaitMs must include the network-retry backoff (1000ms) — equal to legacy
+    // (driver must addQueueWaitMs(action.waitMs), not only the rate-limiter wait).
+    const v4QueueWait = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.queueWaitMs
+    expect(v4QueueWait).toBe(legacyQueueWait)
+    expect(v4QueueWait).toBeGreaterThanOrEqual(1000)
   })
 
   test("history: non-streaming success finalizes the entry (completed) on both paths", async () => {
@@ -315,5 +321,55 @@ describe("CC v4 ↔ legacy equivalence", () => {
 
     expect(legacyState).toBe("failed")
     expect(v4State).toBe("failed")
+  })
+
+  test("history double-track (L2): v4 records effectiveRequest + outboundRequest equal to legacy", async () => {
+    const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
+
+    setV4DriverEnabled("openai-cc", false)
+    await post(body)
+    const legacy = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
+
+    setV4DriverEnabled("openai-cc", true)
+    await post(body)
+    const v4 = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
+
+    // Before P2.3-S the v4 double-track was empty; now it's recorded + equal to legacy.
+    expect(v4?.effectiveRequest).toBeDefined()
+    expect(v4?.effectiveRequest?.format).toBe(legacy?.effectiveRequest?.format)
+    expect(v4?.effectiveRequest?.model).toBe(legacy?.effectiveRequest?.model)
+    expect(v4?.effectiveRequest?.messageCount).toBe(legacy?.effectiveRequest?.messageCount)
+    expect(v4?.outboundRequest).toBeDefined()
+    expect(v4?.outboundRequest?.format).toBe(legacy?.outboundRequest?.format)
+    expect(v4?.outboundRequest?.model).toBe(legacy?.outboundRequest?.model)
+    expect(v4?.outboundRequest?.messageCount).toBe(legacy?.outboundRequest?.messageCount)
+    expect(typeof v4?.queueWaitMs).toBe("number") // recorded (0, no throttle)
+
+    // Two-track (NOT byte-for-byte with legacy on effective): O10 max_completion_tokens
+    // is a wire-trim — it lands on the wire track only, never on effective. (legacy
+    // leaked it into effective; v4 keeps it on wire. Pin the intentional difference.)
+    const v4Eff = v4?.effectiveRequest?.payload as { max_completion_tokens?: number } | undefined
+    const v4Wire = v4?.outboundRequest?.payload as { max_completion_tokens?: number } | undefined
+    expect(v4Eff?.max_completion_tokens).toBeUndefined() // effective = logical request, no wire-trim
+    expect(v4Wire?.max_completion_tokens).toBe(4096) // wire = final bytes, O10 filled
+  })
+
+  test("history double-track (L2) via-responses: outboundRequest.format = openai-responses, effective = cc, equal to legacy", async () => {
+    const body = { model: "gpt-5", messages: [{ role: "user", content: "hi" }], stream: false }
+
+    setV4DriverEnabled("openai-cc", false)
+    await post(body)
+    const legacy = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
+
+    setV4DriverEnabled("openai-cc", true)
+    await post(body)
+    const v4 = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
+
+    // wire is the actual upstream endpoint (responses); effective stays the client CC request.
+    expect(legacy?.outboundRequest?.format).toBe("openai-responses")
+    expect(v4?.outboundRequest?.format).toBe("openai-responses")
+    expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.outboundRequest?.messageCount).toBe(legacy?.outboundRequest?.messageCount)
+    expect(v4?.effectiveRequest?.messageCount).toBe(legacy?.effectiveRequest?.messageCount)
   })
 })

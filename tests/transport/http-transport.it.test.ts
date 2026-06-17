@@ -35,7 +35,8 @@ import { createSseResponse } from "../helpers/sse"
 import { autoRestoreState } from "../helpers/state-fixture"
 
 function makeEnv(): RequestEnvelope {
-  return { model: { id: "gpt-4o" }, clientFormat: "openai-cc" } as unknown as RequestEnvelope
+  const ctx = { addQueueWaitMs: () => {} }
+  return { model: { id: "gpt-4o" }, clientFormat: "openai-cc", ctx } as unknown as RequestEnvelope
 }
 
 function makeWire(over?: Partial<PreparedRequest>): PreparedRequest {

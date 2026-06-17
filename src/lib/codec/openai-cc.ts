@@ -40,6 +40,11 @@
 import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
+import type {
+  //
+  EffectiveRequest,
+  WireRequest,
+} from "~/lib/context/types"
 import type { EndpointType } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 import type {
@@ -60,6 +65,7 @@ import type {
   FormatCodec,
   PreparedRequest,
   RawHttpRequest,
+  RequestSample,
   ResponseAccumulator,
   RouteDecision,
   UpstreamFrame,
@@ -73,12 +79,17 @@ import type {
 } from "~/types/api/openai-chat-completions"
 import type {
   //
+  ResponsesInputItem,
   ResponsesResponse,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
 import { getRequestContextManager } from "~/lib/context/manager"
-import { captureInboundHeaders } from "~/lib/fetch-utils"
+import {
+  //
+  captureInboundHeaders,
+  sanitizeHeadersForHistory,
+} from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import {
   //
@@ -93,7 +104,11 @@ import {
   prepareChatCompletionsRequest,
   prepareResponsesRequest,
 } from "~/lib/openai/request-preparation"
-import { normalizeCallIds } from "~/lib/openai/responses-conversion"
+import {
+  //
+  extractInputItems,
+  normalizeCallIds,
+} from "~/lib/openai/responses-conversion"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { streamErrorKindToOpenAIErrorType } from "~/lib/openai/stream-error"
@@ -112,6 +127,8 @@ import { state } from "~/lib/state"
 
 const CLIENT_FORMAT: ClientFormat = "openai-cc"
 const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
+/** History `format` label for the via-responses wire (the actual upstream endpoint). */
+const RESPONSES_ENDPOINT_TYPE: EndpointType = "openai-responses"
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 /** A per-request Responses→CC stream translator (created lazily on first via-responses frame). */
@@ -206,6 +223,10 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
 
     createResponseAccumulator(): ResponseAccumulator {
       return createOpenAIStreamAccumulator()
+    },
+
+    sampleRequest(wire, env): RequestSample {
+      return sampleOpenAiCcRequest(wire, env)
     },
   }
 }
@@ -403,6 +424,50 @@ function recordDroppedCcParamsWarning(ctx: RequestContext, model: string, droppe
   consola.warn(`[CC→Responses] model=${model} ${message}`)
   ctx.addWarningMessage({ code: DROPPED_CC_PARAMS_WARNING_CODE, message })
   ctx.recordFeature("dropped-params")
+}
+
+/**
+ * S4 observability (P2.3-S): derive the history-side effective + wire request
+ * descriptors for one attempt.
+ *
+ * `effective` is the CC-shaped post-rewrite **logical** request (`env.body` —
+ * always CC, since `translateOut` is identity), labeled as the client endpoint.
+ * `wire` is the actual outbound bytes: format-specific message extraction (CC
+ * `messages` vs Responses `input`) + the actual upstream endpoint label.
+ *
+ * **Two-track, NOT byte-for-byte with legacy on the effective track:** wire-trims
+ * (O10 `max_completion_tokens` fill, header build) live in `prepareWire` and so
+ * land only on `wire`, never on `env.body`/`effective` (retry-transport.md §3,
+ * EffectiveRequest = "before client-specific wire mutations"). The legacy handler
+ * happened to apply O10 before the pipeline, leaking it into its effectiveRequest;
+ * v4 keeps it on the wire track only. The `wire` track IS equivalent (both go
+ * through `prepareChatCompletionsRequest`/`prepareResponsesRequest` with O10). Do
+ * NOT "fix" `effective` to include O10 — that would re-introduce the legacy leak.
+ */
+function sampleOpenAiCcRequest(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
+  const effBody = env.body as { model?: unknown; messages?: unknown }
+  const effective: EffectiveRequest = {
+    model: typeof effBody.model === "string" ? effBody.model : "",
+    resolvedModel: env.model as Model | undefined,
+    messages: Array.isArray(effBody.messages) ? effBody.messages : [],
+    payload: env.body,
+    format: ENDPOINT_TYPE,
+  }
+
+  const wireBody = wire.body as { model?: unknown; messages?: unknown; input?: string | Array<ResponsesInputItem> }
+  const isResponses = env.targetEndpoint === ENDPOINT.RESPONSES
+  let wireMessages: Array<unknown>
+  if (isResponses) wireMessages = extractInputItems(wireBody.input ?? [])
+  else wireMessages = Array.isArray(wireBody.messages) ? wireBody.messages : []
+  const wireRequest: WireRequest = {
+    model: typeof wireBody.model === "string" ? wireBody.model : "",
+    messages: wireMessages,
+    payload: wire.body,
+    headers: sanitizeHeadersForHistory(Object.fromEntries(wire.headers.entries())),
+    format: isResponses ? RESPONSES_ENDPOINT_TYPE : ENDPOINT_TYPE,
+  }
+
+  return { effective, wire: wireRequest }
 }
 
 // ============================================================================
