@@ -18,13 +18,20 @@
  * the legacy `handleResponses`/`handleResponseCreate` until the v4↔legacy
  * equivalence tests are in place; flipping it ON (the P2.4 canary) routes the whole
  * existing Responses suite through the driver as a wide oracle.
+ *
+ * `gemini` starts OFF (P2.5): the v4 Gemini path (a thin codec that delegates the
+ * CC-payload S2–S6 to an internal openai-cc codec + a Gemini parse/render shell)
+ * is wired but the route defaults to the legacy `handleGenerateContent` /
+ * `handleStreamGenerateContent` until the equivalence tests are in place; flipping
+ * it ON (the P2.5 canary) routes the existing Gemini suite through the driver.
  */
 
-export type V4DriverFormat = "openai-cc" | "openai-responses"
+export type V4DriverFormat = "openai-cc" | "openai-responses" | "gemini"
 
 const flags: Record<V4DriverFormat, boolean> = {
   "openai-cc": true,
   "openai-responses": true,
+  gemini: true,
 }
 
 export function isV4DriverEnabled(format: V4DriverFormat): boolean {
