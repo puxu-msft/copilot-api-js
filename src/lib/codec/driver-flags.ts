@@ -5,16 +5,19 @@
  * driver path or the legacy handler. The flag lets a format be switched back to
  * the legacy path at runtime; the old handler is removed only in P3.
  *
- * Module-level mutable: tests that exercise the v4 path enable it and MUST reset
- * it (`setV4DriverEnabled(format, false)`) in an afterEach to avoid cross-file
- * leakage (bun runs the suite in one process). Default is OFF for every format
- * until that format's equivalence is verified.
+ * Module-level mutable: tests that exercise a specific path enable/restore it and
+ * MUST restore the flag's prior value (NOT hardcode false) in an afterEach to
+ * avoid cross-file leakage (bun runs the suite in one process).
+ *
+ * `openai-cc` is ON (P2.3-ON): CC serves through the v4 driver; the legacy
+ * `handleChatCompletion` stays in the tree (toggle back here) until P3.3 deletes
+ * it. The whole existing CC suite runs through the driver at this default.
  */
 
 export type V4DriverFormat = "openai-cc"
 
 const flags: Record<V4DriverFormat, boolean> = {
-  "openai-cc": false,
+  "openai-cc": true,
 }
 
 export function isV4DriverEnabled(format: V4DriverFormat): boolean {

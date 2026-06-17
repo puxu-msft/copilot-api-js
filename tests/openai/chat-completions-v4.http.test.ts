@@ -20,7 +20,11 @@ import {
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { setV4DriverEnabled } from "~/lib/codec/driver-flags"
+import {
+  //
+  isV4DriverEnabled,
+  setV4DriverEnabled,
+} from "~/lib/codec/driver-flags"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -43,6 +47,9 @@ let lastResponsesWire: { model?: string; input?: unknown } | undefined
 let ccHits = 0
 let throwOnce = false
 let throwAlways = false
+
+/** The flag's default, captured at import before any test toggles it (no leak to siblings). */
+const DEFAULT_V4_FLAG = isV4DriverEnabled("openai-cc")
 
 function ccBody(model: string): string {
   return JSON.stringify({
@@ -169,7 +176,9 @@ describe("CC v4 ↔ legacy equivalence", () => {
   })
 
   afterEach(() => {
-    setV4DriverEnabled("openai-cc", false)
+    // Restore the flag's default (NOT a hardcoded false) so this file never leaks
+    // the toggle to sibling files (bun's single-process module singleton).
+    setV4DriverEnabled("openai-cc", DEFAULT_V4_FLAG)
   })
 
   test("non-streaming passthrough: client json + wire payload equal", async () => {

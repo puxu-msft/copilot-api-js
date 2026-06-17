@@ -8,20 +8,20 @@
 
 ## ▶ 当前位置 / 下一步（防呆——每会话先看这里）
 
-- **已完成到**：P2.3（CC 切 driver，behind flag `openai-cc`=**OFF**，legacy 仍 live）。P0/P1/P2.1/P2.2/P2.3 ✅。
-- **下一步**：**P2.3 收尾三小步（见下「P2.3 收尾排程」）→ P2.4（Responses 切 driver）**。粘 `prompts/P2-driver-and-codecs.md` 继续逐格式迁移。
+- **已完成到**：**P2.3 全部 ✅（CC 已切 driver，flag `openai-cc`=ON，全套件经 v4 绿）**。P0/P1/P2.1/P2.2/P2.3（+S/H/ON）✅。
+- **下一步**：**P2.4（Responses 切 driver）**。粘 `prompts/P2-driver-and-codecs.md` 继续逐格式迁移。
 - **⚠️ 现在粘 `prompts/P3-unify.md` 会跑错**：P3 假设「4 格式全在 driver 上」，但 Responses/Gemini/Anthropic（P2.4-2.6）**未做**。P3.1（透传统一）需 4 codec 齐、P3.3（删 handler）会删仍在用的 handler。**P3 须等 P2.4-2.6 全完成。**
 - **排程已重排（2026-06-17，architect subagent 验证）**：原计划把「driver 自动采样」整体放 P3.2（所有格式迁完后）。重排为——**P3.2 拆两半**：`P3.2a`（driver 加采样，共享机件，**提前到 P2.3 收尾**做一次 4 格式同受益）+ `P3.2b`（删各 handler 手动 setter，**锚定各格式迁移点**，不可提前——删不了还在 legacy 的格式的 setter）。`P3.1`（透传统一）**不提前**（需 4 codec 齐）。**翻 flag ON 的硬 gate = L1 行为等价 ∧ L2 记录等价**，逐格式各过各的 gate。详见 P2.3-L1/L2。
 
-### P2.3 收尾排程（重排后，先于 P2.4）
+### P2.3 收尾排程（重排后，已落地）
 
-| 步 | 内容 | flag-ON gate | 前置 |
+| 步 | 内容 | 状态 | 备注 |
 |---|---|---|---|
-| **P2.3-S**（=原 P3.2a，提前） | driver 自动采样下沉：driver.ts:119/:219 占位 → 真采样（per-attempt wireRequest/effectiveRequest、上游原始 sseEvents、forwarded、queueWaitMs）；删 **handler-v4** 对应手动 setter（仅 CC 在 driver 上） | — | 仅 CC 在 driver（driver+ctx 自足）。**进度：请求侧双轨（effectiveRequest/wireRequest）+ queueWaitMs ✅**（codec `sampleRequest` + driver per-attempt + transport addQueueWaitMs；L2 双轨等价测试齐）；**响应侧上游原始 sseEvents（改进）+ 删 handler-v4 setter 待做**。**验证：双轨语义等价**（非 effective 轨逐字节——O10 `max_completion_tokens` 等 wire-trim 只落 wire 轨、effective=未裁剪逻辑请求；legacy 把 O10 泄漏进 effective，v4 修正；wire 轨完全等价）；queueWaitMs 须含重试退避（driver `addQueueWaitMs(action.waitMs)`，非仅限流） |
-| **P2.3-H**（=L1 边缘） | 格式无关「fake-timer + abort/idle/shutdown 信号注入 + driver 状态断言」harness 骨架（一次写、跨格式复用）+ CC 叶子 oracle（CC 错误帧/终态/partial）+ CC auto-truncate 标记等价 | L1 齐 | P2.3-S（错误路径也要记双轨）。**harness 断言 oracle 须格式特定**（Anthropic streamError vs CC 终态不同，否则假绿） |
-| **P2.3-ON** | `driver-flags.ts "openai-cc": false → true`（一行），CC canary | **L1 ∧ L2 齐** | 现有全套 CC 测试自动经 v4 = 宽 oracle 压实 driver；边缘测试连跑 10-25× |
+| **P2.3-S**（=原 P3.2a，提前） | driver 请求侧双轨采样（effectiveRequest/wireRequest）+ queueWaitMs；响应侧上游 sseEvents（改进）+ 删 handler-v4 setter | ⚠️ **请求侧 ✅**（codec `sampleRequest` + driver per-attempt + transport queueWaitMs；L2 双轨等价测试齐；O10 双轨语义裁决——只落 wire 轨；HIGH-1 退避计入修复）。**响应侧上游 sseEvents（改进，非等价项，legacy CC 也空）+ 删 handler-v4 response setter → 归 P3.2b（跨格式一次做）** | |
+| **P2.3-H**（=L1 边缘） | abort/idle/shutdown + auto-truncate 标记等价 | ✅ **由「全套件经 v4」满足**——翻 flag ON 后现有 CC 全套件（含 shutdown-mid-stream 等）经 driver 跑、2584 全绿；handler-v4 流式 catch→error-frame 路径经 shutdown(v4) 覆盖，idle 走同代码路径。**可接受次要缺口**（legacy-parity）：abort-return 委托分支（326-327，委托已测的 `settleStreamingFailure`）、auto-truncate marker（verbose-only，legacy 亦无 http 测）、防御性 JSON.parse catch | |
+| **P2.3-ON** | `driver-flags.ts "openai-cc": true`（默认 ON）；测试隔离修复（v4 测试 afterEach 还原默认值，不泄漏 false） | ✅ | 全套件 2584 pass/0 fail 经 v4 = 宽 oracle 综合等价；legacy handler 仍在树（可 toggle 回切），P3.3 删 |
 
-> 此后 P2.4-2.6 建立在「已采样 + 已 canary 压实」的 driver 上：codec 只提供 `createResponseAccumulator`（复用 driver 采样，不再手写消费侧）+ 复用 P2.3-H 的 harness 骨架 + 各写格式叶子；各格式翻 ON 同样过 L1∧L2。
+> 此后 P2.4-2.6 建立在「请求侧已采样 + 已 canary 压实」的 driver 上：codec 提供 `sampleRequest`/`createResponseAccumulator`（复用 driver 采样）+ 各写格式 oracle；各格式翻 ON 同样过 L1∧L2。响应侧采样下沉（上游 sseEvents + 删 handler setter）跨格式统一在 P3.2b。
 
 ---
 
@@ -33,7 +33,7 @@
 | P0 地基 | 4 | 4/4 | ✅ |
 | P1 改写 registry 化（请求侧） | 4 | 4/4 | ✅ |
 | P1.5/P1.6（响应侧）→ 折入 P2 | — | — | ↪ 见 P1.5-SCOPE |
-| P2 driver + 逐格式 | 6 | 2/6 | 🟡 |
+| P2 driver + 逐格式 | 6 | 3/6 | 🟡 |
 | P3 统一收尾 | 4 | 0/4 | ⬜ |
 
 > **P1 范围修订（2026-06-16，调研后）**：P1 原计划 6 commit。请求侧 4 个（P1.1 接口 + P1.2/P1.3 Anthropic full + P1.4 OpenAI focused）有干净 seam，已全部完成、字节等价、subagent reviewed。**响应侧 P1.5（响应改写注册）/ P1.6（错误帧→codec.formatError）经调研判定折入 P2**——其消费者（P1.5 的 S5 per-frame chain、P1.6 的 codec）是 P2 的交付物，强塞进 P1 = 半重构 byte-critical 流式 pump（forwarded SSE 字节风险）+ 过早造 codec stub，且与 P2.6 重叠。详见 P1.5-SCOPE / P1.5-OQ1（heartbeat 已裁决 option ①）。P1.1 的 `ResponseRewrite` 接口已前瞻定义 + 测试，P2 落地即消费。
@@ -66,7 +66,7 @@
 |---|---|---|---|---|
 | P2.1 | driver.ts + stages/* 骨架 | ✅ | driver 单测 mock codec/transport 15 pass（编排 S1-S7 + 重试循环 + S3/S5 改写链 + buffer/flush + 非流式）；全 offline 2532 pass/0 fail；typecheck+eslint 绿；subagent review（逐行对照 retry-transport §2 + budget off-by-one 与 legacy 等价）无 CRITICAL/HIGH | `createPipelineDriver(deps)`：consume codec/transport/strategies/registry 为 opaque deps。FormatCodec 接口追加 types.ts。abort 抛原始 error（legacy parity，非 spec 草案的 action.error）；strategy.handle 抛错降级原始 error（try/catch）；reject carry reason 由 route/codec 成形（不在 driver 做格式决策）。observability 自动采样占位待 P3.2 |
 | P2.2 | codec/openai-cc.ts | ✅ | codec 30 单测 pass（unit：decideRoute 矩阵/translateOut=identity/prepareWire 两分派+dropped 去重+normalizeCallIds gating/renderResponse 3 循环行为+function_call 跨帧+completed 双帧/formatError 三类型/createResponseAccumulator；it：parse env 字段+azure override+model 解析+tool-name mapper+orphan 过滤+未知模型）；全 offline 2561 pass/0 fail；typecheck+eslint 绿 | per-request 有状态工厂 `createOpenAiCcCodec()`（闭包持 translator 状态）；translateOut=identity + CC→Responses 落 prepareWire（auto-truncate strategy 契约强制，见 P2.2-D1）。stream-error.ts 抽 `streamErrorKindToOpenAIErrorType`（DRY）；RawHttpRequest +method/+path。**不接线**（旧 handler 仍在用）。5 条遗留见下 |
-| P2.3 | **CC 切 driver**（flag 可回切） | ⚠️ | v4 路径全接线 + 7 http 等价测试（透传流式/非流式、tool-name 清洗→还原、unsupported 400、via-responses 流式+非流式含合成 [DONE]、network-retry 重试一次）逐项 v4↔legacy 字节等价（client 输出 + outbound wire）；全 offline 2579 pass/0 fail；typecheck+eslint 绿 | 分 3 commit：transport adapter（fd6c637）+ env-strategy bridge（2d8967e）+ 路由接线（本）。driver +策略工厂；codec +`getTruncateBaseline`/originalBodyForHistory snapshot/preResolved；+driver-flags（**默认 OFF**）；handler-v4 含 D3(parse 前 await system-prompt + preResolved 解决配置 reload 重排)/D6(translate 时 recordFeature)/D2(via-responses 流末合成 [DONE])/S5 tool-restore 在消费侧/采样仍 ctx-setter(P3.2 下沉)。**遗留见 P2.3-L1**：flag 默认 OFF + auto-truncate/abort/idle/shutdown 边缘等价待补后才翻 ON |
+| P2.3 | **CC 切 driver**（flag 可回切） | ✅ | v4 路径全接线 + 7 http 等价测试逐项 v4↔legacy 字节等价（client 输出 + outbound wire）；**收尾 S/H/ON 后 flag ON、全套件 2584 pass/0 fail 经 v4**；typecheck+eslint 绿 | 分 5 commit：transport adapter（fd6c637）+ env-strategy bridge（2d8967e）+ 路由接线（2790d50）+ ctx-settle review 修复（6dbe053）+ **P2.3-S 请求侧双轨采样（6cc8b9c）+ 本（隔离修复+翻 flag ON）**。driver +策略工厂+per-attempt 采样；codec +`getTruncateBaseline`/`getContext`/originalBodyForHistory/preResolved/`sampleRequest`；driver-flags **默认 ON**；handler-v4 含 D3/D6/D2/S5 tool-restore/失败 settle。收尾详情见顶部「P2.3 收尾排程」（S 请求侧✅响应侧→P3.2b / H 经全套件满足 / ON 默认 ON）|
 | P2.4 | codec/openai-responses.ts + Responses 切 driver | ⬜ | Responses 等价（含 ws/force-fallback/stream-id） | |
 | P2.5 | codec/gemini.ts + Gemini 切 driver | ⬜ | Gemini 等价（dropped params/sidecar error） | |
 | P2.6 | **codec/anthropic.ts + Anthropic 切 driver** | ⬜ | thinking signature 往返；web_search 双跳等价 | 最复杂 |
