@@ -27,6 +27,7 @@ import type {
   //
   ClientFormat,
   RequestEnvelope,
+  ResolvedModel,
   UpstreamEndpoint,
 } from "./envelope"
 
@@ -177,6 +178,24 @@ export interface RawHttpRequest {
   readonly path?: string
   /** Model override injected by Azure deployment routing (codec.parse reads it). */
   readonly modelOverride?: string
+  /**
+   * The client's raw inbound body for the history snapshot, when it differs from
+   * `body`. The route applies the async, non-idempotent system-prompt injection
+   * to `body` BEFORE `codec.parse` (parse is sync — P2.2-D3); it passes the
+   * pre-injection client body here so parse records the inboundRequest as what
+   * the client actually sent (not the server-modified wire body). Defaults to
+   * `body` when omitted (no system-prompt injection happened).
+   */
+  readonly originalBodyForHistory?: unknown
+  /**
+   * Model resolution computed by the route BEFORE the sync parse, at the legacy
+   * timing point (before the async system-prompt's `applyConfigToState` config
+   * reload — P2.2-D3). Supplying it makes parse use this exact resolution rather
+   * than re-resolving post-reload, so a config reload (e.g. `disabled_models`) that
+   * happens during system-prompt cannot shift the model lookup relative to the
+   * legacy handler. `model: undefined` is a valid value (unknown gpt-* fallback).
+   */
+  readonly preResolved?: { name: string; model: ResolvedModel | undefined }
   /** Downstream client-disconnect signal, folded into the upstream fetch signal. */
   readonly clientAbortSignal?: AbortSignal
 }

@@ -47,7 +47,7 @@
 |---|---|---|---|---|
 | P2.1 | driver.ts + stages/* 骨架 | ✅ | driver 单测 mock codec/transport 15 pass（编排 S1-S7 + 重试循环 + S3/S5 改写链 + buffer/flush + 非流式）；全 offline 2532 pass/0 fail；typecheck+eslint 绿；subagent review（逐行对照 retry-transport §2 + budget off-by-one 与 legacy 等价）无 CRITICAL/HIGH | `createPipelineDriver(deps)`：consume codec/transport/strategies/registry 为 opaque deps。FormatCodec 接口追加 types.ts。abort 抛原始 error（legacy parity，非 spec 草案的 action.error）；strategy.handle 抛错降级原始 error（try/catch）；reject carry reason 由 route/codec 成形（不在 driver 做格式决策）。observability 自动采样占位待 P3.2 |
 | P2.2 | codec/openai-cc.ts | ✅ | codec 30 单测 pass（unit：decideRoute 矩阵/translateOut=identity/prepareWire 两分派+dropped 去重+normalizeCallIds gating/renderResponse 3 循环行为+function_call 跨帧+completed 双帧/formatError 三类型/createResponseAccumulator；it：parse env 字段+azure override+model 解析+tool-name mapper+orphan 过滤+未知模型）；全 offline 2561 pass/0 fail；typecheck+eslint 绿 | per-request 有状态工厂 `createOpenAiCcCodec()`（闭包持 translator 状态）；translateOut=identity + CC→Responses 落 prepareWire（auto-truncate strategy 契约强制，见 P2.2-D1）。stream-error.ts 抽 `streamErrorKindToOpenAIErrorType`（DRY）；RawHttpRequest +method/+path。**不接线**（旧 handler 仍在用）。5 条遗留见下 |
-| P2.3 | **CC 切 driver**（flag 可回切） | ⬜ | CC e2e+golden 等价；CC 现也记上游 sseEvents | |
+| P2.3 | **CC 切 driver**（flag 可回切） | ⚠️ | v4 路径全接线 + 7 http 等价测试（透传流式/非流式、tool-name 清洗→还原、unsupported 400、via-responses 流式+非流式含合成 [DONE]、network-retry 重试一次）逐项 v4↔legacy 字节等价（client 输出 + outbound wire）；全 offline 2579 pass/0 fail；typecheck+eslint 绿 | 分 3 commit：transport adapter（fd6c637）+ env-strategy bridge（2d8967e）+ 路由接线（本）。driver +策略工厂；codec +`getTruncateBaseline`/originalBodyForHistory snapshot/preResolved；+driver-flags（**默认 OFF**）；handler-v4 含 D3(parse 前 await system-prompt + preResolved 解决配置 reload 重排)/D6(translate 时 recordFeature)/D2(via-responses 流末合成 [DONE])/S5 tool-restore 在消费侧/采样仍 ctx-setter(P3.2 下沉)。**遗留见 P2.3-L1**：flag 默认 OFF + auto-truncate/abort/idle/shutdown 边缘等价待补后才翻 ON |
 | P2.4 | codec/openai-responses.ts + Responses 切 driver | ⬜ | Responses 等价（含 ws/force-fallback/stream-id） | |
 | P2.5 | codec/gemini.ts + Gemini 切 driver | ⬜ | Gemini 等价（dropped params/sidecar error） | |
 | P2.6 | **codec/anthropic.ts + Anthropic 切 driver** | ⬜ | thinking signature 往返；web_search 双跳等价 | 最复杂 |
@@ -79,6 +79,14 @@
 ## 遗留与决策追踪
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
+
+### P2.3-L1 — flag 默认 OFF + 边缘等价待补后翻 ON（P2.3 收尾）
+
+- **发现于**：P2.3 路由接线
+- **当前行为**：`driver-flags.ts` 的 `openai-cc` flag **默认 OFF**——prod 仍走 legacy handler，v4 路径已全接线 + 主路径等价测试（7 http），但**未在 v4 上跑**的等价场景：auto-truncate（413/token_limit 截断重试，需 mock 上游 limit 错误 + 验 truncation marker）、客户端 abort 中途、idle-timeout、shutdown 中途、reasoning_effort/unsupported-beta（CC 无这些策略，N/A）。
+- **理想架构**：迁移计划要求 flag 默认 ON（旧路保留一周期）。翻 ON 前补齐上述边缘场景的 v4↔legacy 等价（沿用 fake timers 连跑 10-25× 验确定性，参照现有 shutdown/abort http 测试）。
+- **为何暂缓**：主路径等价已扎实；边缘场景（尤其 auto-truncate 的 limit 错误 mock + fake-timer abort/idle/shutdown）需额外测试基建，且翻 ON 改变 prod 行为应在边缘覆盖齐后慎重进行。
+- **若做需改什么**：补 auto-truncate + abort/idle/shutdown 的 v4 http 等价测试 → 全绿后把 `driver-flags.ts` 的 `"openai-cc": false` 改为 `true`（一行）；P3.3 删 legacy handler + flag。
 
 ### P2.2-D1 — prepareWire 内做 CC→Responses 全翻译（偏离 retry-transport §3「裁剪」语义；P2.3 接 driver 时复核）
 

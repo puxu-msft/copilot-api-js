@@ -118,19 +118,43 @@ const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 type StreamTranslator = ReturnType<typeof createStreamTranslator>
 
 /**
- * Build the openai-cc codec for one request. The returned instance holds the
- * per-request Responses→CC translator in its closure (see module docstring).
+ * The openai-cc codec, widened beyond {@link FormatCodec} with the per-request
+ * truncation baseline accessor. The driver consumes it as a plain `FormatCodec`;
+ * the route reads {@link OpenAiCcCodec.getTruncateBaseline} (after `parse`) to
+ * build the auto-truncate strategy with the stable un-sanitized baseline.
  */
-export function createOpenAiCcCodec(): FormatCodec {
+export interface OpenAiCcCodec extends FormatCodec {
+  /**
+   * The truncation baseline captured by `parse`: the un-sanitized, post-tool-rename
+   * CC payload the auto-truncate strategy re-truncates from each retry (never the
+   * mutated `env.body`). `undefined` before `parse` runs.
+   */
+  getTruncateBaseline(): ChatCompletionsPayload | undefined
+}
+
+/**
+ * Build the openai-cc codec for one request. The returned instance holds the
+ * per-request Responses→CC translator + truncation baseline in its closure (see
+ * module docstring).
+ */
+export function createOpenAiCcCodec(): OpenAiCcCodec {
   // Lazily created on the first via-responses frame; persists across frames so
   // its cross-frame state (tool-call index map, response id) survives.
   let streamTranslator: StreamTranslator | null = null
+  // The auto-truncate baseline, captured by parse (see OpenAiCcCodec).
+  let truncateBaseline: ChatCompletionsPayload | undefined
 
   return {
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      return parseOpenAiCc(raw)
+      const { env, baseline } = parseOpenAiCc(raw)
+      truncateBaseline = baseline
+      return env
+    },
+
+    getTruncateBaseline() {
+      return truncateBaseline
     },
 
     decideRoute(env) {
@@ -199,18 +223,24 @@ export function createOpenAiCcCodec(): FormatCodec {
  * only the static type over-claims. P2.3 may relax the envelope to
  * `ResolvedModel | undefined` once Anthropic's non-optional assumption is revisited.
  */
-function parseOpenAiCc(raw: RawHttpRequest): RequestEnvelope {
+function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: ChatCompletionsPayload } {
+  // `body` is the wire-logical inbound (system-prompt already injected by the
+  // route, P2.2-D3); `originalBodyForHistory` (when present) is the client's raw
+  // pre-injection body for the history snapshot.
   const incoming = raw.body as ChatCompletionsPayload
+  const clientBody = (raw.originalBodyForHistory ?? raw.body) as ChatCompletionsPayload
 
-  // Snapshot BEFORE any rewrite so history records the client's raw input.
-  const originalSnapshot = structuredClone(incoming)
+  // Snapshot the CLIENT raw (pre-rewrite, pre-system-prompt) for history.
+  const originalSnapshot = structuredClone(clientBody)
 
   // Azure deployment routes inject the deployment name as an explicit override
   // (path wins over body.model). It defines the effective requested model.
   const clientModel = raw.modelOverride ?? incoming.model
-  const resolvedName = resolveModelName(clientModel)
+  // Prefer the route's pre-reload resolution (legacy timing — before the
+  // system-prompt config reload, P2.2-D3); else resolve + look up here.
+  const resolvedName = raw.preResolved?.name ?? resolveModelName(clientModel)
   if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
-  const selectedModel = state.modelIndex.get(resolvedName)
+  const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
 
   // Create the request context (triggers "created" → history insert).
   const manager = getRequestContextManager()
@@ -232,8 +262,8 @@ function parseOpenAiCc(raw: RawHttpRequest): RequestEnvelope {
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
 
-  // Tool-name sanitization (client → upstream). The mapper is stored on ctx so
-  // the response-side restore (an S5 rewrite, not the codec) can reverse it.
+  // Tool-name sanitization (client → upstream) over the wire-logical body. The
+  // mapper is stored on ctx so the response-side restore can reverse it.
   const resolvedPayload: ChatCompletionsPayload = { ...incoming, model: resolvedName }
   const toolNameMapper = buildChatCompletionsToolNameMapper(resolvedPayload, selectedModel?.vendor)
   ctx.setToolNameMapper(toolNameMapper)
@@ -249,13 +279,17 @@ function parseOpenAiCc(raw: RawHttpRequest): RequestEnvelope {
   // it is an outbound-wire trim, not part of the effectiveRequest body).
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(renamedPayload)
 
-  return makeEnvelope({
+  const env = makeEnvelope({
     targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites via decideRoute
     model: selectedModel as ResolvedModel,
     stream: sanitizedPayload.stream ?? false,
     body: sanitizedPayload,
     ctx,
   })
+
+  // `renamedPayload` (post-tool-rename, PRE-sanitize) is the stable auto-truncate
+  // baseline — matching the legacy `originalPayload` the strategy re-truncates from.
+  return { env, baseline: renamedPayload }
 }
 
 function parseContentLength(header: string | null): number | undefined {

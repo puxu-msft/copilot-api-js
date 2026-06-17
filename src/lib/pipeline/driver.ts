@@ -49,8 +49,13 @@ import {
 export interface DriverDeps {
   codec: FormatCodec
   transport: Transport
-  /** Ordered retry strategies (first `canHandle` wins — 02 §1.2 order semantics). */
-  strategies: ReadonlyArray<RetryStrategy>
+  /**
+   * Ordered retry strategies (first `canHandle` wins — 02 §1.2 order semantics).
+   * Either a fixed array, or a per-request factory resolved with the parsed
+   * envelope (S4 input) — strategies that need parse outputs (e.g. the model,
+   * or the codec's truncation baseline) use the factory form.
+   */
+  strategies: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
   /** Normal-budget retry cap (pipeline.ts default 3). */
   maxRetries: number
   /** Learning-budget retry cap (pipeline.ts MAX_LEARNING_RETRIES=32). */
@@ -99,7 +104,9 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   const rewritten = runRewriteIn(deps, routed)
 
   // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
-  const upstream = await runExchange(deps, rewritten)
+  // Resolve the strategy factory now that the envelope (model + codec state) exists.
+  const strategies = typeof deps.strategies === "function" ? deps.strategies(rewritten) : deps.strategies
+  const upstream = await runExchange(deps, rewritten, strategies)
   return { ok: true, upstream, env: rewritten }
 }
 
@@ -121,7 +128,7 @@ function runRewriteIn(deps: DriverDeps, env: RequestEnvelope): RequestEnvelope {
  * re-prepares from it. The adaptive rate-limiter (429) lives inside
  * `transport.send`, below this loop — it never bubbles up here.
  */
-async function runExchange(deps: DriverDeps, env: RequestEnvelope): Promise<UpstreamStream> {
+async function runExchange(deps: DriverDeps, env: RequestEnvelope, strategies: ReadonlyArray<RetryStrategy>): Promise<UpstreamStream> {
   let current = env
   let normalRetries = 0
   let learningRetries = 0
@@ -139,7 +146,7 @@ async function runExchange(deps: DriverDeps, env: RequestEnvelope): Promise<Upst
       const apiError = classifyError(error)
       current.ctx.setAttemptError(apiError)
 
-      const strategy = deps.strategies.find((s) => s.canHandle(apiError))
+      const strategy = strategies.find((s) => s.canHandle(apiError))
       if (!strategy) throw error // no strategy → [FAIL]
 
       // A strategy that itself throws degrades to failing the request with the
