@@ -2,8 +2,10 @@ export { splitInstructionsAndConversation, translateChatCompletionsToResponses }
 export { translateResponsesResponseToCC } from "./responses-to-cc"
 export {
   //
+  createCCToResponsesStreamTranslator,
   translateCCStreamToResponsesStream,
   translateCCToResponsesResponse,
   translateResponsesToChatCompletions,
 } from "./responses-to-cc-request"
+export type { CCToResponsesStreamTranslator } from "./responses-to-cc-request"
 export { createStreamTranslator, translateResponsesStream } from "./responses-to-cc-stream"

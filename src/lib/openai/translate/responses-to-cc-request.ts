@@ -197,6 +197,265 @@ export function translateCCToResponsesResponse(ccResponse: ChatCompletionRespons
 // ============================================================================
 
 /**
+ * One CC SSE frame's worth of translation output (a Responses lifecycle event).
+ */
+interface ResponsesStreamFrame {
+  event: string
+  data: string
+}
+
+/**
+ * A per-frame CC → Responses stream translator. `translate(ccData)` consumes one
+ * upstream CC SSE `data` string and returns the Responses events to emit for it;
+ * `flush()` emits the closing lifecycle events (output/content/item done +
+ * `response.completed`) at stream end.
+ *
+ * This is the per-frame shape the v4 driver consumes (codec.renderResponse is
+ * per-frame); {@link translateCCStreamToResponsesStream} below is a thin
+ * whole-stream driver over it, so both paths produce byte-identical output. The
+ * `response.created` event is emitted lazily on the first `translate`/`flush`
+ * call (matching the legacy generator's "emit created before the loop", incl. the
+ * empty-stream case) and carries `ctx.clientModel` since no chunk has updated the
+ * model yet at that point.
+ */
+export interface CCToResponsesStreamTranslator {
+  /** Translate one upstream CC SSE `data` string → Responses events (empty for `[DONE]`/unparseable). */
+  translate(ccData: string): Array<ResponsesStreamFrame>
+  /** Emit the closing lifecycle events at stream end. */
+  flush(): Array<ResponsesStreamFrame>
+}
+
+/**
+ * Build the per-frame CC → Responses stream translator (the codec holds it in its
+ * per-request closure for the Responses fallback path).
+ *
+ * The global `fixResponsesStreamIds` flag is intentionally bypassed — the
+ * fallback generates internally-consistent IDs from ctx.
+ */
+export function createCCToResponsesStreamTranslator(ctx: TranslateExchangeContext): CCToResponsesStreamTranslator {
+  const createdAt = Math.floor(Date.now() / 1000)
+  const contentParts: Array<string> = []
+  const toolCalls = new Map<number, { id: string; callId: string; name: string; arguments: Array<string> }>()
+  let model = ctx.clientModel
+  let usage: ChatCompletionUsage | undefined
+  let finishReason: FinishReason | null = null
+  let sequenceNumber = 0
+  let textPartStarted = false
+  let messageItemEmitted = false
+  let started = false
+
+  // Emit `response.created` once, lazily — before any chunk updates `model`, so
+  // it carries the injected clientModel (matching the legacy generator's
+  // pre-loop emission).
+  const ensureStarted = (out: Array<ResponsesStreamFrame>): void => {
+    if (started) return
+    started = true
+    out.push(
+      responsesStreamEvent("response.created", {
+        type: "response.created",
+        sequence_number: sequenceNumber++,
+        response: createSyntheticResponsesResponse({ id: ctx.responseId, createdAt, status: "in_progress", model, output: [], usage }),
+      }),
+    )
+  }
+
+  return {
+    translate(ccData) {
+      const out: Array<ResponsesStreamFrame> = []
+      ensureStarted(out)
+
+      const parsed = parseChatCompletionStreamData(ccData)
+      if (!parsed) return out
+
+      if (typeof parsed.model === "string" && parsed.model.length > 0) model = parsed.model
+      if (parsed.usage) usage = parsed.usage as ChatCompletionUsage
+
+      const choices = parsed.choices as Array<Record<string, unknown>> | undefined
+      const choice = choices?.[0]
+      const delta = choice?.delta as Record<string, unknown> | undefined
+      if (typeof choice?.finish_reason === "string") {
+        finishReason = choice.finish_reason as FinishReason
+      }
+
+      // Text delta
+      if (typeof delta?.content === "string" && delta.content.length > 0) {
+        if (!messageItemEmitted) {
+          out.push(
+            responsesStreamEvent("response.output_item.added", {
+              type: "response.output_item.added",
+              sequence_number: sequenceNumber++,
+              output_index: 0,
+              item: { id: ctx.itemId, type: "message", role: "assistant", status: "incomplete", content: [] },
+            }),
+          )
+          messageItemEmitted = true
+        }
+        if (!textPartStarted) {
+          out.push(
+            responsesStreamEvent("response.content_part.added", {
+              type: "response.content_part.added",
+              sequence_number: sequenceNumber++,
+              output_index: 0,
+              content_index: 0,
+              part: { type: "output_text", text: "", annotations: [] },
+            }),
+          )
+          textPartStarted = true
+        }
+
+        contentParts.push(delta.content)
+        out.push(
+          responsesStreamEvent("response.output_text.delta", {
+            type: "response.output_text.delta",
+            sequence_number: sequenceNumber++,
+            output_index: 0,
+            content_index: 0,
+            delta: delta.content,
+          }),
+        )
+      }
+
+      // Tool call deltas
+      if (delta?.tool_calls) {
+        const toolCallDeltas = delta.tool_calls as Array<Record<string, unknown>>
+        for (const tc of toolCallDeltas) {
+          const toolIndex = typeof tc.index === "number" ? tc.index : 0
+          const fn = tc.function as Record<string, unknown> | undefined
+          const existing = toolCalls.get(toolIndex)
+
+          if (!existing) {
+            const callId = typeof tc.id === "string" ? tc.id : `call_${toolIndex}`
+            const name = typeof fn?.name === "string" ? fn.name : ""
+            toolCalls.set(toolIndex, { id: callId, callId, name, arguments: [] })
+
+            out.push(
+              responsesStreamEvent("response.output_item.added", {
+                type: "response.output_item.added",
+                sequence_number: sequenceNumber++,
+                output_index: toolIndex + 1,
+                item: {
+                  type: "function_call",
+                  id: callId,
+                  call_id: callId,
+                  name,
+                  arguments: "",
+                  status: "incomplete",
+                },
+              }),
+            )
+          } else if (typeof fn?.name === "string" && !existing.name) {
+            existing.name = fn.name
+          }
+
+          if (typeof fn?.arguments === "string" && fn.arguments.length > 0) {
+            const current = toolCalls.get(toolIndex)
+            current?.arguments.push(fn.arguments)
+            out.push(
+              responsesStreamEvent("response.function_call_arguments.delta", {
+                type: "response.function_call_arguments.delta",
+                sequence_number: sequenceNumber++,
+                output_index: toolIndex + 1,
+                item_id: current?.id ?? `call_${toolIndex}`,
+                delta: fn.arguments,
+              }),
+            )
+          }
+        }
+      }
+
+      return out
+    },
+
+    flush() {
+      const out: Array<ResponsesStreamFrame> = []
+      ensureStarted(out)
+
+      const text = contentParts.join("")
+      const output: Array<ResponsesOutputItem> = []
+
+      // Close the message item only if it was opened (i.e. some text arrived).
+      if (textPartStarted) {
+        out.push(
+          responsesStreamEvent("response.output_text.done", {
+            type: "response.output_text.done",
+            sequence_number: sequenceNumber++,
+            output_index: 0,
+            content_index: 0,
+            text,
+          }),
+          responsesStreamEvent("response.content_part.done", {
+            type: "response.content_part.done",
+            sequence_number: sequenceNumber++,
+            output_index: 0,
+            content_index: 0,
+            part: { type: "output_text", text, annotations: [] },
+          }),
+        )
+
+        const messageOutput: ResponsesOutputItem = {
+          id: ctx.itemId,
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text, annotations: [] }],
+        }
+        output.push(messageOutput)
+
+        out.push(
+          responsesStreamEvent("response.output_item.done", {
+            type: "response.output_item.done",
+            sequence_number: sequenceNumber++,
+            output_index: 0,
+            item: messageOutput,
+          }),
+        )
+      }
+
+      for (const [toolIndex, toolCall] of toolCalls) {
+        const args = toolCall.arguments.join("")
+        const item: ResponsesOutputItem = {
+          type: "function_call",
+          id: toolCall.id,
+          call_id: toolCall.callId,
+          name: toolCall.name,
+          arguments: args,
+          status: "completed",
+        }
+
+        out.push(
+          responsesStreamEvent("response.function_call_arguments.done", {
+            type: "response.function_call_arguments.done",
+            sequence_number: sequenceNumber++,
+            output_index: toolIndex + 1,
+            item_id: toolCall.id,
+            arguments: args,
+          }),
+          responsesStreamEvent("response.output_item.done", {
+            type: "response.output_item.done",
+            sequence_number: sequenceNumber++,
+            output_index: toolIndex + 1,
+            item,
+          }),
+        )
+
+        output.push(item)
+      }
+
+      const { status, incompleteReason } = ccFinishReasonToResponsesStatus(finishReason)
+      out.push(
+        responsesStreamEvent("response.completed", {
+          type: "response.completed",
+          sequence_number: sequenceNumber,
+          response: createSyntheticResponsesResponse({ id: ctx.responseId, createdAt, status, model, output, usage, incompleteReason }),
+        }),
+      )
+
+      return out
+    },
+  }
+}
+
+/**
  * Translate an upstream CC SSE stream into Responses-shaped SSE events.
  *
  * Emits the Responses lifecycle event sequence:
@@ -209,209 +468,19 @@ export function translateCCToResponsesResponse(ccResponse: ChatCompletionRespons
  *   → response.completed
  *
  * Tool-only responses skip the message-item lifecycle entirely (no synthetic
- * empty message). The global `fixResponsesStreamIds` flag is intentionally
- * bypassed — fallback path generates internally-consistent IDs from ctx.
+ * empty message). Thin whole-stream driver over
+ * {@link createCCToResponsesStreamTranslator} so the v4 codec (per-frame) and
+ * this legacy path stay byte-identical.
  */
 export async function* translateCCStreamToResponsesStream(
   ccStream: AsyncIterable<ServerSentEventMessage>,
   ctx: TranslateExchangeContext,
-): AsyncGenerator<{ event: string; data: string }, void, unknown> {
-  const createdAt = Math.floor(Date.now() / 1000)
-  const contentParts: Array<string> = []
-  const toolCalls = new Map<number, { id: string; callId: string; name: string; arguments: Array<string> }>()
-  let model = ctx.clientModel
-  let usage: ChatCompletionUsage | undefined
-  let finishReason: FinishReason | null = null
-  let sequenceNumber = 0
-
-  // Emit initial lifecycle events with clientModel — first chunk will update
-  // `model` if upstream reports a different (e.g. routed) name.
-  yield responsesStreamEvent("response.created", {
-    type: "response.created",
-    sequence_number: sequenceNumber++,
-    response: createSyntheticResponsesResponse({
-      id: ctx.responseId,
-      createdAt,
-      status: "in_progress",
-      model,
-      output: [],
-      usage,
-    }),
-  })
-
-  let textPartStarted = false
-  let messageItemEmitted = false
-
+): AsyncGenerator<ResponsesStreamFrame, void, unknown> {
+  const translator = createCCToResponsesStreamTranslator(ctx)
   for await (const chunk of ccStream) {
-    const parsed = parseChatCompletionStreamData(chunk.data ?? "")
-    if (!parsed) continue
-
-    if (typeof parsed.model === "string" && parsed.model.length > 0) model = parsed.model
-    if (parsed.usage) usage = parsed.usage as ChatCompletionUsage
-
-    const choices = parsed.choices as Array<Record<string, unknown>> | undefined
-    const choice = choices?.[0]
-    const delta = choice?.delta as Record<string, unknown> | undefined
-    if (typeof choice?.finish_reason === "string") {
-      finishReason = choice.finish_reason as FinishReason
-    }
-
-    // Text delta
-    if (typeof delta?.content === "string" && delta.content.length > 0) {
-      if (!messageItemEmitted) {
-        yield responsesStreamEvent("response.output_item.added", {
-          type: "response.output_item.added",
-          sequence_number: sequenceNumber++,
-          output_index: 0,
-          item: { id: ctx.itemId, type: "message", role: "assistant", status: "incomplete", content: [] },
-        })
-        messageItemEmitted = true
-      }
-      if (!textPartStarted) {
-        yield responsesStreamEvent("response.content_part.added", {
-          type: "response.content_part.added",
-          sequence_number: sequenceNumber++,
-          output_index: 0,
-          content_index: 0,
-          part: { type: "output_text", text: "", annotations: [] },
-        })
-        textPartStarted = true
-      }
-
-      contentParts.push(delta.content)
-      yield responsesStreamEvent("response.output_text.delta", {
-        type: "response.output_text.delta",
-        sequence_number: sequenceNumber++,
-        output_index: 0,
-        content_index: 0,
-        delta: delta.content,
-      })
-    }
-
-    // Tool call deltas
-    if (delta?.tool_calls) {
-      const toolCallDeltas = delta.tool_calls as Array<Record<string, unknown>>
-      for (const tc of toolCallDeltas) {
-        const toolIndex = typeof tc.index === "number" ? tc.index : 0
-        const fn = tc.function as Record<string, unknown> | undefined
-        const existing = toolCalls.get(toolIndex)
-
-        if (!existing) {
-          const callId = typeof tc.id === "string" ? tc.id : `call_${toolIndex}`
-          const name = typeof fn?.name === "string" ? fn.name : ""
-          toolCalls.set(toolIndex, { id: callId, callId, name, arguments: [] })
-
-          yield responsesStreamEvent("response.output_item.added", {
-            type: "response.output_item.added",
-            sequence_number: sequenceNumber++,
-            output_index: toolIndex + 1,
-            item: {
-              type: "function_call",
-              id: callId,
-              call_id: callId,
-              name,
-              arguments: "",
-              status: "incomplete",
-            },
-          })
-        } else if (typeof fn?.name === "string" && !existing.name) {
-          existing.name = fn.name
-        }
-
-        if (typeof fn?.arguments === "string" && fn.arguments.length > 0) {
-          const current = toolCalls.get(toolIndex)
-          current?.arguments.push(fn.arguments)
-          yield responsesStreamEvent("response.function_call_arguments.delta", {
-            type: "response.function_call_arguments.delta",
-            sequence_number: sequenceNumber++,
-            output_index: toolIndex + 1,
-            item_id: current?.id ?? `call_${toolIndex}`,
-            delta: fn.arguments,
-          })
-        }
-      }
-    }
+    yield* translator.translate(chunk.data ?? "")
   }
-
-  const text = contentParts.join("")
-  const output: Array<ResponsesOutputItem> = []
-
-  // Close the message item only if it was opened (i.e. some text arrived).
-  if (textPartStarted) {
-    yield responsesStreamEvent("response.output_text.done", {
-      type: "response.output_text.done",
-      sequence_number: sequenceNumber++,
-      output_index: 0,
-      content_index: 0,
-      text,
-    })
-    yield responsesStreamEvent("response.content_part.done", {
-      type: "response.content_part.done",
-      sequence_number: sequenceNumber++,
-      output_index: 0,
-      content_index: 0,
-      part: { type: "output_text", text, annotations: [] },
-    })
-
-    const messageOutput: ResponsesOutputItem = {
-      id: ctx.itemId,
-      type: "message",
-      role: "assistant",
-      status: "completed",
-      content: [{ type: "output_text", text, annotations: [] }],
-    }
-    output.push(messageOutput)
-
-    yield responsesStreamEvent("response.output_item.done", {
-      type: "response.output_item.done",
-      sequence_number: sequenceNumber++,
-      output_index: 0,
-      item: messageOutput,
-    })
-  }
-
-  for (const [toolIndex, toolCall] of toolCalls) {
-    const args = toolCall.arguments.join("")
-    const item: ResponsesOutputItem = {
-      type: "function_call",
-      id: toolCall.id,
-      call_id: toolCall.callId,
-      name: toolCall.name,
-      arguments: args,
-      status: "completed",
-    }
-
-    yield responsesStreamEvent("response.function_call_arguments.done", {
-      type: "response.function_call_arguments.done",
-      sequence_number: sequenceNumber++,
-      output_index: toolIndex + 1,
-      item_id: toolCall.id,
-      arguments: args,
-    })
-    yield responsesStreamEvent("response.output_item.done", {
-      type: "response.output_item.done",
-      sequence_number: sequenceNumber++,
-      output_index: toolIndex + 1,
-      item,
-    })
-
-    output.push(item)
-  }
-
-  const { status, incompleteReason } = ccFinishReasonToResponsesStatus(finishReason)
-  yield responsesStreamEvent("response.completed", {
-    type: "response.completed",
-    sequence_number: sequenceNumber,
-    response: createSyntheticResponsesResponse({
-      id: ctx.responseId,
-      createdAt,
-      status,
-      model,
-      output,
-      usage,
-      incompleteReason,
-    }),
-  })
+  yield* translator.flush()
 }
 
 // ============================================================================
