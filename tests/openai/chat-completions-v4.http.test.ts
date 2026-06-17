@@ -21,6 +21,7 @@ import {
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { setV4DriverEnabled } from "~/lib/codec/driver-flags"
+import { getHistory } from "~/lib/history"
 import {
   //
   setDisabledModels,
@@ -41,6 +42,7 @@ let lastCcWire: ChatCompletionsPayload | undefined
 let lastResponsesWire: { model?: string; input?: unknown } | undefined
 let ccHits = 0
 let throwOnce = false
+let throwAlways = false
 
 function ccBody(model: string): string {
   return JSON.stringify({
@@ -97,6 +99,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   if (url.endsWith("/chat/completions")) {
     lastCcWire = payload as ChatCompletionsPayload
     ccHits += 1
+    if (throwAlways) throw new Error("ECONNRESET: persistent upstream failure")
     if (throwOnce) {
       throwOnce = false
       throw new Error("ECONNRESET: upstream socket reset")
@@ -160,6 +163,7 @@ describe("CC v4 ↔ legacy equivalence", () => {
     lastResponsesWire = undefined
     ccHits = 0
     throwOnce = false
+    throwAlways = false
     applyFetchMock(upstreamFetchMock)
     setStateForTests({ copilotToken: "tok", autoTruncate: false })
   })
@@ -275,5 +279,41 @@ describe("CC v4 ↔ legacy equivalence", () => {
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     expect(ccHits).toBe(legacyHits)
     expect(v4).toEqual(legacy)
+  })
+
+  test("history: non-streaming success finalizes the entry (completed) on both paths", async () => {
+    const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
+
+    setV4DriverEnabled("openai-cc", false)
+    await post(body)
+    const legacyState = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
+
+    setV4DriverEnabled("openai-cc", true)
+    await post(body)
+    const v4State = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
+
+    expect(legacyState).toBe("completed")
+    expect(v4State).toBe("completed")
+  })
+
+  test("history: persistent upstream failure FINALIZES the entry (failed, not dangling) on both paths", async () => {
+    // A persistent (non-recovering) upstream error: network-retry retries once,
+    // the second failure has no handling strategy → the request fails. The ctx
+    // must reach `failed` (the handler's catch settles it directly — validates the
+    // codec.getContext()+fail wiring; without it the v4 entry would hang pending).
+    const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
+
+    setV4DriverEnabled("openai-cc", false)
+    throwAlways = true
+    await post(body)
+    const legacyState = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
+
+    setV4DriverEnabled("openai-cc", true)
+    throwAlways = true
+    await post(body)
+    const v4State = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
+
+    expect(legacyState).toBe("failed")
+    expect(v4State).toBe("failed")
   })
 })

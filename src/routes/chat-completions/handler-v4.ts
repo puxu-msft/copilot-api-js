@@ -111,16 +111,13 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const codec = createOpenAiCcCodec()
   const transport = createUpstreamHttpTransport({ headersCapture, clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
 
-  // Truncation result (response marker) + the parsed envelope, captured from the
-  // strategy factory (runs after parse, so ctx/env are available for failure settle).
+  // Truncation result for the response marker (captured from the strategy factory).
   let truncateResult: OpenAIAutoTruncateResult | undefined
-  let capturedEnv: RequestEnvelope | undefined
 
   const driver = createPipelineDriver({
     codec,
     transport,
     strategies: (env) => {
-      capturedEnv = env
       const viaResponses = env.targetEndpoint === ENDPOINT.RESPONSES
       if (viaResponses) env.ctx.recordFeature("via-responses") // P2.2-D6
       return buildOpenAiCcStrategies({
@@ -151,18 +148,29 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
-    // Exchange failure (no strategy / budget / abort). Settle the captured ctx
-    // (parse already ran) + capture headers, then surface to the route's forwardError.
-    if (capturedEnv) {
-      capturedEnv.ctx.setHttpHeaders(headersCapture)
-      capturedEnv.ctx.fail((capturedEnv.body as ChatCompletionsPayload).model, error)
+    // Any failure after parse created the ctx (parse-period sanitize/translate
+    // throw, or an exchange failure). Settle it (matching legacy's catch:
+    // setHttpHeaders + fail) — `codec.getContext()` reaches the ctx even when the
+    // throw happened before the envelope was otherwise capturable.
+    const ctx = codec.getContext()
+    if (ctx) {
+      c.set("requestContext", ctx)
+      ctx.setHttpHeaders(headersCapture)
+      ctx.fail(resolvedName, error)
     }
     detachClientAbort()
     throw error
   }
 
+  // Expose the ctx on the request so the observability middleware's non-streaming
+  // safety net can finalize it from the HTTP status if a path below doesn't settle
+  // it (parity with legacy handler.ts c.set("requestContext")).
+  const ctx = codec.getContext()
+  if (ctx) c.set("requestContext", ctx)
+
   if (!result.ok) {
-    // decideRoute reject — shape the OpenAI 400 (route's forwardError finishes it).
+    // decideRoute reject — shape the OpenAI 400 (route's forwardError finishes it;
+    // the middleware finalizes the now-c.set ctx from the 4xx status).
     detachClientAbort()
     throw new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason)
   }

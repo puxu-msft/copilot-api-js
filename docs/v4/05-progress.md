@@ -88,6 +88,23 @@
 - **为何暂缓**：主路径等价已扎实；边缘场景（尤其 auto-truncate 的 limit 错误 mock + fake-timer abort/idle/shutdown）需额外测试基建，且翻 ON 改变 prod 行为应在边缘覆盖齐后慎重进行。
 - **若做需改什么**：补 auto-truncate + abort/idle/shutdown 的 v4 http 等价测试 → 全绿后把 `driver-flags.ts` 的 `"openai-cc": false` 改为 `true`（一行）；P3.3 删 legacy handler + flag。
 
+### P2.3-L2 — v4 路径缺 per-attempt effectiveRequest/outboundRequest 双轨 + queueWaitMs（P3.2 采集下沉）
+
+- **发现于**：P2.3 subagent review（HIGH-1 + LOW）
+- **根因**：legacy 经 pipeline（`setAttemptEffectiveRequest`）+ client `onPrepared`（`setAttemptWireRequest`）记录每 attempt 的 effective/wire request，并经 pipeline `addQueueWaitMs` 累计 rate-limiter 排队时长。driver 路径**尚未**采样这些（driver JSDoc types.ts 已标 P2 target / P3.2「采集全下沉 driver」）。
+- **当前行为**：经 v4 的 history entry 其 `effectiveRequest`/`outboundRequest` 双轨为空、`queueWaitMs`=0。**flag 默认 OFF 不影响线上**；client 响应 + 终态 state（completed/failed）+ forwardedResponse 已正确记录（已测）。
+- **理想架构**：P3.2 driver 在 S4 每 attempt 边界从 `PreparedRequest`+env 派生 wireRequest、从 env.body 派生 effectiveRequest，并在 transport 把 `queueWaitMs` 喂 ctx——消除 handler 手动 setter（envelope-driver §4 自动采样 + 原则7 统一数据源）。
+- **为何暂缓**：这是 P3.2 的核心交付（采集驱动化），非 P2.3 应 pre-empt；翻 flag ON 前应补齐（与 L1 同一 gate）。
+- **若做需改什么**：P3.2 driver 接 `request.attempt_started`{wire}+`request.upstream_frame` 采样；transport 暴露 queueWaitMs 给 ctx。翻 ON 前补 history 双轨等价测试（对照 legacy/v4 的 entry.effectiveRequest/outboundRequest）。
+
+### P2.3-L3 — adaptLegacyStrategy 的 attempt 计数 off-by-one（功能惰性）
+
+- **发现于**：P2.3 subagent review（LOW）
+- **根因**：`adaptLegacyStrategy` 每次 handle 后 `attemptRef.value++`（含被 budget gate 丢弃的终态尝试、含 abort）；legacy pipeline 仅在 retry 通过 budget gate 后 `execIndex++`。预算耗尽的终态尝试上 v4 多加一次。
+- **当前行为**：`context.attempt` 仅用于 auto-truncate 日志行 `Attempt N/M` + `meta.attempt`；多加只影响一个永不发生的后续 handle。CC 路径功能惰性、无可观测影响。
+- **为何暂缓**：无功能/可观测影响；adapter docstring 已自称「approximating」。
+- **若做需改什么**：若未来 strategy 依赖精确 attempt，改为仅在 driver 接受 retry（过 budget gate）后递增——需 driver 把"本次 retry 是否被接受"回传给 adapter。
+
 ### P2.2-D1 — prepareWire 内做 CC→Responses 全翻译（偏离 retry-transport §3「裁剪」语义；P2.3 接 driver 时复核）
 
 - **发现于**：P2.2（codec 设计 + Plan agent 校验）

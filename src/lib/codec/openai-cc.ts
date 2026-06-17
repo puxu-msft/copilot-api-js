@@ -130,6 +130,13 @@ export interface OpenAiCcCodec extends FormatCodec {
    * mutated `env.body`). `undefined` before `parse` runs.
    */
   getTruncateBaseline(): ChatCompletionsPayload | undefined
+  /**
+   * The RequestContext created by `parse` (via `manager.create`). The route reads
+   * it to `c.set("requestContext")` + settle the ctx on a failure that throws
+   * before the envelope is otherwise reachable (parse-period error). `undefined`
+   * before `parse` runs.
+   */
+  getContext(): RequestContext | undefined
 }
 
 /**
@@ -143,6 +150,8 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
   let streamTranslator: StreamTranslator | null = null
   // The auto-truncate baseline, captured by parse (see OpenAiCcCodec).
   let truncateBaseline: ChatCompletionsPayload | undefined
+  // The RequestContext created by parse (for route-side c.set + failure settle).
+  let requestContext: RequestContext | undefined
 
   return {
     format: CLIENT_FORMAT,
@@ -150,11 +159,16 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
     parse(raw) {
       const { env, baseline } = parseOpenAiCc(raw)
       truncateBaseline = baseline
+      requestContext = env.ctx
       return env
     },
 
     getTruncateBaseline() {
       return truncateBaseline
+    },
+
+    getContext() {
+      return requestContext
     },
 
     decideRoute(env) {
