@@ -24,7 +24,7 @@ export type V4DriverFormat = "openai-cc" | "openai-responses"
 
 const flags: Record<V4DriverFormat, boolean> = {
   "openai-cc": true,
-  "openai-responses": false,
+  "openai-responses": true,
 }
 
 export function isV4DriverEnabled(format: V4DriverFormat): boolean {

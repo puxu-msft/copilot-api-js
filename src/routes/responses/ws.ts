@@ -20,19 +20,28 @@ import consola from "consola"
 
 import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
+import type { DriverRequestResult } from "~/lib/pipeline/types"
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type {
   //
   ResponsesPayload,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
+import { isV4DriverEnabled } from "~/lib/codec/driver-flags"
+import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses"
+import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses-strategies"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   registerResponseSession,
   resolveResponseSessionId,
 } from "~/lib/history/store"
-import { isResponsesSupported } from "~/lib/models/endpoint"
+import {
+  //
+  ENDPOINT,
+  isResponsesSupported,
+} from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { responsesInputToMessages } from "~/lib/openai/responses-conversion"
 import {
@@ -47,6 +56,12 @@ import {
   createStreamIdTracker,
   fixStreamEventIds,
 } from "~/lib/openai/stream-id-sync"
+import {
+  //
+  RESPONSES_NAME_BEARING_EVENTS,
+  restoreResponsesEventToolNames,
+} from "~/lib/openai/tool-name-sanitize"
+import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { settleStreamingFailure } from "~/lib/request/stream-settle"
@@ -58,6 +73,7 @@ import {
   type SseFrame,
 } from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
+import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 
 import {
   //
@@ -180,6 +196,16 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   // and the controller is harmless if never aborted.
   const clientAbort = new AbortController()
   wsClientAborts.set(ws, clientAbort)
+
+  // v4 driver path (behind the `openai-responses` flag): reuse the same driver as
+  // the HTTP handler (runRequest/runResponse), with WS frame reads/writes
+  // replacing streamSSE. Unlike the legacy WS path (direct /responses only), the
+  // driver also supports the Responses→CC fallback — so CC-only / Google models
+  // now work over WS via fallback (a consistency improvement; legacy WS sent them
+  // to a broken /responses upstream or rejected them).
+  if (isV4DriverEnabled("openai-responses")) {
+    return handleResponseCreateV4(ws, rawPayload, clientAbort)
+  }
 
   let payload = rawPayload
 
@@ -361,6 +387,175 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
     // Responses path; non-stream errors fall through to server_error.
     sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
   }
+}
+
+// ============================================================================
+// v4 driver path
+// ============================================================================
+
+/**
+ * Handle a response.create over WebSocket via the v4 driver (behind the
+ * `openai-responses` flag). Reuses the SAME driver as the HTTP handler-v4 —
+ * codec + WS-capable Responses transport + env strategies — and writes the
+ * rendered frames as WebSocket JSON frames (ws.send) instead of streamSSE.
+ *
+ * Unlike the legacy WS path (direct /responses only, rejecting unsupported
+ * models), the driver also routes the Responses→CC fallback, so CC-only / Google
+ * models work over WS via fallback. The direct path applies `fixStreamEventIds`
+ * (handler-side S5, like the HTTP pump); the fallback drains the codec's closing
+ * lifecycle via `flushResponse`.
+ */
+async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
+  const requestedModel = rawPayload.model
+  const resolvedModel = resolveModelName(requestedModel)
+  const selectedModel = state.modelIndex.get(resolvedModel)
+
+  // The system-prompt instructions injection is async + non-idempotent — apply it
+  // before the sync codec.parse (the route's pre-step), passing the client raw
+  // separately for the history snapshot.
+  const wireInstructions = await processResponsesInstructions(rawPayload.instructions, resolvedModel)
+  const wireBody: ResponsesPayload = { ...rawPayload, instructions: wireInstructions }
+
+  const headersCapture: HeadersCapture = {}
+  const codec = createOpenAiResponsesCodec()
+  const transport = createUpstreamResponsesTransport({
+    headersCapture,
+    clientAbortSignal: clientAbort.signal,
+    idleTimeoutMs: state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0,
+  })
+  const driver = createPipelineDriver({
+    codec,
+    transport,
+    strategies: (env) => {
+      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
+      return buildOpenAiResponsesStrategiesForEnv(env)
+    },
+    maxRetries: 1,
+    maxLearningRetries: 32,
+  })
+
+  let result: DriverRequestResult
+  try {
+    result = await driver.runRequest({
+      body: wireBody,
+      originalBodyForHistory: rawPayload,
+      headers: new Headers(), // WS transport: no inbound HTTP headers to capture
+      method: "WS",
+      path: "/v1/responses",
+      preResolved: { name: resolvedModel, model: selectedModel },
+      clientAbortSignal: clientAbort.signal,
+    })
+  } catch (error) {
+    const ctx = codec.getContext()
+    if (ctx) {
+      ctx.setHttpHeaders(headersCapture)
+      ctx.fail(resolvedModel, error)
+    }
+    wsClientAborts.delete(ws)
+    const message = error instanceof Error ? error.message : String(error)
+    consola.error(`[WS] Responses API error: ${message}`)
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+    return
+  }
+
+  if (!result.ok) {
+    const ctx = codec.getContext()
+    if (ctx) {
+      ctx.setHttpHeaders(headersCapture)
+      ctx.fail(resolvedModel, new Error(result.rejection.reason))
+    }
+    wsClientAborts.delete(ws)
+    sendErrorAndClose(ws, result.rejection.reason, "invalid_request_error")
+    return
+  }
+
+  const { upstream, env } = result
+  env.ctx.setHttpHeaders(headersCapture)
+  const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
+
+  // Fallback registers the session eagerly so a mid-stream follow-up resolves it.
+  if (viaFallback) {
+    const respId = codec.getFallbackResponseId()
+    if (respId) {
+      if (!env.ctx.sessionId) env.ctx.setSessionId(respId)
+      registerResponseSession(respId, env.ctx.sessionId)
+    }
+  }
+
+  const acc = createResponsesStreamAccumulator()
+  const mapper = env.ctx.toolNameMapper
+  const idTracker = !viaFallback && state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
+  const forwardedSseEvents: Array<SseEventRecord> = []
+  const streamStartMs = Date.now()
+  let eventsReceived = 0
+
+  /** Forward one rendered Responses frame as a WS JSON frame (fix-id direct → accumulate → restore names → send). */
+  const forwardWsFrame = (rawData: string, rawEvent: string | undefined): void => {
+    const eventData = idTracker ? fixStreamEventIds(rawData, rawEvent, idTracker) : rawData
+    let event: ResponsesStreamEvent
+    try {
+      event = JSON.parse(eventData) as ResponsesStreamEvent
+    } catch {
+      consola.debug("[WS] Skipping unparseable SSE event")
+      return
+    }
+    accumulateResponsesStreamEvent(event, acc)
+    const forwardData = restoreWsStreamData(eventData, event, mapper)
+    ws.send(forwardData)
+    forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: event.type, raw: forwardData })
+    eventsReceived++
+    env.ctx.recordStreamProgress({ eventsIn: eventsReceived })
+  }
+
+  try {
+    for await (const frame of driver.runResponse(upstream, env)) {
+      if (!frame.data || frame.data === "[DONE]") continue
+      forwardWsFrame(frame.data, frame.event)
+    }
+    // Fallback: drain the CC→Responses closing lifecycle events.
+    if (viaFallback) {
+      for (const closing of codec.flushResponse(env)) {
+        if (closing.data) forwardWsFrame(closing.data, closing.event)
+      }
+    }
+
+    if (!viaFallback) {
+      if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
+      registerResponseSession(acc.responseId, env.ctx.sessionId)
+    }
+    const responseData = buildResponsesResponseData(acc, resolvedModel)
+    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
+    env.ctx.complete(responseData)
+
+    if (!state.clientWebsocketKeepOpen) ws.close(1000, "done")
+  } catch (error) {
+    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
+    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } }
+    if (settleStreamingFailure({ reqCtx: env.ctx, error, model: acc.model || resolvedModel, partial })) {
+      consola.debug("[WS] Client disconnected mid-stream — recording aborted")
+      return
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    consola.error(`[WS] Responses API error: ${message}`)
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+  }
+}
+
+/**
+ * Restore function_call names (upstream → original) in a Responses SSE data frame
+ * for WS forwarding. No-op when `mapper` is null (the default — the legacy WS path
+ * did no tool-name handling, so default WS behavior is unchanged).
+ */
+function restoreWsStreamData(data: string, event: ResponsesStreamEvent, mapper: ToolNameMapper | null): string {
+  if (!mapper) return data
+  if (!RESPONSES_NAME_BEARING_EVENTS.has(event.type)) return data
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(data)
+  } catch {
+    return data
+  }
+  return restoreResponsesEventToolNames(parsed, mapper) ? JSON.stringify(parsed) : data
 }
 
 // ============================================================================
