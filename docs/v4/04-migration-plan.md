@@ -63,16 +63,25 @@
 **迁移顺序理由**：CC 先行（翻译中枢、strategy 最少、风险最低，最早跑通 driver 全链路）→ Responses/Gemini（依赖 CC 翻译边，CC 稳后再迁）→ Anthropic 最后（约束最严、逻辑最重，此时 driver 已成熟）。
 **可选**：若优先验证最难约束，可把 Anthropic 提前到 P2.3；代价是 driver 未经简单格式打磨就直面最复杂路径。**此顺序是本计划唯一建议用户复核的点**。
 
-**每格式切换的并存机制**：route.ts 内 `if (USE_V4_DRIVER[format]) driver... else legacyHandler...`，flag 默认开新路径、保留旧路径一个发布周期，确认无回归后在 P3 删除。
+**每格式切换的并存机制**：route.ts 内 `if (USE_V4_DRIVER[format]) driver... else legacyHandler...`，flag 保留旧路径一个发布周期，确认无回归后在 P3 删除。
+
+> **排程重排（2026-06-17，architect subagent 验证；实测 P2.3 flag 落地为 OFF）**：原 P3.2「数据采集全下沉」整体放在所有格式迁完后过度保守——driver 加采样是**共享机件**（4 格式都缺 per-attempt 双轨 + queueWaitMs），只依赖 driver+ctx。故 **P3.2 拆两半**：
+> - **P3.2a（driver 加采样）提前**到每格式迁移点之后立即做（CC 即 **P2.3-S**，见 05-progress「P2.3 收尾排程」），后续格式 codec 只提供 `createResponseAccumulator` 复用 driver 采样、不再手写消费侧。
+> - **P3.2b（删各 handler 手动 setter）锚定各格式**——只能删已在 driver 上的格式的 setter，留在 P3。
+> - **P3.1（透传统一）不提前**（需 4 codec 齐）。
+> - **翻 flag ON 的硬 gate（逐格式）= L1 行为等价 ∧ L2 记录等价**；CC 早翻 ON 作 canary（现有全套件自动经 v4 = 宽 oracle 压实 driver），是 P2.3 收尾、不拖到 P3。
+> - 无双写风险：进程级互斥 flag（route.ts），单请求单路径，P2.3-S 同 commit 加 driver 采样 + 删 handler-v4 setter，无并写窗口。
 
 ---
 
 ## P3 — 统一收尾（等价切换）
 
+> 注：原 P3.2 的「driver 加采样」半（P3.2a）已按上述重排提前到各格式迁移点（CC=P2.3-S）。P3 的 P3.2 只剩 **P3.2b（删剩余格式的 handler 手动 setter）**。
+
 | commit | 内容 | invariant |
 |---|---|---|
 | P3.1 | 透传判断统一：4 处散点（messages/cc/responses/ws）+ Gemini 收进各 codec 的 `decideRoute`，**显式保留 3 个非一致默认**（isEndpointSupported 缺=true、isWsResponsesSupported 缺=false、Gemini 无 gate、Responses force-list 绕过） | 路由决策对所有 (格式×模型) 组合等价（表驱动测试覆盖矩阵） |
-| P3.2 | 数据采集全下沉：删除 handler 残留的 setSseEvents/setForwardedResponse/setAttemptWireRequest 手动调用，全部由 driver stage 边界自动采样 | 所有格式都记**上游原始 sseEvents + 客户端 forwarded**双轨（补齐现状缺口）；history entry 字段集不变 |
+| P3.2b | 删除各 handler 残留的 setSseEvents/setForwardedResponse/setAttemptWireRequest 等手动调用（driver 采样已在各格式 P2.x-S 提前落地）；收束至 driver stage 边界自动采样 | 所有格式都记**上游原始 sseEvents + 客户端 forwarded + per-attempt 双轨**；history entry 字段集不变 |
 | P3.3 | 删除旧 handler + feature flag + 死代码（`refactor-cleaner`/knip 验证无引用） | 全测试绿；无悬空导出 |
 | P3.4 | 更新 `docs/DESIGN.md` 架构章节指向 v4 管线 | 文档与代码一致 |
 

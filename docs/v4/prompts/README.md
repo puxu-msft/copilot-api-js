@@ -9,6 +9,8 @@
 | [P2-driver-and-codecs.md](./P2-driver-and-codecs.md) | driver + 逐格式迁移 | P1 完成 |
 | [P3-unify.md](./P3-unify.md) | 透传统一 + 采集下沉 + 删旧 handler | P2 完成 |
 
+> **▶ 当前位置（2026-06-17）**：P2.2/P2.3 ✅（CC 切 driver，flag OFF）。**下一步 = P2.3 收尾三步（P2.3-S 采样下沉 / P2.3-H 边缘等价 / P2.3-ON 翻 flag）→ P2.4 Responses**，粘 `P2-driver-and-codecs.md` 继续。**勿粘 P3**——P2.4-2.6 未完成，P3 会跑错（详见 `05-progress.md` 顶部「当前位置」+「P2.3 收尾排程」）。排程已重排：原 P3.2 的 driver-采样半提前到各格式迁移点。
+
 ## 通用红线（每个会话都必须遵守）
 
 直接复制进每个实现会话，或依赖项目 `CLAUDE.md`（已含这些）：

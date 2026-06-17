@@ -6,6 +6,25 @@
 
 ---
 
+## ▶ 当前位置 / 下一步（防呆——每会话先看这里）
+
+- **已完成到**：P2.3（CC 切 driver，behind flag `openai-cc`=**OFF**，legacy 仍 live）。P0/P1/P2.1/P2.2/P2.3 ✅。
+- **下一步**：**P2.3 收尾三小步（见下「P2.3 收尾排程」）→ P2.4（Responses 切 driver）**。粘 `prompts/P2-driver-and-codecs.md` 继续逐格式迁移。
+- **⚠️ 现在粘 `prompts/P3-unify.md` 会跑错**：P3 假设「4 格式全在 driver 上」，但 Responses/Gemini/Anthropic（P2.4-2.6）**未做**。P3.1（透传统一）需 4 codec 齐、P3.3（删 handler）会删仍在用的 handler。**P3 须等 P2.4-2.6 全完成。**
+- **排程已重排（2026-06-17，architect subagent 验证）**：原计划把「driver 自动采样」整体放 P3.2（所有格式迁完后）。重排为——**P3.2 拆两半**：`P3.2a`（driver 加采样，共享机件，**提前到 P2.3 收尾**做一次 4 格式同受益）+ `P3.2b`（删各 handler 手动 setter，**锚定各格式迁移点**，不可提前——删不了还在 legacy 的格式的 setter）。`P3.1`（透传统一）**不提前**（需 4 codec 齐）。**翻 flag ON 的硬 gate = L1 行为等价 ∧ L2 记录等价**，逐格式各过各的 gate。详见 P2.3-L1/L2。
+
+### P2.3 收尾排程（重排后，先于 P2.4）
+
+| 步 | 内容 | flag-ON gate | 前置 |
+|---|---|---|---|
+| **P2.3-S**（=原 P3.2a，提前） | driver 自动采样下沉：driver.ts:119/:219 占位 → 真采样（per-attempt wireRequest/effectiveRequest、上游原始 sseEvents、forwarded、queueWaitMs）；删 **handler-v4** 对应手动 setter（仅 CC 在 driver 上） | — | 仅 CC 在 driver（driver+ctx 自足）。**验证：补 L2 双轨等价测试**（v4↔legacy 的 history effectiveRequest/outboundRequest/sseEvents/forwardedSseEvents/queueWaitMs 逐字等价）——否则用未验证采样做 canary 基线 |
+| **P2.3-H**（=L1 边缘） | 格式无关「fake-timer + abort/idle/shutdown 信号注入 + driver 状态断言」harness 骨架（一次写、跨格式复用）+ CC 叶子 oracle（CC 错误帧/终态/partial）+ CC auto-truncate 标记等价 | L1 齐 | P2.3-S（错误路径也要记双轨）。**harness 断言 oracle 须格式特定**（Anthropic streamError vs CC 终态不同，否则假绿） |
+| **P2.3-ON** | `driver-flags.ts "openai-cc": false → true`（一行），CC canary | **L1 ∧ L2 齐** | 现有全套 CC 测试自动经 v4 = 宽 oracle 压实 driver；边缘测试连跑 10-25× |
+
+> 此后 P2.4-2.6 建立在「已采样 + 已 canary 压实」的 driver 上：codec 只提供 `createResponseAccumulator`（复用 driver 采样，不再手写消费侧）+ 复用 P2.3-H 的 harness 骨架 + 各写格式叶子；各格式翻 ON 同样过 L1∧L2。
+
+---
+
 ## 总体进度
 
 | 阶段 | commits | 完成 | 状态 |
@@ -14,7 +33,7 @@
 | P0 地基 | 4 | 4/4 | ✅ |
 | P1 改写 registry 化（请求侧） | 4 | 4/4 | ✅ |
 | P1.5/P1.6（响应侧）→ 折入 P2 | — | — | ↪ 见 P1.5-SCOPE |
-| P2 driver + 逐格式 | 6 | 1/6 | 🟡 |
+| P2 driver + 逐格式 | 6 | 2/6 | 🟡 |
 | P3 统一收尾 | 4 | 0/4 | ⬜ |
 
 > **P1 范围修订（2026-06-16，调研后）**：P1 原计划 6 commit。请求侧 4 个（P1.1 接口 + P1.2/P1.3 Anthropic full + P1.4 OpenAI focused）有干净 seam，已全部完成、字节等价、subagent reviewed。**响应侧 P1.5（响应改写注册）/ P1.6（错误帧→codec.formatError）经调研判定折入 P2**——其消费者（P1.5 的 S5 per-frame chain、P1.6 的 codec）是 P2 的交付物，强塞进 P1 = 半重构 byte-critical 流式 pump（forwarded SSE 字节风险）+ 过早造 codec stub，且与 P2.6 重叠。详见 P1.5-SCOPE / P1.5-OQ1（heartbeat 已裁决 option ①）。P1.1 的 `ResponseRewrite` 接口已前瞻定义 + 测试，P2 落地即消费。
@@ -80,22 +99,20 @@
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
 
-### P2.3-L1 — flag 默认 OFF + 边缘等价待补后翻 ON（P2.3 收尾）
+### P2.3-L1 — flag 默认 OFF + 边缘等价待补后翻 ON（→ 重排为 P2.3-H/P2.3-ON）
 
 - **发现于**：P2.3 路由接线
-- **当前行为**：`driver-flags.ts` 的 `openai-cc` flag **默认 OFF**——prod 仍走 legacy handler，v4 路径已全接线 + 主路径等价测试（7 http），但**未在 v4 上跑**的等价场景：auto-truncate（413/token_limit 截断重试，需 mock 上游 limit 错误 + 验 truncation marker）、客户端 abort 中途、idle-timeout、shutdown 中途、reasoning_effort/unsupported-beta（CC 无这些策略，N/A）。
-- **理想架构**：迁移计划要求 flag 默认 ON（旧路保留一周期）。翻 ON 前补齐上述边缘场景的 v4↔legacy 等价（沿用 fake timers 连跑 10-25× 验确定性，参照现有 shutdown/abort http 测试）。
-- **为何暂缓**：主路径等价已扎实；边缘场景（尤其 auto-truncate 的 limit 错误 mock + fake-timer abort/idle/shutdown）需额外测试基建，且翻 ON 改变 prod 行为应在边缘覆盖齐后慎重进行。
-- **若做需改什么**：补 auto-truncate + abort/idle/shutdown 的 v4 http 等价测试 → 全绿后把 `driver-flags.ts` 的 `"openai-cc": false` 改为 `true`（一行）；P3.3 删 legacy handler + flag。
+- **当前行为**：`driver-flags.ts` 的 `openai-cc` flag **默认 OFF**——prod 仍走 legacy handler，v4 路径已全接线 + 主路径等价测试（7 http + 2 history）。
+- **重排后落地（见顶部「P2.3 收尾排程」）**：边缘等价（auto-truncate 标记 + abort/idle/shutdown）归 **P2.3-H**（用格式无关 harness 骨架，CC 叶子 oracle）；翻 ON 归 **P2.3-ON**，硬 gate = **L1 行为等价 ∧ L2 记录等价**。
+- **若做需改什么**：P2.3-S（采样）+ P2.3-H（边缘 L1）全绿 → `driver-flags.ts` 的 `"openai-cc": false` 改 `true`（一行）；P3.3 删 legacy handler + flag。**翻 ON 后现有全套 CC 测试自动经 v4 = 宽 oracle 回归。**
 
-### P2.3-L2 — v4 路径缺 per-attempt effectiveRequest/outboundRequest 双轨 + queueWaitMs（P3.2 采集下沉）
+### P2.3-L2 — v4 缺 per-attempt 双轨 + queueWaitMs（→ 重排为 P2.3-S，原 P3.2 的 driver-采样半提前）
 
-- **发现于**：P2.3 subagent review（HIGH-1 + LOW）
-- **根因**：legacy 经 pipeline（`setAttemptEffectiveRequest`）+ client `onPrepared`（`setAttemptWireRequest`）记录每 attempt 的 effective/wire request，并经 pipeline `addQueueWaitMs` 累计 rate-limiter 排队时长。driver 路径**尚未**采样这些（driver JSDoc types.ts 已标 P2 target / P3.2「采集全下沉 driver」）。
-- **当前行为**：经 v4 的 history entry 其 `effectiveRequest`/`outboundRequest` 双轨为空、`queueWaitMs`=0。**flag 默认 OFF 不影响线上**；client 响应 + 终态 state（completed/failed）+ forwardedResponse 已正确记录（已测）。
-- **理想架构**：P3.2 driver 在 S4 每 attempt 边界从 `PreparedRequest`+env 派生 wireRequest、从 env.body 派生 effectiveRequest，并在 transport 把 `queueWaitMs` 喂 ctx——消除 handler 手动 setter（envelope-driver §4 自动采样 + 原则7 统一数据源）。
-- **为何暂缓**：这是 P3.2 的核心交付（采集驱动化），非 P2.3 应 pre-empt；翻 flag ON 前应补齐（与 L1 同一 gate）。
-- **若做需改什么**：P3.2 driver 接 `request.attempt_started`{wire}+`request.upstream_frame` 采样；transport 暴露 queueWaitMs 给 ctx。翻 ON 前补 history 双轨等价测试（对照 legacy/v4 的 entry.effectiveRequest/outboundRequest）。
+- **发现于**：P2.3 subagent review（HIGH-1 + LOW）；**重排确认于** architect subagent（2026-06-17）
+- **根因**：legacy 经 pipeline（`setAttemptEffectiveRequest`）+ client `onPrepared`（`setAttemptWireRequest`）+ `addQueueWaitMs` 记录每 attempt 的 effective/wire request + 排队时长。driver 路径**尚未**采样（driver.ts:119/:219 是 P3.2 占位）。
+- **当前行为**：经 v4 的 history entry 其 `effectiveRequest`/`outboundRequest` 双轨为空、`queueWaitMs`=0。**flag OFF 不影响线上**；client 响应 + 终态 state + forwardedResponse 已正确记录（已测）。
+- **重排裁决**：原 P3.2 整体放「所有格式迁完后」过度保守——driver 加采样是**共享机件**（4 格式都缺），且只依赖 driver+ctx（不依赖其它格式在 driver 上，driver.ts 采样占位只读 env.ctx）。故**拆半**：`P3.2a`（driver 加采样）**提前为 P2.3-S** 做一次、4 格式同受益；`P3.2b`（删各 handler 手动 setter）锚定各格式迁移点不可提前（删不了仍在 legacy 的格式的 setter）。**无双写风险**：route.ts:13 进程级互斥 flag，单请求单路径，P2.3-S 同 commit 内「driver 加采样 + 删 handler-v4 手动 setter」，无新旧并写窗口。
+- **若做需改什么（P2.3-S）**：driver 在 S4 每 attempt 从 `PreparedRequest`+env 派生 wireRequest、从 env.body 派生 effectiveRequest，S4/S5/S7 采样 sseEvents/forwarded，transport 暴露 queueWaitMs → ctx；删 handler-v4 手动 setter（仅 CC）。**必须补 v4↔legacy history 双轨等价测试**（当前 9 个定向测试不覆盖 history 字段，是 canary 基线正确性的前置）。
 
 ### P2.3-L3 — adaptLegacyStrategy 的 attempt 计数 off-by-one（功能惰性）
 
