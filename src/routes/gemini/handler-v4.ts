@@ -167,11 +167,16 @@ export async function handleGenerateContentV4(c: Context, modelId: string): Prom
 export async function handleStreamGenerateContentV4(c: Context, modelId: string): Promise<Response> {
   const geminiBody = await c.req.json<GenerateContentRequest>()
   const { bundle, result } = await runGeminiRequest(c, geminiBody, modelId, true)
-  const { driver, detachClientAbort } = bundle
+  const { driver, clientAbort, detachClientAbort } = bundle
 
   consola.debug("[gemini:v4] Streaming response")
   result.env.ctx.transition("streaming")
   return streamSSE(c, async (stream) => {
+    // streamSSE.onAbort is the second client-disconnect trigger source — the
+    // inbound HTTP signal bridge (buildGeminiDriver) is the first. Both are needed:
+    // a write-side streamSSE abort is distinct from c.req.raw.signal (parity with
+    // legacy renderGeminiStreaming + the CC/Responses v4 handlers).
+    stream.onAbort(() => clientAbort.abort())
     try {
       await pumpGeminiStreamingV4({ stream, driver, upstream: result.upstream, env: result.env, modelId })
     } finally {

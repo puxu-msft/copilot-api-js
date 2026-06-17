@@ -189,8 +189,11 @@ export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
 function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelope; baseline: ChatCompletionsPayload; ctx: RequestContext } {
   // `raw.body` is the post-system-prompt CC payload (the route translated Gemini→CC
   // and injected system-prompt); `raw.originalBodyForHistory` is the raw Gemini body.
+  // Defensively clone the Gemini body for the history snapshot (parity with the
+  // legacy `structuredClone(body)` — guards history against any later mutation of
+  // the live request object).
   const ccBody = raw.body as ChatCompletionsPayload
-  const geminiSnapshot = raw.originalBodyForHistory as GenerateContentRequest
+  const geminiSnapshot = structuredClone(raw.originalBodyForHistory as GenerateContentRequest)
 
   const resolvedName = raw.preResolved?.name ?? resolveModelName(modelId)
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
