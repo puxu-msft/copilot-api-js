@@ -125,14 +125,21 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
         model: env.model as Model | undefined,
         maxRetries: state.autoTruncateMaxRetries,
         label: viaResponses ? "Completions(→Responses)" : "Completions",
-        onTruncateResult: (result) => {
-          truncateResult = result
-          env.ctx.recordFeature("truncated")
-        },
       })
     },
     maxRetries: state.autoTruncateMaxRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
+    // Post-gate meta sink (C0-② / RFC §11.2): the auto-truncate strategy's
+    // truncateResult, routed here only after the budget gate accepts the retry —
+    // so a budget-rejected truncate retry no longer sets a phantom `truncated`
+    // feature/marker (the pre-gate adapter onMeta used to).
+    onMeta: (meta, metaEnv) => {
+      const result = meta.truncateResult as OpenAIAutoTruncateResult | undefined
+      if (result) {
+        truncateResult = result
+        metaEnv.ctx.recordFeature("truncated")
+      }
+    },
   })
 
   let result: DriverRequestResult

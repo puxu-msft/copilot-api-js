@@ -10,12 +10,12 @@
  * Per-request factory: the route builds these once per request, closing over the
  * **truncation baseline** (`originalPayload` — the un-sanitized, post-tool-rename
  * payload the legacy auto-truncate re-truncates from each retry, never the mutated
- * `env.body`) and a `onTruncateResult` sink so the response side can render the
- * truncation marker.
+ * `env.body`). The auto-truncate `truncateResult` reaches the response side via the
+ * driver's post-gate `onMeta` sink (C0-② / RFC §11.2), not a strategy-level
+ * callback — so a budget-rejected truncate retry no longer records a phantom marker.
  */
 
 import type { Model } from "~/lib/models/client"
-import type { OpenAIAutoTruncateResult } from "~/lib/openai/auto-truncate"
 import type { RetryStrategy as EnvRetryStrategy } from "~/lib/pipeline/types"
 import type { TruncateResult } from "~/lib/request/strategies/auto-truncate"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
@@ -38,19 +38,13 @@ export interface OpenAiCcStrategiesDeps {
   maxRetries: number
   /** Console label for the retry log lines (e.g. "Completions" / "Completions(→Responses)"). */
   label: string
-  /** Sink for the auto-truncate result so the response side can render the marker. */
-  onTruncateResult?: (result: OpenAIAutoTruncateResult) => void
 }
 
 /** Build the ordered env-based CC retry strategies for one request. */
 export function buildOpenAiCcStrategies(deps: OpenAiCcStrategiesDeps): ReadonlyArray<EnvRetryStrategy> {
   const attemptRef = { value: 0 }
-  const onMeta = (meta: Record<string, unknown>): void => {
-    const truncateResult = meta.truncateResult as OpenAIAutoTruncateResult | undefined
-    if (truncateResult) deps.onTruncateResult?.(truncateResult)
-  }
   const adapt = <T>(legacy: Parameters<typeof adaptLegacyStrategy<T>>[0]): EnvRetryStrategy =>
-    adaptLegacyStrategy(legacy, { attemptRef, originalPayload: deps.originalPayload as T, model: deps.model, maxRetries: deps.maxRetries, onMeta })
+    adaptLegacyStrategy(legacy, { attemptRef, originalPayload: deps.originalPayload as T, model: deps.model, maxRetries: deps.maxRetries })
 
   return [
     adapt(createNetworkRetryStrategy<ChatCompletionsPayload>()),

@@ -64,6 +64,15 @@ export interface DriverDeps {
   requestRewrites?: ReadonlyArray<RequestRewrite>
   /** S5 response rewrites (codecs supply format rewrites; default = module registry). */
   responseRewrites?: ReadonlyArray<ResponseRewrite>
+  /**
+   * Post-gate per-retry meta sink (C0-② / RFC §11.2). The driver invokes it with
+   * the `RetryAction.meta` of a retry **only after the budget gate accepts it**,
+   * so a budget-rejected retry never emits phantom pipeline-info. The handler
+   * routes the format-specific meta fields (CC `truncateResult`; Anthropic
+   * `sanitization` / `strippedBetas` / `probedBetas` / `truncateResult`) to its
+   * observability sinks. `env` is the post-retry env carrying that meta.
+   */
+  onMeta?: (meta: Record<string, unknown>, env: RequestEnvelope) => void
 }
 
 /** The driver with its non-streaming response variant (envelope-driver.md §3). */
@@ -106,8 +115,12 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
   // Resolve the strategy factory now that the envelope (model + codec state) exists.
   const strategies = typeof deps.strategies === "function" ? deps.strategies(rewritten) : deps.strategies
-  const upstream = await runExchange(deps, rewritten, strategies)
-  return { ok: true, upstream, env: rewritten }
+  // C0-① (RFC §11.1): runExchange returns the POST-retry env (the final attempt's
+  // env), not `rewritten` (pre-exchange). Consumers — e.g. the Anthropic pump
+  // building the tool-call recoverer from env.body.tools, which deferred-tool-retry
+  // mutates — must see what was actually sent on the successful attempt.
+  const { upstream, env: settled } = await runExchange(deps, rewritten, strategies)
+  return { ok: true, upstream, env: settled }
 }
 
 /** S3: assemble the request-rewrite chain and apply each in declared order. */
@@ -128,11 +141,17 @@ function runRewriteIn(deps: DriverDeps, env: RequestEnvelope): RequestEnvelope {
  * re-prepares from it. The adaptive rate-limiter (429) lives inside
  * `transport.send`, below this loop — it never bubbles up here.
  */
-async function runExchange(deps: DriverDeps, env: RequestEnvelope, strategies: ReadonlyArray<RetryStrategy>): Promise<UpstreamStream> {
+async function runExchange(
+  deps: DriverDeps,
+  env: RequestEnvelope,
+  strategies: ReadonlyArray<RetryStrategy>,
+): Promise<{ upstream: UpstreamStream; env: RequestEnvelope }> {
   let current = env
   let normalRetries = 0
   let learningRetries = 0
   let activeStrategy: RetryStrategy | undefined
+  // The accepted retry's meta (post-gate), threaded to onMeta + onResolved (C0-②).
+  let activeMeta: Record<string, unknown> | undefined
 
   for (;;) {
     const wire = deps.codec.prepareWire(current)
@@ -148,8 +167,14 @@ async function runExchange(deps: DriverDeps, env: RequestEnvelope, strategies: R
     current.ctx.transition("executing")
     try {
       const upstream = await deps.transport.send(wire, current)
-      await activeStrategy?.onResolved?.(current)
-      return upstream
+      // onResolved threads the post-gate meta of the retry that produced this env
+      // (C0-② / RFC §11.2) so the owning strategy commits its learning from it
+      // (e.g. unsupported-beta fixates meta.probedBetas). undefined on first-attempt
+      // success (no retry produced this env).
+      await activeStrategy?.onResolved?.(current, activeMeta)
+      // C0-① (RFC §11.1): return the POST-retry env (the final attempt's `current`),
+      // not the caller's pre-exchange env — consumers read what was actually sent.
+      return { upstream, env: current }
     } catch (error) {
       const apiError = classifyError(error)
       current.ctx.setAttemptError(apiError)
@@ -184,6 +209,12 @@ async function runExchange(deps: DriverDeps, env: RequestEnvelope, strategies: R
 
       current = action.env
       activeStrategy = strategy
+      // Capture the accepted retry's meta post-gate (C0-② / RFC §11.2): a
+      // budget-rejected retry threw above (over-budget → throw), so its meta never
+      // reaches here. Route it to the handler's observability sink (only when
+      // present) and remember it for this strategy's onResolved.
+      activeMeta = action.meta
+      if (action.meta) deps.onMeta?.(action.meta, current)
       current.ctx.recordAttemptFailure({
         willRetry: true,
         nextStrategy: strategy.name,

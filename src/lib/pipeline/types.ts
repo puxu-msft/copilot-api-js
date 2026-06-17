@@ -121,16 +121,34 @@ export interface RetryStrategy {
   canHandle(error: ApiError): boolean
   /** Decide the next action (retry with a modified env, or abort). */
   handle(error: ApiError, env: RequestEnvelope): Promise<RetryAction>
-  /** Commit learning after a retry produced by THIS strategy ultimately succeeded. */
-  onResolved?(env: RequestEnvelope): void | Promise<void>
+  /**
+   * Commit learning after a retry produced by THIS strategy ultimately succeeded.
+   * `meta` is the `RetryAction.meta` carried by the **budget-accepted** retry that
+   * produced the successful env (the driver threads it post-gate, so a
+   * budget-rejected retry's meta never reaches here — C0-② / RFC §11.2). The
+   * adapter forwards it into the legacy `ResolvedContext.meta`, where
+   * `unsupported-beta-retry.onResolved` reads `meta.probedBetas` to fixate the
+   * located betas into the negotiation cache.
+   */
+  onResolved?(env: RequestEnvelope, meta?: Record<string, unknown>): void | Promise<void>
 }
 
 /**
  * The outcome of a strategy's `handle`. `retry` carries the modified envelope
  * for the next attempt; `learning` retries draw from a separate budget (see
  * retry-transport.md §2 / pipeline.ts `MAX_LEARNING_RETRIES`).
+ *
+ * `meta` is opaque per-retry diagnostic data (the legacy `RetryAction.meta` — e.g.
+ * `truncateResult` / `sanitization` / `probedBetas` / `strippedBetas`). The driver
+ * captures it loop-local **only after the budget gate accepts the retry**, then
+ * routes it to the handler's `onMeta` sink and to the owning strategy's
+ * `onResolved` — so a budget-rejected retry never emits phantom pipeline-info
+ * (C0-② / RFC §11.2). The adapter sets it from the legacy action instead of the
+ * old pre-gate immediate `onMeta` call.
  */
-export type RetryAction = { kind: "retry"; env: RequestEnvelope; waitMs?: number; learning?: boolean } | { kind: "abort"; error: ApiError }
+export type RetryAction =
+  | { kind: "retry"; env: RequestEnvelope; waitMs?: number; learning?: boolean; meta?: Record<string, unknown> }
+  | { kind: "abort"; error: ApiError }
 
 // ============================================================================
 // Route decision

@@ -3,9 +3,10 @@
  *
  * Drives `adaptLegacyStrategy` with a mock legacy `RetryStrategy<TPayload>`,
  * asserting the action mapping (retry → env.with(body/prepareHints), abort →
- * {kind:"abort"}), meta surfacing, the shared attempt counter, and waitMs/learning
- * passthrough. Also a light check that `buildOpenAiCcStrategies` yields the
- * ordered CC strategies.
+ * {kind:"abort"}), meta attached to the env-action (C0-②, not fired immediately),
+ * onResolved meta forwarding into the legacy ResolvedContext, the shared attempt
+ * counter, and waitMs/learning passthrough. Also a light check that
+ * `buildOpenAiCcStrategies` yields the ordered CC strategies.
  */
 
 import {
@@ -79,22 +80,49 @@ describe("adaptLegacyStrategy", () => {
     if (action.kind === "abort") expect(action.error).toBe(abortErr)
   })
 
-  test("surfaces action.meta via onMeta", async () => {
+  test("attaches action.meta to the env-action (C0-②: the driver fires it post-gate, the adapter does NOT)", async () => {
     const legacy: LegacyRetryStrategy<P> = {
       name: "mock",
       canHandle: () => true,
       handle: (_e, p) => Promise.resolve({ action: "retry", payload: p, meta: { truncateResult: { wasTruncated: true } } }),
     }
-    let captured: Record<string, unknown> | undefined
-    const adapted = adaptLegacyStrategy(legacy, {
-      attemptRef: { value: 0 },
-      originalPayload: { v: 0 },
-      model: undefined,
-      maxRetries: 3,
-      onMeta: (m) => (captured = m),
-    })
-    await adapted.handle(ERR, makeEnv({ v: 1 }))
-    expect(captured).toEqual({ truncateResult: { wasTruncated: true } })
+    const adapted = adaptLegacyStrategy(legacy, { attemptRef: { value: 0 }, originalPayload: { v: 0 }, model: undefined, maxRetries: 3 })
+    const action = await adapted.handle(ERR, makeEnv({ v: 1 }))
+    expect(action.kind).toBe("retry")
+    if (action.kind === "retry") expect(action.meta).toEqual({ truncateResult: { wasTruncated: true } })
+  })
+
+  test("omits meta on the env-action when the legacy action carries none", async () => {
+    const legacy: LegacyRetryStrategy<P> = {
+      name: "mock",
+      canHandle: () => true,
+      handle: (_e, p) => Promise.resolve({ action: "retry", payload: p }),
+    }
+    const adapted = adaptLegacyStrategy(legacy, { attemptRef: { value: 0 }, originalPayload: { v: 0 }, model: undefined, maxRetries: 3 })
+    const action = await adapted.handle(ERR, makeEnv({ v: 1 }))
+    if (action.kind === "retry") expect(action.meta).toBeUndefined()
+  })
+
+  test("onResolved forwards the driver-supplied meta into the legacy ResolvedContext (RFC §12.2)", async () => {
+    const seen: Array<{ payload: P; meta: Record<string, unknown> | undefined; attempt: number }> = []
+    const legacy: LegacyRetryStrategy<P> = {
+      name: "mock",
+      canHandle: () => true,
+      handle: (_e, p) => Promise.resolve({ action: "retry", payload: p }),
+      onResolved: (ctx) => {
+        seen.push({ payload: ctx.payload, meta: ctx.meta, attempt: ctx.attempt })
+      },
+    }
+    const attemptRef: AttemptRef = { value: 2 }
+    const adapted = adaptLegacyStrategy(legacy, { attemptRef, originalPayload: { v: 0 }, model: undefined, maxRetries: 3 })
+    await adapted.onResolved?.(makeEnv({ v: 5 }), { probedBetas: ["beta-x"] })
+    expect(seen).toEqual([{ payload: { v: 5 }, meta: { probedBetas: ["beta-x"] }, attempt: 2 }])
+  })
+
+  test("onResolved is absent on the adapted strategy when the legacy strategy has none", () => {
+    const legacy: LegacyRetryStrategy<P> = { name: "mock", canHandle: () => true, handle: (_e, p) => Promise.resolve({ action: "retry", payload: p }) }
+    const adapted = adaptLegacyStrategy(legacy, { attemptRef: { value: 0 }, originalPayload: { v: 0 }, model: undefined, maxRetries: 3 })
+    expect(adapted.onResolved).toBeUndefined()
   })
 
   test("legacy context carries the stable originalPayload baseline + shared attempt", async () => {

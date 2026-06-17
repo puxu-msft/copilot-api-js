@@ -15,8 +15,11 @@
  *     shared `attempt` counter, runs the legacy `handle(error, env.body, ctx)`,
  *     then folds the legacy action back: `retry.payload`/`prepareHints` → `env.with(...)`,
  *     `abort` → `{ kind: "abort" }`.
- *   - `action.meta` (e.g. auto-truncate's `truncateResult`) is surfaced via
- *     `onMeta` so the route can carry it to the response side (truncation marker).
+ *   - `action.meta` (e.g. auto-truncate's `truncateResult`, unsupported-beta's
+ *     `probedBetas`) is attached to the returned env-action's `meta` (NOT fired
+ *     immediately) — the driver routes it post-budget-gate to the handler's
+ *     onMeta sink + this strategy's onResolved (C0-② / RFC §11.2), so a
+ *     budget-rejected retry never emits phantom pipeline-info.
  *
  * The `attempt` counter is **shared** across all adapted strategies of one request
  * (a `{ value }` ref the factory increments per handle), approximating the legacy
@@ -51,8 +54,6 @@ export interface AdaptLegacyStrategyDeps<TPayload> {
   model: Model | undefined
   /** Normal-retry budget (legacy `RetryContext.maxRetries`) — used in log lines only. */
   maxRetries: number
-  /** Surface a retry action's `meta` (e.g. `{ truncateResult }`) to the caller. */
-  onMeta?: (meta: Record<string, unknown>) => void
 }
 
 /**
@@ -80,22 +81,25 @@ export function adaptLegacyStrategy<TPayload>(legacy: LegacyRetryStrategy<TPaylo
 
       if (action.action === "abort") return { kind: "abort", error: action.error }
 
-      if (action.meta) deps.onMeta?.(action.meta)
-
       const patch: Parameters<RequestEnvelope["with"]>[0] = { body: action.payload }
       if (action.prepareHints) patch.prepareHints = action.prepareHints
 
+      // Attach legacy `action.meta` to the env-action rather than firing onMeta
+      // immediately (C0-② / RFC §11.2): the driver captures it AFTER the budget
+      // gate accepts the retry, so a budget-rejected retry's meta never produces
+      // phantom pipeline-info / onResolved learning.
       return {
         kind: "retry",
         env: env.with(patch),
         ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
         ...(action.learning && { learning: action.learning }),
+        ...(action.meta && { meta: action.meta }),
       }
     },
 
     ...(legacy.onResolved && {
-      onResolved: (env: RequestEnvelope): void | Promise<void> =>
-        legacy.onResolved?.({ payload: env.body as TPayload, prepareHints: env.prepareHints, attempt: deps.attemptRef.value }),
+      onResolved: (env: RequestEnvelope, meta?: Record<string, unknown>): void | Promise<void> =>
+        legacy.onResolved?.({ payload: env.body as TPayload, prepareHints: env.prepareHints, meta, attempt: deps.attemptRef.value }),
     }),
   }
 }

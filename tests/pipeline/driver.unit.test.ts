@@ -34,12 +34,14 @@ import type {
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
+import type { RetryStrategy as LegacyRetryStrategy } from "~/lib/request/pipeline"
 
 import {
   //
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
 
 // ── ctx recorder ──────────────────────────────────────────────────────────
 
@@ -426,5 +428,184 @@ describe("driver.runResponseNonStreaming", () => {
     const rendered = driver.runResponseNonStreaming(okStream([], { raw: "body" }), env)
     expect(spy.renderResponseNonStreaming).toBe(1)
     expect(rendered).toEqual({ rendered: { raw: "body" } })
+  })
+})
+
+// ── C0 shared-driver contract (RFC §11.1 / §11.2) ──────────────────────────
+
+describe("driver C0 — post-retry env + post-gate meta channel", () => {
+  test("runRequest returns the POST-retry env (C0-①): a strategy that mutates body is visible to the caller", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx, { v: 0 })
+    const { codec } = makeCodec({ env })
+    let attempts = 0
+    const transport = makeTransport(async () => {
+      attempts++
+      if (attempts === 1) throw new Error("boom")
+      return okStream()
+    })
+    // The Anthropic pump reads env.body (tools) post-retry; a pre-retry env would
+    // surface the un-mutated body. Mirror that with a body-mutating strategy.
+    const strategy: RetryStrategy = {
+      name: "mutate-body",
+      canHandle: () => true,
+      handle: async (_e, e) => ({ kind: "retry", env: e.with({ body: { v: 42 } }) }),
+    }
+    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy] })
+
+    const result = await driver.runRequest({ body: {}, headers: new Headers() })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect((result.env.body as { v: number }).v).toBe(42) // pre-retry env would be 0
+  })
+
+  test("onMeta fires post-gate with the accepted retry's meta; onResolved receives the same meta (C0-②)", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    let attempts = 0
+    const transport = makeTransport(async () => {
+      attempts++
+      if (attempts === 1) throw new Error("boom")
+      return okStream()
+    })
+    const metaSeen: Array<Record<string, unknown>> = []
+    let resolvedMeta: Record<string, unknown> | undefined
+    let resolvedCalled = 0
+    const strategy: RetryStrategy = {
+      name: "meta-retry",
+      canHandle: () => true,
+      handle: async (_e, e) => ({ kind: "retry", env: e, meta: { probedBetas: ["beta-x"] } }),
+      // A meta-querying spy (NOT the no-arg `()=>count++` that let CC miss the contract — RFC §12.3).
+      onResolved: (_env, meta) => {
+        resolvedCalled++
+        resolvedMeta = meta
+      },
+    }
+    const onMeta = (meta: Record<string, unknown>): void => {
+      metaSeen.push(meta)
+    }
+    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy], onMeta })
+
+    const result = await driver.runRequest({ body: {}, headers: new Headers() })
+    expect(result.ok).toBe(true)
+    expect(metaSeen).toEqual([{ probedBetas: ["beta-x"] }])
+    expect(resolvedCalled).toBe(1)
+    expect(resolvedMeta).toEqual({ probedBetas: ["beta-x"] })
+  })
+
+  test("a budget-rejected retry's meta never reaches onMeta or onResolved (C0-②, no phantom pipeline-info)", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    const transport = makeTransport(async () => {
+      throw new Error("boom") // always fails → forces budget exhaustion
+    })
+    const metaSeen: Array<Record<string, unknown>> = []
+    let resolvedCalled = 0
+    let n = 0
+    const strategy: RetryStrategy = {
+      name: "meta-retry",
+      canHandle: () => true,
+      handle: async (_e, e) => ({ kind: "retry", env: e, meta: { truncated: ++n } }),
+      onResolved: () => {
+        resolvedCalled++
+      },
+    }
+    const onMeta = (meta: Record<string, unknown>): void => {
+      metaSeen.push(meta)
+    }
+    // maxRetries:1 → attempt1 fail → retry#1 meta{1} ACCEPTED (0>=1 F) → attempt2 fail
+    //   → retry#2 meta{2} REJECTED by budget gate (1>=1 T) → throw, meta{2} discarded.
+    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy], onMeta, maxRetries: 1 })
+
+    await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
+    expect(metaSeen).toEqual([{ truncated: 1 }]) // only the accepted retry, NOT {truncated:2}
+    expect(resolvedCalled).toBe(0) // never succeeded
+  })
+
+  test("onResolved without a meta sink still fires (env-only); no onMeta is fine", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    let attempts = 0
+    const transport = makeTransport(async () => {
+      attempts++
+      if (attempts === 1) throw new Error("boom")
+      return okStream()
+    })
+    let resolvedCalled = 0
+    const strategy: RetryStrategy = {
+      name: "no-meta-retry",
+      canHandle: () => true,
+      handle: async (_e, e) => ({ kind: "retry", env: e }), // no meta
+      onResolved: () => {
+        resolvedCalled++
+      },
+    }
+    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy] }) // no onMeta
+
+    const result = await driver.runRequest({ body: {}, headers: new Headers() })
+    expect(result.ok).toBe(true)
+    expect(resolvedCalled).toBe(1)
+  })
+})
+
+// ── C0 — CC truncateResult phantom guard (RFC §12.3) ───────────────────────
+// The phantom bug: the pre-gate adapter onMeta fired CC's `recordFeature("truncated")`
+// even for a budget-rejected truncate retry. Post-gate the driver only emits the
+// accepted retry's meta, so a budget-exhausting truncate records NO phantom feature.
+
+describe("driver C0 — CC truncateResult phantom guard (RFC §12.3)", () => {
+  // A CC-handler-style onMeta sink: records "truncated" iff a truncateResult meta
+  // arrives (mirrors handler-v4's onMeta).
+  const ccOnMeta =
+    (features: Array<string>) =>
+    (meta: Record<string, unknown>): void => {
+      if (meta.truncateResult) features.push("truncated")
+    }
+  // A legacy auto-truncate-shaped strategy: handles any error by retrying with a
+  // truncateResult meta (we don't exercise the real tokenizer here — that has its
+  // own unit tests; this asserts the adapter→driver→onMeta budget-gating).
+  const truncateLegacy = (): LegacyRetryStrategy<{ v: number }> => ({
+    name: "auto-truncate",
+    canHandle: () => true,
+    handle: (_e, p) => Promise.resolve({ action: "retry", payload: p, meta: { truncateResult: { wasTruncated: true } } }),
+  })
+
+  test("a successful truncate retry records the truncated feature (normal path intact)", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    let attempts = 0
+    const transport = makeTransport(async () => {
+      attempts++
+      if (attempts === 1) throw new Error("limit")
+      return okStream()
+    })
+    const features: Array<string> = []
+    const strategies = [adaptLegacyStrategy(truncateLegacy(), { attemptRef: { value: 0 }, originalPayload: { v: 0 }, model: undefined, maxRetries: 1 })]
+    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies, onMeta: ccOnMeta(features), maxRetries: 1 })
+
+    const result = await driver.runRequest({ body: { v: 0 }, headers: new Headers() })
+    expect(result.ok).toBe(true)
+    expect(features).toEqual(["truncated"])
+  })
+
+  test("a truncate retry that immediately exceeds maxRetries records NO phantom truncated feature", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    const transport = makeTransport(async () => {
+      throw new Error("limit") // always fails
+    })
+    const features: Array<string> = []
+    const strategies = [adaptLegacyStrategy(truncateLegacy(), { attemptRef: { value: 0 }, originalPayload: { v: 0 }, model: undefined, maxRetries: 0 })]
+    // maxRetries:0 → the first truncate retry is rejected by the budget gate
+    // (0>=0) → throw before its meta emits. The old pre-gate adapter onMeta would
+    // have fired a phantom "truncated" here.
+    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies, onMeta: ccOnMeta(features), maxRetries: 0 })
+
+    await expect(driver.runRequest({ body: { v: 0 }, headers: new Headers() })).rejects.toThrow("limit")
+    expect(features).toEqual([])
   })
 })
