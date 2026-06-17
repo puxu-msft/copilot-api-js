@@ -8,9 +8,9 @@
 
 ## ▶ 当前位置 / 下一步（防呆——每会话先看这里）
 
-- **已完成到**：**P2.3 全部 ✅（CC 已切 driver，flag `openai-cc`=ON，全套件经 v4 绿）**。P0/P1/P2.1/P2.2/P2.3（+S/H/ON）✅。
-- **下一步**：**P2.4（Responses 切 driver）**。粘 `prompts/P2-driver-and-codecs.md` 继续逐格式迁移。
-- **⚠️ 现在粘 `prompts/P3-unify.md` 会跑错**：P3 假设「4 格式全在 driver 上」，但 Responses/Gemini/Anthropic（P2.4-2.6）**未做**。P3.1（透传统一）需 4 codec 齐、P3.3（删 handler）会删仍在用的 handler。**P3 须等 P2.4-2.6 全完成。**
+- **已完成到**：**P2.4 全部 ✅（Responses 已切 driver，flag `openai-responses`=ON，全套件经 v4 绿）**。P0/P1/P2.1/P2.2/P2.3/P2.4 ✅。
+- **下一步**：**P2.5（Gemini 切 driver）**。粘 `prompts/P2-driver-and-codecs.md` 继续逐格式迁移。
+- **⚠️ 现在粘 `prompts/P3-unify.md` 会跑错**：P3 假设「4 格式全在 driver 上」，但 Gemini/Anthropic（P2.5-2.6）**未做**。P3.1（透传统一）需 4 codec 齐、P3.3（删 handler）会删仍在用的 handler。**P3 须等 P2.5-2.6 全完成。**
 - **排程已重排（2026-06-17，architect subagent 验证）**：原计划把「driver 自动采样」整体放 P3.2（所有格式迁完后）。重排为——**P3.2 拆两半**：`P3.2a`（driver 加采样，共享机件，**提前到 P2.3 收尾**做一次 4 格式同受益）+ `P3.2b`（删各 handler 手动 setter，**锚定各格式迁移点**，不可提前——删不了还在 legacy 的格式的 setter）。`P3.1`（透传统一）**不提前**（需 4 codec 齐）。**翻 flag ON 的硬 gate = L1 行为等价 ∧ L2 记录等价**，逐格式各过各的 gate。详见 P2.3-L1/L2。
 
 ### P2.3 收尾排程（重排后，已落地）
@@ -33,7 +33,7 @@
 | P0 地基 | 4 | 4/4 | ✅ |
 | P1 改写 registry 化（请求侧） | 4 | 4/4 | ✅ |
 | P1.5/P1.6（响应侧）→ 折入 P2 | — | — | ↪ 见 P1.5-SCOPE |
-| P2 driver + 逐格式 | 6 | 3/6 | 🟡 |
+| P2 driver + 逐格式 | 6 | 4/6 | 🟡 |
 | P3 统一收尾 | 4 | 0/4 | ⬜ |
 
 > **P1 范围修订（2026-06-16，调研后）**：P1 原计划 6 commit。请求侧 4 个（P1.1 接口 + P1.2/P1.3 Anthropic full + P1.4 OpenAI focused）有干净 seam，已全部完成、字节等价、subagent reviewed。**响应侧 P1.5（响应改写注册）/ P1.6（错误帧→codec.formatError）经调研判定折入 P2**——其消费者（P1.5 的 S5 per-frame chain、P1.6 的 codec）是 P2 的交付物，强塞进 P1 = 半重构 byte-critical 流式 pump（forwarded SSE 字节风险）+ 过早造 codec stub，且与 P2.6 重叠。详见 P1.5-SCOPE / P1.5-OQ1（heartbeat 已裁决 option ①）。P1.1 的 `ResponseRewrite` 接口已前瞻定义 + 测试，P2 落地即消费。
@@ -67,7 +67,7 @@
 | P2.1 | driver.ts + stages/* 骨架 | ✅ | driver 单测 mock codec/transport 15 pass（编排 S1-S7 + 重试循环 + S3/S5 改写链 + buffer/flush + 非流式）；全 offline 2532 pass/0 fail；typecheck+eslint 绿；subagent review（逐行对照 retry-transport §2 + budget off-by-one 与 legacy 等价）无 CRITICAL/HIGH | `createPipelineDriver(deps)`：consume codec/transport/strategies/registry 为 opaque deps。FormatCodec 接口追加 types.ts。abort 抛原始 error（legacy parity，非 spec 草案的 action.error）；strategy.handle 抛错降级原始 error（try/catch）；reject carry reason 由 route/codec 成形（不在 driver 做格式决策）。observability 自动采样占位待 P3.2 |
 | P2.2 | codec/openai-cc.ts | ✅ | codec 30 单测 pass（unit：decideRoute 矩阵/translateOut=identity/prepareWire 两分派+dropped 去重+normalizeCallIds gating/renderResponse 3 循环行为+function_call 跨帧+completed 双帧/formatError 三类型/createResponseAccumulator；it：parse env 字段+azure override+model 解析+tool-name mapper+orphan 过滤+未知模型）；全 offline 2561 pass/0 fail；typecheck+eslint 绿 | per-request 有状态工厂 `createOpenAiCcCodec()`（闭包持 translator 状态）；translateOut=identity + CC→Responses 落 prepareWire（auto-truncate strategy 契约强制，见 P2.2-D1）。stream-error.ts 抽 `streamErrorKindToOpenAIErrorType`（DRY）；RawHttpRequest +method/+path。**不接线**（旧 handler 仍在用）。5 条遗留见下 |
 | P2.3 | **CC 切 driver**（flag 可回切） | ✅ | v4 路径全接线 + 7 http 等价测试逐项 v4↔legacy 字节等价（client 输出 + outbound wire）；**收尾 S/H/ON 后 flag ON、全套件 2584 pass/0 fail 经 v4**；typecheck+eslint 绿 | 分 5 commit：transport adapter（fd6c637）+ env-strategy bridge（2d8967e）+ 路由接线（2790d50）+ ctx-settle review 修复（6dbe053）+ **P2.3-S 请求侧双轨采样（6cc8b9c）+ 本（隔离修复+翻 flag ON）**。driver +策略工厂+per-attempt 采样；codec +`getTruncateBaseline`/`getContext`/originalBodyForHistory/preResolved/`sampleRequest`；driver-flags **默认 ON**；handler-v4 含 D3/D6/D2/S5 tool-restore/失败 settle。收尾详情见顶部「P2.3 收尾排程」（S 请求侧✅响应侧→P3.2b / H 经全套件满足 / ON 默认 ON）|
-| P2.4 | codec/openai-responses.ts + Responses 切 driver | ⬜ | Responses 等价（含 ws/force-fallback/stream-id） | |
+| P2.4 | codec/openai-responses.ts + Responses 切 driver | ✅ | v4 路径全接线 + 14 http 等价测试逐项 v4↔legacy 等价（直连流式/非流式 + fallback(Responses→CC) + Google force-fallback + stream-id-sync + normalizeCallIds + reject + network-retry + L2 双轨 + 上游 WS）；**flag ON、全套件 2598 pass/0 fail 经 v4**；流式/WS/fallback 连跑 15× 确定；typecheck+eslint 绿；subagent review + 亲自实测复核（C1 假阳性、M1 已修+回归测试） | per-request 工厂 `createOpenAiResponsesCodec()`；**translateOut=identity + Responses→CC fallback 落 prepareWire**（保 effective 轨=openai-responses，对齐 legacy pipeline，openai-cc P2.2-D1 同构）；上游 WS-attempt 抽 `upstream-ws-attempt.ts` 与 legacy `createResponses` 共享（字节等价，client it-test 守）；`translateCCStreamToResponsesStream` 重构为逐帧 `createCCToResponsesStreamTranslator`（translate+flush）供 codec 复用（oracle: responses-to-cc-request unit）；客户端 WS 复用同 driver（含 fallback，CC-only/Google 经 WS 现可用）。5 条遗留见下 |
 | P2.5 | codec/gemini.ts + Gemini 切 driver | ⬜ | Gemini 等价（dropped params/sidecar error） | |
 | P2.6 | **codec/anthropic.ts + Anthropic 切 driver** | ⬜ | thinking signature 往返；web_search 双跳等价 | 最复杂 |
 
@@ -98,6 +98,41 @@
 ## 遗留与决策追踪
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
+
+### P2.4-D1 — 客户端 WS 复用 driver 带来两处「改进型」行为变化（fallback + tool-name restore）
+
+- **发现于**：P2.4 WS 迁移 + subagent review
+- **根因**：legacy 客户端 WS（`handleResponseCreate`）是较旧/较简路径——只支持直连 `/responses`（`isResponsesSupported` 不过即 `sendErrorAndClose`），**不做** fallback、**不做** tool-name 清洗/还原。v4 WS（`handleResponseCreateV4`）复用同一 driver，故自动获得：① Responses→CC fallback（CC-only / Google 模型经 WS 现可用）；② 请求侧 tool-name 清洗（codec.parse）+ 响应侧还原（`restoreWsStreamData`）。
+- **当前行为**：默认配置下**与 legacy 完全一致**——`sanitizeToolNames` 默认 false → mapper=null → 还原是 no-op；直连路径仍走 `/responses`。差异仅在 ① CC-only/Google 经 WS（legacy 拒绝/发往坏上游，v4 fallback 可用）② `sanitizeToolNames=true` 且有非法工具名（v4 清洗+还原，legacy 透传）。两者皆**严格改进**，非回归；无现有 WS 测试覆盖这些边。
+- **为何归类遗留而非「修」**：这是架构统一的正向副作用（原则7/8），不是缺陷。文档化以备 review 与未来对照。
+- **若要回退到 legacy WS 语义**：在 WS v4 入口前置 `isResponsesSupported` 检查 + 对非直连决策 error+close（但不建议——会丢掉 fallback 能力）。
+
+### P2.4-D2 — stream-id-sync + tool-name restore 仍在 handler/WS-pump 内联（非 S5 registry，与 openai-cc 同）
+
+- **根因**：spec rewrite-registry 把 `responses-stream-id`(P1)/`responses-tool-name-restore`(P2) 列为 S5 ResponseRewrite。但 openai-cc（P2.3）已确立「响应侧 finishing 留 handler」的范式（P2-era division of labor），P2.4 沿用：codec.renderResponse 直连=identity；`fixStreamEventIds`（仅直连）+ tool-name restore + forwarded 采样在 handler-v4 `pumpStreamingV4` / ws.ts `handleResponseCreateV4` 内联。
+- **当前行为**：S5 ResponseRewrite registry（`RESPONSE_REWRITES`）对 openai-responses 仍空；行为正确（全套件经 v4 绿）。
+- **理想架构**：P2.6（Anthropic，响应改写最重）重建 S5 chain 时，把 stream-id-sync / tool-name restore 注册为 ResponseRewrite，handler 退化为纯采样 + 转发。
+- **若做需改什么**：注册 `responses-stream-id`（appliesTo: openai-responses ∧ targetEndpoint=/responses ∧ fixResponsesStreamIds）+ `responses-tool-name-restore`（appliesTo: mapper 非空）到 registry；handler 删内联。
+
+### P2.4-D3 — reject 在 v4 记一条 `failed` history entry（legacy 无），由中间件收尾、非悬挂（与 CC 一致，已实测裁决）
+
+- **发现于**：P2.4 subagent review（报为 CRITICAL「悬挂 pending 泄漏」）→ **主线实测裁决为假阳性**
+- **根因**：legacy `handleResponses` 在 `manager.create()` **之前** reject（handler.ts:145），故无 ctx、无 entry。v4 codec.parse 先建 ctx（→ history insert），decideRoute 才 reject；handler-v4 `!result.ok` 分支 throw HTTPError **不自 settle ctx**，依赖 `observabilityMiddleware`（server.ts:73）POST 分支 `completeFromHttpStatus(400)`→`fail()` 收尾。
+- **当前行为（实测）**：带中间件的 app（=生产）下 reject entry 终态 = **`failed`**（已收尾，非悬挂）。subagent 与初次探针看到的 `pending` 是**测试 harness artifact**——`createFullTestApp` **不注册** observabilityMiddleware（只 server.ts 注册）。与 openai-cc（P2.3）**完全一致**（同 codec-creates-ctx-in-parse 模式，CC handler-v4 reject 分支逐字相同）。
+- **与 spec 的偏差**：envelope-driver §3 写「reject 不建悬挂 history」，但 codec-在-parse-建-ctx 的范式（CC 确立）产生「finalized failed entry」而非「无 entry」。后者反而更符合原则7（记录原始信息，rejected 请求可诊断）。
+- **为何不改**：非泄漏（中间件收尾）、与 CC 一致、更可诊断。WS 路径因中间件豁免 WebSocket（middleware.ts:82）必须自 settle（已正确：ws.ts `!result.ok` 调 `ctx.fail`），HTTP 靠中间件——二者终态皆 `failed`，不对称是有意的。
+
+### P2.4-D4 — 响应侧采样下沉（上游原始 sseEvents + 删 handler/WS 手动 setter）→ 归 P3.2b 跨格式统一
+
+- **根因**：与 openai-cc（P2.3-S）同——driver 请求侧双轨采样已下沉（codec.sampleRequest + driver per-attempt + transport queueWaitMs，L2 双轨等价测试齐）。响应侧上游原始 `sseEvents`（outboundResponse 轨）+ 删 handler-v4/ws.ts 手动 `setForwardedResponse({sseEvents})` setter **未下沉**——这是跨格式统一改进，锚定 P3.2b。
+- **当前行为**：handler-v4 `pumpStreamingV4` + ws.ts `handleResponseCreateV4` 手动收集 `forwardedSseEvents`（客户端实收侧，inboundResponse 轨）并 `setForwardedResponse`。上游原始 sseEvents（outboundResponse）仍缺（legacy Responses 直连也仅采上游帧于 handler，非 driver 统一）——P3.2b 由 driver S4 出口对所有格式统一采样补齐。
+- **若做需改什么**：P3.2b 在 driver S4 出口采上游原始帧（`request.upstream_frame`）+ S5/S7 采 forwarded（`request.forwarded_frame`），HistorySink 经 codec.createResponseAccumulator 重建双轨；删 handler/ws 手动 setter。
+
+### P2.4-D5 — instructions 的 config-reload 在 reject 路径上比 legacy 早触发一次（CC 一致、幂等、低危）
+
+- **根因**：`processResponsesInstructions`（→ `applyConfigToState` 真 I/O 热重载）async + 非幂等，必须在 sync codec.parse **之前**由 route 跑（与 CC `processOpenAIMessages` 同）。legacy 在 reject **之后** 跑 instructions（handler.ts:152），故被拒模型不触发 reload；v4 在 parse/decideRoute 之前跑，故被拒模型也触发一次 reload。
+- **当前行为**：幂等（同 config → 同 state），无害；与 openai-cc 一致。
+- **为何不改**：要在 reject 之前跳过 instructions，需在 instructions 之前做完整模型解析 + 端点检查（重复 decideRoute 逻辑）。收益（被拒请求省一次幂等 reload）不抵复杂度。
 
 ### P2.3-L1 — flag 默认 OFF + 边缘等价待补后翻 ON（→ 重排为 P2.3-H/P2.3-ON）
 
