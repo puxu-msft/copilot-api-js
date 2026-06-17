@@ -4,6 +4,29 @@
 
 ---
 
+> ## ⚠️ P2.1 已完成（2026-06-17）——继续从 P2.2，先读本段交接
+>
+> driver 骨架已落地并独立验证（commit `fe7db72`，15 mock-codec 单测）。**P2.2 起无需再建 driver/接口**，直接实现 codec 并接上。继续前必读以下落地现实：
+>
+> **已存在的地基**：
+> - `src/lib/pipeline/driver.ts` — `createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming`。`deps = { codec, transport, strategies, maxRetries, maxLearningRetries, requestRewrites?, responseRewrites? }`。实现了 `runRequest`(S1→S4 含重试循环) / `runResponse`(S5→S7 流式 + buffer/flush 链) / `runResponseNonStreaming`。
+> - `src/lib/pipeline/types.ts` — **`FormatCodec` 接口已定义**（8 方法：parse/decideRoute/translateOut/prepareWire/renderResponse/renderResponseNonStreaming/formatError/createResponseAccumulator）。P2.2+ 的 codec 实现此接口即可。`RouteDecision`/`RetryStrategy`(env-based)/`RawHttpRequest`/`DriverRequestResult`/`Transport`/`PreparedRequest`/`UpstreamStream` 均在此。
+> - `src/lib/pipeline/rewrite-registry.ts` — `assembleRequestRewrites`/`assembleResponseRewrites` + `RequestRewrite`/`ResponseRewrite` 接口（driver 经 `deps.requestRewrites`/`responseRewrites` 消费）。
+> - `src/lib/transport/send.ts`(P0.2) — `sendUpstreamHttp(params): Promise<unknown>`（原始 SSE 生成器或 JSON）。**注意：它还不是 `Transport.send(wire, env): Promise<UpstreamStream>` 契约**——P2.2/P2.3 要写一个 Transport adapter 把它包成 `UpstreamStream`（`{ frames, nonStream?, headers }`），按 retry-transport §4（含 guardSseIterable 统一、上游 WS 二次选择）。
+>
+> **P2.1 做出的、影响 codec/route 的关键决策**：
+> 1. **abort 抛原始 error**（非 spec 草案的 `action.error`）：driver 在 strategy abort / 无策略 / 超预算 / strategy.handle 自身抛错时，都抛**原始 caught error**（legacy parity，保栈，lint-clean）。classified `apiError` 已 `setAttemptError` 记录。codec/strategy 作者勿期望 abort 能换一个 error 抛出。
+> 2. **reject 携带 `reason` 而非成形 body**：`DriverRequestResult.rejection = { status, reason, format }`。driver **不**替 codec 拼 error envelope——**route 层（P2.3+ 接 driver 时）须按 `format` 把 reason 成形为 per-format error JSON**（Anthropic `{type:"error",error:{type:"invalid_request_error",message}}` / OpenAI `{error:{message,type,code}}`）。
+> 3. **observability 自动采样目前是占位**（driver 内注释标 P3.2）：codec/driver 暂不 publish `request.inbound_captured`/`rewrite_applied`/`upstream_frame`/`forwarded_frame` 等事件。**P2.3 切 CC 时 history 仍靠现 handler 残留的 ctx setter 路径**——即 P2 切 driver 后，采样下沉是 P3.2 才完成；P2 阶段 codec.parse 仍负责 `manager.create` + 基础 inbound 采样（沿用现 handler 做法），避免 history 断档。**这是 P2 的一个真实张力点**：driver 已经编排，但采样未下沉，需在 P2.3 想清楚"切 driver 后谁采样"（建议：codec.parse 内沿用现 handler 的 ctx 填充，P3.2 再统一下沉）。
+> 4. **S5 buffer/flush 链假设至多一个 buffering rewrite**（P2.1-M2，见 05-progress）：tool-input-decode 独此一家。P2.6 注册响应改写若出现多 buffering，需补 buffer→buffer 顺序契约测试。
+> 5. **请求改写如何接进 driver**：P1.2 的 Anthropic 请求改写是 **payload 层**（`anthropic/request-rewrites.ts` 的 `AnthropicRequestRewrite`，operate on MessagesPayload）；P2 codec 要用**平凡 env adapter** 把它们包成 driver 要的 env-based `RequestRewrite`（`apply(env) => env.with({ body: module.apply(env.body, ctx).payload })`），经 `deps.requestRewrites` 传入。OpenAI 请求改写是点应用命名函数（P1.4-SCOPE），P2 driver 切换时把它们归位到 S3（codec.translateOut 后、prepareWire 前）。
+> 6. **prepare 接进 prepareWire**：P1.3 的 `ANTHROPIC_PREPARE_STEPS` / `prepareAnthropicRequest` 即 `codec.prepareWire` 的实现（Anthropic codec 的 prepareWire 调它，env→PreparedRequest）；OpenAI 的 `prepareChatCompletionsRequest`/`prepareResponsesRequest` 同理（O8/O9/O14，P1.4-SCOPE 未注册化、直接调）。
+>
+> **进度看板**：`docs/v4/05-progress.md`（P2.1 ✅，P2.2-P2.6 待做；遗留区有 P2-MUSTFIX1/P2-CHECKPOINT1/P2.1-M2 等 P2 必看项）。
+
+---
+
+
 我要实施 copilot-api-js 管线重构 v4 的 **P2 阶段（driver + 逐格式迁移）**。建 driver 七阶段骨架，逐格式从旧 handler 切到新管线，**新旧路径并存**（feature flag 可回切），旧路径保留到验证完成。
 
 **前置**：P0、P1 完成。
@@ -18,8 +41,8 @@
 
 **六个 commit**：
 
-### P2.1 — driver + stages 骨架
-按 `03-spec/envelope-driver.md` §3/§4 新建 `src/lib/pipeline/driver.ts` + `stages/*`：`runRequest`（S1→S4）、`runResponse`（S5→S7）、非流式变体。消费 codec + rewrite-registry + transport + strategies。**driver 在 stage 边界自动 publish 事件 + 自动采样**（§4 表：inbound/routed/rewrite_applied/attempt/upstream_frame/forwarded_frame/终态）。无格式接入。invariant：driver 单测（mock codec/transport）绿。
+### P2.1 — driver + stages 骨架 ✅ 已完成（commit `fe7db72`）
+已落地 `src/lib/pipeline/driver.ts`（`createPipelineDriver`/`runRequest`/`runResponse`/`runResponseNonStreaming`）+ `FormatCodec` 接口（types.ts）。consume codec/transport/strategies/rewrite-registry 为 opaque deps，15 mock-codec 单测绿。**driver 自动 publish/采样目前是占位（P3.2 才接）**——见上方「P2.1 落地现实」交接段第 3 点。**P2.2 起从此地基继续。**
 
 ### P2.2 — openai-cc codec
 按 `03-spec/codec.md` §1/§3 新建 `src/lib/codec/openai-cc.ts`：parse/decideRoute（透传 or via-responses or reject）/translateOut（identity or CC→Responses）/renderResponse（identity or Responses→CC）/formatError/createResponseAccumulator/prepareWire。复用现 `sanitize/translate/request-preparation`。invariant：codec 单测绿；旧 CC handler 仍在用。

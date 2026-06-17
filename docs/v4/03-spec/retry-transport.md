@@ -37,8 +37,10 @@ async function runExchange(env: RequestEnvelope, strategies: RetryStrategy[]): P
       env.ctx.setAttemptError(apiError)
       const strategy = strategies.find(s => s.canHandle(apiError))   // 取首个（顺序语义见 02 §1.2）
       if (!strategy) throw error                        // 无策略 → [FAIL]
-      const action = await strategy.handle(apiError, env)
-      if (action.kind === "abort") throw action.error
+      let action
+      try { action = await strategy.handle(apiError, env) }
+      catch (e) { /* strategy 自身抛错 → warn + 抛原始 error（legacy pipeline.ts:307-314） */ throw error }
+      if (action.kind === "abort") throw error          // ← P2.1 实现抛【原始 error】非 action.error（见下注）
       // budget gate（normal vs learning，沿用 pipeline.ts:333）
       if (action.learning ? learningRetries++ >= MAX_LEARNING_RETRIES : normalRetries++ >= maxRetries) throw error
       env = action.env                                  // ← strategy 改 env（见 §2.2）
@@ -47,6 +49,10 @@ async function runExchange(env: RequestEnvelope, strategies: RetryStrategy[]): P
     }
   }
 }
+```
+
+> **P2.1 实现决策（已落地 driver.ts，2026-06-17）**：abort / 无策略 / 超预算 / strategy.handle 自身抛错时，driver 一律抛**原始 caught error**（一个真正的 `Error`/`HTTPError`，保栈），**而非** `action.error`。理由：`ApiError` 是纯接口（非 Error 实例），`throw action.error` 会丢栈 + 触 `only-throw-error` lint；且旧 `pipeline.ts:312` 终态也抛原始 caught error（legacy parity）。classified `apiError` 已经 `setAttemptError` 记录，诊断不丢。`RetryAction.abort.error` 字段保留作未来 strategy 覆盖入口，但当前不被 surface。**勿在后续会话把它"修正"回 `throw action.error`。**
+
 ```
 
 ### 2.1 RetryStrategy 接口（提升：改 env 而非 wire）

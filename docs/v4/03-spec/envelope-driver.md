@@ -87,8 +87,10 @@ interface PipelineDriver {
 
 type DriverRequestResult =
   | { ok: true; upstream: UpstreamStream; env: RequestEnvelope }
-  | { ok: false; rejection: { status: number; body: unknown; format: ClientFormat } }  // decideRoute reject / 解析失败
+  | { ok: false; rejection: { status: number; reason: string; format: ClientFormat } }  // decideRoute reject / 解析失败
 ```
+
+> **P2.1 实现决策（已落地，2026-06-17）**：`rejection` 携带原始 `reason`（字符串）+ `format`，**不**在 driver 内拼 error envelope。**route 层接 driver 时须按 `format` 把 reason 成形为 per-format error JSON**（Anthropic `{type:"error",error:{type:"invalid_request_error",message}}` / OpenAI `{error:{message,type,code}}`）——格式差异留在 codec/route，driver 不替它做格式决策。（原 spec 草案写 `body: unknown`；改为 `reason` 更明确"由谁成形"。）
 
 ### runRequest 流程（S1→S4）
 
