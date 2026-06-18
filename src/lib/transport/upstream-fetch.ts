@@ -27,6 +27,9 @@
 // (and its keepalive) take effect on both Bun and Node — verified via `ss` that
 // the upstream HTTPS socket carries a `timer:(keepalive,...)`. Pinned to undici 7:
 // undici 8's index.js eagerly constructs CacheStorage and crashes on Bun 1.3.14.
+// The subpath resolves only because undici ships NO `exports` field — if a future
+// undici adds one that restricts subpaths, this breaks; the exact pin in
+// package.json + the C1 regression test (upstream-fetch.unit.test.ts) guard it.
 import { fetch as undiciFetch } from "undici/index.js"
 
 import { getUpstreamDispatcher } from "~/lib/proxy"

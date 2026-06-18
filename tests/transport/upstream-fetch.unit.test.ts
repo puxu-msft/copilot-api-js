@@ -100,4 +100,12 @@ describe("real undici load (C1 regression guard)", () => {
     const { Agent } = await import("undici/index.js")
     expect("stats" in new Agent({})).toBe(true)
   })
+
+  test("getUpstreamDispatcher (production path) is backed by the real undici", () => {
+    // Guards the PRODUCTION code path (proxy.ts → getUpstreamDispatcher), not just
+    // that the subpath self-loads real undici. A real undici Agent has `stats`;
+    // Bun's shim Agent does not. If proxy.ts reverts to bare "undici", this fails.
+    initProxy({ fromEnv: false })
+    expect("stats" in getUpstreamDispatcher()).toBe(true)
+  })
 })
