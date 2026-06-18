@@ -15,6 +15,7 @@ import {
   //
   createDispatcherForUrl,
   formatProxyDisplay,
+  getUpstreamDispatcher,
   getUpstreamKeepAliveDelayMs,
   initProxy,
 } from "~/lib/proxy"
@@ -85,6 +86,32 @@ describe("proxy utilities", () => {
         fromEnv: false,
       }),
     ).toThrow("SOCKS5 proxy is not supported on Bun runtime. Use Node.js or an HTTP proxy instead.")
+  })
+})
+
+describe("getUpstreamDispatcher", () => {
+  afterEach(() => {
+    process.env.HTTP_PROXY = originalHttpProxy
+    process.env.HTTPS_PROXY = originalHttpsProxy
+  })
+
+  test("returns a ProxyAgent after initProxy with an explicit HTTP proxy URL", () => {
+    initProxy({ url: "http://proxy.example:8080", fromEnv: false })
+    expect(getUpstreamDispatcher()).toBeInstanceOf(ProxyAgent)
+  })
+
+  test("returns an Agent-based dispatcher when configured from environment", () => {
+    // EnvProxyDispatcher extends Agent; assert via the public base type.
+    initProxy({ fromEnv: true })
+    expect(getUpstreamDispatcher()).toBeInstanceOf(Agent)
+  })
+
+  test("returns a configured Agent when no proxy is set", () => {
+    initProxy({ fromEnv: false })
+    const dispatcher = getUpstreamDispatcher()
+    expect(dispatcher).toBeInstanceOf(Agent)
+    // A plain Agent, not the ProxyAgent variant.
+    expect(dispatcher).not.toBeInstanceOf(ProxyAgent)
   })
 })
 

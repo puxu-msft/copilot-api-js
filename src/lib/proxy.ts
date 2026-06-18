@@ -127,20 +127,11 @@ export function formatProxyDisplay(proxyUrl: string): string {
 function initProxyNode(options: ProxyOptions): void {
   try {
     cachedProxyOptions = options
-    installGlobalDispatcher(options)
-
-    if (!timeoutSubscriptionInstalled) {
-      onTransportTimeoutChange(() => {
-        if (!cachedProxyOptions) return
-        try {
-          installGlobalDispatcher(cachedProxyOptions)
-          consola.debug(`Undici timeouts reloaded: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`)
-        } catch (err) {
-          consola.error("Undici timeout reload failed:", err)
-        }
-      })
-      timeoutSubscriptionInstalled = true
-    }
+    const dispatcher = buildUpstreamDispatcher(options)
+    currentUpstreamDispatcher = dispatcher
+    setGlobalDispatcher(dispatcher)
+    logDispatcherInstalled(options)
+    ensureTimeoutSubscription()
   } catch (err) {
     consola.error("Proxy setup failed:", err)
     throw err
@@ -149,30 +140,68 @@ function initProxyNode(options: ProxyOptions): void {
 
 /** Cached proxy options so timeout hot-reload can rebuild the same dispatcher type. */
 let cachedProxyOptions: ProxyOptions | null = null
+/**
+ * The dispatcher currently serving upstream requests, returned by
+ * {@link getUpstreamDispatcher}. On Node this mirrors the global dispatcher; on
+ * Bun it is the ONLY way to apply our Agent options (timeouts + TCP keepalive),
+ * since Bun's global fetch does not consume `setGlobalDispatcher`.
+ */
+let currentUpstreamDispatcher: Dispatcher | undefined
 let timeoutSubscriptionInstalled = false
 
 /**
- * Install (or replace) the global undici dispatcher.
- * Old dispatcher is left for GC; in-flight requests continue on it.
+ * The dispatcher that upstream `undiciFetch` calls must pass explicitly. Lazily
+ * falls back to a timeout/keepalive-configured Agent when `initProxy()` has not
+ * run yet (e.g. CLI tools / tests that issue an upstream request directly).
  */
-function installGlobalDispatcher(options: ProxyOptions): void {
+export function getUpstreamDispatcher(): Dispatcher {
+  if (!currentUpstreamDispatcher) currentUpstreamDispatcher = new Agent(getUndiciAgentOptions())
+  return currentUpstreamDispatcher
+}
+
+/** Build the dispatcher serving upstream requests for the given proxy options. */
+function buildUpstreamDispatcher(options: ProxyOptions): Dispatcher {
+  if (options.url) return createDispatcherForUrl(options.url)
+  if (options.fromEnv) return new EnvProxyDispatcher()
+  // No proxy: still use a configured Agent so undici's default 300s headers/body
+  // timeouts do not pre-empt our application-level streamIdleTimeout / fetchTimeout.
+  return new Agent(getUndiciAgentOptions())
+}
+
+/** Emit the install-time debug line matching the chosen dispatcher kind. */
+function logDispatcherInstalled(options: ProxyOptions): void {
   if (options.url) {
-    setGlobalDispatcher(createDispatcherForUrl(options.url))
     consola.debug(`Proxy configured: ${formatProxyDisplay(options.url)}`)
-    return
-  }
-
-  if (options.fromEnv) {
-    setGlobalDispatcher(new EnvProxyDispatcher())
+  } else if (options.fromEnv) {
     consola.debug("HTTP proxy configured from environment (per-URL)")
-    return
+  } else {
+    consola.debug(`Undici timeouts: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`)
   }
+}
 
-  // No proxy: still install a configured global Agent so undici's default
-  // 300s headers/body timeouts do not pre-empt our application-level
-  // streamIdleTimeout / fetchTimeout.
-  setGlobalDispatcher(new Agent(getUndiciAgentOptions()))
-  consola.debug(`Undici timeouts: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`)
+/** Subscribe once to timeout/keepalive hot-reload, rebuilding the cached dispatcher. */
+function ensureTimeoutSubscription(): void {
+  if (timeoutSubscriptionInstalled) return
+  onTransportTimeoutChange(rebuildUpstreamDispatcher)
+  timeoutSubscriptionInstalled = true
+}
+
+/**
+ * Rebuild the cached upstream dispatcher when fetchTimeout / streamIdleTimeout /
+ * upstreamKeepaliveDelay change. On Node the global dispatcher is replaced too;
+ * the old one is left for in-flight requests to drain and GC. On Bun there is no
+ * global dispatcher to replace — only the cached one matters.
+ */
+function rebuildUpstreamDispatcher(): void {
+  if (!cachedProxyOptions) return
+  try {
+    const dispatcher = buildUpstreamDispatcher(cachedProxyOptions)
+    currentUpstreamDispatcher = dispatcher
+    if (typeof Bun === "undefined") setGlobalDispatcher(dispatcher)
+    consola.debug(`Undici dispatcher reloaded: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s keepalive=${state.upstreamKeepaliveDelay}s`)
+  } catch (err) {
+    consola.error("Undici dispatcher reload failed:", err)
+  }
 }
 
 /** Create the appropriate undici dispatcher for a proxy URL scheme */
@@ -356,17 +385,26 @@ class EnvProxyDispatcher extends Agent {
  * SOCKS5 proxies are not supported on Bun.
  */
 function initProxyBun(options: ProxyOptions): void {
-  if (!options.url) return
+  if (options.url) {
+    const url = new URL(options.url)
+    const protocol = url.protocol.toLowerCase()
 
-  const url = new URL(options.url)
-  const protocol = url.protocol.toLowerCase()
+    if (protocol === "socks5:" || protocol === "socks5h:") {
+      throw new Error("SOCKS5 proxy is not supported on Bun runtime. Use Node.js or an HTTP proxy instead.")
+    }
 
-  if (protocol === "socks5:" || protocol === "socks5h:") {
-    throw new Error("SOCKS5 proxy is not supported on Bun runtime. Use Node.js or an HTTP proxy instead.")
+    // Bun's global fetch reads HTTP_PROXY/HTTPS_PROXY natively. Kept for any
+    // residual global-fetch callers; the hot path uses the explicit dispatcher below.
+    process.env.HTTP_PROXY = options.url
+    process.env.HTTPS_PROXY = options.url
+    consola.debug(`Proxy configured (Bun env): ${formatProxyDisplay(options.url)}`)
   }
 
-  // Set env vars for Bun's native HTTP proxy support
-  process.env.HTTP_PROXY = options.url
-  process.env.HTTPS_PROXY = options.url
-  consola.debug(`Proxy configured (Bun env): ${formatProxyDisplay(options.url)}`)
+  // Bun ignores setGlobalDispatcher, so cache an explicit dispatcher carrying our
+  // Agent options (timeouts + TCP keepalive). getUpstreamDispatcher() hands it to
+  // undiciFetch on the hot path — without it, Bun upstream connections get no TCP
+  // keepalive and die during long thinking silences (the whole reason for this).
+  cachedProxyOptions = options
+  currentUpstreamDispatcher = buildUpstreamDispatcher(options)
+  ensureTimeoutSubscription()
 }
