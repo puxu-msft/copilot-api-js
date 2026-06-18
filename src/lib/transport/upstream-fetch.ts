@@ -31,7 +31,7 @@ export interface UpstreamFetchInit {
   signal?: AbortSignal | undefined
 }
 
-type UpstreamFetchFn = (url: string, init: UpstreamFetchInit) => Promise<Response>
+type UpstreamFetchFn = (url: string | URL, init: UpstreamFetchInit) => Promise<Response>
 
 const productionUpstreamFetch: UpstreamFetchFn = (url, init) =>
   undiciFetch(url, { ...init, dispatcher: getUpstreamDispatcher() }) as unknown as Promise<Response>
@@ -39,7 +39,7 @@ const productionUpstreamFetch: UpstreamFetchFn = (url, init) =>
 let activeUpstreamFetch: UpstreamFetchFn = productionUpstreamFetch
 
 /** Issue an upstream HTTP request via undici with our keepalive/timeout dispatcher. */
-export function upstreamFetch(url: string, init: UpstreamFetchInit): Promise<Response> {
+export function upstreamFetch(url: string | URL, init: UpstreamFetchInit): Promise<Response> {
   return activeUpstreamFetch(url, init)
 }
 

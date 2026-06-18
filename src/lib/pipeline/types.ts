@@ -96,9 +96,9 @@ export interface PreparedRequest {
 /**
  * Pure send/receive, format-agnostic. Extracted from the three clients' shared
  * skeleton (docs/v4/02-current-state.md §6.1): token check → combine signals →
- * fetch(DISABLE_BUILTIN_FETCH_TIMEOUT) → captureHttpHeaders → throw HTTPError on
- * !ok → stream ? SSE iterable : json. The adaptive rate-limiter wraps this at
- * the call site (kept, see retry-transport.md §5).
+ * upstreamFetch (undici + keepalive dispatcher) → captureHttpHeaders → throw
+ * HTTPError on !ok → stream ? SSE iterable : json. The adaptive rate-limiter
+ * wraps this at the call site (kept, see retry-transport.md §5).
  */
 export interface Transport {
   send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream>

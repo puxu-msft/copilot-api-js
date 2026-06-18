@@ -12,6 +12,7 @@ import { hasKnownLimits } from "~/lib/auto-truncate"
 import { createFetchSignal } from "~/lib/fetch-utils"
 import { resolveModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { type MessagesPayload } from "~/types/api/anthropic"
 
 // ============================================================================
@@ -46,7 +47,7 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
   const countPayload = { ...payload, model, system: inlineSystem.system, messages: inlineSystem.messages }
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
+    const response = await upstreamFetch("https://api.anthropic.com/v1/messages/count_tokens", {
       method: "POST",
       headers: {
         "content-type": "application/json",

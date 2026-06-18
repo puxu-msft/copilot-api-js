@@ -35,7 +35,7 @@ describe("upstreamFetch — test bridge", () => {
   })
 
   test("routes through the injected fn and forwards url + init", async () => {
-    const calls: Array<{ url: string; init: unknown }> = []
+    const calls: Array<{ url: string | URL; init: unknown }> = []
     setUpstreamFetchForTests((url, init) => {
       calls.push({ url, init })
       return Promise.resolve(new Response("ok", { status: 200 }))

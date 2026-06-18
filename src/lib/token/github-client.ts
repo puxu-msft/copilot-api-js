@@ -12,6 +12,7 @@ import {
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { sleep } from "~/lib/utils"
 
 // ============================================================================
@@ -29,7 +30,7 @@ export interface GitHubUser {
 }
 
 export const getGitHubUser = async (): Promise<GitHubUser> => {
-  const response = await fetch(`${GITHUB_API_BASE_URL}/user`, {
+  const response = await upstreamFetch(`${GITHUB_API_BASE_URL}/user`, {
     headers: githubHeaders(state),
     signal: AbortSignal.timeout(15_000),
   })
@@ -52,7 +53,7 @@ export interface DeviceCodeResponse {
 }
 
 export const getDeviceCode = async (): Promise<DeviceCodeResponse> => {
-  const response = await fetch(`${GITHUB_BASE_URL}/login/device/code`, {
+  const response = await upstreamFetch(`${GITHUB_BASE_URL}/login/device/code`, {
     method: "POST",
     headers: standardHeaders(),
     body: JSON.stringify({
@@ -77,7 +78,7 @@ export async function pollAccessToken(deviceCode: DeviceCodeResponse): Promise<s
   const expiresAt = Date.now() + deviceCode.expires_in * 1000
 
   while (Date.now() < expiresAt) {
-    const response = await fetch(`${GITHUB_BASE_URL}/login/oauth/access_token`, {
+    const response = await upstreamFetch(`${GITHUB_BASE_URL}/login/oauth/access_token`, {
       method: "POST",
       headers: standardHeaders(),
       body: JSON.stringify({

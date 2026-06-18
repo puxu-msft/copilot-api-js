@@ -24,6 +24,7 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 import { createFetchSignal } from "~/lib/fetch-utils"
 import { createResponses } from "~/lib/openai/responses-client"
 import { combineAbortSignals } from "~/lib/stream"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 // ============================================================================
 // Constants
@@ -282,7 +283,7 @@ function searxngUrl(query: string): URL {
 
 /** Quick reachability probe so an unreachable SearXNG fails fast with a clear hint. */
 async function searxngUnavailableReason(): Promise<string | undefined> {
-  const response = await fetch(DEFAULT_SEARXNG_BASE_URL, {
+  const response = await upstreamFetch(DEFAULT_SEARXNG_BASE_URL, {
     headers: { accept: "text/html,application/json" },
     signal: AbortSignal.timeout(SEARXNG_READINESS_TIMEOUT_MS),
   }).catch((error: unknown) => error)
@@ -303,7 +304,7 @@ async function searchViaSearxng(query: string, clientAbortSignal?: AbortSignal):
     )
   }
 
-  const response = await fetch(searxngUrl(query), {
+  const response = await upstreamFetch(searxngUrl(query), {
     headers: { accept: "application/json" },
     // createFetchSignal applies the configured timeouts.response_header (and proxy via global fetch);
     // fall back to a fixed cap so a hung SearXNG can't stall the request indefinitely.

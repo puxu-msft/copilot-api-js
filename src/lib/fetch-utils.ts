@@ -19,21 +19,6 @@ export function createFetchSignal(): AbortSignal | undefined {
 }
 
 /**
- * Bun's native `fetch` enforces a built-in 300s timeout (connection → response
- * headers) that fires independently of any `signal` we pass and CANNOT be
- * lengthened — Bun aborts on whichever fires first, so a large `timeouts.response_header`
- * is silently capped at 300s and surfaces as `TimeoutError: "The operation
- * timed out."`. Spreading this into the upstream fetch init disables that
- * built-in clock so our application-level `createFetchSignal()` (driven by
- * `timeouts.response_header`) is the single source of truth.
- *
- * Spread (not a literal field) so TypeScript's excess-property check doesn't
- * reject `timeout` on the standard `RequestInit`. Inert on Node — unknown
- * RequestInit fields are ignored there.
- */
-export const DISABLE_BUILTIN_FETCH_TIMEOUT = { timeout: false } as const
-
-/**
  * Populate a HeadersCapture object with request and response headers.
  * Should be called immediately after fetch(), before !response.ok check,
  * so headers are captured even for error responses.

@@ -8,6 +8,7 @@ import { createFetchSignal } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 export const createEmbeddings = async (payload: EmbeddingRequest) => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
@@ -18,7 +19,7 @@ export const createEmbeddings = async (payload: EmbeddingRequest) => {
     input: typeof payload.input === "string" ? [payload.input] : payload.input,
   }
 
-  const response = await fetch(`${copilotBaseUrl(state)}/embeddings`, {
+  const response = await upstreamFetch(`${copilotBaseUrl(state)}/embeddings`, {
     method: "POST",
     headers: copilotHeaders(state),
     body: JSON.stringify(normalizedPayload),

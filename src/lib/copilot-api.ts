@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
 
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
+
 import type { State } from "./state"
 
 import { setVSCodeVersion } from "./state"
@@ -147,7 +149,7 @@ export async function getVSCodeVersion() {
   }, 5000)
 
   try {
-    const response = await fetch(VSCODE_RELEASE_URL, {
+    const response = await upstreamFetch(VSCODE_RELEASE_URL, {
       signal: controller.signal,
       headers: {
         Accept: "application/vnd.github.v3+json",

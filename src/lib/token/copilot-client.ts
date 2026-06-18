@@ -8,13 +8,14 @@ import {
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 // ============================================================================
 // Token
 // ============================================================================
 
 export const getCopilotToken = async (): Promise<CopilotTokenResponse> => {
-  const response = await fetch(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, {
+  const response = await upstreamFetch(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, {
     headers: { ...githubHeaders(state), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
     signal: AbortSignal.timeout(15_000),
   })
@@ -41,7 +42,7 @@ export interface CopilotTokenResponse {
 // ============================================================================
 
 export const getCopilotUsage = async (): Promise<CopilotUsageResponse> => {
-  const response = await fetch(`${GITHUB_API_BASE_URL}/copilot_internal/user`, {
+  const response = await upstreamFetch(`${GITHUB_API_BASE_URL}/copilot_internal/user`, {
     headers: { ...githubHeaders(state), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
     signal: AbortSignal.timeout(15_000),
   })

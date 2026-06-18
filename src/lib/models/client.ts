@@ -12,6 +12,7 @@ import {
   state,
   setModels,
 } from "~/lib/state"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 /**
  * Cached ETag from the last successful /models response.
@@ -43,7 +44,7 @@ export const getModels = async (): Promise<ModelsResponse | undefined> => {
   const headers = copilotHeaders(state)
   if (modelsEtag) headers["If-None-Match"] = modelsEtag
 
-  const response = await fetch(`${copilotBaseUrl(state)}/models`, {
+  const response = await upstreamFetch(`${copilotBaseUrl(state)}/models`, {
     headers,
     signal: createFetchSignal(),
   })
