@@ -19,7 +19,15 @@
  * is covered separately by the proxy unit tests + an out-of-band `ss` check.
  */
 
-import { fetch as undiciFetch } from "undici"
+// Import undici via its file subpath "undici/index.js", NOT the bare "undici"
+// specifier. Bun replaces the bare specifier with a built-in shim whose fetch
+// silently ignores the `dispatcher` option (verified: a subclassed Agent's
+// dispatch() is never called), so TCP keepalive never applies on Bun. The file
+// subpath bypasses the shim and loads the real undici, making the dispatcher
+// (and its keepalive) take effect on both Bun and Node — verified via `ss` that
+// the upstream HTTPS socket carries a `timer:(keepalive,...)`. Pinned to undici 7:
+// undici 8's index.js eagerly constructs CacheStorage and crashes on Bun 1.3.14.
+import { fetch as undiciFetch } from "undici/index.js"
 
 import { getUpstreamDispatcher } from "~/lib/proxy"
 

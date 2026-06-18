@@ -288,8 +288,12 @@ async function searxngUnavailableReason(): Promise<string | undefined> {
     signal: AbortSignal.timeout(SEARXNG_READINESS_TIMEOUT_MS),
   }).catch((error: unknown) => error)
 
-  if (response instanceof Response) return undefined
-  const detail = response instanceof Error ? response.message : String(response)
+  // A resolved Response (any shape) means SearXNG is reachable. Don't use
+  // `instanceof Response`: undici's Response (Node) is not a globalThis.Response
+  // instance, so a successful probe would be misjudged as unavailable. A rejected
+  // fetch yields an Error, so test for that instead.
+  if (!(response instanceof Error)) return undefined
+  const detail = response.message
   return ["Local SearXNG web search is not available.", detail ? `Error: ${detail}` : ""].filter(Boolean).join("\n")
 }
 
@@ -312,8 +316,11 @@ async function searchViaSearxng(query: string, clientAbortSignal?: AbortSignal):
     signal: combineAbortSignals(clientAbortSignal, createFetchSignal() ?? AbortSignal.timeout(SEARXNG_TIMEOUT_MS)),
   }).catch((error: unknown) => error)
 
-  if (!(response instanceof Response)) {
-    const detail = response instanceof Error ? response.message : String(response)
+  // A rejected fetch yields an Error. Don't use `instanceof Response` to detect
+  // success: undici's Response (Node) is not a globalThis.Response instance, so a
+  // successful search would be misjudged as a failure. Test for Error instead.
+  if (response instanceof Error) {
+    const detail = response.message
     return failedSearch(
       query,
       "searxng",
@@ -321,18 +328,18 @@ async function searchViaSearxng(query: string, clientAbortSignal?: AbortSignal):
     )
   }
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "")
+  // Resolved Response (undici/lib.dom structurally compatible — see upstream-fetch.ts).
+  const res = response as Response
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "")
     return failedSearch(
       query,
       "searxng",
-      [`Local SearXNG web search failed with HTTP ${response.status}.`, detail ? `Response: ${detail.slice(0, 500)}` : "", CONFIG_HINT]
-        .filter(Boolean)
-        .join("\n"),
+      [`Local SearXNG web search failed with HTTP ${res.status}.`, detail ? `Response: ${detail.slice(0, 500)}` : "", CONFIG_HINT].filter(Boolean).join("\n"),
     )
   }
 
-  const data = (await response.json().catch(() => ({}))) as { results?: Array<Record<string, unknown>> }
+  const data = (await res.json().catch(() => ({}))) as { results?: Array<Record<string, unknown>> }
   const results = (data.results ?? [])
     .flatMap((result): Array<SearchResult> => {
       const title = typeof result.title === "string" ? result.title.trim() : ""

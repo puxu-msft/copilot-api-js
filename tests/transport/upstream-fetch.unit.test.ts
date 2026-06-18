@@ -89,3 +89,15 @@ describe("upstream dispatcher — keepalive contract", () => {
     expect(getUpstreamDispatcher()).toBe(dispatcher)
   })
 })
+
+describe("real undici load (C1 regression guard)", () => {
+  test("undici/index.js loads the real undici, not Bun's dispatcher-ignoring shim", async () => {
+    // Bun replaces bare "undici" with a built-in shim whose Agent lacks `stats`
+    // and whose fetch silently drops the dispatcher (so TCP keepalive never
+    // applies). The "undici/index.js" file subpath bypasses the shim. If anyone
+    // reverts the import to bare "undici", this fails on Bun — guarding the whole
+    // keepalive premise (see transport/upstream-fetch.ts + proxy.ts imports).
+    const { Agent } = await import("undici/index.js")
+    expect("stats" in new Agent({})).toBe(true)
+  })
+})

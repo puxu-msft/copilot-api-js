@@ -9,7 +9,7 @@ import {
   //
   Agent,
   ProxyAgent,
-} from "undici"
+} from "undici/index.js"
 
 import {
   //

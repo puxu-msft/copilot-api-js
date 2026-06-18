@@ -14,13 +14,17 @@ import {
   SocksClient,
   type SocksProxy,
 } from "socks"
+// undici via file subpath (not bare "undici"): Bun shims the bare specifier and
+// drops the dispatcher's keepalive. The subpath loads the real undici. The Agent
+// built here must be the SAME undici instance the dispatcher is fed to in
+// transport/upstream-fetch.ts, so both import from "undici/index.js".
 import {
   //
   Agent,
   ProxyAgent,
   setGlobalDispatcher,
   type Dispatcher,
-} from "undici"
+} from "undici/index.js"
 
 import {
   //
