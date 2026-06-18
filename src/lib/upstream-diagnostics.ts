@@ -15,6 +15,8 @@
 
 import consola from "consola"
 
+import { state } from "~/lib/state"
+
 /** Diagnostics summary for the tools sent on a failing (400) upstream request. */
 export interface ToolDiagnostics {
   /** Total number of tools sent on the request. */
@@ -206,6 +208,16 @@ export interface UpstreamStreamDisconnectInfo {
 }
 
 /**
+ * Silence (ms) above which a transport-close starts to look like a middlebox idle
+ * reclaim rather than a genuine upstream error. Tuned to the common NAT/firewall/LB
+ * idle window (~30s); below this a drop is more likely an actual upstream failure.
+ */
+const MIDDLEBOX_RECLAIM_SILENCE_MS = 30_000
+
+/** Few-frames bound: a reclaim during a thinking stall has barely streamed anything. */
+const MIDDLEBOX_RECLAIM_MAX_FRAMES = 3
+
+/**
  * Emit a single detailed log line for an upstream stream disconnect.
  *
  * The bare error (`terminated (cause: other side closed)`) says nothing about
@@ -214,13 +226,37 @@ export interface UpstreamStreamDisconnectInfo {
  * (gap between the last upstream frame and the disconnect): a large silence
  * after a `content_block_start` frame is the signature of "died during a silent
  * thinking stall" (e.g. last-frame=content_block_start@201ms, silence≈31s).
+ *
+ * Two operator-facing aids: the effective `keepalive` setting (so it's clear what
+ * TCP keepalive was configured), and a `likely=...` cause + hint when the signals
+ * match the middlebox-idle-reclaim signature — pointing straight at the config to
+ * tune instead of leaving the operator to guess.
  */
 export function logUpstreamStreamDisconnect(info: UpstreamStreamDisconnectInfo): void {
   const silence = info.elapsedMs - info.lastFrameOffsetMs
+
+  // Effective keepalive config (memory-only read; safe inside this fn even if the
+  // error → upstream-diagnostics → state import order is cyclic, since state is
+  // fully initialized by the time any disconnect is logged).
+  const keepaliveSec = state.upstreamKeepaliveDelay
+  const keepalive = keepaliveSec > 0 ? `${keepaliveSec}s` : "default(60s)"
+
+  // Hint-only heuristic: a transport-close after a long silence during a thinking
+  // stall, with barely any frames, is the signature of an idle connection reaped
+  // by a middlebox (NAT/firewall/LB) while the model was thinking silently.
+  const isThinkingStall = info.stuckBlockType === "thinking" || info.lastFrameType === "content_block_start"
+  const looksLikeReclaim =
+    info.kindLabel === "transport-close" && silence >= MIDDLEBOX_RECLAIM_SILENCE_MS && info.frames <= MIDDLEBOX_RECLAIM_MAX_FRAMES && isThinkingStall
+  const likely =
+    looksLikeReclaim ?
+      ` | likely=middlebox-idle-reclaim-during-thinking-stall (hint: the connection path's idle window may be below upstream_keepalive=${keepalive}; try lowering timeouts.upstream_keepalive)`
+    : ""
+
   consola.error(
-    `[upstream-diagnostics] STREAM DISCONNECT model=${info.model} kind=${info.kindLabel}: ${info.detail}`
+    `[upstream-diagnostics] STREAM DISCONNECT model=${info.model} kind=${info.kindLabel} keepalive=${keepalive}: ${info.detail}`
       + ` | elapsed=${info.elapsedMs}ms frames=${info.frames} bytes=${info.bytes}`
       + ` | last-frame=${info.lastFrameType ?? "none"}@${info.lastFrameOffsetMs}ms silence=${silence}ms`
-      + ` | stuck-block=${info.stuckBlockType || "none"} tokens(in/out)=${info.inputTokens}/${info.outputTokens}`,
+      + ` | stuck-block=${info.stuckBlockType || "none"} tokens(in/out)=${info.inputTokens}/${info.outputTokens}`
+      + likely,
   )
 }

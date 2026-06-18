@@ -278,6 +278,11 @@ describe("logUpstreamStreamDisconnect", () => {
       expect(line).toContain("silence=31322ms")
       expect(line).toContain("stuck-block=thinking")
       expect(line).toContain("tokens(in/out)=202331/4")
+      // keepalive setting surfaced + middlebox-reclaim heuristic fires for this
+      // signature (transport-close, long silence, few frames, thinking stall).
+      expect(line).toContain("keepalive=")
+      expect(line).toContain("likely=middlebox-idle-reclaim-during-thinking-stall")
+      expect(line).toContain("timeouts.upstream_keepalive")
     } finally {
       spy.mockRestore()
     }
@@ -303,6 +308,35 @@ describe("logUpstreamStreamDisconnect", () => {
       expect(line).toContain("last-frame=none@0ms")
       expect(line).toContain("silence=600000ms")
       expect(line).toContain("stuck-block=none")
+      // idle-timeout is our own watchdog, not a middlebox reclaim — no likely= hint
+      expect(line).not.toContain("likely=")
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  test("does not flag middlebox reclaim when the silence is short", () => {
+    const spy = spyOn(consola, "error").mockImplementation(noop)
+    try {
+      logUpstreamStreamDisconnect({
+        model: "claude-opus-4.8",
+        kindLabel: "transport-close",
+        detail: "terminated (cause: other side closed)",
+        elapsedMs: 5_000,
+        frames: 2,
+        bytes: 100,
+        lastFrameType: "content_block_start",
+        lastFrameOffsetMs: 100,
+        stuckBlockType: "thinking",
+        inputTokens: 10,
+        outputTokens: 0,
+      })
+
+      const line = spy.mock.calls[0]?.[0] as string
+      // silence = 4900ms < 30s threshold → a genuine error, not an idle reclaim
+      expect(line).not.toContain("likely=")
+      // keepalive setting is still surfaced regardless of the heuristic
+      expect(line).toContain("keepalive=")
     } finally {
       spy.mockRestore()
     }
