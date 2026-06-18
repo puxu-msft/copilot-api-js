@@ -33,12 +33,12 @@ import {
   //
   createFetchSignal,
   captureHttpHeaders,
-  DISABLE_BUILTIN_FETCH_TIMEOUT,
   sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
 
 import {
@@ -122,12 +122,13 @@ export async function createAnthropicMessages(
 
   let response: Response
   try {
-    response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
+    // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
+    // transport/upstream-fetch.ts), so Bun upstream connections get TCP keepalive.
+    response = await upstreamFetch(`${copilotBaseUrl(state)}/v1/messages`, {
       method: "POST",
       headers,
       body: JSON.stringify(wire),
       signal: upstreamSignal,
-      ...DISABLE_BUILTIN_FETCH_TIMEOUT,
     })
   } catch (error) {
     // A shutdown-caused abort becomes a retryable 529 (overloaded) so the

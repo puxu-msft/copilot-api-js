@@ -2,7 +2,7 @@
  * Pure upstream HTTP send/receive — the format-agnostic skeleton shared by the
  * OpenAI Chat Completions and Responses clients (docs/v4/02-current-state.md §6.1).
  *
- * Extracts the common path: combine abort signals → fetch(DISABLE_BUILTIN_FETCH_TIMEOUT)
+ * Extracts the common path: combine abort signals → undiciFetch(dispatcher)
  * → captureHttpHeaders → throw HTTPError on !ok → stream ? raw SSE events : json.
  *
  * P0.2 scope: adopted by the two OpenAI clients only. The Anthropic client keeps
@@ -31,12 +31,13 @@ import {
   //
   captureHttpHeaders,
   createFetchSignal,
-  DISABLE_BUILTIN_FETCH_TIMEOUT,
 } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
+
+import { upstreamFetch } from "./upstream-fetch"
 
 /** Inputs for {@link sendUpstreamHttp} — the per-call wire plus error-shaping context. */
 export interface SendUpstreamHttpParams {
@@ -99,12 +100,14 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
 
   let response: Response
   try {
-    response = await fetch(`${copilotBaseUrl(state)}${endpointPath}`, {
+    // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
+    // upstream-fetch.ts). The Bun-only `{ timeout: false }` guard is gone — undici
+    // has no built-in clock; timeouts come from the dispatcher's Agent.
+    response = await upstreamFetch(`${copilotBaseUrl(state)}${endpointPath}`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal: fetchSignal,
-      ...DISABLE_BUILTIN_FETCH_TIMEOUT,
     })
   } catch (error) {
     // rewriteShutdownAbort (Anthropic v4 transport opt-in): a SHUTDOWN-caused abort

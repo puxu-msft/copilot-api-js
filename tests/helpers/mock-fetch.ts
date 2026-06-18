@@ -40,15 +40,30 @@ import {
   mock,
 } from "bun:test"
 
+import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
+
 /** The real `fetch`, captured at module load before any test swaps it out. */
 export const realFetch: typeof fetch = globalThis.fetch
 
 /** Signature accepted by the fetch-mock helpers (a subset of `fetch`). */
 export type FetchHandler = (input: string | URL | Request, init?: RequestInit) => Response | Promise<Response>
 
+/**
+ * Bridge `upstreamFetch` (transport/upstream-fetch.ts) to whatever is currently
+ * installed as `globalThis.fetch`. Production code issues upstream requests via
+ * undici + a dispatcher, bypassing `globalThis.fetch`; this routes those calls
+ * back through the installed mock so the existing harness keeps working without
+ * each suite re-plumbing to undici's MockAgent. Reads `globalThis.fetch` lazily
+ * so a later `setFetchMock` swap is honoured.
+ */
+function installUpstreamBridge(): void {
+  setUpstreamFetchForTests((url, init) => globalThis.fetch(url, init as RequestInit))
+}
+
 /** Restore `globalThis.fetch` to the real implementation captured at load. */
 export function restoreFetch(): void {
   globalThis.fetch = realFetch
+  setUpstreamFetchForTests(undefined)
 }
 
 /**
@@ -68,6 +83,7 @@ export function autoRestoreFetch(): void {
 export function setFetchMock(handler: FetchHandler) {
   const fetchMock = mock(handler)
   globalThis.fetch = fetchMock as unknown as typeof fetch
+  installUpstreamBridge()
   return fetchMock
 }
 
@@ -78,5 +94,6 @@ export function setFetchMock(handler: FetchHandler) {
  */
 export function applyFetchMock<T extends (...args: Array<never>) => unknown>(fetchMock: T): T {
   globalThis.fetch = fetchMock as unknown as typeof fetch
+  installUpstreamBridge()
   return fetchMock
 }

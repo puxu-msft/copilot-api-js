@@ -81,15 +81,16 @@ test("sets X-Initiator to user if only user present", async () => {
   expect(headers["X-Initiator"]).toBe("user")
 })
 
-test("disables Bun's built-in fetch timeout on the upstream request", async () => {
-  // Bun's native fetch enforces a 300s built-in timeout that ignores our
-  // AbortSignal-based fetchTimeout; the upstream call must pass timeout:false
-  // so `timeouts.response_header` is the single source of truth. See DISABLE_BUILTIN_FETCH_TIMEOUT.
+test("drives the upstream timeout from our application-level abort signal", async () => {
+  // The upstream request now goes through undici (transport/upstream-fetch.ts),
+  // which has no built-in timeout clock (unlike Bun's global fetch, which had a
+  // 300s one). So `timeouts.response_header` stays the single source of truth,
+  // carried via the abort signal on the request rather than a `timeout:false` flag.
   const payload: ChatCompletionsPayload = {
     messages: [{ role: "user", content: "hi" }],
     model: "gpt-test",
   }
   await createChatCompletions(payload)
-  const init = fetchMock.mock.calls[0][1] as { timeout?: unknown }
-  expect(init.timeout).toBe(false)
+  const init = fetchMock.mock.calls[0][1] as { signal?: unknown }
+  expect(init.signal).toBeInstanceOf(AbortSignal)
 })
