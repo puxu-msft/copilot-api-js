@@ -79,13 +79,14 @@ type RetryAction =
 | `token-refresh` | auth_expired ∧ 未刷 | 无（刷新全局 token 副作用） | 同 wire（新 token） |
 | `effort-learning`（**新，提升自 client 内循环**） | bad_request ∧ invalid_reasoning_effort | `env.prepareHints` / negotiation effort | 重裁 effort |
 | `unsupported-beta` | bad_request ∧ unsupported beta | `env.prepareHints.excludeBetas`（含 laconic 子集枚举，learning） | 重裁 beta header |
+| `server-tool-rejection`（**v4-only，legacy 未注册**） | bad_request ∧ web search tool not supported | `env.prepareHints.excludeServerToolTypes` + negotiation serverTools 账本 | 剥 web_search 工具重发 |
 | `body-field-rejection` | bad_request ∧ Extra inputs not permitted | `env.prepareHints.rejectFields` | 重裁 body 字段 |
 | `legacy-thinking` | bad_request ∧ thinking.enabled 不支持 | `env.body.thinking`→adaptive | 重发改后 body |
 | `deferred-tool` | bad_request ∧ Tool reference not found | `env.body.tools[].defer_loading=false` | 重发改后 body |
 | `auto-truncate` | (413 ∨ token_limit) ∧ enabled | `env.body.messages`（从 original 新鲜截断 + **重跑 S3 改写链**） | 重 sanitize+prepare |
 
 **组装**（沿用 02 §1.2，顺序语义不变）：
-- anthropic: network → token-refresh → effort-learning → body-field → legacy-thinking → unsupported-beta → deferred-tool → auto-truncate
+- anthropic: network → token-refresh → effort-learning → body-field → legacy-thinking → unsupported-beta → **server-tool-rejection（v4-only）** → deferred-tool → auto-truncate
 - openai-cc: network → token-refresh → auto-truncate
 - openai-responses: network → token-refresh
 
