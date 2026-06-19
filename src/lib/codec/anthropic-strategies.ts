@@ -1,19 +1,26 @@
 /**
  * v4 pipeline — anthropic-messages env-based retry strategies (P2.6 / C2).
  *
- * Mirrors the legacy `buildAnthropicStrategies` (anthropic/pipeline.ts) but yields
- * driver-shaped env strategies by wrapping the unchanged legacy strategies in
- * {@link adaptLegacyStrategy}. Order + per-strategy logic stay byte-identical to
- * the legacy pipeline (RFC §12.9 — 8 strategies, exact order):
+ * Mirrors the legacy `buildAnthropicStrategies` (anthropic/pipeline.ts) by wrapping
+ * the unchanged legacy strategies in {@link adaptLegacyStrategy}. The 8 legacy
+ * strategies keep their exact order + per-strategy logic (RFC §12.9):
  *
  *   network → token-refresh → effort-learning → body-field → legacy-thinking →
  *   unsupported-beta → deferred-tool → auto-truncate
  *
- * Unlike openai-cc (3 strategies), Anthropic has 4 extra 400-class strategies
- * (effort-learning, body-field, legacy-thinking, unsupported-beta) — do not drop
- * any. The `betaProbe` is the SAME instance the codec records outbound betas into
- * (RFC §2.4 cross-component handle): the unsupported-beta strategy reads its
- * candidates for the laconic `invalid beta flag` path.
+ * **v4-only addition** — `server-tool-rejection` is inserted between
+ * unsupported-beta and deferred-tool (9 strategies total). It is NOT registered
+ * in the legacy pipeline (intentional divergence): it reactively learns native
+ * server tools (web_search) the upstream rejects with 400 `The use of the web
+ * search tool is not supported.`, fixates them in the negotiation cache, and
+ * strips them on retry via `PrepareHints.excludeServerToolTypes`.
+ *
+ * Unlike openai-cc (3 strategies), Anthropic has extra 400-class strategies
+ * (effort-learning, body-field, legacy-thinking, unsupported-beta,
+ * server-tool-rejection) — do not drop any. The `betaProbe` is the SAME instance
+ * the codec records outbound betas into (RFC §2.4 cross-component handle): the
+ * unsupported-beta strategy reads its candidates for the laconic `invalid beta
+ * flag` path.
  *
  * Per-request factory: the handler builds these once per request, closing over the
  * truncation baseline (`originalPayload` = codec.getTruncateBaseline()) + the
@@ -42,6 +49,7 @@ import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferr
 import { createEffortLearningRetryStrategy } from "~/lib/request/strategies/effort-learning-retry"
 import { createLegacyThinkingRetryStrategy } from "~/lib/request/strategies/legacy-thinking-retry"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
+import { createServerToolRejectionStrategy } from "~/lib/request/strategies/server-tool-rejection-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { state } from "~/lib/state"
@@ -72,6 +80,7 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     adapt(createBodyFieldRejectionStrategy<MessagesPayload>()),
     adapt(createLegacyThinkingRetryStrategy<MessagesPayload>()),
     adapt(createUnsupportedBetaRetryStrategy<MessagesPayload>({ getProbeCandidates: () => deps.betaProbe.getCandidates() })),
+    adapt(createServerToolRejectionStrategy<MessagesPayload>()),
     adapt(createDeferredToolRetryStrategy<MessagesPayload>()),
     adapt(
       createAutoTruncateStrategy<MessagesPayload>({
