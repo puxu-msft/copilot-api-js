@@ -10,8 +10,8 @@ import {
 
 import {
   //
-  gunzipJson,
-  gzipJson,
+  compress,
+  decompress,
 } from "./compression"
 
 export interface EntryRow {
@@ -106,7 +106,7 @@ function stripAttemptBodies(attempt: Record<string, unknown>): Record<string, un
  */
 export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string): { row: EntryRow; stages: Array<StagePayload> } {
   const usage = entry.outboundResponse?.usage
-  const headBlob = gzipJson(extractHeadMetaPayload(entry))
+  const headBlob = compress(extractHeadMetaPayload(entry))
 
   const row: EntryRow = {
     id: entry.id,
@@ -145,7 +145,7 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
  */
 export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry {
   const bytes = blob ?? row.blob_gz
-  const restored = gunzipJson(bytes) as Partial<HistoryEntry>
+  const restored = decompress(bytes) as Partial<HistoryEntry>
   return {
     ...restored,
     id: row.id,
@@ -190,7 +190,7 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
   }
 
   for (const sr of stageRows) {
-    const payload = gunzipJson(sr.blob_gz)
+    const payload = decompress(sr.blob_gz)
     switch (sr.stage) {
       case STAGE.inboundRequest: {
         base.inboundRequest = payload as HistoryEntry["inboundRequest"]

@@ -9,8 +9,9 @@ import type { HistoryEntry } from "~/lib/history/types"
 
 import {
   //
-  gunzipJson,
-  gzipJson,
+  compress,
+  decompress,
+  gzipJsonLegacy,
 } from "~/lib/history/sqlite/compression"
 import {
   //
@@ -22,14 +23,14 @@ import {
   type StageRow,
 } from "~/lib/history/sqlite/serialize"
 
-/** Turn serializeHeadEntry's pre-gzip stage payloads into persisted StageRows. */
+/** Turn serializeHeadEntry's pre-compress stage payloads into persisted StageRows. */
 function toStageRows(entryId: string, stages: Array<StagePayload>): Array<StageRow> {
   return stages.map((s) => ({
     entry_id: entryId,
     stage: s.stage,
     attempt_index: s.attemptIndex,
     created_at: 0,
-    blob_gz: gzipJson(s.payload),
+    blob_gz: compress(s.payload),
   }))
 }
 
@@ -76,7 +77,7 @@ describe("sqlite/serialize head+stage", () => {
     expect(row.stop_reason).toBe("end_turn")
 
     // Heavy bodies moved to stage rows, NOT the head blob.
-    const headMeta = gunzipJson(row.blob_gz) as Record<string, unknown>
+    const headMeta = decompress(row.blob_gz) as Record<string, unknown>
     expect(headMeta.inboundRequest).toBeUndefined()
     expect(headMeta.outboundResponse).toBeUndefined()
 
@@ -90,7 +91,7 @@ describe("sqlite/serialize head+stage", () => {
 
   test("backward compat: a legacy single-blob row (no stage rows) assembles unchanged", () => {
     // Simulate an OLD row whose blob holds the FULL entry (pre-split format).
-    const legacyFullBlob = gzipJson({
+    const legacyFullBlob = gzipJsonLegacy({
       inboundRequest: { model: "old-model", messages: [{ role: "user", content: "legacy" }] },
       outboundResponse: { success: true, model: "old-model", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
       sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
@@ -185,7 +186,7 @@ describe("sqlite/serialize head+stage", () => {
     // A stage row for attempt_index=2 exists even though head's attempts only has index 0
     // (head snapshot lagged the stage write before the crash).
     const orphanStage: Array<StageRow> = [
-      { entry_id: row.id, stage: "outbound_request", attempt_index: 2, created_at: 0, blob_gz: gzipJson({ model: "opus", payload: { marker: "lagged" } }) },
+      { entry_id: row.id, stage: "outbound_request", attempt_index: 2, created_at: 0, blob_gz: compress({ model: "opus", payload: { marker: "lagged" } }) },
     ]
 
     const restored = assembleFullEntry(row, orphanStage)

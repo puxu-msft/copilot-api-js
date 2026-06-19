@@ -10,7 +10,7 @@ import {
   packTurnHashes,
 } from "~/lib/history/lineage"
 
-import { gzipJson } from "./compression"
+import { compress } from "./compression"
 import { getDatabase } from "./connection"
 import {
   //
@@ -150,7 +150,7 @@ function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void 
 
 /** Persist one stage payload (gzip + upsert). Head row MUST already exist (FK). */
 function runStageInsert(db: ReturnType<typeof getDatabase>, entryId: string, stage: StagePayload, now: number): void {
-  db.prepare(INSERT_STAGE_SQL).run(entryId, stage.stage, stage.attemptIndex, now, gzipJson(stage.payload))
+  db.prepare(INSERT_STAGE_SQL).run(entryId, stage.stage, stage.attemptIndex, now, compress(stage.payload))
 }
 
 /** Recompute and upsert the session aggregate row from terminal entries only. */
