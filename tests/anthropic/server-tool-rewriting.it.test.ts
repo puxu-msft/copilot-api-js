@@ -51,7 +51,7 @@ describe("stripServerTools", () => {
   describe("when stripping is disabled", () => {
     test("should return undefined for undefined input", () => {
       setStateForTests({ stripServerTools: false })
-      expect(stripServerTools(undefined)).toBeUndefined()
+      expect(stripServerTools(undefined, "m")).toBeUndefined()
     })
 
     test("should return the same array reference (no allocation)", () => {
@@ -60,7 +60,7 @@ describe("stripServerTools", () => {
         { name: "web_search", type: "web_search_20250305" },
         { name: "Bash", description: "Run bash", input_schema: { type: "object" } },
       ]
-      const result = stripServerTools(tools)
+      const result = stripServerTools(tools, "m")
       expect(result).toBe(tools) // same reference, not a copy
     })
   })
@@ -69,13 +69,13 @@ describe("stripServerTools", () => {
     test("should strip web_search server tool", () => {
       setStateForTests({ stripServerTools: true })
       const tools: Array<Tool> = [{ name: "web_search", type: "web_search_20250305" }]
-      expect(stripServerTools(tools)).toBeUndefined()
+      expect(stripServerTools(tools, "m")).toBeUndefined()
     })
 
     test("should strip code_execution server tool", () => {
       setStateForTests({ stripServerTools: true })
       const tools: Array<Tool> = [{ name: "code_execution", type: "code_execution_20250522" }]
-      expect(stripServerTools(tools)).toBeUndefined()
+      expect(stripServerTools(tools, "m")).toBeUndefined()
     })
 
     test("should not strip custom tools", () => {
@@ -85,7 +85,7 @@ describe("stripServerTools", () => {
         description: "Run bash commands",
         input_schema: { type: "object", properties: { command: { type: "string" } } },
       }
-      const result = stripServerTools([customTool])!
+      const result = stripServerTools([customTool], "m")!
       expect(result).toHaveLength(1)
       expect(result[0]).toBe(customTool) // same reference
     })
@@ -97,14 +97,14 @@ describe("stripServerTools", () => {
         { name: "Bash", description: "Run bash", input_schema: { type: "object" } },
         { name: "web_fetch", type: "web_fetch_20250305" },
       ]
-      const result = stripServerTools(tools)!
+      const result = stripServerTools(tools, "m")!
       expect(result).toHaveLength(1)
       expect(result[0].name).toBe("Bash")
     })
 
     test("should return undefined for empty array", () => {
       setStateForTests({ stripServerTools: true })
-      expect(stripServerTools([])).toBeUndefined()
+      expect(stripServerTools([], "m")).toBeUndefined()
     })
 
     test("should match tools by type prefix, not exact match", () => {
@@ -115,7 +115,7 @@ describe("stripServerTools", () => {
         { name: "ws2", type: "web_search_20250305" },
         { name: "ws3", type: "web_search_20260101" },
       ]
-      expect(stripServerTools(tools)).toBeUndefined()
+      expect(stripServerTools(tools, "m")).toBeUndefined()
     })
   })
 })

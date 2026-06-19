@@ -99,6 +99,12 @@ export interface PrepareHints {
    * the global cache already strips.
    */
   rejectFields?: ReadonlyArray<string>
+  /**
+   * Native server tool type prefixes (e.g. `web_search_`) to strip from the
+   * next wire payload, in addition to anything the global config / negotiation
+   * cache already strips. Set by the server-tool-rejection retry strategy.
+   */
+  excludeServerToolTypes?: ReadonlyArray<string>
 }
 
 export type RetryAction<TPayload> =

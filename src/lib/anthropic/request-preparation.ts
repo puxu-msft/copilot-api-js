@@ -74,6 +74,13 @@ interface PrepareAnthropicRequestOptions {
    */
   excludeBetas?: ReadonlyArray<string>
   rejectFields?: ReadonlyArray<string>
+  /**
+   * Server tool type prefixes to strip from the next wire payload, in addition
+   * to anything the global config / negotiation cache already strips. Supplied
+   * by the server-tool-rejection retry strategy via
+   * `PrepareHints.excludeServerToolTypes`.
+   */
+  excludeServerToolTypes?: ReadonlyArray<string>
 }
 
 /**
@@ -247,7 +254,7 @@ export function prepareAnthropicRequest(
   steps: ReadonlyArray<PrepareStep> = ANTHROPIC_PREPARE_STEPS,
 ): PreparedAnthropicRequest {
   const ctx: PrepareContext = {
-    wire: buildWirePayload(payload, opts?.rejectFields),
+    wire: buildWirePayload(payload, opts?.rejectFields, opts?.excludeServerToolTypes),
     headers: {},
     opts: opts ?? {},
   }
@@ -255,7 +262,11 @@ export function prepareAnthropicRequest(
   return { wire: ctx.wire, headers: ctx.headers }
 }
 
-function buildWirePayload(payload: MessagesPayload, rejectFields?: ReadonlyArray<string>): Record<string, unknown> {
+function buildWirePayload(
+  payload: MessagesPayload,
+  rejectFields?: ReadonlyArray<string>,
+  excludeServerToolTypes?: ReadonlyArray<string>,
+): Record<string, unknown> {
   const wire: Record<string, unknown> = {}
   const rejected = collectRejectedFields(payload.model)
   if (rejectFields) {
@@ -291,7 +302,7 @@ function buildWirePayload(payload: MessagesPayload, rejectFields?: ReadonlyArray
   }
 
   if (wire.tools) {
-    wire.tools = stripServerTools(wire.tools as Array<Tool>)
+    wire.tools = stripServerTools(wire.tools as Array<Tool>, payload.model, excludeServerToolTypes)
   }
 
   return wire

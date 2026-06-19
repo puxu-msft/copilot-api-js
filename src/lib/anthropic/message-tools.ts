@@ -24,6 +24,7 @@ import type {
 import { applyStickyUndeferredTools } from "~/lib/request/strategies/deferred-tool-retry"
 import { state } from "~/lib/state"
 
+import { getUnsupportedServerToolTypes } from "./feature-negotiation"
 import { modelSupportsToolSearch } from "./features"
 
 // ============================================================================
@@ -329,24 +330,32 @@ export function isServerToolType(type: string | undefined): boolean {
 /**
  * Strip server-side tools from the tools array, or pass them through unchanged.
  *
- * When state.stripServerTools is enabled, server tools (web_search,
- * code_execution, etc.) are removed from the request because Copilot's /v1/messages
- * endpoint may not support executing them server-side. Without this, the tools
- * would be silently ignored or cause errors.
+ * Three strip sources are unioned:
+ *   1. `state.stripServerTools` — global config opt-in; removes EVERY server tool.
+ *   2. learned cache (`getUnsupportedServerToolTypes(model)`) — per-(endpoint,
+ *      model) type prefixes the upstream reactively rejected (e.g. `web_search_`).
+ *   3. `excludeTypes` — per-attempt hint from the server-tool-rejection retry
+ *      strategy (`PrepareHints.excludeServerToolTypes`), deterministic for THIS
+ *      attempt independent of whether the cache was written yet.
  *
- * When disabled (default), server tools are passed through unchanged — the proxy
- * transparently forwards them per the Anthropic protocol.
+ * Sources 2 and 3 strip only the matching type prefixes; other server tools pass
+ * through. When no source applies (default), all tools are forwarded unchanged
+ * per the Anthropic protocol.
  */
-export function stripServerTools(tools: Array<Tool> | undefined): Array<Tool> | undefined {
+export function stripServerTools(tools: Array<Tool> | undefined, model: string, excludeTypes?: ReadonlyArray<string>): Array<Tool> | undefined {
   if (!tools) return undefined
 
-  // When stripping is disabled, pass all tools through unchanged
-  if (!state.stripServerTools) return tools
+  const learned = new Set([...getUnsupportedServerToolTypes(model), ...(excludeTypes ?? [])])
+  const stripAll = state.stripServerTools
+
+  // No source strips anything — forward unchanged.
+  if (!stripAll && learned.size === 0) return tools
 
   const result: Array<Tool> = []
 
   for (const tool of tools) {
-    if (isServerToolType(tool.type)) {
+    const matchesLearned = [...learned].some((prefix) => (tool.type ?? "").startsWith(prefix))
+    if (isServerToolType(tool.type) && (stripAll || matchesLearned)) {
       consola.warn(`[DirectAnthropic] Stripping server tool: ${tool.name} (type: ${tool.type})`)
       continue
     }
