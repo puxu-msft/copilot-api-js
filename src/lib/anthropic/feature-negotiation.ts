@@ -18,6 +18,11 @@
  *   - deferredTools — per (model, toolName) sticky `defer_loading: false`
  *                    decisions, learned from `Tool reference 'X' not
  *                    found in available tools` errors.
+ *   - serverTools  — per (model, serverToolType) native server tools the
+ *                    upstream rejects, learned from `The use of the web
+ *                    search tool is not supported.` (code unsupported_value).
+ *                    Stored as type prefixes (e.g. `web_search_`) so prepare
+ *                    can strip every dated variant.
  *
  * Persisted to `PATHS.NEGOTIATION_STATES`.
  */
@@ -54,6 +59,8 @@ const unsupportedBetas = new Map<string, Set<string>>()
 const supportedEfforts = new Map<string, Array<string>>()
 /** deferredTools[modelKey] = Set<toolName> that must be un-deferred */
 const stickyUndeferredTools = new Map<string, Set<string>>()
+/** serverTools[modelKey] = Set<serverToolType prefix> the upstream rejects */
+const unsupportedServerTools = new Map<string, Set<string>>()
 
 function modelKey(modelId: string): string {
   return `${copilotBaseUrl(state)}|anthropic-messages|${normalizeForMatching(modelId)}`
@@ -156,6 +163,26 @@ export function getStickyUndeferredTools(modelId: string): Array<string> {
 }
 
 // ============================================================================
+// Unsupported native server tools
+// ============================================================================
+
+/**
+ * Mark a native server tool type (by prefix, e.g. `web_search_`) as unsupported
+ * for the given model. Learned reactively from upstream 400 rejections.
+ */
+export function markAnthropicServerToolUnsupported(modelId: string, toolType: string): void {
+  const trimmed = toolType.trim()
+  if (!trimmed) return
+  if (addToSetMap(unsupportedServerTools, modelKey(modelId), trimmed)) schedulePersist()
+}
+
+/** Return all server tool type prefixes marked unsupported for the given model. */
+export function getUnsupportedServerToolTypes(modelId: string): Array<string> {
+  const set = unsupportedServerTools.get(modelKey(modelId))
+  return set ? [...set] : []
+}
+
+// ============================================================================
 // Persistence
 // ============================================================================
 
@@ -165,6 +192,7 @@ interface NegotiationStateFile {
   betas: Record<string, Array<string>>
   efforts: Record<string, Array<string>>
   deferredTools: Record<string, Array<string>>
+  serverTools: Record<string, Array<string>>
 }
 
 function snapshotSetMap(map: Map<string, Set<string>>): Record<string, Array<string>> {
@@ -209,6 +237,7 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     betas: snapshotSetMap(unsupportedBetas),
     efforts: snapshotEffortMap(supportedEfforts),
     deferredTools: snapshotSetMap(stickyUndeferredTools),
+    serverTools: snapshotSetMap(unsupportedServerTools),
   }
   try {
     await atomicWriteJson(PATHS.NEGOTIATION_STATES, data)
@@ -252,6 +281,7 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       + loadSetMap(unsupportedBetas, data.betas)
       + loadEffortMap(supportedEfforts, data.efforts)
       + loadSetMap(stickyUndeferredTools, data.deferredTools)
+      + loadSetMap(unsupportedServerTools, data.serverTools)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
     }
@@ -280,4 +310,5 @@ export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void
   unsupportedBetas.clear()
   supportedEfforts.clear()
   stickyUndeferredTools.clear()
+  unsupportedServerTools.clear()
 }
