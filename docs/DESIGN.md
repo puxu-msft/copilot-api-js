@@ -18,7 +18,7 @@
 | HTTP 服务器 | `Bun.serve()` | `@hono/node-server` | `lib/serve.ts` |
 | WebSocket | `hono/bun` | `@hono/node-ws` | `lib/ws/adapter.ts` |
 | SQLite | `bun:sqlite` | `node:sqlite`（Node ≥22.5） | `lib/history/sqlite/driver.ts` |
-| 上游 fetch / keepalive | `undici/index.js` 的 fetch + dispatcher（子路径绕 Bun shim） | `undici/index.js` 的 fetch + dispatcher（Node 本就真 undici） | `transport/upstream-fetch.ts` / `lib/proxy.ts`，见 [bun-runtime-timeout.md](bun-runtime-timeout.md) |
+| 上游 fetch / keepalive | **https → `node:http2`**（h2 session 池 + Response 适配器 + createConnection `setKeepAlive`）；http → `undici/index.js`（子路径绕 Bun shim） | https → `node:http2`；http → `undici/index.js`（Node 本就真 undici） | `transport/http2-client.ts` / `transport/upstream-fetch.ts` / `lib/proxy.ts`，见 [bun-runtime-timeout.md](bun-runtime-timeout.md) |
 | 代理 | undici dispatcher（ProxyAgent / EnvProxyDispatcher，经 upstream-fetch 显式传） | 同左 + `setGlobalDispatcher` | `lib/proxy.ts` |
 
 #### 依赖选型原则：bun-first
@@ -26,7 +26,7 @@
 所选外部库本身**必须能在 Bun 下原生工作**——判据是"Bun 热路径上的库 Bun 原生可跑"，而非"禁止任何 node-only 依赖"：
 
 - **拒绝 node-gyp 原生绑定（`binding.gyp`）**——Bun 兼容性最大的雷区。标杆实例：driver.ts 刻意不用 `better-sqlite3`（Bun 1.3 加载时直接拒绝 "not yet supported in Bun"），改用两端各自的内建 SQLite，避免用户在安装时被迫二选一。
-- **node-only 库可作兼容路径，但不得进 Bun 热路径**——`@hono/node-server`、`@hono/node-ws` 只在 Node 分支被动态 `import()`。**例外：`undici` 经 `undici/index.js` 子路径进 Bun 热路径**（所有上游 fetch 的传输层）——它纯 JS、无 node-gyp，符合"Bun 原生可跑"判据；走子路径是因为 Bun 把裸 `undici` 替换为内建 shim 会静默丢弃 dispatcher（TCP keepalive 失效），子路径绕过 shim 加载真 undici。pin undici 7（8 的 index.js 在 Bun 崩）。详见 [bun-runtime-timeout.md](bun-runtime-timeout.md)。
+- **node-only 库可作兼容路径，但不得进 Bun 热路径**——`@hono/node-server`、`@hono/node-ws` 只在 Node 分支被动态 `import()`。**上游 https 热路径走内建 `node:http2`**（`transport/http2-client.ts`）：Bun 的 undici HTTP 解析层对 GHC h2 端点的 chunked HTTP/1.1 响应永久挂（裸 `node:tls` 收齐字节、Node 同码 0.4s、curl 0.4s——是 undici-on-Bun 的解析 bug），而所有 https 上游皆 h2-native，故改走 node:http2（h2 + `createConnection` 上 `setKeepAlive`，`ss` 实证 idle socket 带 keepalive timer）。**`undici` 经 `undici/index.js` 子路径仅留给明文 `http://`**（本地 SearXNG）——纯 JS、无 node-gyp；走子路径是因为 Bun 把裸 `undici` 替换为内建 shim 会静默丢弃 dispatcher。pin undici 7（8 的 index.js 在 Bun 崩）。详见 [bun-runtime-timeout.md](bun-runtime-timeout.md) 与 [rfc/upstream-http2-transport.md](rfc/upstream-http2-transport.md)。
 - **审计手段（实测，非推断）**：`find node_modules -name binding.gyp` 应为空（零 node-gyp 依赖）；`find node_modules -name "*.node"` 命中的 `@rollup` / `@rolldown` / `@oxc-*` 都是**构建工具**预编译产物，只在构建期用、不进运行时 dist，不算违反。
 
 ### 入口点
