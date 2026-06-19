@@ -4,10 +4,35 @@
 
 ## 架构
 
+### 运行时兼容（Bun-first / Node-compatible）
+
+项目同时支持 Bun 与 Node 两个运行时，但**优先级不对称**：
+
+- **Bun 是一等公民**——默认/推荐运行时。所有开发与运行命令（`dev` / `start` / `test:*`）都走 `bun`，`bun test` 是唯一被 CI 实测的后端套件。
+- **Node 仅是有意维护的兼容目标**——分流路径靠运行时逻辑保证，但实测覆盖弱于 Bun（Node 专属分支在 `bun test` 下走不到，例如 driver.ts 的 `nodeFactory()`）。
+
+所有运行时差异都收敛到单一判别点 `typeof globalThis.Bun !== "undefined"`，分流出独立实现：
+
+| 子系统 | Bun 路径 | Node 路径 | 文件 |
+|--------|----------|-----------|------|
+| HTTP 服务器 | `Bun.serve()` | `@hono/node-server` | `lib/serve.ts` |
+| WebSocket | `hono/bun` | `@hono/node-ws` | `lib/ws/adapter.ts` |
+| SQLite | `bun:sqlite` | `node:sqlite`（Node ≥22.5） | `lib/history/sqlite/driver.ts` |
+| 上游 fetch / keepalive | `undici/index.js` 的 fetch + dispatcher（子路径绕 Bun shim） | `undici/index.js` 的 fetch + dispatcher（Node 本就真 undici） | `transport/upstream-fetch.ts` / `lib/proxy.ts`，见 [bun-runtime-timeout.md](bun-runtime-timeout.md) |
+| 代理 | undici dispatcher（ProxyAgent / EnvProxyDispatcher，经 upstream-fetch 显式传） | 同左 + `setGlobalDispatcher` | `lib/proxy.ts` |
+
+#### 依赖选型原则：bun-first
+
+所选外部库本身**必须能在 Bun 下原生工作**——判据是"Bun 热路径上的库 Bun 原生可跑"，而非"禁止任何 node-only 依赖"：
+
+- **拒绝 node-gyp 原生绑定（`binding.gyp`）**——Bun 兼容性最大的雷区。标杆实例：driver.ts 刻意不用 `better-sqlite3`（Bun 1.3 加载时直接拒绝 "not yet supported in Bun"），改用两端各自的内建 SQLite，避免用户在安装时被迫二选一。
+- **node-only 库可作兼容路径，但不得进 Bun 热路径**——`@hono/node-server`、`@hono/node-ws` 只在 Node 分支被动态 `import()`。**例外：`undici` 经 `undici/index.js` 子路径进 Bun 热路径**（所有上游 fetch 的传输层）——它纯 JS、无 node-gyp，符合"Bun 原生可跑"判据；走子路径是因为 Bun 把裸 `undici` 替换为内建 shim 会静默丢弃 dispatcher（TCP keepalive 失效），子路径绕过 shim 加载真 undici。pin undici 7（8 的 index.js 在 Bun 崩）。详见 [bun-runtime-timeout.md](bun-runtime-timeout.md)。
+- **审计手段（实测，非推断）**：`find node_modules -name binding.gyp` 应为空（零 node-gyp 依赖）；`find node_modules -name "*.node"` 命中的 `@rollup` / `@rolldown` / `@oxc-*` 都是**构建工具**预编译产物，只在构建期用、不进运行时 dist，不算违反。
+
 ### 入口点
 
 - `src/main.ts` - CLI 入口（citty），子命令：`start`、`login`（别名 `auth`）、`logout`、`debug`、`list-claude-code`、`setup-claude-code`
-- `src/start.ts` - 服务器启动：认证、模型缓存，通过 srvx 启动 Hono 服务器
+- `src/start.ts` - 服务器启动：认证、模型缓存，启动 Hono 服务器（经 `lib/serve.ts`：Bun → `Bun.serve()`，Node → `@hono/node-server`）
 - `src/server.ts` - Hono 应用配置，注册所有路由
 
 ### 请求流程
@@ -53,7 +78,7 @@ src/lib/
 │   └── index.ts           # 响应式 auto-truncate（token 限制学习 + 预检查）
 ├── config/
 │   ├── config.ts          # config.yaml 类型定义、加载与热重载
-│   └── paths.ts           # 配置文件路径解析（`APP_DIR` 尊重 `XDG_DATA_HOME` 环境变量；数据库路径 `PATHS.HISTORY_DB` 由此派生）
+│   └── paths.ts           # 配置文件路径解析（`APP_DIR` 尊重 `XDG_DATA_HOME` 环境变量；`PATHS.HISTORY_DB` 数据库与 `PATHS.COPILOT_LOG` 文件日志由此派生）
 ├── context/
 │   ├── manager.ts         # 请求上下文管理器（活跃请求跟踪 + stale reaper）
 │   ├── request.ts         # RequestContext（请求生命周期状态机）
@@ -68,15 +93,20 @@ src/lib/
 │   ├── state.ts           # 模块级状态（historyState、initHistory、shutdownHistory）
 │   ├── in-flight.ts       # 进行中请求的内存映射（仅用于 WebSocket 实时推送）
 │   ├── sqlite/
-│   │   ├── connection.ts  # SQLite 连接管理（bun:sqlite）+ 启动期孤儿回收（pending→interrupted）
-│   │   ├── compression.ts # payload/response 的 gzip 压缩 / 解压
+│   │   ├── connection.ts  # SQLite 连接管理（bun:sqlite）+ 启动期孤儿回收（pending→interrupted）+ 启动期 VACUUM 空间回收（auto_vacuum=INCREMENTAL 须早于 WAL；freelist≥25% 且≥64MB 触发全量 VACUUM，全程 try/catch 不阻断启动）
+│   │   ├── compression.ts # blob 存储 codec：写 zstd L3（比 gzip 砍半），读按 magic bytes 自动判别 gzip(legacy,1f8b)/zstd(28b52ffd)，既有 gzip 行透明可读零迁移
 │   │   ├── schema.ts      # 表 DDL 与索引定义（权威 schema：entries_v2 head 表 + entry_stages 子表）
-│   │   ├── serialize.ts   # head-meta/stage 拆分序列化 + assembleFullEntry（head + stage 行重组）
-│   │   ├── write.ts       # 写入操作（upsertHeadRow ON CONFLICT / upsertStageRow / insertCompletedEntry 终态）
+│   │   ├── serialize.ts   # head-meta/stage 拆分序列化 + assembleFullEntry（head + stage 行重组）+ request_group 合并帧 dedup（同 entry 的 inbound/effective/outbound 请求体 >90% 冗余，finalize 时打包进单个 zstd 帧；读侧 decodeStageRows 透明展开，等价个体行）
+│   │   ├── write.ts       # 写入操作（upsertHeadRow ON CONFLICT / upsertStageRow / insertCompletedEntry 终态，finalize 经 partitionStagesForWrite 打包请求组）
 │   │   ├── read.ts        # 查询操作（分页、过滤、head+stage 批量组装防 N+1）
 │   │   ├── stats.ts       # 聚合统计查询（排除活跃行）
-│   │   └── reaper.ts      # 定期清理（按状态分桶维持 success/failure 行数上限 + 运行期 stale-pending 回收）
+│   │   └── reaper.ts      # 定期清理（按状态分桶维持 success/failure 行数上限 + 运行期 stale-pending 回收 + incremental_vacuum 持续还空间给 OS）
 │   └── index.ts           # Barrel re-export
+├── observability/        # 请求生命周期 + 系统日志的 event-bus + sinks（见 docs/rfc/observability-rewrite.md）
+│   ├── bus.ts            # publish/subscribe 总线（命名空间 scoped publisher，同步 fan-out）
+│   ├── events.ts         # ObservabilityEvent 联合（request.* / history.* / system.*，含 system.log）
+│   ├── republish.ts      # 唯一 consola hijack 点：每条 consola 日志 → system.log 事件投到 bus（重入守卫断 disk-full→日志风暴的环）
+│   └── sinks/            # console（stdout + footer）/ history（SQLite）/ telemetry / ws（WebSocket）/ file（copilot-api.log 轮转）
 ├── ws/
 │   ├── adapter.ts         # 共享 WebSocket adapter（Node/Bun）
 │   ├── broadcast.ts       # Topic-aware WS 总线（history / status / shutdown 事件统一推送）
