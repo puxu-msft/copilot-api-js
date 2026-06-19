@@ -5,7 +5,11 @@ import { state } from "~/lib/state"
 
 import type { Database } from "./connection"
 
-import { getDatabase } from "./connection"
+import {
+  //
+  getDatabase,
+  incrementalVacuum,
+} from "./connection"
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -83,6 +87,9 @@ export function startReaper(successLimit: number, failureLimit: number, interval
       // for failure-bucket eviction in the same tick.
       reclaimStaleActiveRows()
       runReaperOnce(successLimit, failureLimit)
+      // Return the pages just freed by eviction to the OS (no-op unless
+      // auto_vacuum=INCREMENTAL is in effect — see incrementalVacuum).
+      incrementalVacuum(getDatabase())
     } catch (err: unknown) {
       consola.warn("[history/sqlite] reaper tick failed", err)
     }
