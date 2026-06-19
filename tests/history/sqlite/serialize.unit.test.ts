@@ -18,7 +18,9 @@ import {
   assembleFullEntry,
   deserializeEntry,
   type EntryRow,
+  partitionStagesForWrite,
   serializeHeadEntry,
+  STAGE,
   type StagePayload,
   type StageRow,
 } from "~/lib/history/sqlite/serialize"
@@ -245,5 +247,57 @@ describe("sqlite/serialize head+stage", () => {
     const { row } = serializeHeadEntry(entry, "pending")
     expect(row.status).toBe("pending")
     expect(entry.state).toBe("completed")
+  })
+
+  test("B3: request_group dedup frame assembles field-identical to per-stage rows", () => {
+    // A multi-attempt entry exercises per-attempt effective/outbound packing.
+    const entry: HistoryEntry = {
+      id: "dedup-1",
+      endpoint: "anthropic-messages",
+      startedAt: 1,
+      state: "completed",
+      active: false,
+      lastUpdatedAt: 9,
+      inboundRequest: { model: "opus", messages: [{ role: "user", content: "x".repeat(500) }] },
+      sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
+      attempts: [
+        {
+          index: 0,
+          error: "413",
+          durationMs: 1,
+          wireRequest: { model: "opus", payload: { marker: "a0", body: "x".repeat(500) } },
+          response: { success: false, model: "opus", usage: { input_tokens: 0, output_tokens: 0 }, status: 413, content: null },
+        },
+        {
+          index: 1,
+          durationMs: 2,
+          effectiveRequest: { model: "opus", payload: { marker: "eff1", body: "x".repeat(500) } },
+          wireRequest: { model: "opus", payload: { marker: "a1", body: "x".repeat(500) } },
+          response: { success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, content: { role: "assistant", content: "ok" } },
+        },
+      ],
+    }
+
+    const { row, stages } = serializeHeadEntry(entry)
+
+    // UNPACKED: every stage as its own row (legacy/in-flight layout).
+    const unpacked = assembleFullEntry(row, toStageRows(row.id, stages))
+
+    // PACKED: request-group stages compressed into one request_group frame.
+    const { groupRow, rest } = partitionStagesForWrite(stages)
+    expect(groupRow).not.toBeNull()
+    const packedRows: Array<StageRow> = [
+      ...toStageRows(row.id, rest),
+      { entry_id: row.id, stage: STAGE.requestGroup, attempt_index: -1, created_at: 0, blob_gz: compress(groupRow!.payload) },
+    ]
+    const packed = assembleFullEntry(row, packedRows)
+
+    // The dedup frame is a storage encoding only — reassembly must be identical.
+    expect(packed).toEqual(unpacked)
+    // And the request bodies round-trip verbatim through the frame.
+    expect(packed.attempts?.[0].wireRequest?.payload).toEqual({ marker: "a0", body: "x".repeat(500) })
+    expect(packed.attempts?.[1].effectiveRequest?.payload).toEqual({ marker: "eff1", body: "x".repeat(500) })
+    expect((packed.outboundRequest?.payload as { marker: string }).marker).toBe("a1")
+    expect(packed.sseEvents?.[0].type).toBe("message_start")
   })
 })

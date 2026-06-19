@@ -59,9 +59,32 @@ export const STAGE = {
   outboundResponse: "outbound_response",
   inboundResponse: "inbound_response",
   sseEvents: "sse_events",
+  /**
+   * Dedup container (B3): a single row holding the JSON array of the request
+   * group's member stages (inbound_request + per-attempt effective/outbound
+   * request) compressed in ONE zstd frame. The three request bodies are >90%
+   * redundant, so a shared frame stores the 2nd/3rd copies near-free. Written
+   * ONLY at finalize (insertCompletedEntry); in-flight rows stay per-stage.
+   */
+  requestGroup: "request_group",
 } as const
 
 export type StageName = (typeof STAGE)[keyof typeof STAGE]
+
+/** Stages packed into the `request_group` dedup frame — the redundant request bodies. */
+const REQUEST_GROUP_STAGES = new Set<string>([STAGE.inboundRequest, STAGE.effectiveRequest, STAGE.outboundRequest])
+
+/** Is this stage a member of the request-group dedup frame? */
+export function isRequestGroupStage(stage: string): boolean {
+  return REQUEST_GROUP_STAGES.has(stage)
+}
+
+/** One decoded member of a request_group container frame. */
+interface RequestGroupMember {
+  stage: string
+  attemptIndex: number
+  payload: unknown
+}
 
 /** `attempt_index` value for leg-independent stages (inbound/forwarded/sse). */
 export const LEG_ATTEMPT_INDEX = -1
@@ -189,9 +212,9 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
     return slot
   }
 
-  for (const sr of stageRows) {
-    const payload = decompress(sr.blob_gz)
-    switch (sr.stage) {
+  for (const member of decodeStageRows(stageRows)) {
+    const { stage, attemptIndex, payload } = member
+    switch (stage) {
       case STAGE.inboundRequest: {
         base.inboundRequest = payload as HistoryEntry["inboundRequest"]
         break
@@ -205,15 +228,15 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
         break
       }
       case STAGE.effectiveRequest: {
-        attemptSlot(sr.attempt_index).effectiveRequest = payload
+        attemptSlot(attemptIndex).effectiveRequest = payload
         break
       }
       case STAGE.outboundRequest: {
-        attemptSlot(sr.attempt_index).wireRequest = payload
+        attemptSlot(attemptIndex).wireRequest = payload
         break
       }
       case STAGE.outboundResponse: {
-        attemptSlot(sr.attempt_index).response = payload
+        attemptSlot(attemptIndex).response = payload
         break
       }
       default: {
@@ -238,6 +261,48 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
   }
 
   return base
+}
+
+/**
+ * Normalize persisted stage rows into decoded {stage, attemptIndex, payload}
+ * members, transparently expanding a `request_group` container frame (B3) back
+ * into its member stages. Legacy per-stage rows (gzip or zstd) pass through
+ * 1:1, so assembleFullEntry's per-stage logic is identical for both layouts.
+ */
+function decodeStageRows(stageRows: Array<StageRow>): Array<RequestGroupMember> {
+  const out: Array<RequestGroupMember> = []
+  for (const sr of stageRows) {
+    if (sr.stage === STAGE.requestGroup) {
+      const members = decompress(sr.blob_gz) as Array<RequestGroupMember>
+      for (const m of members) out.push({ stage: m.stage, attemptIndex: m.attemptIndex, payload: m.payload })
+    } else {
+      out.push({ stage: sr.stage, attemptIndex: sr.attempt_index, payload: decompress(sr.blob_gz) })
+    }
+  }
+  return out
+}
+
+/**
+ * Partition finalize-time stage payloads into the request-group dedup frame
+ * (one `request_group` StagePayload whose payload is the JSON array of members,
+ * compressed as a single zstd frame so the >90%-redundant request bodies share
+ * one frame) plus the remaining individually-stored stages.
+ *
+ * The members are the verbatim `extractStagePayloads` outputs — already
+ * final-attempt-mirror-resolved — so reassembly produces a member list
+ * field-identical to the per-stage layout (RFC C1/C2 invariant). `groupRow` is
+ * null only when no request-group stage exists (defensive; inbound_request
+ * always does).
+ */
+export function partitionStagesForWrite(stages: Array<StagePayload>): { groupRow: StagePayload | null; rest: Array<StagePayload> } {
+  const members: Array<RequestGroupMember> = []
+  const rest: Array<StagePayload> = []
+  for (const s of stages) {
+    if (isRequestGroupStage(s.stage)) members.push({ stage: s.stage, attemptIndex: s.attemptIndex, payload: s.payload })
+    else rest.push(s)
+  }
+  const groupRow: StagePayload | null = members.length > 0 ? { stage: STAGE.requestGroup, attemptIndex: LEG_ATTEMPT_INDEX, payload: members } : null
+  return { groupRow, rest }
 }
 
 /**

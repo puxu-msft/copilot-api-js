@@ -15,6 +15,7 @@ import { getDatabase } from "./connection"
 import {
   //
   type EntryRow,
+  partitionStagesForWrite,
   serializeHeadEntry,
   type StagePayload,
 } from "./serialize"
@@ -230,7 +231,11 @@ export function insertCompletedEntry(entry: HistoryEntry, digest?: LineageDigest
   const tx = db.transaction(() => {
     runHeadInsert(db, row)
     db.prepare("DELETE FROM entry_stages WHERE entry_id = ?").run(row.id)
-    for (const stage of stages) runStageInsert(db, row.id, stage, now)
+    // Pack the redundant request bodies into one request_group dedup frame
+    // (B3); response/sse stages stay individual. DELETE+rewrite stays atomic.
+    const { groupRow, rest } = partitionStagesForWrite(stages)
+    for (const stage of rest) runStageInsert(db, row.id, stage, now)
+    if (groupRow) runStageInsert(db, row.id, groupRow, now)
     if (digest) runLineageInsert(db, row.id, digest)
     if (row.session_id) recomputeSession(db, row.session_id)
   })
