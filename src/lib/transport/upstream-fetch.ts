@@ -34,6 +34,8 @@ import { fetch as undiciFetch } from "undici/index.js"
 
 import { getUpstreamDispatcher } from "~/lib/proxy"
 
+import { http2Fetch } from "./http2-client"
+
 /** Request init accepted by {@link upstreamFetch}; the dispatcher is added internally. */
 export interface UpstreamFetchInit {
   method?: string
@@ -44,19 +46,31 @@ export interface UpstreamFetchInit {
 
 type UpstreamFetchFn = (url: string | URL, init: UpstreamFetchInit) => Promise<Response>
 
-const productionUpstreamFetch: UpstreamFetchFn = (url, init) =>
-  undiciFetch(url, { ...init, dispatcher: getUpstreamDispatcher() }) as unknown as Promise<Response>
+/** undici transport — used for plaintext `http://` upstreams (e.g. local SearXNG). */
+const undiciUpstreamFetch: UpstreamFetchFn = (url, init) => undiciFetch(url, { ...init, dispatcher: getUpstreamDispatcher() }) as unknown as Promise<Response>
+
+/**
+ * Prefer HTTP/2 for every `https://` upstream. All real upstreams are h2-native
+ * (verified: GHC `api.*.githubcopilot.com`, `api.github.com`, `github.com`,
+ * `api.anthropic.com`), and undici's HTTP/1.1 parser hangs forever under Bun on
+ * the Copilot hosts' chunked responses (see http2-client.ts / RFC). The only
+ * plaintext `http://` upstream (local SearXNG) stays on undici.
+ */
+const productionUpstreamFetch: UpstreamFetchFn = (url, init) => {
+  const u = typeof url === "string" ? new URL(url) : url
+  return u.protocol === "https:" ? http2Fetch(u, init) : undiciUpstreamFetch(u, init)
+}
 
 let activeUpstreamFetch: UpstreamFetchFn = productionUpstreamFetch
 
-/** Issue an upstream HTTP request via undici with our keepalive/timeout dispatcher. */
+/** Issue an upstream HTTP request — HTTP/2 for https, undici for plaintext http. */
 export function upstreamFetch(url: string | URL, init: UpstreamFetchInit): Promise<Response> {
   return activeUpstreamFetch(url, init)
 }
 
 /**
  * Test-only: route {@link upstreamFetch} through `fn` (e.g. the `globalThis.fetch`
- * mock), or restore the production undici path when `fn` is undefined.
+ * mock), or restore the production path when `fn` is undefined.
  */
 export function setUpstreamFetchForTests(fn: UpstreamFetchFn | undefined): void {
   activeUpstreamFetch = fn ?? productionUpstreamFetch

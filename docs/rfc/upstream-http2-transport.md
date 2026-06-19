@@ -1,8 +1,13 @@
 # RFC: 上游传输 undici → node:http2 迁移(修 Bun 挂起 + HTTP/2 + keepalive)
 
-**状态:** 草案 v2 — 已对抗 review + 两个 make-or-break crux 实测验证。待实现。
+**状态:** 已实现 (v3) — `https://` 全走 node:http2,`http://`(SearXNG)保留 undici。两 make-or-break crux 实测验证 + 全套测试绿。
 **驱动:** 生产 bug——本地(Bun)版启动期 `cacheModels()` 永久挂起,无法服务。
-**Scope:** **按 origin 分流**——仅 **GHC HTTP/2 host**(`api.{accountType}.githubcopilot.com` / `api.githubcopilot.com`)的上游请求改走 **node:http2** 薄客户端;**其余 host 保留 undici**(SearXNG 明文 `http://localhost:8080`、`api.anthropic.com`、github.com OAuth、VSCode release)。`upstreamFetch` 签名(返回 `Response`)与全部消费端不变。
+**Scope(v3 终态):** **按 scheme 分流**——所有 `https://` 上游走 **node:http2**(全部 h2-native,已逐一验证:GHC、`api.github.com`、`github.com`、`api.anthropic.com`);唯一的明文 `http://`(本地 SearXNG)保留 undici。`upstreamFetch` 签名(返回 `Response`)与全部消费端不变。
+
+> **v3 修订(用户指示 + 实现期发现):**
+> - **(用户)`https` 全走 h2**:用户指示"支持 HTTP2 的都优先 HTTP2"。已验证所有 https 上游皆 h2,故路由从 v2 的"仅 GHC host"放宽为"全 https → node:http2"(更主动)。SearXNG 明文 http:// 保留 undici(用户确认其有需求)。
+> - **(实现期实测,CRITICAL 限制)Bun 的 node:http2 客户端对任何中途连接终止都交付 synthetic clean `end`**(`response→data→end→close`,rstCode=0)——clean server RST 与完整连接 drop 皆然(exp/ 实证)。故 **mid-stream truncation 在 Bun 下无法在传输层检测**。`error`/`close-before-end` 兜底在 Node 下有效;Bun 下的残余靠 app 层(SSE 缺失终止事件 message_stop/[DONE])。**仍严格优于被替换的 undici**——后者在 Bun 下对这些 host 是永久 hang(比截断更糟)。
+
 
 > **v2 修订(对抗 review 2026-06-19,已采纳):**
 > - **(H1/H2,CRITICAL)原 v1「全量替换 undici」over-scoped 且错误**:grep 实测 upstreamFetch 服务 `http://localhost:8080`(SearXNG,明文 HTTP 非 TLS 非 443 非 h2)、`api.anthropic.com`、github OAuth、VSCode release——全量替换会打挂它们。改为**仅 GHC h2 host 分流到 node:http2**,真实问题(GHC host 在 Bun-undici 挂)精准命中,其余零回归。

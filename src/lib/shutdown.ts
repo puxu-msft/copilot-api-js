@@ -32,6 +32,7 @@ import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { shutdownRequestTelemetry } from "./request-telemetry"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
+import { closeHttp2Sessions } from "./transport/http2-client"
 import {
   //
   closeAllClients,
@@ -376,6 +377,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // Stop background services
   stopRefresh()
   shutdownHistory()
+  closeHttp2Sessions()
   peekUpstreamWsManager()?.stopNew()
 
   // NOTE: Browser-observer WebSocket clients (history/status dashboards) are
