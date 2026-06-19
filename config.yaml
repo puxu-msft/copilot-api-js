@@ -179,7 +179,11 @@ web_search:
 # Settings for Anthropic API tool handling and timeouts.
 
 anthropic:
-  # Strip server-side tools (web_search, etc.) from requests
+  # Strip server-side tools (web_search, etc.) from requests.
+  # This is the unconditional global switch. Even when false, a server tool the
+  # upstream rejects with 400 ("web search tool is not supported") is learned and
+  # stripped pre-emptively for that (endpoint, model) on subsequent requests
+  # (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
   strip_server_tools: false
 
   # Synthetic SSE keepalive interval (seconds) for the client-facing stream.
