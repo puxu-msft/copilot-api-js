@@ -64,59 +64,28 @@ export interface ConsoleSinkOptions {
   /** Show `[....]` start lines (only in `consola.level >= 5`). Default true. */
   showActive?: boolean
   /**
-   * Whether to hijack `consola.setReporters` so log lines coordinate with
-   * the footer. Default `true`. **Set `false` in commits 3b-3e** to avoid
-   * shadowing the legacy `ConsoleRenderer`'s reporter (which also hijacks
-   * consola) and producing a TTY footer-flicker regression during the
-   * transition window. Commit 4 flips this back to `true` once
-   * `ConsoleRenderer` is removed.
-   */
-  hijackConsola?: boolean
-  /**
-   * When `true`, the sink subscribes and tracks state internally but
-   * writes nothing to stdout. **Set `true` in commits 3b-3e** because the
-   * legacy `ConsoleRenderer` (installed by main.ts:initConsolaReporter)
-   * still owns rendering — each lifecycle event would otherwise produce
-   * one `[ OK ]` line from each renderer. Commit 4 deletes
-   * ConsoleRenderer and flips this back to `false`.
-   *
-   * The subscription stays alive so the sink-ordering integration test
-   * (tests/observability/sink-ordering.unit.test.ts) still pins the
-   * History → Telemetry → Ws → Console attach contract.
+   * When `true`, the sink subscribes and tracks state internally but writes
+   * nothing to stdout. Used by tests that pin the sink attach order without
+   * asserting rendered bytes.
    */
   silent?: boolean
-}
-
-interface ConsolaReporter {
-  log(logObj: { args: Array<unknown>; type: string }): void
 }
 
 export class ConsoleSink {
   private readonly stdout: NodeJS.WritableStream
   private readonly isTTY: boolean
   private readonly showActive: boolean
-  private readonly hijackConsola: boolean
   private readonly silent: boolean
   private readonly active = new Map<string, ActiveRequest>()
   private footerVisible = false
   private footerTimer: ReturnType<typeof setInterval> | null = null
-  private readonly originalReporters: Array<unknown>
   private readonly unsubscribe: () => void
 
   constructor(bus: ObservabilityBus, options?: ConsoleSinkOptions) {
     this.stdout = options?.stdout ?? process.stdout
     this.isTTY = options?.isTTY ?? process.stdout.isTTY
     this.showActive = options?.showActive ?? true
-    this.hijackConsola = options?.hijackConsola ?? true
     this.silent = options?.silent ?? false
-
-    if (this.hijackConsola) {
-      // Preserve original reporters BEFORE installing ours so destroy() can restore.
-      this.originalReporters = [...consola.options.reporters]
-      consola.setReporters([this.makeFooterAwareReporter()])
-    } else {
-      this.originalReporters = []
-    }
 
     this.unsubscribe = bus.subscribe((event) => {
       this.handle(event)
@@ -131,9 +100,6 @@ export class ConsoleSink {
       this.footerVisible = false
     }
     this.active.clear()
-    if (this.hijackConsola && this.originalReporters.length > 0) {
-      consola.setReporters(this.originalReporters as Parameters<typeof consola.setReporters>[0])
-    }
   }
 
   // ============================================================================
@@ -186,6 +152,13 @@ export class ConsoleSink {
       }
       case "request.aborted": {
         this.onTerminal(event.ctx, "aborted", { error: "client disconnected" })
+        return
+      }
+      // Non-HTTP consola logs republished onto the bus (republish.ts). Rendered
+      // through the same footer-coordinated printLog path the old hijack
+      // reporter used, so stdout bytes are unchanged.
+      case "system.log": {
+        this.onSystemLog(event)
         return
       }
       // history.* / system.* — currently no console output (reserved).
@@ -432,31 +405,14 @@ export class ConsoleSink {
   }
 
   /**
-   * Build a consola reporter that wraps each log call in `clearFooterForLog
-   * → write → renderFooter` so consola output does not collide with the
-   * footer redraw. Preserves the existing UX from `console-renderer.ts`.
+   * Render a republished consola log (`system.log` event) through the same
+   * footer-coordinated path the old hijack reporter used. `message` is already
+   * args-joined by republish.ts; `consolaPrefix` supplies the `[INFO] HH:MM:SS`
+   * prefix from the log's own timestamp.
    */
-  private makeFooterAwareReporter(): ConsolaReporter {
-    return {
-      log: (logObj) => {
-        this.clearFooterForLog()
-        const message = logObj.args
-          .map((arg) => {
-            if (typeof arg === "string") return arg
-            if (arg instanceof Error) return arg.stack ?? arg.message
-            return JSON.stringify(arg)
-          })
-          .join(" ")
-          .trimEnd()
-        const prefix = consolaPrefix(logObj.type)
-        if (prefix) {
-          this.stdout.write(`${prefix} ${message}\n`)
-        } else {
-          this.stdout.write(`${message}\n`)
-        }
-        this.renderFooter()
-      },
-    }
+  private onSystemLog(event: Extract<ObservabilityEvent, { kind: "system.log" }>): void {
+    const prefix = consolaPrefix(event.logType, new Date(event.time))
+    this.printLog(prefix ? `${prefix} ${event.message}` : event.message)
   }
 }
 
@@ -500,8 +456,8 @@ function renderFeatureTag(feature: string, detail?: Record<string, unknown>): st
   }
 }
 
-function consolaPrefix(type: string): string {
-  const time = pc.dim(formatTime())
+function consolaPrefix(type: string, date?: Date): string {
+  const time = pc.dim(formatTime(date))
   switch (type) {
     case "error":
     case "fatal": {

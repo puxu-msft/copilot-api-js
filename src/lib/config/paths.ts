@@ -64,6 +64,8 @@ export const PATHS = {
   REQUEST_TELEMETRY: path.join(APP_DIR, "request-telemetry.json"),
   NEGOTIATION_STATES: path.join(APP_DIR, "negotiation-states.json"),
   HISTORY_DB: path.join(APP_DIR, "history.db"),
+  /** Rotating file log for non-HTTP consola output (startup, auth, warnings, errors). */
+  COPILOT_LOG: path.join(APP_DIR, "copilot-api.log"),
   /** Codex CLI config file (`$CODEX_HOME/config.toml`, default `~/.codex/config.toml`). */
   CODEX_CONFIG_TOML: path.join(computeCodexHome(), "config.toml"),
 }

@@ -39,7 +39,9 @@ import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initBus } from "./lib/observability"
 import { formatBillingLabel } from "./lib/observability/projections/format"
+import { installConsolaRepublish } from "./lib/observability/republish"
 import { attachConsoleSink } from "./lib/observability/sinks/console"
+import { attachFileSink } from "./lib/observability/sinks/file"
 import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
@@ -353,10 +355,15 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
   attachWsSink(bus)
-  // ConsoleSink is now authoritative — owns stdout footer + consola hijack.
-  // The legacy lib/tui/ subsystem and its initConsolaReporter / tuiMiddleware
-  // / ConsoleRenderer / TuiLogger are deleted in commit 4.
+  // ConsoleSink renders request lifecycle lines + the republished consola
+  // stream (system.log) to stdout with the active-request footer. FileSink
+  // persists that same consola stream to a rotating copilot-api.log so it
+  // survives a crash/hang (the original incident: no logs when the process
+  // hung). Both must subscribe BEFORE installConsolaRepublish installs the
+  // single consola hijack — otherwise early republished logs reach no sink.
   attachConsoleSink(bus)
+  attachFileSink(bus, { path: PATHS.COPILOT_LOG })
+  installConsolaRepublish(systemPublisher)
 
   // Initialize request context manager with the request.* publisher so
   // every lifecycle / context_updated event reaches HistorySink + WsSink +

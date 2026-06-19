@@ -199,6 +199,15 @@ export type ObservabilityEvent =
   | { kind: "system.shutdown_phase_changed"; phase: ShutdownPhase; previousPhase: ShutdownPhase | null; needsFlush: boolean }
   | { kind: "system.shutdown_completed" }
 
+  // ── Non-HTTP console logs (republished from consola — the single hijack
+  //    point lives in `observability/republish.ts`, installed by start.ts).
+  //    Consumed by ConsoleSink (stdout, footer-coordinated) and FileSink
+  //    (copilot-api.log). `message` is the args pre-joined by the reporter so
+  //    both sinks share one representation; `logType` is the consola level name
+  //    ("info" | "warn" | "error" | "success" | "debug" | …) for prefix
+  //    selection; `time` is the log timestamp in epoch ms. ──
+  | { kind: "system.log"; logType: string; message: string; time: number }
+
 /** Top-level namespace prefix of an event kind. */
 export type EventNamespace = "request" | "history" | "system"
 
