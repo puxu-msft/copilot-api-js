@@ -262,27 +262,46 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
   const upstreamSse: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
 
-  for await (const frame of upstream.frames) {
-    // Skip the `[DONE]` sentinel — it's a gateway-injected transport terminator
-    // (OpenAI convention, NOT part of the Anthropic protocol; anthropic/stream.ts:104),
-    // not a content frame. The accumulators skip it and the legacy Anthropic pump
-    // broke before recording it, so excluding it keeps the upstream-original track to
-    // real content frames (no mislabeled `type:"message"` sentinel) + matches the
-    // pre-P3.2b Anthropic baseline. Forwarded never carried it either (pump breaks).
-    if (frame.data !== "[DONE]") {
-      upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
-      if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
+  try {
+    for await (const frame of upstream.frames) {
+      // Skip the `[DONE]` sentinel — it's a gateway-injected transport terminator
+      // (OpenAI convention, NOT part of the Anthropic protocol; anthropic/stream.ts:104),
+      // not a content frame. The accumulators skip it and the legacy Anthropic pump
+      // broke before recording it, so excluding it keeps the upstream-original track to
+      // real content frames (no mislabeled `type:"message"` sentinel) + matches the
+      // pre-P3.2b Anthropic baseline. Forwarded never carried it either (pump breaks).
+      if (frame.data !== "[DONE]") {
+        upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
+        if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
+      }
+      // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
+      for (const rewritten of passThrough([frame], rewrites, states, 0)) {
+        // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
+        yield* renderFrames(deps, rewritten, env)
+      }
     }
-    // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
-    for (const rewritten of passThrough([frame], rewrites, states, 0)) {
-      // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
-      yield* renderFrames(deps, rewritten, env)
+  } finally {
+    // S5 flush: drain buffered frames at stream end. In `finally` (RFC §4.0.5, H3
+    // pre-step) so `flushChain` RUNS on every generator exit — normal completion, an
+    // upstream throw, AND a consumer-triggered `.return()` (`break`) / `.throw()`.
+    //
+    // Frame DELIVERY differs by exit, though (ECMAScript IteratorClose):
+    //   - normal completion / upstream throw → the `yield*` below delivers flushed
+    //     frames to the consumer (on a throw, BEFORE the error re-propagates — the
+    //     generator unwinds through finally), so nothing is dropped.
+    //   - consumer `break` → `.return()` → the finally still RUNS (buffer state /
+    //     side effects clear), but IteratorClose DISCARDS values yielded here, so a
+    //     breaking consumer does NOT receive them.
+    //
+    // With `RESPONSE_REWRITES` empty this is a no-op (flushChain → []), so it is
+    // behavior-preserving today — the live Anthropic pump always `break`s on
+    // [DONE]/error and is unaffected. Phase 4 (migrating a buffering decode/recover
+    // rewrite into the registry) MUST NOT rely on this finally to deliver flushed
+    // frames to an early-breaking consumer — that path needs an explicit flush
+    // before the break (cf. the handler's post-loop flush, handler-v4.ts:655-663).
+    for (const flushed of flushChain(rewrites, states)) {
+      yield* renderFrames(deps, flushed, env)
     }
-  }
-
-  // S5 flush: drain buffered frames at stream end, each threading the rewrites after it.
-  for (const flushed of flushChain(rewrites, states)) {
-    yield* renderFrames(deps, flushed, env)
   }
 }
 

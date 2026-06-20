@@ -429,6 +429,52 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     // x is buffered by rewrite[0]; on flush its output threads rewrite[1] → "[x]"
     expect(out.map((f) => f.data)).toEqual(["[x]"])
   })
+
+  test("flush on exception: a buffering rewrite drains in finally when upstream throws (H3 — exception-path parity)", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    interface BufState extends RewriteState {
+      buf: Array<string>
+    }
+    // Buffers every frame, flushes the joined accumulation — a stand-in for a
+    // migrated buffering rewrite (decode / recover) holding tool_use fragments.
+    const accumulate: ResponseRewrite = {
+      name: "accumulate",
+      order: 100,
+      appliesTo: () => true,
+      createState: (): BufState => ({ buf: [] }),
+      transform: (frame, state): FrameAction => {
+        ;(state as BufState).buf.push(frame.data ?? "")
+        return { kind: "buffer" }
+      },
+      flush: (state): Array<UpstreamFrame> => [{ data: (state as BufState).buf.join(",") }],
+    }
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [accumulate] })
+
+    // Upstream yields two frames, then throws (mid-stream transport blow-up).
+    async function* throwAfter(items: Array<UpstreamFrame>): AsyncIterable<UpstreamFrame> {
+      for (const it of items) yield it
+      throw new Error("upstream blew up")
+    }
+    const upstream: UpstreamStream = { frames: throwAfter([{ data: "a" }, { data: "b" }]), headers: new Headers() }
+
+    const collected: Array<ClientFrame> = []
+    let caught: unknown
+    try {
+      for await (const f of driver.runResponse(upstream, env)) collected.push(f)
+    } catch (error) {
+      caught = error
+    }
+
+    // The exception still surfaces to the consumer (finally drains, then re-throws).
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toBe("upstream blew up")
+    // The buffered frames were flushed in `finally` BEFORE the error propagated —
+    // without try/finally `flushChain` (post-loop) is unreachable on a throw and the
+    // held frames are silently dropped (the H3 regression Phase 4 would introduce).
+    expect(collected.map((f) => f.data)).toEqual(["a,b"])
+  })
 })
 
 describe("driver.runResponseNonStreaming", () => {
