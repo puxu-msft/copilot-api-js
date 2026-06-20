@@ -1,14 +1,15 @@
 /**
- * P2.4 — Responses v4 driver ↔ legacy equivalence (http + WS transports).
+ * Responses v4 driver behavior (http + WS transports).
  *
- * Runs the same request through the legacy handler (flag off) and the v4 driver
- * path (flag on) against the same mocked upstream, asserting the client-facing
- * output + the outbound wire payload match. Covers direct passthrough
- * (streaming + non-streaming), the Responses→CC fallback, Google force-fallback,
- * stream-id-sync, normalizeCallIds, the unsupported-model reject, the L2 history
- * double-track, and the upstream-WS transport path.
+ * Originally a v4↔legacy equivalence suite; after P3.3 deleted the legacy
+ * Responses handler (and the `driver-flags` toggle), these assert the v4 driver
+ * path directly. Byte-critical cases keep a golden lock captured from the driver
+ * path; the rest keep their own absolute/content assertions. Covers direct
+ * passthrough (streaming + non-streaming), the Responses→CC fallback, Google
+ * force-fallback, stream-id-sync, normalizeCallIds, the unsupported-model reject,
+ * the L2 history double-track, and the upstream-WS transport path.
  *
- * Fallback `resp_`/`item_` IDs are random (genShortId), so fallback comparisons
+ * Fallback `resp_`/`item_` IDs are random (genShortId), so fallback goldens
  * normalize them before equality.
  */
 
@@ -28,11 +29,6 @@ import type {
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
-import {
-  //
-  isV4DriverEnabled,
-  setV4DriverEnabled,
-} from "~/lib/codec/driver-flags"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -59,8 +55,6 @@ let lastResponsesWire: ResponsesPayload | undefined
 let lastCcWire: { model?: string; messages?: unknown } | undefined
 let respHits = 0
 let throwOnce = false
-
-const DEFAULT_V4_FLAG = isV4DriverEnabled("openai-responses")
 
 // ── upstream response factories ─────────────────────────────────────────────
 
@@ -179,7 +173,7 @@ function normalizeIds(text: string): string {
   return text.replaceAll(/\b(resp|item)_[A-Za-z0-9]+/g, "$1_X")
 }
 
-describe("Responses v4 ↔ legacy equivalence", () => {
+describe("Responses v4 driver path", () => {
   autoTestRuntime()
   autoRestoreFetch()
 
@@ -194,53 +188,55 @@ describe("Responses v4 ↔ legacy equivalence", () => {
   })
 
   afterEach(() => {
-    setV4DriverEnabled("openai-responses", DEFAULT_V4_FLAG)
+    // Nothing global to restore now that the driver flag is gone.
   })
 
-  test("direct non-streaming: client json + wire payload equal", async () => {
+  test("direct non-streaming: client json + wire payload", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: false }
 
-    setV4DriverEnabled("openai-responses", false)
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    const legacyWire = lastResponsesWire
-
-    setV4DriverEnabled("openai-responses", true)
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     const v4Wire = lastResponsesWire
 
-    expect(v4).toEqual(legacy)
-    expect(v4Wire).toEqual(legacyWire)
+    // Byte-lock: direct passthrough renders the upstream Responses body verbatim.
+    expect(v4).toEqual({
+      id: "resp_up_1",
+      object: "response",
+      created_at: 1,
+      status: "completed",
+      model: "gpt-resp",
+      output: [
+        { id: "item_1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi there", annotations: [] }] },
+      ],
+      usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+      tools: [],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      store: false,
+    })
+    expect(v4Wire?.model).toBe("gpt-resp")
+    expect(v4Wire?.stream).toBe(false)
   })
 
-  test("direct streaming: client SSE bytes equal", async () => {
+  test("direct streaming: client SSE bytes", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: true }
 
-    setV4DriverEnabled("openai-responses", false)
-    const legacyText = await (await post(body)).text()
-
-    setV4DriverEnabled("openai-responses", true)
     const v4Text = await (await post(body)).text()
 
-    expect(v4Text).toBe(legacyText)
+    expect(v4Text).toBe(responsesStreamFrames("gpt-resp").join(""))
     expect(v4Text).toContain("response.completed")
   })
 
-  test("direct streaming stream-id-sync: .done id corrected to .added id (both paths equal)", async () => {
+  test("direct streaming stream-id-sync: .done id corrected to .added id", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: true, __idMismatch: true }
 
-    setV4DriverEnabled("openai-responses", false)
-    const legacyText = await (await post(body)).text()
-
-    setV4DriverEnabled("openai-responses", true)
     const v4Text = await (await post(body)).text()
 
-    expect(v4Text).toBe(legacyText)
     // The .done frame's id was corrected to the canonical .added id.
     expect(v4Text).toContain("oi_canonical")
     expect(v4Text).not.toContain("oi_DIFFERENT")
   })
 
-  test("normalizeCallIds: call_ → fc_ on the direct wire (both paths equal)", async () => {
+  test("normalizeCallIds: call_ → fc_ on the direct wire", async () => {
     const body = {
       model: "gpt-resp",
       input: [
@@ -250,142 +246,136 @@ describe("Responses v4 ↔ legacy equivalence", () => {
       stream: false,
     }
 
-    setV4DriverEnabled("openai-responses", false)
-    await post(body)
-    const legacyWire = lastResponsesWire
-
-    setV4DriverEnabled("openai-responses", true)
     await post(body)
     const v4Wire = lastResponsesWire
 
-    expect(v4Wire).toEqual(legacyWire)
     const items = v4Wire?.input as Array<{ call_id?: string; id?: string }>
     expect(items[0].call_id).toBe("fc_abc") // normalized
   })
 
-  test("fallback (Responses→CC) non-streaming: client Responses json equal + wire is CC-shaped", async () => {
+  test("fallback (Responses→CC) non-streaming: client Responses json + wire is CC-shaped", async () => {
     const body = { model: "gpt-cc-only", input: "hi", stream: false }
 
-    setV4DriverEnabled("openai-responses", false)
-    const legacy = normalizeIds(JSON.stringify(await (await post(body)).json()))
-    const legacyWire = lastCcWire
-
-    setV4DriverEnabled("openai-responses", true)
     const v4 = normalizeIds(JSON.stringify(await (await post(body)).json()))
     const v4Wire = lastCcWire
 
-    expect(v4).toBe(legacy)
+    // Byte-lock (IDs normalized): the CC upstream body rendered back into Responses shape.
+    expect(v4).toBe(
+      normalizeIds(
+        JSON.stringify({
+          id: "resp_X",
+          object: "response",
+          created_at: 1,
+          status: "completed",
+          model: "gpt-cc-only",
+          output: [
+            {
+              id: "item_X",
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "hi there", annotations: [] }],
+            },
+          ],
+          usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+          tools: [],
+          tool_choice: "auto",
+          parallel_tool_calls: false,
+          store: false,
+        }),
+      ),
+    )
     expect(v4Wire?.messages).toBeDefined() // Responses→CC translation happened
-    expect(v4Wire).toEqual(legacyWire)
   })
 
-  test("fallback streaming: client Responses SSE equal (IDs normalized)", async () => {
+  test("fallback streaming: client Responses SSE (IDs normalized)", async () => {
     const body = { model: "gpt-cc-only", input: "hi", stream: true }
 
-    setV4DriverEnabled("openai-responses", false)
-    const legacyText = normalizeIds(await (await post(body)).text())
-
-    setV4DriverEnabled("openai-responses", true)
     const v4Text = normalizeIds(await (await post(body)).text())
 
-    expect(v4Text).toBe(legacyText)
     expect(v4Text).toContain("response.completed")
+    expect(v4Text).toContain("response.output_text.delta")
   })
 
-  test("Google force-fallback: routes to /chat/completions on both paths", async () => {
+  test("Google force-fallback: routes to /chat/completions", async () => {
     const body = { model: "gemini-forced", input: "hi", stream: false }
 
-    setV4DriverEnabled("openai-responses", false)
-    const legacy = normalizeIds(JSON.stringify(await (await post(body)).json()))
-    const legacyWire = lastCcWire
-
-    setV4DriverEnabled("openai-responses", true)
     const v4 = normalizeIds(JSON.stringify(await (await post(body)).json()))
     const v4Wire = lastCcWire
 
     expect(v4Wire?.messages).toBeDefined() // forced to CC
-    expect(v4).toBe(legacy)
-    expect(v4Wire).toEqual(legacyWire)
+    expect(v4).toBe(
+      normalizeIds(
+        JSON.stringify({
+          id: "resp_X",
+          object: "response",
+          created_at: 1,
+          status: "completed",
+          model: "gemini-forced",
+          output: [
+            {
+              id: "item_X",
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "hi there", annotations: [] }],
+            },
+          ],
+          usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+          tools: [],
+          tool_choice: "auto",
+          parallel_tool_calls: false,
+          store: false,
+        }),
+      ),
+    )
   })
 
-  test("unsupported model → 400 on both paths", async () => {
+  test("unsupported model → 400", async () => {
     const body = { model: "claude-only", input: "hi", stream: false }
 
-    setV4DriverEnabled("openai-responses", false)
-    expect((await post(body)).status).toBe(400)
-
-    setV4DriverEnabled("openai-responses", true)
     expect((await post(body)).status).toBe(400)
   })
 
-  test("network-retry: a transient upstream error retries once then succeeds (both paths, 2 hits)", async () => {
+  test("network-retry: a transient upstream error retries once then succeeds (2 hits)", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: false }
 
-    setV4DriverEnabled("openai-responses", false)
-    throwOnce = true
-    respHits = 0
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    expect(respHits).toBe(2)
-
-    setV4DriverEnabled("openai-responses", true)
     throwOnce = true
     respHits = 0
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     expect(respHits).toBe(2)
-    expect(v4).toEqual(legacy)
+    expect((v4 as { id?: string }).id).toBe("resp_up_1")
   })
 
-  test("history: non-streaming success finalizes the entry (completed) on both paths", async () => {
+  test("history: non-streaming success finalizes the entry (completed)", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: false }
 
-    setV4DriverEnabled("openai-responses", false)
-    await post(body)
-    const legacyState = getHistory({ endpoint: "openai-responses" }).entries[0]?.state
-
-    setV4DriverEnabled("openai-responses", true)
     await post(body)
     const v4State = getHistory({ endpoint: "openai-responses" }).entries[0]?.state
 
-    expect(legacyState).toBe("completed")
     expect(v4State).toBe("completed")
   })
 
-  test("history double-track (L2) direct: effective + outbound both openai-responses, equal to legacy", async () => {
+  test("history double-track (L2) direct: effective + outbound both openai-responses", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: false }
 
-    setV4DriverEnabled("openai-responses", false)
-    await post(body)
-    const legacy = getHistory({ endpoint: "openai-responses" }).entries[0]
-
-    setV4DriverEnabled("openai-responses", true)
     await post(body)
     const v4 = getHistory({ endpoint: "openai-responses" }).entries[0]
 
-    expect(v4?.effectiveRequest?.format).toBe(legacy?.effectiveRequest?.format)
     expect(v4?.effectiveRequest?.format).toBe("openai-responses")
-    expect(v4?.effectiveRequest?.model).toBe(legacy?.effectiveRequest?.model)
-    expect(v4?.outboundRequest?.format).toBe(legacy?.outboundRequest?.format)
+    expect(v4?.effectiveRequest?.model).toBe("gpt-resp")
     expect(v4?.outboundRequest?.format).toBe("openai-responses")
-    expect(v4?.outboundRequest?.messageCount).toBe(legacy?.outboundRequest?.messageCount)
     expect(typeof v4?.queueWaitMs).toBe("number")
   })
 
-  test("history double-track (L2) fallback: effective=openai-responses, outbound=openai-chat-completions, equal to legacy", async () => {
+  test("history double-track (L2) fallback: effective=openai-responses, outbound=openai-chat-completions", async () => {
     const body = { model: "gpt-cc-only", input: "hi", stream: false }
 
-    setV4DriverEnabled("openai-responses", false)
-    await post(body)
-    const legacy = getHistory({ endpoint: "openai-responses" }).entries[0]
-
-    setV4DriverEnabled("openai-responses", true)
     await post(body)
     const v4 = getHistory({ endpoint: "openai-responses" }).entries[0]
 
-    expect(legacy?.outboundRequest?.format).toBe("openai-chat-completions")
     expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
     expect(v4?.effectiveRequest?.format).toBe("openai-responses")
-    expect(v4?.outboundRequest?.messageCount).toBe(legacy?.outboundRequest?.messageCount)
-    expect(v4?.effectiveRequest?.messageCount).toBe(legacy?.effectiveRequest?.messageCount)
   })
 })
 
@@ -455,7 +445,7 @@ const WS_EVENTS: Array<ResponsesStreamEvent> = [
   } as unknown as ResponsesStreamEvent,
 ]
 
-describe("Responses v4 ↔ legacy equivalence — upstream WS transport", () => {
+describe("Responses v4 driver path — upstream WS transport", () => {
   autoTestRuntime()
   autoRestoreFetch()
 
@@ -467,7 +457,6 @@ describe("Responses v4 ↔ legacy equivalence — upstream WS transport", () => 
   })
 
   afterEach(() => {
-    setV4DriverEnabled("openai-responses", DEFAULT_V4_FLAG)
     setUpstreamWsConnectionFactoryForTests(null)
     resetUpstreamWsManagerForTests()
   })
@@ -482,19 +471,12 @@ describe("Responses v4 ↔ legacy equivalence — upstream WS transport", () => 
     return app.request("/responses", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
   }
 
-  test("streaming request goes over upstream WS and forwards frames (both paths equal)", async () => {
+  test("streaming request goes over upstream WS and forwards frames", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: true }
 
     setUpstreamWsConnectionFactoryForTests(() => fakeWsConnection(WS_EVENTS))
-    setV4DriverEnabled("openai-responses", false)
-    const legacyText = await (await postWs(body)).text()
-
-    resetUpstreamWsManagerForTests()
-    setUpstreamWsConnectionFactoryForTests(() => fakeWsConnection(WS_EVENTS))
-    setV4DriverEnabled("openai-responses", true)
     const v4Text = await (await postWs(body)).text()
 
-    expect(v4Text).toBe(legacyText)
     expect(v4Text).toContain("WS")
     expect(v4Text).toContain("response.completed")
   })
@@ -503,7 +485,6 @@ describe("Responses v4 ↔ legacy equivalence — upstream WS transport", () => 
     const body = { model: "gpt-resp", input: "hi", stream: true }
 
     setUpstreamWsConnectionFactoryForTests(() => fakeWsConnection(WS_EVENTS))
-    setV4DriverEnabled("openai-responses", true)
     await (await postWs(body)).text()
 
     const entry = getHistory({ endpoint: "openai-responses" }).entries[0]

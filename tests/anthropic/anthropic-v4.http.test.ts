@@ -1,19 +1,17 @@
 /**
- * P2.6 — Anthropic /v1/messages v4 driver ↔ legacy equivalence (http).
+ * Anthropic /v1/messages v4 driver behavior (http).
  *
- * Runs the same request through the legacy `handleMessages` (flag off) and the
- * v4 driver `handleMessagesV4` (flag on) against the same mocked upstream,
- * asserting the client-facing output + the outbound wire payload match. The
- * Anthropic codec's translate/render are identity (bypass-direct), so the driver
- * forwards the upstream Anthropic SSE frames byte-for-byte; the equivalence here
- * therefore exercises the byte-critical pump primitives (streaming-pump.ts) and
- * the legacy non-streaming finishing reused by handler-v4.
+ * Originally a v4↔legacy equivalence suite; after P3.3 deleted the legacy
+ * `handleMessages`, these assert the v4 driver path (`handleMessagesV4`) directly.
+ * The byte-critical streaming cases keep a golden lock derived from the upstream
+ * fixtures (Anthropic is bypass-direct — translate/render are identity, so the
+ * driver forwards the upstream SSE frames verbatim, terminating at `[DONE]`);
+ * golden values were captured from the legacy↔v4 equivalence run before removal.
  *
- * Covers the v4-specific divergence points the wide-oracle (whole suite re-run
- * with the flag on) does NOT assert as v4-vs-legacy: direct stream/non-stream
- * byte equivalence, thinking-signature round-trip, tool-name sanitize→restore,
- * network-retry, the L2 history double-track, the reject → `failed` finalization
- * (under a production-faithful app that installs observabilityMiddleware), and
+ * Covers the v4-specific points the wide-oracle (whole suite on the driver) does
+ * NOT assert in isolation: direct stream/non-stream output, thinking-signature
+ * round-trip, network-retry, the L2 history double-track, the reject → `failed`
+ * finalization (under a production-faithful app with observabilityMiddleware), and
  * H2 (a terminal upstream `error` SSE frame → forwarded once → ctx.fail, NOT a
  * thrown 500 like the OpenAI paths).
  */
@@ -30,11 +28,6 @@ import {
 import { Hono } from "hono"
 
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
-import {
-  //
-  isV4DriverEnabled,
-  setV4DriverEnabled,
-} from "~/lib/codec/driver-flags"
 import { forwardError } from "~/lib/error"
 import {
   //
@@ -65,8 +58,6 @@ let messagesHits = 0
 let capturedWire: { model?: string; stream?: boolean; messages?: Array<unknown>; tools?: Array<{ name?: string }> } | undefined
 let throwOnce = false
 let scenario: Scenario = "ok"
-
-const DEFAULT_V4_FLAG = isV4DriverEnabled("anthropic")
 
 // ── upstream response factories ─────────────────────────────────────────────
 
@@ -214,7 +205,7 @@ async function post(body: unknown, target: Hono = app): Promise<Response> {
   return target.request("/v1/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
 }
 
-describe("Anthropic v4 ↔ legacy equivalence", () => {
+describe("Anthropic v4 driver path", () => {
   autoTestRuntime()
   autoRestoreFetch()
 
@@ -229,132 +220,96 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
   })
 
   afterEach(async () => {
-    setV4DriverEnabled("anthropic", DEFAULT_V4_FLAG)
     // The deferred-tool strategy records sticky-undeferred tools in the
     // process-global feature-negotiation ledger; reset it so it doesn't leak
-    // into sibling tests (or the second sub-run within a test).
+    // into sibling tests.
     await resetAnthropicFeatureNegotiationForTesting()
   })
 
-  test("direct non-streaming: client json + wire payload equal", async () => {
+  test("direct non-streaming: client json mirrors upstream + wire carries the request", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
-    setV4DriverEnabled("anthropic", false)
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    const legacyWire = capturedWire
-
-    setV4DriverEnabled("anthropic", true)
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
-    const v4Wire = capturedWire
 
-    expect(v4).toEqual(legacy)
-    expect(v4Wire).toEqual(legacyWire)
+    // Anthropic is bypass-direct (renderResponseNonStreaming = identity): the
+    // client JSON is the upstream body verbatim.
+    expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
+    expect(capturedWire?.model).toBe("claude-sonnet-4.6")
+    expect(capturedWire?.messages).toEqual([{ role: "user", content: "Hello" }])
+    expect(capturedWire?.stream).toBe(false)
   })
 
-  test("direct streaming: client SSE bytes equal", async () => {
+  test("direct streaming: client SSE forwards the upstream frames verbatim (terminating at [DONE])", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Stream please" }], max_tokens: 64, stream: true }
 
-    setV4DriverEnabled("anthropic", false)
-    const legacyText = await (await post(body)).text()
-
-    setV4DriverEnabled("anthropic", true)
     const v4Text = await (await post(body)).text()
 
-    expect(v4Text).toBe(legacyText)
+    // Byte-lock (golden = the fixture frames minus the trailing `data: [DONE]`,
+    // which the pump breaks on rather than forwards). Captured from the legacy↔v4
+    // equivalence run before the legacy path was removed (P3.3).
+    expect(v4Text).toBe(okStreamFrames("claude-sonnet-4.6").slice(0, -1).join(""))
     expect(v4Text).toContain("Hello from mocked stream")
     expect(v4Text).toContain("message_stop")
   })
 
-  test("streaming thinking + signature_delta forwarded byte-for-byte (both paths equal)", async () => {
+  test("streaming thinking + signature_delta forwarded byte-for-byte", async () => {
     scenario = "thinking"
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Think" }], max_tokens: 256, stream: true }
 
-    setV4DriverEnabled("anthropic", false)
-    const legacyText = await (await post(body)).text()
-
-    setV4DriverEnabled("anthropic", true)
     const v4Text = await (await post(body)).text()
 
-    expect(v4Text).toBe(legacyText)
+    // Byte-lock: thinking + signature_delta must survive forwarding verbatim.
+    expect(v4Text).toBe(thinkingStreamFrames("claude-sonnet-4.6").slice(0, -1).join(""))
     expect(v4Text).toContain("sig-abc-123") // signature survives forwarding
     expect(v4Text).toContain("thinking_delta")
   })
 
-  test("alias resolves + non-streaming wire model is canonical (both paths equal)", async () => {
+  test("alias resolves + non-streaming wire model is canonical", async () => {
     const body = { model: "opus", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
-    setV4DriverEnabled("anthropic", false)
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    const legacyWire = capturedWire
-
-    setV4DriverEnabled("anthropic", true)
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
-    const v4Wire = capturedWire
 
-    expect(v4).toEqual(legacy)
-    expect(v4Wire?.model).toBe("claude-opus-4.6")
-    expect(v4Wire).toEqual(legacyWire)
+    expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-opus-4.6")) as Record<string, unknown>)
+    expect(capturedWire?.model).toBe("claude-opus-4.6")
   })
 
-  test("network-retry: a transient upstream error retries once then succeeds (both paths, 2 hits)", async () => {
+  test("network-retry: a transient upstream error retries once then succeeds (2 hits)", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
-    setV4DriverEnabled("anthropic", false)
-    throwOnce = true
-    messagesHits = 0
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    expect(messagesHits).toBe(2)
-
-    setV4DriverEnabled("anthropic", true)
     throwOnce = true
     messagesHits = 0
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     expect(messagesHits).toBe(2)
-    expect(v4).toEqual(legacy)
+    expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
   })
 
-  test("history: non-streaming success finalizes the entry (completed) on both paths", async () => {
+  test("history: non-streaming success finalizes the entry (completed)", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
-    setV4DriverEnabled("anthropic", false)
-    await post(body)
-    const legacyState = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state
-
-    // Clear between sub-runs so entries[0] is unambiguously the v4 entry (the
-    // getHistory sort tie-breaks same-ms entries by id.localeCompare, which is
-    // non-deterministic across a counter digit boundary — queries.ts:95).
-    clearHistory()
-    setV4DriverEnabled("anthropic", true)
     await post(body)
     const v4State = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state
 
-    expect(legacyState).toBe("completed")
     expect(v4State).toBe("completed")
   })
 
-  test("history double-track (L2): effective + outbound both anthropic-messages, equal to legacy", async () => {
+  test("history double-track (L2): effective + outbound both anthropic-messages, payload byte-fidelity", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
-    setV4DriverEnabled("anthropic", false)
-    await post(body)
-    const legacy = getHistory({ endpoint: "anthropic-messages" }).entries[0]
-
     clearHistory()
-    setV4DriverEnabled("anthropic", true)
     await post(body)
     const v4 = getHistory({ endpoint: "anthropic-messages" }).entries[0]
 
-    expect(v4?.effectiveRequest?.format).toBe(legacy?.effectiveRequest?.format)
+    // Both tracks tagged anthropic-messages (bypass-direct = no format change).
     expect(v4?.effectiveRequest?.format).toBe("anthropic-messages")
-    expect(v4?.effectiveRequest?.model).toBe(legacy?.effectiveRequest?.model)
-    expect(v4?.outboundRequest?.format).toBe(legacy?.outboundRequest?.format)
+    expect(v4?.effectiveRequest?.model).toBe("claude-sonnet-4.6")
     expect(v4?.outboundRequest?.format).toBe("anthropic-messages")
-    expect(v4?.outboundRequest?.messageCount).toBe(legacy?.outboundRequest?.messageCount)
+    expect(v4?.outboundRequest?.messageCount).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number")
-    // Compare the recorded payload CONTENT, not just shape — L2's whole point is
-    // byte-fidelity of the effective/outbound bodies (richest-data-flow).
-    expect(v4?.effectiveRequest?.payload).toEqual(legacy?.effectiveRequest?.payload)
-    expect(v4?.outboundRequest?.payload).toEqual(legacy?.outboundRequest?.payload)
+    // Byte-fidelity of the effective/outbound bodies (richest-data-flow). Golden =
+    // the request body (a plain request: sanitize + prepare are no-ops here).
+    const goldenBody = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
+    expect(v4?.effectiveRequest?.payload).toEqual(goldenBody)
+    expect(v4?.outboundRequest?.payload).toEqual(goldenBody)
   })
 
   test("history records raw sseEvents (upstream) + forwarded sseEvents (inboundResponse) on the v4 streaming path", async () => {
@@ -364,7 +319,6 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
     // frames land in `inboundResponse.sseEvents` (request.ts maps the internal
     // `_forwardedResponse` → entry.inboundResponse). Both tracks must be present.
     clearHistory()
-    setV4DriverEnabled("anthropic", true)
     await (await post(body)).text()
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
 
@@ -375,15 +329,9 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
     expect(entry?.inboundResponse?.sseEvents?.length ?? 0).toBeGreaterThan(0)
   })
 
-  test("reject (non-Anthropic vendor) → 400 on both paths, no upstream hit", async () => {
+  test("reject (non-Anthropic vendor) → 400, no upstream hit", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
 
-    setV4DriverEnabled("anthropic", false)
-    messagesHits = 0
-    expect((await post(body)).status).toBe(400)
-    expect(messagesHits).toBe(0)
-
-    setV4DriverEnabled("anthropic", true)
     messagesHits = 0
     expect((await post(body)).status).toBe(400)
     expect(messagesHits).toBe(0)
@@ -396,7 +344,6 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
     // — under the middleware, that c.set ctx is finalized from the 400 status to
     // `failed` (RFC §11.5 — not a dangling/pending entry).
     clearHistory()
-    setV4DriverEnabled("anthropic", true)
     const res = await post(body, observableApp)
     expect(res.status).toBe(400)
 
@@ -404,24 +351,17 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
     expect(entry?.state).toBe("failed")
   })
 
-  test("H2: terminal upstream `error` SSE frame → forwarded once → ctx.fail (both paths equal)", async () => {
+  test("H2: terminal upstream `error` SSE frame → forwarded once → ctx.fail", async () => {
     scenario = "errorFrame"
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: true }
 
-    setV4DriverEnabled("anthropic", false)
-    const legacyRes = await post(body, observableApp)
-    const legacyText = await legacyRes.text()
-    const legacyState = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state
-
     clearHistory()
-    setV4DriverEnabled("anthropic", true)
     const v4Res = await post(body, observableApp)
     const v4Text = await v4Res.text()
     const v4State = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state
 
     // SSE already started → 200, not a thrown 500.
     expect(v4Res.status).toBe(200)
-    expect(v4Text).toBe(legacyText)
     // The error frame is forwarded EXACTLY once (not dropped, not duplicated).
     expect(v4Text.match(/"type":"error"/g)?.length).toBe(1)
     // The forwarded error carries the UPSTREAM error's type + message verbatim
@@ -430,32 +370,24 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
     expect(v4Text).toContain("upstream overloaded")
     // Terminal error settles the ctx as failed (not a thrown error → 500).
     expect(v4State).toBe("failed")
-    expect(legacyState).toBe("failed")
   })
 
-  test("H3: a mid-stream ReadableStream error → pump synthesizes an error frame → ctx.fail (both paths equal)", async () => {
+  test("H3: a mid-stream ReadableStream error → pump synthesizes an error frame → ctx.fail", async () => {
     scenario = "midStreamThrow"
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: true }
 
-    setV4DriverEnabled("anthropic", false)
-    const legacyText = await (await post(body, observableApp)).text()
-    const legacyState = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state
-
     clearHistory()
-    setV4DriverEnabled("anthropic", true)
     const v4Text = await (await post(body, observableApp)).text()
     const v4State = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state
 
-    expect(v4Text).toBe(legacyText)
     // The partial content forwarded before the throw is preserved, then a
     // synthesized error frame is appended (catch path).
     expect(v4Text).toContain("Hello from mocked stream")
     expect(v4Text).toContain('"type":"error"')
     expect(v4State).toBe("failed")
-    expect(legacyState).toBe("failed")
   })
 
-  test("deferred-tool retry: a tool-reference 400 undefers the tool + retries (both paths, 2 hits, undeferred on the wire)", async () => {
+  test("deferred-tool retry: a tool-reference 400 undefers the tool + retries (2 hits, undeferred on the wire)", async () => {
     scenario = "deferredTool"
     const body = {
       model: "claude-sonnet-4.6",
@@ -465,14 +397,6 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
       tools: [{ name: "search", description: "search the web", input_schema: { type: "object", properties: {} }, defer_loading: true }],
     }
 
-    setV4DriverEnabled("anthropic", false)
-    await resetAnthropicFeatureNegotiationForTesting()
-    messagesHits = 0
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    expect(messagesHits).toBe(2)
-    const legacyRetryTool = capturedWire?.tools?.find((t) => t.name === "search") as { defer_loading?: boolean } | undefined
-
-    setV4DriverEnabled("anthropic", true)
     await resetAnthropicFeatureNegotiationForTesting()
     messagesHits = 0
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
@@ -480,12 +404,11 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
     const v4RetryTool = capturedWire?.tools?.find((t) => t.name === "search") as { defer_loading?: boolean } | undefined
 
     // The retry's outbound wire (post-retry env) carries the UNdeferred tool.
-    expect(legacyRetryTool?.defer_loading).toBeFalsy()
     expect(v4RetryTool?.defer_loading).toBeFalsy()
-    expect(v4).toEqual(legacy)
+    expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
   })
 
-  test("deferred-tool retry (streaming): undefer + retry runs the v4 pump on the post-retry env (both paths equal)", async () => {
+  test("deferred-tool retry (streaming): undefer + retry runs the v4 pump on the post-retry env", async () => {
     scenario = "deferredTool"
     const body = {
       model: "claude-sonnet-4.6",
@@ -495,13 +418,6 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
       tools: [{ name: "search", description: "search the web", input_schema: { type: "object", properties: {} }, defer_loading: true }],
     }
 
-    setV4DriverEnabled("anthropic", false)
-    await resetAnthropicFeatureNegotiationForTesting()
-    messagesHits = 0
-    const legacyText = await (await post(body)).text()
-    expect(messagesHits).toBe(2)
-
-    setV4DriverEnabled("anthropic", true)
     await resetAnthropicFeatureNegotiationForTesting()
     messagesHits = 0
     // The streaming pump builds its recoverer/decoder from `env.body.tools` of the
@@ -512,13 +428,12 @@ describe("Anthropic v4 ↔ legacy equivalence", () => {
 
     const v4RetryTool = capturedWire?.tools?.find((t) => t.name === "search") as { defer_loading?: boolean } | undefined
     expect(v4RetryTool?.defer_loading).toBeFalsy()
-    expect(v4Text).toBe(legacyText)
+    expect(v4Text).toBe(okStreamFrames("claude-sonnet-4.6").slice(0, -1).join(""))
     expect(v4Text).toContain("Hello from mocked stream")
   })
 
-  test("the /anthropic/v1/messages alias dispatches through the v4 handler when the flag is on", async () => {
+  test("the /anthropic/v1/messages alias dispatches through the v4 handler", async () => {
     injectModels()
-    setV4DriverEnabled("anthropic", true)
     const res = await app.request("/anthropic/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

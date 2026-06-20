@@ -18,11 +18,6 @@ import {
   getUnsupportedServerToolTypes,
   resetAnthropicFeatureNegotiationForTesting,
 } from "~/lib/anthropic/feature-negotiation"
-import {
-  //
-  isV4DriverEnabled,
-  setV4DriverEnabled,
-} from "~/lib/codec/driver-flags"
 import { PATHS } from "~/lib/config/paths"
 import {
   //
@@ -93,20 +88,15 @@ const app = createFullTestApp()
 
 let tmpDir = ""
 let realPath = ""
-let priorV4Anthropic = false
 
 beforeAll(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "neg-srvtool-http-"))
   realPath = PATHS.NEGOTIATION_STATES
   PATHS.NEGOTIATION_STATES = path.join(tmpDir, "negotiation-states.json")
-  // Strategy is registered only on the v4 driver — route it there for this probe.
-  priorV4Anthropic = isV4DriverEnabled("anthropic")
-  setV4DriverEnabled("anthropic", true)
 })
 
 afterAll(async () => {
   PATHS.NEGOTIATION_STATES = realPath
-  setV4DriverEnabled("anthropic", priorV4Anthropic)
   await fs.rm(tmpDir, { recursive: true, force: true })
 })
 

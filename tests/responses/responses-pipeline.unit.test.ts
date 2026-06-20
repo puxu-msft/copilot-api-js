@@ -5,7 +5,7 @@ import {
   test,
 } from "bun:test"
 
-import { extractInputItems } from "~/routes/responses/pipeline"
+import { extractInputItems } from "~/lib/openai/responses-conversion"
 
 describe("extractInputItems", () => {
   test("wraps string input as a synthetic user message item", () => {

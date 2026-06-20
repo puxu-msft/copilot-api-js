@@ -1,11 +1,13 @@
 /**
- * P2.3 — CC v4 driver ↔ legacy equivalence (http).
+ * CC v4 driver behavior (http).
  *
- * Runs the same request through the legacy handler (flag off) and the v4 driver
- * path (flag on) against the same mocked upstream, asserting the client-facing
- * output + the outbound wire payload match. Covers passthrough streaming +
- * non-streaming, tool-name sanitize/restore, the unsupported-model reject, and
- * the via-responses bridge (incl. the synthesized trailing [DONE]).
+ * Originally a v4↔legacy equivalence suite; after P3.3 deleted the legacy CC
+ * handler (and the `driver-flags` toggle), these assert the v4 driver path
+ * directly. Byte-critical passthrough cases keep a golden lock captured from the
+ * driver path; the rest keep their own absolute/content assertions. Covers
+ * passthrough streaming + non-streaming, tool-name sanitize/restore, the
+ * unsupported-model reject, and the via-responses bridge (incl. the synthesized
+ * trailing [DONE]).
  */
 
 import {
@@ -20,11 +22,6 @@ import {
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import {
-  //
-  isV4DriverEnabled,
-  setV4DriverEnabled,
-} from "~/lib/codec/driver-flags"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -47,9 +44,6 @@ let lastResponsesWire: { model?: string; input?: unknown } | undefined
 let ccHits = 0
 let throwOnce = false
 let throwAlways = false
-
-/** The flag's default, captured at import before any test toggles it (no leak to siblings). */
-const DEFAULT_V4_FLAG = isV4DriverEnabled("openai-cc")
 
 function ccBody(model: string): string {
   return JSON.stringify({
@@ -160,7 +154,7 @@ async function post(body: unknown): Promise<Response> {
   return app.request("/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
 }
 
-describe("CC v4 ↔ legacy equivalence", () => {
+describe("CC v4 driver path", () => {
   autoTestRuntime()
   autoRestoreFetch()
 
@@ -176,41 +170,41 @@ describe("CC v4 ↔ legacy equivalence", () => {
   })
 
   afterEach(() => {
-    // Restore the flag's default (NOT a hardcoded false) so this file never leaks
-    // the toggle to sibling files (bun's single-process module singleton).
-    setV4DriverEnabled("openai-cc", DEFAULT_V4_FLAG)
+    // The deferred-tool/feature ledgers are reset per-suite elsewhere; nothing
+    // global to restore here now that the driver flag is gone.
   })
 
-  test("non-streaming passthrough: client json + wire payload equal", async () => {
+  test("non-streaming passthrough: client json + wire payload", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
 
-    setV4DriverEnabled("openai-cc", false)
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    const legacyWire = lastCcWire
-
-    setV4DriverEnabled("openai-cc", true)
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     const v4Wire = lastCcWire
 
-    expect(v4).toEqual(legacy)
-    expect(v4Wire).toEqual(legacyWire)
+    expect(v4).toEqual({
+      id: "chatcmpl-eq",
+      object: "chat.completion",
+      created: 1,
+      model: "gpt-4o",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi there" }, finish_reason: "stop", logprobs: null }],
+      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+    })
+    expect(v4Wire?.model).toBe("gpt-4o")
+    expect(v4Wire?.messages).toEqual([{ role: "user", content: "hi" }])
+    expect(v4Wire?.stream).toBe(false)
   })
 
-  test("streaming passthrough: client SSE bytes equal", async () => {
+  test("streaming passthrough: client SSE bytes", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }
 
-    setV4DriverEnabled("openai-cc", false)
-    const legacyText = await (await post(body)).text()
-
-    setV4DriverEnabled("openai-cc", true)
     const v4Text = await (await post(body)).text()
 
-    expect(v4Text).toBe(legacyText)
+    // Byte-lock: the driver forwards the upstream CC chunks verbatim, incl. [DONE].
+    expect(v4Text).toBe(ccStreamFrames("gpt-4o").join(""))
     expect(v4Text).toContain("Hello")
     expect(v4Text).toContain("[DONE]")
   })
 
-  test("tool-name sanitize→restore: client sees original names, wire sees sanitized (both paths equal)", async () => {
+  test("tool-name sanitize→restore: client sees original names, wire sees sanitized", async () => {
     // A tool name with characters the sanitizer rewrites for upstream.
     const body = {
       model: "gpt-4o",
@@ -219,166 +213,132 @@ describe("CC v4 ↔ legacy equivalence", () => {
       stream: false,
     }
 
-    setV4DriverEnabled("openai-cc", false)
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    const legacyWire = lastCcWire
-
-    setV4DriverEnabled("openai-cc", true)
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     const v4Wire = lastCcWire
 
-    expect(v4).toEqual(legacy)
-    expect(v4Wire).toEqual(legacyWire)
+    expect(v4).toEqual({
+      id: "chatcmpl-eq-tool",
+      object: "chat.completion",
+      created: 1,
+      model: "gpt-4o",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "f-renamed", arguments: "{}" } }] },
+          finish_reason: "tool_calls",
+          logprobs: null,
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+    })
+    // The wire tool name is sanitized (the client-facing name above is unchanged).
+    const wireToolName = (v4Wire?.tools as Array<{ function?: { name?: string } }> | undefined)?.[0]?.function?.name
+    expect(wireToolName).not.toBe("my.tool:with-bad/chars")
   })
 
-  test("unsupported model → 400 on both paths", async () => {
+  test("unsupported model → 400", async () => {
     const body = { model: "claude-only", messages: [{ role: "user", content: "hi" }], stream: false }
 
-    setV4DriverEnabled("openai-cc", false)
-    const legacy = await post(body)
-    expect(legacy.status).toBe(400)
-
-    setV4DriverEnabled("openai-cc", true)
     const v4 = await post(body)
     expect(v4.status).toBe(400)
   })
 
-  test("via-responses non-streaming: client CC json equal + wire is Responses-shaped", async () => {
+  test("via-responses non-streaming: client CC json + wire is Responses-shaped", async () => {
     const body = { model: "gpt-5", messages: [{ role: "user", content: "hi" }], stream: false }
 
-    setV4DriverEnabled("openai-cc", false)
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    const legacyWire = lastResponsesWire
-
-    setV4DriverEnabled("openai-cc", true)
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     const v4Wire = lastResponsesWire
 
-    expect(v4).toEqual(legacy)
+    expect(v4).toEqual({
+      id: "resp_1",
+      object: "chat.completion",
+      model: "gpt-5",
+      choices: [{ index: 0, message: { role: "assistant", content: null }, finish_reason: "stop", logprobs: null }],
+      usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+    })
     expect(v4Wire?.input).toBeDefined() // CC→Responses translation happened
-    expect(v4Wire).toEqual(legacyWire)
   })
 
-  test("via-responses streaming: client CC SSE equal incl. trailing [DONE]", async () => {
+  test("via-responses streaming: client CC SSE incl. trailing [DONE]", async () => {
     const body = { model: "gpt-5", messages: [{ role: "user", content: "hi" }], stream: true }
 
-    setV4DriverEnabled("openai-cc", false)
-    const legacyText = await (await post(body)).text()
-
-    setV4DriverEnabled("openai-cc", true)
     const v4Text = await (await post(body)).text()
 
-    expect(v4Text).toBe(legacyText)
     expect(v4Text).toContain("[DONE]")
+    expect(v4Text).toContain("chat.completion.chunk")
   })
 
-  test("network-retry: a transient upstream error retries once then succeeds (both paths, 2 hits + queueWaitMs)", async () => {
+  test("network-retry: a transient upstream error retries once then succeeds (2 hits + queueWaitMs)", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
 
-    setV4DriverEnabled("openai-cc", false)
-    throwOnce = true
-    ccHits = 0
-    const legacy = (await (await post(body)).json()) as Record<string, unknown>
-    expect(ccHits).toBe(2) // initial failure + 1 retry
-    const legacyHits = ccHits
-    const legacyQueueWait = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.queueWaitMs
-
-    setV4DriverEnabled("openai-cc", true)
     throwOnce = true
     ccHits = 0
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
-    expect(ccHits).toBe(legacyHits)
-    expect(v4).toEqual(legacy)
-    // queueWaitMs must include the network-retry backoff (1000ms) — equal to legacy
-    // (driver must addQueueWaitMs(action.waitMs), not only the rate-limiter wait).
+    expect(ccHits).toBe(2) // initial failure + 1 retry
+    expect((v4 as { id?: string }).id).toBe("chatcmpl-eq")
+    // queueWaitMs must include the network-retry backoff (1000ms) — driver must
+    // addQueueWaitMs(action.waitMs), not only the rate-limiter wait.
     const v4QueueWait = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.queueWaitMs
-    expect(v4QueueWait).toBe(legacyQueueWait)
     expect(v4QueueWait).toBeGreaterThanOrEqual(1000)
   })
 
-  test("history: non-streaming success finalizes the entry (completed) on both paths", async () => {
+  test("history: non-streaming success finalizes the entry (completed)", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
 
-    setV4DriverEnabled("openai-cc", false)
-    await post(body)
-    const legacyState = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
-
-    setV4DriverEnabled("openai-cc", true)
     await post(body)
     const v4State = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
 
-    expect(legacyState).toBe("completed")
     expect(v4State).toBe("completed")
   })
 
-  test("history: persistent upstream failure FINALIZES the entry (failed, not dangling) on both paths", async () => {
+  test("history: persistent upstream failure FINALIZES the entry (failed, not dangling)", async () => {
     // A persistent (non-recovering) upstream error: network-retry retries once,
     // the second failure has no handling strategy → the request fails. The ctx
     // must reach `failed` (the handler's catch settles it directly — validates the
     // codec.getContext()+fail wiring; without it the v4 entry would hang pending).
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
 
-    setV4DriverEnabled("openai-cc", false)
-    throwAlways = true
-    await post(body)
-    const legacyState = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
-
-    setV4DriverEnabled("openai-cc", true)
     throwAlways = true
     await post(body)
     const v4State = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
 
-    expect(legacyState).toBe("failed")
     expect(v4State).toBe("failed")
   })
 
-  test("history double-track (L2): v4 records effectiveRequest + outboundRequest equal to legacy", async () => {
+  test("history double-track (L2): v4 records effectiveRequest + outboundRequest", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
 
-    setV4DriverEnabled("openai-cc", false)
-    await post(body)
-    const legacy = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
-
-    setV4DriverEnabled("openai-cc", true)
     await post(body)
     const v4 = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
 
-    // Before P2.3-S the v4 double-track was empty; now it's recorded + equal to legacy.
     expect(v4?.effectiveRequest).toBeDefined()
-    expect(v4?.effectiveRequest?.format).toBe(legacy?.effectiveRequest?.format)
-    expect(v4?.effectiveRequest?.model).toBe(legacy?.effectiveRequest?.model)
-    expect(v4?.effectiveRequest?.messageCount).toBe(legacy?.effectiveRequest?.messageCount)
+    expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.effectiveRequest?.model).toBe("gpt-4o")
+    expect(v4?.effectiveRequest?.messageCount).toBe(1)
     expect(v4?.outboundRequest).toBeDefined()
-    expect(v4?.outboundRequest?.format).toBe(legacy?.outboundRequest?.format)
-    expect(v4?.outboundRequest?.model).toBe(legacy?.outboundRequest?.model)
-    expect(v4?.outboundRequest?.messageCount).toBe(legacy?.outboundRequest?.messageCount)
+    expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.outboundRequest?.model).toBe("gpt-4o")
+    expect(v4?.outboundRequest?.messageCount).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number") // recorded (0, no throttle)
 
-    // Two-track (NOT byte-for-byte with legacy on effective): O10 max_completion_tokens
-    // is a wire-trim — it lands on the wire track only, never on effective. (legacy
-    // leaked it into effective; v4 keeps it on wire. Pin the intentional difference.)
+    // Two-track (NOT byte-for-byte): O10 max_completion_tokens is a wire-trim — it
+    // lands on the wire track only, never on effective.
     const v4Eff = v4?.effectiveRequest?.payload as { max_completion_tokens?: number } | undefined
     const v4Wire = v4?.outboundRequest?.payload as { max_completion_tokens?: number } | undefined
     expect(v4Eff?.max_completion_tokens).toBeUndefined() // effective = logical request, no wire-trim
     expect(v4Wire?.max_completion_tokens).toBe(4096) // wire = final bytes, O10 filled
   })
 
-  test("history double-track (L2) via-responses: outboundRequest.format = openai-responses, effective = cc, equal to legacy", async () => {
+  test("history double-track (L2) via-responses: outboundRequest.format = openai-responses, effective = cc", async () => {
     const body = { model: "gpt-5", messages: [{ role: "user", content: "hi" }], stream: false }
 
-    setV4DriverEnabled("openai-cc", false)
-    await post(body)
-    const legacy = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
-
-    setV4DriverEnabled("openai-cc", true)
     await post(body)
     const v4 = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
 
     // wire is the actual upstream endpoint (responses); effective stays the client CC request.
-    expect(legacy?.outboundRequest?.format).toBe("openai-responses")
     expect(v4?.outboundRequest?.format).toBe("openai-responses")
     expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.messageCount).toBe(legacy?.outboundRequest?.messageCount)
-    expect(v4?.effectiveRequest?.messageCount).toBe(legacy?.effectiveRequest?.messageCount)
+    expect(v4?.outboundRequest?.messageCount).toBe(1)
+    expect(v4?.effectiveRequest?.messageCount).toBe(1)
   })
 })

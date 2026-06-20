@@ -1,9 +1,10 @@
 /**
- * P2.5 — Gemini v4 driver ↔ legacy equivalence (http).
+ * Gemini v4 driver behavior (http).
  *
- * Runs the same Gemini request through the legacy handler (flag off) and the v4
- * driver path (flag on) against the same mocked upstream, asserting the client-
- * facing Gemini output + the outbound CC wire payload match. Covers
+ * Originally a v4↔legacy equivalence suite; after P3.3 deleted the legacy Gemini
+ * handler (and the `driver-flags` toggle), these assert the v4 driver path
+ * directly. Byte-critical translation cases keep a golden lock captured from the
+ * driver path; the rest keep their own absolute/content assertions. Covers
  * generateContent (non-streaming), streamGenerateContent, the via-responses
  * bridge (Gemini→CC→Responses), the Gemini-shape mid-stream error frame, the
  * dropped-params warning, and the L2 history double-track.
@@ -21,11 +22,6 @@ import {
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import {
-  //
-  isV4DriverEnabled,
-  setV4DriverEnabled,
-} from "~/lib/codec/driver-flags"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -45,8 +41,6 @@ import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 let lastCcWire: ChatCompletionsPayload | undefined
 let lastResponsesWire: { model?: string; input?: unknown } | undefined
-
-const DEFAULT_V4_FLAG = isV4DriverEnabled("gemini")
 
 function ccNonStream(model: string): Response {
   return new Response(
@@ -148,7 +142,7 @@ async function post(modelMethod: string, body: unknown): Promise<Response> {
   return app.request(`/v1beta/models/${modelMethod}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
 }
 
-describe("Gemini v4 ↔ legacy equivalence", () => {
+describe("Gemini v4 driver path", () => {
   autoTestRuntime()
   autoRestoreFetch()
 
@@ -162,120 +156,105 @@ describe("Gemini v4 ↔ legacy equivalence", () => {
   })
 
   afterEach(() => {
-    setV4DriverEnabled("gemini", DEFAULT_V4_FLAG)
+    // Nothing global to restore now that the driver flag is gone.
   })
 
-  test("generateContent non-streaming: client Gemini json + CC wire equal", async () => {
+  test("generateContent non-streaming: client Gemini json + CC wire", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "Hello Gemini" }] }] }
 
-    setV4DriverEnabled("gemini", false)
-    const legacy = (await (await post("gpt-4o:generateContent", body)).json()) as Record<string, unknown>
-    const legacyWire = lastCcWire
-
-    setV4DriverEnabled("gemini", true)
     const v4 = (await (await post("gpt-4o:generateContent", body)).json()) as Record<string, unknown>
     const v4Wire = lastCcWire
 
-    expect(v4).toEqual(legacy)
-    expect(v4Wire).toEqual(legacyWire)
+    // Byte-lock: Gemini→CC wire + CC→Gemini rendered client json (translation path).
+    expect(v4).toEqual({
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: "Mocked Gemini response" }] },
+          finishReason: "STOP",
+          index: 0,
+        },
+      ],
+      usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 4, totalTokenCount: 16 },
+      modelVersion: "gpt-4o",
+      responseId: "chatcmpl-g",
+    })
+    expect(v4Wire?.model).toBe("gpt-4o")
+    expect(v4Wire?.messages).toEqual([{ role: "user", content: "Hello Gemini" }])
     // Gemini-shape sanity
     expect((v4 as { candidates: Array<{ content: { role: string } }> }).candidates[0].content.role).toBe("model")
   })
 
-  test("streamGenerateContent: client Gemini SSE equal", async () => {
+  test("streamGenerateContent: client Gemini SSE", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }] }
 
-    setV4DriverEnabled("gemini", false)
-    const legacyText = await (await post("gpt-4o:streamGenerateContent", body)).text()
-
-    setV4DriverEnabled("gemini", true)
     const v4Text = await (await post("gpt-4o:streamGenerateContent", body)).text()
 
-    expect(v4Text).toBe(legacyText)
     expect(v4Text).toContain("usageMetadata")
+    expect(v4Text).toContain("Hello ")
+    expect(v4Text).toContain("Gemini")
   })
 
-  test("via-responses: Gemini→CC→Responses, wire is Responses-shaped, client Gemini json equal", async () => {
+  test("via-responses: Gemini→CC→Responses, wire is Responses-shaped, client Gemini json", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }] }
 
-    setV4DriverEnabled("gemini", false)
-    const legacy = (await (await post("gpt-resp-only:generateContent", body)).json()) as Record<string, unknown>
-    const legacyWire = lastResponsesWire
-
-    setV4DriverEnabled("gemini", true)
     const v4 = (await (await post("gpt-resp-only:generateContent", body)).json()) as Record<string, unknown>
     const v4Wire = lastResponsesWire
 
-    expect(v4).toEqual(legacy)
+    // Byte-lock: the full Gemini→CC→Responses bridge round-trip rendered back to Gemini.
+    expect(v4).toEqual({
+      candidates: [
+        {
+          content: { role: "model", parts: [] },
+          finishReason: "STOP",
+          index: 0,
+        },
+      ],
+      usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, totalTokenCount: 6 },
+      modelVersion: "gpt-resp-only",
+      responseId: "resp_1",
+    })
     expect(v4Wire?.input).toBeDefined() // CC→Responses translation happened
-    expect(v4Wire).toEqual(legacyWire)
   })
 
-  test("mid-stream error: Gemini-shape data-only error frame equal", async () => {
+  test("mid-stream error: Gemini-shape data-only error frame", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }] }
 
-    setV4DriverEnabled("gemini", false)
-    errorMidStream = true
-    const legacyText = await (await post("gpt-4o:streamGenerateContent", body)).text()
-
-    setV4DriverEnabled("gemini", true)
     errorMidStream = true
     const v4Text = await (await post("gpt-4o:streamGenerateContent", body)).text()
 
-    expect(v4Text).toBe(legacyText)
     expect(v4Text).toContain("upstream blew up")
     expect(v4Text).toContain("INTERNAL")
   })
 
-  test("dropped-params warning recorded on both paths (safetySettings)", async () => {
+  test("dropped-params warning recorded (safetySettings)", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }], safetySettings: [{ category: "HARM", threshold: "BLOCK_NONE" }] }
 
-    setV4DriverEnabled("gemini", false)
-    await post("gpt-4o:generateContent", body)
-    const legacyWarn = getHistory({ endpoint: "gemini-generate-content" }).entries[0]?.warningMessages?.some(
-      (w: { code: string }) => w.code === "gemini_dropped_params",
-    )
-
-    setV4DriverEnabled("gemini", true)
     await post("gpt-4o:generateContent", body)
     const v4Warn = getHistory({ endpoint: "gemini-generate-content" }).entries[0]?.warningMessages?.some(
       (w: { code: string }) => w.code === "gemini_dropped_params",
     )
 
-    expect(legacyWarn).toBe(true)
     expect(v4Warn).toBe(true)
   })
 
-  test("history double-track (L2): effective + outbound openai-chat-completions, equal to legacy", async () => {
+  test("history double-track (L2): effective + outbound openai-chat-completions", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }] }
 
-    setV4DriverEnabled("gemini", false)
-    await post("gpt-4o:generateContent", body)
-    const legacy = getHistory({ endpoint: "gemini-generate-content" }).entries[0]
-
-    setV4DriverEnabled("gemini", true)
     await post("gpt-4o:generateContent", body)
     const v4 = getHistory({ endpoint: "gemini-generate-content" }).entries[0]
 
-    expect(v4?.effectiveRequest?.format).toBe(legacy?.effectiveRequest?.format)
     expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
     expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.messageCount).toBe(legacy?.outboundRequest?.messageCount)
+    expect(v4?.outboundRequest?.messageCount).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number")
   })
 
-  test("history: non-streaming success finalizes the entry (completed) on both paths", async () => {
+  test("history: non-streaming success finalizes the entry (completed)", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }] }
 
-    setV4DriverEnabled("gemini", false)
-    await post("gpt-4o:generateContent", body)
-    const legacyState = getHistory({ endpoint: "gemini-generate-content" }).entries[0]?.state
-
-    setV4DriverEnabled("gemini", true)
     await post("gpt-4o:generateContent", body)
     const v4State = getHistory({ endpoint: "gemini-generate-content" }).entries[0]?.state
 
-    expect(legacyState).toBe("completed")
     expect(v4State).toBe("completed")
   })
 })
