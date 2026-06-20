@@ -31,7 +31,6 @@ import {
   clearAllEntries,
   insertCompletedEntry,
   upsertHeadRow,
-  upsertStageRow,
 } from "./sqlite/write"
 import { historyState } from "./state"
 import { getStats } from "./stats"
@@ -174,11 +173,19 @@ export function persistEntryStatus(id: string): void {
   }
 }
 
-/** Incremental per-attempt stage persistence (head row must already exist). Best-effort. */
+/**
+ * Incremental per-attempt stage persistence. Head-first / FK-safe: upserts the
+ * in-flight head row + these stages in ONE transaction, so a not-yet-persisted
+ * head can never `FOREIGN KEY constraint failed`-reject the stage rows (the
+ * historic silently-swallowed failure). Replaces the bare per-stage
+ * `upsertStageRow` loop, which assumed the head already existed. Best-effort.
+ */
 export function persistEntryStages(id: string, stages: Array<StagePayload>): void {
   if (!historyState.enabled || stages.length === 0) return
+  const entry = getInFlight(id)
+  if (!entry) return
   try {
-    for (const stage of stages) upsertStageRow(id, stage)
+    upsertHeadRow(entry, entry.state, stages)
   } catch (err: unknown) {
     consola.warn("[history] stage persist failed", err)
   }
