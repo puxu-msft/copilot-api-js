@@ -113,6 +113,7 @@ REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedA
 - tombstone 走 `upsertHeadRow`，**不重算 session 聚合**（仅 `insertCompletedEntry` 重算）。若该 tombstone 是其 session 最后一个 entry，session 的 request_count/token 统计不含它；若该 session 后续有别的 entry 正常 finalize，`recomputeSession` 会把已是 failed 终态的 tombstone 行纳入、自愈。
 - transient 重试期间崩溃：entry 仍以 eager 写的 `pending` 状态留在库里（finalize 不更新 head status），下次启动 `reclaimOrphanedActiveRows` 标为 `interrupted`——即一个实际 failed 的请求可能最终记为 `interrupted`（失败桶终态，事实不丢但状态语义降级）。
 - 读侧地板：head-only 行（连 tombstone 的 stage 都没写进）经 `deserializeEntry` 把缺失的 `inboundRequest` 兜底为 `{ model }`，保证 `getEntry`/详情/导出消费者不因 `inboundRequest` 为 undefined 崩溃。
+- 无周期维护时（`history.reaper_interval: 0`）transient 失败立即降级 tombstone：deferred-finalize 重试只能由 reaper tick 驱动，`reaper_interval=0` 关掉整个周期 timer（连带 WAL checkpoint / incremental_vacuum），故 `finalizeEntry` 经 `isReaperRunning()` 门控直接 tombstone（不滞留泄漏）。注：**仅 `reaper_interval=0` 触发**——`success_limit`/`failure_limit=0`（无限保留）下 timer 仍跑（淘汰自 no-op），drain 不受影响。
 
 ## 表结构（Head 表 + Stage 子表）
 

@@ -116,7 +116,15 @@ export function runReaperTick(successLimit: number, failureLimit: number): void 
 
 export function startReaper(successLimit: number, failureLimit: number, intervalSeconds: number): void {
   stopReaper()
-  if (intervalSeconds <= 0 || (successLimit <= 0 && failureLimit <= 0)) return
+  // Gate the periodic timer ONLY on the interval knob ("do periodic maintenance?"),
+  // NOT on the retention limits. The tick now does more than eviction — it drains
+  // deferred finalizations, returns freed pages, and checkpoints the WAL — all of
+  // which must keep running even when a user sets both limits to 0 (= unlimited
+  // retention). Eviction itself self-disables: `evictBucket` no-ops on limit<=0.
+  // (Previously a `limits<=0` short-circuit also killed the timer, which coupled
+  // the finalize-retry drain to the eviction config and made "unlimited retention"
+  // silently force every transient finalize failure straight to a lossy tombstone.)
+  if (intervalSeconds <= 0) return
   timer = setInterval(() => {
     try {
       runReaperTick(successLimit, failureLimit)
