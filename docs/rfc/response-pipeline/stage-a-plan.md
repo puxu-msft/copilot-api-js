@@ -1,6 +1,6 @@
 # Stage A — Transform Registry 激活 实现计划
 
-> **For agentic workers:** 用 superpowers:subagent-driven-development 或 executing-plans 逐任务实现。本计划是 [docs/rfc/response-pipeline-driver-owned.md](./response-pipeline-driver-owned.md) 的 **Stage A**（Stage B 不在本计划，A 落地后重走 OQ1）。
+> **For agentic workers:** 用 superpowers:subagent-driven-development 或 executing-plans 逐任务实现。本计划是 [docs/rfc/response-pipeline-driver-owned.md](./design.md) 的 **Stage A**（Stage B 不在本计划，A 落地后重走 OQ1）。
 
 **Goal:** 激活休眠的 `rewrite-registry`，把请求 + 响应（流式 + 非流式）改写从 codec/handler 内联迁进 driver 的 transform registry，让"新增拦截/修复 = 注册一个 ResponseRewrite"，generator 模型不变。
 
