@@ -150,6 +150,19 @@ driver 在固定边界 publish 事件，取代现状 handler 手动 setter（02 
 
 **关键改进**：`request.upstream_frame` 由 driver 在 S4 出口对**所有格式**统一采样 → 所有格式都获得上游原始 `sseEvents`（补齐现状"仅 messages"缺口，D8 原始记录完整性）。
 
+### P3.2b 落地状态（务实下沉 / Option B，2026-06-20）
+
+上表是设计意图（纯事件总线 + sink 累积器模型）。P3.2b 实际落地为**务实下沉**——保留 v4 现行的「driver 直接调 ctx setter」机制（非全量改为 bus 事件），只把**真实功能缺口**（上游原始 sseEvents）下沉，理由是其余采集已在 P2 各阶段满足或受架构边界约束：
+
+- **`S4 收发中`（上游原始 sseEvents）→ 已下沉 ✅**：driver 在 `runResponse` **循环顶**（renderResponse 之前）逐帧 `ctx.setSseEvents`（别名挂载，早退安全），对所有经 `driver.runResponse` 的格式统一（CC/Responses/Gemini/Anthropic HTTP + 客户端 WS）。采样点必须在循环顶而非 yield 点——CC via-responses / Responses fallback 的 `renderResponse` 非 identity，上游原始轨要的是**翻译前**字节。Anthropic 的手动 `setSseEvents` 已删（driver 提供；`frame.event` 即其 `parsed.type`，字节等价）。
+- **`S5/S7`（forwarded）→ 永久保留 handler-side（架构边界，非待办）**：「driver 采所有 forwarded 帧、删所有 `setForwardedResponse`」对两个格式**架构上不可行**，逐帧 registry 是错误抽象：
+  - **Gemini**：`translateOpenAIStreamToGemini` 是 whole-stream translator（跨帧累积 tool_calls + 帧外副产 usage/finishReason 驱动 complete），不经 driver yield 点（见 P2.5-D1）。
+  - **Anthropic heartbeat**：`startForwardedSseHeartbeat` 是 idle-driven 定时器，上游静默期无帧到达，无法表达为逐帧 `transform`（见 P1.5-OQ1，已裁决 option ①）。
+
+  故 S5/S7 行中的 `request.forwarded_frame` 对这两个格式是**概念归类、handler-side 旁路**（与 P1.5-OQ1 对 heartbeat 的措辞一致）；CC/Responses/WS 的 forwarded 采样虽**可**逐帧化，但为避免 CC/Responses 进 registry 而 Gemini/Anthropic 不进的非对称、且不触 byte-critical forwarded 字节路径，统一保留 handler-side（客户端真实字节在 handler 变换/注入处产生）。
+- **`S1/S2/S3/S4-attempt`**：请求侧 per-attempt 双轨（effective+wire+queueWaitMs）已于 **P2.3-S** 下沉（`codec.sampleRequest` + driver per-attempt）；inbound capture（Anthropic 仍手动）+ recordFeature/setHttpHeaders 属请求侧散点，非 P3.2b 响应侧缺口，留作后续可选清理。
+
+
 ---
 
 ## 5. RequestContext 收敛
