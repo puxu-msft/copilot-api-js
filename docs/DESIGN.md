@@ -37,17 +37,23 @@
 
 ### 请求流程
 
-1. 请求进入 `src/routes/` 中的 Hono 路由
-2. 路由分发：
-   - `/v1/messages` — Anthropic Messages API（`anthropic/handlers.ts`）
-   - `/chat/completions` — OpenAI Chat Completions API
-   - `/v1/responses` — OpenAI Responses API
-   - `/openai/deployments/:deployment/*` — Azure OpenAI 经典格式（从 URL 路径注入 model）
-   - `/openai/v1/*` — Azure OpenAI v1 格式（与标准 OpenAI 路由共用 handler）
-3. 对于 Anthropic 请求，必须是 Anthropic vendor 的模型（直连 Copilot 的原生 Anthropic 端点）
-4. 请求通过 retry pipeline（策略模式）处理：token 刷新、auto-truncate、tool 重试
-5. 消息经过 sanitize 管道清洗后发送
-6. 请求完成 / 失败时一次性写入 SQLite，否则仅更新内存 in-flight 映射并推送 WebSocket
+v4 管线：路由按前缀选 **codec**（每格式一个）+ 构建 per-request **driver**，由 driver 编排七阶段（S1–S7）。详见 [v4 设计文档](v4/01-architecture.md) 与 [03-spec/](v4/03-spec/)。
+
+1. 请求进入 `src/routes/` 中的 Hono 路由（`route.ts` 薄包装：try/catch + forwardError，直调 v4 handler）。
+2. handler 按接入格式选 codec（`lib/codec/`：`anthropic` / `openai-cc` / `openai-responses` / `openai-gemini`）+ 构建 driver（`createPipelineDriver`，consume codec + transport + retry strategies + rewrite registry），调 `driver.runRequest` / `driver.runResponse`。
+3. driver 编排**七阶段**（`lib/pipeline/driver.ts`，详见 [03-spec/envelope-driver.md](v4/03-spec/envelope-driver.md)）：
+   - **S1 parse** — `codec.parse(raw)` → `RequestEnvelope`（model 解析、body 提取、建 RequestContext）
+   - **S2 route/translate** — `codec.decideRoute`（透传/翻译/拒绝，统一 4 格式判断）+ `codec.translateOut`（透传=identity）
+   - **S3 rewrite-in** — `runRewriteIn`：请求改写链（registry 按 format+config+order 装配）
+   - **S4 exchange** — `runExchange`：错误驱动重试循环（`codec.prepareWire` → `transport.send` → 失败时首个匹配 strategy 改写 env 重试；429 由 adaptive rate-limiter 在 transport 内消化）
+   - **S5 rewrite-out** — 响应改写链（逐帧 transform/buffer/flush）
+   - **S6 render** — `codec.renderResponse` 翻回客户端协议（透传=identity）
+   - **S7 forward** — handler 写回客户端（streamSSE / JSON / WS frame）
+4. driver 在阶段边界采样原始数据 → observability bus → sinks（History/Ws/Console/Telemetry/File）：S1 入站、S4 per-attempt 双轨（effective/wire + queueWaitMs）+ **上游原始 sseEvents**（循环顶逐帧，所有格式统一）；客户端 forwarded 由 handler 在写回点采样（Gemini 整流翻译 / Anthropic heartbeat 不经 driver yield 点，见 [03-spec/envelope-driver.md §4](v4/03-spec/envelope-driver.md)）。
+5. Anthropic 直连为 **bypass-direct**（translate/render=identity，driver 逐字透传上游 SSE）；非 Anthropic vendor 模型在 S2 拒绝 400（无降级）。
+6. **Azure**：`injectDeploymentModel` 从 URL path 注入 `azureModelOverride`，复用 CC/Responses 的 v4 handler（不新增 codec）。
+7. **例外**（不进 driver）：web_search 双跳（Anthropic opt-in，正交控制流，走 legacy direct-completion `handleDirectAnthropicCompletion`，P2.6-D1 暂缓）；`count_tokens`（Anthropic/Gemini，本地 tokenizer，无管线）；embeddings（无 history/重试需求）。
+8. 请求完成 / 失败时一次性写入 SQLite，否则仅更新内存 in-flight 映射并推送 WebSocket。
 
 ### 核心模块
 
@@ -66,7 +72,9 @@ src/lib/
 ├── sanitize-system-reminder.ts  # <system-reminder> 标签解析与提取
 ├── anthropic/
 │   ├── client.ts          # Anthropic API 客户端（直连 + Copilot 代理）
-│   ├── handlers.ts        # API 路由决策 + SSE 流处理
+│   ├── pipeline.ts        # runAnthropicPipeline + buildAnthropicStrategies（web_search 双跳复用 executeRequestPipeline）
+│   ├── request-rewrites.ts # 请求改写 registry（preprocessTools + sanitize 包成 RequestRewrite，driver S3 消费）
+│   ├── request-preparation.ts # prepareAnthropicRequest（B1-B12：wire payload + beta/effort/cache_control + headers）
 │   ├── sanitize.ts        # 消息清洗管道（2 阶段：预处理 + 可重复清洗）
 │   ├── auto-truncate.ts   # Anthropic 格式的 auto-truncate 适配
 │   ├── message-mapping.ts # 消息映射（原消息 ↔ 清洗后消息索引对应）
@@ -127,13 +135,31 @@ src/lib/
 │   ├── stream-accumulator.ts    # Chat Completions SSE 事件累积器
 │   ├── stream-error.ts    # 流式生命周期错误 → OpenAI SSE error.type 映射（共享于 chat-completions/responses）
 │   └── orphan-filter.ts   # OpenAI 消息孤儿 tool call 过滤
+├── codec/                 # v4 每格式编解码器（FormatCodec：parse/decideRoute/translateOut/renderResponse/prepareWire/sampleRequest/createResponseAccumulator）
+│   ├── anthropic.ts       # Anthropic codec（bypass-direct，translate/render=identity）
+│   ├── openai-cc.ts       # Chat Completions codec（翻译中枢：CC↔Responses via-responses）
+│   ├── openai-responses.ts # Responses codec（直连 + Responses→CC fallback）
+│   ├── openai-gemini.ts   # Gemini codec（薄翻译层，工厂内委托 cc codec 处理 CC payload）
+│   └── *-strategies.ts    # 各格式重试策略组装（anthropic/openai-cc/openai-responses）
+├── pipeline/              # v4 driver 骨架（七阶段编排）
+│   ├── driver.ts          # createPipelineDriver：编排 S1-S7 + 错误驱动重试 + 阶段边界采样（上游原始 sseEvents 循环顶逐帧）
+│   ├── envelope.ts        # RequestEnvelope / ClientFormat / UpstreamEndpoint
+│   ├── types.ts           # FormatCodec / Transport / RetryStrategy / RouteDecision 接口
+│   ├── rewrite-registry.ts # 请求/响应改写 registry（按 format+config+order 装配过滤）
+│   └── legacy-strategy-adapter.ts # 旧 RetryStrategy → driver env-based 适配
+├── transport/             # v4 格式无关收发层（retry-transport.md）
+│   ├── http-transport.ts  # createUpstreamHttpTransport（fetch→SSE|JSON + guardSseIterable + header 捕获）
+│   ├── send.ts            # 格式无关收发骨架
+│   ├── upstream-fetch.ts  # 上游 fetch 统一入口（undici dispatcher / keepalive 显式传）
+│   ├── http2-client.ts    # node:http2 客户端（Bun 下 GHC https 热路径，见 bun-runtime-timeout.md）
+│   └── responses-transport.ts # Responses 上游传输（HTTP vs 上游 WS 二次选择）
 ├── request/
-│   ├── pipeline.ts        # 请求重试管道（策略模式）
+│   ├── pipeline.ts        # 旧请求重试管道（executeRequestPipeline，策略模式；现仅 web_search 双跳 + countTokens 等非 driver 路径用）
 │   ├── payload.ts         # Payload 构造与大小日志
 │   ├── recording.ts       # 请求/响应历史记录
 │   ├── truncation.ts      # 消息截断逻辑
 │   ├── response.ts        # 响应处理工具
-│   └── strategies/        # 重试策略：auto-truncate、token-refresh、network-retry、deferred-tool-retry
+│   └── strategies/        # 重试策略：auto-truncate、token-refresh、network-retry、deferred-tool-retry（driver 经 legacy-strategy-adapter 复用）
 ├── token/                 # Copilot token 获取与管理
 └── tui/                   # 终端 UI（请求日志、token 统计、中间件）
 ```
