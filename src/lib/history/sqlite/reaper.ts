@@ -135,3 +135,13 @@ export function stopReaper(): void {
     timer = null
   }
 }
+
+/**
+ * Whether the periodic reaper timer is currently running. The store layer gates
+ * transient-retain on this: if no reaper will ever tick (interval disabled, or
+ * during shutdown after stopReaper), a deferred finalize would never be retried
+ * and would leak — so the caller tombstones immediately instead of retaining.
+ */
+export function isReaperRunning(): boolean {
+  return timer !== null
+}

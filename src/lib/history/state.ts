@@ -7,6 +7,11 @@ import {
   state,
 } from "~/lib/state"
 
+// Function-only cyclic import (state ↔ entries): used solely inside
+// `shutdownHistory` at call time, never at module eval, so it is safe — by then
+// both modules are fully initialized (entries' `retryPendingFinalizations` is a
+// hoisted function declaration).
+import { retryPendingFinalizations } from "./entries"
 import { clearInFlight } from "./in-flight"
 import {
   //
@@ -72,6 +77,11 @@ export function shutdownHistory(): void {
   unsubscribeHistoryLimit?.()
   unsubscribeHistoryLimit = undefined
   stopReaper()
+  // Last-chance drain BEFORE closing the DB: the reaper is now stopped, so each
+  // still-pending deferred finalize that fails again will tombstone (its
+  // `isReaperRunning()` gate is now false) instead of re-retaining — nothing
+  // transiently-deferred is silently lost on graceful shutdown.
+  retryPendingFinalizations()
   closeDatabase()
   enabled = false
 }

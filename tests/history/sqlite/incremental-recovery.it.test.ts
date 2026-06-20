@@ -64,7 +64,12 @@ describe("history incremental persistence + recovery", () => {
 
     const pending = getEntryById("r1")
     expect(pending?.state).toBe("pending")
-    expect(pending?.inboundRequest).toBeUndefined() // no stage rows written yet
+    // Head-only row: inboundRequest is floored to { model } from the head column
+    // (its messages live in the not-yet-written inbound_request stage). Partiality
+    // is governed by `state`, not field presence (see assembleFullEntry docstring),
+    // and the read path must not leave the non-optional inboundRequest undefined.
+    expect(pending?.inboundRequest?.model).toBe("m")
+    expect(pending?.inboundRequest?.messages).toBeUndefined()
 
     // Finalize with full data.
     insertCompletedEntry(

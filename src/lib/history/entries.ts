@@ -22,10 +22,15 @@ import {
   type LineageDigest,
 } from "./lineage"
 import { runHistoryWrite } from "./persist-guard"
-import { setReaperTickHook } from "./sqlite/reaper"
+import {
+  //
+  isReaperRunning,
+  setReaperTickHook,
+} from "./sqlite/reaper"
 import {
   //
   extractStagePayloads,
+  STAGE,
   type StagePayload,
 } from "./sqlite/serialize"
 import {
@@ -147,9 +152,11 @@ export function __setTerminalWriterForTests(fn?: TerminalWriter): void {
  *
  * Non-lossy on write failure (the core of the persist-resilience fix): the
  * in-flight copy is the last surviving source of the entry, so it is dropped
- * ONLY after a confirmed write. A transient failure (SQLITE_BUSY) retains the
- * entry for a reaper-tick retry; a permanent failure (or exhausted retries)
- * degrades to a head-only tombstone so the FACT of the request is never lost.
+ * ONLY after a confirmed write. A transient failure (SQLITE_BUSY) with a running
+ * reaper retains the entry for a reaper-tick retry; a permanent failure,
+ * exhausted retries, or no running reaper degrades to a readable tombstone (head
+ * + the small inbound_request/outbound_response stages) so the FACT of the
+ * request is never lost.
  */
 export function finalizeEntry(id: string): void {
   if (!historyState.enabled) return
@@ -184,20 +191,32 @@ export function finalizeEntry(id: string): void {
   // was the silent total-loss (disk write failed AND the only memory copy
   // dropped → the request vanished from history, only a warn left behind).
   const attempts = (finalizeRetries.get(id) ?? 0) + 1
-  if (result.transient && attempts < MAX_FINALIZE_RETRIES) {
-    // Transient (e.g. SQLITE_BUSY under WAL contention): retain the in-flight
-    // copy untouched and let the reaper tick re-attempt once contention clears.
+  if (result.transient && attempts < MAX_FINALIZE_RETRIES && isReaperRunning()) {
+    // Transient (e.g. SQLITE_BUSY under WAL contention) AND a reaper tick will
+    // come to retry: retain the in-flight copy untouched. The `isReaperRunning`
+    // gate is essential — with the reaper disabled (interval 0) or stopped (mid
+    // shutdown) there is no drain, so retaining would leak forever; we tombstone
+    // immediately instead (below).
     finalizeRetries.set(id, attempts)
     return
   }
 
-  // Permanent error, or transient retries exhausted: preserve at least the FACT
-  // of the request as a minimal head-only tombstone (status/error/timing/tokens
-  // survive; the bulky stage blobs degrade), then drop the un-writable in-flight
-  // copy so memory stays bounded.
+  // Permanent error, transient retries exhausted, or no reaper to retry:
+  // preserve the FACT of the request as a degraded tombstone. Write head +
+  // ONLY the small essential stages (inbound_request + outbound_response, both
+  // held in memory) — skipping the bulk (sseEvents / per-attempt request bodies)
+  // that most likely triggered the failure — so the row stays readable
+  // (`assembleFullEntry` rebuilds inboundRequest/outboundResponse) and the
+  // request content + error survive. If even that fails, fall back to a head-only
+  // flip so status/model/error in the head columns still persist (the read path
+  // floors a missing inbound_request stage so it never crashes consumers).
   finalizeRetries.delete(id)
-  const tomb = runHistoryWrite("finalize-tombstone", () => upsertHeadRow(entry, entry.state))
-  if (!tomb.ok) consola.error(`[history] tombstone write also failed; entry ${id} not persisted`)
+  const tombstoneStages = extractStagePayloads(entry).filter((s) => s.stage === STAGE.inboundRequest || s.stage === STAGE.outboundResponse)
+  const tomb = runHistoryWrite("finalize-tombstone", () => upsertHeadRow(entry, entry.state, tombstoneStages))
+  if (!tomb.ok) {
+    const headOnly = runHistoryWrite("finalize-tombstone-head", () => upsertHeadRow(entry, entry.state))
+    if (!headOnly.ok) consola.error(`[history] tombstone write failed entirely; entry ${id} not persisted`)
+  }
   removeInFlight(id)
   publishEntryUpdated(toEntrySummary(entry))
   publishStatsChanged()

@@ -107,6 +107,13 @@ REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedA
 
 > 注：tombstone 计数 `getHistoryPersistErrorStats()` 暂未接入 `/api/status`（避免投机性表面）；需要时由 status 路由读该 getter 即可。
 
+**tombstone 的已知退化**（写不进全量时的可接受降级，非缺陷）：
+
+- tombstone 只写 head + `inbound_request` + `outbound_response` 两个小 stage（保住请求内容 + 失败原因），**跳过** `sse_events`/逐 attempt 请求体等大块——它们正是最可能撑爆全量写的部分，故诊断上游流细节（如逐帧 `sseEvents`）在 tombstone 行不可得。
+- tombstone 走 `upsertHeadRow`，**不重算 session 聚合**（仅 `insertCompletedEntry` 重算）。若该 tombstone 是其 session 最后一个 entry，session 的 request_count/token 统计不含它；若该 session 后续有别的 entry 正常 finalize，`recomputeSession` 会把已是 failed 终态的 tombstone 行纳入、自愈。
+- transient 重试期间崩溃：entry 仍以 eager 写的 `pending` 状态留在库里（finalize 不更新 head status），下次启动 `reclaimOrphanedActiveRows` 标为 `interrupted`——即一个实际 failed 的请求可能最终记为 `interrupted`（失败桶终态，事实不丢但状态语义降级）。
+- 读侧地板：head-only 行（连 tombstone 的 stage 都没写进）经 `deserializeEntry` 把缺失的 `inboundRequest` 兜底为 `{ model }`，保证 `getEntry`/详情/导出消费者不因 `inboundRequest` 为 undefined 崩溃。
+
 ## 表结构（Head 表 + Stage 子表）
 
 SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重数据从单表单 blob 拆为 **head 表 + stage 子表**的 1:N 模型，使 reaper 分桶 / stats 聚合 / 游标分页 / session 重算继续只作用于 head 表 `entries_v2`（每请求恰一行）。

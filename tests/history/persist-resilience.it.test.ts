@@ -15,8 +15,13 @@ import {
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import { getEntryById } from "~/lib/history/sqlite/read"
-import { runReaperTick } from "~/lib/history/sqlite/reaper"
+import {
+  //
+  runReaperTick,
+  stopReaper,
+} from "~/lib/history/sqlite/reaper"
 import { STAGE } from "~/lib/history/sqlite/serialize"
+import { upsertHeadRow } from "~/lib/history/sqlite/write"
 import {
   //
   __setTerminalWriterForTests,
@@ -122,19 +127,57 @@ describe("history persistence resilience", () => {
     markFailed("p1")
 
     // Terminal (full) write fails permanently (e.g. oversized blob) — retrying
-    // is pointless, so the entry degrades to a minimal head-only tombstone.
+    // is pointless, so the entry degrades to a tombstone (head + the small
+    // inbound_request/outbound_response stages, skipping the bulk).
     __setTerminalWriterForTests(() => {
       throw sqliteError("string or blob too big", "SQLITE_TOOBIG")
     })
     finalizeEntry("p1")
     __setTerminalWriterForTests(undefined)
 
-    // In-flight dropped (bounded memory), but the head-only tombstone preserves
-    // the FACT of the failed request (status/model/error) for post-hoc diagnosis.
+    // In-flight dropped (bounded memory), but the tombstone is READABLE and
+    // preserves the FACT: status + model + error all survive for diagnosis.
     expect(getInFlightEntry("p1")).toBeUndefined()
     const row = getEntryById("p1")
     expect(row).toBeDefined()
     expect(row?.state).toBe("failed")
+    // Regression guard (review CRITICAL): a head-only tombstone left
+    // inboundRequest undefined and crashed detail/export consumers. The tombstone
+    // now writes the inbound_request + outbound_response stages, so they read back.
+    expect(row?.inboundRequest?.model).toBe("claude-opus-4-8")
+    expect(row?.outboundResponse?.error).toContain("NGHTTP2_CANCEL")
+  })
+
+  test("with the reaper disabled/stopped, a transient failure tombstones immediately (no in-flight leak)", () => {
+    insertEntry(baseEntry("d1"))
+    markFailed("d1")
+    stopReaper() // no drain will ever come → retaining would leak forever
+
+    __setTerminalWriterForTests(() => {
+      throw sqliteError("database is locked", "SQLITE_BUSY")
+    })
+    finalizeEntry("d1")
+    __setTerminalWriterForTests(undefined)
+
+    // Must NOT be retained in-flight (would leak); degrades straight to tombstone.
+    expect(getInFlightEntry("d1")).toBeUndefined()
+    expect(getEntryById("d1")?.state).toBe("failed")
+  })
+
+  test("a head-only row (no stage rows) reads back without crashing — inboundRequest is floored", () => {
+    // Simulate the worst case: even the tombstone stage write failed, leaving a
+    // head-only row. The read path must floor inboundRequest so consumers
+    // (`entry.inboundRequest.messages`, CSV export) never crash on a partial row.
+    const entry = baseEntry("h1")
+    entry.state = "failed"
+    upsertHeadRow(entry, "failed") // head only, NO stages
+
+    const row = getEntryById("h1")
+    expect(row).toBeDefined()
+    expect(row?.inboundRequest).toBeDefined()
+    expect(row?.inboundRequest?.model).toBe("claude-opus-4-8")
+    // The crash was `entry.inboundRequest.messages` on undefined inboundRequest.
+    expect(() => row?.inboundRequest?.messages?.length).not.toThrow()
   })
 
   test("finalize succeeds normally when the write works (baseline — entry persisted + removed from in-flight)", () => {

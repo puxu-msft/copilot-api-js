@@ -181,6 +181,13 @@ export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry
     state: (row.status as HistoryEntry["state"]) ?? restored.state ?? "completed",
     active: false,
     lastUpdatedAt: row.ended_at ?? row.started_at,
+    // Contract floor: `inboundRequest` is non-optional on HistoryEntry, but a
+    // head-only row (e.g. a degraded tombstone whose inbound_request stage was
+    // never written) has it stripped into an absent stage. Default to a minimal
+    // object so detail/export consumers (`entry.inboundRequest.messages`) never
+    // crash on a partial row — model/error/status/timing still live in head
+    // columns. A real inbound_request stage overrides this in assembleFullEntry.
+    inboundRequest: restored.inboundRequest ?? { model: row.model ?? undefined },
   } as HistoryEntry
 }
 
