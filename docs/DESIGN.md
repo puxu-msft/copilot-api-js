@@ -94,21 +94,22 @@ src/lib/
 ├── history/
 │   ├── store.ts           # Barrel re-export（含前端公开 type API：types + entries + queries + sessions + state + stats + in-flight）
 │   ├── types.ts           # 类型定义（HistoryEntry、ContentBlock、Session、HistoryStats 等）
-│   ├── entries.ts         # 条目 CRUD（insertEntry、updateEntry、finalizeEntry、clearHistory）+ 增量持久化（persistEntryEager/Status/Stages）
+│   ├── entries.ts         # 条目 CRUD（insertEntry、updateEntry、finalizeEntry、clearHistory）+ 增量持久化（persistEntryEager/Status/Stages，均经 persist-guard 守卫）+ finalize 无损（写成功才 removeInFlight；transient 失败保留 in-flight 待 reaper 重试，permanent/重试耗尽降级 head-only tombstone 保住失败事实）+ retryPendingFinalizations 注册为 reaper tick hook
+│   ├── persist-guard.ts   # 持久化写守卫 runHistoryWrite：把每次 SQLite 写包成不抛错但分类（transient: BUSY/LOCKED/IOERR vs permanent）+ ERROR 日志（非 warn）+ 按 stage:class 计数（getHistoryPersistErrorStats），取代旧的盲 try/catch→warn
 │   ├── queries.ts         # 查询（getEntry、getHistory、getHistorySummaries、getSummary）
 │   ├── sessions.ts        # Session 聚合（getSession、getSessions、getSessionEntries 等）
 │   ├── stats.ts           # 聚合统计（getStats）
 │   ├── state.ts           # 模块级状态（historyState、initHistory、shutdownHistory）
 │   ├── in-flight.ts       # 进行中请求的内存映射（仅用于 WebSocket 实时推送）
 │   ├── sqlite/
-│   │   ├── connection.ts  # SQLite 连接管理（bun:sqlite）+ 启动期孤儿回收（pending→interrupted）+ 启动期 VACUUM 空间回收（auto_vacuum=INCREMENTAL 须早于 WAL；freelist≥25% 且≥64MB 触发全量 VACUUM，全程 try/catch 不阻断启动）
+│   │   ├── connection.ts  # SQLite 连接管理（bun:sqlite）+ 启动期孤儿回收（pending→interrupted）+ 启动期 VACUUM 空间回收（auto_vacuum=INCREMENTAL 须早于 WAL；freelist≥25% 且≥64MB 触发全量 VACUUM，全程 try/catch 不阻断启动）+ checkpointWal(PASSIVE) 供 reaper tick 周期收回 WAL（控 -wal 体积、缩短锁窗口、降 SQLITE_BUSY）
 │   │   ├── compression.ts # blob 存储 codec：写 zstd L3（比 gzip 砍半），读按 magic bytes 自动判别 gzip(legacy,1f8b)/zstd(28b52ffd)，既有 gzip 行透明可读零迁移
 │   │   ├── schema.ts      # 表 DDL 与索引定义（权威 schema：entries_v2 head 表 + entry_stages 子表）
 │   │   ├── serialize.ts   # head-meta/stage 拆分序列化 + assembleFullEntry（head + stage 行重组）+ request_group 合并帧 dedup（同 entry 的 inbound/effective/outbound 请求体 >90% 冗余，finalize 时打包进单个 zstd 帧；读侧 decodeStageRows 透明展开，等价个体行）
-│   │   ├── write.ts       # 写入操作（upsertHeadRow ON CONFLICT / upsertStageRow / insertCompletedEntry 终态，finalize 经 partitionStagesForWrite 打包请求组）
+│   │   ├── write.ts       # 写入操作（upsertHeadRow ON CONFLICT，可同事务带 stages / upsertStageRow / insertCompletedEntry 终态 head-first 原子写，finalize 经 partitionStagesForWrite 打包请求组）
 │   │   ├── read.ts        # 查询操作（分页、过滤、head+stage 批量组装防 N+1）
 │   │   ├── stats.ts       # 聚合统计查询（排除活跃行）
-│   │   └── reaper.ts      # 定期清理（按状态分桶维持 success/failure 行数上限 + 运行期 stale-pending 回收 + incremental_vacuum 持续还空间给 OS）
+│   │   └── reaper.ts      # 定期清理 runReaperTick（drain 延后的 finalize[setReaperTickHook] → 按状态分桶维持 success/failure 行数上限 → 运行期 stale-pending 回收 → incremental_vacuum 还空间给 OS → wal_checkpoint(PASSIVE) 控 WAL 体积）
 │   └── index.ts           # Barrel re-export
 ├── observability/        # 请求生命周期 + 系统日志的 event-bus + sinks（见 docs/rfc/observability-rewrite.md）
 │   ├── bus.ts            # publish/subscribe 总线（命名空间 scoped publisher，同步 fan-out）

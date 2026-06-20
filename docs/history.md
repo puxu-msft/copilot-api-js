@@ -56,6 +56,8 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 `src/lib/history/sqlite/reaper.ts` 定期清理 `entries_v2`，按**状态分桶**独立维持上限——成功历史与失败历史互不挤占。
 
+每个 reaper tick 由 `runReaperTick` 编排，顺序为：**drain 延后的 finalize**（`tickHook` → `retryPendingFinalizations`，让 transient 失败保留的 entry 重试落盘，先于淘汰以便本 tick 计入）→ stale 活跃行回收 → 按状态分桶淘汰 → `incremental_vacuum` 还空间给 OS → `wal_checkpoint(PASSIVE)` 收回 WAL（控 `-wal` 体积、缩短锁窗口、降低 `SQLITE_BUSY`）。`runReaperTick` 单独导出便于测试，无需等定时器。
+
 - `history.success_limit` — 成功（`completed`）条目上限（默认 50，0 = 无限制）
 - `history.failure_limit` — 失败诊断条目上限（默认 200，0 = 无限制）。`failed`/`aborted`/`interrupted` 三种终态进入此桶
 - `history.reaper_interval` — 定期清理秒数（默认 600 = 10 分钟，0 = 禁用）
@@ -89,6 +91,21 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 **双源一致性契约**：active 请求同时有 in-flight 内存对象与 SQLite 的 head + 部分 stage 行。读取优先 in-flight（`getEntry = getInFlight(id) ?? getEntryById(id)`），故 active 请求恒读内存全量、不读半截 SQLite。SQLite 仅作持久化、WS 仅作实时，二者 schema 不同、互不校验。崩溃后 in-flight 消失，SQLite 半截行经回收为 `interrupted` 才被读取。
 
 REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedAt` DESC 排序，按 id 去重）。
+
+## 持久化韧性（写失败不静默丢数据）
+
+每一次 history SQLite 写都经 `src/lib/history/persist-guard.ts` 的 `runHistoryWrite` 守卫，取代历史上"裸 `try/catch` → `consola.warn` → 继续"的盲吞模式（那种模式让真实且反复发生的写失败——`FOREIGN KEY constraint failed`、WAL 争用下的 `SQLITE_BUSY`、序列化 bug、磁盘满——全部降级成一句 warn 且无人知晓）。守卫做三件事：把错误分类为 **transient**（`SQLITE_BUSY`/`LOCKED`/`IOERR`，稍后重试可成）vs **permanent**（约束/`TOOBIG`/序列化）；以 **ERROR**（非 warn）日志暴露，进而经 file sink / console / `system.log` 总线可见；按 `stage:class` 计数（`getHistoryPersistErrorStats()`，可查可告警）。
+
+**增量写（eager head / head-status / stage）** 是尽力而为的优化（finalize 才是权威写），失败时仅记 ERROR + 计数，不重试——但 `persistEntryStages` 现为 **head-first 原子写**（同事务内先 upsert head 再写 stages），从根上消除了"stage 写时 head 不存在"的 FK 失败类。
+
+**finalize 无损**：in-flight 内存副本是 entry 的最后存活源，故**仅在确认写成功后才 `removeInFlight`**。终态写失败时：
+
+- **transient** → 保留 in-flight 不动，由 reaper tick 的 `retryPendingFinalizations`（经 `setReaperTickHook` 注册）在 WAL 争用消退后重试，上限 `MAX_FINALIZE_RETRIES`（5）次；
+- **permanent / 重试耗尽** → 降级写一行 **head-only tombstone**（`upsertHeadRow`，保住失败事实：status/model/error/timing/token；只丢体积大的 stage blob），再丢内存副本以 bound memory。
+
+这条链直接修复了一类隐性数据丢失：旧 `finalizeEntry` 把 `insertCompletedEntry` 的抛错吞成 warn 后**无条件 `removeInFlight`**——终态写一旦失败，entry 既没上盘又从内存唯一副本删除 = 彻底蒸发，而越大的 entry（在 WAL 争用下）越易触发。失败请求连同其 `sseEvents` 可靠落盘，是事后从 history 诊断上游怪象（如 `NGHTTP2_CANCEL` 流中断）的前提。
+
+> 注：tombstone 计数 `getHistoryPersistErrorStats()` 暂未接入 `/api/status`（避免投机性表面）；需要时由 status 路由读该 getter 即可。
 
 ## 表结构（Head 表 + Stage 子表）
 
