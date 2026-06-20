@@ -1,10 +1,10 @@
 /**
  * v4 driver path for the Google Gemini endpoints (P2.5).
  *
- * The route switches to these behind the `gemini` feature flag (driver-flags);
- * the legacy `handleGenerateContent` / `handleStreamGenerateContent` stay in use
- * when the flag is off. `countTokens` is NOT a pipeline path (local tokenizer) —
- * it stays on the legacy handler.
+ * The Gemini route dispatches generateContent / streamGenerateContent here (the
+ * v4 driver path — the only path since P3.3 removed the legacy handlers).
+ * `countTokens` is NOT a pipeline path (local tokenizer) — it stays on the
+ * sibling `handler.ts`.
  *
  * Gemini is a thin translation layer: the route translates Gemini→CC + injects
  * the system-prompt, the {@link createOpenAiGeminiCodec} delegates the CC-payload

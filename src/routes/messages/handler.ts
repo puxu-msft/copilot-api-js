@@ -1,7 +1,11 @@
 /**
- * Anthropic /v1/messages route handler.
- * Parses payload, resolves model, processes system prompt,
- * and orchestrates completion (streaming / non-streaming).
+ * Anthropic direct-completion path (shared with the web_search double-hop).
+ *
+ * The /v1/messages route runs the v4 driver (`handler-v4.ts`); this file no
+ * longer owns a route. It retains `handleDirectAnthropicCompletion` + its subtree
+ * (sanitize → pipeline → dispatch → streaming/non-streaming finishing), which the
+ * web_search orchestrator (`web-search-handler.ts`, a deferred P2.6 item that
+ * bypasses the driver) invokes for the main-model second hop.
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -19,11 +23,6 @@ import type {
   HeadersCapture,
   RequestContext,
 } from "~/lib/context/request"
-import type {
-  //
-  MessageContent,
-  ToolDefinition,
-} from "~/lib/history"
 import type {
   //
   PreprocessInfo,
@@ -48,7 +47,6 @@ import {
   createToolInputStreamDecoder,
   decodeToolInputBlocksInResponse,
 } from "~/lib/anthropic/decode-tool-input"
-import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import {
   //
@@ -64,11 +62,9 @@ import {
 import { runAnthropicRequestRewrites } from "~/lib/anthropic/request-rewrites"
 import {
   //
-  preprocessAnthropicMessages,
   type SanitizationStats,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
-import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import {
   //
   createServerToolBlockFilter,
@@ -81,17 +77,6 @@ import {
   processAnthropicStream,
 } from "~/lib/anthropic/stream"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import {
-  //
-  handleWarmupRequest,
-  isWarmupRequest,
-} from "~/lib/anthropic/warmup"
-import { payloadHasWebSearch } from "~/lib/anthropic/web-search"
-import { getRequestContextManager } from "~/lib/context/manager"
-import { HTTPError } from "~/lib/error"
-import { captureInboundHeaders } from "~/lib/fetch-utils"
-import { getSessionIdFromHeaders } from "~/lib/history/store"
-import { resolveModelName } from "~/lib/models/resolver"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -101,7 +86,6 @@ import {
 } from "~/lib/request"
 import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { state } from "~/lib/state"
-import { processAnthropicSystem } from "~/lib/system-prompt"
 
 import {
   //
@@ -113,7 +97,6 @@ import {
   startForwardedSseHeartbeat,
   type StreamPumpState,
 } from "./streaming-pump"
-import { handleWebSearchCompletion } from "./web-search-handler"
 
 // Re-export the forwarded-SSE heartbeat starter so consumers that import it via
 // this handler module (web-search-handler.ts, the unit tests) keep working after
@@ -129,115 +112,6 @@ export { startForwardedSseHeartbeat } from "./streaming-pump"
  * Parses payload, resolves model name, processes system prompt,
  * creates RequestContext, and routes to direct Anthropic API.
  */
-export async function handleMessages(c: Context) {
-  const anthropicPayload = await c.req.json<MessagesPayload>()
-
-  // Warmup interception — before any heavy processing (model resolution, context creation, etc.)
-  if (state.warmupPolicy !== "allow" && isWarmupRequest(anthropicPayload)) {
-    return handleWarmupRequest(c, anthropicPayload, state.warmupPolicy)
-  }
-
-  // Snapshot the inbound payload BEFORE any mutation (model resolution,
-  // system processing, message preprocessing). This is what we record as
-  // the request's "original" — handlers below intentionally rewrite
-  // anthropicPayload in place, so without this snapshot the history view
-  // would show a half-processed payload labeled as the user's raw input,
-  // and auto-truncate's "re-truncate from original" path would compound
-  // edits that already happened on the wire.
-  const originalSnapshot = structuredClone(anthropicPayload)
-
-  // Resolve model name aliases and date-suffixed versions
-  // e.g., "haiku" → "claude-haiku-4.5", "claude-sonnet-4-20250514" → "claude-sonnet-4"
-  const clientModel = anthropicPayload.model
-  const resolvedModel = resolveModelName(clientModel)
-  if (resolvedModel !== clientModel) {
-    consola.debug(`Model name resolved: ${clientModel} → ${resolvedModel}`)
-    anthropicPayload.model = resolvedModel
-  }
-  const clientModelName = clientModel !== resolvedModel ? clientModel : undefined
-
-  // System prompt collection + config-based overrides (always active)
-  if (anthropicPayload.system) {
-    anthropicPayload.system = await processAnthropicSystem(anthropicPayload.system, anthropicPayload.model)
-  }
-
-  // Get tracking ID
-
-  // Route validation BEFORE creating RequestContext — prevents dangling history entries
-  // when routing fails (reqCtx.create() triggers history insertion, and a subsequent throw
-  // without reqCtx.fail() would leave an entry with no response)
-  const routingDecision = supportsDirectAnthropicApi(anthropicPayload.model)
-  if (!routingDecision.supported) {
-    const msg = `Model "${anthropicPayload.model}" does not support /v1/messages: ${routingDecision.reason}`
-    throw new HTTPError(msg, 400, msg)
-  }
-  consola.debug(`[AnthropicRouting] ${anthropicPayload.model}: ${routingDecision.reason}`)
-
-  // Create request context — this triggers the "created" event → history consumer inserts entry
-  const manager = getRequestContextManager()
-  const contentLengthHeader = c.req.header("content-length")
-  const reqBodySize = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : undefined
-  const reqCtx = manager.create({
-    endpoint: "anthropic-messages",
-    sessionId: getSessionIdFromHeaders(c.req.raw.headers),
-    rawPath: c.req.path,
-    method: c.req.method,
-    path: c.req.path,
-    ...(reqBodySize !== undefined && Number.isFinite(reqBodySize) && { requestBodySize: reqBodySize }),
-  })
-  // Expose ctx so observabilityMiddleware can fail-safe finalize on
-  // uncaught throws and completeFromHttpStatus on non-streaming returns.
-  c.set("requestContext", reqCtx)
-  reqCtx.setOriginalRequest({
-    // Use client's original model name (before resolution/overrides)
-    model: clientModelName ?? originalSnapshot.model,
-    messages: originalSnapshot.messages as unknown as Array<MessageContent>,
-    stream: originalSnapshot.stream ?? false,
-    tools: originalSnapshot.tools as Array<ToolDefinition> | undefined,
-    system: originalSnapshot.system,
-    payload: originalSnapshot,
-  })
-  reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
-
-  // Build the per-request tool-name sanitization mapper from the client's
-  // ORIGINAL custom tools — before preprocessTools injects stubs/tool_search,
-  // so injected stubs and server tools are never renamed. No-op (null) when the
-  // feature is disabled or no name needs rewriting. Response handlers read this
-  // back from reqCtx to restore upstream names to the client's originals.
-  const selectedModelForMapper = state.modelIndex.get(anthropicPayload.model)
-  reqCtx.setToolNameMapper(buildAnthropicToolNameMapper(anthropicPayload.tools, anthropicPayload.model, selectedModelForMapper?.vendor))
-
-  // Publish model resolution to the observability bus. Replaces the legacy
-  // `tuiLogger.updateRequest({ model, clientModel })` direct call — sinks
-  // (ConsoleSink / WsSink) receive `request.model_resolved` via the bus and
-  // update their renderings. The legacy tuiLogger track is still kept by
-  // main.ts:initConsolaReporter for now; commit 4 deletes it.
-  reqCtx.setResolvedModel({
-    resolved: anthropicPayload.model,
-    ...(clientModelName !== undefined && { client: clientModelName }),
-  })
-
-  // Phase 1: One-time preprocessing (idempotent, before routing)
-  const preprocessed = preprocessAnthropicMessages(anthropicPayload.messages)
-  anthropicPayload.messages = preprocessed.messages
-  const preprocessInfo = {
-    strippedReadTagCount: preprocessed.strippedReadTagCount,
-    dedupedToolCallCount: preprocessed.dedupedToolCallCount,
-  }
-
-  // Web search double-hop interception — only when enabled AND the request
-  // carries a native web_search server tool (or Claude Code's WebSearch). When
-  // disabled this is a single boolean check (fully short-circuited, zero behavior
-  // change). The orchestrator runs two non-streaming model hops + a real search
-  // and emits a synthesized response with visible server_tool_use + result blocks.
-  if (state.webSearchEnabled && payloadHasWebSearch(anthropicPayload)) {
-    consola.debug("[WebSearch] Intercepting request with native web_search tool")
-    const selectedModel = state.modelIndex.get(anthropicPayload.model)
-    return handleWebSearchCompletion(c, anthropicPayload, reqCtx, selectedModel, preprocessInfo)
-  }
-
-  return handleDirectAnthropicCompletion(c, anthropicPayload, reqCtx, preprocessInfo)
-}
 
 // ============================================================================
 // Direct Anthropic completion orchestration

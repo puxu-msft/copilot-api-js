@@ -20,11 +20,6 @@
  * betas in `prepareWire`) and the strategies (the unsupported-beta strategy reads
  * the candidates). The factory takes it as a parameter.
  *
- * **Scope (C2):** this commit builds + unit-tests the codec and strategies; it is
- * NOT wired into any route (the legacy `handleMessages` stays in use; C3 switches
- * the route to the driver behind the `anthropic` flag, default OFF). The invariant
- * is "codec/strategy unit tests green + full suite unaffected".
- *
  * Mirrors the deferred markers of openai-cc (P2.2-D*): system-prompt injection is
  * a route pre-step (parse is sync); `formatError` gets only the classified kind.
  */
@@ -233,8 +228,8 @@ interface ParseAnthropicResult {
 /**
  * S1: inbound HTTP → envelope. **Synchronous** (FormatCodec.parse contract).
  *
- * Reproduces the request-side setup of the legacy `handleMessages` (ctx create →
- * setOriginalRequest → tool-name mapper → setResolvedModel) + the
+ * Reproduces the request-side ctx setup (ctx create → setOriginalRequest →
+ * tool-name mapper → setResolvedModel) + the
  * `runInitialSanitizationAndRecord` (sanitize chain + initial pipeline-info +
  * thinking feature). The route pre-step has already done warmup / model resolve /
  * async system-prompt / message-level `preprocessAnthropicMessages` / web_search —

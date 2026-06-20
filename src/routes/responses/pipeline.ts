@@ -27,8 +27,6 @@ import {
   //
   extractInputItems,
 } from "~/lib/openai/responses-conversion"
-import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
-import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 
 // Re-export so existing import sites (`./pipeline`) keep working without churn.
 
@@ -75,8 +73,5 @@ export function createResponsesAdapter(
 }
 
 /** Create the retry strategies for Responses API pipeline execution */
-export function createResponsesStrategies() {
-  return [createNetworkRetryStrategy<ResponsesPayload>(), createTokenRefreshStrategy<ResponsesPayload>()]
-}
 
 export { extractInputItems, normalizeCallIds } from "~/lib/openai/responses-conversion"

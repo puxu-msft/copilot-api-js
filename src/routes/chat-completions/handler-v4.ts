@@ -1,8 +1,8 @@
 /**
  * v4 driver path for Chat Completions (P2.3).
  *
- * The route switches to this behind the `openai-cc` feature flag (driver-flags);
- * the legacy `handleChatCompletion` stays in use when the flag is off. Builds a
+ * The Chat Completions route dispatches here (the v4 driver path — the only path
+ * since P3.3 removed the legacy `handleChatCompletion`). Builds a
  * per-request driver (codec + HTTP transport + env strategies) and drives the
  * seven stages, keeping behavior equivalent to the legacy handler.
  *

@@ -10,15 +10,9 @@
 
 import { Hono } from "hono"
 
-import { isV4DriverEnabled } from "~/lib/codec/driver-flags"
 import { forwardError } from "~/lib/error"
 
-import {
-  //
-  handleCountTokens,
-  handleGenerateContent,
-  handleStreamGenerateContent,
-} from "./handler"
+import { handleCountTokens } from "./handler"
 import {
   //
   handleGenerateContentV4,
@@ -52,10 +46,10 @@ geminiRoutes.post("/models/:modelWithMethod", async (c) => {
     const method = modelWithMethod.slice(colon + 1)
 
     if (method === "generateContent") {
-      return isV4DriverEnabled("gemini") ? await handleGenerateContentV4(c, modelId) : await handleGenerateContent(c, modelId)
+      return await handleGenerateContentV4(c, modelId)
     }
     if (method === "streamGenerateContent") {
-      return isV4DriverEnabled("gemini") ? await handleStreamGenerateContentV4(c, modelId) : await handleStreamGenerateContent(c, modelId)
+      return await handleStreamGenerateContentV4(c, modelId)
     }
     if (method === "countTokens") {
       return await handleCountTokens(c, modelId)

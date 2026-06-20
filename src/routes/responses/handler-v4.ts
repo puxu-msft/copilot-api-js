@@ -1,11 +1,9 @@
 /**
  * v4 driver path for the OpenAI Responses API (P2.4).
  *
- * The route switches to this behind the `openai-responses` feature flag
- * (driver-flags); the legacy `handleResponses` stays in use when the flag is off.
- * Builds a per-request driver (codec + WS-capable Responses transport + env
- * strategies) and drives the seven stages, keeping behavior equivalent to the
- * legacy direct + fallback handlers.
+ * The Responses route dispatches here (the v4 driver path — the only path since
+ * P3.3 removed the legacy `handleResponses`). Builds a per-request driver (codec
+ * + WS-capable Responses transport + env strategies) and drives the seven stages.
  *
  * P2-era division of labor (sampling sinks to the driver in P3.2, mirroring CC):
  * this route still owns the response-side sampling (forwarded SSE events +

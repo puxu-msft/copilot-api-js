@@ -14,9 +14,9 @@
 import { Hono } from "hono"
 
 import { forwardError } from "~/lib/error"
-import { handleChatCompletion } from "~/routes/chat-completions/handler"
+import { handleChatCompletionV4 } from "~/routes/chat-completions/handler-v4"
 import { handleEmbeddings } from "~/routes/embeddings/route"
-import { handleResponses } from "~/routes/responses/handler"
+import { handleResponsesV4 } from "~/routes/responses/handler-v4"
 
 export const azureDeploymentRoutes = new Hono()
 
@@ -57,7 +57,7 @@ async function injectDeploymentModel(c: any): Promise<void> {
 azureDeploymentRoutes.post("/:deployment/chat/completions", async (c) => {
   try {
     await injectDeploymentModel(c)
-    return await handleChatCompletion(c)
+    return await handleChatCompletionV4(c)
   } catch (error) {
     return forwardError(c, error, "openai")
   }
@@ -83,7 +83,7 @@ azureDeploymentRoutes.post("/:deployment/embeddings", async (c) => {
 azureDeploymentRoutes.post("/:deployment/responses", async (c) => {
   try {
     await injectDeploymentModel(c)
-    return await handleResponses(c)
+    return await handleResponsesV4(c)
   } catch (error) {
     return forwardError(c, error, "openai")
   }

@@ -1,13 +1,14 @@
 /**
  * v4 driver path for the Anthropic /v1/messages endpoint (P2.6 / C3b).
  *
- * The route switches to this behind the `anthropic` feature flag (driver-flags);
- * the legacy `handleMessages` stays in use when the flag is off (default). This is
- * the "bypass-direct" format: the codec's translate/render are identity, so the
- * driver streams the upstream Anthropic SSE frames through byte-for-byte and this
- * handler reuses the legacy byte-critical pump primitives (streaming-pump.ts) +
- * the legacy non-streaming finishing — only the stream SOURCE changes (from
- * `processAnthropicStream` to `driver.runResponse`, with parse+accumulate+break
+ * The Anthropic route dispatches here (the v4 driver path — the only path since
+ * P3.3 removed the legacy `handleMessages`). This is the "bypass-direct" format:
+ * the codec's translate/render are identity, so the driver streams the upstream
+ * Anthropic SSE frames through byte-for-byte and this handler reuses the
+ * byte-critical pump primitives (streaming-pump.ts, shared with the retained
+ * web_search direct-completion path) + the non-streaming finishing — only the
+ * stream SOURCE changes (from `processAnthropicStream` to `driver.runResponse`,
+ * with parse+accumulate+break
  * inlined; the idle/shutdown/client-abort guard is owned by the transport).
  *
  * Two route pre-steps stay on the legacy path by design (RFC §1 / §12.7):

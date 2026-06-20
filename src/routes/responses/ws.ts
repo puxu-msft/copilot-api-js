@@ -28,28 +28,22 @@ import type {
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
-import { isV4DriverEnabled } from "~/lib/codec/driver-flags"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses-strategies"
-import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   registerResponseSession,
-  resolveResponseSessionId,
 } from "~/lib/history/store"
 import {
   //
   ENDPOINT,
-  isResponsesSupported,
 } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
-import { responsesInputToMessages } from "~/lib/openai/responses-conversion"
 import {
   //
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
-import { stripImageGenerationTool } from "~/lib/openai/responses-tool-filter"
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
@@ -62,25 +56,11 @@ import {
   restoreResponsesEventToolNames,
 } from "~/lib/openai/tool-name-sanitize"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { executeRequestPipeline } from "~/lib/request/pipeline"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { settleStreamingFailure } from "~/lib/request/stream-settle"
-import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import {
-  //
-  guardSseIterable,
-  type SseFrame,
-} from "~/lib/stream"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
-
-import {
-  //
-  createResponsesAdapter,
-  createResponsesStrategies,
-  normalizeCallIds,
-} from "./pipeline"
 
 // ============================================================================
 // Constants
@@ -197,196 +177,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   const clientAbort = new AbortController()
   wsClientAborts.set(ws, clientAbort)
 
-  // v4 driver path (behind the `openai-responses` flag): reuse the same driver as
-  // the HTTP handler (runRequest/runResponse), with WS frame reads/writes
-  // replacing streamSSE. Unlike the legacy WS path (direct /responses only), the
-  // driver also supports the Responses→CC fallback — so CC-only / Google models
-  // now work over WS via fallback (a consistency improvement; legacy WS sent them
-  // to a broken /responses upstream or rejected them).
-  if (isV4DriverEnabled("openai-responses")) {
-    return handleResponseCreateV4(ws, rawPayload, clientAbort)
-  }
-
-  let payload = rawPayload
-
-  const requestedModel = payload.model
-  // Snapshot BEFORE any mutation so history "original" reflects the client's
-  // raw frame, not the half-processed in-flight version (model resolution,
-  // instructions processing, call_id normalization all mutate payload below).
-  const originalSnapshot = structuredClone(payload)
-
-  // Strip the image_generation builtin tool when configured — parity with the
-  // HTTP handler (Copilot upstream rejects it, failing the whole request).
-  // Runs AFTER the snapshot so history retains evidence the client sent it
-  // (CLAUDE.md 原则7: 不主动丢弃任何可能有诊断价值的信息).
-  stripImageGenerationTool(payload)
-
-  const resolvedModel = resolveModelName(requestedModel)
-  payload.model = resolvedModel
-
-  // Check endpoint support
-  const selectedModel = state.modelIndex.get(resolvedModel)
-  if (!isResponsesSupported(selectedModel)) {
-    sendErrorAndClose(ws, `Model "${resolvedModel}" does not support the Responses API`, "invalid_request_error")
-    wsClientAborts.delete(ws)
-    return
-  }
-
-  // Process system prompt (overrides, prepend, append from config)
-  payload.instructions = await processResponsesInstructions(payload.instructions, payload.model)
-
-  // Normalize call IDs before pipeline (call_ → fc_)
-  if (state.normalizeResponsesCallIds) {
-    payload = normalizeCallIds(payload)
-  }
-
-  // Create request context for tracking. Per RFC §2.9 the WS entry point
-  // passes method="WS" so sinks render the activity line consistently
-  // with HTTP routes. ConsoleSink reads ctx via the bus `request.created`
-  // event — no separate tuiLogger entry needed (commit 4 deleted lib/tui).
-  const reqCtx = getRequestContextManager().create({
-    endpoint: "openai-responses",
-    sessionId: resolveResponseSessionId(payload.previous_response_id),
-    rawPath: "/v1/responses",
-    method: "WS",
-    path: "/v1/responses",
-  })
-
-  reqCtx.setOriginalRequest({
-    model: requestedModel,
-    messages: responsesInputToMessages(originalSnapshot.input),
-    stream: true,
-    tools: originalSnapshot.tools,
-    system: originalSnapshot.instructions ?? undefined,
-    payload: originalSnapshot,
-  })
-  // WS transport: no inbound HTTP headers to capture
-
-  // Publish resolved model to the observability bus. Always emit so the
-  // snapshot's resolvedModel is populated for sinks; include clientModel
-  // only on a genuine remap (avoids unnecessary `requested → resolved`
-  // arrow when they're the same).
-  reqCtx.setResolvedModel({
-    resolved: resolvedModel,
-    ...(requestedModel !== resolvedModel && { client: requestedModel }),
-  })
-
-  // Build pipeline adapter and strategies (shared with HTTP handler)
-  const headersCapture: HeadersCapture = {}
-  // `clientAbort` was created + registered in `wsClientAborts` at the top of
-  // this function — see the comment there. We reuse it here when wiring the
-  // adapter so the upstream WS connection sees the same controller the
-  // socket-level handlers (onClose / onError) will fire.
-  const adapter = createResponsesAdapter(
-    selectedModel,
-    headersCapture,
-    (wireRequest) => {
-      reqCtx.setAttemptWireRequest(wireRequest)
-    },
-    (transport) => {
-      reqCtx.setAttemptTransport(transport)
-    },
-    undefined,
-    clientAbort.signal,
-  )
-  const strategies = createResponsesStrategies()
-
-  // Forwarded frames — what the client actually received over the WebSocket.
-  // Hoisted above the try so the catch can still record the partial timeline.
-  const forwardedSseEvents: Array<SseEventRecord> = []
-  const streamStartMs = Date.now()
-  // Hoisted so the catch can read partial usage for an aborted record.
-  const acc = createResponsesStreamAccumulator()
-
-  try {
-    // Execute pipeline (model resolution, token refresh, rate limiting)
-    const pipelineResult = await executeRequestPipeline({
-      adapter,
-      strategies,
-      payload,
-      originalPayload: payload,
-      model: selectedModel,
-      maxRetries: 1,
-      requestContext: reqCtx,
-    })
-
-    // Capture HTTP headers from the final attempt for history recording
-    reqCtx.setHttpHeaders(headersCapture)
-
-    const response = pipelineResult.response
-
-    // Stream SSE events → WebSocket JSON frames. `guardSseIterable` owns the
-    // stable-signal abort race (so a Phase 3 shutdown is observed even while
-    // blocked on a stalled upstream) and the shutdown-vs-client distinction: a
-    // shutdown throws StreamShutdownError (→ catch → sendErrorAndClose with a
-    // retryable frame), while a client disconnect ends the loop cleanly.
-    const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
-    const idTracker = state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
-    let eventsReceived = 0
-
-    const guarded = guardSseIterable(response as AsyncIterable<SseFrame>, {
-      idleTimeoutMs,
-      shutdownSignal: getShutdownSignal(),
-      clientSignal: clientAbort.signal,
-    })
-
-    for await (const sseEvent of guarded) {
-      if (!sseEvent.data || sseEvent.data === "[DONE]") continue
-
-      try {
-        // Fix inconsistent IDs from upstream before processing
-        const eventData = idTracker ? fixStreamEventIds(sseEvent.data, sseEvent.event, idTracker) : sseEvent.data
-        const parsed = JSON.parse(eventData) as ResponsesStreamEvent
-        accumulateResponsesStreamEvent(parsed, acc)
-
-        // Forward (possibly ID-corrected) event as WebSocket JSON frame
-        ws.send(eventData)
-        forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: parsed.type, raw: eventData })
-        eventsReceived++
-
-        reqCtx.recordStreamProgress({ eventsIn: eventsReceived })
-
-        // Check for terminal events
-        if (TERMINAL_EVENTS.has(parsed.type)) break
-      } catch {
-        consola.debug("[WS] Skipping unparseable SSE event")
-      }
-    }
-
-    // Record to history
-    if (!reqCtx.sessionId && acc.responseId) {
-      reqCtx.setSessionId(acc.responseId)
-    }
-    registerResponseSession(acc.responseId, reqCtx.sessionId)
-    const responseData = buildResponsesResponseData(acc, resolvedModel)
-    reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    reqCtx.complete(responseData)
-
-    // Close WebSocket unless the client has opted into long-lived sessions.
-    // When kept open, the client may send another `response.create` on the same
-    // socket; concurrency is rejected by the per-socket in-flight lock below.
-    if (!state.clientWebsocketKeepOpen) {
-      ws.close(1000, "done")
-    }
-  } catch (error) {
-    reqCtx.setHttpHeaders(headersCapture)
-    reqCtx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-
-    // Uniform terminal settle: client disconnect → `aborted` (return, don't
-    // send/close the gone socket); else → `fail()` and send an error frame.
-    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } }
-    if (settleStreamingFailure({ reqCtx, error, model: resolvedModel, partial })) {
-      consola.debug("[WS] Client disconnected mid-stream — recording aborted")
-      return
-    }
-
-    const message = error instanceof Error ? error.message : String(error)
-    consola.error(`[WS] Responses API error: ${message}`)
-    // Map stream lifecycle errors to the OpenAI error type (idle-timeout →
-    // timeout_error, shutdown/other → server_error) for parity with the HTTP
-    // Responses path; non-stream errors fall through to server_error.
-    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
-  }
+  return handleResponseCreateV4(ws, rawPayload, clientAbort)
 }
 
 // ============================================================================
