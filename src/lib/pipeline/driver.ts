@@ -14,6 +14,8 @@
 
 import consola from "consola"
 
+import type { SseEventRecord } from "~/lib/history"
+
 import { classifyError } from "~/lib/error"
 
 import type { RequestEnvelope } from "./envelope"
@@ -241,7 +243,28 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
   const rewrites = assembleResponseRewrites(env, deps.responseRewrites ?? RESPONSE_REWRITES)
   const states: Array<RewriteState> = rewrites.map((r) => r.createState?.() ?? {})
 
+  // S4-exit sampling (P3.2b, envelope-driver.md §4): record each upstream-ORIGINAL
+  // frame (raw verbatim) BEFORE the rewrite/render chain. The `outboundResponse`
+  // track must capture the upstream bytes PRE-translation — CC via-responses /
+  // Responses fallback `renderResponse` is NOT identity (only Anthropic/direct
+  // is), so the yield point is the wrong place for the upstream track. Universal
+  // across every format that drives runResponse (CC / Responses / Gemini / Anthropic
+  // HTTP + client WS), closing the "sseEvents recorded only on Anthropic" gap (§4
+  // "关键改进", D8 原始记录完整性). `frame.event` is the SSE event type — for
+  // Anthropic it equals the `parsed.type` the legacy pump recorded (Anthropic always
+  // sends an event line), so this stays byte-equivalent there; the fallback only
+  // applies to formats whose chunks carry no event line (CC).
+  //
+  // Pushed per-frame and aliased onto ctx on the first frame (setSseEvents stores
+  // the array reference): a consumer that breaks early (the Anthropic pump breaks
+  // on [DONE]/error) abandons this generator, so code AFTER the loop never runs —
+  // but the aliased array already holds every frame consumed up to the break.
+  const upstreamSse: Array<SseEventRecord> = []
+  const streamStartMs = Date.now()
+
   for await (const frame of upstream.frames) {
+    upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
+    if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
     // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
     for (const rewritten of passThrough([frame], rewrites, states, 0)) {
       // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
@@ -260,7 +283,14 @@ function* renderFrames(deps: DriverDeps, frame: UpstreamFrame, env: RequestEnvel
   const rendered = deps.codec.renderResponse(frame, env)
   const frames = Array.isArray(rendered) ? rendered : [rendered]
   for (const out of frames) {
-    // P3.2 wires `request.forwarded_frame`{frame} sampling here.
+    // Forwarded-frame (`inboundResponse`) sampling stays handler-side (P3.2b /
+    // Option B): the TRUE client bytes are produced where the handler transforms
+    // (tool-name restore, fix-stream-ids, CC→Gemini whole-stream translation) and
+    // injects (verbose marker, via-responses [DONE], idle heartbeat). Two of those
+    // — Gemini's whole-stream translator (P2.5-D1) and Anthropic's timer-driven
+    // heartbeat (P1.5-OQ1) — do not flow through this yield point and cannot be
+    // expressed as per-frame rewrites, so the driver cannot own forwarded sampling
+    // without reintroducing the byte-critical risk those decisions deferred.
     yield out
   }
 }

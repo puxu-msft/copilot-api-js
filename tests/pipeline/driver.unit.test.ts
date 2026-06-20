@@ -50,15 +50,18 @@ interface CtxCalls {
   transition: Array<string>
   setAttemptError: Array<ApiError>
   recordAttemptFailure: Array<unknown>
+  setSseEvents: Array<unknown>
 }
 
 function makeCtx(): { ctx: RequestContext; calls: CtxCalls } {
-  const calls: CtxCalls = { beginAttempt: [], transition: [], setAttemptError: [], recordAttemptFailure: [] }
+  const calls: CtxCalls = { beginAttempt: [], transition: [], setAttemptError: [], recordAttemptFailure: [], setSseEvents: [] }
   const ctx = {
     beginAttempt: (o: unknown) => calls.beginAttempt.push(o),
     transition: (s: string) => calls.transition.push(s),
     setAttemptError: (e: ApiError) => calls.setAttemptError.push(e),
     recordAttemptFailure: (a: unknown) => calls.recordAttemptFailure.push(a),
+    // P3.2b: runResponse samples upstream-original frames here (aliased per-frame).
+    setSseEvents: (e: unknown) => calls.setSseEvents.push(e),
   } as unknown as RequestContext
   return { ctx, calls }
 }
@@ -329,8 +332,8 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     return out
   }
 
-  test("identity (no rewrites): renders + yields every frame", async () => {
-    const { ctx } = makeCtx()
+  test("identity (no rewrites): renders + yields every frame + samples upstream sseEvents", async () => {
+    const { ctx, calls } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
     const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
@@ -338,6 +341,16 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
 
     const out = await collect(driver.runResponse(okStream(frames), env))
     expect(out.map((f) => f.data)).toEqual(["1", "2"])
+
+    // P3.2b: the driver samples each upstream-original frame at the loop top (raw
+    // verbatim, BEFORE render) — aliased onto ctx so a single setSseEvents call
+    // exposes the growing array with every consumed frame.
+    expect(calls.setSseEvents).toHaveLength(1)
+    const sampled = calls.setSseEvents[0] as Array<{ type: string; raw: string }>
+    expect(sampled.map((e) => ({ type: e.type, raw: e.raw }))).toEqual([
+      { type: "message", raw: "1" },
+      { type: "message", raw: "2" },
+    ])
   })
 
   test("suppress drops a frame; emit replaces; chain order respected", async () => {

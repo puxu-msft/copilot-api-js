@@ -665,7 +665,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
-    env.ctx.setSseEvents(sseEvents)
+    // Upstream-original sseEvents are sampled by the driver (runResponse loop-top,
+    // P3.2b); the handler records only the client-forwarded track here. The local
+    // `sseEvents` array (filled by the shared pump) survives for logUpstreamStreamError.
     env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
 
     if (acc.streamError) {
@@ -677,8 +679,8 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       env.ctx.complete(buildAnthropicResponseData(acc, model))
     }
   } catch (error) {
-    // Record what was streamed/forwarded so far BEFORE settling (原则3).
-    env.ctx.setSseEvents(sseEvents)
+    // Record what was forwarded so far BEFORE settling (原则3). Upstream-original
+    // sseEvents are the driver's (runResponse loop-top, P3.2b).
     env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
 
     const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined }
