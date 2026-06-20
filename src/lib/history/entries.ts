@@ -21,6 +21,7 @@ import {
   computeLineageDigest,
   type LineageDigest,
 } from "./lineage"
+import { runHistoryWrite } from "./persist-guard"
 import {
   //
   extractStagePayloads,
@@ -154,11 +155,7 @@ export function finalizeEntry(id: string): void {
  */
 export function persistEntryEager(entry: HistoryEntry): void {
   if (!historyState.enabled) return
-  try {
-    upsertHeadRow(entry, entry.state, extractStagePayloads(entry))
-  } catch (err: unknown) {
-    consola.warn("[history] eager head persist failed", err)
-  }
+  runHistoryWrite("eager-head", () => upsertHeadRow(entry, entry.state, extractStagePayloads(entry)))
 }
 
 /** Incremental head-row status update (on each lifecycle transition). Best-effort. */
@@ -166,11 +163,7 @@ export function persistEntryStatus(id: string): void {
   if (!historyState.enabled) return
   const entry = getInFlight(id)
   if (!entry) return
-  try {
-    upsertHeadRow(entry, entry.state)
-  } catch (err: unknown) {
-    consola.warn("[history] head status persist failed", err)
-  }
+  runHistoryWrite("head-status", () => upsertHeadRow(entry, entry.state))
 }
 
 /**
@@ -184,11 +177,7 @@ export function persistEntryStages(id: string, stages: Array<StagePayload>): voi
   if (!historyState.enabled || stages.length === 0) return
   const entry = getInFlight(id)
   if (!entry) return
-  try {
-    upsertHeadRow(entry, entry.state, stages)
-  } catch (err: unknown) {
-    consola.warn("[history] stage persist failed", err)
-  }
+  runHistoryWrite("stage", () => upsertHeadRow(entry, entry.state, stages))
 }
 
 export function clearHistory(): void {
