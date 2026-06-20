@@ -24,14 +24,22 @@
  * shell) serves through the driver; the legacy `handleGenerateContent` /
  * `handleStreamGenerateContent` stay in the tree (toggle back here) until P3.3
  * deletes them. The whole existing Gemini suite runs through the driver.
+ *
+ * `anthropic` starts OFF (P2.6 / C3b): the v4 Anthropic /v1/messages path (the
+ * heaviest codec + 8 retry strategies + beta-probe + byte-critical streaming
+ * pump reused from streaming-pump.ts) is wired but the route defaults to the
+ * legacy `handleMessages` until the v4↔legacy equivalence tests are in place;
+ * flipping it ON (the P2.6 canary, C4) routes the whole existing Anthropic suite
+ * through the driver as a wide oracle.
  */
 
-export type V4DriverFormat = "openai-cc" | "openai-responses" | "gemini"
+export type V4DriverFormat = "openai-cc" | "openai-responses" | "gemini" | "anthropic"
 
 const flags: Record<V4DriverFormat, boolean> = {
   "openai-cc": true,
   "openai-responses": true,
   gemini: true,
+  anthropic: false,
 }
 
 export function isV4DriverEnabled(format: V4DriverFormat): boolean {
