@@ -62,6 +62,7 @@ import {
   createToolInputStreamDecoder,
   decodeToolInputBlocksInResponse,
 } from "~/lib/anthropic/decode-tool-input"
+import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
@@ -187,6 +188,16 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // the driver (RFC §1 / §12.7). Re-creates the legacy lightweight ctx (the codec
   // is bypassed entirely for this path).
   if (state.webSearchEnabled && payloadHasWebSearch(wireBody)) {
+    // The web_search path bypasses the driver, so it ALSO bypasses the driver's
+    // decideRoute route-validation. Replicate legacy's pre-ctx check here
+    // (handler.ts: supportsDirectAnthropicApi runs before web_search) so an
+    // unsupported model + web_search rejects identically (400) instead of
+    // silently proceeding into the double-hop.
+    const routing = supportsDirectAnthropicApi(resolvedName)
+    if (!routing.supported) {
+      const msg = `Model "${resolvedName}" does not support /v1/messages: ${routing.reason}`
+      throw new HTTPError(msg, 400, msg)
+    }
     consola.debug("[WebSearch] Intercepting request with native web_search tool (v4 route → legacy handler)")
     const reqCtx = createWebSearchContext(c, clientRaw, wireBody, resolvedName, clientModel, selectedModel)
     return handleWebSearchCompletion(c, wireBody, reqCtx, selectedModel, preprocessInfo)
