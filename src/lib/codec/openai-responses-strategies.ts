@@ -1,10 +1,10 @@
 /**
  * v4 pipeline — openai-responses env-based retry strategies.
  *
- * Mirrors the legacy `createResponsesStrategies` (routes/responses/pipeline.ts)
- * but yields driver-shaped env strategies, by wrapping the unchanged legacy
- * strategies in {@link adaptLegacyStrategy}. Order + per-strategy logic stay
- * byte-identical to the legacy pipeline (02 §1.2): network → token-refresh.
+ * Mirrors the legacy Responses retry-strategy set but yields driver-shaped env
+ * strategies, by wrapping the unchanged legacy strategies in
+ * {@link adaptLegacyStrategy}. Order + per-strategy logic stay byte-identical to
+ * the legacy pipeline (02 §1.2): network → token-refresh.
  *
  * Unlike CC, the Responses path has NO auto-truncate strategy
  * (retry-transport.md §2.2: `openai-responses: network → token-refresh`), so the

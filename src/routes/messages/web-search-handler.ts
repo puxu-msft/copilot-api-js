@@ -1,8 +1,9 @@
 /**
  * Web search double-hop interception for the Anthropic /v1/messages route.
  *
- * Invoked from `handleMessages` when `web_search.enabled` is on and the request
- * carries a native web_search server tool (or Claude Code's WebSearch). Runs a
+ * Invoked from the v4 Anthropic route (`handler-v4.ts`) when `web_search.enabled`
+ * is on and the request carries a native web_search server tool (or Claude Code's
+ * WebSearch). Runs a
  * non-streaming FIRST-HOP PROBE so the main model can decide whether to search,
  * then branches:
  *   - NO search (pass-through, the common case) → re-dispatch the request

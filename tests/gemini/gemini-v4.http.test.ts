@@ -189,9 +189,14 @@ describe("Gemini v4 driver path", () => {
 
     const v4Text = await (await post("gpt-4o:streamGenerateContent", body)).text()
 
-    expect(v4Text).toContain("usageMetadata")
-    expect(v4Text).toContain("Hello ")
-    expect(v4Text).toContain("Gemini")
+    // Byte-lock on the CC→Gemini stream translation (golden = translated client SSE;
+    // no synthesized epoch to normalize — Gemini frames carry no timestamp).
+    const frame = (inner: string): string => `data: {"candidates":[${inner}],"modelVersion":"gpt-4o"}\n\n`
+    expect(v4Text).toBe(
+      frame('{"content":{"role":"model","parts":[{"text":"Hello "}]},"index":0}')
+        + frame('{"content":{"role":"model","parts":[{"text":"Gemini"}]},"index":0}')
+        + `data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gpt-4o"}\n\n`,
+    )
   })
 
   test("via-responses: Gemini→CC→Responses, wire is Responses-shaped, client Gemini json", async () => {

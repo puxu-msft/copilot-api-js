@@ -170,7 +170,7 @@ async function post(body: unknown): Promise<Response> {
 
 /** Normalize random fallback resp_/item_ IDs so legacy ↔ v4 comparisons are stable. */
 function normalizeIds(text: string): string {
-  return text.replaceAll(/\b(resp|item)_[A-Za-z0-9]+/g, "$1_X")
+  return text.replaceAll(/\b(resp|item)_[A-Za-z0-9]+/g, "$1_X").replaceAll(/"created_at":\d+/g, '"created_at":0')
 }
 
 describe("Responses v4 driver path", () => {
@@ -288,13 +288,28 @@ describe("Responses v4 driver path", () => {
     expect(v4Wire?.messages).toBeDefined() // Responses→CC translation happened
   })
 
-  test("fallback streaming: client Responses SSE (IDs normalized)", async () => {
+  test("fallback streaming: client Responses SSE (full lifecycle, IDs normalized)", async () => {
     const body = { model: "gpt-cc-only", input: "hi", stream: true }
 
     const v4Text = normalizeIds(await (await post(body)).text())
 
-    expect(v4Text).toContain("response.completed")
-    expect(v4Text).toContain("response.output_text.delta")
+    // Byte-lock on the CC→Responses stream translation: the FULL lifecycle event
+    // sequence (the translator synthesizes created→item→content_part→delta→done→
+    // completed) + the streamed text. (A literal whole-string golden is impractical
+    // for 8 events; the ordered event list + content is the translation contract.)
+    const eventTypes = [...v4Text.matchAll(/^event: (.+)$/gm)].map((m) => m[1])
+    expect(eventTypes).toEqual([
+      "response.created",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.output_text.delta",
+      "response.output_text.done",
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed",
+    ])
+    expect(v4Text).toContain('"delta":"Hello"')
+    expect(v4Text).toContain('"type":"output_text","text":"Hello"')
   })
 
   test("Google force-fallback: routes to /chat/completions", async () => {

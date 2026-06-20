@@ -263,8 +263,16 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
   const streamStartMs = Date.now()
 
   for await (const frame of upstream.frames) {
-    upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
-    if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
+    // Skip the `[DONE]` sentinel — it's a gateway-injected transport terminator
+    // (OpenAI convention, NOT part of the Anthropic protocol; anthropic/stream.ts:104),
+    // not a content frame. The accumulators skip it and the legacy Anthropic pump
+    // broke before recording it, so excluding it keeps the upstream-original track to
+    // real content frames (no mislabeled `type:"message"` sentinel) + matches the
+    // pre-P3.2b Anthropic baseline. Forwarded never carried it either (pump breaks).
+    if (frame.data !== "[DONE]") {
+      upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
+      if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
+    }
     // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
     for (const rewritten of passThrough([frame], rewrites, states, 0)) {
       // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.

@@ -231,9 +231,10 @@ describe("CC v4 driver path", () => {
       ],
       usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
     })
-    // The wire tool name is sanitized (the client-facing name above is unchanged).
+    // The wire tool name is sanitized (`:` `/` → `_`); the client-facing name
+    // above is restored unchanged (round-trip locked).
     const wireToolName = (v4Wire?.tools as Array<{ function?: { name?: string } }> | undefined)?.[0]?.function?.name
-    expect(wireToolName).not.toBe("my.tool:with-bad/chars")
+    expect(wireToolName).toBe("my.tool_with-bad_chars")
   })
 
   test("unsupported model → 400", async () => {
@@ -262,10 +263,19 @@ describe("CC v4 driver path", () => {
   test("via-responses streaming: client CC SSE incl. trailing [DONE]", async () => {
     const body = { model: "gpt-5", messages: [{ role: "user", content: "hi" }], stream: true }
 
-    const v4Text = await (await post(body)).text()
+    // Normalize the synthesized `created` epoch (Date.now-derived) for a stable
+    // byte-lock on the Responses→CC stream translation (golden = the translated
+    // client SSE, captured before the legacy path was removed).
+    const v4Text = (await (await post(body)).text()).replaceAll(/"created":\d+/g, '"created":0')
 
-    expect(v4Text).toContain("[DONE]")
-    expect(v4Text).toContain("chat.completion.chunk")
+    const chunk = (over: string): string =>
+      `event: message\ndata: {"id":"resp_1","object":"chat.completion.chunk","created":0,"model":"gpt-5","choices":[{"index":0,${over},"logprobs":null}]}\n\n`
+    expect(v4Text).toBe(
+      chunk('"delta":{"role":"assistant"},"finish_reason":null')
+        + chunk('"delta":{"content":"Hi"},"finish_reason":null')
+        + chunk('"delta":{},"finish_reason":"stop"')
+        + "data: [DONE]\n\n",
+    )
   })
 
   test("network-retry: a transient upstream error retries once then succeeds (2 hits + queueWaitMs)", async () => {
