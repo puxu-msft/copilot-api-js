@@ -15,6 +15,7 @@ import {
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import { getEntryById } from "~/lib/history/sqlite/read"
+import { runReaperTick } from "~/lib/history/sqlite/reaper"
 import { STAGE } from "~/lib/history/sqlite/serialize"
 import {
   //
@@ -142,5 +143,25 @@ describe("history persistence resilience", () => {
     finalizeEntry("ok1")
     expect(getInFlightEntry("ok1")).toBeUndefined()
     expect(getEntryById("ok1")?.state).toBe("failed")
+  })
+
+  // ── Fix D: the reaper tick drains deferred finalizations (hook wiring) ───────
+  test("a reaper tick drains a transiently-deferred finalize via the registered hook", () => {
+    insertEntry(baseEntry("r1"))
+    markFailed("r1")
+
+    // Transiently fail → entry retained in-flight, pending a retry.
+    __setTerminalWriterForTests(() => {
+      throw sqliteError("database is locked", "SQLITE_BUSY")
+    })
+    finalizeEntry("r1")
+    expect(getInFlightEntry("r1")).toBeDefined()
+
+    // The writer recovers; one reaper tick runs the auto-registered drain hook
+    // (retryPendingFinalizations) + a WAL checkpoint, persisting the entry.
+    __setTerminalWriterForTests(undefined)
+    runReaperTick(100, 200)
+    expect(getInFlightEntry("r1")).toBeUndefined()
+    expect(getEntryById("r1")?.state).toBe("failed")
   })
 })

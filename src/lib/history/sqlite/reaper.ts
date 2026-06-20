@@ -7,11 +7,25 @@ import type { Database } from "./connection"
 
 import {
   //
+  checkpointWal,
   getDatabase,
   incrementalVacuum,
 } from "./connection"
 
 let timer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Optional JS-side callback run at the START of each reaper tick. The store layer
+ * registers `retryPendingFinalizations` here to re-attempt history finalizations
+ * that a transient SQLite error deferred — wired via a setter so the reaper (SQLite
+ * layer) stays decoupled from the store layer (it only invokes an opaque callback).
+ */
+let tickHook: (() => void) | null = null
+
+/** Register (or clear, with `null`) the per-tick drain callback. */
+export function setReaperTickHook(fn: (() => void) | null): void {
+  tickHook = fn
+}
 
 /**
  * SQL predicates partitioning entries_v2 into success / failure buckets.
@@ -78,18 +92,34 @@ export function reclaimStaleActiveRows(maxAgeMs: number = state.staleRequestMaxA
   return result.changes
 }
 
+/**
+ * One full reaper tick: drain deferred finalizations → reclaim stale active rows
+ * → evict overflow buckets → return freed pages → checkpoint the WAL. Exported so
+ * it can be exercised directly in tests without waiting on the interval timer.
+ */
+export function runReaperTick(successLimit: number, failureLimit: number): void {
+  const db = getDatabase()
+  // Drain transiently-deferred history finalizations FIRST, so freshly-persisted
+  // rows are counted/bucketed in the eviction pass this same tick.
+  tickHook?.()
+  // Reclaim stale active rows so freshly-interrupted rows are eligible for
+  // failure-bucket eviction in the same tick.
+  reclaimStaleActiveRows()
+  runReaperOnce(successLimit, failureLimit)
+  // Return the pages just freed by eviction to the OS (no-op unless
+  // auto_vacuum=INCREMENTAL is in effect — see incrementalVacuum).
+  incrementalVacuum(db)
+  // Keep the WAL bounded so lock windows stay short (fewer SQLITE_BUSY for the
+  // persist-guard to absorb).
+  checkpointWal(db)
+}
+
 export function startReaper(successLimit: number, failureLimit: number, intervalSeconds: number): void {
   stopReaper()
   if (intervalSeconds <= 0 || (successLimit <= 0 && failureLimit <= 0)) return
   timer = setInterval(() => {
     try {
-      // Reclaim stale active rows FIRST so freshly-interrupted rows are eligible
-      // for failure-bucket eviction in the same tick.
-      reclaimStaleActiveRows()
-      runReaperOnce(successLimit, failureLimit)
-      // Return the pages just freed by eviction to the OS (no-op unless
-      // auto_vacuum=INCREMENTAL is in effect — see incrementalVacuum).
-      incrementalVacuum(getDatabase())
+      runReaperTick(successLimit, failureLimit)
     } catch (err: unknown) {
       consola.warn("[history/sqlite] reaper tick failed", err)
     }

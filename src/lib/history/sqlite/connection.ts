@@ -196,6 +196,22 @@ function migrateEntriesColumns(database: Database): void {
   database.exec("CREATE INDEX IF NOT EXISTS idx_entries_v2_pid ON entries_v2(pid, started_at DESC)")
 }
 
+/**
+ * Checkpoint the WAL back into the main DB. PASSIVE: does as much as possible
+ * WITHOUT taking an exclusive lock, so it never blocks readers/writers and never
+ * needs the busy_timeout. Called each reaper tick to keep the `-wal` file from
+ * ballooning (observed: a 400 MB WAL when checkpoints were starved by long-lived
+ * readers) — an oversized WAL lengthens lock windows and raises the SQLITE_BUSY
+ * odds the persist-guard then has to absorb. Never throws.
+ */
+export function checkpointWal(database: Database): void {
+  try {
+    database.exec("PRAGMA wal_checkpoint(PASSIVE);")
+  } catch (err: unknown) {
+    consola.warn("[history/sqlite] wal_checkpoint failed", err)
+  }
+}
+
 export function getDatabase(): Database {
   if (!db) throw new Error("[history/sqlite] database not initialized; call openDatabase first")
   return db

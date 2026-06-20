@@ -22,6 +22,7 @@ import {
   type LineageDigest,
 } from "./lineage"
 import { runHistoryWrite } from "./persist-guard"
+import { setReaperTickHook } from "./sqlite/reaper"
 import {
   //
   extractStagePayloads,
@@ -213,6 +214,12 @@ export function retryPendingFinalizations(): void {
   if (finalizeRetries.size === 0) return
   for (const id of finalizeRetries.keys()) finalizeEntry(id)
 }
+
+// Register the drain on every reaper tick. Done here (not in state.ts) so the
+// reaper stays decoupled from the store layer — it invokes an opaque callback,
+// and the store owns what that callback does. Safe at module load: the hook is
+// just stored; the timer that calls it is started later by initHistory.
+setReaperTickHook(retryPendingFinalizations)
 
 /**
  * Eager incremental persistence: write the head row (+ whatever stage rows are
