@@ -39,7 +39,7 @@ const flags: Record<V4DriverFormat, boolean> = {
   "openai-cc": true,
   "openai-responses": true,
   gemini: true,
-  anthropic: false,
+  anthropic: true,
 }
 
 export function isV4DriverEnabled(format: V4DriverFormat): boolean {
