@@ -1,0 +1,519 @@
+/**
+ * Stage A Task0 — activated-state response-rewrite golden baseline (byte-lock).
+ *
+ * The byte-critical streaming golden in `anthropic-v4.http.test.ts` only locks
+ * two *no-op-rewrite* passthrough streams (ok / thinking). This file locks the
+ * ACTIVATED response-rewrite paths the handler-v4 pump runs — the byte-equivalence
+ * basis for the Stage A `rewrite-registry` migration (RFC §7): every later
+ * migration commit must keep these green.
+ *
+ * Covered activations (each fixture drives the real activation path, not a
+ * passthrough):
+ *   S1  server-tool-filter suppress + index densify (server_tool_use idx0 dropped,
+ *       text idx1 → client idx0).
+ *   S2  tool-input-decode buffer/flush (AskUserQuestion `questions` stringified
+ *       array → decoded + question backfilled at content_block_stop).
+ *   S3a recover-tool-call CANDIDATE → COMMIT (tier A, stop_reason=tool_use →
+ *       synthesized tool_use).
+ *   S3b recover-tool-call ROLLBACK (candidate interrupted by a fresh
+ *       content_block_start → `[stopFrame, ...bufferedFrames]`, recover-stream.ts:93-98).
+ *   S4  recover + decode both buffering at stream end → double flush
+ *       (handler-v4.ts:655-663): recover.flush feeds decode, then decode.flush.
+ *   S5  recover × filter index-space interaction (synth tool_use at upstream
+ *       maxIndexSeen+1, then filter densifies past the dropped server tool).
+ *   S6  non-streaming variants (renderNonStreamingV4 whole-response helpers):
+ *       server-tool filter / tool-input decode / recover.
+ *
+ * Heartbeat isolation (Task0 item 7): every streaming case runs with the default
+ * `anthropicFakeSseHeartbeat=0`, so no synthetic `ping` is ever interleaved — the
+ * forwarded byte stream is deterministic. (Ping timing is covered separately by
+ * `fake-sse-heartbeat.unit.test.ts`.)
+ *
+ * Goldens are composed from per-frame builders (escaping handled by JSON.stringify,
+ * synthesized tool_use ids are sha256-deterministic) rather than transcribed
+ * literals; the structure documents each transform. Captured from the current
+ * handler-v4 path BEFORE any registry migration.
+ */
+
+import {
+  //
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
+
+import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
+import {
+  //
+  setModelOverrides,
+  setModels,
+  setStateForTests,
+} from "~/lib/state"
+
+import { mockModel } from "../helpers/factories"
+import {
+  //
+  applyFetchMock,
+  autoRestoreFetch,
+} from "../helpers/mock-fetch"
+import { createSseResponse } from "../helpers/sse"
+import { createFullTestApp } from "../helpers/test-app"
+import { autoTestRuntime } from "../helpers/test-bootstrap"
+
+// ── frame builders ───────────────────────────────────────────────────────────
+
+/** An event-named SSE frame (passthrough / filter-rewritten frames keep their upstream event name). */
+function ev(event: string, obj: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`
+}
+
+/** A data-only SSE frame (recoverer-synthesized frames carry no `event:` line). */
+function dat(obj: unknown): string {
+  return `data: ${JSON.stringify(obj)}\n\n`
+}
+
+const DONE = "data: [DONE]\n\n"
+const MODEL = "claude-sonnet-4.6"
+
+function messageStart(): string {
+  return ev("message_start", {
+    type: "message_start",
+    message: {
+      id: "msg-golden",
+      type: "message",
+      role: "assistant",
+      model: MODEL,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 0 },
+    },
+  })
+}
+const messageDelta = (stopReason: string): string =>
+  ev("message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 5 } })
+const messageStop = (): string => ev("message_stop", { type: "message_stop" })
+
+// Downgrade text: residue `<function_calls>` + a single `<invoke name="search">`.
+const INVOKE_TEXT = '<function_calls><invoke name="search"><parameter name="query">weather</parameter></invoke>'
+// AskUserQuestion input whose `questions` is a stringified JSON array (decode target).
+const ASK_INPUT = JSON.stringify({ questions: JSON.stringify([{ header: "Deploy?" }]) })
+// Deterministic synthesized id: synthesizeToolUseId("search", 0, INVOKE_TEXT) (sha256-derived, stable across runs/scenarios).
+const SYNTH_ID = "toolu_4J3DaoIFX52HRvUKKqdPbCOR"
+
+const SEARCH_TOOL = { name: "search", description: "search the web", input_schema: { type: "object", properties: { query: { type: "string" } } } }
+
+// ── upstream stream fixtures ─────────────────────────────────────────────────
+
+function s1Frames(): Array<string> {
+  return [
+    messageStart(),
+    ev("content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "server_tool_use", id: "srvtool_1", name: "web_search", input: {} },
+    }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query":"x"}' } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+    ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "hi there" } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+    messageDelta("end_turn"),
+    messageStop(),
+    DONE,
+  ]
+}
+
+function s2Frames(): Array<string> {
+  return [
+    messageStart(),
+    ev("content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "toolu_ask", name: "AskUserQuestion", input: {} },
+    }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: ASK_INPUT.slice(0, 20) } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: ASK_INPUT.slice(20) } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+    ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "ok" } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+    messageDelta("tool_use"),
+    messageStop(),
+    DONE,
+  ]
+}
+
+function s3aFrames(): Array<string> {
+  return [
+    messageStart(),
+    ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: INVOKE_TEXT.slice(0, 40) } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: INVOKE_TEXT.slice(40) } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+    messageDelta("tool_use"),
+    messageStop(),
+    DONE,
+  ]
+}
+
+function s3bFrames(): Array<string> {
+  return [
+    messageStart(),
+    ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: INVOKE_TEXT } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+    ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "actually no" } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+    messageDelta("end_turn"),
+    messageStop(),
+    DONE,
+  ]
+}
+
+function s4Frames(): Array<string> {
+  return [
+    messageStart(),
+    ev("content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "toolu_ask", name: "AskUserQuestion", input: {} },
+    }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: ASK_INPUT } }),
+    ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: INVOKE_TEXT } }),
+    DONE,
+  ]
+}
+
+function s5Frames(): Array<string> {
+  return [
+    messageStart(),
+    ev("content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "server_tool_use", id: "srvtool_1", name: "web_search", input: {} },
+    }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query":"x"}' } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+    ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: INVOKE_TEXT } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+    messageDelta("tool_use"),
+    messageStop(),
+    DONE,
+  ]
+}
+
+// ── non-streaming upstream bodies ────────────────────────────────────────────
+
+function s6FilterBody(): string {
+  return JSON.stringify({
+    id: "msg-ns",
+    type: "message",
+    role: "assistant",
+    model: MODEL,
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 5, output_tokens: 6 },
+    content: [
+      { type: "server_tool_use", id: "srvtool_1", name: "web_search", input: { query: "x" } },
+      {
+        type: "web_search_tool_result",
+        tool_use_id: "srvtool_1",
+        content: [{ type: "web_search_result", title: "t", url: "https://e.com", encrypted_content: "z" }],
+      },
+      { type: "text", text: "after search" },
+    ],
+  })
+}
+
+function s6DecodeBody(): string {
+  return JSON.stringify({
+    id: "msg-ns",
+    type: "message",
+    role: "assistant",
+    model: MODEL,
+    stop_reason: "tool_use",
+    stop_sequence: null,
+    usage: { input_tokens: 5, output_tokens: 6 },
+    content: [{ type: "tool_use", id: "toolu_ask", name: "AskUserQuestion", input: { questions: JSON.stringify([{ header: "Deploy?" }]) } }],
+  })
+}
+
+function s6RecoverBody(): string {
+  return JSON.stringify({
+    id: "msg-ns",
+    type: "message",
+    role: "assistant",
+    model: MODEL,
+    stop_reason: "tool_use",
+    stop_sequence: null,
+    usage: { input_tokens: 5, output_tokens: 6 },
+    content: [{ type: "text", text: INVOKE_TEXT }],
+  })
+}
+
+// ── expected forwarded goldens (composed; document each transform) ────────────
+
+// S1: server_tool dropped, text idx1 densified → client idx0.
+const S1_GOLDEN = [
+  messageStart(),
+  ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi there" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+  messageDelta("end_turn"),
+  messageStop(),
+].join("")
+
+// S2: AskUserQuestion input decoded (questions array structured) + question backfilled.
+const S2_GOLDEN = [
+  messageStart(),
+  ev("content_block_start", {
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "tool_use", id: "toolu_ask", name: "AskUserQuestion", input: {} },
+  }),
+  ev("content_block_delta", {
+    type: "content_block_delta",
+    index: 0,
+    delta: { type: "input_json_delta", partial_json: JSON.stringify({ questions: [{ header: "Deploy?", question: "Deploy?" }] }) },
+  }),
+  ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+  ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "ok" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+  messageDelta("tool_use"),
+  messageStop(),
+].join("")
+
+// S3a: text start forwarded, deltas buffered; COMMIT emits stopFrame + synth tool_use (upstream idx1, no event line).
+const S3A_GOLDEN = [
+  messageStart(),
+  ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+  dat({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: SYNTH_ID, name: "search", input: {} } }),
+  dat({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ query: "weather" }) } }),
+  dat({ type: "content_block_stop", index: 1 }),
+  messageDelta("tool_use"),
+  messageStop(),
+].join("")
+
+// S3b: rollback replays `[stopFrame, ...bufferedFrames]` — stop precedes the buffered invoke-text delta (quirky order, locked).
+const S3B_GOLDEN = [
+  messageStart(),
+  ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+  ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: INVOKE_TEXT } }),
+  ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "actually no" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+  messageDelta("end_turn"),
+  messageStop(),
+].join("")
+
+// S4: double flush at stream end — recover.flush emits text delta idx1, then decode.flush emits the RAW (un-decoded) AskUserQuestion delta idx0.
+const S4_GOLDEN = [
+  messageStart(),
+  ev("content_block_start", {
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "tool_use", id: "toolu_ask", name: "AskUserQuestion", input: {} },
+  }),
+  ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: INVOKE_TEXT } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: ASK_INPUT } }),
+].join("")
+
+// S5: server_tool dropped → text idx1 densified to client idx0; synth tool_use (upstream idx2) densified to client idx1.
+const S5_GOLDEN = [
+  messageStart(),
+  ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+  dat({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: SYNTH_ID, name: "search", input: {} } }),
+  dat({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ query: "weather" }) } }),
+  dat({ type: "content_block_stop", index: 1 }),
+  messageDelta("tool_use"),
+  messageStop(),
+].join("")
+
+// ── mock ─────────────────────────────────────────────────────────────────────
+
+type Scenario = "s1" | "s2" | "s3a" | "s3b" | "s4" | "s5" | "s6Filter" | "s6Decode" | "s6Recover"
+let scenario: Scenario = "s1"
+
+const upstreamMock = mock((input: string | URL | Request, init?: RequestInit) => {
+  const url =
+    typeof input === "string" ? input
+    : input instanceof URL ? input.href
+    : input.url
+  if (!url.endsWith("/v1/messages")) throw new Error(`unexpected upstream URL: ${url}`)
+  const payload = typeof init?.body === "string" ? (JSON.parse(init.body) as { stream?: boolean }) : {}
+  if (!payload.stream) {
+    const body =
+      scenario === "s6Filter" ? s6FilterBody()
+      : scenario === "s6Decode" ? s6DecodeBody()
+      : s6RecoverBody()
+    return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }))
+  }
+  const frames =
+    scenario === "s1" ? s1Frames()
+    : scenario === "s2" ? s2Frames()
+    : scenario === "s3a" ? s3aFrames()
+    : scenario === "s3b" ? s3bFrames()
+    : scenario === "s4" ? s4Frames()
+    : s5Frames()
+  return Promise.resolve(createSseResponse(frames))
+})
+
+const app = createFullTestApp()
+
+function injectModels(): void {
+  setModels({ object: "list", data: [mockModel("claude-sonnet-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
+  setModelOverrides({})
+}
+
+async function postStream(extra?: Record<string, unknown>): Promise<string> {
+  injectModels()
+  const res = await app.request("/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: MODEL, max_tokens: 256, stream: true, messages: [{ role: "user", content: "go" }], ...extra }),
+  })
+  return res.text()
+}
+
+async function postJson(extra?: Record<string, unknown>): Promise<unknown> {
+  injectModels()
+  const res = await app.request("/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: MODEL, max_tokens: 256, stream: false, messages: [{ role: "user", content: "go" }], ...extra }),
+  })
+  return res.json()
+}
+
+// ── tests ────────────────────────────────────────────────────────────────────
+
+describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () => {
+  autoTestRuntime()
+  autoRestoreFetch()
+
+  beforeEach(async () => {
+    upstreamMock.mockClear()
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    applyFetchMock(upstreamMock)
+    await resetAnthropicFeatureNegotiationForTesting()
+  })
+
+  test("S1 server-tool suppress + index densify (streaming)", async () => {
+    scenario = "s1"
+    const text = await postStream()
+    expect(text).toBe(S1_GOLDEN)
+    // No leak of the suppressed server_tool_use / its input.
+    expect(text).not.toContain("server_tool_use")
+    expect(text).not.toContain("web_search")
+    // Heartbeat isolation (intervalSec=0): no synthetic ping interleaved.
+    expect(text).not.toContain('"type":"ping"')
+  })
+
+  test("S2 tool-input decode buffer/flush + question backfill (streaming)", async () => {
+    scenario = "s2"
+    const text = await postStream()
+    // Byte-lock proves the decode+backfill: the buffered `questions` deltas are
+    // replaced by one input_json_delta carrying the structured + backfilled input
+    // (the value lives inside a nested JSON string, so it is escaped on the wire —
+    // the byte-exact golden is the authoritative check).
+    expect(text).toBe(S2_GOLDEN)
+    expect(text).not.toContain('"type":"ping"')
+  })
+
+  test("S3a recover-tool-call CANDIDATE → COMMIT (streaming)", async () => {
+    scenario = "s3a"
+    setStateForTests({ recoverToolCallText: true })
+    const text = await postStream({ tools: [SEARCH_TOOL] })
+    expect(text).toBe(S3A_GOLDEN)
+    // The downgraded `<invoke>` text was rebuilt into a tool_use block (never forwarded as text).
+    expect(text).not.toContain("<invoke")
+    expect(text).toContain(SYNTH_ID)
+    expect(text).not.toContain('"type":"ping"')
+  })
+
+  test("S3b recover-tool-call ROLLBACK (candidate interrupted)", async () => {
+    scenario = "s3b"
+    setStateForTests({ recoverToolCallText: true })
+    const text = await postStream({ tools: [SEARCH_TOOL] })
+    expect(text).toBe(S3B_GOLDEN)
+    // Rollback replays the buffered invoke-text verbatim (no synthesized tool_use).
+    expect(text).toContain("<invoke")
+    expect(text).not.toContain(SYNTH_ID)
+    expect(text).not.toContain('"type":"ping"')
+  })
+
+  test("S4 recover + decode double flush at stream end", async () => {
+    scenario = "s4"
+    setStateForTests({ recoverToolCallText: true })
+    const text = await postStream({ tools: [SEARCH_TOOL] })
+    expect(text).toBe(S4_GOLDEN)
+    expect(text).not.toContain('"type":"ping"')
+  })
+
+  test("S5 recover × server-tool-filter index-space interaction", async () => {
+    scenario = "s5"
+    setStateForTests({ recoverToolCallText: true })
+    const text = await postStream({ tools: [SEARCH_TOOL] })
+    expect(text).toBe(S5_GOLDEN)
+    expect(text).not.toContain("server_tool_use")
+    expect(text).toContain(SYNTH_ID)
+    expect(text).not.toContain('"type":"ping"')
+  })
+
+  test("S6 non-streaming: server-tool blocks filtered from response", async () => {
+    scenario = "s6Filter"
+    const json = await postJson()
+    expect(json).toEqual({
+      id: "msg-ns",
+      type: "message",
+      role: "assistant",
+      model: MODEL,
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 5, output_tokens: 6 },
+      content: [{ type: "text", text: "after search" }],
+    })
+  })
+
+  test("S6 non-streaming: tool-input decode + question backfill", async () => {
+    scenario = "s6Decode"
+    const json = await postJson()
+    expect(json).toEqual({
+      id: "msg-ns",
+      type: "message",
+      role: "assistant",
+      model: MODEL,
+      stop_reason: "tool_use",
+      stop_sequence: null,
+      usage: { input_tokens: 5, output_tokens: 6 },
+      content: [{ type: "tool_use", id: "toolu_ask", name: "AskUserQuestion", input: { questions: [{ header: "Deploy?", question: "Deploy?" }] } }],
+    })
+  })
+
+  test("S6 non-streaming: recover-tool-call text → tool_use", async () => {
+    scenario = "s6Recover"
+    setStateForTests({ recoverToolCallText: true })
+    const json = await postJson({ tools: [SEARCH_TOOL] })
+    expect(json).toEqual({
+      id: "msg-ns",
+      type: "message",
+      role: "assistant",
+      model: MODEL,
+      stop_reason: "tool_use",
+      stop_sequence: null,
+      usage: { input_tokens: 5, output_tokens: 6 },
+      content: [{ type: "tool_use", id: SYNTH_ID, name: "search", input: { query: "weather" } }],
+    })
+  })
+})
