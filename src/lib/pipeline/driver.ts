@@ -348,15 +348,19 @@ function passThrough(
 }
 
 /**
- * Drain each rewrite's flush in order; flushed frames thread the rewrites after
- * it. Flush runs in ascending rewrite index, so a buffering rewrite's flushed
- * frames pass through every later rewrite (e.g. buffer→tag yields tagged frames).
+ * Drain each rewrite's flush in ASCENDING order; each flushed frame threads the
+ * rewrites AFTER it (`passThrough` startIdx = `i + 1`). This is a deterministic
+ * multi-buffer cascade (§4.A1 — resolves the P2.1-M2 "single buffer" assumption),
+ * locked by tests/pipeline/response-rewrite-contract.unit.test.ts:
  *
- * Assumption: at most ONE buffering rewrite per chain (the current real case is
- * tool-input-decode alone). With two buffering rewrites the relative order of a
- * later buffer's own held frames vs. an earlier buffer's flushed-then-emitted
- * frames is left undefined; lock the contract with a test before any chain with
- * multiple buffering rewrites lands (P2.6 — recorded in 05-progress P2.1-M2).
+ *   for i in 0..n: rewrites[i].flush() → passThrough(flushed, rewrites, states, i+1)
+ *
+ * So an earlier buffer's flushed frames are re-threaded through every later rewrite
+ * — including a later BUFFERING rewrite, which may itself buffer them and release
+ * them at ITS flush turn. Concretely for recover-tool-call(100) + tool-input-decode(200):
+ * recover.flush → decode.transform (may buffer) → … → decode.flush drains them
+ * (= handler-v4.ts:655-663's two-pass stream-end flush). Ordering is fully defined:
+ * frames released by rewrite[i] always precede frames released by rewrite[j] for j > i.
  */
 function flushChain(rewrites: ReadonlyArray<ResponseRewrite>, states: Array<RewriteState>): Array<UpstreamFrame> {
   const out: Array<UpstreamFrame> = []

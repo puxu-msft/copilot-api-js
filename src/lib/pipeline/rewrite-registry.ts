@@ -122,7 +122,34 @@ export interface ResponseRewrite {
  */
 export const REQUEST_REWRITES: ReadonlyArray<RequestRewrite> = []
 
-/** The registered response rewrites. Empty in P1.1; populated by P1.5. */
+/**
+ * Response-rewrite assembly order (ASCENDING = runs first). Phase 4 registers the
+ * four Anthropic rewrites at these orders; the values encode hard contracts the
+ * handwritten pump used to get from closure nesting (streaming-pump.ts:195-228):
+ *
+ *   - `recoverToolCall` (100) MUST precede `serverToolFilter` — recover-tool-call/
+ *     stream.ts:40 hard-assumes it runs BEFORE the filter: it emits wire-name tool_use
+ *     on the UPSTREAM index space (`maxUpstreamIndexSeen + k`); the filter then restores
+ *     client names + densifies indices. Reversed → index/name corruption.
+ *   - `thinkingSignatureCompat` (150) reshapes thinking frames; independent of the
+ *     buffering rewrites but pinned for deterministic assembly.
+ *   - `toolInputDecode` (200) runs AFTER recover so a recover-synthesized/flushed
+ *     tool_use frame threads through the decoder (recover.flush → decode.transform →
+ *     decode.flush; the flushChain cascade — driver.ts `flushChain`).
+ *   - `serverToolFilter` (300) runs LAST so its index densify sees the FINAL block set
+ *     (after recover added synthesized blocks + decode finalized buffered input).
+ *
+ * The buffer/flush + multi-buffer cascade + index-densify invariants these orders
+ * depend on are locked by tests/pipeline/response-rewrite-contract.unit.test.ts.
+ */
+export const RESPONSE_REWRITE_ORDER = {
+  recoverToolCall: 100,
+  thinkingSignatureCompat: 150,
+  toolInputDecode: 200,
+  serverToolFilter: 300,
+} as const
+
+/** The registered response rewrites. Empty in P1.1; populated by Phase 4 (RFC §4.A1). */
 export const RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = []
 
 /**
