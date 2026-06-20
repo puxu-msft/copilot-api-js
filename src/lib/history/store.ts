@@ -1,4 +1,5 @@
 export {
+  __setTerminalWriterForTests,
   clearHistory,
   finalizeEntry,
   getInFlightEntry,
@@ -8,6 +9,7 @@ export {
   persistEntryEager,
   persistEntryStages,
   persistEntryStatus,
+  retryPendingFinalizations,
   updateEntry,
 } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"

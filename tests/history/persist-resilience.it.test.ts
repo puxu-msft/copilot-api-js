@@ -18,10 +18,15 @@ import { getEntryById } from "~/lib/history/sqlite/read"
 import { STAGE } from "~/lib/history/sqlite/serialize"
 import {
   //
+  __setTerminalWriterForTests,
+  finalizeEntry,
+  getInFlightEntry,
   initHistory,
   insertEntry,
   persistEntryStages,
+  retryPendingFinalizations,
   shutdownHistory,
+  updateEntry,
 } from "~/lib/history/store"
 import { setHistoryConfig } from "~/lib/state"
 
@@ -37,6 +42,28 @@ function baseEntry(id: string): HistoryEntry {
   } as HistoryEntry
 }
 
+function markFailed(id: string): void {
+  updateEntry(id, {
+    state: "failed",
+    active: false,
+    lastUpdatedAt: Date.now(),
+    endedAt: Date.now(),
+    outboundResponse: {
+      success: false,
+      model: "claude-opus-4-8",
+      usage: { input_tokens: 7, output_tokens: 0 },
+      content: null,
+      error: "Stream closed with error code NGHTTP2_CANCEL",
+    },
+  })
+}
+
+function sqliteError(message: string, code?: string): Error {
+  const err = new Error(message)
+  if (code) (err as { code?: string }).code = code
+  return err
+}
+
 describe("history persistence resilience", () => {
   beforeEach(() => {
     shutdownHistory()
@@ -46,6 +73,7 @@ describe("history persistence resilience", () => {
   })
 
   afterEach(() => {
+    __setTerminalWriterForTests(undefined)
     shutdownHistory()
     closeDatabase()
     setHistoryConfig({ historyDbPath: "" })
@@ -64,5 +92,55 @@ describe("history persistence resilience", () => {
 
     expect(getEntryById("s1")).toBeDefined()
     expect(getEntryById("s1")?.state).toBe("pending")
+  })
+
+  // ── Fix B: finalize is non-lossy ────────────────────────────────────────────
+  test("finalize retains the in-flight entry on a TRANSIENT write error, then a reaper drain persists it", () => {
+    insertEntry(baseEntry("t1"))
+    markFailed("t1")
+
+    // Terminal write fails transiently (SQLITE_BUSY under WAL contention).
+    __setTerminalWriterForTests(() => {
+      throw sqliteError("database is locked", "SQLITE_BUSY")
+    })
+    finalizeEntry("t1")
+
+    // NOT dropped: retained in-flight, nothing written, no silent loss.
+    expect(getInFlightEntry("t1")).toBeDefined()
+    expect(getEntryById("t1")).toBeUndefined()
+
+    // Contention clears → reaper-tick drain re-attempts and the entry persists.
+    __setTerminalWriterForTests(undefined)
+    retryPendingFinalizations()
+    expect(getInFlightEntry("t1")).toBeUndefined()
+    expect(getEntryById("t1")?.state).toBe("failed")
+  })
+
+  test("finalize degrades to a tombstone on a PERMANENT write error (the FACT survives, never silently lost)", () => {
+    insertEntry(baseEntry("p1"))
+    markFailed("p1")
+
+    // Terminal (full) write fails permanently (e.g. oversized blob) — retrying
+    // is pointless, so the entry degrades to a minimal head-only tombstone.
+    __setTerminalWriterForTests(() => {
+      throw sqliteError("string or blob too big", "SQLITE_TOOBIG")
+    })
+    finalizeEntry("p1")
+    __setTerminalWriterForTests(undefined)
+
+    // In-flight dropped (bounded memory), but the head-only tombstone preserves
+    // the FACT of the failed request (status/model/error) for post-hoc diagnosis.
+    expect(getInFlightEntry("p1")).toBeUndefined()
+    const row = getEntryById("p1")
+    expect(row).toBeDefined()
+    expect(row?.state).toBe("failed")
+  })
+
+  test("finalize succeeds normally when the write works (baseline — entry persisted + removed from in-flight)", () => {
+    insertEntry(baseEntry("ok1"))
+    markFailed("ok1")
+    finalizeEntry("ok1")
+    expect(getInFlightEntry("ok1")).toBeUndefined()
+    expect(getEntryById("ok1")?.state).toBe("failed")
   })
 })

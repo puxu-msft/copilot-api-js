@@ -103,6 +103,31 @@ export function updateEntry(
 }
 
 /**
+ * Max transient-failure retries before a terminal entry is degraded to a
+ * tombstone and dropped from memory. Bounds the in-flight retention of an entry
+ * whose full write keeps failing, so a persistently-unwritable entry cannot
+ * accumulate across reaper ticks.
+ */
+const MAX_FINALIZE_RETRIES = 5
+
+/** id → consecutive transient finalize-failure count (entries retained in-flight for reaper-tick retry). */
+const finalizeRetries = new Map<string, number>()
+
+/** The terminal (full) write. Swappable for tests to exercise the failure paths. */
+type TerminalWriter = (entry: HistoryEntry, digest?: LineageDigest) => void
+let terminalWriter: TerminalWriter = insertCompletedEntry
+
+/**
+ * Test seam: inject a terminal writer (e.g. one that throws a SQLITE_BUSY /
+ * permanent error) to exercise the non-lossy finalize paths. Pass `undefined`
+ * to restore the production `insertCompletedEntry`. Mirrors the
+ * `setHttp2SessionFactoryForTests` DI pattern (DI over `mock.module`).
+ */
+export function __setTerminalWriterForTests(fn?: TerminalWriter): void {
+  terminalWriter = fn ?? insertCompletedEntry
+}
+
+/**
  * Finalize an in-flight entry: persist to SQLite and remove from the
  * in-flight map. Caller MUST have already merged the terminal state
  * (state="completed"|"failed", response, etc.) via `updateEntry` before
@@ -118,11 +143,20 @@ export function updateEntry(
  *   update would silently no-op because the entry was gone. Making
  *   finalization an explicit call eliminates this whole class of ordering
  *   bugs and makes the flow auditable.
+ *
+ * Non-lossy on write failure (the core of the persist-resilience fix): the
+ * in-flight copy is the last surviving source of the entry, so it is dropped
+ * ONLY after a confirmed write. A transient failure (SQLITE_BUSY) retains the
+ * entry for a reaper-tick retry; a permanent failure (or exhausted retries)
+ * degrades to a head-only tombstone so the FACT of the request is never lost.
  */
 export function finalizeEntry(id: string): void {
   if (!historyState.enabled) return
   const entry = getInFlight(id)
-  if (!entry) return
+  if (!entry) {
+    finalizeRetries.delete(id)
+    return
+  }
 
   // Compute the lineage digest OUTSIDE the transaction (RFC §11). A throw
   // here logs + persists the entry without a lineage row — the backfill
@@ -136,14 +170,48 @@ export function finalizeEntry(id: string): void {
     consola.warn("[lineage] digest compute failed for", id, err)
   }
 
-  try {
-    insertCompletedEntry(entry, digest)
-  } catch (err: unknown) {
-    consola.warn("[history] failed to persist completed entry", err)
+  const result = runHistoryWrite("finalize", () => terminalWriter(entry, digest))
+  if (result.ok) {
+    finalizeRetries.delete(id)
+    removeInFlight(id)
+    publishEntryUpdated(toEntrySummary(entry))
+    publishStatsChanged()
+    return
   }
+
+  // Persisting the full entry failed. NEVER blind-`removeInFlight` here — that
+  // was the silent total-loss (disk write failed AND the only memory copy
+  // dropped → the request vanished from history, only a warn left behind).
+  const attempts = (finalizeRetries.get(id) ?? 0) + 1
+  if (result.transient && attempts < MAX_FINALIZE_RETRIES) {
+    // Transient (e.g. SQLITE_BUSY under WAL contention): retain the in-flight
+    // copy untouched and let the reaper tick re-attempt once contention clears.
+    finalizeRetries.set(id, attempts)
+    return
+  }
+
+  // Permanent error, or transient retries exhausted: preserve at least the FACT
+  // of the request as a minimal head-only tombstone (status/error/timing/tokens
+  // survive; the bulky stage blobs degrade), then drop the un-writable in-flight
+  // copy so memory stays bounded.
+  finalizeRetries.delete(id)
+  const tomb = runHistoryWrite("finalize-tombstone", () => upsertHeadRow(entry, entry.state))
+  if (!tomb.ok) consola.error(`[history] tombstone write also failed; entry ${id} not persisted`)
   removeInFlight(id)
   publishEntryUpdated(toEntrySummary(entry))
   publishStatsChanged()
+}
+
+/**
+ * Reaper-tick drain: re-attempt finalize for entries whose terminal write failed
+ * transiently and were retained in-flight. Each retry runs the full finalize path
+ * (success → persisted + removed; still-failing → re-queued, or past
+ * MAX_FINALIZE_RETRIES → tombstoned + dropped), so a permanently-unwritable entry
+ * cannot accumulate. No-op when nothing is pending.
+ */
+export function retryPendingFinalizations(): void {
+  if (finalizeRetries.size === 0) return
+  for (const id of finalizeRetries.keys()) finalizeEntry(id)
 }
 
 /**
