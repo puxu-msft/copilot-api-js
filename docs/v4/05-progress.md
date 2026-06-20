@@ -8,9 +8,9 @@
 
 ## ▶ 当前位置 / 下一步（防呆——每会话先看这里）
 
-- **已完成到**：**P2.6 进行中（C0-C2 已提交）**。P0/P1/P2.1-P2.5 ✅。P2.6 的 RFC 已 4 轮收敛（[docs/rfc/p2.6-anthropic-driver-migration.md](../rfc/p2.6-anthropic-driver-migration.md)，新增 §12 round-4 裁决）。已提交：`80a2157` **C0**（共享 driver 契约：runExchange 返回 post-retry env §11.1 + onMeta/onResolved meta 通道 post-gate §11.2，onMeta 上移 DriverDeps，影响所有 4 格式）、`044e895` **C1**（sendUpstreamHttp 加 `rewriteShutdownAbort` hook，shutdown→529 §12.1）、`c4a2786` **C2**（anthropic codec + 8 策略，不接线）。每 commit subagent review + 主线核验，全 backend 套件 **2638 pass / 0 fail**。
-- **下一步**：**P2.6 C3→C4→C5**——续接 prompt 在 [docs/v4/prompts/P2.6-C3-C5.md](prompts/P2.6-C3-C5.md)（自包含蓝图：C3 handler-v4 + streaming-pump.ts 抽取 + route flag OFF；C4 flag ON canary 过 L1∧L2；C5 文档推进 P3）。3 个关键决策已裁决（pump 抽共享模块 / web_search 走 legacy ctx / reject 经中间件收尾 failed）。
-- **⚠️ 现在粘 `prompts/P3-unify.md` 会跑错**：P3 假设「4 格式全在 driver 上」，但 Anthropic（P2.6）**C3 未做**（codec 已建但未接线，flag 默认 OFF）。P3.1（透传统一）需 4 codec 齐、P3.3（删 handler）会删仍在用的 handler。**P3 须等 P2.6 C3-C5 完成。**
+- **已完成到**：**P2 全部完成（P2.1-P2.6 ✅，6/6）**。P0/P1/P2 ✅。P2.6（Anthropic 切 driver）RFC 已 4 轮收敛（[docs/rfc/p2.6-anthropic-driver-migration.md](../rfc/p2.6-anthropic-driver-migration.md)，§12 round-4 裁决）。C0-C5 全部提交：`80a2157` C0（共享 driver 契约）、`044e895` C1（transport rewriteShutdownAbort hook）、`c4a2786` C2（codec+8 策略）、`db8e67b` **C3a**（streaming-pump.ts 抽取,纯移动）、`f7f2f4c` **C3b**（handler-v4 + route flag OFF）、`9d51857` 等价测试（15 测试）、`b8adf80` **review 修复**（web_search 路由校验对齐 legacy）、`94d6a23` 测试加固、`977a634` **C4**（flag ON）。每 commit subagent review + 主线亲自核验,**全 backend 2707 pass / 0 fail 经 v4**（另有 2 个无关 FileSink 预存失败,属 observability-rewrite WIP 域,非本迁移引入）。
+- **下一步**：**P3 统一收尾**（4 codec 已齐、4 格式全在 driver 上、flag 全 ON）。P3.1 透传统一进 decideRoute / P3.2 数据采集全下沉 driver（含 P3.2b 删各 handler 手动 setter + 补 sseEvents 缺口）/ P3.3 删旧 handler + flag + 死代码 / P3.4 更新 DESIGN.md 指向 v4。续接 prompt 见 [prompts/P3-unify.md](prompts/P3-unify.md)。
+- **✅ P2.6 已完成,P3 解除封锁**：4 格式（CC/Responses/Gemini/Anthropic）codec 齐、全在 driver 上、flag 全默认 ON,legacy handler 仍在树（可 toggle 回切）待 P3.3 删。P3.1（透传统一,需 4 codec 齐）与 P3.3（删 handler）的前置条件均已满足,**现在可粘 `prompts/P3-unify.md`**。P2.6 遗留见 P2.6-D1～D4。
 - **排程已重排（2026-06-17，architect subagent 验证）**：原计划把「driver 自动采样」整体放 P3.2（所有格式迁完后）。重排为——**P3.2 拆两半**：`P3.2a`（driver 加采样，共享机件，**提前到 P2.3 收尾**做一次 4 格式同受益）+ `P3.2b`（删各 handler 手动 setter，**锚定各格式迁移点**，不可提前——删不了还在 legacy 的格式的 setter）。`P3.1`（透传统一）**不提前**（需 4 codec 齐）。**翻 flag ON 的硬 gate = L1 行为等价 ∧ L2 记录等价**，逐格式各过各的 gate。详见 P2.3-L1/L2。
 
 ### P2.3 收尾排程（重排后，已落地）
@@ -33,7 +33,7 @@
 | P0 地基 | 4 | 4/4 | ✅ |
 | P1 改写 registry 化（请求侧） | 4 | 4/4 | ✅ |
 | P1.5/P1.6（响应侧）→ 折入 P2 | — | — | ↪ 见 P1.5-SCOPE |
-| P2 driver + 逐格式 | 6 | 5/6 | 🟡 |
+| P2 driver + 逐格式 | 6 | 6/6 | ✅ |
 | P3 统一收尾 | 4 | 0/4 | ⬜ |
 
 > **P1 范围修订（2026-06-16，调研后）**：P1 原计划 6 commit。请求侧 4 个（P1.1 接口 + P1.2/P1.3 Anthropic full + P1.4 OpenAI focused）有干净 seam，已全部完成、字节等价、subagent reviewed。**响应侧 P1.5（响应改写注册）/ P1.6（错误帧→codec.formatError）经调研判定折入 P2**——其消费者（P1.5 的 S5 per-frame chain、P1.6 的 codec）是 P2 的交付物，强塞进 P1 = 半重构 byte-critical 流式 pump（forwarded SSE 字节风险）+ 过早造 codec stub，且与 P2.6 重叠。详见 P1.5-SCOPE / P1.5-OQ1（heartbeat 已裁决 option ①）。P1.1 的 `ResponseRewrite` 接口已前瞻定义 + 测试，P2 落地即消费。
@@ -69,7 +69,7 @@
 | P2.3 | **CC 切 driver**（flag 可回切） | ✅ | v4 路径全接线 + 7 http 等价测试逐项 v4↔legacy 字节等价（client 输出 + outbound wire）；**收尾 S/H/ON 后 flag ON、全套件 2584 pass/0 fail 经 v4**；typecheck+eslint 绿 | 分 5 commit：transport adapter（fd6c637）+ env-strategy bridge（2d8967e）+ 路由接线（2790d50）+ ctx-settle review 修复（6dbe053）+ **P2.3-S 请求侧双轨采样（6cc8b9c）+ 本（隔离修复+翻 flag ON）**。driver +策略工厂+per-attempt 采样；codec +`getTruncateBaseline`/`getContext`/originalBodyForHistory/preResolved/`sampleRequest`；driver-flags **默认 ON**；handler-v4 含 D3/D6/D2/S5 tool-restore/失败 settle。收尾详情见顶部「P2.3 收尾排程」（S 请求侧✅响应侧→P3.2b / H 经全套件满足 / ON 默认 ON）|
 | P2.4 | codec/openai-responses.ts + Responses 切 driver | ✅ | v4 路径全接线 + 14 http 等价测试逐项 v4↔legacy 等价（直连流式/非流式 + fallback(Responses→CC) + Google force-fallback + stream-id-sync + normalizeCallIds + reject + network-retry + L2 双轨 + 上游 WS）；**flag ON、全套件 2598 pass/0 fail 经 v4**；流式/WS/fallback 连跑 15× 确定；typecheck+eslint 绿；subagent review + 亲自实测复核（C1 假阳性、M1 已修+回归测试） | per-request 工厂 `createOpenAiResponsesCodec()`；**translateOut=identity + Responses→CC fallback 落 prepareWire**（保 effective 轨=openai-responses，对齐 legacy pipeline，openai-cc P2.2-D1 同构）；上游 WS-attempt 抽 `upstream-ws-attempt.ts` 与 legacy `createResponses` 共享（字节等价，client it-test 守）；`translateCCStreamToResponsesStream` 重构为逐帧 `createCCToResponsesStreamTranslator`（translate+flush）供 codec 复用（oracle: responses-to-cc-request unit）；客户端 WS 复用同 driver（含 fallback，CC-only/Google 经 WS 现可用）。5 条遗留见下 |
 | P2.5 | codec/gemini.ts + Gemini 切 driver | ✅ | v4 全接线 + 7 http 等价测试（generateContent 非流/流 + via-responses(Gemini→CC→Responses) + Gemini-shape error frame + dropped-params 警告 + L2 双轨 + completed 终态）；**flag ON、全套件 2606 pass/0 fail 经 v4**；Gemini 流式连跑 12× 确定；typecheck+eslint 绿；subagent review + 亲自核验（HIGH stream.onAbort 已修+回归、2 LOW 已处理） | **薄翻译层委托范式**：gemini codec 持内部 `createOpenAiCcCodec()` 实例，decideRoute/translateOut/prepareWire/renderResponse/renderResponseNonStreaming/sampleRequest/createResponseAccumulator **全委托 cc**（不调 cc.parse——这些方法对 env 纯，唯一 cc 闭包态是 via-responses translator，lazily 建于 cc.renderResponse）；codec 只自做 parse(Gemini→CC + gemini-generate-content ctx + Gemini-shape original + O10 fill) + Gemini error。**renderResponse 产 CC 帧**（非 Gemini）——CC→Gemini 整流翻译留 handler-v4（`translateOpenAIStreamToGemini` 不重构、零字节风险，同 legacy）。countTokens 仍 legacy（本地 tokenizer，无管线）。复用 createUpstreamHttpTransport + CC strategies。3 条遗留见下 |
-| P2.6 | **codec/anthropic.ts + Anthropic 切 driver** | 🟡 C0-C2 | thinking signature 往返；web_search 双跳等价 | 最复杂。C0(80a2157 共享契约)+C1(044e895 transport hook)+C2(c4a2786 codec+8策略) ✅；C3(handler-v4+pump 抽取+flag OFF)/C4(flag ON canary)/C5(docs) 待做，续接 prompt 见 [prompts/P2.6-C3-C5.md](prompts/P2.6-C3-C5.md) |
+| P2.6 | **codec/anthropic.ts + Anthropic 切 driver** | ✅ | v4 全接线 + 15 http 等价测试逐项 v4↔legacy 字节等价（直连流/非流 + thinking+signature_delta 逐字 + alias + network-retry + L2 双轨含 payload 内容 + sseEvents/inboundResponse 双轨 + reject 双路 + **reject→failed 忠实 middleware** + **H2 终态 error 帧恰转发一次→ctx.fail 非 throw** + **H3 mid-stream throw→pump catch 合成 error 帧** + deferred-tool 往返 非流/流 + /anthropic 别名）；**flag ON、全套件 2707 pass/0 fail 经 v4**；流式/时序连跑 15× 确定；typecheck+eslint 绿；subagent review（实现+测试双视角）+ 亲自核验每条 file:line（M1 web_search 路由校验已修+回归、H1/H2 driver 层分歧已文档化、C1 oracle 可信度已修） | 最复杂。**bypass-direct 格式**：codec translate/render=identity,driver 逐字透传上游 Anthropic SSE,handler-v4 复用 streaming-pump byte-critical 原语,只换流源为 driver.runResponse + 内联 parse+accumulate+break（guard 由 transport 承担）。C0(80a2157)+C1(044e895)+C2(c4a2786)+C3a(db8e67b pump 抽取)+C3b(f7f2f4c)+等价测试(9d51857)+review 修复(b8adf80)+加固(94d6a23)+C4(977a634)。H1 transport shutdown→529 在 http-transport.it 层覆盖。4 条遗留见 P2.6-D1～D4 |
 
 ## P3 — 统一收尾
 
@@ -98,6 +98,38 @@
 ## 遗留与决策追踪
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
+
+### P2.6-D1 — web_search 双跳整条留 legacy ctx,绕过 v4 driver（暂缓）
+
+- **发现于**：P2.6 RFC §1/§12.7 设计裁决 + C3 实现。
+- **根因**：web_search 双跳（拦截含 native web_search server tool 的请求 → 真实搜索 → 主模型二次生成）是一条与单跳 driver 编排正交的控制流,搬进 driver 需为 driver 引入"双跳"概念。RFC 裁定整条 web_search 留 legacy `handleWebSearchCompletion` + legacy 轻量 ctx,作 P2.6 暂缓项。
+- **当前行为**：v4 route 在 `state.webSearchEnabled && payloadHasWebSearch(wireBody)` 时复现 legacy 轻量 ctx（`createWebSearchContext`）并调 `handleWebSearchCompletion`,**不进 codec/driver**。与 codec.parse 的小重复（ctx 创建）被接受。**review 修复（b8adf80）**：web_search 分支前补回 `supportsDirectAnthropicApi` 路由校验,对齐 legacy 在 ctx 创建前的无条件校验（否则非 Anthropic 模型 + web_search 会绕过校验静默进双跳）。
+- **理想架构**：driver 支持多跳编排,或 web_search 作为一种 codec 变体。
+- **为何暂缓**：web_search 是低频 opt-in 特性（`webSearchEnabled` 默认 false）,搬进 driver 的收益 < 给 driver 引入多跳复杂度的成本,且与 P2.6 主线（单跳 byte 等价）正交。
+- **若做需改什么**：driver 增多跳 step 或 codec 多跳变体;handler-v4 删 web_search 拦截分支;web_search 等价测试纳入 v4 canary（当前 `webSearchEnabled=true` 时 canary 覆盖不完整,因该路径不经 v4）。
+
+### P2.6-D2 — driver `onMeta`（仅 meta 存在时触发）vs legacy `onRetry`（无条件触发）的 retry 可观测性分歧（driver 层,跨 4 格式）
+
+- **发现于**：P2.6 C3 subagent review（实现视角）+ 亲自核验 effort-learning-retry.ts:74 / driver.ts:217 / pipeline.ts:368,377 / handler.ts:368-408。
+- **根因**：legacy pipeline `onRetry` 在每次被预算门接受的 retry **无条件**触发,其回调 `recordRetryPipelineState` 总是重建 messageMapping + recordFeature；且 `setAttemptSanitization` 在 `action.meta?.sanitization` 存在时记 per-attempt。v4 driver 的 `onMeta` 仅在 `action.meta` 存在时触发（driver.ts:217 `if (action.meta)`）,而 effort-learning 策略返回无 meta 的 retry。
+- **当前行为**：(a) 无-meta retry（effort-learning）在 v4 不触发 `recordRetryPipelineStateV4`。**实际影响微**:effort-learning 的 payload 不变（仅重新 prepare effort）,故 messageMapping 对初始/retry 等同、thinking 初始已记,**唯一差异 = legacy 在无-meta retry 记一个误导性的 `truncated` feature tag（else 分支）,v4 不记（v4 反更正确）**。(b) auto-truncate retry（有 meta.sanitization）在 v4 经 onMeta 记**聚合** `setPipelineInfo.sanitization`,但不记 legacy 的 **per-attempt** `setAttemptSanitization`——**信息保留**（聚合里有）,仅 per-attempt 副本缺。
+- **理想架构**：driver 区分"无条件 per-retry 钩子"（重建聚合 pipeline-info + per-attempt sanitization）与"meta-gated 钩子",或把 per-attempt sanitization 记录下沉 driver（与 `setAttemptEffectiveRequest`/`setAttemptWireRequest` 并列,driver.ts:162-166 已 per-attempt 记这两轨）。
+- **为何暂缓**：这是 **driver 层跨 4 格式的 P2.3 既定 onMeta 契约**,非 P2.6 anthropic 引入——CC/Responses/Gemini 早已 flag ON 用同样 pattern 过 canary。改 driver retry 钩子语义影响全 4 格式,需独立的跨格式 RFC + 重验,不在 P2.6 anthropic C3 范围。且两项实际影响小（(a) v4 更正确;(b) 信息聚合保留）。
+- **若做需改什么**：driver.ts 加无条件 onRetry 钩子 + 把 per-attempt sanitization 记录搬进 `runExchange` 的 retry 分支;4 格式 handler-v4 各自的 onMeta 回调相应调整;回归 4 格式 L2 双轨测试。建议归 P3.2（数据采集下沉 driver）一并处理。
+
+### P2.6-D3 — reject（不支持的模型）在 v4 记一条 `failed` history entry,legacy 不记任何 entry（与 CC P2.4-D3 一致,有意）
+
+- **发现于**：P2.6 C3 review + RFC §11.5,与 `mem:` P2.4-D3 同构。
+- **根因**：legacy 路由校验在 ctx 创建前（handler.ts:169）,reject 时 entry 从未插入。v4 codec.parse **无条件**先建 ctx（触发 history insert）,再 decideRoute reject。
+- **当前行为**：v4 reject → handler `c.set("requestContext", ctx)` 后 throw HTTPError → observabilityMiddleware 经 4xx `completeFromHttpStatus` 把 ctx fail → **failed entry（非 dangling）**。legacy reject → 无 entry。**已由装 middleware 的忠实 app 测试裁决**（`anthropic-v4.http.test.ts` reject→failed,替代需起服务器的实测,守 no-auto-server）。
+- **为何接受**：与 CC/Responses/Gemini 一致（P2.4-D3 已定为有意分歧,richest-data-flow——v4 记更多）。理想态由 P3.1 透传统一时整体复核 4 格式 reject 形态。
+
+### P2.6-D4 — 等价测试经 mock-fetch 绕过生产上游 transport（handler-equivalence 范围,可接受）
+
+- **发现于**：P2.6 等价测试 subagent review（测试视角）。
+- **根因**：`anthropic-v4.http.test.ts` 经 `applyFetchMock` 把上游桥到 mock,真实 `transport/upstream-fetch.ts` / `http2-client.ts` / undici dispatcher 路径不被调用（与 CC/Responses/Gemini v4 测试同范式）。
+- **当前行为**：测试验证 handler/pump 层 v4↔legacy 等价,**不覆盖 transport 层 framing**。H1（transport shutdown→529 `rewriteShutdownAbort`,v4 专属 opt-in）由 `tests/transport/http-transport.it.test.ts:118-193` 在忠实 transport 层覆盖三态,handler-v4 已 opt-in;故 transport 层分歧在其专属测试覆盖,不在 handler-equivalence 文件重复。
+- **为何接受**:handler-equivalence 测试的目的是 handler/pump 层等价;transport 层有独立 it-test。两层各测各的,无覆盖洞。
 
 ### P2.5-D1 — Gemini codec 委托内部 cc codec（不调 cc.parse），renderResponse 产 CC 帧而非 Gemini 帧
 
