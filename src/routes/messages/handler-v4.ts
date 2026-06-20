@@ -290,6 +290,10 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   const driver = createPipelineDriver({
     codec,
     transport,
+    // S3 — the Anthropic request sanitize chain + its recordings, lifted from
+    // codec.parse into a per-request RequestRewrite (RFC §4.A0). The codec owns them
+    // (they close over preprocessInfo + write initialSanitizationInfo back).
+    requestRewrites: codec.getRequestRewrites(),
     strategies: (env) => {
       // parse resolves the factory AFTER parse populated resanitize, so it is
       // present here; the guard is defensive (an unreachable parse failure would

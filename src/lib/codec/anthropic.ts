@@ -54,6 +54,7 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { RequestRewrite } from "~/lib/pipeline/rewrite-registry"
 import type {
   //
   ClassifiedStreamError,
@@ -73,7 +74,6 @@ import type {
 } from "~/types/api/anthropic"
 
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
-import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
 import { runAnthropicRequestRewrites } from "~/lib/anthropic/request-rewrites"
 import {
@@ -92,6 +92,8 @@ import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
+
+import { createAnthropicSanitizeRewrite } from "./anthropic-request-rewrites"
 
 const CLIENT_FORMAT: ClientFormat = "anthropic"
 const ENDPOINT_TYPE: EndpointType = "anthropic-messages"
@@ -119,6 +121,8 @@ export interface AnthropicCodec extends FormatCodec {
   getLatestEffectiveMessages(): Array<unknown> | undefined
   /** Latest attempt's effective `thinking` (sampleRequest-captured; `thinking` feature rebuild). */
   getLatestEffectiveThinking(): unknown
+  /** The per-request request rewrites (driver S3): the sanitize chain + its side-channel recordings (RFC §4.A0). */
+  getRequestRewrites(): ReadonlyArray<RequestRewrite>
 }
 
 /** Args for {@link createAnthropicCodec}. */
@@ -142,15 +146,27 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   let latestEffectiveMessages: Array<unknown> | undefined
   let latestEffectiveThinking: unknown
 
+  // The S3 request rewrite (sanitize chain + its recordings), built once per request.
+  // It closes over `preprocessInfo` (route-supplied, not on the env) and writes the
+  // initial sanitization-info back to the closure for the retry-rebuild reads. parse
+  // leaves env.body = pre-sanitize baseline; the driver's S3 runs this (RFC §4.A0).
+  const requestRewrites: ReadonlyArray<RequestRewrite> = [
+    createAnthropicSanitizeRewrite({
+      preprocessInfo: args.preprocessInfo,
+      onInitialSanitizationInfo: (info) => {
+        initialSanitizationInfo = info
+      },
+    }),
+  ]
+
   return {
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const parsed = parseAnthropic(raw, args.preprocessInfo)
+      const parsed = parseAnthropic(raw)
       requestContext = parsed.env.ctx
       truncateBaseline = parsed.baseline
       clientAnthropicBeta = parsed.clientAnthropicBeta
-      initialSanitizationInfo = parsed.initialSanitizationInfo
       resanitize = parsed.resanitize
       return parsed.env
     },
@@ -175,6 +191,9 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     },
     getLatestEffectiveThinking() {
       return latestEffectiveThinking
+    },
+    getRequestRewrites() {
+      return requestRewrites
     },
 
     decideRoute(env) {
@@ -221,7 +240,6 @@ interface ParseAnthropicResult {
   env: RequestEnvelope
   baseline: MessagesPayload
   clientAnthropicBeta: string | undefined
-  initialSanitizationInfo: SanitizationInfo
   resanitize: AnthropicSanitizeFn
 }
 
@@ -229,14 +247,15 @@ interface ParseAnthropicResult {
  * S1: inbound HTTP → envelope. **Synchronous** (FormatCodec.parse contract).
  *
  * Reproduces the request-side ctx setup (ctx create → setOriginalRequest →
- * tool-name mapper → setResolvedModel) + the
- * `runInitialSanitizationAndRecord` (sanitize chain + initial pipeline-info +
- * thinking feature). The route pre-step has already done warmup / model resolve /
- * async system-prompt / message-level `preprocessAnthropicMessages` / web_search —
- * so `raw.body` is the preprocessed + system-injected wire body, and
+ * tool-name mapper → setResolvedModel) + the resanitize closure. The initial
+ * sanitize pass and its pipeline-info / message-mapping / thinking recordings move
+ * to driver S3 (`createAnthropicSanitizeRewrite`, RFC §4.A0) — parse leaves
+ * `env.body` = the pre-sanitize baseline. The route pre-step has already done warmup /
+ * model resolve / async system-prompt / message-level `preprocessAnthropicMessages` /
+ * web_search — so `raw.body` is the preprocessed + system-injected wire body, and
  * `raw.originalBodyForHistory` is the client's raw pre-injection body.
  */
-function parseAnthropic(raw: RawHttpRequest, preprocessInfo: PreprocessInfo): ParseAnthropicResult {
+function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
   const incoming = raw.body as MessagesPayload
   const clientBody = (raw.originalBodyForHistory ?? raw.body) as MessagesPayload
   const originalSnapshot = structuredClone(clientBody)
@@ -283,35 +302,19 @@ function parseAnthropic(raw: RawHttpRequest, preprocessInfo: PreprocessInfo): Pa
     ...(clientModelName !== undefined && { client: clientModelName }),
   })
 
-  // Initial sanitize + record (inlined runInitialSanitizationAndRecord).
-  const { payload: initialSanitized, sanitizeResult } = runAnthropicRequestRewrites(anthropicPayload, { toolNameMapper })
-  const stats = sanitizeResult.stats
-  const initialSanitizationInfo = toSanitizationInfo(stats)
-
-  const hasPreprocessing = preprocessInfo.dedupedToolCallCount > 0 || preprocessInfo.strippedReadTagCount > 0
-  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || hasPreprocessing) {
-    // Mapping baseline is the preprocessed, pre-initial-sanitize messages (RFC §12.9).
-    const messageMapping = buildMessageMapping(anthropicPayload.messages, initialSanitized.messages)
-    ctx.setPipelineInfo({
-      preprocessing: preprocessInfo,
-      sanitization: [initialSanitizationInfo],
-      messageMapping,
-    })
-  }
-
-  if (initialSanitized.thinking && initialSanitized.thinking.type !== "disabled") {
-    ctx.recordFeature("thinking", { type: initialSanitized.thinking.type })
-  }
-
   // The direct sanitize chain — reused as the adapter's sanitize and auto-truncate's
-  // resanitize (the strategies read it via codec.getResanitize()).
+  // resanitize (the strategies read it via codec.getResanitize()). The INITIAL pass
+  // (+ its pipelineInfo / messageMapping / thinking / initialSanitizationInfo
+  // recordings) now runs in driver S3 via `createAnthropicSanitizeRewrite` (RFC §4.A0),
+  // NOT here — so a model rejected at S2 never sanitizes, and env.body below stays the
+  // pre-sanitize baseline (= the truncation/message-mapping baseline) until S3.
   const resanitize: AnthropicSanitizeFn = (p) => runAnthropicRequestRewrites(p, { toolNameMapper }).sanitizeResult
 
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.MESSAGES,
     model: selectedModel as ResolvedModel,
-    stream: initialSanitized.stream ?? false,
-    body: initialSanitized,
+    stream: anthropicPayload.stream ?? false,
+    body: anthropicPayload,
     ctx,
   })
 
@@ -319,7 +322,6 @@ function parseAnthropic(raw: RawHttpRequest, preprocessInfo: PreprocessInfo): Pa
     env,
     baseline: anthropicPayload,
     clientAnthropicBeta: raw.headers.get("anthropic-beta") ?? undefined,
-    initialSanitizationInfo,
     resanitize,
   }
 }
