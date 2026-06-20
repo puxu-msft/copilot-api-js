@@ -28,6 +28,7 @@ import type {
   RawHttpRequest,
   RetryAction,
   RetryStrategy,
+  RunResponseOpts,
   Transport,
   UpstreamFrame,
   UpstreamStream,
@@ -86,7 +87,7 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
 export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming {
   return {
     runRequest: (raw) => runRequest(deps, raw),
-    runResponse: (upstream, env) => runResponse(deps, upstream, env),
+    runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
   }
 }
@@ -238,10 +239,10 @@ async function runExchange(
 // ============================================================================
 
 /** S5→S7: rewrite-out (per-frame chain + flush) → renderResponse → yield. */
-async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: RequestEnvelope): AsyncIterable<ClientFrame> {
-  // S5 — Rewrite-out: assemble the response-rewrite chain (per-request state).
+async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame> {
+  // S5 — Rewrite-out: assemble the response-rewrite chain (per-request state, seeded from env).
   const rewrites = assembleResponseRewrites(env, deps.responseRewrites ?? RESPONSE_REWRITES)
-  const states: Array<RewriteState> = rewrites.map((r) => r.createState?.() ?? {})
+  const states: Array<RewriteState> = rewrites.map((r) => r.createState?.(env) ?? {})
 
   // S4-exit sampling (P3.2b, envelope-driver.md §4): record each upstream-ORIGINAL
   // frame (raw verbatim) BEFORE the rewrite/render chain. The `outboundResponse`
@@ -273,6 +274,11 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
       if (frame.data !== "[DONE]") {
         upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
         if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
+        // Hand the raw upstream frame to the handler's upstream-side work (accumulate
+        // → outboundResponse, repetition, progress, diagnostics) BEFORE the rewrite
+        // chain (RFC §4.A1 — keeps those on the upstream-original, not the rewritten
+        // frames the loop yields below). Same skip-[DONE] condition as upstreamSse.
+        opts?.onUpstreamFrame?.(frame)
       }
       // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
       for (const rewritten of passThrough([frame], rewrites, states, 0)) {

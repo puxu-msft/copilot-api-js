@@ -49,6 +49,7 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   DriverRequestResult,
+  UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type {
@@ -60,7 +61,6 @@ import type {
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import {
   //
-  createToolInputStreamDecoder,
   decodeToolInputBlocksInResponse,
 } from "~/lib/anthropic/decode-tool-input"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
@@ -68,7 +68,6 @@ import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
-  createToolCallTextRecoverer,
   extractToolParamTypes,
   recoverToolCallTextInResponse,
 } from "~/lib/anthropic/recover-tool-call"
@@ -80,7 +79,6 @@ import {
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import {
   //
-  createServerToolBlockFilter,
   filterServerToolBlocksFromResponse,
   logServerToolBlocks,
   restoreToolNamesInResponse,
@@ -97,6 +95,7 @@ import {
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search/detect"
 import { createAnthropicCodec } from "~/lib/codec/anthropic"
+import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic-response-rewrites"
 import { buildAnthropicStrategies } from "~/lib/codec/anthropic-strategies"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
@@ -119,10 +118,9 @@ import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
   anthropicStreamErrorType,
-  forwardToClient,
+  forwardClientFrame,
   logUpstreamStreamError,
-  parseStreamEventData,
-  processOneStreamEvent,
+  recordUpstreamFrame,
   startForwardedSseHeartbeat,
   type StreamPumpState,
 } from "./streaming-pump"
@@ -294,6 +292,10 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // codec.parse into a per-request RequestRewrite (RFC §4.A0). The codec owns them
     // (they close over preprocessInfo + write initialSanitizationInfo back).
     requestRewrites: codec.getRequestRewrites(),
+    // S5 — the Anthropic response-rewrite chain (recover/thinking/decode/filter),
+    // lifted from the handler's hand-nested pump into the driver (RFC §4.A1). The
+    // driver applies + flushes them; the handler just forwards the yielded frames.
+    responseRewrites: ANTHROPIC_RESPONSE_REWRITES,
     strategies: (env) => {
       // parse resolves the factory AFTER parse populated resanitize, so it is
       // present here; the guard is defensive (an unreachable parse failure would
@@ -532,16 +534,20 @@ interface PumpAnthropicStreamingV4Options {
 }
 
 /**
- * Stream pump for the v4 Anthropic path. Sets up the same per-request state as the
- * legacy `handleDirectAnthropicStreamingResponse` (accumulator + repetition checker
- * + server-tool filter + tool-input decoder + tool-call-text recoverer + heartbeat),
- * then drives `driver.runResponse` (identity → upstream Anthropic SSE frames) with
- * the legacy parse+accumulate+break inlined.
+ * Stream pump for the v4 Anthropic path. The driver applies the S5 response-rewrite
+ * chain (recover/thinking/decode/filter via `ANTHROPIC_RESPONSE_REWRITES`) +
+ * `flushChain`, yielding the REWRITTEN client frames; this handler:
+ *   - runs the upstream-side work (accumulate → outboundResponse, repetition, progress,
+ *     diagnostics) on the RAW frame via the driver's `onUpstreamFrame` hook — BEFORE the
+ *     rewrites (Option A / RFC §4.A1: keeps `outboundResponse` on the upstream-original),
+ *   - forwards the yielded (rewritten) frames (sample + heartbeat write; NO re-filter),
+ *   - DRAINS the generator (no `break`): a break would discard the finally `flushChain`
+ *     on the breaking consumer (Phase 3 contract), losing stream-end buffers. `[DONE]`
+ *     is skip-forwarded; the terminal `error` frame is forwarded then drained.
  *
- * The transport's `guardSseIterable` already owns idle/shutdown/client-abort, so
- * this inline loop does NOT add a second guard (RFC §10.6 — avoids double abort
- * listeners). `env.body` is the post-retry env (C0-① / RFC §11.1): the recoverer
- * reads `env.body.tools` so deferred-tool retry's modified tools are reflected.
+ * The transport's `guardSseIterable` owns idle/shutdown/client-abort. `env.body` is the
+ * post-retry env (C0-①): the recover/decode rewrites read `env.body.tools` so a
+ * deferred-tool retry's modified tools are reflected (via `createState(env)`).
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env, clientAbortSignal } = opts
@@ -551,30 +557,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   const acc = createAnthropicStreamAccumulator()
   const checkRepetition = createStreamRepetitionChecker(model)
 
-  // Raw upstream SSE frames (verbatim, incl. keepalives) for history.
+  // Raw upstream SSE frames (verbatim) — a local copy for logUpstreamStreamError. The
+  // PERSISTED upstream-original track is the driver's (runResponse loop-top, P3.2b).
   const sseEvents: Array<SseEventRecord> = []
-  // Forwarded SSE frames — what the client ACTUALLY received after filtering /
-  // restoration / decoding. Compared against `sseEvents` = sent-vs-received.
+  // Forwarded SSE frames — what the client ACTUALLY received (post-S5-rewrite).
   const forwardedSseEvents: Array<SseEventRecord> = []
-
-  const serverToolFilter = createServerToolBlockFilter(env.ctx.toolNameMapper)
-
-  const toolInputDecoder = createToolInputStreamDecoder(
-    {
-      fields: state.decodeToolInputFields,
-      all: state.decodeAllToolInputFields,
-    },
-    { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
-  )
-
-  // Tool-call-text recoverer reads the POST-retry env body's tools (C0-①) — a
-  // deferred-tool retry that changed `tools` is reflected here, so the synthesized
-  // tool_use names/schemas match what was actually sent.
-  const toolCallTextRecoverer = createToolCallTextRecoverer({
-    enabled: state.recoverToolCallText,
-    toolNames: new Set((anthropicPayload.tools ?? []).map((t) => t.name)),
-    toolSchemas: extractToolParamTypes(anthropicPayload.tools),
-  })
 
   const streamState: StreamPumpState = {
     streamStartMs: Date.now(),
@@ -586,8 +573,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   }
 
   // Synthetic SSE keepalive (anthropic.fake_sse_heartbeat). Heartbeats are
-  // proxy-originated: recorded ONLY in forwardedSseEvents, never sseEvents. The
-  // clientAbortSignal lets the heartbeat tick skip emitting after a client abort.
+  // proxy-originated: recorded ONLY in forwardedSseEvents, never sseEvents.
   const heartbeat = startForwardedSseHeartbeat({
     intervalSec: state.anthropicFakeSseHeartbeat,
     stream,
@@ -596,96 +582,55 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     clientAbortSignal,
   })
 
-  try {
-    // driver.runResponse yields the upstream Anthropic SSE frames byte-for-byte
-    // (renderResponse is identity). Inline the legacy processAnthropicStream's
-    // parse+accumulate+break (the guard is the transport's, not re-added here).
-    for await (const frame of driver.runResponse(upstream, env)) {
-      const rawEvent = frame as ServerSentEventMessage
-
-      // Keepalive (no data): forward as-is, no parse/accumulate.
-      if (!rawEvent.data) {
-        await processOneStreamEvent({
-          rawEvent,
-          parsed: undefined,
-          streamState,
-          sseEvents,
-          forwardedSseEvents,
-          reqCtx: env.ctx,
-          checkRepetition,
-          serverToolFilter,
-          toolInputDecoder,
-          toolCallTextRecoverer,
-          heartbeat,
-        })
-        continue
-      }
-
-      if (rawEvent.data === "[DONE]") break
-
-      let parsed: StreamEvent | undefined
+  // Upstream-side work on the RAW frame (BEFORE the S5 rewrites): parse + accumulate
+  // (→ outboundResponse, upstream-original) + the shared recording (sseEvents,
+  // progress, repetition, server-tool logging). A malformed frame is logged but not
+  // fatal (RFC §12.6) — still recorded with parsed=undefined.
+  const onUpstreamFrame = (frame: UpstreamFrame): void => {
+    const rawEvent = frame as ServerSentEventMessage
+    let parsed: StreamEvent | undefined
+    if (rawEvent.data) {
       try {
         parsed = JSON.parse(rawEvent.data) as StreamEvent
         accumulateAnthropicStreamEvent(parsed, acc)
       } catch (error) {
-        // Defensive (RFC §12.6, matching processAnthropicStream): a malformed frame
-        // is logged but NOT fatal — still forward it (parsed=undefined), don't break,
-        // don't fail.
         consola.error("Failed to parse Anthropic stream event:", error, rawEvent.data)
       }
-
-      await processOneStreamEvent({
-        rawEvent,
-        parsed,
-        streamState,
-        sseEvents,
-        forwardedSseEvents,
-        reqCtx: env.ctx,
-        checkRepetition,
-        serverToolFilter,
-        toolInputDecoder,
-        toolCallTextRecoverer,
-        heartbeat,
-      })
-
-      // H2 (RFC §11.4): a terminal upstream `error` SSE frame is forwarded EXACTLY
-      // once (above) THEN breaks — yield-then-break, not break-then-drop. The
-      // post-loop `acc.streamError` branch settles it as fail (not a thrown error).
-      if (parsed?.type === "error") break
     }
+    recordUpstreamFrame({ rawEvent, parsed, streamState, sseEvents, reqCtx: env.ctx, checkRepetition })
+  }
 
-    // Flush any tool_use input the recoverer/decoder buffered (defensive — normal
-    // completion emits content_block_stop). Recoverer first, then decoder.
-    for (const rev of toolCallTextRecoverer.flush()) {
-      const rp = parseStreamEventData(rev.data)
-      for (const ev of toolInputDecoder.processEvent(rp, rev)) {
-        await forwardToClient(ev, ev === rev ? rp : undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
-      }
-    }
-    for (const ev of toolInputDecoder.flush()) {
-      await forwardToClient(ev, undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
+  try {
+    // The driver yields the rewritten client frames + drains its flushChain at stream
+    // end (finally). DRAIN, don't break — the breaking-consumer path discards the
+    // finally flush (Phase 3). [DONE] is the sentinel (never forwarded); the terminal
+    // upstream `error` frame is forwarded then drained, settled below via acc.streamError.
+    for await (const yielded of driver.runResponse(upstream, env, { onUpstreamFrame })) {
+      const ev = yielded as ServerSentEventMessage
+      if (ev.data === "[DONE]") continue
+      await forwardClientFrame(ev, forwardedSseEvents, streamState.streamStartMs, heartbeat)
     }
 
     const summaryParts = [`↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`]
     if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
-    // Upstream-original sseEvents are sampled by the driver (runResponse loop-top,
-    // P3.2b); the handler records only the client-forwarded track here. The local
-    // `sseEvents` array (filled by the shared pump) survives for logUpstreamStreamError.
+    // Upstream-original sseEvents are the driver's (P3.2b); record the client-forwarded
+    // track here. The local `sseEvents` survives for logUpstreamStreamError.
     env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
 
     if (acc.streamError) {
-      // Terminal upstream `error` SSE event (H2) — not a thrown failure, so it never
-      // reaches the catch. Log + fail here (mirrors the catch block's console.error).
+      // Terminal upstream `error` SSE event (H2) — forwarded above, drained, now settled
+      // as fail (not a thrown error → never reaches the catch).
       consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
       env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
     } else {
       env.ctx.complete(buildAnthropicResponseData(acc, model))
     }
   } catch (error) {
-    // Record what was forwarded so far BEFORE settling (原则3). Upstream-original
-    // sseEvents are the driver's (runResponse loop-top, P3.2b).
+    // Record what was forwarded so far BEFORE settling (原则3). The driver's finally
+    // flushChain already drained + delivered any buffered frames BEFORE this throw
+    // propagated (Phase 1: throw → finally yields → re-throw), so no handler flush here.
     env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
 
     const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined }
@@ -695,23 +640,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     }
 
     logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
-
-    // H3 (RFC §10.4): best-effort flush of buffered tool_use deltas BEFORE the error
-    // frame, so the client doesn't silently lose fragments the decoder was holding.
-    // The stream may already be broken (abort/shutdown); ignore failures here.
-    try {
-      for (const rev of toolCallTextRecoverer.flush()) {
-        const rp = parseStreamEventData(rev.data)
-        for (const ev of toolInputDecoder.processEvent(rp, rev)) {
-          await forwardToClient(ev, ev === rev ? rp : undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
-        }
-      }
-      for (const ev of toolInputDecoder.flush()) {
-        await forwardToClient(ev, undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
-      }
-    } catch {
-      // stream already closed — nothing to recover
-    }
 
     const errorMessage = error instanceof Error ? error.message : String(error)
     const errorType = anthropicStreamErrorType(error)

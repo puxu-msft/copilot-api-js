@@ -103,42 +103,37 @@ export interface ProcessOneStreamEventArgs {
   heartbeat: ForwardedSseHeartbeat
 }
 
+/** Inputs for {@link recordUpstreamFrame} — the upstream-side (raw) recording. */
+export interface RecordUpstreamFrameArgs {
+  rawEvent: ServerSentEventMessage
+  parsed: StreamEvent | undefined
+  streamState: StreamPumpState
+  sseEvents: Array<SseEventRecord>
+  reqCtx: RequestContext
+  checkRepetition: (text: string) => void
+}
+
 /**
- * Process a single upstream SSE event: update counters, record debug info,
- * filter server-tool blocks, and forward to the client. Mutates `streamState`,
- * `sseEvents`, `forwardedSseEvents`, and writes to `stream`.
+ * Upstream-side recording for ONE raw upstream frame: counters, the verbatim
+ * `sseEvents` record, block-boundary debug + server-tool logging, the stream-progress
+ * publish, and the repetition check. Operates on the UPSTREAM-ORIGINAL frame — in the
+ * v4 driver path the handler runs this via `driver.runResponse`'s `onUpstreamFrame`
+ * hook (BEFORE the S5 rewrite chain), so accumulate / progress / diagnostics stay on
+ * raw frames even though the driver yields the rewritten ones (RFC §4.A1). The legacy
+ * `processOneStreamEvent` (web_search direct path) calls it too, then runs its own
+ * recover/decode/filter nesting + forward.
  */
-export async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<void> {
-  const {
-    rawEvent,
-    parsed,
-    streamState,
-    sseEvents,
-    forwardedSseEvents,
-    reqCtx,
-    checkRepetition,
-    serverToolFilter,
-    toolInputDecoder,
-    toolCallTextRecoverer,
-    heartbeat,
-  } = args
+export function recordUpstreamFrame(args: RecordUpstreamFrameArgs): void {
+  const { rawEvent, parsed, streamState, sseEvents, reqCtx, checkRepetition } = args
 
   const dataLen = rawEvent.data?.length ?? 0
   streamState.bytesIn += dataLen
   streamState.eventsIn++
 
   // Faithfully record every raw upstream event, including `ping` keepalives —
-  // their timing reveals upstream idle gaps (e.g. pings during long thinking).
-  // Deltas (input_json_delta / thinking_delta / text_delta / signature_delta)
-  // are the ONLY original record of what the upstream actually streamed — the
-  // accumulated `response.content` is a derived artifact (accumulate →
-  // mapAnthropicContentBlocks → safeParseJson) and cannot answer "was the tool_use
-  // input empty at the source?". `raw` stores the verbatim upstream `data:` bytes
-  // (no parse round-trip); `type` is derived for indexing. Keepalive / unparseable
-  // frames are recorded too (timing matters — a signature_delta closing an
-  // encrypted thinking block can arrive seconds after content_block_start, a gap
-  // only visible if the bracketing keepalives are kept). Required by 原则3
-  // (后端存储必须完整,不主动丢弃任何可观测原始数据).
+  // their timing reveals upstream idle gaps. `raw` stores the verbatim upstream
+  // `data:` bytes (no parse round-trip); `type` is derived for indexing. Required by
+  // 原则3 (后端存储必须完整,不主动丢弃任何可观测原始数据).
   sseEvents.push({
     offsetMs: Date.now() - streamState.streamStartMs,
     type: parsed?.type ?? rawEvent.event ?? "keepalive",
@@ -168,10 +163,8 @@ export async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Pr
     streamState.currentBlockType = ""
   }
 
-  // Publish streaming progress to the observability bus. Replaces the
-  // legacy `tuiLogger.updateRequest({ streamBytesIn/streamEventsIn/...
-  // })` direct call — ConsoleSink's footer reads bytesIn/eventsIn/blockType
-  // from `request.stream_progress` and renders ` ↓12KB 42ev [thinking]`.
+  // Publish streaming progress to the observability bus (ConsoleSink footer reads
+  // bytesIn/eventsIn/blockType from `request.stream_progress`).
   reqCtx.recordStreamProgress({
     bytesIn: streamState.bytesIn,
     eventsIn: streamState.eventsIn,
@@ -185,6 +178,31 @@ export async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Pr
       checkRepetition(delta.text)
     }
   }
+}
+
+/**
+ * Process a single upstream SSE event: update counters, record debug info,
+ * filter server-tool blocks, and forward to the client. Mutates `streamState`,
+ * `sseEvents`, `forwardedSseEvents`, and writes to `stream`.
+ */
+export async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<void> {
+  const {
+    rawEvent,
+    parsed,
+    streamState,
+    sseEvents,
+    forwardedSseEvents,
+    reqCtx,
+    checkRepetition,
+    serverToolFilter,
+    toolInputDecoder,
+    toolCallTextRecoverer,
+    heartbeat,
+  } = args
+
+  // Raw-side recording (sseEvents, debug, progress, repetition, server-tool logging) —
+  // shared with the v4 driver path's `onUpstreamFrame` hook (recordUpstreamFrame).
+  recordUpstreamFrame({ rawEvent, parsed, streamState, sseEvents, reqCtx, checkRepetition })
 
   // Tool-call text recovery (text→tool_use) is the OUTERMOST response transform: it
   // sees every upstream event (incl. message_start/message_delta) to keep its state,
@@ -273,6 +291,34 @@ export async function forwardToClient(
   heartbeat.noteRealFrame()
   await heartbeat.writeSerialized({
     data: forwardData,
+    event: ev.event,
+    id: ev.id !== undefined ? String(ev.id) : undefined,
+    retry: ev.retry,
+  })
+}
+
+/**
+ * Forward one ALREADY-REWRITTEN client frame (the v4 driver path): sample it into
+ * `forwardedSseEvents` (the proxy→client record) + write it via the heartbeat-serialized
+ * writer. Unlike {@link forwardToClient} this does NO server-tool filtering / index
+ * remap — the driver's S5 chain already applied those, so the frame `ev` is the final
+ * client bytes (suppressed frames never reach here: `passThrough` doesn't yield them).
+ */
+export async function forwardClientFrame(
+  ev: ServerSentEventMessage,
+  forwardedSseEvents: Array<SseEventRecord>,
+  streamStartMs: number,
+  heartbeat: ForwardedSseHeartbeat,
+): Promise<void> {
+  const parsed = parseStreamEventData(ev.data)
+  forwardedSseEvents.push({
+    offsetMs: Date.now() - streamStartMs,
+    type: parsed?.type ?? ev.event ?? "keepalive",
+    raw: ev.data ?? "",
+  })
+  heartbeat.noteRealFrame()
+  await heartbeat.writeSerialized({
+    data: ev.data ?? "",
     event: ev.event,
     id: ev.id !== undefined ? String(ev.id) : undefined,
     retry: ev.retry,

@@ -223,6 +223,20 @@ export interface RawHttpRequest {
   readonly clientAbortSignal?: AbortSignal
 }
 
+/** Per-call hooks for {@link PipelineDriver.runResponse}. */
+export interface RunResponseOpts {
+  /**
+   * Invoked at the response loop top with each UPSTREAM-ORIGINAL frame (raw,
+   * verbatim — BEFORE the S5 rewrite chain), at the same point/condition the driver
+   * samples `upstreamSse` (the `[DONE]` sentinel is skipped). Lets a handler keep
+   * its upstream-side work (accumulate → history `outboundResponse`, repetition,
+   * progress, error diagnostics) on the raw frames while the driver yields the
+   * rewritten ones for forwarding (RFC §4.A1 — preserves the upstream-original
+   * accumulate when the response rewrites move into the driver).
+   */
+  onUpstreamFrame?: (frame: UpstreamFrame) => void
+}
+
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at
  * each stage boundary. Lifted+merged from the current `executeRequestPipeline`
@@ -232,7 +246,7 @@ export interface PipelineDriver {
   /** Request side: run S1→S4 (S4 contains error-driven retry). */
   runRequest(raw: RawHttpRequest): Promise<DriverRequestResult>
   /** Response side: build the S5→S6→S7 streaming transform chain. */
-  runResponse(upstream: UpstreamStream, env: RequestEnvelope): AsyncIterable<ClientFrame>
+  runResponse(upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame>
 }
 
 /**

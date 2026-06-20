@@ -45,6 +45,7 @@ import {
 } from "bun:test"
 
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
+import { getHistory } from "~/lib/history"
 import {
   //
   setModelOverrides,
@@ -340,9 +341,60 @@ const S5_GOLDEN = [
   messageStop(),
 ].join("")
 
+// S7 (thinking-signature-compat reshape): an embedded-signature thinking start
+// (`content_block_start{thinking:"",signature:S}` + stop, NO signature_delta) is
+// reshaped on the FORWARDED stream into an empty-thinking start + a synthesized
+// signature_delta — the two reshaped frames both inherit the source frame's
+// `event: content_block_start` line (the `{...frame, data}` quirk, locked here).
+function s7Frames(): Array<string> {
+  return [
+    messageStart(),
+    ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "SIG-XYZ" } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+    ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+    messageDelta("end_turn"),
+    messageStop(),
+    DONE,
+  ]
+}
+const S7_GOLDEN = [
+  messageStart(),
+  ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
+  ev("content_block_start", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "SIG-XYZ" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+  ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+  messageDelta("end_turn"),
+  messageStop(),
+].join("")
+
+// outboundResponse.content goldens — the UPSTREAM-ORIGINAL accumulated response
+// (ctx.complete → entry.outboundResponse, what lineage reads). The migration MUST
+// keep this on raw upstream frames (Option A): it includes the server_tool_use the
+// forwarded stream filters (S1), the downgraded TEXT the forwarded stream recovers
+// (S3a), and the thinking signature on the start the forwarded stream reshapes (S7).
+const S1_OUTBOUND = {
+  role: "assistant",
+  content: [
+    { type: "server_tool_use", id: "srvtool_1", name: "web_search", input: { query: "x" } },
+    { type: "text", text: "hi there" },
+  ],
+}
+const S3A_OUTBOUND = { role: "assistant", content: [{ type: "text", text: INVOKE_TEXT }] }
+const S7_OUTBOUND = {
+  role: "assistant",
+  content: [
+    { type: "thinking", thinking: "", signature: "SIG-XYZ" },
+    { type: "text", text: "answer" },
+  ],
+}
+
 // ── mock ─────────────────────────────────────────────────────────────────────
 
-type Scenario = "s1" | "s2" | "s3a" | "s3b" | "s4" | "s5" | "s6Filter" | "s6Decode" | "s6Recover"
+type Scenario = "s1" | "s2" | "s3a" | "s3b" | "s4" | "s5" | "s7" | "s6Filter" | "s6Decode" | "s6Recover"
 let scenario: Scenario = "s1"
 
 const upstreamMock = mock((input: string | URL | Request, init?: RequestInit) => {
@@ -365,6 +417,7 @@ const upstreamMock = mock((input: string | URL | Request, init?: RequestInit) =>
     : scenario === "s3a" ? s3aFrames()
     : scenario === "s3b" ? s3bFrames()
     : scenario === "s4" ? s4Frames()
+    : scenario === "s7" ? s7Frames()
     : s5Frames()
   return Promise.resolve(createSseResponse(frames))
 })
@@ -396,6 +449,11 @@ async function postJson(extra?: Record<string, unknown>): Promise<unknown> {
   return res.json()
 }
 
+/** The upstream-original accumulated assistant response (ctx.complete → entry.outboundResponse). */
+function lastOutboundContent(): unknown {
+  return getHistory({ endpoint: "anthropic-messages" }).entries[0]?.outboundResponse?.content
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () => {
@@ -418,6 +476,9 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(text).not.toContain("web_search")
     // Heartbeat isolation (intervalSec=0): no synthetic ping interleaved.
     expect(text).not.toContain('"type":"ping"')
+    // Option A: the accumulated (upstream-original) response KEEPS the server_tool_use
+    // the forwarded stream filters out — accumulate is on raw, not the rewritten frames.
+    expect(lastOutboundContent()).toEqual(S1_OUTBOUND)
   })
 
   test("S2 tool-input decode buffer/flush + question backfill (streaming)", async () => {
@@ -440,6 +501,9 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(text).not.toContain("<invoke")
     expect(text).toContain(SYNTH_ID)
     expect(text).not.toContain('"type":"ping"')
+    // Option A: the accumulated (upstream-original) response KEEPS the downgraded TEXT —
+    // recovery is forwarded-only (history 保留上游降级原貌).
+    expect(lastOutboundContent()).toEqual(S3A_OUTBOUND)
   })
 
   test("S3b recover-tool-call ROLLBACK (candidate interrupted)", async () => {
@@ -469,6 +533,19 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(text).not.toContain("server_tool_use")
     expect(text).toContain(SYNTH_ID)
     expect(text).not.toContain('"type":"ping"')
+  })
+
+  test("S7 thinking-signature-compat reshape (streaming)", async () => {
+    scenario = "s7"
+    const text = await postStream()
+    // Forwarded: the embedded-signature thinking start becomes empty-thinking start +
+    // synthesized signature_delta (both inherit `event: content_block_start`).
+    expect(text).toBe(S7_GOLDEN)
+    expect(text).toContain('"type":"signature_delta","signature":"SIG-XYZ"')
+    expect(text).not.toContain('"type":"ping"')
+    // Option A: the accumulated (upstream-original) response keeps the signature on the
+    // thinking start (the forwarded stream splits it into a signature_delta).
+    expect(lastOutboundContent()).toEqual(S7_OUTBOUND)
   })
 
   test("S6 non-streaming: server-tool blocks filtered from response", async () => {

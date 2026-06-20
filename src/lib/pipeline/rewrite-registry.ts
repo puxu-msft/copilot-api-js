@@ -102,8 +102,12 @@ export interface ResponseRewrite {
   readonly name: string
   readonly order: number
   appliesTo(env: RequestEnvelope): boolean
-  /** Create this rewrite's private per-request state. Omitted = stateless. */
-  createState?(): RewriteState
+  /**
+   * Create this rewrite's private per-request state. Omitted = stateless. Receives
+   * the parsed `env` so a rewrite can seed its state from request data (e.g. the
+   * tool names / tool-name mapper a buffering rewrite needs).
+   */
+  createState?(env: RequestEnvelope): RewriteState
   /** Per-frame transform; may emit/replace/suppress/buffer. */
   transform(frame: UpstreamFrame, state: RewriteState): FrameAction
   /** Flush buffered frames at stream end (e.g. tool-input decoder at content_block_stop). */
