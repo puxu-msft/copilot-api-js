@@ -1,0 +1,373 @@
+/**
+ * Anthropic streaming pump — shared primitives extracted from handler.ts.
+ *
+ * These are the SSE forwarding / heartbeat / per-event processing primitives
+ * used by the legacy `handler.ts` and (in the v4 rearchitecture) the future
+ * `handler-v4.ts`. Pure code move from handler.ts — no logic changes.
+ */
+
+import type { ServerSentEventMessage } from "fetch-event-stream"
+import type { SSEStreamingApi } from "hono/streaming"
+
+import consola from "consola"
+
+import type { ToolInputStreamDecoder } from "~/lib/anthropic/decode-tool-input"
+import type { ToolCallTextRecoverer } from "~/lib/anthropic/recover-tool-call"
+import type { RequestContext } from "~/lib/context/request"
+import type { SseEventRecord } from "~/lib/history/store"
+import type { StreamEvent } from "~/types/api/anthropic"
+
+import {
+  //
+  createServerToolBlockFilter,
+  logServerToolBlock,
+} from "~/lib/anthropic/server-tool-filter"
+import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { applyThinkingSignatureCompat } from "~/lib/anthropic/thinking-signature-compat"
+import { formatErrorWithCause } from "~/lib/error"
+import { state } from "~/lib/state"
+import { classifyStreamError } from "~/lib/stream"
+import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
+
+/** Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error. */
+export function anthropicStreamErrorType(error: unknown): string {
+  switch (classifyStreamError(error)) {
+    case "idle-timeout": {
+      return "timeout_error"
+    }
+    case "shutdown": {
+      return "overloaded_error"
+    }
+    default: {
+      return "api_error"
+    }
+  }
+}
+
+/**
+ * Extract live-stream signals and emit a detailed upstream-disconnect log.
+ *
+ * Pulls the diagnostic signals out of the handler-internal stream state and
+ * delegates formatting/emission to `logUpstreamStreamDisconnect`. The `silence`
+ * it surfaces (gap between the last upstream frame and the disconnect) is the
+ * smoking gun for "died during a silent thinking stall".
+ */
+export function logUpstreamStreamError(
+  error: unknown,
+  ctx: {
+    model: string
+    streamState: StreamPumpState
+    acc: ReturnType<typeof createAnthropicStreamAccumulator>
+    sseEvents: Array<SseEventRecord>
+  },
+): void {
+  const { model, streamState, acc, sseEvents } = ctx
+  const last = sseEvents.at(-1)
+  const kind = classifyStreamError(error)
+  logUpstreamStreamDisconnect({
+    model,
+    kindLabel: kind === "other" ? "transport-close" : kind,
+    detail: error instanceof Error ? formatErrorWithCause(error) : String(error),
+    elapsedMs: Date.now() - streamState.streamStartMs,
+    frames: sseEvents.length,
+    bytes: streamState.bytesIn,
+    lastFrameType: last?.type,
+    lastFrameOffsetMs: last?.offsetMs ?? 0,
+    stuckBlockType: streamState.currentBlockType,
+    inputTokens: acc.inputTokens,
+    outputTokens: acc.outputTokens,
+  })
+}
+
+/** Mutable counters/state threaded through the streaming pump. */
+export interface StreamPumpState {
+  streamStartMs: number
+  bytesIn: number
+  eventsIn: number
+  currentBlockType: string
+  firstEventLogged: boolean
+  recoverFeatureLogged: boolean
+}
+
+export interface ProcessOneStreamEventArgs {
+  rawEvent: ServerSentEventMessage
+  parsed: StreamEvent | undefined
+  streamState: StreamPumpState
+  sseEvents: Array<SseEventRecord>
+  forwardedSseEvents: Array<SseEventRecord>
+  reqCtx: RequestContext
+  checkRepetition: (text: string) => void
+  serverToolFilter: ReturnType<typeof createServerToolBlockFilter>
+  toolInputDecoder: ToolInputStreamDecoder
+  toolCallTextRecoverer: ToolCallTextRecoverer
+  heartbeat: ForwardedSseHeartbeat
+}
+
+/**
+ * Process a single upstream SSE event: update counters, record debug info,
+ * filter server-tool blocks, and forward to the client. Mutates `streamState`,
+ * `sseEvents`, `forwardedSseEvents`, and writes to `stream`.
+ */
+export async function processOneStreamEvent(args: ProcessOneStreamEventArgs): Promise<void> {
+  const {
+    rawEvent,
+    parsed,
+    streamState,
+    sseEvents,
+    forwardedSseEvents,
+    reqCtx,
+    checkRepetition,
+    serverToolFilter,
+    toolInputDecoder,
+    toolCallTextRecoverer,
+    heartbeat,
+  } = args
+
+  const dataLen = rawEvent.data?.length ?? 0
+  streamState.bytesIn += dataLen
+  streamState.eventsIn++
+
+  // Faithfully record every raw upstream event, including `ping` keepalives —
+  // their timing reveals upstream idle gaps (e.g. pings during long thinking).
+  // Deltas (input_json_delta / thinking_delta / text_delta / signature_delta)
+  // are the ONLY original record of what the upstream actually streamed — the
+  // accumulated `response.content` is a derived artifact (accumulate →
+  // mapAnthropicContentBlocks → safeParseJson) and cannot answer "was the tool_use
+  // input empty at the source?". `raw` stores the verbatim upstream `data:` bytes
+  // (no parse round-trip); `type` is derived for indexing. Keepalive / unparseable
+  // frames are recorded too (timing matters — a signature_delta closing an
+  // encrypted thinking block can arrive seconds after content_block_start, a gap
+  // only visible if the bracketing keepalives are kept). Required by 原则3
+  // (后端存储必须完整,不主动丢弃任何可观测原始数据).
+  sseEvents.push({
+    offsetMs: Date.now() - streamState.streamStartMs,
+    type: parsed?.type ?? rawEvent.event ?? "keepalive",
+    raw: rawEvent.data ?? "",
+  })
+
+  // Debug: log first event arrival (measures TTFB from stream perspective)
+  if (!streamState.firstEventLogged) {
+    const eventType = parsed?.type ?? "keepalive"
+    consola.debug(`[Stream] First event at +${Date.now() - streamState.streamStartMs}ms (${eventType})`)
+    streamState.firstEventLogged = true
+  }
+
+  // Debug: log content block boundaries with timing
+  if (parsed?.type === "content_block_start") {
+    streamState.currentBlockType = (parsed.content_block as { type: string }).type
+    consola.debug(`[Stream] Block #${parsed.index} start: ${streamState.currentBlockType} at +${Date.now() - streamState.streamStartMs}ms`)
+
+    // Log server tool information (before filtering, so info is never lost)
+    const block = parsed.content_block as unknown as Record<string, unknown> & { type: string }
+    logServerToolBlock(block)
+  } else if (parsed?.type === "content_block_stop") {
+    const offset = Date.now() - streamState.streamStartMs
+    consola.debug(
+      `[Stream] Block #${parsed.index} stop (${streamState.currentBlockType}) at +${offset}ms, cumulative ↓${streamState.bytesIn}B ${streamState.eventsIn}ev`,
+    )
+    streamState.currentBlockType = ""
+  }
+
+  // Publish streaming progress to the observability bus. Replaces the
+  // legacy `tuiLogger.updateRequest({ streamBytesIn/streamEventsIn/...
+  // })` direct call — ConsoleSink's footer reads bytesIn/eventsIn/blockType
+  // from `request.stream_progress` and renders ` ↓12KB 42ev [thinking]`.
+  reqCtx.recordStreamProgress({
+    bytesIn: streamState.bytesIn,
+    eventsIn: streamState.eventsIn,
+    blockType: streamState.currentBlockType,
+  })
+
+  // Check for repetitive output in text deltas
+  if (parsed?.type === "content_block_delta") {
+    const delta = parsed.delta as { type: string; text?: string }
+    if (delta.type === "text_delta" && delta.text) {
+      checkRepetition(delta.text)
+    }
+  }
+
+  // Tool-call text recovery (text→tool_use) is the OUTERMOST response transform: it
+  // sees every upstream event (incl. message_start/message_delta) to keep its state,
+  // and emits 0/1/many frames (buffering during CANDIDATE, synthesizing on COMMIT).
+  // Each emitted frame then runs the existing thinking-signature-compat shim and the
+  // tool-input decoder, before forwardToClient (serverToolFilter restores synthesized
+  // wire-name tool_use names + remaps indices). Recoverer is a no-op when disabled.
+  for (const recovered of toolCallTextRecoverer.processEvent(parsed, rawEvent)) {
+    const recoveredParsed = recovered === rawEvent ? parsed : parseStreamEventData(recovered.data)
+
+    // Synthesized tool_use content_block_start (fresh frame, not pass-through) signals
+    // a recovery happened — record a persistent, auditable feature once per response.
+    if (
+      !streamState.recoverFeatureLogged
+      && recovered !== rawEvent
+      && recoveredParsed?.type === "content_block_start"
+      && (recoveredParsed.content_block as { type?: string }).type === "tool_use"
+    ) {
+      streamState.recoverFeatureLogged = true
+      reqCtx.recordFeature("tool-call-recovered")
+      consola.info("[RECOVER] rebuilt tool_use from downgraded upstream text")
+    }
+
+    // thinking-signature compat shim (per recovered frame; bypasses decoder like before)
+    if (recoveredParsed) {
+      const compatFrames = applyThinkingSignatureCompat(recoveredParsed, state.thinkingSignatureCompat)
+      if (compatFrames) {
+        for (const repl of compatFrames) {
+          const replRaw: ServerSentEventMessage = { ...recovered, data: JSON.stringify(repl) }
+          await forwardToClient(replRaw, repl, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
+        }
+        continue
+      }
+    }
+
+    // tool-input decoder (buffers selected tool_use input; no-op on recoverer's
+    // already-typed synthesized tool_use via reference-equality)
+    for (const ev of toolInputDecoder.processEvent(recoveredParsed, recovered)) {
+      await forwardToClient(ev, ev === recovered ? recoveredParsed : undefined, serverToolFilter, forwardedSseEvents, streamState.streamStartMs, heartbeat)
+    }
+  }
+}
+
+/** Best-effort parse of an SSE data payload into a StreamEvent (undefined on failure / keepalive). */
+export function parseStreamEventData(data: string | undefined): StreamEvent | undefined {
+  if (!data) return undefined
+  try {
+    return JSON.parse(data) as StreamEvent
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Forward one (possibly decoder-rewritten) SSE event to the client, applying
+ * the server-tool filter for index remapping / suppression. `knownParsed` is
+ * supplied for pass-through events to avoid a redundant re-parse. The frame
+ * actually written is also appended to `forwardedSseEvents` (the proxy→client
+ * record); suppressed frames (rewriteEvent → null) are recorded by neither.
+ */
+export async function forwardToClient(
+  ev: ServerSentEventMessage,
+  knownParsed: StreamEvent | undefined,
+  serverToolFilter: ReturnType<typeof createServerToolBlockFilter>,
+  forwardedSseEvents: Array<SseEventRecord>,
+  streamStartMs: number,
+  heartbeat: ForwardedSseHeartbeat,
+): Promise<void> {
+  const evParsed = knownParsed ?? parseStreamEventData(ev.data)
+  const forwardData = serverToolFilter.rewriteEvent(evParsed, ev.data ?? "")
+  if (forwardData === null) return
+
+  // Record the exact frame the client receives (post-rewrite). evParsed reflects
+  // the pre-rewrite parse; the type is stable enough for indexing, and `raw` holds
+  // the actual forwarded bytes.
+  forwardedSseEvents.push({
+    offsetMs: Date.now() - streamStartMs,
+    type: evParsed?.type ?? ev.event ?? "keepalive",
+    raw: forwardData,
+  })
+
+  // Note real-frame activity BEFORE awaiting the write — even if the timer
+  // fires while we're awaiting `writeSerialized`, it will see a fresh
+  // `lastRealMs` and skip emitting a redundant ping. Serialized via the
+  // heartbeat's writer to interleave-protect against the timer callback.
+  heartbeat.noteRealFrame()
+  await heartbeat.writeSerialized({
+    data: forwardData,
+    event: ev.event,
+    id: ev.id !== undefined ? String(ev.id) : undefined,
+    retry: ev.retry,
+  })
+}
+
+export interface ForwardedSseHeartbeat {
+  /** Serialize a write with any pending heartbeat write, so SSE frame bytes never interleave. */
+  writeSerialized: (msg: Parameters<SSEStreamingApi["writeSSE"]>[0]) => Promise<void>
+  /** Mark that a real upstream-originated frame was just forwarded (resets the keepalive countdown). */
+  noteRealFrame: () => void
+  /** Stop the timer. Idempotent. */
+  stop: () => void
+}
+
+export interface StartHeartbeatOpts {
+  intervalSec: number
+  stream: SSEStreamingApi
+  forwardedSseEvents: Array<SseEventRecord>
+  streamState: StreamPumpState
+  clientAbortSignal: AbortSignal | undefined
+}
+
+/**
+ * Start the forwarded-SSE keepalive. When `intervalSec <= 0` this is a no-op
+ * pass-through (writes go straight to `stream.writeSSE`, no timer). When > 0,
+ * a self-rescheduling timer checks every interval whether at least that many
+ * seconds have passed since the last real forwarded frame; if so, it injects
+ * an Anthropic-protocol `event: ping` so the client doesn't time out while
+ * upstream is silent. Heartbeats are recorded ONLY in `forwardedSseEvents`
+ * (the proxy→client diagnostic), never in `sseEvents` (raw upstream record),
+ * preserving 原则3 — the upstream timeline stays untouched.
+ *
+ * All writes (real + heartbeat) go through one shared promise chain so the
+ * timer callback and the main pump never interleave their SSE frame bytes.
+ * `noteRealFrame()` is called BEFORE awaiting the real write, so a timer
+ * firing mid-write sees the fresh timestamp and skips redundant pings.
+ */
+export function startForwardedSseHeartbeat(opts: StartHeartbeatOpts): ForwardedSseHeartbeat {
+  const { intervalSec, stream, forwardedSseEvents, streamState, clientAbortSignal } = opts
+  let writeChain: Promise<void> = Promise.resolve()
+  const writeSerialized = (msg: Parameters<SSEStreamingApi["writeSSE"]>[0]): Promise<void> => {
+    const next = writeChain.then(() => stream.writeSSE(msg))
+    writeChain = next.catch(() => undefined)
+    return next
+  }
+
+  if (intervalSec <= 0) {
+    return { writeSerialized, noteRealFrame: () => undefined, stop: () => undefined }
+  }
+
+  const intervalMs = intervalSec * 1000
+  let lastRealMs = Date.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+
+  const noteRealFrame = (): void => {
+    lastRealMs = Date.now()
+  }
+
+  const tick = (): void => {
+    if (stopped || clientAbortSignal?.aborted) return
+    const elapsed = Date.now() - lastRealMs
+    if (elapsed >= intervalMs) {
+      // Inject one Anthropic-protocol `ping` keepalive. Standard SDKs treat
+      // this as a benign no-op; clients that don't know `ping` still keep the
+      // TCP connection alive on byte arrival.
+      const pingData = JSON.stringify({ type: "ping" })
+      forwardedSseEvents.push({
+        offsetMs: Date.now() - streamState.streamStartMs,
+        type: "ping",
+        raw: pingData,
+      })
+      // Serialized write — the heartbeat may race the main pump; the shared
+      // chain guarantees byte-level non-interleaving. Errors (closed stream)
+      // are swallowed: the main pump's next write will hit the same error
+      // and route through the existing settle path.
+      void writeSerialized({ event: "ping", data: pingData }).catch(() => undefined)
+      lastRealMs = Date.now()
+      timer = setTimeout(tick, intervalMs)
+    } else {
+      // Real frame arrived since last check — reschedule for when the
+      // remaining gap would reach intervalMs.
+      timer = setTimeout(tick, intervalMs - elapsed)
+    }
+  }
+  timer = setTimeout(tick, intervalMs)
+
+  return {
+    writeSerialized,
+    noteRealFrame,
+    stop: () => {
+      if (stopped) return
+      stopped = true
+      if (timer) clearTimeout(timer)
+    },
+  }
+}
