@@ -44,126 +44,80 @@ v4 管线：路由按前缀选 **codec**（每格式一个）+ 构建 per-reques
 3. driver 编排**七阶段**（`lib/pipeline/driver.ts`，详见 [03-spec/envelope-driver.md](v4/03-spec/envelope-driver.md)）：
    - **S1 parse** — `codec.parse(raw)` → `RequestEnvelope`（model 解析、body 提取、建 RequestContext）
    - **S2 route/translate** — `codec.decideRoute`（透传/翻译/拒绝，统一 4 格式判断）+ `codec.translateOut`（透传=identity）
-   - **S3 rewrite-in** — `runRewriteIn`：请求改写链（registry 按 format+config+order 装配）
+   - **S3 rewrite-in** — `runRewriteIn`：请求改写链（registry 按 format+config+order 装配）。Anthropic 由 codec 经 `deps.requestRewrites` 供 per-request `RequestRewrite`（`codec/anthropic-request-rewrites.ts`：sanitize 链 + pipelineInfo/messageMapping/thinking 记录，**Stage A A0** 从 `codec.parse` 迁入；闭包 over 路由产的 `preprocessInfo`，故走 codec-provided 而非 module-global `REQUEST_REWRITES`）
    - **S4 exchange** — `runExchange`：错误驱动重试循环（`codec.prepareWire` → `transport.send` → 失败时首个匹配 strategy 改写 env 重试；429 由 adaptive rate-limiter 在 transport 内消化）
-   - **S5 rewrite-out** — 响应改写链（逐帧 transform/buffer/flush）
+   - **S5 rewrite-out** — 响应改写链（逐帧 `transform`：emit/suppress/buffer + 流末 `flushChain`，已进 `try/finally` 故异常路径也 drain registry buffer）。Anthropic 的 4 个 `ResponseRewrite` 定义在 `src/lib/codec/anthropic-response-rewrites.ts`（`ANTHROPIC_RESPONSE_REWRITES`），由 handler 作 `deps.responseRewrites` 传入 driver（module-global `RESPONSE_REWRITES` 仍空）：recover-tool-call=100 / thinking-signature-compat=150 / tool-input-decode=200 / server-tool-filter=300，**Stage A A1** 从 handler pump 原子迁入，复用既有 factory 不重写算法核；order 编码硬序契约 recover<filter
    - **S6 render** — `codec.renderResponse` 翻回客户端协议（透传=identity）
    - **S7 forward** — handler 写回客户端（streamSSE / JSON / WS frame）
-4. driver 在阶段边界采样原始数据 → observability bus → sinks（History/Ws/Console/Telemetry/File）：S1 入站、S4 per-attempt 双轨（effective/wire + queueWaitMs）+ **上游原始 sseEvents**（循环顶逐帧，所有格式统一）；客户端 forwarded 由 handler 在写回点采样（Gemini 整流翻译 / Anthropic heartbeat 不经 driver yield 点，见 [03-spec/envelope-driver.md §4](v4/03-spec/envelope-driver.md)）。
-5. Anthropic 直连为 **bypass-direct**（translate/render=identity，driver 逐字透传上游 SSE）；非 Anthropic vendor 模型在 S2 拒绝 400（无降级）。
+4. driver 在阶段边界采样原始数据 → observability bus → sinks（History/Ws/Console/Telemetry/File）：S1 入站、S4 per-attempt 双轨（effective/wire + queueWaitMs）+ **上游原始 sseEvents**（循环顶逐帧，所有格式统一）+ **S5 前经 `runResponse` 的 `onUpstreamFrame` hook 把 raw 帧交回 handler 做 accumulate（→ `outboundResponse` 保上游原貌，Option A）/ repetition / progress / 诊断（Anthropic，A1：响应改写迁进 driver 后这些 upstream-side 工作仍在 raw 帧上）**；客户端 forwarded 由 handler 在写回点采样（Gemini 整流翻译 / Anthropic heartbeat 不经 driver yield 点，见 [03-spec/envelope-driver.md §4](v4/03-spec/envelope-driver.md)）。
+5. Anthropic 直连为 **bypass-direct**（`translateOut`/`renderResponse`=identity）；其 S5 响应改写链（recover/thinking/decode/filter）由 driver 逐帧应用后 yield 给 handler 转发（**A1 起非逐字透传**——driver 跑改写，handler 只采样 + 心跳写出，不再二次 filter）。handler **drain 不 break**（`[DONE]` skip-forward、error 帧转发后排空）以让 driver 的 finally `flushChain` 把流末 buffer 交付给 draining 消费者（break 会被 IteratorClose 丢弃）。非 Anthropic vendor 模型在 S2 拒绝 400（无降级）。
 6. **Azure**：`injectDeploymentModel` 从 URL path 注入 `azureModelOverride`，复用 CC/Responses 的 v4 handler（不新增 codec）。
 7. **例外**（不进 driver）：web_search 双跳（Anthropic opt-in，正交控制流，走 legacy direct-completion `handleDirectAnthropicCompletion`，P2.6-D1 暂缓）；`count_tokens`（Anthropic/Gemini，本地 tokenizer，无管线）；embeddings（无 history/重试需求）。
 8. 请求完成 / 失败时一次性写入 SQLite，否则仅更新内存 in-flight 映射并推送 WebSocket。
 
+### 活的架构现状（v4 迁移态）
+
+v4 driver（七阶段编排）正逐步取代各格式巨型 handler。下表定位"当前活的是哪条路径"——读具体模块前先在此对齐，别把旧路径当主路径。状态：`[done]` 已迁 driver / `[wip]` 仍 handler-side / `[bypass]` 设计上不进 driver / `[退役中]`。
+
+| 子系统 / 路径 | 状态 | 当前活的架构 | 在哪看 |
+|---|---|---|---|
+| 请求改写（S3） | `[done]` A0 | Anthropic sanitize 链经 codec-provided 闭包注入 driver S3（codec 方法 `getRequestRewrites()`） | `src/lib/codec/anthropic-request-rewrites.ts` |
+| 流式响应改写（S5） | `[done]` A1 | recover/thinking/decode/filter 四条 ResponseRewrite——**载体是 handler import 的 `ANTHROPIC_RESPONSE_REWRITES` 数组并作 `responseRewrites:` 传入 driver；module-global `RESPONSE_REWRITES` 仍是空数组**（别去 registry 找改写） | `src/lib/codec/anthropic-response-rewrites.ts` |
+| 非流式响应改写 | `[wip]` A.B | 仍 handler-side（`renderNonStreamingV4` 手写 whole-response 序列），未进 driver | `src/routes/messages/handler-v4.ts` |
+| Responses + 上游 WS | `[wip]` A.C | 逐帧改写 + 整流翻译仍 handler-side，不经 driver yield 点 | `src/lib/openai/`、`src/routes/responses/ws.ts` |
+| 旁路（设计如此，不进 driver） | `[bypass]` | web_search 双跳（走 legacy `executeRequestPipeline`）、count_tokens（本地 tokenizer，不沾 pipeline）、embeddings | `src/lib/anthropic/web-search/` |
+| 旧重试管道 | `[退役中]` | `src/lib/request/`（`executeRequestPipeline` + strategies）；strategies 经 `legacy-strategy-adapter` 被 driver 复用，pipeline 本体**仅 web_search 双跳消费** | `src/lib/request/pipeline.ts` |
+
+完整迁移设计与 phase 进度见 `docs/v4/` 与 `docs/rfc/response-pipeline/`。
+
 ### 核心模块
 
-```
-src/lib/
-├── state.ts               # 全局运行时状态（所有配置集中管理）
-├── error.ts               # HTTPError 类，错误转发与格式化，Retry-After 解析
-├── stream.ts              # 通用流工具（raceIteratorNext、StreamIdleTimeoutError、combineAbortSignals）
-├── shutdown.ts            # 优雅关闭（drain + abort signal）
-├── copilot-api.ts         # Copilot API 公共工具（endpoint URL 构建等）
-├── fetch-utils.ts         # HTTP fetch 封装（超时、代理、错误处理）
-├── proxy.ts               # HTTP/HTTPS 代理配置
-├── repetition-detector.ts # 流式重复性检测（KMP 算法）
-├── adaptive-rate-limiter.ts # 自适应速率限制器（3 模式：Normal/Rate-limited/Recovering）
-├── system-prompt.ts       # System prompt override 应用（config.yaml 规则）
-├── sanitize-system-reminder.ts  # <system-reminder> 标签解析与提取
-├── anthropic/
-│   ├── client.ts          # Anthropic API 客户端（直连 + Copilot 代理）
-│   ├── pipeline.ts        # runAnthropicPipeline + buildAnthropicStrategies（web_search 双跳复用 executeRequestPipeline）
-│   ├── request-rewrites.ts # 请求改写 registry（preprocessTools + sanitize 包成 RequestRewrite，driver S3 消费）
-│   ├── request-preparation.ts # prepareAnthropicRequest（B1-B12：wire payload + beta/effort/cache_control + headers）
-│   ├── sanitize.ts        # 消息清洗管道（2 阶段：预处理 + 可重复清洗）
-│   ├── auto-truncate.ts   # Anthropic 格式的 auto-truncate 适配
-│   ├── message-mapping.ts # 消息映射（原消息 ↔ 清洗后消息索引对应）
-│   ├── message-tools.ts   # Tool 预处理管道（注入、defer_loading、server tool 剥离）
-│   ├── stream-accumulator.ts # Anthropic SSE 事件累积器
-│   ├── features.ts        # 模型特性检测（thinking 支持等）
-│   └── recover-tool-call/      # 上游 tool-call 文本降级的透明恢复（core 纯函数 + SSE transform + 非流式 helper）
-├── auto-truncate/
-│   └── index.ts           # 响应式 auto-truncate（token 限制学习 + 预检查）
-├── config/
-│   ├── config.ts          # config.yaml 类型定义、加载与热重载
-│   └── paths.ts           # 配置文件路径解析（`APP_DIR` 尊重 `XDG_DATA_HOME` 环境变量；`PATHS.HISTORY_DB` 数据库与 `PATHS.COPILOT_LOG` 文件日志由此派生）
-├── context/
-│   ├── manager.ts         # 请求上下文管理器（活跃请求跟踪 + stale reaper）
-│   ├── request.ts         # RequestContext（请求生命周期状态机）
-│   └── consumers.ts       # 请求上下文消费者注册
-├── history/
-│   ├── store.ts           # Barrel re-export（含前端公开 type API：types + entries + queries + sessions + state + stats + in-flight）
-│   ├── types.ts           # 类型定义（HistoryEntry、ContentBlock、Session、HistoryStats 等）
-│   ├── entries.ts         # 条目 CRUD（insertEntry、updateEntry、finalizeEntry、clearHistory）+ 增量持久化（persistEntryEager/Status/Stages，均经 persist-guard 守卫）+ finalize 无损（写成功才 removeInFlight；transient 失败保留 in-flight 待 reaper 重试，permanent/重试耗尽降级 head-only tombstone 保住失败事实）+ retryPendingFinalizations 注册为 reaper tick hook
-│   ├── persist-guard.ts   # 持久化写守卫 runHistoryWrite：把每次 SQLite 写包成不抛错但分类（transient: BUSY/LOCKED/IOERR vs permanent）+ ERROR 日志（非 warn）+ 按 stage:class 计数（getHistoryPersistErrorStats），取代旧的盲 try/catch→warn
-│   ├── queries.ts         # 查询（getEntry、getHistory、getHistorySummaries、getSummary）
-│   ├── sessions.ts        # Session 聚合（getSession、getSessions、getSessionEntries 等）
-│   ├── stats.ts           # 聚合统计（getStats）
-│   ├── state.ts           # 模块级状态（historyState、initHistory、shutdownHistory）
-│   ├── in-flight.ts       # 进行中请求的内存映射（仅用于 WebSocket 实时推送）
-│   ├── sqlite/
-│   │   ├── connection.ts  # SQLite 连接管理（bun:sqlite）+ 启动期孤儿回收（pending→interrupted）+ 启动期 VACUUM 空间回收（auto_vacuum=INCREMENTAL 须早于 WAL；freelist≥25% 且≥64MB 触发全量 VACUUM，全程 try/catch 不阻断启动）+ checkpointWal(PASSIVE) 供 reaper tick 周期收回 WAL（控 -wal 体积、缩短锁窗口、降 SQLITE_BUSY）
-│   │   ├── compression.ts # blob 存储 codec：写 zstd L3（比 gzip 砍半），读按 magic bytes 自动判别 gzip(legacy,1f8b)/zstd(28b52ffd)，既有 gzip 行透明可读零迁移
-│   │   ├── schema.ts      # 表 DDL 与索引定义（权威 schema：entries_v2 head 表 + entry_stages 子表）
-│   │   ├── serialize.ts   # head-meta/stage 拆分序列化 + assembleFullEntry（head + stage 行重组）+ request_group 合并帧 dedup（同 entry 的 inbound/effective/outbound 请求体 >90% 冗余，finalize 时打包进单个 zstd 帧；读侧 decodeStageRows 透明展开，等价个体行）
-│   │   ├── write.ts       # 写入操作（upsertHeadRow ON CONFLICT，可同事务带 stages / upsertStageRow / insertCompletedEntry 终态 head-first 原子写，finalize 经 partitionStagesForWrite 打包请求组）
-│   │   ├── read.ts        # 查询操作（分页、过滤、head+stage 批量组装防 N+1）
-│   │   ├── stats.ts       # 聚合统计查询（排除活跃行）
-│   │   └── reaper.ts      # 定期清理 runReaperTick（drain 延后的 finalize[setReaperTickHook] → 按状态分桶维持 success/failure 行数上限 → 运行期 stale-pending 回收 → incremental_vacuum 还空间给 OS → wal_checkpoint(PASSIVE) 控 WAL 体积）
-│   └── index.ts           # Barrel re-export
-├── observability/        # 请求生命周期 + 系统日志的 event-bus + sinks（见 docs/rfc/observability-rewrite.md）
-│   ├── bus.ts            # publish/subscribe 总线（命名空间 scoped publisher，同步 fan-out）
-│   ├── events.ts         # ObservabilityEvent 联合（request.* / history.* / system.*，含 system.log）
-│   ├── republish.ts      # 唯一 consola hijack 点：每条 consola 日志 → system.log 事件投到 bus（重入守卫断 disk-full→日志风暴的环）
-│   └── sinks/            # console（stdout + footer）/ history（SQLite）/ telemetry / ws（WebSocket）/ file（copilot-api.log 轮转）
-├── ws/
-│   ├── adapter.ts         # 共享 WebSocket adapter（Node/Bun）
-│   ├── broadcast.ts       # Topic-aware WS 总线（history / status / shutdown 事件统一推送）
-│   └── index.ts           # Barrel re-export
-├── models/
-│   ├── resolver.ts        # Model 解析：别名 → 规范名 → overrides → family 回退
-│   ├── client.ts          # Copilot models API 客户端
-│   ├── endpoint.ts        # 模型端点支持检查
-│   └── tokenizer.ts       # 模型 tokenizer 信息
-├── openai/
-│   ├── client.ts          # OpenAI Chat Completions 客户端
-│   ├── sanitize.ts        # OpenAI 消息清洗
-│   ├── auto-truncate.ts   # OpenAI 格式的 auto-truncate 适配
-│   ├── embeddings.ts      # Embeddings API 客户端
-│   ├── responses-client.ts      # OpenAI Responses API 客户端
-│   ├── responses-conversion.ts  # Responses API 数据格式转换（input/output → history）
-│   ├── responses-stream-accumulator.ts # Responses SSE 事件累积器
-│   ├── stream-accumulator.ts    # Chat Completions SSE 事件累积器
-│   ├── stream-error.ts    # 流式生命周期错误 → OpenAI SSE error.type 映射（共享于 chat-completions/responses）
-│   └── orphan-filter.ts   # OpenAI 消息孤儿 tool call 过滤
-├── codec/                 # v4 每格式编解码器（FormatCodec：parse/decideRoute/translateOut/renderResponse/prepareWire/sampleRequest/createResponseAccumulator）
-│   ├── anthropic.ts       # Anthropic codec（bypass-direct，translate/render=identity）
-│   ├── openai-cc.ts       # Chat Completions codec（翻译中枢：CC↔Responses via-responses）
-│   ├── openai-responses.ts # Responses codec（直连 + Responses→CC fallback）
-│   ├── openai-gemini.ts   # Gemini codec（薄翻译层，工厂内委托 cc codec 处理 CC payload）
-│   └── *-strategies.ts    # 各格式重试策略组装（anthropic/openai-cc/openai-responses）
-├── pipeline/              # v4 driver 骨架（七阶段编排）
-│   ├── driver.ts          # createPipelineDriver：编排 S1-S7 + 错误驱动重试 + 阶段边界采样（上游原始 sseEvents 循环顶逐帧）
-│   ├── envelope.ts        # RequestEnvelope / ClientFormat / UpstreamEndpoint
-│   ├── types.ts           # FormatCodec / Transport / RetryStrategy / RouteDecision 接口
-│   ├── rewrite-registry.ts # 请求/响应改写 registry（按 format+config+order 装配过滤）
-│   └── legacy-strategy-adapter.ts # 旧 RetryStrategy → driver env-based 适配
-├── transport/             # v4 格式无关收发层（retry-transport.md）
-│   ├── http-transport.ts  # createUpstreamHttpTransport（fetch→SSE|JSON + guardSseIterable + header 捕获）
-│   ├── send.ts            # 格式无关收发骨架
-│   ├── upstream-fetch.ts  # 上游 fetch 统一入口（undici dispatcher / keepalive 显式传）
-│   ├── http2-client.ts    # node:http2 客户端（Bun 下 GHC https 热路径，见 bun-runtime-timeout.md）
-│   └── responses-transport.ts # Responses 上游传输（HTTP vs 上游 WS 二次选择）
-├── request/
-│   ├── pipeline.ts        # 旧请求重试管道（executeRequestPipeline，策略模式；现仅 web_search 双跳 + countTokens 等非 driver 路径用）
-│   ├── payload.ts         # Payload 构造与大小日志
-│   ├── recording.ts       # 请求/响应历史记录
-│   ├── truncation.ts      # 消息截断逻辑
-│   ├── response.ts        # 响应处理工具
-│   └── strategies/        # 重试策略：auto-truncate、token-refresh、network-retry、deferred-tool-retry（driver 经 legacy-strategy-adapter 复用）
-├── token/                 # Copilot token 获取与管理
-└── tui/                   # 终端 UI（请求日志、token 统计、中间件）
-```
+`src/lib/` 按格式域 + 横切关注组织。下面是**目录级关系图**：每节点给「职责 · 跨目录数据流/consumed-by · provenance/反直觉契约」，**不列叶子文件**——叶子清单交 `git ls-files src/lib` / codemap 派生（手列叶子=高 churn 必漂成死条目）。大域（anthropic/history/openai）下沉到子目录级。维护约定见末尾「图维度规则」。
+
+**v4 管线骨架（格式无关）**
+
+| 目录 | 职责 · 关系 · 契约 |
+|---|---|
+| `src/lib/pipeline/` | driver 七阶段编排（S1–S7 + 错误驱动重试 + 阶段边界采样 + `onUpstreamFrame` hook 把 raw 上游帧交回 handler 做 accumulate/采样）。**反直觉契约**：`rewrite-registry.ts` 的 module-global `REQUEST_REWRITES`/`RESPONSE_REWRITES` **故意留空数组**——Anthropic 改写走 codec/handler 传入的 `deps`，registry 只供装配器 + `RESPONSE_REWRITE_ORDER` 硬序常量（recover 100 < thinking 150 < decode 200 < filter 300）。`legacy-strategy-adapter` 把旧 RetryStrategy 适配成 driver env-based 重试。 |
+| `src/lib/codec/` | 每格式 `FormatCodec`（parse/decideRoute/translateOut/renderResponse/prepareWire/sampleRequest）。**openai-cc 是翻译中枢**（CC↔Responses 经 `src/lib/openai/translate/`）；**openai-gemini 工厂内委托内部 openai-cc codec** 处理 CC payload；anthropic 为 bypass-direct（translate/render=identity），`getRequestRewrites()` 供 driver S3，响应改写则由 handler import `anthropic-response-rewrites.ts` 的 `ANTHROPIC_RESPONSE_REWRITES` 传入 S5。`*-strategies` 各格式组装重试策略。 |
+| `src/lib/transport/` | 格式无关上游收发。`upstream-fetch.ts` 唯一上游 fetch 入口（显式传 undici dispatcher + keepalive）。**反直觉契约**：Bun 下 GHC https 热路径走内建 `node:http2`（`http2-client.ts`）而非 undici（undici-on-Bun 对 h2 chunked 响应永久挂，见 `docs/bun-runtime-timeout.md`）；明文 http 才走 undici 子路径。 |
+
+**格式适配域**
+
+| 目录 | 职责 · 关系 · 契约 |
+|---|---|
+| `src/lib/anthropic/` | Anthropic 格式全栈（最大域）。子域：`src/lib/anthropic/sanitize/`（消息清洗管道，payload-level 请求改写 `request-rewrites.ts` 被 codec S3 wrapper + web_search 旁路共享）、`src/lib/anthropic/recover-tool-call/`（tool-call 文本降级透明恢复，CANDIDATE/COMMIT + 非流式 helper，被 A1 响应改写包装）、`src/lib/anthropic/web-search/`（双跳旁路 orchestrator + backends）、thinking 处理（signature 自包含→块级保护）。`request-preparation.ts` 是 B1–B12 wire 准备；`pipeline.ts` 现仅 web_search 双跳复用 `executeRequestPipeline`。 |
+| `src/lib/openai/` | OpenAI 全栈（CC + Responses + embeddings + 上游 WS）。`src/lib/openai/translate/` 是 CC↔Responses 翻译核（被 openai-cc/gemini codec 消费）；`upstream-ws*` 是上游 WebSocket 传输（半开熔断 + 回退）；`stream-error.ts` 把流式生命周期错误映射为 OpenAI SSE `error.type`（CC/Responses 共享）。 |
+| `src/lib/gemini/` | Gemini 薄翻译层（request/response/stream convert + schema normalize + tool-call pairing），被 `codec/openai-gemini` 消费、翻成内部 CC 后复用 CC 全链。 |
+| `src/lib/auto-truncate/` | 响应式 auto-truncate 引擎（token 限制学习 + 预检查），被 anthropic/openai 各自适配层消费。 |
+
+**状态 / 观测 / 存储**
+
+| 目录 | 职责 · 关系 · 契约 |
+|---|---|
+| `src/lib/observability/` | 请求生命周期 + 系统日志 event-bus + sinks（见 `docs/rfc/observability-rewrite.md`）。`bus` 同步 fan-out scoped publisher；`sinks/`（console/file/history/telemetry/ws）订阅消费；`projections/` 渲染日志行（**provenance**：取代已删的 `lib/tui/`）。**反直觉契约**：`republish.ts` 是**唯一 consola hijack 点**（每条日志→`system.log` 事件投 bus，重入守卫断 disk-full→日志风暴的环）。 |
+| `src/lib/history/` | 请求/响应持久化（SQLite）。子域：`src/lib/history/sqlite/`（head/stage 拆表 + zstd L3 + magic-bytes 新旧判别 + request_group 合并帧 dedup + reaper 分桶淘汰 + 启动 VACUUM + WAL checkpoint）、`src/lib/history/lineage/`（Anthropic 前缀哈希谱系，canonicalize 剥 cache_control + system-reminder）。**反直觉契约**：`persist-guard.ts` 的 `runHistoryWrite` 取代旧盲 `try/catch→warn`（分类 transient/permanent + ERROR 日志 + per-stage:class 计数）；finalize 无损（写成功才 removeInFlight，失败保留 in-flight 待 reaper 重试）。`store.ts` barrel 同时是前端 `~backend/*` 公开 type API。 |
+| `src/lib/context/` | `RequestContext` 状态机 + 活跃请求 manager + stale reaper + activity-summary，被 driver/handler/observability 跨域消费（in-flight 跟踪）。 |
+| `src/lib/config/` | config.yaml 类型/加载/热重载/校验。`compat` 迁移废弃配置键；`paths` 解析 `APP_DIR`（尊重 `XDG_DATA_HOME`）派生 DB/日志路径。热重载语义见下文。 |
+| `src/lib/models/` | Model 解析（别名→规范名→overrides→family 回退）+ Copilot models API + capabilities + 后台 refresh + tokenizer。详见 `docs/model-resolution.md`。 |
+| `src/lib/token/` | Copilot/GitHub token 生命周期 + `providers/`（cli/device-auth/env/file 多源）。详见 `docs/authentication.md`。 |
+| `src/lib/ws/` | 共享 WebSocket adapter（Node/Bun 分流）+ topic-aware broadcast 总线（history/status/shutdown 统一推送）。 |
+| `src/lib/request/` | **旧** v4-pre 重试管道（`executeRequestPipeline` 策略模式）；现仅 web_search 双跳消费本体，`strategies/`（重试策略集）经 `pipeline/legacy-strategy-adapter` 被 v4 driver 复用。见上「活的架构现状」。 |
+| `src/lib/error/`、`src/lib/system-prompt/` | 单文件已升为子目录。`error/`：HTTPError + classify/forward/parsing（Retry-After 解析）。`system-prompt/`：override 应用（config 规则）+ `<system-reminder>` 标签解析。 |
+
+**顶层裸文件（仅点名有跨文件关系者）**
+
+| 文件 | 职责 · consumed-by |
+|---|---|
+| `src/lib/serve.ts` | Bun/Node HTTP 服务器分流**入口**（`globalThis.Bun` 判别 → `Bun.serve()` / `@hono/node-server`），被 `src/start.ts` 消费。 |
+| `src/lib/tool-name-mapper.ts` | tool name 清洗/还原映射，**跨域共享**：codec + anthropic/openai 两条 sanitize 链 + context + routes。 |
+| `src/lib/abort-bridge.ts` | client abort → 上游 AbortSignal 桥接，被全部 v4 handler + web-search-handler 消费。 |
+| `src/lib/adaptive-rate-limiter.ts` | 3 模式自适应速率限制（Normal/Rate-limited/Recovering），stateful singleton，在 transport 内消化 429。 |
+| `src/lib/stream.ts`、`src/lib/shutdown.ts`、`src/lib/state.ts` | 通用流工具（raceIteratorNext/combineAbortSignals）/ 优雅关闭（drain + abort）/ 全局运行时状态。详见 `docs/shutdown.md`。 |
+
+> 纯工具裸文件（`utils.ts`/`atomic-fs.ts`/`fetch-utils.ts`/`copilot-api.ts`/`proxy.ts`/`process-identity.ts`/`request-telemetry.ts`/`codex-config.ts`/`repetition-detector.ts`/`upstream-diagnostics.ts`）不入图——文件名自明、无跨文件关系。
+
+**图维度规则（维护约定，DESIGN.md 自约束）**：每节点 ≤2 行；三问命中 ≥1 才入图——① provenance/演进（怎么来的、取代了什么）② consumed-by/契约（谁跨域消费、对调用方的不变量）③ 反直觉决策（与朴素预期相反、不读注释会踩坑）。纯复述文件名 / barrel re-export / 纯工具函数**不入图**；叶子文件清单交 `git ls-files src/lib` / codemap 派生，**绝不在此手列**（手列叶子是高 churn + 低密度 + 必然漂移成死条目，由 `tests/infra/design-doc-tree.unit.test.ts` L1 守卫挡死条目复发）；**字段级配置指针归 [运行时选项](#运行时选项) 配置表，不在模块图复述**。粒度：≤~12 文件单职责→目录级；>20 文件或多子职责→子目录级（anthropic/history/openai）。
 
 ### 路由
 
