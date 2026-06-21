@@ -20,7 +20,11 @@
 import { consola } from "consola"
 
 import type { EndpointType } from "~/lib/history/store"
-import type { ScopedPublisher } from "~/lib/observability"
+import type {
+  //
+  ObservabilityEvent,
+  ScopedPublisher,
+} from "~/lib/observability"
 
 import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
@@ -103,6 +107,41 @@ export function resetRequestContextManagerForTests(options?: RequestContextManag
   _manager?.stopReaper()
   _manager = createRequestContextManager(options)
   return _manager
+}
+
+/** A captured `request.*` ObservabilityEvent (from {@link withCapturingManager}). */
+export type CapturedRequestEvent = Extract<ObservabilityEvent, { kind: `request.${string}` }>
+
+/**
+ * Run `fn` with the module-global manager temporarily swapped for a fresh one whose `request.*`
+ * events are captured locally (NOT published to the real bus → no History/in-flight/WS pollution).
+ * For dry-run / inspection: `codec.parse` builds its ctx via this captured manager, so the request
+ * never surfaces as a real one. Returns `fn`'s result + the captured events (feature/pipeline-info
+ * side-channel diagnostics).
+ *
+ * Side-effect-free isolation (RFC §11): the temp manager's reaper is NEVER started
+ * (`createRequestContextManager` doesn't auto-start it), so there's no timer to leak; the saved
+ * manager is restored by reference WITHOUT `stopReaper()` (unlike `resetRequestContextManagerForTests`,
+ * which would kill the production reaper). Caller must serialize concurrent dry-runs — the swap is a
+ * process-global window; concurrent REAL requests during it route their `request.*` events into the
+ * capture array (lost from the bus), so don't run during heavy traffic.
+ */
+export function withCapturingManager<T>(fn: () => T): { result: T; events: Array<CapturedRequestEvent> } {
+  const saved = _manager
+  const events: Array<CapturedRequestEvent> = []
+  const publisher = {
+    publish: (event: CapturedRequestEvent) => void events.push(event),
+    publishAndFlush: (event: CapturedRequestEvent) => {
+      events.push(event)
+      return Promise.resolve({ delivered: true } as never)
+    },
+  } as unknown as ScopedPublisher<"request">
+  _manager = createRequestContextManager({ publisher })
+  try {
+    return { result: fn(), events }
+  } finally {
+    _manager = saved
+  }
 }
 
 // ─── Factory ───
