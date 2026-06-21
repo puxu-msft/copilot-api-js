@@ -74,6 +74,7 @@ import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
 import { getEntry } from "~/lib/history"
 import { resolveModelName } from "~/lib/models/resolver"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { assembleResponseRewrites } from "~/lib/pipeline/rewrite-registry"
 
 /** RFC-facing format names (the `format` param + the `entryId`→format mapping). */
 type DryRunFormat = "anthropic" | "openai-cc" | "openai-responses" | "openai-gemini"
@@ -300,7 +301,7 @@ function requestSideCaveats(format: DryRunFormat): Array<string> {
   const base =
     format === "anthropic" ?
       "请求侧 = 用当前代码 + live 配置重跑 inboundRequest，非复现当时（preprocess 会重算；betaProbe 为 throwaway；prepare-wire 仅首个 attempt、反应式 retry 改写不可见）"
-    : `请求侧 = 用当前代码 + live 配置重跑 inboundRequest（非复现当时）；handler 的 system-prompt 预注入未镜像；${format} 无 S3 请求改写（rewrite-in 恒空）；反应式 retry 改写不可见`
+    : `请求侧 = 用当前代码 + live 配置重跑 inboundRequest（非复现当时）；handler 的 system-prompt 预注入未镜像；model 重新解析（未用 route 的 preResolved）；${format} 无 S3 请求改写（rewrite-in 恒空）；反应式 retry 改写不可见${format === "openai-gemini" ? "；Gemini→CC 翻译按 stream=false" : ""}`
   return [base]
 }
 
@@ -354,9 +355,20 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
       if (!Array.isArray(sse) || sse.length === 0) return c.json({ error: "Entry has no sseEvents to replay (non-streaming? pass stream:false)" }, 400)
       frames = toUpstreamFrames(sse as Array<unknown>)
     } else {
+      // Non-streaming replay rebuilds an Anthropic-shaped response from the projection —
+      // Anthropic-only. Other formats' non-streaming entries can't be faithfully rebuilt
+      // here (the projection differs per format), so reject rather than silently coerce a
+      // CC/Responses/Gemini entry into an Anthropic envelope (review finding #3).
+      if (entryEndpoint !== "anthropic-messages") {
+        return c.json(
+          {
+            error: `Non-streaming entryId replay is only supported for Anthropic (endpoint=${entryEndpoint}); use inline \`upstream.response\` for other formats`,
+          },
+          400,
+        )
+      }
       const outbound = entry.outboundResponse as Record<string, unknown> | undefined
       if (!outbound) return c.json({ error: "Entry has no outboundResponse to replay" }, 400)
-      // Non-streaming replay is rebuilt from the Anthropic projection; other formats need inline.
       nonStreamingResponse = rebuildNonStreamingResponse(outbound)
     }
   } else {
@@ -371,7 +383,6 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
   const cfg = RESPONSE_FORMAT_CONFIG[format]
   const stream = frames !== undefined
   const skipRender = body.stopAfter === "rewrite-out"
-  const rewritesAvailable = cfg.responseRewrites.length > 0
 
   // ── Capturing ctx: real createRequestContext (no publisher → emit no-op) + recordFeature spy ──
   const features: Array<{ feature: string; detail?: Record<string, unknown> }> = []
@@ -383,6 +394,14 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
   }
 
   const env = buildEnv(ctx, cfg, tools, stream)
+  // Honest `rewritesAvailable` (review #1/#2): derive from rewrites that ACTUALLY assemble
+  // for THIS env+config (gate-aware via `appliesTo`), not the static registry length. A
+  // Responses dry-run with `fixResponsesStreamIds:false` assembles to `[]` → false (not a
+  // phantom true). Per path: streaming runs `transform` (every ResponseRewrite has one);
+  // non-streaming runs `transformWhole` (a streaming-only rewrite like fixIds has none →
+  // structurally inert in the whole-response chain → false).
+  const assembled = assembleResponseRewrites(env, cfg.responseRewrites)
+  const rewritesAvailable = stream ? assembled.length > 0 : assembled.some((r) => r.transformWhole !== undefined)
   const driver = createPipelineDriver({
     codec: dryRunIdentityCodec(cfg.clientFormat),
     transport: dryRunTransport,

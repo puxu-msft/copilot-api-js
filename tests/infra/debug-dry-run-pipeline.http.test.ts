@@ -147,6 +147,26 @@ describe("POST /api/debug/dry-run-pipeline", () => {
     expect(forwardedQuestions(body.result)).toEqual([{ header: "Pick one", question: "Pick one" }])
   })
 
+  test("reports per-rewrite frameActions for the assembled Anthropic chain (T2 output content)", async () => {
+    // Review #5: the T2 perRewrite/frameActions output (the inspector's headline) had no
+    // content coverage. For an AskUserQuestion stream under default state, the assembled S5
+    // chain is tool-input-decode (gated on the decode config) + server-tool-filter (always
+    // ANTHROPIC) + thinking-signature-compat (default-on); each rewrite's `transform` runs
+    // per frame, so perRewrite must report them with non-empty frameActions.
+    const upstream = askUserQuestionUpstream(JSON.stringify([{ header: "H", question: "Q" }]))
+    const res = await post({ upstream: { sseEvents: upstream }, stopAfter: "rewrite-out" })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      stages: { "rewrite-out": { rewritesAvailable: boolean; perRewrite: Array<{ name: string; frameActions: Array<unknown> }> } }
+    }
+    expect(body.stages["rewrite-out"].rewritesAvailable).toBe(true)
+    const names = body.stages["rewrite-out"].perRewrite.map((r) => r.name)
+    expect(names).toContain("tool-input-decode")
+    expect(names).toContain("server-tool-filter")
+    // Each reported rewrite actually saw frames (non-empty frameActions), not a phantom entry.
+    for (const r of body.stages["rewrite-out"].perRewrite) expect(r.frameActions.length).toBeGreaterThan(0)
+  })
+
   test("captures tool-input-decode-failed feature for a non-decodable `questions`", async () => {
     const upstream = askUserQuestionUpstream("not valid json")
     const res = await post({ upstream: { sseEvents: upstream } })
@@ -244,7 +264,7 @@ describe("POST /api/debug/dry-run-pipeline", () => {
       expect(body.inspection.stages.parse?.clientFormat).toBe("gemini")
     })
 
-    test("response side: openai-responses runs the real fixIds rewrite (rewritesAvailable:true)", async () => {
+    test("response side: openai-responses runs the real fixIds rewrite (rewritesAvailable:true + the id is actually corrected)", async () => {
       const ev = (o: Record<string, unknown>): { raw: string; type: string } => ({ raw: JSON.stringify(o), type: o.type as string })
       const upstream = [
         ev({ type: "response.output_item.added", output_index: 0, item: { id: "item_A", type: "message" } }),
@@ -252,10 +272,34 @@ describe("POST /api/debug/dry-run-pipeline", () => {
       ]
       const res = await post({ upstream: { sseEvents: upstream }, format: "openai-responses", stopAfter: "rewrite-out" })
       expect(res.status).toBe(200)
-      const body = (await res.json()) as { format: string; stages: { "rewrite-out": { rewritesAvailable: boolean; perRewrite: Array<{ name: string }> } } }
+      const body = (await res.json()) as {
+        format: string
+        stages: { "rewrite-out": { rewritesAvailable: boolean; perRewrite: Array<{ name: string }> } }
+        result: Array<{ data?: string }>
+      }
       expect(body.format).toBe("openai-responses")
       expect(body.stages["rewrite-out"].rewritesAvailable).toBe(true)
       expect(body.stages["rewrite-out"].perRewrite.map((r) => r.name)).toContain("responses-fix-stream-ids")
+      // Effect (not just "the rewrite was assembled"): fixStreamEventIds rewrites the `.done`
+      // frame's item id back to the canonical `.added` id (item_B → item_A). Asserting the
+      // OUTPUT — a name-only check would pass even if the rewrite were an identity no-op.
+      const doneFrame = body.result
+        .map((f) => (typeof f.data === "string" ? (JSON.parse(f.data) as { type?: string; item?: { id?: string } }) : undefined))
+        .find((p) => p?.type === "response.output_item.done")
+      expect(doneFrame?.item?.id).toBe("item_A")
+    })
+
+    test("response side: openai-responses with fixResponsesStreamIds OFF → rewritesAvailable:false (honest, gate-aware)", async () => {
+      // Review #1: rewritesAvailable must reflect ACTUAL assembly (appliesTo-gated), not the
+      // static registry length. With the only Responses rewrite's gate off, nothing assembles.
+      setStateForTests({ fixResponsesStreamIds: false })
+      const ev = (o: Record<string, unknown>): { raw: string; type: string } => ({ raw: JSON.stringify(o), type: o.type as string })
+      const upstream = [ev({ type: "response.output_item.added", output_index: 0, item: { id: "item_A", type: "message" } })]
+      const res = await post({ upstream: { sseEvents: upstream }, format: "openai-responses", stopAfter: "rewrite-out" })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { stages: { "rewrite-out": { rewritesAvailable: boolean; perRewrite: Array<unknown> } } }
+      expect(body.stages["rewrite-out"].rewritesAvailable).toBe(false)
+      expect(body.stages["rewrite-out"].perRewrite).toEqual([])
     })
 
     test("response side: openai-cc has no driver rewrites (rewritesAvailable:false) + identity render", async () => {
