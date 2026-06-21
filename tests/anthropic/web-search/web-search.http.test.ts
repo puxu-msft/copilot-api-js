@@ -39,6 +39,7 @@ import {
   autoRestoreFetch,
 } from "../../helpers/mock-fetch"
 import { createSseResponse } from "../../helpers/sse"
+import { autoRestoreState } from "../../helpers/state-fixture"
 import { autoTestRuntime } from "../../helpers/test-bootstrap"
 
 // ============================================================================
@@ -55,6 +56,13 @@ let redispatchHits = 0
 // end-to-end test can assert the direct path's thinking-signature shim repairs
 // it for the client.
 let redispatchThinkingStream = false
+// When true, the re-dispatch upstream returns an `AskUserQuestion` tool_use whose
+// `input.questions` is a STRINGIFIED JSON array AND whose items LACK `question`
+// (the real GHC double-degradation). Lets the test exercise the bypass's OWN
+// second decoder copy (`web-search-direct.ts` createToolInputStreamDecoder /
+// decodeToolInputBlocksInResponse) — distinct from the v4 main-path S5 chain.
+// Streaming vs non-streaming is chosen by the re-dispatch request's `stream` flag.
+let redispatchAskUserQuestion = false
 let firstHopToolUse = true
 let firstHopMultiSearch = false
 let firstHopStatus = 200
@@ -166,6 +174,59 @@ function buildEmbeddedSigThinkingFrames(model: string): Array<string> {
   ]
 }
 
+// ── AskUserQuestion decode fixture for the bypass re-dispatch path ───────────
+// The real GHC degradation: `input.questions` arrives as a STRINGIFIED JSON
+// array whose items ALSO lack `question` (two failures at once). Decode must
+// (a) parse the string → array and (b) backfill `question = header`. This is the
+// SAME input shape the v4 main-path lock uses (debug-dry-run-pipeline.http.test
+// "mirrors reaped entry 1643"), so asserting the same decoded+backfilled output
+// here doubles as a cross-path drift guard (T3): bypass copy ≡ main-path chain.
+const ASK_QUESTIONS = [
+  { header: "文件组织", multiSelect: false, options: [{ label: "只做 #1 (rename)", description: "仅 messages/handler.ts → web-search-direct.ts" }] },
+]
+const ASK_QUESTIONS_STRINGIFIED = JSON.stringify(ASK_QUESTIONS)
+/** The decoded + header-backfilled shape the client MUST receive on the forwarded wire. */
+const ASK_QUESTIONS_DECODED = ASK_QUESTIONS.map((q) => ({ ...q, question: q.header }))
+
+/** Non-streaming AskUserQuestion re-dispatch body (questions stringified, items missing `question`). */
+function redispatchAskUserQuestionBody(model: string): string {
+  return JSON.stringify({
+    id: "msg-rd-auq",
+    type: "message",
+    role: "assistant",
+    model,
+    content: [{ type: "tool_use", id: "toolu_auq", name: "AskUserQuestion", input: { questions: ASK_QUESTIONS_STRINGIFIED } }],
+    stop_reason: "tool_use",
+    stop_sequence: null,
+    usage: { input_tokens: 10, output_tokens: 5 },
+  })
+}
+
+/** Streaming AskUserQuestion re-dispatch frames — one `input_json_delta` carrying the stringified questions. */
+function buildAskUserQuestionFrames(model: string): Array<string> {
+  return [
+    `event: message_start\ndata: ${JSON.stringify({
+      type: "message_start",
+      message: {
+        id: "msg_rd_auq",
+        type: "message",
+        role: "assistant",
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 0 },
+      },
+    })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_auq", name: "AskUserQuestion", input: {} } })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ questions: ASK_QUESTIONS_STRINGIFIED }) } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
+    `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 5 } })}\n\n`,
+    `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
+    "data: [DONE]\n\n",
+  ]
+}
+
 const upstreamFetchMock = mock(async (input: string | URL | Request, init?: RequestInit) => {
   const url =
     typeof input === "string" ? input
@@ -173,7 +234,7 @@ const upstreamFetchMock = mock(async (input: string | URL | Request, init?: Requ
     : input.url
   const payload =
     typeof init?.body === "string" ?
-      (JSON.parse(init.body) as { model?: string; tools?: Array<{ type?: string }>; messages?: Array<{ content?: unknown }> })
+      (JSON.parse(init.body) as { model?: string; stream?: boolean; tools?: Array<{ type?: string }>; messages?: Array<{ content?: unknown }> })
     : {}
   const model = payload.model ?? "unknown"
 
@@ -201,6 +262,14 @@ const upstreamFetchMock = mock(async (input: string | URL | Request, init?: Requ
       // can assert the direct path's shim repairs it for the client.
       if (redispatchThinkingStream) {
         return createSseResponse(buildEmbeddedSigThinkingFrames(model))
+      }
+      // Re-dispatch returns an AskUserQuestion tool_use (stringified questions,
+      // items missing `question`) so the bypass's OWN decoder copy is exercised.
+      // Streaming vs non-streaming follows the re-dispatched request's own flag.
+      if (redispatchAskUserQuestion) {
+        return payload.stream ?
+            createSseResponse(buildAskUserQuestionFrames(model))
+          : new Response(redispatchAskUserQuestionBody(model), { status: 200, headers: { "content-type": "application/json" } })
       }
       return new Response(firstHopBody(model), { status: 200, headers: { "content-type": "application/json" } })
     }
@@ -239,12 +308,16 @@ const webSearchTool = { name: "web_search", type: "web_search_20250305", max_use
 describe("POST /v1/messages — web_search double-hop", () => {
   autoTestRuntime()
   autoRestoreFetch()
+  // Restore state after each test — these tests mutate decode/backfill config and
+  // bun runs the whole suite in one process (global singleton leaks across files).
+  autoRestoreState()
 
   beforeEach(() => {
     messagesHits = 0
     responsesHits = 0
     redispatchHits = 0
     redispatchThinkingStream = false
+    redispatchAskUserQuestion = false
     firstHopToolUse = true
     firstHopMultiSearch = false
     firstHopStatus = 200
@@ -422,6 +495,86 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(persisted!.outboundResponse).toBeDefined()
   })
 
+  test("bypass decode (streaming): re-dispatch AskUserQuestion is decoded + header-backfilled on the forwarded stream", async () => {
+    // The bypass (web-search-direct.ts) carries its OWN decoder copy, independent
+    // of the v4 main-path S5 chain. Drive it via the pass-through re-dispatch
+    // (probe does NOT search → handleDirectAnthropicCompletion → streaming pump →
+    // createToolInputStreamDecoder). Assert the client receives a DECODED array
+    // with `question` backfilled, while history keeps the upstream stringified form.
+    firstHopToolUse = false // probe answers directly → pass-through re-dispatch
+    redispatchAskUserQuestion = true // re-dispatch upstream emits the AskUserQuestion degradation
+    setStateForTests({ decodeToolInputFields: { AskUserQuestion: ["questions"] }, decodeAllToolInputFields: false, backfillQuestionFromHeader: true })
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-opus-4.6",
+        messages: [{ role: "user", content: "ask me something" }],
+        max_tokens: 256,
+        tools: [webSearchTool],
+        stream: true,
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    // Forwarded (client-received): questions decoded to an array AND each item backfilled.
+    expect(questionsFromFrames(rawDataLines(text))).toEqual(ASK_QUESTIONS_DECODED)
+    // Went through the direct path (probe + re-dispatch), no search.
+    expect(messagesHits).toBe(2)
+    expect(redispatchHits).toBe(1)
+    expect(responsesHits).toBe(0)
+
+    // History: forwarded (inboundResponse.sseEvents) decoded; upstream-raw (top-level
+    // sseEvents) keeps the stringified form (richest-data-flow: decode touches only
+    // the forwarded wire, history preserves the upstream anomaly verbatim).
+    const entry = getHistory({ endpoint: "anthropic-messages", limit: 5 }).entries[0]
+    expect(entry).toBeDefined()
+    expect(questionsFromFrames((entry.inboundResponse?.sseEvents ?? []).map((e) => e.raw))).toEqual(ASK_QUESTIONS_DECODED)
+    const upstreamQuestions = questionsFromFrames((entry.sseEvents ?? []).map((e) => e.raw))
+    expect(typeof upstreamQuestions).toBe("string") // NOT decoded in history
+    expect(upstreamQuestions).toBe(ASK_QUESTIONS_STRINGIFIED)
+  })
+
+  test("bypass decode (non-streaming): re-dispatch AskUserQuestion is decoded + header-backfilled on the forwarded JSON", async () => {
+    // Same bypass copy, non-streaming branch: handleDirectAnthropicNonStreamingResponse
+    // → decodeToolInputBlocksInResponse. Client JSON must carry the decoded+backfilled
+    // input; history's outboundResponse (upstream-original) keeps the stringified form.
+    firstHopToolUse = false
+    redispatchAskUserQuestion = true
+    setStateForTests({ decodeToolInputFields: { AskUserQuestion: ["questions"] }, decodeAllToolInputFields: false, backfillQuestionFromHeader: true })
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-opus-4.6",
+        messages: [{ role: "user", content: "ask me something" }],
+        max_tokens: 256,
+        tools: [webSearchTool],
+        stream: false,
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as SynthesizedBody
+    // Forwarded (client JSON): decoded array WITH question backfilled.
+    expect(askUserQuestionInput(body.content)?.questions).toEqual(ASK_QUESTIONS_DECODED)
+    expect(messagesHits).toBe(2)
+    expect(redispatchHits).toBe(1)
+    expect(responsesHits).toBe(0)
+
+    // History: forwarded (inboundResponse) decoded; upstream-original (outboundResponse) stringified.
+    const entry = getHistory({ endpoint: "anthropic-messages", limit: 5 }).entries[0]
+    expect(entry).toBeDefined()
+    const fwdContent = (entry.inboundResponse?.content as { content?: Array<Record<string, unknown>> } | undefined)?.content ?? []
+    expect(askUserQuestionInput(fwdContent)?.questions).toEqual(ASK_QUESTIONS_DECODED)
+    const upstreamContent = (entry.outboundResponse?.content as { content?: Array<Record<string, unknown>> } | null)?.content ?? []
+    expect(typeof askUserQuestionInput(upstreamContent)?.questions).toBe("string") // NOT decoded in history
+    expect(askUserQuestionInput(upstreamContent)?.questions).toBe(ASK_QUESTIONS_STRINGIFIED)
+  })
+
   test("closed state (webSearchEnabled=false) short-circuits — request goes through the normal path", async () => {
     setWebSearchConfig({ webSearchEnabled: false, webSearchBackend: "gpt-5.5" })
     const res = await app.request("/v1/messages", {
@@ -584,4 +737,37 @@ function safeParse(raw: string): Record<string, unknown> | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Collect the raw `data:` JSON strings (excluding `[DONE]`) from a forwarded SSE text. */
+function rawDataLines(sse: string): Array<string> {
+  const out: Array<string> = []
+  for (const line of sse.split("\n")) {
+    if (!line.startsWith("data: ")) continue
+    const body = line.slice(6)
+    if (body === "[DONE]") continue
+    out.push(body)
+  }
+  return out
+}
+
+/**
+ * Reassemble a tool_use block's `questions` value from a list of SSE frame raw JSON
+ * strings, by joining its `input_json_delta` fragments and parsing. Returns the
+ * decoded array on the forwarded wire, or the still-stringified value in upstream history.
+ */
+function questionsFromFrames(rawFrames: Array<string>): unknown {
+  const chunks: Array<string> = []
+  for (const raw of rawFrames) {
+    const p = safeParse(raw)
+    const delta = p?.delta as { type?: string; partial_json?: string } | undefined
+    if (p?.type === "content_block_delta" && delta?.type === "input_json_delta") chunks.push(delta.partial_json ?? "")
+  }
+  return (JSON.parse(chunks.join("")) as { questions?: unknown }).questions
+}
+
+/** Find the `AskUserQuestion` tool_use block's `input` in a non-streaming content array. */
+function askUserQuestionInput(content: Array<Record<string, unknown>>): Record<string, unknown> | undefined {
+  const block = content.find((b) => b.type === "tool_use" && b.name === "AskUserQuestion")
+  return block?.input as Record<string, unknown> | undefined
 }
