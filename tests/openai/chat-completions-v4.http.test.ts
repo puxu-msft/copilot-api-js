@@ -82,6 +82,21 @@ function ccStreamFrames(model: string): Array<string> {
   ]
 }
 
+/**
+ * Stage B B0 baseline: a streaming response whose tool_call carries the SANITIZED
+ * (wire) name `name`. The handler's `restoreStreamToolNames` rewrites the forwarded
+ * frame's name back to the client original — this is the forwarded-only streaming
+ * restore that Stage B's owns-sink flip (B4) must keep byte-identical.
+ */
+function ccStreamToolFrames(model: string, wireName: string): Array<string> {
+  return [
+    `data: ${JSON.stringify({ id: "stool", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: wireName, arguments: "" } }] }, finish_reason: null, logprobs: null }] })}\n\n`,
+    `data: ${JSON.stringify({ id: "stool", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "{}" } }] }, finish_reason: null, logprobs: null }] })}\n\n`,
+    `data: ${JSON.stringify({ id: "stool", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls", logprobs: null }] })}\n\n`,
+    "data: [DONE]\n\n",
+  ]
+}
+
 function responsesStreamFrames(): Array<string> {
   return [
     `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_1", model: "gpt-5" } })}\n\n`,
@@ -105,7 +120,13 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
       throwOnce = false
       throw new Error("ECONNRESET: upstream socket reset")
     }
-    if (payload.stream) return Promise.resolve(createSseResponse(ccStreamFrames(payload.model)))
+    if (payload.stream) {
+      // Stage B B0: a streaming tool_call echoes the SANITIZED wire name the handler
+      // sent (`payload.tools[0].function.name`) so the forwarded restore is exercised.
+      const wireName =
+        Array.isArray(payload.tools) && payload.tools.length > 0 ? (payload.tools[0] as { function?: { name?: string } }).function?.name : undefined
+      return Promise.resolve(createSseResponse(wireName ? ccStreamToolFrames(payload.model, wireName) : ccStreamFrames(payload.model)))
+    }
     const body = Array.isArray(payload.tools) && payload.tools.length > 0 ? ccToolBody(payload.model) : ccBody(payload.model)
     return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }))
   }
@@ -202,6 +223,31 @@ describe("CC v4 driver path", () => {
     expect(v4Text).toBe(ccStreamFrames("gpt-4o").join(""))
     expect(v4Text).toContain("Hello")
     expect(v4Text).toContain("[DONE]")
+  })
+
+  // Stage B B0 baseline: CC STREAMING tool-name restore (forwarded-only). The
+  // existing restore test (below) is non-streaming; this locks the streaming
+  // forwarded bytes so the owns-sink flip (B4) can't silently change them.
+  test("Stage B B0: streaming tool-name restore — forwarded bytes show the client original name", async () => {
+    const clientName = "my.tool:with-bad/chars"
+    const wireName = "my.tool_with-bad_chars" // `:` `/` → `_` (sanitizer)
+    const body = {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "use the tool" }],
+      tools: [{ type: "function", function: { name: clientName, description: "d" } }],
+      stream: true,
+    }
+
+    const v4Text = await (await post(body)).text()
+
+    // Expected forwarded stream: the upstream wire-named tool_call (first frame) is
+    // restored to the client original; the argument/finish/[DONE] frames pass through.
+    const expected = ccStreamToolFrames("gpt-4o", wireName).join("").split(wireName).join(clientName)
+    expect(v4Text).toBe(expected)
+    // The wire received the sanitized name (request side); the client never sees it.
+    expect(lastCcWire?.tools?.[0]?.function?.name).toBe(wireName)
+    expect(v4Text).not.toContain(wireName)
+    expect(v4Text).toContain(clientName)
   })
 
   test("tool-name sanitize→restore: client sees original names, wire sees sanitized", async () => {
