@@ -173,6 +173,7 @@ v4 driver（七阶段编排）正逐步取代各格式巨型 handler。下表定
 | `/api/logs` | 请求日志 |
 | `/api/event_logging` | Anthropic 事件日志（静默消费） |
 | `/api/debug/dry-run-truncate` | 离线 dry-run：复用真实 tokenize+truncate 函数（短路发 GHC），并排返回三套 token 口径（gpt-tokenizer / char÷4 / 上游报告值）+ pre-check + 截断结果。输入为内联 payload 或已存 history entry（`entryId`） |
+| `/api/debug/dry-run-pipeline` | 离线 pipeline dry-run（Phase 1：响应侧 Anthropic）：把合成/回放的上游响应喂进真实 v4 driver 的 S5 响应改写链（recover/thinking/decode/filter），短路 GHC，输出 forwarded 帧 + 捕获的 feature 事件（含 `tool-input-decode-failed`），使"上游某响应经当前代码处理后客户端会收到什么"可确定性观测。输入 `entryId` 回放（`sseEvents[].raw` 流式 / `outboundResponse` 重建非流式）或 inline 合成上游。手工 env + 无 publisher 的捕获 ctx → 零 history/WS 污染；`fidelity` 字段诚实标注 driver 输出≠客户端实收（缺 handler-side heartbeat 等）。设计见 [rfc/pipeline-dry-run-inspector.md](rfc/pipeline-dry-run-inspector.md) |
 
 #### 基础设施
 
