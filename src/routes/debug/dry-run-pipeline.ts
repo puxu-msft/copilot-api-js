@@ -28,14 +28,22 @@ import type {
   //
   ClientFrame,
   FormatCodec,
+  RawHttpRequest,
+  RequestInspectStage,
   Transport,
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
+import { preprocessAnthropicMessages } from "~/lib/anthropic/sanitize"
+import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrites"
+import { withCapturingManager } from "~/lib/context/manager"
 import { createRequestContext } from "~/lib/context/request"
 import { getEntry } from "~/lib/history"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+
+const REQUEST_STAGES = new Set<string>(["parse", "translate", "rewrite-in"])
 
 const InlineUpstreamSchema = z.union([
   z.object({ sseEvents: z.array(z.union([z.string(), z.object({ raw: z.string(), type: z.string().optional() })])) }),
@@ -44,18 +52,18 @@ const InlineUpstreamSchema = z.union([
 
 const DryRunPipelineSchema = z
   .object({
-    /** Replay a stored history entry (uses its sseEvents / outboundResponse + inboundRequest tools). */
+    /** Replay a stored history entry (uses its sseEvents/outboundResponse for response side, inboundRequest for request side). */
     entryId: z.string().min(1).optional(),
-    /** Inline request context — only `tools` is consumed by S5 (recover schema). */
-    request: z.object({ tools: z.array(z.record(z.string(), z.unknown())).optional() }).optional(),
-    /** Inline synthetic upstream (streaming sseEvents or non-streaming response). */
+    /** Inline request payload (full Anthropic body). Request-side stages read it; response-side reads only `tools`. */
+    request: z.record(z.string(), z.unknown()).optional(),
+    /** Inline synthetic upstream (streaming sseEvents or non-streaming response) — response side only. */
     upstream: InlineUpstreamSchema.optional(),
     /** Streaming vs non-streaming. Derived from entry/upstream when omitted. */
     stream: z.boolean().optional(),
-    /** Stop stage. For Anthropic, rewrite-out == render (render is identity). */
-    stopAfter: z.enum(["rewrite-out", "render"]).default("render"),
+    /** Stop stage. parse/translate/rewrite-in = request side; rewrite-out/render = response side (Anthropic render is identity). */
+    stopAfter: z.enum(["parse", "translate", "rewrite-in", "rewrite-out", "render"]).default("render"),
   })
-  .refine((b) => b.entryId !== undefined || b.upstream !== undefined, {
+  .refine((b) => b.entryId !== undefined || b.upstream !== undefined || b.request !== undefined, {
     message: "Provide either `entryId` or `upstream`",
   })
 
@@ -125,10 +133,60 @@ function buildEnv(ctx: RequestContext, tools: unknown, stream: boolean): Request
   } as unknown as RequestEnvelope
 }
 
+/**
+ * Request-side inspection (S1→`stopAfter`): assemble the REAL Anthropic codec (per-request closure
+ * over a throwaway betaProbe + freshly-computed preprocessInfo) + driver, then run `inspectRequest`
+ * under a capturing manager (so `codec.parse`'s `manager.create()` doesn't pollute history/WS).
+ * Mirrors the handler's pre-step (`preprocessAnthropicMessages`); fidelity caveats in the response.
+ */
+function inspectAnthropicRequest(payload: Record<string, unknown>, stopAfter: RequestInspectStage) {
+  const pre = preprocessAnthropicMessages((payload.messages ?? []) as never)
+  const betaProbe = createBetaProbe(typeof payload._anthropicBeta === "string" ? payload._anthropicBeta : undefined)
+  const codec = createAnthropicCodec({
+    betaProbe,
+    preprocessInfo: { strippedReadTagCount: pre.strippedReadTagCount, dedupedToolCallCount: pre.dedupedToolCallCount },
+  })
+  const driver = createPipelineDriver({
+    codec,
+    transport: dryRunTransport,
+    strategies: [],
+    maxRetries: 0,
+    maxLearningRetries: 0,
+    requestRewrites: codec.getRequestRewrites(),
+  })
+  const raw = { body: { ...payload, messages: pre.messages }, headers: new Headers(), path: "/v1/messages", method: "POST" } as unknown as RawHttpRequest
+  return withCapturingManager(() => driver.inspectRequest(raw, stopAfter))
+}
+
 export async function handleDryRunPipeline(c: Context): Promise<Response> {
   const parsed = DryRunPipelineSchema.safeParse(await c.req.json().catch(() => ({})))
   if (!parsed.success) return c.json({ error: "Invalid request", issues: parsed.error.issues }, 400)
   const body = parsed.data
+
+  // ── Request side (S1→S3): build the real Anthropic codec + inspectRequest under a capturing manager ──
+  if (REQUEST_STAGES.has(body.stopAfter)) {
+    let payload: Record<string, unknown> | undefined = body.request
+    if (body.entryId !== undefined) {
+      const entry = getEntry(body.entryId)
+      if (!entry) return c.json({ error: `History entry not found: ${body.entryId}` }, 404)
+      payload = entry.inboundRequest as Record<string, unknown> | undefined
+    }
+    if (!payload) return c.json({ error: "Request-side stages need `request` (inline payload) or `entryId`" }, 400)
+    const { result: inspection, events } = inspectAnthropicRequest(payload, body.stopAfter as RequestInspectStage)
+    return c.json({
+      stopAfter: body.stopAfter,
+      format: "anthropic",
+      side: "request",
+      inspection,
+      diagnostics: { eventKinds: events.map((e) => e.kind) },
+      fidelity: {
+        clientFinal: false,
+        caveats: [
+          "请求侧 = 用当前代码 + live 配置重跑 inboundRequest，非复现当时（preprocess 会重算；betaProbe 为 throwaway；反应式 retry 改写不可见，prepare-wire 未含本 MVP）",
+        ],
+      },
+    })
+  }
 
   // ── Resolve input: tools (for recover schema), streaming frames OR non-streaming response ──
   let tools: unknown

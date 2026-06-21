@@ -21,11 +21,13 @@ import type { StateSnapshot } from "~/lib/state"
 
 import {
   //
+  setModels,
   setStateForTests,
   snapshotStateForTests,
   restoreStateForTests,
 } from "~/lib/state"
 
+import { mockModel } from "../helpers/factories"
 import { createFullTestApp } from "../helpers/test-app"
 import {
   //
@@ -34,6 +36,23 @@ import {
 } from "../helpers/test-bootstrap"
 
 const app = createFullTestApp()
+
+function seedModel(): void {
+  setModels({
+    object: "list",
+    data: [
+      mockModel("claude-sonnet-4", {
+        vendor: "Anthropic",
+        capabilities: {
+          family: "claude",
+          type: "chat",
+          tokenizer: "o200k_base",
+          limits: { max_context_window_tokens: 1_000_000, max_output_tokens: 16000, max_prompt_tokens: 1_000_000 },
+        },
+      }),
+    ],
+  })
+}
 
 async function post(payload: unknown): Promise<Response> {
   return app.request("/api/debug/dry-run-pipeline", {
@@ -86,6 +105,7 @@ describe("POST /api/debug/dry-run-pipeline", () => {
   beforeEach(() => {
     snap = snapshotStateForTests()
     setStateForTests({ decodeToolInputFields: { AskUserQuestion: ["questions"] }, decodeAllToolInputFields: false, backfillQuestionFromHeader: true })
+    seedModel()
   })
 
   afterEach(() => {
@@ -142,6 +162,41 @@ describe("POST /api/debug/dry-run-pipeline", () => {
 
   test("400 when neither entryId nor upstream is provided", async () => {
     const res = await post({ stream: true })
+    expect(res.status).toBe(400)
+  })
+
+  // ── Request side (S1→S3) ──
+
+  test("request side: inspectRequest runs S1-S3, returns per-stage snapshots + applied", async () => {
+    const request = { model: "claude-sonnet-4", messages: [{ role: "user", content: "hi" }], max_tokens: 100 }
+    const res = await post({ request, stopAfter: "rewrite-in" })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      side: string
+      inspection: {
+        stoppedAt: string
+        stages: { parse?: { clientFormat?: string }; translate?: unknown; "rewrite-in"?: { applied?: Array<{ name: string; changed: boolean }> } }
+      }
+    }
+    expect(body.side).toBe("request")
+    expect(body.inspection.stoppedAt).toBe("rewrite-in")
+    expect(body.inspection.stages.parse?.clientFormat).toBe("anthropic")
+    expect(body.inspection.stages.translate).toBeDefined()
+    expect(Array.isArray(body.inspection.stages["rewrite-in"]?.applied)).toBe(true)
+  })
+
+  test("request side: stopAfter=parse stops before S2", async () => {
+    const request = { model: "claude-sonnet-4", messages: [{ role: "user", content: "hi" }], max_tokens: 100 }
+    const res = await post({ request, stopAfter: "parse" })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { inspection: { stoppedAt: string; stages: { parse?: unknown; translate?: unknown } } }
+    expect(body.inspection.stoppedAt).toBe("parse")
+    expect(body.inspection.stages.parse).toBeDefined()
+    expect(body.inspection.stages.translate).toBeUndefined()
+  })
+
+  test("request side: 400 when no request/entryId provided", async () => {
+    const res = await post({ stopAfter: "rewrite-in" })
     expect(res.status).toBe(400)
   })
 })
