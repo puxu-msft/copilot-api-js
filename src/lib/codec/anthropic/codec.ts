@@ -119,8 +119,6 @@ export interface AnthropicCodec extends FormatCodec {
   getResanitize(): AnthropicSanitizeFn | undefined
   /** Latest attempt's effective `messages` (sampleRequest-captured; message-mapping rebuild). */
   getLatestEffectiveMessages(): Array<unknown> | undefined
-  /** Latest attempt's effective `thinking` (sampleRequest-captured; `thinking` feature rebuild). */
-  getLatestEffectiveThinking(): unknown
   /** The per-request request rewrites (driver S3): the sanitize chain + its side-channel recordings (RFC §4.A0). */
   getRequestRewrites(): ReadonlyArray<RequestRewrite>
 }
@@ -144,7 +142,6 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   let initialSanitizationInfo: SanitizationInfo | undefined
   let resanitize: AnthropicSanitizeFn | undefined
   let latestEffectiveMessages: Array<unknown> | undefined
-  let latestEffectiveThinking: unknown
 
   // The S3 request rewrite (sanitize chain + its recordings), built once per request.
   // It closes over `preprocessInfo` (route-supplied, not on the env) and writes the
@@ -189,9 +186,6 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     getLatestEffectiveMessages() {
       return latestEffectiveMessages
     },
-    getLatestEffectiveThinking() {
-      return latestEffectiveThinking
-    },
     getRequestRewrites() {
       return requestRewrites
     },
@@ -212,13 +206,20 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     },
 
     prepareWire(env) {
-      return prepareAnthropicWire(env, { betaProbe: args.betaProbe, clientAnthropicBeta, requestContext })
+      return prepareAnthropicWire(env, {
+        betaProbe: args.betaProbe,
+        clientAnthropicBeta,
+        requestContext,
+        // requested = the client's original thinking type, from the FIXED truncate
+        // baseline (never the per-attempt env.body, which legacy-thinking-retry
+        // mutates enabled→adaptive on retry).
+        requestedThinkingType: (truncateBaseline?.thinking as { type?: string } | undefined)?.type,
+      })
     },
 
     sampleRequest(wire, env): RequestSample {
       const sample = sampleAnthropicRequest(wire, env)
       latestEffectiveMessages = sample.effectiveMessages
-      latestEffectiveThinking = sample.effectiveThinking
       return sample.requestSample
     },
 
@@ -357,6 +358,12 @@ interface PrepareWireDeps {
   betaProbe: BetaProbe
   clientAnthropicBeta: string | undefined
   requestContext: RequestContext | undefined
+  /**
+   * Client's original `thinking.type` (fixed across retries — from the truncate
+   * baseline, NOT `env.body` which retries mutate). Recorded as the `requested`
+   * half of the merged `thinking` feature alongside the effective wire value.
+   */
+  requestedThinkingType: string | undefined
 }
 
 /**
@@ -382,11 +389,17 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
   // adapter's onPrepared received) so unsupported-beta can probe them.
   deps.betaProbe.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
 
-  // Surface the ACTUAL outbound thinking shape (post coerceAdaptiveThinking), not
-  // the sanitized client request's — matches legacy pipeline.ts onPrepared.
+  // Record `thinking` as a per-request terminal dimension: `effective` = the
+  // ACTUAL outbound wire shape (post coerceAdaptiveThinking), `requested` = the
+  // client's original type (fixed baseline, supplied by the codec). The console
+  // overwrites `effective` per attempt and renders requested→effective once, so
+  // a coercion stays visible even when a retry rewrites the body.
   const wireThinking = prepared.wire.thinking as { type?: string } | undefined
   if (wireThinking?.type && wireThinking.type !== "disabled") {
-    deps.requestContext?.recordFeature("thinking-wire", { type: wireThinking.type })
+    deps.requestContext?.recordFeature("thinking", {
+      ...(deps.requestedThinkingType !== undefined && { requested: deps.requestedThinkingType }),
+      effective: wireThinking.type,
+    })
   }
 
   return {
@@ -404,7 +417,6 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
 interface SampleAnthropicResult {
   requestSample: RequestSample
   effectiveMessages: Array<unknown>
-  effectiveThinking: unknown
 }
 
 /**
@@ -413,10 +425,10 @@ interface SampleAnthropicResult {
  *   - `effective` = the post-rewrite logical request (`env.body`).
  *   - `wire` = the actual outbound bytes (`prepared.wire`, B1-B12 + sanitized headers).
  *
- * Captures the latest effective `messages` + `thinking` for the route to rebuild
- * retry message-mapping + the `thinking` feature (RFC §12.4/§12.5). The §12.5
- * invariant (`action.env.body === action.payload`) makes these the same objects
- * the legacy `recordRetryPipelineState` reads from `newPayload`.
+ * Captures the latest effective `messages` for the route to rebuild retry
+ * message-mapping (RFC §12.4/§12.5). The §12.5 invariant
+ * (`action.env.body === action.payload`) makes these the same objects the legacy
+ * `recordRetryPipelineState` reads from `newPayload`.
  */
 function sampleAnthropicRequest(wire: PreparedRequest, env: RequestEnvelope): SampleAnthropicResult {
   const effBody = env.body as MessagesPayload
@@ -439,7 +451,7 @@ function sampleAnthropicRequest(wire: PreparedRequest, env: RequestEnvelope): Sa
     format: ENDPOINT_TYPE,
   }
 
-  return { requestSample: { effective, wire: wireRequest }, effectiveMessages, effectiveThinking: effBody.thinking }
+  return { requestSample: { effective, wire: wireRequest }, effectiveMessages }
 }
 
 // ============================================================================

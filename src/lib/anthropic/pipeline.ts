@@ -138,13 +138,19 @@ export function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAd
             // Capture the betas actually sent so the beta-retry strategy can
             // probe them if the upstream returns a laconic `invalid beta flag`.
             betaProbe.recordOutbound(headers)
-            // Surface the ACTUAL outbound thinking shape. The `thinking:` tags
-            // elsewhere read the sanitized payload (the client's request shape),
-            // so when coerceAdaptiveThinking rewrites enabled→adaptive on the
-            // wire, only this tag reflects what upstream really received.
+            // Record `thinking` as a per-request terminal dimension: `effective`
+            // = the ACTUAL outbound wire shape (post coerceAdaptiveThinking),
+            // `requested` = the client's original type from the FIXED closure
+            // `anthropicPayload` (NOT the per-attempt `p`, which retries mutate).
+            // The console overwrites `effective` per attempt and renders
+            // requested→effective once.
             const wireThinking = wire.thinking as { type?: string } | undefined
             if (wireThinking?.type && wireThinking.type !== "disabled") {
-              reqCtx?.recordFeature("thinking-wire", { type: wireThinking.type })
+              const requestedType = (anthropicPayload.thinking as { type?: string } | undefined)?.type
+              reqCtx?.recordFeature("thinking", {
+                ...(requestedType !== undefined && { requested: requestedType }),
+                effective: wireThinking.type,
+              })
             }
             reqCtx?.setAttemptWireRequest({
               model: typeof wire.model === "string" ? wire.model : anthropicPayload.model,

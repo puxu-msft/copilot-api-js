@@ -220,14 +220,6 @@ function runInitialSanitizationAndRecord(
     })
   }
 
-  // Publish "thinking" feature when enabled. Replaces the legacy
-  // `tuiLogger.updateRequest({ tags: ["thinking:..."] })` direct call —
-  // ConsoleSink renders it as the same `(thinking:adaptive)` suffix on
-  // the [ OK ] line via `renderFeatureTag` in observability/sinks/console.ts.
-  if (initialSanitized.thinking && initialSanitized.thinking.type !== "disabled") {
-    reqCtx.recordFeature("thinking", { type: initialSanitized.thinking.type })
-  }
-
   return { initialSanitized, initialSanitizationInfo }
 }
 
@@ -279,9 +271,6 @@ function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
     reqCtx.recordFeature("beta-stripped", { betas: strippedBetas })
   } else {
     reqCtx.recordFeature("truncated")
-  }
-  if (newPayload.thinking && newPayload.thinking.type !== "disabled") {
-    reqCtx.recordFeature("thinking", { type: newPayload.thinking.type })
   }
 }
 

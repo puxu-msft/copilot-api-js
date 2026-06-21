@@ -80,9 +80,5 @@ function applyAnthropicSanitize(env: RequestEnvelope, deps: AnthropicRequestRewr
     })
   }
 
-  if (sanitized.thinking && sanitized.thinking.type !== "disabled") {
-    ctx.recordFeature("thinking", { type: sanitized.thinking.type })
-  }
-
   return { env: env.with({ body: sanitized }), changed: sanitized !== baseline }
 }

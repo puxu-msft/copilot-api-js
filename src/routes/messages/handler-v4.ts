@@ -405,9 +405,11 @@ export function retryMetaFeature(meta: Record<string, unknown>, hasTruncateResul
  * Rebuild `setPipelineInfo` + features for an accepted retry. Mirrors the legacy
  * `recordRetryPipelineState`, but the data comes from two channels (RFC §12.4):
  *   - message-mapping baseline ← `codec.getTruncateBaseline()` (preprocessed,
- *     pre-initial-sanitize); mapping effective + `thinking` feature ←
- *     `codec.getLatestEffectiveMessages/Thinking()` (sampleRequest-captured, the
- *     `action.env.body === action.payload` invariant makes them the retry's body).
+ *     pre-initial-sanitize); mapping effective ← `codec.getLatestEffectiveMessages()`
+ *     (sampleRequest-captured, the `action.env.body === action.payload` invariant
+ *     makes it the retry's body). (The `thinking` feature is NOT rebuilt here — it
+ *     is emitted per-attempt by `prepareWire` as a terminal `{requested, effective}`
+ *     dimension; see codec.ts / observability console sink.)
  *   - sanitization / strippedBetas / probedBetas / truncateResult ← `meta`
  *     (onMeta, post-gate).
  */
@@ -449,13 +451,6 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   // emit meta with neither signal, and must NOT be branded `truncated`.
   const retryFeature = retryMetaFeature(meta, retryTruncateResult !== undefined)
   if (retryFeature) ctx.recordFeature(retryFeature.feature, retryFeature.detail)
-
-  // `thinking` feature ← the retry's effective body (sampleRequest closure, NOT
-  // meta — RFC §12.4 easy-to-miss point).
-  const effectiveThinking = codec.getLatestEffectiveThinking() as { type?: string } | undefined
-  if (effectiveThinking && effectiveThinking.type !== "disabled") {
-    ctx.recordFeature("thinking", { type: effectiveThinking.type })
-  }
 }
 
 // ============================================================================

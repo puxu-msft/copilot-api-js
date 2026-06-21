@@ -113,10 +113,15 @@ export interface AttemptSnapshot {
 export type FeatureKind =
   /** auto-truncate ran */
   | "truncated"
-  /** adaptive/enabled thinking — `detail: { type: "adaptive" | "enabled" }` */
+  /**
+   * Thinking mode as a per-request terminal dimension —
+   * `detail: { requested?: string, effective: string }`. `effective` is the
+   * final outbound wire `thinking.type` (post coerceAdaptiveThinking); `requested`
+   * is the client's original `thinking.type`. They differ when the pipeline
+   * coerced it (e.g. `enabled`→`adaptive`). Scope: top-level `thinking.type` only
+   * (budget_tokens / output_config.effort coercions are not surfaced here).
+   */
   | "thinking"
-  /** upstream thinking coercion — `detail: { type: string }` */
-  | "thinking-wire"
   /** unsupported-beta strategy stripped headers — `detail: { betas: string[] }` */
   | "beta-stripped"
   /** responses → chat-completions fallback */

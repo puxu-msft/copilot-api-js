@@ -48,8 +48,15 @@ interface ActiveRequest {
   streamBytesIn?: number
   streamEventsIn?: number
   streamBlockType?: string
-  /** Features applied to this request (e.g. "truncated", "thinking:adaptive"). */
+  /** Features applied to this request (e.g. "truncated", "beta-strip:..."). */
   tags: Array<string>
+  /**
+   * Thinking as a terminal dimension (NOT an accumulated tag): `requested` is
+   * set once (fixed), `effective` is overwritten per attempt (last wins). Rendered
+   * once at completion via {@link formatThinkingTag}, so a multi-attempt request
+   * yields exactly one thinking tag instead of a contradictory pile-up.
+   */
+  thinking?: { requested?: string; effective: string }
   /** Was this a `/history/*` route? Suppresses completion line unless it errored. */
   isHistoryAccess: boolean
   /** Final status code from terminal event. */
@@ -135,6 +142,17 @@ export class ConsoleSink {
       }
       case "request.feature_applied": {
         const entry = this.upsertCtx(event.ctx)
+        // `thinking` is a terminal dimension, not an accumulated tag: set
+        // `requested` once (fixed), overwrite `effective` per attempt. Rendered
+        // once at completion — avoids the cross-attempt contradictory pile-up.
+        if (event.feature === "thinking") {
+          const d = (event.detail ?? {}) as { requested?: unknown; effective?: unknown }
+          if (typeof d.effective === "string") {
+            const requested = typeof d.requested === "string" ? d.requested : entry.thinking?.requested
+            entry.thinking = requested !== undefined ? { requested, effective: d.effective } : { effective: d.effective }
+          }
+          return
+        }
         const tag = renderFeatureTag(event.feature, event.detail)
         if (tag && !entry.tags.includes(tag)) entry.tags.push(tag)
         return
@@ -291,7 +309,10 @@ export class ConsoleSink {
     const durationMs = Date.now() - ctx.startTime
     const queueWait = ctx.queueWaitMs > 100 ? formatDuration(ctx.queueWaitMs) : undefined
 
-    const tagStr = !isError && entry.tags.length > 0 ? pc.dim(` (${entry.tags.join(", ")})`) : ""
+    // Thinking is a terminal field rendered once here (prepended), then the
+    // accumulated feature tags.
+    const allTags = entry.thinking ? [formatThinkingTag(entry.thinking), ...entry.tags] : entry.tags
+    const tagStr = !isError && allTags.length > 0 ? pc.dim(` (${allTags.join(", ")})`) : ""
     const errorStr = isError && info.error ? `: ${info.error}` : ""
     const extra = tagStr + errorStr || undefined
 
@@ -421,8 +442,20 @@ export class ConsoleSink {
 // ============================================================================
 
 /**
+ * Render the thinking terminal field into a single console tag. `effective` is
+ * the authoritative "what actually ran"; a differing `requested` is shown as
+ * `requested→effective` (matching the `ws→http` convention) to surface coercion.
+ */
+export function formatThinkingTag(thinking: { requested?: string; effective: string }): string {
+  return thinking.requested !== undefined && thinking.requested !== thinking.effective ?
+      `thinking:${thinking.requested}→${thinking.effective}`
+    : `thinking:${thinking.effective}`
+}
+
+/**
  * Render a `FeatureKind` + detail blob into a human-readable tag for the
- * `[ OK ] ... (foo, bar)` suffix.
+ * `[ OK ] ... (foo, bar)` suffix. (`thinking` is handled separately as a
+ * terminal field — see {@link formatThinkingTag}.)
  */
 function renderFeatureTag(feature: string, detail?: Record<string, unknown>): string | undefined {
   switch (feature) {
@@ -431,11 +464,6 @@ function renderFeatureTag(feature: string, detail?: Record<string, unknown>): st
     case "via-responses":
     case "dropped-params": {
       return feature
-    }
-    case "thinking":
-    case "thinking-wire": {
-      const type = detail?.type
-      return typeof type === "string" ? `${feature}:${type}` : feature
     }
     case "beta-stripped": {
       const betas = detail?.betas
