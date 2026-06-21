@@ -235,5 +235,29 @@ describe("POST /responses — fallback dispatch decision", () => {
     expect(body).toContain("response.completed")
     expect(chatHits).toBe(1)
     expect(responsesHits).toBe(0)
+
+    // Stage B B0 baseline: the fallback CC→Responses CLOSING LIFECYCLE — the frames
+    // `codec.flushResponse` drains AFTER the driver loop. Stage B (B4) moves this drain
+    // into the driver's `finally` as an S6 flush mirroring S5 flushChain; the closing
+    // event SEQUENCE + structure must stay byte-identical. IDs/created_at are per-run
+    // random, so we lock the event sequence + the closing frames' stable fields.
+    const events = body
+      .split("\n\n")
+      .filter(Boolean)
+      .map((f) => /^event: (.+)/.exec(f)?.[1])
+    expect(events).toEqual([
+      "response.created",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.output_text.delta",
+      "response.output_text.done", // ← closing lifecycle (flushResponse) begins here
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed",
+    ])
+    // The closing frames carry the finalized text + completed status (drain correctness).
+    expect(body).toContain('"type":"response.output_text.done","sequence_number":4,"output_index":0,"content_index":0,"text":"hi"')
+    expect(body).toContain('"type":"response.completed","sequence_number":7')
+    expect(body).toContain('"status":"completed"')
   })
 })

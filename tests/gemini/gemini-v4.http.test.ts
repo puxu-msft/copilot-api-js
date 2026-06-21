@@ -72,6 +72,27 @@ function responsesStreamFrames(): Array<string> {
   ]
 }
 
+/**
+ * Stage B B0 baseline: a CC tool-call stream whose terminal frame's finish_reason
+ * is "stop" (NOT "tool_calls"), so the per-frame tool drain never fires and the
+ * accumulated tool_call is flushed at STREAM END (convert-stream.ts:162). This is
+ * B5's hardest path — the per-frame translator's stream-end drain — which Stage B's
+ * Gemini per-frame migration must reproduce. The text delta precedes the tool to
+ * also lock text/tool interleave ordering.
+ */
+function ccToolFinishOmittedStream(model: string): Array<string> {
+  return [
+    `data: ${JSON.stringify({ id: "s", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { role: "assistant", content: "looking up " }, finish_reason: null, logprobs: null }] })}\n\n`,
+    `data: ${JSON.stringify({ id: "s", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_w", type: "function", function: { name: "get_weather", arguments: "" } }] }, finish_reason: null, logprobs: null }] })}\n\n`,
+    `data: ${JSON.stringify({ id: "s", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"city":"SF"}' } }] }, finish_reason: null, logprobs: null }] })}\n\n`,
+    `data: ${JSON.stringify({ id: "s", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: {}, finish_reason: "stop", logprobs: null }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } })}\n\n`,
+    "data: [DONE]\n\n",
+  ]
+}
+
+let errorMidStream = false
+let toolFinishOmitted = false
+
 /** A stream that errors mid-way after delivering one frame. */
 function erroringCcStream(model: string): Response {
   const encoder = new TextEncoder()
@@ -92,8 +113,6 @@ function erroringCcStream(model: string): Response {
   return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
 }
 
-let errorMidStream = false
-
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
   const url =
     typeof input === "string" ? input
@@ -104,6 +123,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   if (url.endsWith("/chat/completions")) {
     lastCcWire = payload as ChatCompletionsPayload
     if (errorMidStream) return Promise.resolve(erroringCcStream(payload.model))
+    if (toolFinishOmitted) return Promise.resolve(createSseResponse(ccToolFinishOmittedStream(payload.model)))
     if (payload.stream) return Promise.resolve(createSseResponse(ccStreamFrames(payload.model)))
     return Promise.resolve(ccNonStream(payload.model))
   }
@@ -151,6 +171,7 @@ describe("Gemini v4 driver path", () => {
     lastCcWire = undefined
     lastResponsesWire = undefined
     errorMidStream = false
+    toolFinishOmitted = false
     applyFetchMock(upstreamFetchMock)
     setStateForTests({ copilotToken: "tok", autoTruncate: false })
   })
@@ -196,6 +217,23 @@ describe("Gemini v4 driver path", () => {
       frame('{"content":{"role":"model","parts":[{"text":"Hello "}]},"index":0}')
         + frame('{"content":{"role":"model","parts":[{"text":"Gemini"}]},"index":0}')
         + `data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gpt-4o"}\n\n`,
+    )
+  })
+
+  // Stage B B0 baseline: B5's hardest path — the CC→Gemini per-frame translator's
+  // STREAM-END tool drain. The tool_call's terminal finish_reason is "stop" (not
+  // "tool_calls"), so the per-frame drain never fires and the accumulated tool is
+  // flushed at stream end (convert-stream.ts:162). Locks: text precedes tool, the
+  // functionCall is emitted (id+name+args), and the terminal usageMetadata frame.
+  // Stage B's Gemini per-frame migration (B5) must reproduce this byte-for-byte.
+  test("Stage B B0: gemini tool-call drained at STREAM END (finish_reason omitted) + text/tool interleave", async () => {
+    toolFinishOmitted = true
+    const v4Text = await (await post("gpt-4o:streamGenerateContent", { contents: [{ role: "user", parts: [{ text: "weather?" }] }] })).text()
+
+    expect(v4Text).toBe(
+      `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"looking up "}]},"index":0}],"modelVersion":"gpt-4o"}\n\n`
+        + `data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_w","name":"get_weather","args":{"city":"SF"}}}]},"index":0}],"modelVersion":"gpt-4o"}\n\n`
+        + `data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3,"totalTokenCount":8},"modelVersion":"gpt-4o"}\n\n`,
     )
   })
 
