@@ -252,39 +252,55 @@ export interface RunResponseOpts {
  * synthetic heartbeats + error frames never byte-interleave on the wire.
  */
 export interface ClientSink {
-  /** Write one rendered client frame; samples both observability tracks (B4). */
+  /**
+   * Write one rendered real client frame. Samples the FORWARDED track (the SSE sink's
+   * `onForwarded`, → history `inboundResponse.sseEvents`); the upstream-original track is
+   * the driver's (it samples raw frames before the rewrite chain). The heartbeat ping is
+   * sampled too (forwarded-only, via the sink's internal timer).
+   */
   write(frame: ClientFrame): Promise<void>
   /**
-   * Inject an already-terminal-form frame (heartbeat ping) bypassing render, sampled
-   * forwarded-only (NOT sseEvents). Shares the same chain as {@link write}. Named for
-   * its real semantics — forwarded-only sampling of a synthetic frame — NOT
-   * "bypass-render" (design §3.3 audit). B2 wires the heartbeat; omitted = no inject.
+   * Write a handler-injected terminal frame (e.g. the H3 synthesized error frame) straight
+   * to the wire — NOT sampled into either track. This is what keeps the H2-sampled /
+   * H3-unsampled forwarded-track asymmetry (B0-c): a handler-synthesized error reaches the
+   * client but never enters the forwarded diagnostic record. Shares the same serialization
+   * chain as {@link write}. Omitted by sinks that have no out-of-band inject (WS/array).
    */
   writeSynthetic?(frame: ClientFrame): Promise<void>
   /**
-   * Release sink-held resources (the B2 heartbeat timer). The driver's
+   * Release sink-held resources (the heartbeat timer). The driver's
    * `runResponseSink` `finally` MUST call this on every exit (normal / throw /
    * abort / write-reject) so a self-rescheduling timer can't leak (design §3.3).
    */
   close?(): void
 }
 
-/** The classified terminal-error payload an owns-sink response settles with (design §3.2). */
-export interface StreamErrorPayload {
-  type: string
-  message: string
-}
-
 /**
  * The format-agnostic control-signal result of owns-sink `runResponseSink` (design
- * §3.2, minimality-audit revision). Carries ONLY the control signal — NO accumulator.
- * Every handler already owns + feeds its own format accumulator (Anthropic via
- * `onUpstreamFrame`, Responses/Gemini by iterating frames), and reads its own terminal
- * business data (usage / stop_reason / truncateResult / responseId / gemini-meta)
- * out-of-band; folding the accumulator back into the outcome would be a net-new
- * coupling + a per-format grab-bag. The handler maps the outcome to `ctx.complete/fail`.
+ * §3.2, minimality-audit revision + B-cut-over refinement). Carries ONLY the control
+ * signal — NO accumulator. Every handler already owns + feeds its own format
+ * accumulator (Anthropic via `onUpstreamFrame`, Responses/Gemini by iterating frames),
+ * and reads its own terminal business data (usage / stop_reason / truncateResult /
+ * responseId / gemini-meta) out-of-band; folding the accumulator back into the outcome
+ * would be a net-new coupling + a per-format grab-bag. The handler maps the outcome to
+ * `ctx.complete/fail/abort`.
+ *
+ * Three terminal control signals (B3a, refining B1's single `stream-error`):
+ *   - `complete` — the upstream stream drained cleanly (NO throw). A terminal upstream
+ *     `error` SSE frame (H2) is part of a CLEAN drain (it's a content frame, not a
+ *     throw), so it still yields `complete`; the handler reads its own `acc.streamError`
+ *     to map H2 → `ctx.fail`. The driver does NOT inspect the accumulator (it holds none).
+ *   - `stream-error` — the upstream iterable (or a `sink.write`) THREW a non-abort error
+ *     (H3). Carries the RAW thrown `error` (richest-data-flow): the format handler is the
+ *     consumer that classifies it (`classifyStreamError`), shapes its protocol error
+ *     frame, logs the disconnect diagnostic, and settles `ctx.fail` — none of which the
+ *     format-agnostic driver can do without losing fidelity (a lossy `{type,message}`
+ *     summary would drop the error's cause chain + force a re-classification).
+ *   - `settled-abort` — the throw was a client disconnect (`classifyStreamError ===
+ *     "client-abort"`). The downstream stream is dead, so the handler writes ZERO further
+ *     bytes and settles `ctx.abort` (B0-d "abort → zero bytes").
  */
-export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: StreamErrorPayload } | { kind: "settled-abort" }
+export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: unknown } | { kind: "settled-abort" }
 
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at

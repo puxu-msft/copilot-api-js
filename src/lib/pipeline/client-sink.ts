@@ -1,5 +1,5 @@
 /**
- * v4 pipeline — ClientSink factories (Stage B B1, design §3.3).
+ * v4 pipeline — ClientSink factories (Stage B B1/B2 + Anthropic cut-over, design §3.3).
  *
  * The driver's owns-the-sink write-out port + its concrete adapters. The driver
  * consumes the abstract {@link ClientSink}; these factories are the ONLY place that
@@ -14,12 +14,21 @@
  * write still runs) — mirroring streaming-pump.ts:362-367 so the disconnect is never
  * silently swallowed into a `complete`.
  *
- * B1 ships the `write` path + serialization only; `writeSynthetic` (heartbeat) and a
- * real `close` (timer teardown) land in B2.
+ * Sampling-track asymmetry (the cut-over piece, design §3.3 audit):
+ *   - `write` (real upstream→client frame) samples the FORWARDED track (`onForwarded`).
+ *   - the internal heartbeat timer's ping ALSO samples forwarded (a ping IS a
+ *     proxy→client frame; it appears in `inboundResponse.sseEvents`, never the raw
+ *     `sseEvents` upstream track — DESIGN.md 原则3).
+ *   - `writeSynthetic` (handler-injected, e.g. the H3 synthesized error frame) writes
+ *     to the WIRE but does NOT sample — so a handler-synthesized terminal error never
+ *     enters the forwarded track (the H2-sampled / H3-unsampled asymmetry the B0-c
+ *     golden locks). This is red-line-3 option "writeSynthetic 不推 onForwarded".
  */
 
 import type { SSEStreamingApi } from "hono/streaming"
 import type { WSContext } from "hono/ws"
+
+import type { SseEventRecord } from "~/lib/history"
 
 import type { ClientFrame } from "./types"
 import type { ClientSink } from "./types"
@@ -29,7 +38,7 @@ import type { ClientSink } from "./types"
  * supplies the ping FRAME (Anthropic `event: ping` / `{type:"ping"}`) — the sink stays
  * format-agnostic. `intervalSec <= 0` disables it. Mirrors `startForwardedSseHeartbeat`
  * (streaming-pump.ts) but lives in the sink so `write` naturally notes the last-real-frame
- * time. The forwarded-only SAMPLING of injected pings is wired in B4.
+ * time. The injected ping is sampled into the forwarded track (the timer below).
  */
 export interface SseSinkHeartbeat {
   /** Seconds of client-forward silence before a synthetic ping is injected (<=0 disables). */
@@ -38,6 +47,21 @@ export interface SseSinkHeartbeat {
   pingFrame: ClientFrame
   /** Suppress pings once the client has disconnected. */
   clientAbortSignal?: AbortSignal
+}
+
+/** {@link makeSseSink} options — heartbeat (optional) + forwarded-track sampling (optional). */
+export interface SseSinkOptions {
+  /** Forward-idle keepalive (omitted / `intervalSec<=0` → no timer). */
+  heartbeat?: SseSinkHeartbeat
+  /**
+   * Forwarded-track sampler: invoked per real frame (`write`) AND per injected ping
+   * (the heartbeat timer), NEVER per `writeSynthetic`. The handler pushes the record
+   * into `forwardedSseEvents` (→ history `inboundResponse.sseEvents`). The record
+   * shape (offsetMs / parsed-type / raw bytes) mirrors the legacy `forwardClientFrame`.
+   */
+  onForwarded?: (record: SseEventRecord) => void
+  /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
+  streamStartMs?: number
 }
 
 /**
@@ -57,34 +81,89 @@ function makeSerializer(): (fn: () => void | Promise<void>) => Promise<void> {
   }
 }
 
-/** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
-export function makeSseSink(stream: SSEStreamingApi, heartbeat?: SseSinkHeartbeat): ClientSink {
-  const enqueue = makeSerializer()
-  const sseWrite = (frame: ClientFrame): Promise<void> =>
-    enqueue(() => stream.writeSSE({ data: frame.data ?? "", ...(frame.event !== undefined && { event: frame.event }) }))
+/**
+ * Derive the forwarded-record `type` exactly as the legacy `forwardClientFrame` did:
+ * the parsed JSON `type`, falling back to the SSE `event:` name, then "keepalive".
+ * Kept format-agnostic (plain `JSON.parse`, no Anthropic import).
+ */
+function frameType(frame: ClientFrame): string {
+  if (frame.data) {
+    try {
+      const parsed = JSON.parse(frame.data) as { type?: unknown }
+      if (typeof parsed.type === "string") return parsed.type
+    } catch {
+      // not JSON → fall through to the event/keepalive label
+    }
+  }
+  return frame.event ?? "keepalive"
+}
 
-  // No heartbeat → the bare write path (still single-chain serialized).
-  if (!heartbeat || heartbeat.intervalSec <= 0) {
-    return { write: sseWrite }
+/** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
+export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
+  const { heartbeat, onForwarded, streamStartMs = Date.now() } = opts
+  const enqueue = makeSerializer()
+
+  // Bare SSE write. Forwards the full SSE framing (event/data/id/retry) — `id`/`retry`
+  // are part of the wire (the upstream may emit `id:`/`retry:` lines), so dropping them
+  // would silently narrow the bypass-direct passthrough. Byte-equivalent to the legacy
+  // forwardClientFrame (streaming-pump.ts): `id` stringified, undefined keys omitted.
+  const writeSse = (frame: ClientFrame): Promise<void> =>
+    enqueue(() =>
+      stream.writeSSE({
+        data: frame.data ?? "",
+        ...(frame.event !== undefined && { event: frame.event }),
+        ...(frame.id !== undefined && { id: String(frame.id) }),
+        ...(frame.retry !== undefined && { retry: frame.retry }),
+      }),
+    )
+
+  const sampleForwarded = (frame: ClientFrame): void => {
+    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "" })
   }
 
-  // Forward-idle (SOFT) racer: inject a ping after `intervalSec` of write-silence to keep
-  // the CLIENT connection alive. It does NOT touch the upstream-idle guard (transport-
-  // resident, HARD kill) — the two are deliberately SEPARATE racers (design §3.3 / B2
-  // two-racer): a heartbeat must not keep a silent-upstream stream alive forever.
-  const intervalMs = heartbeat.intervalSec * 1000
+  // Forward-idle (SOFT) racer state — only armed when a heartbeat is configured. It does
+  // NOT touch the upstream-idle guard (transport-resident, HARD kill): the two are
+  // deliberately SEPARATE racers (design §3.3 / B2 two-racer) so a heartbeat can't keep a
+  // silent-upstream stream alive forever.
+  const heartbeatOn = heartbeat !== undefined && heartbeat.intervalSec > 0
   let lastRealMs = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
 
+  // Real frame → sample forwarded + write. noteRealFrame BEFORE the await so a timer
+  // firing mid-write sees the fresh ts and skips a redundant ping.
+  const write = (frame: ClientFrame): Promise<void> => {
+    lastRealMs = Date.now()
+    sampleForwarded(frame)
+    return writeSse(frame)
+  }
+
+  // Handler-injected synthetic frame (the H3 error frame): write to the wire, NEVER
+  // sample forwarded — keeps the H2-sampled/H3-unsampled asymmetry (B0-c).
+  const writeSynthetic = (frame: ClientFrame): Promise<void> => writeSse(frame)
+
+  // close stops the heartbeat timer (no-op when none) — runResponseSink's `finally`
+  // MUST call it on every exit so a self-rescheduling timer can't leak.
+  const close = (): void => {
+    if (stopped) return
+    stopped = true
+    if (timer) clearTimeout(timer)
+  }
+
+  if (!heartbeatOn) {
+    return { write, writeSynthetic, close }
+  }
+
+  const intervalMs = heartbeat.intervalSec * 1000
   const tick = (): void => {
     if (stopped || heartbeat.clientAbortSignal?.aborted) return
     const elapsed = Date.now() - lastRealMs
     if (elapsed >= intervalMs) {
-      // Synthetic ping — shares the chain (no byte-interleave). Forwarded-only sampling
-      // is wired in B4; B1/B2 only inject. Errors swallowed: the next real write hits the
-      // same closed stream and routes through the driver's outcome/settle path.
-      void sseWrite(heartbeat.pingFrame).catch(() => undefined)
+      // Synthetic ping — sampled into the forwarded track (a ping IS a proxy→client
+      // frame), shares the chain (no byte-interleave). Errors swallowed: the next real
+      // write hits the same closed stream and routes through the driver's outcome path.
+      sampleForwarded(heartbeat.pingFrame)
+      void writeSse(heartbeat.pingFrame).catch(() => undefined)
       lastRealMs = Date.now()
       timer = setTimeout(tick, intervalMs)
     } else {
@@ -95,20 +174,7 @@ export function makeSseSink(stream: SSEStreamingApi, heartbeat?: SseSinkHeartbea
   // unref so a leaked timer can never hold the event loop / block graceful shutdown.
   ;(timer as unknown as { unref?: () => void }).unref?.()
 
-  return {
-    write: (frame) => {
-      // noteRealFrame BEFORE the await so a timer firing mid-write sees the fresh ts.
-      lastRealMs = Date.now()
-      return sseWrite(frame)
-    },
-    // Public synthetic inject (handler-driven), same chain; B4 adds forwarded-only sampling.
-    writeSynthetic: (frame) => sseWrite(frame),
-    close: () => {
-      if (stopped) return
-      stopped = true
-      if (timer) clearTimeout(timer)
-    },
-  }
+  return { write, writeSynthetic, close }
 }
 
 /** WS sink — writes JSON frame strings through a Hono `WSContext` (the Responses WS path). */

@@ -44,6 +44,7 @@ import {
   type DriverDeps,
 } from "~/lib/pipeline/driver"
 import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
+import { StreamClientAbortError } from "~/lib/stream"
 
 // ── ctx recorder ──────────────────────────────────────────────────────────
 
@@ -548,6 +549,65 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     const outcome = await driver.runResponseSink({ frames: throwingStream([{ data: "a" }]), headers: new Headers() }, makeEnv(ctx), errSink)
     expect(outcome.kind).toBe("stream-error")
     expect(closedErr).toBe(1)
+  })
+
+  test("a thrown StreamClientAbortError → settled-abort (not stream-error)", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+
+    async function* abortingStream(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new StreamClientAbortError()
+    }
+    const { sink, frames } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: abortingStream(), headers: new Headers() }, makeEnv(ctx), sink)
+
+    // A client-abort settles distinctly — the handler writes ZERO further bytes (B0-d).
+    expect(outcome.kind).toBe("settled-abort")
+    // The frame before the abort was still written.
+    expect(frames).toEqual([{ data: "1" }])
+  })
+
+  test("stream-error carries the RAW thrown error (richest-data-flow), not a {type,message} summary", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+
+    const raw = new Error("upstream blew up")
+    async function* throwRaw(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw raw
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: throwRaw(), headers: new Headers() }, makeEnv(ctx), sink)
+    expect(outcome.kind).toBe("stream-error")
+    // The handler is the consumer that classifies/formats/logs — it gets the SAME error object.
+    if (outcome.kind === "stream-error") expect(outcome.error).toBe(raw)
+  })
+
+  test("sink.close() runs on the abort + write-reject exits too (full leak matrix)", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+
+    // Exit 3 — client abort.
+    let closedAbort = 0
+    async function* abortStream(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new StreamClientAbortError()
+    }
+    const abortSink: ClientSink = { write: () => Promise.resolve(), close: () => void closedAbort++ }
+    expect((await driver.runResponseSink({ frames: abortStream(), headers: new Headers() }, makeEnv(ctx), abortSink)).kind).toBe("settled-abort")
+    expect(closedAbort).toBe(1)
+
+    // Exit 4 — sink.write reject (client disconnect mid-write).
+    let closedReject = 0
+    const rejectArr = makeArraySink({ rejectAtFrame: 0 })
+    const rejectSink: ClientSink = { write: rejectArr.sink.write, close: () => void closedReject++ }
+    const outcome = await driver.runResponseSink(okStream([{ data: "1" }]), makeEnv(ctx), rejectSink)
+    expect(outcome.kind).toBe("stream-error") // a plain reject is NOT classified client-abort
+    expect(closedReject).toBe(1)
   })
 })
 

@@ -17,6 +17,7 @@ import consola from "consola"
 import type { SseEventRecord } from "~/lib/history"
 
 import { classifyError } from "~/lib/error"
+import { classifyStreamError } from "~/lib/stream"
 
 import type { RequestEnvelope } from "./envelope"
 import type {
@@ -331,29 +332,27 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
 }
 
 /**
- * owns-the-sink streaming (Stage B B1): drain the generator `runResponse` into `sink`,
- * returning a control-signal {@link ResponseOutcome}. A thin WRAPPING SHIM — it reuses
- * the generator's S5→S6 chain verbatim, so the SINK FRAME SEQUENCE == the generator's
- * YIELD SEQUENCE (the B1 equivalence test locks this). `sink.close()` runs on EVERY exit
- * (normal / throw / write-reject) so a B2 heartbeat timer can't leak.
+ * owns-the-sink streaming (Stage B, design §3.2): drain the generator `runResponse`
+ * into `sink`, returning a control-signal {@link ResponseOutcome}. Reuses the
+ * generator's S5→S6 chain verbatim, so the SINK FRAME SEQUENCE == the generator's
+ * YIELD SEQUENCE (the B0 real-renderer goldens lock this byte-for-byte). `sink.close()`
+ * runs on EVERY exit (normal / throw / abort / write-reject) so the heartbeat timer
+ * can't leak.
  *
- * **NOT yet a drop-in for the live handler loops** (B1-adversarial-review): the generator
- * YIELDS the `[DONE]` sentinel + every terminal frame. `runResponseSink` DROPS `[DONE]`
- * (it's a gateway transport terminator, NOT a content frame — anthropic/stream.ts:104) so
- * the sentinel never reaches any sink; the per-format trailing terminator is the handler's
- * job (Anthropic emits NONE; CC/Responses synthesize their own `data: [DONE]` post-loop —
- * byte-identical to today's cc handler-v4:319). That unifies the `[DONE]` home the four
- * handlers used to each special-case (Anthropic skip / CC passthrough-forward + synth).
- * STILL outside this shim: WS BREAKS on the terminal event (ws.ts:295) instead of draining
- * — B3a adds an early-termination signal for WS. So "frame-equivalent" holds for the
- * generator yield (minus `[DONE]`), NOT for WS's early stop; B3a's equivalence test MUST
- * use a real per-format renderer (the B1 identity-renderer would false-green).
+ * `[DONE]` handling: the generator YIELDS the `[DONE]` sentinel (guard only blocks
+ * sampling); `runResponseSink` DROPS it (it's a gateway transport terminator, NOT a
+ * content frame — anthropic/stream.ts:104) so it never reaches a sink. The per-format
+ * trailing terminator is the handler's job (Anthropic emits NONE; CC/Responses
+ * synthesize their own `data: [DONE]` post-loop).
  *
- * B1 outcome is minimal: clean drain → `complete`; ANY thrown error (upstream throw OR
- * a `sink.write` rejection = client gone) → a non-`complete` outcome — so a disconnect
- * is never silently swallowed into `complete` (the B1 rejecting-sink fault test). B3a
- * refines the catch into `stream-error` (upstream / `acc.streamError` — invisible to this
- * outcome, the handler still reads its own accumulator) vs `settled-abort` (client-abort).
+ * Terminal classification (B3a — refining B1's single `stream-error`):
+ *   - clean drain → `complete{headers}` (a terminal upstream `error` frame, H2, is a
+ *     clean drain — the handler reads its own `acc.streamError` to fail).
+ *   - a thrown error classified `client-abort` → `settled-abort` (client gone, zero bytes).
+ *   - any other throw (upstream blow-up H3, or a `sink.write` reject = client gone
+ *     mid-write) → `stream-error` carrying the RAW error so the format handler classifies /
+ *     formats / logs / settles it with full fidelity (richest-data-flow — the driver is
+ *     format-agnostic and must not lossily pre-summarize).
  */
 async function runResponseSink(
   deps: DriverDeps,
@@ -371,7 +370,12 @@ async function runResponseSink(
     }
     return { kind: "complete", headers: upstream.headers }
   } catch (error) {
-    return { kind: "stream-error", error: { type: "stream_error", message: error instanceof Error ? error.message : String(error) } }
+    // A client disconnect (the transport guard's StreamClientAbortError, or any error
+    // classified client-abort) settles as abort — the handler writes nothing further.
+    if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+    // Otherwise surface the RAW error (richest-data-flow): the format handler classifies
+    // it, shapes its protocol error frame, logs diagnostics, and settles ctx.fail.
+    return { kind: "stream-error", error }
   } finally {
     sink.close?.()
   }

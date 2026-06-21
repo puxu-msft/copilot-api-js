@@ -156,10 +156,18 @@ export function raceIteratorNext<T>(
 // SSE iterator helpers
 // ============================================================================
 
-/** Shape of an SSE frame as produced by `fetch-event-stream` and our pipeline. */
+/**
+ * Shape of an SSE frame as produced by `fetch-event-stream` and our pipeline.
+ * Mirrors `ServerSentEventMessage`: `id`/`retry` are part of the SSE wire framing
+ * (the upstream may emit `id:`/`retry:` lines) and MUST be carried through so the
+ * forwarded client bytes stay a faithful passthrough — a sink that writes only
+ * `event`/`data` would silently drop them.
+ */
 export interface SseFrame {
   event?: string
   data?: string
+  id?: string | number
+  retry?: number
 }
 
 /**

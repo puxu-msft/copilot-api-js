@@ -88,6 +88,7 @@ import { HTTPError } from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { resolveModelName } from "~/lib/models/resolver"
+import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
@@ -96,7 +97,6 @@ import {
   createTruncationMarker,
   prependMarkerToResponse,
 } from "~/lib/request"
-import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { state } from "~/lib/state"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
@@ -104,10 +104,8 @@ import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
   anthropicStreamErrorType,
-  forwardClientFrame,
   logUpstreamStreamError,
   recordUpstreamFrame,
-  startForwardedSseHeartbeat,
   type StreamPumpState,
 } from "./streaming-pump"
 import { handleWebSearchCompletion } from "./web-search-handler"
@@ -505,20 +503,28 @@ interface PumpAnthropicStreamingV4Options {
 }
 
 /**
- * Stream pump for the v4 Anthropic path. The driver applies the S5 response-rewrite
- * chain (recover/thinking/decode/filter via `ANTHROPIC_RESPONSE_REWRITES`) +
- * `flushChain`, yielding the REWRITTEN client frames; this handler:
+ * Stream pump for the v4 Anthropic path — **owns-the-sink** (Stage B Anthropic cut-over).
+ * The driver now OWNS the client write-out: it applies the S5 response-rewrite chain
+ * (recover/thinking/decode/filter via `ANTHROPIC_RESPONSE_REWRITES`) + `flushChain`, then
+ * writes each REWRITTEN client frame to the injected {@link makeSseSink}, returning a
+ * control-signal {@link import("~/lib/pipeline/types").ResponseOutcome}. This handler:
  *   - runs the upstream-side work (accumulate → outboundResponse, repetition, progress,
  *     diagnostics) on the RAW frame via the driver's `onUpstreamFrame` hook — BEFORE the
  *     rewrites (Option A / RFC §4.A1: keeps `outboundResponse` on the upstream-original),
- *   - forwards the yielded (rewritten) frames (sample + heartbeat write; NO re-filter),
- *   - DRAINS the generator (no `break`): a break would discard the finally `flushChain`
- *     on the breaking consumer (Phase 3 contract), losing stream-end buffers. `[DONE]`
- *     is skip-forwarded; the terminal `error` frame is forwarded then drained.
+ *   - samples the FORWARDED track INSIDE the sink (`onForwarded` → `forwardedSseEvents`):
+ *     because the driver owns the write-out, the handler no longer sees each forwarded
+ *     frame — the sink samples on `write` (real frames + the heartbeat ping), and the H3
+ *     synthesized error frame goes through `sink.writeSynthetic` which does NOT sample
+ *     (the H2-sampled / H3-unsampled asymmetry the B0-c golden locks),
+ *   - maps the outcome + its own accumulator to the terminal ctx state (the driver holds
+ *     no accumulator; H2 — a terminal upstream `error` frame — is a CLEAN drain, so the
+ *     outcome is `complete` and `acc.streamError` is what flips it to `ctx.fail`).
  *
- * The transport's `guardSseIterable` owns idle/shutdown/client-abort. `env.body` is the
- * post-retry env (C0-①): the recover/decode rewrites read `env.body.tools` so a
- * deferred-tool retry's modified tools are reflected (via `createState(env)`).
+ * The transport's `guardSseIterable` owns idle/shutdown/client-abort (HARD kill); the
+ * sink's heartbeat is a SEPARATE forward-idle racer (SOFT) — `runResponseSink`'s `finally`
+ * calls `sink.close()` on every exit so its timer can't leak. `env.body` is the post-retry
+ * env (C0-①): the recover/decode rewrites read `env.body.tools` so a deferred-tool retry's
+ * modified tools are reflected (via `createState(env)`).
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env, clientAbortSignal } = opts
@@ -531,7 +537,8 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   // Raw upstream SSE frames (verbatim) — a local copy for logUpstreamStreamError. The
   // PERSISTED upstream-original track is the driver's (runResponse loop-top, P3.2b).
   const sseEvents: Array<SseEventRecord> = []
-  // Forwarded SSE frames — what the client ACTUALLY received (post-S5-rewrite).
+  // Forwarded SSE frames — what the client ACTUALLY received (post-S5-rewrite). Filled by
+  // the sink's `onForwarded` sampler (real frames + heartbeat ping), NOT the H3 synth error.
   const forwardedSseEvents: Array<SseEventRecord> = []
 
   const streamState: StreamPumpState = {
@@ -542,16 +549,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     firstEventLogged: false,
     recoverFeatureLogged: false,
   }
-
-  // Synthetic SSE keepalive (anthropic.fake_sse_heartbeat). Heartbeats are
-  // proxy-originated: recorded ONLY in forwardedSseEvents, never sseEvents.
-  const heartbeat = startForwardedSseHeartbeat({
-    intervalSec: state.anthropicFakeSseHeartbeat,
-    stream,
-    forwardedSseEvents,
-    streamState,
-    clientAbortSignal,
-  })
 
   // Upstream-side work on the RAW frame (BEFORE the S5 rewrites): parse + accumulate
   // (→ outboundResponse, upstream-original) + the shared recording (sseEvents,
@@ -571,54 +568,69 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     recordUpstreamFrame({ rawEvent, parsed, streamState, sseEvents, reqCtx: env.ctx, checkRepetition })
   }
 
-  try {
-    // The driver yields the rewritten client frames + drains its flushChain at stream
-    // end (finally). DRAIN, don't break — the breaking-consumer path discards the
-    // finally flush (Phase 3). [DONE] is the sentinel (never forwarded); the terminal
-    // upstream `error` frame is forwarded then drained, settled below via acc.streamError.
-    for await (const yielded of driver.runResponse(upstream, env, { onUpstreamFrame })) {
-      const ev = yielded as ServerSentEventMessage
-      if (ev.data === "[DONE]") continue
-      await forwardClientFrame(ev, forwardedSseEvents, streamState.streamStartMs, heartbeat)
-    }
+  // The driver-owned client sink: SSE write-out + forwarded sampling + (optional) the
+  // fake_sse_heartbeat forward-idle racer. Heartbeats are proxy-originated: sampled ONLY
+  // into forwardedSseEvents (via onForwarded), never sseEvents (the driver's raw track).
+  const sink = makeSseSink(stream, {
+    onForwarded: (record) => forwardedSseEvents.push(record),
+    streamStartMs: streamState.streamStartMs,
+    ...(state.anthropicFakeSseHeartbeat > 0 && {
+      heartbeat: {
+        intervalSec: state.anthropicFakeSseHeartbeat,
+        pingFrame: { event: "ping", data: JSON.stringify({ type: "ping" }) },
+        clientAbortSignal,
+      },
+    }),
+  })
 
-    const summaryParts = [`↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`]
-    if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
-    consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
+  // Snapshot the forwarded track onto the ctx (R3-④: forwardedSseEvents is aliased by
+  // entry.inboundResponse — `close()` in runResponseSink's finally already stopped the
+  // heartbeat, but a fresh copy is the durable guard against a late ping mutating it).
+  const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
-    // Upstream-original sseEvents are the driver's (P3.2b); record the client-forwarded
-    // track here. The local `sseEvents` survives for logUpstreamStreamError.
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
+  // The driver drives the S5 chain + writes the rewritten frames to the sink; `[DONE]` is
+  // dropped inside runResponseSink (Anthropic emits no trailing terminator). The outcome
+  // is the format-agnostic control signal; the handler reads its own `acc` for the rest.
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
 
-    if (acc.streamError) {
-      // Terminal upstream `error` SSE event (H2) — forwarded above, drained, now settled
-      // as fail (not a thrown error → never reaches the catch).
-      consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
-      env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
-    } else {
-      env.ctx.complete(buildAnthropicResponseData(acc, model))
-    }
-  } catch (error) {
-    // Record what was forwarded so far BEFORE settling (原则3). The driver's finally
-    // flushChain already drained + delivered any buffered frames BEFORE this throw
-    // propagated (Phase 1: throw → finally yields → re-throw), so no handler flush here.
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
+  if (outcome.kind === "settled-abort") {
+    // Client disconnected mid-stream — the stream is dead, write ZERO further bytes
+    // (B0-d). Record what was forwarded so far, then settle as aborted.
+    recordForwarded()
+    consola.debug("[Stream] Client disconnected mid-stream — recording aborted")
+    env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined })
+    return
+  }
 
-    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined }
-    if (settleStreamingFailure({ reqCtx: env.ctx, error, model: acc.model || model, partial })) {
-      consola.debug("[Stream] Client disconnected mid-stream — recording aborted")
-      return
-    }
+  recordForwarded()
 
+  if (outcome.kind === "stream-error") {
+    // H3 — the upstream iterable (or a sink write) threw a non-abort error. Settle as
+    // fail (with the partial accumulated so far) + synthesize the Anthropic error frame
+    // through the NON-sampling writeSynthetic path (so H3 never enters the forwarded track).
+    const error = outcome.error
+    env.ctx.fail(acc.model || model, error, {
+      usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
+      stop_reason: acc.stopReason || undefined,
+    })
     logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
-
     const errorMessage = error instanceof Error ? error.message : String(error)
     const errorType = anthropicStreamErrorType(error)
-    await heartbeat.writeSerialized({
-      event: "error",
-      data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }),
-    })
-  } finally {
-    heartbeat.stop()
+    await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
+    return
+  }
+
+  // outcome.kind === "complete" — the upstream drained cleanly.
+  const summaryParts = [`↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`]
+  if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
+  consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
+
+  if (acc.streamError) {
+    // H2 — a terminal upstream `error` SSE event was forwarded as a content frame (clean
+    // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
+    consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
+    env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
+  } else {
+    env.ctx.complete(buildAnthropicResponseData(acc, model))
   }
 }

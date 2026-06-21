@@ -68,6 +68,19 @@ describe("makeSseSink", () => {
     await makeSseSink(stream).write({} as ClientFrame)
     expect(writes).toEqual([{ data: "" }])
   })
+
+  test("forwards id/retry SSE framing (faithful passthrough; id stringified, undefined keys omitted)", async () => {
+    const { stream, writes } = mockStream()
+    const sink = makeSseSink(stream)
+    // An upstream frame carrying SSE `id:`/`retry:` framing must be forwarded verbatim —
+    // a sink that wrote only event/data would silently narrow the bypass-direct passthrough.
+    await sink.write({ event: "message", data: "hi", id: 7, retry: 3000 })
+    await sink.write({ event: "message", data: "bye" }) // no id/retry → omitted
+    expect(writes).toEqual([
+      { data: "hi", event: "message", id: "7", retry: 3000 },
+      { data: "bye", event: "message" },
+    ])
+  })
 })
 
 describe("makeWsSink", () => {
@@ -139,16 +152,18 @@ describe("makeSseSink heartbeat (B2 forward-idle racer)", () => {
   beforeEach(() => clock.install())
   afterEach(() => clock.restore())
 
-  test("intervalSec<=0 → no timer, bare write sink (no writeSynthetic/close)", async () => {
+  test("intervalSec<=0 → no timer, but writeSynthetic/close are always defined (cut-over: H3 needs them with heartbeat off)", async () => {
     const { stream } = stubSseStream()
-    const sink = makeSseSink(stream, { intervalSec: 0, pingFrame: PING })
-    expect(sink.writeSynthetic).toBeUndefined()
-    expect(sink.close).toBeUndefined()
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 0, pingFrame: PING } })
+    // writeSynthetic (H3 non-sampled error frame) + close (no-op timer teardown) must
+    // always exist — the default Anthropic path runs with anthropicFakeSseHeartbeat=0.
+    expect(typeof sink.writeSynthetic).toBe("function")
+    expect(typeof sink.close).toBe("function")
   })
 
   test("injects a ping only after intervalSec of forward-silence", async () => {
     const { stream, written } = stubSseStream()
-    const sink = makeSseSink(stream, { intervalSec: 15, pingFrame: PING })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: PING } })
     await clock.advance(14_000)
     expect(written).toEqual([]) // not yet
     await clock.advance(1_000) // 15s silence → fires
@@ -158,7 +173,7 @@ describe("makeSseSink heartbeat (B2 forward-idle racer)", () => {
 
   test("a real write resets the countdown — a steady stream never pings", async () => {
     const { stream, written } = stubSseStream()
-    const sink = makeSseSink(stream, { intervalSec: 15, pingFrame: PING })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: PING } })
     for (let i = 0; i < 5; i++) {
       await clock.advance(10_000) // < interval each time
       await sink.write({ data: `f${i}` })
@@ -169,7 +184,7 @@ describe("makeSseSink heartbeat (B2 forward-idle racer)", () => {
 
   test("close() clears the timer — no ping after close", async () => {
     const { stream, written } = stubSseStream()
-    const sink = makeSseSink(stream, { intervalSec: 15, pingFrame: PING })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: PING } })
     sink.close?.()
     await clock.advance(60_000)
     expect(written).toEqual([])
@@ -178,10 +193,56 @@ describe("makeSseSink heartbeat (B2 forward-idle racer)", () => {
   test("aborted clientAbortSignal suppresses pings", async () => {
     const { stream, written } = stubSseStream()
     const ac = new AbortController()
-    const sink = makeSseSink(stream, { intervalSec: 15, pingFrame: PING, clientAbortSignal: ac.signal })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: PING, clientAbortSignal: ac.signal } })
     ac.abort()
     await clock.advance(60_000)
     expect(written).toEqual([])
     sink.close?.()
+  })
+})
+
+// ── makeSseSink forwarded-track sampling (Anthropic cut-over, onForwarded) ─────
+
+describe("makeSseSink forwarded-track sampling (onForwarded)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  test("write samples forwarded (parsed type → offset/raw); writeSynthetic does NOT (H3 unsampled)", async () => {
+    const { stream, written } = stubSseStream()
+    const sampled: Array<{ offsetMs: number; type: string; raw: string }> = []
+    const sink = makeSseSink(stream, { onForwarded: (r) => sampled.push(r), streamStartMs: clock.now })
+
+    await clock.advance(100)
+    await sink.write({ event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 0 }) })
+    // H3 synthesized error frame — reaches the WIRE but must NOT be sampled.
+    await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: "boom" } }) })
+
+    // Both frames hit the wire.
+    expect(written.length).toBe(2)
+    // Only the real write is sampled (type from the parsed JSON, raw = verbatim data).
+    expect(sampled).toEqual([{ offsetMs: 100, type: "content_block_delta", raw: JSON.stringify({ type: "content_block_delta", index: 0 }) }])
+  })
+
+  test("the heartbeat ping IS sampled into the forwarded track (proxy→client frame)", async () => {
+    const { stream } = stubSseStream()
+    const sampled: Array<{ offsetMs: number; type: string; raw: string }> = []
+    const sink = makeSseSink(stream, {
+      onForwarded: (r) => sampled.push(r),
+      streamStartMs: clock.now,
+      heartbeat: { intervalSec: 15, pingFrame: PING },
+    })
+    await clock.advance(15_000) // silence → ping fires
+    expect(sampled).toEqual([{ offsetMs: 15_000, type: "ping", raw: '{"type":"ping"}' }])
+    sink.close?.()
+  })
+
+  test("forwarded type falls back to event name then keepalive for non-JSON data", async () => {
+    const { stream } = stubSseStream()
+    const sampled: Array<{ type: string }> = []
+    const sink = makeSseSink(stream, { onForwarded: (r) => sampled.push({ type: r.type }), streamStartMs: clock.now })
+    await sink.write({ event: "message", data: "not json" }) // unparseable → event name
+    await sink.write({ data: "" }) // no data, no event → keepalive
+    expect(sampled).toEqual([{ type: "message" }, { type: "keepalive" }])
   })
 })
