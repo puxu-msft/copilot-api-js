@@ -78,7 +78,7 @@ import { createPipelineDriver } from "~/lib/pipeline/driver"
 /** RFC-facing format names (the `format` param + the `entryId`→format mapping). */
 type DryRunFormat = "anthropic" | "openai-cc" | "openai-responses" | "openai-gemini"
 
-const REQUEST_STAGES = new Set<string>(["parse", "translate", "rewrite-in"])
+const REQUEST_STAGES = new Set<string>(["parse", "translate", "rewrite-in", "prepare-wire"])
 
 /** entryId → format: the stored `endpoint` discriminant maps 1:1 to a dry-run format. */
 const ENDPOINT_TO_FORMAT: Record<EndpointType, DryRunFormat> = {
@@ -149,8 +149,8 @@ const DryRunPipelineSchema = z
     format: z.enum(["anthropic", "openai-cc", "openai-responses", "openai-gemini"]).optional(),
     /** Streaming vs non-streaming. Derived from entry/upstream when omitted. */
     stream: z.boolean().optional(),
-    /** Stop stage. parse/translate/rewrite-in = request side; rewrite-out/render = response side. */
-    stopAfter: z.enum(["parse", "translate", "rewrite-in", "rewrite-out", "render"]).default("render"),
+    /** Stop stage. parse/translate/rewrite-in/prepare-wire = request side; rewrite-out/render = response side. */
+    stopAfter: z.enum(["parse", "translate", "rewrite-in", "prepare-wire", "rewrite-out", "render"]).default("render"),
   })
   .refine((b) => b.entryId !== undefined || b.upstream !== undefined || b.request !== undefined, {
     message: "Provide either `entryId` or `upstream`",
@@ -299,7 +299,7 @@ function buildNonAnthropicRequest(format: Exclude<DryRunFormat, "anthropic">, pa
 function requestSideCaveats(format: DryRunFormat): Array<string> {
   const base =
     format === "anthropic" ?
-      "请求侧 = 用当前代码 + live 配置重跑 inboundRequest，非复现当时（preprocess 会重算；betaProbe 为 throwaway；反应式 retry 改写不可见，prepare-wire 未含本 MVP）"
+      "请求侧 = 用当前代码 + live 配置重跑 inboundRequest，非复现当时（preprocess 会重算；betaProbe 为 throwaway；prepare-wire 仅首个 attempt、反应式 retry 改写不可见）"
     : `请求侧 = 用当前代码 + live 配置重跑 inboundRequest（非复现当时）；handler 的 system-prompt 预注入未镜像；${format} 无 S3 请求改写（rewrite-in 恒空）；反应式 retry 改写不可见`
   return [base]
 }

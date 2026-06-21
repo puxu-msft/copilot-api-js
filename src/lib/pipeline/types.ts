@@ -346,7 +346,7 @@ export interface PipelineDriver {
 }
 
 /** Request-side stage to stop {@link PipelineDriver.inspectRequest} after. */
-export type RequestInspectStage = "parse" | "translate" | "rewrite-in"
+export type RequestInspectStage = "parse" | "translate" | "rewrite-in" | "prepare-wire"
 
 /** Result of {@link PipelineDriver.inspectRequest} — per-stage snapshots up to the stop point. */
 export interface RequestInspection {
@@ -358,6 +358,14 @@ export interface RequestInspection {
     parse?: { clientFormat: string; targetEndpoint?: string; model: unknown; body: unknown }
     translate?: { targetEndpoint?: string; body: unknown }
     "rewrite-in"?: { body: unknown; applied: Array<{ name: string; changed: boolean }> }
+    /**
+     * S4-pre `codec.prepareWire` output — the last-mile wire (url + headers + body + stream)
+     * for the FIRST attempt only. `note` flags that reactive retry rewrites (beta-strip /
+     * server-tool-strip) — which only fire on an upstream error, never reached in dry-run —
+     * are NOT reflected (RFC §11 P1). `prepareWire` is non-pure in real codecs; the caller
+     * isolates its side effects (throwaway betaProbe + capturing ctx).
+     */
+    "prepare-wire"?: { url: string; headers: Record<string, string>; body: unknown; stream: boolean; note: string }
   }
 }
 

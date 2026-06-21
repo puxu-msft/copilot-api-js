@@ -112,4 +112,31 @@ describe("driver.inspectRequest", () => {
     // transport.send throws if called; reaching rewrite-in without throwing proves S4 is never entered.
     expect(() => driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "rewrite-in")).not.toThrow()
   })
+
+  test("stopAfter=prepare-wire runs S4-pre wire prep on the post-rewrite env (note: first-attempt only)", () => {
+    const codec = makeCodec({ orig: 1 })
+    // S4-pre: the codec derives the wire from the (post-S3) env. Non-pure in real codecs
+    // (betaProbe.recordOutbound / ctx.recordFeature) — the endpoint isolates that with a
+    // throwaway probe + capturing ctx; the mock here just proves the driver calls it last.
+    ;(codec as { prepareWire: FormatCodec["prepareWire"] }).prepareWire = (env) => ({
+      url: "https://up/v1/messages",
+      headers: new Headers({ "x-beta": "b" }),
+      body: { wire: true, from: env.body as Record<string, unknown> },
+      stream: false,
+    })
+    const r = driverWith(codec, [appendRewrite]).inspectRequest(RAW, "prepare-wire")
+    expect(r.stoppedAt).toBe("prepare-wire")
+    // S3 still ran before S4-pre (the wire is derived from the rewritten body).
+    expect(r.stages["rewrite-in"]?.applied).toEqual([{ name: "append-flag", changed: true }])
+    expect(r.stages["prepare-wire"]?.url).toBe("https://up/v1/messages")
+    expect(r.stages["prepare-wire"]?.body).toEqual({ wire: true, from: { orig: 1, rewritten: true } })
+    expect(r.stages["prepare-wire"]?.headers).toMatchObject({ "x-beta": "b" })
+    expect(r.stages["prepare-wire"]?.note).toContain("first-attempt only")
+  })
+
+  test("stopAfter=prepare-wire never calls transport either", () => {
+    const codec = makeCodec({ orig: 1 })
+    ;(codec as { prepareWire: FormatCodec["prepareWire"] }).prepareWire = () => ({ url: "u", headers: new Headers(), body: {}, stream: false })
+    expect(() => driverWith(codec).inspectRequest(RAW, "prepare-wire")).not.toThrow()
+  })
 })

@@ -285,6 +285,28 @@ describe("POST /api/debug/dry-run-pipeline", () => {
       expect(body.fidelity.caveats.some((c) => c.includes("CC 帧") && c.includes("非 Gemini"))).toBe(true)
     })
 
+    test("request side: prepare-wire (S4-pre) derives the first-attempt wire under a throwaway betaProbe", async () => {
+      // T4: stopAfter=prepare-wire runs the real `prepareAnthropicWire` (non-pure:
+      // betaProbe.recordOutbound + ctx.recordFeature) — isolated by a throwaway probe +
+      // the capturing manager, so no pollution. Verifies the wire + first-attempt note.
+      const request = { model: "claude-sonnet-4", messages: [{ role: "user", content: "hi" }], max_tokens: 100 }
+      const res = await post({ request, stopAfter: "prepare-wire" })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        format: string
+        side: string
+        inspection: { stoppedAt: string; stages: { "prepare-wire"?: { url?: string; body?: unknown; note?: string } } }
+      }
+      expect(body.format).toBe("anthropic")
+      expect(body.side).toBe("request")
+      expect(body.inspection.stoppedAt).toBe("prepare-wire")
+      const pw = body.inspection.stages["prepare-wire"]
+      expect(pw).toBeDefined()
+      expect(typeof pw?.url).toBe("string")
+      expect(pw?.body).toBeDefined()
+      expect(pw?.note).toContain("first-attempt only")
+    })
+
     test("rewrite-out vs render are both available; skipRender distinguishes the stop stage", async () => {
       // Anthropic identity-render: rewrite-out (skipRender) and render coincide, but the
       // fidelity note records which stop stage produced the output.

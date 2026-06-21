@@ -200,7 +200,22 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
     current = result.env
   }
   stages["rewrite-in"] = { body: snapshotBody(current.body), applied }
-  return { stoppedAt: "rewrite-in", stages }
+  if (stopAfter === "rewrite-in") return { stoppedAt: "rewrite-in", stages }
+
+  // S4-pre — prepare-wire: the codec's last-mile wire derivation for the FIRST attempt
+  // (RFC §4 / §11 P1). NEVER enters the exchange loop, so reactive retry rewrites
+  // (beta-strip / server-tool-strip — only triggered by an upstream error) are invisible;
+  // `note` flags that. `prepareWire` is non-pure in real codecs (betaProbe.recordOutbound /
+  // ctx.recordFeature) — the caller isolates those side effects (throwaway probe + capturing ctx).
+  const wire = deps.codec.prepareWire(current)
+  stages["prepare-wire"] = {
+    url: wire.url,
+    headers: Object.fromEntries(wire.headers.entries()),
+    body: snapshotBody(wire.body),
+    stream: wire.stream,
+    note: "first-attempt only; reactive retry rewrites (beta-strip / server-tool-strip) not visible",
+  }
+  return { stoppedAt: "prepare-wire", stages }
 }
 
 /**
