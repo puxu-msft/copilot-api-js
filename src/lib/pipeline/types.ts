@@ -237,6 +237,55 @@ export interface RunResponseOpts {
   onUpstreamFrame?: (frame: UpstreamFrame) => void
 }
 
+// ============================================================================
+// owns-the-sink writeout (Stage B — design §3.2/§3.3)
+// ============================================================================
+
+/**
+ * The driver's abstract client write-out port (Stage B, design §3.3). Kept
+ * deliberately THIN — write + serialize only, no business logic — so owns-the-sink
+ * doesn't bloat the driver's concerns (the RFC's named Stage-B cost). The route
+ * injects a concrete sink (`makeSseSink(stream)` / `makeWsSink(ws)`); tests use
+ * `makeArraySink()`; the driver never touches Hono.
+ *
+ * All writes share ONE internal Promise chain (serialization) so real frames +
+ * synthetic heartbeats + error frames never byte-interleave on the wire.
+ */
+export interface ClientSink {
+  /** Write one rendered client frame; samples both observability tracks (B4). */
+  write(frame: ClientFrame): Promise<void>
+  /**
+   * Inject an already-terminal-form frame (heartbeat ping) bypassing render, sampled
+   * forwarded-only (NOT sseEvents). Shares the same chain as {@link write}. Named for
+   * its real semantics — forwarded-only sampling of a synthetic frame — NOT
+   * "bypass-render" (design §3.3 audit). B2 wires the heartbeat; omitted = no inject.
+   */
+  writeSynthetic?(frame: ClientFrame): Promise<void>
+  /**
+   * Release sink-held resources (the B2 heartbeat timer). The driver's
+   * `runResponseSink` `finally` MUST call this on every exit (normal / throw /
+   * abort / write-reject) so a self-rescheduling timer can't leak (design §3.3).
+   */
+  close?(): void
+}
+
+/** The classified terminal-error payload an owns-sink response settles with (design §3.2). */
+export interface StreamErrorPayload {
+  type: string
+  message: string
+}
+
+/**
+ * The format-agnostic control-signal result of owns-sink `runResponseSink` (design
+ * §3.2, minimality-audit revision). Carries ONLY the control signal — NO accumulator.
+ * Every handler already owns + feeds its own format accumulator (Anthropic via
+ * `onUpstreamFrame`, Responses/Gemini by iterating frames), and reads its own terminal
+ * business data (usage / stop_reason / truncateResult / responseId / gemini-meta)
+ * out-of-band; folding the accumulator back into the outcome would be a net-new
+ * coupling + a per-format grab-bag. The handler maps the outcome to `ctx.complete/fail`.
+ */
+export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: StreamErrorPayload } | { kind: "settled-abort" }
+
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at
  * each stage boundary. Lifted+merged from the current `executeRequestPipeline`

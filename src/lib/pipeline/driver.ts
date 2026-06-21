@@ -22,10 +22,12 @@ import type { RequestEnvelope } from "./envelope"
 import type {
   //
   ClientFrame,
+  ClientSink,
   DriverRequestResult,
   FormatCodec,
   PipelineDriver,
   RawHttpRequest,
+  ResponseOutcome,
   RetryAction,
   RetryStrategy,
   RunResponseOpts,
@@ -89,6 +91,14 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
    * passes the rendered response (from `runResponseNonStreaming`) and gets the rewritten one.
    */
   runResponseWhole(response: unknown, env: RequestEnvelope): unknown
+  /**
+   * owns-the-sink streaming response (Stage B B1, design §3.2). The driver drives the
+   * S5→S6 chain and writes each client frame to `sink`, returning a format-agnostic
+   * {@link ResponseOutcome} (NO accumulator — the handler keeps its own). B1 is a thin
+   * wrapping shim over the generator `runResponse` (additive, NO consumer yet — every
+   * handler still drives the generator); B2–B5 cut formats over and refine the outcome.
+   */
+  runResponseSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts?: RunResponseOpts): Promise<ResponseOutcome>
 }
 
 export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming {
@@ -97,6 +107,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
     runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
+    runResponseSink: (upstream, env, sink, opts) => runResponseSink(deps, upstream, env, sink, opts),
   }
 }
 
@@ -316,6 +327,39 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
     for (const flushed of flushChain(rewrites, states)) {
       yield* renderFrames(deps, flushed, env)
     }
+  }
+}
+
+/**
+ * owns-the-sink streaming (Stage B B1): drain the generator `runResponse` into `sink`,
+ * returning a control-signal {@link ResponseOutcome}. A thin WRAPPING SHIM — it reuses
+ * the generator's S5→S6 chain verbatim, so it's byte-equivalent to the current path by
+ * construction (the B1 equivalence test locks `sink` frame sequence == generator yield
+ * sequence). `sink.close()` runs on EVERY exit (normal / throw / write-reject) so a
+ * B2 heartbeat timer can't leak.
+ *
+ * B1 outcome is minimal: clean drain → `complete`; ANY thrown error (upstream throw OR
+ * a `sink.write` rejection = client gone) → a non-`complete` outcome — so a disconnect
+ * is never silently swallowed into `complete` (the B1 rejecting-sink fault test). B3a
+ * refines the catch into `stream-error` (upstream / `acc.streamError`) vs `settled-abort`
+ * (client-abort) using the handler's accumulator + abort signal.
+ */
+async function runResponseSink(
+  deps: DriverDeps,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  sink: ClientSink,
+  opts?: RunResponseOpts,
+): Promise<ResponseOutcome> {
+  try {
+    for await (const frame of runResponse(deps, upstream, env, opts)) {
+      await sink.write(frame)
+    }
+    return { kind: "complete", headers: upstream.headers }
+  } catch (error) {
+    return { kind: "stream-error", error: { type: "stream_error", message: error instanceof Error ? error.message : String(error) } }
+  } finally {
+    sink.close?.()
   }
 }
 

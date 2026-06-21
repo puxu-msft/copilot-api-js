@@ -26,6 +26,7 @@ import type {
 import type {
   //
   ClientFrame,
+  ClientSink,
   FormatCodec,
   PreparedRequest,
   RetryStrategy,
@@ -36,6 +37,7 @@ import type {
 } from "~/lib/pipeline/types"
 import type { RetryStrategy as LegacyRetryStrategy } from "~/lib/request/pipeline"
 
+import { makeArraySink } from "~/lib/pipeline/client-sink"
 import {
   //
   createPipelineDriver,
@@ -474,6 +476,65 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     // without try/finally `flushChain` (post-loop) is unreachable on a throw and the
     // held frames are silently dropped (the H3 regression Phase 4 would introduce).
     expect(collected.map((f) => f.data)).toEqual(["a,b"])
+  })
+})
+
+describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
+  async function* throwingStream(items: Array<UpstreamFrame>): AsyncIterable<UpstreamFrame> {
+    for (const i of items) yield i
+    throw new Error("upstream blew up")
+  }
+
+  test("equivalence: sink frame sequence == generator yield sequence; outcome=complete+headers", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const frames: Array<UpstreamFrame> = [{ data: "1" }, { data: "2" }, { data: "3" }]
+
+    // generator yield sequence
+    const genOut: Array<ClientFrame> = []
+    for await (const f of driver.runResponse(okStream(frames), makeEnv(ctx))) genOut.push(f)
+
+    // owns-sink sequence — must equal the generator's, by construction (wrapping shim)
+    const { sink, frames: sunk } = makeArraySink()
+    const headers = new Headers({ "x-up": "1" })
+    const outcome = await driver.runResponseSink({ frames: gen(frames), headers }, makeEnv(ctx), sink)
+
+    expect(sunk).toEqual(genOut)
+    expect(outcome).toEqual({ kind: "complete", headers })
+  })
+
+  test("rejecting sink (client disconnect mid-write) → non-complete outcome, never complete", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const { sink, frames: sunk } = makeArraySink({ rejectAtFrame: 1 })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "1" }, { data: "2" }, { data: "3" }]), makeEnv(ctx), sink)
+
+    // The disconnect must NOT be swallowed into `complete`.
+    expect(outcome.kind).not.toBe("complete")
+    expect(outcome.kind).toBe("stream-error")
+    // Frame 0 was written before the reject at frame 1.
+    expect(sunk).toEqual([{ data: "1" }])
+  })
+
+  test("sink.close() runs on BOTH normal completion and an upstream throw", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+
+    let closedOk = 0
+    const okArr = makeArraySink()
+    const okSink: ClientSink = { write: okArr.sink.write, close: () => void closedOk++ }
+    expect((await driver.runResponseSink(okStream([{ data: "x" }]), makeEnv(ctx), okSink)).kind).toBe("complete")
+    expect(closedOk).toBe(1)
+
+    let closedErr = 0
+    const errSink: ClientSink = { write: () => Promise.resolve(), close: () => void closedErr++ }
+    const outcome = await driver.runResponseSink({ frames: throwingStream([{ data: "a" }]), headers: new Headers() }, makeEnv(ctx), errSink)
+    expect(outcome.kind).toBe("stream-error")
+    expect(closedErr).toBe(1)
   })
 })
 
