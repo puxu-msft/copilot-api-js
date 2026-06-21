@@ -35,7 +35,11 @@ import {
 } from "~/lib/openai/auto-truncate"
 import { state } from "~/lib/state"
 
+import { handleDryRunPipeline } from "./dry-run-pipeline"
+
 export const debugRoutes = new Hono()
+
+debugRoutes.post("/dry-run-pipeline", handleDryRunPipeline)
 
 const DryRunSchema = z
   .object({
