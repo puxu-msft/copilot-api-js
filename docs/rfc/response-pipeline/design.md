@@ -170,9 +170,11 @@ WS（`responses/ws.ts`）消费同一 `driver.runResponse`（同 Responses HTTP�
 
 ## 5. Stage B — driver-owned-writeout（远景，A 后重走 OQ1 再定，slug: stage-b-reeval）
 
-> **定位修订（用户 2026-06-20）**：Stage B **不预承诺**。Stage A 落地后,拿真实体验**诚实重走 OQ1**——评估 Stage B 的增量（forwarded 统一进 driver + handler 真薄）是否值 ≥1000 行 byte-critical + Gemini 逐帧化 + driver 关注点膨胀的代价。2 个对抗 reviewer 都质疑其增量值不抵代价、且 P3.2b-D1"forwarded handler-side 是正确归置非债"的论据未被真正反驳（只被 owns-the-sink 绕过）。以下骨架供 A 完成后重评时参考。
+> **✅ OQ1 重走结论（用户 2026-06-21）：GO——启动 Stage B。** Stage A（A0/A1/A.B/A.C）成功落地后，用户拍板做 driver-owned-writeout，接受 ≥1000 行 byte-critical + Gemini 逐帧化 + driver 关注点膨胀的代价。2 reviewer 的"不值"是基于 ROI/字节代价的保守判断，被用户价值观**"长远架构正确 > 字节代价/改动量"**覆盖（呼应 architecture-health-first：成本不是决策因素，最优形状存在时不因代价回退）。实施按 [stage-b-plan.md](./stage-b-plan.md)（B0 golden 预捕获 → B1 sink → B2 heartbeat → B3 outcome → B4 forwarded → B5 gemini，逐格式 canary、新旧并存到切换完成、每 commit 可独立 revert）。OQ4 在实施期解。下方为各 phase 设计骨架。
 
-- **B1（client-sink）**：引入 `ClientSink` 抽象 + `makeSseSink`/`makeWsSink`/`makeArraySink`；新增 owns-sink 版 `runResponse` 与 generator 版并存（adapter 桥接），不切格式。**注意（审计）**：owns-the-sink 让 driver 持 IO 写出口 = 把"编排"与"IO 写出/串行化/异常 finishing"合并进 driver,比现状 generator 的干净边界**更耦合**——这是 Stage B 的真实代价,重评 OQ1 时计入。
+> **原定位（用户 2026-06-20，已被上面的 GO 覆盖，保留供追溯）**：Stage B **不预承诺**……（2 reviewer 质疑增量不抵代价、P3.2b-D1 论据未被真正反驳）。
+
+- **B1（client-sink）**：引入 `ClientSink` 抽象 + `makeSseSink`/`makeWsSink`/`makeArraySink`；新增 owns-sink 版 `runResponse` 与 generator 版并存（adapter 桥接），不切格式。**注意（审计）**：owns-the-sink 让 driver 持 IO 写出口 = 把"编排"与"IO 写出/串行化/异常 finishing"合并进 driver,比现状 generator 的干净边界**更耦合**——这是 Stage B 的真实代价,实施期保持边界尽量薄（sink 只负责写 + 串行化，不混业务）。
 - **B2（heartbeat-soft-idle）**：把 heartbeat 建模为 `guardSseIterable`/`raceIteratorNext` 的 **soft-idle racer**（到点 resolve 合成帧 + 重置计时，对比 hard-idle reject 杀流）；soft 帧标 `synthetic`、跳过 sseEvents 采样（只入 forwarded）。**fake-timer 连跑 10–25× 验确定性**。
 - **B3（accumulator-control-signal）**：accumulator + 终态决策进 driver；`runResponse` 返回 `ResponseOutcome`（§3.2,**注意修订后的"终态读快照非 live"语义**）；H2 + H3 收进 driver try/catch/finally（§4.0.5 已前置最小子集）。
 - **B4（forwarded-into-sink）**：forwarded 采样进 `ClientSink.write`，删 handler 手动 `setForwardedResponse` + WS 的同套；**正式推翻 P3.2b-D1 边界**。
@@ -255,7 +257,7 @@ WS（`responses/ws.ts`）消费同一 `driver.runResponse`（同 Responses HTTP�
 
 ## 10. 开放问题（待 writing-plans / Stage A 完成后定）
 
-- **OQ1（核心，已升为明确立场）**：Stage B **不预承诺**。Stage A（含流式/非流式/WS）落地后,拿真实体验诚实重评:B 的增量（forwarded/heartbeat 统一进 driver + handler 真薄）是否值 ≥1000 行 byte-critical + Gemini 逐帧化 + driver 关注点膨胀的代价。2 reviewer 倾向"不值"（封闭改写集自用 proxy,forwarded handler-side 是正确归置非债）;最终由实测体验定。
-- **OQ2**：A0（请求侧 driver S3 接真实改写,最低风险）是否作为**独立先行 commit**——它修确凿割裂、不碰响应字节,可在响应侧改写迁移前单独落地验证 registry 装配机制。**倾向:是,A0 先行。**
-- **OQ3**：非流式 `transformWhole` 与流式 `transform` 是否真能复用 order/appliesTo 声明,还是非流式有独立顺序需求（whole-response helper 的应用序与逐帧序是否一致——需核对 `renderNonStreamingV4` 现状序 vs `processOneStreamEvent` 序）。
-- **OQ4（若做 Stage B）**：`ResponseOutcome` 承载多少终态信息（usage/stop_reason）供 handler `ctx.complete`;ClientSink 的 `writeRaw` 是否真需要;heartbeat soft-idle 合并两计时器的时序等价。
+- **OQ1（核心，已升为明确立场）→ ✅ 裁决 GO（用户 2026-06-21）**：Stage A 成功落地后用户拍板**做 Stage B**——价值观"长远架构正确 > 字节代价/改动量"覆盖 2 reviewer 的 ROI 保守判断。实施按 `stage-b-plan.md`。原"不预承诺/2 reviewer 倾向不值"立场保留供追溯（见 §5）。
+- **OQ2 → ✅ 已落实**：A0 作独立先行 commit（Stage A Task2），最低风险先验 registry 装配。
+- **OQ3 → ✅ 已裁决（Stage A Task5/A.B）**：非流式现状序与流式升序不一致（restore 在流式 bundle 进 filter@300），用户裁定统一到流式升序。
+- **OQ4（Stage B 实施期解）**：`ResponseOutcome` 承载多少终态信息（usage/stop_reason）供 handler `ctx.complete`;ClientSink 的 `writeRaw` 是否真需要;heartbeat soft-idle 合并两计时器的时序等价。**→ 在 stage-b-plan.md 各 phase 内逐个解。**

@@ -150,7 +150,7 @@
 ## Stage A 收尾
 
 - [x] 更新 `docs/v4/05-progress.md`：标 Stage A 各 deferred item 处置（P2.4-D2 解决、P2.1-M2 解决）；记 Stage A 出口状态。
-- [ ] 更新 RFC §5/§10：A 已落地，**重走 OQ1**——拿真实体验评估 Stage B 是否值得做，带回用户定夺。（OQ1 数据已备，待用户 go/no-go）
+- [x] 更新 RFC §5/§10：A 已落地，**重走 OQ1**——用户 2026-06-21 裁决 **GO**（启动 Stage B，价值观"长远架构正确 > 字节代价"覆盖 reviewer 的 ROI 保守判断）；实施计划见 `stage-b-plan.md`。
 - [x] 全套最终 subagent review（多视角）+ 全 backend 绿。（Phase 7 audit：死代码=0、三 home 边界成立；golden 34 pass；全 backend 2798 pass，唯一 fail 为无关 file-sink ENOTDIR）
 
 ---
