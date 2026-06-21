@@ -19,9 +19,10 @@
  * P2-era division of labor (sampling sinks to the driver in P3.2): this handler
  * still owns the response-side sampling (sseEvents + forwarded SSE + accumulate +
  * complete/fail), the retry pipeline-info rebuild (`recordRetryPipelineStateV4`,
- * data sourced per RFC §12.4), and the client-facing finishing the codec does NOT
- * do (server-tool filter, tool-call-text recovery, tool-name restore, tool-input
- * decode, the verbose truncation marker).
+ * data sourced per RFC §12.4), and the verbose truncation marker. The client-facing
+ * response rewrites (server-tool filter, tool-call-text recovery, tool-name restore,
+ * tool-input decode) are driver-owned in BOTH modes (A1/A.B): streaming via the S5
+ * per-frame chain, non-streaming via `driver.runResponseWhole` (`transformWhole`).
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -59,30 +60,15 @@ import type {
 } from "~/types/api/anthropic"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
-import {
-  //
-  decodeToolInputBlocksInResponse,
-} from "~/lib/anthropic/decode-tool-input"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
-import {
-  //
-  extractToolParamTypes,
-  recoverToolCallTextInResponse,
-} from "~/lib/anthropic/recover-tool-call"
 import {
   //
   preprocessAnthropicMessages,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
-import {
-  //
-  filterServerToolBlocksFromResponse,
-  logServerToolBlocks,
-  restoreToolNamesInResponse,
-} from "~/lib/anthropic/server-tool-filter"
 import {
   //
   accumulateAnthropicStreamEvent,
@@ -370,7 +356,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   if (!env.stream) {
     try {
       const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
-      return renderNonStreamingV4(c, env, resp, truncateResult)
+      return renderNonStreamingV4(c, driver, env, resp, truncateResult)
     } finally {
       detachClientAbort()
     }
@@ -463,20 +449,23 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
 // ============================================================================
 
 /**
- * Reproduce the legacy `handleDirectAnthropicNonStreamingResponse` sequence:
- * verbose marker → server-tool filter → recover-tool-call-text (BEFORE
- * restoreToolNames) → restore tool-names → decode tool-input → setForwardedResponse
- * (client-facing) + complete (upstream-original, order matters). `env.body` is the
- * post-retry env (deferred-tool retry's tools are reflected there).
+ * Finish a non-streaming Anthropic response: verbose marker (handler-side) → the driver's
+ * whole-response rewrite chain (`runResponseWhole`: recover → decode → filter+restore, the
+ * same registry the streaming pump drives per-frame, A.B) → setForwardedResponse (client-facing,
+ * rewritten) + complete (upstream-original `response`, order matters) → c.json.
+ *
+ * The marker stays out of the registry (design §3.1 — it's a verbose debug banner, not an
+ * "upstream-quirk fix") and is applied BEFORE the chain. `env.body` is the post-retry env
+ * (deferred-tool retry's tools are reflected there) — the driver's rewrites read it via `env`.
  */
 function renderNonStreamingV4(
   c: Context,
+  driver: ReturnType<typeof createPipelineDriver>,
   env: RequestEnvelope,
   response: AnthropicMessageResponse,
   truncateResult: AnthropicAutoTruncateResult | undefined,
 ): Response {
   const reqCtx = env.ctx
-  const anthropicPayload = env.body as MessagesPayload
   let finalResponse = response
 
   if (state.verbose && truncateResult?.wasTruncated) {
@@ -484,25 +473,7 @@ function renderNonStreamingV4(
     finalResponse = prependMarkerToResponse(response, marker)
   }
 
-  logServerToolBlocks(finalResponse.content as unknown as Array<Record<string, unknown> & { type: string }>)
-  finalResponse = filterServerToolBlocksFromResponse(finalResponse)
-
-  finalResponse = recoverToolCallTextInResponse(finalResponse, {
-    enabled: state.recoverToolCallText,
-    toolNames: new Set((anthropicPayload.tools ?? []).map((t) => t.name)),
-    toolSchemas: extractToolParamTypes(anthropicPayload.tools),
-  })
-
-  finalResponse = restoreToolNamesInResponse(finalResponse, reqCtx.toolNameMapper)
-
-  finalResponse = decodeToolInputBlocksInResponse(
-    finalResponse,
-    {
-      fields: state.decodeToolInputFields,
-      all: state.decodeAllToolInputFields,
-    },
-    { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
-  )
+  finalResponse = driver.runResponseWhole(finalResponse, env) as AnthropicMessageResponse
 
   reqCtx.setForwardedResponse({ content: { role: "assistant", content: finalResponse.content } })
   reqCtx.complete({

@@ -82,6 +82,13 @@ export interface DriverDeps {
 export interface PipelineDriverWithNonStreaming extends PipelineDriver {
   /** S5→S6 non-streaming: render the whole upstream response back to the client. */
   runResponseNonStreaming(upstream: UpstreamStream, env: RequestEnvelope): unknown
+  /**
+   * S5 non-streaming (design §3.1, A.B): apply each rewrite's `transformWhole` to the
+   * already-rendered whole response, in the SAME ascending-`order` chain as the per-frame
+   * `runResponse`. Pure (no observability / ctx settling — the handler owns that); the caller
+   * passes the rendered response (from `runResponseNonStreaming`) and gets the rewritten one.
+   */
+  runResponseWhole(response: unknown, env: RequestEnvelope): unknown
 }
 
 export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming {
@@ -89,6 +96,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runRequest: (raw) => runRequest(deps, raw),
     runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
+    runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
   }
 }
 
@@ -309,6 +317,22 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
       yield* renderFrames(deps, flushed, env)
     }
   }
+}
+
+/**
+ * S5 non-streaming (design §3.1, A.B): apply each applicable rewrite's `transformWhole` to
+ * the rendered whole response in ascending `order` (same chain order as the per-frame
+ * `runResponse`). `assembleResponseRewrites` filters by `appliesTo` + sorts by `order`, so a
+ * rewrite whose gate is off is skipped (= byte-identical to its helper's passthrough). No
+ * per-rewrite state (whole-response helpers are stateless); `transformWhole`-less rewrites
+ * (e.g. thinking-signature-compat) are no-ops here.
+ */
+function runResponseWhole(deps: DriverDeps, response: unknown, env: RequestEnvelope): unknown {
+  let current = response
+  for (const rewrite of assembleResponseRewrites(env, deps.responseRewrites ?? RESPONSE_REWRITES)) {
+    if (rewrite.transformWhole) current = rewrite.transformWhole(current, env)
+  }
+  return current
 }
 
 /** S6 + S7: render one upstream frame to client frame(s) and surface them. */

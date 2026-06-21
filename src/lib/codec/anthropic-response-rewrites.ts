@@ -17,12 +17,20 @@
  * thinking reshape threads through the decoder, which no-ops on thinking frames — locked by
  * golden S7). The handler imports these and passes them via `deps.responseRewrites` (avoids a
  * `lib/pipeline → lib/codec` import cycle; keeps the per-request env closure for `createState`).
+ *
+ * Non-streaming (A.B): recover / decode / filter also declare `transformWhole` (loading the
+ * same-file `*InResponse` helpers), so the driver's `runResponseWhole` drives them on the whole
+ * JSON response via the SAME ascending-`order` chain (recover<decode<filter+restore — name
+ * restore is bundled into the filter, mirroring the streaming filter). `thinking-signature-compat`
+ * is streaming-only (no `transformWhole`): in a non-streaming JSON response the `signature` field
+ * is directly client-readable, so the start-frame shim is unnecessary (DESIGN.md, that field).
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import consola from "consola"
 
+import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { RequestContext } from "~/lib/context/request"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -38,14 +46,25 @@ import type {
   StreamEvent,
 } from "~/types/api/anthropic"
 
-import { createToolInputStreamDecoder } from "~/lib/anthropic/decode-tool-input"
+import {
+  //
+  createToolInputStreamDecoder,
+  decodeToolInputBlocksInResponse,
+} from "~/lib/anthropic/decode-tool-input"
 import {
   //
   createToolCallTextRecoverer,
   extractToolParamTypes,
+  recoverToolCallTextInResponse,
   type ToolCallTextRecoverer,
 } from "~/lib/anthropic/recover-tool-call"
-import { createServerToolBlockFilter } from "~/lib/anthropic/server-tool-filter"
+import {
+  //
+  createServerToolBlockFilter,
+  filterServerToolBlocksFromResponse,
+  logServerToolBlocks,
+  restoreToolNamesInResponse,
+} from "~/lib/anthropic/server-tool-filter"
 import { applyThinkingSignatureCompat } from "~/lib/anthropic/thinking-signature-compat"
 import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
 import { state } from "~/lib/state"
@@ -117,6 +136,17 @@ const recoverRewrite: ResponseRewrite = {
     return bufferOrEmit(out)
   },
   flush: (st): Array<UpstreamFrame> => (st as RecoverState).recoverer.flush() as Array<UpstreamFrame>,
+  // Non-streaming: rebuild downgraded text → tool_use on the whole response. `enabled:true`
+  // because `appliesTo` already gated `state.recoverToolCallText` (when off, the driver skips
+  // this rewrite entirely = byte-identical to the helper's `enabled:false` early-return).
+  transformWhole: (response, env): unknown => {
+    const tools = (env.body as MessagesPayload).tools
+    return recoverToolCallTextInResponse(response as AnthropicMessageResponse, {
+      enabled: true,
+      toolNames: new Set((tools ?? []).map((t) => t.name)),
+      toolSchemas: extractToolParamTypes(tools),
+    })
+  },
 }
 
 // ============================================================================
@@ -162,6 +192,15 @@ const decodeRewrite: ResponseRewrite = {
   }),
   transform: (frame, st): FrameAction => bufferOrEmit((st as DecodeState).decoder.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage)),
   flush: (st): Array<UpstreamFrame> => (st as DecodeState).decoder.flush() as Array<UpstreamFrame>,
+  // Non-streaming: decode stringified-JSON input fields + AskUserQuestion header backfill on
+  // the whole response (same config the streaming decoder reads). `appliesTo` gated that at
+  // least one decode rule could fire, so this never runs as a pure passthrough.
+  transformWhole: (response): unknown =>
+    decodeToolInputBlocksInResponse(
+      response as AnthropicMessageResponse,
+      { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
+      { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
+    ),
 }
 
 // ============================================================================
@@ -183,6 +222,15 @@ const filterRewrite: ResponseRewrite = {
     const data = (st as FilterState).filter.rewriteEvent(parseFrame(frame.data), frame.data ?? "")
     if (data === null) return { kind: "suppress" }
     return { kind: "emit", frames: [{ ...frame, data }] }
+  },
+  // Non-streaming: log (before stripping, so info is never lost) → filter server-tool blocks →
+  // restore client tool_use names. Restore is bundled here (order 300) exactly as the streaming
+  // filter does both suppress + name-restore in one pass — keeping the whole-response chain on
+  // the same ascending order as the per-frame chain (recover<decode<filter+restore).
+  transformWhole: (response, env): unknown => {
+    const resp = response as AnthropicMessageResponse
+    logServerToolBlocks(resp.content as unknown as Array<Record<string, unknown> & { type: string }>)
+    return restoreToolNamesInResponse(filterServerToolBlocksFromResponse(resp), env.ctx.toolNameMapper)
   },
 }
 

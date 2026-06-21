@@ -124,10 +124,10 @@
 - Modify: `src/lib/pipeline/driver.ts`（`runResponseNonStreaming` 在 codec render 后按 order 链跑 `transformWhole`）+ `src/routes/messages/handler-v4.ts`（`renderNonStreamingV4` 去内联 whole-response 序列）
 - Test: 重跑 Task0 非流式 golden
 
-- [ ] **Step 1: 接口加 transformWhole** — types.ts + rewrite-registry.ts。
-- [ ] **Step 2: 实现 transformWhole** — recover/decode/filter 装载 `recoverToolCallTextInResponse`/`decodeToolInputBlocksInResponse`/`filterServerToolBlocksFromResponse`（同文件 helper）。**核对 OQ3：非流式应用序（renderNonStreamingV4 现状）vs 流式 order 一致**——若不一致，order 链需对非流式单独声明或核实等价。
-- [ ] **Step 3: driver runResponseNonStreaming 跑链 + handler 去内联** — `renderNonStreamingV4` 移除手写 whole-response 序列。marker 仍走 `prependMarkerToResponse`（不进 registry）。
-- [ ] **Step 4: 跑非流式 golden + 全套 + Step5 typecheck/eslint/subagent/Commit** — `git add -- ...（上述文件）&& git commit -m "feat(pipeline): Stage A Task5(A.B) 非流式响应改写经 transformWhole 统一进 registry"`
+- [x] **Step 1: 接口加 transformWhole** — `rewrite-registry.ts`（`ResponseRewrite` 接口就在此文件，非 types.ts）。
+- [x] **Step 2: 实现 transformWhole** — recover/decode/filter 装载 `recoverToolCallTextInResponse`/`decodeToolInputBlocksInResponse`/`filterServerToolBlocksFromResponse`+`restoreToolNamesInResponse`（同文件 helper）。**OQ3 已裁决（实测核对）**：非流式现状序（`filter→recover→restore→decode`，decode 在 restore 之后=client-name 匹配）与流式升序（`recover→decode→filter+restore`，decode 在 restore 之前=wire-name 匹配）**确实不一致**——restore 在流式被 bundle 进 filter@300，无法用单一 order 同时满足两序。用户裁决：**统一到流式升序**（非流式 decode 改为先于 restore=wire-name 匹配，与流式一致），收敛了一处既有的流式/非流式不一致。仅 `sanitizeToolNames:true`+被清洗的 decode-target tool 这一极窄角可观测（默认 decode-target `AskUserQuestion` 名干净，不触发）；golden 用干净名，两序字节等价。
+- [x] **Step 3: driver `runResponseWhole` 跑链 + handler 去内联** — 新增独立 `driver.runResponseWhole(response, env)`（按 `assembleResponseRewrites` 升序跑各 `transformWhole`），**未折进 `runResponseNonStreaming`**：handler 需保留 codec-render 后的 upstream-原始 `response` 给 `complete`、把 rewritten `finalResponse` 给 `setForwardedResponse`/`c.json`。`renderNonStreamingV4` 只剩 marker（`prependMarkerToResponse`，不进 registry）+ 调 `runResponseWhole`。
+- [x] **Step 4: 跑非流式 golden + 全套 + Step5 typecheck/eslint/subagent/Commit** — golden 10/10 pass；全 offline 2797 pass（唯一 fail `file-sink.unit.test.ts` 是无关 `/tmp` ENOTDIR 环境问题，与本改动无 import 关系，pre-existing）；typecheck+eslint 绿；subagent 对抗 review 无 CRITICAL/HIGH（逐条实测核验顺序/gating/marker/commute）。**遗留（deferred，不在 A.B 范围）**：web_search 双跳 `[bypass]`（`handler.ts` 的 `handleDirectAnthropicNonStreamingResponse`）仍用旧序 `filter→recover→restore→decode`——它是 legacy 子树、自有 ctx、不建 driver，待 web_search 迁 driver（P2.6-D1）时随之收敛；当前与主路径仅在上述极窄角分歧。
 
 ---
 

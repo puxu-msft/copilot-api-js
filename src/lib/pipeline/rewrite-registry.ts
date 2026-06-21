@@ -112,6 +112,17 @@ export interface ResponseRewrite {
   transform(frame: UpstreamFrame, state: RewriteState): FrameAction
   /** Flush buffered frames at stream end (e.g. tool-input decoder at content_block_stop). */
   flush?(state: RewriteState): Array<UpstreamFrame>
+  /**
+   * Non-streaming (whole-response) counterpart of {@link transform} (design §3.1). The
+   * driver's `runResponseWhole` applies these in the SAME ascending-`order` chain as the
+   * per-frame `transform`, so one rewrite declares both modes once. Loads the same-file
+   * whole-response helper (e.g. `filterServerToolBlocksFromResponse` / `decodeToolInput
+   * BlocksInResponse`) — distinct implementation from `transform`, but identical logic.
+   * Stateless (operates on the whole response in hand, no cross-frame buffering); receives
+   * `env` for request-derived data (tools, tool-name mapper). Omitted = the rewrite does
+   * not apply to non-streaming (e.g. a streaming-only frame-id fixer).
+   */
+  transformWhole?(response: unknown, env: RequestEnvelope): unknown
 }
 
 // ============================================================================
