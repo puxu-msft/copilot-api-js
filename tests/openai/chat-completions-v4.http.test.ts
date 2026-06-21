@@ -44,6 +44,7 @@ let lastResponsesWire: { model?: string; input?: unknown } | undefined
 let ccHits = 0
 let throwOnce = false
 let throwAlways = false
+let truncate413Once = false
 
 function ccBody(model: string): string {
   return JSON.stringify({
@@ -120,6 +121,14 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
       throwOnce = false
       throw new Error("ECONNRESET: upstream socket reset")
     }
+    // Stage B B0: first hit returns 413 (payload_too_large) → auto-truncate fires +
+    // retries; the retry streams. With verbose on, the retry's stream is prefixed by
+    // the truncation marker chunk.
+    if (truncate413Once && ccHits === 1) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ error: { message: "prompt is too long" } }), { status: 413, headers: { "content-type": "application/json" } }),
+      )
+    }
     if (payload.stream) {
       // Stage B B0: a streaming tool_call echoes the SANITIZED wire name the handler
       // sent (`payload.tools[0].function.name`) so the forwarded restore is exercised.
@@ -186,6 +195,7 @@ describe("CC v4 driver path", () => {
     ccHits = 0
     throwOnce = false
     throwAlways = false
+    truncate413Once = false
     applyFetchMock(upstreamFetchMock)
     setStateForTests({ copilotToken: "tok", autoTruncate: false })
   })
@@ -281,6 +291,56 @@ describe("CC v4 driver path", () => {
     // above is restored unchanged (round-trip locked).
     const wireToolName = (v4Wire?.tools as Array<{ function?: { name?: string } }> | undefined)?.[0]?.function?.name
     expect(wireToolName).toBe("my.tool_with-bad_chars")
+  })
+
+  // Stage B B0 baseline: the verbose TRUNCATION MARKER injected as the FIRST forwarded
+  // chunk (handler-v4 prepends it before the driver loop, `event: message`). The review's
+  // "biggest hole" — zero coverage. A 413 triggers auto-truncate; the retry's stream is
+  // prefixed by a synthetic marker chunk. The owns-sink flip (B4) must keep this injected
+  // marker as the first chunk with the same shape (id/created are per-run timestamps).
+  test("Stage B B0: verbose truncation marker is the FIRST forwarded chunk (streaming, event: message)", async () => {
+    setDisabledModels([])
+    setModels({
+      object: "list",
+      data: [
+        mockModel("gpt-4o", {
+          vendor: "OpenAI",
+          supported_endpoints: ["/chat/completions"],
+          capabilities: { family: "gpt-4", type: "chat", limits: { max_context_window_tokens: 200, max_output_tokens: 50, max_prompt_tokens: 150 } },
+        }),
+      ],
+    })
+    setStateForTests({ copilotToken: "tok", verbose: true, autoTruncate: true, autoTruncateMaxRetries: 5 })
+    truncate413Once = true
+    const messages = Array.from({ length: 30 }, (_, i) => ({
+      role: "user",
+      content: `message number ${i} the quick brown fox jumps over the lazy dog repeatedly and again`,
+    }))
+
+    const text = await (
+      await app.request("/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", messages, stream: true }),
+      })
+    ).text()
+
+    expect(ccHits).toBe(2) // first 413 → truncate → retry streams
+
+    const frame = text.split("\n\n").find(Boolean)
+    // First forwarded frame = the synthetic marker chunk, carried on `event: message`.
+    expect(frame.startsWith("event: message\ndata: ")).toBe(true)
+    const marker = JSON.parse(frame.slice("event: message\ndata: ".length)) as {
+      object: string
+      choices: Array<{ delta: { content: string }; finish_reason: null }>
+    }
+    expect(marker.object).toBe("chat.completion.chunk")
+    expect(marker.choices[0].finish_reason).toBe(null)
+    // Marker content format (token counts deterministic-but-tokenizer-coupled → match shape).
+    expect(marker.choices[0].delta.content).toMatch(/^\n\n---\n\[Auto-truncated: \d+ messages removed, \d+ → \d+ tokens \(\d+% reduction\)\]$/)
+    // The marker PRECEDES the real upstream content (it is genuinely first).
+    expect(text.indexOf("Auto-truncated")).toBeLessThan(text.indexOf("Hello"))
+    expect(text).toContain("[DONE]")
   })
 
   test("unsupported model → 400", async () => {
