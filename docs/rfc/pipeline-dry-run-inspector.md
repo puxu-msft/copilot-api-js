@@ -115,7 +115,7 @@ inspectRequest(raw, stopAfter): RequestInspection   // 跑 S1→stopAfter，绝�
 ## 8. 分阶段实现
 
 - **Phase 1（响应侧 Anthropic，零全局 swap，最高价值最低风险）** ✅ **已实现（eaaea99）**：手工 env + 捕获 ctx(`createRequestContext` 无 publisher + wrap recordFeature) + entryId(sseEvents→frame adapter / 非流式 outboundResponse 重建)/inline 上游。Anthropic render=identity 故 stopAfter rewrite-out/render 等价、**无需 driver 改动**(skipRender/frameActions hook 推迟到非 identity render 的 Phase 3)。`src/routes/debug/dry-run-pipeline.ts` + `tests/infra/debug-dry-run-pipeline.http.test.ts`(5 测试)。subagent 审查 PASS。
-- **Phase 2（请求侧 Anthropic）**：driver `inspectRequest` + manager-swap 隔离(mutex) + stopAfter parse/translate/rewrite-in/prepare-wire(首 attempt) + entryId header 从 httpHeaders.inboundRequest 合成 RawHttpRequest。
+- **Phase 2（请求侧 Anthropic）** ✅ **已实现（9278895 driver.inspectRequest / 4a0a8fc withCapturingManager / 9ab19b7 endpoint）**：driver `inspectRequest(raw, stopAfter)`(S1→stopAfter、不进 S4、逐阶段 structuredClone 快照 + S3 per-rewrite{name,changed}) + 无副作用 `withCapturingManager`(临时换全局 manager、events 收本地不发 bus、还原不停生产 reaper) + endpoint 请求侧(真实 codec 组装:preprocessAnthropicMessages + throwaway betaProbe + createAnthropicCodec)。stopAfter parse/translate/rewrite-in。inline request / entryId(inboundRequest)。**prepare-wire 未含本 MVP**(非纯:betaProbe/ctx 写副作用,见 §11 H2)。
 - **Phase 3（全格式）**：format switch 接 openai-cc/responses/gemini；响应侧对 CC/Gemini 标 `rewritesAvailable:false`（不编空改写测试）；Gemini render 标保真注脚（输出 CC）。每格式请求侧 + 高保真处的测试。
 - **收尾**：§10 保真边界 + DESIGN 路由表 + 模块文档；deferred-items 记"配置 env 注入"重构。
 
