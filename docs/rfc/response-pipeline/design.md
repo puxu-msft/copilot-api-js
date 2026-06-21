@@ -80,33 +80,37 @@ driver 的 `runResponseNonStreaming`（现状 driver.ts 已有，只调 `codec.r
 
 ### 3.2 `ResponseOutcome` + 控制信号（Stage B，slug: response-outcome）
 
+> **审计修订（2026-06-21，minimality round）：`ResponseOutcome` 不带 `accumulator`。** 实测现状（handler-v4.ts:528/236、ws.ts:273）：**accumulator 一律 handler 自建自持**（Anthropic 经 `onUpstreamFrame` 喂、Responses/Gemini 迭代帧喂），driver 现在根本不碰 accumulator。原稿"codec.createResponseAccumulator() 由 driver 持有、outcome 带回"是 **net-new 耦合**（非简化），且会逼 outcome 长成 per-format grab-bag（Anthropic 还要 `truncateResult`、Responses 要 `responseId`、Gemini 无 driver accumulator 根本套不上）。**最小形状 = outcome 只载格式无关的控制信号**，终态业务数据（usage/stop_reason/truncateResult/responseId/gemini-meta）继续 handler 自持 out-of-band（它本来就持）。这条同时消掉 B3a/B3b 拆分（Gemini 不再在 outcome 层特殊）。
+
 ```ts
 runResponse(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink): Promise<ResponseOutcome>
 
 type ResponseOutcome =
-  | { kind: "complete"; accumulator: ResponseAccumulator; headers: Headers }
-  | { kind: "stream-error"; error: StreamErrorPayload; accumulator: ResponseAccumulator }
-  | { kind: "settled-abort" }  // client 中途断开，已无下游可写
+  | { kind: "complete"; headers: Headers }
+  | { kind: "stream-error"; error: StreamErrorPayload }   // handler 据此 ctx.fail(从自持 acc 取 partial)
+  | { kind: "settled-abort" }                              // client 中途断开，已无下游可写
 
-interface StreamErrorPayload { type: string; message: string; source: "upstream-error-frame" | "thrown" }
+interface StreamErrorPayload { type: string; message: string }  // source 判别移除(无消费者读它,YAGNI)
 ```
 
-- **控制信号 ≠ 观测事件**，走两条不交叉的路：终态决策（streamError → fail/complete）是 driver **内部进程内同步**数据流（driver 循环里持 accumulator、循环后读 `acc.streamError` 返回 outcome，**不经 bus**）；观测（`request.completed`/`request.failed`）由 handler 拿 outcome 后调 `ctx.complete/fail` 才进 bus（**bus 只单向收终态、driver 不订阅自己 → 无环**）。
-- **accumulator 一实例**：由 `codec.createResponseAccumulator()` 创建、driver 循环持有，**control 同步读 + HistorySink 同步读终态快照**（无竞态）。
-  > **审计修订（2026-06-20）**：原稿说"HistorySink 异步读 accumulator 重建双轨"是**事实错误**。核实现状（`observability/{bus,events}.ts` + `history.ts`）：bus 是**同步** fan-out；HistorySink 在**终态**（`request.completed/failed/aborted`）读 `event.entry`——一个 handler 调 `ctx.complete(buildAnthropicResponseData(acc))` 时**已从 accumulator 固化的快照**,**不碰 live accumulator**、driver 喂帧期间根本不读。Stage B 若按原稿字面"HistorySink 异步读 live accumulator"去改,反而会**引入现在不存在的竞态**。正确做法:维持"终态读快照"语义,driver 的 accumulator 只在循环结束、构造终态 entry 时被读一次。
+- **控制信号 ≠ 观测事件**，走两条不交叉的路：终态决策（streamError → fail/complete）是 driver **内部进程内同步**数据流（driver 循环里读 `acc.streamError` 经 handler 喂的 acc——driver 不持 acc，但 handler 在循环后从自持 acc 读 streamError 决定 ctx.complete/fail）；观测（`request.completed`/`request.failed`）由 handler 调 `ctx.complete/fail` 才进 bus（**bus 只单向收终态、driver 不订阅自己 → 无环**）。
+- **accumulator 一实例、handler 持有**：`buildXResponseData(acc)` 在 handler 终态调用时固化快照喂 `ctx.complete`，HistorySink 终态读 `event.entry` 快照（**非 live accumulator**，§审计已证 bus.ts:12 同步 fan-out）。**绝不**改"driver 持 + 异步读 live"（引入现不存在的竞态）。
 
 ### 3.3 `ClientSink`（Stage B，slug: client-sink）
 
 ```ts
 interface ClientSink {
-  write(frame: ClientFrame): Promise<void>      // 写已 render 的 client 帧；串行化在 sink 内（单 Promise chain）
-  writeRaw?(frame: ClientFrame): Promise<void>   // 旁路 render 的注入（heartbeat/合成 marker 已是终态协议形态时）
+  write(frame: ClientFrame): Promise<void>          // 写已 render 的 client 帧；采样 sseEvents + forwarded 双轨；串行化在 sink 内（单 Promise chain）
+  writeSynthetic?(frame: ClientFrame): Promise<void> // 注入帧(heartbeat ping)：采样 forwarded-only(跳过 sseEvents)，共用同一 chain
+  close?(): void                                     // 停 heartbeat 计时器 + 释放；driver 在 runResponse 的 finally 必调(防 self-reschedule 泄漏)
 }
 ```
 
+> **审计修订（2026-06-21，minimality round）：`writeRaw`→`writeSynthetic`，rationale 修正。** 它的真实存在理由**不是"旁路 render"**（Anthropic heartbeat 路径 codec=identity，render 自身即等价），而是**采样轨非对称**：ping 必须入 `forwardedSseEvents` 但**绝不入** `sseEvents`（上游原始轨，DESIGN.md 原则3 ping 是 proxy-originated）。`writeRaw` 这名会诱导实现者把 Gemini/Responses 需翻译的注入帧错走旁路 → 字节腐坏；`writeSynthetic` 编码真语义（已终态形态的合成帧、forwarded-only 采样）。**新增 `close?()`**（concurrency round）：sink 持 heartbeat 自重排计时器，driver `runResponse` 的 `finally` 必调 `close()` 停它（含 sink.write-reject 路径），否则 setTimeout 泄漏 pin 住 forwarded buffer（同 OOM 面）；计时器另 `unref()` 防御。
+
 - route 注入具体 sink（`makeSseSink(stream)` / `makeWsSink(ws)`），**driver 不耦合 Hono**；测试用 `makeArraySink()`。
-- 串行化（现状 `heartbeat.writeSerialized` 的单 chain）收敛进 sink，真实帧 + 心跳 + error 帧共用同一 chain、杜绝字节交错。
-- **codec.renderResponse 保持纯**（仍返回 `ClientFrame[]`，不持 sink、不写）——边界干净：codec 产帧、driver+sink 写出。
+- 串行化（现状 `heartbeat.writeSerialized` 的单 chain）收敛进 sink，真实帧 + 心跳 + error 帧共用同一 chain、杜绝字节交错。**`sink.write` reject（client 断连 mid-write）必须传播到 driver 循环 → outcome=settled-abort/stream-error，绝不被 `.catch(()=>undefined)` 吞成 complete**（concurrency round HIGH）。
+- **codec.renderResponse 保持纯**（仍返回 `ClientFrame[]`，不持 sink、不写）——边界干净：codec 产帧、driver+sink 写出。codec 的流末 `flushResponse`（Responses fallback / Gemini 终态 meta）由 driver 在 `finally` 紧跟 S5 `flushChain` 后 drain 进 sink（**S6 flush 镜像 S5 flush 的阶段对称**，非 bespoke 特例）。
 
 ---
 
