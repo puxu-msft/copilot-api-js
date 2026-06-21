@@ -102,6 +102,23 @@ describe("POST /api/debug/dry-run-pipeline", () => {
     expect(forwardedQuestions(body.result)).toEqual([{ header: "H", question: "Q" }])
   })
 
+  test("decodes + backfills the real GHC-downgrade shape (Chinese AskUserQuestion, mirrors reaped entry 1643)", async () => {
+    // The live failure: upstream sent `input.questions` as a JSON-string-encoded array whose
+    // items also LACK `question` (both degradations at once). Confirm current v4 code
+    // deterministically (a) decodes the string → array AND (b) backfills question=header —
+    // closing the "intermittent, entry reaped, can't reproduce" gap that drove this endpoint.
+    const realQuestions = [
+      { header: "文件组织", multiSelect: false, options: [{ label: "只做 #1 (rename)", description: "仅 messages/handler.ts → web-search-direct.ts" }] },
+    ]
+    const upstream = askUserQuestionUpstream(JSON.stringify(realQuestions))
+    const res = await post({ upstream: { sseEvents: upstream } })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { result: Array<{ data?: string }> }
+    // Forwarded = decoded array WITH question backfilled from header (the client-final shape).
+    const expected = realQuestions.map((q) => ({ ...q, question: q.header }))
+    expect(forwardedQuestions(body.result)).toEqual(expected)
+  })
+
   test("backfills a missing `question` from `header`", async () => {
     const upstream = askUserQuestionUpstream(JSON.stringify([{ header: "Pick one" }]))
     const res = await post({ upstream: { sseEvents: upstream } })
