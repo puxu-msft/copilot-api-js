@@ -80,13 +80,14 @@ type RetryAction =
 | `effort-learning`（**新，提升自 client 内循环**） | bad_request ∧ invalid_reasoning_effort | `env.prepareHints` / negotiation effort | 重裁 effort |
 | `unsupported-beta` | bad_request ∧ unsupported beta | `env.prepareHints.excludeBetas`（含 laconic 子集枚举，learning） | 重裁 beta header |
 | `server-tool-rejection`（**v4-only，legacy 未注册**） | bad_request ∧ web search tool not supported | `env.prepareHints.excludeServerToolTypes` + negotiation serverTools 账本 | 剥 web_search 工具重发 |
+| `structured-outputs-rejection`（**v4-only，legacy 未注册**） | bad_request ∧ Vertex `allowedPartnerModelFeatures` 禁用 `structured_outputs` | `env.body.output_config.format` 删除 + negotiation partnerFeatures 账本（prepare `strip-structured-outputs` 步 pre-emptive 剥） | 剥 `output_config.format` 重发（降级为自由文本） |
 | `body-field-rejection` | bad_request ∧ Extra inputs not permitted | `env.prepareHints.rejectFields` | 重裁 body 字段 |
 | `legacy-thinking` | bad_request ∧ thinking.enabled 不支持 | `env.body.thinking`→adaptive | 重发改后 body |
 | `deferred-tool` | bad_request ∧ Tool reference not found | `env.body.tools[].defer_loading=false` | 重发改后 body |
 | `auto-truncate` | (413 ∨ token_limit) ∧ enabled | `env.body.messages`（从 original 新鲜截断 + **重跑 S3 改写链**） | 重 sanitize+prepare |
 
 **组装**（沿用 02 §1.2，顺序语义不变）：
-- anthropic: network → token-refresh → effort-learning → body-field → legacy-thinking → unsupported-beta → **server-tool-rejection（v4-only）** → deferred-tool → auto-truncate
+- anthropic: network → token-refresh → effort-learning → body-field → legacy-thinking → unsupported-beta → **server-tool-rejection（v4-only）** → **structured-outputs-rejection（v4-only）** → deferred-tool → auto-truncate
 - openai-cc: network → token-refresh → auto-truncate
 - openai-responses: network → token-refresh
 

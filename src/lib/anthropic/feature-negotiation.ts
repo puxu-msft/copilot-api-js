@@ -23,6 +23,11 @@
  *                    search tool is not supported.` (code unsupported_value).
  *                    Stored as type prefixes (e.g. `web_search_`) so prepare
  *                    can strip every dated variant.
+ *   - partnerFeatures — per (model, featureName) partner-model features the
+ *                    upstream org policy disallows, learned from Vertex's
+ *                    `constraints/vertexai.allowedPartnerModelFeatures violated
+ *                    ... disallowed feature X` 400. Currently only
+ *                    `structured_outputs` (→ strip `output_config.format`).
  *
  * Persisted to `PATHS.NEGOTIATION_STATES`.
  */
@@ -61,6 +66,8 @@ const supportedEfforts = new Map<string, Array<string>>()
 const stickyUndeferredTools = new Map<string, Set<string>>()
 /** serverTools[modelKey] = Set<serverToolType prefix> the upstream rejects */
 const unsupportedServerTools = new Map<string, Set<string>>()
+/** partnerFeatures[modelKey] = Set<partner feature name> the upstream org policy disallows */
+const unsupportedPartnerFeatures = new Map<string, Set<string>>()
 
 function modelKey(modelId: string): string {
   return `${copilotBaseUrl(state)}|anthropic-messages|${normalizeForMatching(modelId)}`
@@ -183,6 +190,35 @@ export function getUnsupportedServerToolTypes(modelId: string): Array<string> {
 }
 
 // ============================================================================
+// Unsupported partner-model features (Vertex org policy)
+// ============================================================================
+
+/**
+ * Canonical name (as the upstream reports it) for the structured-outputs
+ * partner feature — the only currently-strippable one. Maps to stripping the
+ * client's `output_config.format` from the wire payload.
+ */
+export const STRUCTURED_OUTPUTS_PARTNER_FEATURE = "structured_outputs"
+
+/**
+ * Mark a partner-model feature (e.g. `structured_outputs`) as disallowed for the
+ * given model. Learned reactively from a Vertex org-policy 400
+ * (`constraints/vertexai.allowedPartnerModelFeatures violated`).
+ */
+export function markAnthropicPartnerFeatureUnsupported(modelId: string, feature: string): void {
+  const trimmed = feature.trim()
+  if (!trimmed) return
+  if (addToSetMap(unsupportedPartnerFeatures, modelKey(modelId), trimmed)) schedulePersist()
+}
+
+/** Whether the given partner-model feature is disallowed for the given model. */
+export function isAnthropicPartnerFeatureUnsupported(modelId: string, feature: string): boolean {
+  const trimmed = feature.trim()
+  if (!trimmed) return false
+  return unsupportedPartnerFeatures.get(modelKey(modelId))?.has(trimmed) ?? false
+}
+
+// ============================================================================
 // Persistence
 // ============================================================================
 
@@ -193,6 +229,7 @@ interface NegotiationStateFile {
   efforts: Record<string, Array<string>>
   deferredTools: Record<string, Array<string>>
   serverTools: Record<string, Array<string>>
+  partnerFeatures: Record<string, Array<string>>
 }
 
 function snapshotSetMap(map: Map<string, Set<string>>): Record<string, Array<string>> {
@@ -238,6 +275,7 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     efforts: snapshotEffortMap(supportedEfforts),
     deferredTools: snapshotSetMap(stickyUndeferredTools),
     serverTools: snapshotSetMap(unsupportedServerTools),
+    partnerFeatures: snapshotSetMap(unsupportedPartnerFeatures),
   }
   try {
     await atomicWriteJson(PATHS.NEGOTIATION_STATES, data)
@@ -282,6 +320,7 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       + loadEffortMap(supportedEfforts, data.efforts)
       + loadSetMap(stickyUndeferredTools, data.deferredTools)
       + loadSetMap(unsupportedServerTools, data.serverTools)
+      + loadSetMap(unsupportedPartnerFeatures, data.partnerFeatures)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
     }
@@ -311,4 +350,5 @@ export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void
   supportedEfforts.clear()
   stickyUndeferredTools.clear()
   unsupportedServerTools.clear()
+  unsupportedPartnerFeatures.clear()
 }

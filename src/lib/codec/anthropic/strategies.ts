@@ -8,19 +8,25 @@
  *   network → token-refresh → effort-learning → body-field → legacy-thinking →
  *   unsupported-beta → deferred-tool → auto-truncate
  *
- * **v4-only addition** — `server-tool-rejection` is inserted between
- * unsupported-beta and deferred-tool (9 strategies total). It is NOT registered
- * in the legacy pipeline (intentional divergence): it reactively learns native
- * server tools (web_search) the upstream rejects with 400 `The use of the web
- * search tool is not supported.`, fixates them in the negotiation cache, and
- * strips them on retry via `PrepareHints.excludeServerToolTypes`.
+ * **v4-only additions** — two reactive feature-strip strategies are inserted
+ * between unsupported-beta and deferred-tool (10 strategies total), NOT
+ * registered in the legacy pipeline (intentional divergence):
+ *   - `server-tool-rejection` — learns native server tools (web_search) the
+ *     upstream rejects with 400 `The use of the web search tool is not
+ *     supported.`, fixates them in the negotiation cache, and strips them on
+ *     retry via `PrepareHints.excludeServerToolTypes`.
+ *   - `structured-outputs-rejection` — learns the `structured_outputs` partner
+ *     feature when a Vertex org policy
+ *     (`constraints/vertexai.allowedPartnerModelFeatures`) disallows it with a
+ *     400, fixates it in the negotiation cache, and strips
+ *     `output_config.format` on retry (and pre-emptively in prepare).
  *
  * Unlike openai-cc (3 strategies), Anthropic has extra 400-class strategies
  * (effort-learning, body-field, legacy-thinking, unsupported-beta,
- * server-tool-rejection) — do not drop any. The `betaProbe` is the SAME instance
- * the codec records outbound betas into (RFC §2.4 cross-component handle): the
- * unsupported-beta strategy reads its candidates for the laconic `invalid beta
- * flag` path.
+ * server-tool-rejection, structured-outputs-rejection) — do not drop any. The
+ * `betaProbe` is the SAME instance the codec records outbound betas into (RFC
+ * §2.4 cross-component handle): the unsupported-beta strategy reads its
+ * candidates for the laconic `invalid beta flag` path.
  *
  * Per-request factory: the handler builds these once per request, closing over the
  * truncation baseline (`originalPayload` = codec.getTruncateBaseline()) + the
@@ -50,6 +56,7 @@ import { createEffortLearningRetryStrategy } from "~/lib/request/strategies/effo
 import { createLegacyThinkingRetryStrategy } from "~/lib/request/strategies/legacy-thinking-retry"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createServerToolRejectionStrategy } from "~/lib/request/strategies/server-tool-rejection-retry"
+import { createStructuredOutputsRejectionStrategy } from "~/lib/request/strategies/structured-outputs-rejection-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { state } from "~/lib/state"
@@ -81,6 +88,7 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     adapt(createLegacyThinkingRetryStrategy<MessagesPayload>()),
     adapt(createUnsupportedBetaRetryStrategy<MessagesPayload>({ getProbeCandidates: () => deps.betaProbe.getCandidates() })),
     adapt(createServerToolRejectionStrategy<MessagesPayload>()),
+    adapt(createStructuredOutputsRejectionStrategy<MessagesPayload>()),
     adapt(createDeferredToolRetryStrategy<MessagesPayload>()),
     adapt(
       createAutoTruncateStrategy<MessagesPayload>({

@@ -115,8 +115,24 @@ export type ToolChoice = { type: "auto" } | { type: "any" } | { type: "none" } |
 export const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const
 export type EffortLevel = (typeof EFFORT_LEVELS)[number]
 
+/**
+ * Structured-outputs format descriptor (`output_config.format`).
+ *
+ * Carries the JSON-schema the client wants the model's output constrained to
+ * (Anthropic structured outputs). Some upstreams disallow this feature — e.g.
+ * GHC routing to Vertex AI where the org policy
+ * `constraints/vertexai.allowedPartnerModelFeatures` blocks `structured_outputs`
+ * for the partner Claude model, returning a 400. The
+ * `structured-outputs-rejection-retry` strategy reacts by stripping this field.
+ */
+export interface OutputFormat {
+  type: string
+  schema?: Record<string, unknown>
+}
+
 export interface OutputConfig {
   effort?: string
+  format?: OutputFormat
 }
 
 // ============================================================================

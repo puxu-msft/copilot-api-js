@@ -18,7 +18,9 @@ import {
   getUnsupportedFeatures,
   isAnthropicBetaUnsupported,
   isAnthropicFeatureUnsupported,
+  isAnthropicPartnerFeatureUnsupported,
   setSupportedEfforts,
+  STRUCTURED_OUTPUTS_PARTNER_FEATURE,
 } from "./feature-negotiation"
 import {
   //
@@ -234,6 +236,7 @@ export const ANTHROPIC_PREPARE_STEPS: ReadonlyArray<PrepareStep> = [
   { name: "coerce-thinking", apply: (ctx) => coerceAdaptiveThinking(ctx.wire, ctx.opts.resolvedModel) },
   { name: "adjust-budget", apply: (ctx) => adjustThinkingBudget(ctx.wire, ctx.opts.resolvedModel) },
   { name: "clamp-effort", apply: (ctx) => clampEffortLevel(ctx.wire, ctx.opts.resolvedModel) },
+  { name: "strip-structured-outputs", apply: (ctx) => stripUnsupportedStructuredOutputs(ctx.wire) },
   { name: "cache-control", apply: (ctx) => applyCacheControlMode(ctx.wire) },
   { name: "build-headers", apply: buildAnthropicHeaders },
 ]
@@ -527,6 +530,36 @@ function reconcileWithMetadata(whitelist: Array<string>, metadataSet: Set<string
     `[DirectAnthropic] ${source} effort whitelist for ${modelName} dropped out-of-range values [${dropped.join(", ")}] not in model metadata [${[...metadataSet].join(", ")}]`,
   )
   return kept
+}
+
+/**
+ * Strip `output_config.format` (structured outputs) from the wire when the
+ * resolved model's upstream has been learned to disallow the
+ * `structured_outputs` partner feature.
+ *
+ * Some GHC accounts route to Vertex AI where the org policy
+ * `constraints/vertexai.allowedPartnerModelFeatures` blocks `structured_outputs`
+ * for the partner Claude model, returning a 400. The
+ * `structured-outputs-rejection-retry` strategy records the incompatibility in
+ * the negotiation cache; this step pre-emptively strips the format on every
+ * subsequent same-(endpoint, model) request so they don't re-pay a failed
+ * upstream round-trip. `effort` (and any other `output_config` key) is
+ * preserved; an emptied `output_config` is dropped entirely.
+ */
+function stripUnsupportedStructuredOutputs(wire: Record<string, unknown>): void {
+  const outputConfig = wire.output_config as OutputConfig | undefined
+  if (!outputConfig || outputConfig.format === undefined) return
+
+  const modelName = wire.model as string | undefined
+  if (!modelName || !isAnthropicPartnerFeatureUnsupported(modelName, STRUCTURED_OUTPUTS_PARTNER_FEATURE)) return
+
+  const { format: _format, ...rest } = outputConfig
+  if (Object.keys(rest).length > 0) {
+    wire.output_config = rest
+  } else {
+    delete wire.output_config
+  }
+  consola.debug(`[DirectAnthropic] Stripped output_config.format (structured_outputs disallowed, model=${modelName})`)
 }
 
 /**

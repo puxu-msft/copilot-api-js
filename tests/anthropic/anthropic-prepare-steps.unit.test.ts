@@ -24,8 +24,15 @@ import {
 } from "~/lib/anthropic/request-preparation"
 
 describe("ANTHROPIC_PREPARE_STEPS order contract", () => {
-  test("steps are named and ordered: coerce → adjust → clamp → cache → headers", () => {
-    expect(ANTHROPIC_PREPARE_STEPS.map((s) => s.name)).toEqual(["coerce-thinking", "adjust-budget", "clamp-effort", "cache-control", "build-headers"])
+  test("steps are named and ordered: coerce → adjust → clamp → strip-structured-outputs → cache → headers", () => {
+    expect(ANTHROPIC_PREPARE_STEPS.map((s) => s.name)).toEqual([
+      "coerce-thinking",
+      "adjust-budget",
+      "clamp-effort",
+      "strip-structured-outputs",
+      "cache-control",
+      "build-headers",
+    ])
   })
 
   test("thinking shape coercion precedes budget and effort clamping (B3<B4<B5)", () => {
@@ -48,6 +55,6 @@ describe("ANTHROPIC_PREPARE_STEPS order contract", () => {
     }))
     const payload: MessagesPayload = { model: "claude-opus-4-6", max_tokens: 1024, messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] }
     prepareAnthropicRequest(payload, undefined, spySteps)
-    expect(calls).toEqual(["coerce-thinking", "adjust-budget", "clamp-effort", "cache-control", "build-headers"])
+    expect(calls).toEqual(["coerce-thinking", "adjust-budget", "clamp-effort", "strip-structured-outputs", "cache-control", "build-headers"])
   })
 })
