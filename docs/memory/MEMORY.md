@@ -19,6 +19,7 @@
 - [subagent 反馈也要批判核验](feedback-subagent-feedback-also-critically-verify.md) — subagent 的 audit 结论也是声音权威;行动前亲自读它引用的每个 file:line;推理不可见就派新 subagent;绝不未经核验照搬 subagent 输出
 - [大重构先 RFC 再实现](feedback-rfc-then-implement-for-large-refactors.md) — ≥1000 行重构:brainstorm → 在 docs/rfc/ 写 RFC → 3+ 轮对抗 subagent review(每轮抓到真问题)→ 解决 open questions → 带 commit invariants 实现
 - [commit invariants 方法论](methodology-commit-invariants.md) — 多 commit 重构必须在 RFC 里编码"每个 commit 终于状态 X"的 invariant;中间 commit 绝不让系统半坏(如 sink 在 commit 2 就 idle 挂上,使可观测性贯穿到 commit 3b 切换)
+- [RFC 多 phase 文档结构](methodology-rfc-multi-phase-doc-structure.md) — RFC 要交给一组独立实现者并行做时:拆 design(WHY+契约)/plan(HOW+factory 锚点表)/prompts(每 phase 一个 self-contained kick-off)三层 + README 集中红线/DAG;活范例 docs/rfc/response-pipeline;是 rfc-then-implement 的产物组织维度
 - [lint-staged 回滚行为](lint-staged-rollback-behavior.md) — bun lint-staged 失败时 stash-then-revert 工作区;之后的 eslint --fix 只活在工作区、不在 index;"修完"后仍同样 lint 报错=暂存 blob 陈旧;重新 git-add 才真正提交
 - [挖"PASS with WARN"](feedback-mine-the-pass-with-warn.md) — subagent 报"PASS 但有个小 WARN"时,当黄灯不当绿灯;花 5-15 分钟顺 WARN 的因果链——常是真实回归的冰山一角(如死导出→迁到 bus 但 drain 语义被静默丢掉)
 - [Hono onError 吞掉 throw](hono-onerror-consumes-throws.md) — Hono 的 `server.onError` 在 middleware catch 之前就捕获 handler 的 throw;`next()` 外包 `try/catch + ...handle...` 是死代码;改用 next 之后的 `c.res.status >= 400`。防御性 primitive(failIfNotFinalized)对 WS/stdio 旁路仍有用

@@ -27,4 +27,6 @@ metadata:
 
 **哪怕一轮都别跳过。** 本 session：v1 RFC 有 4 个 FAIL + 8 个 WARN，v2 有 3 个 red + 4 个 yellow，v3 有 3 个文本自洽性问题。每一轮都实打实地改进了设计——没有一轮是多余的。
 
-Related: [[feedback-architecture-health-is-user-need]], [[methodology-commit-invariants]], [[feedback-subagent-feedback-also-critically-verify]]。
+交付物组织（当 RFC 要分派给一组独立实现者并行做时，文档拆 design/plan/prompts 三层 + per-phase self-contained kick-off）见 [[methodology-rfc-multi-phase-doc-structure]]——本条记流程，那条记产物结构。
+
+Related: [[feedback-architecture-health-is-user-need]], [[methodology-commit-invariants]], [[feedback-subagent-feedback-also-critically-verify]], [[methodology-rfc-multi-phase-doc-structure]]。
