@@ -50,6 +50,7 @@ import {
   //
   createToolInputStreamDecoder,
   decodeToolInputBlocksInResponse,
+  reportDecodeFailure,
 } from "~/lib/anthropic/decode-tool-input"
 import {
   //
@@ -184,10 +185,13 @@ const decodeRewrite: ResponseRewrite = {
   // is byte-identical.
   appliesTo: (env) =>
     ANTHROPIC(env) && (Object.keys(state.decodeToolInputFields).length > 0 || state.decodeAllToolInputFields || state.backfillQuestionFromHeader),
-  createState: (): DecodeState => ({
+  createState: (env): DecodeState => ({
     decoder: createToolInputStreamDecoder(
       { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
-      { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
+      {
+        backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
+        onDecodeFailure: (info) => reportDecodeFailure(info, env.ctx),
+      },
     ),
   }),
   transform: (frame, st): FrameAction => bufferOrEmit((st as DecodeState).decoder.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage)),
@@ -195,11 +199,14 @@ const decodeRewrite: ResponseRewrite = {
   // Non-streaming: decode stringified-JSON input fields + AskUserQuestion header backfill on
   // the whole response (same config the streaming decoder reads). `appliesTo` gated that at
   // least one decode rule could fire, so this never runs as a pure passthrough.
-  transformWhole: (response): unknown =>
+  transformWhole: (response, env): unknown =>
     decodeToolInputBlocksInResponse(
       response as AnthropicMessageResponse,
       { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
-      { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
+      {
+        backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
+        onDecodeFailure: (info) => reportDecodeFailure(info, env.ctx),
+      },
     ),
 }
 

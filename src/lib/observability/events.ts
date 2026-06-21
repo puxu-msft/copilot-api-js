@@ -129,6 +129,8 @@ export type FeatureKind =
   | "transport"
   /** streaming recoverer rebuilt a tool_use from downgraded upstream text */
   | "tool-call-recovered"
+  /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
+  | "tool-input-decode-failed"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 

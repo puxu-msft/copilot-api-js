@@ -48,6 +48,7 @@ import {
   //
   createToolInputStreamDecoder,
   decodeToolInputBlocksInResponse,
+  reportDecodeFailure,
 } from "~/lib/anthropic/decode-tool-input"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import {
@@ -377,7 +378,10 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
       fields: state.decodeToolInputFields,
       all: state.decodeAllToolInputFields,
     },
-    { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
+    {
+      backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
+      onDecodeFailure: (info) => reportDecodeFailure(info, reqCtx),
+    },
   )
 
   const toolCallTextRecoverer = createToolCallTextRecoverer({
@@ -553,7 +557,10 @@ function handleDirectAnthropicNonStreamingResponse(
       fields: state.decodeToolInputFields,
       all: state.decodeAllToolInputFields,
     },
-    { backfillAskUserQuestionHeader: state.backfillQuestionFromHeader },
+    {
+      backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
+      onDecodeFailure: (info) => reportDecodeFailure(info, reqCtx),
+    },
   )
 
   // Record the forwarded (client-facing) content, then complete() with the

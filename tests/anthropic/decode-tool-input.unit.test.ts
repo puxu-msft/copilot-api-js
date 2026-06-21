@@ -13,6 +13,8 @@ import {
   //
   createToolInputStreamDecoder,
   decodeToolInputBlocksInResponse,
+  reportDecodeFailure,
+  type DecodeFailureInfo,
 } from "~/lib/anthropic/decode-tool-input"
 import { type DecodeToolInputConfig } from "~/lib/anthropic/decode-tool-input-core"
 
@@ -252,5 +254,103 @@ describe("decodeToolInputBlocksInResponse — backfill", () => {
     const resp = baseResponse([{ type: "tool_use", id: "t1", name: "AskUserQuestion", input: { questions: [{ header: "H" }] } }])
     const out = decodeToolInputBlocksInResponse(resp, cfg({}))
     expect(out).toBe(resp)
+  })
+})
+
+// ============================================================================
+// onDecodeFailure (observability)
+// ============================================================================
+
+describe("createToolInputStreamDecoder — onDecodeFailure", () => {
+  const sink = () => {
+    const calls: Array<DecodeFailureInfo> = []
+    return { calls, onDecodeFailure: (info: DecodeFailureInfo) => calls.push(info) }
+  }
+  const C = cfg({ AskUserQuestion: ["questions"] })
+
+  test("fires field-undecodable when a configured field is a non-JSON string", () => {
+    const { calls, onDecodeFailure } = sink()
+    const d = createToolInputStreamDecoder(C, { onDecodeFailure })
+    run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":'), delta(0, String.raw`"not json at all"}`), stop(0)])
+    expect(calls).toEqual([{ tool: "AskUserQuestion", field: "questions", reason: "field-undecodable", valueLength: "not json at all".length }])
+  })
+
+  test("fires input-parse-failed when the whole buffered input JSON is malformed", () => {
+    const { calls, onDecodeFailure } = sink()
+    const d = createToolInputStreamDecoder(C, { onDecodeFailure })
+    run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":'), stop(0)]) // truncated → unparseable
+    expect(calls).toEqual([{ tool: "AskUserQuestion", reason: "input-parse-failed" }])
+  })
+
+  test("does NOT fire on successful decode (valid stringified array)", () => {
+    const { calls, onDecodeFailure } = sink()
+    const d = createToolInputStreamDecoder(C, { onDecodeFailure })
+    run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":'), delta(0, String.raw`"[{\"h\":1}]"}`), stop(0)])
+    expect(calls).toEqual([])
+  })
+
+  test("does NOT fire on flush (interrupted stream, no content_block_stop)", () => {
+    const { calls, onDecodeFailure } = sink()
+    const d = createToolInputStreamDecoder(C, { onDecodeFailure })
+    run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":"not json"')]) // no stop
+    d.flush()
+    expect(calls).toEqual([]) // flush is a normal abort, never a decode failure
+  })
+
+  test("dedupes per (tool,field,reason) across multiple blocks in one request", () => {
+    const { calls, onDecodeFailure } = sink()
+    const d = createToolInputStreamDecoder(C, { onDecodeFailure })
+    run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":"bad1"}'), stop(0), start(1, "AskUserQuestion"), delta(1, '{"questions":"bad2"}'), stop(1)])
+    expect(calls).toHaveLength(1) // same tool:field:reason → reported once
+  })
+
+  test("does NOT fire under all=true for plain (non-explicit) string fields", () => {
+    const { calls, onDecodeFailure } = sink()
+    const d = createToolInputStreamDecoder(cfg({}, true), { onDecodeFailure })
+    run(d, [start(0, "AnyTool"), delta(0, '{"note":'), delta(0, String.raw`"just text"}`), stop(0)])
+    expect(calls).toEqual([]) // all-mode plain strings legitimately don't decode
+  })
+
+  test("partial: reports only the configured field that stayed a string", () => {
+    const { calls, onDecodeFailure } = sink()
+    const d = createToolInputStreamDecoder(cfg({ AskUserQuestion: ["questions", "extra"] }), { onDecodeFailure })
+    run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":"[1]",'), delta(0, String.raw`"extra":"nope"}`), stop(0)])
+    // questions decodes to [1] (no report); extra stays a string (reported)
+    expect(calls).toEqual([{ tool: "AskUserQuestion", field: "extra", reason: "field-undecodable", valueLength: "nope".length }])
+  })
+
+  test("input-parse-failed fires for a backfill-only buffered tool (decode fields empty)", () => {
+    const { calls, onDecodeFailure } = sink()
+    const d = createToolInputStreamDecoder(cfg({}), { backfillAskUserQuestionHeader: true, onDecodeFailure })
+    run(d, [start(0, "AskUserQuestion"), delta(0, '{"questions":'), stop(0)]) // buffered for backfill, malformed
+    expect(calls).toEqual([{ tool: "AskUserQuestion", reason: "input-parse-failed" }])
+  })
+})
+
+describe("decodeToolInputBlocksInResponse — onDecodeFailure", () => {
+  const baseResponse = (content: Array<Record<string, unknown>>) =>
+    ({ id: "m", type: "message", role: "assistant", model: "m", content, stop_reason: "tool_use" }) as never
+
+  test("fires field-undecodable for a configured field that stays a string", () => {
+    const calls: Array<DecodeFailureInfo> = []
+    const resp = baseResponse([{ type: "tool_use", id: "t1", name: "AskUserQuestion", input: { questions: "not json" } }])
+    decodeToolInputBlocksInResponse(resp, cfg({ AskUserQuestion: ["questions"] }), { onDecodeFailure: (i) => calls.push(i) })
+    expect(calls).toEqual([{ tool: "AskUserQuestion", field: "questions", reason: "field-undecodable", valueLength: "not json".length }])
+  })
+
+  test("does NOT fire on successful decode", () => {
+    const calls: Array<DecodeFailureInfo> = []
+    const resp = baseResponse([{ type: "tool_use", id: "t1", name: "AskUserQuestion", input: { questions: '[{"h":1}]' } }])
+    decodeToolInputBlocksInResponse(resp, cfg({ AskUserQuestion: ["questions"] }), { onDecodeFailure: (i) => calls.push(i) })
+    expect(calls).toEqual([])
+  })
+})
+
+describe("reportDecodeFailure", () => {
+  test("records the tool-input-decode-failed feature with detail", () => {
+    const features: Array<{ feature: string; detail?: Record<string, unknown> }> = []
+    const ctx = { id: "req_1", recordFeature: (feature: string, detail?: Record<string, unknown>) => features.push({ feature, detail }) }
+    reportDecodeFailure({ tool: "AskUserQuestion", field: "questions", reason: "field-undecodable", valueLength: 7 }, ctx as never)
+    expect(features).toEqual([{ feature: "tool-input-decode-failed", detail: { tool: "AskUserQuestion", field: "questions", reason: "field-undecodable" } }])
   })
 })
