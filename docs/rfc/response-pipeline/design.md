@@ -112,7 +112,10 @@ interface ClientSink {
 
 ## 4. Stage A — 激活 registry（commit-invariant 阶段）
 
+> **✅ 已完成（2026-06-21）**：A0（请求侧 S3）/ A1（Anthropic 流式响应集 S5）/ A.B（非流式 `transformWhole`）/ A.C（Responses fixIds，HTTP+WS 共享）全部落地。出口达成——"新增拦截/修复 = 注册一条 Request/ResponseRewrite" 在所有格式 × 流式/非流式 × HTTP/WS 成立。各 phase 设计推理保留于下（实现细节与裁决见 `stage-a-plan.md` Task 0-6）。heartbeat / forwarded 采样 / WS-HTTP 写出仍 handler-side（generator 模型限制，Stage B 评估，见 §5/§10）。
+
 > **不变量（每 commit 必过）**：① typecheck + `bun run test:backend` 绿 ② golden fixture 字节等价（改前 pump 路径预捕获，改后逐字节比对）③ 三大能力守卫（`/history/api/entries/:id` 双轨、`/api/logs`+`/api/status`、WS wire 协议）④ 可独立 revert。
+
 
 ### 4.0 迁移次序与中间态字节安全（slug: atomic-interdependent-migration）
 

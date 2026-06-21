@@ -8,10 +8,25 @@
 
 ## ▶ 当前位置 / 下一步（防呆——每会话先看这里）
 
-- **已完成到**：**P2 全部完成（P2.1-P2.6 ✅，6/6）**。P0/P1/P2 ✅。P2.6（Anthropic 切 driver）RFC 已 4 轮收敛（[docs/rfc/p2.6-anthropic-driver-migration.md](../rfc/p2.6-anthropic-driver-migration.md)，§12 round-4 裁决）。C0-C5 全部提交：`80a2157` C0（共享 driver 契约）、`044e895` C1（transport rewriteShutdownAbort hook）、`c4a2786` C2（codec+8 策略）、`db8e67b` **C3a**（streaming-pump.ts 抽取,纯移动）、`f7f2f4c` **C3b**（handler-v4 + route flag OFF）、`9d51857` 等价测试（15 测试）、`b8adf80` **review 修复**（web_search 路由校验对齐 legacy）、`94d6a23` 测试加固、`977a634` **C4**（flag ON）。每 commit subagent review + 主线亲自核验,**全 backend 2707 pass / 0 fail 经 v4**（另有 2 个无关 FileSink 预存失败,属 observability-rewrite WIP 域,非本迁移引入）。
-- **下一步**：**P3 统一收尾**（4 codec 已齐、4 格式全在 driver 上、flag 全 ON）。P3.1 透传统一进 decideRoute / P3.2 数据采集全下沉 driver（含 P3.2b 删各 handler 手动 setter + 补 sseEvents 缺口）/ P3.3 删旧 handler + flag + 死代码 / P3.4 更新 DESIGN.md 指向 v4。续接 prompt 见 [prompts/P3-unify.md](prompts/P3-unify.md)。
-- **✅ P2.6 已完成,P3 解除封锁**：4 格式（CC/Responses/Gemini/Anthropic）codec 齐、全在 driver 上、flag 全默认 ON,legacy handler 仍在树（可 toggle 回切）待 P3.3 删。P3.1（透传统一,需 4 codec 齐）与 P3.3（删 handler）的前置条件均已满足,**现在可粘 `prompts/P3-unify.md`**。P2.6 遗留见 P2.6-D1～D4。
-- **排程已重排（2026-06-17，architect subagent 验证）**：原计划把「driver 自动采样」整体放 P3.2（所有格式迁完后）。重排为——**P3.2 拆两半**：`P3.2a`（driver 加采样，共享机件，**提前到 P2.3 收尾**做一次 4 格式同受益）+ `P3.2b`（删各 handler 手动 setter，**锚定各格式迁移点**，不可提前——删不了还在 legacy 的格式的 setter）。`P3.1`（透传统一）**不提前**（需 4 codec 齐）。**翻 flag ON 的硬 gate = L1 行为等价 ∧ L2 记录等价**，逐格式各过各的 gate。详见 P2.3-L1/L2。
+- **已完成到**：**🎉 v4 重构整体完成（P0/P1/P2/P3 全 ✅）**。P3 统一收尾全部提交：`0c9cb91` **P3.1**（透传矩阵测试）、`ce072a2`+`4b8c61c` **P3.2b**（上游 sseEvents 下沉 driver + 边界文档）、`1a3aff4` **P3.3a**（等价测试改纯 v4）、`9d509e9` **P3.3b**（删 legacy handler+flag+死代码+Azure 迁 v4，−2254 行）、`e95bca8` **P3.4**（DESIGN.md 指向 v4）。每 commit subagent review + 主线亲自核验;**全 backend 2751 pass / 0 fail 经 v4**（另有 2 个无关 FileSink 预存失败,属 observability-rewrite WIP 域,非本迁移引入）。knip src/ 零悬空(探针验证)。
+- **下一步**：**无（v4 重构收官）**。剩余 deferred items 见「遗留与决策追踪」（P3.2b-D1 forwarded 边界 / P3.3-D1 web_search 保留 legacy Anthropic 路径 / P3.3-D2 createResponsesAdapter 测试用 / P2.6-D1 web_search 双跳进 driver / P2.6-D2 onMeta-vs-onRetry / P2.4-D1 WS 改进型副作用 等），均为低优先、需用户日后定夺的独立改进，不阻塞收官。
+- **历史**：P2.6（Anthropic 切 driver）RFC 4 轮收敛（[docs/rfc/p2.6-anthropic-driver-migration.md](../rfc/p2.6-anthropic-driver-migration.md)）;P2 各格式逐格式翻 flag ON 作 canary;P3.3 删除 flag 机制（driver-flags.ts），v4 成为唯一路径。
+
+### Stage A（response-pipeline RFC）— ✅ 完成（2026-06-21）
+
+v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 `docs/rfc/response-pipeline/`，master plan `stage-a-plan.md`）已全部落地：把请求/响应改写从 codec/handler 内联迁进 driver 的 registry，终态 = **"新增一条拦截/修复 = 注册一个 Request/ResponseRewrite 条目"** 在所有格式 × 流式/非流式 × HTTP/WS 成立。
+
+| Phase | 内容 | 状态 |
+|---|---|---|
+| Task0 | 激活态 golden 基线（改前锁字节） | ✅ |
+| Task1 | flushChain 进 try/finally（异常路径也 drain registry buffer） | ✅ |
+| Task2 (A0) | 请求改写 codec.parse → driver S3 | ✅ |
+| Task3 | flushChain 双 buffer 确定契约 + RESPONSE_REWRITE_ORDER | ✅ |
+| Task4 (A1) | 原子迁 4 条 Anthropic 流式响应改写 → driver S5 | ✅ |
+| Task5 (A.B) | 非流式 `transformWhole` → driver `runResponseWhole`（与流式共享升序 order 链） | ✅ |
+| Task6 (A.C) | Responses `fixStreamEventIds` → driver S5 registry（HTTP+WS 共享） | ✅ |
+
+**受影响 deferred items 现状**：**P2.4-D2**（响应 finishing 留 handler、S5 registry 空）→ **Stage A 解决**；**P2.1-M2**（flushChain 单 buffer 假设）→ **Task3 解决**（双 buffer 确定契约）。**未变（Stage A 设计上不动，Stage B 评估）**：P3.2b-D1（forwarded 采样 handler-side）、P1.5-OQ1（heartbeat 抗逐帧）、P2.6-D1（web_search 双跳仍 legacy bypass，未进 driver）。Stage A 出口 = generator 模型不变，heartbeat/forwarded 采样/WS-HTTP 写出仍 handler-side。**Stage B（driver-owned-writeout）不预承诺**——重走 OQ1 见 RFC §5/§10。
 
 ### P2.3 收尾排程（重排后，已落地）
 
@@ -75,10 +90,12 @@
 
 | # | commit | 状态 | invariant 验证 | 备注 |
 |---|---|---|---|---|
-| P3.1 | 透传判断统一进 decideRoute | ⬜ | 表驱动 (格式×模型) 矩阵 | 3 非一致默认显式保留 |
-| P3.2 | 数据采集全下沉 driver，删 handler 手动调用 | ⬜ | 所有格式双轨记录 | 补齐 sseEvents 缺口 |
-| P3.3 | 删旧 handler + flag + 死代码 | ⬜ | knip 无悬空、全测试绿 | |
-| P3.4 | 更新 docs/DESIGN.md 指向 v4 | ⬜ | 文档代码一致 | |
+| P3.1 | 透传判断统一进 decideRoute | ✅ | 表驱动 (格式×模型) 矩阵 44 例全绿 | decideRoute 在 P2 已逐格式落地;本 commit 补统一矩阵测试钉死 3 非一致默认。`0c9cb91` |
+| P3.2b | 上游原始 sseEvents 下沉 driver（务实下沉/Option B） | ✅ | 所有格式记上游原始 sseEvents + 客户端 forwarded + per-attempt 双轨 | driver runResponse 循环顶逐帧采上游原始(renderResponse 前,4 格式+WS 统一)+删 Anthropic 冗余 setSseEvents;forwarded 永久 handler-side(Gemini 整流/heartbeat 抗拒逐帧,文档化边界,援引 P2.5-D1/P1.5-OQ1)。`ce072a2`+`4b8c61c`。详见 P3.2b-D1 |
+| P3.3 | 删旧 handler + flag + 死代码 | ✅ | knip src/ 零悬空(探针验证)、全测试 2751 pass、typecheck+eslint 绿 | 测试改纯 v4(G+D,`1a3aff4`)+ surgical 删除(`9d509e9`,−2254 行):route×4+ws 直调 v4、删 CC/responses 整文件 + handleMessages + gemini generate + fallback/pipeline 部分 + driver-flags、Azure 迁 v4。**保留**:web_search 共享的 handleDirectAnthropicCompletion 子树、gemini countTokens、executeRequestPipeline、streaming-pump。详见 P3.3-D1/D2 |
+| P3.4 | 更新 docs/DESIGN.md 指向 v4 | ✅ | 文档代码一致 | 请求流程→S1-S7、核心模块补 codec/pipeline/transport。`e95bca8` |
+
+**P3 出口状态**：单一 driver 管线、透传判断统一、上游原始 sseEvents 双轨全格式覆盖、legacy handler 删除（web_search 子树 + countTokens 保留）。**v4 重构整体完成**（P0-P3 全 ✅）。
 
 ---
 
@@ -98,6 +115,27 @@
 ## 遗留与决策追踪
 
 > 实现过程中发现的、需用户定夺或暂缓的项记录在此（参照"deferred items 完整文档化"原则：根因、当前行为、理想架构、为何暂缓、若做需改什么）。
+
+### P3.2b-D1 — forwarded（inboundResponse）采样永久保留 handler-side（架构边界，非待办）
+
+- **发现于**：P3.2b 设计 + architect subagent 独立核验（2026-06-20）。
+- **根因**：P3.2 计划字面（envelope-driver §4 / P2.4-D4）设想 driver 在 S5/S7 采所有 forwarded 帧、删所有 `setForwardedResponse`。但**两个格式的 forwarded 帧不经 driver yield 点**：Gemini 的 `translateOpenAIStreamToGemini` 是 whole-stream translator（跨帧累积 tool_calls + 帧外副产 usage/finishReason 驱动 complete，P2.5-D1），Anthropic 的 heartbeat 是 idle-driven 定时器（上游静默期无帧到达，P1.5-OQ1 已裁决 option ①）。逐帧 `ResponseRewrite.transform` 表达不了二者。
+- **当前行为（Option B，用户 2026-06-20 选定）**：driver 只下沉**上游原始 sseEvents**（循环顶逐帧，4 格式+WS 统一，闭合 §4「关键改进」缺口）+ 删 Anthropic 冗余 `setSseEvents`；**forwarded 采样保留各 handler 写回点**（客户端真实字节在 handler 变换/注入处产生）。`request.upstream_frame` 全格式覆盖;`request.forwarded_frame` 对 Gemini/Anthropic-heartbeat 是「概念归类、handler-side 旁路」（envelope-driver §4 已标注）。
+- **为何不改**：逐帧 registry 对 whole-stream translator + idle keepalive 是错误抽象,强行统一是不健康耦合(推翻 P2.5-D1/P1.5-OQ1 两份既有裁决 + 触 byte-critical forwarded 字节路径)。Option A(全下沉)里唯一长远正确的部分(上游 sseEvents)Option B 已完整包含。
+- **若做需改什么**：见 Option A——把 CC/Responses finishing 注册为 S5 ResponseRewrite(可逐帧)+ 攻克 Gemini 逐帧翻译(需帧外 meta 通道)+ Anthropic heartbeat-in-driver(需给 ResponseRewrite 加 idle/timer hook)。**不建议**(架构退步)。
+
+### P3.3-D1 — web_search 双跳保活整条 legacy Anthropic direct-completion 路径（messages/handler.ts 半删）
+
+- **发现于**：P3.3 映射 subagent + 主线亲自核验 file:line（handler-v4:203 → web-search-handler:123 → `handleDirectAnthropicCompletion`）。
+- **根因**：web_search 双跳（P2.6-D1，opt-in，正交控制流）走 legacy ctx + `handleDirectAnthropicCompletion` 子树（sanitize → pipeline → dispatch → streaming/非流式 finishing），v4 web_search 入口（handler-v4）也复用它。故 P3.3 删 legacy Anthropic 时**只能删 `handleMessages`（route 入口），保留 `handleDirectAnthropicCompletion` 整棵子树**——messages/handler.ts 是「半删」文件，现为 web_search backend。
+- **当前行为**：`handleDirectAnthropicCompletion` + `runInitialSanitizationAndRecord`/`dispatchAnthropicResponse`/`handleDirectAnthropicStreamingResponse`/`handleDirectAnthropicNonStreamingResponse` + `executeRequestPipeline`(经 runAnthropicPipeline) 全保留;streaming-pump.ts 共享。
+- **理想架构**：web_search 双跳进 driver（多跳编排 / codec 多跳变体，P2.6-D1）→ 届时整条 legacy Anthropic direct-completion 可删。
+- **若做需改什么**：实现 P2.6-D1（driver 多跳）→ 删 messages/handler.ts 剩余子树 + web-search-handler 改走 driver。
+
+### P3.3-D2 — createResponsesAdapter 生产死、仅 pipeline 单测用（responses/pipeline.ts）→ ✅ 已解决（review 修复）
+
+- **发现于**：P3.3b 删 createResponsesStrategies 时 grep（初判「测试用保留」）；**P3 收尾 subagent 复审纠正**：测试 `tests/pipeline/pipeline-with-strategy.unit.test.ts:204` 用的是**本地同名函数**（非 import src），src 的 `createResponsesAdapter` 实为**全死**（knip 假阴性漏报——pass-null 盲点）。
+- **解决**：`1494b06` 删 `routes/responses/pipeline.ts` 整文件（含 createResponsesAdapter + extractInputItems/normalizeCallIds re-export，后者唯一消费者 responses-pipeline.unit 已在 P3.3a 改指真源）。typecheck 绿确认无 dangling。
 
 ### P2.6-D1 — web_search 双跳整条留 legacy ctx,绕过 v4 driver（暂缓）
 
@@ -157,7 +195,7 @@
 - **发现于**：P2.4 WS 迁移 + subagent review
 - **根因**：legacy 客户端 WS（`handleResponseCreate`）是较旧/较简路径——只支持直连 `/responses`（`isResponsesSupported` 不过即 `sendErrorAndClose`），**不做** fallback、**不做** tool-name 清洗/还原。v4 WS（`handleResponseCreateV4`）复用同一 driver，故自动获得：① Responses→CC fallback（CC-only / Google 模型经 WS 现可用）；② 请求侧 tool-name 清洗（codec.parse）+ 响应侧还原（`restoreWsStreamData`）。
 - **当前行为**：默认配置下**与 legacy 完全一致**——`sanitizeToolNames` 默认 false → mapper=null → 还原是 no-op；直连路径仍走 `/responses`。差异仅在 ① CC-only/Google 经 WS（legacy 拒绝/发往坏上游，v4 fallback 可用）② `sanitizeToolNames=true` 且有非法工具名（v4 清洗+还原，legacy 透传）。两者皆**严格改进**，非回归；无现有 WS 测试覆盖这些边。
-- **为何归类遗留而非「修」**：这是架构统一的正向副作用（原则7/8），不是缺陷。文档化以备 review 与未来对照。
+- **为何归类遗留而非「修」**：这是架构统一的正向副作用（richest-data-flow / best-complete-solution），不是缺陷。文档化以备 review 与未来对照。
 - **若要回退到 legacy WS 语义**：在 WS v4 入口前置 `isResponsesSupported` 检查 + 对非直连决策 error+close（但不建议——会丢掉 fallback 能力）。
 
 ### P2.4-D2 — stream-id-sync + tool-name restore 仍在 handler/WS-pump 内联（非 S5 registry，与 openai-cc 同）
@@ -172,7 +210,7 @@
 - **发现于**：P2.4 subagent review（报为 CRITICAL「悬挂 pending 泄漏」）→ **主线实测裁决为假阳性**
 - **根因**：legacy `handleResponses` 在 `manager.create()` **之前** reject（handler.ts:145），故无 ctx、无 entry。v4 codec.parse 先建 ctx（→ history insert），decideRoute 才 reject；handler-v4 `!result.ok` 分支 throw HTTPError **不自 settle ctx**，依赖 `observabilityMiddleware`（server.ts:73）POST 分支 `completeFromHttpStatus(400)`→`fail()` 收尾。
 - **当前行为（实测）**：带中间件的 app（=生产）下 reject entry 终态 = **`failed`**（已收尾，非悬挂）。subagent 与初次探针看到的 `pending` 是**测试 harness artifact**——`createFullTestApp` **不注册** observabilityMiddleware（只 server.ts 注册）。与 openai-cc（P2.3）**完全一致**（同 codec-creates-ctx-in-parse 模式，CC handler-v4 reject 分支逐字相同）。
-- **与 spec 的偏差**：envelope-driver §3 写「reject 不建悬挂 history」，但 codec-在-parse-建-ctx 的范式（CC 确立）产生「finalized failed entry」而非「无 entry」。后者反而更符合原则7（记录原始信息，rejected 请求可诊断）。
+- **与 spec 的偏差**：envelope-driver §3 写「reject 不建悬挂 history」，但 codec-在-parse-建-ctx 的范式（CC 确立）产生「finalized failed entry」而非「无 entry」。后者反而更符合richest-data-flow（记录原始信息，rejected 请求可诊断）。
 - **为何不改**：非泄漏（中间件收尾）、与 CC 一致、更可诊断。WS 路径因中间件豁免 WebSocket（middleware.ts:82）必须自 settle（已正确：ws.ts `!result.ok` 调 `ctx.fail`），HTTP 靠中间件——二者终态皆 `failed`，不对称是有意的。
 
 ### P2.4-D4 — 响应侧采样下沉（上游原始 sseEvents + 删 handler/WS 手动 setter）→ 归 P3.2b 跨格式统一
@@ -267,7 +305,7 @@
   - 改写**已是命名导出函数**（`applyChatCompletionsToolNameSanitization`/`sanitizeOpenAIMessages`/`stripImageGenerationTool`/`normalizeCallIds`/`applyResponsesToolNameSanitization`），唯一**内联**的是 CC 的 O10（max_completion_tokens 填充）。
   - 它们**分散一次性点应用**于 handler 各处，与 snapshot / ctx 创建 / 模型解析 / system-prompt 交织（如 O7 tool-name `mutate originalPayload.messages/tools` 就地改 snapshot 源；O11 strip-image 在 snapshot 后 ctx 前；O12 normalize-call-ids 在 system-prompt 后）。**不存在单一组合**。
   - prepare（O8 normalizeMaxTokens + O9/O14 headers）**极简**（2 步），不像 Anthropic 的 12 步 prepare。
-- **决策**（用户确认"聚焦抽取 O10 + 文档化"）：P1.4 只把唯一内联的 O10 抽为命名可测函数 `fillMaxCompletionTokens`。**不**把已命名的点应用改写强行重组进单一链 registry——那会：① 改变它们相对 snapshot/ctx 创建的执行时机 → 动 history snapshot/行为；② 字节等价回归面大；③ 对已命名函数是投机性泛化（原则8 YAGNI）。
+- **决策**（用户确认"聚焦抽取 O10 + 文档化"）：P1.4 只把唯一内联的 O10 抽为命名可测函数 `fillMaxCompletionTokens`。**不**把已命名的点应用改写强行重组进单一链 registry——那会：① 改变它们相对 snapshot/ctx 创建的执行时机 → 动 history snapshot/行为；② 字节等价回归面大；③ 对已命名函数是投机性泛化（architecture-health-first，YAGNI）。
 - **下沉 P2**：OpenAI 的 S3 请求改写注册化由 P2 driver 落地——driver 重构 handler 流程时本就要把这些点应用步骤归位到 S3 阶段，届时用 env adapter 包成统一 rewrite 链（与 P1.2 的 payload 模块 + env adapter 同构）。prepare（O8/O9/O14）极简，P2 prepareWire 直接调现有 `prepareChatCompletionsRequest`/`prepareResponsesRequest`，无需 step 列表（不同于 Anthropic B*）。
 
 ### P2-MUSTFIX1 — sanitize 模块 `changed` 信号不完整（P2 消费 rewrite_applied 前必修）
@@ -314,4 +352,4 @@
 - **根因**：P0.1 按 retry-transport.md §3 新增 `src/lib/pipeline/types.ts` 的 transport 侧 `WireRequest`（`{ url, headers: Headers, body, stream }`，transport 实际发送字节）。`src/lib/context/types.ts:46` 已存在一个**不同形状**的 history 侧 `WireRequest`（`{ model, messages, payload, headers: Record<string,string>, format }`，per-attempt 记录快照，与 `EffectiveRequest`/`ResponseData` 构成 `Attempt` 对称三元组，被 `setAttemptWireRequest` 消费）。
 - **决策**：改 **transport 侧**（新、零消费者、零风险）为 `PreparedRequest`，而非破坏 history 的对称三元组。理由：① transport 侧无消费者，改名零破坏（P0.2 的 `transport/send.ts` 尚未 adopt Transport 契约，无引用）；② history 侧 `WireRequest` 与 `EffectiveRequest` 在 attempt 记录语境对称、9+ 消费者、是合理既有设计；③ `PreparedRequest` 精确表达"`prepareWire` 产出的待发送 HTTP 请求"，与 `prepareWire` 呼应。
 - **实施**：`pipeline/types.ts` 的 `WireRequest`→`PreparedRequest`（interface + `Transport.send` 签名 + JSDoc）；同步 `retry-transport.md`、`P0-foundation.md`。typecheck 绿，全 src 无残留引用（grep 确认）。
-- **P2 派生方向（保留）**：transport 落地后，driver 从 `PreparedRequest` + env 派生 history 快照（model←env、messages/payload←body、format←env、headers←headers），消除 6 处 handler 手动 `setAttemptWireRequest` 构造（呼应 envelope-driver §4 自动采样 + 06-inherited-issues DI-3、原则7 统一数据源）。已写入 `PreparedRequest` 的 JSDoc。
+- **P2 派生方向（保留）**：transport 落地后，driver 从 `PreparedRequest` + env 派生 history 快照（model←env、messages/payload←body、format←env、headers←headers），消除 6 处 handler 手动 `setAttemptWireRequest` 构造（呼应 envelope-driver §4 自动采样 + 06-inherited-issues DI-3、richest-data-flow 统一数据源）。已写入 `PreparedRequest` 的 JSDoc。

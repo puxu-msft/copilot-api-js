@@ -28,7 +28,7 @@
 
 **为什么先做：** RFC §7 审计指出现有 golden 只锁 no-op 透传流；所有激活态 byte-critical 路径零覆盖。必须在**改动前**的代码上锁字节，否则后续迁移无等价基线（golden-fixture-pre-capture 纪律）。
 
-- [ ] **Step 1: 写激活态 golden 测试（断言当前 handler-v4 输出的真实字节）**，覆盖场景：
+- [x] **Step 1: 写激活态 golden 测试（断言当前 handler-v4 输出的真实字节）**，覆盖场景：
   - `server_tool_use` block 流（`state.webSearchEnabled` 关、但请求含 server tool）→ suppress + 后续块 index densify
   - AskUserQuestion tool_use 流（`decodeToolInputFields` 默认）→ buffer/flush mid-stream finalize
   - 降级文本流（`recoverToolCallText: true`）→ CANDIDATE/COMMIT 合成 tool_use + rollback（candidate 被 content_block_start 打断）
@@ -36,8 +36,8 @@
   - recover × filter index 空间交互（recover 用 `maxUpstreamIndexSeen+k` + filter densify）
   - 非流式各场景（server-tool 过滤、tool-input decode、name restore、recover）
   - 用临时 `console.error("###CAP_*###"+JSON.stringify(text))` 跑一次抓真实字节，转成 inline golden 常量，删临时打印（同 P3.3a 手法）
-- [ ] **Step 2: 跑通（当前代码全绿）** — `bun test tests/anthropic/response-rewrite-golden.http.test.ts`，Expected: all PASS（这是改前基线）
-- [ ] **Step 3: Commit** — `git add -- tests/anthropic/response-rewrite-golden.http.test.ts && git commit -m "test(pipeline): Stage A Task0 激活态响应改写 golden 基线(改前锁字节)"`
+- [x] **Step 2: 跑通（当前代码全绿）** — `bun test tests/anthropic/response-rewrite-golden.http.test.ts`，Expected: all PASS（这是改前基线）
+- [x] **Step 3: Commit** — `git add -- tests/anthropic/response-rewrite-golden.http.test.ts && git commit -m "test(pipeline): Stage A Task0 激活态响应改写 golden 基线(改前锁字节)"`
 
 > 这些 golden 在后续每个迁移任务后**重跑必须仍全绿**（字节等价 gate）。
 
@@ -51,12 +51,12 @@
 
 **为什么：** RFC §4.0.5——`flushChain`(driver.ts:284) 在 for-await 之后但**不在 try/finally**，异常时不执行。任何 buffering rewrite 入 registry 后异常路径 buffer 静默丢失。前置此修复（generator 模型下即可做，当前 RESPONSE_REWRITES 空、行为 no-op）。
 
-- [ ] **Step 1: 写失败测试** — mock 一个 buffering ResponseRewrite（transform 返回 `{kind:"buffer"}`、flush 返回缓冲帧）+ 一个在 N 帧后抛错的 upstream；断言：异常抛出**前** flush 的帧已 yield（catch 到异常 + 收到 flushed 帧）。
-- [ ] **Step 2: 跑验证失败** — `bun test tests/pipeline/driver.unit.test.ts -t "flush on exception"`，Expected: FAIL（现状 flushChain 不在 finally，异常时 flushed 帧丢失）
-- [ ] **Step 3: 实现** — `runResponse` 改为 `try { for await(...) {...} } finally { for (const flushed of flushChain(rewrites, states)) yield* renderFrames(...) }`。注意：finally 里 yield 在 generator 中合法；正常路径 + 异常路径都 drain。**保持 upstreamSse 采样别名逻辑不变**（[DONE] skip 等，P3.2b/P3 收尾）。
-- [ ] **Step 4: 跑验证通过** — 上述测试 PASS + `bun test tests/pipeline/driver.unit.test.ts` 全绿 + Task0 golden 全绿（行为 no-op，应无变化）
-- [ ] **Step 5: typecheck + eslint --fix** — `bun run typecheck` 绿；`bunx eslint --fix src/lib/pipeline/driver.ts`
-- [ ] **Step 6: subagent review + Commit** — 派全量工具 subagent 核验"finally 里 yield 不破坏正常路径采样/forwarded 时序"；`git add -- src/lib/pipeline/driver.ts tests/pipeline/driver.unit.test.ts && git commit -m "fix(pipeline): Stage A Task1 flushChain 进 try/finally(H3 前置,异常路径也 drain registry buffer)"`
+- [x] **Step 1: 写失败测试** — mock 一个 buffering ResponseRewrite（transform 返回 `{kind:"buffer"}`、flush 返回缓冲帧）+ 一个在 N 帧后抛错的 upstream；断言：异常抛出**前** flush 的帧已 yield（catch 到异常 + 收到 flushed 帧）。
+- [x] **Step 2: 跑验证失败** — `bun test tests/pipeline/driver.unit.test.ts -t "flush on exception"`，Expected: FAIL（现状 flushChain 不在 finally，异常时 flushed 帧丢失）
+- [x] **Step 3: 实现** — `runResponse` 改为 `try { for await(...) {...} } finally { for (const flushed of flushChain(rewrites, states)) yield* renderFrames(...) }`。注意：finally 里 yield 在 generator 中合法；正常路径 + 异常路径都 drain。**保持 upstreamSse 采样别名逻辑不变**（[DONE] skip 等，P3.2b/P3 收尾）。
+- [x] **Step 4: 跑验证通过** — 上述测试 PASS + `bun test tests/pipeline/driver.unit.test.ts` 全绿 + Task0 golden 全绿（行为 no-op，应无变化）
+- [x] **Step 5: typecheck + eslint --fix** — `bun run typecheck` 绿；`bunx eslint --fix src/lib/pipeline/driver.ts`
+- [x] **Step 6: subagent review + Commit** — 派全量工具 subagent 核验"finally 里 yield 不破坏正常路径采样/forwarded 时序"；`git add -- src/lib/pipeline/driver.ts tests/pipeline/driver.unit.test.ts && git commit -m "fix(pipeline): Stage A Task1 flushChain 进 try/finally(H3 前置,异常路径也 drain registry buffer)"`
 
 ---
 
@@ -70,12 +70,12 @@
 
 **为什么 + 风险：** RFC §4.A0——`driver.ts:131` 跑空 `REQUEST_REWRITES`，真实改写在 codec.parse（确凿割裂）。**风险点（审计 OQ3）：** codec.parse 现在还在 sanitize 时记 `setPipelineInfo`/`messageMapping`（anthropic.ts:287+）。迁到 S3 改变记录时机 → golden 必须覆盖**请求 history**（effectiveRequest + pipelineInfo + messageMapping）。**明确排除** B1-B12（PrepareStep）+ normalizeCallIds（P2.2-D1 卡）。
 
-- [ ] **Step 1: 写 golden（请求侧改前基线）** — 捕获当前 codec.parse 路径的 `effectiveRequest.payload` + `pipelineInfo` + `messageMapping`（含 sanitize 实际改动的场景：system-reminder 去除、tool-name fix、orphan 过滤）
-- [ ] **Step 2: 跑通基线** — Expected: PASS（改前）
-- [ ] **Step 3: 包 RequestRewrite + 填 REQUEST_REWRITES** — 把 `runAnthropicRequestRewrites` 包成 `RequestRewrite{name:"anthropic-sanitize", order, appliesTo: env=>env.clientFormat==="anthropic", apply: env => ({env: env.with({body: rewritten}), changed, stats})}`；保持 pipelineInfo/messageMapping 记录（迁进 apply 或保留 codec.parse 记录点——**二选一需 golden 锁定哪个时机字节等价**）
-- [ ] **Step 4: codec.parse 去内联** — 移除 parse 里的 `runAnthropicRequestRewrites` 调用，依赖 driver S3
-- [ ] **Step 5: 跑验证** — 请求 golden 全绿 + Task0 响应 golden 全绿 + `bun run test:backend`（anthropic 套件经 driver S3）
-- [ ] **Step 6: typecheck + eslint + subagent review + Commit** — subagent 核验"sanitize 记录时机迁移字节等价"；`git add -- src/lib/pipeline/rewrite-registry.ts src/lib/codec/anthropic.ts tests/pipeline/request-rewrite-registry.it.test.ts && git commit -m "feat(pipeline): Stage A Task2(A0) 请求改写从 codec.parse 迁进 driver S3 registry"`
+- [x] **Step 1: 写 golden（请求侧改前基线）** — 捕获当前 codec.parse 路径的 `effectiveRequest.payload` + `pipelineInfo` + `messageMapping`（含 sanitize 实际改动的场景：system-reminder 去除、tool-name fix、orphan 过滤）
+- [x] **Step 2: 跑通基线** — Expected: PASS（改前）
+- [x] **Step 3: 包 RequestRewrite + 填 REQUEST_REWRITES** — 把 `runAnthropicRequestRewrites` 包成 `RequestRewrite{name:"anthropic-sanitize", order, appliesTo: env=>env.clientFormat==="anthropic", apply: env => ({env: env.with({body: rewritten}), changed, stats})}`；保持 pipelineInfo/messageMapping 记录（迁进 apply 或保留 codec.parse 记录点——**二选一需 golden 锁定哪个时机字节等价**）
+- [x] **Step 4: codec.parse 去内联** — 移除 parse 里的 `runAnthropicRequestRewrites` 调用，依赖 driver S3
+- [x] **Step 5: 跑验证** — 请求 golden 全绿 + Task0 响应 golden 全绿 + `bun run test:backend`（anthropic 套件经 driver S3）
+- [x] **Step 6: typecheck + eslint + subagent review + Commit** — subagent 核验"sanitize 记录时机迁移字节等价"；`git add -- src/lib/pipeline/rewrite-registry.ts src/lib/codec/anthropic.ts tests/pipeline/request-rewrite-registry.it.test.ts && git commit -m "feat(pipeline): Stage A Task2(A0) 请求改写从 codec.parse 迁进 driver S3 registry"`
 
 > **OQ2：A0 可作独立先行 commit**——它最低风险、修真实割裂、不碰响应字节。若实现中发现 pipelineInfo 时机迁移复杂，可把"记录时机保留 codec、仅 body 改写迁 registry"作为更小步。
 
@@ -89,11 +89,11 @@
 
 **为什么：** RFC §4.A1——Task 4 同时注册 recover + decode 两个 buffering rewrite（触发 P2.1-M2 单 buffer 假设失效）。先锁定确定契约。
 
-- [ ] **Step 1: 写 buffer→buffer 链测试** — 两个 buffering mock rewrite（order 100/200），断言：升序 flush，rewrite[100] 的 flushed 帧穿过 rewrite[200]（含其 buffer），用同一 state 实例；与"recover.flush 输出喂 decode、decode 再 flush"语义同构。
-- [ ] **Step 2: 写 processEvent↔transform 映射测试** — 断言映射规约：空 array→`suppress`、单帧→`emit{[f]}`、多帧→`emit{frames}`、buffer→`buffer`（这是 Task 4 包装 factory 时的适配规约）。
-- [ ] **Step 3: 跑验证失败/通过** — 若现 flushChain 升序语义已满足，测试直接 PASS（锁契约）；若不满足，修 flushChain 使其满足。
-- [ ] **Step 4: 更新 flushChain JSDoc** — 把"至多一个 buffering rewrite"假设替换为 §4.A1 确定契约文字。
-- [ ] **Step 5: typecheck + Commit** — `git add -- src/lib/pipeline/driver.ts tests/pipeline/driver.unit.test.ts && git commit -m "feat(pipeline): Stage A Task3 flushChain 双 buffer 确定契约 + processEvent↔transform 映射(P2.1-M2 锁定)"`
+- [x] **Step 1: 写 buffer→buffer 链测试** — 两个 buffering mock rewrite（order 100/200），断言：升序 flush，rewrite[100] 的 flushed 帧穿过 rewrite[200]（含其 buffer），用同一 state 实例；与"recover.flush 输出喂 decode、decode 再 flush"语义同构。
+- [x] **Step 2: 写 processEvent↔transform 映射测试** — 断言映射规约：空 array→`suppress`、单帧→`emit{[f]}`、多帧→`emit{frames}`、buffer→`buffer`（这是 Task 4 包装 factory 时的适配规约）。
+- [x] **Step 3: 跑验证失败/通过** — 若现 flushChain 升序语义已满足，测试直接 PASS（锁契约）；若不满足，修 flushChain 使其满足。
+- [x] **Step 4: 更新 flushChain JSDoc** — 把"至多一个 buffering rewrite"假设替换为 §4.A1 确定契约文字。
+- [x] **Step 5: typecheck + Commit** — `git add -- src/lib/pipeline/driver.ts tests/pipeline/driver.unit.test.ts && git commit -m "feat(pipeline): Stage A Task3 flushChain 双 buffer 确定契约 + processEvent↔transform 映射(P2.1-M2 锁定)"`
 
 ---
 
@@ -107,12 +107,12 @@
 
 **为什么原子：** RFC §4.0——recover/decode/filter 有硬顺序契约（recover-tool-call/stream.ts:40"假设跑在 serverToolFilter 之前"），单迁中间态颠倒顺序、只默认配置无害。原子迁消除中间态。thinking(order 150)夹在中间，一并迁。
 
-- [ ] **Step 1: 包 4 个 ResponseRewrite**（anthropic-response-rewrites.ts）：每个 `{name, order(100/150/200/300), appliesTo, createState(持 factory 闭包态), transform(适配 factory 的 processEvent→FrameAction，用 Task3 映射规约), flush?(factory.flush→帧)}`。recover/decode 有 flush；filter/thinking 无 buffer。
-- [ ] **Step 2: 拆 forwardToClient**（streaming-pump.ts）：移除 filter 调用（→registry）；handler 简化版只"采 forwarded（driver 已应用 registry 链的帧）+ heartbeat noteRealFrame/写出"；suppress 帧不到 handler（passThrough suppress 不 yield）→ 不采不写，与现状等价。
-- [ ] **Step 3: 填 RESPONSE_REWRITES + handler 去内联** — registry 装配 4 个；handler-v4 的 `processOneStreamEvent` 调用链去掉 recover/decode/filter/thinking（driver S5 跑）。
-- [ ] **Step 4: 跑 Task0 golden + 全套** — **逐字节等价是硬 gate**：`bun test tests/anthropic/response-rewrite-golden.http.test.ts` 全绿 + `bun run test:backend`。流式/时序 fixture 连跑 10-25× 确定性。
-- [ ] **Step 5: typecheck + eslint + 多视角 subagent 对抗 review** — 这是 Stage A 最 byte-critical 的 commit，派 ≥2 个全量工具 subagent（byte-safety + 顺序契约视角）+ 主线亲自核验每个 file:line（尤其 index densify、suppress 时机、双 flush 顺序、recover rollback）。
-- [ ] **Step 6: Commit** — `git add -- src/lib/codec/anthropic-response-rewrites.ts src/lib/pipeline/rewrite-registry.ts src/routes/messages/streaming-pump.ts src/routes/messages/handler-v4.ts && git commit -m "feat(pipeline): Stage A Task4(A1) 原子迁 Anthropic 响应改写集进 registry(recover/thinking/decode/filter)"`
+- [x] **Step 1: 包 4 个 ResponseRewrite**（anthropic-response-rewrites.ts）：每个 `{name, order(100/150/200/300), appliesTo, createState(持 factory 闭包态), transform(适配 factory 的 processEvent→FrameAction，用 Task3 映射规约), flush?(factory.flush→帧)}`。recover/decode 有 flush；filter/thinking 无 buffer。
+- [x] **Step 2: 拆 forwardToClient**（streaming-pump.ts）：移除 filter 调用（→registry）；handler 简化版只"采 forwarded（driver 已应用 registry 链的帧）+ heartbeat noteRealFrame/写出"；suppress 帧不到 handler（passThrough suppress 不 yield）→ 不采不写，与现状等价。
+- [x] **Step 3: 填 RESPONSE_REWRITES + handler 去内联** — registry 装配 4 个；handler-v4 的 `processOneStreamEvent` 调用链去掉 recover/decode/filter/thinking（driver S5 跑）。
+- [x] **Step 4: 跑 Task0 golden + 全套** — **逐字节等价是硬 gate**：`bun test tests/anthropic/response-rewrite-golden.http.test.ts` 全绿 + `bun run test:backend`。流式/时序 fixture 连跑 10-25× 确定性。
+- [x] **Step 5: typecheck + eslint + 多视角 subagent 对抗 review** — 这是 Stage A 最 byte-critical 的 commit，派 ≥2 个全量工具 subagent（byte-safety + 顺序契约视角）+ 主线亲自核验每个 file:line（尤其 index densify、suppress 时机、双 flush 顺序、recover rollback）。
+- [x] **Step 6: Commit** — `git add -- src/lib/codec/anthropic-response-rewrites.ts src/lib/pipeline/rewrite-registry.ts src/routes/messages/streaming-pump.ts src/routes/messages/handler-v4.ts && git commit -m "feat(pipeline): Stage A Task4(A1) 原子迁 Anthropic 响应改写集进 registry(recover/thinking/decode/filter)"`
 
 ---
 
@@ -149,9 +149,9 @@
 
 ## Stage A 收尾
 
-- [ ] 更新 `docs/v4/05-progress.md`：标 Stage A 各 deferred item 处置（P2.4-D2 解决、P2.1-M2 解决）；记 Stage A 出口状态。
-- [ ] 更新 RFC §5/§10：A 已落地，**重走 OQ1**——拿真实体验评估 Stage B 是否值得做，带回用户定夺。
-- [ ] 全套最终 subagent review（多视角）+ 全 backend 绿。
+- [x] 更新 `docs/v4/05-progress.md`：标 Stage A 各 deferred item 处置（P2.4-D2 解决、P2.1-M2 解决）；记 Stage A 出口状态。
+- [ ] 更新 RFC §5/§10：A 已落地，**重走 OQ1**——拿真实体验评估 Stage B 是否值得做，带回用户定夺。（OQ1 数据已备，待用户 go/no-go）
+- [x] 全套最终 subagent review（多视角）+ 全 backend 绿。（Phase 7 audit：死代码=0、三 home 边界成立；golden 34 pass；全 backend 2798 pass，唯一 fail 为无关 file-sink ENOTDIR）
 
 ---
 
