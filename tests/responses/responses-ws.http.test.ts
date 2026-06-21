@@ -51,12 +51,24 @@ import {
 let capturedPayload: ResponsesPayload | undefined
 /** When true, the mock upstream emits a real event AFTER response.completed (to test the terminal-event break). */
 let emitTrailingAfterCompleted = false
+/** When true, the mock upstream emits output_item.added(id=A) + .done(id=B) so stream-id-sync (via the driver's S5 registry) corrects .done to A. */
+let emitIdMismatch = false
 
 const upstreamFetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
   if (typeof init?.body !== "string") {
     throw new TypeError(`expected string body in mock, got ${typeof init?.body}`)
   }
   capturedPayload = JSON.parse(init.body) as ResponsesPayload
+
+  if (emitIdMismatch) {
+    return createSseResponse([
+      `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: createBaseResponsesResponse(capturedPayload.model, "in_progress") })}\n\n`,
+      `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { id: "oi_canonical", type: "message", role: "assistant", status: "in_progress", content: [] } })}\n\n`,
+      `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", sequence_number: 2, output_index: 0, item: { id: "oi_DIFFERENT", type: "message", role: "assistant", status: "completed", content: [] } })}\n\n`,
+      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 3, response: createBaseResponsesResponse(capturedPayload.model, "completed", { input_tokens: 1, output_tokens: 1, total_tokens: 2 }) })}\n\n`,
+      "data: [DONE]\n\n",
+    ])
+  }
 
   const frames = [
     `event: response.created\ndata: ${JSON.stringify({
@@ -210,6 +222,7 @@ describe("Responses WebSocket transport", () => {
     snapshot = snapshotStateForTests()
     capturedPayload = undefined
     emitTrailingAfterCompleted = false
+    emitIdMismatch = false
     upstreamFetchMock.mockClear()
     setStateForTests({
       accountType: "individual",
@@ -289,6 +302,29 @@ describe("Responses WebSocket transport", () => {
     expect(capturedPayload?.model).toBe("gpt-4o")
     expect(capturedPayload?.input).toBe("Hello from WS client")
     expect(capturedPayload?.stream).toBe(true)
+  })
+
+  test("stream-id-sync over WS: .done id corrected to .added id (shared S5 registry)", async () => {
+    // Proves the A.C migration: fix-stream-ids now lives in the driver's S5 response-rewrite
+    // registry, so the WS transport gets it from the SAME registry the HTTP path uses — no
+    // per-transport inline idTracker. With fixResponsesStreamIds on, the mismatched .done id
+    // (oi_DIFFERENT) must be rewritten to the canonical .added id (oi_canonical).
+    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] })] })
+    setStateForTests({ fixResponsesStreamIds: true })
+    emitIdMismatch = true
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "hi" } }))
+
+    const result = await closePromise
+
+    const doneFrame = result.messages.find((m) => m.type === "response.output_item.done") as { item?: { id?: string } } | undefined
+    expect(doneFrame?.item?.id).toBe("oi_canonical")
+    expect(JSON.stringify(result.messages)).not.toContain("oi_DIFFERENT")
+    expect(result.code).toBe(1000)
   })
 
   test("stops at the terminal event — a frame after response.completed is not forwarded", async () => {

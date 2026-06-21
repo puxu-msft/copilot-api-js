@@ -21,7 +21,6 @@ import consola from "consola"
 import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
 import type { DriverRequestResult } from "~/lib/pipeline/types"
-import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type {
   //
   ResponsesPayload,
@@ -29,6 +28,7 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses"
+import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses-strategies"
 import {
   //
@@ -47,13 +47,7 @@ import {
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
-  createStreamIdTracker,
-  fixStreamEventIds,
-} from "~/lib/openai/stream-id-sync"
-import {
-  //
-  RESPONSES_NAME_BEARING_EVENTS,
-  restoreResponsesEventToolNames,
+  restoreResponsesStreamFrameToolNames,
 } from "~/lib/openai/tool-name-sanitize"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { buildResponsesResponseData } from "~/lib/request/recording"
@@ -192,9 +186,9 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  *
  * Unlike the legacy WS path (direct /responses only, rejecting unsupported
  * models), the driver also routes the Responses→CC fallback, so CC-only / Google
- * models work over WS via fallback. The direct path applies `fixStreamEventIds`
- * (handler-side S5, like the HTTP pump); the fallback drains the codec's closing
- * lifecycle via `flushResponse`.
+ * models work over WS via fallback. The direct path's `fixStreamEventIds` now runs
+ * in the driver's S5 response-rewrite registry (A.C — the SAME instance the HTTP
+ * pump uses); the fallback drains the codec's closing lifecycle via `flushResponse`.
  */
 async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
   const requestedModel = rawPayload.model
@@ -217,6 +211,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const driver = createPipelineDriver({
     codec,
     transport,
+    // S5 — the SAME Responses response-rewrite chain the HTTP handler uses (fix-stream-ids,
+    // DIRECT only): registering once makes HTTP + WS share one stateful rewrite instance (A.C).
+    responseRewrites: RESPONSES_RESPONSE_REWRITES,
     strategies: (env) => {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
       return buildOpenAiResponsesStrategiesForEnv(env)
@@ -275,23 +272,22 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
 
   const acc = createResponsesStreamAccumulator()
   const mapper = env.ctx.toolNameMapper
-  const idTracker = !viaFallback && state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let eventsReceived = 0
 
-  /** Forward one rendered Responses frame as a WS JSON frame; returns true on a terminal event. */
-  const forwardWsFrame = (rawData: string, rawEvent: string | undefined): boolean => {
-    const eventData = idTracker ? fixStreamEventIds(rawData, rawEvent, idTracker) : rawData
+  /** Forward one driver-yielded Responses frame as a WS JSON frame; returns true on a terminal event.
+   * fix-stream-ids (direct) is applied upstream in the driver's S5 chain, so `rawData` is already fixed. */
+  const forwardWsFrame = (rawData: string): boolean => {
     let event: ResponsesStreamEvent
     try {
-      event = JSON.parse(eventData) as ResponsesStreamEvent
+      event = JSON.parse(rawData) as ResponsesStreamEvent
     } catch {
       consola.debug("[WS] Skipping unparseable SSE event")
       return false
     }
     accumulateResponsesStreamEvent(event, acc)
-    const forwardData = restoreWsStreamData(eventData, event, mapper)
+    const forwardData = restoreResponsesStreamFrameToolNames(rawData, event.type, mapper)
     ws.send(forwardData)
     forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: event.type, raw: forwardData })
     eventsReceived++
@@ -307,12 +303,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       // even if the upstream emits trailing frames or stalls without closing. The
       // fallback's terminal (response.completed) comes from `flushResponse` below,
       // not this loop, so this break only fires on the direct path.
-      if (forwardWsFrame(frame.data, frame.event)) break
+      if (forwardWsFrame(frame.data)) break
     }
     // Fallback: drain the CC→Responses closing lifecycle events.
     if (viaFallback) {
       for (const closing of codec.flushResponse(env)) {
-        if (closing.data) forwardWsFrame(closing.data, closing.event)
+        if (closing.data) forwardWsFrame(closing.data)
       }
     }
 
@@ -336,23 +332,6 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     consola.error(`[WS] Responses API error: ${message}`)
     sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
   }
-}
-
-/**
- * Restore function_call names (upstream → original) in a Responses SSE data frame
- * for WS forwarding. No-op when `mapper` is null (the default — the legacy WS path
- * did no tool-name handling, so default WS behavior is unchanged).
- */
-function restoreWsStreamData(data: string, event: ResponsesStreamEvent, mapper: ToolNameMapper | null): string {
-  if (!mapper) return data
-  if (!RESPONSES_NAME_BEARING_EVENTS.has(event.type)) return data
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(data)
-  } catch {
-    return data
-  }
-  return restoreResponsesEventToolNames(parsed, mapper) ? JSON.stringify(parsed) : data
 }
 
 // ============================================================================

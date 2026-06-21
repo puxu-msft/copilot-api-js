@@ -140,10 +140,10 @@
 
 **为什么 WS 一并：** RFC §4.C——WS 消费同一 `driver.runResponse`，Responses 逐帧改写进 registry 后 HTTP+WS 都受益。WS/HTTP 写出层仍 handler-side（Stage B 统一）。
 
-- [ ] **Step 1: 预捕获 Responses + WS 激活态 golden**（fixStreamEventIds id 映射、tool-name restore）
-- [ ] **Step 2: 包 Responses ResponseRewrite + 填 registry**（注意 fixStreamEventIds 仅直连、跨帧 id state；restore 逐帧）
-- [ ] **Step 3: handler-v4 + ws.ts 去内联** — `forwardFrame`（HTTP）+ `forwardWsFrame`（WS）去掉 fixIds/restore（driver S5 跑），只留采样 + 写出。
-- [ ] **Step 4: 跑 Responses + WS golden + 全套 + Step5 typecheck/eslint/subagent/Commit** — `git add -- ...（上述文件）&& git commit -m "feat(pipeline): Stage A Task6(A.C) Responses 逐帧改写进 registry(HTTP+WS 共享)"`
+- [x] **Step 1: 预捕获 Responses + WS 激活态 golden**（fixStreamEventIds id 映射、tool-name restore）。HTTP fixIds 已有 `responses-v4.http.test.ts:229`（direct .done id 校正）锁；WS fixIds 此前无覆盖，本 phase **新增** `responses-ws.http.test.ts` 的 "stream-id-sync over WS" 测试锁住共享-registry 收益（WS 经同一 S5 registry 拿到 fixIds）。
+- [x] **Step 2: 包 Responses ResponseRewrite + 填 registry** — 新建 `src/lib/codec/openai-responses-rewrites.ts`：`fixStreamIdsRewrite`（ResponseRewrite，`createState` 持 `StreamIdTracker` 跨帧，`appliesTo` = openai-responses + `targetEndpoint===RESPONSES`(direct) + `state.fixResponsesStreamIds`）+ `RESPONSES_RESPONSE_REWRITES`。**裁决（实测）**：只有 fixIds 进 registry，**restore 不进**——driver S5 在 `renderResponse`(S6) **之前**跑，direct 的 renderResponse=identity（S5 帧=Responses），但 fallback 的 renderResponse=CC→Responses 翻译（S5 帧=CC），restore 进 S5 会在 fallback 静默 no-op（CC 帧无 Responses 事件类型）→ 名字还原丢失。且 accumulator 读 `event.item.id`（dedup）+ `event.item.name`，accumulate 必须在 fixIds 之后、restore 之前。故 fixIds→S5（accumulate 看已修复帧，dedup 保持），restore 留 handler-side（forwarded-only、post-accumulate、作用于 render 后帧）。用户拍板"不纠结逐字节、要长远对的设计"——这正是长远对的形状（restore 留 handler 是 fallback 正确性约束，非字节洁癖）。
+- [x] **Step 3: handler-v4 + ws.ts 去内联** — 两处 `forwardFrame`/`forwardWsFrame` 删掉 inline `idTracker`+`fixStreamEventIds`（driver S5 跑），accumulate 改在 driver-yielded(已修复)帧上；两处重复的 restore 函数 dedup 成共享 `restoreResponsesStreamFrameToolNames`（`tool-name-sanitize.ts`）。WS `forwardWsFrame` 去掉无用的 `rawEvent` 形参。
+- [x] **Step 4: 跑 Responses + WS golden + 全套 + Step5 typecheck/eslint/subagent/Commit** — 231 responses 测试绿（含 fixIds direct + 新 WS fixIds）；WS 套件连跑 15×/15 clean（连接时序无 flaky）；全 offline 2798 pass（唯一 fail `file-sink.unit.test.ts` 同 A.B，无关 `/tmp` ENOTDIR）；typecheck+eslint 绿；subagent 对抗 review 无 CRITICAL/HIGH（核 fixIds direct-only/tracker 生命周期/accumulate 看修复帧/restore post-accumulate/HTTP-WS 共享同一 registry/[DONE] no-op/fallback closing 旁路），唯一 gap=3 处陈旧 docstring 已回填。
 
 ---
 

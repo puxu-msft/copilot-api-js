@@ -8,11 +8,13 @@
  * P2-era division of labor (sampling sinks to the driver in P3.2, mirroring CC):
  * this route still owns the response-side sampling (forwarded SSE events +
  * accumulate + complete/fail), the client-facing finishing the codec does NOT do
- * — `fixStreamEventIds` (DIRECT only, an S5 concern kept handler-side), tool-name
- * restore, session registration — and the fallback closing lifecycle flush
- * (`codec.flushResponse`, the per-frame translator's stream-end drain). The error
- * frame is built inline (raw upstream message) rather than via `codec.formatError`
- * (P2.2-D4 — formatError only gets the classified kind).
+ * — tool-name restore (forwarded-only, post-accumulate, on the rendered Responses
+ * frames), session registration — and the fallback closing lifecycle flush
+ * (`codec.flushResponse`, the per-frame translator's stream-end drain). The
+ * stateful `fixStreamEventIds` (DIRECT only) now runs in the driver's S5 response-
+ * rewrite registry (A.C), shared with the WS transport. The error frame is built
+ * inline (raw upstream message) rather than via `codec.formatError` (P2.2-D4 —
+ * formatError only gets the classified kind).
  */
 
 import type { Context } from "hono"
@@ -30,7 +32,6 @@ import type {
   DriverRequestResult,
   UpstreamStream,
 } from "~/lib/pipeline/types"
-import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type {
   //
   ResponsesPayload,
@@ -40,6 +41,7 @@ import type {
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses"
+import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses-strategies"
 import { HTTPError } from "~/lib/error"
 import {
@@ -58,14 +60,8 @@ import {
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import {
   //
-  createStreamIdTracker,
-  fixStreamEventIds,
-} from "~/lib/openai/stream-id-sync"
-import {
-  //
-  RESPONSES_NAME_BEARING_EVENTS,
-  restoreResponsesEventToolNames,
   restoreResponsesOutputToolNames,
+  restoreResponsesStreamFrameToolNames,
 } from "~/lib/openai/tool-name-sanitize"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { buildResponsesResponseData } from "~/lib/request/recording"
@@ -76,25 +72,6 @@ import { createUpstreamResponsesTransport } from "~/lib/transport/responses-tran
 
 /** Responses has no learning-budget strategy; the value is inert (passed for completeness). */
 const MAX_LEARNING_RETRIES = 32
-
-/**
- * Restore function_call names (upstream → original) in a single Responses SSE
- * data frame for forwarding. Re-parses `data` (rather than mutating the
- * accumulated `event`) so history keeps the upstream names. Best-effort: returns
- * the input unchanged on parse failure / no change. No-op when `mapper` is null.
- * Unifies the legacy `restoreResponsesStreamData` (direct) + `restoreFallbackStreamData`.
- */
-function restoreStreamToolNames(data: string, event: ResponsesStreamEvent, mapper: ToolNameMapper | null): string {
-  if (!mapper) return data
-  if (!RESPONSES_NAME_BEARING_EVENTS.has(event.type)) return data
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(data)
-  } catch {
-    return data
-  }
-  return restoreResponsesEventToolNames(parsed, mapper) ? JSON.stringify(parsed) : data
-}
 
 export async function handleResponsesV4(c: Context): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
@@ -124,6 +101,10 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
+    // S5 — the Responses response-rewrite chain (fix-stream-ids, DIRECT only). The driver
+    // applies it before render (A.C); the handler forwards the yielded (fixed) frames. Tool-name
+    // restore stays handler-side (forwarded-only, post-accumulate, must run on rendered frames).
+    responseRewrites: RESPONSES_RESPONSE_REWRITES,
     strategies: (env) => {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
       return buildOpenAiResponsesStrategiesForEnv(env)
@@ -255,27 +236,24 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const acc = createResponsesStreamAccumulator()
   const mapper = env.ctx.toolNameMapper
   const model = (env.body as ResponsesPayload).model
-  // stream-id-sync applies to the DIRECT path only (the fallback generates
-  // internally-consistent IDs from ctx and the legacy fallback never fixes them).
-  const idTracker = !viaFallback && state.fixResponsesStreamIds ? createStreamIdTracker() : undefined
 
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let bytesIn = 0
   let eventsIn = 0
 
-  /** Forward one rendered Responses frame: fix-id (direct) → accumulate → restore names → write. */
+  /** Forward one driver-yielded Responses frame: accumulate → restore names → write. fix-stream-ids
+   * (direct) is now applied upstream in the driver's S5 chain, so the yielded `rawData` is already fixed. */
   const forwardFrame = async (rawData: string, rawEvent: string | undefined): Promise<void> => {
-    const eventData = idTracker ? fixStreamEventIds(rawData, rawEvent, idTracker) : rawData
     let event: ResponsesStreamEvent
     try {
-      event = JSON.parse(eventData) as ResponsesStreamEvent
+      event = JSON.parse(rawData) as ResponsesStreamEvent
     } catch (err) {
-      consola.debug(`[Responses:v4] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, eventData.slice(0, 200))
+      consola.debug(`[Responses:v4] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, rawData.slice(0, 200))
       return
     }
     accumulateResponsesStreamEvent(event, acc)
-    const forwardData = restoreStreamToolNames(eventData, event, mapper)
+    const forwardData = restoreResponsesStreamFrameToolNames(rawData, event.type, mapper)
     forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: rawEvent ?? event.type, raw: forwardData })
     await stream.writeSSE({ event: rawEvent ?? event.type, data: forwardData })
   }

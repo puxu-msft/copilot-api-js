@@ -280,3 +280,26 @@ export function restoreResponsesEventToolNames(event: unknown, mapper: ToolNameM
 
   return false
 }
+
+/**
+ * Restore `function_call` names (upstream → original) in one raw Responses SSE
+ * data frame for client forwarding — the shared helper both transports (HTTP
+ * `forwardFrame` + WS `forwardWsFrame`) call at the forward point.
+ *
+ * Re-parses `data` into its OWN object (rather than reusing the caller's
+ * accumulator event) so history keeps the upstream names: restoration is a
+ * forwarded-only transform, applied AFTER accumulation. No-op when `mapper` is
+ * null or the event type never carries a name. Best-effort: returns `data`
+ * unchanged on parse failure / no change.
+ */
+export function restoreResponsesStreamFrameToolNames(data: string, eventType: string, mapper: ToolNameMapper | null): string {
+  if (!mapper) return data
+  if (!RESPONSES_NAME_BEARING_EVENTS.has(eventType)) return data
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(data)
+  } catch {
+    return data
+  }
+  return restoreResponsesEventToolNames(parsed, mapper) ? JSON.stringify(parsed) : data
+}
