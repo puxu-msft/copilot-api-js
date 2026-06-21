@@ -116,8 +116,13 @@ inspectRequest(raw, stopAfter): RequestInspection   // 跑 S1→stopAfter，绝�
 
 - **Phase 1（响应侧 Anthropic，零全局 swap，最高价值最低风险）** ✅ **已实现（eaaea99）**：手工 env + 捕获 ctx(`createRequestContext` 无 publisher + wrap recordFeature) + entryId(sseEvents→frame adapter / 非流式 outboundResponse 重建)/inline 上游。Anthropic render=identity 故 stopAfter rewrite-out/render 等价、**无需 driver 改动**(skipRender/frameActions hook 推迟到非 identity render 的 Phase 3)。`src/routes/debug/dry-run-pipeline.ts` + `tests/infra/debug-dry-run-pipeline.http.test.ts`(5 测试)。subagent 审查 PASS。
 - **Phase 2（请求侧 Anthropic）** ✅ **已实现（9278895 driver.inspectRequest / 4a0a8fc withCapturingManager / 9ab19b7 endpoint）**：driver `inspectRequest(raw, stopAfter)`(S1→stopAfter、不进 S4、逐阶段 structuredClone 快照 + S3 per-rewrite{name,changed}) + 无副作用 `withCapturingManager`(临时换全局 manager、events 收本地不发 bus、还原不停生产 reaper) + endpoint 请求侧(真实 codec 组装:preprocessAnthropicMessages + throwaway betaProbe + createAnthropicCodec)。stopAfter parse/translate/rewrite-in。inline request / entryId(inboundRequest)。**prepare-wire 未含本 MVP**(非纯:betaProbe/ctx 写副作用,见 §11 H2)。
-- **Phase 3（全格式）**：format switch 接 openai-cc/responses/gemini；响应侧对 CC/Gemini 标 `rewritesAvailable:false`（不编空改写测试）；Gemini render 标保真注脚（输出 CC）。每格式请求侧 + 高保真处的测试。
-- **收尾**：§10 保真边界 + DESIGN 路由表 + 模块文档；deferred-items 记"配置 env 注入"重构。
+- **Phase 3（全格式）** ✅ **已实现（d0b6d0c T1/T2 driver hooks / 947ee45 T3 全格式 endpoint / 2f78af5 T4 prepare-wire）**：
+  - **T1 `RunResponseOpts.skipRender`**：driver `runResponse` 两个 yield 点（per-frame 循环 + 流末 `flushChain` drain）都分叉——`skipRender` 时 `yield` S5 帧 verbatim 而非 `yield* renderFrames`（覆盖 flushChain 路径，否则丢流末 buffered 帧）。identity-render 格式（Anthropic）下 no-op。
+  - **T2 per-rewrite `onRewriteAction`**：`passThrough` 内每条 rewrite `transform` 返回的 `FrameAction` 经可选采样钩子上报 `(name, frameIndex, action)`；生产路径不传→零开销；只采 per-frame 循环、不采 flushChain re-threading。
+  - **T3 全格式 endpoint**：dry-run 自带 format switch（不抽 `buildDriverDeps`、不迁真实路由，OQ2/C6）。请求侧每格式真实 codec（Gemini 镜像 route 的 Gemini→CC 翻译预步，parse 期望已翻译 CC body + `originalBodyForHistory` 原始 Gemini；system-prompt 注入未镜像=caveat）。响应侧真实 S5 rewrites（Anthropic 4 / Responses 1 fixIds / CC+Gemini 空→`rewritesAvailable:false`，不编空改写测试）；render 用最小 identity codec（忠实——driver S6 render 对各格式 direct/passthrough 本就 identity，非 identity 的 Gemini CC→Gemini 整流/Responses post-render restore/Anthropic heartbeat 全在 handler-side，逐格式标 `fidelity.caveats`）。`skipRender = stopAfter==="rewrite-out"`。
+  - **T4 `prepare-wire`（S4-pre）**：`inspectRequest` 加 `prepare-wire` stopAfter——S3 后调一次 `codec.prepareWire(env)` 快照 last-mile wire（url+headers+body+stream），不进 S4 exchange 循环；`note` 标 first-attempt-only（反应式 retry 改写不可见）。prepareWire 非纯（betaProbe/ctx 副作用）由 throwaway probe + capturing manager 隔离。
+  - 测试：`tests/pipeline/driver.unit.test.ts`（skipRender×2 + frameActions×2）、`tests/pipeline/inspect-request.unit.test.ts`（prepare-wire×2）、`tests/infra/debug-dry-run-pipeline.http.test.ts`（全格式请求/响应侧 + prepare-wire，共 26 测试）。
+- **收尾** ✅：§8 标 Phase 3 done + DESIGN 路由表更新（全格式 + 请求/响应侧）；§6「配置 env 注入消竞态」重构仍 deferred（见 `docs/audits/deferred-items.md`）。
 
 ## 9. 决策（评审后）
 

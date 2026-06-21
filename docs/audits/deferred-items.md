@@ -43,3 +43,16 @@ Claude Code 客户端报 `InputValidationError: AskUserQuestion ... parameter qu
 
 ### 探针产物
 `exp/decode-driver-probe/`（subagent 留存的 v4 driver decode 探针，按 `mem:feedback-experiments-in-repo-exp-dir` 归档）。
+
+## 3. dry-run inspector：配置经 env/deps 注入消竞态（2026-06-21，Phase 3 收尾记）
+
+dry-run inspector（`POST /api/debug/dry-run-pipeline`）Phase 1-3 已全部落地（全格式 + 请求/响应侧，见 [rfc/pipeline-dry-run-inspector.md](../rfc/pipeline-dry-run-inspector.md) §8）。MVP 故意**砸掉 `configOverrides`**——dry-run 一律用当前 live 配置。
+
+### 为何暂缓（根因 + 当前行为）
+响应侧 rewrites **逐帧读 module-global `state`**（`response-rewrites.ts` 的 thinking 逐帧读 `state.thinkingSignatureCompat`、`appliesTo`/`prepareWire` 每次读 global）。若要支持"按不同配置对比回放"，朴素做法是 temp state-swap，但其窗口=**整条响应流时长**（opus 长 thinking 数十秒~数百秒），会长时间污染并发真实请求配置（评审 C1 实证）。且回放本就该用 live 配置——`configOverrides` 是投机表面。
+
+### 理想架构（若日后要做）
+**配置经 env/deps 注入、rewrites 读快照而非 module-global `state`**（彻底消竞态）。这是跨**所有** response rewrite 的重构（每条 rewrite 的 `appliesTo`/`createState`/`transform` 都改为读注入的配置快照）。**绝不**用 temp state-swap 绕（已证窗口=整流时长、live 污染）。
+
+### 触发条件
+仅当真出现"同一回放输入要对比多套配置下的客户端实收"需求时再做。当前 dry-run 用 live 配置已覆盖"上游某响应经**当前**代码+配置处理后客户端会收到什么"——本案（AskUserQuestion decode/backfill）已够用。
