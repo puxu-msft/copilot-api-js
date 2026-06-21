@@ -163,6 +163,11 @@ async function startBunServer(options: BunStartOptions): Promise<ServerInstance>
     port: options.port,
     hostname: options.hostname,
     idleTimeout: 255, // seconds (Bun max — default 10s is too short for LLM streaming)
+    // The proxy must not self-limit client input size. Bun.serve defaults
+    // maxRequestBodySize to 128 MiB; the Node path (@hono/node-server → node:http)
+    // has no body-size limit, so we lift Bun's cap to keep both runtimes
+    // unbounded and consistent. Bound payload size at the deployment edge instead.
+    maxRequestBodySize: Number.MAX_SAFE_INTEGER,
     ...(options.bunWebSocket ? { websocket: options.bunWebSocket } : {}),
   })
 

@@ -480,9 +480,10 @@ export interface State {
   readonly stripImageGenerationTool: boolean
 
   /**
-   * Hard cap on inbound WebSocket frame bytes for the client-side /responses WS.
-   * Default 1 MiB; set to 0 to disable. Bounds heap pressure from oversized
-   * `response.create` payloads on a public deployment.
+   * Optional cap on inbound WebSocket frame bytes for the client-side /responses WS.
+   * Default 0 = unlimited (the proxy does not self-limit client input; bound heap
+   * pressure at the deployment edge / reverse proxy instead). Set a positive value
+   * to opt into a hard cap on oversized `response.create` payloads.
    */
   readonly maxWsFrameBytes: number
 
@@ -973,7 +974,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   fixResponsesStreamIds: true,
   stripImageGenerationTool: false,
   clientWebsocketKeepOpen: false,
-  maxWsFrameBytes: 1024 * 1024,
+  maxWsFrameBytes: 0,
   maxClientWsConnections: 256,
   maxUpstreamWsConnections: 32,
   anthropicApiKey: "",

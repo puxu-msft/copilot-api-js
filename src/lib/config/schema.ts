@@ -311,7 +311,7 @@ export const ResponsesConfigSchema = z
      * and some clients (e.g. Codex CLI) auto-inject it. Default false.
      */
     strip_image_generation_tool: nullableBoolean(),
-    /** Hard cap on inbound WS frame bytes (default 1 MiB; 0 = unlimited). */
+    /** Optional cap on inbound WS frame bytes (default 0 = unlimited; set positive to opt into a hard cap). */
     max_ws_frame_bytes: nullableNonnegativeInt(),
     /** Max concurrent client WS connections (default 256; 0 = unlimited). */
     max_client_ws_connections: nullableNonnegativeInt(),

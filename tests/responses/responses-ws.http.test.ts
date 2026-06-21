@@ -384,14 +384,16 @@ describe("Responses WebSocket transport", () => {
     ws.close()
   })
 
-  test("rejects messages exceeding maxWsFrameBytes with invalid_request_error", async () => {
+  test("rejects messages exceeding a configured maxWsFrameBytes with invalid_request_error", async () => {
+    // The cap is opt-in (default 0 = unlimited); set an explicit positive cap.
+    setStateForTests({ maxWsFrameBytes: 1024 * 1024 })
     server = startWsServer()
 
     const ws = new WebSocket(`${server.url}/responses`)
     const closePromise = waitForSocketClose(ws)
 
     await waitForOpen(ws)
-    // Build a 1 MiB + 1 byte payload — over the default 1 MiB cap
+    // Build a 1 MiB + 1 byte payload — over the configured 1 MiB cap
     const huge = "x".repeat(1024 * 1024 + 1)
     ws.send(huge)
 
