@@ -312,6 +312,31 @@ export interface PipelineDriver {
   runRequest(raw: RawHttpRequest): Promise<DriverRequestResult>
   /** Response side: build the S5→S6→S7 streaming transform chain. */
   runResponse(upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame>
+  /**
+   * Inspect the request side S1→`stopAfter`, NEVER entering S4 (no GHC call). Returns a
+   * per-stage envelope snapshot (`body` is `structuredClone`d so later stages don't mutate
+   * earlier snapshots) + the S3 per-rewrite `{name, changed}` log. For dry-run / debugging
+   * the request-rewrite chain (`docs/rfc/pipeline-dry-run-inspector.md` §4). Synchronous —
+   * S1-S3 have no `await`. Isolation (the global manager touched by `codec.parse`) is the
+   * caller's concern, NOT this method's.
+   */
+  inspectRequest(raw: RawHttpRequest, stopAfter: RequestInspectStage): RequestInspection
+}
+
+/** Request-side stage to stop {@link PipelineDriver.inspectRequest} after. */
+export type RequestInspectStage = "parse" | "translate" | "rewrite-in"
+
+/** Result of {@link PipelineDriver.inspectRequest} — per-stage snapshots up to the stop point. */
+export interface RequestInspection {
+  /** Where the inspection stopped: the requested stage, or `"reject"` if S2 rejected the route. */
+  stoppedAt: RequestInspectStage | "reject"
+  /** Present only when `stoppedAt === "reject"`. */
+  rejected?: { status: number; reason: string }
+  stages: {
+    parse?: { clientFormat: string; targetEndpoint?: string; model: unknown; body: unknown }
+    translate?: { targetEndpoint?: string; body: unknown }
+    "rewrite-in"?: { body: unknown; applied: Array<{ name: string; changed: boolean }> }
+  }
 }
 
 /**

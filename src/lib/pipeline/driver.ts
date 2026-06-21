@@ -28,6 +28,8 @@ import type {
   FormatCodec,
   PipelineDriver,
   RawHttpRequest,
+  RequestInspectStage,
+  RequestInspection,
   ResponseOutcome,
   RetryAction,
   RetryStrategy,
@@ -106,6 +108,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
   return {
     runRequest: (raw) => runRequest(deps, raw),
     runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts),
+    inspectRequest: (raw, stopAfter) => inspectRequest(deps, raw, stopAfter),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
     runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
     runResponseSink: (upstream, env, sink, opts) => runResponseSink(deps, upstream, env, sink, opts),
@@ -155,6 +158,48 @@ function runRewriteIn(deps: DriverDeps, env: RequestEnvelope): RequestEnvelope {
     // P3.2 wires `request.rewrite_applied`{name, changed, stats} here.
   }
   return current
+}
+
+/** Deep-snapshot a stage's `body` so later stages' in-place mutation can't perturb earlier snapshots. */
+function snapshotBody(body: unknown): unknown {
+  try {
+    return structuredClone(body)
+  } catch {
+    return body
+  }
+}
+
+/**
+ * Inspect S1→`stopAfter` WITHOUT entering S4 (RFC §4). Mirrors `runRequest`'s S1-S3 verbatim
+ * (same codec calls + `runRewriteIn` logic) but snapshots each stage and stops early — the
+ * driver stays the single authority on stage ordering (no duplicated chain in the endpoint).
+ */
+function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: RequestInspectStage): RequestInspection {
+  const stages: RequestInspection["stages"] = {}
+
+  // S1 — parse.
+  const parsed = deps.codec.parse(raw)
+  stages.parse = { clientFormat: parsed.clientFormat, targetEndpoint: parsed.targetEndpoint, model: parsed.model, body: snapshotBody(parsed.body) }
+  if (stopAfter === "parse") return { stoppedAt: "parse", stages }
+
+  // S2 — route / translate.
+  const decision = deps.codec.decideRoute(parsed)
+  if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
+  const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
+  const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
+  stages.translate = { targetEndpoint: routed.targetEndpoint, body: snapshotBody(routed.body) }
+  if (stopAfter === "translate") return { stoppedAt: "translate", stages }
+
+  // S3 — rewrite-in (mirror runRewriteIn, capturing per-rewrite {name, changed}).
+  const applied: Array<{ name: string; changed: boolean }> = []
+  let current = routed
+  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? REQUEST_REWRITES)) {
+    const result = rewrite.apply(current)
+    applied.push({ name: rewrite.name, changed: result.changed })
+    current = result.env
+  }
+  stages["rewrite-in"] = { body: snapshotBody(current.body), applied }
+  return { stoppedAt: "rewrite-in", stages }
 }
 
 /**
