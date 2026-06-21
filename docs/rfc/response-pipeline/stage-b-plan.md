@@ -1,9 +1,10 @@
 # Stage B — driver-owned-writeout 实现计划
 
 > **▶ 当前位置（2026-06-21，防呆——新会话先看这里）**
-> **已落地 + 提交（全 additive，零 handler 切换、零行为变化）**：**B0**（golden 预捕获 5 项 + 2 项归入引入风险的 phase；`8c512ce`/`bd5626f`/`f19b9fa`/`3e96507`）→ **B1**（`ClientSink`/`ResponseOutcome`/3 sink/`runResponseSink` shim + 对抗 review；`4418072`/`9cb2ace`）→ **B2**（`runResponseSink` 丢 `[DONE]` 哨兵 `4085fe2` + heartbeat 进 sink `5b59253`）。全 backend 2828 pass（唯一 fail = 预存无关 `file-sink` ENOTDIR）。
-> **下一步 = 第一个 byte-critical commit：Anthropic cut-over canary**。粘 [prompts/stage-b-anthropic-cutover.md](./prompts/stage-b-anthropic-cutover.md) 进新会话执行。它 collapse 了本 plan 的 B2-整合 + B3a + B4-Anthropic（per-format cut-over 时 forwarded 采样必须同时进 sink）。**勿**单跑 B3/B4 的非 Anthropic 部分——按 canary 序 Anthropic→CC→Responses-HTTP→Responses-WS→Gemini 逐格式整体切。
-> **B0-d/B0-e 等少数不变量**（abort 零字节、两-racer idle-kill）按设计**随 cut-over 落地**（见各 phase 内注 + 上述 prompt §3）。
+> **已落地 + 提交（全 additive，零 handler 切换、零行为变化）**：**B0**（golden 预捕获 5 项 + 2 项归入引入风险的 phase；`8c512ce`/`bd5626f`/`f19b9fa`/`3e96507`）→ **B1**（`ClientSink`/`ResponseOutcome`/3 sink/`runResponseSink` shim + 对抗 review；`4418072`/`9cb2ace`）→ **B2**（`runResponseSink` 丢 `[DONE]` 哨兵 `4085fe2` + heartbeat 进 sink `5b59253`）。
+> **✅ Anthropic cut-over canary 已落地（第一个 byte-critical commit，`cdca98e`）**——collapse 了 B2-整合 + B3a + B4-Anthropic：Anthropic 流式 `pumpAnthropicStreamingV4` 切 owns-sink（`runResponseSink` 据 outcome.kind 映射终态、forwarded 采样进 sink `onForwarded`、heartbeat 进 sink、H2/H3 非采样非对称、4 退出 close 泄漏矩阵、两-racer 整合不变量、abort 零字节、id/retry 转发保真）。B0 goldens 逐字节等价连跑 20×、全 backend 2842 pass（唯一 fail = 预存无关 `file-sink` ENOTDIR）。3 subagent 对抗 review + 主线亲核（修 C1 id/retry 静默收窄 + types.ts writeSynthetic doc rot）。
+> **下一步 = 第二个格式 cut-over：CC**（有 verbose-marker streaming + via-responses `[DONE]` 合成，比 Anthropic 多两件）→ Responses-HTTP → Responses-WS（须给 sink port 加早停信号）→ Gemini（B5，最硬）。**勿**单跑 B3/B4 的非 Anthropic 部分——按 canary 序逐格式整体切。
+> **B0-d/B0-e 等少数不变量**（abort 零字节、两-racer idle-kill）Anthropic 已随 cut-over 落地（`tests/pipeline/owns-sink-two-racer.unit.test.ts`）；其余格式随各自 cut-over。
 
 > **For agentic workers:** 本计划是 [design.md](./design.md) 的 **Stage B**（§5 / §3.2 / §3.3）。Stage A 已全部落地（registry 激活）；Stage B 把 `runResponse` 从 generator（handler 写出）翻转为 **owns-the-sink**（driver 持 `ClientSink`、driver 自己写客户端），把 forwarded 采样 / heartbeat 串行化 / 终态决策 / 整流翻译统一进 driver。**用户 2026-06-21 裁决 GO**（OQ1，§5）。
 
@@ -96,7 +97,7 @@
 
 - [x] **Step 1**: forward-idle heartbeat 进 `makeSseSink`（可选 `SseSinkHeartbeat`，additive）——`write` 更新 `lastRealMs`，到点经 `writeSynthetic` 注 ping。upstream-idle guard 留 transport 不动。两 racer **不共用 timer**。✅ commit 5b59253
 - [x] **Step 2**: ping 共用 serialize chain（无字节交错）；`close()` 停 timer；`unref()` 防泄漏；格式无关（ping 帧调用方供）。`writeSynthetic` 的 forwarded-only **采样待 B4**（B2 只注入）。
-- [x] **Step 3（mechanism 单测）**: fake-timer：ping 仅静默后发 / 真帧重置 / close 清 timer / abort 抑制 / intervalSec<=0 退化。11 pass。**仍待 B3a canary（需真消费者 + transport 整合才可测）**：① 两-racer **整合不变量**（heartbeat 开 + 上游静默 → 收 ping **且** 仍 `stream_idle` 死）② 4 退出路径泄漏断言（driver `finally` 必调 `close()`）。这些随 Anthropic cut-over 落地（B0-e 同此归属）。
+- [x] **Step 3（mechanism 单测）**: fake-timer：ping 仅静默后发 / 真帧重置 / close 清 timer / abort 抑制 / intervalSec<=0 退化。11 pass。**两-racer 整合不变量 + 4 退出泄漏断言已随 Anthropic canary 落地**（`tests/pipeline/owns-sink-two-racer.unit.test.ts`：heartbeat 开 + 上游静默 → 收 ping 且 仍 `stream_idle` 死；driver 单测 close 泄漏矩阵 4 退出 normal/throw/abort/write-reject）。
 
 > **OQ4 解（B2）**：`writeSynthetic` 用于 soft ping（终态形态、forwarded-only 采样[B4]、共用 chain）。两 timer **不合并**；`close()` 在 driver `finally` 必调防泄漏。
 
@@ -110,7 +111,7 @@
 - [ ] **Step 2**: **维持"终态读快照非 live accumulator"语义**（§3.2 + 主线核 bus.ts:12 同步 fan-out / history sink 终态读 `event.entry` 快照）——handler 拿 outcome 后从**自持 acc** 调 `ctx.complete(buildXResponseData(acc))` 固化快照。driver 不持 acc、不读 live acc。**`setForwardedResponse` 时 snapshot `[...forwardedSseEvents]`**（R3 别名 caveat：entry.inboundResponse 别名该数组，late ping push 会改已快照 entry）或终态前先 `sink.close()` 停心跳。
 - [ ] **Step 2b**: 保留 `recordStreamProgress` mid-flight（R1，ConsoleSink 活页脚），与字节计数器同源（别 driver 计帧、handler 读陈旧 streamState）。
 - [ ] **Step 3（顺序锁 + WS，R2/R1）**: **`[flush]→[error]` 顺序锁**——owns-sink 若在 catch 写 error 先于 finally flush 会翻序，golden 锁顺序非仅 presence。**H2-sampled/H3-unsampled 非对称**：H3 handler 合成 error 须走非采样写（否则新进 forwarded 轨）。**WS 终态不 break**（对齐 Anthropic drain-don't-break，终态检测移到 driver outcome 而非 consumer break；防 break 丢 finally flush）。
-- [ ] **Step 4**: 逐格式切 **Anthropic→CC→Responses-HTTP→Responses-WS**（canary，Gemini 留 B5），每切全套件绿 + golden 字节等价 + fault-injection 矩阵绿。subagent（终态时序+竞态）+ 逐格式 Commit。
+- [ ] **Step 4**: 逐格式切 **Anthropic→CC→Responses-HTTP→Responses-WS**（canary，Gemini 留 B5），每切全套件绿 + golden 字节等价 + fault-injection 矩阵绿。subagent（终态时序+竞态）+ 逐格式 Commit。**Anthropic ✅ 已切（`cdca98e`）**——Step 1-3 的 H2/H3/abort 分类 + 终态快照 + `[flush]→[error]` 顺序 + H2/H3 非采样非对称对 Anthropic 全部落地（WS 早停信号仍待 Responses-WS）。CC/Responses-HTTP/Responses-WS 待切。
 
 ---
 
@@ -121,7 +122,7 @@
 - [ ] **Step 1**: forwarded 采样下沉进 `ClientSink.write`——只采真到达 sink 的帧。删 handler 手动 `setForwardedResponse({sseEvents})` + WS 同套 + Responses `forwardedSseEvents` push。`writeSynthetic`（heartbeat）采 forwarded、跳 sseEvents。**H3 handler 合成 error 走非采样写**（R2：否则新进 forwarded 轨）。
 - [ ] **Step 2**: `runResponseSink` `finally` 里 S6 flush（`codec.flushResponse`）写进 sink，handler 不再 post-loop drain。
 - [ ] **Step 3**: 更新 `driver.ts:343-350` `renderFrames` 陈旧注释（它枚举"driver 不能 own 的注入帧 verbose marker/heartbeat/Gemini"作 P3.2b-D1 论据）——逐项给 owns-sink 归宿（marker→driver 特判、heartbeat→writeSynthetic、Gemini→B5）。DESIGN.md/RFC §8.3 标 P3.2b-D1 已推翻。
-- [ ] **Step 4**: 逐格式切 **Anthropic/CC/Responses-HTTP/Responses-WS**（含 CC 的 verbose marker + restore forwarded-字节 golden，R2）。golden 双轨（forwarded==现状字节、outboundResponse 上游原貌不变）。subagent + Commit。
+- [ ] **Step 4**: 逐格式切 **Anthropic/CC/Responses-HTTP/Responses-WS**（含 CC 的 verbose marker + restore forwarded-字节 golden，R2）。golden 双轨（forwarded==现状字节、outboundResponse 上游原貌不变）。subagent + Commit。**Anthropic ✅ 已切（`cdca98e`）**：forwarded 采样在 `makeSseSink.onForwarded`、H3 走非采样 `writeSynthetic`、heartbeat ping 采 forwarded 跳 sseEvents。注：Anthropic 仍 handler 调 `setForwardedResponse([...forwardedSseEvents])`（sink 经 `onForwarded` 回调喂 handler 的数组，**sink 不 reach ctx**，保持极薄）——Step 1 "删 handler 手动 setForwardedResponse" 的彻底下沉留待全格式切完统一收口。CC/Responses 待切。
 
 ---
 

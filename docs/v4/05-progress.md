@@ -37,11 +37,11 @@ v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 
 | B0 | golden 预捕获（5 项 byte-lock + 2 项归 cut-over phase） | ✅ | 8c512ce/bd5626f/f19b9fa/3e96507 |
 | B1 | `ClientSink`/`ResponseOutcome`(无 accumulator)/`makeSse·Ws·ArraySink`/`runResponseSink` shim + 对抗 review | ✅ | 4418072/9cb2ace |
 | B2 | `runResponseSink` 丢 `[DONE]` 哨兵 + heartbeat forward-idle racer 进 sink（两-racer 不合并、additive） | ✅ | 4085fe2/5b59253 |
-| **Anthropic cut-over canary** | 活的 `pumpAnthropicStreamingV4` 切 owns-sink（**第一个 byte-critical commit**，collapse B2-整合+B3a+B4-Anthropic） | ⬜ **下一步** | [prompt](../rfc/response-pipeline/prompts/stage-b-anthropic-cutover.md) |
-| CC / Responses-HTTP / Responses-WS / Gemini | 逐格式 cut-over（CC 多 marker+via-responses DONE；WS 须加早停信号；Gemini=B5 逐帧化最硬） | ⬜ | — |
+| **Anthropic cut-over canary** | 活的 `pumpAnthropicStreamingV4` 切 owns-sink（**第一个 byte-critical commit**，collapse B2-整合+B3a+B4-Anthropic） | ✅ | cdca98e |
+| CC / Responses-HTTP / Responses-WS / Gemini | 逐格式 cut-over（CC 多 marker+via-responses DONE；WS 须加早停信号；Gemini=B5 逐帧化最硬） | ⬜ **下一步 CC** | — |
 | 收尾 | 删 generator `runResponse`+旧 heartbeat（scope 仅 driver 消费者，web_search bypass 仍用）；文档同步 | ⬜ | — |
 
-**B0/B1/B2 全 additive**（零 handler 切换、零行为变化，全 backend 2828 pass 除预存 file-sink）。**关键裁决**（已并入 plan + design §3.2/§3.3）：`ResponseOutcome` **剥 accumulator**（handler 自持）；heartbeat **两-racer 不合并**（forward-idle soft 进 sink vs upstream-idle hard 留 transport）；`writeRaw`→`writeSynthetic`（采样轨非对称非旁路-render）；`flushResponse`=S6-flush 镜像 S5；`[DONE]` 哨兵由 `runResponseSink` 丢、per-format 尾终止符 handler 合成。**B1-review cut-over 红线**：per-format 切时 forwarded 采样必须同进 sink（B3a/B4 collapse）、WS 须早停信号、等价测试须用真 renderer（identity 会 false-green）。
+**B0/B1/B2 全 additive**（零 handler 切换、零行为变化）。**Anthropic canary（`cdca98e`）= 第一个 byte-critical cut-over**：`runResponseSink` 据 outcome.kind（`complete`/`stream-error{raw error}`/`settled-abort`）映射终态；forwarded 采样进 sink（`onForwarded`）、H3 走非采样 `writeSynthetic`、heartbeat ping 采 forwarded 跳 sseEvents（H2/H3 非对称 B0-c 锁）；4 退出 close 泄漏矩阵 + 两-racer 整合不变量 + abort 零字节（`tests/pipeline/owns-sink-two-racer.unit.test.ts`）；**id/retry SSE framing 转发保真**（subagent review 抓出旧 B1 sink 静默收窄，已修 + SseFrame 增 id/retry）。B0 goldens 逐字节连跑 20×、全 backend 2842 pass（除预存 file-sink）。3 subagent 对抗 review + 主线亲核（修 C1 id/retry + types.ts writeSynthetic doc rot）。**关键裁决**（已并入 plan + design §3.2/§3.3）：`ResponseOutcome` **剥 accumulator**（handler 自持）；heartbeat **两-racer 不合并**；`writeSynthetic`=非采样写（H3）、ping 采样由内部 timer；`[DONE]` 由 `runResponseSink` 丢、per-format 尾终止符 handler 合成。**下一格式 cut-over = CC**（多 verbose-marker streaming + via-responses `[DONE]` 合成）。
 
 
 ### P2.3 收尾排程（重排后，已落地）
