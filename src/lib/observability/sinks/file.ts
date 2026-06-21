@@ -94,6 +94,8 @@ export class FileSink {
     this.maxSizeBytes = options.maxSizeBytes ?? DEFAULT_MAX_SIZE_BYTES
     this.retain = options.retain ?? DEFAULT_RETAIN
     this.currentSize = this.statSize()
+    // Initial default for the existing-file case; `append` re-anchors it to each written
+    // line's day, so a stale construction-time value can't trigger a spurious rotation.
     this.currentDay = dayKey(Date.now())
 
     this.unsubscribe = bus.subscribe((event) => {
@@ -118,6 +120,13 @@ export class FileSink {
       fs.mkdirSync(path.dirname(this.path), { recursive: true })
       fs.appendFileSync(this.path, line)
       this.currentSize += byteLen
+      // Track the day of the last line ACTUALLY written, not the construction wall-clock
+      // (`currentDay` was seeded from `Date.now()`). Events carry their own `time`, which can
+      // legitimately differ from construction time; without this, the first event whose day
+      // differs from the construction day leaves `currentDay` stale, so the SECOND same-day
+      // event spuriously day-rotates (moving the first line into `.log.1`). Genuine midnight
+      // rotation still fires: a later event on a new day differs from this last-written day.
+      this.currentDay = dayKey(time)
     } catch (err: unknown) {
       // NEVER route through consola — that re-enters the republish reporter.
       process.stderr.write(`[FileSink] write failed: ${err instanceof Error ? err.message : String(err)}\n`)

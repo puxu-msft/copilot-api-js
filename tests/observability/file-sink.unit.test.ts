@@ -84,6 +84,27 @@ describe("FileSink ← system.log", () => {
     expect(fs.readFileSync(logPath, "utf8")).toContain("day two")
   })
 
+  test("does not spuriously day-rotate when event days differ from the construction wall-clock", () => {
+    // Regression: `currentDay` was seeded from `Date.now()` (construction wall-clock) but
+    // compared against each event's embedded `time`. When the logged events' day differs from
+    // "today", the FIRST event left `currentDay` stale, so the SECOND same-day event tripped a
+    // spurious day-rotation — moving the first line into `.log.1` and losing it from the active
+    // file. This test pins a fixed PAST day (always ≠ today), so it would fail under the old
+    // behavior on every calendar day except that exact date. Both same-day lines must coexist.
+    const logPath = freshLogPath()
+    const bus = createBus()
+    const sink = new FileSink(bus, { path: logPath })
+    const sys = bus.scope("system")
+    sys.publish({ kind: "system.log", logType: "info", message: "first same-day", time: Date.parse("2020-01-02T08:00:00") })
+    sys.publish({ kind: "system.log", logType: "info", message: "second same-day", time: Date.parse("2020-01-02T08:00:01") })
+    sink.destroy()
+
+    const content = fs.readFileSync(logPath, "utf8")
+    expect(content).toContain("first same-day")
+    expect(content).toContain("second same-day")
+    expect(fs.existsSync(`${logPath}.1`)).toBe(false) // no rotation happened
+  })
+
   test("a write failure does not throw (isolated to stderr)", () => {
     // Point the sink at a path whose parent is a FILE, so mkdir/append fails.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-filesink-"))
