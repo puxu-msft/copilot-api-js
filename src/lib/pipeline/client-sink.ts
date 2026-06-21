@@ -25,6 +25,22 @@ import type { ClientFrame } from "./types"
 import type { ClientSink } from "./types"
 
 /**
+ * Forward-idle heartbeat config for {@link makeSseSink} (Stage B B2). The format
+ * supplies the ping FRAME (Anthropic `event: ping` / `{type:"ping"}`) — the sink stays
+ * format-agnostic. `intervalSec <= 0` disables it. Mirrors `startForwardedSseHeartbeat`
+ * (streaming-pump.ts) but lives in the sink so `write` naturally notes the last-real-frame
+ * time. The forwarded-only SAMPLING of injected pings is wired in B4.
+ */
+export interface SseSinkHeartbeat {
+  /** Seconds of client-forward silence before a synthetic ping is injected (<=0 disables). */
+  intervalSec: number
+  /** The already-terminal-form ping frame to inject (format-specific). */
+  pingFrame: ClientFrame
+  /** Suppress pings once the client has disconnected. */
+  clientAbortSignal?: AbortSignal
+}
+
+/**
  * A single-Promise-chain serializer. Returns an `enqueue` that runs `fn` after all
  * prior writes complete and resolves/rejects with `fn`'s result — but keeps the
  * internal chain alive across a rejection (so one failed write doesn't wedge the
@@ -42,10 +58,56 @@ function makeSerializer(): (fn: () => void | Promise<void>) => Promise<void> {
 }
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
-export function makeSseSink(stream: SSEStreamingApi): ClientSink {
+export function makeSseSink(stream: SSEStreamingApi, heartbeat?: SseSinkHeartbeat): ClientSink {
   const enqueue = makeSerializer()
+  const sseWrite = (frame: ClientFrame): Promise<void> =>
+    enqueue(() => stream.writeSSE({ data: frame.data ?? "", ...(frame.event !== undefined && { event: frame.event }) }))
+
+  // No heartbeat → the bare write path (still single-chain serialized).
+  if (!heartbeat || heartbeat.intervalSec <= 0) {
+    return { write: sseWrite }
+  }
+
+  // Forward-idle (SOFT) racer: inject a ping after `intervalSec` of write-silence to keep
+  // the CLIENT connection alive. It does NOT touch the upstream-idle guard (transport-
+  // resident, HARD kill) — the two are deliberately SEPARATE racers (design §3.3 / B2
+  // two-racer): a heartbeat must not keep a silent-upstream stream alive forever.
+  const intervalMs = heartbeat.intervalSec * 1000
+  let lastRealMs = Date.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+
+  const tick = (): void => {
+    if (stopped || heartbeat.clientAbortSignal?.aborted) return
+    const elapsed = Date.now() - lastRealMs
+    if (elapsed >= intervalMs) {
+      // Synthetic ping — shares the chain (no byte-interleave). Forwarded-only sampling
+      // is wired in B4; B1/B2 only inject. Errors swallowed: the next real write hits the
+      // same closed stream and routes through the driver's outcome/settle path.
+      void sseWrite(heartbeat.pingFrame).catch(() => undefined)
+      lastRealMs = Date.now()
+      timer = setTimeout(tick, intervalMs)
+    } else {
+      timer = setTimeout(tick, intervalMs - elapsed)
+    }
+  }
+  timer = setTimeout(tick, intervalMs)
+  // unref so a leaked timer can never hold the event loop / block graceful shutdown.
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+
   return {
-    write: (frame) => enqueue(() => stream.writeSSE({ data: frame.data ?? "", ...(frame.event !== undefined && { event: frame.event }) })),
+    write: (frame) => {
+      // noteRealFrame BEFORE the await so a timer firing mid-write sees the fresh ts.
+      lastRealMs = Date.now()
+      return sseWrite(frame)
+    },
+    // Public synthetic inject (handler-driven), same chain; B4 adds forwarded-only sampling.
+    writeSynthetic: (frame) => sseWrite(frame),
+    close: () => {
+      if (stopped) return
+      stopped = true
+      if (timer) clearTimeout(timer)
+    },
   }
 }
 

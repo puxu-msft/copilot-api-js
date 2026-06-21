@@ -5,6 +5,8 @@
 
 import {
   //
+  afterEach,
+  beforeEach,
   describe,
   expect,
   test,
@@ -76,5 +78,110 @@ describe("makeWsSink", () => {
     await sink.write({ data: '{"type":"x"}' })
     await sink.write({}) // empty → ""
     expect(sent).toEqual(['{"type":"x"}', ""])
+  })
+})
+
+// ── makeSseSink heartbeat (B2 forward-idle racer) ─────────────────────────────
+
+/** Minimal deterministic clock for the heartbeat timer (mirrors fake-sse-heartbeat's). */
+class FakeClock {
+  now = 1_000_000
+  private nextId = 1
+  private timers = new Map<number, { fireAt: number; cb: () => void; cleared?: boolean }>()
+  private origSet = globalThis.setTimeout
+  private origClear = globalThis.clearTimeout
+  private origNow = Date.now
+  install(): void {
+    Date.now = () => this.now
+    ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
+      const id = this.nextId++
+      this.timers.set(id, { fireAt: this.now + ms, cb })
+      return id as unknown as ReturnType<typeof setTimeout>
+    }) as typeof setTimeout
+    ;(globalThis as { clearTimeout: typeof clearTimeout }).clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
+      const e = this.timers.get(id as unknown as number)
+      if (e) e.cleared = true
+    }) as typeof clearTimeout
+  }
+  restore(): void {
+    Date.now = this.origNow
+    globalThis.setTimeout = this.origSet
+    globalThis.clearTimeout = this.origClear
+  }
+  async advance(ms: number): Promise<void> {
+    const target = this.now + ms
+    for (;;) {
+      const due = [...this.timers.entries()].filter(([, t]) => !t.cleared && t.fireAt <= target).sort(([, a], [, b]) => a.fireAt - b.fireAt)
+      if (due.length === 0) break
+      const [id, entry] = due[0]
+      this.now = entry.fireAt
+      this.timers.delete(id)
+      entry.cb()
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+    this.now = target
+  }
+}
+
+function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
+  const written: Array<{ data: string; event?: string }> = []
+  const stream = {
+    writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+  } as unknown as Parameters<typeof makeSseSink>[0]
+  return { stream, written }
+}
+
+const PING: ClientFrame = { event: "ping", data: '{"type":"ping"}' }
+
+describe("makeSseSink heartbeat (B2 forward-idle racer)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  test("intervalSec<=0 → no timer, bare write sink (no writeSynthetic/close)", async () => {
+    const { stream } = stubSseStream()
+    const sink = makeSseSink(stream, { intervalSec: 0, pingFrame: PING })
+    expect(sink.writeSynthetic).toBeUndefined()
+    expect(sink.close).toBeUndefined()
+  })
+
+  test("injects a ping only after intervalSec of forward-silence", async () => {
+    const { stream, written } = stubSseStream()
+    const sink = makeSseSink(stream, { intervalSec: 15, pingFrame: PING })
+    await clock.advance(14_000)
+    expect(written).toEqual([]) // not yet
+    await clock.advance(1_000) // 15s silence → fires
+    expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }])
+    sink.close?.()
+  })
+
+  test("a real write resets the countdown — a steady stream never pings", async () => {
+    const { stream, written } = stubSseStream()
+    const sink = makeSseSink(stream, { intervalSec: 15, pingFrame: PING })
+    for (let i = 0; i < 5; i++) {
+      await clock.advance(10_000) // < interval each time
+      await sink.write({ data: `f${i}` })
+    }
+    expect(written.filter((w) => w.event === "ping")).toEqual([]) // no pings
+    sink.close?.()
+  })
+
+  test("close() clears the timer — no ping after close", async () => {
+    const { stream, written } = stubSseStream()
+    const sink = makeSseSink(stream, { intervalSec: 15, pingFrame: PING })
+    sink.close?.()
+    await clock.advance(60_000)
+    expect(written).toEqual([])
+  })
+
+  test("aborted clientAbortSignal suppresses pings", async () => {
+    const { stream, written } = stubSseStream()
+    const ac = new AbortController()
+    const sink = makeSseSink(stream, { intervalSec: 15, pingFrame: PING, clientAbortSignal: ac.signal })
+    ac.abort()
+    await clock.advance(60_000)
+    expect(written).toEqual([])
+    sink.close?.()
   })
 })
