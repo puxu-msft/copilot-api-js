@@ -1,9 +1,10 @@
 /**
- * HTTP tests for POST /api/debug/dry-run-pipeline (Phase 1, response side, Anthropic).
+ * HTTP tests for POST /api/debug/dry-run-pipeline (all formats, request + response side).
  *
- * Verifies the offline pipeline dry-run feeds a synthetic upstream through the real
- * v4 S5 response-rewrite chain (ANTHROPIC_RESPONSE_REWRITES) and returns the forwarded
- * frames + captured feature events — without touching GHC or polluting history.
+ * Verifies the offline pipeline dry-run feeds a synthetic/replayed request + upstream
+ * through the real v4 driver — request side (S1→S3 inspectRequest, per-format codec) and
+ * response side (S5 rewrite chain, Anthropic 4 / Responses 1 / CC + Gemini none) — without
+ * touching GHC or polluting history, with honest per-format fidelity caveats (RFC §10).
  */
 
 import {
@@ -209,5 +210,95 @@ describe("POST /api/debug/dry-run-pipeline", () => {
   test("request side: 400 when no request/entryId provided", async () => {
     const res = await post({ stopAfter: "rewrite-in" })
     expect(res.status).toBe(400)
+  })
+
+  // ── Phase 3: all formats ──
+
+  describe("all formats (Phase 3)", () => {
+    test("request side: openai-cc parse runs, format switched, rewrite-in empty (no CC request rewrites)", async () => {
+      const request = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }
+      const res = await post({ request, format: "openai-cc", stopAfter: "parse" })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { format: string; side: string; inspection: { stoppedAt: string; stages: { parse?: { clientFormat?: string } } } }
+      expect(body.format).toBe("openai-cc")
+      expect(body.side).toBe("request")
+      expect(body.inspection.stages.parse?.clientFormat).toBe("openai-cc")
+    })
+
+    test("request side: openai-responses parse runs under the real codec", async () => {
+      const request = { model: "gpt-4o", input: [{ role: "user", content: "hi" }] }
+      const res = await post({ request, format: "openai-responses", stopAfter: "parse" })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { format: string; inspection: { stages: { parse?: { clientFormat?: string } } } }
+      expect(body.format).toBe("openai-responses")
+      expect(body.inspection.stages.parse?.clientFormat).toBe("openai-responses")
+    })
+
+    test("request side: openai-gemini parse translates Gemini→CC under the real codec", async () => {
+      // Gemini body carries `model` for the dry-run (the live path takes it from the URL).
+      const request = { model: "gemini-2.5-pro", contents: [{ role: "user", parts: [{ text: "hi" }] }] }
+      const res = await post({ request, format: "openai-gemini", stopAfter: "parse" })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { format: string; inspection: { stages: { parse?: { clientFormat?: string } } } }
+      expect(body.format).toBe("openai-gemini")
+      expect(body.inspection.stages.parse?.clientFormat).toBe("gemini")
+    })
+
+    test("response side: openai-responses runs the real fixIds rewrite (rewritesAvailable:true)", async () => {
+      const ev = (o: Record<string, unknown>): { raw: string; type: string } => ({ raw: JSON.stringify(o), type: o.type as string })
+      const upstream = [
+        ev({ type: "response.output_item.added", output_index: 0, item: { id: "item_A", type: "message" } }),
+        ev({ type: "response.output_item.done", output_index: 0, item: { id: "item_B", type: "message" } }),
+      ]
+      const res = await post({ upstream: { sseEvents: upstream }, format: "openai-responses", stopAfter: "rewrite-out" })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { format: string; stages: { "rewrite-out": { rewritesAvailable: boolean; perRewrite: Array<{ name: string }> } } }
+      expect(body.format).toBe("openai-responses")
+      expect(body.stages["rewrite-out"].rewritesAvailable).toBe(true)
+      expect(body.stages["rewrite-out"].perRewrite.map((r) => r.name)).toContain("responses-fix-stream-ids")
+    })
+
+    test("response side: openai-cc has no driver rewrites (rewritesAvailable:false) + identity render", async () => {
+      const frame = JSON.stringify({ id: "c", object: "chat.completion.chunk", choices: [{ delta: { content: "hi" }, index: 0 }] })
+      const res = await post({ upstream: { sseEvents: [{ raw: frame, type: "" }] }, format: "openai-cc", stopAfter: "render" })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        format: string
+        stages: { "rewrite-out": { rewritesAvailable: boolean; perRewrite: Array<unknown> } }
+        result: Array<{ data?: string }>
+      }
+      expect(body.format).toBe("openai-cc")
+      expect(body.stages["rewrite-out"].rewritesAvailable).toBe(false)
+      expect(body.stages["rewrite-out"].perRewrite).toEqual([])
+      // No rewrites + identity render → the CC frame round-trips verbatim.
+      expect(body.result[0]?.data).toBe(frame)
+    })
+
+    test("response side: openai-gemini has no driver rewrites + the CC-frame fidelity caveat", async () => {
+      const frame = JSON.stringify({ id: "c", object: "chat.completion.chunk", choices: [{ delta: { content: "hi" }, index: 0 }] })
+      const res = await post({ upstream: { sseEvents: [{ raw: frame, type: "" }] }, format: "openai-gemini", stopAfter: "render" })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { format: string; stages: { "rewrite-out": { rewritesAvailable: boolean } }; fidelity: { caveats: Array<string> } }
+      expect(body.format).toBe("openai-gemini")
+      expect(body.stages["rewrite-out"].rewritesAvailable).toBe(false)
+      // §10: the driver render outputs CC frames, NOT Gemini — must be flagged.
+      expect(body.fidelity.caveats.some((c) => c.includes("CC 帧") && c.includes("非 Gemini"))).toBe(true)
+    })
+
+    test("rewrite-out vs render are both available; skipRender distinguishes the stop stage", async () => {
+      // Anthropic identity-render: rewrite-out (skipRender) and render coincide, but the
+      // fidelity note records which stop stage produced the output.
+      const ev = (o: Record<string, unknown>): { raw: string; type: string } => ({ raw: JSON.stringify(o), type: o.type as string })
+      const upstream = [
+        ev({ type: "message_start", message: { id: "m", type: "message", role: "assistant", content: [], model: "claude-opus-4-8" } }),
+        ev({ type: "message_stop" }),
+      ]
+      const ro = await post({ upstream: { sseEvents: upstream }, stopAfter: "rewrite-out" })
+      const rd = await post({ upstream: { sseEvents: upstream }, stopAfter: "render" })
+      const roBody = (await ro.json()) as { fidelity: { caveats: Array<string> } }
+      const rdBody = (await rd.json()) as { fidelity: { caveats: Array<string> } }
+      expect(roBody.fidelity.caveats.some((c) => c.includes("pre-render"))).toBe(true)
+      expect(rdBody.fidelity.caveats.some((c) => c.includes("S6 render 后"))).toBe(true)
+    })
   })
 })
