@@ -338,14 +338,16 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
  * (normal / throw / write-reject) so a B2 heartbeat timer can't leak.
  *
  * **NOT yet a drop-in for the live handler loops** (B1-adversarial-review): the generator
- * YIELDS the `[DONE]` sentinel + every terminal frame, but the per-format handlers do
- * post-yield work the shim does NOT replicate — Anthropic DROPS `[DONE]` (handler-v4:581);
- * CC/Responses drop the upstream `[DONE]` and SYNTHESIZE their own (cc handler-v4:319);
- * WS BREAKS on the terminal event (ws.ts:295) instead of draining. So "byte-equivalent"
- * holds for the generator yield, NOT for the client bytes today's handlers emit. B2 must
- * relocate `[DONE]` drop/synthesis (into the sink / a frame-filter / stop yielding `[DONE]`)
- * + add an early-termination signal for WS, and the B2 equivalence test MUST use a real
- * per-format renderer + a `[DONE]` frame (the B1 identity-renderer test would false-green).
+ * YIELDS the `[DONE]` sentinel + every terminal frame. `runResponseSink` DROPS `[DONE]`
+ * (it's a gateway transport terminator, NOT a content frame — anthropic/stream.ts:104) so
+ * the sentinel never reaches any sink; the per-format trailing terminator is the handler's
+ * job (Anthropic emits NONE; CC/Responses synthesize their own `data: [DONE]` post-loop —
+ * byte-identical to today's cc handler-v4:319). That unifies the `[DONE]` home the four
+ * handlers used to each special-case (Anthropic skip / CC passthrough-forward + synth).
+ * STILL outside this shim: WS BREAKS on the terminal event (ws.ts:295) instead of draining
+ * — B3a adds an early-termination signal for WS. So "frame-equivalent" holds for the
+ * generator yield (minus `[DONE]`), NOT for WS's early stop; B3a's equivalence test MUST
+ * use a real per-format renderer (the B1 identity-renderer would false-green).
  *
  * B1 outcome is minimal: clean drain → `complete`; ANY thrown error (upstream throw OR
  * a `sink.write` rejection = client gone) → a non-`complete` outcome — so a disconnect
@@ -362,6 +364,9 @@ async function runResponseSink(
 ): Promise<ResponseOutcome> {
   try {
     for await (const frame of runResponse(deps, upstream, env, opts)) {
+      // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
+      // handler synthesizes its own trailing terminator; Anthropic emits none).
+      if (frame.data === "[DONE]") continue
       await sink.write(frame)
     }
     return { kind: "complete", headers: upstream.headers }

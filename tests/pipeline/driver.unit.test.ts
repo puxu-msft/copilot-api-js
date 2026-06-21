@@ -504,6 +504,19 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     expect(outcome).toEqual({ kind: "complete", headers })
   })
 
+  test("drops the [DONE] transport sentinel — never written to a sink (B2 cut-over red line)", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const { sink, frames } = makeArraySink()
+
+    // The generator YIELDS the [DONE] frame (identity render); the sink must NOT receive it.
+    const outcome = await driver.runResponseSink(okStream([{ data: "x" }, { data: "[DONE]" }, { data: "y" }]), makeEnv(ctx), sink)
+
+    expect(frames).toEqual([{ data: "x" }, { data: "y" }])
+    expect(outcome.kind).toBe("complete")
+  })
+
   test("rejecting sink (client disconnect mid-write) → non-complete outcome, never complete", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
