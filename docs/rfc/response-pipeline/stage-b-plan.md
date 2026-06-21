@@ -89,11 +89,11 @@
 > - **forward-idle heartbeat**（`streaming-pump.ts:360+`，`noteRealFrame` 由每个 forwarded 帧更新 `lastRealMs`，client 侧，post-rewrite）：测**客户端转发**静默 → **soft 注帧续命**，**故意不重置上游 idle**（DESIGN.md：上游真死仍按 `timeouts.stream_idle` 失败）。
 > 二者测的是**管道两侧**。原计划"合并同一计时器源"会让"心跳注帧重置上游 idle → 静默死上游被永久续命"破坏 DESIGN.md 不变量。
 
-- [ ] **Step 1**: 把 forward-idle heartbeat 移进 `ClientSink`——`write` 更新 `lastRealMs`，到点 soft 注帧经 `writeSynthetic`（`event: ping` 已终态形态）。upstream-idle guard **留 transport 不动**（hard kill 语义不变）。两 racer 并存喂同一循环，**不共用一个 timer**。
-- [ ] **Step 2**: soft 合成帧标 `synthetic`：`writeSynthetic` **采样进 forwardedSseEvents 但跳过 sseEvents**。单 Promise chain 串行化收敛进 sink，真实帧+心跳+error+flush **共用同一 chain**（不许 ping 另起 chain → 杜绝乱序）；计时器 `unref()`。
-- [ ] **Step 3（时序 + 泄漏，R3 硬 gate）**: **fake-timer 连跑 10-25×** + ① **不变量 golden**：heartbeat 开 + 上游静默 → 客户端收 ping **且** 流仍在 `stream_idle` 死（证两 racer 未合并）② **泄漏断言**：4 退出路径（normal/throw/abort/write-reject）后计时器均已 `close()` 清除（无 self-reschedule 残留）。仅 owns-sink 路径用；generator + web_search bypass heartbeat 保持现状（并存期）。subagent（时序视角）+ Commit。
+- [x] **Step 1**: forward-idle heartbeat 进 `makeSseSink`（可选 `SseSinkHeartbeat`，additive）——`write` 更新 `lastRealMs`，到点经 `writeSynthetic` 注 ping。upstream-idle guard 留 transport 不动。两 racer **不共用 timer**。✅ commit 5b59253
+- [x] **Step 2**: ping 共用 serialize chain（无字节交错）；`close()` 停 timer；`unref()` 防泄漏；格式无关（ping 帧调用方供）。`writeSynthetic` 的 forwarded-only **采样待 B4**（B2 只注入）。
+- [x] **Step 3（mechanism 单测）**: fake-timer：ping 仅静默后发 / 真帧重置 / close 清 timer / abort 抑制 / intervalSec<=0 退化。11 pass。**仍待 B3a canary（需真消费者 + transport 整合才可测）**：① 两-racer **整合不变量**（heartbeat 开 + 上游静默 → 收 ping **且** 仍 `stream_idle` 死）② 4 退出路径泄漏断言（driver `finally` 必调 `close()`）。这些随 Anthropic cut-over 落地（B0-e 同此归属）。
 
-> **OQ4 解（B2）**：`writeSynthetic` 用于 soft ping（终态形态、forwarded-only 采样、共用 chain）。两 timer **不合并**；`close()` 在 driver `finally` 必调防泄漏。
+> **OQ4 解（B2）**：`writeSynthetic` 用于 soft ping（终态形态、forwarded-only 采样[B4]、共用 chain）。两 timer **不合并**；`close()` 在 driver `finally` 必调防泄漏。
 
 ---
 
