@@ -333,16 +333,25 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
 /**
  * owns-the-sink streaming (Stage B B1): drain the generator `runResponse` into `sink`,
  * returning a control-signal {@link ResponseOutcome}. A thin WRAPPING SHIM — it reuses
- * the generator's S5→S6 chain verbatim, so it's byte-equivalent to the current path by
- * construction (the B1 equivalence test locks `sink` frame sequence == generator yield
- * sequence). `sink.close()` runs on EVERY exit (normal / throw / write-reject) so a
- * B2 heartbeat timer can't leak.
+ * the generator's S5→S6 chain verbatim, so the SINK FRAME SEQUENCE == the generator's
+ * YIELD SEQUENCE (the B1 equivalence test locks this). `sink.close()` runs on EVERY exit
+ * (normal / throw / write-reject) so a B2 heartbeat timer can't leak.
+ *
+ * **NOT yet a drop-in for the live handler loops** (B1-adversarial-review): the generator
+ * YIELDS the `[DONE]` sentinel + every terminal frame, but the per-format handlers do
+ * post-yield work the shim does NOT replicate — Anthropic DROPS `[DONE]` (handler-v4:581);
+ * CC/Responses drop the upstream `[DONE]` and SYNTHESIZE their own (cc handler-v4:319);
+ * WS BREAKS on the terminal event (ws.ts:295) instead of draining. So "byte-equivalent"
+ * holds for the generator yield, NOT for the client bytes today's handlers emit. B2 must
+ * relocate `[DONE]` drop/synthesis (into the sink / a frame-filter / stop yielding `[DONE]`)
+ * + add an early-termination signal for WS, and the B2 equivalence test MUST use a real
+ * per-format renderer + a `[DONE]` frame (the B1 identity-renderer test would false-green).
  *
  * B1 outcome is minimal: clean drain → `complete`; ANY thrown error (upstream throw OR
  * a `sink.write` rejection = client gone) → a non-`complete` outcome — so a disconnect
  * is never silently swallowed into `complete` (the B1 rejecting-sink fault test). B3a
- * refines the catch into `stream-error` (upstream / `acc.streamError`) vs `settled-abort`
- * (client-abort) using the handler's accumulator + abort signal.
+ * refines the catch into `stream-error` (upstream / `acc.streamError` — invisible to this
+ * outcome, the handler still reads its own accumulator) vs `settled-abort` (client-abort).
  */
 async function runResponseSink(
   deps: DriverDeps,
