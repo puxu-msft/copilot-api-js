@@ -25,10 +25,30 @@
  * same-(endpoint, model) requests pre-emptively strip the field during prepare
  * (`stripUnsupportedStructuredOutputs`), avoiding a repeated failed round-trip.
  *
- * Scope: only `structured_outputs` is handled — it is the sole partner feature
- * with a known, safe strip target (`output_config.format`). Other disallowed
- * features fall through to a plain 400 (we can't safely guess what to remove).
+ * Deferred / extension point — **only `structured_outputs` is handled today**:
+ *   - Current behavior: any OTHER disallowed partner feature
+ *     (`extended_thinking`, `vision`, `prompt_caching`, …) is parsed by
+ *     `parseDisallowedPartnerFeature` but `canHandle` returns false for it, so
+ *     the request still fails with a plain 400.
+ *   - Why deferred: `structured_outputs` is the only feature with empirical
+ *     evidence AND a known, safe strip target (`output_config.format`). The
+ *     other features have no obvious "remove this one field and the request is
+ *     still valid" mapping, and stripping the wrong thing would silently change
+ *     request semantics. We don't speculatively guess (YAGNI).
+ *   - To extend: add the feature→strip mapping (a small table keyed by feature
+ *     name), let `canHandle` accept the new feature, and teach the matching
+ *     prepare step (`stripUnsupportedStructuredOutputs` and siblings) to honour
+ *     the negotiation-cache entry. The identification half
+ *     (`parseDisallowedPartnerFeature`) is already feature-agnostic.
+ *
+ * Note: stripping `structured_outputs` drops the client's JSON-schema guarantee
+ * (degrade to free-form). The real fix is on the user's side — allow the feature
+ * in the Vertex org policy; the negotiation-cache fixation is permanent until
+ * `negotiation-states.json` is cleared, so a user who later allow-lists the
+ * feature must delete that entry to re-enable structured outputs.
  */
+
+import consola from "consola"
 
 import type { OutputConfig } from "~/types/api/anthropic"
 
@@ -103,6 +123,14 @@ export function createStructuredOutputsRejectionStrategy<TPayload extends { mode
     handle(_error: ApiError, currentPayload: TPayload, _context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
       attempted = true
       markAnthropicPartnerFeatureUnsupported(currentPayload.model, STRUCTURED_OUTPUTS_PARTNER_FEATURE)
+      // One-shot per request (the `attempted` guard above): surface WHY the
+      // response silently loses its JSON-schema guarantee, and how to restore it.
+      consola.warn(
+        `[StructuredOutputs] Upstream org policy disallows "${STRUCTURED_OUTPUTS_PARTNER_FEATURE}" for ${currentPayload.model}; `
+          + `stripped output_config.format and retrying — the response degrades to free-form (no schema guarantee). `
+          + `To restore: allow the feature in your Vertex AI org policy (allowedPartnerModelFeatures), then clear the `
+          + `negotiation cache entry (negotiation-states.json) so it is re-tested.`,
+      )
       return Promise.resolve({
         action: "retry",
         payload: stripStructuredOutputFormat(currentPayload),

@@ -93,6 +93,8 @@ type RetryAction =
 
 **negotiation cache**（feature-negotiation.ts）保留为跨请求 memo；`prepareHints` 为单请求重试意图（replace 语义）。二者关系不变（02 §1.4）。
 
+> **暂缓：`structured-outputs-rejection` 仅落地 `structured_outputs` 一个 partner feature。** Vertex 的 `allowedPartnerModelFeatures` 是通用约束类（可禁用 `extended_thinking`/`vision`/`prompt_caching` 等），错误识别 `parseDisallowedPartnerFeature` 已 feature-agnostic，但负载映射只有 `structured_outputs → 剥 output_config.format` 一条——它是唯一既有实证、又有"删一个字段后请求仍合法"安全剥离目标的特性。其它被禁特性 `canHandle` return false → 仍硬 400。**理想架构**：feature→strip 映射表 + 各 prepare 步认领各自的 negotiation 账本项。**为何暂缓**：其它特性无明确安全剥离目标，乱剥会静默改变请求语义（YAGNI，不投机）。**若要扩展**：加映射表项 + canHandle 放行 + 对应 prepare 步读账本。另注：剥离 structured_outputs 丢失 JSON-schema 保证（降级自由文本）；真正修复在用户侧 Vertex 组织策略放行，negotiation 账本永久 sticky（解禁后需删 `negotiation-states.json` 重测）。strategy `handle` 已打 `warn` 日志告知用户被禁特性 + 恢复方式。
+
 ---
 
 ## 3. prepareWire（env → wire）
