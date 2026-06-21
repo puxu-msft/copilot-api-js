@@ -478,6 +478,121 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     // held frames are silently dropped (the H3 regression Phase 4 would introduce).
     expect(collected.map((f) => f.data)).toEqual(["a,b"])
   })
+
+  // ── T1: skipRender (dry-run sees the S5-rewritten, PRE-render frames) ──
+
+  test("skipRender:false (default) yields RENDERED frames; skipRender:true yields the PRE-render S5 frames", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    // A NON-identity render so the two modes are distinguishable (Anthropic render is
+    // identity, hence Phase 1 didn't need skipRender; CC-via-responses / Responses render
+    // is non-identity, where dry-run must observe the S5 frames BEFORE S6 render).
+    const { codec } = makeCodec({ renderResponse: (frame) => ({ data: `R(${frame.data})` }), env })
+    const tag: ResponseRewrite = {
+      name: "tag",
+      order: 100,
+      appliesTo: () => true,
+      transform: (frame): FrameAction => ({ kind: "emit", frames: [{ data: `S(${frame.data})` }] }),
+    }
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [tag] })
+    const frames: Array<UpstreamFrame> = [{ data: "1" }, { data: "2" }]
+
+    const rendered = await collect(driver.runResponse(okStream(frames), env))
+    expect(rendered.map((f) => f.data)).toEqual(["R(S(1))", "R(S(2))"])
+
+    const preRender = await collect(driver.runResponse(okStream(frames), env, { skipRender: true }))
+    // S5 applied (tag), render skipped → the S5-rewritten frame verbatim.
+    expect(preRender.map((f) => f.data)).toEqual(["S(1)", "S(2)"])
+  })
+
+  test("skipRender covers the flushChain path (stream-end buffered frames are also un-rendered)", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ renderResponse: (frame) => ({ data: `R(${frame.data})` }), env })
+    interface BufState extends RewriteState {
+      buf: Array<string>
+    }
+    const accumulate: ResponseRewrite = {
+      name: "accumulate",
+      order: 100,
+      appliesTo: () => true,
+      createState: (): BufState => ({ buf: [] }),
+      transform: (frame, state): FrameAction => {
+        ;(state as BufState).buf.push(frame.data ?? "")
+        return { kind: "buffer" }
+      },
+      flush: (state): Array<UpstreamFrame> => [{ data: (state as BufState).buf.join(",") }],
+    }
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [accumulate] })
+    const frames: Array<UpstreamFrame> = [{ data: "a" }, { data: "b" }]
+
+    // The only output frame comes from flushChain (everything was buffered). skipRender
+    // MUST cover that yield point too (RFC §11 red line — else stream-end buffered frames
+    // get rendered while loop-body frames don't, an inconsistent half-render).
+    const rendered = await collect(driver.runResponse(okStream(frames), env))
+    expect(rendered.map((f) => f.data)).toEqual(["R(a,b)"])
+
+    const preRender = await collect(driver.runResponse(okStream(frames), env, { skipRender: true }))
+    expect(preRender.map((f) => f.data)).toEqual(["a,b"])
+  })
+
+  // ── T2: per-rewrite frameActions sampling (onRewriteAction hook) ──
+
+  test("onRewriteAction samples each rewrite's per-frame action (emit / suppress / buffer)", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    // filter: suppress "drop"; buffer-til-stop: buffer everything except a "stop" frame,
+    // at which it emits the joined accumulation (mirrors decode at content_block_stop).
+    const filter: ResponseRewrite = {
+      name: "filter",
+      order: 100,
+      appliesTo: () => true,
+      transform: (frame): FrameAction => (frame.data === "drop" ? { kind: "suppress" } : { kind: "emit", frames: [frame] }),
+    }
+    const bufTilStop: ResponseRewrite = {
+      name: "buf-til-stop",
+      order: 200,
+      appliesTo: () => true,
+      createState: (): RewriteState => ({ buf: [] as Array<string> }),
+      transform: (frame, state): FrameAction => {
+        const buf = (state as { buf: Array<string> }).buf
+        if (frame.data === "stop") return { kind: "emit", frames: [{ data: buf.join(",") }] }
+        buf.push(frame.data ?? "")
+        return { kind: "buffer" }
+      },
+    }
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [filter, bufTilStop] })
+    const frames: Array<UpstreamFrame> = [{ data: "keep" }, { data: "drop" }, { data: "stop" }]
+
+    const sampled: Array<{ name: string; frameIndex: number; kind: string }> = []
+    const out = await collect(
+      driver.runResponse(okStream(frames), env, { onRewriteAction: (name, frameIndex, action) => sampled.push({ name, frameIndex, kind: action.kind }) }),
+    )
+    expect(out.map((f) => f.data)).toEqual(["keep"])
+
+    // frame 0 "keep": filter emit → buf-til-stop buffer.
+    // frame 1 "drop": filter suppress → buf-til-stop NOT reached (no surviving frame).
+    // frame 2 "stop": filter emit → buf-til-stop emit (drains "keep,").
+    expect(sampled).toEqual([
+      { name: "filter", frameIndex: 0, kind: "emit" },
+      { name: "buf-til-stop", frameIndex: 0, kind: "buffer" },
+      { name: "filter", frameIndex: 1, kind: "suppress" },
+      { name: "filter", frameIndex: 2, kind: "emit" },
+      { name: "buf-til-stop", frameIndex: 2, kind: "emit" },
+    ])
+  })
+
+  test("onRewriteAction is not invoked when omitted (zero production overhead)", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    const r: ResponseRewrite = { name: "id", order: 100, appliesTo: () => true, transform: (f): FrameAction => ({ kind: "emit", frames: [f] }) }
+    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [r] })
+    // No opts → no hook; just assert it runs cleanly (the hook ref is undefined, never called).
+    const out = await collect(driver.runResponse(okStream([{ data: "x" }]), env))
+    expect(out.map((f) => f.data)).toEqual(["x"])
+  })
 })
 
 describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {

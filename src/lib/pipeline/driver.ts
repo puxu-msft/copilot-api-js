@@ -45,6 +45,7 @@ import {
   assembleResponseRewrites,
   REQUEST_REWRITES,
   RESPONSE_REWRITES,
+  type FrameAction,
   type RequestRewrite,
   type ResponseRewrite,
   type RewriteState,
@@ -327,6 +328,11 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
   // but the aliased array already holds every frame consumed up to the break.
   const upstreamSse: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
+  // T2 (dry-run): the upstream-frame ordinal threaded to `onRewriteAction`. Increments
+  // per upstream frame iterated (the sampler closure reads the live value).
+  let frameIndex = 0
+  const onRewriteAction = opts?.onRewriteAction
+  const sampleAction = onRewriteAction ? (name: string, action: FrameAction) => onRewriteAction(name, frameIndex, action) : undefined
 
   try {
     for await (const frame of upstream.frames) {
@@ -346,10 +352,14 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
         opts?.onUpstreamFrame?.(frame)
       }
       // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
-      for (const rewritten of passThrough([frame], rewrites, states, 0)) {
+      for (const rewritten of passThrough([frame], rewrites, states, 0, sampleAction)) {
         // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
-        yield* renderFrames(deps, rewritten, env)
+        // skipRender (dry-run T1) yields the S5 frame verbatim — the consumer wants the
+        // rewrite-chain output BEFORE the S6 render translation.
+        if (opts?.skipRender) yield rewritten
+        else yield* renderFrames(deps, rewritten, env)
       }
+      frameIndex++
     }
   } finally {
     // S5 flush: drain buffered frames at stream end. In `finally` (RFC §4.0.5, H3
@@ -371,7 +381,8 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
     // frames to an early-breaking consumer — that path needs an explicit flush
     // before the break (cf. the handler's post-loop flush, handler-v4.ts:655-663).
     for (const flushed of flushChain(rewrites, states)) {
-      yield* renderFrames(deps, flushed, env)
+      if (opts?.skipRender) yield flushed
+      else yield* renderFrames(deps, flushed, env)
     }
   }
 }
@@ -470,12 +481,14 @@ function passThrough(
   rewrites: ReadonlyArray<ResponseRewrite>,
   states: Array<RewriteState>,
   startIdx: number,
+  sample?: (rewriteName: string, action: FrameAction) => void,
 ): Array<UpstreamFrame> {
   let current = frames
   for (let i = startIdx; i < rewrites.length; i++) {
     const next: Array<UpstreamFrame> = []
     for (const frame of current) {
       const action = rewrites[i].transform(frame, states[i])
+      sample?.(rewrites[i].name, action)
       if (action.kind === "emit") next.push(...action.frames)
       // suppress / buffer → emit nothing now (buffer is held in the rewrite's state)
     }

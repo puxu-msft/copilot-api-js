@@ -35,6 +35,10 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "./envelope"
+// `import type` — erased at runtime, so this does NOT create a runtime cycle with
+// rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
+// used in the dry-run `onRewriteAction` hook signature ([[type-only-import-breaks-visual-cycle]]).
+import type { FrameAction } from "./rewrite-registry"
 
 // ============================================================================
 // SSE frames + upstream stream
@@ -235,6 +239,24 @@ export interface RunResponseOpts {
    * accumulate when the response rewrites move into the driver).
    */
   onUpstreamFrame?: (frame: UpstreamFrame) => void
+  /**
+   * Dry-run only (pipeline-dry-run-inspector.md §4 T1): yield the S5-rewritten frames
+   * VERBATIM instead of running `codec.renderResponse` (S6). For a format whose render is
+   * NON-identity (CC-via-responses / Responses fallback / Gemini), this exposes the S5
+   * output before the S6 translation — what the rewrite chain actually produced. Covers
+   * BOTH yield points (the per-frame loop AND the stream-end `flushChain` drain), so
+   * stream-end buffered frames aren't rendered while loop-body frames aren't (RFC §11 red
+   * line). Anthropic's render is identity, so this is a no-op there.
+   */
+  skipRender?: boolean
+  /**
+   * Dry-run only (§4 T2): sample each response rewrite's per-frame {@link FrameAction} as
+   * the S5 chain runs (`(rewriteName, frameIndex, action)`, frameIndex = upstream frame
+   * ordinal). Production omits it → zero overhead. Sampled only on the per-frame loop, NOT
+   * the stream-end `flushChain` re-threading (frameActions = per-upstream-frame transform
+   * actions; the flushed frames are reported separately by the inspector).
+   */
+  onRewriteAction?: (rewriteName: string, frameIndex: number, action: FrameAction) => void
 }
 
 // ============================================================================
