@@ -146,3 +146,26 @@ dry-run 跑 driver，但**大量 client-facing 处理在 driver 之外、handler
 - **preprocess 不可重建**：`toolNameMapper`/`preprocessAnthropicMessages` 的 dedup/strip 是 handler pre-step 产物，entry 只存结果 payload；从 inboundRequest 重跑会**重算 preprocess**，逻辑已改则不一致。
 - **betaProbe 状态丢失**：反应式 beta 候选是 S4 重试期演化，dry-run 短路拿不到。
 - 故 entryId 回放对**响应侧 S5（喂 sseEvents[].raw）高保真**，对**请求侧 S1-S3 是"用当前代码+配置重跑 inboundRequest"而非"复现当时"**。
+
+## 11. 第二轮评审修正（v3 实现约束，作为 Phase 锚点）
+
+第二轮 2 人对抗评审确认 v2 **根本可行、无 blocker**，以下实证修正为实现约束（均附 file:line）：
+
+**隔离（修正 §7）**：
+- **"零全局 swap" 须区分读/写**：响应侧 rewrites 仍**读** module-global `state`（response-rewrites.ts:106/160/164/186/190；thinking 逐帧读）；dry-run 用 live 配置**不写** state → 不污染。故 §7 响应侧卖点是"零全局**写**污染"，非"零全局读"——env-注入消除读依赖是 §6 deferred。
+- **捕获 ctx 复用 `createRequestContext`（不传 publisher → emit 全 no-op，request.ts:589）+ wrap `recordFeature`**，**不手搓 stub**（消解"漏方法即抛"）。范式见 `tests/helpers/factories.ts:246` `mockRequestContext`。响应侧 ctx 调用面仅 4 个：`setSseEvents`/`recordFeature`/`toolNameMapper`(返 null 安全, server-tool-filter.ts:102)/`id`。已有测试（driver.unit.test.ts:71、response-rewrite-contract.unit.test.ts:68）证明手工 env 喂真 driver 可行。
+- **请求侧 manager-swap 禁用 `resetRequestContextManagerForTests`**（它 `stopReaper()` 生产 reaper, manager.ts:103）；**Phase 2 锚点：新增无副作用 swap helper**（保存旧 `_manager` + 装 capturingPublisher manager + try/finally 还原，不停 reaper）。capturingPublisher = `{publish: e => local.push(e)}`（`ScopedPublisher.publish` 单方法）。请求侧 S1-S3 **全同步无 await** → swap 窗口=微秒级（远短于被否决的 state-swap 整流窗口）；mutex 只防 dry-run 自身并发嵌套 swap，跨 turn 并发真实请求靠运维告警"勿在重流量期跑"。
+
+**driver API（修正 §4）**：
+- `inspectRequest` 每阶段快照须 `structuredClone(env.body)`（body 是 `.with()` 间共享的可变引用, envelope.ts）。
+- `prepareWire` **非纯**（H2 新洞）：`prepareAnthropicWire` 有 `betaProbe.recordOutbound`(codec.ts:383) + `ctx.recordFeature`(codec.ts:389) 写副作用。prepare-wire dry-run 须**构造 throwaway `betaProbe`**（新实例、不复用生产 handle）+ 捕获 ctx。
+- frameActions hook 采样点 = `passThrough` 内 `rewrites[i].transform` 返回的 `FrameAction`(driver.ts:424)。skipRender 双 yield 点 = driver.ts:305(内层) + :328(flushChain 后)，**两处都分叉**。
+
+**entryId / 数据契约（修正 §3）**：
+- **响应侧流式上游 adapter**（Phase 1 锚点）：history `SseEventRecord{offsetMs,type,raw}` → driver `frame{data,event}`（字段名 `raw→data`/`type→event` 不一致, driver.ts:294 vs :286）。
+- **非流式回放须重建**（H1 新洞）：`outboundResponse.content` 是投影 `{role,content}`（handler-v4.ts:489），非上游原文 → 解包 `content.content` + 合成 `AnthropicMessageResponse` envelope（`{type:"message",role,content,stop_reason,model,usage}`）才能喂 `runResponseWhole`；合成的 `id`/`stop_sequence` 对 transformWhole 无影响但标注为合成。
+- **非流式无 render 阶段**（H4 新洞，修正 §2 表）：`runResponseWhole` 不经 render；`renderResponseNonStreaming` 是 identity、在 rewrite-out **之前**调（handler-v4.ts:358 先 render→476 再 whole，与流式 S5→S6 反序）。非流式 `stopAfter` 只 `rewrite-out` 有意义。
+- RawHttpRequest 合成：`path` 从 entry `rawPath` 取（顶层字段）；header 从 `httpHeaders.inboundRequest`（含 anthropic-beta/session-id/content-length；`authorization` 已脱敏 `***`、parse 不读、无害）。
+- **测试数据约束**（Phase 3）：live DB 当前 100% anthropic-messages + stream=true → 非流式回放、其他格式 endpoint→format 映射**无法用 live entry 实测**，须用 fixture。
+
+**范围（修正 §1/§8）**：CC `createPipelineDriver` 不传 responseRewrites→默认空、Gemini 同（C5 实证）；响应侧仅 Anthropic(4)+Responses(1) 非空，CC/Gemini 标 `rewritesAvailable:false`、不编空改写测试。
