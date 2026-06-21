@@ -1,5 +1,10 @@
 # Stage B — driver-owned-writeout 实现计划
 
+> **▶ 当前位置（2026-06-21，防呆——新会话先看这里）**
+> **已落地 + 提交（全 additive，零 handler 切换、零行为变化）**：**B0**（golden 预捕获 5 项 + 2 项归入引入风险的 phase；`8c512ce`/`bd5626f`/`f19b9fa`/`3e96507`）→ **B1**（`ClientSink`/`ResponseOutcome`/3 sink/`runResponseSink` shim + 对抗 review；`4418072`/`9cb2ace`）→ **B2**（`runResponseSink` 丢 `[DONE]` 哨兵 `4085fe2` + heartbeat 进 sink `5b59253`）。全 backend 2828 pass（唯一 fail = 预存无关 `file-sink` ENOTDIR）。
+> **下一步 = 第一个 byte-critical commit：Anthropic cut-over canary**。粘 [prompts/stage-b-anthropic-cutover.md](./prompts/stage-b-anthropic-cutover.md) 进新会话执行。它 collapse 了本 plan 的 B2-整合 + B3a + B4-Anthropic（per-format cut-over 时 forwarded 采样必须同时进 sink）。**勿**单跑 B3/B4 的非 Anthropic 部分——按 canary 序 Anthropic→CC→Responses-HTTP→Responses-WS→Gemini 逐格式整体切。
+> **B0-d/B0-e 等少数不变量**（abort 零字节、两-racer idle-kill）按设计**随 cut-over 落地**（见各 phase 内注 + 上述 prompt §3）。
+
 > **For agentic workers:** 本计划是 [design.md](./design.md) 的 **Stage B**（§5 / §3.2 / §3.3）。Stage A 已全部落地（registry 激活）；Stage B 把 `runResponse` 从 generator（handler 写出）翻转为 **owns-the-sink**（driver 持 `ClientSink`、driver 自己写客户端），把 forwarded 采样 / heartbeat 串行化 / 终态决策 / 整流翻译统一进 driver。**用户 2026-06-21 裁决 GO**（OQ1，§5）。
 
 **Goal:** handler 薄到 `streamSSE(c, s => driver.runResponse(upstream, env, makeSseSink(s)))`；forwarded/heartbeat/整流/终态全在 driver。

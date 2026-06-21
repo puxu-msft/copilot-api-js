@@ -28,6 +28,22 @@ v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 
 
 **受影响 deferred items 现状**：**P2.4-D2**（响应 finishing 留 handler、S5 registry 空）→ **Stage A 解决**；**P2.1-M2**（flushChain 单 buffer 假设）→ **Task3 解决**（双 buffer 确定契约）。**未变（Stage A 设计上不动，Stage B 评估）**：P3.2b-D1（forwarded 采样 handler-side）、P1.5-OQ1（heartbeat 抗逐帧）、P2.6-D1（web_search 双跳仍 legacy bypass，未进 driver）。Stage A 出口 = generator 模型不变，heartbeat/forwarded 采样/WS-HTTP 写出仍 handler-side。**Stage B（driver-owned-writeout）不预承诺**——重走 OQ1 见 RFC §5/§10。
 
+### Stage B（driver-owned-writeout）— 🟡 进行中（2026-06-21，用户裁决 GO）
+
+`runResponse` generator → **owns-the-sink**（driver 持 `ClientSink` 自己写客户端，forwarded 采样/heartbeat/终态统一进 driver）。计划 [docs/rfc/response-pipeline/stage-b-plan.md](../rfc/response-pipeline/stage-b-plan.md)（4 轮 multi-perspective review 硬化）。**当前位置看该 plan 顶部「▶ 当前位置」banner**。
+
+| Phase | 内容 | 状态 | commit |
+|---|---|---|---|
+| B0 | golden 预捕获（5 项 byte-lock + 2 项归 cut-over phase） | ✅ | 8c512ce/bd5626f/f19b9fa/3e96507 |
+| B1 | `ClientSink`/`ResponseOutcome`(无 accumulator)/`makeSse·Ws·ArraySink`/`runResponseSink` shim + 对抗 review | ✅ | 4418072/9cb2ace |
+| B2 | `runResponseSink` 丢 `[DONE]` 哨兵 + heartbeat forward-idle racer 进 sink（两-racer 不合并、additive） | ✅ | 4085fe2/5b59253 |
+| **Anthropic cut-over canary** | 活的 `pumpAnthropicStreamingV4` 切 owns-sink（**第一个 byte-critical commit**，collapse B2-整合+B3a+B4-Anthropic） | ⬜ **下一步** | [prompt](../rfc/response-pipeline/prompts/stage-b-anthropic-cutover.md) |
+| CC / Responses-HTTP / Responses-WS / Gemini | 逐格式 cut-over（CC 多 marker+via-responses DONE；WS 须加早停信号；Gemini=B5 逐帧化最硬） | ⬜ | — |
+| 收尾 | 删 generator `runResponse`+旧 heartbeat（scope 仅 driver 消费者，web_search bypass 仍用）；文档同步 | ⬜ | — |
+
+**B0/B1/B2 全 additive**（零 handler 切换、零行为变化，全 backend 2828 pass 除预存 file-sink）。**关键裁决**（已并入 plan + design §3.2/§3.3）：`ResponseOutcome` **剥 accumulator**（handler 自持）；heartbeat **两-racer 不合并**（forward-idle soft 进 sink vs upstream-idle hard 留 transport）；`writeRaw`→`writeSynthetic`（采样轨非对称非旁路-render）；`flushResponse`=S6-flush 镜像 S5；`[DONE]` 哨兵由 `runResponseSink` 丢、per-format 尾终止符 handler 合成。**B1-review cut-over 红线**：per-format 切时 forwarded 采样必须同进 sink（B3a/B4 collapse）、WS 须早停信号、等价测试须用真 renderer（identity 会 false-green）。
+
+
 ### P2.3 收尾排程（重排后，已落地）
 
 | 步 | 内容 | 状态 | 备注 |
