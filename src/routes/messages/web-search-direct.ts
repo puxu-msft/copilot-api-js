@@ -1,11 +1,13 @@
 /**
- * Anthropic direct-completion path (shared with the web_search double-hop).
+ * Anthropic direct-completion path — the web_search double-hop's second-hop engine.
  *
- * The /v1/messages route runs the v4 driver (`handler-v4.ts`); this file no
- * longer owns a route. It retains `handleDirectAnthropicCompletion` + its subtree
- * (sanitize → pipeline → dispatch → streaming/non-streaming finishing), which the
- * web_search orchestrator (`web-search-handler.ts`, a deferred P2.6 item that
- * bypasses the driver) invokes for the main-model second hop.
+ * The /v1/messages route runs the v4 driver (`handler-v4.ts`); this file owns NO
+ * route (renamed from the former `handler.ts`, which was misleading — it is not the
+ * messages handler). It retains `handleDirectAnthropicCompletion` + its subtree
+ * (sanitize → pipeline → dispatch → streaming/non-streaming finishing), whose ONLY
+ * live caller is the web_search orchestrator (`web-search-handler.ts`, a deferred
+ * P2.6 `[bypass]` that does not go through the driver) for the main-model second hop.
+ * When web_search migrates onto the driver, this file can shrink / be removed.
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"

@@ -11,7 +11,7 @@ import {
 
 import type { SseEventRecord } from "~/lib/history/store"
 
-import { startForwardedSseHeartbeat } from "~/routes/messages/handler"
+import { startForwardedSseHeartbeat } from "~/routes/messages/web-search-direct"
 
 /**
  * Tests for the synthetic SSE heartbeat (anthropic.fake_sse_heartbeat). Uses

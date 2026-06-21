@@ -66,7 +66,7 @@ import {
   //
   handleDirectAnthropicCompletion,
   startForwardedSseHeartbeat,
-} from "./handler"
+} from "./web-search-direct"
 
 /**
  * Handle an Anthropic completion via the web_search double-hop.

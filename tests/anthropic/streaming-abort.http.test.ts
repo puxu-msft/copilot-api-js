@@ -28,7 +28,7 @@ import {
   setStateForTests,
   state,
 } from "~/lib/state"
-import { handleDirectAnthropicStreamingResponse } from "~/routes/messages/handler"
+import { handleDirectAnthropicStreamingResponse } from "~/routes/messages/web-search-direct"
 
 const MESSAGE_START: ServerSentEventMessage = {
   data: JSON.stringify({
