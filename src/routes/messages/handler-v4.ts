@@ -46,6 +46,7 @@ import type {
   SseEventRecord,
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
+import type { FeatureKind } from "~/lib/observability"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -384,6 +385,23 @@ interface RecordRetryPipelineStateV4Args {
 }
 
 /**
+ * Decide the single sticky feature tag implied by an accepted retry's `meta`
+ * (or `null` for none). Pure so the gating is unit-testable in isolation —
+ * the historical inline `else` unconditionally tagged `truncated`, which is
+ * only correct for an auto-truncate retry. A beta-strip retry carries
+ * `probedBetas`/`strippedBetas`; a truncate retry carries `truncateResult`
+ * (passed in as `hasTruncateResult`); every other strategy's meta
+ * (server-tool / structured-outputs / body-field / deferred-tool /
+ * legacy-thinking / network / token-refresh) maps to NO feature tag.
+ */
+export function retryMetaFeature(meta: Record<string, unknown>, hasTruncateResult: boolean): { feature: FeatureKind; detail?: Record<string, unknown> } | null {
+  const strippedBetas = (meta.probedBetas ?? meta.strippedBetas) as Array<string> | undefined
+  if (strippedBetas && strippedBetas.length > 0) return { feature: "beta-stripped", detail: { betas: strippedBetas } }
+  if (hasTruncateResult) return { feature: "truncated" }
+  return null
+}
+
+/**
  * Rebuild `setPipelineInfo` + features for an accepted retry. Mirrors the legacy
  * `recordRetryPipelineState`, but the data comes from two channels (RFC §12.4):
  *   - message-mapping baseline ← `codec.getTruncateBaseline()` (preprocessed,
@@ -425,14 +443,12 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
     ...(retryMessageMapping && { messageMapping: retryMessageMapping }),
   })
 
-  // Beta retries surface which betas were stripped this attempt as a sticky feature
-  // tag; truncation is a sticky feature tag (mutually exclusive in legacy).
-  const strippedBetas = (meta.probedBetas ?? meta.strippedBetas) as Array<string> | undefined
-  if (strippedBetas && strippedBetas.length > 0) {
-    ctx.recordFeature("beta-stripped", { betas: strippedBetas })
-  } else {
-    ctx.recordFeature("truncated")
-  }
+  // Sticky feature tag for the accepted retry. Beta-strip and truncation are
+  // NOT exhaustive — many strategies (server-tool / structured-outputs /
+  // body-field / deferred-tool / legacy-thinking / network / token-refresh)
+  // emit meta with neither signal, and must NOT be branded `truncated`.
+  const retryFeature = retryMetaFeature(meta, retryTruncateResult !== undefined)
+  if (retryFeature) ctx.recordFeature(retryFeature.feature, retryFeature.detail)
 
   // `thinking` feature ← the retry's effective body (sampleRequest closure, NOT
   // meta — RFC §12.4 easy-to-miss point).
