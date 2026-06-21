@@ -155,6 +155,17 @@ describe("POST /api/debug/dry-run-pipeline", () => {
     expect(decodeFail?.detail).toMatchObject({ tool: "AskUserQuestion", field: "questions", reason: "field-undecodable" })
   })
 
+  test("appliesTo DISABLED side: all decode gates off → forwarded verbatim (questions stays stringified)", async () => {
+    // Test gap A (deferred-items §2 Step1 item3): the decode rewrite's `appliesTo` OFF-side was never
+    // locked. With every gate off the rewrite must NOT be assembled → byte-verbatim passthrough. This
+    // is the class the live symptom would fall into if decode silently stopped via state/gating.
+    setStateForTests({ decodeToolInputFields: {}, decodeAllToolInputFields: false, backfillQuestionFromHeader: false })
+    const stringified = JSON.stringify([{ header: "H", question: "Q" }])
+    const res = await post({ upstream: { sseEvents: askUserQuestionUpstream(stringified) } })
+    const body = (await res.json()) as { result: Array<{ data?: string }> }
+    expect(forwardedQuestions(body.result)).toBe(stringified) // still a STRING, not decoded to an array
+  })
+
   test("404 for an unknown entryId", async () => {
     const res = await post({ entryId: "req_does_not_exist" })
     expect(res.status).toBe(404)
