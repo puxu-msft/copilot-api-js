@@ -187,6 +187,9 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
 
       if (parsed.type === "content_block_start") {
         const block = parsed.content_block as { type: string; name?: string }
+        // KNOWN LIMITATION — sanitize × wire-name (deferred-items §2 Step1 item2). `block.name` is the UPSTREAM WIRE name; decode (order 200) runs BEFORE name-restore (filter, order 300, which applies `toolNameMapper.toClient`).
+        // `cfg.fields` / `ASK_USER_QUESTION_TOOL` are keyed by the CLIENT-ORIGINAL name, so when `sanitizeToolNames` rewrote a tool's name on the wire the upstream echoes the SANITIZED name and this match misses → decode silently skipped (and no [DECODE] log, since the tool was never selected).
+        // NOT a real-world trigger today: the default config (`AskUserQuestion`) is a legal name `makeValidToolName` leaves unchanged. Fix when a tool with an illegal/too-long name lands in `decodeToolInputFields`: resolve `block.name` via `env.ctx.toolNameMapper.toClient(...)` before matching (thread a resolver through here + the non-streaming path + both decode-rewrite call sites).
         if (
           block.type === "tool_use"
           && block.name !== undefined
