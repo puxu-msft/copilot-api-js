@@ -41,8 +41,8 @@ import type {
 } from "~/types/api/openai-chat-completions"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
-import { createOpenAiCcCodec } from "~/lib/codec/openai-cc"
-import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc-strategies"
+import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
+import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"

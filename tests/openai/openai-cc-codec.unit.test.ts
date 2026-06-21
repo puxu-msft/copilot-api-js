@@ -28,7 +28,7 @@ import type {
 } from "~/lib/pipeline/types"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { createOpenAiCcCodec } from "~/lib/codec/openai-cc"
+import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"

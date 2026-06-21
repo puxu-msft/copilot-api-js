@@ -80,9 +80,9 @@ import {
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search/detect"
-import { createAnthropicCodec } from "~/lib/codec/anthropic"
-import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic-response-rewrites"
-import { buildAnthropicStrategies } from "~/lib/codec/anthropic-strategies"
+import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
+import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrites"
+import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"

@@ -24,8 +24,8 @@ import type { SanitizeResult } from "~/lib/request/pipeline"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
-import { createAnthropicCodec } from "~/lib/codec/anthropic"
-import { buildAnthropicStrategies } from "~/lib/codec/anthropic-strategies"
+import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
+import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
 
 const NO_PREPROCESS = { strippedReadTagCount: 0, dedupedToolCallCount: 0 }
 

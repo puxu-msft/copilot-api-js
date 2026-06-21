@@ -42,8 +42,8 @@ import type {
 } from "~/types/api/openai-chat-completions"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
-import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc-strategies"
-import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini"
+import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
+import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import { HTTPError } from "~/lib/error"
 import {
   //

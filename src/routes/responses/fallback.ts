@@ -2,7 +2,7 @@
  * Force-fallback vendor list for /v1/responses.
  *
  * Some vendors' Copilot /responses upstream is broken or absent; the Responses
- * codec (`lib/codec/openai-responses.ts`) consults
+ * codec (`lib/codec/openai-responses/codec.ts`) consults
  * `shouldForceChatCompletionsFallback` to route them through the CC fallback even
  * when the model claims /responses support. (The fallback EXECUTION now lives in
  * the v4 driver path — codec `prepareWire` + `conversation-rebuild.ts` — not here.)

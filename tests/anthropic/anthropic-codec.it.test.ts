@@ -24,7 +24,7 @@ import {
   //
   type AnthropicCodec,
   createAnthropicCodec,
-} from "~/lib/codec/anthropic"
+} from "~/lib/codec/anthropic/codec"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { setModels } from "~/lib/state"
 

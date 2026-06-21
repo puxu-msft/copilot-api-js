@@ -93,7 +93,7 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
 
-import { createAnthropicSanitizeRewrite } from "./anthropic-request-rewrites"
+import { createAnthropicSanitizeRewrite } from "./request-rewrites"
 
 const CLIENT_FORMAT: ClientFormat = "anthropic"
 const ENDPOINT_TYPE: EndpointType = "anthropic-messages"

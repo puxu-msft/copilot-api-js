@@ -23,7 +23,7 @@ import type { SSEStreamingApi } from "hono/streaming"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import type { OpenAiResponsesCodec } from "~/lib/codec/openai-responses"
+import type { OpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
@@ -40,9 +40,9 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
-import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses"
-import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses-rewrites"
-import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses-strategies"
+import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
+import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
+import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
 import { HTTPError } from "~/lib/error"
 import {
   //

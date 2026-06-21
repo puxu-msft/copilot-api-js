@@ -20,7 +20,7 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { RawHttpRequest } from "~/lib/pipeline/types"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { createOpenAiCcCodec } from "~/lib/codec/openai-cc"
+import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { setModels } from "~/lib/state"
 

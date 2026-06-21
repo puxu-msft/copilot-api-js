@@ -147,7 +147,7 @@ describe("adaptLegacyStrategy", () => {
 
 describe("buildOpenAiCcStrategies", () => {
   test("yields network → token-refresh → auto-truncate in order", async () => {
-    const { buildOpenAiCcStrategies } = await import("~/lib/codec/openai-cc-strategies")
+    const { buildOpenAiCcStrategies } = await import("~/lib/codec/openai-cc/strategies")
     const strategies = buildOpenAiCcStrategies({
       originalPayload: { model: "gpt-4o", messages: [] },
       model: undefined,

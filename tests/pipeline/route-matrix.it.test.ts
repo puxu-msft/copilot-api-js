@@ -42,10 +42,10 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
-import { createAnthropicCodec } from "~/lib/codec/anthropic"
-import { createOpenAiCcCodec } from "~/lib/codec/openai-cc"
-import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini"
-import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses"
+import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
+import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
+import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
+import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { setModels } from "~/lib/state"
 

@@ -27,9 +27,9 @@ import type {
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
-import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses"
-import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses-rewrites"
-import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses-strategies"
+import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
+import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
+import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
 import {
   //
   registerResponseSession,

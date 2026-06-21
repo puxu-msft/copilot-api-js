@@ -69,7 +69,7 @@ import {
   //
   createOpenAiCcCodec,
   type OpenAiCcCodec,
-} from "~/lib/codec/openai-cc"
+} from "~/lib/codec/openai-cc/codec"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
