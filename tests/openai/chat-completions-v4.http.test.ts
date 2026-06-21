@@ -327,7 +327,7 @@ describe("CC v4 driver path", () => {
 
     expect(ccHits).toBe(2) // first 413 → truncate → retry streams
 
-    const frame = text.split("\n\n").find(Boolean)
+    const frame = text.split("\n\n").find(Boolean) ?? ""
     // First forwarded frame = the synthetic marker chunk, carried on `event: message`.
     expect(frame.startsWith("event: message\ndata: ")).toBe(true)
     const marker = JSON.parse(frame.slice("event: message\ndata: ".length)) as {
