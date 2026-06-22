@@ -1,10 +1,17 @@
 # RFC: pre-response abort 处理 + opus 长思考保活
 
-**Status:** 设计稿待评审 — ①②(C1/C2)设计已收敛(round-3),可进实现;**③(C3b)采延迟-commit,经 round-A 三视角并行 review 大改**(3 CRITICAL 已纳入设计),待 1 轮以上对抗复审 + Q2 oracle 实测(客户端超时 + 错误帧等价)后实现。
+**Status:** 设计稿待评审 — ①②(C1/C2)设计已收敛(round-3),可进实现;**③(C3b)采延迟-commit,经 round-A 三视角并行 review 大改 + round-B 对抗复审判定收敛**(无设计层 CRITICAL,仅余 Q1/Q2/Q7 需实测/人拍板)。待 Q2 oracle 实测(客户端超时 + 错误帧等价)后实现;C3b 含两个前置子步(forwardError 分派核抽取、sink `emitPingOnAttach`)。
 **Date:** 2026-06-22
 **Owner:** 排查会话(待实现会话接手)
 
 ### Changelog
+
+**Review round B(2026-06-22,对抗复审)—— 判定 ③ 收敛,无新设计层 CRITICAL。** 仅三处伪码/文档保真订正(已修):
+- **[round-A 重写遗留]** §4.2.1 COMMIT 分支误用 `env.ctx`(COMMIT 时 p 未 resolve、env 不存在)→ 改 `codec.getContext()?.recordFeature`(parse 已建 ctx)。
+- **[内部矛盾]** §4.2.1 首 ping 用 `writeSynthetic`(刻意不采样 forwarded 轨)与 §4.2.6"ping 入 forwarded 轨作诊断信号"冲突 → 改为给 sink 加 `emitPingOnAttach`(采样写),列为 C3b sink 子步。
+- **[低估重构]** §4.2.5"复用 forwardError type 映射"实为前置重构:forwardError 分派耦合在 `c.json` 内联,须先抽 `mapHttpErrorToEnvelope` 纯函数 → 列为 C3b 前置子步。
+- **[MEDIUM]** `stalledMs`→`stalledAtLeastMs`(COMMIT 时只知下界)+ resolve 后补真实 totalStalledMs;新 feature key 须登记 `FeatureKind`;onAbort 注册先于首 ping(L1)。
+- **[确认无洞]** Q2 unhandledRejection 论断成立(`p.then(ok,err)` 入 race 永久挂 reject reaction,回调 `await p` 是第二 reaction,无 unhandled 窗口);非流式 100% bypass race;首 ping 必要性成立。
 
 **Review round A(2026-06-22,3 个并行多视角 subagent:协议/兼容、生命周期/并发、配置/状态机)—— ③ 大改,3 CRITICAL 已纳入设计:**
 - **[CRITICAL 协议]** POST-COMMIT 的 SSE error 帧丢失 HTTP 状态码 + `error.type` + `retry-after`,双 oracle 实证 Anthropic SDK 对流内 error 走 `.status===undefined` 裸 APIError + 零自动重试;且现有 `anthropicStreamErrorType` 只产 3 值会把 401/400/429 拍平成 `api_error`。**新增 §4.2.5**:POST-COMMIT 必须复用 forwardError 的 type 映射(保 error.type/retry_after),残余(SDK 无自动重试)入 Q2。
@@ -266,16 +273,17 @@ if (first === "upstream") {
   //   ok+stream → streamSSE 接 pump;throw → §3.2 catch + forwardError(零发散)
 } else {
   // === COMMIT ===  graceTimer 先 fire,上游仍静默 → 提前开 200
-  env.ctx?.recordFeature("pre_stream_grace_commit", { graceSec, stalledMs: graceMs })  // 可观测(round-A M-3)
+  // ctx 来自 codec.getContext()(parse 已建),非 env —— COMMIT 时 p 未 resolve、env 还不存在(round-B H1)
+  codec.getContext()?.recordFeature("pre_stream_grace_commit", { graceSec, stalledAtLeastMs: graceMs })  // 可观测(round-A M-3 / round-B M1)
   return streamSSE(c, async (stream) => {
     const sink = makeSseSink(stream, { heartbeat: { intervalSec, pingFrame, clientAbortSignal: clientAbort.signal } })
-    await sink.writeSynthetic(pingFrame)   // ★立即首 ping(round-A CRITICAL:sink 首 tick 等满 interval,见 §4.2.3)
-    stream.onAbort(() => clientAbort.abort())
+    stream.onAbort(() => clientAbort.abort())  // 先注册再写首 ping(round-B L1:最小化 commit 瞬间断开窗口)
+    await sink.emitPingOnAttach(pingFrame)   // ★立即首 ping,且**必须采样 forwarded 轨**(round-B H2:不能用 writeSynthetic,它不采样;见 §4.2.3/§4.2.6)
     try {
       const result = await p               // 继续 await 同一 promise(不重发);REJECT 路径见下
-      // 成功 → pumpAnthropicStreamingV4(同一 sink)
+      // 成功 → 真实总 stall 时长已知 → recordFeature("pre_stream_grace_resolved",{totalStalledMs})(round-B M1);接 pumpAnthropicStreamingV4(同一 sink)
     } catch (error) {                      // p 的所有失败都是 throw(round-A H-1:非 resolve 分支)
-      // ctx 可能 undefined(client-abort 早于 parse)→ if(ctx) 守卫(round-3)
+      // ctx 可能 undefined(client-abort 早于 parse)→ codec.getContext() 守卫(round-3)
       //   client-gone(clientAbort.signal.aborted)→ ctx?.abort() + 不写字节(已 200,无 499)
       //   HTTPError / decideRoute reject / timeout → ctx?.fail() + sink.writeSynthetic(富错误帧,§4.2.5)
     } finally {
@@ -287,7 +295,7 @@ if (first === "upstream") {
 
 硬约束:
 - **promise 外置 + 回调内只 await**(round-A lifecycle C-1):否则照旧伪码会双发上游。`Promise.race` 已给 `p` 挂 reaction,故 graceTimer 赢后 `p` 后续 reject 不会 unhandledRejection(回调 `await p` 的 try/catch 接住)。
-- **commit 立即首 ping**(round-A CRITICAL,§4.2.3 详):`makeSseSink` 的 heartbeat 首 tick 排在**整个 interval 之后**([client-sink.ts:188](../../src/lib/pipeline/client-sink.ts#L188) `setTimeout(tick, intervalMs)` + [:176](../../src/lib/pipeline/client-sink.ts#L176) `elapsed>=intervalMs` 才发)。若不在 commit 时显式补一帧 ping,客户端要再等一个 interval(本配置 120s)才见首字节 → grace+120s 可能已超客户端超时,**③ 救不了它本要救的请求**。故 commit 后**必须**同步 `writeSynthetic(pingFrame)` 一帧(或给 sink 加 `emitPingOnAttach`)。
+- **commit 立即首 ping,且必须采样 forwarded 轨**(round-A CRITICAL + round-B H2):`makeSseSink` 的 heartbeat 首 tick 排在**整个 interval 之后**([client-sink.ts:188](../../src/lib/pipeline/client-sink.ts#L188) `setTimeout(tick, intervalMs)` + [:176](../../src/lib/pipeline/client-sink.ts#L176) `elapsed>=intervalMs` 才发)。若不在 commit 时显式补一帧 ping,客户端要再等一个 interval(本配置 120s)才见首字节 → grace+120s 可能已超客户端超时,**③ 救不了它本要救的请求**。故 commit 后**必须**同步发一帧 ping —— 但**不能用 `writeSynthetic`**(它刻意不采样 forwarded 轨,[client-sink.ts:158](../../src/lib/pipeline/client-sink.ts#L158)),否则 §4.2.6 的"grace 期 ping 入 forwarded 轨作诊断信号"缺首帧。**需给 sink 加 `emitPingOnAttach(frame)`**:`sampleForwarded(frame) + writeSse(frame) + lastRealMs=now`(与 heartbeat tick 的 [:180-182](../../src/lib/pipeline/client-sink.ts#L180) 同款采样)。这是 ③ 的一处 **sink 改动项**(C3b 子步)。
 - **graceTimer 用 `setTimeout`+`clearTimeout`**(round-A H-2):`AbortSignal.timeout` 不可取消会泄漏;`clearTimeout` 在 race 决出后立即调。
 - **POST-COMMIT 终态全部经 promise REJECT**(round-A H-1):runRequest 的失败(HTTPError/decideRoute/timeout/abort)都是 throw,回调 `try/catch` 必须接住每条并映射(富错误帧 §4.2.5 / ctx.abort)。pump 在 `await p` **resolve 之后**才启动(commit 到 pump 之间只有 ping 在 sink 上)。
 - **回调内必须 settle ctx 的每条退出路径**:`observabilityMiddleware` 对 SSE 响应不 finalize。
@@ -360,12 +368,13 @@ if (first === "upstream") {
 
 设计要求(硬约束,非可选):
 - POST-COMMIT 合成 error 帧**必须复用 forwardError 的 type 映射**(保 `rate_limit_error`/`invalid_request_error`/`authentication_error` 字面量 + 把 `retry_after` 带进 payload),**不得**走 3 值的 `anthropicStreamErrorType`。
+- **前置重构(round-B H3,C3b 子步)**:forwardError 的 status→type 分派**全程内联耦合在 `c.json(...)` 里**([forward.ts:347-436](../../src/lib/error/forward.ts#L347) 每个 status 分支 `helpers.X()` 紧跟 `return c.json`),从未抽成"返回结构化对象"的纯函数。POST-COMMIT 要的是 `{type, message, retry_after}` 塞进 SSE 帧(非写 HTTP 响应)。故须**前置抽取** `mapHttpErrorToEnvelope(error, format): { body, status }` 纯函数,让 forwardError 与 POST-COMMIT 共享(否则 POST-COMMIT 重复实现 status→type 判别 = DRY 违反 + [[feedback-fix-all-comparison-sites]] 复发风险)。好消息:Anthropic helper 输出形状([forward.ts:89](../../src/lib/error/forward.ts#L89) `{type:"error", error:{type:"rate_limit_error", message}}`)**恰等于** Anthropic SSE error 事件 data,抽取后对 Anthropic 直接可用。**§4.2.5"复用"实为一次前置重构 commit,C3b 计划须显式拆出。**
 - 即便如此,SDK 的 `.status===undefined` + 自动重试缺失**协议层无法弥补**(SSE-error 相对 HTTP-error 的不可消除残余)——这是**为何 grace 取大、最小化落入 POST-COMMIT 的错误数**(§4.2.2)的根本原因,也是 **Q2 必须 oracle 实测**的核心(专测"200 流首个语义事件即 error 帧"对 429/401/400 的客户端分支)。
 - **§4.5 golden 的"error 帧内容等价"是伪命题**——若沿用 `anthropicStreamErrorType` 则不等价;golden 须锁"富错误帧保 error.type/retry_after"。
 
 #### 4.2.6 可观测(round-A config M-3/M-4,richest-data-flow)
 
-- **commit 标记**:COMMIT 点 `ctx.recordFeature("pre_stream_grace_commit", { graceSec, stalledMs })`([request.ts:613](../../src/lib/context/request.ts#L613) 现成挂载点),否则 grace-committed 后成功的请求与正常流式 history 形状**完全相同**,运维无法识别 ③ 触发率(调 grace 默认值的关键数据)。
+- **commit 标记**:COMMIT 点 `codec.getContext()?.recordFeature("pre_stream_grace_commit", { graceSec, stalledAtLeastMs: graceMs })`([request.ts:613](../../src/lib/context/request.ts#L613) 现成挂载点;注意 COMMIT 时 ctx 来自 `codec.getContext()` 而非未就绪的 env,round-B H1),否则 grace-committed 后成功的请求与正常流式 history 形状**完全相同**,运维无法识别 ③ 触发率(调 grace 默认值的关键数据)。`stalledAtLeastMs`(非 `stalledMs`)因 COMMIT 时真实总 stall 未知、graceMs 只是下界(round-B M1);p 最终 resolve 后可补记 `pre_stream_grace_resolved{ totalStalledMs }` 供 grace 调参的真实分布。新 feature key **须登记进 `FeatureKind` 联合**(request.ts,否则 typecheck fail,round-B M2)。
 - **ping 非对称**:pre-response 期注入的 ping 仅入 forwarded 轨(`inboundResponse.sseEvents`),上游 `sseEvents` 在 grace 期**保持空**([client-sink.ts:180](../../src/lib/pipeline/client-sink.ts#L180) sampleForwarded;DESIGN 原则3)——这正是诊断 ③ 触发的二级信号(客户端收到 ping 但上游零帧),与 commit 标记互补。
 
 #### 4.2.7 正向确认(round-A 双 oracle,消除两个假想命门)
@@ -399,7 +408,9 @@ if (first === "upstream") {
 | **C1: ① forwardError 分类 abort** | forwardError 对 abort 出 504(超时)/499(客户端断开,靠 `raw.signal.aborted` 判别)+ 良性日志;catch-all 仅剩**真正未知**的非 HTTP 错误。全格式 route 的 catch 经此出口行为一致。单测绿。系统完整可用(纯出口降噪,不碰请求流)。**已知过渡态(round-1 M2)**:C1 单独存在、② 未上时,pre-response 客户端断开仍经 handler `ctx.fail`→`failed`,但 HTTP 已是 499 —— `state=failed` + `status=499` 短暂不一致。这**不是半坏**(系统能跑、数据没丢、status 已正确),是 C2 待修正的已知过渡;telemetry 的 failed 计数在 C2 落地后才与 status 对齐。**① 的 499(client-gone)分支的活/死(round-3 澄清)**:② 落地后 Anthropic 的 client-abort 由 ② 的 `c.body(null,499)` 出(handler 返回非 throw,不进 forwardError),故 ① 的 client-gone 分支对 **Anthropic 变死代码**、仅对 CC/Responses/Gemini(② 未覆盖,仍 throw 进 forwardError)是活代码;Anthropic 经 ① 只走 timeout→504 分支。二者互斥,无重复出 499。 |
 | **C2: ② pre-response client-abort 记 aborted** | **定义性不变量:pre-response client-abort 统一为 `ctx.abort()` 终态(`state=aborted`)**(round-2 C-1:这才是 C2 的核心,499 只是附带表现)。handler catch 区分 client-gone(`clientAbort.signal.aborted`,优先于 timeout → `ctx.abort()`)vs timeout/真失败(→`ctx.fail`+rethrow→C1 的 504/原码)。**HTTP 表现随阶段**:C2 阶段(streamSSE 仍在 runRequest 后)client-gone 在 catch 里 `return c.body(null, 499)`;C3b 后该 499 消失(已 200)。mid-stream 与 pre-response 的客户端断开终态统一为 `aborted`。**范围(Q7)**:本 commit 仅改 **Anthropic** handler;CC/Responses/Gemini 的 aborted 终态待 Q7 决议(否则它们经 ① 出 499 但终态仍 `failed`)。`*.it.test.ts` 绿。 |
 | **C3a: ③ golden 预捕获** | 在 C1+C2 之上、改流程之前,golden 录制现有流式正常 + 流式上游错误(当前出 HTTP 4xx)行为。纯测试新增,不改 src。 |
-| **C3b: ③ 方案 A 乐观开流** | `stream:true` pre-response 即开流打 ping(单 sink,§4.2.1);runRequest 成功接 pump、**所有 pre-pump 失败**(上游错误 + decideRoute reject,H1)降级 SSE error 帧;**client-abort 走 C2 的 `ctx.abort()` 终态语义,但无 499**(round-2 C-1:已 200);**终态全部在 streamSSE 回调内自包含**(H2,中间件不再兜底)、`sink.close()` 在 finally。golden(C3a)证明正常流逐帧等价、错误流变化范围精确(只动状态码层,error 帧内容等价)。非流式路径零改动。 |
+| **C3b-pre1: forwardError 分派核抽取** | 把 [forward.ts](../../src/lib/error/forward.ts) 的 status→{type,message,retry_after} 分派从 `c.json` 内联抽成纯函数 `mapHttpErrorToEnvelope(error, format)`,forwardError 改调它。纯重构、行为不变(现有 forwardError 测试绿即不变量),为 C3b 的富错误帧(§4.2.5)共享。round-B H3。 |
+| **C3b-pre2: sink `emitPingOnAttach`** | 给 `makeSseSink` 加 `emitPingOnAttach(frame)`(采样 + write + 推进 lastRealMs),供 commit 立即首 ping(§4.2.1/§4.2.6)。独立小改,现有 sink 测试绿。round-B H2。 |
+| **C3b: ③ 方案 A 延迟-commit** | 依赖 C1/C2 + C3b-pre1/pre2。`stream:true` + `grace>0` 走两段式(promise 外置 race,§4.2.1);grace 内回头零发散(现状出口)、grace 耗尽 commit 开流 + 立即采样 ping;**所有 POST-COMMIT 失败**(上游错误 + decideRoute reject)降级**富** SSE error 帧(§4.2.5 保 error.type/retry_after);client-abort 走 `ctx.abort()` 无 499;**终态全部在 streamSSE 回调内自包含**(中间件不 finalize SSE)、`sink.close()`+`clearTimeout` 在 finally;commit 点 recordFeature。`grace<=0`/非流式完全 bypass(=禁用)。golden(C3a)锁正常流逐帧等价 + 富错误帧保 type/retry_after。非流式路径零改动。config-hot-reload 矩阵 + DESIGN 同步(§8)。 |
 | **(可选)C0: ⓪ http2-client 保留 abort reason** | 若评审采纳(§1.4):http2-client abort 路径 `reject(signal.reason ?? abortError())`,使 history `attempt.error` 保留 TimeoutError 文案。独立无害(其它消费端仍只看 `isAbortError`,name 从 "AbortError" 变 "TimeoutError" 不影响分类)。可作 C1 前置或独立 commit;504/499 判别**不依赖**它。 |
 
 每个 commit 单独可发布、系统不半坏:C1 独立有用(降噪;过渡态 state/status 不一致是已知、非 bug);C2 依赖 C1 的超时出口但不依赖 C3;C3 依赖 C1/C2 的 abort 语义。⓪ 完全独立。
