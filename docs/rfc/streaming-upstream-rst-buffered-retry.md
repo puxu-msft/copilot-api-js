@@ -1,0 +1,205 @@
+# RFC: 流式响应的事务化缓冲重试 — 保护大 Write/Edit 生成不被上游 mid-stream RST 砍断
+
+**Status:** 设计稿待评审（2026-06-22）
+**Scope:** Anthropic 流式路径（`/v1/messages` streaming）的 mid-stream 上游 RST 保护
+**关联:** 取代/补充模型当时正在写但被 RST 砍断的 `pre-response-stall-and-abort-handling.md`（那篇聚焦 pre-response 静默；本篇聚焦**已开始流式后**的上游主动 RST）
+
+---
+
+## 1. 背景与问题（已实测，非推断）
+
+opus-4.8 在超大上下文（150K–200K token）上生成一个**大 Write/Edit 工具调用**（写大文件/文档）时，上游 GitHub Copilot 在**活跃流中途**发 `RST_STREAM(NGHTTP2_CANCEL)` 把流砍断。已观测四次，签名一致：
+
+| 时刻 | elapsed | silence | stuck-block | input tok | 砍断时在生成 |
+|---|---|---|---|---|---|
+| 02:31 | 140s | 139ms | tool_use | 196665 | — |
+| 02:55 | 87s | 70ms | tool_use | 142015 | — |
+| 06:42 | 148s | 123ms | tool_use(Write) | 167131 | 一篇 ~11KB+ RFC markdown（无重复/loop，合法大生成） |
+
+关键判别（已逐条证伪其它假设）：
+- **非 idle 超时**：`silence` 仅几十~百 ms，流一直在喷 `content_block_delta`。
+- **非固定时长墙**：四次 60/87/140/148s 各不同；同库实证 287s 请求能正常完成。
+- **非 keepalive 失效**：`ss` 实证上游 socket 带 `timer:(keepalive,…)`；且活跃流不空闲，keepalive 不参与。
+- **非 loop/runaway**：尸检 tool_use 的 `input_json` 无任何重复，是模型在写真实大文档。
+- **结论**：GHC 对**大生成的请求级中止**——请求/时刻/负载相关，本地超时/keepalive 都治不了。
+
+### 1.1 两个官方客户端都不保护这种情况（已读源码核验）
+
+| 客户端 | mid-stream 上游 RST 的处理 | 证据 |
+|---|---|---|
+| GHC 官方扩展 | 整请求重试**仅限** `NetworkError`；把 `Premature close`/`ERR_STREAM_PREMATURE_CLOSE`（上游 RST 常见形态）**刻意归 `Canceled` 不重试** | `chatMLFetcher.ts:575`、`:1973-1983`（注释 `/* to be extra sure */`） |
+| Claude Code（Anthropic SDK） | 标准 SDK 重试（408/409/429/5xx/overloaded/连接错误，`maxRetries≈2`+退避）**只覆盖请求建立阶段，不覆盖流已开始后的中途断** | 二进制 grep：`retryable`/`status>=500`/`overloaded_error`/`x-should-retry` 在，无 mid-stream 重试路径 |
+
+官方客户端因为**分不清"客户端取消"vs"上游故障"**，保守地把 premature-close 当取消、不重试。
+
+### 1.2 代理的独有优势
+
+copilot-api 夹在 Claude Code 与 GHC 之间，靠 `abort-bridge`（client abort → 上游 AbortSignal）能**确定性区分**：
+- 客户端主动取消 → `StreamClientAbortError`（不该重试）
+- 服务器关闭 → `StreamShutdownError`（不该重试）
+- 上游主动 RST → `transport-close`（`classifyStreamError` 归 `"other"`，**正是可安全重试的目标**）
+
+这个判别能力就是保护的钥匙——**做官方客户端做不到、且放弃了的事**。
+
+---
+
+## 2. 目标与非目标
+
+**目标**：当流式 Anthropic 响应在**收齐前**因上游 RST（`transport-close`）断裂时，对客户端**透明地重试整请求**，最终把**一次完整生成**的响应交付客户端，而非把半截流 + 错误帧抛给客户端。
+
+**非目标**：
+- 不保证成功——若 GHC 对某请求**持续**无法完成（而非偶发负载），重试也会再 RST；L2 提高成功率，不消灭失败（§8 诚实评估）。
+- 不做断点续传/续写（Anthropic 协议不支持 resume 半截 tool_use；只做**无状态整请求重发**，靠 prompt cache 降成本）。
+- 不动非流式路径（`renderNonStreamingV4` 本就缓冲整响应，且 S4 重试已覆盖其失败）。
+- 不默认开启 auto_truncate（用户明确否决）。
+
+---
+
+## 3. 核心机制：事务化缓冲重试（transactional buffered retry）
+
+把"逐帧 live 转发"改为"**缓冲整响应、成功才 commit**"，从而让"重试"在 mid-stream 失败后变得可能：
+
+```
+loop attempt = 1..N:
+  upstream = runExchange(env)              # 拿一条全新上游流（S4，复用既有重试循环处理 pre-stream 错误）
+  buffer = []                              # 本次尝试的渲染后帧缓冲
+  try:
+    for frame in runResponse(upstream,env):# S5 改写链逐帧（recover/decode/filter…）
+      buffer.push(frame)                   # 不写 sink,只缓冲
+      onUpstreamFrame(rawFrame)            # 仍喂 history 累加器(本次尝试)
+    # 走到这=收到 message_stop,生成完整
+    for frame in buffer: sink.write(frame) # COMMIT:一次性 flush 完整响应
+    return complete
+  catch error:
+    cls = classifyStreamError(error)
+    if cls == client-abort: return settled-abort      # 客户端走了,不重试不转发
+    if cls == shutdown:     return shutdown            # 服务器关,不重试
+    if cls == transport-close 且 attempt < N:          # 上游 RST → 丢弃 buffer,重来
+      record failed attempt; (可选)escalate; continue
+    return stream-error(error)             # 重试耗尽/不可重试 → 维持现状(报错帧)
+```
+
+**关键不变量——全有或全无（all-or-nothing）**：缓冲**整个**响应、只在 `message_stop` 后 commit。**绝不**部分 commit 再重试——否则会把"第 1 次生成的前半"与"第 2 次生成的后半"拼接，产出一个跨两次生成、自相矛盾的响应。一次交付 = 一次生成。
+
+---
+
+## 4. 架构集成（落在 driver，handler 只换调用）
+
+当前（`pumpAnthropicStreamingV4`）：`driver.runRequest`(S1-S4) → `makeSseSink` → `driver.runResponseSink`(S5 逐帧 live 写)。
+
+L2 新增 driver 编排 **`runResponseBufferedSink`**，与 `runResponseSink` 平行：
+
+```ts
+runResponseBufferedSink(
+  env: RequestEnvelope,
+  sink: ClientSink,
+  reExchange: () => Promise<UpstreamStream>,   // 重试时取全新上游流(driver 内部 = runExchange(env))
+  opts: RunBufferedOpts,                        // onUpstreamFrame / onAttemptReset / retryCap / …
+): Promise<ResponseOutcome>
+```
+
+- **谁拥有 re-exchange**：S5 mid-stream 重试必须回到 S4 拿全新上游流。driver 内部本就有 `runExchange`；L2 方法内部循环调它。故 L2 **必须在 driver**（拥有 S4），不能只在 handler。
+- **handler 改动最小**：把 `runResponseSink(upstream,env,sink,…)` 换成 `runResponseBufferedSink(env,sink,…)`（upstream 改由 driver 内部按尝试重取；handler 不再先 `runRequest` 拿 upstream，而是 driver 一并管 S4+S5 的重试）。具体接线见 §11 phases。
+- **S5 改写链每尝试重置**：`recover-tool-call`（CANDIDATE/COMMIT 跨帧状态）、`tool-input-decode`（buffer/flush）、`server-tool-filter`（index densify map）都是 **stateful per-response**。每次重试是一次全新生成 → 必须 `onAttemptReset` 重建改写链 + 重置 history 累加器（`createAnthropicStreamAccumulator`）+ 清空 `forwardedSseEvents`。否则上次尝试的残留状态会污染本次。
+- **complete 后才 flush**：`message_stop` 到达 → buffer 是一次完整生成 → 逐帧 `sink.write` flush（此时 `onForwarded` 采样 forwarded track）。flush 期间不再有上游，纯本地写客户端，极快。
+
+---
+
+## 5. 客户端保活（缓冲窗口期）
+
+缓冲整响应意味着客户端在生成的整个 148s 里**收不到任何真实帧**——会触发 Claude Code（~258s）等客户端的超时断开。**复用既有 `makeSseSink` 的 forward-idle heartbeat**（`anthropicFakeSseHeartbeat`）：
+
+- L2 引擎启用时，**强制开启 heartbeat**（即使用户没配 `fake_sse_heartbeat`，L2 也注入一个保守默认，如 15s），让客户端在缓冲期持续收到 `event: ping`。
+- heartbeat ping 是代理自发的、采样进 forwarded track、不污染上游原始 `sseEvents`（既有契约，§client-sink）。
+- **关键约束**：缓冲 + 重试的总时长必须 < 客户端超时。N 次重试 × 单次最长 ~150s 可能逼近甚至超过 258s → §7 retry cap 必须保守（建议 N=1，即"原始 + 1 次重试"），且 heartbeat 必须在两次尝试之间不中断。
+
+---
+
+## 6. 重试分类（只重 transport-close）
+
+复用 `classifyStreamError`（`src/lib/stream.ts`）：
+
+| 分类 | 来源 | L2 动作 |
+|---|---|---|
+| `client-abort` | `StreamClientAbortError`（abort-bridge） | **不重试** → `settled-abort` |
+| `shutdown` | `StreamShutdownError` | **不重试** → 维持 shutdown 处理 |
+| `idle-timeout` | `StreamIdleTimeoutError`（`timeouts.stream_idle`） | **可选**重试（上游静默死也许偶发；默认**不**重，避免与真正卡死的上游纠缠——开放问题 Q3） |
+| `other`(transport-close) | http2-client `controller.error`（NGHTTP2_CANCEL/ECONNRESET/closed-before-end） | **重试**（目标场景） |
+
+判别正确性是 L2 的安全基石：**绝不**对 client-abort 重试（客户端已走，重试纯浪费 + 可能违背用户意图取消）。
+
+---
+
+## 7. 重试边界与成本
+
+- **retry cap**：配置项，默认保守 **1**（原始 + 最多 1 次重试）。理由：单次大生成 ~150s，N≥2 会逼近客户端超时；且若 GHC 持续无法完成，多重试只是线性浪费。
+- **prompt cache 降成本**：重发是无状态整请求重发，但输入侧靠 `cache_control`（≤4 breakpoint，已实现）近乎免费——重试的增量成本主要是**输出重新生成**（GHC 计费 + 时延），不是输入。
+- **buffer 内存**：缓冲渲染后帧。典型（thinking + text + 11KB tool_use）几十 KB,可控；但需 **buffer 上限守卫**（如 16MB），超限放弃缓冲、退回 live 转发（避免病态超大响应 OOM）。超限是 §12 暂缓项之一。
+- **失败兜底**：重试耗尽仍 RST → 退回**现状**（`stream-error` → handler 写 H3 合成 error 帧 + `ctx.fail`）。客户端体验不比今天差，只是多花了重试时间。
+
+---
+
+## 8. 诚实的有效性评估（评审必读）
+
+L2 的价值**取决于 RST 是偶发还是必然**：
+- **偶发/负载相关**（四次时刻 60-148s 离散 → 倾向此）：重试在不同负载时刻有真实成功机会，L2 提高成功率。
+- **该请求对 GHC 必然超预算**（大输出 × 超大上下文本质太慢）：重试会**再次 RST**，L2 只是多烧一次 150s 仍失败。
+
+**缓解（可选 escalation）**：重试时**收紧** `context_management`（GHC 原生 `clear_tool_uses` trigger 调低 / keep 调小，**非** auto_truncate）压上下文 → 生成更快 → 更可能在 RST 窗口前完成。把 L1（治根：让生成 fit 进 GHC 预算）与 L2（重试）结合，是提高 L2 命中率的正交手段。默认关闭（改变语义），作为 opt-in。
+
+→ **评审决策点**：L2 是否值得做，取决于团队对"RST 偏偶发"的判断。若实测重试命中率低，应优先 L1（context_management 治根）而非 L2（重试治标）。建议 L2 落地后**先采集重试命中率遥测**再决定默认是否开启。
+
+---
+
+## 9. 配置
+
+| 配置键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `anthropic.protect_streaming_generation` | `false \| "on" \| "tool_use_only"` | `false` | L2 总开关。`on`=所有流式响应缓冲重试；`tool_use_only`=仅当请求带 tools（大 Write/Edit 场景）才缓冲，纯文本对话仍 live 流式（省时延）。默认关。 |
+| `anthropic.protect_streaming_max_retries` | number | `1` | mid-stream RST 的重试上限（§7）。 |
+| `anthropic.protect_streaming_escalate_context` | boolean | `false` | 重试时是否收紧 `context_management` 压上下文（§8）。 |
+| `anthropic.protect_streaming_heartbeat` | number | `15` | 缓冲期强制 heartbeat 间隔秒（§5）；L2 启用时即使全局 `fake_sse_heartbeat=0` 也注入。 |
+| `anthropic.protect_streaming_buffer_cap_bytes` | number | `16777216` | buffer 上限,超限退回 live 转发（§7）。 |
+
+热重载语义同其它 `anthropic.*`（`applyConfigToState`）。
+
+---
+
+## 10. 可观测性 / History
+
+- **每次尝试都是一条 attempt**：复用 driver 既有 per-attempt 记录（`beginAttempt` / S4 retry 已有的 attempt 模型）。失败的 mid-stream 尝试记 `attempts[].error`（含 `transport-close` + elapsed/frames/bytes 诊断，复用 `logUpstreamStreamError` 的信号）；最终成功尝试产 `outboundResponse`。
+- **诊断日志**：每次 RST 重试打一行 `[RETRY-stream-n] … transport-close … (buffered retry)`，与既有 `[RETRY-n]` 风格一致，operator 能看到"这个大生成重试了几次"。
+- **forwarded track**：只在最终 commit flush 时采样（客户端实收的是完整响应）；中途失败尝试的帧**不**进 forwarded（客户端从没收到它们）。上游原始 `sseEvents` 仍按尝试记（richest-data-flow：每次尝试的上游原貌都留痕，便于分析为何 RST）。
+- **遥测**：`history.protect_streaming_retry{outcome:success|exhausted}` 计数,支撑 §8 的"重试命中率"决策。
+
+---
+
+## 11. 实现 phases（commit invariants：每个中间 commit 不让系统半坏）
+
+- **Phase 0 — golden 基线**：在改前锁住现有 live-streaming 路径的字节 golden（复用 `response-rewrite-golden.http.test.ts` 范式）+ 一个 mid-stream RST 失败的现状测试（注入 http2 stream error → 现状 `stream-error` → H3 error 帧）。证明改动前后 live 路径字节等价。
+- **Phase 1 — driver `runResponseBufferedSink`（默认不接线）**：新增 driver 方法 + per-attempt 重置 + buffer/flush + re-exchange 循环，但 handler **不调用**（`protect_streaming_generation` 默认 false → 仍走 `runResponseSink`）。单测覆盖：注入"前 2 次 transport-close、第 3 次完整"的上游 → 断言客户端只收到第 3 次的完整响应 + 前两次记为 attempts。此 commit 系统行为零变化（新方法是死代码待激活）。
+- **Phase 2 — handler 接线 + 配置门控**：`pumpAnthropicStreamingV4` 按 `protect_streaming_generation` 选 `runResponseSink`(live) vs `runResponseBufferedSink`(buffered)。默认 false → 行为不变。开启后 e2e 测：mock 上游前 N 次 RST、第 N+1 次完整 → 客户端透明拿到完整 Write。
+- **Phase 3 — heartbeat 强制 + escalation + buffer cap**：缓冲期强制 heartbeat、可选 context escalation、buffer 上限退回 live。
+- **Phase 4 — 遥测 + 文档**：重试命中率计数 + DESIGN/history.md/config 文档同步。
+
+每个 commit：`bun run test:backend` + `typecheck` 绿；live 路径 golden 不变（确认未误伤默认路径）。
+
+---
+
+## 12. 暂缓项 / 开放问题（评审定夺）
+
+- **Q1**：retry cap 默认 1 vs 2？取决于客户端超时余量 + 单次生成时长分布。建议先遥测单次时长 p50/p95 再定。
+- **Q2**：`tool_use_only` 门控如何判定"带 tools"？请求 `tools` 非空即可，还是需更精细（仅 Write/Edit 类）？倾向前者（简单、覆盖目标场景）。
+- **Q3**：`idle-timeout` 是否纳入重试？上游静默死与 transport RST 不同；默认不重，避免与真卡死上游纠缠。
+- **Q4**：buffer 上限超限退回 live 转发后，该响应**失去 L2 保护**（live 流一旦 RST 仍失败）。可接受（病态超大响应罕见），但需文档化。
+- **Q5**：escalation 收紧 context_management 改变了请求语义（丢更多旧上下文）——是否应在响应里给客户端某种"本响应经过上下文压缩"的提示？倾向否（透明即可），记此问题。
+- **Q6**：与 web_search 双跳 `[bypass]`（不进 driver）的交互——双跳路径不享 L2，需在双跳迁 driver 时收敛（与既有 `[bypass]` 暂缓项一致）。
+
+---
+
+## 13. 与既有机制的关系
+
+- **不替代** `recover-tool-call`（重建降级 tool-call 文本）——那是另一类上游怪癖（文本降级），L2 是流断裂保护，正交共存（L2 缓冲的帧本就经过 recover 改写）。
+- **不替代** `anthropicFakeSseHeartbeat`——L2 **复用**它做缓冲期保活。
+- **超越官方**：GHC 客户端对自己做"回滚 partial + 重发"（`clearToPreviousToolInvocation`），但对 premature-close 放弃；L2 替 Claude Code 做这件官方放弃的事，且靠代理的 abort 判别优势安全地只重 transport-close。
+- **持久化**：本 session 已修的持久化韧性（失败 entry 无损落盘 + 诊断）让 L2 的"重试命中率"可被事后从 history 验证——两项工作互补。
