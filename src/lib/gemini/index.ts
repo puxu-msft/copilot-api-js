@@ -18,8 +18,10 @@ export {
 // Streaming
 export {
   //
+  createGeminiStreamTranslator,
   type GeminiStreamMeta,
   type GeminiStreamStep,
+  type GeminiStreamTranslator,
   translateOpenAIStreamToGemini,
 } from "./convert-stream"
 

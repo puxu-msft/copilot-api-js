@@ -62,6 +62,13 @@ export interface SseSinkOptions {
   onForwarded?: (record: SseEventRecord) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
   streamStartMs?: number
+  /**
+   * Override the forwarded record `type` derivation (default {@link frameType}). Gemini frames
+   * carry no SSE `event:` line and no JSON `type` field, so the default would label them
+   * "message"; the legacy Gemini handler hard-labeled every forwarded frame "generateContent".
+   * A format passes a constant `() => "generateContent"` to preserve that history-track label.
+   */
+  forwardedType?: (frame: ClientFrame) => string
 }
 
 /**
@@ -108,7 +115,7 @@ function frameType(frame: ClientFrame): string {
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
 export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
-  const { heartbeat, onForwarded, streamStartMs = Date.now() } = opts
+  const { heartbeat, onForwarded, streamStartMs = Date.now(), forwardedType } = opts
   const enqueue = makeSerializer()
 
   // Bare SSE write. Forwards the full SSE framing (event/data/id/retry) — `id`/`retry`
@@ -126,7 +133,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     )
 
   const sampleForwarded = (frame: ClientFrame): void => {
-    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "" })
+    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: (forwardedType ?? frameType)(frame), raw: frame.data ?? "" })
   }
 
   // Forward-idle (SOFT) racer state — only armed when a heartbeat is configured. It does

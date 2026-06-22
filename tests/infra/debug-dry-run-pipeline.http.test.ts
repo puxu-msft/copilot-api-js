@@ -318,14 +318,22 @@ describe("POST /api/debug/dry-run-pipeline", () => {
       expect(body.result[0]?.data).toBe(frame)
     })
 
-    test("response side: openai-gemini has no driver rewrites + the CC-frame fidelity caveat", async () => {
+    test("response side: openai-gemini dry-run is CC-frame passthrough (identity codec) + the non-Gemini caveat", async () => {
       const frame = JSON.stringify({ id: "c", object: "chat.completion.chunk", choices: [{ delta: { content: "hi" }, index: 0 }] })
       const res = await post({ upstream: { sseEvents: [{ raw: frame, type: "" }] }, format: "openai-gemini", stopAfter: "render" })
       expect(res.status).toBe(200)
-      const body = (await res.json()) as { format: string; stages: { "rewrite-out": { rewritesAvailable: boolean } }; fidelity: { caveats: Array<string> } }
+      const body = (await res.json()) as {
+        format: string
+        stages: { "rewrite-out": { rewritesAvailable: boolean } }
+        result: Array<{ data?: string }>
+        fidelity: { caveats: Array<string> }
+      }
       expect(body.format).toBe("openai-gemini")
       expect(body.stages["rewrite-out"].rewritesAvailable).toBe(false)
-      // §10: the driver render outputs CC frames, NOT Gemini — must be flagged.
+      // The dry-run uses an identity codec (not the real Gemini codec), so the render output is
+      // the CC frame VERBATIM — the real CC→Gemini translation (B5: codec.renderResponse) is not
+      // exercised here. The caveat must honestly flag the output is CC, not Gemini.
+      expect(body.result[0]?.data).toBe(frame)
       expect(body.fidelity.caveats.some((c) => c.includes("CC 帧") && c.includes("非 Gemini"))).toBe(true)
     })
 

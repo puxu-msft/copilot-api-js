@@ -8,19 +8,21 @@
  *
  * Gemini is a thin translation layer: the route translates Gemini→CC + injects
  * the system-prompt, the {@link createOpenAiGeminiCodec} delegates the CC-payload
- * S2–S6 to an internal openai-cc codec (incl. the via-responses bridge), and this
- * handler renders the resulting CC response/stream back to Gemini wire shape
- * (`convertOpenAIResponseToGemini` / `translateOpenAIStreamToGemini`) — keeping
- * the Gemini stream translator whole-stream (no per-frame refactor), exactly as
- * the legacy handler wrapped the CC stream.
+ * S2–S6 to an internal openai-cc codec (incl. the via-responses bridge), and — since
+ * Stage B B5 — the codec's `renderResponse` ALSO does the per-frame CC→Gemini render
+ * (`createGeminiStreamTranslator`, formerly the handler's whole-stream wrapper), so the
+ * owns-the-sink driver writes Gemini frames directly. The streaming handler reads the
+ * terminal usage/finishReason out-of-band via `codec.getStreamMeta()` and drains the
+ * stream-end frames via `codec.flushResponse`. The non-streaming path still renders
+ * CC → Gemini inline (`convertOpenAIResponseToGemini`).
  */
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
+import type { OpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
@@ -49,12 +51,11 @@ import {
   //
   convertGeminiRequestToOpenAI,
   convertOpenAIResponseToGemini,
-  translateOpenAIStreamToGemini,
 } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
+import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { state } from "~/lib/state"
 import { classifyStreamError } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
@@ -167,7 +168,7 @@ export async function handleGenerateContentV4(c: Context, modelId: string): Prom
 export async function handleStreamGenerateContentV4(c: Context, modelId: string): Promise<Response> {
   const geminiBody = await c.req.json<GenerateContentRequest>()
   const { bundle, result } = await runGeminiRequest(c, geminiBody, modelId, true)
-  const { driver, clientAbort, detachClientAbort } = bundle
+  const { driver, codec, clientAbort, detachClientAbort } = bundle
 
   consola.debug("[gemini:v4] Streaming response")
   result.env.ctx.transition("streaming")
@@ -178,7 +179,7 @@ export async function handleStreamGenerateContentV4(c: Context, modelId: string)
     // legacy renderGeminiStreaming + the CC/Responses v4 handlers).
     stream.onAbort(() => clientAbort.abort())
     try {
-      await pumpGeminiStreamingV4({ stream, driver, upstream: result.upstream, env: result.env, modelId })
+      await pumpGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env })
     } finally {
       detachClientAbort()
     }
@@ -217,71 +218,100 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
 interface PumpGeminiStreamingV4Options {
   stream: Parameters<Parameters<typeof streamSSE>[1]>[0]
   driver: ReturnType<typeof createPipelineDriver>
+  codec: OpenAiGeminiCodec
   upstream: UpstreamStream
   env: RequestEnvelope
-  modelId: string
 }
 
+/** Map the Gemini stream meta (codec-accumulated) → the ctx usage shape (legacy parity). */
+function geminiUsageFromMeta(meta: ReturnType<OpenAiGeminiCodec["getStreamMeta"]>): {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number
+} {
+  const u = meta.usageMetadata
+  return {
+    input_tokens: u?.promptTokenCount ?? 0,
+    output_tokens: u?.candidatesTokenCount ?? 0,
+    ...(u?.cachedContentTokenCount !== undefined && { cache_read_input_tokens: u.cachedContentTokenCount }),
+  }
+}
+
+/**
+ * Stream pump for the v4 Gemini path — **owns-the-sink** (Stage B B5 cut-over). The driver OWNS the
+ * client write-out: `runResponseSink` drives the codec's per-frame CC→Gemini translation (the former
+ * whole-stream `translateOpenAIStreamToGemini`, now `createGeminiStreamTranslator` inside the codec)
+ * and writes the Gemini frames to the injected {@link makeSseSink}. This handler:
+ *   - samples the FORWARDED track inside the sink (`onForwarded`), hard-labeling the record `type`
+ *     "generateContent" (Gemini frames carry no event/type the default `frameType` could read),
+ *   - drains the translator's stream-end frames (remaining tool calls + the terminal usage/finishReason
+ *     frame) via `codec.flushResponse` after a clean drain (mirrors the Responses fallback flush),
+ *   - reads the terminal meta out-of-band via `codec.getStreamMeta()` for `ctx.complete` / the
+ *     partial settle on error (renderResponse returns only frames). The H3 error frame is the Gemini
+ *     data-only shape via the NON-sampling `writeSynthetic`. Gemini has no `[DONE]` / no heartbeat.
+ *
+ * Note: `getStreamMeta().finishReason` is always defined (the terminal default `FINISH_REASON_UNSPECIFIED`),
+ * so an error/abort partial that fails BEFORE any upstream finish_reason now records that default
+ * `stop_reason` where the legacy handler omitted it — a history-only, failed-request edge field.
+ */
 async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promise<void> {
-  const { stream, driver, upstream, env, modelId } = opts
+  const { stream, driver, codec, upstream, env } = opts
   const model = (env.body as ChatCompletionsPayload).model
-  let usageMetadata: { promptTokenCount?: number; candidatesTokenCount?: number; cachedContentTokenCount?: number } = {}
-  let finishReason: string | undefined
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
 
-  try {
-    // driver.runResponse yields CC frames (cc.renderResponse normalizes the
-    // via-responses Responses→CC leg). Wrap them with the whole-stream Gemini
-    // translator — identical to the legacy handler wrapping the CC stream.
-    const ccFrames = driver.runResponse(upstream, env) as AsyncIterable<ServerSentEventMessage>
-    for await (const step of translateOpenAIStreamToGemini(ccFrames, modelId)) {
-      const frameData = step.frame.data ?? ""
-      forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: "generateContent", raw: frameData })
-      await stream.writeSSE({ data: frameData })
-      if (step.meta?.usageMetadata) usageMetadata = step.meta.usageMetadata
-      if (step.meta?.finishReason) finishReason = step.meta.finishReason
-    }
+  const sink = makeSseSink(stream, {
+    onForwarded: (record) => forwardedSseEvents.push(record),
+    streamStartMs,
+    forwardedType: () => "generateContent",
+  })
+  const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    env.ctx.complete({
-      success: true,
-      model,
-      usage: {
-        input_tokens: usageMetadata.promptTokenCount ?? 0,
-        output_tokens: usageMetadata.candidatesTokenCount ?? 0,
-        ...(usageMetadata.cachedContentTokenCount !== undefined && { cache_read_input_tokens: usageMetadata.cachedContentTokenCount }),
-      },
-      stop_reason: finishReason,
-      content: null,
-    })
-  } catch (error) {
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    const partial = {
-      usage: {
-        input_tokens: usageMetadata.promptTokenCount ?? 0,
-        output_tokens: usageMetadata.candidatesTokenCount ?? 0,
-        ...(usageMetadata.cachedContentTokenCount !== undefined && { cache_read_input_tokens: usageMetadata.cachedContentTokenCount }),
-      },
-      ...(finishReason !== undefined && { stop_reason: finishReason }),
-    }
-    if (settleStreamingFailure({ reqCtx: env.ctx, error, model, partial })) {
-      consola.debug("[gemini:v4] Client disconnected mid-stream — recording aborted")
-      return
-    }
+  // The driver drives codec.renderResponse (CC→Gemini per-frame) + writes the Gemini frames to the sink.
+  const outcome = await driver.runResponseSink(upstream, env, sink)
+
+  if (outcome.kind === "settled-abort") {
+    recordForwarded()
+    consola.debug("[gemini:v4] Client disconnected mid-stream — recording aborted")
+    const meta = codec.getStreamMeta()
+    env.ctx.abort(model, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
+    return
+  }
+
+  if (outcome.kind === "stream-error") {
+    recordForwarded()
+    const error = outcome.error
+    const meta = codec.getStreamMeta()
+    env.ctx.fail(model, error, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
     consola.error("[gemini:v4] Stream error:", error)
-    // Gemini-shape data-only error frame (SDK clients parse every data: frame).
+    // Gemini-shape data-only error frame (SDK clients parse every data: frame). NOT forward-sampled
+    // (legacy never pushed it) → writeSynthetic.
     const message = error instanceof Error ? error.message : String(error)
     const errorKind = classifyStreamError(error)
     const errorCode = errorKind === "shutdown" ? 503 : 500
-    const errorStatus = geminiStreamErrorStatus(errorKind)
-    await stream.writeSSE({
+    await sink.writeSynthetic?.({
       data: JSON.stringify({
         candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-        error: { code: errorCode, message, status: errorStatus },
+        error: { code: errorCode, message, status: geminiStreamErrorStatus(errorKind) },
       }),
     })
+    return
   }
+
+  // outcome.kind === "complete" — drain the translator's stream-end frames (remaining tool calls +
+  // the terminal finishReason/usage frame), then settle from the codec-accumulated meta.
+  for (const frame of codec.flushResponse(env)) {
+    await sink.write(frame)
+  }
+  recordForwarded()
+  const meta = codec.getStreamMeta()
+  env.ctx.complete({
+    success: true,
+    model,
+    usage: geminiUsageFromMeta(meta),
+    stop_reason: meta.finishReason,
+    content: null,
+  })
 }
 
 /** Map a streaming error kind to the Gemini gRPC `status` string (matches legacy). */

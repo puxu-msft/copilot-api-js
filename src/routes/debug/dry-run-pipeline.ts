@@ -123,11 +123,11 @@ const RESPONSE_FORMAT_CONFIG: Record<DryRunFormat, ResponseFormatConfig> = {
   "openai-gemini": {
     clientFormat: "gemini",
     // Gemini's upstream is CC (the request is translated Gemini→CC); the driver's render
-    // normalizes upstream→CC and the CC→Gemini whole-stream translation is handler-side.
+    // normalizes upstream→CC then translates CC→Gemini per-frame inside the codec (B5 owns-sink).
     targetEndpoint: "/chat/completions",
     responseRewrites: [],
     caveats: [
-      "Gemini render 输出 CC 帧、非 Gemini（整流翻译 translateOpenAIStreamToGemini 在 driver 外，handler-side）",
+      "Gemini dry-run render 输出 CC 帧、非 Gemini（dry-run 用 identity codec，不驱动真实 Gemini codec）；真实 CC→Gemini 逐帧翻译 B5 起在 codec.renderResponse + 流末 codec.flushResponse，终态 meta 经 codec.getStreamMeta 出 driver 外",
       "Gemini 响应侧无 driver 改写（rewritesAvailable:false）",
     ],
   },

@@ -14,26 +14,28 @@
  *   - `formatError`: Gemini gRPC-shape error (the handler builds the data-only
  *     error frame inline, so this is mostly for completeness).
  *
- * **renderResponse produces CC frames, not Gemini frames** (a deliberate bend of
- * the "codec renders client frames" contract): the CC→Gemini stream translation
- * (`translateOpenAIStreamToGemini`) is a stateful WHOLE-STREAM generator (tool-call
- * pairing + usage/finishReason meta) that the legacy handler already wraps around
- * the CC stream. Keeping it whole-stream in the handler-v4 (rather than refactoring
- * it to per-frame) avoids a byte-equivalence risk on a complex translator. So the
- * codec's renderResponse / renderResponseNonStreaming normalize the upstream to CC
- * (delegating to the cc codec, which also covers the via-responses Responses→CC
- * leg), and the handler does the final CC→Gemini render. This is codec.md §3's
- * "Gemini codec 委托 openai-cc 处理 CC payload，自己只负责 parse/render 外壳" — the
- * render shell lives in the handler.
+ * **renderResponse produces Gemini frames** (Stage B B5 owns-sink): the per-request
+ * {@link createGeminiStreamTranslator} state machine (tool-call pairing + usage/finishReason meta),
+ * formerly a whole-stream generator the handler wrapped, now lives in the codec — `renderResponse`
+ * normalizes the upstream to CC (delegating to the cc codec, which also covers the via-responses
+ * Responses→CC leg) then translates each CC frame → Gemini frame(s); `flushResponse` drains the
+ * stream-end frames (remaining tool calls + the terminal finishReason/usage frame); `getStreamMeta`
+ * exposes the terminal meta out-of-band (the owns-sink driver writes only frames). The non-streaming
+ * path (`renderResponseNonStreaming`) stays CC — its handler does its own `convertOpenAIResponseToGemini`.
+ * This realizes codec.md §3's "Gemini codec 委托 openai-cc 处理 CC payload" with the render shell
+ * now IN the codec (B5) rather than the handler.
  *
  * **Per-request stateful factory.** `createOpenAiGeminiCodec()` holds the internal
  * cc codec instance (whose closure carries the via-responses Responses→CC stream
  * translator) + the Gemini ctx + the auto-truncate baseline.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
 import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
+import type { GeminiStreamMeta } from "~/lib/gemini"
 import type { MessageContent } from "~/lib/history"
 import type { EndpointType } from "~/lib/history/store"
 import type {
@@ -72,7 +74,11 @@ import {
 } from "~/lib/codec/openai-cc/codec"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
-import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
+import {
+  //
+  convertGeminiRequestToOpenAI,
+  createGeminiStreamTranslator,
+} from "~/lib/gemini"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
@@ -94,6 +100,18 @@ export interface OpenAiGeminiCodec extends FormatCodec {
   getContext(): RequestContext | undefined
   /** The auto-truncate baseline: the post-system-prompt, pre-sanitize CC payload. `undefined` before parse. */
   getTruncateBaseline(): ChatCompletionsPayload | undefined
+  /**
+   * Stream-end drain (Stage B B5): the CC→Gemini translator's remaining accumulated tool calls +
+   * the terminal `finishReason`/`usageMetadata` frame. The owns-sink handler writes these after the
+   * driver loop (mirrors the Responses fallback `flushResponse`). Empty until `renderResponse` has run.
+   */
+  flushResponse(env: RequestEnvelope): Array<ClientFrame>
+  /**
+   * The terminal Gemini stream meta (usage + finishReason) the codec's CC→Gemini translator
+   * accumulated while rendering (B5). `renderResponse` returns only frames, so this exposes the
+   * out-of-band meta the handler needs for `ctx.complete` / a partial settle on error.
+   */
+  getStreamMeta(): GeminiStreamMeta
 }
 
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
@@ -103,6 +121,10 @@ export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
   // We call its methods WITHOUT its `parse` — they are pure over `env` (+ its own
   // lazily-built via-responses translator closure), so they work standalone.
   const cc: OpenAiCcCodec = createOpenAiCcCodec()
+  // Per-request CC→Gemini stream translator (B5): renderResponse drives it per-frame, flushResponse
+  // drains the stream-end frames, getStreamMeta exposes the terminal usage/finishReason. Eager (cheap;
+  // holds the CC accumulator + tool-flush bookkeeping) — only the streaming path touches it.
+  const geminiTranslator = createGeminiStreamTranslator(modelId)
   let requestContext: RequestContext | undefined
   let truncateBaseline: ChatCompletionsPayload | undefined
 
@@ -140,11 +162,28 @@ export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
       return cc.prepareWire(env)
     },
 
-    // renderResponse / renderResponseNonStreaming normalize the upstream to CC
-    // (cc handles the via-responses Responses→CC leg); the handler-v4 does the
-    // final CC→Gemini render (see module docstring).
+    // renderResponse normalizes the upstream to CC (cc handles the via-responses Responses→CC
+    // leg), then drives the per-request CC→Gemini translator per-frame (B5) so the owns-sink driver
+    // writes Gemini frames directly. renderResponseNonStreaming stays CC (the non-streaming handler
+    // does its own `convertOpenAIResponseToGemini`).
     renderResponse(frame, env) {
-      return cc.renderResponse(frame, env)
+      const ccRendered = cc.renderResponse(frame, env)
+      const ccFrames = Array.isArray(ccRendered) ? ccRendered : [ccRendered]
+      const out: Array<ClientFrame> = []
+      for (const ccFrame of ccFrames) {
+        for (const step of geminiTranslator.renderFrame(ccFrame as ServerSentEventMessage)) {
+          out.push(step.frame)
+        }
+      }
+      return out
+    },
+
+    flushResponse(_env) {
+      return geminiTranslator.flush().map((step) => step.frame)
+    },
+
+    getStreamMeta() {
+      return geminiTranslator.getMeta()
     },
 
     renderResponseNonStreaming(upstream, env) {
