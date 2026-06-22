@@ -53,7 +53,7 @@ describe("createFetchSignal", () => {
 })
 
 describe("captureHttpHeaders", () => {
-  test("captures sanitized request headers and raw response headers", () => {
+  test("captures raw request and response headers (Phase 1: History stores unredacted)", () => {
     const capture: {
       request?: Record<string, string>
       response?: Record<string, string>
@@ -72,7 +72,7 @@ describe("captureHttpHeaders", () => {
     )
 
     expect(capture.request).toEqual({
-      Authorization: "***",
+      Authorization: "Bearer secret",
       "content-type": "application/json",
     })
     expect(capture.response).toEqual({

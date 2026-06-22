@@ -33,7 +33,6 @@ import {
   //
   createFetchSignal,
   captureHttpHeaders,
-  sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
@@ -98,7 +97,7 @@ export async function createAnthropicMessages(
   const prepared = prepareAnthropicRequest(payload, opts)
   opts?.onPrepared?.({
     wire: prepared.wire,
-    headers: sanitizeHeadersForHistory(prepared.headers),
+    headers: prepared.headers,
   })
 
   const { wire, headers } = prepared

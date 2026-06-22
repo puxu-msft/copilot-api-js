@@ -143,14 +143,16 @@ function setModel(name: string, vendor: string, endpoints: Array<string>): void 
   setModelOverrides({})
 }
 
-// ── 通用断言：旧码现状 = 三腿齐 / 无第四腿 / 入站+出站请求头脱敏 / 上游响应头真实 ──
+// ── 通用断言：三腿齐 / 无第四腿 / 入站+出站请求头存原始(Phase 1) / 上游响应头真实 ──
 
 function expectCurrentShape(endpoint: EndpointType, upstreamMarker: string): void {
   const s = summarizeHttpHeaders(latest(endpoint))
   expect(s.legs).toEqual(["inboundRequest", "outboundRequest", "outboundResponse"])
   expect(s.hasInboundResponse).toBe(false)
-  expect(s.inboundAuth).toBe("***")
-  expect(s.outboundAuth).toBe("***")
+  // RFC Phase 1: 敏感头存原始未脱敏(非 "***")
+  expect(s.inboundAuth).toBe("Bearer client-secret-xyz")
+  expect(s.outboundAuth).toBeDefined()
+  expect(s.outboundAuth).not.toBe("***")
   expect(s.outboundRespUpstream).toBe(upstreamMarker)
 }
 

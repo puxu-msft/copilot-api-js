@@ -8,7 +8,6 @@ import type {
   ChatCompletionResponse,
 } from "~/types/api/openai-chat-completions"
 
-import { sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
@@ -45,7 +44,7 @@ export const createChatCompletions = async (
   const prepared = prepareChatCompletionsRequest(payload, opts)
   opts?.onPrepared?.({
     wire: prepared.wire,
-    headers: sanitizeHeadersForHistory(prepared.headers),
+    headers: prepared.headers,
   })
   const { wire, headers } = prepared
 

@@ -14,7 +14,6 @@ import type {
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
-import { sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import { state } from "~/lib/state"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
@@ -60,7 +59,7 @@ export const createResponses = async (
   const prepared = prepareResponsesRequest(payload, opts)
   opts?.onPrepared?.({
     wire: prepared.wire,
-    headers: sanitizeHeadersForHistory(prepared.headers),
+    headers: prepared.headers,
   })
   const { wire } = prepared
   let usedFallback = false

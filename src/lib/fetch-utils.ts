@@ -4,9 +4,15 @@ import { state } from "./state"
 
 const SENSITIVE_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key", "cookie", "set-cookie"])
 
-/** Convert a Headers object to a sanitized Record for history persistence. */
+/**
+ * Convert a Headers object to a Record for history persistence.
+ *
+ * RFC history-http-header-capture Phase 1: History 存**原始未脱敏**头（operator
+ * 决策；richest-data-flow "后端存储必须完整"）。脱敏不再发生在捕获点——
+ * `sanitizeHeadersForHistory` 仅保留给 betaProbe（只读 anthropic-beta，零泄漏）。
+ */
 export function captureInboundHeaders(headers: Headers): Record<string, string> {
-  return sanitizeHeadersForHistory(Object.fromEntries(headers.entries()))
+  return Object.fromEntries(headers.entries())
 }
 
 /**
@@ -24,11 +30,12 @@ export function createFetchSignal(): AbortSignal | undefined {
  * so headers are captured even for error responses.
  */
 export function captureHttpHeaders(capture: HeadersCapture, requestHeaders: Record<string, string>, response: Response): void {
-  capture.request = sanitizeHeadersForHistory(requestHeaders)
+  // RFC Phase 1: History 存原始未脱敏头（见 captureInboundHeaders 注释）。
+  capture.request = requestHeaders
   capture.response = Object.fromEntries(response.headers.entries())
 }
 
-/** Return a copy of headers safe to persist in history/error artifacts. */
+/** Redact sensitive header values. Retained for betaProbe (reads only anthropic-beta); NOT used on the History capture path (Phase 1 stores raw). */
 export function sanitizeHeadersForHistory(headers: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, SENSITIVE_HEADER_NAMES.has(name.toLowerCase()) ? "***" : value]))
 }

@@ -83,7 +83,6 @@ import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   captureInboundHeaders,
-  sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import {
   //
@@ -468,7 +467,7 @@ function sampleOpenAiResponsesRequest(wire: PreparedRequest, env: RequestEnvelop
     model: typeof wireBody.model === "string" ? wireBody.model : "",
     messages: wireMessages,
     payload: wire.body,
-    headers: sanitizeHeadersForHistory(Object.fromEntries(wire.headers.entries())),
+    headers: Object.fromEntries(wire.headers.entries()),
     format: isFallback ? CC_ENDPOINT_TYPE : ENDPOINT_TYPE,
   }
 

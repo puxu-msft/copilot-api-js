@@ -448,7 +448,7 @@ function sampleAnthropicRequest(wire: PreparedRequest, env: RequestEnvelope): Sa
     model: typeof wireBody.model === "string" ? wireBody.model : "",
     messages: Array.isArray(wireBody.messages) ? wireBody.messages : [],
     payload: wire.body,
-    headers: sanitizeHeadersForHistory(Object.fromEntries(wire.headers.entries())),
+    headers: Object.fromEntries(wire.headers.entries()),
     format: ENDPOINT_TYPE,
   }
 

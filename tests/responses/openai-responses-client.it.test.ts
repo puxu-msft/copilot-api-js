@@ -69,7 +69,7 @@ describe("responses client", () => {
     restoreStateForTests(originalState)
   })
 
-  test("returns JSON responses and captures sanitized headers", async () => {
+  test("returns JSON responses and captures raw headers (Phase 1: History stores unredacted)", async () => {
     const fetchMock = setFetchMock(() =>
       Promise.resolve(
         new Response(
@@ -114,7 +114,7 @@ describe("responses client", () => {
       id: "resp_123",
       model: "gpt-4o",
     })
-    expect(headersCapture.request?.Authorization).toBe("***")
+    expect(headersCapture.request?.Authorization).toBe("Bearer copilot-test-token")
     expect(headersCapture.response?.["x-request-id"]).toBe("resp-2")
     expect(onPrepared).toHaveBeenCalledTimes(1)
   })

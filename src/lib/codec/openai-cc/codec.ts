@@ -88,7 +88,6 @@ import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   captureInboundHeaders,
-  sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import {
@@ -463,7 +462,7 @@ function sampleOpenAiCcRequest(wire: PreparedRequest, env: RequestEnvelope): Req
     model: typeof wireBody.model === "string" ? wireBody.model : "",
     messages: wireMessages,
     payload: wire.body,
-    headers: sanitizeHeadersForHistory(Object.fromEntries(wire.headers.entries())),
+    headers: Object.fromEntries(wire.headers.entries()),
     format: isResponses ? RESPONSES_ENDPOINT_TYPE : ENDPOINT_TYPE,
   }
 

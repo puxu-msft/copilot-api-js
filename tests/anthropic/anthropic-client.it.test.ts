@@ -54,7 +54,7 @@ describe("anthropic client", () => {
     })
   })
 
-  test("returns JSON responses and captures sanitized headers", async () => {
+  test("returns JSON responses and captures raw headers (Phase 1: History stores unredacted)", async () => {
     const fetchMock = setFetchMock(
       async () =>
         new Response(
@@ -94,7 +94,7 @@ describe("anthropic client", () => {
       id: "msg_123",
       model: "claude-sonnet-4.6",
     })
-    expect(headersCapture.request?.Authorization).toBe("***")
+    expect(headersCapture.request?.Authorization).toBe("Bearer copilot-test-token")
     expect(headersCapture.response?.["x-request-id"]).toBe("resp-1")
     expect(onPrepared).toHaveBeenCalledTimes(1)
   })
