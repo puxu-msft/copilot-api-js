@@ -6,6 +6,10 @@
 
 ### Changelog
 
+**设计精化(2026-06-22,用户提问驱动)—— ③ 改为延迟-commit(grace window)。** 用户问"如何保证总是进入流式 / 提前 ping 是否正确":
+- "流式与否"无需 await 上游即可定 —— `env.stream` 自客户端 payload、`readonly` 全链不可变(§4.2.0,锚 codec.ts:316 / envelope.ts:90),③ 仅 gate 在 `clientRaw.stream === true`,非流式不受影响。
+- 纯"立即开流"对所有 pre-generation 错误发散于真实 Anthropic(它校验阶段仍回 HTTP 4xx)。**改进:延迟-commit(§4.2.2)** —— 先 `Promise.race(runRequest, graceTimer)` 等一个 grace 窗口(30–60s),grace 内上游回头(成功**或**快速错误)走现状出正确 HTTP 状态码(零发散),仅 grace 耗尽的真·长 stall 才提前开 200+ping。上游错误几乎都亚秒~数秒,故发散面缩到"长 stall 后才报错"的极少数,**Q2 验证面大幅缩小**。
+
 **Review round 3(2026-06-22,对抗 subagent)—— 收敛,无新设计层 CRITICAL。** 仅两处表述精度补充,已纳入:
 - ① 的 499(client-gone)分支在 ② 落地后对 **Anthropic 变死代码**(由 ② 的 `c.body(null,499)` 出),仅对 CC/Responses/Gemini 是活代码;二者互斥无重复 —— 已在 §5 C1 invariant 标注。
 - §4.2.1 的 C3b 回调伪码补 `if (ctx)` 守卫:client-abort 早于 `codec.parse` 建 ctx 时 ctx 为 undefined,直接 `ctx.abort()` 会 NPE —— 已补。
@@ -203,24 +207,29 @@ if (error instanceof Error && isAbortError(error)) {
 让 `stream:true` 的 Anthropic 请求在等待上游响应头期间,对客户端**已经是一条活的 SSE 流**并周期性打 ping,使 opus server-side 长思考(pre-response 静默数十秒~数百秒)不触发客户端超时断开。
 
 硬约束:
-- **Anthropic SSE 协议**允许在 `message_start` 前/任意位置插 `event: ping`。但我们一旦对客户端发出 200 + 任意字节,就**无法再改 HTTP 状态码**。
-- 当前 driver 的形状是 `await runRequest`(拿到上游响应/状态)→ 才决定 stream/non-stream、才 `streamSSE`。③ 要打破这个顺序:对已知 `stream:true` 的请求**乐观提前 streamSSE**。
+- **Anthropic SSE 协议**允许在 `message_start` 前/任意位置插 `event: ping`(客户端契约上须忽略)。但我们一旦对客户端发出 200 + 任意字节,就**无法再改 HTTP 状态码**。
+- **与真实 Anthropic 的发散点**:真实 Anthropic 对 `stream:true` 请求,**校验/拒绝阶段的错误仍回 HTTP 4xx**(它只在确定要生成时才打开 200 SSE 流);只有**流已开始之后**的错误才走 SSE error 事件。故"一收到请求就立即开 200"会让"上游响应头到达前的错误窗口"偏离真实上游 —— 这是 §4.2.2 的延迟-commit(grace window)要消除的发散,也是 Q2 oracle 验证的核心。
+- 当前 driver 的形状是 `await runRequest`(拿到上游响应/状态)→ 才决定 stream/non-stream、才 `streamSSE`。③ 要打破这个顺序:对已知 `stream:true` 的请求,**在上游 grace 窗口耗尽后**乐观提前 streamSSE。
 
-### 4.2 方案 A(推荐):乐观开流 + pre-response ping,上游错误降级为 SSE error 帧
+### 4.2 方案 A(推荐,采**延迟-commit 变体** §4.2.2):grace 窗口内正常 await,超时才乐观开流 + ping
 
-对 `stream:true` 请求:
+对 `stream:true` 请求(`clientRaw.stream === true`,同步可判,见 §4.2.0):
 
-1. 立即 `streamSSE(c, ...)`(回 200 + SSE headers),在 stream 内先挂一个 **pre-response heartbeat**(复用 `makeSseSink` 的 heartbeat 机制,或独立 timer),按 `anthropicFakeSseHeartbeat` 间隔打 `event: ping`。
-2. 在 stream 回调内 `await driver.runRequest(...)`(原本在 streamSSE 之前的 await 移进来)。
-3. runRequest 成功 → 停 pre-response heartbeat、接 `pumpAnthropicStreamingV4`(其自己的 heartbeat 接管,**避免双 heartbeat**,见 Open Q5)。
-4. runRequest 抛 **HTTPError**(上游 4xx/5xx,如 400 bad request)→ 已提交 200,**不能**回该状态码;改为合成 Anthropic `event: error` 帧(`{type:"error", error:{type, message}}`)写进流 + `ctx.fail`,然后正常关流。这正是 Anthropic 流式错误的既有形态(pump 的 H3 路径 [handler-v4.ts:601](../../src/routes/messages/handler-v4.ts#L601) 已这么做)。
+1. **先正常 `await driver.runRequest(...)`,但只等一个有界 grace 时长**(`preStreamGraceSec`,默认远小于客户端超时、远大于正常上游延迟,如 30–60s)。grace 内上游回头(成功或错误)→ 走**现状路径**:拿真实上游状态 → 成功接 pump / 错误经 forwardError 出正确 HTTP 状态码。**零发散**(§4.2.2)。
+2. **grace 耗尽上游仍静默** → 此刻才 `streamSSE(c, ...)`(回 200 + SSE headers),挂 `makeSseSink` heartbeat(`anthropicFakeSseHeartbeat` 间隔打 `event: ping`),并在回调内**继续** `await` 同一个 runRequest(不重发,见 §4.2.2 实现注)。
+3. runRequest 成功 → 接 `pumpAnthropicStreamingV4`(同一 sink 接管,**避免双 heartbeat**,Open Q5)。
+4. runRequest 抛 **HTTPError**(上游 4xx/5xx)或 **decideRoute reject**(代理协议拒绝)→ **若已 commit 开流**(grace 已过)→ 合成 Anthropic `event: error` 帧(`{type:"error", error:{type, message}}`)+ `ctx.fail` + 关流(pump 的 H3 路径 [handler-v4.ts:601](../../src/routes/messages/handler-v4.ts#L601) 已这么做);**若尚未 commit**(grace 内)→ 仍经 forwardError 出 HTTP 状态码(零发散)。
 5. runRequest 抛 **AbortError/TimeoutError**(pre-response 客户端断开/超时)→ `ctx.abort()`/`ctx.fail` + 停 heartbeat;客户端断开时不再写字节(`settled-abort` 语义)。
+
+#### 4.2.0 为什么"流式与否"同步可判(不需先 await 上游)
+
+`env.stream` 在 S1 parse 时从客户端 payload 取(`stream: anthropicPayload.stream ?? false`,[codec.ts:316](../../src/lib/codec/anthropic/codec.ts#L316))且 envelope 上 `readonly stream: boolean`([envelope.ts:90](../../src/lib/pipeline/envelope.ts#L90))—— **一次设定、全链不可变**。sanitize/preprocess/parse 都不改它。故 `clientRaw.stream` 是 `env.stream` 的忠实预判,开流决策 100% 在 await 上游之前可定。特殊路径(warmup [:135](../../src/routes/messages/handler-v4.ts#L135) / count_tokens 独立 route / web_search 双跳 [:174](../../src/routes/messages/handler-v4.ts#L174))已在 `runMessagesDriver` 之前剥离,进 driver 的请求 `stream` 标志忠实。`stream:false` 不进 ③(仍 `c.json` + 真状态码)。
 
 #### Tradeoff 与影响面
 
 | 维度 | 影响 |
 |---|---|
-| **状态码** | `stream:true` 的**所有 pre-pump 失败**(上游 4xx/5xx **以及代理自身的 `decideRoute` 400 拒绝** —— round-1 review H1)不再以 HTTP 状态码下发,改 SSE error 帧。非流式(`stream:false`)路径**不受影响**(仍 `c.json` + 真状态码)。Anthropic SDK/Claude Code 对流式错误本就读 `event: error` 帧,故对真实客户端**预期**无回归——但需 oracle 验证(Open Q2)。**注意 decideRoute 400(不支持的模型 + stream)是代理协议拒绝,不是上游错误**,方案 A 下它同样只能 SSE 下发,依赖 HTTP 400 区分"模型不支持"的客户端会看到行为变化。 |
+| **状态码** | `stream:true` 的 pre-pump 失败(上游 4xx/5xx + 代理 `decideRoute` 400)**仅在已 commit 开流后**(grace 耗尽,§4.2.2)才降级成 SSE error 帧;**grace 内的失败仍出正确 HTTP 状态码**(与真实 Anthropic 一致,零发散)。非流式(`stream:false`)路径**完全不受影响**。延迟-commit 把发散收窄到"长 stall 后才报错"的极少数 —— 但该残余仍需 oracle 验证(Open Q2)。 |
 | **finalize 责任(硬约束,H2)** | early-200 后响应即 `text/event-stream`,`observabilityMiddleware` 见 SSE **直接 return、不 finalize**("stream consumer owns it")。故**终态责任全部转入 streamSSE 回调**:当前 [handler-v4.ts:323-336](../../src/routes/messages/handler-v4.ts#L323) 的 settle catch 在 streamSSE **之外**,方案 A 必须把它整段挪进回调内并补齐 abort/fail/HTTPError(→SSE error 帧)三分支 + `sink.close()`。中间件安全网在 SSE 下本就失效,回调必须**自包含全部终态**,否则留 dangling entry。详见 §4.2.1。 |
 | **history `httpStatus`** | 流式上游错误的 history 记录从"有上游 4xx 状态"变为"200 客户端流 + error 帧";`inboundResponse`/attempt 仍保留上游真实状态(richest-data-flow:后端存储完整)。`state` 仍应为 `failed`(经回调内 `ctx.fail`)—— 需确认 ctx.fail 在已开流(已 200)下 state/httpStatus 记录语义不被 early-200 破坏。 |
 | **非 Anthropic 格式** | 本 RFC ③ 仅做 Anthropic `/v1/messages`(bypass-direct,handler 自持 streamSSE)。CC/Responses 的 driver-owned sink(Stage B)已是另一套写出路径,pre-response 保活若要推广需单独评估,**不在 ③ 范围**(YAGNI:先解 opus 长思考这个实测痛点)。**①(forwardError)跨全格式生效**(CC/Responses/Gemini 的 pre-response abort 也同构 `await runRequest` 在 streamSSE 前、throw 到 `forwardError(c, error, fmt)`,出 504/499),需每格式补单测(§3.3)。**但 ②(aborted 终态)Anthropic-only**(round-2 H-2):CC/Responses/Gemini 的 client-abort 经 ① 出 499、终态仍 `failed`,永久不一致 —— 见 Q7 决议。 |
@@ -258,6 +267,23 @@ return streamSSE(c, async (stream) => {
 - **`sink.close()` 必须在 `finally`** —— sink 在 runRequest 之前 attach 起了 heartbeat timer,若 runRequest 抛错没进 pump,pump 的 finally `close()` 不会执行,timer 会泄漏(虽 `unref` 但应显式关,round-1 L1)。
 - **single-sink 跨 pre/post-response**(Q5):同一 `makeSseSink` 实例从 pre-response ping 一路用到 pump,避免双 heartbeat 交接窗口;已核 [client-sink.ts](../../src/lib/pipeline/client-sink.ts) 的 sink 只依赖 `SSEStreamingApi`、不依赖 upstream 就绪,可提前 attach,写入经单 Promise chain 串行化(无字节交错)。heartbeat tick 用 `clientAbortSignal` 抑制对死流的 ping([client-sink.ts:174](../../src/lib/pipeline/client-sink.ts#L174)),故伪码必须传 `clientAbortSignal: clientAbort.signal`(M-3)。
 
+#### 4.2.2 延迟-commit(grace window)—— 把发散面缩到趋近零(设计精化,用户提问驱动)
+
+纯"立即开流"对所有 `stream:true` 的 pre-generation 错误都发散(§4.1 硬约束);**延迟-commit** 把"提前 200"推迟到上游 grace 窗口耗尽之后,只对**真正长 stall**的请求 commit:
+
+| 场景(stream:true) | grace 内上游是否回头 | 行为 | 是否发散 |
+|---|---|---|---|
+| 正常生成(2–5s 回头) | 是 | 现状:接 pump | 否 |
+| 上游快速错误(400/401/429,亚秒~数秒) | 是 | 现状:forwardError 出 HTTP 4xx | **否**(与真实 Anthropic 一致) |
+| opus pre-response 长思考(本 incident) | 否 | grace 后开 200 + ping,最终接 pump | 仅此场景"提前 200" |
+| 长 stall 后才报错(罕见) | 否 | 已 commit → SSE error 帧 | 仅此极少数发散 |
+
+关键洞察:**上游错误几乎都是亚秒~数秒级的快速决策**(校验/限流/鉴权,不需要"思考"),远在 grace(30–60s)之内回头 → 仍出正确 HTTP 状态码。真正撑过 grace 的只有"上游在思考、终将产出内容"的 stall(它不会 pre-response 报错)。于是 **Q2 的 oracle 验证面从"所有流式错误"缩到"长 stall 之后才发生的极少数错误"**,风险大幅下降。
+
+代价:病态 stall 的客户端多等 grace 那几十秒才收到首个 ping —— 但仍在客户端超时内,且远优于当前直接断线失败。
+
+实现注(不重发上游):grace 不是"等 grace 再发请求",而是**一发即 await**,用 `Promise.race([runRequestPromise, graceTimer])` 观察哪个先到。runRequest 先到 → 现状路径;graceTimer 先到 → 开流,然后回调内**继续 await 同一个 `runRequestPromise`**(同一上游请求、同一 attempt,不重发)。`preStreamGraceSec` 进 config(`anthropic.pre_stream_grace` 或复用 `anthropicFakeSseHeartbeat` 语义),`0` = 退化为纯"立即开流"方案 A。
+
 ### 4.3 方案 B(备选,不推荐):仅延长不开流
 
 不提前开流,而是想办法让客户端别超时(如依赖 TCP keepalive / 调大客户端超时)。否决理由:客户端超时不可控(Claude Code 内置),TCP keepalive 不阻止应用层请求超时;治标不治本。
@@ -294,7 +320,7 @@ return streamSSE(c, async (stream) => {
 ## 6. Open Questions(评审需拍板)
 
 1. **Q1 客户端断开的状态码** —— 499(nginx,client closed)vs 408(标准 Request Timeout)vs 干脆不返回 body(连接已断,Hono 需要一个 Response 对象)。倾向 499(语义最准),但需实测 `ContentfulStatusCode` 类型 + Hono 对已断连接写 499 的行为。
-2. **Q2 ③ 的 oracle 验证** —— 方案 A 把流式上游错误从 HTTP 4xx 改为 200+SSE error 帧。需用**真实 Claude Code / Anthropic SDK**(独立 oracle,non self-consistent)确认其对 `event: error` 帧的处理与对 HTTP 4xx 等价(self-consistent-needs-independent-oracle)。这是 ③ 是否安全的 make-or-break。
+2. **Q2 ③ 的 oracle 验证** —— 方案 A 把流式上游错误从 HTTP 4xx 改为 200+SSE error 帧。需用**真实 Claude Code / Anthropic SDK**(独立 oracle,non self-consistent)确认其对 `event: error` 帧的处理与对 HTTP 4xx 等价(self-consistent-needs-independent-oracle)。**延迟-commit(§4.2.2)已把验证面从"所有流式错误"缩到"长 stall 之后才发生的极少数错误"** —— 但该残余仍是 ③ 是否安全的 make-or-break,须实测。
 3. **Q3 顶层 `.error` 投影** —— history 顶层 `.error`/`.failureReason` 为 null(数据在 attempt 层未丢)。是否在本 RFC 一并修顶层回填(richest-data-flow),还是单列。倾向单列(本 incident 不依赖它)。
 4. **Q4 流式 pre-response 期的 shutdown** —— [send.ts:99](../../src/lib/transport/send.ts#L99) 流式不折 `getShutdownSignal()`(注释:stream guard 在 handler 拥有 shutdown)。但 pre-response(streamSSE 前)还没进 guard,故流式请求在 pre-response 期遇优雅关闭不会被 shutdown 中断(靠 graceful_wait 300s 兜)。是否值得在 pre-response 折 shutdown?边缘,倾向不动(记录即可)。
 5. **Q5 ③ 双 heartbeat 交接** —— **round-1 已基本解**:pre-response heartbeat 与 pump 内 heartbeat 复用**同一 `makeSseSink` 实例**(sink 只依赖 `SSEStreamingApi`、不依赖 upstream 就绪,可在 runRequest 前 attach,timer 自重排,写入单 Promise chain 串行化无字节交错 —— 已核 [client-sink.ts](../../src/lib/pipeline/client-sink.ts))。剩余:实现期确认 sink 在 runRequest 抛错(未进 pump)时由回调 finally 的 `sink.close()` 停 timer(§4.2.1,round-1 L1)。
