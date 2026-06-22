@@ -166,11 +166,50 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     expect(frames.some((fr) => (fr.data ?? "").includes("msg_complete"))).toBe(true)
     // Exactly one re-exchange happened.
     expect(sendCount()).toBe(1)
-    // D1: two attempts, each with its OWN upstream-original sseEvents (failed attempt kept).
+    // D1: two attempts. The FAILED attempt keeps its OWN upstream-original sseEvents; the
+    // SUCCESSFUL (final) attempt's frames live ONLY at the top-level slot (no per-attempt dup —
+    // mirrors extractStagePayloads' finalIdx skip), so its per-attempt slot stays unset.
     const attempts = env.ctx.attempts
     expect(attempts).toHaveLength(2)
     expect(JSON.stringify(attempts[0].sseEvents)).toContain("msg_partial")
-    expect(JSON.stringify(attempts[1].sseEvents)).toContain("message_stop")
+    expect(attempts[1].sseEvents).toBeUndefined()
+  })
+
+  test("H2 (terminal upstream `error` frame, clean drain WITHOUT message_stop) commits — NOT retried as truncation", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // A clean drain whose terminal frame is an upstream `error` event (e.g. overload), NO message_stop.
+    const h2Frames: Array<UpstreamFrame> = [
+      f("message_start", { message: { id: "msg_h2" } }),
+      f("error", { error: { type: "overloaded_error", message: "overloaded" } }),
+    ]
+    const first = upstream(framesClean(h2Frames))
+    // A would-be retry upstream exists; it must NOT be consumed (H2 is terminal, not a truncation).
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("msg_should_not_run")))])
+    const { sink, frames } = makeArraySink()
+    let sawErr = false
+    const tracker: Pick<RunBufferedOpts, "onUpstreamFrame" | "onAttemptReset" | "sawMessageStop" | "sawUpstreamError"> = {
+      onUpstreamFrame: (frame: UpstreamFrame) => {
+        try {
+          if ((JSON.parse(frame.data ?? "{}") as { type?: string }).type === "error") sawErr = true
+        } catch {
+          /* ignore */
+        }
+      },
+      onAttemptReset: () => {
+        sawErr = false
+      },
+      sawMessageStop: () => false,
+      sawUpstreamError: () => sawErr,
+    }
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, { ...tracker, retryCap: 3 } as RunBufferedOpts)
+
+    // H2 commits the buffer (the handler then fails via acc.streamError) — it is NOT retried.
+    expect(outcome.kind).toBe("complete")
+    expect(sendCount()).toBe(0) // no re-exchange — the retry upstream was never consumed
+    // The buffered upstream error frame reached the client (mirrors the live path).
+    expect(sinkTypes(frames)).toEqual(["message_start", "error"])
   })
 
   test("truncation (clean drain WITHOUT message_stop) is retryable, not a false commit", async () => {

@@ -11,7 +11,8 @@ metadata:
 
 **How to apply**：
 - 提交用 `git commit -m "..." -- <精确路径>`（pathspec 即 `--only` 语义）：只提交这些路径，**无视 index 里其它一切**，对并发暂存免疫。注意参数顺序——`-m "msg"` 必须在 `-- <path>` **之前**（`git commit -- <path> -m` 会把 `-m` 当 pathspec 报错）。
+- **同一文件含我的改动 + 用户/并发未暂存改动、只想提我的那几个 hunk**（2026-06-22 L2 Phase 2 实证：`handler-v4.ts` 同时有我的 pump 改动和用户的 pre-response abort 改动）：`git commit -- <file>` 会把该文件**整个工作区态**（含别人的改动）一并提交，pathspec 救不了。交互式 `git add -p` 在本 harness 不可用。解法是 **`git apply --cached` 过滤补丁**：`git diff <file>` 生成全量补丁 → `awk` 按 hunk 头 `@@ -OLD` 的 OLD 起始行号过滤只留我的 hunk（我的与别人的 hunk 行区间不重叠时可机械分割）→ `git apply --cached --recount <filtered.patch>` 只把我的 hunk 应用到 index（工作区别人的改动**不动**）。提交前 `git diff --cached <file> | grep -c '<别人改动的特征串>'` 必须为 `0`、`grep -c '<我的特征串>'` 为预期数，双向对账确认 index 只含我的。`--recount` 让 git 容忍行号偏移。
 - 提交后 `git show --stat HEAD` 复核**只含你的文件**。
 - **绝不在并发提交活跃时重写历史**（`reset`/`rebase`/`--amend`）：HEAD 在你脚下移动、你的 commit 被别人的 commit 压在下面，重写极可能 clobber 对方在飞工作。宁可接受"一个 commit 多裹一个无关 doc"这点瑕疵——被裹入的内容没丢（在 git 历史里），代价远小于历史手术在并发下的损坏风险（呼应 [[feedback_never_git_checkout_user_files]] 的破坏性下限）。
 
-是 CLAUDE.md `fine-grained-staging-per-phase-commit` 在**并发多会话**环境的失败模式 + 防线。配 [[feedback-git-staging-and-local-commit-default-allowed]]（本地提交默认允许）。
+是 CLAUDE.md `fine-grained-staging-per-phase-commit` 在**并发多会话**环境的失败模式 + 防线。配 [[feedback-git-staging-and-local-commit-default-allowed]]（本地提交默认允许）、[[sed-touched-files-bundle-inflight-work]]（同文件多作者改动的检测 + `git reset -q HEAD -- <file>` 反向 unstage，与本条的 `git apply --cached` 正向只暂存互为正反操作）。

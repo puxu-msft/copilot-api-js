@@ -301,6 +301,16 @@ export interface RunBufferedOpts extends RunResponseOpts {
    */
   sawMessageStop: () => boolean
   /**
+   * Reads the handler's accumulator: did THIS attempt see a TERMINAL upstream `error` frame
+   * (H2 — e.g. `overloaded_error`)? Such a frame is a clean drain WITHOUT `message_stop`, so
+   * `sawMessageStop()` alone cannot tell it apart from an RST-truncation. H2 is a terminal
+   * upstream decision (NOT a transport cut) → the buffered sink COMMITS it (flushes the buffered
+   * upstream error frame to the client and lets the handler fail via `acc.streamError`), mirroring
+   * the live path, instead of wastefully retrying it as a truncation. Optional: a caller that does
+   * not wire it falls back to the prior "retry every no-message_stop clean drain" behavior.
+   */
+  sawUpstreamError?: () => boolean
+  /**
    * Reset ALL handler-side per-attempt accumulators before a retry re-exchanges
    * (acc / local sseEvents / streamState / repetition checker). The driver re-instantiates
    * its own S5 rewrite-chain state per `runResponse` call; this resets the handler's side.

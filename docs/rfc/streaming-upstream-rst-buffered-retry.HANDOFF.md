@@ -33,6 +33,10 @@ opus-4.8 在超大上下文（150K-200K token）上生成大 Write/Edit 工具�
 | `1fe879b` | **Phase 0**：`tests/anthropic/streaming-l2-baseline.http.test.ts` —— live-streaming 字节回归基线（complete + mid-stream transport-close 现状）。**L2 落地后默认 live 路径不变的回归门**，每 phase 重跑必绿。 |
 | `5538722` | **Phase 1**：driver `runResponseBufferedSink`（缓冲/sawMessageStop 门控/re-exchange/per-attempt 重置）+ D1 ctx（`Attempt.sseEvents` + `commitAttemptSseEvents`/`resetSseEvents`）+ `RunBufferedOpts`。**默认不接线（死代码）**。`tests/pipeline/buffered-sink.unit.test.ts`。 |
 | `ead13cb` | **Phase 1 焦点审修复 [HIGH]**：commit-flush 的 `sink.write` reject 须映射成 `ResponseOutcome`（不裸抛破坏契约）。 |
+| `caa0af7` | **Phase 2 前置**：`isolated-fixture` beforeAll 加 `resetTestRuntime()` 完整重连——修"首测试继承前文件陈旧 bus/manager/closed-DB"的 fixture 潜在 bug。 |
+| `6c8095a` | **Phase 2 接线**：配置三键（`protect_streaming_generation`/`_max_retries`/`_heartbeat`）+ `pumpAnthropicStreamingV4` 按开关选 buffered vs live + 🔴 强制 heartbeat（同 commit）+ 🔴 acc/checkRepetition/local sseEvents/streamState 四项全量重置（forwardedSseEvents 故意不重置，§10）。`streaming-l2-buffered.http.test.ts`（RST 透明重试/acc 不叠加/耗尽 fail/FakeClock heartbeat 保活）。 |
+| `cedaa42` | **Phase 2 D1**：per-attempt 上游 sseEvents 持久化（toHistoryEntry + sink + serialize 非 final 尝试落行 + deserialize 分流 + head 剥离）+ UI AttemptsTimeline 帧数 + serialize round-trip 测。 |
+| `c239e1f` | **Phase 2 焦点审修复**：[HIGH] H2 上游 error 帧经 `sawUpstreamError` 与 RST-truncation 区分（commit 而非重试、保留原始 error 语义）；[MEDIUM] `commitAttemptSseEvents` 移进重试分支（仅失败尝试快照，final 帧只留顶层、内存==DB）。 |
 
 **关键文件（已改）**：
 - `src/lib/pipeline/driver.ts` —— `runResponseBufferedSink`（在 `runResponseSink` 之后）。**已完整实现**，Phase 2 只需 handler 调它。
@@ -49,6 +53,8 @@ opus-4.8 在超大上下文（150K-200K token）上生成大 Write/Edit 工具�
 ## 4. Phase 2-4 剩余（详 Phase 2）
 
 ### Phase 2 —— handler 接线 + heartbeat 强制 + 配置门控（最吃上下文）
+
+> **[已落地 2026-06-22]** commits `caa0af7`/`6c8095a`/`cedaa42`/`c239e1f`（见 §3 表）。全后端 2994 pass、两轮焦点审通过。**下一步是 Phase 3**（buffer cap + escalation）。以下为当时 kick-off 原文，留作 Phase 3/4 接续参考。
 1. **配置**：加 `anthropic.protect_streaming_generation`（`false`|`"on"`|`"tool_use_only"`，默认 `false`）+ `protect_streaming_max_retries`（默认 3）+ `protect_streaming_heartbeat`（默认 15）到 `state.ts` + config.yaml（参照既有 `anthropic.*` 字段，含 hot-reload 矩阵 `tests/config/config-hot-reload.it.test.ts`）。
 2. **handler 选路**：`pumpAnthropicStreamingV4`（`src/routes/messages/handler-v4.ts`）按 `protect_streaming_generation` 选 `runResponseBufferedSink`（buffered）vs `runResponseSink`（live）。默认 false → 走 live → **Phase 0 基线必须仍逐字节绿**。
 3. **🔴 红线（RFC §14，必须同 commit）**：buffered 路径**强制构造 heartbeat**（即使用户 `stream_fake_sse_heartbeat=0`，用 `protect_streaming_heartbeat` 兜底）——否则缓冲期客户端裸奔无 ping 早断，比现状更糟（违反 transitional-states-need-explicit-no-harm）。当前 `handler-v4.ts:~568` 是 `state.anthropicFakeSseHeartbeat>0 &&` 才挂 heartbeat。

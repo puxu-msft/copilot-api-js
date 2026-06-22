@@ -74,7 +74,7 @@ function nodeColor(attempt: AttemptInfo): string {
             {{ attempt.effectiveMessageCount }} messages
           </div>
           <div
-            v-if="attempt.sseEvents?.length"
+            v-if="attempt.error && attempt.sseEvents?.length"
             class="node-meta"
           >
             {{ attempt.sseEvents.length }} upstream frames before cutoff

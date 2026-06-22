@@ -131,8 +131,9 @@ runResponseBufferedSink(
 | `shutdown` | `StreamShutdownError` | **不重试** → 维持 shutdown 处理 |
 | `idle-timeout` | `StreamIdleTimeoutError`（`timeouts.stream_idle`） | **可选**重试（上游静默死也许偶发；默认**不**重，避免与真正卡死的上游纠缠——开放问题 Q3） |
 | `other`(transport-close) | http2-client `controller.error`（NGHTTP2_CANCEL/ECONNRESET/closed-before-end） | **重试**（目标场景） |
+| H2（上游终止 `error` 帧） | `acc.streamError`（如 `overloaded_error`），clean drain 无 message_stop | **不重试 → commit**（终止上游决策，非 truncation；缓冲的 error 帧 flush 给客户端、handler 经 `acc.streamError` 失败，镜像 live）。经 `RunBufferedOpts.sawUpstreamError` 与 RST-truncation 区分——首轮审遗漏此分类（§14 addendum），实现期补 |
 
-判别正确性是 L2 的安全基石：**绝不**对 client-abort 重试（客户端已走，重试纯浪费 + 可能违背用户意图取消）。
+判别正确性是 L2 的安全基石：**绝不**对 client-abort 重试（客户端已走，重试纯浪费 + 可能违背用户意图取消）。**H2 与 truncation 同形**（都是 clean drain 无 message_stop），但 H2 是上游终止决策不该重试——commit 门控用 `sawMessageStop() || sawUpstreamError()` 两信号区分（仅 `sawMessageStop` 会把 H2 误当 truncation 反复重试、且耗尽时把原始 error 语义改写成 "truncated"）。
 
 ---
 
@@ -184,7 +185,7 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 
 - **Phase 0 — golden 基线**：在改前锁住现有 live-streaming 路径的字节 golden（复用 `response-rewrite-golden.http.test.ts` 范式）+ 一个 mid-stream RST 失败的现状测试（注入 http2 stream error → 现状 `stream-error` → H3 error 帧）。证明改动前后 live 路径字节等价。
 - **Phase 1 — driver `runResponseBufferedSink`（默认不接线）**：新增 driver 方法 + per-attempt 重置 + buffer/flush + re-exchange 循环，但 handler **不调用**（`protect_streaming_generation` 默认 false → 仍走 `runResponseSink`）。单测覆盖：注入"前 2 次 transport-close、第 3 次完整"的上游 → 断言客户端只收到第 3 次的完整响应 + 前两次记为 attempts。此 commit 系统行为零变化（新方法是死代码待激活）。
-- **Phase 2 — handler 接线 + 配置门控**：`pumpAnthropicStreamingV4` 按 `protect_streaming_generation` 选 `runResponseSink`(live) vs `runResponseBufferedSink`(buffered)。默认 false → 行为不变。开启后 e2e 测：mock 上游前 N 次 RST、第 N+1 次完整 → 客户端透明拿到完整 Write。
+- **Phase 2 — handler 接线 + 配置门控**：`pumpAnthropicStreamingV4` 按 `protect_streaming_generation` 选 `runResponseSink`(live) vs `runResponseBufferedSink`(buffered)。默认 false → 行为不变。开启后 e2e 测：mock 上游前 N 次 RST、第 N+1 次完整 → 客户端透明拿到完整 Write。**[已落地 2026-06-22]** commits `caa0af7`（fixture 修复）/`6c8095a`（handler 接线 + 配置三键 + 强制 heartbeat + acc 全量重置）/`cedaa42`（per-attempt sseEvents 持久化 D1）/`c239e1f`（焦点审修复：H2 区分 + final 尝试不重复 sseEvents）。heartbeat 强制与接线**同 commit**（§14 红线）。**注**：buffer cap 留 Phase 3。
 - **Phase 3 — heartbeat 强制 + escalation + buffer cap**：缓冲期强制 heartbeat、可选 context escalation、buffer 上限退回 live。
 - **Phase 4 — 遥测 + 文档**：重试命中率计数 + DESIGN/history.md/config 文档同步。
 

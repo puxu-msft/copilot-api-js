@@ -525,13 +525,16 @@ async function runResponseBufferedSink(
         if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
         thrown = error
       }
-      // D1: keep this attempt's upstream-original frames on the attempt before the next
-      // attempt's runResponse resets the top-level slot (kept even when the attempt fails).
-      currentEnv.ctx.commitAttemptSseEvents()
-
-      // COMMIT only on a clean drain that saw message_stop (drained alone is NOT enough —
-      // a clean RST drains cleanly too; gate on the accumulator's terminal flag).
-      if (drained && opts.sawMessageStop()) {
+      // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success)
+      // OR an upstream `error` frame (H2 — a terminal upstream decision such as overload, NOT a
+      // transport cut). A clean drain with NEITHER is a truncation (Bun delivers a clean RST as a
+      // normal `end`, rstCode=0, undetectable — transport/http2-client.ts:169-175) → retryable.
+      // Committing H2 flushes the buffered upstream error frame to the client and lets the handler
+      // fail via `acc.streamError`, exactly mirroring the live path (NOT a wasteful retry that would
+      // also relabel the real error as "truncated" on exhaustion). The committing attempt's frames
+      // live at the top-level slot, so they are NOT snapshotted per-attempt here — only a FAILED
+      // (retried) attempt gets a per-attempt `sseEvents` row (D1), set in the retry branch below.
+      if (drained && (opts.sawMessageStop() || opts.sawUpstreamError?.())) {
         try {
           for (const frame of buffer) await sink.write(frame)
         } catch (error) {
@@ -544,12 +547,17 @@ async function runResponseBufferedSink(
         return { kind: "complete", headers: current.headers }
       }
 
-      // Failure: a transport-close throw, OR a clean drain WITHOUT message_stop (truncation).
+      // Failure: a transport-close throw, OR a clean drain WITHOUT a terminal frame (truncation).
       // Retry ONLY a transport-close throw (`"other"`) or a truncation (no throw) — never a
       // shutdown / idle-timeout throw.
       const retryable = thrown ? classifyStreamError(thrown) === "other" : true
       if (retryable && attempt < cap) {
         attempt++
+        // D1: snapshot THIS failed attempt's upstream-original frames onto the attempt BEFORE the
+        // reset clears the top-level slot — so a failed attempt's frames survive for diagnosis.
+        // (The final attempt — success-commit above OR exhaustion-return below — keeps its frames
+        // at the top-level slot only, matching `extractStagePayloads`' finalIdx skip: no dup.)
+        currentEnv.ctx.commitAttemptSseEvents()
         opts.onAttemptReset?.()
         currentEnv.ctx.resetSseEvents()
         const re = await runExchange(deps, currentEnv, strategies)
@@ -558,7 +566,8 @@ async function runResponseBufferedSink(
         continue
       }
       // Exhausted / non-retryable → surface the error (truncation synthesizes one) for the
-      // handler to classify + write its protocol error frame (unchanged from the live path).
+      // handler to classify + write its protocol error frame (unchanged from the live path). The
+      // final failed attempt's frames stay at the top-level slot (no per-attempt snapshot).
       return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
     }
   } finally {

@@ -655,6 +655,10 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onUpstreamFrame,
         sawMessageStop: () => acc.sawMessageStop,
+        // H2 (a terminal upstream `error` frame) is a clean drain WITHOUT message_stop — the same
+        // shape as an RST-truncation. This lets the buffered sink COMMIT it (the handler then fails
+        // via acc.streamError, mirroring live) instead of wastefully retrying it as a truncation.
+        sawUpstreamError: () => acc.streamError !== undefined,
         onAttemptReset,
         retryCap: state.protectStreamingMaxRetries,
       })
