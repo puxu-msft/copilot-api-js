@@ -19,15 +19,15 @@ import {
   //
   countAnthropicContentBlocks,
   filterEmptyThinkingBlocks,
-} from "./sanitize/content-blocks"
-import { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"
-import { stripReadToolResultTags } from "./sanitize/read-tool-result-tags"
-import { finalizeAnthropicSanitization } from "./sanitize/result"
-import { rewriteServerToolHistory } from "./sanitize/rewrite-server-tool-history"
-import { sanitizeInlineSystemMessages } from "./sanitize/system-messages"
-import { sanitizeAnthropicSystemPrompt } from "./sanitize/system-prompt"
-import { removeAnthropicSystemReminders } from "./sanitize/system-reminders"
-import { processToolBlocks } from "./sanitize/tool-blocks"
+} from "./content-blocks"
+import { deduplicateToolCalls } from "./deduplicate-tool-calls"
+import { stripReadToolResultTags } from "./read-tool-result-tags"
+import { finalizeAnthropicSanitization } from "./result"
+import { rewriteServerToolHistory } from "./rewrite-server-tool-history"
+import { sanitizeInlineSystemMessages } from "./system-messages"
+import { sanitizeAnthropicSystemPrompt } from "./system-prompt"
+import { removeAnthropicSystemReminders } from "./system-reminders"
+import { processToolBlocks } from "./tool-blocks"
 
 /**
  * One-time preprocessing of Anthropic messages.
@@ -130,9 +130,9 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   )
 }
 
-export { deduplicateToolCalls } from "./sanitize/deduplicate-tool-calls"
+export { deduplicateToolCalls } from "./deduplicate-tool-calls"
 
-export { stripReadToolResultTags } from "./sanitize/read-tool-result-tags"
-export { type SanitizationStats, toSanitizationInfo } from "./sanitize/result"
-export { removeAnthropicSystemReminders } from "./sanitize/system-reminders"
-export { processToolBlocks } from "./sanitize/tool-blocks"
+export { stripReadToolResultTags } from "./read-tool-result-tags"
+export { type SanitizationStats, toSanitizationInfo } from "./result"
+export { removeAnthropicSystemReminders } from "./system-reminders"
+export { processToolBlocks } from "./tool-blocks"

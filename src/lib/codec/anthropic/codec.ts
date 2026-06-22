@@ -74,8 +74,8 @@ import type {
 } from "~/types/api/anthropic"
 
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
+import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
-import { runAnthropicRequestRewrites } from "~/lib/anthropic/request-rewrites"
 import {
   //
   toSanitizationInfo,
@@ -93,7 +93,7 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
 
-import { createAnthropicSanitizeRewrite } from "./request-rewrites"
+import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
 
 const CLIENT_FORMAT: ClientFormat = "anthropic"
 const ENDPOINT_TYPE: EndpointType = "anthropic-messages"
@@ -309,7 +309,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
   // recordings) now runs in driver S3 via `createAnthropicSanitizeRewrite` (RFC §4.A0),
   // NOT here — so a model rejected at S2 never sanitizes, and env.body below stays the
   // pre-sanitize baseline (= the truncation/message-mapping baseline) until S3.
-  const resanitize: AnthropicSanitizeFn = (p) => runAnthropicRequestRewrites(p, { toolNameMapper }).sanitizeResult
+  const resanitize: AnthropicSanitizeFn = (p) => runAnthropicPayloadRewrites(p, { toolNameMapper }).sanitizeResult
 
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.MESSAGES,

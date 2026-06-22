@@ -4,7 +4,7 @@
  * Lifts the Anthropic request sanitize chain out of `codec.parse` (S1) into a
  * driver-S3 `RequestRewrite`, so "add a request-side interception/fix = register a
  * RequestRewrite" (symmetric with the response side). The transform reuses the
- * existing `runAnthropicRequestRewrites` chain verbatim (tool-preprocess → tool-name
+ * existing `runAnthropicPayloadRewrites` chain verbatim (tool-preprocess → tool-name
  * → sanitize, ordering owned there); this wrapper adds the env adapter + the four
  * parse-time side-channel recordings that move to S3 with it:
  *   - `initialSanitizationInfo` (written back to the codec closure for retry rebuilds)
@@ -28,7 +28,7 @@ import type {
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
-import { runAnthropicRequestRewrites } from "~/lib/anthropic/request-rewrites"
+import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { toSanitizationInfo } from "~/lib/anthropic/sanitize"
 
 /** The history-facing sanitization-info envelope (subset of SanitizationStats). */
@@ -62,7 +62,7 @@ export function createAnthropicSanitizeRewrite(deps: AnthropicRequestRewriteDeps
 function applyAnthropicSanitize(env: RequestEnvelope, deps: AnthropicRequestRewriteDeps): RewriteResult {
   const ctx = env.ctx
   const baseline = env.body as MessagesPayload
-  const { payload: sanitized, sanitizeResult } = runAnthropicRequestRewrites(baseline, { toolNameMapper: ctx.toolNameMapper })
+  const { payload: sanitized, sanitizeResult } = runAnthropicPayloadRewrites(baseline, { toolNameMapper: ctx.toolNameMapper })
   const stats = sanitizeResult.stats
 
   const initialSanitizationInfo = toSanitizationInfo(stats)

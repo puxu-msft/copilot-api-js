@@ -7,7 +7,7 @@
  * logical request) + `pipelineInfo` (preprocessing + sanitization + messageMapping).
  *
  * `effectiveRequest.payload` is asserted against the canonical chain output
- * (`runAnthropicRequestRewrites`, itself byte-locked by request-rewrites.it.test.ts)
+ * (`runAnthropicPayloadRewrites`, itself byte-locked by request-rewrites.it.test.ts)
  * — this proves the handler-v4 path applies the chain regardless of WHERE (S1 vs S3),
  * and is robust to the large Claude-Code stub list `preprocessTools` injects. The
  * small `pipelineInfo` object is locked inline (captured from the pre-change path).
@@ -37,7 +37,7 @@ import type {
   Tool,
 } from "~/types/api/anthropic"
 
-import { runAnthropicRequestRewrites } from "~/lib/anthropic/request-rewrites"
+import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import {
   //
@@ -97,7 +97,7 @@ function payload(messages: Array<unknown>, extra?: Partial<MessagesPayload>): Me
  */
 function oracleEffective(input: MessagesPayload): MessagesPayload {
   const mapper = buildAnthropicToolNameMapper(input.tools, input.model, "Anthropic")
-  return runAnthropicRequestRewrites(input, { toolNameMapper: mapper }).payload
+  return runAnthropicPayloadRewrites(input, { toolNameMapper: mapper }).payload
 }
 
 async function postAndEntry(body: MessagesPayload): Promise<{ effective: unknown; pipelineInfo: unknown }> {

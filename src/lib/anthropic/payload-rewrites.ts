@@ -62,7 +62,7 @@ export interface AnthropicRewriteResult {
 /**
  * One named Anthropic request-rewrite module over the format-native payload.
  */
-export interface AnthropicRequestRewrite {
+export interface AnthropicPayloadRewrite {
   readonly name: string
   /** Assembly sort key — encodes the §3 phase-ordering contract. */
   readonly order: number
@@ -79,7 +79,7 @@ export interface AnthropicRequestRewrite {
  * history stubs, sticky un-defer). Wraps the cohesive `preprocessTools`, which
  * gates each step on its own config internally.
  */
-const toolPreprocess: AnthropicRequestRewrite = {
+const toolPreprocess: AnthropicPayloadRewrite = {
   name: "tool-preprocess",
   order: 100,
   appliesTo: () => true,
@@ -95,7 +95,7 @@ const toolPreprocess: AnthropicRequestRewrite = {
  * `applyAnthropicToolNameSanitization` (returns the same payload), so skipping
  * the module is byte-identical to the prior unconditional no-op call.
  */
-const toolNameSanitize: AnthropicRequestRewrite = {
+const toolNameSanitize: AnthropicPayloadRewrite = {
   name: "tool-name-sanitize",
   order: 200,
   appliesTo: (ctx) => ctx.toolNameMapper !== null,
@@ -111,7 +111,7 @@ const toolNameSanitize: AnthropicRequestRewrite = {
  * processing, empty-block cleanup). Wraps the cohesive `sanitizeAnthropicMessages`
  * and surfaces its canonical SanitizeResult unchanged.
  */
-const sanitizeMessages: AnthropicRequestRewrite = {
+const sanitizeMessages: AnthropicPayloadRewrite = {
   name: "sanitize-messages",
   order: 300,
   appliesTo: () => true,
@@ -124,7 +124,7 @@ const sanitizeMessages: AnthropicRequestRewrite = {
 }
 
 /** The ordered Anthropic request-rewrite registry. */
-export const ANTHROPIC_REQUEST_REWRITES: ReadonlyArray<AnthropicRequestRewrite> = [toolPreprocess, toolNameSanitize, sanitizeMessages]
+export const ANTHROPIC_PAYLOAD_REWRITES: ReadonlyArray<AnthropicPayloadRewrite> = [toolPreprocess, toolNameSanitize, sanitizeMessages]
 
 // ============================================================================
 // Assembly + run
@@ -134,10 +134,10 @@ export const ANTHROPIC_REQUEST_REWRITES: ReadonlyArray<AnthropicRequestRewrite> 
  * Assemble the Anthropic request-rewrite chain: keep modules whose `appliesTo`
  * passes, sorted by `order`. Returns a fresh array (registry never mutated).
  */
-export function assembleAnthropicRequestRewrites(
+export function assembleAnthropicPayloadRewrites(
   ctx: AnthropicRewriteContext,
-  registry: ReadonlyArray<AnthropicRequestRewrite> = ANTHROPIC_REQUEST_REWRITES,
-): Array<AnthropicRequestRewrite> {
+  registry: ReadonlyArray<AnthropicPayloadRewrite> = ANTHROPIC_PAYLOAD_REWRITES,
+): Array<AnthropicPayloadRewrite> {
   return registry.filter((r) => r.appliesTo(ctx)).sort((a, b) => a.order - b.order)
 }
 
@@ -147,13 +147,13 @@ export function assembleAnthropicRequestRewrites(
  * prior manual composition
  * `sanitizeAnthropicMessages(applyAnthropicToolNameSanitization(preprocessTools(p), mapper))`.
  */
-export function runAnthropicRequestRewrites(
+export function runAnthropicPayloadRewrites(
   payload: MessagesPayload,
   ctx: AnthropicRewriteContext,
 ): { payload: MessagesPayload; sanitizeResult: FullSanitizeResult } {
   let current = payload
   let sanitizeResult: FullSanitizeResult | undefined
-  for (const rewrite of assembleAnthropicRequestRewrites(ctx)) {
+  for (const rewrite of assembleAnthropicPayloadRewrites(ctx)) {
     const result = rewrite.apply(current, ctx)
     current = result.payload
     if (result.sanitizeResult) sanitizeResult = result.sanitizeResult

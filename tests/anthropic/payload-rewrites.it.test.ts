@@ -27,9 +27,9 @@ import type {
 import { preprocessTools } from "~/lib/anthropic/message-tools"
 import {
   //
-  runAnthropicRequestRewrites,
+  runAnthropicPayloadRewrites,
   type AnthropicRewriteContext,
-} from "~/lib/anthropic/request-rewrites"
+} from "~/lib/anthropic/payload-rewrites"
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import {
   //
@@ -167,7 +167,7 @@ describe("Anthropic request-rewrite registry — byte-equivalence with prior com
     test(s.name, () => {
       s.setup?.()
       const expected = oracle(s.payload, s.ctx)
-      const actual = runAnthropicRequestRewrites(s.payload, s.ctx)
+      const actual = runAnthropicPayloadRewrites(s.payload, s.ctx)
 
       // Final payload and the canonical SanitizeResult are byte-identical to the oracle.
       expect(actual.sanitizeResult).toEqual(expected)
@@ -182,7 +182,7 @@ describe("Anthropic request-rewrite registry — byte-equivalence with prior com
   test("tool-name module is skipped (not applied as no-op) when mapper is null — still byte-identical", () => {
     const p = payload([user("q")], { tools: [{ name: "Read", description: "d", input_schema: { type: "object", properties: {} } }] as unknown as Array<Tool> })
     const expected = oracle(p, NO_MAPPER)
-    const actual = runAnthropicRequestRewrites(p, NO_MAPPER)
+    const actual = runAnthropicPayloadRewrites(p, NO_MAPPER)
     expect(actual.sanitizeResult).toEqual(expected)
   })
 })
