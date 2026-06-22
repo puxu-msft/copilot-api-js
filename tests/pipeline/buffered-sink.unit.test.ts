@@ -212,6 +212,51 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     expect(sinkTypes(frames)).toEqual(["message_start", "error"])
   })
 
+  test("buffer cap exceeded → retreat to LIVE forwarding, NO retry, full generation delivered", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // A tiny cap (30 bytes) is exceeded within the first frame or two → retreat to live.
+    const first = upstream(framesClean(completeFrames("msg_big")))
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("msg_retry")))])
+    const { sink, frames } = makeArraySink()
+    const tracker = makeStopTracker()
+    let retreated = false
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, {
+      ...tracker,
+      retryCap: 3,
+      bufferCapBytes: 30,
+      onRetreat: () => {
+        retreated = true
+      },
+    } as RunBufferedOpts)
+
+    expect(retreated).toBe(true) // the cap was exceeded
+    expect(outcome.kind).toBe("complete")
+    expect(sendCount()).toBe(0) // retreat forfeits retry — the retry upstream is never consumed
+    // The WHOLE generation reached the client (retreat flushes the buffered prefix + writes the rest live).
+    expect(sinkTypes(frames)).toEqual(["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"])
+  })
+
+  test("buffer cap exceeded THEN the stream RSTs → stream-error, NO retry (frames already forwarded)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // Retreat early (cap 30), then the upstream RSTs — once retreated, the partial is on the wire,
+    // so it canNOT be retried (mirrors the live path: a post-forward RST fails).
+    const first = upstream(framesThenThrow(completeFrames("msg_partial").slice(0, 3), RST()))
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("msg_retry")))])
+    const { sink, frames } = makeArraySink()
+    const tracker = makeStopTracker()
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, { ...tracker, retryCap: 3, bufferCapBytes: 30 } as RunBufferedOpts)
+
+    expect(outcome.kind).toBe("stream-error")
+    expect(sendCount()).toBe(0) // retreat already forfeited retry
+    // The frames forwarded before the RST stay on the wire (live, can't unsend).
+    expect(frames.length).toBeGreaterThan(0)
+    expect(frames.some((fr) => (fr.data ?? "").includes("msg_partial"))).toBe(true)
+  })
+
   test("truncation (clean drain WITHOUT message_stop) is retryable, not a false commit", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})

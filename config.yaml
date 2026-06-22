@@ -214,6 +214,11 @@ anthropic:
   # withholds all real frames until message_stop, so a heartbeat is constructed
   # UNCONDITIONALLY — using stream_fake_sse_heartbeat when >0, else this fallback.
   protect_streaming_heartbeat: 15
+  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering
+  # and retreating to live forwarding for the rest of THIS response (which then
+  # loses L2 protection — a live RST fails as today). Prevents a pathologically
+  # huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
+  protect_streaming_buffer_cap_bytes: 16777216
 
   # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
   # "input": dedup by (name, input); "result": also require identical result

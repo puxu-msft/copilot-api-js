@@ -242,6 +242,21 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     expect(entry?.state).toBe("failed")
     expect(entry?.outboundResponse?.success).toBe(false)
   })
+
+  test("buffer cap (tiny) → retreat to live, client still gets the full generation, history completed", async () => {
+    rstBeforeComplete = 0 // a clean complete stream; the cap forces a retreat, not a retry
+    setStateForTests({ protectStreamingBufferCapBytes: 10 }) // 10 bytes → exceeded almost immediately
+    const sse = await streamRequest("l2-buf-cap")
+
+    // Retreat forwards the whole generation live (the cap only forfeits buffering, not delivery).
+    expect(frameTypesInOrder(sse)).toContain("message_stop")
+    expect(frameTypesInOrder(sse)).not.toContain("error")
+    expect(upstreamCalls).toBe(1) // no retry
+
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-cap", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    expect(entry?.outboundResponse?.success).toBe(true)
+  })
 })
 
 // ============================================================================

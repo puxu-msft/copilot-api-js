@@ -661,6 +661,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         sawUpstreamError: () => acc.streamError !== undefined,
         onAttemptReset,
         retryCap: state.protectStreamingMaxRetries,
+        bufferCapBytes: state.protectStreamingBufferCapBytes,
       })
     : await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
 

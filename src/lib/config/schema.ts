@@ -313,6 +313,13 @@ export const AnthropicConfigSchema = z
      */
     protect_streaming_max_retries: nullableNonnegativeInt(),
     /**
+     * L2 buffered-path memory guard: max bytes to buffer before ABANDONING buffering and
+     * retreating to live forwarding for the rest of THIS response (the response then loses
+     * L2 protection — a live RST fails as today). Prevents a pathologically huge generation
+     * from buffering unbounded → OOM. `0` = unlimited. Default 16MiB.
+     */
+    protect_streaming_buffer_cap_bytes: nullableNonnegativeInt(),
+    /**
      * Forced heartbeat interval (seconds) for the buffered-retry path. The buffered
      * sink withholds all real frames until `message_stop`, so the client would idle
      * out without a ping; the buffered path constructs a heartbeat UNCONDITIONALLY,

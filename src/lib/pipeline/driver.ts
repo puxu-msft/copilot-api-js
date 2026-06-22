@@ -504,6 +504,7 @@ async function runResponseBufferedSink(
   opts: RunBufferedOpts,
 ): Promise<ResponseOutcome> {
   const cap = opts.retryCap ?? 0
+  const bufferCapBytes = opts.bufferCapBytes ?? 0
   const strategies = typeof deps.strategies === "function" ? deps.strategies(env) : deps.strategies
   let current = upstream
   let currentEnv = env
@@ -511,13 +512,31 @@ async function runResponseBufferedSink(
   try {
     for (;;) {
       const buffer: Array<ClientFrame> = []
+      let bufferedBytes = 0
+      let retreated = false
       let thrown: unknown
       let drained = false
       try {
         for await (const frame of runResponse(deps, current, currentEnv, opts)) {
           if (frame.data === "[DONE]") continue
           const toWrite = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
-          if (toWrite) buffer.push(toWrite)
+          if (!toWrite) continue
+          if (retreated) {
+            // Buffer cap already exceeded → live write-through for the rest (no more buffering).
+            await sink.write(toWrite)
+            continue
+          }
+          buffer.push(toWrite)
+          bufferedBytes += (toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)
+          if (bufferCapBytes > 0 && bufferedBytes > bufferCapBytes) {
+            // OOM guard: abandon buffering, flush what we have, switch to live for the rest. The
+            // response loses L2 protection (a live RST now fails) and is NOT retried (frames are
+            // forwarded). Documented tradeoff (RFC §7 / §12 Q4) — pathological huge responses are rare.
+            retreated = true
+            opts.onRetreat?.()
+            for (const f of buffer) await sink.write(f)
+            buffer.length = 0
+          }
         }
         drained = true
       } catch (error) {
@@ -525,6 +544,15 @@ async function runResponseBufferedSink(
         if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
         thrown = error
       }
+
+      // Retreated to live: the frames are already forwarded — NO retry is possible (can't unsend).
+      // The outcome mirrors the live path: complete (handler decides success/fail via its acc) or
+      // stream-error (the throw / truncation surfaces as today).
+      if (retreated) {
+        if (drained) return { kind: "complete", headers: current.headers }
+        return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
+      }
+
       // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success)
       // OR an upstream `error` frame (H2 — a terminal upstream decision such as overload, NOT a
       // transport cut). A clean drain with NEITHER is a truncation (Bun delivers a clean RST as a

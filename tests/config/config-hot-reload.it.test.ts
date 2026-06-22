@@ -292,6 +292,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
   },
   {
+    configKey: "anthropic.protect_streaming_buffer_cap_bytes",
+    stateKey: "protectStreamingBufferCapBytes",
+    sampleYamlValue: "8388608",
+    expectedStateValue: 8388608,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
+  },
+  {
     configKey: "anthropic.tool_inject_claude_code",
     stateKey: "injectClaudeCodeOfficialTools",
     sampleYamlValue: "false",

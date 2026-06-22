@@ -321,6 +321,17 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * the client is kept alive by the sink heartbeat). `0` = no retry (buffer + commit only).
    */
   retryCap?: number
+  /**
+   * Max bytes to buffer before ABANDONING buffering and retreating to LIVE forwarding for the
+   * rest of THIS response (an OOM guard against a pathologically huge generation). On retreat the
+   * already-buffered frames are flushed and every subsequent frame is written through live — the
+   * response then loses L2 protection (a live RST fails as today) and is NOT retried (frames are
+   * already forwarded). `0`/undefined = unlimited (no cap). Bytes are estimated from each rendered
+   * frame's `data` + `event` string length (a coarse guard, not exact wire bytes).
+   */
+  bufferCapBytes?: number
+  /** Called once if/when the buffer cap is exceeded and the path retreats to live forwarding (telemetry/logging). */
+  onRetreat?: () => void
 }
 
 // ============================================================================
