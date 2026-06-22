@@ -197,7 +197,7 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 | 路由 | 说明 |
 |------|------|
 | `/health` | 健康检查（容器编排用） |
-| `/openapi.json` | 管理 API 的 OpenAPI 3.1 文档（仅 `/api/*` 自有端点；兼容端点镜像上游契约不收录；History REST + dry-run-pipeline 因 handler 返回宽 `ContentfulStatusCode`/动态形状、其消费者为强类型 Vue UI 而故意排除）。经 `OpenAPIHono`（根 app 改 `OpenAPIHono<BlankEnv>`）+ 各管理 route 的 `createRoute`+zod schema 聚合，见 `src/routes/openapi.ts` |
+| `/openapi.json` | **全 API 表面**的 OpenAPI 3.1 文档。两档保真度：管理 API（`/api/*`）经各 router `.openapi()` 的**精确 zod schema**；其余（OpenAI/Anthropic/Gemini/Azure compat、History REST、dry-run-pipeline、event_logging、health）经 `openAPIRegistry.registerPath()` 的**简单 open-object schema**（纯文档、不绑 handler、不校验，故 plain-Hono 路由原封不动照常工作）。根 app 改 `OpenAPIHono<BlankEnv>`；装配见 `src/routes/openapi.ts`（doc31+Scalar+管理 router 聚合）与 `src/routes/openapi-compat.ts`（compat/history/诊断的 registerPath）。vendor compat body 字段级细节查各厂商自有 spec |
 | `/docs` | Scalar 交互式 API 文档页（消费 `/openapi.json`，与 Vue 前端 `/ui` 分离） |
 | `/history/api/*` | History REST API（含 `POST /history/api/entries/:id/pin`、`.../unpin` 切换 debug-pin——pinned 条目豁免 reaper 淘汰+计数，返回更新后的完整 entry） |
 | `/ws` | History WebSocket |

@@ -117,10 +117,10 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
   })
   registry.registerPath({
     method: "get",
-    path: "/anthropic/v1/models/{id}",
+    path: "/anthropic/v1/models/{model}",
     tags: ["anthropic"],
     summary: "Single model, Anthropic format",
-    request: { params: z.object({ id: z.string() }) },
+    request: { params: z.object({ model: z.string() }) },
     responses: { ...ok200("Model"), 404: { description: "Not found", ...jsonContent() } },
   })
 
@@ -198,6 +198,22 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     request: { params: z.object({ id: z.string() }) },
     responses: ok200("Deletion result"),
   })
+  registry.registerPath({
+    method: "post",
+    path: "/history/api/entries/{id}/pin",
+    tags: historyTag,
+    summary: "Pin an entry (exempt from reaper GC)",
+    request: { params: z.object({ id: z.string() }) },
+    responses: { ...ok200("Updated entry"), 404: { description: "Not found", ...jsonContent() } },
+  })
+  registry.registerPath({
+    method: "post",
+    path: "/history/api/entries/{id}/unpin",
+    tags: historyTag,
+    summary: "Unpin an entry",
+    request: { params: z.object({ id: z.string() }) },
+    responses: { ...ok200("Updated entry"), 404: { description: "Not found", ...jsonContent() } },
+  })
 
   // ── Diagnostics + infra ───────────────────────────────────────────────────
   registry.registerPath({
@@ -224,5 +240,32 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     tags: ["infra"],
     summary: "Health check (container orchestration)",
     responses: { ...ok200("Health"), 503: { description: "Unhealthy", ...jsonContent() } },
+  })
+  registry.registerPath({
+    method: "get",
+    path: "/",
+    tags: ["infra"],
+    summary: 'Liveness probe (returns "Server running")',
+    responses: { 200: { description: "Server running", content: { "text/plain": { schema: z.string() } } } },
+  })
+
+  // ── WebSocket endpoints (101 Switching Protocols upgrade) ─────────────────
+  // OpenAPI 3.1 has no first-class WebSocket modeling; documented as GET upgrade
+  // endpoints so they appear on the surface. Registered on the live server (not
+  // the HTTP-only test app) via registerWsRoutes.
+  registry.registerPath({
+    method: "get",
+    path: "/responses",
+    tags: ["openai"],
+    summary: "OpenAI Responses upgrade to WebSocket (also at /v1/responses, /openai/v1/responses)",
+    description: "WebSocket transport for the Responses API (opt-in via openai_responses.upstream_ws / client WS).",
+    responses: { 101: { description: "Switching Protocols (WebSocket)" } },
+  })
+  registry.registerPath({
+    method: "get",
+    path: "/ws",
+    tags: ["history"],
+    summary: "History WebSocket (live entry/status/shutdown push)",
+    responses: { 101: { description: "Switching Protocols (WebSocket)" } },
   })
 }

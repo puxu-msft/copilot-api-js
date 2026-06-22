@@ -59,11 +59,11 @@ export function registerOpenApiDocs(app: OpenAPIHono<BlankEnv>): void {
   app.doc31(OPENAPI_SPEC_PATH, {
     openapi: "3.1.0",
     info: {
-      title: "copilot-api management API",
+      title: "copilot-api",
       version: packageJson.version,
       description: OPENAPI_DESCRIPTION,
     },
   })
 
-  app.get(OPENAPI_DOCS_PATH, Scalar({ url: OPENAPI_SPEC_PATH, pageTitle: "copilot-api management API" }))
+  app.get(OPENAPI_DOCS_PATH, Scalar({ url: OPENAPI_SPEC_PATH, pageTitle: "copilot-api" }))
 }

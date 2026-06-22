@@ -2,10 +2,10 @@
  * Guards the OpenAPI 3.1 document + Scalar UI for the WHOLE API surface.
  *
  * Locks: (1) /openapi.json is a valid 3.1 doc versioned to package.json;
- * (2) the management endpoints (precise schemas) AND the compat / history /
- * diagnostic endpoints (simple schemas via registerPath) all appear with correct
- * paths; (3) documenting the plain-Hono routes did NOT break them — history REST
- * and the dry-run-pipeline inspector still respond (handlers untouched).
+ * (2) DRIFT GUARD — every real HTTP route on the app is either documented in the
+ * spec or in an explicit, reasoned exclusion set (so a newly-added route can't be
+ * silently left undocumented — the failure mode the old hand-picked allowlist
+ * missed); (3) documenting the plain-Hono routes did NOT break them.
  */
 
 import {
@@ -23,10 +23,40 @@ useIsolatedRuntime()
 
 const app = createFullTestApp()
 
-async function getSpec(): Promise<{ openapi: string; info: { version: string }; paths: Record<string, Record<string, unknown>> }> {
+interface Spec {
+  openapi: string
+  info: { version: string }
+  paths: Record<string, Record<string, unknown>>
+}
+
+async function getSpec(): Promise<Spec> {
   const res = await app.request("/openapi.json")
   expect(res.status).toBe(200)
-  return res.json() as Promise<{ openapi: string; info: { version: string }; paths: Record<string, Record<string, unknown>> }>
+  return res.json() as Promise<Spec>
+}
+
+/**
+ * Map a real Hono (method, path) to the spec path it MUST appear as, or `null`
+ * when intentionally not individually documented (with the reason inline).
+ */
+function canonicalSpecPath(rawPath: string): string | null {
+  let p = rawPath.replace(/\/+$/, "") || "/"
+
+  // The doc endpoints themselves + static UI + the /history → /ui redirect.
+  if (p === "/openapi.json" || p === "/docs" || p === "/history") return null
+  if (p === "/ui" || p.startsWith("/ui/")) return null
+  // Gemini is one catch-all route (:modelWithMethod) but documented as 3 explicit
+  // `{model}:<method>` paths — the catch-all itself is intentionally not a spec key.
+  if (p === "/v1beta/models/:modelWithMethod") return null
+
+  // Collapse OpenAI prefix aliases (no-prefix / /openai/v1) to the canonical /v1.
+  p = p.replace(/^\/openai\/v1\//, "/v1/")
+  if (/^\/(?:chat\/completions|models|embeddings|responses)(?:\/|$)/.test(p)) p = "/v1" + p
+  // Anthropic /anthropic/v1/messages alias → canonical /v1/messages.
+  p = p.replace(/^\/anthropic\/v1\/messages/, "/v1/messages")
+
+  // Hono `:param` → OpenAPI `{param}`.
+  return p.replaceAll(/:(\w+)/g, "{$1}")
 }
 
 describe("OpenAPI document — whole surface", () => {
@@ -36,39 +66,37 @@ describe("OpenAPI document — whole surface", () => {
     expect(spec.info.version).toBe(packageJson.version)
   })
 
-  test("includes management endpoints (precise schemas) with correct prefixes", async () => {
+  test("DRIFT GUARD: every real HTTP route is documented or explicitly excluded", async () => {
+    const { paths } = await getSpec()
+    const missing: Array<string> = []
+    const seen = new Set<string>()
+    for (const route of app.routes) {
+      if (route.method === "ALL") continue // middleware, not an endpoint
+      const key = `${route.method} ${route.path}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const specPath = canonicalSpecPath(route.path)
+      if (specPath === null) continue // intentionally excluded (see canonicalSpecPath)
+      const op = paths[specPath]?.[route.method.toLowerCase()]
+      if (op === undefined) missing.push(`${route.method} ${route.path} → expected spec path ${specPath}`)
+    }
+    expect(missing, `undocumented routes (add to openapi-compat.ts or exclude in canonicalSpecPath):\n${missing.join("\n")}`).toEqual([])
+  })
+
+  test("spot-check key endpoints across every family are present", async () => {
     const { paths } = await getSpec()
     for (const p of [
       "/api/status",
-      "/api/tokens",
-      "/api/config",
       "/api/config/yaml",
-      "/api/logs",
-      "/api/models",
-      "/api/models/{model}",
-      "/api/debug/dry-run-truncate",
-    ]) {
-      expect(paths[p], `expected ${p} in spec`).toBeDefined()
-    }
-  })
-
-  test("includes ALL compat + history + diagnostic endpoints (no exclusions)", async () => {
-    const { paths } = await getSpec()
-    for (const p of [
       "/v1/chat/completions",
       "/v1/messages",
-      "/v1/messages/count_tokens",
       "/v1/responses",
-      "/v1/embeddings",
-      "/v1/models",
       "/anthropic/v1/models",
       "/v1beta/models/{model}:generateContent",
-      "/v1beta/models/{model}:streamGenerateContent",
       "/openai/deployments/{deployment}/chat/completions",
       "/history/api/entries",
-      "/history/api/sessions",
+      "/history/api/entries/{id}/pin",
       "/api/debug/dry-run-pipeline",
-      "/api/event_logging/batch",
       "/health",
     ]) {
       expect(paths[p], `expected ${p} in spec`).toBeDefined()
@@ -82,11 +110,8 @@ describe("OpenAPI document — whole surface", () => {
   })
 
   test("documenting plain-Hono routes did NOT break them (handlers still respond)", async () => {
-    // history REST: with history enabled, entries returns 200 (not 404/unrouted)
     const entries = await app.request("/history/api/entries")
     expect(entries.status).toBe(200)
-    // dry-run-pipeline: route is live — an empty body is rejected by the handler
-    // (4xx), proving the handler runs (a missing route would be 404 from notFound).
     const pipeline = await app.request("/api/debug/dry-run-pipeline", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
