@@ -9,8 +9,6 @@
 
 import {
   //
-  afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -23,24 +21,13 @@ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions
 
 import {
   //
-  type StateSnapshot,
-  restoreStateForTests,
   setModels,
   setStateForTests,
-  snapshotStateForTests,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import {
-  //
-  applyFetchMock,
-  autoRestoreFetch,
-} from "../helpers/mock-fetch"
-import {
-  //
-  bootstrapTestRuntime,
-  resetTestRuntime,
-} from "../helpers/test-bootstrap"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
+import { applyFetchMock } from "../helpers/mock-fetch"
 
 // ----- upstream wire mock -----
 //
@@ -135,16 +122,9 @@ function setupChatModel() {
 // ============================================================================
 
 describe("Azure OpenAI classic deployment format", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
-
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     capturedPayload = undefined
     capturedEmbeddingsPayload = undefined
     chatHits = 0
@@ -155,11 +135,6 @@ describe("Azure OpenAI classic deployment format", () => {
     setStateForTests({ copilotToken: "test-token", fetchTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setupChatModel()
-  })
-
-  afterEach(() => {
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("POST /openai/deployments/{model}/chat/completions injects model from URL path", async () => {
@@ -254,16 +229,9 @@ describe("Azure OpenAI classic deployment format", () => {
 // ============================================================================
 
 describe("Azure OpenAI v1 format", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
-
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     capturedPayload = undefined
     capturedEmbeddingsPayload = undefined
     chatHits = 0
@@ -272,11 +240,6 @@ describe("Azure OpenAI v1 format", () => {
     setStateForTests({ copilotToken: "test-token", fetchTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setupChatModel()
-  })
-
-  afterEach(() => {
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("POST /openai/v1/chat/completions routes to chat completions handler", async () => {

@@ -9,32 +9,21 @@
 
 import {
   //
-  afterAll,
-  afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
   test,
 } from "bun:test"
 
-import type { StateSnapshot } from "~/lib/state"
-
 import {
   //
   setModels,
   setStateForTests,
-  snapshotStateForTests,
-  restoreStateForTests,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"
-import {
-  //
-  bootstrapTestRuntime,
-  resetTestRuntime,
-} from "../helpers/test-bootstrap"
 
 const app = createFullTestApp()
 
@@ -93,24 +82,11 @@ function forwardedQuestions(result: Array<{ data?: string }>): unknown {
 }
 
 describe("POST /api/debug/dry-run-pipeline", () => {
-  let snap: StateSnapshot
-
-  beforeAll(async () => {
-    await bootstrapTestRuntime()
-  })
-
-  afterAll(async () => {
-    await resetTestRuntime()
-  })
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snap = snapshotStateForTests()
     setStateForTests({ decodeToolInputFields: { AskUserQuestion: ["questions"] }, decodeAllToolInputFields: false, backfillQuestionFromHeader: true })
     seedModel()
-  })
-
-  afterEach(() => {
-    restoreStateForTests(snap)
   })
 
   test("decodes a stringified `questions` array on the forwarded stream", async () => {

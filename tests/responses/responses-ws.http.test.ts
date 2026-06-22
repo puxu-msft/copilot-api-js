@@ -1,7 +1,6 @@
 import {
   //
   afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -25,28 +24,17 @@ import { getHistory } from "~/lib/history"
 import { gracefulShutdown } from "~/lib/shutdown"
 import {
   //
-  type StateSnapshot,
-  restoreStateForTests,
   setModels,
   setStateForTests,
-  snapshotStateForTests,
 } from "~/lib/state"
 import { closeAllClients } from "~/lib/ws"
 
 import { mockModel } from "../helpers/factories"
-import {
-  //
-  applyFetchMock,
-  restoreFetch,
-} from "../helpers/mock-fetch"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
+import { applyFetchMock } from "../helpers/mock-fetch"
 import { createMockServer } from "../helpers/mock-server"
 import { createMockTracker } from "../helpers/mock-tracker"
 import { createSseResponse } from "../helpers/sse"
-import {
-  //
-  bootstrapTestRuntime,
-  resetTestRuntime,
-} from "../helpers/test-bootstrap"
 
 let capturedPayload: ResponsesPayload | undefined
 /** When true, the mock upstream emits a real event AFTER response.completed (to test the terminal-event break). */
@@ -221,15 +209,11 @@ function waitForSocketClose(ws: WebSocket, timeoutMs = 3000): Promise<SocketClos
 }
 
 describe("Responses WebSocket transport", () => {
-  let snapshot: StateSnapshot
+  useIsolatedRuntime()
+
   let server: TestServerHandle | undefined
 
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
-
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     capturedPayload = undefined
     emitTrailingAfterCompleted = false
     emitIdMismatch = false
@@ -245,12 +229,9 @@ describe("Responses WebSocket transport", () => {
   })
 
   afterEach(() => {
-    restoreFetch()
     server?.stop()
     server = undefined
     closeAllClients()
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("sends an invalid_request_error frame for malformed JSON messages", async () => {

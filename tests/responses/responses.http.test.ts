@@ -1,7 +1,5 @@
 import {
   //
-  afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -14,25 +12,14 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 import { getHistory } from "~/lib/history"
 import {
   //
-  type StateSnapshot,
-  restoreStateForTests,
   setModels,
   setStateForTests,
-  snapshotStateForTests,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import {
-  //
-  applyFetchMock,
-  restoreFetch,
-} from "../helpers/mock-fetch"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
+import { applyFetchMock } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
-import {
-  //
-  bootstrapTestRuntime,
-  resetTestRuntime,
-} from "../helpers/test-bootstrap"
 
 let capturedPayload: ResponsesPayload | undefined
 
@@ -65,14 +52,9 @@ const { createFullTestApp } = await import("../helpers/test-app")
 const app = createFullTestApp()
 
 describe("POST /responses", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     capturedPayload = undefined
     upstreamFetchMock.mockClear()
     // responses-client.ts checks state.copilotToken before calling fetch
@@ -168,12 +150,6 @@ describe("POST /responses", () => {
       )
     }
     applyFetchMock(upstreamFetchMock)
-  })
-
-  afterEach(() => {
-    restoreFetch()
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("returns 400 when the selected model supports neither /responses nor /chat/completions", async () => {

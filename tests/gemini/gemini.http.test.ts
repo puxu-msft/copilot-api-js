@@ -12,8 +12,6 @@
 
 import {
   //
-  afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -25,25 +23,14 @@ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions
 
 import {
   //
-  type StateSnapshot,
-  restoreStateForTests,
   setModels,
   setStateForTests,
-  snapshotStateForTests,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import {
-  //
-  applyFetchMock,
-  restoreFetch,
-} from "../helpers/mock-fetch"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
+import { applyFetchMock } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
-import {
-  //
-  bootstrapTestRuntime,
-  resetTestRuntime,
-} from "../helpers/test-bootstrap"
 
 // ----- upstream wire mock -----
 //
@@ -181,14 +168,9 @@ function applyGeminiState(): void {
 }
 
 describe("POST /v1beta/models/<model>:generateContent", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     capturedPayload = undefined
     upstreamFetchMock.mockClear()
     setDefaultResponseFactory()
@@ -202,12 +184,6 @@ describe("POST /v1beta/models/<model>:generateContent", () => {
       ],
     })
     applyGeminiState()
-  })
-
-  afterEach(() => {
-    restoreFetch()
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("returns Gemini-shaped response and forwards translated OpenAI payload", async () => {
@@ -273,14 +249,9 @@ describe("POST /v1beta/models/<model>:generateContent", () => {
 })
 
 describe("POST /v1beta/models/<model>:streamGenerateContent", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     capturedPayload = undefined
     upstreamFetchMock.mockClear()
     setDefaultResponseFactory()
@@ -294,12 +265,6 @@ describe("POST /v1beta/models/<model>:streamGenerateContent", () => {
       ],
     })
     applyGeminiState()
-  })
-
-  afterEach(() => {
-    restoreFetch()
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("returns SSE stream of Gemini-shaped frames", async () => {
@@ -379,14 +344,9 @@ describe("POST /v1beta/models/<model>:streamGenerateContent", () => {
 })
 
 describe("POST /v1beta/models/<model>:countTokens", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     setModels({
       object: "list",
       data: [
@@ -396,12 +356,6 @@ describe("POST /v1beta/models/<model>:countTokens", () => {
         }),
       ],
     })
-  })
-
-  afterEach(() => {
-    restoreFetch()
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("returns totalTokens for a simple prompt", async () => {
@@ -505,14 +459,9 @@ describe("POST /v1beta/models/<model>:countTokens", () => {
 })
 
 describe("Gemini route :method parsing (L-new-1)", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     capturedPayload = undefined
     upstreamFetchMock.mockClear()
     setDefaultResponseFactory()
@@ -526,12 +475,6 @@ describe("Gemini route :method parsing (L-new-1)", () => {
       ],
     })
     applyGeminiState()
-  })
-
-  afterEach(() => {
-    restoreFetch()
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("model ids containing colons dispatch correctly (last `:` is the method delimiter)", async () => {
@@ -550,14 +493,9 @@ describe("Gemini route :method parsing (L-new-1)", () => {
 })
 
 describe("Gemini streaming partial usage (L-new-2)", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     capturedPayload = undefined
     upstreamFetchMock.mockClear()
     setDefaultResponseFactory()
@@ -571,12 +509,6 @@ describe("Gemini streaming partial usage (L-new-2)", () => {
       ],
     })
     applyGeminiState()
-  })
-
-  afterEach(() => {
-    restoreFetch()
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("partial usage survives mid-stream failure into the history entry", async () => {

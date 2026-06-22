@@ -8,33 +8,23 @@
 
 import {
   //
-  afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
   test,
 } from "bun:test"
 
-import type { StateSnapshot } from "~/lib/state"
-
 import { insertEntry } from "~/lib/history"
 import {
   //
   setModels,
   setStateForTests,
-  snapshotStateForTests,
-  restoreStateForTests,
 } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"
-import {
-  //
-  bootstrapTestRuntime,
-  resetTestRuntime,
-} from "../helpers/test-bootstrap"
 
 const app = createFullTestApp()
 
@@ -68,21 +58,11 @@ async function postDryRun(body: unknown) {
 }
 
 describe("POST /api/debug/dry-run-truncate", () => {
-  let snapshot: StateSnapshot
-
-  beforeAll(() => {
-    bootstrapTestRuntime()
-  })
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     seedModel()
     setStateForTests({ autoTruncate: true })
-  })
-
-  afterEach(() => {
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("inline payload returns all three calibers side by side", async () => {
