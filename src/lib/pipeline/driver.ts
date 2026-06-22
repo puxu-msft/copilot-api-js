@@ -43,8 +43,8 @@ import {
   //
   assembleRequestRewrites,
   assembleResponseRewrites,
-  REQUEST_REWRITES,
-  RESPONSE_REWRITES,
+  BUILTIN_REQUEST_REWRITES,
+  BUILTIN_RESPONSE_REWRITES,
   type FrameAction,
   type RequestRewrite,
   type ResponseRewrite,
@@ -153,7 +153,7 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
 /** S3: assemble the request-rewrite chain and apply each in declared order. */
 function runRewriteIn(deps: DriverDeps, env: RequestEnvelope): RequestEnvelope {
   let current = env
-  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? REQUEST_REWRITES)) {
+  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)) {
     const result = rewrite.apply(current)
     current = result.env
     // P3.2 wires `request.rewrite_applied`{name, changed, stats} here.
@@ -194,7 +194,7 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   // S3 — rewrite-in (mirror runRewriteIn, capturing per-rewrite {name, changed}).
   const applied: Array<{ name: string; changed: boolean }> = []
   let current = routed
-  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? REQUEST_REWRITES)) {
+  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)) {
     const result = rewrite.apply(current)
     applied.push({ name: rewrite.name, changed: result.changed })
     current = result.env
@@ -322,7 +322,7 @@ async function runExchange(
 /** S5→S7: rewrite-out (per-frame chain + flush) → renderResponse → yield. */
 async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame> {
   // S5 — Rewrite-out: assemble the response-rewrite chain (per-request state, seeded from env).
-  const rewrites = assembleResponseRewrites(env, deps.responseRewrites ?? RESPONSE_REWRITES)
+  const rewrites = assembleResponseRewrites(env, deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)
   const states: Array<RewriteState> = rewrites.map((r) => r.createState?.(env) ?? {})
 
   // S4-exit sampling (P3.2b, envelope-driver.md §4): record each upstream-ORIGINAL
@@ -389,7 +389,7 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
     //     side effects clear), but IteratorClose DISCARDS values yielded here, so a
     //     breaking consumer does NOT receive them.
     //
-    // With `RESPONSE_REWRITES` empty this is a no-op (flushChain → []), so it is
+    // With `BUILTIN_RESPONSE_REWRITES` empty this is a no-op (flushChain → []), so it is
     // behavior-preserving today — the live Anthropic pump always `break`s on
     // [DONE]/error and is unaffected. Phase 4 (migrating a buffering decode/recover
     // rewrite into the registry) MUST NOT rely on this finally to deliver flushed
@@ -406,9 +406,11 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
  * owns-the-sink streaming (Stage B, design §3.2): drain the generator `runResponse`
  * into `sink`, returning a control-signal {@link ResponseOutcome}. Reuses the
  * generator's S5→S6 chain verbatim, so the SINK FRAME SEQUENCE == the generator's
- * YIELD SEQUENCE (the B0 real-renderer goldens lock this byte-for-byte). `sink.close()`
- * runs on EVERY exit (normal / throw / abort / write-reject) so the heartbeat timer
- * can't leak.
+ * YIELD SEQUENCE (the B0 real-renderer goldens lock this byte-for-byte). `opts.onRenderedFrame`
+ * (when supplied) transforms each rendered frame just before write — the forwarded-side
+ * counterpart to `opts.onUpstreamFrame` (CC tool-name restore + accumulate; Anthropic omits
+ * it). `sink.close()` runs on EVERY exit (normal / throw / abort / write-reject) so the
+ * heartbeat timer can't leak.
  *
  * `[DONE]` handling: the generator YIELDS the `[DONE]` sentinel (guard only blocks
  * sampling); `runResponseSink` DROPS it (it's a gateway transport terminator, NOT a
@@ -437,7 +439,10 @@ async function runResponseSink(
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue
-      await sink.write(frame)
+      // Post-render, pre-write transform (CC tool-name restore + its accumulate/progress
+      // side effects); identity when the format doesn't supply one (Anthropic). Applied
+      // AFTER the `[DONE]` drop so the hook never sees the sentinel.
+      await sink.write(opts?.onRenderedFrame ? opts.onRenderedFrame(frame) : frame)
     }
     return { kind: "complete", headers: upstream.headers }
   } catch (error) {
@@ -462,7 +467,7 @@ async function runResponseSink(
  */
 function runResponseWhole(deps: DriverDeps, response: unknown, env: RequestEnvelope): unknown {
   let current = response
-  for (const rewrite of assembleResponseRewrites(env, deps.responseRewrites ?? RESPONSE_REWRITES)) {
+  for (const rewrite of assembleResponseRewrites(env, deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)) {
     if (rewrite.transformWhole) current = rewrite.transformWhole(current, env)
   }
   return current

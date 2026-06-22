@@ -19,8 +19,8 @@ import {
   //
   assembleRequestRewrites,
   assembleResponseRewrites,
-  REQUEST_REWRITES,
-  RESPONSE_REWRITES,
+  BUILTIN_REQUEST_REWRITES,
+  BUILTIN_RESPONSE_REWRITES,
 } from "~/lib/pipeline/rewrite-registry"
 
 // A minimal envelope stub — the assemblers only read what `appliesTo` reads.
@@ -87,7 +87,7 @@ describe("assembleRequestRewrites", () => {
   })
 
   test("defaults to the module registry (empty in P1.1)", () => {
-    expect(REQUEST_REWRITES).toEqual([])
+    expect(BUILTIN_REQUEST_REWRITES).toEqual([])
     expect(assembleRequestRewrites(envWith("anthropic"))).toEqual([])
   })
 })
@@ -104,7 +104,7 @@ describe("assembleResponseRewrites", () => {
   })
 
   test("defaults to the module registry (empty in P1.1)", () => {
-    expect(RESPONSE_REWRITES).toEqual([])
+    expect(BUILTIN_RESPONSE_REWRITES).toEqual([])
     expect(assembleResponseRewrites(envWith("anthropic"))).toEqual([])
   })
 })

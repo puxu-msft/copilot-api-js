@@ -44,9 +44,9 @@ v4 管线：路由按前缀选 **codec**（每格式一个）+ 构建 per-reques
 3. driver 编排**七阶段**（`lib/pipeline/driver.ts`，详见 [03-spec/envelope-driver.md](v4/03-spec/envelope-driver.md)）：
    - **S1 parse** — `codec.parse(raw)` → `RequestEnvelope`（model 解析、body 提取、建 RequestContext）
    - **S2 route/translate** — `codec.decideRoute`（透传/翻译/拒绝，统一 4 格式判断）+ `codec.translateOut`（透传=identity）
-   - **S3 rewrite-in** — `runRewriteIn`：请求改写链（registry 按 format+config+order 装配）。Anthropic 由 codec 经 `deps.requestRewrites` 供 per-request `RequestRewrite`（`codec/anthropic/request-rewrites.ts`：sanitize 链 + pipelineInfo/messageMapping/thinking 记录，**Stage A A0** 从 `codec.parse` 迁入；闭包 over 路由产的 `preprocessInfo`，故走 codec-provided 而非 module-global `REQUEST_REWRITES`）
+   - **S3 rewrite-in** — `runRewriteIn`：请求改写链（registry 按 format+config+order 装配）。Anthropic 由 codec 经 `deps.requestRewrites` 供 per-request `RequestRewrite`（`codec/anthropic/request-rewrite-adapter.ts`：sanitize 链 + pipelineInfo/messageMapping/thinking 记录，**Stage A A0** 从 `codec.parse` 迁入；闭包 over 路由产的 `preprocessInfo`，故走 codec-provided 而非 module-global `BUILTIN_REQUEST_REWRITES`）
    - **S4 exchange** — `runExchange`：错误驱动重试循环（`codec.prepareWire` → `transport.send` → 失败时首个匹配 strategy 改写 env 重试；429 由 adaptive rate-limiter 在 transport 内消化）
-   - **S5 rewrite-out** — 响应改写链（逐帧 `transform`：emit/suppress/buffer + 流末 `flushChain`，已进 `try/finally` 故异常路径也 drain registry buffer）。Anthropic 的 4 个 `ResponseRewrite` 定义在 `src/lib/codec/anthropic/response-rewrites.ts`（`ANTHROPIC_RESPONSE_REWRITES`），由 handler 作 `deps.responseRewrites` 传入 driver（module-global `RESPONSE_REWRITES` 仍空）：recover-tool-call=100 / thinking-signature-compat=150 / tool-input-decode=200 / server-tool-filter=300，**Stage A A1** 从 handler pump 原子迁入，复用既有 factory 不重写算法核；order 编码硬序契约 recover<filter
+   - **S5 rewrite-out** — 响应改写链（逐帧 `transform`：emit/suppress/buffer + 流末 `flushChain`，已进 `try/finally` 故异常路径也 drain registry buffer）。Anthropic 的 4 个 `ResponseRewrite` 定义在 `src/lib/codec/anthropic/response-rewrites.ts`（`ANTHROPIC_RESPONSE_REWRITES`），由 handler 作 `deps.responseRewrites` 传入 driver（module-global `BUILTIN_RESPONSE_REWRITES` 仍空）：recover-tool-call=100 / thinking-signature-compat=150 / tool-input-decode=200 / server-tool-filter=300，**Stage A A1** 从 handler pump 原子迁入，复用既有 factory 不重写算法核；order 编码硬序契约 recover<filter
    - **S6 render** — `codec.renderResponse` 翻回客户端协议（透传=identity）
    - **S7 forward** — handler 写回客户端（streamSSE / JSON / WS frame）
 4. driver 在阶段边界采样原始数据 → observability bus → sinks（History/Ws/Console/Telemetry/File）：S1 入站、S4 per-attempt 双轨（effective/wire + queueWaitMs）+ **上游原始 sseEvents**（循环顶逐帧，所有格式统一）+ **S5 前经 `runResponse` 的 `onUpstreamFrame` hook 把 raw 帧交回 handler 做 accumulate（→ `outboundResponse` 保上游原貌，Option A）/ repetition / progress / 诊断（Anthropic，A1：响应改写迁进 driver 后这些 upstream-side 工作仍在 raw 帧上）**；客户端 forwarded 由 handler 在写回点采样（Gemini 整流翻译 / Anthropic heartbeat 不经 driver yield 点，见 [03-spec/envelope-driver.md §4](v4/03-spec/envelope-driver.md)）。
@@ -61,8 +61,8 @@ v4 driver（七阶段编排）正逐步取代各格式巨型 handler。下表定
 
 | 子系统 / 路径 | 状态 | 当前活的架构 | 在哪看 |
 |---|---|---|---|
-| 请求改写（S3） | `[done]` A0 | Anthropic sanitize 链经 codec-provided 闭包注入 driver S3（codec 方法 `getRequestRewrites()`） | `src/lib/codec/anthropic/request-rewrites.ts` |
-| 流式响应改写（S5） | `[done]` A1 | recover/thinking/decode/filter 四条 ResponseRewrite——**载体是 handler import 的 `ANTHROPIC_RESPONSE_REWRITES` 数组并作 `responseRewrites:` 传入 driver；module-global `RESPONSE_REWRITES` 仍是空数组**（别去 registry 找改写） | `src/lib/codec/anthropic/response-rewrites.ts` |
+| 请求改写（S3） | `[done]` A0 | Anthropic sanitize 链经 codec-provided 闭包注入 driver S3（codec 方法 `getRequestRewrites()`） | `src/lib/codec/anthropic/request-rewrite-adapter.ts` |
+| 流式响应改写（S5） | `[done]` A1 | recover/thinking/decode/filter 四条 ResponseRewrite——**载体是 handler import 的 `ANTHROPIC_RESPONSE_REWRITES` 数组并作 `responseRewrites:` 传入 driver；module-global `BUILTIN_RESPONSE_REWRITES` 仍是空数组**（别去 registry 找改写） | `src/lib/codec/anthropic/response-rewrites.ts` |
 | 非流式响应改写（S5 whole） | `[done]` A.B | recover/decode/filter 各声明 `transformWhole`，经 driver `runResponseWhole` 按**与流式同一升序 order 链**应用（name-restore 随 filter@300 bundle）；`renderNonStreamingV4` 只剩 verbose marker（不进 registry，design §3.1）+ 调 `driver.runResponseWhole`。统一后非流式 decode 改为先于 restore（wire-name 匹配，与流式一致）——仅 `sanitizeToolNames`+被清洗的 decode-target 这一极窄角与旧序有别。**注**：web_search 双跳 `[bypass]`（`web-search-direct.ts` 的 `handleDirectAnthropicNonStreamingResponse`）仍用旧序 filter→recover→restore→decode，待其迁 driver 时收敛 | `src/lib/codec/anthropic/response-rewrites.ts`、`src/lib/pipeline/driver.ts` |
 | Responses + 上游 WS（S5 逐帧） | `[done]` A.C | `fixStreamEventIds`（stateful 跨帧 id 修正，direct-only）经 driver S5 registry 应用——HTTP + WS **共享同一条 rewrite**（`RESPONSES_RESPONSE_REWRITES`），不再各自内联 idTracker。tool-name restore 仍 handler-side（forwarded-only、post-accumulate，须作用于 render 后的 Responses 帧；fallback 的 renderResponse 是 CC→Responses 翻译，故 restore 不能进 pre-render 的 S5），但两传输已 dedup 成共享 helper `restoreResponsesStreamFrameToolNames`。整流翻译（CC→Responses）/ WS 写出层仍 handler-side（Stage B） | `src/lib/codec/openai-responses/response-rewrites.ts`、`src/routes/responses/ws.ts` |
 | 流式写出 + forwarded 采样 + 终态（Anthropic） | `[done]` B-canary | **Anthropic 流式 pump 已切 owns-sink**：driver `runResponseSink(upstream, env, sink)` drain S5 链写进 `makeSseSink`，返回格式无关 `ResponseOutcome`（`complete{headers}`/`stream-error{raw error}`/`settled-abort`，**不载 accumulator**——handler 自持 acc 经 `onUpstreamFrame` 喂、终态读 streamError/usage）。**forwarded 采样在 sink 内**（`onForwarded`→`forwardedSseEvents`）：`write` 采、`writeSynthetic`（H3 合成 error 帧）**不采**、内部 heartbeat timer 注 ping 并采——H2-sampled/H3-unsampled 非对称（B0-c 锁）。sink 持 heartbeat 自重排 timer，`runResponseSink` `finally` 必调 `sink.close()`（4 退出路径无泄漏）；sink 与 transport 的 `guardSseIterable` idle 是**分离两-racer**（heartbeat SOFT、upstream-idle HARD）。**仅 Anthropic 已切**——CC/Responses-HTTP/Responses-WS/Gemini 仍走 generator `runResponse`；旧 `startForwardedSseHeartbeat`/`forwardClientFrame`（streaming-pump.ts）web_search bypass 仍用，**别删** | `src/lib/pipeline/client-sink.ts`、`src/lib/pipeline/driver.ts`（`runResponseSink`）、`src/routes/messages/handler-v4.ts`（`pumpAnthropicStreamingV4`） |
@@ -70,6 +70,20 @@ v4 driver（七阶段编排）正逐步取代各格式巨型 handler。下表定
 | 旧重试管道 | `[退役中]` | `src/lib/request/`（`executeRequestPipeline` + strategies）；strategies 经 `legacy-strategy-adapter` 被 driver 复用，pipeline 本体**仅 web_search 双跳消费** | `src/lib/request/pipeline.ts` |
 
 完整迁移设计与 phase 进度见 `docs/v4/` 与 `docs/rfc/response-pipeline/`。
+
+#### 改写词汇（命名约定，钉死映射避免混用）
+
+"改写 payload" 的相关词有精确分工，**不可互换**（重组依据见 `docs/rfc/anthropic-rewrite-reorg.md`）：
+
+| 词 | 精确含义 | 阶段 | 载体 |
+|---|---|---|---|
+| **Rewrite**（`RequestRewrite`/`ResponseRewrite`） | driver registry 装配、env 级、声明式 `order` | S3 / S5 | `pipeline/rewrite-registry.ts` 接口 |
+| **PayloadRewrite**（`AnthropicPayloadRewrite`） | 格式原生（pre-env）改写模块，**被 S3 适配器包装 _或_ 被 bypass 直接调用** | S3 之下 / bypass | `anthropic/payload-rewrites.ts`（被 `codec/anthropic/request-rewrite-adapter.ts` 包装；web_search 旁路独立复用） |
+| **PrepareStep** | per-attempt wire 整形 + 副作用（beta probe），**非 rewrite** | S4-pre | `anthropic/request-preparation.ts`（B1–B12） |
+| **Strategy**（`RetryStrategy`） | 错误驱动反应式 re-rewrite + 重试 | S4 重试环 | `request/strategies/*`（实现）+ `codec/*/strategies.ts`（组装） |
+| **sanitize** | 一条**具体** PayloadRewrite（消息清洗），**不再作伞形动词** | — | `anthropic/sanitize/`（`index.ts` barrel + 子步） |
+
+module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为空**（见 `rewrite-registry.ts` 注释）——各格式改写经 `deps` 注入，**别去 registry 找改写**。
 
 ### 核心模块
 
@@ -79,7 +93,7 @@ v4 driver（七阶段编排）正逐步取代各格式巨型 handler。下表定
 
 | 目录 | 职责 · 关系 · 契约 |
 |---|---|
-| `src/lib/pipeline/` | driver 七阶段编排（S1–S7 + 错误驱动重试 + 阶段边界采样 + `onUpstreamFrame` hook 把 raw 上游帧交回 handler 做 accumulate/采样）。**registry 已激活（Stage A 完成）**：S3 跑请求改写、S5 跑响应逐帧改写（`passThrough`+`flushChain`）、`runResponseWhole` 跑非流式 `transformWhole`。**反直觉契约**：`rewrite-registry.ts` 的 module-global `REQUEST_REWRITES`/`RESPONSE_REWRITES` **故意留空数组**——各格式改写经 codec/handler 传入的 `deps`（Anthropic 请求/响应集、Responses fixIds），registry 本体只供装配器（`assembleRequest/ResponseRewrites` 按 `appliesTo`+`order` 装配）+ `RESPONSE_REWRITE_ORDER` 硬序常量（recover 100 < thinking 150 < decode 200 < filter 300）。`legacy-strategy-adapter` 把旧 RetryStrategy 适配成 driver env-based 重试。改写适配器在 `lib/codec/*-rewrites.ts`（**非** registry 文件）。 |
+| `src/lib/pipeline/` | driver 七阶段编排（S1–S7 + 错误驱动重试 + 阶段边界采样 + `onUpstreamFrame` hook 把 raw 上游帧交回 handler 做 accumulate/采样）。**registry 已激活（Stage A 完成）**：S3 跑请求改写、S5 跑响应逐帧改写（`passThrough`+`flushChain`）、`runResponseWhole` 跑非流式 `transformWhole`。**反直觉契约**：`rewrite-registry.ts` 的 module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意留空数组**——各格式改写经 codec/handler 传入的 `deps`（Anthropic 请求/响应集、Responses fixIds），registry 本体只供装配器（`assembleRequest/ResponseRewrites` 按 `appliesTo`+`order` 装配）+ `RESPONSE_REWRITE_ORDER` 硬序常量（recover 100 < thinking 150 < decode 200 < filter 300）。`legacy-strategy-adapter` 把旧 RetryStrategy 适配成 driver env-based 重试。改写适配器在 `lib/codec/*-rewrites.ts`（**非** registry 文件）。 |
 | `src/lib/codec/` | 每格式 `FormatCodec`（parse/decideRoute/translateOut/renderResponse/prepareWire/sampleRequest）。**openai-cc 是翻译中枢**（CC↔Responses 经 `src/lib/openai/translate/`）；**openai-gemini 工厂内委托内部 openai-cc codec** 处理 CC payload；anthropic 为 bypass-direct（translate/render=identity），`getRequestRewrites()` 供 driver S3，响应改写则由 handler import `anthropic/response-rewrites.ts` 的 `ANTHROPIC_RESPONSE_REWRITES` 传入 S5。`*-strategies` 各格式组装重试策略。 |
 | `src/lib/transport/` | 格式无关上游收发。`upstream-fetch.ts` 唯一上游 fetch 入口（显式传 undici dispatcher + keepalive）。**反直觉契约**：Bun 下 GHC https 热路径走内建 `node:http2`（`http2-client.ts`）而非 undici（undici-on-Bun 对 h2 chunked 响应永久挂，见 `docs/bun-runtime-timeout.md`）；明文 http 才走 undici 子路径。 |
 
@@ -87,7 +101,7 @@ v4 driver（七阶段编排）正逐步取代各格式巨型 handler。下表定
 
 | 目录 | 职责 · 关系 · 契约 |
 |---|---|
-| `src/lib/anthropic/` | Anthropic 格式全栈（最大域）。子域：`src/lib/anthropic/sanitize/`（消息清洗管道，payload-level 请求改写 `request-rewrites.ts` 被 codec S3 wrapper + web_search 旁路共享）、`src/lib/anthropic/recover-tool-call/`（tool-call 文本降级透明恢复，CANDIDATE/COMMIT + 非流式 helper，被 A1 响应改写包装）、`src/lib/anthropic/web-search/`（双跳旁路 orchestrator + backends）、thinking 处理（signature 自包含→块级保护）。`request-preparation.ts` 是 B1–B12 wire 准备；`pipeline.ts` 现仅 web_search 双跳复用 `executeRequestPipeline`。 |
+| `src/lib/anthropic/` | Anthropic 格式全栈（最大域）。子域：`src/lib/anthropic/sanitize/`（消息清洗管道，payload-level 请求改写 `payload-rewrites.ts` 被 codec S3 wrapper + web_search 旁路共享）、`src/lib/anthropic/recover-tool-call/`（tool-call 文本降级透明恢复，CANDIDATE/COMMIT + 非流式 helper，被 A1 响应改写包装）、`src/lib/anthropic/web-search/`（双跳旁路 orchestrator + backends）、thinking 处理（signature 自包含→块级保护）。`request-preparation.ts` 是 B1–B12 wire 准备；`pipeline.ts` 现仅 web_search 双跳复用 `executeRequestPipeline`。 |
 | `src/lib/openai/` | OpenAI 全栈（CC + Responses + embeddings + 上游 WS）。`src/lib/openai/translate/` 是 CC↔Responses 翻译核（被 openai-cc/gemini codec 消费）；`upstream-ws*` 是上游 WebSocket 传输（半开熔断 + 回退）；`stream-error.ts` 把流式生命周期错误映射为 OpenAI SSE `error.type`（CC/Responses 共享）。 |
 | `src/lib/gemini/` | Gemini 薄翻译层（request/response/stream convert + schema normalize + tool-call pairing），被 `codec/openai-gemini` 消费、翻成内部 CC 后复用 CC 全链。 |
 | `src/lib/auto-truncate/` | 响应式 auto-truncate 引擎（token 限制学习 + 预检查），被 anthropic/openai 各自适配层消费。 |

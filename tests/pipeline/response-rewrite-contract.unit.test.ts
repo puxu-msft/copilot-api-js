@@ -3,7 +3,7 @@
  *
  * Phase 4 atomically migrates four Anthropic response rewrites (recover-tool-call /
  * thinking-signature-compat / tool-input-decode / server-tool-filter) into
- * `RESPONSE_REWRITES`, where the order they used to get from handwritten closure
+ * `BUILTIN_RESPONSE_REWRITES`, where the order they used to get from handwritten closure
  * nesting (streaming-pump.ts:195-228) becomes the `order` field + per-rewrite
  * `createState()`. This suite locks the implicit contract Phase 4 relies on, using
  * mock rewrites only — NO production rewrite is migrated here.

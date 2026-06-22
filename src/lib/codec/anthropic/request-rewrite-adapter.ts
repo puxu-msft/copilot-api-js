@@ -15,7 +15,7 @@
  * The recordings need route-supplied `preprocessInfo` (not on the env), so this is a
  * per-request wrapper the codec builds (closing over `preprocessInfo` + the
  * `initialSanitizationInfo` setter) and hands the driver via `deps.requestRewrites`
- * — not a static module-global `REQUEST_REWRITES` entry.
+ * — not a static module-global `BUILTIN_REQUEST_REWRITES` entry.
  */
 
 import type { PreprocessInfo } from "~/lib/history/types"

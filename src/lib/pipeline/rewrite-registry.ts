@@ -130,12 +130,18 @@ export interface ResponseRewrite {
 // ============================================================================
 
 /**
- * The registered request rewrites. Empty in P1.1; populated by P1.2–P1.4 as the
- * Anthropic / OpenAI rewrites are wrapped. Static composition (not runtime
- * registration) keeps assembly deterministic and avoids a mutable global
- * singleton that would leak across bun's single-process test runs.
+ * Built-in (module-global) request rewrites — **intentionally empty by design**.
+ *
+ * Do NOT look here for "where are the rewrites": per-format rewrites are NOT
+ * registered statically. Each codec/handler passes its rewrites per-request via
+ * `deps.requestRewrites` (Anthropic: `codec/anthropic/request-rewrite-adapter.ts`
+ * wrapping `anthropic/payload-rewrites.ts`), which `assembleRequestRewrites` filters
+ * + orders. This constant exists only as the assembler's empty default + to make
+ * grep land on THIS explanation. Static (non-runtime) registration keeps assembly
+ * deterministic and avoids a mutable global singleton that would leak across bun's
+ * single-process test runs.
  */
-export const REQUEST_REWRITES: ReadonlyArray<RequestRewrite> = []
+export const BUILTIN_REQUEST_REWRITES: ReadonlyArray<RequestRewrite> = []
 
 /**
  * Response-rewrite assembly order (ASCENDING = runs first). Phase 4 registers the
@@ -164,8 +170,14 @@ export const RESPONSE_REWRITE_ORDER = {
   serverToolFilter: 300,
 } as const
 
-/** The registered response rewrites. Empty in P1.1; populated by Phase 4 (RFC §4.A1). */
-export const RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = []
+/**
+ * Built-in (module-global) response rewrites — **intentionally empty by design**
+ * (same rationale as {@link BUILTIN_REQUEST_REWRITES}). Per-format response
+ * rewrites come via `deps.responseRewrites`: Anthropic's four
+ * (`ANTHROPIC_RESPONSE_REWRITES` in `codec/anthropic/response-rewrites.ts`) and
+ * Responses' fixIds (`RESPONSES_RESPONSE_REWRITES`). Don't look here for them.
+ */
+export const BUILTIN_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = []
 
 /**
  * Assemble the request-rewrite chain for an envelope: keep the registered
@@ -174,10 +186,10 @@ export const RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = []
  * `Array.prototype.sort` is stable, so equal-`order` ties preserve registry
  * order (cross-format ties are mutually exclusive via `appliesTo`).
  *
- * The `registry` param defaults to {@link REQUEST_REWRITES}; tests inject their
+ * The `registry` param defaults to {@link BUILTIN_REQUEST_REWRITES}; tests inject their
  * own fixture registry, the driver (P2) passes the module default.
  */
-export function assembleRequestRewrites(env: RequestEnvelope, registry: ReadonlyArray<RequestRewrite> = REQUEST_REWRITES): Array<RequestRewrite> {
+export function assembleRequestRewrites(env: RequestEnvelope, registry: ReadonlyArray<RequestRewrite> = BUILTIN_REQUEST_REWRITES): Array<RequestRewrite> {
   return registry.filter((r) => r.appliesTo(env)).sort((a, b) => a.order - b.order)
 }
 
@@ -185,6 +197,6 @@ export function assembleRequestRewrites(env: RequestEnvelope, registry: Readonly
  * Assemble the response-rewrite chain for an envelope (same filter-by-appliesTo
  * + sort-by-order semantics as {@link assembleRequestRewrites}).
  */
-export function assembleResponseRewrites(env: RequestEnvelope, registry: ReadonlyArray<ResponseRewrite> = RESPONSE_REWRITES): Array<ResponseRewrite> {
+export function assembleResponseRewrites(env: RequestEnvelope, registry: ReadonlyArray<ResponseRewrite> = BUILTIN_RESPONSE_REWRITES): Array<ResponseRewrite> {
   return registry.filter((r) => r.appliesTo(env)).sort((a, b) => a.order - b.order)
 }
