@@ -2,7 +2,7 @@
 
 **Status:** 设计稿待评审（2026-06-22）
 **Scope:** Anthropic 流式路径（`/v1/messages` streaming）的 mid-stream 上游 RST 保护
-**关联:** 取代/补充模型当时正在写但被 RST 砍断的 `pre-response-stall-and-abort-handling.md`（那篇聚焦 pre-response 静默；本篇聚焦**已开始流式后**的上游主动 RST）
+**关联:** 补充 `upstream-stream-truncation-detection.md`（截断检测）+ `upstream-http2-transport.md`（http2-client RST 暴露路径）；与 pre-response 静默保活（另文）正交
 
 ---
 
@@ -61,15 +61,21 @@ copilot-api 夹在 Claude Code 与 GHC 之间，靠 `abort-bridge`（client abor
 
 ```
 loop attempt = 1..N:
+  onAttemptReset()                         # 重置全部 handler 侧累积态 + driver S5 链 state(见 §4 修订)
   upstream = runExchange(env)              # 拿一条全新上游流（S4，复用既有重试循环处理 pre-stream 错误）
   buffer = []                              # 本次尝试的渲染后帧缓冲
   try:
     for frame in runResponse(upstream,env):# S5 改写链逐帧（recover/decode/filter…）
       buffer.push(frame)                   # 不写 sink,只缓冲
-      onUpstreamFrame(rawFrame)            # 仍喂 history 累加器(本次尝试)
-    # 走到这=收到 message_stop,生成完整
-    for frame in buffer: sink.write(frame) # COMMIT:一次性 flush 完整响应
-    return complete
+      onUpstreamFrame(rawFrame)            # 仍喂 history 累加器(本次尝试,已重置)
+    # 循环正常结束 ≠ 完整！Bun 下 clean RST 被当正常 end(rstCode=0,不可检测,
+    # 见 http2-client.ts:169-175)。commit 条件必须额外门控 acc.sawMessageStop:
+    if acc.sawMessageStop:
+      for frame in buffer: sink.write(frame) # COMMIT:一次性 flush 完整响应
+      return complete
+    else:                                  # complete-but-truncated = 半截,等价 transport-close
+      if attempt < N: record truncated attempt; continue   # 丢弃 buffer 重来
+      return stream-error(truncationError) # 重试耗尽 → 维持现状(报错帧)
   catch error:
     cls = classifyStreamError(error)
     if cls == client-abort: return settled-abort      # 客户端走了,不重试不转发
@@ -79,7 +85,7 @@ loop attempt = 1..N:
     return stream-error(error)             # 重试耗尽/不可重试 → 维持现状(报错帧)
 ```
 
-**关键不变量——全有或全无（all-or-nothing）**：缓冲**整个**响应、只在 `message_stop` 后 commit。**绝不**部分 commit 再重试——否则会把"第 1 次生成的前半"与"第 2 次生成的后半"拼接，产出一个跨两次生成、自相矛盾的响应。一次交付 = 一次生成。
+**关键不变量——全有或全无（all-or-nothing）**：缓冲**整个**响应、只在**确认 `acc.sawMessageStop`** 后 commit（**不是**"循环结束"——Bun 下 clean RST 砍断的半截流也会让循环正常结束，见上方门控）。**绝不**部分 commit 再重试——否则会把"第 1 次生成的前半"与"第 2 次生成的后半"拼接，产出一个跨两次生成、自相矛盾的响应。一次交付 = 一次生成 = 见过 `message_stop` 的一次。
 
 ---
 
@@ -203,3 +209,26 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 - **不替代** `anthropicFakeSseHeartbeat`——L2 **复用**它做缓冲期保活。
 - **超越官方**：GHC 客户端对自己做"回滚 partial + 重发"（`clearToPreviousToolInvocation`），但对 premature-close 放弃；L2 替 Claude Code 做这件官方放弃的事，且靠代理的 abort 判别优势安全地只重 transport-close。
 - **持久化**：本 session 已修的持久化韧性（失败 entry 无损落盘 + 诊断）让 L2 的"重试命中率"可被事后从 history 验证——两项工作互补。
+
+---
+
+## 14. 评审发现与修订（2026-06-22 对抗审，已读真实代码核验）
+
+第一轮对抗审判定**设计理念正确、值得做、driver/sink/runExchange 集成点真实可行、不需返工**，但发现动手前必须补的缺陷。已修与待定：
+
+### 已修入设计
+- **[CRITICAL] commit 条件漏 `sawMessageStop`**（§3 已修）：Bun 下 clean 服务器 RST（`stream.close(code)`）被当正常 `end`、rstCode=0、不可检测（`http2-client.ts:169-175`）→ `runResponse` 正常收尾 → `complete`。原伪码把"循环结束"当 commit 条件，会把 clean-RST 砍断的**半截响应误 commit 给客户端**——恰在最该重试时不触发。修复：commit 条件 = `complete && acc.sawMessageStop`；`complete && !sawMessageStop`（truncation）当**可重试**信号（等价 transport-close）。复用 handler-v4.ts:627 既有 `!acc.sawMessageStop` 防线。
+- **每尝试重置必须覆盖全部 handler 侧累积态**（§4 强化）：`acc`/`sseEvents`(local)/`forwardedSseEvents`/`streamState`(bytesIn/eventsIn)/`checkRepetition` 全是 handler 闭包局部（handler-v4.ts:528-538），S5 链 state 在 driver 内部。重置劈两半：driver 每尝试重建 S5 链（`assembleResponseRewrites`+`createState`）；handler 经 `onAttemptReset` 回调重置**全部**上述态。**改造点**：`acc` 现为 `const`，须改 `let` 且 `onUpstreamFrame` 闭包读可变引用，否则失败尝试的帧叠加到上次 acc → usage/content/token 跨尝试污染翻倍。原 §4 只点了 acc+forwardedSseEvents，**漏了 sseEvents/streamState/checkRepetition**——必须全覆盖。
+- **§4 "handler 不再先 runRequest" 自相矛盾**（修正）：S1-S3（parse/route/translate/rewrite-in）只能跑一次（建 ctx、跑请求改写、消费 betaProbe），重试只重入 **S4**。正确形状：handler 仍 `runRequest` 拿首流 + settled env → `runResponseBufferedSink(firstUpstream, env, sink, reExchange)`，`reExchange = () => runExchange(env)` 重入 S4。首次 exchange 与重试 exchange **不对称**（首次经 S1-S4，重试仅 S4）。
+- **heartbeat 缓冲期保活其实成立**（§5 修正论证）：`makeSseSink` 的 heartbeat timer 构造即起（`client-sink.ts:188`，`lastRealMs` 初值 `Date.now()`），`tick` 只比 `Date.now()-lastRealMs`，**不依赖有过 write**。缓冲期（从不 write）ping 照常 fire。原 §5 把这写成"致命点"是误读自己代码——保活机制可行。
+- **[HIGH] ping 跨尝试污染 forwarded**（§10 修正）：缓冲期 fire 的 ping 经 `client-sink.ts:180 sampleForwarded` 进 `forwardedSseEvents` 且已写客户端线缆。若该尝试随后失败重来，上次的 ping 已落 forwarded。故 §10"中途失败尝试的帧不进 forwarded"**字面为假**——修正为"ping 例外，跨尝试累积；内容帧仍只在最终 commit 进 forwarded"。
+- **[HIGH] Phase 顺序**（§11 修正）：heartbeat 强制注入必须与 Phase 2 接线**同 commit**——否则开 L2 但没配 `stream_fake_sse_heartbeat` 的用户，缓冲期裸奔无 ping → 比现状更早 idle 断（违反 transitional-states-need-explicit-no-harm）。buffer cap 可留后。
+- **配置键名**：全文 `anthropic.fake_sse_heartbeat` 应为 `anthropic.stream_fake_sse_heartbeat`（state 字段 `anthropicFakeSseHeartbeat`，handler-v4.ts:571）。`protect_streaming_heartbeat` 与既有键关系：buffered 路径**无条件**构造 heartbeat（既有键 >0 取其值，否则用 `protect_streaming_heartbeat` 兜底）。
+- **其它格式非目标显式声明**（§2/§12 补）：CC / Responses-HTTP / Responses-WS / Gemini **全走 `runResponseSink` + http2-client，同样会被上游 mid-stream RST 砍断**。L2 先做 Anthropic（目标场景集中在 Claude Code→Anthropic 大 Write），但 `runResponseBufferedSink` 保持**格式无关**（收 `ClientSink`/`ResponseOutcome`）以便后续推广——避免隐性范围债。
+
+### 待你定的决策（设计层，需输入）
+- **[HIGH] D1 — 多尝试上游原貌存哪**：ctx 只有**单个** `_sseEvents` 槽，`setSseEvents` 是整体替换（request.ts:269）——**架构上存不下多尝试的上游帧**。§10 想"每尝试留上游原貌"与此直接冲突。二选一：(a) 给 ctx/attempt 加 per-attempt sseEvents API（能事后分析"为何前几次 RST"，但要动 ctx 数据模型）；(b) 放弃多尝试上游留痕，只留最终成功尝试的帧（失败尝试只留 attempts[].error 的诊断摘要）。**倾向 (a)**（§8 的"重试命中率/为何失败"诊断价值高），但要评估改 ctx 的范围。
+- **D2 — retry cap N 与客户端超时性质**：N=1 时总墙钟 ~300s > Claude Code ~258s。但 heartbeat 只防 **idle** 超时，不防 **absolute** 超时。**必须先实证 Claude Code 的 258s 是 idle 还是 absolute**（empirical-verification）：若 idle，heartbeat 救得了、N=1 可行；若 absolute，N=1 已超须降级或放弃重试。建议落地前先测客户端超时性质 + 采单次生成时长 p50/p95，再定 N。
+- **D3 — escalation 默认**：`protect_streaming_escalate_context` 默认关时，对"必然超预算"类请求 L2 = 烧 2×150s 仍失败（负收益）。审查认同"总开关默认关 + 落地后先采命中率遥测"策略，但默认启用的前置是 `tool_use_only` 门控 + 命中率达标。确认此策略即可。
+
+> 后续轮次（big-feature-pipeline 要求 3+ 轮）应在 D1-D3 定案后再审一轮，重点核 per-attempt 重置的时序正确性与 ctx 数据模型改动。
