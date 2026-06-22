@@ -588,6 +588,7 @@ export function createRequestContext(opts: {
           effectiveRequest: a.effectiveRequest ? legFromEffective(a.effectiveRequest) : undefined,
           wireRequest: a.wireRequest ? legFromWire(a.wireRequest) : undefined,
           response: a.response ?? undefined,
+          sseEvents: a.sseEvents,
         }))
       }
 

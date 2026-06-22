@@ -171,6 +171,57 @@ describe("sqlite/serialize head+stage", () => {
     expect(restored.outboundResponse?.success).toBe(true)
   })
 
+  test("L2/D1: a FAILED buffered-retry attempt's upstream sseEvents persist at its attempt_index", () => {
+    const entry: HistoryEntry = {
+      id: "l2-1",
+      endpoint: "anthropic-messages",
+      startedAt: 1,
+      state: "completed",
+      active: false,
+      lastUpdatedAt: 9,
+      inboundRequest: { model: "opus" },
+      // Top-level sseEvents mirror the FINAL (successful) attempt's upstream frames.
+      sseEvents: [
+        { offsetMs: 1, type: "message_start", raw: '{"type":"message_start"}' },
+        { offsetMs: 2, type: "message_stop", raw: '{"type":"message_stop"}' },
+      ],
+      attempts: [
+        {
+          index: 0,
+          durationMs: 50,
+          error: "Stream closed with error code NGHTTP2_CANCEL",
+          // The RST'd attempt's partial upstream frames — the D1 diagnostic payload.
+          sseEvents: [
+            { offsetMs: 1, type: "message_start", raw: '{"type":"message_start"}' },
+            { offsetMs: 2, type: "content_block_delta", raw: '{"type":"content_block_delta"}' },
+          ],
+        },
+        {
+          index: 1,
+          durationMs: 120,
+          response: { success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, content: { role: "assistant", content: "ok" } },
+        },
+      ],
+    }
+
+    const { row, stages } = serializeHeadEntry(entry)
+    // sse_events stage rows: the top-level (attempt_index -1) + the failed attempt 0 (index 0).
+    // The final attempt (1) does NOT get a duplicate per-attempt sse_events row.
+    const sseStages = stages.filter((s) => s.stage === "sse_events")
+    expect(sseStages.map((s) => s.attemptIndex).sort((a, b) => a - b)).toEqual([-1, 0])
+    // The per-attempt sseEvents are stripped from the head blob (persisted as stage rows).
+    const headMeta = decompress(row.blob_gz) as { attempts?: Array<Record<string, unknown>> }
+    expect(headMeta.attempts?.[0].sseEvents).toBeUndefined()
+
+    const restored = assembleFullEntry(row, toStageRows(row.id, stages))
+    // The failed attempt's upstream frames are restored on its attempt slot…
+    expect(restored.attempts?.[0].sseEvents?.map((e) => e.type)).toEqual(["message_start", "content_block_delta"])
+    // …the successful attempt has none (its frames are the top-level mirror)…
+    expect(restored.attempts?.[1].sseEvents).toBeUndefined()
+    // …and the top-level sseEvents stay the FINAL generation's frames.
+    expect(restored.sseEvents?.map((e) => e.type)).toEqual(["message_start", "message_stop"])
+  })
+
   test("partial/interrupted: missing stages + out-of-bound attempt_index does not throw", () => {
     const entry: HistoryEntry = {
       id: "partial-1",

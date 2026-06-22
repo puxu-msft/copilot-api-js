@@ -221,6 +221,8 @@ export interface HistoryEntryData {
       payload?: unknown
     }
     response?: ResponseData
+    /** Per-attempt upstream-original SSE frames (L2 buffered retry / D1) — present on FAILED attempts only. */
+    sseEvents?: Array<SseEventRecord>
   }>
 }
 

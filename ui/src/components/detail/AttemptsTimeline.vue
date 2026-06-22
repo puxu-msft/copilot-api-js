@@ -17,6 +17,8 @@ interface AttemptInfo {
     compactedTokens: number
   }
   effectiveMessageCount?: number
+  /** Per-attempt upstream-original SSE frames (L2 buffered retry / D1) — present on FAILED attempts. */
+  sseEvents?: ReadonlyArray<unknown>
 }
 
 defineProps<{
@@ -70,6 +72,12 @@ function nodeColor(attempt: AttemptInfo): string {
             class="node-meta"
           >
             {{ attempt.effectiveMessageCount }} messages
+          </div>
+          <div
+            v-if="attempt.sseEvents?.length"
+            class="node-meta"
+          >
+            {{ attempt.sseEvents.length }} upstream frames before cutoff
           </div>
         </div>
       </div>

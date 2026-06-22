@@ -282,6 +282,13 @@ export interface HistoryEntry {
     effectiveRequest?: RequestLegData
     wireRequest?: RequestLegData
     response?: OutboundResponseData
+    /**
+     * Per-attempt upstream-original SSE frames (L2 buffered retry / D1). Present only on
+     * FAILED (non-final) attempts of a buffered-retry entry — persisted at this attempt's
+     * `attempt_index` so "why did attempt N RST?" is answerable post-hoc. The successful
+     * (final) attempt's frames remain the top-level `sseEvents` (attempt_index -1).
+     */
+    sseEvents?: Array<SseEventRecord>
   }>
 }
 

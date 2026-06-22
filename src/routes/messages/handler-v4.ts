@@ -525,17 +525,35 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
 
-  const acc = createAnthropicStreamAccumulator()
-  const checkRepetition = createStreamRepetitionChecker(model)
+  // L2 — transactional buffered retry selector (RFC §9). `on` buffers every streaming
+  // response; `tool_use_only` buffers only when the request carries tools (the large
+  // Write/Edit scenario, where mid-stream RST is observed). Default false → live path
+  // (`runResponseSink`), byte-identical to before L2 (the Phase 0 baseline locks this).
+  const buffered =
+    state.protectStreamingGeneration === "on"
+    || (state.protectStreamingGeneration === "tool_use_only" && Array.isArray(anthropicPayload.tools) && anthropicPayload.tools.length > 0)
+
+  // These four upstream-side accumulators are reset BETWEEN buffered attempts (onAttemptReset):
+  // each retry is a fresh generation, so reusing them would double-count usage/tokens/bytes and
+  // leak the prior attempt's repetition/sse state. `let` (not `const`) so the reset can rebind
+  // them and the closures below read the CURRENT binding.
+  let acc = createAnthropicStreamAccumulator()
+  let checkRepetition = createStreamRepetitionChecker(model)
 
   // Raw upstream SSE frames (verbatim) — a local copy for logUpstreamStreamError. The
-  // PERSISTED upstream-original track is the driver's (runResponse loop-top, P3.2b).
-  const sseEvents: Array<SseEventRecord> = []
+  // PERSISTED upstream-original track is the driver's (runResponse loop-top, P3.2b; per attempt
+  // in buffered mode via ctx.commitAttemptSseEvents). Reset per attempt so the final error log
+  // reflects the LAST (failing) attempt's frames, not all attempts concatenated.
+  let sseEvents: Array<SseEventRecord> = []
   // Forwarded SSE frames — what the client ACTUALLY received (post-S5-rewrite). Filled by
   // the sink's `onForwarded` sampler (real frames + heartbeat ping), NOT the H3 synth error.
+  // NOT reset across buffered attempts (RFC §10 correction): the client received one continuous
+  // SSE stream, so the heartbeat pings emitted during EARLIER (failed) attempts are genuinely on
+  // the wire and must stay in this "what the client received" record; content frames enter it
+  // only once, at the final commit flush, so they can never double.
   const forwardedSseEvents: Array<SseEventRecord> = []
 
-  const streamState: StreamPumpState = {
+  let streamState: StreamPumpState = {
     streamStartMs: Date.now(),
     bytesIn: 0,
     eventsIn: 0,
@@ -565,12 +583,20 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   // The driver-owned client sink: SSE write-out + forwarded sampling + (optional) the
   // stream_fake_sse_heartbeat forward-idle racer. Heartbeats are proxy-originated: sampled ONLY
   // into forwardedSseEvents (via onForwarded), never sseEvents (the driver's raw track).
+  //
+  // L2 🔴 (RFC §5 / §14): the buffered path withholds ALL real frames until message_stop, so the
+  // client would idle out during the whole generation without a heartbeat. The buffered path
+  // therefore FORCES a heartbeat: it uses `anthropicFakeSseHeartbeat` when the user set it, else
+  // falls back to `protectStreamingHeartbeat` (default 15). The live path is unchanged (heartbeat
+  // only when the user explicitly set `anthropicFakeSseHeartbeat > 0`).
+  const forcedHeartbeatSec = state.anthropicFakeSseHeartbeat > 0 ? state.anthropicFakeSseHeartbeat : state.protectStreamingHeartbeat
+  const heartbeatSec = buffered ? forcedHeartbeatSec : state.anthropicFakeSseHeartbeat
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs: streamState.streamStartMs,
-    ...(state.anthropicFakeSseHeartbeat > 0 && {
+    ...(heartbeatSec > 0 && {
       heartbeat: {
-        intervalSec: state.anthropicFakeSseHeartbeat,
+        intervalSec: heartbeatSec,
         pingFrame: { event: "ping", data: JSON.stringify({ type: "ping" }) },
         clientAbortSignal,
       },
@@ -585,7 +611,36 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   // The driver drives the S5 chain + writes the rewritten frames to the sink; `[DONE]` is
   // dropped inside runResponseSink (Anthropic emits no trailing terminator). The outcome
   // is the format-agnostic control signal; the handler reads its own `acc` for the rest.
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
+  //
+  // L2 buffered path: the driver buffers the whole rendered response and commits to the sink
+  // ONLY on `drained && sawMessageStop()` (a clean RST drains cleanly but lacks message_stop →
+  // truncation → retry). `onAttemptReset` rebinds the four upstream-side accumulators before
+  // each re-exchange so a fresh generation never double-counts the previous attempt; the driver
+  // re-instantiates its own S5 chain state per attempt. `forwardedSseEvents` is intentionally
+  // NOT reset (heartbeat pings already on the client wire stay recorded — RFC §10 correction).
+  const onAttemptReset = (): void => {
+    acc = createAnthropicStreamAccumulator()
+    checkRepetition = createStreamRepetitionChecker(model)
+    sseEvents = []
+    streamState = {
+      streamStartMs: streamState.streamStartMs,
+      bytesIn: 0,
+      eventsIn: 0,
+      currentBlockType: "",
+      firstEventLogged: false,
+      recoverFeatureLogged: false,
+    }
+  }
+
+  const outcome =
+    buffered ?
+      await driver.runResponseBufferedSink(upstream, env, sink, {
+        onUpstreamFrame,
+        sawMessageStop: () => acc.sawMessageStop,
+        onAttemptReset,
+        retryCap: state.protectStreamingMaxRetries,
+      })
+    : await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
 
   if (outcome.kind === "settled-abort") {
     // Client disconnected mid-stream — the stream is dead, write ZERO further bytes

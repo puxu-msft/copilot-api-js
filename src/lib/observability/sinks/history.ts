@@ -322,6 +322,7 @@ function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry
     effectiveRequest: a.effectiveRequest as NonNullable<HistoryEntry["attempts"]>[number]["effectiveRequest"],
     wireRequest: a.wireRequest as NonNullable<HistoryEntry["attempts"]>[number]["wireRequest"],
     response: a.response ? responseDataToHistory(a.response) : undefined,
+    sseEvents: a.sseEvents,
   }))
 }
 

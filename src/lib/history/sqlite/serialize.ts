@@ -108,7 +108,7 @@ export interface StagePayload {
 /** Heavy top-level fields that move OUT of the head blob into stage rows. */
 const STAGE_TOP_KEYS = new Set<string>(["inboundRequest", "effectiveRequest", "outboundRequest", "outboundResponse", "inboundResponse", "sseEvents"])
 /** Per-attempt heavy bodies that move OUT of the head blob's attempts[] into stage rows. */
-const ATTEMPT_BODY_KEYS = new Set<string>(["effectiveRequest", "wireRequest", "response"])
+const ATTEMPT_BODY_KEYS = new Set<string>(["effectiveRequest", "wireRequest", "response", "sseEvents"])
 
 /** Strip the heavy per-attempt bodies, keeping only the attempt summary in the head blob. */
 function stripAttemptBodies(attempt: Record<string, unknown>): Record<string, unknown> {
@@ -231,7 +231,10 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
         break
       }
       case STAGE.sseEvents: {
-        base.sseEvents = payload as HistoryEntry["sseEvents"]
+        // attempt_index -1 → the top-level (final/successful) upstream frames; a per-attempt
+        // index → a FAILED buffered-retry attempt's frames (L2 / D1).
+        if (attemptIndex === LEG_ATTEMPT_INDEX) base.sseEvents = payload as HistoryEntry["sseEvents"]
+        else attemptSlot(attemptIndex).sseEvents = payload
         break
       }
       case STAGE.effectiveRequest: {
@@ -361,6 +364,9 @@ export function extractStagePayloads(entry: HistoryEntry): Array<StagePayload> {
     if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: a.index, payload: a.effectiveRequest })
     if (a.wireRequest) stages.push({ stage: STAGE.outboundRequest, attemptIndex: a.index, payload: a.wireRequest })
     if (a.response) stages.push({ stage: STAGE.outboundResponse, attemptIndex: a.index, payload: a.response })
+    // L2 buffered retry / D1: a FAILED attempt's upstream-original frames (the final/successful
+    // attempt's frames stay at the top-level sse_events row, attempt_index -1).
+    if (a.sseEvents) stages.push({ stage: STAGE.sseEvents, attemptIndex: a.index, payload: a.sseEvents })
   }
 
   // Final attempt slot = authoritative top-level mirror, falling back to the
