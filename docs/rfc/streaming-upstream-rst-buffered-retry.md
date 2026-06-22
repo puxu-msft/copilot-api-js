@@ -259,3 +259,22 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 `protect_streaming_escalate_context` 默认 `false`（重试不收紧 context_management，保请求语义）。L2 总开关 `protect_streaming_generation` 也默认 `false`；默认启用的前置是 `tool_use_only` 门控 + 命中率遥测达标（§8）。
 
 > D1-D3 已定，进 2nd 对抗审（重点：D1 的 ctx/attempt 数据模型改动 + per-attempt 重置时序 + onUpstreamFrame 写当前 attempt 的正确性），通过后进 Phase 0（golden 基线）实现。
+
+---
+
+## 16. 转发粒度定案：A 基线落地，B 未来探索（用户 2026-06-22）
+
+评审中质疑"必须等 `message_stop` 吗，能否结构完成就发"，定案：
+
+### A（本 RFC 主体）— 缓冲整条、`sawMessageStop` 后 commit —— **现在做**
+- 选它的理由：对目标场景（大 tool_use 是 bulk 也是唯一风险块），缓冲早块（thinking/text 小、秒级）几乎不加延迟，而**永远保住重试退路**（什么都没发出去 → 任何时候都能整请求重发），简单稳。
+
+### B（未来探索方向，不在本期实现范围）— 完整块 live 转发 + continuation 续写重试
+- **形态**：已 `content_block_stop` 的块立即 live 转发（低延迟），只缓冲"正在生成的块"；该块 RST 时**不整请求重发**（会与已发块矛盾），而是把已完成块作 **assistant prefill** 拼回请求让 GHC **续写**（模型把 prefill 当前文 → 续出的块连贯一致）。
+- **两个硬限制（决定 B 能否做）**：
+  1. **continuation 只能在完整块边界续**——半截 tool_use 是残缺 JSON，不能作 prefill（Anthropic 不支持 resume 半条消息）。故那个大 Write 块**每次仍整块重生成**，B 没让最难的部分变容易。
+  2. **GATING 研究项**：GHC 是否接受 prefill 含 **thinking 块（带 signature）** 的 assistant turn 再续写（thinking-prefill 可行性 / adaptive thinking 约束 / GHC 兼容）。**若不可行**：live 已发出 + RST + continuation 用不了 + 整请求重发不一致 = **彻底没退路只能报错**——这是 B 的致命风险，必须先证。
+- **为何对本 case 收益小**：tool_use 占 ~148s 几乎全部生成时长，B 的"早块 live"延迟红利微小、"只重生成失败块之后"省的也主要是小前缀；复杂度（prefill 构造 + thinking signature 重放 + GHC 验证）和"没退路"风险却很大。
+- **未来若探索 B**：先做 gating 研究（refs/ 核 GHC continuation 实现 + 实测 thinking-prefill 续写），可行再设计；不可行则 B 永久搁置，A 即最终形态。
+
+> 转发粒度已定案（A 实现、B 探索）。设计层全部决策（§14 首轮审修订 + §15 D1-D3 + §16 A/B）闭合，进 2nd 对抗审 → Phase 0 实现。
