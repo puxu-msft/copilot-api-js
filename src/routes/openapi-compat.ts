@@ -158,14 +158,6 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     responses: { ...ok200("Entry"), 404: { description: "Not found", ...jsonContent() } },
   })
   registry.registerPath({
-    method: "get",
-    path: "/history/api/entries/{id}/lineage",
-    tags: historyTag,
-    summary: "Anthropic prefix-hash lineage for an entry",
-    request: { params: z.object({ id: z.string() }) },
-    responses: ok200("Lineage chain"),
-  })
-  registry.registerPath({
     method: "delete",
     path: "/history/api/entries",
     tags: historyTag,
@@ -174,13 +166,6 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
   })
   registry.registerPath({ method: "get", path: "/history/api/stats", tags: historyTag, summary: "History store statistics", responses: ok200("Stats") })
   registry.registerPath({ method: "get", path: "/history/api/export", tags: historyTag, summary: "Export history", responses: ok200("Exported history") })
-  registry.registerPath({
-    method: "get",
-    path: "/history/api/conversations",
-    tags: historyTag,
-    summary: "Conversation rollups",
-    responses: ok200("Conversations"),
-  })
   registry.registerPath({ method: "get", path: "/history/api/sessions", tags: historyTag, summary: "List sessions", responses: ok200("Sessions") })
   registry.registerPath({
     method: "get",

@@ -71,6 +71,10 @@ export function openDatabase(dbPath: string): Database {
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
   db.exec(SCHEMA_SQL)
+  // Lineage subsystem removed (dead: zero clustering on real traffic) — drop its
+  // orphan tables on existing DBs so they stop occupying space.
+  db.exec("DROP TABLE IF EXISTS entry_lineage")
+  db.exec("DROP TABLE IF EXISTS entry_produced_tool_ids")
   migrateEntriesColumns(db)
   reclaimOrphanedActiveRows(db)
   maybeVacuumOnStartup(db, dbPath)

@@ -4,12 +4,6 @@ import type {
   Session,
 } from "~/lib/history/types"
 
-import {
-  //
-  type LineageDigest,
-  packTurnHashes,
-} from "~/lib/history/lineage"
-
 import { compress } from "./compression"
 import { getDatabase } from "./connection"
 import {
@@ -190,40 +184,11 @@ function recomputeSession(db: ReturnType<typeof getDatabase>, sessionId: string)
 }
 
 /**
- * Persist a lineage digest for an entry. Called inside the
- * `insertCompletedEntry` transaction so the lineage row lands atomically with
- * the head + stage rows (RFC §4.2). Idempotent on re-finalize:
- *  - `INSERT OR REPLACE` on entry_lineage rewrites with the latest digest.
- *  - `INSERT OR IGNORE` on entry_produced_tool_ids tolerates exact duplicates
- *     (composite PK `(tool_use_id, entry_id)` — see schema for rationale).
- *  - The pre-DELETE wipes any stale ids that the new digest no longer mints.
- */
-function runLineageInsert(db: ReturnType<typeof getDatabase>, entryId: string, digest: LineageDigest): void {
-  db.prepare(
-    `INSERT OR REPLACE INTO entry_lineage
-       (entry_id, schema_version, root_hash, turn_hashes_blob, post_response_hash, back_tool_use_id, computed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(entryId, digest.v, digest.rootHash, packTurnHashes(digest.turnHashes), digest.postResponseHash, digest.backToolUseId, digest.computedAt)
-
-  db.prepare("DELETE FROM entry_produced_tool_ids WHERE entry_id = ?").run(entryId)
-  if (digest.producedToolUseIds.length > 0) {
-    const stmt = db.prepare("INSERT OR IGNORE INTO entry_produced_tool_ids (tool_use_id, entry_id) VALUES (?, ?)")
-    for (const toolUseId of digest.producedToolUseIds) {
-      stmt.run(toolUseId, entryId)
-    }
-  }
-}
-
-/**
  * Finalize a terminal entry: upsert the head row (terminal status), replace all
- * its stage rows, persist the lineage digest (if any), and recompute the
- * session aggregate — atomically. Replacing stage rows (DELETE + re-insert)
- * keeps re-finalization idempotent. The `digest` argument is optional so
- * existing test callers and the legacy code path continue to work; per RFC §11
- * the digest is computed OUTSIDE the transaction and passed in here — a compute
- * failure logs + writes the entry without lineage, never blocking the request.
+ * its stage rows, and recompute the session aggregate — atomically. Replacing
+ * stage rows (DELETE + re-insert) keeps re-finalization idempotent.
  */
-export function insertCompletedEntry(entry: HistoryEntry, digest?: LineageDigest): void {
+export function insertCompletedEntry(entry: HistoryEntry): void {
   const db = getDatabase()
   const { row, stages } = serializeHeadEntry(entry)
   const now = Date.now()
@@ -236,7 +201,6 @@ export function insertCompletedEntry(entry: HistoryEntry, digest?: LineageDigest
     const { groupRow, rest } = partitionStagesForWrite(stages)
     for (const stage of rest) runStageInsert(db, row.id, stage, now)
     if (groupRow) runStageInsert(db, row.id, groupRow, now)
-    if (digest) runLineageInsert(db, row.id, digest)
     if (row.session_id) recomputeSession(db, row.session_id)
   })
   tx()

@@ -76,43 +76,6 @@ CREATE TABLE IF NOT EXISTS entry_stages (
   FOREIGN KEY (entry_id) REFERENCES entries_v2(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_entry_stages_entry ON entry_stages(entry_id);
-
--- Per-entry lineage digest. See docs/rfc/request-lineage.md §4.1.
---
--- One row per entry (FOREIGN KEY ... ON DELETE CASCADE — bucket reaper
--- automatically cleans these when an entry is dropped).
---
--- turn_hashes_blob is packed 32-byte raw SHA-256s (~50% size vs JSON-of-hex).
--- post_response_hash is NULL when the entry is failed/interrupted (cannot
--- serve as a parent in the lineage, can still be a child).
--- back_tool_use_id is NULL when the tail message has no tool_result block
--- (pure-text turn, ~1% of completed Claude Code traffic per RFC §2.3).
-CREATE TABLE IF NOT EXISTS entry_lineage (
-  entry_id            TEXT PRIMARY KEY,
-  schema_version      INTEGER NOT NULL,
-  root_hash           TEXT NOT NULL,
-  turn_hashes_blob    BLOB NOT NULL,
-  post_response_hash  TEXT,
-  back_tool_use_id    TEXT,
-  computed_at         INTEGER NOT NULL,
-  FOREIGN KEY (entry_id) REFERENCES entries_v2(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_entry_lineage_post ON entry_lineage(post_response_hash);
-CREATE INDEX IF NOT EXISTS idx_entry_lineage_root ON entry_lineage(root_hash);
-CREATE INDEX IF NOT EXISTS idx_entry_lineage_back ON entry_lineage(back_tool_use_id);
-
--- Reverse-index for O(1) parent lookup by tool_use_id. Composite PK
--- accepts the (vanishingly rare) case of upstream replaying an id across
--- entries; idx_produced_tool_only serves the single-column equality
--- lookup that the parent query hits.
-CREATE TABLE IF NOT EXISTS entry_produced_tool_ids (
-  tool_use_id  TEXT NOT NULL,
-  entry_id     TEXT NOT NULL,
-  PRIMARY KEY (tool_use_id, entry_id),
-  FOREIGN KEY (entry_id) REFERENCES entries_v2(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_produced_tool_only  ON entry_produced_tool_ids(tool_use_id);
-CREATE INDEX IF NOT EXISTS idx_produced_tool_entry ON entry_produced_tool_ids(entry_id);
 `
 
 /**

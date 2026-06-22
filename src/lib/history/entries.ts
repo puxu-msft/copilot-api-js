@@ -16,11 +16,6 @@ import {
   toEntrySummary,
   updateInFlight,
 } from "./in-flight"
-import {
-  //
-  computeLineageDigest,
-  type LineageDigest,
-} from "./lineage"
 import { runHistoryWrite } from "./persist-guard"
 import {
   //
@@ -126,7 +121,7 @@ const MAX_FINALIZE_RETRIES = 5
 const finalizeRetries = new Map<string, number>()
 
 /** The terminal (full) write. Swappable for tests to exercise the failure paths. */
-type TerminalWriter = (entry: HistoryEntry, digest?: LineageDigest) => void
+type TerminalWriter = (entry: HistoryEntry) => void
 let terminalWriter: TerminalWriter = insertCompletedEntry
 
 /**
@@ -172,19 +167,7 @@ export function finalizeEntry(id: string): void {
     return
   }
 
-  // Compute the lineage digest OUTSIDE the transaction (RFC §11). A throw
-  // here logs + persists the entry without a lineage row — the backfill
-  // script can recover it later. The check below tolerates the "this entry
-  // is not an Anthropic request" / "this entry has no messages" cases via
-  // computeLineageDigest returning null.
-  let digest: LineageDigest | undefined
-  try {
-    digest = computeLineageDigest(entry) ?? undefined
-  } catch (err: unknown) {
-    consola.warn("[lineage] digest compute failed for", id, err)
-  }
-
-  const result = runHistoryWrite("finalize", () => terminalWriter(entry, digest))
+  const result = runHistoryWrite("finalize", () => terminalWriter(entry))
   if (result.ok) {
     finalizeRetries.delete(id)
     removeInFlight(id)

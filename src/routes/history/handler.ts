@@ -16,11 +16,6 @@ import {
   type EndpointType,
   type QueryOptions,
 } from "~/lib/history"
-import {
-  //
-  getLineage,
-  listConversations,
-} from "~/lib/history/lineage"
 
 export function handleGetEntries(c: Context) {
   if (!isHistoryEnabled()) {
@@ -66,30 +61,6 @@ export function handleGetEntry(c: Context) {
 }
 
 /**
- * GET /history/api/entries/:id/lineage — return the lineage neighborhood
- * for one entry: parent, children, siblings, root-cluster summary.
- *
- * Returns `{ digest: null, parent: null, children: [], siblings: [], rootSummary: null }`
- * (with HTTP 200) when the entry exists but has no lineage row — typical
- * for non-Anthropic entries (v1 scope per RFC §8.1) or entries written
- * before backfill. Returns 404 when the entry itself is unknown.
- */
-export function handleGetLineage(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-  const id = c.req.param("id")
-  if (!id) {
-    return c.json({ error: "Entry id is required" }, 400)
-  }
-  const entry = getEntry(id)
-  if (!entry) {
-    return c.json({ error: "Entry not found" }, 404)
-  }
-  return c.json(getLineage(id))
-}
-
-/**
  * POST /history/api/entries/:id/pin and .../unpin — toggle the debug-pin flag.
  *
  * A pinned entry is exempt from the AUTOMATIC reaper (never evicted, not counted
@@ -124,24 +95,6 @@ export function handlePinEntry(c: Context) {
 
 export function handleUnpinEntry(c: Context) {
   return setEntryPinState(c, false)
-}
-
-/**
- * GET /history/api/conversations — list rootHash-clustered conversations,
- * newest activity first. Pagination via opaque `cursor` (the latestAt of
- * the last item). `limit` capped at 500.
- *
- * Only Anthropic entries appear here (v1 scope — see RFC §8.1). Entries
- * without a lineage row (pre-backfill, non-Anthropic) are excluded.
- */
-export function handleGetConversations(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-  const q = c.req.query()
-  const limit = q.limit ? Number.parseInt(q.limit, 10) : undefined
-  const cursor = q.cursor || undefined
-  return c.json(listConversations({ limit, cursor }))
 }
 
 export function handleDeleteEntries(c: Context) {

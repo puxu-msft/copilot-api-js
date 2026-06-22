@@ -31,9 +31,6 @@
  *   - Writes contend with a live server on `entries_v2`; `openDatabase` sets a
  *     5s busy_timeout, so a concurrent write waits rather than failing. The row
  *     count here is small, so lock windows stay short.
- *   - Lineage is NOT computed here — run `scripts/backfill-lineage.ts` afterward
- *     to populate `entry_lineage` for the migrated rows (Anthropic-only; failed
- *     entries with no usable response are skipped by its null-return contract).
  *
  * Usage:
  *   bun run scripts/migrate-legacy-entries.ts              # migrate + drop + reclaim
