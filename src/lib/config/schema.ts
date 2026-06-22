@@ -289,6 +289,37 @@ export const AnthropicConfigSchema = z
      * original value across hot-reload; new streams pick up the new value.
      */
     stream_fake_sse_heartbeat: nullableNonnegativeInt(),
+    /**
+     * L2 — transactional buffered retry for streaming generations cut short by an
+     * upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit). Buffers the
+     * whole response and commits only after `message_stop`, re-running the exchange
+     * on a transport-close / truncation, transparently to the client. See
+     * docs/rfc/streaming-upstream-rst-buffered-retry.md.
+     *   "on":            buffer every streaming Anthropic response.
+     *   "tool_use_only": buffer only when the request carries `tools` (the large
+     *                    Write/Edit scenario); pure-text chat stays live (no latency).
+     *   false:           disabled (default) — live streaming, no buffering.
+     */
+    protect_streaming_generation: z
+      .union([z.literal(false), z.literal("on"), z.literal("tool_use_only"), z.null()], {
+        error: "Must be one of: false, on, tool_use_only",
+      })
+      .optional()
+      .transform((v) => v ?? undefined),
+    /**
+     * Max transport-close / truncation retries for the buffered-retry path (a
+     * loop/cost guard, NOT a timeout guard — the client is kept alive by the
+     * forced heartbeat). `0` = no retry (buffer + commit only). Default 3.
+     */
+    protect_streaming_max_retries: nullableNonnegativeInt(),
+    /**
+     * Forced heartbeat interval (seconds) for the buffered-retry path. The buffered
+     * sink withholds all real frames until `message_stop`, so the client would idle
+     * out without a ping; the buffered path constructs a heartbeat UNCONDITIONALLY,
+     * using `stream_fake_sse_heartbeat` when positive, otherwise this fallback.
+     * Default 15.
+     */
+    protect_streaming_heartbeat: nullableNonnegativeInt(),
   })
   .strict()
 

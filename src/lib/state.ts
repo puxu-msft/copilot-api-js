@@ -163,6 +163,19 @@ export interface State {
   readonly anthropicFakeSseHeartbeat: number
 
   /**
+   * L2 — transactional buffered retry for streaming Anthropic generations cut
+   * short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit).
+   * `false` (default) = live streaming, no buffering. `"on"` = buffer every
+   * streaming response. `"tool_use_only"` = buffer only when the request carries
+   * `tools`. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
+   */
+  readonly protectStreamingGeneration: false | "on" | "tool_use_only"
+  /** Max transport-close / truncation retries for the buffered-retry path (loop/cost guard; 0 = no retry). */
+  readonly protectStreamingMaxRetries: number
+  /** Forced heartbeat interval (seconds) for the buffered-retry path; falls back here when `anthropicFakeSseHeartbeat` is 0. */
+  readonly protectStreamingHeartbeat: number
+
+  /**
    * Inject stub definitions for Claude Code's official tool set (Bash, Read,
    * Write, …) when they appear in message history but not in the request's
    * tools array. Required for Claude Code clients that drop tool definitions
@@ -754,6 +767,9 @@ export function setAnthropicBehavior(
       MutableState,
       | "stripServerTools"
       | "anthropicFakeSseHeartbeat"
+      | "protectStreamingGeneration"
+      | "protectStreamingMaxRetries"
+      | "protectStreamingHeartbeat"
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
@@ -939,6 +955,9 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
 export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
   anthropicFakeSseHeartbeat: 0,
+  protectStreamingGeneration: false as false | "on" | "tool_use_only",
+  protectStreamingMaxRetries: 3,
+  protectStreamingHeartbeat: 15,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
@@ -1003,6 +1022,9 @@ export function resetConfigManagedState(): void {
   setAnthropicBehavior({
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
     anthropicFakeSseHeartbeat: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
+    protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
+    protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
+    protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
@@ -1096,6 +1118,9 @@ const mutableState: MutableState = {
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   anthropicFakeSseHeartbeat: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
+  protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
+  protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
+  protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,

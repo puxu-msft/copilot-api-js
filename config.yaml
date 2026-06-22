@@ -152,9 +152,9 @@ shutdown:
 
 history:
   # Successful (non-failed) entries kept in SQLite (0 = unlimited, default: 50)
-  success_limit: 100
+  success_limit: 500
   # Failed entries kept in SQLite — larger by default for diagnostics (0 = unlimited, default: 200)
-  failure_limit: 200
+  failure_limit: 500
   # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600)
   reaper_interval: 600
 
@@ -194,7 +194,26 @@ anthropic:
   # that stalls after content_block_start). Heartbeats DO NOT reset the
   # upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle)
   # and are recorded only in forwardedSseEvents, never in raw upstream sseEvents.
-  stream_fake_sse_heartbeat: 240
+  stream_fake_sse_heartbeat: 120
+
+  # L2 — transactional buffered retry for streaming generations cut short by an
+  # upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge
+  # contexts). Buffers the whole response and commits only after message_stop,
+  # re-running the upstream exchange on a transport-close / truncation — so the
+  # client transparently receives ONE complete generation instead of a half
+  # stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
+  #   false:           disabled (default) — live streaming, no buffering.
+  #   on:              buffer every streaming Anthropic response.
+  #   tool_use_only:   buffer only when the request carries `tools` (the large
+  #                    Write/Edit scenario); pure-text chat stays live.
+  protect_streaming_generation: false
+  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout
+  # guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
+  protect_streaming_max_retries: 3
+  # Forced heartbeat interval (seconds) for the buffered path: the buffer
+  # withholds all real frames until message_stop, so a heartbeat is constructed
+  # UNCONDITIONALLY — using stream_fake_sse_heartbeat when >0, else this fallback.
+  protect_streaming_heartbeat: 15
 
   # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
   # "input": dedup by (name, input); "result": also require identical result

@@ -271,6 +271,27 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
   },
   {
+    configKey: "anthropic.protect_streaming_generation",
+    stateKey: "protectStreamingGeneration",
+    sampleYamlValue: "tool_use_only",
+    expectedStateValue: "tool_use_only",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
+  },
+  {
+    configKey: "anthropic.protect_streaming_max_retries",
+    stateKey: "protectStreamingMaxRetries",
+    sampleYamlValue: "5",
+    expectedStateValue: 5,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
+  },
+  {
+    configKey: "anthropic.protect_streaming_heartbeat",
+    stateKey: "protectStreamingHeartbeat",
+    sampleYamlValue: "30",
+    expectedStateValue: 30,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
+  },
+  {
     configKey: "anthropic.tool_inject_claude_code",
     stateKey: "injectClaudeCodeOfficialTools",
     sampleYamlValue: "false",
