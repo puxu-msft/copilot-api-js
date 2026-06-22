@@ -25,7 +25,7 @@
  * its history next turn. Since the hops downgrade the `tools` array (native
  * web_search → plain function tool), the historical server_tool_use has no
  * matching server-tool definition and upstream 400s. The
- * `anthropic.rewrite_history_server_tools: "downgrade"` config closes that loop
+ * `anthropic.tool_rewrite_history_server: "downgrade"` config closes that loop
  * by rewriting the historical pair into plain tool_use + tool_result inside
  * sanitizeAnthropicMessages (see sanitize/rewrite-server-tool-history.ts).
  */
@@ -153,7 +153,7 @@ export async function handleWebSearchCompletion(
     stream.onAbort(() => clientAbort.abort())
 
     // Pings emitted on this client-facing stream (the upfront flush below +
-    // any synthetic keepalives from `fake_sse_heartbeat` during the second
+    // any synthetic keepalives from `stream_fake_sse_heartbeat` during the second
     // hop) are collected here and merged into the final forwardedSseEvents
     // so history reflects exactly what the client received. Indices use
     // `streamStartMs` so the timeline lines up with the synthesized event
@@ -206,7 +206,7 @@ export async function handleWebSearchCompletion(
  *
  * `prefixForwardedSse` (streaming path only) carries any frames the client
  * already received before the synthesized events fire — currently the upfront
- * `ping` (always) plus any `fake_sse_heartbeat` pings emitted during the
+ * `ping` (always) plus any `stream_fake_sse_heartbeat` pings emitted during the
  * second hop. They are prepended to the forwarded record so history reflects
  * what the client actually received, in order.
  */

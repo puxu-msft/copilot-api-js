@@ -85,7 +85,7 @@ timeouts:
 history:
   limit: 20
 anthropic:
-  strip_server_tools: true
+  tool_strip_server: true
 `)
 
     const res = await app.request("/api/config/yaml")
@@ -94,7 +94,7 @@ anthropic:
     expect(await res.json()).toEqual({
       timeouts: { response_header: 600 },
       history: { limit: 20 },
-      anthropic: { strip_server_tools: true },
+      anthropic: { tool_strip_server: true },
     })
   })
 
@@ -115,20 +115,20 @@ history:
   limit: 20
   reaper_interval: 120
 anthropic:
-  strip_server_tools: true
-  dedup_tool_calls: result
+  tool_strip_server: true
+  tool_dedup_calls: result
   thinking_block_message_policy: preserve
-  strip_read_tool_result_tags: true
+  tool_strip_read_result_tags: true
   context_editing: clear-both
   context_editing_trigger: 200000
   context_editing_keep_tools: 4
   context_editing_keep_thinking: 2
   tool_search: false
   cache_control: disabled
-  non_deferred_tools:
+  tool_non_deferred:
     - custom_tool
     - second_tool
-  rewrite_system_reminders:
+  system_rewrite_reminders:
     - from: '(?i)warning'
       to: ''
       method: regex
@@ -174,18 +174,18 @@ system_prompt_append: "append"
         reaper_interval: 120,
       },
       anthropic: {
-        strip_server_tools: true,
-        dedup_tool_calls: "result",
+        tool_strip_server: true,
+        tool_dedup_calls: "result",
         thinking_block_message_policy: "preserve",
-        strip_read_tool_result_tags: true,
+        tool_strip_read_result_tags: true,
         context_editing: "clear-both",
         context_editing_trigger: 200000,
         context_editing_keep_tools: 4,
         context_editing_keep_thinking: 2,
         tool_search: false,
         cache_control: "disabled",
-        non_deferred_tools: ["custom_tool", "second_tool"],
-        rewrite_system_reminders: [
+        tool_non_deferred: ["custom_tool", "second_tool"],
+        system_rewrite_reminders: [
           {
             from: "(?i)warning",
             to: "",
@@ -446,18 +446,18 @@ model_refresh_interval: 600
         reaper_interval: 120,
       },
       anthropic: {
-        strip_server_tools: true,
-        dedup_tool_calls: "result",
+        tool_strip_server: true,
+        tool_dedup_calls: "result",
         thinking_block_message_policy: "preserve",
-        strip_read_tool_result_tags: true,
+        tool_strip_read_result_tags: true,
         context_editing: "clear-both",
         context_editing_trigger: 200000,
         context_editing_keep_tools: 4,
         context_editing_keep_thinking: 2,
         tool_search: false,
         cache_control: "disabled",
-        non_deferred_tools: ["custom_tool", "second_tool"],
-        rewrite_system_reminders: [
+        tool_non_deferred: ["custom_tool", "second_tool"],
+        system_rewrite_reminders: [
           {
             from: "(?i)warning",
             to: "",
@@ -511,7 +511,7 @@ model_refresh_interval: 600
     expect(written).toContain("anthropic:")
     expect(written).toContain("context_editing_trigger: 200000")
     expect(written).toContain("tool_search: false")
-    expect(written).toContain("non_deferred_tools:")
+    expect(written).toContain("tool_non_deferred:")
     expect(written).toContain("openai_responses:")
     expect(written).toContain("rate_limiter:")
     expect(written).toContain("system_prompt_overrides:")
@@ -545,7 +545,7 @@ model_refresh_interval: 600
         anthropic: {
           context_editing_trigger: -1,
           tool_search: "yes",
-          non_deferred_tools: ["valid", 123],
+          tool_non_deferred: ["valid", 123],
         },
       }),
     })
@@ -565,7 +565,7 @@ model_refresh_interval: 600
           value: "yes",
         },
         {
-          field: "anthropic.non_deferred_tools.1",
+          field: "anthropic.tool_non_deferred.1",
           message: "Must be a non-empty string",
           value: 123,
         },
@@ -662,7 +662,7 @@ shutdown:
     await writeConfig(`
 anthropic:
   # keep this comment
-  strip_server_tools: false
+  tool_strip_server: false
   context_editing: clear-thinking
 `)
 
@@ -671,7 +671,7 @@ anthropic:
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         anthropic: {
-          strip_server_tools: true,
+          tool_strip_server: true,
         },
       }),
     })
@@ -679,14 +679,14 @@ anthropic:
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       anthropic: {
-        strip_server_tools: true,
+        tool_strip_server: true,
         context_editing: "clear-thinking",
       },
     })
 
     const written = await readConfig()
     expect(written).toContain("# keep this comment")
-    expect(written).toContain("strip_server_tools: true")
+    expect(written).toContain("tool_strip_server: true")
     expect(written).toContain("context_editing: clear-thinking")
   })
 
@@ -723,7 +723,7 @@ shutdown:
   test("PUT /api/config/yaml preserves untouched anthropic sibling keys during partial updates", async () => {
     await writeConfig(`
 anthropic:
-  strip_server_tools: true
+  tool_strip_server: true
   context_editing: clear-thinking
 `)
 
@@ -732,7 +732,7 @@ anthropic:
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         anthropic: {
-          rewrite_system_reminders: [
+          system_rewrite_reminders: [
             {
               from: "system reminder",
               to: "",
@@ -745,9 +745,9 @@ anthropic:
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       anthropic: {
-        strip_server_tools: true,
+        tool_strip_server: true,
         context_editing: "clear-thinking",
-        rewrite_system_reminders: [
+        system_rewrite_reminders: [
           {
             from: "system reminder",
             to: "",
@@ -757,9 +757,9 @@ anthropic:
     })
 
     const written = await readConfig()
-    expect(written).toContain("strip_server_tools: true")
+    expect(written).toContain("tool_strip_server: true")
     expect(written).toContain("context_editing: clear-thinking")
-    expect(written).toContain("rewrite_system_reminders:")
+    expect(written).toContain("system_rewrite_reminders:")
   })
 
   test("PUT /api/config/yaml preserves untouched rate_limiter sibling keys during partial updates", async () => {
@@ -834,7 +834,7 @@ model_overrides:
   test("PUT /api/config/yaml replaces existing rewrite rule arrays instead of merging old rules", async () => {
     await writeConfig(`
 anthropic:
-  rewrite_system_reminders:
+  system_rewrite_reminders:
     - from: warning
       to: old
 `)
@@ -844,7 +844,7 @@ anthropic:
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         anthropic: {
-          rewrite_system_reminders: [
+          system_rewrite_reminders: [
             {
               from: "notice",
               to: "new",
@@ -857,7 +857,7 @@ anthropic:
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       anthropic: {
-        rewrite_system_reminders: [
+        system_rewrite_reminders: [
           {
             from: "notice",
             to: "new",
@@ -950,10 +950,10 @@ history:
     })
   })
 
-  test("PUT /api/config/yaml deleting anthropic.strip_server_tools resets runtime state to default", async () => {
+  test("PUT /api/config/yaml deleting anthropic.tool_strip_server resets runtime state to default", async () => {
     await writeConfig(`
 anthropic:
-  strip_server_tools: true
+  tool_strip_server: true
   context_editing: clear-thinking
 `)
     await applyConfigToState()
@@ -964,7 +964,7 @@ anthropic:
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         anthropic: {
-          strip_server_tools: null,
+          tool_strip_server: null,
         },
       }),
     })

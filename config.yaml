@@ -184,7 +184,7 @@ anthropic:
   # upstream rejects with 400 ("web search tool is not supported") is learned and
   # stripped pre-emptively for that (endpoint, model) on subsequent requests
   # (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
-  strip_server_tools: false
+  tool_strip_server: false
 
   # Synthetic SSE keepalive interval (seconds) for the client-facing stream.
   # 0 = disabled (default). When >0, the proxy injects an Anthropic-protocol
@@ -194,11 +194,11 @@ anthropic:
   # that stalls after content_block_start). Heartbeats DO NOT reset the
   # upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle)
   # and are recorded only in forwardedSseEvents, never in raw upstream sseEvents.
-  fake_sse_heartbeat: 240
+  stream_fake_sse_heartbeat: 240
 
   # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
   # "input": dedup by (name, input); "result": also require identical result
-  dedup_tool_calls: false
+  tool_dedup_calls: false
 
   # Policy for assistant messages containing thinking/redacted_thinking blocks.
   # Thinking signatures are self-contained (encrypt the thinking content itself; no
@@ -219,7 +219,7 @@ anthropic:
   #   basic:       coerce to {type:adaptive}, drop budget_tokens (default, mirrors GHC)
   #   best_effort: also map budget_tokens to output_config.effort (only if the client didn't send an explicit effort) — heuristic, GHC doesn't do this
   #   false:       disable — pass client thinking config through unchanged
-  coerce_adaptive_thinking: basic
+  thinking_coerce_adaptive: basic
 
   # Handle role:"system" messages mixed into the messages array — illegal for the Anthropic API (system must be the top-level param), rejected with `Unexpected role "system"`.
   # Such inline system messages come from OpenAI-habit clients or Claude Code mid-conversation context injections (hook output / rules / reminders).
@@ -235,7 +235,7 @@ anthropic:
   # Recommended ON together with web_search.enabled.
   #   downgrade: rewrite the pair into plain tool_use + tool_result (splits the assistant turn so the tool_result lands in a user message)
   #   false:     passthrough (default — will 400 upstream when a historical server_tool_use survives without a matching server-tool definition)
-  rewrite_history_server_tools: false
+  tool_rewrite_history_server: false
 
   # Client compatibility shim for the streaming thinking frame some Copilot upstreams emit
   # (signature embedded in content_block_start, no signature_delta) so standard clients keep the signature.
@@ -243,7 +243,7 @@ anthropic:
   thinking_signature_compat: signature_delta
 
   # Strip <system-reminder> tags from Read tool results
-  strip_read_tool_result_tags: false
+  tool_strip_read_result_tags: false
 
   # Server-side context editing mode. Controls how Anthropic's context_management trims older context when input grows large.
   #   off: disabled (default). No context_management sent.
@@ -273,14 +273,14 @@ anthropic:
   cache_control: proxied
 
   # Additional tool names that should never be deferred when tool_search is enabled.
-  # non_deferred_tools:
+  # tool_non_deferred:
   #   - my_custom_tool
 
   # Rewrite system-reminder tags in messages. false = keep all (default), true = remove all.
   # Or provide rewrite rules (first match wins, top-down).
   # Note: `model` field is NOT supported here (only in system_prompt_overrides).
-  # rewrite_system_reminders: false
-  # rewrite_system_reminders:
+  # system_rewrite_reminders: false
+  # system_rewrite_reminders:
   #   - from: "^Whenever you read a file, you should consider whether it would be considered malware"
   #     to: ""                 # Empty = remove the tag
 
@@ -322,7 +322,7 @@ anthropic:
   # Runtime negotiation also populates a persistent cache (negotiation-states.json) when upstream returns "unsupported beta header(s)". Config entries are always applied; runtime-learned entries survive restarts.
   #
   # Default: none (no pre-filter; rely on runtime negotiation only).
-  strip_beta_headers:
+  beta_strip_headers:
     claude-opus-4.7-1m-internal:
       - context-1m-2025-08-07
       - mid-conversation-system-2026-04-07
@@ -336,7 +336,7 @@ anthropic:
   # Always merged with the built-in default {"*": [inference_geo]} and with runtime-learned entries from upstream `<field>: Extra inputs are not permitted` 400 errors (persisted in negotiation-states.json).
   #
   # Default: none (only built-in inference_geo strip + runtime negotiation).
-  # reject_body_fields:
+  # retry_reject_body_fields:
   #   "*": [some_global_field]
   #   claude-opus-4.7: [model_specific_field]
 
@@ -347,24 +347,24 @@ anthropic:
   # These options decode such fields back to structured form on the response wire (streaming + non-streaming) before forwarding to the client.
   # History records keep the original stringified form — decode never touches sseEvents or the stored response, so the upstream anomaly stays visible in history.
   #
-  # decode_tool_input_fields: per-tool list of top-level input fields to decode.
+  # tool_decode_input_fields: per-tool list of top-level input fields to decode.
   #   Keys are tool names, matched verbatim (no normalization). Replace semantic: setting this key replaces the whole map (write {} to disable entirely).
   #   Default: { AskUserQuestion: [questions] }.
-  decode_tool_input_fields:
+  tool_decode_input_fields:
     AskUserQuestion:
       - questions
 
-  # decode_all_tool_input_fields: when true, attempt to decode ALL top-level string fields of every tool_use input (ignores the map above).
+  # tool_decode_all_input_fields: when true, attempt to decode ALL top-level string fields of every tool_use input (ignores the map above).
   #   server_tool_use is never affected. Default: false.
-  decode_all_tool_input_fields: false
+  tool_decode_all_input_fields: false
 
   # 透明恢复上游偶发把工具调用降级成纯文本（call<invoke>…）的响应，重建为标准 tool_use block。
   # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/rfc/tool-call-text-recovery.md。
-  recover_tool_call_text: false
-  # backfill_question_from_header: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").
+  tool_recover_call_text: false
+  # tool_backfill_question: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").
   #   Upstream models occasionally emit such items. When true, each item that is MISSING the `question` key (present-but-empty is left untouched) and whose `header` is a non-empty string gets `question = header`.
-  #   Applies on the response wire only (streaming + non-streaming), after decode_tool_input_fields; history keeps the upstream-original form. Default: true.
-  backfill_question_from_header: true
+  #   Applies on the response wire only (streaming + non-streaming), after tool_decode_input_fields; history keeps the upstream-original form. Default: true.
+  tool_backfill_question: true
 
 # ============================================================================
 # Responses API

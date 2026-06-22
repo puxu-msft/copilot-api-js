@@ -12,7 +12,7 @@
  *     retain-on-absence semantic; reset only on resetConfigManagedState()).
  * R3: resetConfigManagedState() restores CONFIG_MANAGED_DEFAULTS.
  *
- * Special semantics that don't fit the matrix (e.g. dedup_tool_calls true →
+ * Special semantics that don't fit the matrix (e.g. tool_dedup_calls true →
  * "input" normalization, model_preference per-family merging) live in the
  * "Special semantics" describe block at the bottom.
  */
@@ -257,21 +257,21 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── anthropic.* scalars ────────────────────────────────────────────
   {
-    configKey: "anthropic.strip_server_tools",
+    configKey: "anthropic.tool_strip_server",
     stateKey: "stripServerTools",
     sampleYamlValue: "true",
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   },
   {
-    configKey: "anthropic.fake_sse_heartbeat",
+    configKey: "anthropic.stream_fake_sse_heartbeat",
     stateKey: "anthropicFakeSseHeartbeat",
     sampleYamlValue: "15",
     expectedStateValue: 15,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
   },
   {
-    configKey: "anthropic.inject_claude_code_tools",
+    configKey: "anthropic.tool_inject_claude_code",
     stateKey: "injectClaudeCodeOfficialTools",
     sampleYamlValue: "false",
     expectedStateValue: false,
@@ -292,7 +292,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   },
   {
-    configKey: "anthropic.coerce_adaptive_thinking",
+    configKey: "anthropic.thinking_coerce_adaptive",
     stateKey: "coerceAdaptiveThinking",
     sampleYamlValue: "best_effort",
     expectedStateValue: "best_effort",
@@ -306,7 +306,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
   },
   {
-    configKey: "anthropic.rewrite_history_server_tools",
+    configKey: "anthropic.tool_rewrite_history_server",
     stateKey: "rewriteHistoryServerTools",
     sampleYamlValue: "downgrade",
     expectedStateValue: "downgrade",
@@ -320,22 +320,22 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   },
   {
-    configKey: "anthropic.dedup_tool_calls",
+    configKey: "anthropic.tool_dedup_calls",
     stateKey: "dedupToolCalls",
     sampleYamlValue: "result",
     expectedStateValue: "result",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   },
   {
-    configKey: "anthropic.strip_read_tool_result_tags",
+    configKey: "anthropic.tool_strip_read_result_tags",
     stateKey: "stripReadToolResultTags",
     sampleYamlValue: "true",
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   },
-  // rewrite_system_reminders covered as boolean here; array case in special-semantics.
+  // system_rewrite_reminders covered as boolean here; array case in special-semantics.
   {
-    configKey: "anthropic.rewrite_system_reminders",
+    configKey: "anthropic.system_rewrite_reminders",
     stateKey: "rewriteSystemReminders",
     sampleYamlValue: "true",
     expectedStateValue: true,
@@ -384,7 +384,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
   },
   {
-    configKey: "anthropic.non_deferred_tools",
+    configKey: "anthropic.tool_non_deferred",
     stateKey: "nonDeferredTools",
     sampleYamlValue: `\n  - first_tool\n  - second_tool`,
     expectedStateValue: ["first_tool", "second_tool"],
@@ -414,42 +414,42 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.effortsOverrides,
   },
   {
-    configKey: "anthropic.strip_beta_headers",
+    configKey: "anthropic.beta_strip_headers",
     stateKey: "stripBetaHeaders",
     sampleYamlValue: `\n  "*":\n    - context-management-2025-06-27`,
     expectedStateValue: { "*": ["context-management-2025-06-27"] },
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripBetaHeaders,
   },
   {
-    configKey: "anthropic.reject_body_fields",
+    configKey: "anthropic.retry_reject_body_fields",
     stateKey: "rejectBodyFields",
     sampleYamlValue: `\n  "*":\n    - thinking`,
     expectedStateValue: { "*": ["thinking"] },
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.rejectBodyFields,
   },
   {
-    configKey: "anthropic.decode_tool_input_fields",
+    configKey: "anthropic.tool_decode_input_fields",
     stateKey: "decodeToolInputFields",
     sampleYamlValue: `\n  "MyTool":\n    - foo`,
     expectedStateValue: { MyTool: ["foo"] },
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.decodeToolInputFields,
   },
   {
-    configKey: "anthropic.decode_all_tool_input_fields",
+    configKey: "anthropic.tool_decode_all_input_fields",
     stateKey: "decodeAllToolInputFields",
     sampleYamlValue: "true",
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   },
   {
-    configKey: "anthropic.recover_tool_call_text",
+    configKey: "anthropic.tool_recover_call_text",
     stateKey: "recoverToolCallText",
     sampleYamlValue: "true",
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   },
   {
-    configKey: "anthropic.backfill_question_from_header",
+    configKey: "anthropic.tool_backfill_question",
     stateKey: "backfillQuestionFromHeader",
     sampleYamlValue: "false",
     expectedStateValue: false,
@@ -782,16 +782,16 @@ describe("Special semantics", () => {
     initHistory(true, 200)
   })
 
-  test("dedup_tool_calls: true normalizes to 'input'", async () => {
-    await writeConfig("anthropic:\n  dedup_tool_calls: true\n")
+  test("tool_dedup_calls: true normalizes to 'input'", async () => {
+    await writeConfig("anthropic:\n  tool_dedup_calls: true\n")
     await applyConfigToState()
     expect(state.dedupToolCalls).toBe("input")
   })
 
-  test("rewrite_system_reminders: array compiles to CompiledRewriteRule[]", async () => {
+  test("system_rewrite_reminders: array compiles to CompiledRewriteRule[]", async () => {
     await writeConfig(`
 anthropic:
-  rewrite_system_reminders:
+  system_rewrite_reminders:
     - from: "pattern1"
       to: ""
     - from: "pattern2"

@@ -205,7 +205,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   // custom integrations) have no reason to receive 16 unused stub tools in
   // every prompt — it wastes prompt budget and shapes model behavior toward
   // tool-calling for a workload that may be plain Q&A. Operators disable via
-  // `anthropic.inject_claude_code_tools: false`.
+  // `anthropic.tool_inject_claude_code: false`.
   if (state.injectClaudeCodeOfficialTools) {
     for (const name of CLAUDE_CODE_OFFICIAL_TOOLS) {
       if (!existingNamesLower.has(name.toLowerCase())) {

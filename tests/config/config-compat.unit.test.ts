@@ -102,6 +102,38 @@ describe("config compat — legacy key migration (file load)", () => {
     expect(result.anthropic?.thinking_block_sanitize).toBe("empty_any")
   })
 
+  // anthropic.* concern-prefix normalization (RFC anthropic-rewrite-reorg §6, Phase 4).
+  // Per-key round-trip: legacy flat key in → new concern-prefixed key out. Guards against
+  // a forgotten renameLeaf silently dropping the user's value under the strict schema
+  // (the hot-reload completeness guard proves the NEW key is wired, NOT that the OLD→NEW
+  // migration exists — only this round-trip does).
+  const CONCERN_PREFIX_RENAMES: ReadonlyArray<{ old: string; new: string; value: unknown }> = [
+    { old: "coerce_adaptive_thinking", new: "thinking_coerce_adaptive", value: "best_effort" },
+    { old: "strip_server_tools", new: "tool_strip_server", value: true },
+    { old: "inject_claude_code_tools", new: "tool_inject_claude_code", value: false },
+    { old: "rewrite_history_server_tools", new: "tool_rewrite_history_server", value: "downgrade" },
+    { old: "dedup_tool_calls", new: "tool_dedup_calls", value: "result" },
+    { old: "strip_read_tool_result_tags", new: "tool_strip_read_result_tags", value: true },
+    { old: "non_deferred_tools", new: "tool_non_deferred", value: ["Foo"] },
+    { old: "decode_tool_input_fields", new: "tool_decode_input_fields", value: { AskUserQuestion: ["questions"] } },
+    { old: "decode_all_tool_input_fields", new: "tool_decode_all_input_fields", value: true },
+    { old: "recover_tool_call_text", new: "tool_recover_call_text", value: true },
+    { old: "backfill_question_from_header", new: "tool_backfill_question", value: false },
+    { old: "rewrite_system_reminders", new: "system_rewrite_reminders", value: true },
+    { old: "strip_beta_headers", new: "beta_strip_headers", value: { "claude-x": ["foo"] } },
+    { old: "reject_body_fields", new: "retry_reject_body_fields", value: { "claude-x": ["foo"] } },
+    { old: "fake_sse_heartbeat", new: "stream_fake_sse_heartbeat", value: 30 },
+  ]
+
+  for (const { old: oldKey, new: newKey, value } of CONCERN_PREFIX_RENAMES) {
+    test(`anthropic.${oldKey} → anthropic.${newKey}`, () => {
+      const result = validateConfig({ anthropic: { [oldKey]: value } })
+      const anthropic = result.anthropic as Record<string, unknown> | undefined
+      expect(anthropic?.[newKey]).toEqual(value)
+      expect(anthropic?.[oldKey]).toBeUndefined()
+    })
+  }
+
   test("user-set NEW key wins over migrated legacy key (missing-only merge)", () => {
     const result = validateConfig({ fetch_timeout: 200, timeouts: { response_header: 999 } })
     expect(result.timeouts?.response_header).toBe(999)

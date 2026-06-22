@@ -145,14 +145,14 @@ export const RateLimiterConfigSchema = z
 
 export const AnthropicConfigSchema = z
   .object({
-    strip_server_tools: nullableBoolean(),
+    tool_strip_server: nullableBoolean(),
     /**
      * Inject Claude Code official tool stubs (Bash, Read, Write, …) when
      * referenced in message history but missing from the request's tools
      * array. Default true. Disable for non-Claude-Code clients to save
      * prompt budget and avoid biasing the model toward tool calls.
      */
-    inject_claude_code_tools: nullableBoolean(),
+    tool_inject_claude_code: nullableBoolean(),
     thinking_block_message_policy: nullableEnum(["preserve", "stripped"] as const),
     /**
      * Drop corrupt thinking blocks before sending upstream. Validity is decided
@@ -179,7 +179,7 @@ export const AnthropicConfigSchema = z
      *                the client did not send an explicit effort)
      *   false:       disabled — pass the client config through unchanged
      */
-    coerce_adaptive_thinking: z
+    thinking_coerce_adaptive: z
       .union([z.literal(false), z.literal("basic"), z.literal("best_effort"), z.null()], {
         error: "Must be one of: false, basic, best_effort",
       })
@@ -234,20 +234,20 @@ export const AnthropicConfigSchema = z
      *                the assistant turn so the tool_result lands in a user message.
      *   false:       passthrough (default).
      */
-    rewrite_history_server_tools: z
+    tool_rewrite_history_server: z
       .union([z.literal(false), z.literal("downgrade"), z.null()], {
         error: "Must be one of: false, downgrade",
       })
       .optional()
       .transform((v) => v ?? undefined),
-    dedup_tool_calls: z
+    tool_dedup_calls: z
       .union([z.boolean(), z.literal("input"), z.literal("result"), z.null()], {
         error: "Must be one of: false, true, input, result",
       })
       .optional()
       .transform((v) => v ?? undefined),
-    strip_read_tool_result_tags: nullableBoolean(),
-    rewrite_system_reminders: z
+    tool_strip_read_result_tags: nullableBoolean(),
+    system_rewrite_reminders: z
       .union([z.boolean(), z.array(RewriteRuleSchema), z.null()])
       .optional()
       .transform((v) => v ?? undefined),
@@ -257,24 +257,24 @@ export const AnthropicConfigSchema = z
     context_editing_keep_thinking: nullableNonnegativeInt(),
     tool_search: nullableBoolean(),
     cache_control: nullableEnum(["disabled", "passthrough", "sanitize", "proxied"] as const),
-    non_deferred_tools: nullableNonemptyStringArray(),
+    tool_non_deferred: nullableNonemptyStringArray(),
     api_key: nullableString(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
     // Free-form Records — key = model-name pattern, value = list
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
-    strip_beta_headers: z.record(z.string(), z.array(z.string())).optional(),
-    reject_body_fields: z.record(z.string(), z.array(z.string())).optional(),
+    beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
+    retry_reject_body_fields: z.record(z.string(), z.array(z.string())).optional(),
     // Tool-name-keyed (NOT model-keyed): keys are matched verbatim against the
     // tool name — must NOT go through normalizeModelKeyedRecord, which would
     // fold case/separators and break lookups. Replace semantic (default).
-    decode_tool_input_fields: z.record(z.string(), z.array(z.string())).optional(),
-    decode_all_tool_input_fields: nullableBoolean(),
-    recover_tool_call_text: nullableBoolean(),
+    tool_decode_input_fields: z.record(z.string(), z.array(z.string())).optional(),
+    tool_decode_all_input_fields: nullableBoolean(),
+    tool_recover_call_text: nullableBoolean(),
     /**
      * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
      * Only items missing the `question` key are touched. Default true.
      */
-    backfill_question_from_header: nullableBoolean(),
+    tool_backfill_question: nullableBoolean(),
     /**
      * Synthetic SSE keepalive interval for the client-facing Anthropic stream.
      * `0` disables (default). Any positive integer is the minimum seconds
@@ -288,7 +288,7 @@ export const AnthropicConfigSchema = z
      * interval is captured at stream start — in-flight streams keep their
      * original value across hot-reload; new streams pick up the new value.
      */
-    fake_sse_heartbeat: nullableNonnegativeInt(),
+    stream_fake_sse_heartbeat: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -550,7 +550,7 @@ export type RecordMergeStrategy = "per-key" | "replace"
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
 RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
-// effort_overrides / strip_beta_headers / reject_body_fields intentionally
+// effort_overrides / beta_strip_headers / retry_reject_body_fields intentionally
 // omitted — they default to "replace": when the user sets one of these
 // tables, they take responsibility for the entire policy.
 

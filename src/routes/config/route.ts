@@ -168,7 +168,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Anthropic section keys whose values are collections (arrays / booleans) and
  *  therefore must NOT be written by the generic scalar setter — they are
  *  handled explicitly by replaceCollection / setScalar below. */
-const ANTHROPIC_COLLECTION_KEYS = new Set(["rewrite_system_reminders", "non_deferred_tools"])
+const ANTHROPIC_COLLECTION_KEYS = new Set(["system_rewrite_reminders", "tool_non_deferred"])
 
 type ConfigDocument = ReturnType<typeof parseDocument>
 
@@ -223,13 +223,13 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
     } else if (anthropic) {
       setNestedScalarContainer(doc, ["anthropic"], anthropic, { excludeKeys: ANTHROPIC_COLLECTION_KEYS })
 
-      if (hasOwn(anthropic, "rewrite_system_reminders")) {
-        const rewrite = anthropic.rewrite_system_reminders
+      if (hasOwn(anthropic, "system_rewrite_reminders")) {
+        const rewrite = anthropic.system_rewrite_reminders
         const normalized = Array.isArray(rewrite) && rewrite.length === 0 ? false : rewrite
-        replaceCollection(doc, ["anthropic", "rewrite_system_reminders"], normalized)
+        replaceCollection(doc, ["anthropic", "system_rewrite_reminders"], normalized)
       }
-      if (hasOwn(anthropic, "non_deferred_tools")) {
-        replaceCollection(doc, ["anthropic", "non_deferred_tools"], anthropic.non_deferred_tools)
+      if (hasOwn(anthropic, "tool_non_deferred")) {
+        replaceCollection(doc, ["anthropic", "tool_non_deferred"], anthropic.tool_non_deferred)
       }
     }
   }

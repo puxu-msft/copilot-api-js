@@ -283,7 +283,7 @@ export interface State {
   /**
    * Strip injected `<system-reminder>` tags from Read tool results.
    * Reduces context bloat from repeated system reminders in file content.
-   * Disabled by default; enable with config anthropic.strip_read_tool_result_tags.
+   * Disabled by default; enable with config anthropic.tool_strip_read_result_tags.
    */
   readonly stripReadToolResultTags: boolean
 

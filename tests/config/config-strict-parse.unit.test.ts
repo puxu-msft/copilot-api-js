@@ -85,7 +85,7 @@ describe("loadRawConfigFile (boot-path strict parse)", () => {
   })
 
   test("nested DUPLICATE KEY is also caught", async () => {
-    await writeConfig("anthropic:\n  thinking_signature_compat: signature_delta\nanthropic:\n  coerce_adaptive_thinking: basic\n")
+    await writeConfig("anthropic:\n  thinking_signature_compat: signature_delta\nanthropic:\n  thinking_coerce_adaptive: basic\n")
     await expect(loadRawConfigFile()).rejects.toBeInstanceOf(ConfigParseError)
   })
 

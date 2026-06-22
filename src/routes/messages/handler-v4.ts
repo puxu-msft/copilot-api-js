@@ -563,7 +563,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   }
 
   // The driver-owned client sink: SSE write-out + forwarded sampling + (optional) the
-  // fake_sse_heartbeat forward-idle racer. Heartbeats are proxy-originated: sampled ONLY
+  // stream_fake_sse_heartbeat forward-idle racer. Heartbeats are proxy-originated: sampled ONLY
   // into forwardedSseEvents (via onForwarded), never sseEvents (the driver's raw track).
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),

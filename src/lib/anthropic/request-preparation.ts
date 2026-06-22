@@ -97,7 +97,7 @@ const EPHEMERAL_CACHE_CONTROL = { type: "ephemeral" } as const
 /**
  * Collect the full set of body fields to strip for `modelName`:
  *   - built-in defaults (e.g. inference_geo)
- *   - config-sourced `anthropic.reject_body_fields` (per-model substring, `"*"` = all)
+ *   - config-sourced `anthropic.retry_reject_body_fields` (per-model substring, `"*"` = all)
  *   - runtime-learned negotiation cache (per-(endpoint, model))
  *
  * Use `getUnsupportedFeatures(model)` rather than per-field probing so this
@@ -322,7 +322,7 @@ function buildWirePayload(
  * this is a copilot-api enhancement to preserve the "thinking intensity" intent
  * of old clients that only had `budget_tokens` to express it. Thresholds carry
  * no semantic guarantee — they are an opt-in best effort (config
- * `anthropic.coerce_adaptive_thinking: best_effort`).
+ * `anthropic.thinking_coerce_adaptive: best_effort`).
  *
  * Only low/medium/high are produced (GHC's construction side accepts only these
  * three); clampEffortLevel later fits the value to the model's actual whitelist.

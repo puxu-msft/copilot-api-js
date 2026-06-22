@@ -186,6 +186,25 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // anthropic.* renames (consistency + name-vs-reality)
   renameLeaf("anthropic.efforts_overrides", "anthropic.effort_overrides"),
   renameLeaf("anthropic.thinking_block_sanitize_check", "anthropic.thinking_block_sanitize"),
+  // anthropic.* concern-prefix normalization (RFC anthropic-rewrite-reorg §6, Phase 4):
+  // every key is concern-first (thinking_/tool_/system_/beta_/retry_/stream_). Behavior
+  // unchanged — only the user-facing yaml key spelling. Already-grouped keys (thinking_block_*,
+  // context_editing*, tool_search, cache_control, system_messages_sanitize, …) keep their names.
+  renameLeaf("anthropic.coerce_adaptive_thinking", "anthropic.thinking_coerce_adaptive"),
+  renameLeaf("anthropic.strip_server_tools", "anthropic.tool_strip_server"),
+  renameLeaf("anthropic.inject_claude_code_tools", "anthropic.tool_inject_claude_code"),
+  renameLeaf("anthropic.rewrite_history_server_tools", "anthropic.tool_rewrite_history_server"),
+  renameLeaf("anthropic.dedup_tool_calls", "anthropic.tool_dedup_calls"),
+  renameLeaf("anthropic.strip_read_tool_result_tags", "anthropic.tool_strip_read_result_tags"),
+  renameLeaf("anthropic.non_deferred_tools", "anthropic.tool_non_deferred"),
+  renameLeaf("anthropic.decode_tool_input_fields", "anthropic.tool_decode_input_fields"),
+  renameLeaf("anthropic.decode_all_tool_input_fields", "anthropic.tool_decode_all_input_fields"),
+  renameLeaf("anthropic.recover_tool_call_text", "anthropic.tool_recover_call_text"),
+  renameLeaf("anthropic.backfill_question_from_header", "anthropic.tool_backfill_question"),
+  renameLeaf("anthropic.rewrite_system_reminders", "anthropic.system_rewrite_reminders"),
+  renameLeaf("anthropic.strip_beta_headers", "anthropic.beta_strip_headers"),
+  renameLeaf("anthropic.reject_body_fields", "anthropic.retry_reject_body_fields"),
+  renameLeaf("anthropic.fake_sse_heartbeat", "anthropic.stream_fake_sse_heartbeat"),
   // rate_limiter unit unification: minutes → seconds (value auto-converted ×60)
   renameLeaf("rate_limiter.recovery_timeout", "rate_limiter.recovery_interval", {
     transform: (v) => (typeof v === "number" ? v * 60 : v),

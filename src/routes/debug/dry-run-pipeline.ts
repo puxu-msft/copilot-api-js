@@ -106,7 +106,7 @@ const RESPONSE_FORMAT_CONFIG: Record<DryRunFormat, ResponseFormatConfig> = {
     clientFormat: "anthropic",
     targetEndpoint: "/v1/messages",
     responseRewrites: ANTHROPIC_RESPONSE_REWRITES,
-    caveats: ["缺 handler-side synthetic heartbeat 注入（anthropic.fake_sse_heartbeat）"],
+    caveats: ["缺 handler-side synthetic heartbeat 注入（anthropic.stream_fake_sse_heartbeat）"],
   },
   "openai-responses": {
     clientFormat: "openai-responses",

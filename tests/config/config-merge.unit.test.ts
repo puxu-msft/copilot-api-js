@@ -91,12 +91,12 @@ describe("loadConfig() — bundled + user merge", () => {
 
   test("anthropic section merges field-by-field", async () => {
     setBundledConfigForTests({
-      anthropic: { tool_search: true, strip_server_tools: false },
+      anthropic: { tool_search: true, tool_strip_server: false },
     })
-    await writeUserConfig("anthropic:\n  strip_server_tools: true\n")
+    await writeUserConfig("anthropic:\n  tool_strip_server: true\n")
     const cfg = await loadConfig()
     expect(cfg.anthropic?.tool_search).toBe(true) // from bundled
-    expect(cfg.anthropic?.strip_server_tools).toBe(true) // overridden
+    expect(cfg.anthropic?.tool_strip_server).toBe(true) // overridden
   })
 
   test("model_overrides merges per-key (user wins, bundled-only keys survive)", async () => {

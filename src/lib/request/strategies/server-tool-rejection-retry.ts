@@ -11,7 +11,7 @@
  * No other retry strategy's `canHandle` matches this (its pattern is mutually
  * exclusive with effort / beta / body-field / deferred-tool). Without this
  * strategy the request fails outright unless the user pre-emptively sets
- * `anthropic.strip_server_tools: true` (an unconditional global opt-in).
+ * `anthropic.tool_strip_server: true` (an unconditional global opt-in).
  *
  * Reactive self-healing: on the first 400 we fixate the offending server tool
  * type prefix in the negotiation cache (so future same-(endpoint, model)

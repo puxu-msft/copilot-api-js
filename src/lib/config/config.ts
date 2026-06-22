@@ -274,7 +274,7 @@ export class ConfigParseError extends Error {
  *         level — user keys add/replace, bundled keys without a user
  *         counterpart remain. Values are atomic (replaced wholesale).
  *       · `"replace"` (default — e.g. `anthropic.effort_overrides`,
- *         `strip_beta_headers`, `reject_body_fields`): the user's map
+ *         `beta_strip_headers`, `retry_reject_body_fields`): the user's map
  *         wholly replaces the bundled map. Once the user takes ownership
  *         of the table, the bundled table is fully discarded.
  *   - **ZodArray** — user replaces wholesale when present.
@@ -462,10 +462,10 @@ export async function applyConfigToState(): Promise<Config> {
   // Anthropic settings (scalar: override only when present)
   if (config.anthropic) {
     const a = config.anthropic
-    if (a.strip_server_tools !== undefined) setAnthropicBehavior({ stripServerTools: a.strip_server_tools })
-    if (a.fake_sse_heartbeat !== undefined) setAnthropicBehavior({ anthropicFakeSseHeartbeat: a.fake_sse_heartbeat })
-    if (a.inject_claude_code_tools !== undefined) {
-      setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.inject_claude_code_tools })
+    if (a.tool_strip_server !== undefined) setAnthropicBehavior({ stripServerTools: a.tool_strip_server })
+    if (a.stream_fake_sse_heartbeat !== undefined) setAnthropicBehavior({ anthropicFakeSseHeartbeat: a.stream_fake_sse_heartbeat })
+    if (a.tool_inject_claude_code !== undefined) {
+      setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.tool_inject_claude_code })
     }
     if (a.thinking_block_message_policy !== undefined) {
       setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
@@ -473,23 +473,23 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.thinking_block_sanitize !== undefined) {
       setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize })
     }
-    if (a.coerce_adaptive_thinking !== undefined) {
-      setAnthropicBehavior({ coerceAdaptiveThinking: a.coerce_adaptive_thinking })
+    if (a.thinking_coerce_adaptive !== undefined) {
+      setAnthropicBehavior({ coerceAdaptiveThinking: a.thinking_coerce_adaptive })
     }
     if (a.system_messages_sanitize !== undefined) {
       setAnthropicBehavior({ systemMessagesSanitize: a.system_messages_sanitize })
     }
-    if (a.rewrite_history_server_tools !== undefined) {
-      setAnthropicBehavior({ rewriteHistoryServerTools: a.rewrite_history_server_tools })
+    if (a.tool_rewrite_history_server !== undefined) {
+      setAnthropicBehavior({ rewriteHistoryServerTools: a.tool_rewrite_history_server })
     }
     if (a.thinking_signature_compat !== undefined) {
       setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
     }
-    if (a.dedup_tool_calls !== undefined) {
+    if (a.tool_dedup_calls !== undefined) {
       // Normalize: true → "input" for backward compatibility, false → false
-      setAnthropicBehavior({ dedupToolCalls: a.dedup_tool_calls === true ? "input" : a.dedup_tool_calls })
+      setAnthropicBehavior({ dedupToolCalls: a.tool_dedup_calls === true ? "input" : a.tool_dedup_calls })
     }
-    if (a.strip_read_tool_result_tags !== undefined) setAnthropicBehavior({ stripReadToolResultTags: a.strip_read_tool_result_tags })
+    if (a.tool_strip_read_result_tags !== undefined) setAnthropicBehavior({ stripReadToolResultTags: a.tool_strip_read_result_tags })
     if (a.context_editing !== undefined) setAnthropicBehavior({ contextEditingMode: a.context_editing })
     if (a.context_editing_trigger !== undefined) setAnthropicBehavior({ contextEditingTrigger: a.context_editing_trigger })
     if (a.context_editing_keep_tools !== undefined) setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
@@ -498,7 +498,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.cache_control !== undefined) {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
     }
-    if (a.non_deferred_tools !== undefined) setAnthropicBehavior({ nonDeferredTools: a.non_deferred_tools })
+    if (a.tool_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_non_deferred })
     if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
     if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
     // Collection fields: retain-on-absence semantic — a missing key keeps the
@@ -508,27 +508,27 @@ export async function applyConfigToState(): Promise<Config> {
       setAnthropicBehavior({
         effortsOverrides: normalizeModelKeyedRecord(a.effort_overrides, "anthropic.effort_overrides"),
       })
-    if (a.strip_beta_headers !== undefined)
+    if (a.beta_strip_headers !== undefined)
       setAnthropicBehavior({
-        stripBetaHeaders: normalizeModelKeyedRecord(a.strip_beta_headers, "anthropic.strip_beta_headers"),
+        stripBetaHeaders: normalizeModelKeyedRecord(a.beta_strip_headers, "anthropic.beta_strip_headers"),
       })
-    if (a.reject_body_fields !== undefined)
+    if (a.retry_reject_body_fields !== undefined)
       setAnthropicBehavior({
-        rejectBodyFields: normalizeModelKeyedRecord(a.reject_body_fields, "anthropic.reject_body_fields"),
+        rejectBodyFields: normalizeModelKeyedRecord(a.retry_reject_body_fields, "anthropic.retry_reject_body_fields"),
       })
     // Tool-name-keyed: keys are tool names, matched verbatim. Do NOT normalize
     // (normalizeModelKeyedRecord folds case/separators and is model-specific).
     // cloneStatePatch deep-clones the record, so passing the parsed value is safe.
-    if (a.decode_tool_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.decode_tool_input_fields })
-    if (a.decode_all_tool_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.decode_all_tool_input_fields })
-    if (a.recover_tool_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.recover_tool_call_text })
-    if (a.backfill_question_from_header !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.backfill_question_from_header })
-    if (a.rewrite_system_reminders !== undefined) {
+    if (a.tool_decode_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.tool_decode_input_fields })
+    if (a.tool_decode_all_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.tool_decode_all_input_fields })
+    if (a.tool_recover_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.tool_recover_call_text })
+    if (a.tool_backfill_question !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.tool_backfill_question })
+    if (a.system_rewrite_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
-      if (typeof a.rewrite_system_reminders === "boolean") {
-        setAnthropicBehavior({ rewriteSystemReminders: a.rewrite_system_reminders })
+      if (typeof a.system_rewrite_reminders === "boolean") {
+        setAnthropicBehavior({ rewriteSystemReminders: a.system_rewrite_reminders })
       } else {
-        setAnthropicBehavior({ rewriteSystemReminders: compileRewriteRules(a.rewrite_system_reminders) })
+        setAnthropicBehavior({ rewriteSystemReminders: compileRewriteRules(a.system_rewrite_reminders) })
       }
     }
   }
