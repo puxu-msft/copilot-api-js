@@ -6,6 +6,8 @@
 
 ### Changelog
 
+**第二起 incident 增补(2026-06-22)—— 911s stale-reaper force-fail + 未捕获 AbortError 崩服务器。** 新增缺陷④(reaper `ctx.fail()` 不取消在飞上游、装饰性 force-fail → 资源泄漏到 1200s,暂缓待本 RFC 实现期一并修,正确修法需独立 `StreamReaperCancelError` provenance 而非折进 guard `clientSignal`)与缺陷⑤(孤儿无-awaiter 上游 fetch 的 abort 拒绝经 main.ts unhandledRejection → exit(1) 崩整服务器,**已修复**:http2-client 防御性 rejection observer,实测 Bun+Node)。经两个对抗 subagent 并行复现确认:awaited 上游链永远被既有 catch 接住(0 unhandled),崩溃需真正遗弃的 promise;reaper-teeth 折进 guard `clientSignal` 会误判 reaper-cancel 为客户端断开(静默断流 + 错记 aborted)——故④ 暂缓走正确设计。详见 §2 缺陷④⑤。
+
 **Review round B(2026-06-22,对抗复审)—— 判定 ③ 收敛,无新设计层 CRITICAL。** 仅三处伪码/文档保真订正(已修):
 - **[round-A 重写遗留]** §4.2.1 COMMIT 分支误用 `env.ctx`(COMMIT 时 p 未 resolve、env 不存在)→ 改 `codec.getContext()?.recordFeature`(parse 已建 ctx)。
 - **[内部矛盾]** §4.2.1 首 ping 用 `writeSynthetic`(刻意不采样 forwarded 轨)与 §4.2.6"ping 入 forwarded 轨作诊断信号"冲突 → 改为给 sink 加 `emitPingOnAttach`(采样写),列为 C3b sink 子步。
@@ -103,7 +105,9 @@
 
 ---
 
-## 2. 三个真实缺陷(按 architecture-health-first「问题是否真实存在」分流)
+## 2. 真实缺陷(按 architecture-health-first「问题是否真实存在」分流)
+
+> 缺陷①②③ 是 2026-06-22 首轮排查(292s pre-response stall,经 forwardError 出 `[ERR] 500`)。缺陷④⑤ 是 2026-06-22 第二起 incident(911s stale-reaper force-fail + **未捕获 AbortError 崩服务器**)新增——⑤ 已修复落地、④ 暂缓待本 RFC 实现期一并做。
 
 ### 缺陷①:`forwardError` 不分类 abort —— 直接造成第二条日志
 
@@ -134,6 +138,40 @@
 ①② 只是把已发生的故障「记录得正确」(降噪 + 正确终态/状态码),**③ 才是真正让 opus 长思考不再被客户端超时断线**的修复。
 
 代价(architectural tradeoff):对 `stream:true` 请求若提前回 200 SSE 并在等上游期间打 ping,则**一旦提交 200,上游万一回非 200 错误就只能以 SSE error 帧下发**,而不能再用 HTTP 错误状态码。详见 §4。
+
+①② 已落地(commit ee4dd34,见 [error.unit.test.ts:740](../../tests/infra/error.unit.test.ts#L740) + [pre-response-abort.http.test.ts](../../tests/anthropic/pre-response-abort.http.test.ts));③ 待实现;④⑤ 见下。
+
+### 缺陷④:stale reaper 空有其名 —— `ctx.fail()` 不取消在飞上游(资源泄漏,暂缓)
+
+第二起 incident 的日志:
+
+```
+[WARN] 16:11:59 [context] Force-failing stale request req_1782143808581_141 (endpoint: anthropic-messages, model: claude-opus-4-8, stream: true, state: executing, age: 911s, max: 900s)
+[FAIL] 16:11:59 POST /v1/messages claude-opus-4.8 911.3s ↑628.3KB ↓5.1KB: Request exceeded maximum age of 900s (stale context reaper)
+```
+
+reaper 的 `runReaperOnce`([manager.ts:185](../../src/lib/context/manager.ts#L185))在 `ctx.durationMs > maxAge` 时只调 `ctx.fail(...)`——而 `RequestContext.fail()`([request.ts:428](../../src/lib/context/request.ts#L428))**仅记录终态 + 写 history + 移出 active map**,不取消在飞的上游 HTTP/2 fetch、不中止 handler 协程。`RequestContext` 根本没有 AbortController。于是「force-fail」是**装饰性的**:上游 h2 流、handler 协程、客户端 socket 一直活到 `response_header` 超时(本配置 1200s)才真正了结——比声明死亡晚 ~289s 的资源泄漏,且 `[FAIL]` 日志是个谎言(请求并未真的结束)。`state: executing` + `↓5.1KB` = L2 buffered retry(`protect_streaming_generation: tool_use_only`)第一次尝试转发了 5.1KB 后截断、第二次尝试 pre-response 卡住。
+
+**暂缓理由 + 正确修法(待本 RFC 实现期一并做)**:给 reaper「装牙齿」不能简单把一个新 signal 折进现有 stream guard 的 `clientSignal`——`guardSseIterable`([stream.ts:290-291](../../src/lib/stream.ts#L290))只有 shutdown / client 两个 provenance 桶,一个 reaper-cancel 折进 `clientSignal` 会被**误判成客户端断开** → `StreamClientAbortError` → handler 走 `settled-abort` → 对**仍连着的**客户端静默断流(零字节、无 error 帧)+ 错记 `aborted` 终态(正与缺陷② `abort()` 注释要防的 metric 污染反向重演)。正确修法需引入**独立的 `StreamReaperCancelError` / 第三 provenance**(映射为 `stream-error` → 给仍连着的客户端发合成 error 帧、记 `failed`),并把 `RequestContext` 的生命周期 AbortController 作**新命名参数**喂给 guard(而非折进 `clientSignal`),且要覆盖全 5 格式 handler 的 settled-abort 站点。这是与 ③ 同源的「pre-response/in-flight 生命周期」改动,故并入本 RFC 实现期(C 系列之后),而非独立小修。资源泄漏有界(1200s `response_header` 封顶)、先存的,可暂缓。**实测确认**:reaper-teeth 折在**已 await 的**上游 fetch 上不会引入缺陷⑤ 的崩溃(awaited abort 永远被既有 catch 接住,见 exp/stale-abort-unhandled/repro-fullstack.ts:0 unhandled)。
+
+### 缺陷⑤:孤儿(无 awaiter)上游 fetch 的 abort 拒绝崩溃整服务器 —— 已修复
+
+第二起 incident 的崩溃栈:
+
+```
+AbortError: The operation was aborted.
+    at abortError (src/lib/transport/http2-client.ts:100)
+    at onPreResponseAbort (src/lib/transport/http2-client.ts:138)
+    at abort (unknown)
+```
+
+`http2Fetch` 的 `onPreResponseAbort`([http2-client.ts:148](../../src/lib/transport/http2-client.ts#L148))在 abort 时 `reject(abortError())`。当这个 fetch promise 在 abort 触发时**已被遗弃(无 live awaiter)**——它的 await 链经另一路径(如 reaper force-fail 后 handler 已 settle、或某并发/detached 路径)先行了结——这个 reject 变成 process 级 `unhandledRejection`,而 [main.ts:29](../../src/main.ts#L29) 的 `process.on("unhandledRejection")` 随即 `process.exit(1)`,把**一条良性的「某在飞操作被取消」放大成杀掉所有并发请求的整进程崩溃**。
+
+**实测确认机制**(exp/stale-abort-unhandled/,真实本地 node:http2 server):http2Fetch 的 abort 拒绝在**被 await 时正常捕获**、在**promise 被遗弃时变 unhandled**(栈与生产逐帧一致);最小化的 reject-in-abort-listener 不泄漏 → 确属遗弃 promise 特有,非 Bun 通病。**遗弃 promise 的确切来源未能纯静态定位**(主 handler/driver/retry 路径全 await=安全,经多轮 subagent 全栈复现仍 0 unhandled;后台 fire-and-forget fetch 都有 `.catch`)——最可能是 adaptive rate-limiter 的 detached `void this.processQueue()`([adaptive-rate-limiter.ts:421](../../src/lib/adaptive-rate-limiter.ts#L421))或并发请求共享 h2 session 的边角。
+
+**修复(已落地)**:在 `http2Fetch` 返回的 promise 上挂一个**防御性 no-op rejection observer**(`withRejectionObserver`,[http2-client.ts](../../src/lib/transport/http2-client.ts)):`p.catch(()=>{})` 把孤儿 reject 在全局层标记为已观察,**但不消费它**(返回原 `p`,真实 await/.then 消费者仍独立收到 reject)。这消除了**整类**「孤儿上游 fetch 的 abort/RST 拒绝崩服务器」缺陷,**不依赖**定位每个遗弃源(belt-and-suspenders)。实测 Bun+Node 双端验证(exp/stale-abort-unhandled/fix-technique.ts);回归测试 [http2-client.it.test.ts](../../tests/transport/http2-client.it.test.ts)「abandoned (no-awaiter) promise aborted pre-response does NOT emit a process unhandledRejection」+「observer does not swallow the rejection from a real awaiter」。
+
+**为何不放宽全局 handler**:另一条看似更简单的路是让 [main.ts:29](../../src/main.ts#L29) 的 `unhandledRejection` 处理器对 AbortError「warn 但不 exit」。**否决**:`isAbortError`([classify.ts:265](../../src/lib/error/classify.ts#L265))过宽(匹配 `TimeoutError`、任何含 "abort" 子串的 message、cause 链),用在最后防线的全局崩溃 guard 上会把**真正该崩/该告警的未知 reject**(含 "abort" 字样的逻辑 bug、该 alert 的孤儿 `AbortSignal.timeout` 失败)静默降级、让进程在未知状态续跑。根因修复在产生点(http2-client 的 observer),全局 handler 保持严格。
 
 ---
 

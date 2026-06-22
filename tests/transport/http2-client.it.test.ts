@@ -136,4 +136,49 @@ describe("http2-client", () => {
     const res = http2Fetch(`${url}/x`, { signal: AbortSignal.abort() })
     await expect(res).rejects.toThrow(/abort/i)
   })
+
+  // Crash-safety: a pre-response abort on an ORPHANED fetch promise (the caller
+  // stopped awaiting it — e.g. its await chain settled via another route) must
+  // NOT surface as a process-level unhandledRejection. Without the defensive
+  // rejection observer in http2Fetch, this rejection reaches
+  // process.on("unhandledRejection") → exit(1) in main.ts, turning one cancelled
+  // in-flight request into a whole-server crash (production incident: stale
+  // reaper force-fail at 911s). The awaited path still rejects normally.
+  test("an abandoned (no-awaiter) promise aborted pre-response does NOT emit a process unhandledRejection", async () => {
+    // Silent handler: accept the stream but never respond — a pre-response stall.
+    handler = () => {
+      /* never respond */
+    }
+    const seen: Array<unknown> = []
+    const onUnhandled = (reason: unknown): void => {
+      seen.push(reason)
+    }
+    process.on("unhandledRejection", onUnhandled)
+    try {
+      const ac = new AbortController()
+      // Orphan the promise: no await, no .catch by the caller. Hold a ref so GC
+      // doesn't collect it (GC'd unhandled rejections behave differently).
+      const orphan = http2Fetch(`${url}/stall`, { method: "POST", body: "{}", signal: ac.signal })
+      void orphan
+      // Fire the abort after the stream is open but before any response.
+      await new Promise((r) => setTimeout(r, 30))
+      ac.abort()
+      // Let the rejection + any (absent) unhandled-rejection microtask flush.
+      await new Promise((r) => setTimeout(r, 80))
+      expect(seen).toHaveLength(0)
+    } finally {
+      process.off("unhandledRejection", onUnhandled)
+    }
+  })
+
+  // The observer must NOT consume the rejection — a real awaiter still sees it.
+  test("the defensive observer does not swallow the rejection from a real awaiter", async () => {
+    handler = () => {
+      /* never respond */
+    }
+    const ac = new AbortController()
+    const p = http2Fetch(`${url}/stall`, { method: "POST", body: "{}", signal: ac.signal })
+    setTimeout(() => ac.abort(), 30)
+    await expect(p).rejects.toThrow(/abort/i)
+  })
 })

@@ -107,111 +107,140 @@ function abortError(): Error {
  * is a hand-built `ReadableStream` over the h2 stream — `.ok/.status/.headers/
  * .json()/.text()/.body` all behave as the undici path's `Response` did, so
  * consumers are unchanged.
+ *
+ * Crash-safety contract: the returned promise carries a defensive no-op
+ * rejection observer (see {@link withRejectionObserver}). A pre-response abort
+ * rejects this promise via `onPreResponseAbort`; if the caller has — by the time
+ * the abort fires — stopped awaiting it (e.g. its await chain settled through a
+ * different route, leaving the fetch promise orphaned), that rejection would
+ * otherwise reach `process.on("unhandledRejection")` in main.ts and `exit(1)` —
+ * amplifying one cancelled in-flight operation into a whole-server crash. The
+ * observer marks the rejection handled at the global level WITHOUT consuming it:
+ * a real `await`/`.then` consumer still receives the rejection independently
+ * (verified Bun + Node, exp/stale-abort-unhandled/fix-technique.ts).
  */
 export function http2Fetch(url: string | URL, init: UpstreamFetchInit): Promise<Response> {
   const u = typeof url === "string" ? new URL(url) : url
   const session = getSession(u.origin)
 
-  return new Promise<Response>((resolve, reject) => {
-    const signal = init.signal
-    if (signal?.aborted) {
-      reject(abortError())
-      return
-    }
-
-    const headers: Record<string, string> = {
-      ":method": init.method ?? "GET",
-      ":path": `${u.pathname}${u.search}`,
-      "accept-encoding": "identity",
-    }
-    for (const [key, value] of Object.entries(init.headers ?? {})) {
-      const lower = key.toLowerCase()
-      if (!H2_ILLEGAL_HEADERS.has(lower)) headers[lower] = value
-    }
-
-    const req = session.request(headers)
-
-    // Pre-response abort → reject; the post-response abort (cancel the body
-    // stream) is wired inside the `response` handler below.
-    const onPreResponseAbort = (): void => {
-      req.close(http2.constants.NGHTTP2_CANCEL)
-      reject(abortError())
-    }
-    signal?.addEventListener("abort", onPreResponseAbort, { once: true })
-
-    req.once("response", (h) => {
-      signal?.removeEventListener("abort", onPreResponseAbort)
-
-      const status = h[":status"] ?? 0
-      const responseHeaders = new Headers()
-      for (const [key, value] of Object.entries(h)) {
-        if (key.startsWith(":")) continue
-        if (Array.isArray(value)) for (const v of value) responseHeaders.append(key, v)
-        else if (value !== undefined) responseHeaders.set(key, value)
+  return withRejectionObserver(
+    new Promise<Response>((resolve, reject) => {
+      const signal = init.signal
+      if (signal?.aborted) {
+        reject(abortError())
+        return
       }
 
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          let ended = false
-          req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-          req.once("end", () => {
-            ended = true
-            try {
-              controller.close()
-            } catch {
-              /* already closed (e.g. cancelled) */
-            }
-          })
-          // RST_STREAM / GOAWAY / transport drop mid-body → error the stream so
-          // the consumer (guardSseIterable) sees a failure, NOT a silent
-          // truncation read as success.
-          //
-          // Bun caveat: a *clean* server RST_STREAM (`stream.close(code)`) is
-          // delivered by Bun's node:http2 as a normal `end` with rstCode=0
-          // (verified), so that exact case is undetectable here under Bun. The
-          // dominant real failure — a dropped connection — emits `close` without
-          // `end` and IS caught by the backstop below. App-layer backstops
-          // (guardSseIterable idle-timeout, missing terminal SSE event) cover
-          // the residual.
-          req.once("error", (err) => {
-            try {
-              controller.error(err)
-            } catch {
-              /* already errored */
-            }
-          })
-          // Backstop: node:http2 may emit `close` (carrying a non-zero rstCode)
-          // WITHOUT an `error` on a server-initiated reset. A close before `end`
-          // is a truncated body — surface it as a stream error, never a clean done.
-          req.once("close", () => {
-            if (!ended) {
+      const headers: Record<string, string> = {
+        ":method": init.method ?? "GET",
+        ":path": `${u.pathname}${u.search}`,
+        "accept-encoding": "identity",
+      }
+      for (const [key, value] of Object.entries(init.headers ?? {})) {
+        const lower = key.toLowerCase()
+        if (!H2_ILLEGAL_HEADERS.has(lower)) headers[lower] = value
+      }
+
+      const req = session.request(headers)
+
+      // Pre-response abort → reject; the post-response abort (cancel the body
+      // stream) is wired inside the `response` handler below.
+      const onPreResponseAbort = (): void => {
+        req.close(http2.constants.NGHTTP2_CANCEL)
+        reject(abortError())
+      }
+      signal?.addEventListener("abort", onPreResponseAbort, { once: true })
+
+      req.once("response", (h) => {
+        signal?.removeEventListener("abort", onPreResponseAbort)
+
+        const status = h[":status"] ?? 0
+        const responseHeaders = new Headers()
+        for (const [key, value] of Object.entries(h)) {
+          if (key.startsWith(":")) continue
+          if (Array.isArray(value)) for (const v of value) responseHeaders.append(key, v)
+          else if (value !== undefined) responseHeaders.set(key, value)
+        }
+
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            let ended = false
+            req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+            req.once("end", () => {
+              ended = true
               try {
-                controller.error(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`))
+                controller.close()
               } catch {
-                /* already closed/errored */
+                /* already closed (e.g. cancelled) */
               }
-            }
-          })
-        },
-        cancel() {
-          req.close(http2.constants.NGHTTP2_CANCEL)
-        },
+            })
+            // RST_STREAM / GOAWAY / transport drop mid-body → error the stream so
+            // the consumer (guardSseIterable) sees a failure, NOT a silent
+            // truncation read as success.
+            //
+            // Bun caveat: a *clean* server RST_STREAM (`stream.close(code)`) is
+            // delivered by Bun's node:http2 as a normal `end` with rstCode=0
+            // (verified), so that exact case is undetectable here under Bun. The
+            // dominant real failure — a dropped connection — emits `close` without
+            // `end` and IS caught by the backstop below. App-layer backstops
+            // (guardSseIterable idle-timeout, missing terminal SSE event) cover
+            // the residual.
+            req.once("error", (err) => {
+              try {
+                controller.error(err)
+              } catch {
+                /* already errored */
+              }
+            })
+            // Backstop: node:http2 may emit `close` (carrying a non-zero rstCode)
+            // WITHOUT an `error` on a server-initiated reset. A close before `end`
+            // is a truncated body — surface it as a stream error, never a clean done.
+            req.once("close", () => {
+              if (!ended) {
+                try {
+                  controller.error(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`))
+                } catch {
+                  /* already closed/errored */
+                }
+              }
+            })
+          },
+          cancel() {
+            req.close(http2.constants.NGHTTP2_CANCEL)
+          },
+        })
+
+        if (signal) signal.addEventListener("abort", () => req.close(http2.constants.NGHTTP2_CANCEL), { once: true })
+
+        resolve(new Response(body, { status, headers: responseHeaders }))
       })
 
-      if (signal) signal.addEventListener("abort", () => req.close(http2.constants.NGHTTP2_CANCEL), { once: true })
+      // Error before headers (connect failure, RST before response) → reject.
+      req.once("error", (err: Error) => {
+        signal?.removeEventListener("abort", onPreResponseAbort)
+        reject(err)
+      })
 
-      resolve(new Response(body, { status, headers: responseHeaders }))
-    })
+      if (init.body !== undefined) req.write(init.body)
+      req.end()
+    }),
+  )
+}
 
-    // Error before headers (connect failure, RST before response) → reject.
-    req.once("error", (err: Error) => {
-      signal?.removeEventListener("abort", onPreResponseAbort)
-      reject(err)
-    })
-
-    if (init.body !== undefined) req.write(init.body)
-    req.end()
+/**
+ * Attach a no-op rejection observer to `p` so an orphaned (no-awaiter) rejection
+ * — specifically a pre-response abort that races past its caller — can never
+ * surface as a process-level `unhandledRejection`. The observer does NOT consume
+ * the rejection: `p` is returned unchanged, so a real `await`/`.then` consumer
+ * still gets the rejection. `.catch` registers a SECOND reaction; both fire
+ * independently. Returns the ORIGINAL `p` (not the `.catch` continuation) so the
+ * caller's value/rejection semantics are identical to an un-observed promise.
+ */
+function withRejectionObserver<T>(p: Promise<T>): Promise<T> {
+  p.catch(() => {
+    /* observed: keep an orphaned abort/RST rejection off process.unhandledRejection */
   })
+  return p
 }
 
 /** Close all pooled sessions. Called on graceful shutdown. */
