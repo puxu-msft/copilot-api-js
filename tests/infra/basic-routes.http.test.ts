@@ -1,6 +1,5 @@
 import {
   //
-  afterEach,
   beforeEach,
   describe,
   expect,
@@ -10,25 +9,18 @@ import {
 import { HTTPError } from "~/lib/error"
 import {
   //
-  type StateSnapshot,
-  restoreStateForTests,
   setModels,
   setStateForTests,
-  snapshotStateForTests,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import {
-  //
-  restoreFetch,
-  setFetchMock,
-} from "../helpers/mock-fetch"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
+import { setFetchMock } from "../helpers/mock-fetch"
 import {
   //
   createFullTestApp,
   createMinimalApp,
 } from "../helpers/test-app"
-import { resetTestRuntime } from "../helpers/test-bootstrap"
 
 interface HealthResponseBody {
   status: "healthy" | "unhealthy"
@@ -62,10 +54,9 @@ interface ModelsListResponseBody {
 const app = createFullTestApp()
 
 describe("basic HTTP routes", () => {
-  let snapshot: StateSnapshot
+  useIsolatedRuntime()
 
   beforeEach(() => {
-    snapshot = snapshotStateForTests()
     setModels({
       object: "list",
       data: [
@@ -75,12 +66,6 @@ describe("basic HTTP routes", () => {
         }),
       ],
     })
-  })
-
-  afterEach(() => {
-    restoreFetch()
-    restoreStateForTests(snapshot)
-    resetTestRuntime()
   })
 
   test("GET / returns 200 with server banner", async () => {
