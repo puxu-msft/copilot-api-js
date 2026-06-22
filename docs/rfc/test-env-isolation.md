@@ -227,6 +227,14 @@ history.db 30 文件清单见 subagent 审计原文(新会话用 `rg -l "bootstr
   - `[done]` **低碰撞 batch 2**(`5dcf7fc`):infra/management-routes、anthropic/web-search(orchestrator/backends/web-search)、pipeline(route-matrix/payload-rewrite-registry)——autoTestRuntime+autoRestoreFetch(+autoRestoreState)原子取代;web-search 用 applyFetchMock 覆盖 network guard 实证不误伤。全 backend 2971 pass。
   - `[deferred]` **anthropic/openai/responses/gemini/pipeline 流式域**(~13 文件):被**并发的 L2 pipeline 会话**正在活跃编辑(streaming buffered-retry),曾暂缓避撞——**已于 L2 转用 pathspec 提交、且与本批零重叠后完成迁移**(`e1512ba`,batch 3,19 文件,全 backend 2980 pass)。带 in-test negotiation reset 的 3 文件保留其 reset(与 fixture 并存无害)。
   - `[todo]` **autoRestoreState(21)/autoRestoreFetch(7)-only 的轻量文件**(纯 unit,不需全 runtime):**保留旧 primitive 是正确的**——useIsolatedRuntime 会起 runtime,对纯函数测试偏重;只有触碰 module-global 的才需迁。这两个 primitive 仍有正当消费者,**不删**。
+
+  **手工样板审计(2026-06,回应"是否所有测试都按新版")**:除 autoTestRuntime wrapper 外,另有一批文件**内联** `beforeAll(bootstrapTestRuntime)+snapshot+resetTestRuntime` 手工样板(从没用过 wrapper,故 autoTestRuntime grep 抓不到)。逐个核查 + 迁移:
+  - `[done]` 标准手工样板 http(7):`basic-routes`(`29bd6ae`)+ `responses`/`gemini`/`azure-openai-compat`/`debug-dry-run`/`debug-dry-run-pipeline`/`responses-ws`(`65ad1ac`)——原子取代为 useIsolatedRuntime,净删 ~200 行。
+  - `[done]` `models-client.it`(`f17fe10`):state-only 不需 runtime,但 `cacheModels`/`getModels` 写 `rawModels`(游离 mutableState)afterEach 碰不到→**真实泄漏**;加 targeted `resetRawModelsForTests()` 而非塞重 fixture。
+  - `[ok]` `openai-responses-client.it`(自 reset ws factory+manager)、`anthropic-request-preparation.it`(自 reset negotiation)——**已手工自隔离**,无泄漏,不动。
+  - `[exempt]` `shutdown-anthropic`/`shutdown-mid-stream`:**模块级** lifecycle hooks 测 shutdown 生命周期、依赖 `resetTestRuntime` 的 `_resetShutdownState`——是测 runtime 本身的正当手工管理(fixture 为"需要 runtime"的测试,非"测 runtime 生命周期"的测试),迁移高风险低收益,豁免。已正确 restore state + reset runtime。
+  - `[ok]` 其余 snapshot-only 文件(`start.it`/`config-*`/`chat-completions-service.it`/`coerce-adaptive-thinking.it`):state-only、不碰 leaky global、不 bootstrap——手工 snapshot 正确,非 fixture 目标。
+  - **L1 守卫实证**:全套件跑出守卫红——抓到 L2 并发会话 untracked 新文件 `protect-streaming-stats.ts` 的 `resetProtectStreamingStatsForTests` 未登记。守卫**按设计工作**(将强制 L2 提交时登记进 RESETTERS);因其 untracked 故本会话不登记(import 未提交符号会坏)。committed master 仍绿(该文件不在任何 commit)。
   *Invariant*:每批该域绿 + 全套件绿;未迁域走旧 primitive(新旧并存无害,旧 primitive 不删)。
 - **P3 `[done]` — 端到端 writer 守卫**(R9 收窄版):`tests/infra/real-state-guard.it.test.ts` 行使 negotiation/learned-limits writer 断言落点含 SANDBOX_MARKER 且不在真实 home(可证伪)。**落地 commit**:`6e6fae1`。
 - **P4 `[done]` — 收尾**:`[done]` DESIGN.md 回填默认隔离纪律(`0b145bf`);`[done]` 删死 primitive `autoTestRuntime`(`e4cb71e`,全迁后零消费者,eslint 清 unused 导入,bootstrap/reset 保留);`autoRestoreState`/`autoRestoreFetch` 仍有轻量纯-unit 消费者故**不删**。*注*:`docs/coding-conventions.md` 不存在,纪律回填 DESIGN.md §测试组织;CLAUDE.md 有大量预存外来改动未触碰;并发会话 pathspec 教训由 L2 记入 `git-concurrent-sessions-pathspec-commit`。

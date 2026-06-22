@@ -16,6 +16,7 @@ import {
 } from "~/lib/models/client"
 import {
   //
+  resetRawModelsForTests,
   restoreStateForTests,
   setStateForTests,
   snapshotStateForTests,
@@ -46,6 +47,9 @@ describe("models client", () => {
     restoreFetch()
     restoreStateForTests(originalState)
     resetModelsEtagForTests()
+    // `rawModels` lives outside mutableState, so restoreStateForTests can't reach
+    // it — reset explicitly or cacheModels/getModels leaks across tests (RFC §11 R1).
+    resetRawModelsForTests()
   })
 
   test("getModels fetches models from Copilot", async () => {
