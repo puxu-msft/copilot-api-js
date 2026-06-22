@@ -1,6 +1,6 @@
 # RFC — Anthropic 改写命名/位置 coherence 重组
 
-> 状态：DRAFT（已过 2 轮对抗 review + 实测修订；待 OQ 裁决后转 ACCEPTED）
+> 状态：ACCEPTED（2 轮对抗 review + 实测修订；OQ1-4 已裁决，见 §10）
 > 范围层级（用户 2026-06-22 拍板）：**命名+位置 coherence（请求侧 + 词汇 + config）**，不重写机制、不碰响应侧定义、不跨全格式统一。
 > 前置：v4 P0–P3 已落地；response-pipeline Stage A 出口达成、Stage B（driver-owned-writeout）GO 且 in-flight。
 > 修订记录：R1（2026-06-22）据架构+回归两路对抗 review 实测修订——import 盘点补全（含测试，§5）、加 strategies 碰撞（§2 #8）、Phase-1 oracle 改正（§9）、§7 暂缓根因改正、Phase 4 成本据实重估（34 键×4 面，§6）、加 word-boundary/atomic-move/compat 往返防护（§8）。
@@ -60,18 +60,17 @@
 
 **strategies 碰撞（#8）**：本 RFC **不改** strategies 文件（响应侧 retry 与请求侧重组正交，且改动会扩面到其它格式），仅在 §4 词汇表澄清 Strategy 的两载体（实现 vs 组装），并记入 §7 暂缓——待跨格式统一时连同处理。
 
-## 6. config 重组（Phase 4，user-facing，用户已 opt-in）——成本据实重估
+## 6. config 重组（Phase 4，user-facing）——OQ3 定为**扁平 per-concern 重命名**
 
-`anthropic.*` **34 键**（非原称 ~20）按轴分组（轴见 OQ3）。`sanitize_tool_names` 留顶层（§2 更正）。**实测四面改动**（原 RFC 漏第 4 面）：
+`anthropic.*` **34 键**按关注点前缀统一改名，**不嵌套**（键仍 `anthropic.foo`）。`sanitize_tool_names` 留顶层（§2 更正）。前缀方案：`thinking_*`（coerce/block/signature_compat）、`tool_*`（search/dedup/non_deferred/recover_call_text/decode_*/strip_*/rewrite_history_server）、`cache_control`、`context_editing_*`（已分组）、`system_*`（messages_sanitize/rewrite_reminders）。具体 34 键映射表在实现时定（约束：concern-prefix、flat、1:1）。
 
-1. **schema** `AnthropicConfigSchema`（34 键重组 + `.strict()`）
-2. **`config.ts:applyConfigToState`** ~58 处 `a.<field>` 扁平读取——若 OQ3 选嵌套（`a.thinking_block_message_policy`→`a.thinking?.block_message_policy`）则逐处改写 + provenance 字符串（`normalizeModelKeyedRecord(..., "anthropic.effort_overrides")`）
-3. **compat.ts** 34 个 `renameLeaf("anthropic.x","anthropic.<group>.x")`
-4. **hot-reload 矩阵** `config-hot-reload.it.test.ts` 全量 `configKey` 字符串更新
+**扁平选择的成本（~1×，远低于嵌套）**：
+1. **schema** 34 键改名（仍 `.strict()` 平铺）
+2. **`config.ts:applyConfigToState`** 58 处 `a.<field>` **1:1 改名**（非嵌套那样 `a.x`→`a.group?.x` 的结构改写）
+3. **compat.ts** 34 个 `renameLeaf("anthropic.old","anthropic.new")` 1:1
+4. **hot-reload 矩阵** `configKey` 字符串 1:1 更新
 
-**OQ3 成本差 ~4×**：扁平 per-concern（键仍 `anthropic.foo`，`renameLeaf` 1:1、config.ts 1:1）远低于嵌套子 section（每键 ×4 面）。
-
-**silent-strip 陷阱**（回归 review C/H）：嵌套迁移漏一个 `renameLeaf` → 旧扁平键落入 `.strict()` 的 `anthropic.*` → **校验失败、用户值静默丢弃**。hot-reload 完整性守卫只证"新键在矩阵"，**不证旧→新 compat 映射存在**。故 Phase 4 **强制**：每个改名键一条 **compat 往返测试**（旧 yaml in → 断言新 state 值 out），34 键全参数化覆盖。另：Phase 4 **不得**把跨 section 键（shutdown / openai_responses 的 `graceful_wait`/`normalize_call_ids`/`upstream_ws`…）误拉进 anthropic 重组。
+**silent-strip 防护仍强制**（[[feedback-pass-null-clean-not-self-validating]]）：扁平虽无嵌套放大，但漏一个 `renameLeaf` 仍会让旧键落入 `.strict()` 被静默丢弃。故每个改名键一条 **compat 往返测试**（旧 yaml in → 断言新 state 值 out），34 键全参数化。hot-reload 完整性守卫只证"新键在矩阵"、**不证 compat 映射存在**，故往返测试不可省。Phase 4 **不得**把跨 section 键（shutdown/openai_responses）误并进 anthropic。
 
 ## 7. 暂缓项（完整文档化供未来决策）——根因据实修订
 
@@ -100,14 +99,9 @@
 - **Phase 4（config）oracle** = 每键 compat 往返测试 + hot-reload 完整性守卫。
 - 改前先在旧代码上跑通 oracle（[[methodology-golden-fixture-pre-capture]]）。全 Anthropic 套件（messages.http / thinking-signature / tool-name-sanitize / recover-tool-call / dedup / system-messages / server-tool-rewriting）作宽 oracle 兜底。
 
-## 10. Open Questions（待裁决）
+## 10. Open Questions — 已裁决（用户 2026-06-22）
 
-- **OQ1**：registry 空常量 `BUILTIN_*` 改名触及格式无关共享文件（5 文件，实测非"全格式"）——纳入本 RFC（倾向：改动小且直接解 #4 footgun，`\b` 锚定即安全）。
-- **OQ2**：`payload-rewrites.ts` 是否移入 `anthropic/sanitize/`？反对：它还编排 `message-tools.preprocessTools`（非 sanitize），留 `anthropic/` 顶层更诚实。（倾向不移）
-- **OQ3（最大决策，影响 Phase 4 成本 ~4×）**：config 分组轴——
-  - (a) **请求/响应**（`anthropic.request.*`/`anthropic.response.*`，对齐管线）——会把用户熟悉的 `thinking` 拆两处（请求侧 coerce/block vs 响应侧 signature_compat），心智割裂；
-  - (b) **关注点**（`anthropic.thinking.*`/`anthropic.tools.*`/`anthropic.cache_control`/`anthropic.context_editing.*`）——更直觉但阶段映射不齐；
-  - (c) **关注点为主轴 + 请求/响应作 doc 子注**（review 补的第三解）——保心智对齐又不丢阶段信息；
-  - (d) **降级：仅文档化分组、键不变**（零 compat 风险的 fallback）。
-  需用户定轴 + 是否接受嵌套的 ×4 成本。
-- **OQ4**：`runAnthropicRequestRewrites` 函数名是否随类型一并改 `runAnthropicPayloadRewrites`？保留则"Request"存于函数名而"Payload"用于类型名，轻度不一致；全改则多 5 importer churn。（倾向全改，求一致）
+- **OQ1 ✓ 纳入本 RFC**：registry 空常量 `BUILTIN_*` 改名（5 文件，`\b` 锚定安全），直接解 #4 footgun。
+- **OQ2 ✓ 不移**：`payload-rewrites.ts` 留 `anthropic/` 顶层（它还编排 `message-tools.preprocessTools`，非纯 sanitize）。
+- **OQ3 ✓ 扁平 per-concern 重命名**：config 键**不嵌套**，仍 `anthropic.foo`，按关注点前缀统一改名（`thinking_*`/`tool_*`/`cache_control`/`context_editing_*`/`system_*`）。`renameLeaf` 1:1、`config.ts` 1:1、成本 ~1×、**无嵌套 silent-strip 放大**（仍每键 compat 往返测试兜底）。具体 34 键映射表在 Phase 4 实现时定（约束：concern-prefix、flat、1:1）。
+- **OQ4 ✓ 函数名一并改**：`runAnthropicRequestRewrites`→`runAnthropicPayloadRewrites`，求类型/函数/常量全一致（多 5 importer churn，可接受）。
