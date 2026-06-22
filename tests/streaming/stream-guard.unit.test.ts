@@ -21,7 +21,9 @@ import {
   //
   StreamClientAbortError,
   StreamIdleTimeoutError,
+  StreamReaperCancelError,
   StreamShutdownError,
+  classifyStreamError,
   guardSseIterable,
 } from "~/lib/stream"
 
@@ -165,6 +167,45 @@ describe("guardSseIterable — abort-source distinction", () => {
     client.abort()
 
     await expect(secondPromise).rejects.toBeInstanceOf(StreamShutdownError)
+  })
+
+  test("reaper abort → throws StreamReaperCancelError (④, distinct from client-abort)", async () => {
+    const reaper = new AbortController()
+    const guarded = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, reaperSignal: reaper.signal })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    reaper.abort()
+
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamReaperCancelError)
+  })
+
+  test("client takes precedence over reaper when both aborted (no one to notify → silent abort wins)", async () => {
+    const client = new AbortController()
+    const reaper = new AbortController()
+    const guarded = guardSseIterable(blockingAfterFirst(), {
+      idleTimeoutMs: 0,
+      clientSignal: client.signal,
+      reaperSignal: reaper.signal,
+    })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    client.abort()
+    reaper.abort()
+
+    await expect(secondPromise).rejects.toBeInstanceOf(StreamClientAbortError)
+  })
+
+  test("classifyStreamError maps reaper-cancel to its OWN kind, NOT client-abort (→ routes to stream-error, not settled-abort)", () => {
+    // The driver's sink loop maps ONLY "client-abort" → settled-abort (silent);
+    // everything else → stream-error (handler delivers an error frame). So a
+    // reaper-cancel MUST classify as its own kind for the live client to get the frame.
+    expect(classifyStreamError(new StreamReaperCancelError())).toBe("reaper-cancel")
+    expect(classifyStreamError(new StreamReaperCancelError(900))).toBe("reaper-cancel")
+    expect(classifyStreamError(new StreamClientAbortError())).toBe("client-abort")
   })
 })
 

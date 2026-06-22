@@ -50,8 +50,25 @@ export class StreamClientAbortError extends Error {
   }
 }
 
+/**
+ * Thrown by `guardSseIterable` when the STALE-REQUEST REAPER cancels an
+ * over-age in-flight request (server-initiated, NOT client-initiated). Distinct
+ * from `StreamClientAbortError`: the client is STILL connected, so handlers MUST
+ * deliver a terminal `error` frame (via the `stream-error` outcome) and settle
+ * `failed` — never silently truncate or mis-record as `aborted`. Keeping this a
+ * separate provenance (NOT folded into `clientSignal`) is the whole point: a
+ * reaper-cancel folded into the client bucket would masquerade as a client
+ * disconnect and silently drop the stream to a live client (RFC §2 缺陷④).
+ */
+export class StreamReaperCancelError extends Error {
+  constructor(maxAgeSec?: number) {
+    super(maxAgeSec ? `Request exceeded maximum age of ${maxAgeSec}s (stale context reaper)` : "Request cancelled by stale-request reaper")
+    this.name = "StreamReaperCancelError"
+  }
+}
+
 /** Coarse classification of a stream lifecycle error, protocol-agnostic. */
-export type StreamErrorKind = "idle-timeout" | "shutdown" | "client-abort" | "other"
+export type StreamErrorKind = "idle-timeout" | "shutdown" | "client-abort" | "reaper-cancel" | "other"
 
 /**
  * Classify a streaming error into a protocol-agnostic kind. Every SSE handler
@@ -59,11 +76,17 @@ export type StreamErrorKind = "idle-timeout" | "shutdown" | "client-abort" | "ot
  * (`overloaded_error`), Gemini (`UNAVAILABLE`), and the OpenAI surfaces (via
  * `streamErrorToOpenAIErrorType`) — so the `instanceof` checks live here in one
  * place instead of being repeated in each handler.
+ *
+ * `reaper-cancel` is deliberately NOT `client-abort`: the driver's sink loop maps
+ * only `client-abort` to `settled-abort` (silent), so a reaper-cancel falls through
+ * to `stream-error` and the handler delivers a terminal error frame to the still-
+ * connected client + settles `failed`.
  */
 export function classifyStreamError(error: unknown): StreamErrorKind {
   if (error instanceof StreamIdleTimeoutError) return "idle-timeout"
   if (error instanceof StreamShutdownError) return "shutdown"
   if (error instanceof StreamClientAbortError) return "client-abort"
+  if (error instanceof StreamReaperCancelError) return "reaper-cancel"
   return "other"
 }
 
@@ -223,9 +246,10 @@ export function guardSseIterable<T>(
     idleTimeoutMs: number
     shutdownSignal?: AbortSignal
     clientSignal?: AbortSignal
+    reaperSignal?: AbortSignal
   },
 ): AsyncIterable<T> {
-  const { idleTimeoutMs, shutdownSignal, clientSignal } = opts
+  const { idleTimeoutMs, shutdownSignal, clientSignal, reaperSignal } = opts
   return {
     [Symbol.asyncIterator](): AsyncIterator<T> {
       const inner = source[Symbol.asyncIterator]()
@@ -234,8 +258,9 @@ export function guardSseIterable<T>(
       const onAbort = () => local.abort()
       shutdownSignal?.addEventListener("abort", onAbort, { once: true })
       clientSignal?.addEventListener("abort", onAbort, { once: true })
+      reaperSignal?.addEventListener("abort", onAbort, { once: true })
       // Fast-path: a source was already aborted before the first next().
-      if (shutdownSignal?.aborted || clientSignal?.aborted) local.abort()
+      if (shutdownSignal?.aborted || clientSignal?.aborted || reaperSignal?.aborted) local.abort()
 
       let detached = false
       const detach = () => {
@@ -243,6 +268,7 @@ export function guardSseIterable<T>(
         detached = true
         shutdownSignal?.removeEventListener("abort", onAbort)
         clientSignal?.removeEventListener("abort", onAbort)
+        reaperSignal?.removeEventListener("abort", onAbort)
       }
 
       // Close the underlying source. `for await` does NOT call our `return()`
@@ -287,8 +313,13 @@ export function guardSseIterable<T>(
             // StreamClientAbortError so the handler records the request as
             // `aborted` (distinct from completed) instead of settling a
             // truncated stream as success (Bug 2, uniform across endpoints).
+            // Reaper-cancel checked AFTER client: if the client already left
+            // there is no one to receive the terminal error frame, so a
+            // concurrent client-gone takes precedence (silent abort); a live
+            // client + reaper → StreamReaperCancelError → `stream-error` → frame.
             if (shutdownSignal?.aborted) throw new StreamShutdownError()
             if (clientSignal?.aborted) throw new StreamClientAbortError()
+            if (reaperSignal?.aborted) throw new StreamReaperCancelError()
             return { value: undefined as unknown as T, done: true }
           }
           if (result.done) detach() // natural completion — inner already ended, no close needed
