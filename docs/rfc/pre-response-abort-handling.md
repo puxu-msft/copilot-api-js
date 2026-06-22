@@ -370,7 +370,15 @@ if (first === "upstream") {
 - 修了"commit 立即 ping"(§4.2.1)后,首 ping 延迟消除 → **倾向取大 grace**(尽量晚 commit,最小化 §4.2.5 发散面),但留足 margin。实测前**保守默认偏小(如 30–60s)**:margin 充足、几乎不漏救,代价(中等 stall 走 early-200)被 §4.2.5 的富错误帧缓解。
 - **`anthropicFakeSseHeartbeat` 本配置当前 120s**(非旧稿误写的 240;[config.yaml:197](../../config.yaml#L197),bundled 默认 0)——commit 后**后续** ping 仍按它的 interval;**首个** ping 由 §4.2.1 在 commit 时立即补,二者解耦。
 
-#### 4.2.4 commit-point 状态机(精确生命周期)
+##### 4.2.3.1 keepalive 命名分类重整(用户指示:做最长远方案,③ 实现期一并)
+
+用户 2026-06-22 指示:不做"把 `fake` 单独改掉"的 piecemeal rename,而是**一次性建立一套连贯的 keepalive 命名分类**。背景:心跳概念已变拥挤,实测有**三个**交叉的 knob/概念——
+- `anthropic.stream_fake_sse_heartbeat`(`anthropicFakeSseHeartbeat`)—— mid-stream 客户端保活 ping 间隔。"**fake**" 不精确:注入的是**真正的 Anthropic 协议 `event: ping` 帧**,只是代理本地**合成(synthetic origin)**而非上游转发——"fake" 把"合成来源"误说成"不是真的"(注释其实已用准确词 "Synthetic SSE keepalive")。准确轴=**synthetic / keepalive**。
+- `protectStreamingHeartbeat`(并发 L2 会话新增的 `protect_streaming_*`,[handler-v4.ts](../../src/routes/messages/handler-v4.ts) `forcedHeartbeatSec` fallback)—— buffered/protected-generation 路径的强制心跳。
+- ③ 的 `pre_stream_grace`(grace)+ commit 后 ping cadence(复用上面的 interval)。
+
+**最长远方案**(③ 实现期连同 `pre_stream_grace` 一起定):把这三者整理成一族连贯命名(如 `stream_keepalive_ping_sec` / 统一前缀 + grace 与 ping cadence 语义分清),经 [compat.ts](../../src/lib/config/compat.ts) 的 legacy→current 迁移层(声明式 migration builder + graceful warn,user-set 新键优先,**零破坏用户配置**)落地。**不现在单独改**——避免与并发 L2 刚加的 `protect_streaming_heartbeat` 各改各的、以及二次改名。**注**:① ② 是无条件正确性修复,**无、也不该有配置开关**(abort→499/504/aborted 严格优于旧 500/Unexpected/failed);整个 pre-response 功能的唯一 knob 是 ③ 的 `pre_stream_grace`。
+
 
 `stream:true`(且 `grace>0`)请求经两态,**commit 点**(发首字节)是不可逆边界:
 
