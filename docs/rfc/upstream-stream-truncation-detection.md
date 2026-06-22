@@ -1,6 +1,6 @@
 # RFC：上游流截断检测与处理（stream completeness detection）
 
-状态：草案 v2（已过 2 轮对抗 subagent review）｜作者：调试 req_1782109585894_535 触发｜关联：[[methodology-persistence-swallow-plus-lossy-fallback-loses-data]]、`docs/rfc/response-pipeline/`（Stage B owns-sink，**已全部落地**）
+状态：Phase 0–2 已落地（4 条流式格式：Anthropic/CC/Responses/Gemini），Phase 3 实证确认无需代码，Phase 4 doc-sync 进行中｜作者：调试 req_1782109585894_535 触发｜关联：[[methodology-persistence-swallow-plus-lossy-fallback-loses-data]]、`docs/rfc/response-pipeline/`（Stage B owns-sink，已全部落地）
 
 ## 1. 背景与症状
 
@@ -87,13 +87,13 @@ web_search 双跳（`web-search-handler.ts:236`）也用 `createAnthropicStreamA
 
 每个中间 commit 都不让系统半坏：
 
-- **Phase 0（地基）**：扩展 `fail()`/`PartialResponseInfo` 增 content 通道（§3.2.1）。invariant：现有 fail 调用方行为不变（content 缺省仍 null）。
-- **Phase 1（Anthropic 检测+fail+error-frame）**：落地本案修复。accumulator 加 `sawMessageStop`；handler-v4 complete 分支前插完整性校验 → 截断走 fail（带 content）+ 新增 `writeSynthetic` error 帧（形态可切换，待 §3.2.2 实测）。invariant：完整流逐字节不变（golden 锁），仅截断流从 `[OK]`→`[FAIL]`+error 帧。
-- **Phase 2（CC/Responses/Gemini 检测+fail+error-frame）**：各格式按 §3.1 修正判据补校验（CC sticky `sawFinishReason`、Responses `acc.status===""`、Gemini flush 顺序）。invariant：各格式完整流 golden 不变，含 incomplete/failed/usage-only 合法边界不被误判。
-- **Phase 3（非流式语义残缺检测 + 重试评估）**：按 §3.3 表，解析失败已 FAIL；评估是否加"截断 bad_request → 重试"strategy + 语义残缺检测。
-- **Phase 4（doc-sync）**：DESIGN.md "活的架构现状" + 运行时选项（若引入 config 开关）+ memory 回填 + 修正 stage-b-plan.md 陈旧标注；本 RFC draft→landed。
+- **Phase 0（地基）✅ 已落地**：扩展 `fail()`/`PartialResponseInfo` 增 content 通道（§3.2.1）。invariant：现有 fail 调用方行为不变（content 缺省仍 null）。
+- **Phase 1（Anthropic 检测+fail+error-frame）✅ 已落地**（commit 533cf84）：accumulator 加 `sawMessageStop`；handler complete 分支前插完整性校验 → 截断走 fail（带 content）+ 新增 `writeSynthetic` error 帧（`type:"api_error"`，形态待 §5.1 实测微调）。完整流逐字节不变（golden 锁），仅截断流从 `[OK]`→`[FAIL]`+error 帧。s4 recover golden 的 fixture 本就无 message_stop，现正确追加 error 帧（recover/decode flush 字节仍锁）。
+- **Phase 2（CC/Responses/Gemini 检测+fail+error-frame）✅ 已落地**：各格式复用既有终止符字段——CC `acc.finishReason===""`、Responses `acc.status===""`（viaFallback drain 后检测）、Gemini `getStreamMeta().finishReason===FINISH_REASON_UNSPECIFIED`（flush 前检测，跳过误导终止帧）。各格式完整流 golden 不变；三格式各一条 http 截断测试。
+- **Phase 3（非流式）✅ 实证确认无需代码**：探针 + 代码核验确认非流式上游截断**当前已正确处理**——解析失败（残缺/非法 JSON、h2 "closed before end"）归 `bad_request`、无 strategy 匹配 → **FAIL**（非静默）；socket 级错误（ECONNRESET 等）归 `network_error` → 重试（非流式无已转发字节，可安全重试）。唯一漏洞是**合法但语义残缺 JSON**（HTTP 200 + 完整 JSON 但 content 空/stop_reason 缺）→ 静默 complete，但**罕见且需逐格式语义校验**（YAGNI，暂缓；要做则各 codec 的 `renderResponseNonStreaming` 后加语义完整性断言）。
+- **Phase 4（doc-sync）进行中**：DESIGN.md "活的架构现状" 表 + 本 RFC 状态回填 + memory 提炼。无 config 开关（截断检测硬连线为正确行为，非偏好），故运行时选项表无新增。
 
-first-content-gate 透明重试 + web_search 旁路检测**不进任何 phase**（§3.3 / §3.4 即其暂缓文档化）。
+first-content-gate 透明重试（§3.3）+ web_search 旁路检测（§3.4）+ 非流式语义残缺检测（Phase 3）**均不进当前实现**——暂缓项，文档化于此。
 
 ## 5. Open questions（实现前需实证/定夺）
 
