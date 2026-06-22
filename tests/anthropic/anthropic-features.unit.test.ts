@@ -246,3 +246,43 @@ describe("model-capability allowlists are config-driven (state-sourced)", () => 
     expect(modelSupportsInterleavedThinking("claude-sonnet-4.5")).toBe(false) // default dropped
   })
 })
+
+describe("context_editing / tool_search are metadata-first (supports.X ?? name-list)", () => {
+  // A minimal Model carrying only the capability flag under test.
+  const withSupports = (supports: Record<string, unknown>) =>
+    ({ id: "m", capabilities: { supports } }) as unknown as Parameters<typeof modelSupportsContextEditing>[1]
+
+  test("a declared supports.context_editing flag WINS over the name-list", () => {
+    // Model NOT in the name-list, but metadata declares the capability → true.
+    expect(modelSupportsContextEditing("totally-unknown-model")).toBe(false)
+    expect(modelSupportsContextEditing("totally-unknown-model", withSupports({ context_editing: true }))).toBe(true)
+    // Metadata `false` overrides a name-list match → false (mirrors upstream `supports.X ?? name`).
+    expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(true) // name-list
+    expect(modelSupportsContextEditing("claude-opus-4.8", withSupports({ context_editing: false }))).toBe(false)
+  })
+
+  test("supports.tool_search behaves the same", () => {
+    expect(modelSupportsToolSearch("totally-unknown-model", withSupports({ tool_search: true }))).toBe(true)
+    expect(modelSupportsToolSearch("claude-opus-4.8", withSupports({ tool_search: false }))).toBe(false)
+  })
+
+  test("absent/non-boolean metadata falls through to the name-list", () => {
+    expect(modelSupportsContextEditing("claude-opus-4.8", withSupports({}))).toBe(true) // absent → name-list
+    expect(modelSupportsContextEditing("claude-opus-4.8", withSupports({ context_editing: 1 }))).toBe(true) // non-boolean → name-list
+    // capabilities present but NO supports object, and an explicit null value → both fall to name-list.
+    expect(modelSupportsContextEditing("claude-opus-4.8", { id: "m", capabilities: {} } as unknown as Parameters<typeof modelSupportsContextEditing>[1])).toBe(
+      true,
+    )
+    expect(modelSupportsContextEditing("claude-opus-4.8", withSupports({ context_editing: null }))).toBe(true)
+  })
+
+  test("beta header is metadata-consistent with the tool pipeline (no split-brain)", () => {
+    // A name-list model whose metadata declares tool_search:false must NOT get the advanced-tool-use
+    // beta — otherwise the header (metadata-blind) would diverge from the metadata-aware tool pipeline.
+    const headers = buildAnthropicBetaHeaders("claude-opus-4.6", withSupports({ tool_search: false }))
+    expect(headers["anthropic-beta"] ?? "").not.toContain("advanced-tool-use-2025-11-20")
+    // …and a declared true emits it even for a non-name-list model.
+    const headers2 = buildAnthropicBetaHeaders("totally-unknown-model", withSupports({ tool_search: true }))
+    expect(headers2["anthropic-beta"] ?? "").toContain("advanced-tool-use-2025-11-20")
+  })
+})

@@ -69,6 +69,20 @@ function matchModelCapability(modelId: string, prefixes: ReadonlyArray<string>):
 }
 
 /**
+ * Read a boolean capability flag the model DECLARES in its `/models` metadata (`capabilities.
+ * supports.<key>`). Returns `undefined` when absent/non-boolean so the caller can `?? ` to the
+ * config name-list — the GHC-faithful "metadata-first, name-fallback" layering (chatEndpoint.ts:
+ * `supports.context_editing ?? modelSupportsContextEditing(this)`). The Copilot `/models` does NOT
+ * currently expose `context_editing` / `tool_search` (only `adaptive_thinking`), so today this is
+ * always `undefined` for them and the name-list wins — but honoring the flag the moment GHC adds it
+ * keeps the proxy aligned with upstream without a code change.
+ */
+function metadataCapability(resolvedModel: Model | undefined, key: string): boolean | undefined {
+  const v = resolvedModel?.capabilities?.supports?.[key]
+  return typeof v === "boolean" ? v : undefined
+}
+
+/**
  * Interleaved thinking is supported by:
  * - Claude Sonnet 4/4.5
  * - Claude Haiku 4.5
@@ -90,8 +104,10 @@ export function modelSupportsInterleavedThinking(modelId: string): boolean {
  * - Claude Sonnet 4/4.5/4.6
  * - Claude Opus 4/4.1/4.5/4.6/4.7
  */
-export function modelSupportsContextEditing(modelId: string): boolean {
-  return matchModelCapability(modelId, state.contextEditingModels)
+export function modelSupportsContextEditing(modelId: string, resolvedModel?: Model): boolean {
+  // Metadata-first (GHC-faithful): honor the model's declared `supports.context_editing`, else the
+  // config-driven name allowlist. Mirrors chatEndpoint.ts `supports.context_editing ?? modelSupports…`.
+  return metadataCapability(resolvedModel, "context_editing") ?? matchModelCapability(modelId, state.contextEditingModels)
 }
 
 /**
@@ -99,17 +115,18 @@ export function modelSupportsContextEditing(modelId: string): boolean {
  * Requires both model support AND config mode != 'off'.
  * Mirrors VSCode Copilot Chat's isAnthropicContextEditingEnabled().
  */
-export function isContextEditingEnabled(modelId: string): boolean {
-  return modelSupportsContextEditing(modelId) && state.contextEditingMode !== "off"
+export function isContextEditingEnabled(modelId: string, resolvedModel?: Model): boolean {
+  return modelSupportsContextEditing(modelId, resolvedModel) && state.contextEditingMode !== "off"
 }
 
 /**
  * Tool search is supported by:
  * - Claude Sonnet 4.5/4.6
- * - Claude Opus 4.5/4.6/4.7
+ * - Claude Opus 4.5/4.6/4.7/4.8
  */
-export function modelSupportsToolSearch(modelId: string): boolean {
-  return matchModelCapability(modelId, state.toolSearchModels)
+export function modelSupportsToolSearch(modelId: string, resolvedModel?: Model): boolean {
+  // Metadata-first (GHC-faithful): `supports.tool_search ?? modelSupportsToolSearch(this)` upstream.
+  return metadataCapability(resolvedModel, "tool_search") ?? matchModelCapability(modelId, state.toolSearchModels)
 }
 
 // ============================================================================
@@ -184,11 +201,11 @@ export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model
     betaFeatures.push("interleaved-thinking-2025-05-14")
   }
 
-  if (!opts?.disableContextManagement && (isContextEditingEnabled(modelId) || opts?.forceContextManagementBeta)) {
+  if (!opts?.disableContextManagement && (isContextEditingEnabled(modelId, resolvedModel) || opts?.forceContextManagementBeta)) {
     betaFeatures.push("context-management-2025-06-27")
   }
 
-  if (modelSupportsToolSearch(modelId)) {
+  if (modelSupportsToolSearch(modelId, resolvedModel)) {
     betaFeatures.push("advanced-tool-use-2025-11-20")
   }
 

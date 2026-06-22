@@ -216,7 +216,7 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
   // context_management. Computed HERE (before the beta build) so the beta header includes
   // `context-management-2025-06-27` whenever escalation will inject the body — the body without its
   // beta 400s upstream (the bug the mode-off force-inject would otherwise hit).
-  const escalating = Boolean(opts.contextEscalation) && modelSupportsContextEditing(model)
+  const escalating = Boolean(opts.contextEscalation) && modelSupportsContextEditing(model, opts.resolvedModel)
   const willInjectEscalation = escalating && !contextManagementDisabled && !("context_management" in wire)
 
   const localBeta = buildAnthropicBetaHeaders(model, opts.resolvedModel, {
@@ -247,7 +247,7 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
   // CLIENT-PROVIDED `context_management` — the client's explicit context policy is respected even on a
   // transparent retry. A client that manages its own context owns that choice; escalation only fills
   // the gap when the proxy is the one managing context (RFC §8 / §12 Q5).
-  if (!contextManagementDisabled && !("context_management" in wire) && (isContextEditingEnabled(model) || escalating)) {
+  if (!contextManagementDisabled && !("context_management" in wire) && (isContextEditingEnabled(model, opts.resolvedModel) || escalating)) {
     const hasThinking = Boolean(thinking && thinking.type !== "disabled")
     const contextManagement = buildContextManagement(state.contextEditingMode, hasThinking, escalating ? opts.contextEscalation : undefined)
     if (contextManagement) {

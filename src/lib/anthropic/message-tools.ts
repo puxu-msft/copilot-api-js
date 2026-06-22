@@ -14,6 +14,7 @@
 
 import consola from "consola"
 
+import type { Model } from "~/lib/models/client"
 import type {
   //
   MessageParam,
@@ -148,12 +149,12 @@ function buildHistoryToolStubs(historyToolNames: Set<string>): Array<Tool> {
  *
  * Returns a new array — never mutates the input.
  */
-function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Array<MessageParam>): Array<Tool> {
+function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Array<MessageParam>, resolvedModel?: Model): Array<Tool> {
   // Case-insensitive set for Claude Code stub injection — prevents injecting "Read" when
   // the client already has "read" (different casing). Without this, the model sees two
   // similar tools: the client's (with proper schema) and the stub (with empty schema).
   const existingNamesLower = new Set(tools.map((t) => t.name.toLowerCase()))
-  const toolSearchEnabled = state.toolSearchEnabled && modelSupportsToolSearch(modelId)
+  const toolSearchEnabled = state.toolSearchEnabled && modelSupportsToolSearch(modelId, resolvedModel)
 
   // Collect tool names already referenced in message history — these must
   // stay non-deferred to avoid "Tool reference not found" errors
@@ -271,11 +272,14 @@ export function preprocessTools(payload: MessagesPayload): MessagesPayload {
   const tools = payload.tools
   const model = payload.model
   const messages = payload.messages
+  // Resolve the Model so tool_search can be metadata-first (supports.tool_search) with the config
+  // name-list as fallback — modelIndex is keyed by the resolved id, which `payload.model` carries here.
+  const resolvedModel = state.modelIndex.get(model)
 
   let processed: MessagesPayload
   if (tools && tools.length > 0) {
-    processed = { ...payload, tools: processToolPipeline(tools, model, messages) }
-  } else if (modelSupportsToolSearch(model)) {
+    processed = { ...payload, tools: processToolPipeline(tools, model, messages, resolvedModel) }
+  } else if (modelSupportsToolSearch(model, resolvedModel)) {
     // No tools in request — but if tool search is enabled and history has tool_use
     // references, we need stubs to satisfy API validation
     const historyToolNames = collectHistoryToolNames(messages)
