@@ -257,6 +257,55 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     expect(frames.some((fr) => (fr.data ?? "").includes("msg_partial"))).toBe(true)
   })
 
+  test("onBufferedResolve fires once with the terminal outcome + retry count", async () => {
+    // (a) success after 1 retry.
+    {
+      const env = makeEnv()
+      env.ctx.beginAttempt({})
+      const first = upstream(framesThenThrow(partialFrames("p"), RST()))
+      const { driver } = makeDriver([upstream(framesClean(completeFrames("ok")))])
+      const { sink } = makeArraySink()
+      const calls: Array<{ outcome: string; retries: number }> = []
+      await driver.runResponseBufferedSink(first, env, sink, {
+        ...makeStopTracker(),
+        retryCap: 3,
+        onBufferedResolve: (outcome, retries) => calls.push({ outcome, retries }),
+      } as RunBufferedOpts)
+      expect(calls).toEqual([{ outcome: "success", retries: 1 }])
+    }
+    // (b) exhausted after cap retries.
+    {
+      const env = makeEnv()
+      env.ctx.beginAttempt({})
+      const first = upstream(framesThenThrow(partialFrames("p1"), RST()))
+      const { driver } = makeDriver([upstream(framesThenThrow(partialFrames("p2"), RST())), upstream(framesThenThrow(partialFrames("p3"), RST()))])
+      const { sink } = makeArraySink()
+      const calls: Array<{ outcome: string; retries: number }> = []
+      await driver.runResponseBufferedSink(first, env, sink, {
+        ...makeStopTracker(),
+        retryCap: 2,
+        onBufferedResolve: (outcome, retries) => calls.push({ outcome, retries }),
+      } as RunBufferedOpts)
+      expect(calls).toEqual([{ outcome: "exhausted", retries: 2 }])
+    }
+    // (c) retreated (buffer cap).
+    {
+      const env = makeEnv()
+      env.ctx.beginAttempt({})
+      const first = upstream(framesClean(completeFrames("big")))
+      const { driver } = makeDriver([])
+      const { sink } = makeArraySink()
+      const calls: Array<{ outcome: string; retries: number }> = []
+      await driver.runResponseBufferedSink(first, env, sink, {
+        ...makeStopTracker(),
+        retryCap: 3,
+        bufferCapBytes: 30,
+        onBufferedResolve: (outcome, retries) => calls.push({ outcome, retries }),
+      } as RunBufferedOpts)
+      expect(calls).toEqual([{ outcome: "retreated", retries: 0 }])
+    }
+  })
+
   test("truncation (clean drain WITHOUT message_stop) is retryable, not a false commit", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})

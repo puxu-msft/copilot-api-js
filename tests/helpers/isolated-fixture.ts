@@ -34,6 +34,7 @@ import {
 } from "bun:test"
 
 import { clearAnthropicFeatureNegotiationForTests } from "~/lib/anthropic/feature-negotiation"
+import { resetProtectStreamingStatsForTests } from "~/lib/anthropic/protect-streaming-stats"
 import { resetAllLimitsForTesting } from "~/lib/auto-truncate/engine"
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
@@ -75,6 +76,7 @@ import {
  */
 export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promise<void> }> = [
   { name: "clearAnthropicFeatureNegotiationForTests", reset: clearAnthropicFeatureNegotiationForTests },
+  { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },
   { name: "_resetRequestTelemetryForTests", reset: _resetRequestTelemetryForTests },
   { name: "resetModelsEtagForTests", reset: resetModelsEtagForTests },

@@ -64,6 +64,7 @@ import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
+import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import {
   //
   preprocessAnthropicMessages,
@@ -662,6 +663,13 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         onAttemptReset,
         retryCap: state.protectStreamingMaxRetries,
         bufferCapBytes: state.protectStreamingBufferCapBytes,
+        // L2 hit-rate telemetry (RFC §10): aggregate counter (→ /api/status.protect_streaming) +
+        // a per-entry feature tag + an operator log line. `retries > 0` on success = a real save.
+        onBufferedResolve: (outcome, retries) => {
+          recordProtectStreamingOutcome(outcome, retries)
+          env.ctx.recordFeature("protect-streaming-retry", { outcome, retries })
+          consola.debug(`[protect-stream] ${outcome} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
+        },
       })
     : await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
 

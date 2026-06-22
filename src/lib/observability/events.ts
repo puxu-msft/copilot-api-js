@@ -136,6 +136,8 @@ export type FeatureKind =
   | "tool-call-recovered"
   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
   | "tool-input-decode-failed"
+  /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */
+  | "protect-streaming-retry"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 

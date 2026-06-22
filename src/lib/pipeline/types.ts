@@ -332,6 +332,15 @@ export interface RunBufferedOpts extends RunResponseOpts {
   bufferCapBytes?: number
   /** Called once if/when the buffer cap is exceeded and the path retreats to live forwarding (telemetry/logging). */
   onRetreat?: () => void
+  /**
+   * Called exactly once at the buffered path's terminal resolution (NOT on a client-abort, which
+   * is the client leaving, not a generation outcome) with the outcome label + the number of
+   * re-exchanges consumed (`retries`). Drives the L2 hit-rate telemetry (RFC §10):
+   *   - `"success"`:   committed a complete generation (retries > 0 = a save).
+   *   - `"exhausted"`: all retries failed → surfaced as a stream error.
+   *   - `"retreated"`: buffer cap exceeded → retreated to live forwarding.
+   */
+  onBufferedResolve?: (outcome: "success" | "exhausted" | "retreated", retries: number) => void
 }
 
 // ============================================================================

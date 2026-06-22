@@ -27,6 +27,7 @@ import {
   test,
 } from "bun:test"
 
+import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
 import { getHistory } from "~/lib/history/store"
 import {
   //
@@ -206,6 +207,8 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     expect(entry?.attempts?.[0]?.sseEvents?.length).toBeGreaterThan(0)
     expect(entry?.attempts?.[1]?.sseEvents?.length).toBeGreaterThan(0)
     expect(entry?.attempts?.[2]?.sseEvents).toBeUndefined()
+    // Hit-rate telemetry: one save after 2 retries (RFC §10).
+    expect(getProtectStreamingStats()).toEqual({ success: 1, exhausted: 0, retreated: 0, totalRetries: 2 })
   })
 
   test("acc reset regression — even 3 leading RSTs commit a single non-summed generation", async () => {

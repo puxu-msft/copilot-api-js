@@ -7,6 +7,7 @@
 import { Hono } from "hono"
 
 import { getAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
+import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
 import { listInFlightEntries } from "~/lib/history/store"
@@ -172,6 +173,13 @@ statusRoutes.get("/", async (c) => {
       // Operators can derive "recovers in N seconds" client-side instead of us
       // hardcoding the recovery window in the response shape.
       disabled_until_ms: upstreamWs?.disabledUntilMs ?? 0,
+    },
+
+    // L2 buffered-retry hit-rate counters (RFC §10): since-restart aggregate.
+    // hit rate ≈ success / (success + exhausted) when retries occurred.
+    protect_streaming: {
+      enabled: state.protectStreamingGeneration,
+      ...getProtectStreamingStats(),
     },
   })
 })

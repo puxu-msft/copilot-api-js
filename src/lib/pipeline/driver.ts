@@ -549,6 +549,7 @@ async function runResponseBufferedSink(
       // The outcome mirrors the live path: complete (handler decides success/fail via its acc) or
       // stream-error (the throw / truncation surfaces as today).
       if (retreated) {
+        opts.onBufferedResolve?.("retreated", attempt)
         if (drained) return { kind: "complete", headers: current.headers }
         return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
       }
@@ -572,6 +573,7 @@ async function runResponseBufferedSink(
           if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
           return { kind: "stream-error", error }
         }
+        opts.onBufferedResolve?.("success", attempt)
         return { kind: "complete", headers: current.headers }
       }
 
@@ -596,6 +598,7 @@ async function runResponseBufferedSink(
       // Exhausted / non-retryable → surface the error (truncation synthesizes one) for the
       // handler to classify + write its protocol error frame (unchanged from the live path). The
       // final failed attempt's frames stay at the top-level slot (no per-attempt snapshot).
+      opts.onBufferedResolve?.("exhausted", attempt)
       return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
     }
   } finally {
