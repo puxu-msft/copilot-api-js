@@ -530,6 +530,16 @@ describe("Responses WebSocket transport", () => {
     await shutdownPromise
   })
 
+  // NOTE (Stage B owns-sink settled-abort): the WS client-disconnect path (onClose →
+  // wsClientAborts.abort() → upstream teardown → settled-abort → ctx.abort) is NOT exercised
+  // here — a real client-initiated mid-stream `ws.close()` does not propagate to the server's
+  // onClose→settle chain within the bare-Hono + `Bun.serve` test harness (no existing WS test
+  // does a client-initiated mid-stream close either). The settled-abort OUTCOME mapping is
+  // covered: driver classification by `owns-sink-two-racer.unit.test.ts`, and the handler
+  // outcome→ctx.abort mapping by the HTTP formats' "owns-sink streaming client-abort" tests
+  // (chat-completions-v4 / responses-v4 / gemini-v4 / anthropic-v4). The WS H3 path (mid-stream
+  // shutdown → error frame + 1011) is covered by the test above.
+
   test("rejects new connections beyond maxClientWsConnections", async () => {
     setStateForTests({ maxClientWsConnections: 1 })
     setModels({

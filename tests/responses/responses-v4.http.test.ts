@@ -48,7 +48,12 @@ import {
   applyFetchMock,
   autoRestoreFetch,
 } from "../helpers/mock-fetch"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenAbort,
+  createSseResponseThenError,
+} from "../helpers/sse"
 import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 let lastResponsesWire: ResponsesPayload | undefined
@@ -224,6 +229,48 @@ describe("Responses v4 driver path", () => {
 
     expect(v4Text).toBe(responsesStreamFrames("gpt-resp").join(""))
     expect(v4Text).toContain("response.completed")
+  })
+
+  // Stage B owns-sink: the streaming outcome→ctx mapping (driver classification is locked by
+  // owns-sink-two-racer.unit.test.ts; these lock the HANDLER's mapping).
+  test("owns-sink streaming H3: mid-stream upstream error → entry failed + OpenAI error frame", async () => {
+    setModels({ object: "list", data: [mockModel("gpt-resp", { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+    const errMock = mock(() =>
+      Promise.resolve(createSseResponseThenError([responsesStreamFrames("gpt-resp")[0]], new Error("ECONNRESET: mid-stream upstream blowup"))),
+    )
+    applyFetchMock(errMock)
+
+    const text = await (
+      await app.request("/responses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-resp", input: "hi", stream: true }),
+      })
+    ).text()
+
+    expect(text).toContain("response.created")
+    expect(text).toContain("event: error")
+    expect(text).toContain('"type":"server_error"')
+    expect(getHistory({ endpoint: "openai-responses" }).entries[0]?.state).toBe("failed")
+  })
+
+  test("owns-sink streaming client-abort: mid-stream disconnect → entry aborted + no error frame", async () => {
+    setModels({ object: "list", data: [mockModel("gpt-resp", { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+    const clientAbort = new AbortController()
+    const abortMock = mock(() => Promise.resolve(createSseResponseThenAbort([responsesStreamFrames("gpt-resp")[0]], clientAbort)))
+    applyFetchMock(abortMock)
+
+    const text = await (
+      await app.request("/responses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-resp", input: "hi", stream: true }),
+        signal: clientAbort.signal,
+      })
+    ).text()
+
+    expect(text).not.toContain("event: error")
+    expect(getHistory({ endpoint: "openai-responses" }).entries[0]?.state).toBe("aborted")
   })
 
   test("direct streaming stream-id-sync: .done id corrected to .added id", async () => {

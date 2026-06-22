@@ -36,7 +36,12 @@ import {
   applyFetchMock,
   autoRestoreFetch,
 } from "../helpers/mock-fetch"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenAbort,
+  createSseResponseThenError,
+} from "../helpers/sse"
 import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 let lastCcWire: ChatCompletionsPayload | undefined
@@ -405,6 +410,49 @@ describe("CC v4 driver path", () => {
     const v4State = getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state
 
     expect(v4State).toBe("completed")
+  })
+
+  // Stage B owns-sink: the streaming outcome→ctx mapping. The driver classifies the terminal
+  // (settled-abort vs stream-error) — owns-sink-two-racer.unit.test.ts locks that; these lock the
+  // HANDLER's mapping: stream-error → fail + client error frame; settled-abort → abort + ZERO bytes.
+  test("owns-sink streaming H3: mid-stream upstream error → entry failed + OpenAI error frame", async () => {
+    injectModels()
+    const errMock = mock(() => Promise.resolve(createSseResponseThenError([ccStreamFrames("gpt-4o")[0]], new Error("ECONNRESET: mid-stream upstream blowup"))))
+    applyFetchMock(errMock)
+
+    const text = await (
+      await app.request("/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
+      })
+    ).text()
+
+    // The first frame was forwarded, THEN the OpenAI-shape error frame (event: error).
+    expect(text).toContain("Hello")
+    expect(text).toContain("event: error")
+    expect(text).toContain('"type":"server_error"')
+    expect(getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state).toBe("failed")
+  })
+
+  test("owns-sink streaming client-abort: mid-stream disconnect → entry aborted + no error frame", async () => {
+    injectModels()
+    const clientAbort = new AbortController()
+    const abortMock = mock(() => Promise.resolve(createSseResponseThenAbort([ccStreamFrames("gpt-4o")[0]], clientAbort)))
+    applyFetchMock(abortMock)
+
+    const text = await (
+      await app.request("/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
+        signal: clientAbort.signal,
+      })
+    ).text()
+
+    // The first frame was forwarded; NO client error frame written to the gone client.
+    expect(text).not.toContain("event: error")
+    expect(getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state).toBe("aborted")
   })
 
   test("history: persistent upstream failure FINALIZES the entry (failed, not dangling)", async () => {

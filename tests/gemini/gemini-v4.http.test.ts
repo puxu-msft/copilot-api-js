@@ -36,7 +36,11 @@ import {
   applyFetchMock,
   autoRestoreFetch,
 } from "../helpers/mock-fetch"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenAbort,
+} from "../helpers/sse"
 import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 let lastCcWire: ChatCompletionsPayload | undefined
@@ -267,6 +271,29 @@ describe("Gemini v4 driver path", () => {
 
     expect(v4Text).toContain("upstream blew up")
     expect(v4Text).toContain("INTERNAL")
+    // Stage B owns-sink: the H3 outcome → ctx.fail mapping settles the entry `failed`.
+    expect(getHistory({ endpoint: "gemini-generate-content" }).entries[0]?.state).toBe("failed")
+  })
+
+  // Stage B owns-sink: the settled-abort outcome → ctx.abort mapping (no client error frame).
+  test("owns-sink streaming client-abort: mid-stream disconnect → entry aborted + no error frame", async () => {
+    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })] })
+    const clientAbort = new AbortController()
+    const abortMock = mock(() => Promise.resolve(createSseResponseThenAbort([ccStreamFrames("gpt-4o")[0]], clientAbort)))
+    applyFetchMock(abortMock)
+
+    const text = await (
+      await app.request("/v1beta/models/gpt-4o:streamGenerateContent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+        signal: clientAbort.signal,
+      })
+    ).text()
+
+    // No Gemini error candidate (finishReason "OTHER" + error sidecar) written to the gone client.
+    expect(text).not.toContain('"finishReason":"OTHER"')
+    expect(getHistory({ endpoint: "gemini-generate-content" }).entries[0]?.state).toBe("aborted")
   })
 
   test("dropped-params warning recorded (safetySettings)", async () => {

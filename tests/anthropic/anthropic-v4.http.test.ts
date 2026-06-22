@@ -49,7 +49,11 @@ import {
   applyFetchMock,
   autoRestoreFetch,
 } from "../helpers/mock-fetch"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenAbort,
+} from "../helpers/sse"
 import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 type Scenario = "ok" | "thinking" | "errorFrame" | "midStreamThrow" | "deferredTool"
@@ -385,6 +389,30 @@ describe("Anthropic v4 driver path", () => {
     expect(v4Text).toContain("Hello from mocked stream")
     expect(v4Text).toContain('"type":"error"')
     expect(v4State).toBe("failed")
+  })
+
+  // Stage B owns-sink: the settled-abort branch of `pumpAnthropicStreamingV4` (the existing
+  // streaming-abort.http.test covers the legacy web_search bypass, not the owns-sink pump).
+  // A mid-stream client disconnect settles `aborted` and writes ZERO further bytes (no error frame).
+  test("owns-sink streaming client-abort: mid-stream disconnect → entry aborted + no error frame", async () => {
+    injectModels()
+    const clientAbort = new AbortController()
+    const abortMock = mock(() => Promise.resolve(createSseResponseThenAbort([okStreamFrames("claude-sonnet-4.6")[0]], clientAbort)))
+    applyFetchMock(abortMock)
+    clearHistory()
+
+    const text = await (
+      await observableApp.request("/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4.6", messages: [{ role: "user", content: "hi" }], max_tokens: 64, stream: true }),
+        signal: clientAbort.signal,
+      })
+    ).text()
+
+    // The first frame was forwarded; NO synthesized error frame written to the gone client.
+    expect(text).not.toContain('"type":"error"')
+    expect(getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state).toBe("aborted")
   })
 
   // Stage B B0 baseline: the H2/H3 forwarded-track SAMPLING ASYMMETRY. H2 (upstream
