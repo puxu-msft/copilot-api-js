@@ -149,9 +149,12 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 | `GET /history/api/sessions` | 列出所有 sessions |
 | `GET /history/api/sessions/:id` | 获取 session 详情 |
 | `GET /history/api/sessions/:id/entries` | 获取 session 的所有 entries |
-| `DELETE /history/api/sessions/:id` | 删除 session |
+| `DELETE /history/api/entries` | **清空全部** history（`clearHistory` → 删所有表）。破坏性、不可逆 |
+| `DELETE /history/api/sessions/:id` | 删除 session（`deleteSession` → 删该 session 的所有 entries）。破坏性、不可逆 |
 | `GET /history/api/stats` | 聚合统计数据 |
 | `GET /history/api/export` | 导出历史（JSON/CSV） |
+
+> **破坏性删除必高声记录**：`clearHistory`/`deleteSession` 都 `consola.warn` 打印删除条目数 + 触发来源（`clearHistory`：`CLEARED ALL entries (N persisted + M in-flight) via DELETE /api/entries`；`deleteSession` 类似）。一次不可逆全量销毁绝不静默——否则它与持久化 bug 不可分辨（曾因 `clearHistory` 无日志，一条已落盘的失败记录"消失"耗费长时间盲查才定位是 dev UI 误触发 `DELETE /api/entries`）。
 
 ## WebSocket 实时推送
 
