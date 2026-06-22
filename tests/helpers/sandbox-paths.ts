@@ -35,4 +35,14 @@ if (!process.env.XDG_DATA_HOME || !process.env.XDG_DATA_HOME.includes(SANDBOX_MA
   // atomic write (which does not mkdir) has a directory to land in.
   fs.mkdirSync(path.join(root, "copilot-api"), { recursive: true })
   process.env.XDG_DATA_HOME = root
+  // `CODEX_CONFIG_TOML` is derived from `CODEX_HOME` (→ `~/.codex`), NOT from
+  // `XDG_DATA_HOME` (see config/paths.ts `computeCodexHome`). Redirecting only
+  // XDG would leave `~/.codex/config.toml` as a floor blind spot: any test (or
+  // setup-codex command path) that falls back to the default `PATHS.CODEX_CONFIG_TOML`
+  // would write the operator's real `~/.codex`. Pin CODEX_HOME into the same
+  // sandbox so that path is floored too. (Current codex tests inject an explicit
+  // `configPath`, so this is defense-in-depth, not a fix for a live leak.)
+  const codexHome = path.join(root, ".codex")
+  fs.mkdirSync(codexHome, { recursive: true })
+  process.env.CODEX_HOME = codexHome
 }

@@ -35,4 +35,12 @@ describe("test persistence paths are sandboxed (never the real APP_DIR)", () => 
       expect(p.startsWith(realBase)).toBe(false)
     }
   })
+
+  test("CODEX_CONFIG_TOML is sandboxed (CODEX_HOME redirect, not the real ~/.codex)", () => {
+    // CODEX_CONFIG_TOML derives from CODEX_HOME, a SEPARATE root from XDG_DATA_HOME.
+    // The preload must redirect CODEX_HOME too, else `~/.codex/config.toml` escapes
+    // the floor. Guards the R4 blind spot (see tests/helpers/sandbox-paths.ts).
+    expect(PATHS.CODEX_CONFIG_TOML).toContain(SANDBOX_MARKER)
+    expect(PATHS.CODEX_CONFIG_TOML.startsWith(`${os.homedir()}/.codex`)).toBe(false)
+  })
 })

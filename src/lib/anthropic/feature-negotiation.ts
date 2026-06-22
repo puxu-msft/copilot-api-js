@@ -335,6 +335,15 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
  * drained — otherwise an enqueued persist would race the reset and write
  * cleared state to disk after the test starts inspecting the file.
  */
+function clearNegotiationMaps(): void {
+  unsupportedFeatures.clear()
+  unsupportedBetas.clear()
+  supportedEfforts.clear()
+  stickyUndeferredTools.clear()
+  unsupportedServerTools.clear()
+  unsupportedPartnerFeatures.clear()
+}
+
 export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void> {
   if (persistTimer) {
     clearTimeout(persistTimer)
@@ -345,10 +354,22 @@ export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void
   // A trailing empty persist after the wipe is unnecessary — caller can
   // explicitly persist if they need the cleared state on disk.
   await persistFeatureNegotiation()
-  unsupportedFeatures.clear()
-  unsupportedBetas.clear()
-  supportedEfforts.clear()
-  stickyUndeferredTools.clear()
-  unsupportedServerTools.clear()
-  unsupportedPartnerFeatures.clear()
+  clearNegotiationMaps()
+}
+
+/**
+ * Synchronous, no-disk reset for per-test isolation (the unified fixture calls
+ * this in afterEach). Unlike `resetAnthropicFeatureNegotiationForTesting`, it
+ * does NOT drain/persist — a per-test afterEach should not incur sandbox disk
+ * I/O on every test, and there is nothing worth flushing (the maps are about to
+ * be wiped). Cancels the debounce timer so no enqueued persist fires after the
+ * next test starts, then clears the 6 maps. Use the async drain-reset only when
+ * a caller explicitly needs the cleared state flushed to disk.
+ */
+export function clearAnthropicFeatureNegotiationForTests(): void {
+  if (persistTimer) {
+    clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  clearNegotiationMaps()
 }

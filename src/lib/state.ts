@@ -728,6 +728,17 @@ export function getRawModels(): ModelsResponse | undefined {
 }
 
 /**
+ * Reset the module-scoped `rawModels` cache (for tests). `rawModels` lives
+ * OUTSIDE `mutableState`, so `snapshotStateForTests`/`restoreStateForTests`
+ * cannot reach it — without this, a `setModels()` in one test leaks its raw
+ * response into the next (a later `setDisabledModels` would re-filter from the
+ * stale cache). The unified test fixture calls this in afterEach.
+ */
+export function resetRawModelsForTests(): void {
+  rawModels = undefined
+}
+
+/**
  * Update the disabled model ID list and re-filter `state.models` from the
  * cached raw response. Hot-reloadable from config.yaml.
  */

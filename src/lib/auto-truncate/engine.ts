@@ -202,6 +202,16 @@ interface LearnedLimitsFile {
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 const PERSIST_DEBOUNCE_MS = 5000
 
+/**
+ * Override the learned-limits persistence path. Tests inject a temp file here so
+ * the engine never reads/writes the real `PATHS.LEARNED_LIMITS`. `undefined`
+ * restores the default. Mirrors `_setRequestTelemetryFilePathForTests`.
+ */
+let learnedLimitsPath: string | undefined
+export function setLearnedLimitsPathForTests(path: string | undefined): void {
+  learnedLimitsPath = path
+}
+
 /** Schedule an async write of learned limits (debounced) */
 export function schedulePersist(): void {
   if (persistTimer) return
@@ -228,7 +238,7 @@ export const persistLimits = createSerializedAsyncFn(async () => {
   if (learnedLimits.size === 0) return
   const data: LearnedLimitsFile = { version: 1, limits: Object.fromEntries(learnedLimits) }
   try {
-    await atomicWriteJson(PATHS.LEARNED_LIMITS, data)
+    await atomicWriteJson(learnedLimitsPath ?? PATHS.LEARNED_LIMITS, data)
     persistFailureLogged = false
   } catch (err) {
     // Re-learnable on next error, but persistent ENOSPC / permission failures
@@ -244,7 +254,7 @@ export const persistLimits = createSerializedAsyncFn(async () => {
 /** Load previously persisted limits from disk (called at startup) */
 export async function loadPersistedLimits(): Promise<void> {
   try {
-    const raw = await fs.readFile(PATHS.LEARNED_LIMITS, "utf8")
+    const raw = await fs.readFile(learnedLimitsPath ?? PATHS.LEARNED_LIMITS, "utf8")
     const data = JSON.parse(raw) as LearnedLimitsFile
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: persisted file may have unexpected version
     if (data.version !== 1) return
