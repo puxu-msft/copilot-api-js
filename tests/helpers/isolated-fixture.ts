@@ -142,6 +142,16 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
 
   beforeAll(() => {
     bootstrapTestRuntime()
+    // Full runtime re-wire ONCE per describe, in case the PREVIOUS test file did NOT use
+    // this fixture (e.g. a history `.it` test with its own real-DB lifecycle that closed
+    // the DB and/or left a stale bus + request-context manager). bootstrapTestRuntime's
+    // `initialized` guard skips re-wiring on every call after the first, and the per-test
+    // afterEach `resetTestRuntime` only covers tests 2..N within THIS file — so test 1
+    // would otherwise inherit the predecessor's stale wiring (closed DB → "database not
+    // initialized", or a dead bus → request events never reach the history sink → no
+    // persisted entry). resetTestRuntime reopens `:memory:`, swaps in a fresh bus + sinks,
+    // and re-wires the manager; it is the same call afterEach uses, so this is idempotent.
+    resetTestRuntime()
   })
 
   beforeEach(() => {
