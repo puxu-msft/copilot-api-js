@@ -1,10 +1,21 @@
 # RFC: pre-response abort 处理 + opus 长思考保活
 
-**Status:** 设计稿待评审 — ①②(C1/C2)设计已收敛(round-3),可进实现;**③(C3b)采延迟-commit,经 round-A 三视角并行 review 大改 + round-B 对抗复审判定收敛**(无设计层 CRITICAL,仅余 Q1/Q2/Q7 需实测/人拍板)。待 Q2 oracle 实测(客户端超时 + 错误帧等价)后实现;C3b 含两个前置子步(forwardError 分派核抽取、sink `emitPingOnAttach`)。
+**Status:** **①②⑤ 已实现并提交**(① `ee4dd34` forwardError 分类 abort / ② `d4bced4` pre-response client-abort 记 aborted / ⑤ `c824df4` 孤儿 promise 崩溃防御);**④(reaper 装牙齿)+ C3b-pre1(mapHttpErrorToEnvelope 抽取)+ C3b-pre2(sink emitPingOnAttach)现在即实现就绪、不卡任何 Q——按 round-C 共识依序实现 pre1 → ④ → pre2**(④ 最高优先=真实泄漏);**③(C3b 延迟-commit)设计就绪但实现阻塞于 Q2 实测 + 并发 L2 字段冻结**(round-C 发现 L2 演化引入 2 新 CRITICAL,见下方 Changelog + §4.2.1)。
 **Date:** 2026-06-22
 **Owner:** 排查会话(待实现会话接手)
 
 ### Changelog
+
+**Review round C(2026-06-22,3 个并行多视角 subagent 全 RFC 审查:④⑤ / ③ 全新 / 跨切面实现就绪度)—— 达成实现共识 + 抓到活文档演化引入的 ③ 新 CRITICAL:**
+- **[共识:现在可实现]** ④(reaper 牙齿)+ C3b-pre1 + C3b-pre2 三项均**不卡 Q2**、各自独立有用,依序 pre1 → ④ → pre2。④ 最高优先(真实资源泄漏)。
+- **[④,HIGH 已补]** §5 commit 表原**缺 ④ 行**(下新增 C4)+ "全 5 格式 settled-abort 站点"实为 **6 个**(Responses HTTP [responses/handler-v4.ts] + WS [responses/ws.ts:332 独立 `sendErrorAndClose`+1011] 两站点);④ 中间 commit 必须编码 **provenance-before-signal 不变量**:第三 provenance(`StreamReaperCancelError`)落地**之前**绝不把 reaper signal 接进 guard,否则中间 commit"reaper-cancel 误判 client-abort→静默断流"(缺陷④反向重演)。
+- **[⑤,确认完整]** `withRejectionObserver`([http2-client.ts:239](../../src/lib/transport/http2-client.ts#L239))包裹整个 promise,覆盖**整类** pre-response 孤儿 reject(abort/connect/RST/GOAWAY-before-response 全在同一 promise),不 swallow 真 awaiter,放宽全局 handler 的否决成立。
+- **[③,2 新 CRITICAL,L2 演化引入,记入待 ③ 实现期修]** **(C1)** §4.2.1"复用同一 sink 接 pump"破裂:`pumpAnthropicStreamingV4`([handler-v4.ts:616](../../src/routes/messages/handler-v4.ts#L616))**自建 sink**、签名只收 `stream`([:514](../../src/routes/messages/handler-v4.ts#L514)) → ③ 须重构 pump **接收注入的 sink**,否则双 makeSseSink 共享同一 stream → 字节交错。**(C2)** COMMIT 分支 `await p` 把 decideRoute reject 当 throw——但 `runRequest` 对 reject 走 `return {ok:false}`([driver.ts:146](../../src/lib/pipeline/driver.ts#L146),resolve 非 throw),COMMIT 须**显式判 `result.ok===false`** 再走富错误帧。
+- **[③×④,HIGH]** ④ abort 在飞 fetch,而 ③ POST-COMMIT `await p` 正是那个 fetch → reaper-cancel 既非 client-gone 又非真 timeout,COMMIT catch 须作**第四类显式分支**(与 reaper 自身 `ctx.fail()` 用 `settled` guard 去重)。
+- **[doc-sync]** ①②⑤ 已实现但 §3.1/§3.2 仍是伪码(为**设计意图**,实现见 forward.ts:449 / handler-v4.ts:332)、§4.2 表把②写"待 Q7"——**Q7 已被实现回答为 (a) Anthropic-only**(非待决议);request.ts 行号漂移(abort 实 :476、recordFeature :614)实现期校准。
+- **[keepalive 命名,解耦]** §4.2.3.1 重整面对**已发布的 L2 活字段族**(`protect_streaming_*`),范围比暗示大(schema/config/validation/compat),应**与 ③ 同期、L2 字段冻结后**单独做,**不阻塞 ④/pre1/pre2**。
+- **[Q2 tradeoff]** grace 取大把"发散频率"换成"单次严重度",非纯增益,Q2 须实测这条尾巴的客户端体验。
+
 
 **第二起 incident 增补(2026-06-22)—— 911s stale-reaper force-fail + 未捕获 AbortError 崩服务器。** 新增缺陷④(reaper `ctx.fail()` 不取消在飞上游、装饰性 force-fail → 资源泄漏到 1200s,暂缓待本 RFC 实现期一并修,正确修法需独立 `StreamReaperCancelError` provenance 而非折进 guard `clientSignal`)与缺陷⑤(孤儿无-awaiter 上游 fetch 的 abort 拒绝经 main.ts unhandledRejection → exit(1) 崩整服务器,**已修复**:http2-client 防御性 rejection observer,实测 Bun+Node)。经两个对抗 subagent 并行复现确认:awaited 上游链永远被既有 catch 接住(0 unhandled),崩溃需真正遗弃的 promise;reaper-teeth 折进 guard `clientSignal` 会误判 reaper-cancel 为客户端断开(静默断流 + 错记 aborted)——故④ 暂缓走正确设计。详见 §2 缺陷④⑤。
 
@@ -379,6 +390,7 @@ if (first === "upstream") {
 
 **最长远方案**(③ 实现期连同 `pre_stream_grace` 一起定):把这三者整理成一族连贯命名(如 `stream_keepalive_ping_sec` / 统一前缀 + grace 与 ping cadence 语义分清),经 [compat.ts](../../src/lib/config/compat.ts) 的 legacy→current 迁移层(声明式 migration builder + graceful warn,user-set 新键优先,**零破坏用户配置**)落地。**不现在单独改**——避免与并发 L2 刚加的 `protect_streaming_heartbeat` 各改各的、以及二次改名。**注**:① ② 是无条件正确性修复,**无、也不该有配置开关**(abort→499/504/aborted 严格优于旧 500/Unexpected/failed);整个 pre-response 功能的唯一 knob 是 ③ 的 `pre_stream_grace`。
 
+#### 4.2.4 commit-point 状态机(精确生命周期)
 
 `stream:true`(且 `grace>0`)请求经两态,**commit 点**(发首字节)是不可逆边界:
 
@@ -458,6 +470,7 @@ if (first === "upstream") {
 | **C3b-pre2: sink `emitPingOnAttach`** | 给 `makeSseSink` 加 `emitPingOnAttach(frame)`(采样 + write + 推进 lastRealMs),供 commit 立即首 ping(§4.2.1/§4.2.6)。独立小改,现有 sink 测试绿。round-B H2。 |
 | **C3b: ③ 方案 A 延迟-commit** | 依赖 C1/C2 + C3b-pre1/pre2。`stream:true` + `grace>0` 走两段式(promise 外置 race,§4.2.1);grace 内回头零发散(现状出口)、grace 耗尽 commit 开流 + 立即采样 ping;**所有 POST-COMMIT 失败**(上游错误 + decideRoute reject)降级**富** SSE error 帧(§4.2.5 保 error.type/retry_after);client-abort 走 `ctx.abort()` 无 499;**终态全部在 streamSSE 回调内自包含**(中间件不 finalize SSE)、`sink.close()`+`clearTimeout` 在 finally;commit 点 recordFeature。`grace<=0`/非流式完全 bypass(=禁用)。golden(C3a)锁正常流逐帧等价 + 富错误帧保 type/retry_after。非流式路径零改动。config-hot-reload 矩阵 + DESIGN 同步(§8)。 |
 | **(可选)C0: ⓪ http2-client 保留 abort reason** | 若评审采纳(§1.4):http2-client abort 路径 `reject(signal.reason ?? abortError())`,使 history `attempt.error` 保留 TimeoutError 文案。独立无害(其它消费端仍只看 `isAbortError`,name 从 "AbortError" 变 "TimeoutError" 不影响分类)。可作 C1 前置或独立 commit;504/499 判别**不依赖**它。 |
+| **C4: ④ reaper 装牙齿(StreamReaperCancelError 第三 provenance)** | **依赖 C1/C2(已落地),独立于 C3b、不卡 Q2,可立即落。** 不变量:reaper force-fail 时**真正 abort 在飞上游 h2 fetch** + 中止 handler 协程(`RequestContext` 持生命周期 AbortController,reaper 调它而非仅 `ctx.fail()`);仍连着的客户端收**合成 error 帧**(非静默断流)、记 `failed`(非误记 `aborted`);`guardSseIterable` 加**第三 provenance** `reaperSignal`→`StreamReaperCancelError`→`classifyStreamError` 新 kind `reaper-cancel`→`stream-error`;**全 6 个** settled-abort 站点覆盖(anthropic / chat-completions / responses-HTTP / **responses-WS([ws.ts:332](../../src/routes/responses/ws.ts#L332) 独立 `sendErrorAndClose`+1011)** / gemini);`settled` guard 兜 reaper-自-fail 与 guard-path 的双 settle 幂等。**provenance-before-signal ordering 不变量(round-C HIGH)**:第三 provenance + classifyStreamError 新 kind + 6 站点映射必须**先于**把 reaper signal 接进 guard/transport 落地——否则中间 commit 出现"reaper-cancel 误判 client-abort→静默断流+错记 aborted"(缺陷④反向重演)。建议拆 C4a(RequestContext AbortController + stream.ts 第三 provenance + 6 站点映射,**此时尚未把 signal 接 guard**,纯加通路)→ C4b(reaper 调 abort + send.ts 折 reaper signal 进 fetch,此时 provenance 已就位)。系统不半坏:C4 前是装饰性 force-fail(泄漏到 1200s `response_header` 封顶);C4 后真回收。**pre-response reaper(已知可接受)**:reaper 在 streamSSE 前触发时 fetch reject 经 ① 出 504 + reaper-failed 终态(reaper-cancel 在 pre-response 混进 timeout 桶,对客户端无害)。补 repro:reaper 真调 `ctx.abort()`→fetch signal→0 unhandled(round-C MEDIUM:现有 repro 只间接覆盖)。 |
 
 每个 commit 单独可发布、系统不半坏:C1 独立有用(降噪;过渡态 state/status 不一致是已知、非 bug);C2 依赖 C1 的超时出口但不依赖 C3;C3 依赖 C1/C2 的 abort 语义。⓪ 完全独立。
 
