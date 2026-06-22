@@ -1,5 +1,7 @@
 # prompts — 未来会话实现提示词
 
+> ✅ **v4 流水线重构已全部完成 — 本目录归档为历史实现记录，勿再据此启动实现**。P0→P3 全部收官（v4 成唯一上游路径、`driver-flags.ts` 与各 legacy handler 均已删）；其后 Stage A（response-pipeline registry 激活）已完成、Stage B（driver-owned-writeout）进行中。下列各 prompt 是当时的实现说明，**file:line / 路径 / 策略数等引用已大幅过时**（如 anthropic codec 已迁 `src/lib/codec/anthropic/` 子目录、Anthropic 策略 8→10 条、`driver-flags.ts` 已删）。**当前架构现状以 [docs/DESIGN.md](../../DESIGN.md) + [docs/v4/05-progress.md](../05-progress.md) 为准；下方「▶ 当前位置（2026-06-17）」是历史快照、已失效。**
+
 每个文件是一个**可直接粘贴到新会话**的完整任务说明，驱动该阶段的实现。按顺序执行（P0→P1→P2→P3），每个阶段一个或多个会话。
 
 | 提示词 | 阶段 | 前置 |
