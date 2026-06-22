@@ -298,13 +298,35 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     return
   }
 
-  // outcome.kind === "complete" — drain the translator's stream-end frames (remaining tool calls +
-  // the terminal finishReason/usage frame), then settle from the codec-accumulated meta.
+  // outcome.kind === "complete" — settle from the codec-accumulated meta. But first detect
+  // truncation: a complete Gemini stream carries a real finishReason (its source CC stream always
+  // ends with finish_reason → accumulated into the meta DURING streaming). `getStreamMeta()`
+  // defaults to FINISH_REASON_UNSPECIFIED when none was seen — a truncated upstream. Detect BEFORE
+  // the flush: `codec.flushResponse` would otherwise write a terminal frame carrying that misleading
+  // UNSPECIFIED finishReason to the client (P-Gem). See docs/rfc/upstream-stream-truncation-detection.md.
+  const meta = codec.getStreamMeta()
+  if (meta.finishReason === "FINISH_REASON_UNSPECIFIED") {
+    recordForwarded()
+    const truncErr = new Error("Upstream stream truncated before completion (no finishReason)")
+    consola.error(`[gemini:v4] Upstream truncated for ${model}: drained without a real finishReason`)
+    env.ctx.fail(model, truncErr, { usage: geminiUsageFromMeta(meta) })
+    // Skip the normal flush (it would emit the misleading UNSPECIFIED terminal); emit a Gemini-shape
+    // error frame instead so the client gets a clean terminator. NOT forward-sampled (writeSynthetic).
+    await sink.writeSynthetic?.({
+      data: JSON.stringify({
+        candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
+        error: { code: 500, message: truncErr.message, status: geminiStreamErrorStatus(classifyStreamError(truncErr)) },
+      }),
+    })
+    return
+  }
+
+  // drain the translator's stream-end frames (remaining tool calls + the terminal finishReason/usage
+  // frame), then settle from the codec-accumulated meta.
   for (const frame of codec.flushResponse(env)) {
     await sink.write(frame)
   }
   recordForwarded()
-  const meta = codec.getStreamMeta()
   env.ctx.complete({
     success: true,
     model,

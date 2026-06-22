@@ -329,6 +329,27 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     registerResponseSession(acc.responseId, env.ctx.sessionId)
   }
 
+  // Truncation: a complete Responses stream ALWAYS carries a terminal `response.completed` /
+  // `.incomplete` / `.failed` (all three set `acc.status`). An empty `acc.status` after a clean
+  // drain means the upstream truncated before any terminal — settle FAIL (preserving the partial)
+  // + emit a Responses error frame so the client gets a clean terminator. Checked AFTER the
+  // viaFallback drain (whose synthesized closing lifecycle sets `acc.status`), so a real direct
+  // truncation is caught while a normal fallback close is not. (A truncated *underlying CC*
+  // stream under fallback still gets a synthesized `response.completed` here — that narrower gap
+  // is documented in docs/rfc/upstream-stream-truncation-detection.md §3.1/Q2.)
+  if (acc.status === "") {
+    recordForwarded()
+    const partial = buildResponsesResponseData(acc, model)
+    const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
+    consola.error(`[Responses:v4] Upstream truncated for ${acc.model || model}: drained without a terminal response event`)
+    env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
+    await sink.writeSynthetic?.({
+      event: "error",
+      data: JSON.stringify({ error: { message: truncErr.message, type: streamErrorToOpenAIErrorType(truncErr) } }),
+    })
+    return
+  }
+
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, model))
 }

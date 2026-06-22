@@ -372,6 +372,23 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // `[DONE]` (the driver dropped every upstream one; passthrough + via-responses both terminate
   // with exactly one — P2.2-D2). `sink.write` samples it (type: "message") into the forwarded
   // track before the snapshot.
+  if (acc.finishReason === "") {
+    // Truncation: the rendered stream never carried a finish_reason — a complete OpenAI stream
+    // always terminates with one, so a clean drain without it means the upstream truncated
+    // mid-stream. Settle FAIL (preserving the partial) + emit an OpenAI error frame instead of
+    // the normal `[DONE]`, so the client gets a clean terminator rather than a finish_reason-less
+    // stream it silently treats as done. See docs/rfc/upstream-stream-truncation-detection.md.
+    recordForwarded()
+    const partial = buildOpenAIResponseData(acc, model)
+    const truncErr = new Error("Upstream stream truncated before completion (no finish_reason)")
+    consola.error(`[ChatCompletions:v4] Upstream truncated for ${acc.model || model}: drained without a finish_reason`)
+    env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
+    await sink.writeSynthetic?.({
+      event: "error",
+      data: JSON.stringify({ error: { message: truncErr.message, type: streamErrorToOpenAIErrorType(truncErr) } }),
+    })
+    return
+  }
   await sink.write({ data: "[DONE]" })
   recordForwarded()
   env.ctx.complete(buildOpenAIResponseData(acc, model))
