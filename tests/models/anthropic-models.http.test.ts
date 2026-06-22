@@ -10,8 +10,8 @@ import type { Model } from "~/lib/models/client"
 
 import { setModels } from "~/lib/state"
 
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 // Real Copilot Claude entry from refs/AVAILABLE_MODELS.json (first item)
 const CLAUDE_OPUS_FIXTURE: Model = {
@@ -103,7 +103,7 @@ interface AnthropicListBody {
 }
 
 describe("GET /anthropic/v1/models", () => {
-  autoTestRuntime()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     setModels({ object: "list", data: [CLAUDE_OPUS_FIXTURE, GPT_FIXTURE] })

@@ -52,13 +52,12 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import { createFullTestApp } from "../helpers/test-app"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 const MODEL = "claude-sonnet-4.6"
 
@@ -109,8 +108,7 @@ async function postAndEntry(body: MessagesPayload): Promise<{ effective: unknown
 }
 
 describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamMock.mockClear()

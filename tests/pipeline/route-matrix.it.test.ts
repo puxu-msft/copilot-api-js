@@ -50,7 +50,7 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
 // ── env stub (decideRoute reads only model + body.model + clientFormat) ───────
 
@@ -163,7 +163,7 @@ const MATRIX: Array<MatrixRow> = [
 ]
 
 describe("P3.1 — unified decideRoute matrix (client format × supported_endpoints)", () => {
-  autoTestRuntime()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     setModels({

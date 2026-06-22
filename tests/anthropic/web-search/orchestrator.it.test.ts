@@ -26,12 +26,11 @@ import {
 import * as tokenModule from "~/lib/token"
 
 import { mockModel } from "../../helpers/factories"
+import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../../helpers/mock-fetch"
-import { autoTestRuntime } from "../../helpers/test-bootstrap"
 
 // ============================================================================
 // Mock
@@ -155,8 +154,7 @@ const basePayload = {
 }
 
 describe("orchestrateWebSearch", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     messagesHits = 0

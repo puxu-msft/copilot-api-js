@@ -29,6 +29,7 @@ import {
   //
   type StateSnapshot,
   restoreStateForTests,
+  setStateForTests,
   snapshotStateForTests,
 } from "~/lib/state"
 
@@ -37,7 +38,11 @@ let detachSinks: Array<() => void> = []
 
 /**
  * One-time runtime setup for tests:
- * - SQLite history (in-memory)
+ * - SQLite history opened IN-MEMORY (`:memory:`): faster, leak-free across test
+ *   files (each open is a fresh empty db — see connection.ts), and no temp file
+ *   to clean up. Tests that exercise real on-disk db features (WAL / startup
+ *   VACUUM / reaper persistence across reopen) inject their own `mkdtemp` path
+ *   and do NOT route through bootstrap (see tests/history/sqlite/*.it). RFC §11 R7.
  * - observability bus + minimal sinks (History persists; Telemetry counts)
  * - request context manager wired to the bus's `request.*` publisher
  *
@@ -48,6 +53,7 @@ let detachSinks: Array<() => void> = []
 export function bootstrapTestRuntime() {
   if (initialized) return
 
+  setStateForTests({ historyDbPath: ":memory:" })
   initHistory(true, 100)
 
   const bus = initBus()
@@ -67,6 +73,9 @@ export function resetTestRuntime() {
   // leave the shared DB closed, so the next file's getHistory()/queryEntries()
   // throws "database not initialized". initHistory() reopens it; clearHistory()
   // then empties both the in-flight map and the table for a clean slate.
+  // Re-assert `:memory:` here too: a preceding restoreStateForTests may have
+  // rolled historyDbPath back to "" (real path), so pin it before reopening.
+  setStateForTests({ historyDbPath: ":memory:" })
   initHistory(true, 100)
   clearHistory()
   resetAdaptiveRateLimiter()

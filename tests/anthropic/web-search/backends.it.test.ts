@@ -21,18 +21,16 @@ import {
   setStateForTests,
 } from "~/lib/state"
 
+import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../../helpers/mock-fetch"
-import { autoTestRuntime } from "../../helpers/test-bootstrap"
 
 const baseInput = { query: "typescript release", searchInput: "search instruction", maxOutputTokens: 256 }
 
 describe("executeWebSearch — backends", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })

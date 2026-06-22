@@ -1,6 +1,5 @@
 import {
   //
-  afterEach,
   beforeEach,
   describe,
   expect,
@@ -35,12 +34,11 @@ import {
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 // ----- upstream wire mock -----
 //
@@ -186,8 +184,7 @@ function createHistoryEntry(overrides?: Partial<HistoryEntry>): HistoryEntry {
 }
 
 describe("management and history HTTP routes", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     copilotUsageHits = 0
@@ -208,12 +205,6 @@ describe("management and history HTTP routes", () => {
         }),
       ],
     })
-  })
-
-  afterEach(() => {
-    // autoTestRuntime() already restores state + resetTestRuntime() (which
-    // clears history); only the telemetry singleton needs an extra reset here.
-    _resetRequestTelemetryForTests()
   })
 
   test("GET /api/tokens returns both GitHub and Copilot token metadata", async () => {

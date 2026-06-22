@@ -33,14 +33,12 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../../helpers/factories"
+import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../../helpers/mock-fetch"
 import { createSseResponse } from "../../helpers/sse"
-import { autoRestoreState } from "../../helpers/state-fixture"
-import { autoTestRuntime } from "../../helpers/test-bootstrap"
 
 // ============================================================================
 // Upstream mock — routes by URL suffix, scripts the two hops + search
@@ -306,11 +304,9 @@ interface SynthesizedBody {
 const webSearchTool = { name: "web_search", type: "web_search_20250305", max_uses: 5 }
 
 describe("POST /v1/messages — web_search double-hop", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
   // Restore state after each test — these tests mutate decode/backfill config and
   // bun runs the whole suite in one process (global singleton leaks across files).
-  autoRestoreState()
 
   beforeEach(() => {
     messagesHits = 0

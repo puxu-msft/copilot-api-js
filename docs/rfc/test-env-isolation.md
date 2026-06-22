@@ -1,6 +1,6 @@
 # RFC: 测试环境隔离机制全面重写
 
-**Status:** 设计定稿 — interim floor 已落地(commit `737f9a4`);范围=「默认隔离全重写」(§6 全 8 项,用户 2026-06-22 拍板);设计稿 §8–§10,**3 轮对抗 review 已做、结论与修订见 §11(权威,纠正了 §3/§8.3 的 pre-floor 过时框架)**;按 §11.3 的 P0–P4 实现中。
+**Status:** 实现中 — P0/P1/P3 已落地、P4 文档已回填;P2 分域迁移进行中(models 域已迁,anthropic/openai/responses/gemini/pipeline 域暂缓至并发 L2 会话收敛)。interim floor `737f9a4`;设计 §8–§10;**§11 为权威落地态**(含 review 结论 + P0–P4 进度)。
 **Date:** 2026-06-22
 **Owner:** 新会话推进中
 
@@ -215,10 +215,18 @@ history.db 30 文件清单见 subagent 审计原文(新会话用 `rg -l "bootstr
 - **R8 — floor/fixture 的 fs 职责边界写清**。floor(preload XDG/CODEX 重定向)=**全局 fs 根重定向**,fixture=**per-test runtime/state/network/单例 reset**,fixture **不**再做通用 fs 路径 override(fs 隔离归 floor)。文档明示这条边界,避免「fixture 名为 isolated 却把 fs 全甩给 floor」名实不符的困惑——这是有意分层:floor 管 fs 地板,fixture 管进程内状态。
 - **R9 — real-state-guard 收窄**。动态 writer 守卫与已落地 `sandbox-paths.unit`(静态断言 PATHS 落沙箱)职责部分重叠;增量价值仅在「writer 是否真读了被沙箱的 PATHS」(尤其有独立 seam 的 `learned-limits`)。收窄到行使**每个有独立路径变量的 writer**(learned-limits、telemetry、negotiation、history、**COPILOT_LOG/FileSink**、**codex**),不重复 PATHS 静态守卫已覆盖的。
 
-### 11.3 修订后的 P0–P4(取代 §9)
+### 11.3 修订后的 P0–P4(取代 §9)— 落地态
 
-- **P0 — src seam + 游离状态补 reset**(纯增量,生产路径不变):加 `setLearnedLimitsPathForTests`(engine.ts,当前无 seam);加 `resetRawModelsForTests`(R1);加同步 `clearAnthropicFeatureNegotiationForTests`(11.1,**不动**既有 async drain-reset);bootstrap 走 `:memory:` + 修 test-bootstrap.ts 撒谎注释 + 处理 once-flag×opts(R7a)。preload 加 `CODEX_HOME` 重定向 + `sandbox-paths.unit` 加 codex 断言(R4)。*Invariant*:全套件绿,生产行为不变。
-- **P1 — 统一 fixture + L1 守卫**(8.2 修订版):`isolated-fixture.ts`(`useIsolatedRuntime`);RESETTERS=`Array<() => void | Promise<void>>` 串行 await(R3);network guard 钉 `setUpstreamFetchForTests`(R6);RESETTERS 收全(R1/R2 全部);新增 `tests/infra/resetters-complete.unit.test.ts` L1 守卫(R2)。*Invariant*:additive,fixture+守卫自测绿,不迁移任何测试。
-- **P2 — 分域迁移**(按 `tests/<域>/` 分批,每域一 commit):`useIsolatedRuntime()` **原子取代**旧 `autoTestRuntime`+`autoRestoreState`+`autoRestoreFetch`+逐测试 negotiation reset(R5:同文件不并存)。*Invariant*:每批该域绿 + 全套件绿;未迁域走旧 primitive(不删)。
-- **P3 — 端到端 writer 守卫**(R9 收窄版):`tests/infra/real-state-guard.unit.test.ts` 行使有独立路径的 writer(含 COPILOT_LOG/codex)断言落点含 SANDBOX_MARKER;**自证非假阴性**(故意解除沙箱时须红)。*Invariant*:守卫绿且可证伪。
-- **P4 — 收尾**:删被取代的死 primitive(判据=删后 typecheck+全套件绿作 oracle,非只 grep,R 防 barrel 漏网);回填 `docs/coding-conventions.md`+CLAUDE.md(R8 边界);更新本 RFC→落地;维护 memory。*Invariant*:无悬挂死导出,文档与代码一致。
+进度图例:`[done]` 已落地 / `[wip]` 进行中 / `[deferred]` 暂缓(原因附后)。
+
+- **P0 `[done]` — src seam + 去副作用**(8.3+8.4 的 src 侧):加 `setLearnedLimitsPathForTests`(engine.ts);negotiation **新增同步 `clearAnthropicFeatureNegotiationForTests`**(既有 async drain-reset 不动,11.1);加 `resetRawModelsForTests`(R1);bootstrap 走 `:memory:` + 修撞谎注释;preload 加 `CODEX_HOME` 重定向 + `sandbox-paths.unit` 加 codex 断言(R4)。**落地 commit**:`1c979a6`(P0a CODEX)/`8f2839f`(P0b seam)/`cc20561`(P0c :memory:)。全 backend 2960 pass。
+  *注*:telemetry reset **未改**(11.1 证伪:floor 下 re-point 即 sandbox,非泄漏)。
+- **P1 `[done]` — 统一 fixture + L1 守卫**(8.2 修订版):`tests/helpers/isolated-fixture.ts`(`useIsolatedRuntime`);RESETTERS=`Array<{name, reset}>` 串行 await(R3);network guard reject(不 throw)钉 `setUpstreamFetchForTests`(R6);RESETTERS 收全 13 项(含 http2-factory,R1/R2);L1 守卫 `tests/infra/resetters-complete.unit.test.ts`(R2)+ fixture 自测。**落地 commit**:`3d1b663`。全 backend 2968 pass。
+- **P2 `[wip]` — 分域迁移**(按 `tests/<域>/` 分批,`useIsolatedRuntime()` 原子取代旧 primitive,R5 不并存):
+  - `[done]` **models 域**(`9006e1b`,107 pass)——示范 setModels→rawModels 泄漏被 fixture 修。
+  - `[done]` **低碰撞 batch 2**(`5dcf7fc`):infra/management-routes、anthropic/web-search(orchestrator/backends/web-search)、pipeline(route-matrix/payload-rewrite-registry)——autoTestRuntime+autoRestoreFetch(+autoRestoreState)原子取代;web-search 用 applyFetchMock 覆盖 network guard 实证不误伤。全 backend 2971 pass。
+  - `[deferred]` **anthropic/openai/responses/gemini/pipeline 流式域**(~13 文件):被**并发的 L2 pipeline 会话**正在活跃编辑(anthropic-v4/streaming-l2-baseline、chat-completions-v4、responses-v4/ws、gemini-v4、pipeline/buffered-sink、helpers/sse),同文件并发改动会真实冲突。**暂缓至 L2 会话收敛后**再迁,非降级——迁移机械、pattern 已立(见 models/batch2 commit),任何人可续。
+  - `[todo]` **autoRestoreState/autoRestoreFetch-only 的轻量文件**(纯 unit,不需全 runtime):是否迁移需逐个判断(useIsolatedRuntime 会起 runtime,对纯函数测试偏重);触碰 module-global 的才必须迁,否则旧 primitive 仍正确。
+  *Invariant*:每批该域绿 + 全套件绿;未迁域走旧 primitive(新旧并存无害,旧 primitive 不删)。
+- **P3 `[done]` — 端到端 writer 守卫**(R9 收窄版):`tests/infra/real-state-guard.it.test.ts` 行使 negotiation/learned-limits writer 断言落点含 SANDBOX_MARKER 且不在真实 home(可证伪)。**落地 commit**:`6e6fae1`。
+- **P4 `[wip]` — 收尾**:`[done]` DESIGN.md 回填默认隔离纪律(`0b145bf`);`[todo]` P2 全迁完后删被取代的死 primitive(`autoTestRuntime`/`autoRestoreState`/`autoRestoreFetch`,判据=删后 typecheck+全套件绿)、更新本 RFC→完全落地、维护 memory。*注*:`docs/coding-conventions.md` 不存在(CLAUDE.md 引用但未建),纪律回填进 DESIGN.md §测试组织;CLAUDE.md 有大量预存未提交外来改动,未触碰避免裹入。

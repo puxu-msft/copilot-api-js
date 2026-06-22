@@ -10,8 +10,8 @@ import type { Model } from "~/lib/models/client"
 
 import { setModels } from "~/lib/state"
 
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 const CLAUDE_OPUS_FIXTURE: Model = {
   id: "claude-opus-4.6-1m",
@@ -65,7 +65,7 @@ interface OpenAIModelListBody {
 const app = createFullTestApp()
 
 describe("GET /v1/models — extended capability fields", () => {
-  autoTestRuntime()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     setModels({ object: "list", data: [CLAUDE_OPUS_FIXTURE] })
