@@ -82,9 +82,17 @@ function makeSerializer(): (fn: () => void | Promise<void>) => Promise<void> {
 }
 
 /**
- * Derive the forwarded-record `type` exactly as the legacy `forwardClientFrame` did:
- * the parsed JSON `type`, falling back to the SSE `event:` name, then "keepalive".
- * Kept format-agnostic (plain `JSON.parse`, no Anthropic import).
+ * Derive the forwarded-record `type`: the parsed JSON `type`, falling back to the SSE
+ * `event:` name, then — for a data-bearing frame with neither — "message" (a content
+ * chunk), and "keepalive" only for an empty frame. The fallback tail mirrors the driver's
+ * upstream-track derivation (driver.ts loop-top: `frame.event ?? (frame.data ? "message" :
+ * "keepalive")`) so the forwarded + upstream tracks label frames by the SAME rule. Anthropic
+ * frames carry a parsed `type` (and the ping an `event`) so they never reach the tail; CC
+ * chunks (no `type`, no `event` line) read "message", matching the legacy CC `frame.event ??
+ * "message"` push for every frame CC actually forwards (an event-less EMPTY frame — which
+ * compliant OpenAI streams don't emit — reads "keepalive" here vs the legacy unconditional
+ * "message", the only divergence, deliberately chosen for upstream-track consistency). Kept
+ * format-agnostic (plain `JSON.parse`, no Anthropic import).
  */
 function frameType(frame: ClientFrame): string {
   if (frame.data) {
@@ -92,10 +100,10 @@ function frameType(frame: ClientFrame): string {
       const parsed = JSON.parse(frame.data) as { type?: unknown }
       if (typeof parsed.type === "string") return parsed.type
     } catch {
-      // not JSON → fall through to the event/keepalive label
+      // not JSON → fall through to the event/message/keepalive label
     }
   }
-  return frame.event ?? "keepalive"
+  return frame.event ?? (frame.data ? "message" : "keepalive")
 }
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */

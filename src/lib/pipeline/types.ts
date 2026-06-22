@@ -240,6 +240,19 @@ export interface RunResponseOpts {
    */
   onUpstreamFrame?: (frame: UpstreamFrame) => void
   /**
+   * owns-sink only (consumed by `runResponseSink`, ignored by the generator
+   * `runResponse`): a post-S6-render, pre-write per-frame hook. The COUNTERPART of
+   * `onUpstreamFrame` (pre-rewrite, observe-only) — where the upstream side observes raw
+   * frames for the upstream-original track, the forwarded side TRANSFORMS each rendered
+   * frame for the client. The handler does its rendered-frame-side work (accumulate → the
+   * terminal `complete` data, progress) as a side effect AND returns the frame to forward,
+   * e.g. CC tool-name restore (forwarded-only: history keeps the upstream names via the
+   * driver's raw upstream-track sampling, so the restore must NOT touch that track).
+   * Applied AFTER the `[DONE]` sentinel is dropped, so it never sees `[DONE]`. Anthropic
+   * omits it (its restore is an S5 rewrite; it accumulates raw via `onUpstreamFrame`).
+   */
+  onRenderedFrame?: (frame: ClientFrame) => ClientFrame
+  /**
    * Dry-run only (pipeline-dry-run-inspector.md §4 T1): yield the S5-rewritten frames
    * VERBATIM instead of running `codec.renderResponse` (S6). For a format whose render is
    * NON-identity (CC-via-responses / Responses fallback / Gemini), this exposes the S5

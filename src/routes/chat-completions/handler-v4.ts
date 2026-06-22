@@ -6,16 +6,17 @@
  * per-request driver (codec + HTTP transport + env strategies) and drives the
  * seven stages, keeping behavior equivalent to the legacy handler.
  *
- * P2-era division of labor (sampling sinks to the driver in P3.2): this route
- * still owns the response-side sampling (forwarded SSE events + accumulate +
- * complete/fail) and the client-facing finishing the codec does NOT do —
- * tool-name restore, the verbose truncation marker, and the via-responses
- * trailing `[DONE]` (P2.2-D2). The error frame is built inline (raw upstream
- * message) rather than via `codec.formatError` (P2.2-D4 — formatError only gets
- * the classified kind; the consumer has the raw error, so it matches legacy).
+ * Division of labor (Stage B CC cut-over — owns-the-sink streaming): the DRIVER owns the
+ * client write-out (`runResponseSink` writes each rendered frame to a `makeSseSink`); this
+ * route does the rendered-frame-side work through the driver's `onRenderedFrame` hook
+ * (accumulate + progress + the forwarded-only tool-name restore), samples the forwarded track
+ * inside the sink (`onForwarded`), synthesizes the verbose truncation marker + the trailing
+ * `[DONE]` (P2.2-D2), and maps the outcome to `complete`/`fail`/`abort`. The H3 error frame is
+ * built inline (raw upstream message) rather than via `codec.formatError` (P2.2-D4 — formatError
+ * only gets the classified kind; the consumer has the raw error, so it matches legacy).
+ * The non-streaming path still renders + settles directly (no sink).
  */
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 import type { SSEStreamingApi } from "hono/streaming"
 
@@ -29,6 +30,7 @@ import type { OpenAIAutoTruncateResult } from "~/lib/openai/auto-truncate"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
+  ClientFrame,
   DriverRequestResult,
   UpstreamStream,
 } from "~/lib/pipeline/types"
@@ -61,9 +63,9 @@ import {
   restoreChatCompletionsChunkToolNames,
   restoreChatCompletionsToolNames,
 } from "~/lib/openai/tool-name-sanitize"
+import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { buildOpenAIResponseData } from "~/lib/request"
-import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
@@ -260,83 +262,117 @@ interface PumpStreamingV4Options {
   getTruncateResult: () => OpenAIAutoTruncateResult | undefined
 }
 
+/**
+ * Stream pump for the v4 Chat Completions path — **owns-the-sink** (Stage B CC cut-over).
+ * The driver OWNS the client write-out: it drives the S5 chain (empty for CC) + S6 render
+ * (identity for passthrough, Responses→CC translation for via-responses) and writes each
+ * frame to the injected {@link makeSseSink}, returning a control-signal {@link import("~/lib/pipeline/types").ResponseOutcome}.
+ * This handler:
+ *   - does its rendered-frame-side work in the driver's `onRenderedFrame` hook (the
+ *     post-render counterpart of Anthropic's pre-rewrite `onUpstreamFrame`): per frame it
+ *     accumulates (UPSTREAM names → the terminal `complete` data), records progress, and
+ *     RETURNS the tool-name-RESTORED frame to forward (forwarded-only — the driver's raw
+ *     upstream-track sampling keeps the upstream names in history),
+ *   - samples the FORWARDED track INSIDE the sink (`onForwarded` → `forwardedSseEvents`):
+ *     the verbose marker (written first), every restored content frame, and the synthesized
+ *     trailing `[DONE]` all flow through `sink.write` (sampled); the H3 error frame goes
+ *     through the NON-sampling `sink.writeSynthetic` (legacy CC never recorded it),
+ *   - synthesizes the SINGLE trailing `[DONE]` itself (the driver drops every upstream
+ *     `[DONE]`; passthrough AND via-responses both terminate with exactly one — P2.2-D2),
+ *   - maps the outcome + its own accumulator to the terminal ctx state. CC has no terminal
+ *     upstream `error` frame (no H2 — the OpenAI accumulator tracks no `streamError`), so the
+ *     only failure path is H3 (`stream-error`) / client-abort (`settled-abort`).
+ *
+ * CC has no fake-SSE heartbeat (Anthropic-only), so the sink runs no forward-idle racer.
+ */
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
   const acc = createOpenAIStreamAccumulator()
   const mapper = env.ctx.toolNameMapper
-  const viaResponses = env.targetEndpoint === ENDPOINT.RESPONSES
   const model = (env.body as ChatCompletionsPayload).model
 
+  // Forwarded SSE frames — what the client ACTUALLY received (tool-name restored). Filled by
+  // the sink's `onForwarded` sampler; the upstream-original track is the driver's (runResponse
+  // loop-top samples the raw frames before render).
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let bytesIn = 0
   let eventsIn = 0
 
-  try {
-    // Verbose truncation marker as the first forwarded chunk.
-    const truncateResult = opts.getTruncateResult()
-    if (state.verbose && truncateResult?.wasTruncated) {
-      const marker = createTruncationResponseMarkerOpenAI(truncateResult)
-      const markerChunk: ChatCompletionChunk = {
-        id: `truncation-marker-${Date.now()}`,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [{ index: 0, delta: { content: marker }, finish_reason: null, logprobs: null }],
+  // The driver-owned client sink: SSE write-out + forwarded sampling. No heartbeat (CC has
+  // no stream_fake_sse_heartbeat). The sink preserves SSE id/retry framing it is given.
+  const sink = makeSseSink(stream, {
+    onForwarded: (record) => forwardedSseEvents.push(record),
+    streamStartMs,
+  })
+  const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+
+  // Verbose truncation marker as the FIRST forwarded chunk (before the driver loop). The sink
+  // samples it (event: "message"); `acc.rawContent` records it so the accumulated completion
+  // data includes the marker (legacy parity).
+  const truncateResult = opts.getTruncateResult()
+  if (state.verbose && truncateResult?.wasTruncated) {
+    const marker = createTruncationResponseMarkerOpenAI(truncateResult)
+    const markerChunk: ChatCompletionChunk = {
+      id: `truncation-marker-${Date.now()}`,
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{ index: 0, delta: { content: marker }, finish_reason: null, logprobs: null }],
+    }
+    await sink.write({ data: JSON.stringify(markerChunk), event: "message" })
+    acc.rawContent += marker
+  }
+
+  // Per rendered frame (post-S6, pre-write): progress + accumulate on the UPSTREAM-named frame
+  // (the accumulated completion data keeps upstream names) + return the RESTORED frame for
+  // forwarding (id/retry/event preserved by the spread; the sink writes them). The driver
+  // drops `[DONE]` before this fires.
+  const onRenderedFrame = (frame: ClientFrame): ClientFrame => {
+    bytesIn += frame.data?.length ?? 0
+    eventsIn++
+    env.ctx.recordStreamProgress({ bytesIn, eventsIn })
+    if (frame.data) {
+      try {
+        accumulateOpenAIStreamEvent(JSON.parse(frame.data) as ChatCompletionChunk, acc)
+      } catch (err) {
+        consola.debug(`[ChatCompletions:v4] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, frame.data.slice(0, 200))
       }
-      await stream.writeSSE({ data: JSON.stringify(markerChunk), event: "message" })
-      forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: "message", raw: JSON.stringify(markerChunk) })
-      acc.rawContent += marker
     }
+    return { ...frame, data: restoreStreamToolNames(frame.data, mapper) }
+  }
 
-    for await (const frame of driver.runResponse(upstream, env)) {
-      bytesIn += frame.data?.length ?? 0
-      eventsIn++
-      env.ctx.recordStreamProgress({ bytesIn, eventsIn })
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onRenderedFrame })
 
-      // Accumulate for history/tracking (upstream names; skip [DONE]/empty).
-      if (frame.data && frame.data !== "[DONE]") {
-        try {
-          accumulateOpenAIStreamEvent(JSON.parse(frame.data) as ChatCompletionChunk, acc)
-        } catch (err) {
-          consola.debug(`[ChatCompletions:v4] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, frame.data.slice(0, 200))
-        }
-      }
+  if (outcome.kind === "settled-abort") {
+    // Client disconnected mid-stream — write ZERO further bytes (B0-d). Record what was
+    // forwarded so far, then settle as aborted (mirrors settleStreamingFailure's abort branch).
+    recordForwarded()
+    consola.debug("[ChatCompletions:v4] Client disconnected mid-stream — recording aborted")
+    env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
+    return
+  }
 
-      // Forward with tool-call names restored (upstream → original). Preserve
-      // id/retry when the upstream frame carried them (passthrough path).
-      const sse = frame as ServerSentEventMessage
-      const forwardData = restoreStreamToolNames(frame.data, mapper)
-      forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? "message", raw: forwardData })
-      await stream.writeSSE({
-        data: forwardData,
-        event: frame.event,
-        id: sse.id !== undefined ? String(sse.id) : undefined,
-        retry: sse.retry,
-      })
-    }
-
-    // P2.2-D2: synthesize the via-responses trailing [DONE] (the per-frame codec
-    // render never emits it; passthrough gets [DONE] from the upstream frames).
-    if (viaResponses) {
-      forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: "message", raw: "[DONE]" })
-      await stream.writeSSE({ data: "[DONE]" })
-    }
-
-    const responseData = buildOpenAIResponseData(acc, model)
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    env.ctx.complete(responseData)
-  } catch (error) {
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } }
-    if (settleStreamingFailure({ reqCtx: env.ctx, error, model: acc.model || model, partial })) {
-      consola.debug("[ChatCompletions:v4] Client disconnected mid-stream — recording aborted")
-      return
-    }
+  if (outcome.kind === "stream-error") {
+    // H3 — the upstream iterable (or a sink write) threw a non-abort error. Settle as fail
+    // (partial usage) + write the OpenAI error frame through the NON-sampling writeSynthetic
+    // path (legacy CC never pushed the error frame to the forwarded track).
+    recordForwarded()
+    const error = outcome.error
+    env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     consola.error("[ChatCompletions:v4] Stream error:", error)
-    await stream.writeSSE({
+    await sink.writeSynthetic?.({
       data: JSON.stringify({ error: { message: error instanceof Error ? error.message : String(error), type: streamErrorToOpenAIErrorType(error) } }),
       event: "error",
     })
+    return
   }
+
+  // outcome.kind === "complete" — the upstream drained cleanly. Synthesize the SINGLE trailing
+  // `[DONE]` (the driver dropped every upstream one; passthrough + via-responses both terminate
+  // with exactly one — P2.2-D2). `sink.write` samples it (type: "message") into the forwarded
+  // track before the snapshot.
+  await sink.write({ data: "[DONE]" })
+  recordForwarded()
+  env.ctx.complete(buildOpenAIResponseData(acc, model))
 }
