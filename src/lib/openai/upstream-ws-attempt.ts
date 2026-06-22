@@ -68,6 +68,13 @@ export interface UpstreamWsAttemptOptions {
   conversationId?: string
   /** Client-disconnect signal propagated into the WS request so it frees promptly. */
   clientAbortSignal?: AbortSignal
+  /**
+   * Stale-request REAPER signal (`ctx.lifecycleSignal`) — a DISTINCT provenance from
+   * `clientAbortSignal`, folded into the WS request so a reap cancels the in-flight WS
+   * + frees the connection. The OUTER guard (`guardSseIterable` in responses-transport)
+   * distinguishes reaper-cancel → `stream-error` → error frame for a live client (缺陷④).
+   */
+  reaperSignal?: AbortSignal
 }
 
 /**
@@ -119,12 +126,14 @@ export async function attemptUpstreamResponsesWs(
   const requestAbort = new AbortController()
   const shutdownSignal = getShutdownSignal()
   const clientAbortSignal = opts?.clientAbortSignal
-  const wsRequestSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, requestAbort.signal)
+  const reaperSignal = opts?.reaperSignal
+  const wsRequestSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal, requestAbort.signal)
 
   // Forward external aborts into the local controller so finally-cleanup is consistent.
   const onExternalAbort = () => requestAbort.abort()
   shutdownSignal.addEventListener("abort", onExternalAbort, { once: true })
   clientAbortSignal?.addEventListener("abort", onExternalAbort, { once: true })
+  reaperSignal?.addEventListener("abort", onExternalAbort, { once: true })
 
   const fetchSignal = createFetchSignal()
   const onFetchTimeout = () => {
@@ -135,6 +144,7 @@ export async function attemptUpstreamResponsesWs(
   const detachExternal = () => {
     shutdownSignal.removeEventListener("abort", onExternalAbort)
     clientAbortSignal?.removeEventListener("abort", onExternalAbort)
+    reaperSignal?.removeEventListener("abort", onExternalAbort)
     fetchSignal?.removeEventListener("abort", onFetchTimeout)
   }
 
@@ -163,9 +173,11 @@ export async function attemptUpstreamResponsesWs(
         requestAbort,
         shutdownSignal,
         clientAbortSignal,
+        reaperSignal,
         onComplete: () => {
           shutdownSignal.removeEventListener("abort", onExternalAbort)
           clientAbortSignal?.removeEventListener("abort", onExternalAbort)
+          reaperSignal?.removeEventListener("abort", onExternalAbort)
         },
       }),
     }
@@ -190,13 +202,14 @@ interface StreamWsEventsOptions {
   requestAbort: AbortController
   shutdownSignal: AbortSignal | undefined
   clientAbortSignal: AbortSignal | undefined
+  reaperSignal: AbortSignal | undefined
   onComplete: () => void
 }
 
 async function* streamWsEvents(opts: StreamWsEventsOptions): AsyncGenerator<ServerSentEventMessage> {
-  const { firstEvent, iterator, requestAbort, shutdownSignal, clientAbortSignal, onComplete } = opts
+  const { firstEvent, iterator, requestAbort, shutdownSignal, clientAbortSignal, reaperSignal, onComplete } = opts
   const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
-  const idleAbortSignal = combineAbortSignals(shutdownSignal, clientAbortSignal)
+  const idleAbortSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal)
 
   try {
     yield toSseMessage(firstEvent)

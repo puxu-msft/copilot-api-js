@@ -84,22 +84,26 @@ async function selectAndSend(wire: PreparedRequest, env: RequestEnvelope, deps: 
   const responsesPayload = wire.body as ResponsesPayload
   const headers = Object.fromEntries(wire.headers.entries())
   const model = env.model as Model | undefined
+  // Reaper signal (缺陷④): DISTINCT provenance from clientAbort, folded into BOTH the
+  // upstream WS request / HTTP fetch (cancel the in-flight) and the stream guard (a
+  // mid-stream reap reaches a live client as reaper-cancel → stream-error → error frame).
+  const reaperSignal = env.ctx.lifecycleSignal
 
   if (wire.stream && canUseUpstreamWebSocket(model)) {
     const attempt = await attemptUpstreamResponsesWs(
       { wire: responsesPayload, headers },
-      { conversationId: deps.conversationId, clientAbortSignal: deps.clientAbortSignal },
+      { conversationId: deps.conversationId, clientAbortSignal: deps.clientAbortSignal, reaperSignal },
     )
     if (attempt.kind === "ok") {
       reportTransport(env, "upstream-ws")
-      return { frames: guardWsOrHttp(attempt.generator, deps), headers: new Headers() }
+      return { frames: guardWsOrHttp(attempt.generator, deps, reaperSignal), headers: new Headers() }
     }
     reportTransport(env, "upstream-ws-fallback")
   } else {
     reportTransport(env, "http")
   }
 
-  return sendViaHttp(wire, deps)
+  return sendViaHttp(wire, deps, reaperSignal)
 }
 
 /** Report the chosen transport on the ctx attempt (legacy `onTransport` → `setAttemptTransport`). */
@@ -108,7 +112,7 @@ function reportTransport(env: RequestEnvelope, transport: RequestTransport): voi
 }
 
 /** HTTP send: pure fetch (no client-abort folded in — Responses-historical) + guard on stream. */
-async function sendViaHttp(wire: PreparedRequest, deps: UpstreamResponsesTransportDeps): Promise<UpstreamStream> {
+async function sendViaHttp(wire: PreparedRequest, deps: UpstreamResponsesTransportDeps, reaperSignal?: AbortSignal): Promise<UpstreamStream> {
   const result = await sendUpstreamHttp({
     endpointPath: wire.url,
     headers: Object.fromEntries(wire.headers.entries()),
@@ -118,6 +122,7 @@ async function sendViaHttp(wire: PreparedRequest, deps: UpstreamResponsesTranspo
     modelId: (wire.body as { model?: unknown }).model as string | undefined,
     diagnosticsTools: (wire.body as { tools?: unknown }).tools,
     headersCapture: deps.headersCapture,
+    reaperSignal,
   })
 
   const responseHeaders = new Headers(deps.headersCapture?.response ?? {})
@@ -126,15 +131,20 @@ async function sendViaHttp(wire: PreparedRequest, deps: UpstreamResponsesTranspo
     return { frames: emptyFrames(), nonStream: result, headers: responseHeaders }
   }
 
-  return { frames: guardWsOrHttp(result as AsyncIterable<ServerSentEventMessage>, deps), headers: responseHeaders }
+  return { frames: guardWsOrHttp(result as AsyncIterable<ServerSentEventMessage>, deps, reaperSignal), headers: responseHeaders }
 }
 
-/** Wrap the raw upstream SSE source (WS generator or HTTP events) in the idle/shutdown/client guard. */
-function guardWsOrHttp(source: AsyncIterable<ServerSentEventMessage>, deps: UpstreamResponsesTransportDeps): AsyncIterable<UpstreamFrame> {
+/** Wrap the raw upstream SSE source (WS generator or HTTP events) in the idle/shutdown/client/reaper guard. */
+function guardWsOrHttp(
+  source: AsyncIterable<ServerSentEventMessage>,
+  deps: UpstreamResponsesTransportDeps,
+  reaperSignal?: AbortSignal,
+): AsyncIterable<UpstreamFrame> {
   return guardSseIterable(source, {
     idleTimeoutMs: deps.idleTimeoutMs,
     shutdownSignal: getShutdownSignal(),
     clientSignal: deps.clientAbortSignal,
+    reaperSignal,
   }) as AsyncIterable<UpstreamFrame>
 }
 
