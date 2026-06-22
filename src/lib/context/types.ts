@@ -122,6 +122,8 @@ export interface Attempt {
    * the buffered-retry path populates this; single-attempt live streaming leaves it unset.
    */
   sseEvents?: Array<SseEventRecord>
+  /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
+  responseHeaders?: Record<string, string>
 }
 
 // ─── History Entry Data ───
@@ -179,6 +181,8 @@ export interface HistoryEntryData {
     messages?: Array<unknown>
     system?: unknown
     payload?: unknown
+    /** RFC Phase 3: ② outbound/per-attempt request headers. */
+    headers?: Record<string, string>
   }
 
   /** Upstream → Proxy: the upstream-original response. */
@@ -219,10 +223,14 @@ export interface HistoryEntryData {
       messages?: Array<unknown>
       system?: unknown
       payload?: unknown
+      /** RFC Phase 3: ② per-attempt outbound request headers. */
+      headers?: Record<string, string>
     }
     response?: ResponseData
     /** Per-attempt upstream-original SSE frames (L2 buffered retry / D1) — present on FAILED attempts only. */
     sseEvents?: Array<SseEventRecord>
+    /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
+    responseHeaders?: Record<string, string>
   }>
 }
 
@@ -322,6 +330,7 @@ export interface RequestContext {
   setAttemptWireRequest(req: WireRequest): void
   setAttemptTransport(transport: RequestTransport): void
   setAttemptResponse(response: ResponseData): void
+  setAttemptResponseHeaders(headers: Record<string, string>): void
   setAttemptError(error: ApiError): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void

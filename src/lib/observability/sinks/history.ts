@@ -269,6 +269,9 @@ export class HistorySink {
           messages: entryData.outboundRequest.messages as NonNullable<HistoryEntry["outboundRequest"]>["messages"],
           system: entryData.outboundRequest.system as NonNullable<HistoryEntry["outboundRequest"]>["system"],
           payload: entryData.outboundRequest.payload,
+          // RFC Phase 3: ② per-attempt/outbound request headers (the explicit field
+          // projection must carry the new leg field through HistoryEntryData→HistoryEntry).
+          ...(entryData.outboundRequest.headers && { headers: entryData.outboundRequest.headers }),
         },
       }),
       ...(entryData.httpHeaders && { httpHeaders: entryData.httpHeaders }),
@@ -330,6 +333,7 @@ function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry
     wireRequest: a.wireRequest as NonNullable<HistoryEntry["attempts"]>[number]["wireRequest"],
     response: a.response ? responseDataToHistory(a.response) : undefined,
     sseEvents: a.sseEvents,
+    responseHeaders: a.responseHeaders,
   }))
 }
 

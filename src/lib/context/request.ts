@@ -90,6 +90,7 @@ export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outb
     messages: wp.messages,
     system: (wp.payload as Record<string, unknown> | undefined)?.system,
     payload: wp.payload,
+    headers: wp.headers,
   }
 }
 
@@ -376,6 +377,15 @@ export function createRequestContext(opts: {
       }
     },
 
+    setAttemptResponseHeaders(headers: Record<string, string>) {
+      // RFC Phase 3: ③ per-attempt upstream response headers. The driver writes this for
+      // EVERY attempt (success: UpstreamStream.headers; failure: apiError.responseHeaders) —
+      // unlike `response` (final attempt only via complete/fail). Small → rides the attempt
+      // summary (head blob), no heavy stage.
+      const attempt = ctx.currentAttempt
+      if (attempt) attempt.responseHeaders = headers
+    },
+
     setAttemptError(error: ApiError) {
       const attempt = ctx.currentAttempt
       if (attempt) {
@@ -607,6 +617,7 @@ export function createRequestContext(opts: {
           wireRequest: a.wireRequest ? legFromWire(a.wireRequest) : undefined,
           response: a.response ?? undefined,
           sseEvents: a.sseEvents,
+          responseHeaders: a.responseHeaders,
         }))
       }
 

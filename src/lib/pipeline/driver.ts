@@ -268,12 +268,14 @@ async function runExchange(
       // headers in hand; ③ outboundResponse = the upstream response headers carried
       // by UpstreamStream.headers (empty for the upstream-WS path → leg omitted).
       // Written per-attempt via the merge setter → the FINAL attempt's values stick
-      // at the top-level legs (per-attempt persistence is Phase 3).
+      // at the top-level legs; Phase 3 ALSO records them per-attempt (setAttempt*).
       const upstreamRespHeaders = Object.fromEntries(upstream.headers.entries())
+      const wireReqHeaders = Object.fromEntries(wire.headers.entries())
       current.ctx.setHttpHeaders({
-        request: Object.fromEntries(wire.headers.entries()),
+        request: wireReqHeaders,
         ...(Object.keys(upstreamRespHeaders).length > 0 && { response: upstreamRespHeaders }),
       })
+      if (Object.keys(upstreamRespHeaders).length > 0) current.ctx.setAttemptResponseHeaders(upstreamRespHeaders)
       // onResolved threads the post-gate meta of the retry that produced this env
       // (C0-② / RFC §11.2) so the owning strategy commits its learning from it
       // (e.g. unsupported-beta fixates meta.probedBetas). undefined on first-attempt
@@ -293,6 +295,7 @@ async function runExchange(
         request: Object.fromEntries(wire.headers.entries()),
         ...(apiError.responseHeaders && { response: Object.fromEntries(apiError.responseHeaders.entries()) }),
       })
+      if (apiError.responseHeaders) current.ctx.setAttemptResponseHeaders(Object.fromEntries(apiError.responseHeaders.entries()))
 
       const strategy = strategies.find((s) => s.canHandle(apiError))
       if (!strategy) throw error // no strategy → [FAIL]

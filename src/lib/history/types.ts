@@ -194,6 +194,7 @@ export interface RequestLegData {
   messages?: Array<MessageContent>
   system?: string | Array<SystemBlock>
   payload?: unknown
+  headers?: Record<string, string>
 }
 
 /** Upstream → Proxy response as recorded in history (top-level and per-attempt). */
@@ -296,6 +297,8 @@ export interface HistoryEntry {
      * (final) attempt's frames remain the top-level `sseEvents` (attempt_index -1).
      */
     sseEvents?: Array<SseEventRecord>
+    /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
+    responseHeaders?: Record<string, string>
   }>
 }
 
