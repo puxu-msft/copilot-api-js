@@ -201,6 +201,12 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 - **Q4**：buffer 上限超限退回 live 转发后，该响应**失去 L2 保护**（live 流一旦 RST 仍失败）。可接受（病态超大响应罕见），但需文档化。**[已落地+文档化]** `protect_streaming_buffer_cap_bytes` 默认 16MiB；retreat 后不重试（帧已转发）。
 - **Q5**：escalation 收紧 context_management 改变了请求语义（丢更多旧上下文）——是否应在响应里给客户端某种"本响应经过上下文压缩"的提示？倾向否（透明即可），记此问题。**[决议]** 不提示（透明）；**额外决定**：escalation 不 override 客户端**自带**的 `context_management`（尊重其显式上下文策略，见 `request-preparation.ts` 注释）。**勘误**：早先误以为 opus-4.8 不在 `modelSupportsContextEditing`——核对官方 GHC 源（catch-all `startsWith('claude-opus-4')` → opus-4.8 = true）后确认本项目逐版本白名单漏了 4-8，已补（`features.ts`），escalation 现对 opus-4.8（L2 目标模型）正常生效。
 - **Q6**：与 web_search 双跳 `[bypass]`（不进 driver）的交互——双跳路径不享 L2，需在双跳迁 driver 时收敛（与既有 `[bypass]` 暂缓项一致）。
+- **Q8 — L2 是否推广到非 Anthropic 格式？决议：暂不，保持 Anthropic-only（2026-06-22 判断，用户确认记录）**。
+  - **漏洞本身格式无关**：CC / Responses-HTTP / Responses-WS / Gemini 全走同一 `runResponseSink` + http2-client（`chat-completions/handler-v4.ts:345`、`responses/handler-v4.ts:292`、`responses/ws.ts:330`、`gemini/handler-v4.ts:272`），**同样会被 GHC mid-stream RST/截断**——不是 Anthropic 专属弱点。
+  - **但只在 Anthropic 被观测到，非巧合**：触发条件是 Claude Code 在超大上下文（150-200K）上做大 Write/Edit、opus-4.8、~150s 生成——是 **Claude Code→Anthropic 的工作负载特征**。非 Anthropic 客户端（Codex→Responses、OpenAI SDK→CC、Gemini）不一定跑同样的"巨上下文+巨输出"模式。给**未观测到的问题**建 premium 保护 = 投机性表面（违反 YAGNI）。
+  - **L1 已覆盖全部 4 格式作地板**：非 Anthropic 真截断 → clean error 帧 + 客户端自重试，且会记 `[FAIL] ... truncated`（日志 + history）。**故扩展的触发器明确**：等某格式在截断日志里真冒头，再针对**那一个**格式做，不盲飞。
+  - **扩展的主要 per-format 成本 = 缓冲期保活帧**（非 driver 层）：L2 缓冲窗口 ~150s，无保活客户端 idle 断。**Anthropic 有原生 `event:"ping"`，但 CC/Responses/Gemini 均无 heartbeat**（代码明确：`chat-completions/handler-v4.ts:286` "no fake-SSE heartbeat (Anthropic-only)"、`responses/handler-v4.ts:247` "no heartbeat"、`gemini/handler-v4.ts:252` "no heartbeat"）。逐格式要造客户端能容忍的 keepalive（CC/Responses 候选 SSE 注释行 `:keepalive` / 空 delta chunk；Gemini 待定）+ 实测各客户端流中途收到它不报错——这才是工作量，且依赖客户端行为实测。又一"先证据再做"的理由。
+  - **架构已就绪**：`runResponseBufferedSink` 格式无关（收 `ClientSink`/`ResponseOutcome`），driver 层后续推广近乎零成本；门控/重置/保活接线是逐格式的少量增量。**结论**：保持 Anthropic-only，以 L1 截断日志为扩展触发器，符合本 RFC §8「先采集遥测再决定」哲学。
 
 ---
 

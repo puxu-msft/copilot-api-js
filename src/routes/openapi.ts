@@ -1,18 +1,21 @@
 /**
- * OpenAPI 3.1 document + Scalar API-reference UI for the **management API**.
+ * OpenAPI 3.1 document + Scalar API-reference UI for the **whole API surface**.
  *
- * Scope: only the project-owned management surface under `/api/*` (server
- * status, token/quota, effective config + config.yaml editing, internal model
- * catalog, and the dry-run-truncate inspector) is described here. The OpenAI /
- * Anthropic / Gemini / Azure compat endpoints mirror their upstream vendors'
- * published contracts (use the upstream specs) and are intentionally NOT
- * documented — they stay plain `Hono` and contribute no definitions. The
- * request-history REST API (`/history/api/*`), `/api/debug/dry-run-pipeline`,
- * and `/api/event_logging` are also excluded (see OPENAPI_DESCRIPTION below).
+ * Two tiers of fidelity:
+ *  - Management API (`/api/*`): documented with PRECISE zod schemas via each
+ *    router's `.openapi()` (status / tokens / config / logs / internal models /
+ *    dry-run-truncate).
+ *  - Everything else (OpenAI / Anthropic / Gemini / Azure compat, the
+ *    request-history REST API, dry-run-pipeline, event-logging, health):
+ *    documented with SIMPLE open-object schemas via `openAPIRegistry.registerPath`
+ *    in `./openapi-compat` — pure docs, NO handler binding, so those plain-Hono
+ *    routes keep working untouched. Vendor compat bodies mirror each provider's
+ *    published contract; consult the vendor spec for field-level detail.
  *
  * Mechanism: `OpenAPIHono` collects `createRoute` definitions registered via
  * `.openapi()` on itself and on OpenAPIHono sub-apps mounted with `.route()`
- * (prefix applied). `createServer` / `createFullTestApp` build the root app as
+ * (prefix applied), plus any path added directly to its `openAPIRegistry`.
+ * `createServer` / `createFullTestApp` build the root app as
  * `OpenAPIHono`, mount the management routers (which are OpenAPIHono), then call
  * this to expose `GET /openapi.json` (3.1 doc) and `GET /docs` (Scalar UI).
  */
@@ -23,6 +26,7 @@ import type { BlankEnv } from "hono/types"
 import { Scalar } from "@scalar/hono-api-reference"
 
 import packageJson from "../../package.json"
+import { registerCompatPaths } from "./openapi-compat"
 
 /** Spec endpoint (machine-readable OpenAPI 3.1 JSON). */
 const OPENAPI_SPEC_PATH = "/openapi.json"
@@ -31,19 +35,14 @@ const OPENAPI_SPEC_PATH = "/openapi.json"
 const OPENAPI_DOCS_PATH = "/docs"
 
 const OPENAPI_DESCRIPTION = [
-  "Management API for copilot-api — server status, token/quota, effective config",
-  "and config.yaml editing, the internal model catalog, and the offline",
-  "dry-run-truncate inspector.",
+  "Full API surface for copilot-api.",
   "",
-  "The OpenAI / Anthropic / Gemini / Azure compatibility endpoints are NOT listed",
-  "here: they mirror each upstream vendor's published API contract — use the",
-  "vendor's own OpenAPI spec for those.",
-  "",
-  "Also intentionally absent: the request-history REST API (/history/api/*), the",
-  "pipeline dry-run inspector (/api/debug/dry-run-pipeline), and the event-logging",
-  "telemetry sink (/api/event_logging) — their handlers return broad/dynamic shapes",
-  "(or are write-only sinks) and are typed for the in-repo Vue UI rather than",
-  "external consumers.",
+  "The management API (/api/*) is documented with precise zod schemas. The OpenAI /",
+  "Anthropic / Gemini / Azure compatibility endpoints, the request-history REST API",
+  "(/history/api/*), and the diagnostic inspectors use SIMPLE (open-object) schemas —",
+  "the vendor compat bodies mirror each provider's published contract, so consult the",
+  "vendor's own spec for field-level request/response detail; here every endpoint is",
+  "listed so the whole surface is discoverable.",
 ].join("\n")
 
 /**
@@ -53,6 +52,10 @@ const OPENAPI_DESCRIPTION = [
  * request, so registration order is otherwise unconstrained.
  */
 export function registerOpenApiDocs(app: OpenAPIHono<BlankEnv>): void {
+  // Document the plain-Hono routes (compat / history / diagnostics) directly on
+  // the registry — pure docs, no handler binding, so those routes keep working.
+  registerCompatPaths(app.openAPIRegistry)
+
   app.doc31(OPENAPI_SPEC_PATH, {
     openapi: "3.1.0",
     info: {

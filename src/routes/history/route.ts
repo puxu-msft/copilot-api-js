@@ -21,7 +21,8 @@ import {
 // `.openapi()`'s strict literal-status RouteHandler rejects. Binding them would
 // require rewriting 10 shared/tested handlers or type casts; their real consumer
 // (the Vue UI) is already fully typed via `~backend/*` re-exports. So this sub-API
-// is intentionally ABSENT from /openapi.json — see src/routes/openapi.ts.
+// is documented via `openAPIRegistry.registerPath` in src/routes/openapi-compat.ts
+// (simple schemas, handlers untouched) rather than `.openapi()`-bound here.
 export const historyRoutes = new Hono()
 
 historyRoutes.get("/", (c) => c.redirect("/ui#/v/activity", 302))
