@@ -22,6 +22,7 @@ import {
   type LineageDigest,
 } from "./lineage"
 import { runHistoryWrite } from "./persist-guard"
+import { queryEntryCount } from "./sqlite/read"
 import {
   //
   isReaperRunning,
@@ -274,13 +275,29 @@ export function persistEntryStages(id: string, stages: Array<StagePayload>): voi
   runHistoryWrite("stage", () => upsertHeadRow(entry, entry.state, stages))
 }
 
+/**
+ * Wipe ALL history (in-flight + every SQLite table). Triggered by
+ * `DELETE /history/api/entries` (the UI's "clear all"). This is a destructive,
+ * irreversible operation, so it logs LOUDLY with the count it removed — a silent
+ * full wipe is invisible in the logs and indistinguishable from a persistence
+ * bug (it cost a long forensic investigation to attribute one lost failed entry
+ * to a clear rather than a finalize/reaper defect).
+ */
 export function clearHistory(): void {
+  const inFlightCount = listInFlight().length
   clearInFlight()
   if (historyState.enabled) {
+    let persistedCount = 0
+    try {
+      persistedCount = queryEntryCount()
+    } catch {
+      /* count is best-effort, purely for the log line */
+    }
     try {
       clearAllEntries()
+      consola.warn(`[history] CLEARED ALL entries (${persistedCount} persisted + ${inFlightCount} in-flight) via DELETE /api/entries`)
     } catch (err: unknown) {
-      consola.warn("[history] failed to clear sqlite entries", err)
+      consola.error("[history] failed to clear sqlite entries", err)
     }
   }
   publishHistoryCleared()
