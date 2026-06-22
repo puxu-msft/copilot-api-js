@@ -80,6 +80,40 @@ describe("translateResponsesToChatCompletions", () => {
     expect(result.tool_choice).toBe("required")
   })
 
+  test("degrades a custom (freeform) tool to a function tool", () => {
+    const result = translateResponsesToChatCompletions({
+      model: "m",
+      input: "x",
+      tools: [{ type: "custom", name: "apply_patch", description: "Edit files via patch" }],
+    } satisfies ResponsesPayload)
+
+    expect(result.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "apply_patch",
+          description: "Edit files via patch",
+          parameters: {
+            type: "object",
+            properties: { input: { type: "string", description: "Freeform text input for this tool." } },
+            required: ["input"],
+          },
+        },
+      },
+    ])
+  })
+
+  test("drops unsupported builtin tools but keeps function/custom siblings", () => {
+    const result = translateResponsesToChatCompletions({
+      model: "m",
+      input: "x",
+      tools: [{ type: "web_search" }, { type: "function", name: "f", parameters: { type: "object", properties: {} } }, { type: "custom", name: "apply_patch" }],
+    } satisfies ResponsesPayload)
+
+    expect(result.tools).toHaveLength(2)
+    expect(result.tools?.map((t) => t.function.name)).toEqual(["f", "apply_patch"])
+  })
+
   test("maps tool_choice (function form)", () => {
     const result = translateResponsesToChatCompletions({
       model: "m",

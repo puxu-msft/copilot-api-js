@@ -69,7 +69,7 @@ export interface ResponsesInputItem {
 }
 
 /** Tool definition for the Responses API */
-export type ResponsesTool = ResponsesFunctionTool | ResponsesBuiltinTool
+export type ResponsesTool = ResponsesFunctionTool | ResponsesCustomTool | ResponsesBuiltinTool
 
 export interface ResponsesFunctionTool {
   type: "function"
@@ -77,6 +77,23 @@ export interface ResponsesFunctionTool {
   description?: string
   parameters?: Record<string, unknown>
   strict?: boolean
+}
+
+/**
+ * Freeform "custom" tool (GPT-5 freeform function calling, e.g. Codex CLI's
+ * `apply_patch`). Unlike a function tool it has no JSON-schema `parameters` —
+ * the model emits raw text matching `format` (plain text or a grammar). On the
+ * direct `/responses` passthrough this reaches the upstream verbatim; on the
+ * Responses→CC fallback it is degraded to a function tool (see
+ * `translateToolsToCC`), since Copilot's `/chat/completions` only accepts
+ * function tools.
+ */
+export interface ResponsesCustomTool {
+  type: "custom"
+  name: string
+  description?: string
+  /** Freeform input format descriptor (`{ type: "text" }` or a grammar). */
+  format?: Record<string, unknown>
 }
 
 export interface ResponsesBuiltinTool {

@@ -14,9 +14,22 @@
  * IDs (responseId / itemId) are injected by the handler so the streaming
  * and non-streaming paths share the same exchange ID, enabling correct
  * session registration via registerResponseSession().
+ *
+ * Tool handling (`translateToolsToCC`): Copilot's `/chat/completions` only
+ * accepts function tools, so `custom` (freeform) tools are degraded to function
+ * tools and builtin server tools are dropped — both warned, never silent. Known
+ * deferred limitation: the response side has no inverse — a degraded custom
+ * tool's call comes back as a `function_call` with `{"input":"…"}` JSON args
+ * rather than a native `custom_tool_call`, so a client that strictly expects the
+ * freeform shape (raw-text input) may not round-trip. The direct `/responses`
+ * passthrough is unaffected (custom tools reach the upstream verbatim); this only
+ * concerns the CC fallback (model lacks `/responses` support). No real traffic
+ * exercises it today, so the inverse is intentionally not built (YAGNI).
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import consola from "consola"
 
 import type {
   //
@@ -639,18 +652,68 @@ function translateContentParts(content: ResponsesInputItem["content"], role: Res
   return parts.length > 0 ? parts : ""
 }
 
+/**
+ * Schema handed to the model for a degraded freeform/custom tool: a single
+ * required string field carrying the freeform text the custom tool would have
+ * taken directly. The model has no native freeform slot on `/chat/completions`,
+ * so this gives it one. (Response-side: the resulting function_call args land as
+ * `{"input":"…"}` JSON rather than a raw `custom_tool_call` — a known fallback
+ * limitation, see module note below.)
+ */
+const FREEFORM_TOOL_PARAMETERS = {
+  type: "object",
+  properties: { input: { type: "string", description: "Freeform text input for this tool." } },
+  required: ["input"],
+} as const
+
+/**
+ * Translate Responses tools → Chat Completions tools.
+ *
+ * Copilot's `/chat/completions` upstream only accepts **function** tools, so the
+ * fallback must reshape the others rather than forward them:
+ *   - `function` → passthrough (1:1).
+ *   - `custom` (freeform, e.g. Codex `apply_patch`) → degrade to a function tool
+ *     with a single freeform string param. Preserves tool availability through
+ *     the fallback (the model can still call it) at the cost of the freeform
+ *     grammar; warned so the degradation is observable.
+ *   - builtin server tools (`web_search`/`file_search`/`code_interpreter`) →
+ *     dropped (unsupported on CC), warned so the loss is not silent.
+ *
+ * The earlier implementation silently `.filter`ed to function-only, dropping
+ * custom + builtin tools with no trace. (The direct `/responses` passthrough is
+ * unaffected — it never calls this.)
+ */
 function translateToolsToCC(tools: Array<ResponsesTool>): Array<Tool> {
-  return tools
-    .filter((tool): tool is Extract<ResponsesTool, { type: "function" }> => tool.type === "function")
-    .map((tool) => ({
-      type: "function",
-      function: {
-        name: tool.name,
-        ...(tool.description !== undefined && { description: tool.description }),
-        ...(tool.parameters !== undefined && { parameters: tool.parameters }),
-        ...(tool.strict !== undefined && { strict: tool.strict }),
-      },
-    }))
+  const out: Array<Tool> = []
+  for (const tool of tools) {
+    if (tool.type === "function") {
+      out.push({
+        type: "function",
+        function: {
+          name: tool.name,
+          ...(tool.description !== undefined && { description: tool.description }),
+          ...(tool.parameters !== undefined && { parameters: tool.parameters }),
+          ...(tool.strict !== undefined && { strict: tool.strict }),
+        },
+      })
+    } else if (tool.type === "custom") {
+      consola.warn(
+        `[Responses→CC] custom tool "${tool.name}" degraded to a function tool (freeform input → string parameter) for the /chat/completions fallback`,
+      )
+      out.push({
+        type: "function",
+        function: {
+          name: tool.name,
+          ...(tool.description !== undefined && { description: tool.description }),
+          parameters: { ...FREEFORM_TOOL_PARAMETERS },
+        },
+      })
+    } else {
+      const id = typeof tool.type === "string" ? tool.type : "unknown"
+      consola.warn(`[Responses→CC] dropping builtin tool "${id}" unsupported by the /chat/completions fallback`)
+    }
+  }
+  return out
 }
 
 function translateToolChoiceToCC(choice: ResponsesToolChoice): NonNullable<ChatCompletionsPayload["tool_choice"]> {
