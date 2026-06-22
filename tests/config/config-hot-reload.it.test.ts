@@ -299,6 +299,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
   },
   {
+    configKey: "anthropic.protect_streaming_escalate_context",
+    stateKey: "protectStreamingEscalateContext",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
+  },
+  {
     configKey: "anthropic.tool_inject_claude_code",
     stateKey: "injectClaudeCodeOfficialTools",
     sampleYamlValue: "false",

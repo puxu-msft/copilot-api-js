@@ -63,8 +63,8 @@ opus-4.8 在超大上下文（150K-200K token）上生成大 Write/Edit 工具�
 6. **per-attempt sseEvents 持久化（D1 read 侧）**：路径激活后，把 `Attempt.sseEvents` 接进 `toHistoryEntry` 的 attempts map（`request.ts:557`）+ history sink `toHistoryAttempts` + serialize（落 `entry_stages` 的 attempt_index 分行）+ history UI 读侧。Phase 1 已备 runtime 字段，这步是把它持久化/展示。
 7. **测试**：① 开 L2 + 前 N 次 RST→客户端透明拿完整 + acc 不跨尝试叠加（http 测试，仿 `streaming-l2-baseline` 范式 + `createSseResponseThenError`）；② heartbeat 缓冲期保活（仿 `fake-sse-heartbeat.unit.test`）；③ acc 全量重置回归。**验收**：Phase 0 基线 + 全后端绿；2nd 焦点审。
 
-### Phase 3 —— buffer cap（`protect_streaming_buffer_cap_bytes` 默认 16MB，超限退回 live）+ escalation（可选，默认关）。
-### Phase 4 —— 重试命中率遥测（`history.protect_streaming_retry{outcome}`）+ DESIGN.md/history.md/config 文档同步 + memory 回填。
+### Phase 3 —— buffer cap（`protect_streaming_buffer_cap_bytes` 默认 16MB，超限退回 live）+ escalation（可选，默认关）。 **[已落地 2026-06-22]** buffer cap `98d7f7c`、escalation `bebf595`（+ `7cdc92d` 补 beta header / 修遥测漏计）。
+### Phase 4 —— 重试命中率遥测（`history.protect_streaming_retry{outcome}`）+ DESIGN.md/history.md/config 文档同步 + memory 回填。 **[已落地 2026-06-22]** 遥测 `65d1896`（`protect-streaming-stats` + `/api/status` + ctx feature tag）、heartbeat=0 跨字段告警 `cab8364`、文档同步本次。**L2 全 Phase（0-4）完成。**
 
 ---
 

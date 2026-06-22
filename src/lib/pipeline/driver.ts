@@ -571,6 +571,10 @@ async function runResponseBufferedSink(
           // buffered sink ALWAYS returns a ResponseOutcome, never a raw throw (mirrors
           // runResponseSink's catch; the buffer is discarded — the client got a partial flush).
           if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+          // L2 produced a COMPLETE generation (reached the terminal frame) — the flush failed at the
+          // transport, NOT the retry: count it as a `success` so the hit-rate denominator isn't a
+          // blind spot. The handler still settles the request as failed (delivery), independently.
+          opts.onBufferedResolve?.("success", attempt)
           return { kind: "stream-error", error }
         }
         opts.onBufferedResolve?.("success", attempt)
@@ -590,6 +594,10 @@ async function runResponseBufferedSink(
         currentEnv.ctx.commitAttemptSseEvents()
         opts.onAttemptReset?.()
         currentEnv.ctx.resetSseEvents()
+        // L2 escalation (RFC §8): let the caller tighten this retry's env (e.g. force aggressive
+        // context_management) so the regenerated response is smaller/faster. Format-agnostic — the
+        // driver just threads the returned env into the next exchange.
+        if (opts.escalate) currentEnv = opts.escalate(currentEnv, attempt)
         const re = await runExchange(deps, currentEnv, strategies)
         current = re.upstream
         currentEnv = re.env

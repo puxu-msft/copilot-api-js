@@ -105,6 +105,14 @@ export interface PrepareHints {
    * cache already strips. Set by the server-tool-rejection retry strategy.
    */
   excludeServerToolTypes?: ReadonlyArray<string>
+  /**
+   * L2 buffered-retry escalation (RFC §8): FORCE an aggressive native `clear_tool_uses`
+   * context_management edit on this attempt's wire (independent of `context_editing` mode) to
+   * compress the context so the generation finishes faster. Set by the buffered driver's
+   * `escalate` hook per retry, with progressively tighter values. Skipped when the model doesn't
+   * support context_management (gated by `contextManagementDisabled`).
+   */
+  contextEscalation?: { trigger: number; keepTools: number; keepThinking: number }
 }
 
 export type RetryAction<TPayload> =

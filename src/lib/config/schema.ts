@@ -320,6 +320,14 @@ export const AnthropicConfigSchema = z
      */
     protect_streaming_buffer_cap_bytes: nullableNonnegativeInt(),
     /**
+     * On each buffered RST/truncation retry, FORCE a progressively aggressive native
+     * `clear_tool_uses` context_management edit (lower trigger + smaller keep) to compress the
+     * context so the generation finishes faster — within the next RST window (RFC §8). Independent
+     * of `context_editing` (a retry-only emergency compression); skipped when the model doesn't
+     * support context_management. Changes request semantics (drops more old context). Default false.
+     */
+    protect_streaming_escalate_context: nullableBoolean(),
+    /**
      * Forced heartbeat interval (seconds) for the buffered-retry path. The buffered
      * sink withholds all real frames until `message_stop`, so the client would idle
      * out without a ping; the buffered path constructs a heartbeat UNCONDITIONALLY,

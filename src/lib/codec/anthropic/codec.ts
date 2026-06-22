@@ -383,6 +383,7 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
     ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
     ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
     ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
+    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
   })
 
   // Record the betas actually sent (sanitized headers — same value the legacy

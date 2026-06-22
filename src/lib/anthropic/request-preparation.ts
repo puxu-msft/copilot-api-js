@@ -29,6 +29,7 @@ import {
   isContextEditingEnabled,
   mergeAnthropicBeta,
   modelHasAdaptiveThinking,
+  modelSupportsContextEditing,
 } from "./features"
 import { stripServerTools } from "./message-tools"
 import {
@@ -83,6 +84,12 @@ interface PrepareAnthropicRequestOptions {
    * `PrepareHints.excludeServerToolTypes`.
    */
   excludeServerToolTypes?: ReadonlyArray<string>
+  /**
+   * L2 buffered-retry escalation (RFC §8) from `PrepareHints.contextEscalation`: when set, FORCE
+   * an aggressive native `clear_tool_uses` context_management edit on this attempt (independent of
+   * `contextEditingMode`). Skipped when `contextManagementDisabled` (model doesn't support it).
+   */
+  contextEscalation?: { trigger: number; keepTools: number; keepThinking: number }
 }
 
 /**
@@ -190,8 +197,17 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
     delete wire.context_management
   }
 
+  // L2 escalation (RFC §8): force-inject an aggressive `clear_tool_uses` on retry regardless of
+  // `contextEditingMode`, gated by model support + not-disabled + no client-provided
+  // context_management. Computed HERE (before the beta build) so the beta header includes
+  // `context-management-2025-06-27` whenever escalation will inject the body — the body without its
+  // beta 400s upstream (the bug the mode-off force-inject would otherwise hit).
+  const escalating = Boolean(opts.contextEscalation) && modelSupportsContextEditing(model)
+  const willInjectEscalation = escalating && !contextManagementDisabled && !("context_management" in wire)
+
   const localBeta = buildAnthropicBetaHeaders(model, opts.resolvedModel, {
     disableContextManagement: contextManagementDisabled,
+    forceContextManagementBeta: willInjectEscalation,
   })
   const mergedBeta = mergeAnthropicBeta(opts.clientAnthropicBeta, localBeta["anthropic-beta"])
   const filteredBeta = filterUnsupportedBetas(model, mergedBeta, opts.excludeBetas)
@@ -207,9 +223,19 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
   }
   if (filteredBeta) headers["anthropic-beta"] = filteredBeta
 
-  if (!contextManagementDisabled && !("context_management" in wire) && isContextEditingEnabled(model)) {
+  // Context_management injection: normally gated by `contextEditingMode != off` (isContextEditingEnabled).
+  // L2 escalation (opts.contextEscalation) ALSO injects — FORCING an aggressive clear_tool_uses even
+  // when context_editing is off (and adding its beta header above). Escalation takes precedence over
+  // the config-driven build; the gates (model support + not-disabled + no client context_management)
+  // were already folded into `willInjectEscalation` for the beta header.
+  //
+  // NOTE (deliberate): the `!("context_management" in wire)` gate means escalation does NOT override a
+  // CLIENT-PROVIDED `context_management` — the client's explicit context policy is respected even on a
+  // transparent retry. A client that manages its own context owns that choice; escalation only fills
+  // the gap when the proxy is the one managing context (RFC §8 / §12 Q5).
+  if (!contextManagementDisabled && !("context_management" in wire) && (isContextEditingEnabled(model) || escalating)) {
     const hasThinking = Boolean(thinking && thinking.type !== "disabled")
-    const contextManagement = buildContextManagement(state.contextEditingMode, hasThinking)
+    const contextManagement = buildContextManagement(state.contextEditingMode, hasThinking, escalating ? opts.contextEscalation : undefined)
     if (contextManagement) {
       wire.context_management = contextManagement
       consola.debug("[DirectAnthropic] Added context_management:", JSON.stringify(contextManagement))

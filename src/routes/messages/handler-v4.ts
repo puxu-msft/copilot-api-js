@@ -120,6 +120,9 @@ import { handleWebSearchCompletion } from "./web-search-handler"
 /** Anthropic's effort-learning strategy is real (not inert); learning budget = 32 (legacy MAX_LEARNING_RETRIES). */
 const MAX_LEARNING_RETRIES = 32
 
+/** L2 escalation floor: the most aggressive `clear_tool_uses` input-token trigger we'll set on a retry. */
+const ESCALATE_MIN_TRIGGER = 4096
+
 // ============================================================================
 // Main entry point
 // ============================================================================
@@ -663,6 +666,23 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         onAttemptReset,
         retryCap: state.protectStreamingMaxRetries,
         bufferCapBytes: state.protectStreamingBufferCapBytes,
+        // L2 escalation (RFC §8, opt-in): on each retry FORCE a progressively aggressive
+        // clear_tool_uses (halve the input-token trigger, shrink keep) so the regenerated response
+        // is smaller/faster — more likely to finish before the next RST. Independent of
+        // context_editing config; request-preparation skips it when the model lacks support.
+        ...(state.protectStreamingEscalateContext && {
+          escalate: (e: RequestEnvelope, attempt: number): RequestEnvelope =>
+            e.with({
+              prepareHints: {
+                ...e.prepareHints,
+                contextEscalation: {
+                  trigger: Math.max(ESCALATE_MIN_TRIGGER, Math.floor(state.contextEditingTrigger / 2 ** attempt)),
+                  keepTools: Math.max(1, state.contextEditingKeepTools - attempt),
+                  keepThinking: Math.max(1, state.contextEditingKeepThinking),
+                },
+              },
+            }),
+        }),
         // L2 hit-rate telemetry (RFC §10): aggregate counter (→ /api/status.protect_streaming) +
         // a per-entry feature tag + an operator log line. `retries > 0` on success = a real save.
         onBufferedResolve: (outcome, retries) => {

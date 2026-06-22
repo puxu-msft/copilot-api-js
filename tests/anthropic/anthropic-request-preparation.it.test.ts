@@ -63,6 +63,41 @@ describe("prepareAnthropicRequest", () => {
     expect(prepared.headers["anthropic-beta"]).toContain("context-management-2025-06-27")
   })
 
+  test("L2 escalation FORCES an aggressive clear_tool_uses even when context_editing is OFF", () => {
+    setStateForTests({
+      contextEditingMode: "off", // escalation injects regardless
+      copilotToken: "test-token",
+      vsCodeVersion: "1.100.0",
+      accountType: "individual",
+    })
+
+    const prepared = prepareAnthropicRequest(basePayload(), { contextEscalation: { trigger: 12500, keepTools: 1, keepThinking: 1 } })
+    expect(prepared.wire.context_management).toEqual({
+      edits: [
+        {
+          type: "clear_tool_uses_20250919",
+          trigger: { type: "input_tokens", value: 12500 },
+          keep: { type: "tool_uses", value: 1 },
+        },
+      ],
+    })
+    // The forced context_management body REQUIRES its beta header (else GHC 400s), even with mode off.
+    expect(prepared.headers["anthropic-beta"]).toContain("context-management-2025-06-27")
+  })
+
+  test("L2 escalation is suppressed when the model doesn't support context_management (no 400)", () => {
+    setStateForTests({
+      contextEditingMode: "off",
+      copilotToken: "test-token",
+      vsCodeVersion: "1.100.0",
+      accountType: "individual",
+    })
+    markAnthropicFeatureUnsupported("claude-opus-4-6", "context_management")
+
+    const prepared = prepareAnthropicRequest(basePayload(), { contextEscalation: { trigger: 12500, keepTools: 1, keepThinking: 1 } })
+    expect(prepared.wire.context_management).toBeUndefined()
+  })
+
   test("suppresses context_management when negotiation cache marks it unsupported", () => {
     setStateForTests({
       contextEditingMode: "clear-tooluse",

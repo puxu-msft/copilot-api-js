@@ -81,6 +81,8 @@ let rstBeforeComplete = 0
 /** When true, EVERY attempt RSTs (retries exhausted scenario). */
 let alwaysRst = false
 let upstreamCalls = 0
+/** Captured upstream wire bodies (parsed) per exchange — for asserting per-retry escalation. */
+const capturedBodies: Array<Record<string, unknown>> = []
 
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
   const url =
@@ -90,6 +92,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   const payload = typeof init?.body === "string" ? (JSON.parse(init.body) as { model?: string }) : {}
   const model = payload.model ?? MODEL
   if (url.endsWith("/v1/messages")) {
+    if (typeof init?.body === "string") capturedBodies.push(JSON.parse(init.body) as Record<string, unknown>)
     upstreamCalls += 1
     const rst = alwaysRst || upstreamCalls <= rstBeforeComplete
     return Promise.resolve(rst ? createSseResponseThenError(buildPartialFrames(model), RST_ERROR) : createSseResponse(buildCompleteFrames(model)))
@@ -143,6 +146,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     upstreamCalls = 0
     rstBeforeComplete = 0
     alwaysRst = false
+    capturedBodies.length = 0
     setStateForTests({
       copilotToken: "test-token",
       accountType: "individual",
@@ -259,6 +263,37 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-cap", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
     expect(entry?.outboundResponse?.success).toBe(true)
+  })
+
+  test("escalation ON → each retry's wire forces a progressively aggressive context_management", async () => {
+    // opus-4.8 is NOT in modelSupportsContextEditing, so escalation would be a no-op there; use a
+    // supported model (opus-4-6) to prove the handler→driver→prepareWire threading injects it.
+    const SUPPORTED = "claude-opus-4-6"
+    setModels({ object: "list", data: [mockModel(SUPPORTED, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
+    setStateForTests({ protectStreamingEscalateContext: true })
+    rstBeforeComplete = 1 // attempt 0 RSTs, attempt 1 (retry) escalates + completes
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-session-id": "l2-buf-esc" },
+      body: JSON.stringify({
+        model: SUPPORTED,
+        messages: [{ role: "user", content: "write" }],
+        max_tokens: 256,
+        stream: true,
+        tools: [{ name: "Write", description: "w", input_schema: { type: "object", properties: {} } }],
+      }),
+    })
+    expect(res.status).toBe(200)
+    await res.text()
+
+    expect(upstreamCalls).toBe(2)
+    // Attempt 0 (no escalation) has no forced context_management (context_editing is off by default).
+    expect(capturedBodies[0]?.context_management).toBeUndefined()
+    // Attempt 1 (first retry) carries an aggressive clear_tool_uses: trigger halved (100000→50000), keep 3→2.
+    expect(capturedBodies[1]?.context_management).toEqual({
+      edits: [{ type: "clear_tool_uses_20250919", trigger: { type: "input_tokens", value: 50000 }, keep: { type: "tool_uses", value: 2 } }],
+    })
   })
 })
 

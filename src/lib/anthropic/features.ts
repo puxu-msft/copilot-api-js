@@ -130,6 +130,12 @@ export interface AnthropicBetaHeaders {
 
 export interface AnthropicBetaHeaderOptions {
   disableContextManagement?: boolean
+  /**
+   * Force the `context-management-2025-06-27` beta even when `isContextEditingEnabled` is false
+   * (mode off). Set by L2 escalation, which force-injects a `context_management` body regardless
+   * of mode — the body without its beta header would 400 upstream.
+   */
+  forceContextManagementBeta?: boolean
 }
 
 /**
@@ -185,7 +191,7 @@ export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model
     betaFeatures.push("interleaved-thinking-2025-05-14")
   }
 
-  if (!opts?.disableContextManagement && isContextEditingEnabled(modelId)) {
+  if (!opts?.disableContextManagement && (isContextEditingEnabled(modelId) || opts?.forceContextManagementBeta)) {
     betaFeatures.push("context-management-2025-06-27")
   }
 
@@ -253,7 +259,27 @@ export interface ContextManagement {
  * - "clear-tooluse" → clear_tool_uses only
  * - "clear-both" → both edits
  */
-export function buildContextManagement(mode: ContextEditingMode, hasThinking: boolean): ContextManagement | undefined {
+export function buildContextManagement(
+  mode: ContextEditingMode,
+  hasThinking: boolean,
+  escalation?: { trigger: number; keepTools: number; keepThinking: number },
+): ContextManagement | undefined {
+  // L2 escalation (RFC §8): FORCE an aggressive clear_tool_uses (+ clear_thinking when thinking is
+  // present) regardless of `mode` — a retry-only emergency compression to finish faster before the
+  // next RST. The caller gates model support (contextManagementDisabled); this only shapes the edit.
+  if (escalation) {
+    const edits: Array<ContextManagementEdit> = []
+    if (hasThinking) {
+      edits.push({ type: "clear_thinking_20251015", keep: { type: "thinking_turns", value: Math.max(1, escalation.keepThinking) } })
+    }
+    edits.push({
+      type: "clear_tool_uses_20250919",
+      trigger: { type: "input_tokens", value: Math.max(1, escalation.trigger) },
+      keep: { type: "tool_uses", value: Math.max(0, escalation.keepTools) },
+    })
+    return { edits }
+  }
+
   if (mode === "off") {
     return undefined
   }

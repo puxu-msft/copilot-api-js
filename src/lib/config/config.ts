@@ -472,6 +472,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.protect_streaming_max_retries !== undefined) setAnthropicBehavior({ protectStreamingMaxRetries: a.protect_streaming_max_retries })
     if (a.protect_streaming_heartbeat !== undefined) setAnthropicBehavior({ protectStreamingHeartbeat: a.protect_streaming_heartbeat })
     if (a.protect_streaming_buffer_cap_bytes !== undefined) setAnthropicBehavior({ protectStreamingBufferCapBytes: a.protect_streaming_buffer_cap_bytes })
+    if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
     if (a.tool_inject_claude_code !== undefined) {
       setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.tool_inject_claude_code })
     }

@@ -341,6 +341,14 @@ export interface RunBufferedOpts extends RunResponseOpts {
    *   - `"retreated"`: buffer cap exceeded → retreated to live forwarding.
    */
   onBufferedResolve?: (outcome: "success" | "exhausted" | "retreated", retries: number) => void
+  /**
+   * Per-retry env transform applied BEFORE each re-exchange (L2 escalation, RFC §8). Returns a new
+   * env (e.g. with `prepareHints.contextEscalation` set to progressively tighter context_management)
+   * so the retry's wire compresses the context and finishes faster. Format-agnostic: the driver just
+   * threads the returned env into the next `runExchange`; the Anthropic specifics live in the handler.
+   * `attempt` is the 1-based retry number. Omitted = no escalation (env unchanged).
+   */
+  escalate?: (env: RequestEnvelope, attempt: number) => RequestEnvelope
 }
 
 // ============================================================================

@@ -219,6 +219,14 @@ anthropic:
   # loses L2 protection — a live RST fails as today). Prevents a pathologically
   # huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
   protect_streaming_buffer_cap_bytes: 16777216
+  # On each buffered RST/truncation retry, FORCE a progressively aggressive native
+  # clear_tool_uses context_management edit (lower trigger + smaller keep) to
+  # compress the context so the generation finishes faster — within the next RST
+  # window. Independent of context_editing (retry-only emergency compression);
+  # skipped when the model doesn't support context_management. Changes request
+  # semantics (drops more old context). Default false (opt-in; enable only after
+  # telemetry shows plain retry's hit rate is low for over-budget requests).
+  protect_streaming_escalate_context: false
 
   # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
   # "input": dedup by (name, input); "result": also require identical result

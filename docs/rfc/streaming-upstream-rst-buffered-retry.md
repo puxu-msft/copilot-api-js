@@ -163,10 +163,10 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 | 配置键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `anthropic.protect_streaming_generation` | `false \| "on" \| "tool_use_only"` | `false` | L2 总开关。`on`=所有流式响应缓冲重试；`tool_use_only`=仅当请求带 tools（大 Write/Edit 场景）才缓冲，纯文本对话仍 live 流式（省时延）。默认关。 |
-| `anthropic.protect_streaming_max_retries` | number | `1` | mid-stream RST 的重试上限（§7）。 |
-| `anthropic.protect_streaming_escalate_context` | boolean | `false` | 重试时是否收紧 `context_management` 压上下文（§8）。 |
+| `anthropic.protect_streaming_max_retries` | number | `3` | mid-stream RST 的重试上限（§7；默认 `3` per §15 D2——loop/成本闸非超时闸）。 |
+| `anthropic.protect_streaming_escalate_context` | boolean | `false` | 重试时是否收紧 `context_management` 压上下文（§8）。**[已落地]** 每次重试 FORCE 渐进激进的原生 `clear_tool_uses`（trigger 每轮减半至 4096 floor、keep -1 至 1），独立于 `context_editing`、尊重模型支持（不支持则安全降级 no-op、不 400）、不 override 客户端自带 `context_management`。 |
 | `anthropic.protect_streaming_heartbeat` | number | `15` | 缓冲期强制 heartbeat 间隔秒（§5）；L2 启用时即使全局 `fake_sse_heartbeat=0` 也注入。 |
-| `anthropic.protect_streaming_buffer_cap_bytes` | number | `16777216` | buffer 上限,超限退回 live 转发（§7）。 |
+| `anthropic.protect_streaming_buffer_cap_bytes` | number | `16777216` | buffer 上限（16MiB），超限 ABANDON 缓冲、退回 live 写穿（§7；该响应失去 L2 保护、不重试）。`0`=无限。 |
 
 热重载语义同其它 `anthropic.*`（`applyConfigToState`）。
 
@@ -186,8 +186,8 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 - **Phase 0 — golden 基线**：在改前锁住现有 live-streaming 路径的字节 golden（复用 `response-rewrite-golden.http.test.ts` 范式）+ 一个 mid-stream RST 失败的现状测试（注入 http2 stream error → 现状 `stream-error` → H3 error 帧）。证明改动前后 live 路径字节等价。
 - **Phase 1 — driver `runResponseBufferedSink`（默认不接线）**：新增 driver 方法 + per-attempt 重置 + buffer/flush + re-exchange 循环，但 handler **不调用**（`protect_streaming_generation` 默认 false → 仍走 `runResponseSink`）。单测覆盖：注入"前 2 次 transport-close、第 3 次完整"的上游 → 断言客户端只收到第 3 次的完整响应 + 前两次记为 attempts。此 commit 系统行为零变化（新方法是死代码待激活）。
 - **Phase 2 — handler 接线 + 配置门控**：`pumpAnthropicStreamingV4` 按 `protect_streaming_generation` 选 `runResponseSink`(live) vs `runResponseBufferedSink`(buffered)。默认 false → 行为不变。开启后 e2e 测：mock 上游前 N 次 RST、第 N+1 次完整 → 客户端透明拿到完整 Write。**[已落地 2026-06-22]** commits `caa0af7`（fixture 修复）/`6c8095a`（handler 接线 + 配置三键 + 强制 heartbeat + acc 全量重置）/`cedaa42`（per-attempt sseEvents 持久化 D1）/`c239e1f`（焦点审修复：H2 区分 + final 尝试不重复 sseEvents）。heartbeat 强制与接线**同 commit**（§14 红线）。**注**：buffer cap 留 Phase 3。
-- **Phase 3 — heartbeat 强制 + escalation + buffer cap**：缓冲期强制 heartbeat、可选 context escalation、buffer 上限退回 live。
-- **Phase 4 — 遥测 + 文档**：重试命中率计数 + DESIGN/history.md/config 文档同步。
+- **Phase 3 — heartbeat 强制 + escalation + buffer cap**：缓冲期强制 heartbeat、可选 context escalation、buffer 上限退回 live。**[已落地 2026-06-22]** heartbeat 强制随 Phase 2（`6c8095a`）；buffer cap `98d7f7c`；escalation `bebf595`（+ `7cdc92d` 补 force-inject 的 context-management beta header）。
+- **Phase 4 — 遥测 + 文档**：重试命中率计数 + DESIGN/history.md/config 文档同步。**[已落地 2026-06-22]** 遥测 `65d1896`（`protect-streaming-stats` 计数器 + `/api/status.protect_streaming` + ctx feature tag）；heartbeat=0 跨字段告警 `cab8364`；文档同步本次。
 
 每个 commit：`bun run test:backend` + `typecheck` 绿；live 路径 golden 不变（确认未误伤默认路径）。
 
@@ -198,8 +198,8 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 - **Q1**：retry cap 默认 1 vs 2？取决于客户端超时余量 + 单次生成时长分布。建议先遥测单次时长 p50/p95 再定。
 - **Q2**：`tool_use_only` 门控如何判定"带 tools"？请求 `tools` 非空即可，还是需更精细（仅 Write/Edit 类）？倾向前者（简单、覆盖目标场景）。
 - **Q3**：`idle-timeout` 是否纳入重试？上游静默死与 transport RST 不同；默认不重，避免与真卡死上游纠缠。
-- **Q4**：buffer 上限超限退回 live 转发后，该响应**失去 L2 保护**（live 流一旦 RST 仍失败）。可接受（病态超大响应罕见），但需文档化。
-- **Q5**：escalation 收紧 context_management 改变了请求语义（丢更多旧上下文）——是否应在响应里给客户端某种"本响应经过上下文压缩"的提示？倾向否（透明即可），记此问题。
+- **Q4**：buffer 上限超限退回 live 转发后，该响应**失去 L2 保护**（live 流一旦 RST 仍失败）。可接受（病态超大响应罕见），但需文档化。**[已落地+文档化]** `protect_streaming_buffer_cap_bytes` 默认 16MiB；retreat 后不重试（帧已转发）。
+- **Q5**：escalation 收紧 context_management 改变了请求语义（丢更多旧上下文）——是否应在响应里给客户端某种"本响应经过上下文压缩"的提示？倾向否（透明即可），记此问题。**[决议]** 不提示（透明）；**额外决定**：escalation 不 override 客户端**自带**的 `context_management`（尊重其显式上下文策略，见 `request-preparation.ts` 注释）；opus-4.8 不在 `modelSupportsContextEditing` 列表故对它 escalation 安全降级 no-op（既有列表范围，待核 4.8 支持后补）。
 - **Q6**：与 web_search 双跳 `[bypass]`（不进 driver）的交互——双跳路径不享 L2，需在双跳迁 driver 时收敛（与既有 `[bypass]` 暂缓项一致）。
 
 ---

@@ -176,6 +176,8 @@ export interface State {
   readonly protectStreamingHeartbeat: number
   /** Max bytes to buffer before retreating to live forwarding (OOM guard; 0 = unlimited). */
   readonly protectStreamingBufferCapBytes: number
+  /** On each buffered retry, force progressively aggressive context_management compression (RFC §8). Default false. */
+  readonly protectStreamingEscalateContext: boolean
 
   /**
    * Inject stub definitions for Claude Code's official tool set (Bash, Read,
@@ -773,6 +775,7 @@ export function setAnthropicBehavior(
       | "protectStreamingMaxRetries"
       | "protectStreamingHeartbeat"
       | "protectStreamingBufferCapBytes"
+      | "protectStreamingEscalateContext"
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
@@ -962,6 +965,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   protectStreamingMaxRetries: 3,
   protectStreamingHeartbeat: 15,
   protectStreamingBufferCapBytes: 16_777_216,
+  protectStreamingEscalateContext: false,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
@@ -1030,6 +1034,7 @@ export function resetConfigManagedState(): void {
     protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
     protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
     protectStreamingBufferCapBytes: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
+    protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
@@ -1127,6 +1132,7 @@ const mutableState: MutableState = {
   protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
   protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
   protectStreamingBufferCapBytes: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
+  protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,

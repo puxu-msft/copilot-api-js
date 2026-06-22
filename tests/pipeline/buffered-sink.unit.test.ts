@@ -362,10 +362,18 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     const { driver } = makeDriver([])
     const { sink, frames } = makeArraySink({ rejectAtFrame: 2 })
     const tracker = makeStopTracker()
+    const resolves: Array<{ outcome: string; retries: number }> = []
 
-    const outcome = await driver.runResponseBufferedSink(first, env, sink, { ...tracker, retryCap: 1 } as RunBufferedOpts)
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, {
+      ...tracker,
+      retryCap: 1,
+      onBufferedResolve: (o, r) => resolves.push({ outcome: o, retries: r }),
+    } as RunBufferedOpts)
 
     expect(outcome.kind).toBe("stream-error") // not a thrown rejection
     expect(frames).toHaveLength(2) // the two writes that landed before the reject
+    // M1: the generation was COMPLETE (message_stop drained) — the mid-flush failure is a transport
+    // delivery issue, counted as `success` so the hit-rate denominator isn't a blind spot.
+    expect(resolves).toEqual([{ outcome: "success", retries: 0 }])
   })
 })
