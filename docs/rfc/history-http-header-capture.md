@@ -1,6 +1,8 @@
 # RFC：History HTTP Header 捕获的理想形状重构
 
-状态：草案 v6（完整阶段模型——纠正 v1-v5 的裁剪倾向）。作者：基于多轮对抗调研 + 主线实证 + operator 的完整性纠正。
+状态：草案 v6.1（完整阶段模型；完整性轴复审通过、无残留裁剪；可进入实现）。作者：基于多轮对抗调研 + 主线实证 + operator 的完整性纠正。
+
+> **v6.1 修订（完整性轴复审）**：两个 reviewer 用 richest-data-flow 完整性轴（显式覆盖 YAGNI）复审——确认 v6 已彻底逆转 v1-v5 裁剪、无残留（两个"空/no-op"是 WS 真无源非裁剪）。精修：③ per-attempt 持久化**非纯加字段**（driver 现根本不写 per-attempt response，须在 `runExchange` 成功/catch 新增写入，§4.3/§5 Phase 3）；OQ1 经实测解答（Hono streamSSE 非 lazy，`c.res.headers` 返回后可靠）；补 trailers 未来完整性占位 OQ5。
 
 > **v6 重定向（operator 纠正 v1-v5 的根本设计错误）**：v1-v5（我 + 默认持 DRY/YAGNI 的 subagent）用"重复""无消费者"去**裁剪数据模型**（砍 per-attempt headers、删 inboundResponse 腿）——这违反本项目 richest-data-flow 硬约束："History 记录请求/响应生命周期所有可观测原始数据，**后端存储必须完整，前端展示可选择性呈现**"。"无 UI 消费"不是删除理由（前端选择性展示 ≠ 后端可不存）；"与另一腿字节相同"也不是（它们是**不同阶段**的真实记录，恰好当前相同不代表语义相同）。**正确形状=四条腿都是代理中继的真实边，每条腿（及每个 attempt）自然地记录它完整的头**。v6 据此**逆转所有裁剪**：补齐 per-attempt headers、建 inboundResponse 腿，而非删除。
 
@@ -84,9 +86,9 @@ driver 在 S4 per-attempt 循环用**已存在的干净来源**写 ctx，每 att
 
 `attempts[]` 完整存每 attempt 的出站两腿头：
 
-- `RequestLegData`（`types.ts:190`）加 `headers?: Record<string,string>`；`legFromWire`（`request.ts:85`）输出它（修 §3.1 丢弃）。
-- `OutboundResponseData`（`types.ts:200`）加 `headers?: Record<string,string>`；driver per-attempt 写 `attempts[].response.headers`（建 §3.2 缺槽）。
-- serialize 的 per-attempt stage（`serialize.ts:362-376`）随 wireRequest/response 持久化 headers（既有 stage 容器，加字段即随之落盘）。
+- ② `RequestLegData`（`types.ts:190`）加 `headers?: Record<string,string>`；`legFromWire`（`request.ts:85`）输出 `headers: wp.headers`（修 §3.1 落盘丢弃；顶层 outboundRequest 经 finalize 镜像最终 attempt 本已活，此处补的是 per-attempt 槽，不冲突）。**纯机械加字段。**
+- ③ `OutboundResponseData`（`types.ts:200`）加 `headers?: Record<string,string>`。**注意（实测）：driver 当前根本不写 per-attempt response**——`setAttemptResponse`（`request.ts:350`）只被 `complete()`/`fail()` 调一次写 final attempt；`runExchange`（`driver.ts:240-328`）成功路只 `return {upstream,env}`、catch 路只 `setAttemptError`，非终态 attempt 从不落 response。故 ③ per-attempt 须**新增 driver 写入逻辑**：在 `runExchange` 成功 `return` 前写 `upstream.headers`、catch 分支写 `apiError.responseHeaders` 到当前 attempt。数据源都可得，但这是新写入路径、非纯加字段（工作量大于 ②）。
+- serialize 的 per-attempt stage（`serialize.ts:380-381` outbound_request/outbound_response row，payload=整对象）随 wireRequest/response 持久化 headers（既有 stage 容器，加字段即随对象 JSON 落盘 + deserialize 还原）。
 
 顶层 `httpHeaders.outboundRequest/outboundResponse` 镜像最终 attempt。
 
@@ -115,17 +117,18 @@ anthropic-beta 语义消费（`codec.ts:325` 读 + `request-preparation.ts:208` 
 - **Phase 0（golden 预捕获）**：旧代码上 4 格式 ×（完成 + HTTP-错误失败 + 重试）golden，锁现有三腿 + 敏感头（`***`，Phase 1 更新）。`tests/history/*.it.test.ts`。
 - **Phase 1（存原始）**：拆 History 捕获路径 sanitize；betaProbe 不动；sink 不加开关。迁移断言 `***` 的测试（`anthropic-client.it.test.ts:97`、`openai-responses-client.it.test.ts:117`、`history-store`/`history-api`/`request-context`）。Invariant：三腿在、敏感头变真实。
 - **Phase 2（②③ driver 捕获 + 删 bag + 扩 classify）**：前置扩 `classifyHTTPError` 全分支透传 responseHeaders；driver per-attempt 写出站两腿（成败两路）；`sendUpstreamHttp` 返回扩 response.headers、transport 脱 bag。过渡双写比对（完成 + 502 失败）逐格式一致后删 bag + 13 setHttpHeaders + transport dep + captureHttpHeaders + finalize 迁移。迁移测试 `request-context.unit.test.ts:537/621/627`、`http-transport.it.test.ts:80/84/86`、`fetch-utils.it.test.ts:55-62`。Invariant：顶层三腿（含 HTTP-错误 ③）不回退。
-- **Phase 3（②③ per-attempt 持久化）**：`RequestLegData`/`OutboundResponseData` 加 headers + `legFromWire` 输出 + driver 写 per-attempt + serialize。Invariant：retry entry 的 `attempts[].wireRequest.headers`/`.response.headers` 完整、顶层镜像最终。
+- **Phase 3（②③ per-attempt 持久化）**：② `RequestLegData` 加 headers + `legFromWire` 输出（纯机械）；③ `OutboundResponseData` 加 headers + **新增 driver per-attempt response 写入逻辑**（`runExchange` 成功 return 前写 `upstream.headers`、catch 写 `apiError.responseHeaders`——driver 现仅 final attempt 经 complete/fail 落 response，非机械加字段）+ serialize 随对象落盘。Invariant：retry entry 的 `attempts[].wireRequest.headers`/`.response.headers` 逐 attempt 完整、顶层镜像最终。
 - **Phase 4（④ inboundResponse 建捕获）**：4 格式 handler 写出点捕获 `c.res.headers` → `ctx.httpHeaders.inboundResponse`；保留 4 处类型声明改活腿。Invariant：四腿齐全；WS 按语义。
 - **Phase 5（in-flight 可见）**：setter publish + sink onContextUpdated 分支。Invariant：终态不变；in-flight 含 httpHeaders；WS 推送体积不爆。
 - **Phase 6（① 入站捕获收敛，暂缓收尾）**：4 格式逐字节相同的入站捕获上移 driver S1（最低优先，撞 reject 路径 ctx 生命周期，OQ）。
 
 ## 6. Open questions
 
-1. **④ inboundResponse 的捕获时机**：流式 `c.res.headers` 在 `streamSSE` setup 后是否可靠可读（Hono 可能 lazy flush）？还是改在 driver-owned sink 启动写出点注入？需实测 Hono 行为。
-2. **④ WS 客户端语义**：Responses 客户端 WS（`ws.ts`）经 WS 帧收响应、无 HTTP 响应头——④ 对 WS 存空、还是记 WS 帧元数据（如首帧时间）？倾向空 + 文档化。
+1. ~~**④ inboundResponse 的捕获时机**~~（已实测解答）：Hono `streamSSE` **非 lazy**——同步经 `c.header()` 设 4 头（Content-Type/Transfer-Encoding/Cache-Control/Connection）后 fire-and-forget 跑回调，`streamSSE(...)` **返回后** `c.res.headers` 即可靠完整。捕获改 `const resp = streamSSE(...); 读 resp.headers/c.res.headers; return resp`（非流式 `c.json` 同理）。无需移到 sink 启动点。
+2. **④ WS 客户端语义**：Responses 客户端 WS（`ws.ts`）经 WS 帧收响应、无 HTTP 响应头——④ 对 WS 存空（真无源，非裁剪；WS 仍经历 ②③ 出站腿、照常记）。是否另记 WS 帧元数据（首帧时间）属另一可观测维度，倾向空 + 文档化。
 3. **② per-attempt 跨 attempt dedup**：多 attempt 头近乎相同，是否 dedup（zstd 已压、倾向不 dedup 保完整）？
 4. **Phase 6 入站上移与 reject 路径**：reject 保留入站捕获是否让 reject 也建 entry？
+5. **响应 trailers（未来完整性占位）**：GHC h2 响应理论上可带 trailers，当前 transport 不暴露（`UpstreamStream` 无 trailers 字段）——属"真实可能发生但当前无数据源"。未来若 transport 暴露 trailers，应归入 ③ 完整记录范畴。当前不建表面（无源），仅记此占位。
 
 ## 7. 测试策略
 
