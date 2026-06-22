@@ -250,8 +250,11 @@ export interface RunResponseOpts {
    * driver's raw upstream-track sampling, so the restore must NOT touch that track).
    * Applied AFTER the `[DONE]` sentinel is dropped, so it never sees `[DONE]`. Anthropic
    * omits it (its restore is an S5 rewrite; it accumulates raw via `onUpstreamFrame`).
+   * Returns `undefined` to SKIP the frame entirely (not written, not forward-sampled) —
+   * used by Responses for empty/unparseable frames that the legacy loop dropped before
+   * forwarding; CC always returns a frame.
    */
-  onRenderedFrame?: (frame: ClientFrame) => ClientFrame
+  onRenderedFrame?: (frame: ClientFrame) => ClientFrame | undefined
   /**
    * Dry-run only (pipeline-dry-run-inspector.md §4 T1): yield the S5-rewritten frames
    * VERBATIM instead of running `codec.renderResponse` (S6). For a format whose render is

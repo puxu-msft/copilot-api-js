@@ -5,16 +5,20 @@
  * P3.3 removed the legacy `handleResponses`). Builds a per-request driver (codec
  * + WS-capable Responses transport + env strategies) and drives the seven stages.
  *
- * P2-era division of labor (sampling sinks to the driver in P3.2, mirroring CC):
- * this route still owns the response-side sampling (forwarded SSE events +
- * accumulate + complete/fail), the client-facing finishing the codec does NOT do
- * — tool-name restore (forwarded-only, post-accumulate, on the rendered Responses
- * frames), session registration — and the fallback closing lifecycle flush
- * (`codec.flushResponse`, the per-frame translator's stream-end drain). The
- * stateful `fixStreamEventIds` (DIRECT only) now runs in the driver's S5 response-
- * rewrite registry (A.C), shared with the WS transport. The error frame is built
- * inline (raw upstream message) rather than via `codec.formatError` (P2.2-D4 —
- * formatError only gets the classified kind).
+ * Division of labor (Stage B Responses-HTTP cut-over — owns-the-sink streaming): the DRIVER
+ * owns the client write-out (`runResponseSink` writes each rendered frame to a `makeSseSink`);
+ * this route does the rendered-frame-side work through the driver's `onRenderedFrame` hook
+ * (accumulate + progress + the forwarded-only tool-name restore on the rendered Responses
+ * frames; `undefined` return skips empty/unparseable frames), samples the forwarded track
+ * inside the sink (`onForwarded`), and after a clean drain handles the format-specific
+ * finishing the codec/driver do NOT: the fallback closing-lifecycle flush (`codec.flushResponse`,
+ * the CC→Responses translator's stream-end drain — deferred B4 moves it into the driver's S6
+ * flush) and session registration (fallback eager pre-stream; direct post-loop via
+ * `acc.responseId`). The stateful `fixStreamEventIds` (DIRECT only) runs in the driver's S5
+ * response-rewrite registry (A.C), shared with the WS transport. The error frame is built
+ * inline (raw upstream message) rather than via `codec.formatError` (P2.2-D4). Responses has
+ * no `[DONE]` (it ends with `response.completed`) and no H2 (the accumulator tracks no
+ * `streamError`), so the only failure paths are H3 (`stream-error`) / client-abort.
  */
 
 import type { Context } from "hono"
@@ -29,6 +33,7 @@ import type { SseEventRecord } from "~/lib/history/store"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
+  ClientFrame,
   DriverRequestResult,
   UpstreamStream,
 } from "~/lib/pipeline/types"
@@ -63,9 +68,9 @@ import {
   restoreResponsesOutputToolNames,
   restoreResponsesStreamFrameToolNames,
 } from "~/lib/openai/tool-name-sanitize"
+import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { buildResponsesResponseData } from "~/lib/request/recording"
-import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
@@ -237,66 +242,93 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const mapper = env.ctx.toolNameMapper
   const model = (env.body as ResponsesPayload).model
 
+  // Forwarded SSE frames — what the client ACTUALLY received (tool-name restored). Filled by
+  // the sink's `onForwarded` sampler; the upstream-original track is the driver's (runResponse
+  // loop-top samples the raw frames before render). No heartbeat (Responses has none).
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let bytesIn = 0
   let eventsIn = 0
 
-  /** Forward one driver-yielded Responses frame: accumulate → restore names → write. fix-stream-ids
-   * (direct) is now applied upstream in the driver's S5 chain, so the yielded `rawData` is already fixed. */
-  const forwardFrame = async (rawData: string, rawEvent: string | undefined): Promise<void> => {
+  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
+  const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+
+  /**
+   * Accumulate one rendered Responses frame + restore function_call names (forwarded-only).
+   * Returns the restored frame to forward, or `undefined` to skip (empty / unparseable —
+   * the legacy loop's `!frame.data` guard + `forwardFrame`'s parse-fail early return).
+   * fix-stream-ids (direct) was already applied in the driver's S5 chain. Shared by the driver
+   * loop (via `onRenderedFrame`, which adds progress counting) AND the fallback closing drain.
+   */
+  const restoreAndAccumulate = (frame: ClientFrame): ClientFrame | undefined => {
+    if (!frame.data) return undefined
     let event: ResponsesStreamEvent
     try {
-      event = JSON.parse(rawData) as ResponsesStreamEvent
+      event = JSON.parse(frame.data) as ResponsesStreamEvent
     } catch (err) {
-      consola.debug(`[Responses:v4] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, rawData.slice(0, 200))
-      return
+      consola.debug(`[Responses:v4] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, frame.data.slice(0, 200))
+      return undefined
     }
     accumulateResponsesStreamEvent(event, acc)
-    const forwardData = restoreResponsesStreamFrameToolNames(rawData, event.type, mapper)
-    forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: rawEvent ?? event.type, raw: forwardData })
-    await stream.writeSSE({ event: rawEvent ?? event.type, data: forwardData })
+    // Wire `event:` line = `frame.event ?? event.type` (byte-identical to the legacy forwardFrame).
+    // The forwarded HISTORY-record `type` is derived by the sink's `frameType` (parsed-JSON-`type`-
+    // first), vs the legacy record's `rawEvent ?? event.type` (event-line-first) — these agree for
+    // every compliant Responses frame (the SSE `event:` line mirrors the JSON `type`); they'd only
+    // differ in the history label (never the wire) for a malformed upstream where `event:` ≠ `type`.
+    return { event: frame.event ?? event.type, data: restoreResponsesStreamFrameToolNames(frame.data, event.type, mapper) }
   }
 
-  try {
-    for await (const frame of driver.runResponse(upstream, env)) {
-      if (!frame.data || frame.data === "[DONE]") continue
-      bytesIn += frame.data.length
-      eventsIn++
-      env.ctx.recordStreamProgress({ bytesIn, eventsIn })
-      await forwardFrame(frame.data, frame.event)
-    }
+  // Driver-loop hook: progress counting (loop frames only, mirroring the legacy loop body —
+  // the fallback closing drain did NOT count) + restore/accumulate. Skips empty BEFORE counting
+  // (legacy pre-count `!frame.data` guard); a parse-fail counts but does not forward (legacy).
+  const onRenderedFrame = (frame: ClientFrame): ClientFrame | undefined => {
+    if (!frame.data) return undefined
+    bytesIn += frame.data.length
+    eventsIn++
+    env.ctx.recordStreamProgress({ bytesIn, eventsIn })
+    return restoreAndAccumulate(frame)
+  }
 
-    // Fallback: drain the CC→Responses translator's closing lifecycle events
-    // (output_text.done … response.completed) — the per-frame renderResponse has
-    // no stream-end hook (mirrors how CC synthesizes the trailing [DONE]).
-    if (viaFallback) {
-      for (const closing of codec.flushResponse(env)) {
-        if (!closing.data) continue
-        await forwardFrame(closing.data, closing.event)
-      }
-    }
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onRenderedFrame })
 
-    // Direct registers the session after the loop with the upstream-reported id.
-    if (!viaFallback) {
-      if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
-      registerResponseSession(acc.responseId, env.ctx.sessionId)
-    }
+  if (outcome.kind === "settled-abort") {
+    recordForwarded()
+    consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
+    env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
+    return
+  }
 
-    const responseData = buildResponsesResponseData(acc, model)
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    env.ctx.complete(responseData)
-  } catch (error) {
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } }
-    if (settleStreamingFailure({ reqCtx: env.ctx, error, model: acc.model || model, partial })) {
-      consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
-      return
-    }
+  if (outcome.kind === "stream-error") {
+    // H3 — settle as fail (partial usage) + write the OpenAI error frame through the
+    // NON-sampling writeSynthetic path (legacy never pushed the error frame to forwarded).
+    recordForwarded()
+    const error = outcome.error
+    env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     consola.error("[Responses:v4] Stream error:", error)
-    await stream.writeSSE({
+    await sink.writeSynthetic?.({
       event: "error",
       data: JSON.stringify({ error: { message: error instanceof Error ? error.message : String(error), type: streamErrorToOpenAIErrorType(error) } }),
     })
+    return
   }
+
+  // outcome.kind === "complete" — the upstream drained cleanly.
+  if (viaFallback) {
+    // Drain the CC→Responses translator's closing lifecycle (output_text.done … response.completed)
+    // — the per-frame renderResponse has no stream-end hook (mirrors how CC synthesizes [DONE]).
+    // Each closing frame goes through restoreAndAccumulate (response.completed sets responseId/usage)
+    // + the sink (sampled). Not progress-counted (legacy `forwardFrame` drain did not count).
+    // (Deferred: B4 moves this drain into the driver's `finally` as an S6 flush mirroring S5 flushChain.)
+    for (const closing of codec.flushResponse(env)) {
+      const out = restoreAndAccumulate(closing)
+      if (out) await sink.write(out)
+    }
+  } else {
+    // Direct registers the session after the loop with the upstream-reported id.
+    if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
+    registerResponseSession(acc.responseId, env.ctx.sessionId)
+  }
+
+  recordForwarded()
+  env.ctx.complete(buildResponsesResponseData(acc, model))
 }

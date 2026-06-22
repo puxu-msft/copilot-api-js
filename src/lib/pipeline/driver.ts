@@ -439,10 +439,12 @@ async function runResponseSink(
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue
-      // Post-render, pre-write transform (CC tool-name restore + its accumulate/progress
-      // side effects); identity when the format doesn't supply one (Anthropic). Applied
-      // AFTER the `[DONE]` drop so the hook never sees the sentinel.
-      await sink.write(opts?.onRenderedFrame ? opts.onRenderedFrame(frame) : frame)
+      // Post-render, pre-write transform (CC/Responses tool-name restore + accumulate/progress
+      // side effects); identity when the format doesn't supply one (Anthropic). Applied AFTER
+      // the `[DONE]` drop so the hook never sees the sentinel. A `undefined` return SKIPS the
+      // frame (Responses drops empty/unparseable frames the legacy loop never forwarded).
+      const toWrite = opts?.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
+      if (toWrite) await sink.write(toWrite)
     }
     return { kind: "complete", headers: upstream.headers }
   } catch (error) {
