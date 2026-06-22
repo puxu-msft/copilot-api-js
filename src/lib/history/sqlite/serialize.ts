@@ -41,11 +41,21 @@ export interface EntryRow {
   pid: number | null
   boot_time: number | null
   git_sha: string | null
+  // Debug-pin flag (0/1). Owned EXCLUSIVELY by setEntryPinned's dedicated UPDATE —
+  // never written by the head insert/upsert (INSERT_ENTRY_SQL omits it, so it
+  // keeps its DEFAULT 0 on insert and survives every eager status re-upsert).
+  // Read-only from the entry's perspective; the column is the single source.
+  pinned: number
   blob_gz: Uint8Array
 }
 
-/** HistoryEntry keys represented in dedicated row columns — excluded from blob_gz. */
-const META_KEYS = new Set<string>(["id", "sessionId", "startedAt", "endedAt", "durationMs", "endpoint", "transport", "state"])
+/**
+ * HistoryEntry keys represented in dedicated row columns — excluded from blob_gz.
+ * `pinned` is here too: it is a DB-only flag mutated AFTER the blob is written
+ * (the head blob is finalized once; pinning happens later), so it must never be
+ * serialized into the blob — it is always derived from the column on read.
+ */
+const META_KEYS = new Set<string>(["id", "sessionId", "startedAt", "endedAt", "durationMs", "endpoint", "transport", "state", "pinned"])
 
 // ============================================================================
 // Stage taxonomy (entry_stages rows)
@@ -156,6 +166,10 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
     pid: entry.process?.pid ?? null,
     boot_time: entry.process?.bootTime ?? null,
     git_sha: entry.process?.gitSha ?? null,
+    // Carried for type-completeness only — INSERT_ENTRY_SQL does NOT write this
+    // column (pinned is owned by setEntryPinned). On a fresh insert the column
+    // takes DEFAULT 0; this value is intentionally ignored by the head upsert.
+    pinned: entry.pinned ? 1 : 0,
     blob_gz: headBlob,
   }
   return { row, stages: extractStagePayloads(entry) }
@@ -180,6 +194,7 @@ export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry
     transport: (row.transport ?? restored.transport) as HistoryEntry["transport"],
     state: (row.status as HistoryEntry["state"]) ?? restored.state ?? "completed",
     active: false,
+    pinned: row.pinned === 1,
     lastUpdatedAt: row.ended_at ?? row.started_at,
     // Contract floor: `inboundRequest` is non-optional on HistoryEntry, but a
     // head-only row (e.g. a degraded tombstone whose inbound_request stage was

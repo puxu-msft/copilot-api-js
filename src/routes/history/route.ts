@@ -12,6 +12,8 @@ import {
   handleGetSession,
   handleGetSessions,
   handleGetStats,
+  handlePinEntry,
+  handleUnpinEntry,
 } from "./handler"
 
 // Plain Hono (not OpenAPIHono): the /history/api/* handlers live in ./handler and
@@ -29,6 +31,8 @@ historyRoutes.all("/", (c) => c.json({ error: "Not Found" }, 404))
 historyRoutes.get("/api/entries", handleGetEntries)
 historyRoutes.get("/api/entries/:id", handleGetEntry)
 historyRoutes.get("/api/entries/:id/lineage", handleGetLineage)
+historyRoutes.post("/api/entries/:id/pin", handlePinEntry)
+historyRoutes.post("/api/entries/:id/unpin", handleUnpinEntry)
 historyRoutes.delete("/api/entries", handleDeleteEntries)
 historyRoutes.get("/api/stats", handleGetStats)
 historyRoutes.get("/api/export", handleExport)

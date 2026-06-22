@@ -29,6 +29,7 @@ import {
   type EndpointType,
   type HistoryEntry,
 } from "~/lib/history"
+import { persistEntryEager } from "~/lib/history/store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
@@ -41,6 +42,8 @@ import {
   handleGetSession,
   handleGetSessions,
   handleGetStats,
+  handlePinEntry,
+  handleUnpinEntry,
 } from "~/routes/history/handler"
 
 // ─── Test app ───
@@ -48,6 +51,8 @@ import {
 const app = new Hono()
 app.get("/api/entries", handleGetEntries)
 app.get("/api/entries/:id", handleGetEntry)
+app.post("/api/entries/:id/pin", handlePinEntry)
+app.post("/api/entries/:id/unpin", handleUnpinEntry)
 app.delete("/api/entries", handleDeleteEntries)
 app.get("/api/stats", handleGetStats)
 app.get("/api/export", handleExport)
@@ -87,6 +92,10 @@ async function get(path: string) {
 
 async function del(path: string) {
   return app.request(path, { method: "DELETE" })
+}
+
+async function post(path: string) {
+  return app.request(path, { method: "POST" })
 }
 
 async function json<T = unknown>(res: Response): Promise<T> {
@@ -249,6 +258,64 @@ describe("GET /api/entries/:id", () => {
     expect(res.status).toBe(404)
     const body = await json<{ error: string }>(res)
     expect(body.error).toContain("not found")
+  })
+})
+
+// ─── handlePinEntry / handleUnpinEntry ───
+
+describe("POST /api/entries/:id/pin and /unpin", () => {
+  test("pin returns the updated entry with pinned=true and persists it", async () => {
+    const entry = createEntry("anthropic-messages", "test", [{ role: "user", content: "keep me" }])
+
+    const res = await post(`/api/entries/${entry.id}/pin`)
+    expect(res.status).toBe(200)
+    const body = await json<HistoryEntry>(res)
+    expect(body.id).toBe(entry.id)
+    expect(body.pinned).toBe(true)
+
+    // A subsequent GET reflects the persisted pin state.
+    const getRes = await get(`/api/entries/${entry.id}`)
+    expect((await json<HistoryEntry>(getRes)).pinned).toBe(true)
+  })
+
+  test("unpin clears the flag", async () => {
+    const entry = createEntry("anthropic-messages", "test", [{ role: "user", content: "toggle" }])
+    await post(`/api/entries/${entry.id}/pin`)
+
+    const res = await post(`/api/entries/${entry.id}/unpin`)
+    expect(res.status).toBe(200)
+    expect((await json<HistoryEntry>(res)).pinned).toBe(false)
+
+    const getRes = await get(`/api/entries/${entry.id}`)
+    expect((await json<HistoryEntry>(getRes)).pinned).toBe(false)
+  })
+
+  test("pin returns 404 for a non-existent id", async () => {
+    const res = await post("/api/entries/nope/pin")
+    expect(res.status).toBe(404)
+    expect((await json<{ error: string }>(res)).error).toContain("not found")
+  })
+
+  test("pinning an eager-persisted in-flight entry reflects pinned in the response (in-flight view synced)", async () => {
+    // An entry that is eager-persisted (sqlite head row) but still in-flight
+    // (not finalized). getEntry reads in-flight FIRST, so setPinned must sync the
+    // in-flight copy — otherwise the column says pinned=1 but the response says false.
+    const entry: HistoryEntry = {
+      id: generateId(),
+      startedAt: Date.now(),
+      endpoint: "anthropic-messages",
+      state: "streaming",
+      active: true,
+      inboundRequest: { model: "test", messages: [{ role: "user", content: "live" }], stream: true },
+    }
+    insertEntry(entry)
+    persistEntryEager(entry) // writes the sqlite head row (status=streaming) while still in-flight
+
+    const res = await post(`/api/entries/${entry.id}/pin`)
+    expect(res.status).toBe(200)
+    expect((await json<HistoryEntry>(res)).pinned).toBe(true)
+    // The in-flight read also reflects it now.
+    expect(getEntry(entry.id)?.pinned).toBe(true)
   })
 })
 

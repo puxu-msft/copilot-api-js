@@ -113,7 +113,7 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 | 目录 | 职责 · 关系 · 契约 |
 |---|---|
 | `src/lib/observability/` | 请求生命周期 + 系统日志 event-bus + sinks（见 `docs/rfc/observability-rewrite.md`）。`bus` 同步 fan-out scoped publisher；`sinks/`（console/file/history/telemetry/ws）订阅消费；`projections/` 渲染日志行（**provenance**：取代已删的 `lib/tui/`）。**反直觉契约**：`republish.ts` 是**唯一 consola hijack 点**（每条日志→`system.log` 事件投 bus，重入守卫断 disk-full→日志风暴的环）。 |
-| `src/lib/history/` | 请求/响应持久化（SQLite）。子域：`src/lib/history/sqlite/`（head/stage 拆表 + zstd L3 + magic-bytes 新旧判别 + request_group 合并帧 dedup + reaper 分桶淘汰 + 启动 VACUUM + WAL checkpoint + trigram FTS5 子串搜索 + 启动 ANALYZE/reaper `PRAGMA optimize` 统计）、`src/lib/history/lineage/`（Anthropic 前缀哈希谱系，canonicalize 剥 cache_control + system-reminder）。**反直觉契约**：`persist-guard.ts` 的 `runHistoryWrite` 取代旧盲 `try/catch→warn`（分类 transient/permanent + ERROR 日志 + per-stage:class 计数）；finalize 无损（写成功才 removeInFlight，失败保留 in-flight 待 reaper 重试）；**`entries_fts` 是 external-content trigram FTS5（`MATCH` 做 ≥3 字符子串搜索、<3 走 LIKE 回退），靠 entries_v2 的 AFTER INSERT/UPDATE/DELETE 触发器同步——故 reclaim 计数改用 SELECT COUNT 而非 `.run().changes`（触发器写入会被 bun:sqlite 计入 changes）**。`store.ts` barrel 同时是前端 `~backend/*` 公开 type API。 |
+| `src/lib/history/` | 请求/响应持久化（SQLite）。子域：`src/lib/history/sqlite/`（head/stage 拆表 + zstd L3 + magic-bytes 新旧判别 + request_group 合并帧 dedup + reaper 分桶淘汰 + 启动 VACUUM + WAL checkpoint + trigram FTS5 子串搜索 + 启动 ANALYZE/reaper `PRAGMA optimize` 统计）、`src/lib/history/lineage/`（Anthropic 前缀哈希谱系，canonicalize 剥 cache_control + system-reminder）。**反直觉契约**：`persist-guard.ts` 的 `runHistoryWrite` 取代旧盲 `try/catch→warn`（分类 transient/permanent + ERROR 日志 + per-stage:class 计数）；finalize 无损（写成功才 removeInFlight，失败保留 in-flight 待 reaper 重试）；**`entries_v2.pinned` 是 debug-pin 标志（`setEntryPinned` 经 `POST /history/api/entries/:id/pin|unpin` 切换）——pinned 行与 active 行同属 reaper「桶外」豁免（reaper SUCCESS/FAILURE_WHERE 各带 `AND pinned=0`，故既不被淘汰、也不计入 success/failure 保留名额），且故意不进 INSERT/UPSERT 列表（首插取 DEFAULT 0、后续 eager 状态 upsert 不重置它）**；**`entries_fts` 是 external-content trigram FTS5（`MATCH` 做 ≥3 字符子串搜索、<3 走 LIKE 回退），靠 entries_v2 的 AFTER INSERT/UPDATE/DELETE 触发器同步——故 reclaim 计数改用 SELECT COUNT 而非 `.run().changes`（触发器写入会被 bun:sqlite 计入 changes）**。`store.ts` barrel 同时是前端 `~backend/*` 公开 type API。 |
 | `src/lib/context/` | `RequestContext` 状态机 + 活跃请求 manager + stale reaper + activity-summary，被 driver/handler/observability 跨域消费（in-flight 跟踪）。 |
 | `src/lib/config/` | config.yaml 类型/加载/热重载/校验。`compat` 迁移废弃配置键；`paths` 解析 `APP_DIR`（尊重 `XDG_DATA_HOME`）派生 DB/日志路径。热重载语义见下文。 |
 | `src/lib/models/` | Model 解析（别名→规范名→overrides→family 回退）+ Copilot models API + capabilities + 后台 refresh + tokenizer。详见 `docs/model-resolution.md`。 |
@@ -199,7 +199,7 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 | `/health` | 健康检查（容器编排用） |
 | `/openapi.json` | 管理 API 的 OpenAPI 3.1 文档（仅 `/api/*` 自有端点；兼容端点镜像上游契约不收录；History REST + dry-run-pipeline 因 handler 返回宽 `ContentfulStatusCode`/动态形状、其消费者为强类型 Vue UI 而故意排除）。经 `OpenAPIHono`（根 app 改 `OpenAPIHono<BlankEnv>`）+ 各管理 route 的 `createRoute`+zod schema 聚合，见 `src/routes/openapi.ts` |
 | `/docs` | Scalar 交互式 API 文档页（消费 `/openapi.json`，与 Vue 前端 `/ui` 分离） |
-| `/history/api/*` | History REST API |
+| `/history/api/*` | History REST API（含 `POST /history/api/entries/:id/pin`、`.../unpin` 切换 debug-pin——pinned 条目豁免 reaper 淘汰+计数，返回更新后的完整 entry） |
 | `/ws` | History WebSocket |
 | `/ui/*` | History UI v3 静态文件 |
 

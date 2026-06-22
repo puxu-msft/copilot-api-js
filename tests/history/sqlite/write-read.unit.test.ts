@@ -27,6 +27,8 @@ import {
   clearAllEntries,
   deleteSession,
   insertCompletedEntry,
+  setEntryPinned,
+  upsertHeadRow,
   upsertResponseSession,
 } from "~/lib/history/sqlite/write"
 
@@ -276,5 +278,34 @@ describe("sqlite write/read", () => {
     const sessions = listSessions()
     expect(sessions).toHaveLength(1)
     expect([...sessions[0].models].sort()).toEqual(["claude-opus-4-7", "claude-sonnet-4-6"])
+  })
+
+  test("pinned defaults false; setEntryPinned roundtrips through column + summary", () => {
+    insertCompletedEntry(makeEntry({ id: "pin-1" }))
+    expect(getEntryById("pin-1")?.pinned).toBe(false)
+    expect(querySummaries({ limit: 10 }).find((s) => s.id === "pin-1")?.pinned).toBe(false)
+
+    expect(setEntryPinned("pin-1", true)).toBe(true)
+    expect(getEntryById("pin-1")?.pinned).toBe(true)
+    expect(querySummaries({ limit: 10 }).find((s) => s.id === "pin-1")?.pinned).toBe(true)
+
+    expect(setEntryPinned("pin-1", false)).toBe(true)
+    expect(getEntryById("pin-1")?.pinned).toBe(false)
+  })
+
+  test("a later head upsert (eager status transition) does NOT reset the pin flag", () => {
+    const entry = makeEntry({ id: "pin-keep" })
+    insertCompletedEntry(entry)
+    expect(setEntryPinned("pin-keep", true)).toBe(true)
+    // Eager incremental writers re-upsert the head row; INSERT_ENTRY_SQL omits
+    // the pinned column, so the dedicated flag must survive untouched.
+    upsertHeadRow(entry, "streaming")
+    expect(getEntryById("pin-keep")?.pinned).toBe(true)
+    insertCompletedEntry(entry) // full re-finalize too
+    expect(getEntryById("pin-keep")?.pinned).toBe(true)
+  })
+
+  test("setEntryPinned returns false for an unknown id", () => {
+    expect(setEntryPinned("ghost", true)).toBe(false)
   })
 })

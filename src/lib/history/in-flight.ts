@@ -159,6 +159,7 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     endpoint: entry.endpoint,
     state: entry.state,
     active: entry.active,
+    pinned: entry.pinned,
     lastUpdatedAt: entry.lastUpdatedAt,
     queueWaitMs: entry.queueWaitMs,
     attemptCount: entry.attemptCount,

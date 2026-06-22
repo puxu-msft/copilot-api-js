@@ -10,6 +10,7 @@ export {
   persistEntryStages,
   persistEntryStatus,
   retryPendingFinalizations,
+  setPinned,
   updateEntry,
 } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"

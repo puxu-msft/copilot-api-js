@@ -85,6 +85,14 @@ describe("toEntrySummary memoization (M4)", () => {
     expect(s1.searchText).toBe(s2.searchText)
   })
 
+  test("carries the pinned flag through to the summary (producer must not drop it)", () => {
+    const unpinned = makeEntry("p0", 1)
+    expect(toEntrySummary(unpinned).pinned).toBeUndefined() // absent → undefined (falsy)
+
+    const pinned = { ...makeEntry("p1", 1), pinned: true }
+    expect(toEntrySummary(pinned).pinned).toBe(true)
+  })
+
   test("performance: 1000 summary calls on a heavy entry don't re-iterate messages", () => {
     // 200-message entry, 10 blocks each. Re-iterating on every call would be
     // 200 × 10 × 1000 = 2,000,000 block visits. With memoization, it's a

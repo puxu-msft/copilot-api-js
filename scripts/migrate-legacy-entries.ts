@@ -138,6 +138,7 @@ function toEntryRow(r: LegacyRow): EntryRow {
     pid: null,
     boot_time: null,
     git_sha: null,
+    pinned: 0,
     blob_gz: r.blob_gz,
   }
 }

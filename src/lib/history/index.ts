@@ -31,6 +31,7 @@ export {
   resolveResponseSessionId,
   setHistoryMaxEntries,
   setHistoryPublisher,
+  setPinned,
   shutdownHistory,
   updateEntry,
 } from "./store"

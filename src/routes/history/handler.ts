@@ -12,6 +12,7 @@ import {
   getSessions,
   getStats,
   isHistoryEnabled,
+  setPinned,
   type EndpointType,
   type QueryOptions,
 } from "~/lib/history"
@@ -86,6 +87,43 @@ export function handleGetLineage(c: Context) {
     return c.json({ error: "Entry not found" }, 404)
   }
   return c.json(getLineage(id))
+}
+
+/**
+ * POST /history/api/entries/:id/pin and .../unpin — toggle the debug-pin flag.
+ *
+ * A pinned entry is exempt from the AUTOMATIC reaper (never evicted, not counted
+ * toward the retention limits), keeping its raw request/response data across GC
+ * while debugging. It is NOT immortal: explicit `DELETE /api/sessions/:id` and
+ * `DELETE /api/entries` (clear-all) still remove it — pin only blocks the
+ * background reaper, not deliberate deletion. Returns the refreshed full entry
+ * (richest form, so the caller sees `pinned` plus everything else without a
+ * second round-trip). 404 if unknown.
+ */
+function setEntryPinState(c: Context, pinned: boolean) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+  const id = c.req.param("id")
+  if (!id) {
+    return c.json({ error: "Entry id is required" }, 400)
+  }
+  if (!setPinned(id, pinned)) {
+    return c.json({ error: "Entry not found" }, 404)
+  }
+  const entry = getEntry(id)
+  if (!entry) {
+    return c.json({ error: "Entry not found" }, 404)
+  }
+  return c.json(entry)
+}
+
+export function handlePinEntry(c: Context) {
+  return setEntryPinState(c, true)
+}
+
+export function handleUnpinEntry(c: Context) {
+  return setEntryPinState(c, false)
 }
 
 /**

@@ -65,6 +65,21 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 每桶按 `started_at ASC, id ASC` 删除最旧条目，保留最新的对应 `limit` 条。**活跃态（`pending`/`executing`/`streaming`）落在两桶之外**——reaper 既不计数也不淘汰进行中请求的 head 行；它们的回收由下文的孤儿/stale 回收负责。删除 head 行时，其 `entry_stages` 子行经 `ON DELETE CASCADE` 一并删除。
 
+### Debug-pin（豁免淘汰）
+
+`entries_v2.pinned`（`INTEGER NOT NULL DEFAULT 0`）是 debug 用的钉住标志。调试时常需保留某条 entry 的完整原始数据（请求/响应/sseEvents/per-attempt），但默认 reaper 会按桶超额淘汰把关键样本挤掉。**pinned 行与活跃态行一样落在两桶之外**——reaper 的 `SUCCESS_WHERE`/`FAILURE_WHERE` 各带 `AND pinned = 0`，而 `evictBucket` 的 COUNT 与 DELETE 子查询共用此谓词，故 pinned 行**既不被淘汰、也不计入 success/failure 名额**（pin 满 limit 条不会把正常历史挤空）。
+
+实现要点：
+
+- **专列独占写**：`pinned` 列**故意不进** `INSERT_ENTRY_SQL` 的列清单与 `ON CONFLICT DO UPDATE SET`——首次插入取 `DEFAULT 0`，后续所有 eager 状态 upsert（pending→streaming→completed）都不会重置它。唯一写者是 `setEntryPinned(id, pinned)`（`write.ts`）的专用 `UPDATE`。
+- **非 blob**：`pinned` 是 DB-only 标志（blob 在 finalize 时一次写定，pin 发生在之后），故进 `META_KEYS`、永不序列化进 blob，读时一律由列派生。
+- **存在性判定不读 `.run().changes`**：`entries_fts` 的 AFTER UPDATE 触发器写入会被 bun:sqlite 计入 `changes`，故 `setEntryPinned` 用 `SELECT 1` 判断行是否存在。
+- **in-flight 同步**：`setPinned`（`entries.ts`）切换列后调 `updateInFlight(id, { pinned })` 同步内存副本——因 `getEntry` 是 in-flight 优先，eager-persisted 但未 finalize 的 entry 否则会读到旧 `pinned`（HTTP 响应与广播都会失真）；`toEntrySummary` 也带 `pinned`，避免 producer 丢字段。
+- **广播**：同步后 `publishEntryUpdated`，已连接的 WS 客户端实时反映 `pinned`（不改 stats——pinning 不影响 completed/failed 计数）。
+- **只豁免自动 reaper，非永久不可删**：pin 仅挡后台 reaper 的自动淘汰；显式 `DELETE /history/api/sessions/:id`（删 session）与 `DELETE /history/api/entries`（clear-all）仍会删除 pinned 条目。
+
+REST 用法见下文 `POST /history/api/entries/:id/pin|unpin`。
+
 ### 崩溃回收（pending → interrupted）
 
 由于请求一进来即落盘（见下文增量持久化），进程崩溃会在 SQLite 留下停在非终态的 head 行。两条回收路径把它们标为 `interrupted`（失败桶终态，可被淘汰）：
@@ -146,6 +161,8 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 |------|------|
 | `GET /history/api/entries` | 分页查询 entries（支持 model、endpoint、from/to 等过滤） |
 | `GET /history/api/entries/:id` | 获取单个 entry |
+| `POST /history/api/entries/:id/pin` | 钉住该 entry（`pinned=1`）：豁免 reaper 淘汰+计数，返回更新后的完整 entry；未知 id → 404 |
+| `POST /history/api/entries/:id/unpin` | 取消钉住（`pinned=0`），恢复正常淘汰资格；返回更新后的完整 entry |
 | `GET /history/api/sessions` | 列出所有 sessions |
 | `GET /history/api/sessions/:id` | 获取 session 详情 |
 | `GET /history/api/sessions/:id/entries` | 获取 session 的所有 entries |

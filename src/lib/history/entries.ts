@@ -22,7 +22,11 @@ import {
   type LineageDigest,
 } from "./lineage"
 import { runHistoryWrite } from "./persist-guard"
-import { queryEntryCount } from "./sqlite/read"
+import {
+  //
+  getEntryById,
+  queryEntryCount,
+} from "./sqlite/read"
 import {
   //
   isReaperRunning,
@@ -38,6 +42,7 @@ import {
   //
   clearAllEntries,
   insertCompletedEntry,
+  setEntryPinned,
   upsertHeadRow,
 } from "./sqlite/write"
 import { historyState } from "./state"
@@ -302,6 +307,30 @@ export function clearHistory(): void {
   }
   publishHistoryCleared()
   publishStatsChanged()
+}
+
+/**
+ * Toggle the debug-pin flag on a persisted entry, then broadcast the refreshed
+ * summary so connected WS clients reflect the new state. Returns whether the
+ * entry exists. A pinned entry is exempt from reaper eviction AND retention
+ * counting (see `setEntryPinned` + reaper SUCCESS_WHERE/FAILURE_WHERE), so its
+ * raw data survives GC for debugging. No stats broadcast — pinning changes
+ * neither the completed/failed counts nor token sums.
+ */
+export function setPinned(id: string, pinned: boolean): boolean {
+  if (!historyState.enabled) return false
+  const changed = setEntryPinned(id, pinned)
+  if (!changed) return false
+  // The `pinned` column is authoritative, but an entry that is still in-flight
+  // (eager-persisted yet un-finalized) is read in-flight-FIRST by `getEntry`.
+  // Sync the in-flight copy so HTTP responses and the broadcast summary reflect
+  // the new flag immediately — not only after the entry finalizes. No-op when the
+  // entry is already terminal (no in-flight copy). The pin survives finalize
+  // regardless: INSERT_ENTRY_SQL never writes the column (see setEntryPinned).
+  updateInFlight(id, { pinned })
+  const entry = getInFlight(id) ?? getEntryById(id)
+  if (entry) publishEntryUpdated(toEntrySummary(entry))
+  return true
 }
 
 export function listInFlightEntries(): Array<HistoryEntry> {

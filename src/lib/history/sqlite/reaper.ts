@@ -36,9 +36,14 @@ export function setReaperTickHook(fn: (() => void) | null): void {
  * counts or evicts an in-progress request's head row. Their backstop is
  * `reclaimStaleActiveRows` (runtime) + startup orphan recovery, which flip a
  * stuck/dead row to `interrupted` (a failure-bucket terminal state).
+ *
+ * `AND pinned = 0` similarly excludes debug-pinned rows from BOTH buckets:
+ * `evictBucket` reuses the same predicate for its COUNT and its DELETE subquery,
+ * so a pinned row is neither counted toward the limit (never pushes an unpinned
+ * row out) nor eligible for eviction. Pinning a row keeps its raw data forever.
  */
-const FAILURE_WHERE = "status IN ('failed','aborted','interrupted')"
-const SUCCESS_WHERE = "status = 'completed'"
+const FAILURE_WHERE = "status IN ('failed','aborted','interrupted') AND pinned = 0"
+const SUCCESS_WHERE = "status = 'completed' AND pinned = 0"
 
 /** Active (non-terminal) statuses — reaper-exempt; reclaimed only via interrupted. */
 const ACTIVE_STATUSES = ["pending", "executing", "streaming"]

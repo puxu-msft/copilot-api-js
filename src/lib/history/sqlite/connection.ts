@@ -276,6 +276,9 @@ function migrateEntriesColumns(database: Database): void {
     { name: "pid", type: "INTEGER" },
     { name: "boot_time", type: "INTEGER" },
     { name: "git_sha", type: "TEXT" },
+    // Debug-pin flag. SQLite permits ALTER ADD COLUMN with a NOT NULL + constant
+    // DEFAULT, so existing rows backfill to 0 (unpinned) without a rewrite.
+    { name: "pinned", type: "INTEGER NOT NULL DEFAULT 0" },
   ]
 
   for (const col of wanted) {

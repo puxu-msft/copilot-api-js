@@ -17,9 +17,17 @@ import {
   closeDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
-import { queryEntryCount } from "~/lib/history/sqlite/read"
+import {
+  //
+  getEntryById,
+  queryEntryCount,
+} from "~/lib/history/sqlite/read"
 import { runReaperOnce } from "~/lib/history/sqlite/reaper"
-import { insertCompletedEntry } from "~/lib/history/sqlite/write"
+import {
+  //
+  insertCompletedEntry,
+  setEntryPinned,
+} from "~/lib/history/sqlite/write"
 
 /** Seed `n` entries with the given lifecycle state, ids prefixed by state. */
 function seed(n: number, status: RequestLifecycleState = "completed", startBase = 1_000): void {
@@ -110,5 +118,49 @@ describe("reaper (per-status buckets)", () => {
     runReaperOnce(2, 10)
     // Oldest three removed, newest two kept.
     expect(queryEntryCount({ success: true })).toBe(2)
+  })
+
+  test("a pinned row is exempt from eviction AND from bucket counting", () => {
+    seed(5, "completed", 1_000) // completed-0..4, ts 1000..1004
+    expect(setEntryPinned("completed-0", true)).toBe(true) // pin the OLDEST
+    // Bucket now = unpinned completed-1..4 (4 rows). limit 2 → evict oldest 2
+    // (completed-1, completed-2); keep completed-3, completed-4. Pinned
+    // completed-0 is outside the bucket entirely, so it neither counts nor dies.
+    const deleted = runReaperOnce(2, 10)
+    expect(deleted).toBe(2)
+    expect(queryEntryCount()).toBe(3) // completed-0 (pinned) + completed-3,4
+    expect(getEntryById("completed-0")).toBeDefined() // pinned survived as oldest
+    expect(getEntryById("completed-1")).toBeUndefined()
+    expect(getEntryById("completed-2")).toBeUndefined()
+  })
+
+  test("pinning every overflowing row prevents all eviction", () => {
+    seed(5, "completed", 1_000)
+    for (let i = 0; i < 5; i++) expect(setEntryPinned(`completed-${i}`, true)).toBe(true)
+    expect(runReaperOnce(2, 10)).toBe(0) // bucket is empty after exclusion
+    expect(queryEntryCount()).toBe(5)
+  })
+
+  test("a failed pinned row is exempt from the failure bucket too", () => {
+    seed(5, "failed", 2_000)
+    expect(setEntryPinned("failed-0", true)).toBe(true)
+    const deleted = runReaperOnce(10, 2)
+    expect(deleted).toBe(2) // unpinned failed-1..4 over limit 2 → evict 2 oldest
+    expect(getEntryById("failed-0")).toBeDefined()
+    expect(queryEntryCount()).toBe(3)
+  })
+
+  test("unpinning restores reaper eligibility", () => {
+    seed(5, "completed", 1_000)
+    expect(setEntryPinned("completed-0", true)).toBe(true)
+    expect(setEntryPinned("completed-0", false)).toBe(true) // back to normal
+    // All 5 unpinned again: limit 2 → evict oldest 3 incl. completed-0.
+    runReaperOnce(2, 10)
+    expect(getEntryById("completed-0")).toBeUndefined()
+    expect(queryEntryCount({ success: true })).toBe(2)
+  })
+
+  test("setEntryPinned on an unknown id returns false", () => {
+    expect(setEntryPinned("nope", true)).toBe(false)
   })
 })

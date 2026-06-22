@@ -267,6 +267,26 @@ export function upsertStageRow(entryId: string, stage: StagePayload): void {
   runStageInsert(db, entryId, stage, Date.now())
 }
 
+/**
+ * Set (or clear) the debug-pin flag on one entry. Returns whether a row with
+ * `id` exists (true even if the flag was already in the requested state — the
+ * UPDATE is idempotent). The dedicated UPDATE is the ONLY writer of the `pinned`
+ * column; INSERT_ENTRY_SQL deliberately omits it, so a head re-upsert never
+ * resets a pinned row.
+ *
+ * Existence is read via a SELECT, NOT `.run().changes`: the entries_fts AFTER
+ * UPDATE trigger writes trigram rows that bun:sqlite folds into `changes`, which
+ * would misreport whether the head row matched (see
+ * reference-bun-sqlite-get-null-and-trigger-changes).
+ */
+export function setEntryPinned(id: string, pinned: boolean): boolean {
+  const db = getDatabase()
+  const exists = Boolean(db.prepare("SELECT 1 FROM entries_v2 WHERE id = ?").get(id))
+  if (!exists) return false
+  db.prepare("UPDATE entries_v2 SET pinned = ? WHERE id = ?").run(pinned ? 1 : 0, id)
+  return true
+}
+
 export function deleteSession(sessionId: string): number {
   const db = getDatabase()
   let deleted = 0

@@ -121,6 +121,7 @@ describe("sqlite/serialize head+stage", () => {
       pid: null,
       boot_time: null,
       git_sha: null,
+      pinned: 0,
       blob_gz: legacyFullBlob,
     }
 

@@ -217,6 +217,13 @@ export interface HistoryEntry {
   endpoint: EndpointType
   state?: RequestLifecycleState
   active?: boolean
+  /**
+   * Debug-pin flag. A pinned entry is exempt from the SQLite reaper — never
+   * evicted and not counted toward the success/failure retention limits — so its
+   * raw request/response data persists across GC while debugging. Backed by the
+   * `entries_v2.pinned` column (not the blob); toggled via setEntryPinned.
+   */
+  pinned?: boolean
   lastUpdatedAt?: number
   queueWaitMs?: number
   attemptCount?: number
@@ -376,6 +383,8 @@ export interface EntrySummary {
   endpoint: EndpointType
   state?: RequestLifecycleState
   active?: boolean
+  /** Debug-pin flag — see HistoryEntry.pinned. Pinned entries survive the reaper. */
+  pinned?: boolean
   lastUpdatedAt?: number
   queueWaitMs?: number
   attemptCount?: number
