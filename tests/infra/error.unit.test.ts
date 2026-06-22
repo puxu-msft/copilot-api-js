@@ -706,4 +706,76 @@ describe("forwardError", () => {
     // Generic 503 — falls through to the default error handler
     expect(body.error.type).toBe("error")
   })
+
+  // ─── abort classification (① — an abort is NOT an "unexpected non-HTTP error") ───
+
+  /** Mock context whose inbound request signal carries an `aborted` flag (client-disconnect indicator). */
+  function createMockContextWithSignal(rawSignalAborted: boolean): {
+    ctx: Parameters<typeof forwardError>[0]
+    getLastJson: () => { data: unknown; status: number }
+  } {
+    let lastJson: { data: unknown; status: number } | undefined
+    const ctx = {
+      json: (data: unknown, status?: number) => {
+        lastJson = { data, status: status ?? 200 }
+        return new Response(JSON.stringify(data), { status: status ?? 200 })
+      },
+      req: { method: "POST", path: "/v1/messages", raw: { signal: { aborted: rawSignalAborted } } },
+    } as unknown as Parameters<typeof forwardError>[0]
+    return {
+      ctx,
+      getLastJson: () => {
+        if (!lastJson) throw new Error("json() was never called")
+        return lastJson
+      },
+    }
+  }
+
+  function makeAbortError(): Error {
+    const e = new Error("The operation was aborted.")
+    e.name = "AbortError"
+    return e
+  }
+
+  test("client disconnect (raw.signal aborted) → 499, not the 500 catch-all", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(true)
+    forwardError(ctx, makeAbortError())
+    expect(getLastJson().status).toBe(499)
+  })
+
+  test("response-header timeout (raw.signal NOT aborted) → 504, not the 500 catch-all", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(false)
+    forwardError(ctx, makeAbortError())
+    expect(getLastJson().status).toBe(504)
+  })
+
+  test("TimeoutError-named abort with un-aborted client signal → 504", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(false)
+    const e = new Error("The operation was aborted due to timeout")
+    e.name = "TimeoutError"
+    forwardError(ctx, e)
+    expect(getLastJson().status).toBe(504)
+  })
+
+  test("openai format: client disconnect → 499 with api_error envelope", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(true)
+    forwardError(ctx, makeAbortError(), "openai")
+    const { data, status } = getLastJson()
+    expect(status).toBe(499)
+    expect((data as { error: { type: string } }).error.type).toBe("api_error")
+  })
+
+  test("gemini format: response-header timeout → 504 with DEADLINE_EXCEEDED", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(false)
+    forwardError(ctx, makeAbortError(), "gemini")
+    const { data, status } = getLastJson()
+    expect(status).toBe(504)
+    expect((data as { error: { status: string } }).error.status).toBe("DEADLINE_EXCEEDED")
+  })
+
+  test("a genuinely unexpected non-abort error still falls through to 500", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(false)
+    forwardError(ctx, new Error("genuinely unexpected failure"))
+    expect(getLastJson().status).toBe(500)
+  })
 })

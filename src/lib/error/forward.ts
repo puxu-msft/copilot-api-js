@@ -3,8 +3,10 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
+import { state } from "~/lib/state"
 import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
 
+import { isAbortError } from "./classify"
 import { HTTPError } from "./http-error"
 import {
   //
@@ -436,6 +438,26 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
   }
 
   const errorMessage = error instanceof Error ? formatErrorWithCause(error) : String(error)
+
+  // Aborts (client cancel or upstream response-header timeout) are EXPECTED
+  // operational conditions, not "unexpected" server bugs — classify them out of
+  // the generic 500 catch-all below. Discriminate by the inbound request signal:
+  // a client disconnect aborts `c.req.raw.signal`; a response-header timeout fires
+  // on the fetch signal only, leaving `raw.signal` un-aborted. `error.name` can't
+  // be used — the http2 client synthesizes a generic AbortError (dropping the
+  // AbortSignal.timeout TimeoutError identity); see classify.ts / http2-client.ts.
+  if (error instanceof Error && isAbortError(error)) {
+    // `c.req.raw.signal` is the inbound request signal; cast to optional for
+    // defensive test contexts (mirrors abort-bridge.ts).
+    const clientSignal = c.req.raw.signal as AbortSignal | undefined
+    if (clientSignal?.aborted) {
+      consola.debug(`Client disconnected (pre-response) in ${c.req.method} ${c.req.path}`)
+      return c.json(helpers.defaultError("Client closed request", false, 499), 499 as ContentfulStatusCode)
+    }
+    consola.warn(`Upstream response-header timeout in ${c.req.method} ${c.req.path} (${state.fetchTimeout}s)`)
+    return c.json(helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
+  }
+
   consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage)
 
   return c.json(helpers.defaultError(errorMessage, true, 500), 500)
