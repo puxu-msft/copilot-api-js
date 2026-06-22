@@ -65,6 +65,15 @@ describe("modelSupportsContextEditing", () => {
     expect(modelSupportsContextEditing("claude-opus-4-6")).toBe(true)
   })
 
+  test("should support claude-opus-4.7 and claude-opus-4.8 (per GHC catch-all startsWith claude-opus-4)", () => {
+    // The authoritative GHC `modelSupportsContextEditing` matches all opus-4.x via `startsWith('claude-opus-4')`;
+    // this project mirrors it per-version, so each new opus-4.x must be listed (4.8 was an earlier omission).
+    expect(modelSupportsContextEditing("claude-opus-4.7")).toBe(true)
+    expect(modelSupportsContextEditing("claude-opus-4-7")).toBe(true)
+    expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(true)
+    expect(modelSupportsContextEditing("claude-opus-4-8")).toBe(true)
+  })
+
   test("should support claude-opus-4.5", () => {
     expect(modelSupportsContextEditing("claude-opus-4.5")).toBe(true)
   })
@@ -113,6 +122,12 @@ describe("modelSupportsToolSearch", () => {
 
   test("should support claude-opus-4-6 (hyphenated)", () => {
     expect(modelSupportsToolSearch("claude-opus-4-6")).toBe(true)
+  })
+
+  test("should support claude-opus-4.7 and claude-opus-4.8 (GHC allows opus ≥ 4.5)", () => {
+    expect(modelSupportsToolSearch("claude-opus-4.7")).toBe(true)
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(true)
+    expect(modelSupportsToolSearch("claude-opus-4-8")).toBe(true)
   })
 
   test("should support claude-opus-4.5", () => {

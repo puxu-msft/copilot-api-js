@@ -521,6 +521,10 @@ export async function applyConfigToState(): Promise<Config> {
       setAnthropicBehavior({
         stripBetaHeaders: normalizeModelKeyedRecord(a.beta_strip_headers, "anthropic.beta_strip_headers"),
       })
+    if (a.partner_strip_features !== undefined)
+      setAnthropicBehavior({
+        stripPartnerFeatures: normalizeModelKeyedRecord(a.partner_strip_features, "anthropic.partner_strip_features"),
+      })
     if (a.retry_reject_body_fields !== undefined)
       setAnthropicBehavior({
         rejectBodyFields: normalizeModelKeyedRecord(a.retry_reject_body_fields, "anthropic.retry_reject_body_fields"),

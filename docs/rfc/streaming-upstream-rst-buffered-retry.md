@@ -199,7 +199,7 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 - **Q2**：`tool_use_only` 门控如何判定"带 tools"？请求 `tools` 非空即可，还是需更精细（仅 Write/Edit 类）？倾向前者（简单、覆盖目标场景）。
 - **Q3**：`idle-timeout` 是否纳入重试？上游静默死与 transport RST 不同；默认不重，避免与真卡死上游纠缠。
 - **Q4**：buffer 上限超限退回 live 转发后，该响应**失去 L2 保护**（live 流一旦 RST 仍失败）。可接受（病态超大响应罕见），但需文档化。**[已落地+文档化]** `protect_streaming_buffer_cap_bytes` 默认 16MiB；retreat 后不重试（帧已转发）。
-- **Q5**：escalation 收紧 context_management 改变了请求语义（丢更多旧上下文）——是否应在响应里给客户端某种"本响应经过上下文压缩"的提示？倾向否（透明即可），记此问题。**[决议]** 不提示（透明）；**额外决定**：escalation 不 override 客户端**自带**的 `context_management`（尊重其显式上下文策略，见 `request-preparation.ts` 注释）；opus-4.8 不在 `modelSupportsContextEditing` 列表故对它 escalation 安全降级 no-op（既有列表范围，待核 4.8 支持后补）。
+- **Q5**：escalation 收紧 context_management 改变了请求语义（丢更多旧上下文）——是否应在响应里给客户端某种"本响应经过上下文压缩"的提示？倾向否（透明即可），记此问题。**[决议]** 不提示（透明）；**额外决定**：escalation 不 override 客户端**自带**的 `context_management`（尊重其显式上下文策略，见 `request-preparation.ts` 注释）。**勘误**：早先误以为 opus-4.8 不在 `modelSupportsContextEditing`——核对官方 GHC 源（catch-all `startsWith('claude-opus-4')` → opus-4.8 = true）后确认本项目逐版本白名单漏了 4-8，已补（`features.ts`），escalation 现对 opus-4.8（L2 目标模型）正常生效。
 - **Q6**：与 web_search 双跳 `[bypass]`（不进 driver）的交互——双跳路径不享 L2，需在双跳迁 driver 时收敛（与既有 `[bypass]` 暂缓项一致）。
 
 ---

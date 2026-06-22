@@ -25,6 +25,12 @@
  * same-(endpoint, model) requests pre-emptively strip the field during prepare
  * (`stripUnsupportedStructuredOutputs`), avoiding a repeated failed round-trip.
  *
+ * Proactive twin: the operator can also pre-declare disallowed partner features
+ * in config (`anthropic.partner_strip_features: { <model>: [structured_outputs] }`);
+ * the prepare step unions config ∪ this learned cache (same shape as
+ * `beta_strip_headers` ∪ the beta cache), so a declared model strips on the FIRST
+ * request without paying this reactive 400 + degrade-warn round-trip.
+ *
  * Deferred / extension point — **only `structured_outputs` is handled today**:
  *   - Current behavior: any OTHER disallowed partner feature
  *     (`extended_thinking`, `vision`, `prompt_caching`, …) is parsed by

@@ -121,8 +121,8 @@ timeouts:
   response_header: 900
 
   # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
-  # Keeps the GHC connection alive through long opus thinking silences so NAT/firewall
-  # idle reapers don't sever it ("terminated (cause: other side closed)"). Node-only.
+  # Keeps the GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it ("terminated (cause: other side closed)").
+  # Effective on BOTH Bun and Node — all upstream requests go through one undici dispatcher (Bun's global fetch ignores it, so we load real undici via a file subpath).
   upstream_keepalive: 15
 
   # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
@@ -180,63 +180,32 @@ web_search:
 
 anthropic:
   # Strip server-side tools (web_search, etc.) from requests.
-  # This is the unconditional global switch. Even when false, a server tool the
-  # upstream rejects with 400 ("web search tool is not supported") is learned and
-  # stripped pre-emptively for that (endpoint, model) on subsequent requests
-  # (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
+  # This is the unconditional global switch. Even when false, a server tool the upstream rejects with 400 ("web search tool is not supported") is learned and stripped pre-emptively for that (endpoint, model) on subsequent requests (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
   tool_strip_server: false
 
-  # Synthetic SSE keepalive interval (seconds) for the client-facing stream.
-  # 0 = disabled (default). When >0, the proxy injects an Anthropic-protocol
-  # `event: ping` frame whenever no real upstream event has been forwarded for
-  # that many seconds — prevents the client (e.g. Claude Code ~258s) from
-  # disconnecting while upstream is silent (notably opus-4.8 adaptive thinking
-  # that stalls after content_block_start). Heartbeats DO NOT reset the
-  # upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle)
-  # and are recorded only in forwardedSseEvents, never in raw upstream sseEvents.
+  # Synthetic SSE keepalive interval (seconds) for the client-facing stream. 0 = disabled (default). When >0, the proxy injects an Anthropic-protocol `event: ping` frame whenever no real upstream event has been forwarded for that many seconds — prevents the client (e.g. Claude Code ~258s) from disconnecting while upstream is silent (notably opus-4.8 adaptive thinking that stalls after content_block_start). Heartbeats DO NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle) and are recorded only in forwardedSseEvents, never in raw upstream sseEvents.
   stream_fake_sse_heartbeat: 120
 
-  # L2 — transactional buffered retry for streaming generations cut short by an
-  # upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge
-  # contexts). Buffers the whole response and commits only after message_stop,
-  # re-running the upstream exchange on a transport-close / truncation — so the
-  # client transparently receives ONE complete generation instead of a half
-  # stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
+  # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
   #   false:           disabled (default) — live streaming, no buffering.
   #   on:              buffer every streaming Anthropic response.
-  #   tool_use_only:   buffer only when the request carries `tools` (the large
-  #                    Write/Edit scenario); pure-text chat stays live.
+  #   tool_use_only:   buffer only when the request carries `tools` (the large Write/Edit scenario); pure-text chat stays live.
   protect_streaming_generation: false
-  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout
-  # guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
+  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
   protect_streaming_max_retries: 3
-  # Forced heartbeat interval (seconds) for the buffered path: the buffer
-  # withholds all real frames until message_stop, so a heartbeat is constructed
-  # UNCONDITIONALLY — using stream_fake_sse_heartbeat when >0, else this fallback.
+  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until message_stop, so a heartbeat is constructed UNCONDITIONALLY — using stream_fake_sse_heartbeat when >0, else this fallback.
   protect_streaming_heartbeat: 15
-  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering
-  # and retreating to live forwarding for the rest of THIS response (which then
-  # loses L2 protection — a live RST fails as today). Prevents a pathologically
-  # huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
+  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection — a live RST fails as today). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
   protect_streaming_buffer_cap_bytes: 16777216
-  # On each buffered RST/truncation retry, FORCE a progressively aggressive native
-  # clear_tool_uses context_management edit (lower trigger + smaller keep) to
-  # compress the context so the generation finishes faster — within the next RST
-  # window. Independent of context_editing (retry-only emergency compression);
-  # skipped when the model doesn't support context_management. Changes request
-  # semantics (drops more old context). Default false (opt-in; enable only after
-  # telemetry shows plain retry's hit rate is low for over-budget requests).
+  # On each buffered RST/truncation retry, FORCE a progressively aggressive native clear_tool_uses context_management edit (lower trigger + smaller keep) to compress the context so the generation finishes faster — within the next RST window. Independent of context_editing (retry-only emergency compression); skipped when the model doesn't support context_management. Changes request semantics (drops more old context). Default false (opt-in; enable only after telemetry shows plain retry's hit rate is low for over-budget requests).
   protect_streaming_escalate_context: false
 
   # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
   # "input": dedup by (name, input); "result": also require identical result
   tool_dedup_calls: false
 
-  # Policy for assistant messages containing thinking/redacted_thinking blocks.
-  # Thinking signatures are self-contained (encrypt the thinking content itself; no
-  # context/position binding — empirically verified), so block-level protection suffices.
-  #   preserve: keep thinking blocks verbatim + don't reorder consecutive thinking,
-  #             but allow all surrounding cleanup (default)
+  # Policy for assistant messages containing thinking/redacted_thinking blocks. Thinking signatures are self-contained (encrypt the thinking content itself; no context/position binding — empirically verified), so block-level protection suffices.
+  #   preserve: keep thinking blocks verbatim + don't reorder consecutive thinking, but allow all surrounding cleanup (default)
   #   stripped: actively delete thinking blocks from old messages
   thinking_block_message_policy: preserve
 
@@ -269,8 +238,7 @@ anthropic:
   #   false:     passthrough (default — will 400 upstream when a historical server_tool_use survives without a matching server-tool definition)
   tool_rewrite_history_server: false
 
-  # Client compatibility shim for the streaming thinking frame some Copilot upstreams emit
-  # (signature embedded in content_block_start, no signature_delta) so standard clients keep the signature.
+  # Client compatibility shim for the streaming thinking frame some Copilot upstreams emit (signature embedded in content_block_start, no signature_delta) so standard clients keep the signature.
   #   signature_delta (default) | redacted_thinking | false
   thinking_signature_compat: signature_delta
 
@@ -358,6 +326,19 @@ anthropic:
     claude-opus-4.7-1m-internal:
       - context-1m-2025-08-07
       - mid-conversation-system-2026-04-07
+    claude-sonnet-4.6:
+      # Why these four for claude-sonnet-4.6: this account routes sonnet-4.6 to Vertex AI, which rejects them with a laconic 400 ("invalid beta flag").
+      - interleaved-thinking-2025-05-14
+      - context-management-2025-06-27
+      - prompt-caching-scope-2026-01-05
+      - mid-conversation-system-2026-04-07
+
+  # Per-model partner-model features the upstream org policy disallows. Config twin of the runtime negotiation cache (partnerFeatures) — declared features are stripped on the FIRST request, no reactive 400 + degrade-warn round-trip.
+  #
+  # `structured_outputs` for claude-sonnet-4.6: this account routes sonnet-4.6 to Vertex AI, whose org policy `allowedPartnerModelFeatures` blocks it; clients (Claude Code's title generator) send `output_config.format`, so the proxy strips that field. Value is the feature NAME, not the internal path.
+  partner_strip_features:
+    claude-sonnet-4.6:
+      - structured_outputs
 
   # ---------------------------------------------------------------------------
   # Body field pre-filter
@@ -412,21 +393,18 @@ openai_responses:
   # WS failures fall back to HTTP transparently; 3 consecutive fallbacks temporarily disable WS for 5 minutes (single half-open probe on expiry). Default: false.
   upstream_ws: true
 
-  # Fix inconsistent item IDs across `output_item.added` / `output_item.done` events from Copilot's
-  # upstream stream. Required by `@ai-sdk/openai` which validates ID continuity. Default: true.
+  # Fix inconsistent item IDs across `output_item.added` / `output_item.done` events from Copilot's upstream stream. Required by `@ai-sdk/openai` which validates ID continuity. Default: true.
   fix_stream_ids: true
 
-  # Keep the client-side WebSocket open after `response.completed` so the client can issue
-  # follow-up `response.create` frames on the same socket. When false (default), the socket
-  # closes with code 1000 after each request (HTTP-like one-shot semantics).
+  # Keep the client-side WebSocket open after `response.completed` so the client can issue follow-up `response.create` frames on the same socket. When false (default), the socket closes with code 1000 after each request (HTTP-like one-shot semantics).
   # Concurrent `response.create` on the same socket is rejected with an error frame.
   client_ws_keep_open: false
 
 # ============================================================================
 # Rate Limiter
 # ============================================================================
-# Fine-tune the adaptive rate limiter behavior. The rate limiter is enabled/disabled via --no-rate-limit CLI flag;
-# these settings control its parameters when enabled.
+# Fine-tune the adaptive rate limiter behavior. The rate limiter is enabled/disabled via --no-rate-limit CLI flag; these settings control its parameters when enabled.
+# NOT hot-reloadable (stateful singleton built once at startup; requires restart).
 
 rate_limiter:
   # Seconds to wait before retrying after rate limit error
@@ -441,8 +419,5 @@ rate_limiter:
 # ============================================================================
 # Tool Name Sanitization
 # ============================================================================
-# Sanitize tool names that violate the target model's constraints (illegal characters like dots, over-length,
-# or collisions) into legal names before sending upstream, then restore the client's original names in the
-# response. Deterministic and stateless (rebuilt per request). Spans Anthropic + Chat Completions + Responses
-# paths. Top-level (cross-protocol), not under anthropic.*. Default: false.
+# Sanitize tool names that violate the target model's constraints (illegal characters like dots, over-length, or collisions) into legal names before sending upstream, then restore the client's original names in the response. Deterministic and stateless (rebuilt per request). Spans Anthropic + Chat Completions + Responses paths. Top-level (cross-protocol), not under anthropic.*. Default: false.
 sanitize_tool_names: true

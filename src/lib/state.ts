@@ -553,6 +553,15 @@ export interface State {
   readonly stripBetaHeaders: Record<string, Array<string>>
 
   /**
+   * Per-model partner-model feature names (e.g. `structured_outputs`) the upstream
+   * disallows — the config twin of the `partnerFeatures` negotiation cache. The
+   * prepare step strips each disallowed feature's payload (currently only
+   * `structured_outputs` → `output_config.format`); union'd with the runtime cache.
+   * `"*"` applies to all models. Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly stripPartnerFeatures: Record<string, Array<string>>
+
+  /**
    * Per-model body fields to strip from outbound payloads before sending
    * upstream. Keys are model-name substrings; the pseudo-key `"*"` applies
    * to all models. Built-in default: `{ "*": ["inference_geo"] }`.
@@ -632,6 +641,7 @@ function cloneState(source: MutableState): MutableState {
     modelOverrides: { ...source.modelOverrides },
     effortsOverrides: { ...source.effortsOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
+    stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
     rejectBodyFields: cloneStripBetaHeaders(source.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(source.decodeToolInputFields),
     disabledModels: [...source.disabledModels],
@@ -677,6 +687,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("stripBetaHeaders" in patch) {
     cloned.stripBetaHeaders = patch.stripBetaHeaders ? cloneStripBetaHeaders(patch.stripBetaHeaders) : undefined
+  }
+  if ("stripPartnerFeatures" in patch) {
+    cloned.stripPartnerFeatures = patch.stripPartnerFeatures ? cloneStripBetaHeaders(patch.stripPartnerFeatures) : undefined
   }
   if ("rejectBodyFields" in patch) {
     cloned.rejectBodyFields = patch.rejectBodyFields ? cloneStripBetaHeaders(patch.rejectBodyFields) : undefined
@@ -801,6 +814,7 @@ export function setAnthropicBehavior(
       | "warmupPolicy"
       | "effortsOverrides"
       | "stripBetaHeaders"
+      | "stripPartnerFeatures"
       | "rejectBodyFields"
       | "decodeToolInputFields"
       | "decodeAllToolInputFields"
@@ -1019,6 +1033,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   warmupPolicy: "allow" as WarmupPolicy,
   effortsOverrides: {} as Record<string, Array<string>>,
   stripBetaHeaders: {} as Record<string, Array<string>>,
+  stripPartnerFeatures: {} as Record<string, Array<string>>,
   rejectBodyFields: {} as Record<string, Array<string>>,
   decodeToolInputFields: { AskUserQuestion: ["questions"] } as Record<string, Array<string>>,
   decodeAllToolInputFields: false,
@@ -1060,6 +1075,7 @@ export function resetConfigManagedState(): void {
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+    stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
     rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
     decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
@@ -1173,6 +1189,7 @@ const mutableState: MutableState = {
   warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
   stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+  stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
   rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
   decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
   decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,

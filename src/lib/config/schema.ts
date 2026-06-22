@@ -263,6 +263,7 @@ export const AnthropicConfigSchema = z
     // Free-form Records — key = model-name pattern, value = list
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
+    partner_strip_features: z.record(z.string(), z.array(z.string())).optional(),
     retry_reject_body_fields: z.record(z.string(), z.array(z.string())).optional(),
     // Tool-name-keyed (NOT model-keyed): keys are matched verbatim against the
     // tool name — must NOT go through normalizeModelKeyedRecord, which would
@@ -596,7 +597,7 @@ export type RecordMergeStrategy = "per-key" | "replace"
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
 RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
-// effort_overrides / beta_strip_headers / retry_reject_body_fields intentionally
+// effort_overrides / beta_strip_headers / partner_strip_features / retry_reject_body_fields intentionally
 // omitted — they default to "replace": when the user sets one of these
 // tables, they take responsibility for the entire policy.
 

@@ -1,74 +1,5 @@
 {
-  "object": "list",
   "data": [
-    {
-      "billing": {
-        "is_premium": true,
-        "multiplier": 1,
-        "restricted_to": [
-          "pro",
-          "pro_plus",
-          "business",
-          "enterprise",
-          "max"
-        ]
-      },
-      "capabilities": {
-        "family": "claude-opus-4.6-1m",
-        "limits": {
-          "max_context_window_tokens": 1000000,
-          "max_non_streaming_output_tokens": 16000,
-          "max_output_tokens": 64000,
-          "max_prompt_tokens": 936000,
-          "vision": {
-            "max_prompt_image_size": 3145728,
-            "max_prompt_images": 1,
-            "supported_media_types": [
-              "image/jpeg",
-              "image/png",
-              "image/webp",
-              "image/gif"
-            ]
-          }
-        },
-        "object": "model_capabilities",
-        "supports": {
-          "adaptive_thinking": true,
-          "max_thinking_budget": 32000,
-          "min_thinking_budget": 1024,
-          "parallel_tool_calls": true,
-          "reasoning_effort": [
-            "low",
-            "medium",
-            "high"
-          ],
-          "streaming": true,
-          "structured_outputs": true,
-          "tool_calls": true,
-          "vision": true
-        },
-        "tokenizer": "o200k_base",
-        "type": "chat"
-      },
-      "id": "claude-opus-4.6-1m",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
-      "model_picker_category": "powerful",
-      "model_picker_enabled": true,
-      "name": "Claude Opus 4.6 (1M context)(Internal only)",
-      "object": "model",
-      "policy": {
-        "state": "enabled",
-        "terms": "Enable access to the latest Claude Opus 4.6 (1M context) model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.6 (1M context)](https://gh.io/copilot-claude-opus)."
-      },
-      "preview": false,
-      "supported_endpoints": [
-        "/v1/messages",
-        "/chat/completions"
-      ],
-      "vendor": "Anthropic",
-      "version": "claude-opus-4.6-1m"
-    },
     {
       "billing": {
         "is_premium": true,
@@ -84,70 +15,6 @@
       },
       "capabilities": {
         "family": "claude-opus-4.6",
-        "limits": {
-          "max_context_window_tokens": 200000,
-          "max_non_streaming_output_tokens": 16000,
-          "max_output_tokens": 32000,
-          "max_prompt_tokens": 168000,
-          "vision": {
-            "max_prompt_image_size": 3145728,
-            "max_prompt_images": 1,
-            "supported_media_types": [
-              "image/jpeg",
-              "image/png",
-              "image/webp",
-              "image/gif"
-            ]
-          }
-        },
-        "object": "model_capabilities",
-        "supports": {
-          "adaptive_thinking": true,
-          "max_thinking_budget": 32000,
-          "min_thinking_budget": 1024,
-          "parallel_tool_calls": true,
-          "reasoning_effort": [
-            "low",
-            "medium",
-            "high"
-          ],
-          "streaming": true,
-          "structured_outputs": true,
-          "tool_calls": true,
-          "vision": true
-        },
-        "tokenizer": "o200k_base",
-        "type": "chat"
-      },
-      "id": "claude-opus-4.6",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
-      "model_picker_category": "powerful",
-      "model_picker_enabled": true,
-      "name": "Claude Opus 4.6",
-      "object": "model",
-      "policy": {
-        "state": "enabled",
-        "terms": "Enable access to the latest Claude Opus 4.6 model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.6](https://gh.io/copilot-claude-opus)."
-      },
-      "preview": false,
-      "supported_endpoints": [
-        "/v1/messages",
-        "/chat/completions"
-      ],
-      "vendor": "Anthropic",
-      "version": "claude-opus-4.6"
-    },
-    {
-      "billing": {
-        "is_premium": true,
-        "multiplier": 1,
-        "restricted_to": [
-          "enterprise"
-        ]
-      },
-      "capabilities": {
-        "family": "claude-opus-4.7-1m-internal",
         "limits": {
           "max_context_window_tokens": 1000000,
           "max_non_streaming_output_tokens": 16000,
@@ -174,7 +41,7 @@
             "low",
             "medium",
             "high",
-            "xhigh"
+            "max"
           ],
           "streaming": true,
           "structured_outputs": true,
@@ -184,16 +51,16 @@
         "tokenizer": "o200k_base",
         "type": "chat"
       },
-      "id": "claude-opus-4.7-1m-internal",
+      "id": "claude-opus-4.6",
       "is_chat_default": false,
       "is_chat_fallback": false,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
-      "name": "Claude Opus 4.7 (1M context)(Internal only)",
+      "name": "Claude Opus 4.6",
       "object": "model",
       "policy": {
         "state": "enabled",
-        "terms": "Enable access to the latest Claude Opus 4.7 (1M context) model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.7 (1M context)](https://gh.io/copilot-claude-opus)."
+        "terms": "Enable access to the latest Claude Opus 4.6 model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.6](https://gh.io/copilot-claude-opus)."
       },
       "preview": false,
       "supported_endpoints": [
@@ -201,137 +68,8 @@
         "/chat/completions"
       ],
       "vendor": "Anthropic",
-      "version": "claude-opus-4.7-1m-internal"
-    },
-    {
-      "billing": {
-        "is_premium": true,
-        "multiplier": 1,
-        "restricted_to": [
-          "pro_plus",
-          "business",
-          "enterprise",
-          "max"
-        ]
-      },
-      "capabilities": {
-        "family": "claude-opus-4.7-high",
-        "limits": {
-          "max_context_window_tokens": 200000,
-          "max_non_streaming_output_tokens": 16000,
-          "max_output_tokens": 32000,
-          "max_prompt_tokens": 168000,
-          "vision": {
-            "max_prompt_image_size": 3145728,
-            "max_prompt_images": 1,
-            "supported_media_types": [
-              "image/jpeg",
-              "image/png",
-              "image/webp",
-              "image/gif"
-            ]
-          }
-        },
-        "object": "model_capabilities",
-        "supports": {
-          "adaptive_thinking": true,
-          "max_thinking_budget": 32000,
-          "min_thinking_budget": 1024,
-          "parallel_tool_calls": true,
-          "reasoning_effort": [
-            "high"
-          ],
-          "streaming": true,
-          "structured_outputs": true,
-          "tool_calls": true,
-          "vision": true
-        },
-        "tokenizer": "o200k_base",
-        "type": "chat"
-      },
-      "id": "claude-opus-4.7-high",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
-      "model_picker_category": "powerful",
-      "model_picker_enabled": true,
-      "name": "Claude Opus 4.7 (High reasoning)(Internal only)",
-      "object": "model",
-      "policy": {
-        "state": "enabled",
-        "terms": "Enable access to the latest Claude Opus 4.7 High reasoning model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.7 High reasoning](https://gh.io/copilot-claude-opus)."
-      },
-      "preview": false,
-      "supported_endpoints": [
-        "/v1/messages",
-        "/chat/completions"
-      ],
-      "vendor": "Anthropic",
-      "version": "claude-opus-4.7-high"
-    },
-    {
-      "billing": {
-        "is_premium": true,
-        "multiplier": 1,
-        "restricted_to": [
-          "pro_plus",
-          "business",
-          "enterprise",
-          "max"
-        ]
-      },
-      "capabilities": {
-        "family": "claude-opus-4.7-xhigh",
-        "limits": {
-          "max_context_window_tokens": 200000,
-          "max_non_streaming_output_tokens": 16000,
-          "max_output_tokens": 32000,
-          "max_prompt_tokens": 168000,
-          "vision": {
-            "max_prompt_image_size": 3145728,
-            "max_prompt_images": 1,
-            "supported_media_types": [
-              "image/jpeg",
-              "image/png",
-              "image/webp",
-              "image/gif"
-            ]
-          }
-        },
-        "object": "model_capabilities",
-        "supports": {
-          "adaptive_thinking": true,
-          "max_thinking_budget": 32000,
-          "min_thinking_budget": 1024,
-          "parallel_tool_calls": true,
-          "reasoning_effort": [
-            "xhigh"
-          ],
-          "streaming": true,
-          "structured_outputs": true,
-          "tool_calls": true,
-          "vision": true
-        },
-        "tokenizer": "o200k_base",
-        "type": "chat"
-      },
-      "id": "claude-opus-4.7-xhigh",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
-      "model_picker_category": "powerful",
-      "model_picker_enabled": true,
-      "name": "Claude Opus 4.7 (Extra high reasoning)(Internal only)",
-      "object": "model",
-      "policy": {
-        "state": "enabled",
-        "terms": "Enable access to the latest Claude Opus 4.7 (Extra high reasoning) model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.7 (Extra high reasoning)](https://gh.io/copilot-claude-opus)."
-      },
-      "preview": false,
-      "supported_endpoints": [
-        "/v1/messages",
-        "/chat/completions"
-      ],
-      "vendor": "Anthropic",
-      "version": "claude-opus-4.7-xhigh"
+      "version": "claude-opus-4.6",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -347,10 +85,10 @@
       "capabilities": {
         "family": "claude-opus-4.7",
         "limits": {
-          "max_context_window_tokens": 200000,
+          "max_context_window_tokens": 1000000,
           "max_non_streaming_output_tokens": 16000,
-          "max_output_tokens": 32000,
-          "max_prompt_tokens": 168000,
+          "max_output_tokens": 64000,
+          "max_prompt_tokens": 936000,
           "vision": {
             "max_prompt_image_size": 3145728,
             "max_prompt_images": 1,
@@ -369,7 +107,11 @@
           "min_thinking_budget": 1024,
           "parallel_tool_calls": true,
           "reasoning_effort": [
-            "medium"
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
           ],
           "streaming": true,
           "structured_outputs": true,
@@ -396,7 +138,78 @@
         "/chat/completions"
       ],
       "vendor": "Anthropic",
-      "version": "claude-opus-4.7"
+      "version": "claude-opus-4.7",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+    },
+    {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "pro_plus",
+          "business",
+          "enterprise",
+          "max"
+        ]
+      },
+      "capabilities": {
+        "family": "claude-opus-4.8",
+        "limits": {
+          "max_context_window_tokens": 1000000,
+          "max_non_streaming_output_tokens": 16000,
+          "max_output_tokens": 64000,
+          "max_prompt_tokens": 936000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "adaptive_thinking": true,
+          "max_thinking_budget": 32000,
+          "min_thinking_budget": 1024,
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "claude-opus-4.8",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "powerful",
+      "model_picker_enabled": true,
+      "name": "Claude Opus 4.8",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest Claude Opus 4.8 model from Anthropic. [Learn more about how GitHub Copilot serves Claude Opus 4.8](https://gh.io/copilot-claude-opus)."
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/v1/messages",
+        "/chat/completions"
+      ],
+      "vendor": "Anthropic",
+      "version": "claude-opus-4.8",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -414,10 +227,10 @@
       "capabilities": {
         "family": "claude-sonnet-4.6",
         "limits": {
-          "max_context_window_tokens": 200000,
+          "max_context_window_tokens": 1000000,
           "max_non_streaming_output_tokens": 16000,
-          "max_output_tokens": 32000,
-          "max_prompt_tokens": 168000,
+          "max_output_tokens": 64000,
+          "max_prompt_tokens": 936000,
           "vision": {
             "max_prompt_image_size": 3145728,
             "max_prompt_images": 5,
@@ -438,7 +251,8 @@
           "reasoning_effort": [
             "low",
             "medium",
-            "high"
+            "high",
+            "max"
           ],
           "streaming": true,
           "structured_outputs": true,
@@ -465,7 +279,8 @@
         "/v1/messages"
       ],
       "vendor": "Anthropic",
-      "version": "claude-sonnet-4.6"
+      "version": "claude-sonnet-4.6",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -484,9 +299,9 @@
       "capabilities": {
         "family": "gemini-3.1-pro-preview",
         "limits": {
-          "max_context_window_tokens": 200000,
+          "max_context_window_tokens": 1000000,
           "max_output_tokens": 64000,
-          "max_prompt_tokens": 136000,
+          "max_prompt_tokens": 936000,
           "vision": {
             "max_prompt_image_size": 3145728,
             "max_prompt_images": 10,
@@ -532,7 +347,8 @@
         "/chat/completions"
       ],
       "vendor": "Google",
-      "version": "gemini-3.1-pro-preview"
+      "version": "gemini-3.1-pro-preview",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -542,15 +358,16 @@
           "pro",
           "pro_plus",
           "business",
-          "enterprise"
+          "enterprise",
+          "max"
         ]
       },
       "capabilities": {
         "family": "gemini-3.5-flash",
         "limits": {
-          "max_context_window_tokens": 200000,
+          "max_context_window_tokens": 1000000,
           "max_output_tokens": 64000,
-          "max_prompt_tokens": 128000,
+          "max_prompt_tokens": 936000,
           "vision": {
             "max_prompt_image_size": 3145728,
             "max_prompt_images": 10,
@@ -569,6 +386,7 @@
           "min_thinking_budget": 256,
           "parallel_tool_calls": true,
           "reasoning_effort": [
+            "minimal",
             "low",
             "medium",
             "high"
@@ -587,79 +405,17 @@
       "model_picker_enabled": true,
       "name": "Gemini 3.5 Flash",
       "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": "Enable access to the latest Gemini 3.5 Flash model from Google. [Learn more about how GitHub Copilot serves Gemini 3.5 Flash](https://docs.github.com/en/copilot/reference/ai-models/model-hosting#google-models)."
+      },
       "preview": false,
       "supported_endpoints": [
         "/chat/completions"
       ],
       "vendor": "Google",
-      "version": "gemini-3.5-flash"
-    },
-    {
-      "billing": {
-        "is_premium": true,
-        "multiplier": 1,
-        "restricted_to": [
-          "pro",
-          "edu",
-          "pro_plus",
-          "individual_trial",
-          "business",
-          "enterprise",
-          "max"
-        ]
-      },
-      "capabilities": {
-        "family": "gpt-5.2-codex",
-        "limits": {
-          "max_context_window_tokens": 400000,
-          "max_output_tokens": 128000,
-          "max_prompt_tokens": 272000,
-          "vision": {
-            "max_prompt_image_size": 3145728,
-            "max_prompt_images": 1,
-            "supported_media_types": [
-              "image/jpeg",
-              "image/png",
-              "image/webp",
-              "image/gif"
-            ]
-          }
-        },
-        "object": "model_capabilities",
-        "supports": {
-          "parallel_tool_calls": true,
-          "reasoning_effort": [
-            "low",
-            "medium",
-            "high",
-            "xhigh"
-          ],
-          "streaming": true,
-          "structured_outputs": true,
-          "tool_calls": true,
-          "vision": true
-        },
-        "tokenizer": "o200k_base",
-        "type": "chat"
-      },
-      "id": "gpt-5.2-codex",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
-      "model_picker_category": "powerful",
-      "model_picker_enabled": true,
-      "name": "GPT-5.2-Codex",
-      "object": "model",
-      "policy": {
-        "state": "enabled",
-        "terms": "Enable access to the latest GPT-5.2-Codex model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.2-Codex](https://gh.io/copilot-openai)."
-      },
-      "preview": false,
-      "supported_endpoints": [
-        "/responses",
-        "ws:/responses"
-      ],
-      "vendor": "OpenAI",
-      "version": "gpt-5.2-codex"
+      "version": "gemini-3.5-flash",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -710,8 +466,8 @@
         "type": "chat"
       },
       "id": "gpt-5.3-codex",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
+      "is_chat_default": true,
+      "is_chat_fallback": true,
       "model_picker_category": "powerful",
       "model_picker_enabled": true,
       "name": "GPT-5.3-Codex",
@@ -722,7 +478,8 @@
         "ws:/responses"
       ],
       "vendor": "OpenAI",
-      "version": "gpt-5.3-codex"
+      "version": "gpt-5.3-codex",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -790,7 +547,8 @@
         "ws:/responses"
       ],
       "vendor": "OpenAI",
-      "version": "gpt-5.4-mini"
+      "version": "gpt-5.4-mini",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -810,7 +568,7 @@
         "limits": {
           "max_context_window_tokens": 1050000,
           "max_output_tokens": 128000,
-          "max_prompt_tokens": 272000,
+          "max_prompt_tokens": 922000,
           "vision": {
             "max_prompt_image_size": 3145728,
             "max_prompt_images": 1,
@@ -826,6 +584,7 @@
         "supports": {
           "parallel_tool_calls": true,
           "reasoning_effort": [
+            "none",
             "low",
             "medium",
             "high",
@@ -857,7 +616,8 @@
         "ws:/responses"
       ],
       "vendor": "OpenAI",
-      "version": "gpt-5.4"
+      "version": "gpt-5.4",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -873,9 +633,9 @@
       "capabilities": {
         "family": "gpt-5.5",
         "limits": {
-          "max_context_window_tokens": 400000,
+          "max_context_window_tokens": 1050000,
           "max_output_tokens": 128000,
-          "max_prompt_tokens": 272000,
+          "max_prompt_tokens": 922000,
           "vision": {
             "max_prompt_image_size": 3145728,
             "max_prompt_images": 1,
@@ -922,7 +682,58 @@
         "ws:/responses"
       ],
       "vendor": "OpenAI",
-      "version": "gpt-5.5"
+      "version": "gpt-5.5",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
+    },
+    {
+      "billing": {
+        "is_premium": true,
+        "multiplier": 1,
+        "restricted_to": [
+          "business",
+          "enterprise"
+        ]
+      },
+      "capabilities": {
+        "family": "oswe-vscode-modelD",
+        "limits": {
+          "max_context_window_tokens": 256000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 128000
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "mai-code-1-flash-internal",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "versatile",
+      "model_picker_enabled": true,
+      "name": "MAI-Code-1-Flash",
+      "object": "model",
+      "policy": {
+        "state": "enabled",
+        "terms": ""
+      },
+      "preview": false,
+      "supported_endpoints": [
+        "/responses"
+      ],
+      "vendor": "Azure OpenAI",
+      "version": "mai-code-1-flash-internal",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -930,11 +741,11 @@
         "multiplier": 1
       },
       "capabilities": {
-        "family": "search-agent",
+        "family": "trajectory-compaction",
         "limits": {
-          "max_context_window_tokens": 256000,
-          "max_output_tokens": 1024,
-          "max_prompt_tokens": 200000
+          "max_context_window_tokens": 262144,
+          "max_output_tokens": 16384,
+          "max_prompt_tokens": 245760
         },
         "object": "model_capabilities",
         "supports": {
@@ -945,86 +756,19 @@
         "tokenizer": "o200k_base",
         "type": "chat"
       },
-      "id": "accounts/msft/routers/f185i3v4",
+      "id": "trajectory-compaction",
       "is_chat_default": false,
       "is_chat_fallback": false,
       "model_picker_enabled": false,
-      "name": "Search Agent A",
+      "name": "Trajectory Compaction",
       "object": "model",
       "preview": true,
       "supported_endpoints": [
         "/chat/completions"
       ],
       "vendor": "Experimental",
-      "version": "accounts/msft/routers/f185i3v4"
-    },
-    {
-      "billing": {
-        "is_premium": true,
-        "multiplier": 1
-      },
-      "capabilities": {
-        "family": "search-agent",
-        "limits": {
-          "max_context_window_tokens": 256000,
-          "max_output_tokens": 1024,
-          "max_prompt_tokens": 200000
-        },
-        "object": "model_capabilities",
-        "supports": {
-          "parallel_tool_calls": true,
-          "streaming": true,
-          "tool_calls": true
-        },
-        "tokenizer": "o200k_base",
-        "type": "chat"
-      },
-      "id": "accounts/msft/routers/fmfeto88",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
-      "model_picker_enabled": false,
-      "name": "Search Agent B",
-      "object": "model",
-      "preview": true,
-      "supported_endpoints": [
-        "/chat/completions"
-      ],
-      "vendor": "Fireworks",
-      "version": "accounts/msft/routers/fmfeto88"
-    },
-    {
-      "billing": {
-        "is_premium": true,
-        "multiplier": 1
-      },
-      "capabilities": {
-        "family": "search-agent",
-        "limits": {
-          "max_context_window_tokens": 256000,
-          "max_output_tokens": 1024,
-          "max_prompt_tokens": 200000
-        },
-        "object": "model_capabilities",
-        "supports": {
-          "parallel_tool_calls": true,
-          "streaming": true,
-          "tool_calls": true
-        },
-        "tokenizer": "o200k_base",
-        "type": "chat"
-      },
-      "id": "accounts/msft/routers/gdjv4v2v",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
-      "model_picker_enabled": false,
-      "name": "Search Agent C",
-      "object": "model",
-      "preview": true,
-      "supported_endpoints": [
-        "/chat/completions"
-      ],
-      "vendor": "Fireworks",
-      "version": "accounts/msft/routers/gdjv4v2v"
+      "version": "trajectory-compaction",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1082,7 +826,8 @@
         "ws:/responses"
       ],
       "vendor": "Azure OpenAI",
-      "version": "gpt-5-mini"
+      "version": "gpt-5-mini",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1113,7 +858,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4o-mini-2024-07-18"
+      "version": "gpt-4o-mini-2024-07-18",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1125,24 +871,13 @@
         "limits": {
           "max_context_window_tokens": 128000,
           "max_output_tokens": 16384,
-          "max_prompt_tokens": 64000,
-          "vision": {
-            "max_prompt_image_size": 3145728,
-            "max_prompt_images": 1,
-            "supported_media_types": [
-              "image/jpeg",
-              "image/png",
-              "image/webp",
-              "image/gif"
-            ]
-          }
+          "max_prompt_tokens": 64000
         },
         "object": "model_capabilities",
         "supports": {
           "parallel_tool_calls": true,
           "streaming": true,
-          "tool_calls": true,
-          "vision": true
+          "tool_calls": true
         },
         "tokenizer": "o200k_base",
         "type": "chat"
@@ -1155,7 +890,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4o-2024-11-20"
+      "version": "gpt-4o-2024-11-20",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1186,7 +922,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4o-2024-08-06"
+      "version": "gpt-4o-2024-08-06",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1213,7 +950,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "text-embedding-3-small"
+      "version": "text-embedding-3-small",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1237,7 +975,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "text-embedding-3-small"
+      "version": "text-embedding-3-small",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1297,7 +1036,8 @@
         "/v1/messages"
       ],
       "vendor": "Anthropic",
-      "version": "claude-sonnet-4.5"
+      "version": "claude-sonnet-4.5",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1355,7 +1095,8 @@
         "/v1/messages"
       ],
       "vendor": "Anthropic",
-      "version": "claude-opus-4.5"
+      "version": "claude-opus-4.5",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1408,7 +1149,8 @@
         "/v1/messages"
       ],
       "vendor": "Anthropic",
-      "version": "claude-haiku-4.5"
+      "version": "claude-haiku-4.5",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1472,7 +1214,8 @@
       },
       "preview": true,
       "vendor": "Google",
-      "version": "gemini-3-flash-preview"
+      "version": "gemini-3-flash-preview",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1531,7 +1274,8 @@
       },
       "preview": false,
       "vendor": "Google",
-      "version": "gemini-2.5-pro"
+      "version": "gemini-2.5-pro",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1578,75 +1322,8 @@
       },
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4.1-2025-04-14"
-    },
-    {
-      "billing": {
-        "is_premium": true,
-        "multiplier": 1,
-        "restricted_to": [
-          "pro",
-          "pro_plus",
-          "max",
-          "business",
-          "enterprise",
-          "individual_trial",
-          "edu"
-        ]
-      },
-      "capabilities": {
-        "family": "gpt-5.2",
-        "limits": {
-          "max_context_window_tokens": 400000,
-          "max_output_tokens": 128000,
-          "max_prompt_tokens": 272000,
-          "vision": {
-            "max_prompt_image_size": 3145728,
-            "max_prompt_images": 1,
-            "supported_media_types": [
-              "image/jpeg",
-              "image/png",
-              "image/webp",
-              "image/gif"
-            ]
-          }
-        },
-        "object": "model_capabilities",
-        "supports": {
-          "parallel_tool_calls": true,
-          "reasoning_effort": [
-            "low",
-            "medium",
-            "high",
-            "xhigh"
-          ],
-          "streaming": true,
-          "structured_outputs": true,
-          "tool_calls": true,
-          "vision": true
-        },
-        "tokenizer": "o200k_base",
-        "type": "chat"
-      },
-      "id": "gpt-5.2",
-      "is_chat_default": false,
-      "is_chat_fallback": false,
-      "model_picker_category": "versatile",
-      "model_picker_enabled": true,
-      "name": "GPT-5.2",
-      "object": "model",
-      "policy": {
-        "state": "enabled",
-        "terms": "Enable access to the latest GPT-5.2 model from OpenAI. [Learn more about how GitHub Copilot serves GPT-5.2](https://gh.io/copilot-openai)."
-      },
-      "preview": false,
-      "supported_endpoints": [
-        "/chat/completions",
-        "/responses",
-        "ws:/responses"
-      ],
-      "vendor": "OpenAI",
-      "version": "gpt-5.2"
+      "version": "gpt-4.1-2025-04-14",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1666,12 +1343,13 @@
       "is_chat_default": false,
       "is_chat_fallback": false,
       "model_picker_category": "versatile",
-      "model_picker_enabled": true,
+      "model_picker_enabled": false,
       "name": "GPT-4.1 Copilot",
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-41-copilot"
+      "version": "gpt-41-copilot",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1701,7 +1379,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-3.5-turbo-0613"
+      "version": "gpt-3.5-turbo-0613",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1731,7 +1410,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4-0613"
+      "version": "gpt-4-0613",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1761,7 +1441,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4-0613"
+      "version": "gpt-4-0613",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1792,7 +1473,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4-0125-preview"
+      "version": "gpt-4-0125-preview",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1834,7 +1516,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4o-2024-05-13"
+      "version": "gpt-4o-2024-05-13",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1865,7 +1548,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4o-2024-05-13"
+      "version": "gpt-4o-2024-05-13",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1901,10 +1585,10 @@
         "type": "chat"
       },
       "id": "gpt-4.1",
-      "is_chat_default": true,
-      "is_chat_fallback": true,
+      "is_chat_default": false,
+      "is_chat_fallback": false,
       "model_picker_category": "versatile",
-      "model_picker_enabled": true,
+      "model_picker_enabled": false,
       "name": "GPT-4.1",
       "object": "model",
       "policy": {
@@ -1913,7 +1597,8 @@
       },
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4.1-2025-04-14"
+      "version": "gpt-4.1-2025-04-14",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1952,7 +1637,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-3.5-turbo-0613"
+      "version": "gpt-3.5-turbo-0613",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -1983,7 +1669,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4o-mini-2024-07-18"
+      "version": "gpt-4o-mini-2024-07-18",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -2025,7 +1712,8 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "gpt-4o-2024-11-20"
+      "version": "gpt-4o-2024-11-20",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
       "billing": {
@@ -2050,7 +1738,9 @@
       "object": "model",
       "preview": false,
       "vendor": "Azure OpenAI",
-      "version": "text-embedding-3-small"
+      "version": "text-embedding-3-small",
+      "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     }
-  ]
+  ],
+  "object": "list"
 }

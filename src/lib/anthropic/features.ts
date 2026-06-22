@@ -86,6 +86,7 @@ export function modelSupportsContextEditing(modelId: string): boolean {
     || normalized.startsWith("claude-sonnet-4-5")
     || normalized === "claude-sonnet-4"
     || normalized.startsWith("claude-opus-4-7")
+    || normalized.startsWith("claude-opus-4-8")
     || normalized.startsWith("claude-opus-4-5")
     || normalized.startsWith("claude-opus-4-6")
     || normalized.startsWith("claude-opus-4-1")
@@ -116,6 +117,7 @@ export function modelSupportsToolSearch(modelId: string): boolean {
     || normalized.startsWith("claude-opus-4-5")
     || normalized.startsWith("claude-opus-4-6")
     || normalized.startsWith("claude-opus-4-7")
+    || normalized.startsWith("claude-opus-4-8")
   )
 }
 

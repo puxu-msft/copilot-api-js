@@ -48,6 +48,9 @@ import {
   createStructuredOutputsRejectionStrategy,
   parseDisallowedPartnerFeature,
 } from "~/lib/request/strategies/structured-outputs-rejection-retry"
+import { setStateForTests } from "~/lib/state"
+
+import { autoRestoreState } from "../helpers/state-fixture"
 
 const MODEL = "claude-sonnet-4.6"
 
@@ -177,10 +180,25 @@ describe("strip-structured-outputs prepare step", () => {
   // output_config, so the input payload is never mutated.
   const stripStep = ANTHROPIC_PREPARE_STEPS.find((s) => s.name === "strip-structured-outputs") as PrepareStep
   const stripOnly: ReadonlyArray<PrepareStep> = [stripStep]
+  autoRestoreState() // the config-source test mutates state.stripPartnerFeatures
 
   test("preserves output_config.format when the feature is NOT marked unsupported", () => {
     const { wire } = prepareAnthropicRequest(basePayload(), undefined, stripOnly)
     expect((wire.output_config as { format?: unknown }).format).toBeDefined()
+  })
+
+  test("strips when declared via config `anthropic.partner_strip_features` (no cache mark)", () => {
+    // config source ONLY — no markAnthropicPartnerFeatureUnsupported; proves the
+    // config ∪ cache union, mirroring how `beta_strip_headers` works for betas.
+    setStateForTests({ stripPartnerFeatures: { [MODEL]: [STRUCTURED_OUTPUTS_PARTNER_FEATURE] } })
+    const { wire } = prepareAnthropicRequest(basePayload(), undefined, stripOnly)
+    expect(wire.output_config).toEqual({ effort: "high" })
+  })
+
+  test('config wildcard `"*"` applies to every model', () => {
+    setStateForTests({ stripPartnerFeatures: { "*": [STRUCTURED_OUTPUTS_PARTNER_FEATURE] } })
+    const { wire } = prepareAnthropicRequest(basePayload(), undefined, stripOnly)
+    expect(wire.output_config).toEqual({ effort: "high" })
   })
 
   test("strips output_config.format (keeping effort) once the feature is fixated", () => {

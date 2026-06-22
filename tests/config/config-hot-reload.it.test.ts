@@ -456,6 +456,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripBetaHeaders,
   },
   {
+    configKey: "anthropic.partner_strip_features",
+    stateKey: "stripPartnerFeatures",
+    sampleYamlValue: `\n  "*":\n    - structured_outputs`,
+    expectedStateValue: { "*": ["structured_outputs"] },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures,
+  },
+  {
     configKey: "anthropic.retry_reject_body_fields",
     stateKey: "rejectBodyFields",
     sampleYamlValue: `\n  "*":\n    - thinking`,

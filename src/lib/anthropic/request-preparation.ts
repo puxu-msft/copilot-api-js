@@ -133,6 +133,20 @@ function collectStripBetas(modelName: string): Set<string> {
 }
 
 /**
+ * Partner-model feature names (e.g. `structured_outputs`) the operator declared
+ * disallowed via config `anthropic.partner_strip_features`. The config twin of
+ * the `partnerFeatures` negotiation cache — union'd at the strip step, exactly
+ * like `collectStripBetas` ∪ the beta negotiation cache. `"*"` applies to all.
+ */
+function collectStripPartnerFeatures(modelName: string): Set<string> {
+  const strip = new Set<string>()
+  for (const features of collectAllMatching(modelName, state.stripPartnerFeatures)) {
+    for (const feature of features) strip.add(feature)
+  }
+  return strip
+}
+
+/**
  * Drop beta tokens that are known-unsupported for `modelName`. Returns the
  * filtered comma-separated header value, or `undefined` if nothing remains.
  *
@@ -560,24 +574,30 @@ function reconcileWithMetadata(whitelist: Array<string>, metadataSet: Set<string
 
 /**
  * Strip `output_config.format` (structured outputs) from the wire when the
- * resolved model's upstream has been learned to disallow the
- * `structured_outputs` partner feature.
+ * resolved model's upstream is known to disallow the `structured_outputs`
+ * partner feature — learned reactively (negotiation `partnerFeatures` cache) OR
+ * declared by the operator (config `anthropic.partner_strip_features`). Same
+ * config ∪ cache union as betas.
  *
  * Some GHC accounts route to Vertex AI where the org policy
  * `constraints/vertexai.allowedPartnerModelFeatures` blocks `structured_outputs`
  * for the partner Claude model, returning a 400. The
  * `structured-outputs-rejection-retry` strategy records the incompatibility in
- * the negotiation cache; this step pre-emptively strips the format on every
- * subsequent same-(endpoint, model) request so they don't re-pay a failed
- * upstream round-trip. `effort` (and any other `output_config` key) is
- * preserved; an emptied `output_config` is dropped entirely.
+ * the cache; declaring it in config makes the strip first-request-durable. Either
+ * way this step pre-emptively strips the format so requests don't re-pay a failed
+ * upstream round-trip. `effort` (and any other `output_config` key) is preserved;
+ * an emptied `output_config` is dropped entirely.
  */
 function stripUnsupportedStructuredOutputs(wire: Record<string, unknown>): void {
   const outputConfig = wire.output_config as OutputConfig | undefined
   if (!outputConfig || outputConfig.format === undefined) return
 
   const modelName = wire.model as string | undefined
-  if (!modelName || !isAnthropicPartnerFeatureUnsupported(modelName, STRUCTURED_OUTPUTS_PARTNER_FEATURE)) return
+  if (!modelName) return
+  const disallowed =
+    isAnthropicPartnerFeatureUnsupported(modelName, STRUCTURED_OUTPUTS_PARTNER_FEATURE)
+    || collectStripPartnerFeatures(modelName).has(STRUCTURED_OUTPUTS_PARTNER_FEATURE)
+  if (!disallowed) return
 
   const { format: _format, ...rest } = outputConfig
   if (Object.keys(rest).length > 0) {

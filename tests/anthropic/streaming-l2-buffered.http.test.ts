@@ -266,10 +266,8 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
   })
 
   test("escalation ON → each retry's wire forces a progressively aggressive context_management", async () => {
-    // opus-4.8 is NOT in modelSupportsContextEditing, so escalation would be a no-op there; use a
-    // supported model (opus-4-6) to prove the handler→driver→prepareWire threading injects it.
-    const SUPPORTED = "claude-opus-4-6"
-    setModels({ object: "list", data: [mockModel(SUPPORTED, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
+    // opus-4.8 (the L2 target model) supports context_management per GHC, so escalation applies to it
+    // directly — proving the handler→driver→prepareWire threading injects the aggressive edit.
     setStateForTests({ protectStreamingEscalateContext: true })
     rstBeforeComplete = 1 // attempt 0 RSTs, attempt 1 (retry) escalates + completes
 
@@ -277,7 +275,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       method: "POST",
       headers: { "Content-Type": "application/json", "x-session-id": "l2-buf-esc" },
       body: JSON.stringify({
-        model: SUPPORTED,
+        model: MODEL,
         messages: [{ role: "user", content: "write" }],
         max_tokens: 256,
         stream: true,
