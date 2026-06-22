@@ -15,13 +15,12 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 // ----- upstream wire mock -----
 //
@@ -167,8 +166,7 @@ interface ErrorHttpBody {
 }
 
 describe("POST /v1/messages", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     messagesHits = 0

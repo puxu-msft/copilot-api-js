@@ -25,14 +25,14 @@ import { getRequestContextManager } from "~/lib/context/manager"
 import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
 function rawReq(body: unknown, over?: Partial<RawHttpRequest>): RawHttpRequest {
   return { body, headers: new Headers({ "content-length": "42" }), method: "POST", path: "/chat/completions", ...over }
 }
 
 describe("openai-cc codec — parse", () => {
-  autoTestRuntime()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     setModels({

@@ -26,12 +26,11 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 // End-to-end probe for the server-tool-rejection self-healing strategy on the
 // Anthropic path: a request carrying a native web_search server tool against a
@@ -101,8 +100,7 @@ afterAll(async () => {
 })
 
 describe("POST /v1/messages — server-tool-rejection self-healing", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     toolTypesPerCall.length = 0

@@ -34,17 +34,16 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import {
   //
   createSseResponse,
   createSseResponseThenError,
 } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 const MODEL = "claude-opus-4.8"
 
@@ -126,8 +125,7 @@ function frameTypesInOrder(sse: string): Array<string> {
 }
 
 describe("L2 baseline — Anthropic live streaming (locked before L2 lands)", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()

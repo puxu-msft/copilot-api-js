@@ -26,13 +26,12 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 const MODEL = "gpt-5"
 
@@ -69,8 +68,7 @@ async function post(): Promise<Response> {
 }
 
 describe("Responses v4 — upstream stream truncation detection", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()

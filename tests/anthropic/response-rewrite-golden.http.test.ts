@@ -54,14 +54,13 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
 import { createFullTestApp } from "../helpers/test-app"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 // ── frame builders ───────────────────────────────────────────────────────────
 
@@ -462,8 +461,7 @@ function lastOutboundContent(): unknown {
 // ── tests ────────────────────────────────────────────────────────────────────
 
 describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(async () => {
     upstreamMock.mockClear()

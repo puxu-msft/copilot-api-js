@@ -1,8 +1,8 @@
 # RFC: 测试环境隔离机制全面重写
 
-**Status:** 实现中 — P0/P1/P3 已落地、P4 文档已回填;P2 分域迁移进行中(models 域已迁,anthropic/openai/responses/gemini/pipeline 域暂缓至并发 L2 会话收敛)。interim floor `737f9a4`;设计 §8–§10;**§11 为权威落地态**(含 review 结论 + P0–P4 进度)。
+**Status:** 基本落地 — P0/P1/P2/P3/P4 全部完成;所有需 runtime 的测试已迁 `useIsolatedRuntime`,死 primitive `autoTestRuntime` 已删;`autoRestoreState`/`autoRestoreFetch` 仍服务轻量纯-unit 测试故保留。interim floor `737f9a4`;**§11 为权威落地态**(review 结论 + P0–P4 进度 + 落地 commit)。
 **Date:** 2026-06-22
-**Owner:** 新会话推进中
+**Owner:** 已完成本轮
 
 ---
 
@@ -225,8 +225,8 @@ history.db 30 文件清单见 subagent 审计原文(新会话用 `rg -l "bootstr
 - **P2 `[wip]` — 分域迁移**(按 `tests/<域>/` 分批,`useIsolatedRuntime()` 原子取代旧 primitive,R5 不并存):
   - `[done]` **models 域**(`9006e1b`,107 pass)——示范 setModels→rawModels 泄漏被 fixture 修。
   - `[done]` **低碰撞 batch 2**(`5dcf7fc`):infra/management-routes、anthropic/web-search(orchestrator/backends/web-search)、pipeline(route-matrix/payload-rewrite-registry)——autoTestRuntime+autoRestoreFetch(+autoRestoreState)原子取代;web-search 用 applyFetchMock 覆盖 network guard 实证不误伤。全 backend 2971 pass。
-  - `[deferred]` **anthropic/openai/responses/gemini/pipeline 流式域**(~13 文件):被**并发的 L2 pipeline 会话**正在活跃编辑(anthropic-v4/streaming-l2-baseline、chat-completions-v4、responses-v4/ws、gemini-v4、pipeline/buffered-sink、helpers/sse),同文件并发改动会真实冲突。**暂缓至 L2 会话收敛后**再迁,非降级——迁移机械、pattern 已立(见 models/batch2 commit),任何人可续。
-  - `[todo]` **autoRestoreState/autoRestoreFetch-only 的轻量文件**(纯 unit,不需全 runtime):是否迁移需逐个判断(useIsolatedRuntime 会起 runtime,对纯函数测试偏重);触碰 module-global 的才必须迁,否则旧 primitive 仍正确。
+  - `[deferred]` **anthropic/openai/responses/gemini/pipeline 流式域**(~13 文件):被**并发的 L2 pipeline 会话**正在活跃编辑(streaming buffered-retry),曾暂缓避撞——**已于 L2 转用 pathspec 提交、且与本批零重叠后完成迁移**(`e1512ba`,batch 3,19 文件,全 backend 2980 pass)。带 in-test negotiation reset 的 3 文件保留其 reset(与 fixture 并存无害)。
+  - `[todo]` **autoRestoreState(21)/autoRestoreFetch(7)-only 的轻量文件**(纯 unit,不需全 runtime):**保留旧 primitive 是正确的**——useIsolatedRuntime 会起 runtime,对纯函数测试偏重;只有触碰 module-global 的才需迁。这两个 primitive 仍有正当消费者,**不删**。
   *Invariant*:每批该域绿 + 全套件绿;未迁域走旧 primitive(新旧并存无害,旧 primitive 不删)。
 - **P3 `[done]` — 端到端 writer 守卫**(R9 收窄版):`tests/infra/real-state-guard.it.test.ts` 行使 negotiation/learned-limits writer 断言落点含 SANDBOX_MARKER 且不在真实 home(可证伪)。**落地 commit**:`6e6fae1`。
-- **P4 `[wip]` — 收尾**:`[done]` DESIGN.md 回填默认隔离纪律(`0b145bf`);`[todo]` P2 全迁完后删被取代的死 primitive(`autoTestRuntime`/`autoRestoreState`/`autoRestoreFetch`,判据=删后 typecheck+全套件绿)、更新本 RFC→完全落地、维护 memory。*注*:`docs/coding-conventions.md` 不存在(CLAUDE.md 引用但未建),纪律回填进 DESIGN.md §测试组织;CLAUDE.md 有大量预存未提交外来改动,未触碰避免裹入。
+- **P4 `[done]` — 收尾**:`[done]` DESIGN.md 回填默认隔离纪律(`0b145bf`);`[done]` 删死 primitive `autoTestRuntime`(`e4cb71e`,全迁后零消费者,eslint 清 unused 导入,bootstrap/reset 保留);`autoRestoreState`/`autoRestoreFetch` 仍有轻量纯-unit 消费者故**不删**。*注*:`docs/coding-conventions.md` 不存在,纪律回填 DESIGN.md §测试组织;CLAUDE.md 有大量预存外来改动未触碰;并发会话 pathspec 教训由 L2 记入 `git-concurrent-sessions-pathspec-commit`。

@@ -14,12 +14,11 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 // End-to-end probe for the tool-name sanitization round-trip on the Anthropic
 // path: with `sanitize_tool_names` ON, a tool named "search.web" (a dot, which
@@ -82,8 +81,7 @@ interface ToolUseHttpBody {
 }
 
 describe("POST /v1/messages — tool-name sanitization round-trip", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     capturedTools = undefined

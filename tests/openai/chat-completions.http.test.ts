@@ -16,13 +16,12 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 interface ChatCompletionHttpBody {
   id: string
@@ -123,8 +122,7 @@ const { createFullTestApp } = await import("../helpers/test-app")
 const app = createFullTestApp()
 
 describe("POST /chat/completions", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     capturedPayload = undefined

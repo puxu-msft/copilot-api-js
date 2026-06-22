@@ -31,10 +31,10 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import {
   //
@@ -42,7 +42,6 @@ import {
   createSseResponseThenAbort,
   createSseResponseThenError,
 } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 let lastCcWire: ChatCompletionsPayload | undefined
 let lastResponsesWire: { model?: string; input?: unknown } | undefined
@@ -190,8 +189,7 @@ async function post(body: unknown): Promise<Response> {
 }
 
 describe("CC v4 driver path", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()

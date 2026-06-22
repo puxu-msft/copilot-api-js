@@ -31,17 +31,16 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import {
   //
   createSseResponse,
   createSseResponseThenAbort,
 } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 let lastCcWire: ChatCompletionsPayload | undefined
 let lastResponsesWire: { model?: string; input?: unknown } | undefined
@@ -167,8 +166,7 @@ async function post(modelMethod: string, body: unknown): Promise<Response> {
 }
 
 describe("Gemini v4 driver path", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()

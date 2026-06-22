@@ -29,13 +29,12 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 // Upstream stream: the non-standard embedded-signature thinking block (signature
 // on content_block_start, NO signature_delta), then a text block, then close.
@@ -116,8 +115,7 @@ function dataFramesOfType(sse: string, type: string): Array<Record<string, unkno
 }
 
 describe("POST /v1/messages — thinking-signature compatibility shim", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()

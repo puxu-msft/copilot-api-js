@@ -43,10 +43,10 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import {
   //
@@ -54,7 +54,6 @@ import {
   createSseResponseThenAbort,
   createSseResponseThenError,
 } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 let lastResponsesWire: ResponsesPayload | undefined
 let lastCcWire: { model?: string; messages?: unknown } | undefined
@@ -179,8 +178,7 @@ function normalizeIds(text: string): string {
 }
 
 describe("Responses v4 driver path", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()
@@ -508,8 +506,7 @@ const WS_EVENTS: Array<ResponsesStreamEvent> = [
 ]
 
 describe("Responses v4 driver path — upstream WS transport", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()

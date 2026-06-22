@@ -29,13 +29,12 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 // ----- upstream wire mock -----
 //
@@ -149,8 +148,7 @@ async function postResponses(model: string, stream = false): Promise<Response> {
 }
 
 describe("POST /responses — fallback dispatch decision", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     responsesHits = 0

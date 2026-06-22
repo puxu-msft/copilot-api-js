@@ -29,7 +29,7 @@ import { getRequestContextManager } from "~/lib/context/manager"
 import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
 const NO_PREPROCESS = { strippedReadTagCount: 0, dedupedToolCallCount: 0 }
 
@@ -46,7 +46,7 @@ function anthropicBody(over?: Partial<MessagesPayload>): MessagesPayload {
 }
 
 describe("anthropic codec — parse / decideRoute / prepareWire / sampleRequest", () => {
-  autoTestRuntime()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     setModels({

@@ -230,7 +230,7 @@ ui/
 
 2. **隔离级别后缀**（控制"按速度跑"）：
    - `*.unit.test.ts` — 纯函数，无运行时
-   - `*.it.test.ts` — 起 state/history runtime（bootstrapTestRuntime/autoTestRuntime/initHistory/setStateForTests）
+   - `*.it.test.ts` — 起 state/history runtime（useIsolatedRuntime/bootstrapTestRuntime/initHistory/setStateForTests）
    - `*.http.test.ts` — 起 Hono app 或 server（createFullTestApp/Bun.serve）
 
    于是域靠**目录**索引、速度靠**后缀**索引（`bun run test:unit` 只跑快测试）。
@@ -239,7 +239,7 @@ ui/
 
 **隔离纪律**：bun 单进程跑全套件，全局单例（state、history、upstream-WS manager、`mock.module`）会跨文件泄漏。因此：测试用 DI/fetch-mock 而非 `mock.module`（仅 `tui-format` 的 picocolors 是已证良性的例外）；带 fs I/O 的测试（如 setup-claude-code）用注入的临时目录，绝不碰真实 `$HOME`。
 
-**默认隔离 fixture（`useIsolatedRuntime`，2026-06 加）**：新增 `.it`/`.http` 测试**默认调 `tests/helpers/isolated-fixture.ts` 的 `useIsolatedRuntime()`**——一处入口给出全隔离：bootstrap runtime（history 走 `:memory:`）+ per-test state 快照/还原（吸收 `autoRestoreState`）+ afterEach 串行 reset 全部 module-global 单例（`RESETTERS` 表）+ upstream network guard（未 mock 的上游调用即 reject；`network:"passthrough"` opt-out）。**不要**同文件再叠加 `autoRestoreState()`（两个 restore 的快照时机不同会按注册顺序互相覆盖污染基线）。`useIsolatedRuntime` 取代旧的 `autoTestRuntime`+`autoRestoreState`+`autoRestoreFetch`+逐测试 negotiation reset 组合。**新增 module-global 单例时**：提供 `reset*ForTests` 导出并登记进 `RESETTERS` 表——L1 守卫 `tests/infra/resetters-complete.unit.test.ts` 枚举 src 全部 `*ForTest(s|ing)` 导出、断言每个 ∈ 表 ∪ 豁免清单，忘登记即 fail（无导出的游离 module-global 如曾经的 `rawModels` 守卫抓不到，故**必须**给它 reset 导出）。fs 隔离**不归 fixture**，归下面的 preload 地板（分层：地板管 fs 根，fixture 管进程内状态）。
+**默认隔离 fixture（`useIsolatedRuntime`，2026-06 加）**：新增 `.it`/`.http` 测试**默认调 `tests/helpers/isolated-fixture.ts` 的 `useIsolatedRuntime()`**——一处入口给出全隔离：bootstrap runtime（history 走 `:memory:`）+ per-test state 快照/还原（吸收 `autoRestoreState`）+ afterEach 串行 reset 全部 module-global 单例（`RESETTERS` 表）+ upstream network guard（未 mock 的上游调用即 reject；`network:"passthrough"` opt-out）。**不要**同文件再叠加 `autoRestoreState()`（两个 restore 的快照时机不同会按注册顺序互相覆盖污染基线）。`useIsolatedRuntime` 已**完全取代并删除** `autoTestRuntime`（旧的 bootstrap+state 还原组合），凡需 runtime 的 `.it`/`.http` 测试都已迁过来；但 `autoRestoreState`/`autoRestoreFetch` 作为**独立 primitive 保留**，继续服务不需要全 runtime 的轻量纯-unit 测试（强行迁到 fixture 反而起多余 runtime，违 YAGNI）。**新增 module-global 单例时**：提供 `reset*ForTests` 导出并登记进 `RESETTERS` 表——L1 守卫 `tests/infra/resetters-complete.unit.test.ts` 枚举 src 全部 `*ForTest(s|ing)` 导出、断言每个 ∈ 表 ∪ 豁免清单，忘登记即 fail（无导出的游离 module-global 如曾经的 `rawModels` 守卫抓不到，故**必须**给它 reset 导出）。fs 隔离**不归 fixture**，归下面的 preload 地板（分层：地板管 fs 根，fixture 管进程内状态）。
 
 **持久化路径地板防线**（2026-06 加）：`bunfig.toml` 的 `[test].preload`（`tests/helpers/sandbox-paths.ts`）在任何 src 模块算 `PATHS` 前把 `XDG_DATA_HOME` **与 `CODEX_HOME`** 重定向到 `mkdtemp` 临时目录，兜住**所有 APP_DIR 派生持久化**（negotiation/`history.db`/logs/learned-limits/telemetry）**及 `~/.codex/config.toml`**（codex 派生自 `CODEX_HOME` 非 `XDG_DATA_HOME`，只重定向 XDG 会留盲区）——`[test].preload` 只作用于 `bun test`、不影响 `bun run start`/生产。双守卫：`tests/infra/sandbox-paths.unit.test.ts`（静态断言 `PATHS.*` 落沙箱）+ `tests/infra/real-state-guard.it.test.ts`（动态行使 writer、断言写出文件落沙箱不落真实 home——mtime-diff 守卫会被常驻 live server 污染成假阳，故用 writer 落点反证）。逐测试 `PATHS.X = mkdtemp()` 或 `set*PathForTests` seam 注入仍是首选（更强隔离），preload 是兜底地板而非替代。**背景与全面重写设计**见 [rfc/test-env-isolation.md](rfc/test-env-isolation.md)（§11 为权威落地态）。
 

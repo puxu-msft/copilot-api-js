@@ -29,13 +29,12 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 const MODEL = "claude-opus-4.8"
 
@@ -109,8 +108,7 @@ function dataFramesOfType(sse: string, type: string): Array<Record<string, unkno
 }
 
 describe("POST /v1/messages — upstream stream truncation detection", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()

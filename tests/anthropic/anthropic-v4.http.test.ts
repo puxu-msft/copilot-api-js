@@ -44,17 +44,16 @@ import {
 import { registerHttpRoutes } from "~/routes"
 
 import { mockModel } from "../helpers/factories"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
-  autoRestoreFetch,
 } from "../helpers/mock-fetch"
 import {
   //
   createSseResponse,
   createSseResponseThenAbort,
 } from "../helpers/sse"
-import { autoTestRuntime } from "../helpers/test-bootstrap"
 
 type Scenario = "ok" | "thinking" | "errorFrame" | "midStreamThrow" | "deferredTool"
 
@@ -210,8 +209,7 @@ async function post(body: unknown, target: Hono = app): Promise<Response> {
 }
 
 describe("Anthropic v4 driver path", () => {
-  autoTestRuntime()
-  autoRestoreFetch()
+  useIsolatedRuntime()
 
   beforeEach(() => {
     messagesHits = 0
