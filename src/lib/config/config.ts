@@ -36,7 +36,11 @@ import {
   normalizeModelNameList,
 } from "../models/resolver"
 import { PATHS } from "./paths"
-import { validateConfig } from "./validation"
+import {
+  //
+  validateConfig,
+  warnProtectStreamingHeartbeatOnce,
+} from "./validation"
 
 // Re-export Zod-inferred types so existing imports of these names keep working.
 export type { AnthropicConfig, Config, HistoryConfig, RateLimiterConfig, ResponsesConfig, RewriteRule, ShutdownConfig } from "./schema"
@@ -535,6 +539,14 @@ export async function applyConfigToState(): Promise<Config> {
       }
     }
   }
+
+  // L2 cross-field guard: buffered streaming with NO keepalive heartbeat = clients idle out.
+  // Checked on the EFFECTIVE state (post-apply, so bundled defaults + hot-reload retain are reflected).
+  warnProtectStreamingHeartbeatOnce({
+    protectStreamingGeneration: state.protectStreamingGeneration,
+    fakeHeartbeat: state.anthropicFakeSseHeartbeat,
+    protectHeartbeat: state.protectStreamingHeartbeat,
+  })
 
   // System prompt overrides (collection: entire replacement)
   if (config.system_prompt_overrides !== undefined) {

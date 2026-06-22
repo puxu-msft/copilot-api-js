@@ -14,6 +14,7 @@ import {
   _resetConfigValidationWarnTrackingForTests,
   validateConfig,
 } from "~/lib/config/config"
+import { warnProtectStreamingHeartbeatOnce } from "~/lib/config/validation"
 
 let warnSpy: ReturnType<typeof spyOn<typeof consola, "warn">>
 
@@ -202,5 +203,36 @@ describe("validateConfig — warn-once semantics", () => {
     _resetConfigValidationWarnTrackingForTests()
     validateConfig({ foo: 1 })
     expect(warnedMessages().filter((m) => m.includes("foo")).length).toBe(2)
+  })
+})
+
+describe("warnProtectStreamingHeartbeatOnce — L2 buffered keepalive cross-field guard", () => {
+  test("buffered ON + both heartbeats 0 → warns", () => {
+    warnProtectStreamingHeartbeatOnce({ protectStreamingGeneration: "on", fakeHeartbeat: 0, protectHeartbeat: 0 })
+    expect(warnedMessages().some((m) => m.includes("protect_streaming_generation is enabled") && m.includes("no keepalive"))).toBe(true)
+  })
+
+  test("buffered OFF → never warns (even with both heartbeats 0)", () => {
+    warnProtectStreamingHeartbeatOnce({ protectStreamingGeneration: false, fakeHeartbeat: 0, protectHeartbeat: 0 })
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  test("buffered ON but protect heartbeat > 0 → no warn", () => {
+    warnProtectStreamingHeartbeatOnce({ protectStreamingGeneration: "tool_use_only", fakeHeartbeat: 0, protectHeartbeat: 15 })
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  test("buffered ON but fake heartbeat > 0 → no warn", () => {
+    warnProtectStreamingHeartbeatOnce({ protectStreamingGeneration: "on", fakeHeartbeat: 120, protectHeartbeat: 0 })
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  test("warns ONCE across repeated applies (hot-reload), re-warns after reset", () => {
+    warnProtectStreamingHeartbeatOnce({ protectStreamingGeneration: "on", fakeHeartbeat: 0, protectHeartbeat: 0 })
+    warnProtectStreamingHeartbeatOnce({ protectStreamingGeneration: "on", fakeHeartbeat: 0, protectHeartbeat: 0 })
+    expect(warnedMessages().filter((m) => m.includes("no keepalive")).length).toBe(1)
+    _resetConfigValidationWarnTrackingForTests()
+    warnProtectStreamingHeartbeatOnce({ protectStreamingGeneration: "on", fakeHeartbeat: 0, protectHeartbeat: 0 })
+    expect(warnedMessages().filter((m) => m.includes("no keepalive")).length).toBe(2)
   })
 })
