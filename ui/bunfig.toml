@@ -1,0 +1,12 @@
+# Bun config for the `ui` workspace.
+#
+# Sole purpose: make `bun test` run from this workspace (cwd = ui/, via
+# `bun run --filter copilot-api-ui test:bun`) inherit the SAME fs sandbox as the
+# backend suite. Bun loads the *nearest* bunfig.toml, so without this file ui's
+# bun tests would pick up the root bunfig but resolve its `preload` relative to
+# cwd (→ ui/tests/helpers/sandbox-paths.ts, which does not exist) and silently
+# skip sandboxing. The path below is resolved relative to THIS file (ui/), so it
+# correctly points at the shared preload. Keeps the "no test touches the real
+# ~/.local/share/copilot-api / ~/.codex" floor intact for ui bun tests too.
+[test]
+preload = ["../tests/helpers/sandbox-paths.ts"]

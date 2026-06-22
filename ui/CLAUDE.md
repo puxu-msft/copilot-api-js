@@ -46,7 +46,7 @@ bun run test       # 先跑 bun test，再跑 vitest  bun run test:ui
 
 - `<script setup lang="ts">` 单文件组件，偏好使用 Composition API 而非 Options API
 - 不使用行末分号（与后端一致）
-- 优先使用 VueUse（`@vueuse/core`、`@vueuse/integrations`）而非手写生命周期管理
+- 优先使用 VueUse（`@vueuse/core`）而非手写生命周期管理
 
 ### script setup 内部排序
 
