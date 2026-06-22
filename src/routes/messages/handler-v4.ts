@@ -28,6 +28,7 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 import type { SSEStreamingApi } from "hono/streaming"
+import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
@@ -84,7 +85,11 @@ import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrites"
 import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { HTTPError } from "~/lib/error"
+import {
+  //
+  HTTPError,
+  isAbortError,
+} from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
 import { getSessionIdFromHeaders } from "~/lib/history/store"
 import { resolveModelName } from "~/lib/models/resolver"
@@ -329,6 +334,19 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     if (ctx) {
       c.set("requestContext", ctx)
       ctx.setHttpHeaders(headersCapture)
+      // A pre-response CLIENT disconnect is a cancellation, not a failure: record
+      // the distinct `aborted` terminal state (parity with the mid-stream pump's
+      // settled-abort path, pumpAnthropicStreamingV4) instead of `failed`, and
+      // return 499 rather than rethrowing into forwardError's catch-all. Discriminate
+      // via our own clientAbort controller (here, pre-streamSSE, only the
+      // client-disconnect bridge flips it) — NOT error.name (the http2 client
+      // synthesizes a generic AbortError; a response-header timeout does NOT flip
+      // clientAbort, so it correctly falls through to fail → forwardError 504).
+      if (error instanceof Error && isAbortError(error) && clientAbort.signal.aborted) {
+        ctx.abort(resolvedName)
+        detachClientAbort()
+        return c.body(null, 499 as ContentfulStatusCode)
+      }
       ctx.fail(resolvedName, error)
     }
     detachClientAbort()

@@ -119,7 +119,7 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 | `src/lib/token/` | Copilot/GitHub token 生命周期 + `providers/`（cli/device-auth/env/file 多源）。详见 `docs/authentication.md`。 |
 | `src/lib/ws/` | 共享 WebSocket adapter（Node/Bun 分流）+ topic-aware broadcast 总线（history/status/shutdown 统一推送）。 |
 | `src/lib/request/` | **旧** v4-pre 重试管道（`executeRequestPipeline` 策略模式）；现仅 web_search 双跳消费本体，`strategies/`（重试策略集）经 `pipeline/legacy-strategy-adapter` 被 v4 driver 复用。见上「活的架构现状」。 |
-| `src/lib/error/`、`src/lib/system-prompt/` | 单文件已升为子目录。`error/`：HTTPError + classify/forward/parsing（Retry-After 解析）。`system-prompt/`：override 应用（config 规则）+ `<system-reminder>` 标签解析。 |
+| `src/lib/error/`、`src/lib/system-prompt/` | 单文件已升为子目录。`error/`：HTTPError + classify/forward/parsing（Retry-After 解析）。**反直觉契约**：`forward.ts` 的 `forwardError` 不把 abort 落 500 catch-all——`isAbortError` 命中后按 `c.req.raw.signal.aborted` 分流：客户端断开→499、上游响应头超时→504（判别**不靠 error.name**，因 `http2-client` 合成的 AbortError 抹掉了 `AbortSignal.timeout` 的 TimeoutError 身份）；pre-response 客户端断开在 `messages/handler-v4.ts` 的 catch 里记 `aborted` 终态（非 `failed`）。详见 [rfc/pre-response-abort-handling.md](rfc/pre-response-abort-handling.md)（③ pre-response 保活待 Q2 实测）。`system-prompt/`：override 应用（config 规则）+ `<system-reminder>` 标签解析。 |
 
 **顶层裸文件（仅点名有跨文件关系者）**
 
