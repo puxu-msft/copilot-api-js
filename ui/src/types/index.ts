@@ -25,8 +25,6 @@ export type {
   SanitizationInfo,
   ServerToolResultContentBlock,
   ServerToolUseContentBlock,
-  Session,
-  SessionResult,
   SseEventRecord,
   SummaryResult,
   SystemBlock,

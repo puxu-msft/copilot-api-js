@@ -151,12 +151,6 @@ describe("history incremental persistence + recovery", () => {
     const stats = computeStats()
     expect(stats.totalRequests).toBe(2) // pending excluded
     expect(stats.successfulRequests).toBe(2)
-    const session = getDatabase().prepare("SELECT request_count, total_input_tokens FROM sessions WHERE id='S'").get() as {
-      request_count: number
-      total_input_tokens: number
-    }
-    expect(session.request_count).toBe(2)
-    expect(session.total_input_tokens).toBe(12)
   })
 
   test("stats break out aborted/interrupted distinctly; failedRequests stays = only 'failed'", () => {

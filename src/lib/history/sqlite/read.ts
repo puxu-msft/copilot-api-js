@@ -3,7 +3,6 @@ import type {
   EntrySummary,
   HistoryEntry,
   QueryOptions,
-  Session,
 } from "~/lib/history/types"
 
 import { getDatabase } from "./connection"
@@ -195,44 +194,6 @@ export function queryEntryCount(opts?: QueryOptions): number {
   const { sql, params } = applyWhere(opts)
   const row = db.prepare(`SELECT COUNT(*) AS n FROM entries_v2 ${sql}`).get(...params) as { n: number }
   return row.n
-}
-
-interface SessionRow {
-  id: string
-  start_time: number
-  last_activity: number
-  request_count: number
-  total_input_tokens: number
-  total_output_tokens: number
-  models_json: string | null
-  endpoints_json: string | null
-  tools_used_json: string | null
-}
-
-function rowToSession(r: SessionRow): Session {
-  return {
-    id: r.id,
-    startTime: r.start_time,
-    lastActivity: r.last_activity,
-    requestCount: r.request_count,
-    totalInputTokens: r.total_input_tokens,
-    totalOutputTokens: r.total_output_tokens,
-    models: r.models_json ? (JSON.parse(r.models_json) as Array<string>) : [],
-    endpoints: r.endpoints_json ? (JSON.parse(r.endpoints_json) as Session["endpoints"]) : [],
-    toolsUsed: r.tools_used_json ? (JSON.parse(r.tools_used_json) as Array<string>) : undefined,
-  }
-}
-
-export function listSessions(): Array<Session> {
-  const db = getDatabase()
-  const rows = db.prepare("SELECT * FROM sessions ORDER BY last_activity DESC").all() as Array<SessionRow>
-  return rows.map((r) => rowToSession(r))
-}
-
-export function getSessionById(id: string): Session | undefined {
-  const db = getDatabase()
-  const row = db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined
-  return row ? rowToSession(row) : undefined
 }
 
 export function resolveResponseSession(responseId: string): string | undefined {

@@ -26,7 +26,6 @@ import type {
   HistoryEntry,
   HistoryStats,
   SummaryResult,
-  SessionResult,
 } from "../src/types"
 
 import { useDetailViewState } from "../src/composables/useDetailViewState"
@@ -51,7 +50,6 @@ mock.module("../src/api/ws", () => ({
 const mockFetchEntries = mock<() => Promise<SummaryResult>>(() => Promise.resolve({ entries: [], total: 0, nextCursor: null, prevCursor: null }))
 const mockFetchEntry = mock<(id: string) => Promise<HistoryEntry>>(() => Promise.resolve(makeFullEntry("e1")))
 const mockDeleteEntries = mock<() => Promise<void>>(() => Promise.resolve())
-const mockFetchSessions = mock<() => Promise<SessionResult>>(() => Promise.resolve({ sessions: [], total: 0 }))
 
 function makeStats(overrides: Partial<HistoryStats> = {}): HistoryStats {
   return {
@@ -78,7 +76,6 @@ mock.module("../src/api/http", () => ({
     fetchEntries: mockFetchEntries,
     fetchEntry: mockFetchEntry,
     deleteEntries: mockDeleteEntries,
-    fetchSessions: mockFetchSessions,
     fetchStats: mockFetchStats,
     getExportUrl: (format: string) => `/history/api/export?format=${format}`,
   },
@@ -124,7 +121,6 @@ function resetMocks(): void {
   mockFetchEntries.mockClear()
   mockFetchEntry.mockClear()
   mockDeleteEntries.mockClear()
-  mockFetchSessions.mockClear()
   mockFetchStats.mockClear()
   mockWSConnect.mockClear()
   mockWSDisconnect.mockClear()

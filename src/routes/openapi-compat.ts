@@ -166,15 +166,6 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
   })
   registry.registerPath({ method: "get", path: "/history/api/stats", tags: historyTag, summary: "History store statistics", responses: ok200("Stats") })
   registry.registerPath({ method: "get", path: "/history/api/export", tags: historyTag, summary: "Export history", responses: ok200("Exported history") })
-  registry.registerPath({ method: "get", path: "/history/api/sessions", tags: historyTag, summary: "List sessions", responses: ok200("Sessions") })
-  registry.registerPath({
-    method: "get",
-    path: "/history/api/sessions/{id}",
-    tags: historyTag,
-    summary: "Single session",
-    request: { params: z.object({ id: z.string() }) },
-    responses: { ...ok200("Session"), 404: { description: "Not found", ...jsonContent() } },
-  })
   registry.registerPath({
     method: "delete",
     path: "/history/api/sessions/{id}",

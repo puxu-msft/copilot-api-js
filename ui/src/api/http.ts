@@ -3,7 +3,6 @@ import type {
   SummaryResult,
   HistoryEntry,
   HistoryStats,
-  SessionResult,
   QueryOptions,
 } from "@/types"
 import type {
@@ -80,14 +79,6 @@ export const api = {
   },
 
   // Sessions
-  async fetchSessions(): Promise<SessionResult> {
-    return request<SessionResult>("/sessions")
-  },
-
-  async fetchSession(id: string): Promise<ReturnType<typeof request>> {
-    return request("/sessions/" + id)
-  },
-
   async deleteSession(id: string): Promise<void> {
     await request("/sessions/" + id, { method: "DELETE" })
   },

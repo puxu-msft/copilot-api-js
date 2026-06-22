@@ -39,8 +39,6 @@ import {
   handleExport,
   handleGetEntries,
   handleGetEntry,
-  handleGetSession,
-  handleGetSessions,
   handleGetStats,
   handlePinEntry,
   handleUnpinEntry,
@@ -56,8 +54,6 @@ app.post("/api/entries/:id/unpin", handleUnpinEntry)
 app.delete("/api/entries", handleDeleteEntries)
 app.get("/api/stats", handleGetStats)
 app.get("/api/export", handleExport)
-app.get("/api/sessions", handleGetSessions)
-app.get("/api/sessions/:id", handleGetSession)
 app.delete("/api/sessions/:id", handleDeleteSession)
 
 // ─── Helpers ───
@@ -372,34 +368,9 @@ describe("GET /api/export", () => {
   })
 })
 
-// ─── handleGetSessions / handleGetSession / handleDeleteSession ───
+// ─── handleDeleteSession ───
 
 describe("sessions API", () => {
-  test("GET /api/sessions returns sessions list", async () => {
-    createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
-
-    const res = await get("/api/sessions")
-    expect(res.status).toBe(200)
-    const body = await json<{ sessions: Array<unknown> }>(res)
-    expect(body.sessions.length).toBeGreaterThanOrEqual(1)
-  })
-
-  test("GET /api/sessions/:id returns session with entries", async () => {
-    const entry = createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
-    expect(entry.sessionId).toBeTruthy()
-
-    const res = await get(`/api/sessions/${entry.sessionId}`)
-    expect(res.status).toBe(200)
-    const body = await json<{ id: string; entries: Array<unknown> }>(res)
-    expect(body.id).toBe(entry.sessionId!)
-    expect(body.entries.length).toBeGreaterThanOrEqual(1)
-  })
-
-  test("GET /api/sessions/:id returns 404 for non-existent session", async () => {
-    const res = await get("/api/sessions/nonexistent")
-    expect(res.status).toBe(404)
-  })
-
   test("DELETE /api/sessions/:id deletes session", async () => {
     const entry = createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
     const sessionId = entry.sessionId

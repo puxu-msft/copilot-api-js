@@ -12,7 +12,6 @@ import {
   clearHistory,
   getCurrentSession,
   getSessionIdFromHeaders,
-  getSessions,
   initHistory,
   registerResponseSession,
   resolveResponseSessionId,
@@ -41,7 +40,6 @@ describe("history session resolution", () => {
 
   test("does not create a synthetic session when no id is provided", () => {
     expect(getCurrentSession("anthropic-messages")).toBeUndefined()
-    expect(getSessions().sessions.length).toBe(0)
   })
 
   test("extracts a real client session id from headers", () => {

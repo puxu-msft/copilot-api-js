@@ -23,7 +23,6 @@ import {
 import type {
   //
   HistoryEntry,
-  Session,
 } from "~/lib/history"
 
 import {
@@ -32,9 +31,7 @@ import {
   getCurrentSession,
   getEntry,
   getHistory,
-  getSession,
   getSessionEntries,
-  getSessions,
   getStats,
   initHistory,
   insertEntry,
@@ -129,11 +126,6 @@ describe("initHistory", () => {
     clearHistory()
     expect(totalEntryCount()).toBe(0)
   })
-
-  test("does not generate a synthetic session ID on init", () => {
-    initHistory(true, 100)
-    expect(getSessions().sessions.length).toBe(0)
-  })
 })
 
 // ─── insertEntry ───
@@ -201,45 +193,6 @@ describe("insertEntry", () => {
     expect(entry.sessionId).toBeTruthy()
   })
 
-  test("session is created when entry completes with tools", () => {
-    const entry = insertHistoryEntry("anthropic-messages", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "test" }],
-      tools: [{ name: "file_search" }, { name: "read_file" }],
-    })
-    completeEntry(entry.id)
-
-    const session = getSession(entry.sessionId!)
-    expect(session).toBeDefined()
-    expect(session!.id).toBe(entry.sessionId!)
-  })
-
-  test("increments session request count", () => {
-    const first = insertHistoryEntry("anthropic-messages", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "1" }],
-    })
-    const sessionId = first.sessionId!
-    completeEntry(first.id)
-
-    const secondId = generateId()
-    insertEntry({
-      id: secondId,
-      sessionId,
-      startedAt: Date.now(),
-      endpoint: "anthropic-messages",
-      inboundRequest: {
-        model: "claude-sonnet-4-20250514",
-        messages: [{ role: "user", content: "2" }],
-        stream: true,
-      },
-    })
-    completeEntry(secondId)
-
-    const session = getSession(sessionId)
-    expect(session!.requestCount).toBe(2)
-  })
-
   test("stores entries without a session when none is provided", () => {
     const entry: HistoryEntry = {
       id: generateId(),
@@ -256,7 +209,6 @@ describe("insertEntry", () => {
 
     const stored = getEntry(entry.id)
     expect(stored?.sessionId).toBeUndefined()
-    expect(getSessions().sessions.length).toBe(0)
   })
 })
 
@@ -349,28 +301,6 @@ describe("updateEntry (response)", () => {
       },
     })
     // Should not throw
-  })
-
-  test("updates session token stats", () => {
-    const entry = insertHistoryEntry("anthropic-messages", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "hello" }],
-    })
-
-    updateEntry(entry.id, {
-      state: "completed",
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 100, output_tokens: 50 },
-        content: null,
-      },
-    })
-    finalizeEntry(entry.id)
-
-    const session = getSession(entry.sessionId!)
-    expect(session!.totalInputTokens).toBe(100)
-    expect(session!.totalOutputTokens).toBe(50)
   })
 })
 
@@ -801,55 +731,6 @@ describe("updateEntry stores sseEvents", () => {
   })
 })
 
-// ─── Session.endpoints tracking ───
-
-describe("Session.endpoints tracking", () => {
-  test("new session records initial endpoint on entry completion", () => {
-    const entry = insertHistoryEntry("anthropic-messages", {
-      model: "test",
-      messages: [{ role: "user", content: "hi" }],
-    })
-    completeEntry(entry.id)
-
-    const session = getSession(entry.sessionId!) as Session
-    expect(session.endpoints).toContain("anthropic-messages")
-  })
-
-  test("same endpoint is not duplicated across completions", () => {
-    const sessionId = "session-1"
-    for (let i = 0; i < 3; i++) {
-      const id = generateId()
-      insertEntry({
-        id,
-        sessionId,
-        startedAt: Date.now() + i,
-        endpoint: "anthropic-messages",
-        inboundRequest: { model: "test", messages: [{ role: "user", content: `m${i}` }], stream: true },
-      })
-      completeEntry(id)
-    }
-
-    const session = getSession(sessionId) as Session
-    expect(session.endpoints).toEqual(["anthropic-messages"])
-  })
-
-  test("session tracks the endpoint of its entries", () => {
-    const sessionId = "session-multi"
-    const id = generateId()
-    insertEntry({
-      id,
-      sessionId,
-      startedAt: Date.now(),
-      endpoint: "openai-chat-completions",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "hi" }], stream: true },
-    })
-    completeEntry(id)
-
-    const session = getSession(sessionId) as Session
-    expect(session.endpoints).toContain("openai-chat-completions")
-  })
-})
-
 // ─── getSessionEntries pagination ───
 
 describe("getSessionEntries pagination", () => {
@@ -915,7 +796,7 @@ describe("getSessionEntries pagination", () => {
 // ─── clearHistory ───
 
 describe("clearHistory", () => {
-  test("removes all entries and sessions", () => {
+  test("removes all entries", () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
@@ -923,12 +804,10 @@ describe("clearHistory", () => {
     completeEntry(entry.id)
 
     expect(totalEntryCount()).toBe(1)
-    expect(getSessions().sessions.length).toBe(1)
 
     clearHistory()
 
     expect(totalEntryCount()).toBe(0)
-    expect(getSessions().sessions.length).toBe(0)
   })
 
   test("clears in-flight entries", () => {

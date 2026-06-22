@@ -36,19 +36,6 @@ CREATE INDEX IF NOT EXISTS idx_entries_v2_endpoint   ON entries_v2(endpoint, sta
 -- CREATE INDEX on the not-yet-added pid column would fail. Both are created
 -- inside migrateEntriesColumns, after the ALTER.
 
-CREATE TABLE IF NOT EXISTS sessions (
-  id                   TEXT PRIMARY KEY,
-  start_time           INTEGER NOT NULL,
-  last_activity        INTEGER NOT NULL,
-  request_count        INTEGER NOT NULL DEFAULT 0,
-  total_input_tokens   INTEGER NOT NULL DEFAULT 0,
-  total_output_tokens  INTEGER NOT NULL DEFAULT 0,
-  models_json          TEXT,
-  endpoints_json       TEXT,
-  tools_used_json      TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity DESC);
-
 CREATE TABLE IF NOT EXISTS response_sessions (
   response_id TEXT PRIMARY KEY,
   session_id  TEXT NOT NULL

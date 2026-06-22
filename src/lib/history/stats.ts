@@ -3,7 +3,6 @@ import type { HistoryStats } from "./types"
 import { listInFlight } from "./in-flight"
 import {
   //
-  listSessions,
   queryEntries,
 } from "./sqlite/read"
 import { computeStats } from "./sqlite/stats"
@@ -64,10 +63,9 @@ export function getStats(): HistoryStats {
 
 export function exportHistory(format: "json" | "csv" = "json"): string {
   const entries = queryEntries({ limit: 1_000_000 })
-  const sessions = listSessions()
 
   if (format === "json") {
-    return JSON.stringify({ sessions, entries }, null, 2)
+    return JSON.stringify({ entries }, null, 2)
   }
 
   const headers = [

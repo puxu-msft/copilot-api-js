@@ -15,7 +15,6 @@ import type {
   HistoryEntry,
   HistoryStats,
   RequestLifecycleState,
-  Session,
 } from "@/types"
 
 import { api } from "@/api/http"
@@ -43,7 +42,6 @@ export interface ActivityFilters {
 export interface HistoryDataState {
   entries: Ref<Array<EntrySummary>>
   selectedEntry: Ref<HistoryEntry | null>
-  sessions: Ref<Array<Session>>
   stats: Ref<HistoryStats | null>
   filters: ActivityFilters
   searchQuery: ComputedRef<string>
@@ -61,7 +59,6 @@ export interface HistoryDataState {
   pageSize: number
   fetchEntries: (cursor?: string, direction?: "older" | "newer") => Promise<void>
   fetchStats: () => Promise<void>
-  fetchSessions: () => Promise<void>
   selectEntry: (id: string) => Promise<void>
   selectAdjacentEntry: (direction: "next" | "prev") => void
   clearSelection: () => void
@@ -82,7 +79,6 @@ export interface HistoryDataState {
 export function useHistoryData(showToast: (message: string, type: "success" | "error") => void): HistoryDataState {
   const entries = ref<Array<EntrySummary>>([])
   const selectedEntry = ref<HistoryEntry | null>(null)
-  const sessions = ref<Array<Session>>([])
   const stats = ref<HistoryStats | null>(null)
 
   const filters = reactive<ActivityFilters>({
@@ -168,15 +164,6 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     }
   }
 
-  async function fetchSessions(): Promise<void> {
-    try {
-      const result = await api.fetchSessions()
-      sessions.value = result.sessions
-    } catch (err) {
-      console.warn("[history] Failed to fetch sessions:", err instanceof Error ? err.message : err)
-    }
-  }
-
   async function selectEntry(id: string): Promise<void> {
     try {
       selectedEntry.value = await api.fetchEntry(id)
@@ -227,7 +214,7 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
 
   async function refresh(): Promise<void> {
     const currentId = selectedEntry.value?.id
-    await Promise.all([fetchEntries(), fetchStats(), fetchSessions()])
+    await Promise.all([fetchEntries(), fetchStats()])
     if (currentId) {
       await selectEntry(currentId)
     }
@@ -277,7 +264,6 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
   return {
     entries,
     selectedEntry,
-    sessions,
     stats,
     filters,
     searchQuery,
@@ -295,7 +281,6 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     pageSize,
     fetchEntries,
     fetchStats,
-    fetchSessions,
     selectEntry,
     selectAdjacentEntry,
     clearSelection,

@@ -25,7 +25,6 @@ export const useHistoryStore = defineStore("history", () => {
   return {
     entries: data.entries,
     selectedEntry: data.selectedEntry,
-    sessions: data.sessions,
     stats: data.stats,
     filters: data.filters,
     searchQuery: data.searchQuery,
@@ -43,7 +42,6 @@ export const useHistoryStore = defineStore("history", () => {
     selectedIndex: data.selectedIndex,
     fetchEntries: data.fetchEntries,
     fetchStats: data.fetchStats,
-    fetchSessions: data.fetchSessions,
     selectEntry: data.selectEntry,
     selectAdjacentEntry: data.selectAdjacentEntry,
     clearSelection: data.clearSelection,

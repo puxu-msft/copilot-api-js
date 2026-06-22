@@ -75,6 +75,9 @@ export function openDatabase(dbPath: string): Database {
   // orphan tables on existing DBs so they stop occupying space.
   db.exec("DROP TABLE IF EXISTS entry_lineage")
   db.exec("DROP TABLE IF EXISTS entry_produced_tool_ids")
+  // Sessions materialized aggregate table removed — operational stats are now
+  // telemetry-based; drop the orphan table on existing DBs.
+  db.exec("DROP TABLE IF EXISTS sessions")
   migrateEntriesColumns(db)
   reclaimOrphanedActiveRows(db)
   maybeVacuumOnStartup(db, dbPath)

@@ -14,16 +14,7 @@ export {
   updateEntry,
 } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
-export {
-  deleteSession,
-  getCurrentSession,
-  getSession,
-  getSessionEntries,
-  getSessionIdFromHeaders,
-  getSessions,
-  registerResponseSession,
-  resolveResponseSessionId,
-} from "./sessions"
+export { deleteSession, getCurrentSession, getSessionEntries, getSessionIdFromHeaders, registerResponseSession, resolveResponseSessionId } from "./sessions"
 export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries, setHistoryPublisher, shutdownHistory } from "./state"
 export { exportHistory, getStats } from "./stats"
 
@@ -49,8 +40,6 @@ export type {
   SanitizationInfo,
   ServerToolResultContentBlock,
   ServerToolUseContentBlock,
-  Session,
-  SessionResult,
   SseEventRecord,
   SummaryResult,
   SystemBlock,

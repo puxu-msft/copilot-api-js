@@ -81,7 +81,11 @@ export function computeStats(): HistoryStats {
     )
     .all(Date.now() - 24 * 60 * 60 * 1000) as Array<{ hour: string; count: number }>
 
-  const activeSessions = db.prepare(`SELECT COUNT(*) AS n FROM sessions`).get() as { n: number }
+  // Distinct sessions with >=1 terminal entry (derived from entries_v2 — the
+  // materialized sessions table was removed; operational stats are entries-derived).
+  const activeSessions = db.prepare(`SELECT COUNT(DISTINCT session_id) AS n FROM entries_v2 WHERE session_id IS NOT NULL AND ${NOT_ACTIVE}`).get() as {
+    n: number
+  }
 
   const modelDistribution: Record<string, number> = {}
   for (const m of perModel) modelDistribution[m.model] = m.count

@@ -5,8 +5,6 @@ import type {
   CursorResult,
   EndpointType,
   HistoryEntry,
-  Session,
-  SessionResult,
 } from "./types"
 
 import {
@@ -16,8 +14,6 @@ import {
 } from "./in-flight"
 import {
   //
-  getSessionById,
-  listSessions,
   queryEntries,
   resolveResponseSession,
 } from "./sqlite/read"
@@ -79,18 +75,6 @@ export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): 
   return normalizeSessionId(sessionId)
 }
 
-export function getSessions(): SessionResult {
-  const sessions = listSessions()
-  return {
-    sessions,
-    total: sessions.length,
-  }
-}
-
-export function getSession(id: string): Session | undefined {
-  return getSessionById(id)
-}
-
 export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
   const all = queryEntries({ sessionId, limit: 1_000_000 }).sort((a, b) => a.startedAt - b.startedAt)
@@ -110,7 +94,7 @@ export function getSessionEntries(sessionId: string, options: { cursor?: string;
 }
 
 export function deleteSession(sessionId: string): boolean {
-  const existed = getSessionById(sessionId) !== undefined
+  const existed = queryEntries({ sessionId, limit: 1 }).length > 0
   const deleted = sqliteDeleteSession(sessionId)
 
   // Also remove any in-flight entries belonging to this session

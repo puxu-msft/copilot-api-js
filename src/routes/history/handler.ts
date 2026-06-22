@@ -7,9 +7,6 @@ import {
   exportHistory,
   getEntry,
   getHistorySummaries,
-  getSession,
-  getSessionEntries,
-  getSessions,
   getStats,
   isHistoryEnabled,
   setPinned,
@@ -135,43 +132,6 @@ export function handleExport(c: Context) {
 }
 
 /** Session management endpoints */
-export function handleGetSessions(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-
-  const result = getSessions()
-  return c.json(result)
-}
-
-export function handleGetSession(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-
-  const id = c.req.param("id")
-  if (!id) {
-    return c.json({ error: "Session id is required" }, 400)
-  }
-  const session = getSession(id)
-
-  if (!session) {
-    return c.json({ error: "Session not found" }, 404)
-  }
-
-  // Include paginated entries in the session response
-  const query = c.req.query()
-  const result = getSessionEntries(id, {
-    cursor: query.cursor || undefined,
-    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
-  })
-
-  return c.json({
-    ...session,
-    ...result,
-  })
-}
-
 export function handleDeleteSession(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)

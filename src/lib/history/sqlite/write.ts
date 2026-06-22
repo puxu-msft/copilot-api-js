@@ -1,7 +1,6 @@
 import type {
   //
   HistoryEntry,
-  Session,
 } from "~/lib/history/types"
 
 import { compress } from "./compression"
@@ -49,71 +48,6 @@ INSERT OR REPLACE INTO entry_stages (entry_id, stage, attempt_index, created_at,
 VALUES (?,?,?,?,?)
 `
 
-/**
- * Insert (or upsert by id) one entry and refresh its session aggregate row.
- *
- * Concurrency / re-insert safety:
- *   The entries table uses `INSERT OR REPLACE`, so calling `insertCompletedEntry`
- *   twice with the same entry.id is benign for entries themselves (the old row
- *   is replaced). For the sessions table, however, the previous design used
- *   incremental upsert (`request_count = request_count + 1`,
- *   `total_input_tokens = total_input_tokens + excluded.total_input_tokens`),
- *   which double-counts on the second call. Because incremental aggregates
- *   are not recoverable once corrupted (`/api/status` and history dashboards
- *   surface them), this function now recomputes the per-session aggregates
- *   from the canonical entries table inside the same transaction. The cost
- *   is one extra indexed SELECT per insert; the win is unconditional
- *   correctness under any future code path that may re-insert.
- */
-const UPSERT_SESSION_SQL = `
-INSERT INTO sessions (
-  id, start_time, last_activity, request_count,
-  total_input_tokens, total_output_tokens,
-  models_json, endpoints_json, tools_used_json
-) VALUES (?,?,?,?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET
-  last_activity = excluded.last_activity,
-  request_count = excluded.request_count,
-  total_input_tokens = excluded.total_input_tokens,
-  total_output_tokens = excluded.total_output_tokens,
-  models_json = excluded.models_json,
-  endpoints_json = excluded.endpoints_json,
-  tools_used_json = excluded.tools_used_json
-`
-
-/**
- * Active (non-terminal) statuses. Eager persistence writes a head row at
- * request start (status=pending) and on each transition, so the entries table
- * now contains in-progress rows. Session/stats aggregates must EXCLUDE these —
- * otherwise request_count/token sums count requests that have not finished,
- * shifting their meaning from "completed" to "received".
- */
-const ACTIVE_STATUS_SQL = `status IN ('pending','executing','streaming')`
-
-const RECOMPUTE_SESSION_AGGREGATES_SQL = `
-SELECT
-  COUNT(*) AS request_count,
-  COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
-  COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
-  MIN(started_at) AS start_time,
-  COALESCE(MAX(ended_at), MAX(started_at)) AS last_activity
-FROM entries_v2
-WHERE session_id = ? AND NOT (${ACTIVE_STATUS_SQL})
-`
-
-/**
- * Distinct model / endpoint set used across all entries in the session.
- * `models_json` and `endpoints_json` are not numeric — they need their own
- * recompute query because GROUP_CONCAT(DISTINCT) does not coexist with the
- * scalar aggregates above in a single non-GROUP-BY SELECT in SQLite.
- */
-const RECOMPUTE_SESSION_MODELS_SQL = `
-SELECT DISTINCT model FROM entries_v2 WHERE session_id = ? AND model IS NOT NULL ORDER BY model
-`
-const RECOMPUTE_SESSION_ENDPOINTS_SQL = `
-SELECT DISTINCT endpoint FROM entries_v2 WHERE session_id = ? AND endpoint IS NOT NULL ORDER BY endpoint
-`
-
 /** Bind + run the head-row upsert for one EntryRow. */
 function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void {
   db.prepare(INSERT_ENTRY_SQL).run(
@@ -148,41 +82,6 @@ function runStageInsert(db: ReturnType<typeof getDatabase>, entryId: string, sta
   db.prepare(INSERT_STAGE_SQL).run(entryId, stage.stage, stage.attemptIndex, now, compress(stage.payload))
 }
 
-/** Recompute and upsert the session aggregate row from terminal entries only. */
-function recomputeSession(db: ReturnType<typeof getDatabase>, sessionId: string): void {
-  const agg = db.prepare(RECOMPUTE_SESSION_AGGREGATES_SQL).get(sessionId) as {
-    request_count: number
-    total_input_tokens: number
-    total_output_tokens: number
-    start_time: number
-    last_activity: number
-  } | null
-  if (!agg || agg.request_count <= 0) return
-
-  const modelRows = db.prepare(RECOMPUTE_SESSION_MODELS_SQL).all(sessionId) as Array<{ model: string | null }>
-  const endpointRows = db.prepare(RECOMPUTE_SESSION_ENDPOINTS_SQL).all(sessionId) as Array<{ endpoint: string | null }>
-  const models = modelRows.map((r) => r.model).filter((m): m is string => typeof m === "string" && m.length > 0)
-  const endpoints = endpointRows.map((r) => r.endpoint).filter((e): e is string => typeof e === "string" && e.length > 0)
-
-  // Preserve any tools_used_json the session already had — recompute only
-  // covers entries-derivable aggregates; tools_used is set out-of-band via
-  // upsertSessionMeta and must not be silently nulled on every insert.
-  const existing = db.prepare("SELECT tools_used_json FROM sessions WHERE id = ?").get(sessionId) as { tools_used_json: string | null } | undefined
-  const toolsUsedJson = existing?.tools_used_json ?? null
-
-  db.prepare(UPSERT_SESSION_SQL).run(
-    sessionId,
-    agg.start_time,
-    agg.last_activity,
-    agg.request_count,
-    agg.total_input_tokens,
-    agg.total_output_tokens,
-    JSON.stringify(models),
-    JSON.stringify(endpoints),
-    toolsUsedJson,
-  )
-}
-
 /**
  * Finalize a terminal entry: upsert the head row (terminal status), replace all
  * its stage rows, and recompute the session aggregate — atomically. Replacing
@@ -201,7 +100,6 @@ export function insertCompletedEntry(entry: HistoryEntry): void {
     const { groupRow, rest } = partitionStagesForWrite(stages)
     for (const stage of rest) runStageInsert(db, row.id, stage, now)
     if (groupRow) runStageInsert(db, row.id, groupRow, now)
-    if (row.session_id) recomputeSession(db, row.session_id)
   })
   tx()
 }
@@ -261,7 +159,6 @@ export function deleteSession(sessionId: string): number {
     const { n } = db.prepare("SELECT COUNT(*) AS n FROM entries_v2 WHERE session_id = ?").get(sessionId) as { n: number }
     deleted = n
     db.prepare("DELETE FROM entries_v2 WHERE session_id = ?").run(sessionId)
-    db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId)
   })
   tx()
   return deleted
@@ -275,7 +172,6 @@ export function clearAllEntries(): void {
     // explicit delete is belt-and-suspenders and clearer intent.
     db.prepare("DELETE FROM entry_stages").run()
     db.prepare("DELETE FROM entries_v2").run()
-    db.prepare("DELETE FROM sessions").run()
     db.prepare("DELETE FROM response_sessions").run()
   })
   tx()
@@ -283,34 +179,4 @@ export function clearAllEntries(): void {
 
 export function upsertResponseSession(responseId: string, sessionId: string): void {
   getDatabase().prepare("INSERT OR REPLACE INTO response_sessions (response_id, session_id) VALUES (?, ?)").run(responseId, sessionId)
-}
-
-export function upsertSessionMeta(session: Session): void {
-  getDatabase()
-    .prepare(
-      `INSERT INTO sessions (
-        id, start_time, last_activity, request_count,
-        total_input_tokens, total_output_tokens,
-        models_json, endpoints_json, tools_used_json
-      ) VALUES (?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET
-        last_activity = excluded.last_activity,
-        request_count = excluded.request_count,
-        total_input_tokens = excluded.total_input_tokens,
-        total_output_tokens = excluded.total_output_tokens,
-        models_json = excluded.models_json,
-        endpoints_json = excluded.endpoints_json,
-        tools_used_json = excluded.tools_used_json`,
-    )
-    .run(
-      session.id,
-      session.startTime,
-      session.lastActivity,
-      session.requestCount,
-      session.totalInputTokens,
-      session.totalOutputTokens,
-      JSON.stringify(session.models),
-      JSON.stringify(session.endpoints),
-      session.toolsUsed ? JSON.stringify(session.toolsUsed) : null,
-    )
 }

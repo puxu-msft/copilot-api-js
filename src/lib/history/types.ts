@@ -302,18 +302,6 @@ export interface HistoryEntry {
   }>
 }
 
-export interface Session {
-  id: string
-  startTime: number
-  lastActivity: number
-  requestCount: number
-  totalInputTokens: number
-  totalOutputTokens: number
-  models: Array<string>
-  endpoints: Array<EndpointType>
-  toolsUsed?: Array<string>
-}
-
 export interface HistoryState {
   enabled: boolean
 }
@@ -353,11 +341,6 @@ export interface CursorResult<T> {
   total: number
   nextCursor: string | null
   prevCursor: string | null
-}
-
-export interface SessionResult {
-  sessions: Array<Session>
-  total: number
 }
 
 export interface HistoryStats {
