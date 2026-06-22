@@ -39,6 +39,7 @@ metadata:
 
 **本会话踩到的坑：**
 - `sed` 会静默地搞乱多行模式。任何跨行的内容，用 Edit/Read。
+- **缩进敏感的 perl/sed 替换会跨"平行块"误匹配**（2026-06-22 本会话踩 **2 次**给 `state.ts` 加 config 字段）：`state.ts` 有两个**字段赋值行只差缩进**的平行块——`mutableState` init（**2-space**）和 `resetConfigManagedState`（**4-space**）。用 2-space pattern `perl -0pi -e 's/(  foo: X,\n)/$1  bar: Y,\n/'` 想给 init 块加 `bar` 时，该 pattern **也匹配 4-space 行**（4 个前导空格里末 2 个 + `foo`），于是在 reset 块插入**错位的 2-space 重复行**、且**漏掉真正的 init 块**。症状：grep 该字段出现 **6** 处（含 1 个缩进不对的错位重复）而非预期 5 处（interface / setAnthropicBehavior-union / CONFIG_MANAGED_DEFAULTS / reset / init）。**解法**：给 state.ts 这类平行块加字段**用 Edit + 唯一后续行上下文**，别用 perl/sed 缩进 pattern；非要 perl 则 `^  foo`（`^` 锚行首，精确 2 空格）+ 后跟唯一行。**对账**：加完 `grep -c "<字段>" src/lib/state.ts` 应=5，多了就是错位重复。
 - `sed -i 's/foo/bar/g' file file` 能作用于多个文件，但**不递归**。递归用：`grep -rln "foo" src | xargs sed -i 's/foo/bar/g'`。
 - 批量删除后，也要删除如今未使用的导入——TypeScript 会报错，那就是你的提示。
 - 批量编辑之间始终跑 `bun run typecheck`。别叠 5 个批量编辑再去 debug 一堵墙的类型错误。
