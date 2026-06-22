@@ -85,6 +85,14 @@ export interface ResponseData {
 export interface PartialResponseInfo {
   usage?: ResponseData["usage"]
   stop_reason?: string
+  /**
+   * Partial accumulated content to keep on the failed entry's `outboundResponse`
+   * (richest-data-flow: the truncated content is observable diagnostic data). When
+   * absent, `fail()` stores `content: null` as before. Set by the upstream-truncation
+   * path (a clean EOF without the protocol terminator) so the residual partial
+   * (e.g. a half-streamed tool_use) is not lost.
+   */
+  content?: unknown
 }
 
 // ─── Attempt ───

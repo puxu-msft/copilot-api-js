@@ -106,6 +106,13 @@ export interface AnthropicStreamAccumulator extends BaseStreamAccumulator {
   copilotAnnotations: Array<CopilotAnnotations>
   /** Error received from stream, if any */
   streamError?: { type: string; message: string }
+  /**
+   * Whether the mandatory `message_stop` terminator was seen. A complete Anthropic
+   * stream ALWAYS ends with `message_stop`; its absence on a clean-EOF `complete`
+   * outcome means the upstream truncated mid-message (see
+   * `docs/rfc/upstream-stream-truncation-detection.md`).
+   */
+  sawMessageStop: boolean
   /** Server-side tool search request count from usage.server_tool_use */
   toolSearchRequests: number
 }
@@ -123,6 +130,7 @@ export function createAnthropicStreamAccumulator(): AnthropicStreamAccumulator {
     contentBlocks: [],
     copilotAnnotations: [],
     toolSearchRequests: 0,
+    sawMessageStop: false,
   }
 }
 
@@ -154,7 +162,9 @@ export function accumulateAnthropicStreamEvent(event: StreamEvent, acc: Anthropi
       break
     }
     case "message_stop": {
-      // Nothing to do — stop_reason is provided in message_delta, no state to clear
+      // The mandatory stream terminator — record that we saw it so the handler can
+      // distinguish a complete stream from a truncated one (clean EOF, no message_stop).
+      acc.sawMessageStop = true
       break
     }
     case "ping": {

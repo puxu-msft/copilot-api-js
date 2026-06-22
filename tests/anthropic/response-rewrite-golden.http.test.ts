@@ -327,6 +327,11 @@ const S4_GOLDEN = [
   ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
   ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: INVOKE_TEXT } }),
   ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: ASK_INPUT } }),
+  // The s4 fixture ends WITHOUT message_stop, so after the recover+decode flush the proxy
+  // detects the truncated stream and appends a synthetic Anthropic `error` terminator
+  // (docs/rfc/upstream-stream-truncation-detection.md). The recover/decode flush bytes above
+  // stay byte-locked; this frame documents the truncation terminator on the forwarded stream.
+  ev("error", { type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
 ].join("")
 
 // S5: server_tool dropped → text idx1 densified to client idx0; synth tool_use (upstream idx2) densified to client idx1.

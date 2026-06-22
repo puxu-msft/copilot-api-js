@@ -624,6 +624,27 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
     consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
     env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
+  } else if (!acc.sawMessageStop) {
+    // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
+    // (GHC mid-stream cutoff — e.g. a half-streamed tool_use with invalid JSON). The
+    // driver sees a clean drain → `complete`, but the message never finished. Settle as
+    // FAIL (not a silent `[ OK ]`) — preserving the accumulated partial on the entry
+    // (richest-data-flow) — and emit a synthetic Anthropic `error` event to the client so
+    // its SDK gets a clean terminator instead of a dangling, unterminated stream. This is
+    // the complete-but-truncated branch, NOT the H3 stream-error path: the writeSynthetic
+    // is NEW here (non-sampling wire write — the error frame never enters the forwarded
+    // track). See docs/rfc/upstream-stream-truncation-detection.md.
+    const partial = buildAnthropicResponseData(acc, model)
+    consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+    env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
+      usage: partial.usage,
+      stop_reason: partial.stop_reason,
+      content: partial.content,
+    })
+    await sink.writeSynthetic?.({
+      event: "error",
+      data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
+    })
   } else {
     env.ctx.complete(buildAnthropicResponseData(acc, model))
   }
