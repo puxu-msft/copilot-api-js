@@ -16,9 +16,10 @@ export function useAppTheme(): AppThemeController {
   const theme = useTheme()
   const storedTheme = useLocalStorage(STORAGE_KEY, theme.global.name.value)
 
-  // Apply stored theme on init (if valid)
+  // Apply stored theme on init (if valid). Vuetify 4.1's theme.change returns a
+  // promise (transition); fire-and-forget on init.
   if (VALID_THEMES.has(storedTheme.value)) {
-    theme.change(storedTheme.value)
+    void theme.change(storedTheme.value)
   }
 
   // Sync Vuetify theme name → localStorage
