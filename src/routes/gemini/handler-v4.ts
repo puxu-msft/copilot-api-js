@@ -29,6 +29,7 @@ import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
+  ClientFrame,
   DriverRequestResult,
   UpstreamStream,
 } from "~/lib/pipeline/types"
@@ -306,12 +307,20 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   // UNSPECIFIED finishReason to the client (P-Gem). See docs/rfc/upstream-stream-truncation-detection.md.
   const meta = codec.getStreamMeta()
   if (meta.finishReason === "FINISH_REASON_UNSPECIFIED") {
+    // Forward any buffered partial content the translator accumulated (e.g. a tool_call whose
+    // args arrived before the truncation — Gemini uniquely buffers tool_calls to flush, unlike
+    // the delta-streaming formats), but DROP the translator's terminal frame: it carries the
+    // misleading UNSPECIFIED finishReason (the error frame below is the real terminator). The
+    // terminal is the only flushed frame with `candidates[0].finishReason`; tool_call frames
+    // carry a `functionCall` part and no finishReason. See docs/rfc/upstream-stream-truncation-detection.md.
+    for (const frame of codec.flushResponse(env)) {
+      if (!isGeminiTerminalFrame(frame)) await sink.write(frame)
+    }
     recordForwarded()
     const truncErr = new Error("Upstream stream truncated before completion (no finishReason)")
     consola.error(`[gemini:v4] Upstream truncated for ${model}: drained without a real finishReason`)
     env.ctx.fail(model, truncErr, { usage: geminiUsageFromMeta(meta) })
-    // Skip the normal flush (it would emit the misleading UNSPECIFIED terminal); emit a Gemini-shape
-    // error frame instead so the client gets a clean terminator. NOT forward-sampled (writeSynthetic).
+    // Gemini-shape error frame so the client gets a clean terminator. NOT forward-sampled (writeSynthetic).
     await sink.writeSynthetic?.({
       data: JSON.stringify({
         candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
@@ -334,6 +343,22 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     stop_reason: meta.finishReason,
     content: null,
   })
+}
+
+/**
+ * Distinguish the translator's terminal flush frame (carries `candidates[0].finishReason`) from a
+ * content/tool_call frame (carries a `functionCall`/`text` part, no finishReason). Used by the
+ * truncation path to forward buffered partial content while dropping the misleading UNSPECIFIED
+ * terminal. A non-JSON / parse-failed frame is treated as non-terminal (forwarded).
+ */
+function isGeminiTerminalFrame(frame: ClientFrame): boolean {
+  if (!frame.data) return false
+  try {
+    const parsed = JSON.parse(frame.data) as { candidates?: Array<{ finishReason?: unknown }> }
+    return parsed.candidates?.[0]?.finishReason !== undefined
+  } catch {
+    return false
+  }
 }
 
 /** Map a streaming error kind to the Gemini gRPC `status` string (matches legacy). */
