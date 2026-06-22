@@ -1,0 +1,38 @@
+{
+  "name": "copilot-api-ui",
+  "version": "0.0.0",
+  "description": "Request-history viewer UI for copilot-api (Vue 3 + Vuetify 4 + Vite).",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit --project tsconfig.json",
+    "test": "npm run test:bun && npm run test:vitest",
+    "test:bun": "bun test ./tests/",
+    "test:vitest": "vitest run"
+  },
+  "dependencies": {
+    "@mdi/font": "^7.4.47",
+    "@vueuse/core": "^14.3.0",
+    "@vueuse/integrations": "^14.3.0",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.38",
+    "vue-json-pretty": "^2.6.0",
+    "vue-router": "^5.1.0",
+    "vuetify": "^4.1.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.7",
+    "@vue/test-utils": "^2.4.11",
+    "jsdom": "^29.1.1",
+    "unplugin-auto-import": "^21.0.0",
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^7.3.3",
+    "vite-plugin-vue-devtools": "^8.1.3",
+    "vite-plugin-vuetify": "^2.1.3",
+    "vitest": "^4.1.9",
+    "vue-tsc": "^3.3.5"
+  }
+}

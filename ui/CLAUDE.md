@@ -3,12 +3,12 @@
 ## 项目上下文
 
 这是 copilot-api 内置的请求历史查看器前端。Vue 3 + Vuetify 4 + Vite 7。
-独立于后端 tsconfig——后端通过 `exclude` 排除本目录，本目录有自己的 [tsconfig.json](tsconfig.json)。
+本目录是**独立的 bun workspace 成员**：有自己的 [package.json](package.json)（FE 依赖与脚本）与 [tsconfig.json](tsconfig.json)（后端 tsconfig 经 `exclude` 排除本目录）。根 `package.json` 声明 `workspaces:["ui"]`，**单一根 `bun.lock`**（hoist）。
 后端 `src/routes/ui/route.ts` 默认在 `/ui` 提供 `ui/dist/` 静态文件，可使用 `--external-ui-url` 改为其他 URL（如 vite dev server）。
 
 ## 构建与工具链
 
-- **依赖管理用 bun**（lockfile 为 `bun.lock`）。安装依赖用 `bun add`/`bun install`，不要用 `npm install`（npm 会因 peer deps 冲突失败）。
+- **依赖管理用 bun**（lockfile 为根 `bun.lock`）。FE 依赖装到本 workspace：在 `ui/` 下 `bun add <pkg>`，或根目录 `bun add --filter copilot-api-ui <pkg>`；不要用 `npm install`（npm 会因 peer deps 冲突失败）。仓库级 dev 工具（typescript/eslint/tsdown/playwright/lint-staged）在根 `package.json`，经 hoist 对本 workspace 可见。
 - 路径别名：`@/*` → `<root>/ui/src/*`，`~backend/*` → `<root>/src/*`（跨项目类型导入）。
 - Base URL \(`base`\) 开发时为 `/`，生产构建为 `/ui/`（后端静态文件挂载路径）。
 - dev proxy 转发 API 到后端（默认 `localhost:4141`，可通过 `COPILOT_API_HOST`/`COPILOT_API_PORT` 覆盖）。
@@ -19,13 +19,14 @@ Vite 配置的自动导入（自动注册组件）：
 - `unplugin-auto-import` 自动导入 Vue、VueUse、Pinia、vue-router API，生成 [auto-imports.d.ts](types/auto-imports.d.ts)。
 - `unplugin-vue-components` 自动导入 `src/components/` 下的项目组件，生成 [components.d.ts`](types/components.d.ts)。
 
-以下命令由根目录 [package.json](../package.json) 管理：
+脚本定义在本目录 [package.json](package.json)；根目录 [package.json](../package.json) 提供同名委派入口（`bun run --filter copilot-api-ui …`），故两处均可运行：
 
 ```bash
-bun run build:ui      # 构建到 ui/dist/
-bun run dev:ui        # 开发模式，Vite 代理 API 请求到后端
-bun run typecheck:ui  # vue-tsc 类型检查
-bun run test:ui       # 先跑 bun test，再跑 vitest
+# 在 ui/ 下直接跑(本 workspace 脚本)         # 或在根目录跑(委派)
+bun run build      # 构建到 ui/dist/          bun run build:ui
+bun run dev        # 开发模式，Vite 代理后端    bun run dev:ui
+bun run typecheck  # vue-tsc 类型检查          bun run typecheck:ui
+bun run test       # 先跑 bun test，再跑 vitest  bun run test:ui
 ```
 
 ## 两套测试系统

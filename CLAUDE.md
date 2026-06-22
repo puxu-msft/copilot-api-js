@@ -121,7 +121,7 @@
 - 路径别名：后端 `~/*` 映射到 `src/*`，前端 `@/*` 映射到 `src/*`，前端引用后端 `~backend/*` 映射到 `../../src/*`。
 - 测试：使用 Bun 内置测试运行器。后端测试在 `tests/`，**按功能域分目录**（镜像 `src/lib/`：`anthropic/`、`openai/`、`responses/`、`models/`、`history/`、`config/`、`pipeline/`、`shutdown/`、`infra/` 等）+ **隔离后缀**命名：`*.unit.test.ts`（纯函数）、`*.it.test.ts`（起 state/history runtime）、`*.http.test.ts`（起 Hono app/server）。`e2e/`（需 token）、`e2e-ui/`（Playwright）单列。前端测试在 `ui/tests/`。新增测试：归属看被测 `~/lib/<域>/` 路径，后缀看是否起 runtime/app。详见 @docs/DESIGN.md 的"测试组织"。
 - 测试隔离（bun 单进程跑全套件，全局单例会跨文件泄漏）：用 DI / fetch-mock，**不用 `mock.module`**（它进程级无 teardown）；mutate 全局 state 的测试加 `autoRestoreState()`；带 fs I/O 的测试用注入的临时目录，**绝不写真实 `$HOME`/`~/.claude`**（曾酿事故）。跑测试用 `bun run test:backend` 等（**不是 `npm run`**——本机 Volta 无默认 Node）。
-- 前端依赖与脚本由仓库根 `package.json` 统一管理：使用 `npm run build:ui`、`npm run dev:ui`、`npm run typecheck:ui`、`npm run test:ui`。
+- 前端依赖与脚本由 `ui/package.json` 自有（bun workspace 成员，根 `package.json` 声明 `workspaces:["ui"]`）：`npm run build:ui`、`npm run dev:ui`、`npm run typecheck:ui`、`npm run test:ui` 仍是根入口（经 `bun run --filter copilot-api-ui …` 委派 ui workspace）。新增 FE 依赖装到 `ui/`（`bun add --filter copilot-api-ui <pkg>` 或在 `ui/` 下 `bun add`）；仓库级 dev 工具（typescript/eslint 及 FE eslint 插件/tsdown/playwright/lint-staged）仍在根——lint 是全树单一关注点。
 - 错误处理：使用显式错误类（参见 `src/lib/error.ts`）。避免静默失败。
 
 ### 注释规范

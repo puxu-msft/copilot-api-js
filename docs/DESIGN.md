@@ -205,13 +205,14 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 
 ```
 ui/
+├── package.json       # 前端自有依赖与脚本（private bun workspace 成员）
 ├── src/types/         # 类型定义（re-export 自 ~backend/lib/history/store）
 └── tests/             # 前端测试（bun test）
 ```
 
 路径别名：后端 `~/*` → `src/*`，前端 `@/*` → `ui/src/*`，前端引用后端 `~backend/*` → `../src/*`。
 前端类型统一从后端 re-export，不重复定义。
-前端依赖与脚本由仓库根 `package.json` 统一管理。
+前端依赖与脚本由 **`ui/package.json` 自有**（bun workspace 成员，根 `package.json` 声明 `workspaces:["ui"]`、单一根 `bun.lock` hoist）：FE 运行时 + `vite`/`vitest`/`vue-tsc` 等构建测试 devDeps 都在 ui 下，ui 拥有自己的 `build`/`dev`/`typecheck`/`test` 脚本（cwd=ui，配置经 `import.meta.dirname` 自寻）。根脚本经 `bun run --filter copilot-api-ui <script>` 委派（`build:ui`/`dev:ui`/`typecheck:ui`/`test:ui` 入口名不变）。仓库级 dev 工具（`typescript`/`eslint` 及 FE eslint 插件/`tsdown`/`playwright`/`lint-staged`）仍在根——lint 是全树单一关注点。`~backend` 跨引用不变（vite alias 解析后端纯函数源码，无需 workspace 依赖声明）。
 
 ### 测试组织（按域 + 隔离后缀两维度）
 
