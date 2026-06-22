@@ -29,7 +29,16 @@ import {
 } from "./sqlite/write"
 import { historyState } from "./state"
 
-const SESSION_HEADER_CANDIDATES = ["x-session-id", "x-conversation-id", "x-chat-session-id", "x-thread-id", "x-interaction-id"] as const
+// `x-claude-code-session-id` is what Claude Code actually sends (a stable per-conversation UUID,
+// reused across every request in the session) — it must lead the list so anthropic traffic aggregates.
+const SESSION_HEADER_CANDIDATES = [
+  "x-claude-code-session-id",
+  "x-session-id",
+  "x-conversation-id",
+  "x-chat-session-id",
+  "x-thread-id",
+  "x-interaction-id",
+] as const
 
 function normalizeSessionId(value: string | null | undefined): string | undefined {
   if (typeof value !== "string") return undefined

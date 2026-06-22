@@ -53,6 +53,16 @@ describe("history session resolution", () => {
     expect(getSessionIdFromHeaders(headers)).toBe("interaction-123")
   })
 
+  test("extracts the Claude Code session id and prefers it over generic candidates", () => {
+    // Claude Code sends `x-claude-code-session-id` (a stable per-conversation UUID).
+    const headers = new Headers({
+      "x-claude-code-session-id": "ce6fd04e-a162-4cd6-bdff-81d0b110c8fb",
+      "x-session-id": "generic-fallback",
+    })
+
+    expect(getSessionIdFromHeaders(headers)).toBe("ce6fd04e-a162-4cd6-bdff-81d0b110c8fb")
+  })
+
   test("uses previous response ids as real responses session anchors", () => {
     expect(resolveResponseSessionId("resp_root")).toBe("resp_root")
 
