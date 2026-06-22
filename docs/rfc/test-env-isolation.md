@@ -1,8 +1,8 @@
 # RFC: 测试环境隔离机制全面重写
 
-**Status:** 调研/草案 — interim floor 已落地(commit `737f9a4`),全面重写待新会话推进。
+**Status:** 设计定稿 — interim floor 已落地(commit `737f9a4`);范围=「默认隔离全重写」(§6 全 8 项,用户 2026-06-22 拍板);设计稿 §8–§10,**3 轮对抗 review 已做、结论与修订见 §11(权威,纠正了 §3/§8.3 的 pre-floor 过时框架)**;按 §11.3 的 P0–P4 实现中。
 **Date:** 2026-06-22
-**Owner:** TBD(新会话继续)
+**Owner:** 新会话推进中
 
 ---
 
@@ -109,3 +109,116 @@ history.db 30 文件清单见 subagent 审计原文(新会话用 `rg -l "bootstr
 
 已落地的 interim(commit 737f9a4,勿回退):tests/helpers/sandbox-paths.ts + bunfig.toml [test].preload + tests/infra/sandbox-paths.unit.test.ts。
 ```
+
+---
+
+## 8. 设计稿(范围=默认隔离全重写,§6 全 8 项)
+
+### 8.1 核心理念:隔离从「opt-in 记得沙箱」变为「默认构造即隔离」
+
+现状是**三层 opt-in 拼凑** + 一层全局 floor 兜底(§2、§4):测试各自记得调 `autoRestoreState`/`autoRestoreFetch`/`autoTestRuntime`/逐测试 `PATHS.X=mkdtemp`,漏一个就泄漏;floor(preload 重定向 `XDG_DATA_HOME`)是事后兜底,把 fs 危害降为零,但**不改变「测试默认不隔离」这一根本结构**。
+重写目标:让 `.it`/`.http` 测试**默认**拿到「临时 fs 路径 + `:memory:` history + 干净的全部 module-global 单例 + 受控网络」,使「忘了沙箱就擦真实状态/泄漏到下个测试」从构造上不可能,而非靠记性 + floor。floor 保留为最后地板(防御纵深,零成本)。
+
+### 8.2 中枢:统一 fixture `useIsolatedRuntime`
+
+新增 `tests/helpers/isolated-fixture.ts`,导出单一入口 `useIsolatedRuntime(opts?)`,在 describe 顶部调一次,注册 `beforeAll`/`beforeEach`/`afterEach`,把现有 primitive 组合成「默认全隔离」:
+
+- **runtime**:`bootstrapTestRuntime()`(改走 `:memory:`,见 8.4)+ `resetTestRuntime()` afterEach。
+- **state**:`snapshotStateForTests` beforeEach / `restoreStateForTests` afterEach(吸收 `autoRestoreState`)。
+- **network**:afterEach `restoreFetch()`;默认安装一个「未 mock 的上游调用即 throw」的 guard fetch(可 opt-out),让忘记 mock 网络的测试**响亮失败**而非真打网络(呼应 feedback_tests_never_touch_real_env)。
+- **module-global 单例全 reset**(afterEach,这是「默认隔离」相对 floor 的真正增量——floor 只管 fs,管不了进程内跨测试 map 泄漏):
+  `resetAnthropicFeatureNegotiationForTesting`(6 maps)、`resetAllLimitsForTesting`(auto-truncate)、`_resetRequestTelemetryForTests`、`resetModelsEtagForTests`、`resetUpstreamWsManagerForTests`、`resetProcessIdentityForTests`、`_resetConfigValidationWarnTrackingForTests`、`resetBundledConfigCacheForTests`、`resetAdaptiveRateLimiter`(已在 resetTestRuntime 内)、bus/context(已在 resetTestRuntime 内)。
+  注册中心化为一张 `RESETTERS: Array<() => void>` 表,afterEach 顺序调用;新增 module-global 单例时**加一行**即全测试覆盖。
+
+`opts` 字段(全部有安全默认,留 opt-out/opt-in 缝):
+- `network?: "guard" | "passthrough" | "off"`(默认 `"guard"`)
+- `history?: ":memory:" | "tempfile" | "off"`(默认 `":memory:"`;需真实磁盘特性的少数测试用 `"tempfile"` 拿注入临时文件)
+- `wsSink?` / `consoleSink?`(默认不挂,沿用 bootstrap 现状)
+
+### 8.3 补齐缺失的注入 seam(§6.3)+ 修「reset 写盘」设计气味(§6.4)
+
+持久化路径应成为一等可注入依赖,而非只能靠 floor 重定向 `PATHS`:
+
+- **`auto-truncate/engine.ts`**:当前**完全无 seam**(直写 `PATHS.LEARNED_LIMITS`)。加 `setLearnedLimitsPathForTests(path | undefined)`,内部读模块变量 `learnedLimitsPath ?? PATHS.LEARNED_LIMITS`。
+- **`request-telemetry.ts`**:已有 `_setRequestTelemetryFilePathForTests`,但 `_resetRequestTelemetryForTests` 把 `telemetryFilePath` **还原成真实 `PATHS.REQUEST_TELEMETRY`**(L532)——这是气味,reset 反而解除沙箱。改为 reset **不动 path**(只清内存计数),path 由测试显式设/清。
+- **`feature-negotiation.ts`**:`resetAnthropicFeatureNegotiationForTesting` 当前 `await persistFeatureNegotiation()` **落盘**(根因 bug 来源)。改为**只 cancel 防抖 timer + clear 6 maps,绝不落盘**——reset 是测试构造,不该产生持久化副作用。审 `persistTimer`/`schedulePersist` 的 drain 语义,确保 cancel 后无悬挂写。
+
+这三处改完,「在 afterEach reset 全部 module-global」就**不再有任何写真实盘的路径**,floor 退化为纯防御纵深。
+
+### 8.4 `bootstrapTestRuntime` 默认 `:memory:`(§6.2)
+
+证据(§研究):`openDatabase(":memory:")` 显式支持(connection.ts:54 从不复用 memory 连接 / :108 跳过 VACUUM / 已有 `openInMemoryDatabase`);需真实磁盘特性的测试(`vacuum.it`/`search-backfill.it`/`incremental-recovery.it`)**自管 `mkdtemp` 路径、不经 bootstrap**,不受影响。
+改 `bootstrapTestRuntime`/`resetTestRuntime` 的 `initHistory(true,100)` 前置 `setStateForTests({historyDbPath: ":memory:"})`(或经 fixture opts)。顺带修 test-bootstrap.ts:39 那条**撒谎注释**(写着 in-memory 实际开真实 db)。
+
+### 8.5 module-global map 的 per-test 隔离:reset 而非 DI(§6.6)
+
+评估结论:**默认 reset(8.2 的 RESETTERS)足够,不做 DI 改造**。
+理由(architecture-health-first + YAGNI):full DI(把 feature-negotiation 6 maps 改成可注入实例)会触及每个 prepare step/strategy 消费点,是巨大表面;而一旦 8.3 让 reset 不再落盘、8.2 让 fixture **默认**在每个 .it/.http 的 afterEach 无条件 reset,跨测试 in-memory 泄漏就已从构造上根除(不再依赖「测试记得 reset」)。DI 只在「reset 证明不充分」(如异步 persist race 跨测试可见)时才上;本设计交对抗 review 专门证伪这一点(见 §10 Q3)。
+
+### 8.6 端到端守卫(§6.7)——形态修正
+
+**陷阱**:操作者服务器**常驻运行**、持续写真实 `~/.local/share/copilot-api/*`(history.db-wal/telemetry/log 秒级更新)。所以「跑完套件断言真实目录 mtime 未变」会被**生产服务器活动**污染成 false-positive,不可靠(本会话实测确认:这些文件 mtime 反映的是 live server,非测试)。
+正确形态:守卫**主动行使每个 writer**,断言落点在 sandbox 而非真实 APP_DIR——`persistFeatureNegotiation()`/telemetry flush/learned-limits save/`openDatabase` 各跑一次,读回路径前缀含 `SANDBOX_MARKER`。这是确定性的、不受 live server 干扰。`sandbox-paths.unit`(静态断言 PATHS 解析)+ 新 `real-state-guard`(动态断言 writer 落点)双守卫。
+
+### 8.7 文档(§6.8)
+
+把隔离纪律写进 `docs/coding-conventions.md`(测试组织小节)+ CLAUDE.md 代码风格的测试隔离条:新增 .it/.http **默认调 `useIsolatedRuntime()`**;需真实磁盘/网络/特殊路径的显式经 opts 或注入 seam opt-in;新增 module-global 单例**必须**在 RESETTERS 表加一行 + 提供 `reset*ForTests`。
+
+---
+
+## 9. Phase 计划 + commit invariants
+
+每个中间 commit 都不让套件半坏(`bun run test:backend` + `typecheck` 绿);细粒度暂存、一阶段一 commit。
+
+- **P0 — src seam + 去副作用**(8.3+8.4 的 src 侧):加 `setLearnedLimitsPathForTests`;telemetry reset 不再 re-point;negotiation reset 不再落盘;bootstrap 走 `:memory:` + 修撒谎注释。
+  *Invariant*:纯增量/行为保持(生产路径不变),全套件绿。这步本身已消除「reset 写盘」根因(即便后续 phase 未做,真实状态也已不被 reset 擦)。
+- **P1 — 统一 fixture**(8.2):新增 `isolated-fixture.ts` + RESETTERS 表;**不迁移任何测试**。
+  *Invariant*:additive,fixture 自带单测验证(开/关 network guard、reset 覆盖全表),全套件绿。
+- **P2 — 分域迁移 .it/.http**(按 `tests/<域>/` 分批,每域一 commit):用 `useIsolatedRuntime()` 替换逐文件 `autoTestRuntime`+`autoRestoreState`+`autoRestoreFetch`+逐测试 negotiation reset 样板;保留各测试真正需要的 opts。
+  *Invariant*:每批迁完该域绿;未迁的域仍走旧 primitive(新旧并存无害,旧 primitive 不删)。
+- **P3 — 端到端守卫**(8.6):新增 `tests/infra/real-state-guard.unit.test.ts`(writer 落点断言)。
+  *Invariant*:守卫绿且能在「故意解除沙箱」时红(自证非假阴性,呼应 feedback-pass-null-clean-not-self-validating)。
+- **P4 — 收尾**:删除被 fixture 取代的死 primitive(若全消费者已迁;否则保留并文档化);回填 `docs/coding-conventions.md`+CLAUDE.md;更新本 RFC 状态→落地;维护 memory。
+  *Invariant*:无悬挂死导出;文档与代码一致。
+
+---
+
+## 10. 交对抗 review 的 open questions(裁判轴=长远正确+完整,非 ROI)
+
+- **Q1**:8.2 的「network guard 默认 throw on unmocked upstream」会不会误伤合法的本地/passthrough 测试(SearXNG 明文、e2e)?guard 的判别边界(upstreamFetch vs globalThis.fetch vs 真实外呼)是否精确?
+- **Q2**:8.3 让 `feature-negotiation` reset 不落盘——`persistTimer` 防抖窗口内若已 schedule,cancel 是否彻底?有没有「reset 后 timer 仍 fire 一次落盘」的残窗?drain/serialize 语义需逐行核。
+- **Q3**:8.5 的「reset 足够、不做 DI」——能否构造一个跨测试 in-memory 泄漏,是 afterEach reset **抓不住**的(如某 map 在 reset 表之外、或异步写在 reset 后落地)?若能,则 DI 不是 YAGNI 而是必需。
+- **Q4**:P2 分域迁移期间「新 fixture + 旧 primitive 并存」是否真无害?有没有两者 afterEach 顺序耦合(如 fixture 先 restore state、旧 autoRestoreState 再 restore 一次旧快照)导致的交叉污染?
+- **Q5**:`:memory:` 默认是否漏掉某个**当前依赖真实 db 文件**却经 bootstrap 的测试(grep 未覆盖的间接消费)?
+- **Q6**:RESETTERS 表的**完整性**如何防漂移(新增 module-global 单例忘记登记)?是否需要一个 L1 守卫(类似 config-hot-reload 的完整性测试)枚举 src 里所有 `reset*ForTests` 导出、断言都在表内?
+
+---
+
+## 11. 对抗 review 结论与设计修订(权威 — 已亲自逐 file:line 复核每条断言)
+
+3 轮并行对抗 subagent(correctness/coverage/architecture 三视角)+ 主会话亲自复核。**最重要的结论:RFC §3 审计与 §8.3 部分写于 floor 落地之际,引用的是 floor 之前的旧行为,已过时——下面纠正,以 §11 为准。**
+
+### 11.1 已证伪 / 降级(pre-floor 过时框架)
+
+- **negotiation reset「写空快照=根因气味」是过时描述**。亲验 `feature-negotiation.ts:338-354`:当前 `resetAnthropicFeatureNegotiationForTesting` 已是 **cancel timer → drain(`await persistFeatureNegotiation()`,写的是 still-populated 非空状态)→ clear maps**,注释 L343-346 明确解释 drain 是**有意**的(排空在飞写,避免 enqueued persist 在测试开始后才落 cleared 态)。**根因 bug(空快照擦真实文件)早已被这次重构 + floor 双修**。§8.3 提议「删掉落盘」是基于过时前提——**不删这个 drain**。修订:fixture 的 per-test afterEach 不该每测试都跑这条 async drain(纯 sandbox I/O 浪费);改为**新增一条轻量同步 `clearAnthropicFeatureNegotiationForTests()`**(只 cancel timer + clear maps,不 await、不 persist)供 fixture 默认调;既有 async drain-reset 保留给「需要把 cleared 态刷盘」的显式 caller。
+- **telemetry reset「re-point 到真实路径=泄漏」也是过时框架**。`_resetRequestTelemetryForTests` 把 `telemetryFilePath` 还原成 `PATHS.REQUEST_TELEMETRY`——**floor 下 `PATHS.*` 即 sandbox,不是泄漏**。`management-routes.http.test.ts:200,216` 只调 `_reset`(从不 setPath),依赖这个 re-point,行为正确。修订:**telemetry 保持现状,不改 reset 语义**(§8.3 的 telemetry bullet 撤销)。`_setRequestTelemetryFilePathForTests` 留作显式 opt-in。
+
+### 11.2 已证实的真实问题(必须纳入实现)
+
+- **R1 — `rawModels` 跨测试泄漏(无 reset 导出的游离状态)**。亲验 `state.ts:707`:`rawModels` module-scoped、**不在 mutableState**、`setModels()` 写、`snapshot/restoreStateForTests` **碰不到**、无 reset 导出。subagent 探针实证 t1 `setModels` 残留到 t2。**修复:加 `resetRawModelsForTests()` 导出并入 RESETTERS**。教训:「枚举 `*ForTests` 导出」的 L1 守卫**抓不到无导出的游离状态**——所以完整性不能只靠枚举导出,补救是先给每个 module-global 补 reset 导出(无导出=守卫盲区)。
+- **R2 — RESETTERS 手列已漂移(漏 ≥4 个)**。除 R1,审计漏:`setUpstreamWsConnectionFactoryForTests`(注入的 WS factory 不复位→跨测试复用 mock)、`__setTerminalWriterForTests`(同理)、`resetHistoryPersistErrorStats`(persist-guard,错误计数跨测试)、config 的 `resetConfigCache`/`resetApplyState`(config 域)。**「§8.7 靠人记加一行」当场被证伪**。修复:**加 L1 完整性守卫**(枚举 src 全部 `(reset|set)*ForTest(s|ing)` 导出 + 已知无导出游离态清单,断言每个要么在 RESETTERS、要么在显式豁免清单(setter 语义如 `setBundledConfigForTests`/`_setRequestTelemetryFilePathForTests`/`setLearnedLimitsPathForTests`)),对标 `config-hot-reload.it` 完整性测试。
+- **R3 — RESETTERS 必须支持 async**。`resetAnthropicFeatureNegotiationForTesting` 是 `async`;若 fixture 用它须 `await`。修订:fixture 默认用 11.1 的同步 `clear*` 变体规避;但 RESETTERS 类型仍定为 `Array<() => void | Promise<void>>` 且 afterEach **串行 await**(future-proof,防下个 async resetter 被 fire-and-forget)。
+- **R4 — CODEX_HOME 是 floor + 守卫双盲区**。亲验 `paths.ts:20-22`:`computeCodexHome()` 读 `CODEX_HOME` env,**不读 `XDG_DATA_HOME`**→preload 的 XDG 重定向**覆盖不到 `~/.codex/config.toml`**。codex 测试存在(`setup-codex.unit`/`codex-config.unit`/`setup-claude-code.unit`)。**修复:preload 同时重定向 `CODEX_HOME` 到 sandbox**(`sandbox-paths.ts` 加一行);`sandbox-paths.unit` 守卫加断言 `CODEX_CONFIG_TOML` 在 sandbox;端到端守卫行使 codex writer。
+- **R5 — Q4 afterEach 顺序耦合(真实条件性)**。subagent 探针证实:`autoRestoreState`(call-time 快照)与新 fixture(per-test 快照)在同文件并存、且注册顺序使旧的陈旧 call-time 快照后跑胜出时,会覆盖正确基线(典型成因:`beforeAll` 设基线)。**修复:P2 迁移强制「新 fixture 取代旧 primitive,同文件不并存」**(原子替换,非叠加);并定 commit invariant。
+- **R6 — network guard seam 必须钉死 `setUpstreamFetchForTests`**。https 热路径走 `http2Fetch`(`upstream-fetch.ts:59-62`)绕过 globalThis.fetch;guard 只 hook globalThis.fetch 会漏。须复用 `mock-fetch.ts` 的 bridge seam(`setUpstreamFetchForTests`)覆盖 http2+undici 双路径。**e2e 豁免要写成契约**(e2e 不进 fixture→天然豁免;record 模式若 fixture 化须 `network:"passthrough"`),非靠侥幸。
+- **R7 — `:memory:` 的两个交互须文档化**。(a) `bootstrapTestRuntime` 的 module-level `initialized` once-flag × fixture `history` opts:per-describe 切 tempfile 会被 once-flag 吃掉(第二个 describe 的 bootstrap no-op);fixture 须绕过 once-flag 或显式 reopen。(b) `:memory:` 默认使经 bootstrap 的 .http 不再覆盖**真实 db 文件打开路径**(mkdir/WAL/`maybeVacuumOnStartup`)——这条生产路径(`state.ts:66`)迁移后**只剩 tempfile 测试(`vacuum.it`/`search-backfill.it`/`incremental-recovery.it`)覆盖**;承认这是覆盖面收缩(非纯收益),靠保留这些 tempfile 测试扛住真实路径回归。
+- **R8 — floor/fixture 的 fs 职责边界写清**。floor(preload XDG/CODEX 重定向)=**全局 fs 根重定向**,fixture=**per-test runtime/state/network/单例 reset**,fixture **不**再做通用 fs 路径 override(fs 隔离归 floor)。文档明示这条边界,避免「fixture 名为 isolated 却把 fs 全甩给 floor」名实不符的困惑——这是有意分层:floor 管 fs 地板,fixture 管进程内状态。
+- **R9 — real-state-guard 收窄**。动态 writer 守卫与已落地 `sandbox-paths.unit`(静态断言 PATHS 落沙箱)职责部分重叠;增量价值仅在「writer 是否真读了被沙箱的 PATHS」(尤其有独立 seam 的 `learned-limits`)。收窄到行使**每个有独立路径变量的 writer**(learned-limits、telemetry、negotiation、history、**COPILOT_LOG/FileSink**、**codex**),不重复 PATHS 静态守卫已覆盖的。
+
+### 11.3 修订后的 P0–P4(取代 §9)
+
+- **P0 — src seam + 游离状态补 reset**(纯增量,生产路径不变):加 `setLearnedLimitsPathForTests`(engine.ts,当前无 seam);加 `resetRawModelsForTests`(R1);加同步 `clearAnthropicFeatureNegotiationForTests`(11.1,**不动**既有 async drain-reset);bootstrap 走 `:memory:` + 修 test-bootstrap.ts 撒谎注释 + 处理 once-flag×opts(R7a)。preload 加 `CODEX_HOME` 重定向 + `sandbox-paths.unit` 加 codex 断言(R4)。*Invariant*:全套件绿,生产行为不变。
+- **P1 — 统一 fixture + L1 守卫**(8.2 修订版):`isolated-fixture.ts`(`useIsolatedRuntime`);RESETTERS=`Array<() => void | Promise<void>>` 串行 await(R3);network guard 钉 `setUpstreamFetchForTests`(R6);RESETTERS 收全(R1/R2 全部);新增 `tests/infra/resetters-complete.unit.test.ts` L1 守卫(R2)。*Invariant*:additive,fixture+守卫自测绿,不迁移任何测试。
+- **P2 — 分域迁移**(按 `tests/<域>/` 分批,每域一 commit):`useIsolatedRuntime()` **原子取代**旧 `autoTestRuntime`+`autoRestoreState`+`autoRestoreFetch`+逐测试 negotiation reset(R5:同文件不并存)。*Invariant*:每批该域绿 + 全套件绿;未迁域走旧 primitive(不删)。
+- **P3 — 端到端 writer 守卫**(R9 收窄版):`tests/infra/real-state-guard.unit.test.ts` 行使有独立路径的 writer(含 COPILOT_LOG/codex)断言落点含 SANDBOX_MARKER;**自证非假阴性**(故意解除沙箱时须红)。*Invariant*:守卫绿且可证伪。
+- **P4 — 收尾**:删被取代的死 primitive(判据=删后 typecheck+全套件绿作 oracle,非只 grep,R 防 barrel 漏网);回填 `docs/coding-conventions.md`+CLAUDE.md(R8 边界);更新本 RFC→落地;维护 memory。*Invariant*:无悬挂死导出,文档与代码一致。
