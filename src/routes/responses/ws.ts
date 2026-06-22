@@ -363,6 +363,21 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     registerResponseSession(acc.responseId, env.ctx.sessionId)
   }
 
+  // Truncation: a complete Responses stream carries a terminal response event (sets `acc.status`);
+  // an empty `acc.status` after the drain means the upstream truncated before any terminal. Mirrors
+  // the HTTP handler, but the WS sink has NO `writeSynthetic` — use `sendErrorAndClose` (the WS H3
+  // analog, 1011) to emit the error + close. Checked AFTER the viaFallback drain (whose synthesized
+  // `response.completed` sets `acc.status`). See docs/rfc/upstream-stream-truncation-detection.md.
+  if (acc.status === "") {
+    recordForwarded()
+    const partial = buildResponsesResponseData(acc, resolvedModel)
+    const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
+    consola.error(`[WS] Upstream truncated for ${acc.model || resolvedModel}: drained without a terminal response event`)
+    env.ctx.fail(acc.model || resolvedModel, truncErr, { usage: partial.usage, content: partial.content })
+    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr))
+    return
+  }
+
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, resolvedModel))
 

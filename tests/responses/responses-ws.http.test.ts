@@ -53,12 +53,22 @@ let capturedPayload: ResponsesPayload | undefined
 let emitTrailingAfterCompleted = false
 /** When true, the mock upstream emits output_item.added(id=A) + .done(id=B) so stream-id-sync (via the driver's S5 registry) corrects .done to A. */
 let emitIdMismatch = false
+/** When true, the mock upstream emits created + a text delta then EOF — NO response.completed (truncation). */
+let emitTruncated = false
 
 const upstreamFetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
   if (typeof init?.body !== "string") {
     throw new TypeError(`expected string body in mock, got ${typeof init?.body}`)
   }
   capturedPayload = JSON.parse(init.body) as ResponsesPayload
+
+  if (emitTruncated) {
+    // created + a delta, then EOF — no terminal response event, no [DONE].
+    return createSseResponse([
+      `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: createBaseResponsesResponse(capturedPayload.model, "in_progress") })}\n\n`,
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "Hi", sequence_number: 1 })}\n\n`,
+    ])
+  }
 
   if (emitIdMismatch) {
     return createSseResponse([
@@ -223,6 +233,7 @@ describe("Responses WebSocket transport", () => {
     capturedPayload = undefined
     emitTrailingAfterCompleted = false
     emitIdMismatch = false
+    emitTruncated = false
     upstreamFetchMock.mockClear()
     setStateForTests({
       accountType: "individual",
@@ -346,6 +357,32 @@ describe("Responses WebSocket transport", () => {
     expect(result.messages.map((m) => m.type)).toEqual(["response.created", "response.output_text.delta", "response.completed"])
     expect(JSON.stringify(result.messages)).not.toContain("TRAILING")
     expect(result.code).toBe(1000)
+  })
+
+  test("truncated upstream (no response.completed) → error frame + 1011 close, history FAILED", async () => {
+    setModels({
+      object: "list",
+      data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] })],
+    })
+    emitTruncated = true
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "hi" } }))
+
+    const result = await closePromise
+
+    // A clean terminator: an error frame + the WS H3 close code (1011), not a silent 1000.
+    const errorFrame = result.messages.find((m) => m.type === "error") as { error?: { message?: string } } | undefined
+    expect(errorFrame).toBeDefined()
+    expect(String(errorFrame?.error?.message)).toContain("truncated")
+    expect(result.code).toBe(1011)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    expect(String(entry?.outboundResponse?.error)).toContain("truncated")
   })
 
   test("keeps socket open after response.completed when clientWebsocketKeepOpen is true", async () => {
