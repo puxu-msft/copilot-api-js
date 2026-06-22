@@ -1,0 +1,26 @@
+[mock 0.009s 2026-06-22T21:15:05.176Z] listening on http://localhost:8797  (MOCK_MODE=silent:360)
+[mock 1.660s 2026-06-22T21:15:06.827Z] HEAD / mode=silent:360 ua=Bun/1.4.0
+[mock 2.711s 2026-06-22T21:15:07.878Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.711s 2026-06-22T21:15:07.878Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 62.711s 2026-06-22T21:16:07.881Z] <- req.signal abort event
+[mock 62.764s 2026-06-22T21:16:07.934Z] <- client ABORTED during silence at +60.05s
+[mock 63.317s 2026-06-22T21:16:08.487Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 63.318s 2026-06-22T21:16:08.488Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 123.316s 2026-06-22T21:17:08.488Z] <- req.signal abort event
+[mock 123.515s 2026-06-22T21:17:08.686Z] <- client ABORTED during silence at +60.20s
+[mock 124.394s 2026-06-22T21:17:09.566Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 124.394s 2026-06-22T21:17:09.566Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 184.392s 2026-06-22T21:18:09.566Z] <- req.signal abort event
+[mock 184.562s 2026-06-22T21:18:09.736Z] <- client ABORTED during silence at +60.17s
+[mock 186.618s 2026-06-22T21:18:11.791Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 186.618s 2026-06-22T21:18:11.792Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 246.616s 2026-06-22T21:19:11.792Z] <- req.signal abort event
+[mock 246.825s 2026-06-22T21:19:12.000Z] <- client ABORTED during silence at +60.21s
+[mock 251.171s 2026-06-22T21:19:16.347Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 251.172s 2026-06-22T21:19:16.347Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 311.170s 2026-06-22T21:20:16.343Z] <- req.signal abort event
+[mock 311.347s 2026-06-22T21:20:16.520Z] <- client ABORTED during silence at +60.17s
+[mock 321.167s 2026-06-22T21:20:26.340Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 321.167s 2026-06-22T21:20:26.340Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 381.160s 2026-06-22T21:21:26.341Z] <- req.signal abort event
+[mock 381.308s 2026-06-22T21:21:26.489Z] <- client ABORTED during silence at +60.14s

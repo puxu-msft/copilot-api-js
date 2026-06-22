@@ -1,0 +1,178 @@
+===== Q2 part(a)+CC-layer run  2026-06-22T21:07:43+00:00 =====
+----- E1 mode=sse-error:429 -----
+[E1] mock pid=3426676 mode=sse-error:429 port=8791  2026-06-22T21:07:44+00:00
+[E1] claude exited rc=1 wall=1.733111662s
+[E1] --- mock log ---
+[mock 0.009s 2026-06-22T21:07:43.945Z] listening on http://localhost:8791  (MOCK_MODE=sse-error:429)
+[mock 1.581s 2026-06-22T21:07:45.517Z] HEAD / mode=sse-error:429 ua=Bun/1.4.0
+[mock 2.537s 2026-06-22T21:07:46.473Z] POST /v1/messages mode=sse-error:429 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.537s 2026-06-22T21:07:46.473Z] -> 200 + SSE error frame FIRST (rich; type=rate_limit_error)
+[E1] --- cli log (head) ---
+{"type":"result","subtype":"success","is_error":true,"api_error_status":null,"duration_ms":478,"duration_api_ms":0,"num_turns":1,"result":"API Error: Number of requests has exceeded your rate limit","stop_reason":"stop_sequence","session_id":"a2b141e8-ff69-4504-9096-a46264dcec09","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{},"permission_denials":[],"terminal_reason":"completed","fast_mode_state":"off","uuid":"48c008d8-66c8-4ee9-9adf-ea5376bc18fa"}
+
+[E1] done
+[E1] mock POST attempts=1
+[E1] CC result: "subtype":"success" "is_error":true "api_error_status":null "result":"API Error: Number of requests has exceeded your rate limit" 
+----- E2 mode=http-error:429:1 -----
+[E2] mock pid=3426858 mode=http-error:429:1 port=8792  2026-06-22T21:07:48+00:00
+[E2] claude exited rc=124 wall=40.180206040s
+[E2] --- mock log ---
+[mock 0.009s 2026-06-22T21:07:47.718Z] listening on http://localhost:8792  (MOCK_MODE=http-error:429:1)
+[mock 1.554s 2026-06-22T21:07:49.263Z] HEAD / mode=http-error:429:1 ua=Bun/1.4.0
+[mock 2.537s 2026-06-22T21:07:50.246Z] POST /v1/messages mode=http-error:429:1 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.537s 2026-06-22T21:07:50.246Z] -> HTTP 429 (real-anthropic shape; retry-after=1)
+[mock 3.551s 2026-06-22T21:07:51.260Z] POST /v1/messages mode=http-error:429:1 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 3.551s 2026-06-22T21:07:51.260Z] -> HTTP 429 (real-anthropic shape; retry-after=1)
+[mock 4.781s 2026-06-22T21:07:52.490Z] POST /v1/messages mode=http-error:429:1 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 4.781s 2026-06-22T21:07:52.490Z] -> HTTP 429 (real-anthropic shape; retry-after=1)
+[mock 6.791s 2026-06-22T21:07:54.500Z] POST /v1/messages mode=http-error:429:1 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 6.791s 2026-06-22T21:07:54.500Z] -> HTTP 429 (real-anthropic shape; retry-after=1)
+[mock 11.540s 2026-06-22T21:07:59.249Z] POST /v1/messages mode=http-error:429:1 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 11.540s 2026-06-22T21:07:59.249Z] -> HTTP 429 (real-anthropic shape; retry-after=1)
+[mock 20.053s 2026-06-22T21:08:07.762Z] POST /v1/messages mode=http-error:429:1 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 20.053s 2026-06-22T21:08:07.762Z] -> HTTP 429 (real-anthropic shape; retry-after=1)
+[mock 37.328s 2026-06-22T21:08:25.037Z] POST /v1/messages mode=http-error:429:1 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 37.328s 2026-06-22T21:08:25.038Z] -> HTTP 429 (real-anthropic shape; retry-after=1)
+[E2] --- cli log (head) ---
+
+[E2] done
+[E2] mock POST attempts=7
+[E2] CC result: 
+----- E3 mode=commit-then-error:429:1 -----
+[E3] mock pid=3427889 mode=commit-then-error:429:1 port=8793  2026-06-22T21:08:30+00:00
+[E3] claude exited rc=1 wall=2.814863795s
+[E3] --- mock log ---
+[mock 0.009s 2026-06-22T21:08:29.956Z] listening on http://localhost:8793  (MOCK_MODE=commit-then-error:429:1)
+[mock 1.582s 2026-06-22T21:08:31.530Z] HEAD / mode=commit-then-error:429:1 ua=Bun/1.4.0
+[mock 2.622s 2026-06-22T21:08:32.566Z] POST /v1/messages mode=commit-then-error:429:1 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.623s 2026-06-22T21:08:32.567Z] -> 200 + message_start + ping, then error(429) after 1s
+[E3] --- cli log (head) ---
+{"type":"result","subtype":"success","is_error":true,"api_error_status":null,"duration_ms":1493,"duration_api_ms":0,"num_turns":1,"result":"API Error: Number of requests has exceeded your rate limit","stop_reason":"stop_sequence","session_id":"b83707b2-a11e-4dcb-b749-8adc12848f01","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{},"permission_denials":[],"terminal_reason":"completed","fast_mode_state":"off","uuid":"62639313-e979-473e-a538-adbfd6742144"}
+
+[E3] done
+[E3] mock POST attempts=1
+[E3] CC result: "subtype":"success" "is_error":true "api_error_status":null "result":"API Error: Number of requests has exceeded your rate limit" 
+----- E4 mode=sse-error:401 -----
+[E4] mock pid=3428081 mode=sse-error:401 port=8794  2026-06-22T21:08:35+00:00
+[E4] claude exited rc=1 wall=2.044860413s
+[E4] --- mock log ---
+[mock 0.008s 2026-06-22T21:08:34.809Z] listening on http://localhost:8794  (MOCK_MODE=sse-error:401)
+[mock 1.794s 2026-06-22T21:08:36.596Z] HEAD / mode=sse-error:401 ua=Bun/1.4.0
+[mock 2.858s 2026-06-22T21:08:37.660Z] POST /v1/messages mode=sse-error:401 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.859s 2026-06-22T21:08:37.660Z] -> 200 + SSE error frame FIRST (rich; type=authentication_error)
+[E4] --- cli log (head) ---
+{"type":"result","subtype":"success","is_error":true,"api_error_status":null,"duration_ms":543,"duration_api_ms":0,"num_turns":1,"result":"Not logged in · Please run /login","stop_reason":"stop_sequence","session_id":"f62a192e-d6b8-452c-984b-d3d17e137bd6","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{},"permission_denials":[],"terminal_reason":"completed","fast_mode_state":"off","uuid":"8709a070-b562-41b9-bcf9-bb3cb1ea8cfe"}
+
+[E4] done
+[E4] mock POST attempts=1
+[E4] CC result: "subtype":"success" "is_error":true "api_error_status":null "result":"Not logged in · Please run /login" 
+----- E5 mode=sse-error:400 -----
+[E5] mock pid=3428523 mode=sse-error:400 port=8795  2026-06-22T21:08:39+00:00
+[E5] claude exited rc=1 wall=1.937664781s
+[E5] --- mock log ---
+[mock 0.009s 2026-06-22T21:08:38.899Z] listening on http://localhost:8795  (MOCK_MODE=sse-error:400)
+[mock 1.584s 2026-06-22T21:08:40.474Z] HEAD / mode=sse-error:400 ua=Bun/1.4.0
+[mock 2.727s 2026-06-22T21:08:41.617Z] POST /v1/messages mode=sse-error:400 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.728s 2026-06-22T21:08:41.618Z] -> 200 + SSE error frame FIRST (rich; type=invalid_request_error)
+[E5] --- cli log (head) ---
+{"type":"result","subtype":"success","is_error":true,"api_error_status":null,"duration_ms":555,"duration_api_ms":0,"num_turns":1,"result":"API Error: messages: at least one message is required","stop_reason":"stop_sequence","session_id":"0473c415-1cd8-4b4a-9462-e34921c189e5","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{},"permission_denials":[],"terminal_reason":"completed","fast_mode_state":"off","uuid":"f7bb68dd-c348-47d3-a828-bba3366bf08a"}
+
+[E5] done
+[E5] mock POST attempts=1
+[E5] CC result: "subtype":"success" "is_error":true "api_error_status":null "result":"API Error: messages: at least one message is required" 
+----- A mode=noheaders:360 (long) -----
+[A] mock pid=3428698 mode=noheaders:360 port=8796  2026-06-22T21:08:43+00:00
+[A] claude exited rc=124 wall=380.218136003s
+[A] --- mock log ---
+[mock 0.008s 2026-06-22T21:08:42.887Z] listening on http://localhost:8796  (MOCK_MODE=noheaders:360)
+[mock 1.491s 2026-06-22T21:08:44.370Z] HEAD / mode=noheaders:360 ua=Bun/1.4.0
+[mock 2.430s 2026-06-22T21:08:45.309Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.430s 2026-06-22T21:08:45.309Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 62.436s 2026-06-22T21:09:45.316Z] <- client ABORTED while waiting for headers at +60.01s
+[mock 62.658s 2026-06-22T21:09:45.538Z] <- detected abort (no headers ever sent) at +60.23s
+[mock 63.003s 2026-06-22T21:09:45.883Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 63.003s 2026-06-22T21:09:45.883Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 123.001s 2026-06-22T21:10:45.878Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 123.155s 2026-06-22T21:10:46.033Z] <- detected abort (no headers ever sent) at +60.15s
+[mock 124.062s 2026-06-22T21:10:46.939Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 124.062s 2026-06-22T21:10:46.939Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 184.060s 2026-06-22T21:11:46.938Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 184.236s 2026-06-22T21:11:47.114Z] <- detected abort (no headers ever sent) at +60.17s
+[mock 186.322s 2026-06-22T21:11:49.199Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 186.322s 2026-06-22T21:11:49.199Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 246.320s 2026-06-22T21:12:49.202Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 246.520s 2026-06-22T21:12:49.402Z] <- detected abort (no headers ever sent) at +60.20s
+[mock 250.565s 2026-06-22T21:12:53.447Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 250.565s 2026-06-22T21:12:53.447Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 310.559s 2026-06-22T21:13:53.444Z] <- client ABORTED while waiting for headers at +59.99s
+[mock 310.736s 2026-06-22T21:13:53.621Z] <- detected abort (no headers ever sent) at +60.17s
+[mock 318.831s 2026-06-22T21:14:01.718Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 318.831s 2026-06-22T21:14:01.718Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 378.830s 2026-06-22T21:15:01.714Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 379.001s 2026-06-22T21:15:01.886Z] <- detected abort (no headers ever sent) at +60.17s
+[A] --- cli log (head) ---
+
+[A] done
+[A] disconnect: ABORTED while waiting for headers at +60.01s  survived-window: <no>
+[A] CC result: 
+----- B mode=silent:360 (long) -----
+[B] mock pid=3438186 mode=silent:360 port=8797  2026-06-22T21:15:06+00:00
+[B] claude exited rc=124 wall=380.202760474s
+[B] --- mock log ---
+[mock 0.009s 2026-06-22T21:15:05.176Z] listening on http://localhost:8797  (MOCK_MODE=silent:360)
+[mock 1.660s 2026-06-22T21:15:06.827Z] HEAD / mode=silent:360 ua=Bun/1.4.0
+[mock 2.711s 2026-06-22T21:15:07.878Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.711s 2026-06-22T21:15:07.878Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 62.711s 2026-06-22T21:16:07.881Z] <- req.signal abort event
+[mock 62.764s 2026-06-22T21:16:07.934Z] <- client ABORTED during silence at +60.05s
+[mock 63.317s 2026-06-22T21:16:08.487Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 63.318s 2026-06-22T21:16:08.488Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 123.316s 2026-06-22T21:17:08.488Z] <- req.signal abort event
+[mock 123.515s 2026-06-22T21:17:08.686Z] <- client ABORTED during silence at +60.20s
+[mock 124.394s 2026-06-22T21:17:09.566Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 124.394s 2026-06-22T21:17:09.566Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 184.392s 2026-06-22T21:18:09.566Z] <- req.signal abort event
+[mock 184.562s 2026-06-22T21:18:09.736Z] <- client ABORTED during silence at +60.17s
+[mock 186.618s 2026-06-22T21:18:11.791Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 186.618s 2026-06-22T21:18:11.792Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 246.616s 2026-06-22T21:19:11.792Z] <- req.signal abort event
+[mock 246.825s 2026-06-22T21:19:12.000Z] <- client ABORTED during silence at +60.21s
+[mock 251.171s 2026-06-22T21:19:16.347Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 251.172s 2026-06-22T21:19:16.347Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 311.170s 2026-06-22T21:20:16.343Z] <- req.signal abort event
+[mock 311.347s 2026-06-22T21:20:16.520Z] <- client ABORTED during silence at +60.17s
+[mock 321.167s 2026-06-22T21:20:26.340Z] POST /v1/messages mode=silent:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 321.167s 2026-06-22T21:20:26.340Z] -> silent hold for 360s (pre-response silence; client governs disconnect)
+[mock 381.160s 2026-06-22T21:21:26.341Z] <- req.signal abort event
+[B] --- cli log (head) ---
+
+[B] done
+[B] disconnect: ABORTED during silence at +60.05s  survived-window: <no>
+[B] CC result: 
+----- C mode=ping:30:330 (long) -----
+[C] mock pid=3449841 mode=ping:30:330 port=8798  2026-06-22T21:21:28+00:00
+[C] claude exited rc=0 wall=332.154311102s
+[C] --- mock log ---
+[mock 0.007s 2026-06-22T21:21:27.412Z] listening on http://localhost:8798  (MOCK_MODE=ping:30:330)
+[mock 1.711s 2026-06-22T21:21:29.116Z] HEAD / mode=ping:30:330 ua=Bun/1.4.0
+[mock 2.784s 2026-06-22T21:21:30.188Z] POST /v1/messages mode=ping:30:330 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.784s 2026-06-22T21:21:30.188Z] -> ping every 30s for 330s, then clean tail
+[mock 2.786s 2026-06-22T21:21:30.190Z]    ping #1 sent at +0.00s
+[mock 32.789s 2026-06-22T21:22:00.193Z]    ping #2 sent at +30.00s
+[mock 62.794s 2026-06-22T21:22:30.200Z]    ping #3 sent at +60.01s
+[mock 92.798s 2026-06-22T21:23:00.205Z]    ping #4 sent at +90.01s
+[mock 122.803s 2026-06-22T21:23:30.213Z]    ping #5 sent at +120.02s
+[mock 152.809s 2026-06-22T21:24:00.221Z]    ping #6 sent at +150.02s
+[mock 182.812s 2026-06-22T21:24:30.220Z]    ping #7 sent at +180.03s
+[mock 212.816s 2026-06-22T21:25:00.228Z]    ping #8 sent at +210.03s
+[mock 242.822s 2026-06-22T21:25:30.233Z]    ping #9 sent at +240.04s
+[mock 272.826s 2026-06-22T21:26:00.239Z]    ping #10 sent at +270.04s
+[mock 302.828s 2026-06-22T21:26:30.244Z]    ping #11 sent at +300.04s
+[mock 332.831s 2026-06-22T21:27:00.245Z] -> ping window elapsed; emitting message_start..stop tail
+[C] --- cli log (head) ---
+{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"duration_ms":330717,"duration_api_ms":330080,"ttft_ms":330579,"ttft_stream_ms":330577,"time_to_request_ms":518,"num_turns":1,"result":"done","stop_reason":"end_turn","session_id":"ee467495-cf84-42d9-a9f0-5b7e04f70c41","total_cost_usd":0.000175,"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{"claude-opus-4-8":{"inputTokens":10,"outputTokens":5,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.000175,"contextWindow":1000000,"maxOutputTokens":64000}},"permission_denials":[],"terminal_reason":"completed","fast_mode_state":"off","uuid":"149cb0c2-2849-463f-8efe-e0a1dbe9b982"}
+
+[C] done
+[C] disconnect: <none>  survived-window: <no>
+[C] CC result: "subtype":"success" "is_error":false "result":"done" 
+===== DONE  2026-06-22T21:27:01+00:00 =====

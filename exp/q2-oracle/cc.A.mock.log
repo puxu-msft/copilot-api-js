@@ -1,0 +1,26 @@
+[mock 0.008s 2026-06-22T21:08:42.887Z] listening on http://localhost:8796  (MOCK_MODE=noheaders:360)
+[mock 1.491s 2026-06-22T21:08:44.370Z] HEAD / mode=noheaders:360 ua=Bun/1.4.0
+[mock 2.430s 2026-06-22T21:08:45.309Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.430s 2026-06-22T21:08:45.309Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 62.436s 2026-06-22T21:09:45.316Z] <- client ABORTED while waiting for headers at +60.01s
+[mock 62.658s 2026-06-22T21:09:45.538Z] <- detected abort (no headers ever sent) at +60.23s
+[mock 63.003s 2026-06-22T21:09:45.883Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 63.003s 2026-06-22T21:09:45.883Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 123.001s 2026-06-22T21:10:45.878Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 123.155s 2026-06-22T21:10:46.033Z] <- detected abort (no headers ever sent) at +60.15s
+[mock 124.062s 2026-06-22T21:10:46.939Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 124.062s 2026-06-22T21:10:46.939Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 184.060s 2026-06-22T21:11:46.938Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 184.236s 2026-06-22T21:11:47.114Z] <- detected abort (no headers ever sent) at +60.17s
+[mock 186.322s 2026-06-22T21:11:49.199Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 186.322s 2026-06-22T21:11:49.199Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 246.320s 2026-06-22T21:12:49.202Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 246.520s 2026-06-22T21:12:49.402Z] <- detected abort (no headers ever sent) at +60.20s
+[mock 250.565s 2026-06-22T21:12:53.447Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 250.565s 2026-06-22T21:12:53.447Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 310.559s 2026-06-22T21:13:53.444Z] <- client ABORTED while waiting for headers at +59.99s
+[mock 310.736s 2026-06-22T21:13:53.621Z] <- detected abort (no headers ever sent) at +60.17s
+[mock 318.831s 2026-06-22T21:14:01.718Z] POST /v1/messages mode=noheaders:360 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 318.831s 2026-06-22T21:14:01.718Z] -> WITHHOLDING headers for 360s (true pre-response silence)
+[mock 378.830s 2026-06-22T21:15:01.714Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 379.001s 2026-06-22T21:15:01.886Z] <- detected abort (no headers ever sent) at +60.17s

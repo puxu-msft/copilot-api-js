@@ -1,8 +1,10 @@
 ---
 name: project-pre-response-abort-rfc
-description: pre-response abort 处理 + opus 长思考保活 RFC——①②设计就绪可实现，③(延迟-commit 保活)设计已多轮收敛但实现卡在 Q2 实测，等下次报错再做
-metadata:
+description: pre-response abort 处理 + opus 长思考保活 RFC——①②④⑤已实现+C3b-pre1已落地+P1 Q2已实测裁决 GO（CC 超时=idle 型 60s→grace<60s，错误帧 401/400 等价仅 429/5xx 发散）；③(延迟-commit 保活)Q2 阻塞解除、P2 可启动，余阻塞=L2 字段冻结+2 新 CRITICAL
+metadata: 
+  node_type: memory
   type: project
+  originSessionId: 79ff48bb-02b7-4df3-a1f9-06f727721113
 ---
 
 排查 opus-4.8 流式请求在 pre-response（上游 292s 没回响应头）被客户端断开、产生 `[FAIL] ... The operation was aborted.` + `[ERR] Unexpected non-HTTP error` 双日志，产出 RFC `docs/rfc/pre-response-abort-handling.md`（设计稿，**尚未实现任何代码**）。三个缺陷：
@@ -13,6 +15,13 @@ metadata:
 
 **状态（2026-06-22）**：①已实现并提交（commit `ee4dd34`：forwardError 分类 abort + 单测，跨全格式）。②已实现并提交（commit `d4bced4`：handler-v4.ts pre-response catch → `ctx.abort()`+499；http 测 `tests/anthropic/pre-response-abort.http.test.ts` 断言 state="aborted" 区分 ①-fallback，2 pass）。①② 均 lint/type/test 全绿、subagent 实现复审通过。CC/Responses/Gemini 的 pre-response client-abort 仍 failed+499（Q7(a) 已文档化范围决策，本次不扩面）。③（C3b 延迟-commit）经 round-A（3 视角并行）+ round-B（对抗复审）**判定收敛、无设计层 CRITICAL**，含两前置子步 C3b-pre1（抽 `mapHttpErrorToEnvelope` 纯函数，因 forwardError 分派耦合在 `c.json` 内联）、C3b-pre2（sink 加 `emitPingOnAttach`）。
 
-**③ 为何还没实现 / 触发条件**：③ 卡在 **Q2 oracle 实测**（make-or-break）——POST-COMMIT 把上游错误降级成 200+SSE error 帧，双 oracle 已证 Anthropic SDK 对流内 error 走 `.status===undefined` 裸 APIError + 零自动重试（401/400/429 还会被旧 `anthropicStreamErrorType` 拍平成 `api_error`）。须用真实 Claude Code/SDK 实测：① 它对"200 流首事件即 error 帧"的 429/401/400 分支；② Claude Code 真实请求超时类型/阈值（定 grace 默认值，~258s 是单方声称未 pin）。用户决定（2026-06-22）：**等下一次真的遇到 pre-response stall 报错再做 Q2 实测 + 实现 ③**。下次出现 `[FAIL] ... operation was aborted` 且 history `inboundResponse:null`/`sseEventsLen:0` 即触发信号——用 [[empirical-probe-via-history-api]] 从 4141 后端拉真实 entry 确认。
+**③ Q2 已实测裁决 GO（2026-06-22，[exp/q2-oracle/REPORT.md](../../exp/q2-oracle/REPORT.md)，详见 [[reference-claude-code-timeout-and-sse-error-oracle]]）**：用真实 `@anthropic-ai/sdk` 0.105.0 + 真实 `claude` CLI 2.1.185（独立 oracle，self-consistent-needs-independent-oracle）+ 受控 mock 上游（`exp/q2-oracle/mock-server.ts` 可静默/ping/HTTP-error/SSE-error/commit-then-error；CC 经 `--settings` 覆盖盖过 user settings 的 4141 base URL，prod-faithful = custom URL + `copilot-api` token 不设 `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL`）实测：
+- **(a)** CC 请求超时 = **idle 型、≈ 60s、自动重试**（源码 `db()` 在 body-idle watchdog 激活时 `timeout:!1` 关 SDK 600s 总超时 + 行为 ping@30s 存活 330s/ping@45s 存活 225s 双证；8 abort 样本全 60.0–60.2s，first-party 与 prod-faithful 一致）。incident 的 ~292s 非单次自动超时（用户中断/headless 重试风暴）。→ **grace 硬约束 `< 60s`、默认定 40s；heartbeat 须 < 60s（③ 原稿/既有 `anthropicFakeSseHeartbeat` 的 120s 太慢、失效，须改 30–40s）**。
+- **(b)** 错误帧**部分等价**：`error.type` 富帧保真（`mapHttpErrorToEnvelope` 已落地 `3e4b3cd`）→ 各类错误正确显示（401 触发 CC "请 /login"）；**401/400/不可重试类完全等价**（不重试本就正确）；**仅 429 及 5xx 可重试类真发散**（CC 对 HTTP-429 重试 ≥7×、对 200+SSE-error-429 一次即弃）。E3 证流式 commit 后即便真错误 CC 也不重试（协议固有）→ 唯一真发散 = 长 stall>grace 后才到的可重试错误。
+- **裁决 GO**：keepalive 机制实证可行 + 残余被延迟-commit 收窄到病态少数 + 显示保真。**P2（C3b）可启动**，余阻塞 = **并发 L2 字段冻结 + §4.2.1 的 2 新 CRITICAL（pump 自建 sink / decideRoute resolve 非 throw），非 Q2**。RFC §6 Q2 / §4.2.3 grace 默认 40s / §4.2.5 / §5 C3b 行已据实测更新。
 
 关联 [[project-v4-pipeline-rearchitecture]]（同属 v4 管线域；注意有[[git-concurrent-sessions-pathspec-commit]] 说的并发会话在做 L2 streaming，③ 的 sink/driver 改动可能与之相邻，实现前先看活的架构现状表）。
+
+**第二起 incident（2026-06-22）增补缺陷④⑤**（详见 RFC §2 + [[orphaned-promise-abort-crashes-server]]）：911s stale-reaper force-fail + 未捕获 AbortError 崩服务器。
+- **⑤（已修，commit `c824df4`）**：孤儿（无 awaiter）上游 fetch 的 abort 拒绝经 `main.ts` unhandledRejection→exit(1) 崩整服务器；修在产生点 `http2Fetch` 挂防御性 `withRejectionObserver`。
+- **④（已落地 `d6eacf0`(C4a)+`4bd6850`(C4b)+`67b6eca`(WS)）**：reaper 装牙齿——独立 `StreamReaperCancelError` 第三 provenance（**不折进 `guardSseIterable` 的 `clientSignal`**，否则误判 reaper-cancel 为客户端断开→静默断流+错记 `aborted`）；`RequestContext` 加 `lifecycleSignal`+`reapInFlight()` 真取消在飞上游 fetch。**待跟进**：Responses 上游-WS 传输未折 `reaperSignal`（opt-in、非 incident 路径，泄漏有界 1200s）；reaper-真-abort 的 0-unhandled repro（P4）。

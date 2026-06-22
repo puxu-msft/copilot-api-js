@@ -12,25 +12,26 @@
 | **④ reaper 装牙齿**（真取消在飞上游，全传输 HTTP h2 + Responses-WS） | `d6eacf0`(C4a) + `4bd6850`(C4b) + `67b6eca`(WS) |
 | **C3b-pre1** `mapHttpErrorToEnvelope` 抽取 | `3e4b3cd` |
 | C3b-pre2 emitPingOnAttach | 判定冗余（③ 用既有 `sink.write`），无 commit |
+| **P1 Q2 oracle 实测** | ✅ 已裁决 **GO**（[exp/q2-oracle/REPORT.md](../../../exp/q2-oracle/REPORT.md)）—— CC 超时=idle 型≈60s（grace<60s 默认 40s，heartbeat<60s）；错误帧 401/400 等价、仅 429/5xx 真发散但被延迟-commit 收窄。**P2 阻塞解除** |
 
 ## 待跟进 Prompts
 
 | Prompt | 任务 | 前置 | 性质 |
 |---|---|---|---|
-| [P1-q2-oracle-measurement.md](./P1-q2-oracle-measurement.md) | Q2 真实客户端实测（③ 的**硬门**） | 无（需真实 Claude Code/SDK + 运行中代理） | 实测、非代码 |
-| [P2-c3b-delayed-commit.md](./P2-c3b-delayed-commit.md) | ③ 延迟-commit 实现（opus 长思考保活） | **P1（Q2 出结论）** + 解 §4.2.1 的 2 个新 CRITICAL + 并发 L2 字段冻结 | 大特性、byte-critical |
+| ~~[P1-q2-oracle-measurement.md](./P1-q2-oracle-measurement.md)~~ | Q2 真实客户端实测 | — | ✅ **已完成（GO）**，见上 |
+| [P2-c3b-delayed-commit.md](./P2-c3b-delayed-commit.md) | ③ 延迟-commit 实现（opus 长思考保活） | ~~P1~~（已 GO）+ 解 §4.2.1 的 2 个新 CRITICAL + 并发 L2 字段冻结 | 大特性、byte-critical |
 | [P3-keepalive-naming-taxonomy.md](./P3-keepalive-naming-taxonomy.md) | keepalive 配置命名一族重整 | L2 `protect_streaming_*` 字段冻结（建议与 P2 同期） | 重构 + compat 迁移 |
 | [P4-reaper-real-abort-repro.md](./P4-reaper-real-abort-repro.md) | reaper-真-abort 的 0-unhandled repro（强化 ④） | 无（④ 已落地） | 独立小测、可随时做 |
 
 ## 依赖 DAG
 
 ```
-P1 (Q2 实测) ──► P2 (③ C3b 延迟-commit) ──► [P3 keepalive 可同期]
+P1 (Q2 实测) ✅ GO ──► P2 (③ C3b 延迟-commit) ──► [P3 keepalive 可同期]
 P4 (reaper repro) ── 独立,随时可做(④ 已落地)
 P3 也独立依赖 L2 字段冻结(与 P2 解耦但建议同期,避免二次改名)
 ```
 
-**P1 是 P2 的硬门**：③ 把 POST-COMMIT 上游错误降级成 200+SSE-error 帧——双 oracle 已证对 Anthropic SDK 不等价（`.status===undefined` + 零自动重试）。grace 默认值也依赖实测客户端超时。**P1 不出结论，P2 不能落地**（不是 YAGNI 可绕，是真实外部/实测阻塞）。
+**P1 已出结论（GO）**：③ 把 POST-COMMIT 上游错误降级成 200+SSE-error 帧——实测证 **401/400/不可重试类完全等价**、**仅 429/5xx 可重试类真发散**（CC 对 HTTP-429 重试 ≥7×、对 200+SSE-error-429 一次即弃），延迟-commit 把发散收窄到"长 stall>grace 后才到的可重试错误"病态少数。grace 默认 **40s**（实测 CC idle 阈值 60s），heartbeat **< 60s**。**P2 可启动**（余阻塞为并发 L2 字段冻结 + §4.2.1 的 2 新 CRITICAL，非 Q2）。
 
 ## 通用红线（每个 prompt 都遵守，复制进实现会话或依赖项目 CLAUDE.md）
 

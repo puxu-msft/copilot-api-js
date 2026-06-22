@@ -1,0 +1,10 @@
+[mock 0.008s 2026-06-22T21:46:26.759Z] listening on http://localhost:8803  (MOCK_MODE=ping:45:200)
+[mock 1.537s 2026-06-22T21:46:28.287Z] HEAD / mode=ping:45:200 ua=Bun/1.4.0
+[mock 2.644s 2026-06-22T21:46:29.395Z] POST /v1/messages mode=ping:45:200 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.645s 2026-06-22T21:46:29.395Z] -> ping every 45s for 200s, then clean tail
+[mock 2.646s 2026-06-22T21:46:29.397Z]    ping #1 sent at +0.00s
+[mock 47.651s 2026-06-22T21:47:14.404Z]    ping #2 sent at +45.00s
+[mock 92.654s 2026-06-22T21:47:59.406Z]    ping #3 sent at +90.01s
+[mock 137.656s 2026-06-22T21:48:44.409Z]    ping #4 sent at +135.01s
+[mock 182.658s 2026-06-22T21:49:29.414Z]    ping #5 sent at +180.01s
+[mock 227.660s 2026-06-22T21:50:14.422Z] -> ping window elapsed; emitting message_start..stop tail

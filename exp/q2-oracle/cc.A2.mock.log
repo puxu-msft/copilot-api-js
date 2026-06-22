@@ -1,0 +1,38 @@
+[mock 0.009s 2026-06-22T21:28:16.565Z] listening on http://localhost:8801  (MOCK_MODE=noheaders:660)
+[mock 1.553s 2026-06-22T21:28:18.109Z] HEAD / mode=noheaders:660 ua=Bun/1.4.0
+[mock 2.572s 2026-06-22T21:28:19.128Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 2.572s 2026-06-22T21:28:19.128Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 62.571s 2026-06-22T21:29:19.132Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 62.571s 2026-06-22T21:29:19.133Z] <- detected abort (no headers ever sent) at +60.00s
+[mock 63.192s 2026-06-22T21:29:19.754Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 63.192s 2026-06-22T21:29:19.754Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 123.191s 2026-06-22T21:30:19.754Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 123.410s 2026-06-22T21:30:19.973Z] <- detected abort (no headers ever sent) at +60.22s
+[mock 124.414s 2026-06-22T21:30:20.977Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 124.414s 2026-06-22T21:30:20.977Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 184.413s 2026-06-22T21:31:20.976Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 184.622s 2026-06-22T21:31:21.185Z] <- detected abort (no headers ever sent) at +60.21s
+[mock 186.824s 2026-06-22T21:31:23.387Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 186.824s 2026-06-22T21:31:23.387Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 246.823s 2026-06-22T21:32:23.391Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 247.030s 2026-06-22T21:32:23.597Z] <- detected abort (no headers ever sent) at +60.21s
+[mock 251.224s 2026-06-22T21:32:27.791Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 251.224s 2026-06-22T21:32:27.792Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 311.221s 2026-06-22T21:33:27.793Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 311.424s 2026-06-22T21:33:27.995Z] <- detected abort (no headers ever sent) at +60.20s
+[mock 320.838s 2026-06-22T21:33:37.414Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 320.838s 2026-06-22T21:33:37.415Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 380.837s 2026-06-22T21:34:37.415Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 381.036s 2026-06-22T21:34:37.614Z] <- detected abort (no headers ever sent) at +60.20s
+[mock 400.620s 2026-06-22T21:34:57.198Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 400.620s 2026-06-22T21:34:57.199Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 460.617s 2026-06-22T21:35:57.193Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 460.859s 2026-06-22T21:35:57.435Z] <- detected abort (no headers ever sent) at +60.24s
+[mock 495.674s 2026-06-22T21:36:32.240Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 495.674s 2026-06-22T21:36:32.240Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 555.671s 2026-06-22T21:37:32.235Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 555.853s 2026-06-22T21:37:32.417Z] <- detected abort (no headers ever sent) at +60.18s
+[mock 589.853s 2026-06-22T21:38:06.419Z] POST /v1/messages mode=noheaders:660 ua=claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.175)
+[mock 589.853s 2026-06-22T21:38:06.419Z] -> WITHHOLDING headers for 660s (true pre-response silence)
+[mock 649.851s 2026-06-22T21:39:06.420Z] <- client ABORTED while waiting for headers at +60.00s
+[mock 649.968s 2026-06-22T21:39:06.537Z] <- detected abort (no headers ever sent) at +60.11s
