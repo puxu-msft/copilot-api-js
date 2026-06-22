@@ -14,7 +14,7 @@ import {
   test,
 } from "bun:test"
 
-import { retryMetaFeature } from "~/routes/messages/handler-v4"
+import { retryMetaFeature } from "~/routes/messages/retry-meta-feature"
 
 describe("retryMetaFeature", () => {
   test("beta-strip meta (strippedBetas) → beta-stripped with detail", () => {

@@ -90,6 +90,7 @@ import {
 import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { state } from "~/lib/state"
 
+import { retryMetaFeature } from "./retry-meta-feature"
 import {
   //
   anthropicStreamErrorType,
@@ -256,22 +257,15 @@ function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
     messageMapping: retryMessageMapping,
   })
 
-  // Update tracking tags. Beta retries surface which betas were stripped this
-  // attempt as a sticky feature tag; truncation is a sticky feature tag.
-  // Retry counter / per-attempt diagnostics are emitted as [RETRY-n] lines
-  // by `executeRequestPipeline` — kept out of the final outcome's tag list
-  // to avoid duplicating the same information.
   // Publish features observed on this retry attempt. Replaces the legacy
   // `tuiLogger.updateRequest({ tags: [...] })` direct call. Per-attempt
   // retry counter / diagnostics are emitted as [RETRY-n] lines by
   // `executeRequestPipeline` — kept out of feature events to avoid
-  // duplicating the same information.
-  const strippedBetas = (meta?.probedBetas ?? meta?.strippedBetas) as Array<string> | undefined
-  if (strippedBetas && strippedBetas.length > 0) {
-    reqCtx.recordFeature("beta-stripped", { betas: strippedBetas })
-  } else {
-    reqCtx.recordFeature("truncated")
-  }
+  // duplicating the same information. `retryMetaFeature` gates `truncated`
+  // on an actual truncate meta (an unconditional `else` here falsely branded
+  // every non-beta retry as truncated).
+  const retryFeature = retryMetaFeature(meta ?? {}, retryTruncateResult !== undefined)
+  if (retryFeature) reqCtx.recordFeature(retryFeature.feature, retryFeature.detail)
 }
 
 /**

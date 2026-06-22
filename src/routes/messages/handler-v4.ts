@@ -46,7 +46,6 @@ import type {
   SseEventRecord,
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
-import type { FeatureKind } from "~/lib/observability"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -102,6 +101,7 @@ import { state } from "~/lib/state"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
+import { retryMetaFeature } from "./retry-meta-feature"
 import {
   //
   anthropicStreamErrorType,
@@ -382,23 +382,6 @@ interface RecordRetryPipelineStateV4Args {
   env: RequestEnvelope
   codec: ReturnType<typeof createAnthropicCodec>
   preprocessInfo: PreprocessInfo
-}
-
-/**
- * Decide the single sticky feature tag implied by an accepted retry's `meta`
- * (or `null` for none). Pure so the gating is unit-testable in isolation —
- * the historical inline `else` unconditionally tagged `truncated`, which is
- * only correct for an auto-truncate retry. A beta-strip retry carries
- * `probedBetas`/`strippedBetas`; a truncate retry carries `truncateResult`
- * (passed in as `hasTruncateResult`); every other strategy's meta
- * (server-tool / structured-outputs / body-field / deferred-tool /
- * legacy-thinking / network / token-refresh) maps to NO feature tag.
- */
-export function retryMetaFeature(meta: Record<string, unknown>, hasTruncateResult: boolean): { feature: FeatureKind; detail?: Record<string, unknown> } | null {
-  const strippedBetas = (meta.probedBetas ?? meta.strippedBetas) as Array<string> | undefined
-  if (strippedBetas && strippedBetas.length > 0) return { feature: "beta-stripped", detail: { betas: strippedBetas } }
-  if (hasTruncateResult) return { feature: "truncated" }
-  return null
 }
 
 /**
