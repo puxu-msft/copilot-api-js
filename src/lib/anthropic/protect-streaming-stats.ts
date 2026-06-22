@@ -1,26 +1,27 @@
 /**
  * L2 buffered-retry hit-rate telemetry (RFC §10 / §8 decision data).
  *
- * A tiny in-memory aggregate counter of buffered-retry resolutions, exposed via
- * `/api/status.protect_streaming`. Supports the §8 "is mid-stream RST occasional
- * (→ keep L2) or inevitable-overbudget (→ prefer L1)" decision: the hit rate is
- * `success / (success + exhausted)`. Resets on restart (a live-observation counter,
- * not the durable 7-day usage history — per-entry detail already lives in history's
- * `attempts[]`). `recordFeature("protect-streaming-retry")` additionally tags each
- * entry for per-request querying.
+ * A tiny in-memory aggregate counter of L2 ENGAGEMENTS (NOT every buffered request) — exposed via
+ * `/api/status.protect_streaming`. The handler only records here when L2 actually did something:
+ * a `success` AFTER ≥1 retry (a real save), an `exhausted` (all retries RST), or a `retreated`
+ * (buffer cap). A clean first-try buffered commit (no RST, retries 0) is the silent happy path and
+ * is NOT counted — otherwise every 200 would inflate `success`. So `success` here means "RST hit,
+ * retry saved it", and the §8 hit rate is `success / (success + exhausted)`. Resets on restart (a
+ * live-observation counter, not the durable 7-day usage history — per-entry detail already lives in
+ * history's `attempts[]`). `recordFeature("protect-streaming-retry")` tags the same engagements.
  */
 
 /** Resolution outcome of a buffered-retry generation. */
 export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated"
 
 export interface ProtectStreamingStats {
-  /** Committed a complete generation (possibly after ≥1 retry). */
+  /** Committed a complete generation AFTER ≥1 retry — an RST that L2 transparently saved. */
   success: number
   /** All retries failed (transport-close / truncation) — surfaced as a stream error. */
   exhausted: number
   /** Buffer cap exceeded → retreated to live forwarding (lost L2 protection). */
   retreated: number
-  /** Total retries consumed across all resolutions (a save = success with retries > 0). */
+  /** Total retries consumed across all engagements. */
   totalRetries: number
 }
 

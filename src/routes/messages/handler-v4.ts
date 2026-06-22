@@ -684,8 +684,13 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
             }),
         }),
         // L2 hit-rate telemetry (RFC §10): aggregate counter (→ /api/status.protect_streaming) +
-        // a per-entry feature tag + an operator log line. `retries > 0` on success = a real save.
+        // a per-entry feature tag + an operator log line — recorded ONLY for an actual L2 engagement:
+        // a save after ≥1 retry, an exhaustion, or a buffer-cap retreat. A clean first-try commit
+        // (retries === 0, no RST) is the silent buffered happy path — tagging/counting it would put
+        // `protect-streaming-retry` on essentially every 200 and inflate the "success" hit-rate with
+        // requests L2 never actually engaged on.
         onBufferedResolve: (outcome, retries) => {
+          if (outcome === "success" && retries === 0) return
           recordProtectStreamingOutcome(outcome, retries)
           env.ctx.recordFeature("protect-streaming-retry", { outcome, retries })
           consola.debug(`[protect-stream] ${outcome} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)

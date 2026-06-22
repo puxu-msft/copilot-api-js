@@ -215,6 +215,20 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     expect(getProtectStreamingStats()).toEqual({ success: 1, exhausted: 0, retreated: 0, totalRetries: 2 })
   })
 
+  test("clean first-try buffered commit (no RST) is NOT counted or tagged as a retry", async () => {
+    rstBeforeComplete = 0 // upstream completes first try — the buffered happy path, zero retries
+    const sse = await streamRequest("l2-buf-clean")
+
+    expect(frameTypesInOrder(sse)).toContain("message_stop")
+    expect(upstreamCalls).toBe(1) // no retry
+
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-clean", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    // L2 never ENGAGED (no RST) → no telemetry, no `protect-streaming-retry` feature tag (which would
+    // otherwise appear on essentially every buffered 200 and inflate the hit-rate).
+    expect(getProtectStreamingStats()).toEqual({ success: 0, exhausted: 0, retreated: 0, totalRetries: 0 })
+  })
+
   test("acc reset regression — even 3 leading RSTs commit a single non-summed generation", async () => {
     rstBeforeComplete = 3
     const sse = await streamRequest("l2-buf-reset")
