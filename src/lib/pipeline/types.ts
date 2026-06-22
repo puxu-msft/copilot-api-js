@@ -285,6 +285,34 @@ export interface RunResponseOpts {
   onRewriteAction?: (rewriteName: string, frameIndex: number, action: FrameAction) => void
 }
 
+/**
+ * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
+ * docs/rfc/streaming-upstream-rst-buffered-retry.md). Extends {@link RunResponseOpts}
+ * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
+ * attempt) with the buffered-retry control surface.
+ */
+export interface RunBufferedOpts extends RunResponseOpts {
+  /**
+   * Reads the handler's accumulator: did THIS attempt see `message_stop`? The buffered
+   * sink commits ONLY on `drained && sawMessageStop()` — a clean drain alone is NOT
+   * enough, because Bun delivers a clean upstream RST as a normal `end` (rstCode=0,
+   * undetectable; transport/http2-client.ts:169-175). A clean drain WITHOUT message_stop
+   * is a truncation → retryable.
+   */
+  sawMessageStop: () => boolean
+  /**
+   * Reset ALL handler-side per-attempt accumulators before a retry re-exchanges
+   * (acc / local sseEvents / streamState / repetition checker). The driver re-instantiates
+   * its own S5 rewrite-chain state per `runResponse` call; this resets the handler's side.
+   */
+  onAttemptReset?: () => void
+  /**
+   * Max transport-close / truncation retries (a loop/cost guard, NOT a timeout guard —
+   * the client is kept alive by the sink heartbeat). `0` = no retry (buffer + commit only).
+   */
+  retryCap?: number
+}
+
 // ============================================================================
 // owns-the-sink writeout (Stage B — design §3.2/§3.3)
 // ============================================================================

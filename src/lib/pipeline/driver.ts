@@ -33,6 +33,7 @@ import type {
   ResponseOutcome,
   RetryAction,
   RetryStrategy,
+  RunBufferedOpts,
   RunResponseOpts,
   Transport,
   UpstreamFrame,
@@ -103,6 +104,16 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
    * handler still drives the generator); B2–B5 cut formats over and refine the outcome.
    */
   runResponseSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts?: RunResponseOpts): Promise<ResponseOutcome>
+  /**
+   * L2 — transactional buffered retry (docs/rfc/streaming-upstream-rst-buffered-retry.md).
+   * Buffers each attempt's rendered frames instead of writing them live; commits (flushes to
+   * `sink`) ONLY on a clean drain that saw `message_stop`; on a transport-close RST (or a
+   * truncation = clean drain without message_stop) re-runs the exchange for a fresh stream and
+   * re-buffers, up to `opts.retryCap`. All-or-nothing: a partially-generated response is never
+   * forwarded (the client gets ONE complete generation, or the surfaced error). Default OFF
+   * (Phase 1: no consumer — every handler still uses `runResponseSink`).
+   */
+  runResponseBufferedSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: RunBufferedOpts): Promise<ResponseOutcome>
 }
 
 export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming {
@@ -113,6 +124,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
     runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
     runResponseSink: (upstream, env, sink, opts) => runResponseSink(deps, upstream, env, sink, opts),
+    runResponseBufferedSink: (upstream, env, sink, opts) => runResponseBufferedSink(deps, upstream, env, sink, opts),
   }
 }
 
@@ -461,6 +473,94 @@ async function runResponseSink(
     // Otherwise surface the RAW error (richest-data-flow): the format handler classifies
     // it, shapes its protocol error frame, logs diagnostics, and settles ctx.fail.
     return { kind: "stream-error", error }
+  } finally {
+    sink.close?.()
+  }
+}
+
+/**
+ * L2 — transactional buffered retry (design §3, docs/rfc/streaming-upstream-rst-buffered-retry.md).
+ *
+ * Buffers each attempt's rendered frames (does NOT write them live), then commits the WHOLE
+ * buffer to `sink` ONLY when the attempt drained cleanly AND the handler's accumulator saw
+ * `message_stop`. A transport-close RST (thrown, `classifyStreamError === "other"`) or a
+ * truncation (clean drain WITHOUT message_stop — Bun delivers a clean RST as a normal `end`)
+ * discards the buffer and re-runs `runExchange` for a fresh upstream stream, up to
+ * `opts.retryCap`. All-or-nothing: the client only ever receives ONE complete generation's
+ * frames, or — on exhaustion / a non-retryable error — the surfaced `stream-error` (the handler
+ * writes its protocol error frame, as today). NEVER retries a `client-abort` (client gone) or a
+ * `shutdown` / `idle-timeout` (only transport-close).
+ *
+ * Per-attempt isolation: `runResponse` re-instantiates the S5 rewrite-chain state on each call;
+ * `opts.onAttemptReset` resets the handler's accumulators; `ctx.commitAttemptSseEvents()` snapshots
+ * each attempt's upstream-original frames onto its attempt record (D1) before the next attempt's
+ * `runResponse` resets the top-level slot via `ctx.resetSseEvents()`.
+ */
+async function runResponseBufferedSink(
+  deps: DriverDeps,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  sink: ClientSink,
+  opts: RunBufferedOpts,
+): Promise<ResponseOutcome> {
+  const cap = opts.retryCap ?? 0
+  const strategies = typeof deps.strategies === "function" ? deps.strategies(env) : deps.strategies
+  let current = upstream
+  let currentEnv = env
+  let attempt = 0
+  try {
+    for (;;) {
+      const buffer: Array<ClientFrame> = []
+      let thrown: unknown
+      let drained = false
+      try {
+        for await (const frame of runResponse(deps, current, currentEnv, opts)) {
+          if (frame.data === "[DONE]") continue
+          const toWrite = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
+          if (toWrite) buffer.push(toWrite)
+        }
+        drained = true
+      } catch (error) {
+        // Client gone → settle abort, write nothing further, never retry.
+        if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+        thrown = error
+      }
+      // D1: keep this attempt's upstream-original frames on the attempt before the next
+      // attempt's runResponse resets the top-level slot (kept even when the attempt fails).
+      currentEnv.ctx.commitAttemptSseEvents()
+
+      // COMMIT only on a clean drain that saw message_stop (drained alone is NOT enough —
+      // a clean RST drains cleanly too; gate on the accumulator's terminal flag).
+      if (drained && opts.sawMessageStop()) {
+        try {
+          for (const frame of buffer) await sink.write(frame)
+        } catch (error) {
+          // Client gone mid-flush (a `sink.write` reject) — map it like the drain path so the
+          // buffered sink ALWAYS returns a ResponseOutcome, never a raw throw (mirrors
+          // runResponseSink's catch; the buffer is discarded — the client got a partial flush).
+          if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+          return { kind: "stream-error", error }
+        }
+        return { kind: "complete", headers: current.headers }
+      }
+
+      // Failure: a transport-close throw, OR a clean drain WITHOUT message_stop (truncation).
+      // Retry ONLY a transport-close throw (`"other"`) or a truncation (no throw) — never a
+      // shutdown / idle-timeout throw.
+      const retryable = thrown ? classifyStreamError(thrown) === "other" : true
+      if (retryable && attempt < cap) {
+        attempt++
+        opts.onAttemptReset?.()
+        currentEnv.ctx.resetSseEvents()
+        const re = await runExchange(deps, currentEnv, strategies)
+        current = re.upstream
+        currentEnv = re.env
+        continue
+      }
+      // Exhausted / non-retryable → surface the error (truncation synthesizes one) for the
+      // handler to classify + write its protocol error frame (unchanged from the live path).
+      return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
+    }
   } finally {
     sink.close?.()
   }

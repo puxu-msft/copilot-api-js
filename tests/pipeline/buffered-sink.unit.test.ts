@@ -1,0 +1,238 @@
+/**
+ * L2 — runResponseBufferedSink unit tests (Phase 1, dead code until Phase 2 wires it).
+ *
+ * Drives the driver's transactional buffered-retry directly with a mock codec/transport +
+ * a REAL RequestContext (so per-attempt `sseEvents` / the attempt model are exercised) and
+ * a recording array sink. Asserts: a transport-close mid-stream RST re-exchanges and the
+ * client receives ONLY the final complete generation; commit gates on `sawMessageStop`
+ * (a clean drain WITHOUT message_stop = truncation → retry); client-abort never retries;
+ * each attempt keeps its own upstream-original sseEvents (D1).
+ *
+ * See docs/rfc/streaming-upstream-rst-buffered-retry.md §3/§4/§15.
+ */
+
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+import type {
+  //
+  ClientFrame,
+  FormatCodec,
+  PreparedRequest,
+  RunBufferedOpts,
+  Transport,
+  UpstreamFrame,
+  UpstreamStream,
+} from "~/lib/pipeline/types"
+
+import { createRequestContext } from "~/lib/context/request"
+import { makeArraySink } from "~/lib/pipeline/client-sink"
+import {
+  //
+  createPipelineDriver,
+  type DriverDeps,
+} from "~/lib/pipeline/driver"
+
+// ── frame fixtures ──────────────────────────────────────────────────────────
+
+function f(type: string, extra: Record<string, unknown> = {}): UpstreamFrame {
+  return { event: type, data: JSON.stringify({ type, ...extra }) } as UpstreamFrame
+}
+const completeFrames = (msgId: string): Array<UpstreamFrame> => [
+  f("message_start", { message: { id: msgId } }),
+  f("content_block_start", { index: 0, content_block: { type: "tool_use", name: "Write" } }),
+  f("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: '{"x":1}' } }),
+  f("content_block_stop", { index: 0 }),
+  f("message_delta", { delta: { stop_reason: "tool_use" } }),
+  f("message_stop"),
+]
+const partialFrames = (msgId: string): Array<UpstreamFrame> => [
+  f("message_start", { message: { id: msgId } }),
+  f("content_block_start", { index: 0, content_block: { type: "tool_use", name: "Write" } }),
+  f("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: '{"x":' } }),
+]
+
+async function* framesThenThrow(items: Array<UpstreamFrame>, error: Error): AsyncIterable<UpstreamFrame> {
+  for (const i of items) yield i
+  throw error
+}
+async function* framesClean(items: Array<UpstreamFrame>): AsyncIterable<UpstreamFrame> {
+  for (const i of items) yield i
+}
+function upstream(frames: AsyncIterable<UpstreamFrame>): UpstreamStream {
+  return { frames, headers: new Headers() }
+}
+
+const RST = (): Error => new Error("Stream closed with error code NGHTTP2_CANCEL")
+
+// ── mock codec / driver ──────────────────────────────────────────────────────
+
+function makeCodec(): FormatCodec {
+  return {
+    format: "anthropic",
+    parse: () => {
+      throw new Error("parse not used")
+    },
+    decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
+    translateOut: (env) => env,
+    prepareWire: () => ({ url: "u", headers: new Headers(), body: {}, stream: true }) as PreparedRequest,
+    renderResponse: (frame) => frame, // identity (Anthropic bypass-direct)
+    renderResponseNonStreaming: (u) => u,
+    formatError: () => ({ event: "error", data: "{}" }) as ClientFrame,
+    createResponseAccumulator: () => ({ model: "", inputTokens: 0, outputTokens: 0, rawContent: "" }),
+  }
+}
+
+function makeEnv(): RequestEnvelope {
+  const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+  return {
+    clientFormat: "anthropic",
+    targetEndpoint: "/v1/messages",
+    model: {},
+    stream: true,
+    body: {},
+    view: {},
+    prepareHints: {},
+    ctx,
+    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
+      return { ...this, ...patch } as unknown as RequestEnvelope
+    },
+  } as unknown as RequestEnvelope
+}
+
+/** A driver whose retry `transport.send` returns the given upstreams in sequence. */
+function makeDriver(retryUpstreams: Array<UpstreamStream>) {
+  let sendCount = 0
+  const transport: Transport = {
+    send: () => {
+      const u = retryUpstreams[sendCount] ?? retryUpstreams.at(-1)
+      sendCount++
+      return Promise.resolve(u)
+    },
+  }
+  const deps: DriverDeps = { codec: makeCodec(), transport, strategies: [], maxRetries: 3, maxLearningRetries: 32 }
+  return { driver: createPipelineDriver(deps), sendCount: () => sendCount }
+}
+
+/** sawMessageStop tracker fed by onUpstreamFrame, reset per attempt. */
+function makeStopTracker() {
+  let saw = false
+  return {
+    onUpstreamFrame: (frame: UpstreamFrame) => {
+      try {
+        if ((JSON.parse(frame.data ?? "{}") as { type?: string }).type === "message_stop") saw = true
+      } catch {
+        /* ignore */
+      }
+    },
+    onAttemptReset: () => {
+      saw = false
+    },
+    sawMessageStop: () => saw,
+  }
+}
+
+function sinkTypes(frames: Array<ClientFrame>): Array<string> {
+  return frames.map((fr) => {
+    try {
+      return (JSON.parse(fr.data ?? "{}") as { type?: string }).type ?? "?"
+    } catch {
+      return "?"
+    }
+  })
+}
+
+describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
+  test("transport-close RST → re-exchange; client receives ONLY the final complete generation", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({}) // simulate runRequest's first exchange (attempt 0)
+    const first = upstream(framesThenThrow(partialFrames("msg_partial"), RST()))
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("msg_complete")))])
+    const { sink, frames } = makeArraySink()
+    const tracker = makeStopTracker()
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, { ...tracker, retryCap: 1 } as RunBufferedOpts)
+
+    expect(outcome.kind).toBe("complete")
+    // The client gets the COMPLETE generation's frames (NO partial-attempt frames, NO [DONE]).
+    expect(sinkTypes(frames)).toEqual(["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"])
+    // The partial attempt's message_start (msg_partial) never reached the client.
+    expect(frames.some((fr) => (fr.data ?? "").includes("msg_partial"))).toBe(false)
+    expect(frames.some((fr) => (fr.data ?? "").includes("msg_complete"))).toBe(true)
+    // Exactly one re-exchange happened.
+    expect(sendCount()).toBe(1)
+    // D1: two attempts, each with its OWN upstream-original sseEvents (failed attempt kept).
+    const attempts = env.ctx.attempts
+    expect(attempts).toHaveLength(2)
+    expect(JSON.stringify(attempts[0].sseEvents)).toContain("msg_partial")
+    expect(JSON.stringify(attempts[1].sseEvents)).toContain("message_stop")
+  })
+
+  test("truncation (clean drain WITHOUT message_stop) is retryable, not a false commit", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // First attempt drains cleanly but has NO message_stop (Bun clean-RST shape).
+    const first = upstream(framesClean(partialFrames("msg_trunc")))
+    const { driver } = makeDriver([upstream(framesClean(completeFrames("msg_ok")))])
+    const { sink, frames } = makeArraySink()
+    const tracker = makeStopTracker()
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, { ...tracker, retryCap: 1 } as RunBufferedOpts)
+
+    expect(outcome.kind).toBe("complete")
+    expect(sinkTypes(frames)).toContain("message_stop")
+    expect(frames.some((fr) => (fr.data ?? "").includes("msg_trunc"))).toBe(false)
+  })
+
+  test("retries exhausted → stream-error, client got nothing committed", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const first = upstream(framesThenThrow(partialFrames("p1"), RST()))
+    // every retry also RSTs
+    const { driver } = makeDriver([upstream(framesThenThrow(partialFrames("p2"), RST())), upstream(framesThenThrow(partialFrames("p3"), RST()))])
+    const { sink, frames } = makeArraySink()
+    const tracker = makeStopTracker()
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, { ...tracker, retryCap: 1 } as RunBufferedOpts)
+
+    expect(outcome.kind).toBe("stream-error")
+    // Nothing committed to the client (buffered path never forwards a failed generation).
+    expect(frames).toHaveLength(0)
+  })
+
+  test("retryCap 0 → no retry; a transport-close surfaces immediately as stream-error", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const first = upstream(framesThenThrow(partialFrames("x"), RST()))
+    const { driver, sendCount } = makeDriver([])
+    const { sink, frames } = makeArraySink()
+    const tracker = makeStopTracker()
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, { ...tracker, retryCap: 0 } as RunBufferedOpts)
+
+    expect(outcome.kind).toBe("stream-error")
+    expect(sendCount()).toBe(0) // no re-exchange
+    expect(frames).toHaveLength(0)
+  })
+
+  test("client disconnect mid-commit-flush → stream-error (a ResponseOutcome, never a raw throw)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // A complete first attempt → commit path. The sink rejects on the 3rd flush write
+    // (client gone mid-flush). The buffered sink must MAP it to an outcome, not throw out.
+    const first = upstream(framesClean(completeFrames("msg_ok")))
+    const { driver } = makeDriver([])
+    const { sink, frames } = makeArraySink({ rejectAtFrame: 2 })
+    const tracker = makeStopTracker()
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, { ...tracker, retryCap: 1 } as RunBufferedOpts)
+
+    expect(outcome.kind).toBe("stream-error") // not a thrown rejection
+    expect(frames).toHaveLength(2) // the two writes that landed before the reject
+  })
+})

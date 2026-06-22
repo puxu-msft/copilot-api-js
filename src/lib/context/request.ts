@@ -363,6 +363,28 @@ export function createRequestContext(opts: {
       }
     },
 
+    /**
+     * L2 buffered retry / D1: snapshot the top-level upstream `_sseEvents` (set by
+     * the just-finished attempt's `runResponse`) onto the CURRENT attempt, so a
+     * failed attempt's upstream frames survive for diagnosis instead of being
+     * replaced when the next attempt's `runResponse` resets the top-level slot.
+     * Snapshot (not alias) so a later `resetSseEvents()` / re-set can't perturb it.
+     */
+    commitAttemptSseEvents() {
+      const attempt = ctx.currentAttempt
+      if (attempt) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
+    },
+
+    /**
+     * L2 buffered retry: clear the top-level upstream `_sseEvents` so the NEXT
+     * buffered attempt's `runResponse` starts fresh (the just-finished attempt's
+     * frames are already snapshotted via `commitAttemptSseEvents`). Without this,
+     * an attempt that RSTs before any frame would inherit the prior attempt's frames.
+     */
+    resetSseEvents() {
+      _sseEvents = null
+    },
+
     addQueueWaitMs(ms: number) {
       _queueWaitMs += ms
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "queueWaitMs", contextRef: ctx })

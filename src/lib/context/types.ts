@@ -113,6 +113,15 @@ export interface Attempt {
   waitMs?: number
   startTime: number
   durationMs: number
+  /**
+   * Per-attempt upstream-original SSE frames (L2 buffered retry / D1). Populated by
+   * `commitAttemptSseEvents()` from the top-level `_sseEvents` after each buffered
+   * attempt drains, so a FAILED attempt's upstream frames are kept for diagnosis
+   * ("why did attempt N RST?") instead of being replaced by the next attempt. The
+   * top-level entry `sseEvents` still mirrors the FINAL (successful) attempt. Only
+   * the buffered-retry path populates this; single-attempt live streaming leaves it unset.
+   */
+  sseEvents?: Array<SseEventRecord>
 }
 
 // ─── History Entry Data ───
@@ -311,6 +320,10 @@ export interface RequestContext {
   setAttemptTransport(transport: RequestTransport): void
   setAttemptResponse(response: ResponseData): void
   setAttemptError(error: ApiError): void
+  /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
+  commitAttemptSseEvents(): void
+  /** L2 buffered retry: clear the top-level upstream sseEvents so the next attempt starts fresh. */
+  resetSseEvents(): void
   addQueueWaitMs(ms: number): void
   transition(newState: RequestState, meta?: Record<string, unknown>): void
   complete(response: ResponseData): void
