@@ -232,3 +232,30 @@ L2 的价值**取决于 RST 是偶发还是必然**：
 - **D3 — escalation 默认**：`protect_streaming_escalate_context` 默认关时，对"必然超预算"类请求 L2 = 烧 2×150s 仍失败（负收益）。审查认同"总开关默认关 + 落地后先采命中率遥测"策略，但默认启用的前置是 `tool_use_only` 门控 + 命中率达标。确认此策略即可。
 
 > 后续轮次（big-feature-pipeline 要求 3+ 轮）应在 D1-D3 定案后再审一轮，重点核 per-attempt 重置的时序正确性与 ctx 数据模型改动。
+
+---
+
+## 15. 决策定案（D1–D3，用户 2026-06-22 拍板）
+
+### D1 — 多尝试上游原貌：采 (a)，挂 per-attempt（动 ctx 数据模型）
+
+放弃"单个 ctx `_sseEvents` 槽只留最后一次"，改为**每尝试各留上游原貌**：
+
+- **ctx/attempt 模型扩展**：`Attempt` 记录新增 `sseEvents` 字段；新增 ctx API（如 `ctx.recordAttemptSseEvents(frames)` 或让 `onUpstreamFrame` 写当前 attempt 的槽）。`onUpstreamFrame` 缓冲期采的上游帧写进**当前 attempt** 的 sseEvents，而非顶层 `_sseEvents`。
+- **顶层 `_sseEvents` 语义**：commit 时 = 成功那次 attempt 的 sseEvents（即 `inboundResponse.sseEvents` 仍是客户端最终对应的那次生成的上游原貌，向后兼容现有读取）。
+- **History 持久化**：per-attempt sseEvents 天然落 `entry_stages`（已按 `attempt_index` 分行，schema 无需大改——`STAGE.sseEvents` + attemptIndex）。失败尝试的上游帧 → `attempts[i].sseEvents` → 事后可逐次分析"为何前几次 RST"（§8 命中率/失败诊断的关键数据）。
+- **2nd review 重点**：ctx API 改动范围、`onUpstreamFrame` 写当前 attempt 的时序、读侧（history/UI）对 per-attempt sseEvents 的呈现。
+
+### D2 — retry cap N：可配置，默认放宽到 3（loop/成本闸，非超时闸）
+
+实证定性：客户端（Claude Code）258s 是 **idle 超时**（用户见过更久的成功生成）→ heartbeat 可无限保活缓冲期 → N **不受客户端超时约束**。N 的唯一作用是**给"对 GHC 必然超预算"的请求一个有限放弃点**（否则每轮再 RST → 无限循环烧 GHC 计费 + 占资源）。
+
+- `anthropic.protect_streaming_max_retries`：默认 **3**（原 §7/§9 的 `1` 作废——那是超时驱动的保守值，现约束解除）。`0` = 不重试（退回现状 live 路径）。可调更大。
+- 文档须讲清：这是 loop/成本闸，不是超时闸；调大只增加偶发 RST 的命中机会，对必然超预算的请求只是多烧时间。
+- **可选正交闸（暂缓，§12 增补 Q7）**：总时长预算 `protect_streaming_max_total_ms`（累计超 T 放弃）——比 count 更贴合时长方差，但默认只用 count 上限，T-budget 留待遥测后按需加。
+
+### D3 — escalation 默认关：确认
+
+`protect_streaming_escalate_context` 默认 `false`（重试不收紧 context_management，保请求语义）。L2 总开关 `protect_streaming_generation` 也默认 `false`；默认启用的前置是 `tool_use_only` 门控 + 命中率遥测达标（§8）。
+
+> D1-D3 已定，进 2nd 对抗审（重点：D1 的 ctx/attempt 数据模型改动 + per-attempt 重置时序 + onUpstreamFrame 写当前 attempt 的正确性），通过后进 Phase 0（golden 基线）实现。
