@@ -20,7 +20,11 @@ import consola from "consola"
 
 import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
-import type { DriverRequestResult } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  DriverRequestResult,
+} from "~/lib/pipeline/types"
 import type {
   //
   ResponsesPayload,
@@ -49,9 +53,9 @@ import {
   //
   restoreResponsesStreamFrameToolNames,
 } from "~/lib/openai/tool-name-sanitize"
+import { makeWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { buildResponsesResponseData } from "~/lib/request/recording"
-import { settleStreamingFailure } from "~/lib/request/stream-settle"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
@@ -179,16 +183,22 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
 // ============================================================================
 
 /**
- * Handle a response.create over WebSocket via the v4 driver (behind the
- * `openai-responses` flag). Reuses the SAME driver as the HTTP handler-v4 —
- * codec + WS-capable Responses transport + env strategies — and writes the
- * rendered frames as WebSocket JSON frames (ws.send) instead of streamSSE.
+ * Handle a response.create over WebSocket via the v4 driver — **owns-the-sink** (Stage B
+ * Responses-WS cut-over). Reuses the SAME driver as the HTTP handler-v4; the driver writes
+ * the rendered frames to a `makeWsSink` (ws.send) instead of streamSSE, returning a control-
+ * signal `ResponseOutcome`. This handler does the rendered-frame work through `onRenderedFrame`
+ * (accumulate + restore + count; WS counts loop AND closing-drain frames) and supplies a
+ * `stopAfterFrame` predicate so the driver stops after a terminal event (response.completed/…)
+ * — the direct-path early-stop that never reads past the terminal (legacy WS break). Forwarded
+ * sampling is in the sink (`onForwarded`); the H3 error path uses `sendErrorAndClose` (the WS
+ * analog of the HTTP `writeSynthetic`, unsampled) + 1011 close; clean completion closes 1000
+ * unless `clientWebsocketKeepOpen`.
  *
- * Unlike the legacy WS path (direct /responses only, rejecting unsupported
- * models), the driver also routes the Responses→CC fallback, so CC-only / Google
- * models work over WS via fallback. The direct path's `fixStreamEventIds` now runs
- * in the driver's S5 response-rewrite registry (A.C — the SAME instance the HTTP
- * pump uses); the fallback drains the codec's closing lifecycle via `flushResponse`.
+ * Unlike the legacy WS path (direct /responses only, rejecting unsupported models), the driver
+ * also routes the Responses→CC fallback, so CC-only / Google models work over WS via fallback.
+ * The direct path's `fixStreamEventIds` runs in the driver's S5 response-rewrite registry (A.C —
+ * the SAME instance the HTTP pump uses); the fallback drains the codec's closing lifecycle via
+ * `flushResponse`. Responses has no `[DONE]` / no H2 / no heartbeat.
  */
 async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
   const requestedModel = rawPayload.model
@@ -276,62 +286,87 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const streamStartMs = Date.now()
   let eventsReceived = 0
 
-  /** Forward one driver-yielded Responses frame as a WS JSON frame; returns true on a terminal event.
-   * fix-stream-ids (direct) is applied upstream in the driver's S5 chain, so `rawData` is already fixed. */
-  const forwardWsFrame = (rawData: string): boolean => {
+  // The driver-owned WS sink: ws.send write-out + forwarded sampling (no heartbeat for WS).
+  const sink = makeWsSink(ws, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
+  const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+
+  /**
+   * Accumulate one rendered Responses frame + restore function_call names (forwarded-only) + count.
+   * Returns the restored `{data}`-only frame (WS frames carry no event line), or `undefined` to skip
+   * (empty / unparseable — the legacy loop's `!frame.data` guard + `forwardWsFrame`'s parse-fail
+   * early return; neither counted). Shared by the driver loop (via `onRenderedFrame`) AND the
+   * fallback closing drain — WS counts BOTH (legacy `forwardWsFrame` ran for loop + drain alike,
+   * unlike the HTTP pump which only counted the loop). fix-stream-ids (direct) was already applied
+   * in the driver's S5 chain.
+   */
+  const restoreAccumulateCount = (frame: ClientFrame): ClientFrame | undefined => {
+    if (!frame.data) return undefined
     let event: ResponsesStreamEvent
     try {
-      event = JSON.parse(rawData) as ResponsesStreamEvent
+      event = JSON.parse(frame.data) as ResponsesStreamEvent
     } catch {
       consola.debug("[WS] Skipping unparseable SSE event")
-      return false
+      return undefined
     }
     accumulateResponsesStreamEvent(event, acc)
-    const forwardData = restoreResponsesStreamFrameToolNames(rawData, event.type, mapper)
-    ws.send(forwardData)
-    forwardedSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: event.type, raw: forwardData })
     eventsReceived++
     env.ctx.recordStreamProgress({ eventsIn: eventsReceived })
-    return TERMINAL_EVENTS.has(event.type)
+    return { data: restoreResponsesStreamFrameToolNames(frame.data, event.type, mapper) }
   }
 
-  try {
-    for await (const frame of driver.runResponse(upstream, env)) {
-      if (!frame.data || frame.data === "[DONE]") continue
-      // Stop on a terminal event (response.completed/failed/incomplete/error) —
-      // parity with the legacy WS loop, which never reads past the terminal frame
-      // even if the upstream emits trailing frames or stalls without closing. The
-      // fallback's terminal (response.completed) comes from `flushResponse` below,
-      // not this loop, so this break only fires on the direct path.
-      if (forwardWsFrame(frame.data)) break
+  // Terminal early-stop (driver `stopAfterFrame`): the direct path must not read past
+  // response.completed/failed/incomplete/error (legacy WS break — an upstream that emits trailing
+  // frames or stalls without closing would otherwise hang to idle-timeout). The fallback's terminal
+  // (response.completed) comes from `flushResponse` below, not the loop, so this never fires there.
+  const isTerminal = (frame: ClientFrame): boolean => {
+    if (!frame.data) return false
+    try {
+      return TERMINAL_EVENTS.has((JSON.parse(frame.data) as ResponsesStreamEvent).type)
+    } catch {
+      return false
     }
-    // Fallback: drain the CC→Responses closing lifecycle events.
-    if (viaFallback) {
-      for (const closing of codec.flushResponse(env)) {
-        if (closing.data) forwardWsFrame(closing.data)
-      }
-    }
+  }
 
-    if (!viaFallback) {
-      if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
-      registerResponseSession(acc.responseId, env.ctx.sessionId)
-    }
-    const responseData = buildResponsesResponseData(acc, resolvedModel)
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    env.ctx.complete(responseData)
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, stopAfterFrame: isTerminal })
 
-    if (!state.clientWebsocketKeepOpen) ws.close(1000, "done")
-  } catch (error) {
-    env.ctx.setForwardedResponse({ sseEvents: forwardedSseEvents })
-    const partial = { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } }
-    if (settleStreamingFailure({ reqCtx: env.ctx, error, model: acc.model || resolvedModel, partial })) {
-      consola.debug("[WS] Client disconnected mid-stream — recording aborted")
-      return
-    }
+  if (outcome.kind === "settled-abort") {
+    recordForwarded()
+    consola.debug("[WS] Client disconnected mid-stream — recording aborted")
+    env.ctx.abort(acc.model || resolvedModel, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
+    return
+  }
+
+  if (outcome.kind === "stream-error") {
+    // H3 — settle as fail (partial usage) + send the OpenAI error frame and close (1011). The
+    // error frame is NOT forward-sampled (legacy never pushed it), so it goes via sendErrorAndClose
+    // (the WS analog of the HTTP writeSynthetic), not the sink.
+    recordForwarded()
+    const error = outcome.error
+    env.ctx.fail(acc.model || resolvedModel, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
     sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+    return
   }
+
+  // outcome.kind === "complete" — the upstream drained cleanly (or stopped at the terminal frame).
+  if (viaFallback) {
+    // Drain the CC→Responses translator's closing lifecycle (output_text.done … response.completed),
+    // counted + forward-sampled like loop frames (WS parity). (Deferred: B4 moves this into the
+    // driver's S6 flush.)
+    for (const closing of codec.flushResponse(env)) {
+      const out = restoreAccumulateCount(closing)
+      if (out) await sink.write(out)
+    }
+  } else {
+    if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
+    registerResponseSession(acc.responseId, env.ctx.sessionId)
+  }
+
+  recordForwarded()
+  env.ctx.complete(buildResponsesResponseData(acc, resolvedModel))
+
+  if (!state.clientWebsocketKeepOpen) ws.close(1000, "done")
 }
 
 // ============================================================================

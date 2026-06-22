@@ -185,14 +185,31 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   return { write, writeSynthetic, close }
 }
 
+/** {@link makeWsSink} options — forwarded-track sampling (optional). */
+export interface WsSinkOptions {
+  /**
+   * Forwarded-track sampler invoked per written frame (→ history `inboundResponse.sseEvents`).
+   * The record shape (offsetMs / parsed-type / raw bytes) mirrors the legacy `forwardWsFrame`
+   * push (`{type: event.type, raw: forwardData}`; `frameType` yields the parsed JSON `type`).
+   */
+  onForwarded?: (record: SseEventRecord) => void
+  /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
+  streamStartMs?: number
+}
+
 /** WS sink — writes JSON frame strings through a Hono `WSContext` (the Responses WS path). */
-export function makeWsSink(ws: WSContext): ClientSink {
+export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
+  const { onForwarded, streamStartMs = Date.now() } = opts
   const enqueue = makeSerializer()
   return {
-    write: (frame) =>
-      enqueue(() => {
+    // Sample the forwarded track synchronously at call time (before the enqueued send), then
+    // write. WS frames carry only `data` (no SSE event/id/retry line), matching legacy `ws.send`.
+    write: (frame) => {
+      onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "" })
+      return enqueue(() => {
         ws.send(frame.data ?? "")
-      }),
+      })
+    },
   }
 }
 

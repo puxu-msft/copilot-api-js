@@ -256,6 +256,16 @@ export interface RunResponseOpts {
    */
   onRenderedFrame?: (frame: ClientFrame) => ClientFrame | undefined
   /**
+   * owns-sink only (`runResponseSink`): early-stop predicate evaluated AFTER each frame is
+   * written. Returning `true` breaks the drain loop and settles `complete` — the format's
+   * terminal-frame signal (Responses WS stops after `response.completed`/`failed`/`incomplete`/
+   * `error` so a trailing frame or a stalled-without-closing upstream is never read past). The
+   * break runs the generator's `finally` (flushChain) like any consumer close; for Responses the
+   * S5 chain has no buffering rewrite so nothing is lost. Omitted = drain the upstream fully
+   * (Anthropic / CC / Responses-HTTP). The frame is the just-written one (post-`onRenderedFrame`).
+   */
+  stopAfterFrame?: (frame: ClientFrame) => boolean
+  /**
    * Dry-run only (pipeline-dry-run-inspector.md §4 T1): yield the S5-rewritten frames
    * VERBATIM instead of running `codec.renderResponse` (S6). For a format whose render is
    * NON-identity (CC-via-responses / Responses fallback / Gemini), this exposes the S5

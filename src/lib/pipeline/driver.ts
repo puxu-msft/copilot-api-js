@@ -408,9 +408,10 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
  * generator's S5→S6 chain verbatim, so the SINK FRAME SEQUENCE == the generator's
  * YIELD SEQUENCE (the B0 real-renderer goldens lock this byte-for-byte). `opts.onRenderedFrame`
  * (when supplied) transforms each rendered frame just before write — the forwarded-side
- * counterpart to `opts.onUpstreamFrame` (CC tool-name restore + accumulate; Anthropic omits
- * it). `sink.close()` runs on EVERY exit (normal / throw / abort / write-reject) so the
- * heartbeat timer can't leak.
+ * counterpart to `opts.onUpstreamFrame` (CC/Responses tool-name restore + accumulate; Anthropic
+ * omits it). `opts.stopAfterFrame` (when supplied) breaks the drain loop after a terminal frame
+ * and settles `complete` (Responses WS stops after `response.completed`). `sink.close()` runs on
+ * EVERY exit (normal / break / throw / abort / write-reject) so the heartbeat timer can't leak.
  *
  * `[DONE]` handling: the generator YIELDS the `[DONE]` sentinel (guard only blocks
  * sampling); `runResponseSink` DROPS it (it's a gateway transport terminator, NOT a
@@ -444,7 +445,13 @@ async function runResponseSink(
       // the `[DONE]` drop so the hook never sees the sentinel. A `undefined` return SKIPS the
       // frame (Responses drops empty/unparseable frames the legacy loop never forwarded).
       const toWrite = opts?.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
-      if (toWrite) await sink.write(toWrite)
+      if (toWrite) {
+        await sink.write(toWrite)
+        // Early-stop after a terminal frame (Responses WS: don't read past response.completed —
+        // a trailing frame or a stalled upstream would otherwise hang to idle-timeout). The break
+        // runs the generator's `finally` (flushChain); empty for Responses, so nothing is lost.
+        if (opts?.stopAfterFrame?.(toWrite)) break
+      }
     }
     return { kind: "complete", headers: upstream.headers }
   } catch (error) {
