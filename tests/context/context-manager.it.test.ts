@@ -165,6 +165,8 @@ describe("stale request reaper", () => {
 
     expect(manager.activeCount).toBe(1)
     expect(ctx.settled).toBe(false)
+    // Before reaping, the lifecycle signal is live (in-flight upstream not cancelled).
+    expect(ctx.lifecycleSignal.aborted).toBe(false)
 
     await waitUntil(() => ctx.durationMs > 50, {
       label: "context to exceed stale request max age",
@@ -176,6 +178,21 @@ describe("stale request reaper", () => {
     expect(ctx.settled).toBe(true)
     const failEvents = events.filter((e) => e.kind === "request.failed")
     expect(failEvents).toHaveLength(1)
+    // ④ — the reaper now has TEETH: reapInFlight() aborted the lifecycle signal, so the
+    // transport's folded reaperSignal cancels the in-flight upstream fetch / stream (not a
+    // merely-decorative force-fail). state is `failed` (NOT `aborted` — server-initiated).
+    expect(ctx.lifecycleSignal.aborted).toBe(true)
+    expect(ctx.state).toBe("failed")
+  })
+
+  test("reapInFlight() aborts the lifecycle signal (idempotent, independent of fail)", () => {
+    const { manager } = makeManager()
+    const ctx = manager.create({ endpoint: "anthropic-messages" })
+    expect(ctx.lifecycleSignal.aborted).toBe(false)
+    ctx.reapInFlight()
+    expect(ctx.lifecycleSignal.aborted).toBe(true)
+    ctx.reapInFlight() // idempotent — second call is a no-op
+    expect(ctx.lifecycleSignal.aborted).toBe(true)
   })
 
   test("_runReaperOnce does not fail contexts within maxAge", () => {

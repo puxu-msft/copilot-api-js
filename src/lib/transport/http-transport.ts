@@ -78,6 +78,7 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
           diagnosticsTools: body.tools,
           headersCapture: deps.headersCapture,
           clientAbortSignal: deps.clientAbortSignal,
+          reaperSignal: env.ctx.lifecycleSignal,
           ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
         }),
       )
@@ -95,11 +96,15 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
 
       // Streaming: wrap the raw SSE source in the idle/shutdown/client-abort guard
       // (the guard owns shutdown for the streamed body; the non-stream fetch folds
-      // shutdown into its own signal inside sendUpstreamHttp).
+      // shutdown into its own signal inside sendUpstreamHttp). `reaperSignal`
+      // (ctx.lifecycleSignal) is a DISTINCT provenance from `clientSignal` so a
+      // mid-stream reaper-cancel reaches a still-connected client as an error frame
+      // (StreamReaperCancelError → stream-error), never a silent client-abort (缺陷④).
       const frames = guardSseIterable(result as AsyncIterable<ServerSentEventMessage>, {
         idleTimeoutMs: deps.idleTimeoutMs,
         shutdownSignal: getShutdownSignal(),
         clientSignal: deps.clientAbortSignal,
+        reaperSignal: env.ctx.lifecycleSignal,
       }) as AsyncIterable<UpstreamFrame>
 
       return { frames, headers: responseHeaders }

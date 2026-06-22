@@ -334,12 +334,14 @@ const STREAM_ERROR_STATUS: Record<ClassifiedStreamError, string> = {
   "idle-timeout": "DEADLINE_EXCEEDED",
   shutdown: "UNAVAILABLE",
   "client-abort": "CANCELLED",
+  "reaper-cancel": "UNAVAILABLE",
   other: "INTERNAL",
 }
 const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   "idle-timeout": "Stream idle timeout",
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
+  "reaper-cancel": "Request cancelled by stale-request reaper",
   other: "Stream error",
 }
 

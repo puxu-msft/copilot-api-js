@@ -464,6 +464,7 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   "idle-timeout": "Stream idle timeout",
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
+  "reaper-cancel": "Request cancelled by stale-request reaper",
   other: "Stream error",
 }
 
@@ -473,7 +474,8 @@ function anthropicErrorType(err: ClassifiedStreamError): string {
     case "idle-timeout": {
       return "timeout_error"
     }
-    case "shutdown": {
+    case "shutdown":
+    case "reaper-cancel": {
       return "overloaded_error"
     }
     default: {

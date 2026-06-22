@@ -197,6 +197,13 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
             + `, age: ${Math.round(ctx.durationMs / 1000)}s`
             + `, max: ${state.staleRequestMaxAge}s)`,
         )
+        // Give the reaper teeth (缺陷④): cancel the in-flight upstream fetch / stream
+        // via the lifecycle signal — the transport folds it into the fetch (cancels a
+        // pre-response header-wait) and the stream guard (a mid-stream reap reaches a
+        // live client as a `reaper-cancel` → `stream-error` → error frame). `fail()`
+        // stays as the terminal-state record + safety net for the no-active-consumer
+        // edge; the `settled` guard dedups with the handler's own settle.
+        ctx.reapInFlight()
         ctx.fail(ctx.originalRequest?.model ?? "unknown", new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`))
       }
     }

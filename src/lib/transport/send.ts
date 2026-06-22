@@ -68,6 +68,13 @@ export interface SendUpstreamHttpParams {
    */
   clientAbortSignal?: AbortSignal
   /**
+   * Stale-request REAPER signal (`ctx.lifecycleSignal`), folded into the fetch so
+   * the reaper can cancel the in-flight upstream during the (long) header-wait —
+   * a DISTINCT provenance from `clientAbortSignal` (RFC §2 缺陷④); the streaming
+   * guard also receives it separately so a mid-stream reap reaches a live client.
+   */
+  reaperSignal?: AbortSignal
+  /**
    * When true, a SHUTDOWN-caused fetch abort (`getShutdownSignal().aborted` && the
    * thrown error is an `AbortError`) is rewritten to a retryable `HTTPError` 529
    * (overloaded), so the client backs off and retries against the restarted
@@ -89,14 +96,17 @@ export interface SendUpstreamHttpParams {
  * attached on opaque 400s.
  */
 export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<unknown> {
-  const { endpointPath, headers, body, stream, errorLabel, modelId, diagnosticsTools, headersCapture, clientAbortSignal, rewriteShutdownAbort } = params
+  const { endpointPath, headers, body, stream, errorLabel, modelId, diagnosticsTools, headersCapture, clientAbortSignal, reaperSignal, rewriteShutdownAbort } =
+    params
 
   // For non-streaming requests, fold the shutdown signal into the fetch signal so
   // a Phase 3 abort interrupts the (long) header-wait; streaming omits it (the
   // stream guard in the handler owns shutdown for the streamed body).
   // `clientAbortSignal` (when supplied) is always folded in so a client cancel
-  // terminates both stream and non-stream paths.
-  const fetchSignal = combineAbortSignals(createFetchSignal(), stream ? undefined : getShutdownSignal(), clientAbortSignal)
+  // terminates both stream and non-stream paths. `reaperSignal` (ctx.lifecycleSignal)
+  // is always folded too so the stale reaper can cancel the (long) pre-response
+  // header-wait for BOTH stream and non-stream (缺陷④).
+  const fetchSignal = combineAbortSignals(createFetchSignal(), stream ? undefined : getShutdownSignal(), clientAbortSignal, reaperSignal)
 
   let response: Response
   try {

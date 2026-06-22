@@ -148,6 +148,8 @@ export function createRequestContext(opts: {
   let _endTime: number | null = null
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
   let settled = false
+  /** Lifecycle abort — fired by the reaper (reapInFlight) to cancel in-flight upstream work (缺陷④). */
+  const lifecycleAbort = new AbortController()
 
   /**
    * Build an ObservabilityEvent-compatible snapshot of the current ctx state
@@ -182,6 +184,12 @@ export function createRequestContext(opts: {
 
   const ctx: RequestContext = {
     id,
+    get lifecycleSignal() {
+      return lifecycleAbort.signal
+    },
+    reapInFlight() {
+      lifecycleAbort.abort()
+    },
     get sessionId() {
       return _sessionId
     },

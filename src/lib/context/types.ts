@@ -341,6 +341,21 @@ export interface RequestContext {
    * usage / stop_reason observed before the disconnect.
    */
   abort(model: string, partial?: PartialResponseInfo): void
+  /**
+   * Lifecycle abort signal for the in-flight upstream work. Folded by the
+   * transport into the upstream fetch + the stream guard (as a DISTINCT
+   * `reaperSignal` provenance, never `clientSignal`), so the stale-request
+   * reaper can actually CANCEL an over-age in-flight request rather than only
+   * record a decorative terminal state (RFC §2 缺陷④).
+   */
+  readonly lifecycleSignal: AbortSignal
+  /**
+   * Abort the lifecycle signal — cancels the in-flight upstream fetch / stream.
+   * Called by the reaper (alongside `fail()`); a live client mid-stream then
+   * receives a terminal error frame (reaper-cancel → `stream-error`) and the
+   * request settles `failed` (not silently truncated / mis-recorded `aborted`).
+   */
+  reapInFlight(): void
   toHistoryEntry(): HistoryEntryData
 
   // ─── Observability emit surface (added in commit 3a; callers wired in 3b-3d) ───
