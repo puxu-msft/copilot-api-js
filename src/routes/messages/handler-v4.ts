@@ -38,7 +38,6 @@ import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SanitizationStats } from "~/lib/anthropic/sanitize"
 import type {
   //
-  HeadersCapture,
   RequestContext,
 } from "~/lib/context/request"
 import type {
@@ -259,7 +258,6 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
 
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
-  const headersCapture: HeadersCapture = {}
 
   // betaProbe is a cross-component handle (RFC §2.4): the SAME instance is injected
   // into both the codec (records outbound betas in prepareWire) and the strategies
@@ -270,7 +268,6 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   // rewriteShutdownAbort (C1 / H1): a shutdown-caused non-streaming fetch abort is
   // rewritten to a retryable 529 inside the send core, in the driver loop's place.
   const transport = createUpstreamHttpTransport({
-    headersCapture,
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: state.streamIdleTimeout * 1000,
     rewriteShutdownAbort: true,
@@ -331,13 +328,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     })
   } catch (error) {
     // Any failure after parse created the ctx (parse-period sanitize/translate
-    // throw, or an exchange failure). Settle it (matching legacy's catch:
-    // setHttpHeaders + fail) — `codec.getContext()` reaches the ctx even when the
-    // throw happened before the envelope was otherwise capturable.
+    // throw, or an exchange failure). Settle it — `codec.getContext()` reaches the
+    // ctx even when the throw happened before the envelope was otherwise capturable.
+    // (Outbound header legs are written by the driver during the exchange, RFC Phase 2.)
     const ctx = codec.getContext()
     if (ctx) {
       c.set("requestContext", ctx)
-      ctx.setHttpHeaders(headersCapture)
       // A pre-response CLIENT disconnect is a cancellation, not a failure: record
       // the distinct `aborted` terminal state (parity with the mid-stream pump's
       // settled-abort path, pumpAnthropicStreamingV4) instead of `failed`, and
@@ -372,7 +368,6 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   }
 
   const { upstream, env } = result
-  env.ctx.setHttpHeaders(headersCapture)
 
   if (!env.stream) {
     try {
@@ -387,6 +382,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   env.ctx.transition("streaming")
   return streamSSE(c, async (stream) => {
     stream.onAbort(() => clientAbort.abort())
+    // RFC Phase 4: ④ capture the proxy→client response headers (streamSSE has set
+    // them synchronously before invoking this callback; finalize runs later in the pump).
+    env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     try {
       await pumpAnthropicStreamingV4({ stream, driver, upstream, env, clientAbortSignal: clientAbort.signal })
     } finally {
@@ -490,6 +488,10 @@ function renderNonStreamingV4(
   finalResponse = driver.runResponseWhole(finalResponse, env) as AnthropicMessageResponse
 
   reqCtx.setForwardedResponse({ content: { role: "assistant", content: finalResponse.content } })
+  // RFC Phase 4: ④ build the client response first so its headers are set, capture them
+  // (proxy→client), THEN complete — finalize must see the inboundResponse leg.
+  const clientResponse = c.json(finalResponse)
+  reqCtx.setInboundResponseHeaders(Object.fromEntries(clientResponse.headers.entries()))
   reqCtx.complete({
     success: true,
     model: response.model,
@@ -503,7 +505,7 @@ function renderNonStreamingV4(
     content: { role: "assistant", content: response.content },
   })
 
-  return c.json(finalResponse)
+  return clientResponse
 }
 
 // ============================================================================

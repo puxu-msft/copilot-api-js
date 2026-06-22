@@ -16,7 +16,6 @@ import {
   test,
 } from "bun:test"
 
-import type { HeadersCapture } from "~/lib/context/request"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -77,8 +76,7 @@ describe("createUpstreamHttpTransport", () => {
       res.headers.set("x-upstream", "yes")
       return res
     })
-    const headersCapture: HeadersCapture = {}
-    const transport = createUpstreamHttpTransport({ headersCapture, idleTimeoutMs: 5000 })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
     const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
     const frames = await collect(upstream.frames)
@@ -89,7 +87,7 @@ describe("createUpstreamHttpTransport", () => {
 
   test("non-streaming: returns nonStream JSON + empty frames", async () => {
     setFetchMock(() => new Response(JSON.stringify({ id: "cc-1", choices: [] }), { status: 200, headers: { "content-type": "application/json" } }))
-    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000 })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
     const upstream = await transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())
     expect(await collect(upstream.frames)).toEqual([])
@@ -98,7 +96,7 @@ describe("createUpstreamHttpTransport", () => {
 
   test("non-ok upstream → throws HTTPError with the endpoint's error label", async () => {
     setFetchMock(() => new Response(JSON.stringify({ error: "bad" }), { status: 400, headers: { "content-type": "application/json" } }))
-    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000 })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
     await expect(transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())).rejects.toThrow(
       /Failed to create chat completions/,
@@ -107,7 +105,7 @@ describe("createUpstreamHttpTransport", () => {
 
   test("via-responses url → uses the responses error label on failure", async () => {
     setFetchMock(() => new Response("nope", { status: 500 }))
-    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000 })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
     await expect(transport.send(makeWire({ url: "/responses", stream: false, body: { model: "gpt-5", input: [], stream: false } }), makeEnv())).rejects.toThrow(
       /Failed to create responses/,
@@ -135,7 +133,7 @@ describe("createUpstreamHttpTransport — rewriteShutdownAbort 529 hook", () => 
   test("hook OFF (default): a fetch AbortError re-throws the ORIGINAL object unchanged (CC/Responses parity, identity preserved)", async () => {
     const abortErr = new DOMException("The operation was aborted", "AbortError")
     setFetchMock(() => new Promise<Response>((_resolve, reject) => reject(abortErr)))
-    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000 })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
     let caught: unknown
     try {
@@ -149,7 +147,7 @@ describe("createUpstreamHttpTransport — rewriteShutdownAbort 529 hook", () => 
   test("hook ON but NO shutdown (client-disconnect): AbortError NEVER becomes 529 — re-throws the original", async () => {
     const abortErr = new DOMException("The operation was aborted", "AbortError")
     setFetchMock(() => new Promise<Response>((_resolve, reject) => reject(abortErr)))
-    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000, rewriteShutdownAbort: true })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, rewriteShutdownAbort: true })
 
     let caught: unknown
     try {
@@ -171,7 +169,7 @@ describe("createUpstreamHttpTransport — rewriteShutdownAbort 529 hook", () => 
           signal?.addEventListener("abort", onAbort, { once: true })
         }),
     )
-    const transport = createUpstreamHttpTransport({ headersCapture: {}, idleTimeoutMs: 5000, rewriteShutdownAbort: true })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, rewriteShutdownAbort: true })
 
     const shutdownPromise = gracefulShutdown("SIGTERM", {
       tracker: createMockTracker([{ status: "streaming" }]),

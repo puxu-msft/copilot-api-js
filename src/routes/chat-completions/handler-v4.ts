@@ -23,7 +23,6 @@ import type { SSEStreamingApi } from "hono/streaming"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { OpenAIAutoTruncateResult } from "~/lib/openai/auto-truncate"
@@ -109,9 +108,8 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
 
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
-  const headersCapture: HeadersCapture = {}
   const codec = createOpenAiCcCodec()
-  const transport = createUpstreamHttpTransport({ headersCapture, clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
+  const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
 
   // Truncation result for the response marker (captured from the strategy factory).
   let truncateResult: OpenAIAutoTruncateResult | undefined
@@ -158,13 +156,12 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
     })
   } catch (error) {
     // Any failure after parse created the ctx (parse-period sanitize/translate
-    // throw, or an exchange failure). Settle it (matching legacy's catch:
-    // setHttpHeaders + fail) — `codec.getContext()` reaches the ctx even when the
-    // throw happened before the envelope was otherwise capturable.
+    // throw, or an exchange failure). Settle it — `codec.getContext()` reaches the
+    // ctx even when the throw happened before the envelope was otherwise capturable.
+    // (Outbound header legs are written by the driver during the exchange, RFC Phase 2.)
     const ctx = codec.getContext()
     if (ctx) {
       c.set("requestContext", ctx)
-      ctx.setHttpHeaders(headersCapture)
       ctx.fail(resolvedName, error)
     }
     detachClientAbort()
@@ -185,7 +182,6 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   }
 
   const { upstream, env } = result
-  env.ctx.setHttpHeaders(headersCapture)
 
   if (!env.stream) {
     try {
@@ -200,6 +196,8 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   env.ctx.transition("streaming")
   return streamSSE(c, async (stream) => {
     stream.onAbort(() => clientAbort.abort())
+    // RFC Phase 4: ④ capture proxy→client response headers (set by streamSSE before this callback).
+    env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     try {
       await pumpStreamingV4({ stream, driver, upstream, env, getTruncateResult: () => truncateResult })
     } finally {
@@ -235,6 +233,9 @@ function renderNonStreamingV4(
   const clientResponse = restoreChatCompletionsToolNames(response, env.ctx.toolNameMapper)
 
   env.ctx.setForwardedResponse({ content: clientResponse.choices[0]?.message })
+  // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
+  const httpResponse = c.json(clientResponse)
+  env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
   env.ctx.complete({
     success: true,
     model: response.model,
@@ -247,7 +248,7 @@ function renderNonStreamingV4(
     content: choice.message,
   })
 
-  return c.json(clientResponse)
+  return httpResponse
 }
 
 // ============================================================================

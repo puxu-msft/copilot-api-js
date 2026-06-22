@@ -263,6 +263,17 @@ async function runExchange(
     current.ctx.transition("executing")
     try {
       const upstream = await deps.transport.send(wire, current)
+      // RFC history-http-header-capture Phase 2: driver owns the outbound header
+      // capture (no handler-side HeadersCapture bag). ② outboundRequest = the wire
+      // headers in hand; ③ outboundResponse = the upstream response headers carried
+      // by UpstreamStream.headers (empty for the upstream-WS path → leg omitted).
+      // Written per-attempt via the merge setter → the FINAL attempt's values stick
+      // at the top-level legs (per-attempt persistence is Phase 3).
+      const upstreamRespHeaders = Object.fromEntries(upstream.headers.entries())
+      current.ctx.setHttpHeaders({
+        request: Object.fromEntries(wire.headers.entries()),
+        ...(Object.keys(upstreamRespHeaders).length > 0 && { response: upstreamRespHeaders }),
+      })
       // onResolved threads the post-gate meta of the retry that produced this env
       // (C0-② / RFC §11.2) so the owning strategy commits its learning from it
       // (e.g. unsupported-beta fixates meta.probedBetas). undefined on first-attempt
@@ -274,6 +285,14 @@ async function runExchange(
     } catch (error) {
       const apiError = classifyError(error)
       current.ctx.setAttemptError(apiError)
+      // RFC Phase 2: capture the outbound legs on the failure path too. ② from the
+      // wire; ③ from apiError.responseHeaders (classifyHTTPError now passes it through
+      // on ALL HTTP-error branches). Network/abort failures have no upstream response
+      // → response leg correctly absent. Final attempt wins at the top level.
+      current.ctx.setHttpHeaders({
+        request: Object.fromEntries(wire.headers.entries()),
+        ...(apiError.responseHeaders && { response: Object.fromEntries(apiError.responseHeaders.entries()) }),
+      })
 
       const strategy = strategies.find((s) => s.canHandle(apiError))
       if (!strategy) throw error // no strategy → [FAIL]

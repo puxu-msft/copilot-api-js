@@ -291,11 +291,24 @@ export function createRequestContext(opts: {
           ...(capture.request && { outboundRequest: capture.request }),
           ...(capture.response && { outboundResponse: capture.response }),
         }
+        // RFC Phase 5: surface httpHeaders to in-flight observers (history sink's
+        // onContextUpdated reads live ctx.httpHeaders). Not in the lightweight
+        // snapshot — kept lean; the sink reads the full headers off the ctx ref.
+        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
       }
     },
 
     setInboundRequestHeaders(headers: Record<string, string>) {
       _httpHeaders = { ..._httpHeaders, inboundRequest: headers }
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
+    },
+
+    setInboundResponseHeaders(headers: Record<string, string>) {
+      // RFC Phase 4: ④ Proxy → Client response headers (the headers the proxy actually
+      // sends to the client), captured at the handler write-out point. Completes the
+      // four-leg model. Publishes for in-flight visibility (Phase 5).
+      _httpHeaders = { ..._httpHeaders, inboundResponse: headers }
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     addWarningMessage(warning: WarningMessage) {
@@ -569,13 +582,10 @@ export function createRequestContext(opts: {
       if (finalAttempt?.wireRequest) {
         const wp = finalAttempt.wireRequest
         entry.outboundRequest = legFromWire(wp)
-        // wp.headers is non-optional in WireRequest; only migrate when the
-        // shape is sensible (truthy + non-empty would be defensive but the
-        // type guarantees a Record<string, string>).
-        _httpHeaders = { ..._httpHeaders, outboundRequest: wp.headers }
       }
 
-      // Assign httpHeaders AFTER wireRequest migration so outboundRequest is included
+      // httpHeaders.outboundRequest/outboundResponse are written by the driver during
+      // the exchange (RFC Phase 2 — no finalize-time wireRequest→outboundRequest migration).
       if (_httpHeaders) {
         entry.httpHeaders = _httpHeaders
       }

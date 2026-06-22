@@ -51,12 +51,6 @@ import { guardSseIterable } from "~/lib/stream"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
 export interface UpstreamResponsesTransportDeps {
-  /**
-   * History header-capture sink (HTTP path only — WS has no HTTP response
-   * headers). `sendUpstreamHttp` fills it; the adapter surfaces the captured
-   * response headers as `UpstreamStream.headers`.
-   */
-  headersCapture?: HeadersCapture
   /** Client-disconnect signal, folded into the stream guard + the WS request. */
   clientAbortSignal?: AbortSignal
   /** Stream idle-timeout (ms) for `guardSseIterable` (`state.streamIdleTimeout * 1000`). */
@@ -113,6 +107,10 @@ function reportTransport(env: RequestEnvelope, transport: RequestTransport): voi
 
 /** HTTP send: pure fetch (no client-abort folded in — Responses-historical) + guard on stream. */
 async function sendViaHttp(wire: PreparedRequest, deps: UpstreamResponsesTransportDeps, reaperSignal?: AbortSignal): Promise<UpstreamStream> {
+  // Transport-local capture (RFC Phase 2 — no handler-threaded bag); fills `.response`
+  // so we can surface upstream response headers as `UpstreamStream.headers` (read by
+  // the driver to write ctx.httpHeaders.outboundResponse).
+  const headersCapture: HeadersCapture = {}
   const result = await sendUpstreamHttp({
     endpointPath: wire.url,
     headers: Object.fromEntries(wire.headers.entries()),
@@ -121,11 +119,11 @@ async function sendViaHttp(wire: PreparedRequest, deps: UpstreamResponsesTranspo
     errorLabel: "Failed to create responses",
     modelId: (wire.body as { model?: unknown }).model as string | undefined,
     diagnosticsTools: (wire.body as { tools?: unknown }).tools,
-    headersCapture: deps.headersCapture,
+    headersCapture,
     reaperSignal,
   })
 
-  const responseHeaders = new Headers(deps.headersCapture?.response ?? {})
+  const responseHeaders = new Headers(headersCapture.response ?? {})
 
   if (!wire.stream) {
     return { frames: emptyFrames(), nonStream: result, headers: responseHeaders }

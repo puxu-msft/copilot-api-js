@@ -23,7 +23,6 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import type { OpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
-import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
@@ -70,16 +69,14 @@ interface GeminiDriverBundle {
   codec: ReturnType<typeof createOpenAiGeminiCodec>
   clientAbort: AbortController
   detachClientAbort: () => void
-  headersCapture: HeadersCapture
 }
 
 /** Shared driver setup for both Gemini generate paths. */
 function buildGeminiDriver(c: Context, modelId: string): GeminiDriverBundle {
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
-  const headersCapture: HeadersCapture = {}
   const codec = createOpenAiGeminiCodec(modelId)
-  const transport = createUpstreamHttpTransport({ headersCapture, clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
+  const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
 
   const driver = createPipelineDriver({
     codec,
@@ -97,7 +94,7 @@ function buildGeminiDriver(c: Context, modelId: string): GeminiDriverBundle {
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })
 
-  return { driver, codec, clientAbort, detachClientAbort, headersCapture }
+  return { driver, codec, clientAbort, detachClientAbort }
 }
 
 /** Translate + run S1–S4; returns the driver result or settles the ctx + throws. */
@@ -116,7 +113,7 @@ async function runGeminiRequest(
   ccPayload.messages = await processOpenAIMessages(ccPayload.messages, resolvedName)
 
   const bundle = buildGeminiDriver(c, modelId)
-  const { driver, codec, clientAbort, detachClientAbort, headersCapture } = bundle
+  const { driver, codec, clientAbort, detachClientAbort } = bundle
 
   let result: DriverRequestResult
   try {
@@ -130,10 +127,10 @@ async function runGeminiRequest(
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
+    // Outbound header legs are written by the driver during the exchange (RFC Phase 2).
     const ctx = codec.getContext()
     if (ctx) {
       c.set("requestContext", ctx)
-      ctx.setHttpHeaders(headersCapture)
       ctx.fail(resolvedName, error)
     }
     detachClientAbort()
@@ -148,7 +145,6 @@ async function runGeminiRequest(
     throw new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason)
   }
 
-  result.env.ctx.setHttpHeaders(headersCapture)
   return { bundle, result }
 }
 
@@ -179,6 +175,8 @@ export async function handleStreamGenerateContentV4(c: Context, modelId: string)
     // a write-side streamSSE abort is distinct from c.req.raw.signal (parity with
     // legacy renderGeminiStreaming + the CC/Responses v4 handlers).
     stream.onAbort(() => clientAbort.abort())
+    // RFC Phase 4: ④ capture proxy→client response headers (set by streamSSE before this callback).
+    result.env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     try {
       await pumpGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env })
     } finally {
@@ -197,6 +195,9 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
   const usage = chat.usage
 
   env.ctx.setForwardedResponse({ content: gemini })
+  // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
+  const httpResponse = c.json(gemini)
+  env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
   env.ctx.complete({
     success: true,
     model: chat.model,
@@ -209,7 +210,7 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
     content: choice.message,
   })
 
-  return c.json(gemini)
+  return httpResponse
 }
 
 // ============================================================================

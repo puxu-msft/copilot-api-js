@@ -28,7 +28,6 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import type { OpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
-import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -93,11 +92,9 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
 
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
-  const headersCapture: HeadersCapture = {}
   const conversationId = getSessionIdFromHeaders(c.req.raw.headers)
   const codec = createOpenAiResponsesCodec()
   const transport = createUpstreamResponsesTransport({
-    headersCapture,
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: state.streamIdleTimeout * 1000,
     ...(conversationId !== undefined && { conversationId }),
@@ -132,11 +129,11 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
     })
   } catch (error) {
     // Any failure after parse created the ctx (parse-period throw, or an exchange
-    // failure). Settle it (matching legacy's catch: setHttpHeaders + fail).
+    // failure). Settle it. (Outbound header legs are written by the driver during
+    // the exchange, RFC Phase 2.)
     const ctx = codec.getContext()
     if (ctx) {
       c.set("requestContext", ctx)
-      ctx.setHttpHeaders(headersCapture)
       ctx.fail(resolvedName, error)
     }
     detachClientAbort()
@@ -153,7 +150,6 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   }
 
   const { upstream, env } = result
-  env.ctx.setHttpHeaders(headersCapture)
   const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
 
   if (!env.stream) {
@@ -181,6 +177,8 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
 
   return streamSSE(c, async (stream) => {
     stream.onAbort(() => clientAbort.abort())
+    // RFC Phase 4: ④ capture proxy→client response headers (set by streamSSE before this callback).
+    env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     try {
       await pumpStreamingV4({ stream, driver, codec, upstream, env, viaFallback })
     } finally {
@@ -205,6 +203,9 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
   const clientResponse = restoreResponsesOutputToolNames(resp, env.ctx.toolNameMapper)
   env.ctx.setForwardedResponse({ content: responsesOutputToContent(clientResponse.output) })
 
+  // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
+  const httpResponse = c.json(clientResponse)
+  env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
   env.ctx.complete({
     success: true,
     model: resp.model,
@@ -220,7 +221,7 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
     content: responsesOutputToContent(resp.output),
   })
 
-  return c.json(clientResponse)
+  return httpResponse
 }
 
 // ============================================================================

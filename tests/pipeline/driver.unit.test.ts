@@ -65,6 +65,10 @@ function makeCtx(): { ctx: RequestContext; calls: CtxCalls } {
     recordAttemptFailure: (a: unknown) => calls.recordAttemptFailure.push(a),
     // P3.2b: runResponse samples upstream-original frames here (aliased per-frame).
     setSseEvents: (e: unknown) => calls.setSseEvents.push(e),
+    // RFC Phase 2: driver writes outbound header legs during the exchange (success +
+    // failure). The mock just no-ops; the header capture itself is covered by the
+    // http-headers-capture golden + history integration tests.
+    setHttpHeaders: () => {},
   } as unknown as RequestContext
   return { ctx, calls }
 }

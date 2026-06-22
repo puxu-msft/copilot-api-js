@@ -40,13 +40,6 @@ import { guardSseIterable } from "~/lib/stream"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
 export interface UpstreamHttpTransportDeps {
-  /**
-   * History header-capture sink. `sendUpstreamHttp` fills it via
-   * `captureHttpHeaders`; the adapter also surfaces the captured response
-   * headers as `UpstreamStream.headers`. The route samples it via ctx in P2
-   * (P3.2 sinks it through the driver).
-   */
-  headersCapture?: HeadersCapture
   /** Client-disconnect signal, folded into the upstream fetch + the stream guard. */
   clientAbortSignal?: AbortSignal
   /** Stream idle-timeout (ms) for `guardSseIterable` (`state.streamIdleTimeout * 1000`). */
@@ -66,6 +59,12 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     async send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream> {
       const headers = Object.fromEntries(wire.headers.entries())
       const body = wire.body as { model?: unknown; tools?: unknown }
+      // Transport-local capture: sendUpstreamHttp fills `.response` (via
+      // captureHttpHeaders) so we can surface the upstream response headers as
+      // `UpstreamStream.headers`. RFC Phase 2: no longer a handler-threaded bag —
+      // the driver owns writing the outbound legs to ctx from `UpstreamStream.headers`
+      // (success) / `apiError.responseHeaders` (failure).
+      const headersCapture: HeadersCapture = {}
 
       const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
         sendUpstreamHttp({
@@ -76,7 +75,7 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
           errorLabel: errorLabelFor(wire.url),
           modelId: typeof body.model === "string" ? body.model : (env.model as Model | undefined)?.id,
           diagnosticsTools: body.tools,
-          headersCapture: deps.headersCapture,
+          headersCapture,
           clientAbortSignal: deps.clientAbortSignal,
           reaperSignal: env.ctx.lifecycleSignal,
           ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
@@ -86,9 +85,9 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
       // pipeline.ts `addQueueWaitMs`).
       env.ctx.addQueueWaitMs(queueWaitMs)
 
-      // `UpstreamStream.headers` = the captured upstream response headers (P3.2
-      // consumer). `sendUpstreamHttp` already populated `headersCapture.response`.
-      const responseHeaders = new Headers(deps.headersCapture?.response ?? {})
+      // `UpstreamStream.headers` = the captured upstream response headers, read by
+      // the driver to write ctx.httpHeaders.outboundResponse (RFC Phase 2).
+      const responseHeaders = new Headers(headersCapture.response ?? {})
 
       if (!wire.stream) {
         return { frames: emptyFrames(), nonStream: result, headers: responseHeaders }

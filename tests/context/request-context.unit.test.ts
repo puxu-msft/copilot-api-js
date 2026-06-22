@@ -534,10 +534,9 @@ describe("createRequestContext - toHistoryEntry", () => {
       messages: [{ role: "user", content: "logical" }],
       context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
     })
-    expect(entry.httpHeaders?.outboundRequest).toEqual({
-      "anthropic-version": "2023-06-01",
-      "anthropic-beta": "context-management-2025-06-27,advanced-tool-use-2025-11-20",
-    })
+    // RFC Phase 2: httpHeaders.outboundRequest is written by the driver during the
+    // exchange (from wire.headers), no longer migrated from wireRequest at finalize —
+    // so toHistoryEntry() alone (no driver run) does not populate it here.
   })
 
   test("effectiveRequest is undefined when no attempt set it", () => {

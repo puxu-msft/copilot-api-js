@@ -216,6 +216,13 @@ export class HistorySink {
       updateEntry(ctx.id, { pipelineInfo: ctx.pipelineInfo })
       return
     }
+    if (field === "httpHeaders" && ctx.httpHeaders) {
+      // RFC Phase 5: mirror the live captured header legs onto the in-flight entry so
+      // streaming requests show httpHeaders before they finalize. Reads the full
+      // headers off the ctx ref (not carried in the lightweight snapshot).
+      updateEntry(ctx.id, { httpHeaders: ctx.httpHeaders })
+      return
+    }
     // Other field names (e.g. future additions) are intentionally ignored —
     // adding a new mirror-to-history field is an explicit choice.
   }

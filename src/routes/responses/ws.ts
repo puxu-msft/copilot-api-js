@@ -18,7 +18,6 @@ import type {
 
 import consola from "consola"
 
-import type { HeadersCapture } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
 import type {
   //
@@ -211,10 +210,8 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const wireInstructions = await processResponsesInstructions(rawPayload.instructions, resolvedModel)
   const wireBody: ResponsesPayload = { ...rawPayload, instructions: wireInstructions }
 
-  const headersCapture: HeadersCapture = {}
   const codec = createOpenAiResponsesCodec()
   const transport = createUpstreamResponsesTransport({
-    headersCapture,
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0,
   })
@@ -246,7 +243,6 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   } catch (error) {
     const ctx = codec.getContext()
     if (ctx) {
-      ctx.setHttpHeaders(headersCapture)
       ctx.fail(resolvedModel, error)
     }
     wsClientAborts.delete(ws)
@@ -259,7 +255,6 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   if (!result.ok) {
     const ctx = codec.getContext()
     if (ctx) {
-      ctx.setHttpHeaders(headersCapture)
       ctx.fail(resolvedModel, new Error(result.rejection.reason))
     }
     wsClientAborts.delete(ws)
@@ -268,7 +263,6 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   }
 
   const { upstream, env } = result
-  env.ctx.setHttpHeaders(headersCapture)
   const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
 
   // Fallback registers the session eagerly so a mid-stream follow-up resolves it.

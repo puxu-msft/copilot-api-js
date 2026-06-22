@@ -1,6 +1,6 @@
 # RFC：History HTTP Header 捕获的理想形状重构
 
-状态：草案 v6.1（完整阶段模型；完整性轴复审通过、无残留裁剪；可进入实现）。作者：基于多轮对抗调研 + 主线实证 + operator 的完整性纠正。
+状态：**实现中** — Phase 0/1/2/4/5 已落地（golden + 存原始 + driver 捕获删 bag + 第四腿 inboundResponse + in-flight 可见，全套测试绿）；Phase 3（per-attempt）暂缓（见 §5）。设计基线：草案 v6.1（完整阶段模型；完整性轴复审通过、无残留裁剪）。
 
 > **v6.1 修订（完整性轴复审）**：两个 reviewer 用 richest-data-flow 完整性轴（显式覆盖 YAGNI）复审——确认 v6 已彻底逆转 v1-v5 裁剪、无残留（两个"空/no-op"是 WS 真无源非裁剪）。精修：③ per-attempt 持久化**非纯加字段**（driver 现根本不写 per-attempt response，须在 `runExchange` 成功/catch 新增写入，§4.3/§5 Phase 3）；OQ1 经实测解答（Hono streamSSE 非 lazy，`c.res.headers` 返回后可靠）；补 trailers 未来完整性占位 OQ5。
 
@@ -117,7 +117,7 @@ anthropic-beta 语义消费（`codec.ts:325` 读 + `request-preparation.ts:208` 
 - **Phase 0（golden 预捕获）**：旧代码上 4 格式 ×（完成 + HTTP-错误失败 + 重试）golden，锁现有三腿 + 敏感头（`***`，Phase 1 更新）。`tests/history/*.it.test.ts`。
 - **Phase 1（存原始）**：拆 History 捕获路径 sanitize；betaProbe 不动；sink 不加开关。迁移断言 `***` 的测试（`anthropic-client.it.test.ts:97`、`openai-responses-client.it.test.ts:117`、`history-store`/`history-api`/`request-context`）。Invariant：三腿在、敏感头变真实。
 - **Phase 2（②③ driver 捕获 + 删 bag + 扩 classify）**：前置扩 `classifyHTTPError` 全分支透传 responseHeaders；driver per-attempt 写出站两腿（成败两路）；`sendUpstreamHttp` 返回扩 response.headers、transport 脱 bag。过渡双写比对（完成 + 502 失败）逐格式一致后删 bag + 13 setHttpHeaders + transport dep + captureHttpHeaders + finalize 迁移。迁移测试 `request-context.unit.test.ts:537/621/627`、`http-transport.it.test.ts:80/84/86`、`fetch-utils.it.test.ts:55-62`。Invariant：顶层三腿（含 HTTP-错误 ③）不回退。
-- **Phase 3（②③ per-attempt 持久化）**：② `RequestLegData` 加 headers + `legFromWire` 输出（纯机械）；③ `OutboundResponseData` 加 headers + **新增 driver per-attempt response 写入逻辑**（`runExchange` 成功 return 前写 `upstream.headers`、catch 写 `apiError.responseHeaders`——driver 现仅 final attempt 经 complete/fail 落 response，非机械加字段）+ serialize 随对象落盘。Invariant：retry entry 的 `attempts[].wireRequest.headers`/`.response.headers` 逐 attempt 完整、顶层镜像最终。
+- **Phase 3（②③ per-attempt 持久化）— 暂缓（实现中发现，文档化待后续）**。原计划 ② `RequestLegData` 加 headers + `legFromWire` 输出。**实测发现**：加 headers 到 `RequestLegData`/`legFromWire` 后，per-attempt `attempts[].wireRequest.headers` **及顶层 `entry.outboundRequest`（RequestLegData 腿）均不带 headers**——sqlite stage 序列化/反序列化路径（`serialize.ts` outbound_request stage round-trip）未携带新增的 `headers` 字段（须进一步排查 stage payload 投影/压缩是否过滤）。**根因/当前/理想/为何暂缓**：(根因) RequestLegData 腿走 entry_stages 拆表 round-trip、与随 head-blob 落盘的 httpHeaders 不同路径；(当前) **httpHeaders.outboundRequest 已存最终 attempt 的出站请求头（Phase 2，可用）**，per-attempt 维度缺失；(理想) per-attempt ②③ 完整记录每次 retry 的出站头；(为何暂缓) ② 与 httpHeaders.outboundRequest **高度冗余**（请求头跨 attempt 多数相同）+ stage round-trip 须排查 + **零 UI 消费者**；③ 须**新增 driver per-attempt response 写入路径**（driver 现仅 final attempt 经 complete/fail 落 response）+ 新 attempt 字段/setter/serialize，是更大改动。(若做需改) 排查 serialize stage 为何丢 RequestLegData.headers / 或改用 head-blob 路径 + 新增 `setAttemptResponseHeaders` + driver 成功/catch 写 + attempt 类型 + serialize。
 - **Phase 4（④ inboundResponse 建捕获）**：4 格式 handler 写出点捕获 `c.res.headers` → `ctx.httpHeaders.inboundResponse`；保留 4 处类型声明改活腿。Invariant：四腿齐全；WS 按语义。
 - **Phase 5（in-flight 可见）**：setter publish + sink onContextUpdated 分支。Invariant：终态不变；in-flight 含 httpHeaders；WS 推送体积不爆。
 - **Phase 6（① 入站捕获收敛，暂缓收尾）**：4 格式逐字节相同的入站捕获上移 driver S1（最低优先，撞 reject 路径 ctx 生命周期，OQ）。
