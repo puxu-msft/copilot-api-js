@@ -1,5 +1,6 @@
 import {
   //
+  afterEach,
   describe,
   expect,
   test,
@@ -13,6 +14,12 @@ import {
   modelSupportsInterleavedThinking,
   modelSupportsToolSearch,
 } from "~/lib/anthropic/features"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 describe("modelSupportsInterleavedThinking", () => {
   test("should NOT support claude-opus-4.6 (uses adaptive thinking instead)", () => {
@@ -208,5 +215,34 @@ describe("mergeAnthropicBeta", () => {
     expect(mergeAnthropicBeta(undefined, undefined)).toBeUndefined()
     expect(mergeAnthropicBeta("", "")).toBeUndefined()
     expect(mergeAnthropicBeta("  ", ",,")).toBeUndefined()
+  })
+})
+
+describe("model-capability allowlists are config-driven (state-sourced)", () => {
+  const snapshot = snapshotStateForTests()
+  // Restore after EVERY test (even on throw) so a mutated module-global can't leak across tests/files.
+  afterEach(() => restoreStateForTests(snapshot))
+
+  test("a custom contextEditingModels list overrides the defaults (family-match)", () => {
+    setStateForTests({ contextEditingModels: ["claude-future-9", "claude-opus-4-6"] })
+    // The custom family is now supported…
+    expect(modelSupportsContextEditing("claude-future-9")).toBe(true)
+    expect(modelSupportsContextEditing("claude-future-9-mini")).toBe(true) // family member
+    expect(modelSupportsContextEditing("claude-opus-4.6")).toBe(true)
+    // …and a model NOT in the custom list is no longer supported (default opus-4.8 dropped).
+    expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(false)
+    // Family boundary still excludes the unrelated "-90" sibling.
+    expect(modelSupportsContextEditing("claude-future-90")).toBe(false)
+  })
+
+  test("empty list disables a capability entirely", () => {
+    setStateForTests({ toolSearchModels: [] })
+    expect(modelSupportsToolSearch("claude-opus-4.6")).toBe(false)
+  })
+
+  test("interleaved list is config-driven too", () => {
+    setStateForTests({ interleavedThinkingModels: ["claude-opus-4-8"] })
+    expect(modelSupportsInterleavedThinking("claude-opus-4.8")).toBe(true)
+    expect(modelSupportsInterleavedThinking("claude-sonnet-4.5")).toBe(false) // default dropped
   })
 })

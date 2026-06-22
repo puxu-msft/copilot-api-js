@@ -329,6 +329,21 @@ export const AnthropicConfigSchema = z
      */
     protect_streaming_escalate_context: nullableBoolean(),
     /**
+     * Config-driven model-capability allowlists. Each is a list of model-name "family" prefixes
+     * (normalized: lowercase, dots→dashes); a model has the capability when its normalized id equals
+     * an entry or starts with `entry + "-"`. Bundled defaults mirror GHC's capability checks — edit
+     * to add/remove models (e.g. a new Claude release) WITHOUT a code change. See features.ts.
+     */
+    model_capabilities: z
+      .object({
+        context_editing: nullableNonemptyStringArray(),
+        tool_search: nullableNonemptyStringArray(),
+        interleaved_thinking: nullableNonemptyStringArray(),
+        adaptive_thinking: nullableNonemptyStringArray(),
+      })
+      .strict()
+      .optional(),
+    /**
      * Forced heartbeat interval (seconds) for the buffered-retry path. The buffered
      * sink withholds all real frames until `message_stop`, so the client would idle
      * out without a ping; the buffered path constructs a heartbeat UNCONDITIONALLY,

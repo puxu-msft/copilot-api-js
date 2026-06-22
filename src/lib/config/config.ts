@@ -473,6 +473,14 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.protect_streaming_heartbeat !== undefined) setAnthropicBehavior({ protectStreamingHeartbeat: a.protect_streaming_heartbeat })
     if (a.protect_streaming_buffer_cap_bytes !== undefined) setAnthropicBehavior({ protectStreamingBufferCapBytes: a.protect_streaming_buffer_cap_bytes })
     if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
+    // Model-capability allowlists (retain-on-absence per sub-key; an explicit empty list clears).
+    if (a.model_capabilities) {
+      const mc = a.model_capabilities
+      if (mc.context_editing !== undefined) setAnthropicBehavior({ contextEditingModels: mc.context_editing })
+      if (mc.tool_search !== undefined) setAnthropicBehavior({ toolSearchModels: mc.tool_search })
+      if (mc.interleaved_thinking !== undefined) setAnthropicBehavior({ interleavedThinkingModels: mc.interleaved_thinking })
+      if (mc.adaptive_thinking !== undefined) setAnthropicBehavior({ adaptiveThinkingModels: mc.adaptive_thinking })
+    }
     if (a.tool_inject_claude_code !== undefined) {
       setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.tool_inject_claude_code })
     }

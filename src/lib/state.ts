@@ -143,6 +143,17 @@ export interface State {
   /** 透明恢复上游 tool-call 文本降级（RFC tool-call-text-recovery）。默认 false。 */
   readonly recoverToolCallText: boolean
 
+  /**
+   * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
+   * normalized model-name "family" prefixes; a model has the capability when its normalized id
+   * equals an entry or starts with `entry + "-"` (see `features.ts:matchModelCapability`). Bundled
+   * defaults mirror GHC's capability checks; editing config adds/removes models without code changes.
+   */
+  readonly contextEditingModels: ReadonlyArray<string>
+  readonly toolSearchModels: ReadonlyArray<string>
+  readonly interleavedThinkingModels: ReadonlyArray<string>
+  readonly adaptiveThinkingModels: ReadonlyArray<string>
+
   /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
   readonly stripServerTools: boolean
 
@@ -810,6 +821,10 @@ export function setAnthropicBehavior(
       | "compressToolResultsBeforeTruncate"
       | "sanitizeToolNames"
       | "recoverToolCallText"
+      | "contextEditingModels"
+      | "toolSearchModels"
+      | "interleavedThinkingModels"
+      | "adaptiveThinkingModels"
       | "anthropicApiKey"
       | "warmupPolicy"
       | "effortsOverrides"
@@ -1008,6 +1023,18 @@ export const CONFIG_MANAGED_DEFAULTS = {
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
   recoverToolCallText: false,
+  // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
+  contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
+  toolSearchModels: [
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+  ] as ReadonlyArray<string>,
+  interleavedThinkingModels: ["claude-sonnet-4", "claude-haiku-4-5", "claude-opus-4-5"] as ReadonlyArray<string>,
+  adaptiveThinkingModels: ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"] as ReadonlyArray<string>,
   fetchTimeout: 300,
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
@@ -1071,6 +1098,10 @@ export function resetConfigManagedState(): void {
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+    contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
+    toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
+    interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
+    adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
     anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
@@ -1135,6 +1166,10 @@ const mutableState: MutableState = {
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+  contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
+  toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
+  interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
+  adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
   contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
   contextEditingKeepTools: CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools,

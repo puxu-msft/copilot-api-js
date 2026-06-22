@@ -200,6 +200,39 @@ anthropic:
   # On each buffered RST/truncation retry, FORCE a progressively aggressive native clear_tool_uses context_management edit (lower trigger + smaller keep) to compress the context so the generation finishes faster — within the next RST window. Independent of context_editing (retry-only emergency compression); skipped when the model doesn't support context_management. Changes request semantics (drops more old context). Default false (opt-in; enable only after telemetry shows plain retry's hit rate is low for over-budget requests).
   protect_streaming_escalate_context: false
 
+  # Model-capability allowlists — which models get each Anthropic capability.
+  # Each list holds model-name "family" prefixes (normalized: lowercase, dots→dashes).
+  # A model has the capability when its normalized id EQUALS an entry or starts with
+  # `entry + "-"` — so `claude-opus-4` matches `claude-opus-4` and the whole
+  # `claude-opus-4-x` family, but NOT the unrelated `claude-opus-40`.
+  # These mirror GitHub Copilot Chat's capability checks; edit to add/remove models
+  # (e.g. a new Claude release) WITHOUT a code change. Entries may be dotted or dashed.
+  model_capabilities:
+    # context_management (clear_tool_uses / clear_thinking) support.
+    context_editing:
+      - claude-haiku-4-5
+      - claude-sonnet-4
+      - claude-opus-4
+      - claude-opus-41
+    # Native server-side tool_search support.
+    tool_search:
+      - claude-sonnet-4-5
+      - claude-sonnet-4-6
+      - claude-opus-4-5
+      - claude-opus-4-6
+      - claude-opus-4-7
+      - claude-opus-4-8
+    # interleaved-thinking-2025-05-14 beta (non-adaptive thinking models).
+    interleaved_thinking:
+      - claude-sonnet-4
+      - claude-haiku-4-5
+      - claude-opus-4-5
+    # Adaptive thinking ({type:adaptive}) — name fallback when /models metadata is silent.
+    adaptive_thinking:
+      - claude-opus-4-6
+      - claude-opus-4-7
+      - claude-opus-4-8
+
   # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
   # "input": dedup by (name, input); "result": also require identical result
   tool_dedup_calls: false

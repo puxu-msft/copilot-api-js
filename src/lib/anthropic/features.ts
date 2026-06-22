@@ -51,6 +51,24 @@ export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision 
 // ============================================================================
 
 /**
+ * Match a model id against a config-driven capability allowlist of model-name "family" prefixes.
+ *
+ * A prefix `p` matches when `normalize(model) === normalize(p)` OR `normalize(model)` starts with
+ * `normalize(p) + "-"`. The trailing-dash boundary is what makes `claude-opus-4` match the bare
+ * `claude-opus-4` and the whole `claude-opus-4-x` family, WITHOUT matching the unrelated
+ * `claude-opus-40`. Entries may be written dotted or dashed (both normalize the same). The lists
+ * live in `state` (sourced from `anthropic.model_capabilities` in config.yaml — bundled defaults
+ * mirror GHC's capability checks); editing config adds/removes models without a code change.
+ */
+function matchModelCapability(modelId: string, prefixes: ReadonlyArray<string>): boolean {
+  const n = normalizeForMatching(modelId)
+  return prefixes.some((p) => {
+    const np = normalizeForMatching(p)
+    return n === np || n.startsWith(`${np}-`)
+  })
+}
+
+/**
  * Interleaved thinking is supported by:
  * - Claude Sonnet 4/4.5
  * - Claude Haiku 4.5
@@ -63,13 +81,7 @@ export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision 
  *   interleaved-thinking beta header.
  */
 export function modelSupportsInterleavedThinking(modelId: string): boolean {
-  const normalized = normalizeForMatching(modelId)
-  return (
-    normalized.startsWith("claude-sonnet-4-5")
-    || normalized.startsWith("claude-sonnet-4")
-    || normalized.startsWith("claude-haiku-4-5")
-    || normalized.startsWith("claude-opus-4-5")
-  )
+  return matchModelCapability(modelId, state.interleavedThinkingModels)
 }
 
 /**
@@ -79,20 +91,7 @@ export function modelSupportsInterleavedThinking(modelId: string): boolean {
  * - Claude Opus 4/4.1/4.5/4.6/4.7
  */
 export function modelSupportsContextEditing(modelId: string): boolean {
-  const normalized = normalizeForMatching(modelId)
-  return (
-    normalized.startsWith("claude-haiku-4-5")
-    || normalized.startsWith("claude-sonnet-4-6")
-    || normalized.startsWith("claude-sonnet-4-5")
-    || normalized === "claude-sonnet-4"
-    || normalized.startsWith("claude-opus-4-7")
-    || normalized.startsWith("claude-opus-4-8")
-    || normalized.startsWith("claude-opus-4-5")
-    || normalized.startsWith("claude-opus-4-6")
-    || normalized.startsWith("claude-opus-4-1")
-    || normalized === "claude-opus-41"
-    || normalized === "claude-opus-4"
-  )
+  return matchModelCapability(modelId, state.contextEditingModels)
 }
 
 /**
@@ -110,15 +109,7 @@ export function isContextEditingEnabled(modelId: string): boolean {
  * - Claude Opus 4.5/4.6/4.7
  */
 export function modelSupportsToolSearch(modelId: string): boolean {
-  const normalized = normalizeForMatching(modelId)
-  return (
-    normalized.startsWith("claude-sonnet-4-5")
-    || normalized.startsWith("claude-sonnet-4-6")
-    || normalized.startsWith("claude-opus-4-5")
-    || normalized.startsWith("claude-opus-4-6")
-    || normalized.startsWith("claude-opus-4-7")
-    || normalized.startsWith("claude-opus-4-8")
-  )
+  return matchModelCapability(modelId, state.toolSearchModels)
 }
 
 // ============================================================================
@@ -169,7 +160,7 @@ export function modelHasAdaptiveThinking(modelId: string, resolvedModel?: Model)
   if (typeof supports?.max_thinking_budget === "number" && supports.max_thinking_budget > 0) return false
 
   const normalized = normalizeForMatching(modelId)
-  return normalized.startsWith("claude-opus-4-6") || normalized.startsWith("claude-opus-4-7") || normalized.startsWith("claude-opus-4-8")
+  return matchModelCapability(normalized, state.adaptiveThinkingModels)
 }
 
 /**
