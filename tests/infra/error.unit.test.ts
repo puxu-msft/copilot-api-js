@@ -11,6 +11,7 @@ import {
   classifyError,
   forwardError,
   formatErrorWithCause,
+  mapHttpErrorToEnvelope,
   parseRetryAfterHeader,
   parseTokenLimitError,
 } from "~/lib/error"
@@ -777,5 +778,48 @@ describe("forwardError", () => {
     const { ctx, getLastJson } = createMockContextWithSignal(false)
     forwardError(ctx, new Error("genuinely unexpected failure"))
     expect(getLastJson().status).toBe(500)
+  })
+})
+
+// ─── mapHttpErrorToEnvelope (C3b-pre1 — pure dispatch shared by forwardError + RFC ③ POST-COMMIT) ───
+
+describe("mapHttpErrorToEnvelope", () => {
+  test("429 (rate_limited body) → anthropic rate_limit_error envelope, status 429, classified, warn log", () => {
+    const body = JSON.stringify({ error: { code: "rate_limited", message: "Too many requests" } })
+    const out = mapHttpErrorToEnvelope(new HTTPError("Rate limited", 429, body), "anthropic")
+    expect(out.status).toBe(429)
+    expect(out.classified).toBe(true)
+    expect(out.log.level).toBe("warn")
+    expect((out.body as { error: { type: string } }).error.type).toBe("rate_limit_error")
+  })
+
+  test("402 with Retry-After → quota envelope carries retry_after; log notes the wait", () => {
+    const headers = new Headers({ "retry-after": "42" })
+    const out = mapHttpErrorToEnvelope(new HTTPError("Quota", 402, "{}", undefined, headers), "anthropic")
+    expect(out.status).toBe(402)
+    expect((out.body as { retry_after?: number }).retry_after).toBe(42)
+    expect(out.log.message).toContain("42")
+  })
+
+  test("503 upstream-rate-limited (message-only, no rate_limited code) → openai rate_limit_exceeded, status 503, classified", () => {
+    const body = JSON.stringify({ error: { message: "Rate limit exceeded for upstream provider" } })
+    const out = mapHttpErrorToEnvelope(new HTTPError("Unavailable", 503, body), "openai")
+    expect(out.status).toBe(503)
+    expect(out.classified).toBe(true)
+    expect((out.body as { error: { type: string } }).error.type).toBe("rate_limit_exceeded")
+  })
+
+  test("opaque 500 → default envelope, status 500, NOT classified (where forwardError attaches diagnostics), error log", () => {
+    const out = mapHttpErrorToEnvelope(new HTTPError("Boom", 500, "internal failure"), "anthropic")
+    expect(out.status).toBe(500)
+    expect(out.classified).toBe(false)
+    expect(out.log.level).toBe("error")
+  })
+
+  test("body matches what forwardError emits (forwardError now delegates to map) — 413 parity", () => {
+    const err = new HTTPError("Too large", 413, "")
+    const mapped = mapHttpErrorToEnvelope(err, "anthropic")
+    expect(mapped.status).toBe(413)
+    expect((mapped.body as { error: { type: string } }).error.type).toBe("invalid_request_error")
   })
 })

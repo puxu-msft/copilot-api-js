@@ -346,95 +346,135 @@ function pickHelpers(format: ErrorWireFormat): FormatHelpers {
   return ANTHROPIC_HELPERS
 }
 
+/** Log descriptor returned by {@link mapHttpErrorToEnvelope} — emitted by the caller, NOT here, so the status dispatch stays pure + single-sourced. */
+interface ErrorEnvelopeLog {
+  level: "warn" | "error"
+  message: string
+  /** Optional second consola arg (the default path logs the parsed errorJson object). */
+  data?: unknown
+}
+
+/**
+ * Map an upstream {@link HTTPError} to its wire envelope for `format` — the PURE
+ * status→{body,status} dispatch shared by {@link forwardError} (→ `c.json`) and the
+ * streaming POST-COMMIT error-frame synthesis (RFC ③, docs/rfc/pre-response-abort-handling.md §4.2.5).
+ * NO side effects: the `log` descriptor is emitted by the caller (keeps the branching
+ * single-sourced), and `classified` (false only on the default fall-through) tells the
+ * caller where tool-diagnostics augmentation applies. The Anthropic helper outputs are
+ * already shaped like an SSE `error` event's data, so ③ uses `body` verbatim.
+ */
+export function mapHttpErrorToEnvelope(
+  error: HTTPError,
+  format: ErrorWireFormat,
+): { body: Record<string, unknown>; status: number; log: ErrorEnvelopeLog; classified: boolean } {
+  const helpers = pickHelpers(format)
+  const limitInfo = error.status === 400 ? extractTokenLimitFromResponseText(error.responseText) : null
+
+  if (error.status === 413) {
+    return { body: helpers.requestTooLarge(), status: 413, log: { level: "warn", message: "HTTP 413: Request too large" }, classified: true }
+  }
+
+  if (limitInfo?.current && limitInfo.limit) {
+    const excess = limitInfo.current - limitInfo.limit
+    const percentage = Math.round((excess / limitInfo.limit) * 100)
+    return {
+      body: helpers.tokenLimit(limitInfo.current, limitInfo.limit),
+      status: 400,
+      log: {
+        level: "warn",
+        message:
+          `HTTP ${error.status}: Token limit exceeded for ${error.modelId ?? "unknown"} `
+          + `(${limitInfo.current.toLocaleString()} > ${limitInfo.limit.toLocaleString()}, `
+          + `${excess.toLocaleString()} over, ${percentage}% excess)`,
+      },
+      classified: true,
+    }
+  }
+
+  if (error.status === 402) {
+    const retryAfter = parseRetryAfterHeader(error.responseHeaders)
+    return {
+      body: helpers.quotaExceeded(retryAfter),
+      status: 402,
+      log: { level: "warn", message: `HTTP 402: Quota exceeded${retryAfter ? ` (retry after ${retryAfter}s)` : ""}` },
+      classified: true,
+    }
+  }
+
+  if (error.status === 422) {
+    return {
+      body: helpers.contentFiltered(error.responseText),
+      status: 422,
+      log: { level: "warn", message: "HTTP 422: Content filtered by safety system" },
+      classified: true,
+    }
+  }
+
+  let errorJson: unknown
+  try {
+    errorJson = JSON.parse(error.responseText)
+  } catch {
+    errorJson = error.responseText
+  }
+
+  if (typeof errorJson === "object" && errorJson !== null) {
+    const errorObj = errorJson as CopilotError & AnthropicError
+
+    if (error.status === 429 || errorObj.error?.code === "rate_limited") {
+      return {
+        body: helpers.rateLimit(errorObj.error?.message),
+        status: 429,
+        log: { level: "warn", message: "HTTP 429: Rate limit exceeded" },
+        classified: true,
+      }
+    }
+
+    if (error.status === 503 && isUpstreamRateLimited(error.responseText)) {
+      const retryAfter = parseRetryAfterHeader(error.responseHeaders)
+      const body = helpers.rateLimit(errorObj.error?.message ?? "Upstream provider rate limited. Please try again later.")
+      if (retryAfter) {
+        body.retry_after = retryAfter
+      }
+      return {
+        body,
+        status: 503,
+        log: { level: "warn", message: `HTTP 503: Upstream provider rate limited${retryAfter ? ` (retry after ${retryAfter}s)` : ""}` },
+        classified: true,
+      }
+    }
+  } else if (error.status === 429) {
+    return { body: helpers.rateLimit(), status: 429, log: { level: "warn", message: "HTTP 429: Rate limit exceeded" }, classified: true }
+  }
+
+  // Default pass-through (unclassified) — the caller attaches tool diagnostics here.
+  const log: ErrorEnvelopeLog =
+    typeof errorJson === "string" ?
+      {
+        level: "error",
+        message: `HTTP ${error.status}: ${errorJson.trimStart().startsWith("<") ? `[HTML ${errorJson.length} bytes]` : truncateForLog(errorJson, 200)}`,
+      }
+    : { level: "error", message: `HTTP ${error.status}:`, data: errorJson }
+  return { body: helpers.defaultError(error.responseText, error.status >= 500, error.status), status: error.status, log, classified: false }
+}
+
 export function forwardError(c: Context, error: unknown, format: ErrorWireFormat = "anthropic") {
   const helpers = pickHelpers(format)
 
   if (error instanceof HTTPError) {
-    const limitInfo = error.status === 400 ? extractTokenLimitFromResponseText(error.responseText) : null
+    const { body, status, log, classified } = mapHttpErrorToEnvelope(error, format)
+    if (log.data !== undefined) consola[log.level](log.message, log.data)
+    else consola[log.level](log.message)
 
-    if (error.status === 413) {
-      const formattedError = helpers.requestTooLarge()
-      consola.warn("HTTP 413: Request too large")
-      return c.json(formattedError, 413 as ContentfulStatusCode)
-    }
-
-    if (limitInfo?.current && limitInfo.limit) {
-      const formattedError = helpers.tokenLimit(limitInfo.current, limitInfo.limit)
-      const excess = limitInfo.current - limitInfo.limit
-      const percentage = Math.round((excess / limitInfo.limit) * 100)
-      consola.warn(
-        `HTTP ${error.status}: Token limit exceeded for ${error.modelId ?? "unknown"} `
-          + `(${limitInfo.current.toLocaleString()} > ${limitInfo.limit.toLocaleString()}, `
-          + `${excess.toLocaleString()} over, ${percentage}% excess)`,
-      )
-      return c.json(formattedError, 400 as ContentfulStatusCode)
-    }
-
-    if (error.status === 402) {
-      const retryAfter = parseRetryAfterHeader(error.responseHeaders)
-      const formattedError = helpers.quotaExceeded(retryAfter)
-      consola.warn(`HTTP 402: Quota exceeded${retryAfter ? ` (retry after ${retryAfter}s)` : ""}`)
-      return c.json(formattedError, 402 as ContentfulStatusCode)
-    }
-
-    if (error.status === 422) {
-      const formattedError = helpers.contentFiltered(error.responseText)
-      consola.warn("HTTP 422: Content filtered by safety system")
-      return c.json(formattedError, 422 as ContentfulStatusCode)
-    }
-
-    let errorJson: unknown
-    try {
-      errorJson = JSON.parse(error.responseText)
-    } catch {
-      errorJson = error.responseText
-    }
-
-    if (typeof errorJson === "object" && errorJson !== null) {
-      const errorObj = errorJson as CopilotError & AnthropicError
-
-      if (error.status === 429 || errorObj.error?.code === "rate_limited") {
-        const formattedError = helpers.rateLimit(errorObj.error?.message)
-        consola.warn("HTTP 429: Rate limit exceeded")
-        return c.json(formattedError, 429 as ContentfulStatusCode)
-      }
-
-      if (error.status === 503 && isUpstreamRateLimited(error.responseText)) {
-        const retryAfter = parseRetryAfterHeader(error.responseHeaders)
-        const formattedError = helpers.rateLimit(errorObj.error?.message ?? "Upstream provider rate limited. Please try again later.")
-        if (retryAfter) {
-          formattedError.retry_after = retryAfter
-        }
-        consola.warn(`HTTP 503: Upstream provider rate limited${retryAfter ? ` (retry after ${retryAfter}s)` : ""}`)
-        return c.json(formattedError, 503 as ContentfulStatusCode)
-      }
-    } else if (error.status === 429) {
-      const formattedError = helpers.rateLimit()
-      consola.warn("HTTP 429: Rate limit exceeded")
-      return c.json(formattedError, 429 as ContentfulStatusCode)
-    }
-
-    if (typeof errorJson === "string") {
-      const isHtml = errorJson.trimStart().startsWith("<")
-      const preview = isHtml ? `[HTML ${errorJson.length} bytes]` : truncateForLog(errorJson, 200)
-      consola.error(`HTTP ${error.status}: ${preview}`)
-    } else {
-      consola.error(`HTTP ${error.status}:`, errorJson)
-    }
-
-    // Hint-only tool-schema diagnostics attached by the client on suspicious
-    // 400s. Warn + surface as a sibling field so the standard error envelope
-    // (`error: {...}`) is left untouched. Note: already-classified 400s
-    // (token-limit / 413 / 422) return earlier via their specialized envelopes
-    // and intentionally do not carry tool_diagnostics here (their root cause is
-    // already known); the diagnostics are still persisted to History via
-    // RequestContext.fail().
-    const body = helpers.defaultError(error.responseText, error.status >= 500, error.status)
-    if (error.diagnostics) {
+    // Hint-only tool-schema diagnostics attached by the client on suspicious 400s —
+    // ONLY on the unclassified default path (token-limit / 413 / 422 / 429 / 503 envelopes
+    // intentionally omit them: their root cause is already known). Warn + surface as a
+    // sibling field so the standard error envelope (`error: {...}`) is left untouched;
+    // the diagnostics are still persisted to History via RequestContext.fail().
+    if (!classified && error.diagnostics) {
       logToolDiagnostics(error.modelId ?? "unknown", error.diagnostics)
       body.tool_diagnostics = error.diagnostics
     }
-    return c.json(body, error.status as ContentfulStatusCode)
+    return c.json(body, status as ContentfulStatusCode)
   }
 
   const errorMessage = error instanceof Error ? formatErrorWithCause(error) : String(error)

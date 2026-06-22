@@ -137,6 +137,7 @@ function classifyHTTPError(error: HTTPError): ApiError {
       type: "payload_too_large",
       status,
       message,
+      responseHeaders: error.responseHeaders,
       raw: error,
     }
   }
@@ -158,6 +159,7 @@ function classifyHTTPError(error: HTTPError): ApiError {
       status,
       message,
       retryAfter,
+      responseHeaders: error.responseHeaders,
       raw: error,
     }
   }
@@ -167,6 +169,7 @@ function classifyHTTPError(error: HTTPError): ApiError {
       type: "server_error",
       status,
       message,
+      responseHeaders: error.responseHeaders,
       raw: error,
     }
   }
@@ -176,6 +179,7 @@ function classifyHTTPError(error: HTTPError): ApiError {
       type: "auth_expired",
       status,
       message,
+      responseHeaders: error.responseHeaders,
       raw: error,
     }
   }
@@ -189,6 +193,7 @@ function classifyHTTPError(error: HTTPError): ApiError {
         message,
         tokenLimit: tokenLimit.limit,
         tokenCurrent: tokenLimit.current,
+        responseHeaders: error.responseHeaders,
         raw: error,
       }
     }
@@ -200,6 +205,7 @@ function classifyHTTPError(error: HTTPError): ApiError {
         status,
         message,
         retryAfter,
+        responseHeaders: error.responseHeaders,
         raw: error,
       }
     }
@@ -209,6 +215,7 @@ function classifyHTTPError(error: HTTPError): ApiError {
     type: "bad_request",
     status,
     message,
+    responseHeaders: error.responseHeaders,
     raw: error,
   }
 }
