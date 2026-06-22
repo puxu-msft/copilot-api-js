@@ -238,6 +238,8 @@ ui/
 
 **隔离纪律**：bun 单进程跑全套件，全局单例（state、history、upstream-WS manager、`mock.module`）会跨文件泄漏。因此：测试用 DI/fetch-mock 而非 `mock.module`（仅 `tui-format` 的 picocolors 是已证良性的例外）；mutate 全局 state 的测试用 `autoRestoreState()` 还原；带 fs I/O 的测试（如 setup-claude-code）用注入的临时目录，绝不碰真实 `$HOME`。
 
+**持久化路径地板防线**（2026-06 加）：`bunfig.toml` 的 `[test].preload`（`tests/helpers/sandbox-paths.ts`）在任何 src 模块算 `PATHS` 前把 `XDG_DATA_HOME` 重定向到 `mkdtemp` 临时目录，兜住**所有 APP_DIR 派生持久化**（negotiation/`history.db`/logs/learned-limits/telemetry）——`[test].preload` 只作用于 `bun test`、不影响 `bun run start`/生产。守卫 `tests/infra/sandbox-paths.unit.test.ts`。逐测试 `PATHS.X = mkdtemp()` 注入仍是首选（更强的 test-to-test 隔离），preload 是兜底地板而非替代。**背景**：曾有 30+ 测试经 `bootstrapTestRuntime`→`initHistory` 默认开真实 `history.db` 并 reap、9 个 negotiation 测试经 `reset` 写空真实 `negotiation-states.json`——完整审计与"全面重写"方向见 [rfc/test-env-isolation.md](rfc/test-env-isolation.md)。
+
 ## 运行时选项
 
 所有运行时状态集中在 `lib/state.ts`，通过 CLI 参数或 config.yaml 设置。
