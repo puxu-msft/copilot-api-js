@@ -7,6 +7,9 @@ token = "$NPM_TOKEN"
 
 [test]
 root = "./tests"
+# Redirect APP_DIR-derived persistence to a temp dir so no test touches the real
+# ~/.local/share/copilot-api (see tests/helpers/sandbox-paths.ts).
+preload = ["./tests/helpers/sandbox-paths.ts"]
 coverage = true
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
