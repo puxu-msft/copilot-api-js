@@ -11,7 +11,11 @@
  * upstream-reported count for Claude models) directly observable offline.
  */
 
-import { Hono } from "hono"
+import {
+  //
+  createRoute,
+  OpenAPIHono,
+} from "@hono/zod-openapi"
 import { z } from "zod"
 
 import type { Model } from "~/lib/models/client"
@@ -37,8 +41,12 @@ import { state } from "~/lib/state"
 
 import { handleDryRunPipeline } from "./dry-run-pipeline"
 
-export const debugRoutes = new Hono()
+export const debugRoutes = new OpenAPIHono()
 
+// `dry-run-pipeline` keeps a plain `.post` (not `.openapi`): its handler lives in
+// a separate module and its output is highly dynamic (per-format × per-stage
+// intermediate state), so a faithful schema would be noise. It stays functional
+// but is intentionally absent from the OpenAPI document.
 debugRoutes.post("/dry-run-pipeline", handleDryRunPipeline)
 
 const DryRunSchema = z
@@ -104,7 +112,24 @@ function resolveInput(body: z.infer<typeof DryRunSchema>): DryRunResolved | { er
   return { payload, format, model, resolvedModel, reported }
 }
 
-debugRoutes.post("/dry-run-truncate", async (c) => {
+const ErrorSchema = z.record(z.string(), z.unknown())
+
+const dryRunTruncateRoute = createRoute({
+  method: "post",
+  path: "/dry-run-truncate",
+  tags: ["debug"],
+  summary: "Offline auto-truncate replay (three token calibers + result)",
+  // Body validated by the handler (DryRunSchema), not the OpenAPI layer, so its
+  // bespoke 400/404 envelopes are preserved.
+  description: "Body: { entryId } or { payload, format? } (+ optional gpt-caliber `target`). Replays the real truncate path, short-circuiting the GHC call.",
+  responses: {
+    200: { description: "Caliber comparison + pre-check + truncation result", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid input", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "History entry not found", content: { "application/json": { schema: ErrorSchema } } },
+  },
+})
+
+debugRoutes.openapi(dryRunTruncateRoute, async (c) => {
   let raw: unknown
   try {
     raw = await c.req.json()
@@ -175,22 +200,25 @@ debugRoutes.post("/dry-run-truncate", async (c) => {
       }
     }
 
-    return c.json({
-      input: {
-        mode: parsed.data.entryId !== undefined ? "entry" : "payload",
-        ...(parsed.data.entryId !== undefined && { entryId: parsed.data.entryId }),
-        format,
-        resolvedModel,
+    return c.json(
+      {
+        input: {
+          mode: parsed.data.entryId !== undefined ? "entry" : "payload",
+          ...(parsed.data.entryId !== undefined && { entryId: parsed.data.entryId }),
+          format,
+          resolvedModel,
+        },
+        calibers: { gptTokenizer, charOver4, reported },
+        ratios: {
+          reportedOverGpt: reported && gptTokenizer > 0 ? Number((reported.current / gptTokenizer).toFixed(3)) : null,
+          charOver4OverGpt: gptTokenizer > 0 ? Number((charOver4 / gptTokenizer).toFixed(3)) : null,
+        },
+        limit: { effectiveLimit: preCheck.tokenLimit, appliedGptTarget: appliedGptTarget ?? null },
+        preCheck,
+        truncate,
       },
-      calibers: { gptTokenizer, charOver4, reported },
-      ratios: {
-        reportedOverGpt: reported && gptTokenizer > 0 ? Number((reported.current / gptTokenizer).toFixed(3)) : null,
-        charOver4OverGpt: gptTokenizer > 0 ? Number((charOver4 / gptTokenizer).toFixed(3)) : null,
-      },
-      limit: { effectiveLimit: preCheck.tokenLimit, appliedGptTarget: appliedGptTarget ?? null },
-      preCheck,
-      truncate,
-    })
+      200,
+    )
   } catch (error) {
     // Defense-in-depth: malformed block shapes inside an otherwise array-shaped
     // payload (bad content/system/tool blocks) make the tokenizer/truncate iterate

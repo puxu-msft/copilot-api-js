@@ -4,7 +4,12 @@
  * in a single request.
  */
 
-import { Hono } from "hono"
+import {
+  //
+  createRoute,
+  OpenAPIHono,
+  z,
+} from "@hono/zod-openapi"
 
 import { getAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
 import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
@@ -31,9 +36,46 @@ import {
 
 import packageJson from "../../../package.json"
 
-export const statusRoutes = new Hono()
+export const statusRoutes = new OpenAPIHono()
 
-statusRoutes.get("/", async (c) => {
+/**
+ * Aggregated server status. Top-level keys are documented; the nested objects
+ * (auth / quota / rateLimiter / requestTelemetry / memory / upstream_ws /
+ * protect_streaming) carry runtime-dynamic, evolving shapes and are described as
+ * open objects to avoid schema drift — see the handler / DESIGN.md for fields.
+ */
+const ServerStatusSchema = z
+  .object({
+    status: z.string().openapi({ description: "healthy | unhealthy | shutting_down" }),
+    uptime: z.number().openapi({ description: "Seconds since server start" }),
+    version: z.string(),
+    vsCodeVersion: z.string().nullable(),
+    auth: z.record(z.string(), z.unknown()),
+    quota: z.record(z.string(), z.unknown()).openapi({ description: "Copilot quota: { status: ok | no_data | error, ... }" }),
+    activeRequests: z.object({ count: z.number().int() }),
+    rateLimiter: z.record(z.string(), z.unknown()),
+    requestTelemetry: z.record(z.string(), z.unknown()),
+    memory: z.record(z.string(), z.unknown()),
+    shutdown: z.object({ phase: z.unknown() }),
+    models: z.object({ totalCount: z.number().int(), availableCount: z.number().int() }),
+    upstream_ws: z.record(z.string(), z.unknown()),
+    protect_streaming: z.record(z.string(), z.unknown()),
+  })
+  .openapi("ServerStatus")
+
+const getStatusRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["status"],
+  summary: "Aggregated server status",
+  description:
+    "Health, auth, Copilot quota, rate limiter, request telemetry, memory, shutdown phase, model counts, upstream-WS and L2 protect-streaming stats.",
+  responses: {
+    200: { description: "Server status", content: { "application/json": { schema: ServerStatusSchema } } },
+  },
+})
+
+statusRoutes.openapi(getStatusRoute, async (c) => {
   const now = Date.now()
 
   // Rate limiter status + config
@@ -124,62 +166,65 @@ statusRoutes.get("/", async (c) => {
     }
   }
 
-  return c.json({
-    status: serverStatus,
-    uptime: serverStartTime > 0 ? Math.floor((now - serverStartTime) / 1000) : 0,
-    version: packageJson.version,
-    vsCodeVersion: state.vsCodeVersion ?? null,
+  return c.json(
+    {
+      status: serverStatus,
+      uptime: serverStartTime > 0 ? Math.floor((now - serverStartTime) / 1000) : 0,
+      version: packageJson.version,
+      vsCodeVersion: state.vsCodeVersion ?? null,
 
-    auth: {
-      accountType: state.accountType,
-      tokenSource: state.tokenInfo?.source ?? null,
-      tokenExpiresAt: state.tokenInfo?.expiresAt ?? null,
-      copilotTokenExpiresAt: state.copilotTokenInfo ? state.copilotTokenInfo.expiresAt * 1000 : null,
+      auth: {
+        accountType: state.accountType,
+        tokenSource: state.tokenInfo?.source ?? null,
+        tokenExpiresAt: state.tokenInfo?.expiresAt ?? null,
+        copilotTokenExpiresAt: state.copilotTokenInfo ? state.copilotTokenInfo.expiresAt * 1000 : null,
+      },
+
+      quota,
+
+      activeRequests: {
+        count: activeCount,
+      },
+
+      rateLimiter,
+
+      requestTelemetry,
+
+      memory: {
+        historyBackend: "sqlite",
+        historyEntryCount,
+        historySuccessLimit: state.historySuccessLimit,
+        historyFailureLimit: state.historyFailureLimit,
+        inFlightCount,
+      },
+
+      shutdown: {
+        phase: getShutdownPhase(),
+      },
+
+      models: {
+        totalCount: state.models?.data.length ?? 0,
+        availableCount: state.modelIds.size,
+      },
+
+      upstream_ws: {
+        enabled: state.upstreamWebSocket,
+        active_connections: upstreamWs?.activeCount ?? 0,
+        consecutive_fallbacks: upstreamWs?.consecutiveFallbacks ?? 0,
+        temporarily_disabled: upstreamWs?.temporarilyDisabled ?? false,
+        // Absolute deadline (epoch ms) for half-open recovery; 0 when not disabled.
+        // Operators can derive "recovers in N seconds" client-side instead of us
+        // hardcoding the recovery window in the response shape.
+        disabled_until_ms: upstreamWs?.disabledUntilMs ?? 0,
+      },
+
+      // L2 buffered-retry hit-rate counters (RFC §10): since-restart aggregate.
+      // hit rate ≈ success / (success + exhausted) when retries occurred.
+      protect_streaming: {
+        enabled: state.protectStreamingGeneration,
+        ...getProtectStreamingStats(),
+      },
     },
-
-    quota,
-
-    activeRequests: {
-      count: activeCount,
-    },
-
-    rateLimiter,
-
-    requestTelemetry,
-
-    memory: {
-      historyBackend: "sqlite",
-      historyEntryCount,
-      historySuccessLimit: state.historySuccessLimit,
-      historyFailureLimit: state.historyFailureLimit,
-      inFlightCount,
-    },
-
-    shutdown: {
-      phase: getShutdownPhase(),
-    },
-
-    models: {
-      totalCount: state.models?.data.length ?? 0,
-      availableCount: state.modelIds.size,
-    },
-
-    upstream_ws: {
-      enabled: state.upstreamWebSocket,
-      active_connections: upstreamWs?.activeCount ?? 0,
-      consecutive_fallbacks: upstreamWs?.consecutiveFallbacks ?? 0,
-      temporarily_disabled: upstreamWs?.temporarilyDisabled ?? false,
-      // Absolute deadline (epoch ms) for half-open recovery; 0 when not disabled.
-      // Operators can derive "recovers in N seconds" client-side instead of us
-      // hardcoding the recovery window in the response shape.
-      disabled_until_ms: upstreamWs?.disabledUntilMs ?? 0,
-    },
-
-    // L2 buffered-retry hit-rate counters (RFC §10): since-restart aggregate.
-    // hit rate ≈ success / (success + exhausted) when retries occurred.
-    protect_streaming: {
-      enabled: state.protectStreamingGeneration,
-      ...getProtectStreamingStats(),
-    },
-  })
+    200,
+  )
 })

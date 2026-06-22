@@ -1,6 +1,11 @@
 /** Current effective runtime configuration and editable config.yaml routes */
 
-import { Hono } from "hono"
+import {
+  //
+  createRoute,
+  OpenAPIHono,
+  z,
+} from "@hono/zod-openapi"
 import fs from "node:fs/promises"
 import { parseDocument } from "yaml"
 
@@ -20,7 +25,115 @@ import {
   state,
 } from "~/lib/state"
 
-export const configRoutes = new Hono()
+export const configRoutes = new OpenAPIHono()
+
+/** Effective runtime config / raw config.yaml — both free-form key/value maps. */
+const ConfigObjectSchema = z.record(z.string(), z.unknown()).openapi("ConfigObject")
+
+/** Validation / read error envelope. */
+const ConfigErrorSchema = z
+  .object({
+    error: z.string(),
+    details: z.array(z.object({ field: z.string(), message: z.string() })).optional(),
+  })
+  .openapi("ConfigError")
+
+const getEffectiveConfigRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["config"],
+  summary: "Effective runtime configuration (secrets masked)",
+  responses: {
+    200: { description: "Effective config snapshot", content: { "application/json": { schema: ConfigObjectSchema } } },
+  },
+})
+
+const getConfigYamlRoute = createRoute({
+  method: "get",
+  path: "/yaml",
+  tags: ["config"],
+  summary: "Raw user config.yaml (parsed to JSON)",
+  responses: {
+    200: { description: "Parsed config.yaml", content: { "application/json": { schema: ConfigObjectSchema } } },
+    500: { description: "Failed to read config.yaml", content: { "application/json": { schema: ConfigErrorSchema } } },
+  },
+})
+
+const putConfigYamlRoute = createRoute({
+  method: "put",
+  path: "/yaml",
+  tags: ["config"],
+  summary: "Replace user config.yaml from a (partial) JSON config",
+  // NOTE: the request body is intentionally NOT validated by the OpenAPI layer —
+  // the handler does its own JSON-parse + `validateConfigInput`, returning
+  // bespoke 400 envelopes ("Invalid JSON body" / "Config validation failed")
+  // that existing tests lock. Declaring a request schema here would let the
+  // OpenAPI validator reject first and change those responses.
+  description: "Body: a partial config.yaml as JSON (sparse overrides merged into the user config file).",
+  responses: {
+    200: { description: "Saved config.yaml (parsed)", content: { "application/json": { schema: ConfigObjectSchema } } },
+    400: { description: "Invalid JSON or config validation failure", content: { "application/json": { schema: ConfigErrorSchema } } },
+  },
+})
+
+configRoutes.openapi(getEffectiveConfigRoute, (c) => {
+  return c.json(buildEffectiveConfig(), 200)
+})
+
+configRoutes.openapi(getConfigYamlRoute, async (c) => {
+  try {
+    const config = await loadRawConfigFile()
+    return c.json(config, 200)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to read config.yaml"
+    return c.json(
+      {
+        error: "Failed to read config.yaml",
+        details: [{ field: "$", message }],
+      },
+      500,
+    )
+  }
+})
+
+configRoutes.openapi(putConfigYamlRoute, async (c) => {
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json(
+      {
+        error: "Invalid JSON body",
+        details: [{ field: "$", message: "Request body must be valid JSON" }],
+      },
+      400,
+    )
+  }
+
+  const validation = validateConfigInput(body)
+  if (!validation.valid) {
+    return c.json(
+      {
+        error: "Config validation failed",
+        details: validation.details,
+      },
+      400,
+    )
+  }
+
+  const doc = await loadEditableConfigDocument()
+  mergeConfigIntoDocument(doc, validation.value)
+
+  await fs.mkdir(PATHS.APP_DIR, { recursive: true })
+  await fs.writeFile(PATHS.CONFIG_YAML, doc.toString(), "utf8")
+
+  resetConfigCache()
+  resetConfigManagedState()
+  await applyConfigToState()
+
+  const saved = await loadRawConfigFile()
+  return c.json(saved, 200)
+})
 
 /**
  * Config-managed keys that must NEVER be emitted verbatim via /api/config — they
@@ -80,65 +193,6 @@ function buildEffectiveConfig(): Record<string, unknown> {
 
   return out
 }
-
-configRoutes.get("/", (c) => {
-  return c.json(buildEffectiveConfig())
-})
-
-configRoutes.get("/yaml", async (c) => {
-  try {
-    const config = await loadRawConfigFile()
-    return c.json(config)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to read config.yaml"
-    return c.json(
-      {
-        error: "Failed to read config.yaml",
-        details: [{ field: "$", message }],
-      },
-      500,
-    )
-  }
-})
-
-configRoutes.put("/yaml", async (c) => {
-  let body: unknown
-  try {
-    body = await c.req.json()
-  } catch {
-    return c.json(
-      {
-        error: "Invalid JSON body",
-        details: [{ field: "$", message: "Request body must be valid JSON" }],
-      },
-      400,
-    )
-  }
-
-  const validation = validateConfigInput(body)
-  if (!validation.valid) {
-    return c.json(
-      {
-        error: "Config validation failed",
-        details: validation.details,
-      },
-      400,
-    )
-  }
-
-  const doc = await loadEditableConfigDocument()
-  mergeConfigIntoDocument(doc, validation.value)
-
-  await fs.mkdir(PATHS.APP_DIR, { recursive: true })
-  await fs.writeFile(PATHS.CONFIG_YAML, doc.toString(), "utf8")
-
-  resetConfigCache()
-  resetConfigManagedState()
-  await applyConfigToState()
-
-  const saved = await loadRawConfigFile()
-  return c.json(saved)
-})
 
 /**
  * Serialize rewriteSystemReminders for API output.

@@ -14,6 +14,12 @@ import {
   handleGetStats,
 } from "./handler"
 
+// Plain Hono (not OpenAPIHono): the /history/api/* handlers live in ./handler and
+// return broad `ContentfulStatusCode` JSON responses (plain `c.json(data)`), which
+// `.openapi()`'s strict literal-status RouteHandler rejects. Binding them would
+// require rewriting 10 shared/tested handlers or type casts; their real consumer
+// (the Vue UI) is already fully typed via `~backend/*` re-exports. So this sub-API
+// is intentionally ABSENT from /openapi.json — see src/routes/openapi.ts.
 export const historyRoutes = new Hono()
 
 historyRoutes.get("/", (c) => c.redirect("/ui#/v/activity", 302))

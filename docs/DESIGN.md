@@ -197,6 +197,8 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 | 路由 | 说明 |
 |------|------|
 | `/health` | 健康检查（容器编排用） |
+| `/openapi.json` | 管理 API 的 OpenAPI 3.1 文档（仅 `/api/*` 自有端点；兼容端点镜像上游契约不收录；History REST + dry-run-pipeline 因 handler 返回宽 `ContentfulStatusCode`/动态形状、其消费者为强类型 Vue UI 而故意排除）。经 `OpenAPIHono`（根 app 改 `OpenAPIHono<BlankEnv>`）+ 各管理 route 的 `createRoute`+zod schema 聚合，见 `src/routes/openapi.ts` |
+| `/docs` | Scalar 交互式 API 文档页（消费 `/openapi.json`，与 Vue 前端 `/ui` 分离） |
 | `/history/api/*` | History REST API |
 | `/ws` | History WebSocket |
 | `/ui/*` | History UI v3 静态文件 |
