@@ -10,6 +10,7 @@ import {
   checkpointWal,
   getDatabase,
   incrementalVacuum,
+  runOptimize,
 } from "./connection"
 
 let timer: ReturnType<typeof setInterval> | null = null
@@ -85,11 +86,23 @@ export function reclaimStaleActiveRows(maxAgeMs: number = state.staleRequestMaxA
   const { pid } = getProcessIdentity()
   const cutoff = Date.now() - maxAgeMs
   const placeholders = ACTIVE_STATUSES.map(() => "?").join(",")
-  const result = db
-    .prepare(`UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, ?) WHERE status IN (${placeholders}) AND pid = ? AND started_at < ?`)
-    .run(cutoff, ...ACTIVE_STATUSES, pid, cutoff)
-  if (result.changes > 0) consola.info(`[history/sqlite] reaper reclaimed ${result.changes} stale active row(s) → interrupted`)
-  return result.changes
+  const where = `status IN (${placeholders}) AND pid = ? AND started_at < ?`
+  // Count the matched rows directly rather than reading `.run().changes`: the
+  // entries_fts AFTER-UPDATE trigger also writes (trigram rows), and bun:sqlite
+  // folds those trigger-side writes into `changes`, which would inflate the
+  // reclaim count. COUNT+UPDATE run in one transaction so the returned number is
+  // exactly what was flipped (mirrors evictBucket avoiding `.changes` under
+  // cascade/trigger fan-out).
+  let reclaimed = 0
+  const tx = db.transaction(() => {
+    const { n } = db.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...ACTIVE_STATUSES, pid, cutoff) as { n: number }
+    if (n > 0)
+      db.prepare(`UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, ?) WHERE ${where}`).run(cutoff, ...ACTIVE_STATUSES, pid, cutoff)
+    reclaimed = n
+  })
+  tx()
+  if (reclaimed > 0) consola.info(`[history/sqlite] reaper reclaimed ${reclaimed} stale active row(s) → interrupted`)
+  return reclaimed
 }
 
 /**
@@ -112,6 +125,9 @@ export function runReaperTick(successLimit: number, failureLimit: number): void 
   // Keep the WAL bounded so lock windows stay short (fewer SQLITE_BUSY for the
   // persist-guard to absorb).
   checkpointWal(db)
+  // Refresh planner statistics incrementally so index choices track the table's
+  // changing shape (cheap; re-ANALYZEs only tables that changed enough).
+  runOptimize(db)
 }
 
 export function startReaper(successLimit: number, failureLimit: number, intervalSeconds: number): void {

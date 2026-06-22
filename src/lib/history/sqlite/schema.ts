@@ -28,10 +28,12 @@ CREATE INDEX IF NOT EXISTS idx_entries_v2_started_at ON entries_v2(started_at DE
 CREATE INDEX IF NOT EXISTS idx_entries_v2_session    ON entries_v2(session_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_entries_v2_model      ON entries_v2(model, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_entries_v2_status     ON entries_v2(status, started_at DESC);
--- NOTE: idx_entries_v2_pid is intentionally NOT created here. On an existing
--- (pre-pid) database, openDatabase runs this SCHEMA_SQL *before* the column
--- migration, so a CREATE INDEX on the not-yet-added pid column would fail.
--- The pid index is created inside migrateEntriesColumns, after the ALTER.
+CREATE INDEX IF NOT EXISTS idx_entries_v2_endpoint   ON entries_v2(endpoint, started_at DESC);
+-- NOTE: idx_entries_v2_pid AND idx_entries_v2_active are intentionally NOT
+-- created here. Both reference the pid column, and on an existing (pre-pid)
+-- database openDatabase runs this SCHEMA_SQL *before* the column migration, so a
+-- CREATE INDEX on the not-yet-added pid column would fail. Both are created
+-- inside migrateEntriesColumns, after the ALTER.
 
 CREATE TABLE IF NOT EXISTS sessions (
   id                   TEXT PRIMARY KEY,
@@ -110,4 +112,47 @@ CREATE TABLE IF NOT EXISTS entry_produced_tool_ids (
 );
 CREATE INDEX IF NOT EXISTS idx_produced_tool_only  ON entry_produced_tool_ids(tool_use_id);
 CREATE INDEX IF NOT EXISTS idx_produced_tool_entry ON entry_produced_tool_ids(entry_id);
+`
+
+/**
+ * Trigram FTS5 search index over the entry summary text, executed SEPARATELY
+ * from SCHEMA_SQL (see connection.ts `ensureSearchIndex`) because it must run
+ * AFTER `migrateEntriesColumns` — on a pre-summary-column database the
+ * `search_text` / `preview_text` columns it references don't exist until the
+ * ALTER adds them, and the AFTER-write triggers below reference `new.search_text`.
+ *
+ * Design:
+ *   - **trigram tokenizer** makes `MATCH '"substring"'` behave like
+ *     `LIKE '%substring%'` (for ≥3-char needles) but index-backed instead of a
+ *     full table scan — preserving the substring-search semantics the UI relied
+ *     on. Sub-3-char needles fall back to LIKE in read.ts (trigram needs ≥3 chars).
+ *   - **external-content** (`content='entries_v2'`): the FTS index stores only
+ *     trigrams, NOT a second copy of the text — it reads the original from
+ *     entries_v2 via `rowid`. Keeps the index compact.
+ *   - **sync triggers**: external-content FTS is NOT auto-maintained. These fire
+ *     on EVERY write path — including raw-SQL deletes (reaper eviction,
+ *     deleteSession, clearAll) and the eager-persistence head upserts (which fire
+ *     AFTER UPDATE) — so the index stays consistent without routing every write
+ *     through TS. The `'delete'` command needs the OLD column values to locate
+ *     and remove the row's trigrams (external-content delete contract).
+ *
+ * Rowid coupling caveat: entries_v2 has a TEXT primary key, so its `rowid` is
+ * the implicit integer rowid — which a full `VACUUM` can RENUMBER. After any
+ * VACUUM the external-content index must be rebuilt (see connection.ts).
+ */
+export const FTS_SCHEMA_SQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+  search_text, preview_text,
+  content='entries_v2', content_rowid='rowid', tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS entries_v2_fts_ai AFTER INSERT ON entries_v2 BEGIN
+  INSERT INTO entries_fts(rowid, search_text, preview_text) VALUES (new.rowid, new.search_text, new.preview_text);
+END;
+CREATE TRIGGER IF NOT EXISTS entries_v2_fts_ad AFTER DELETE ON entries_v2 BEGIN
+  INSERT INTO entries_fts(entries_fts, rowid, search_text, preview_text) VALUES ('delete', old.rowid, old.search_text, old.preview_text);
+END;
+CREATE TRIGGER IF NOT EXISTS entries_v2_fts_au AFTER UPDATE ON entries_v2 BEGIN
+  INSERT INTO entries_fts(entries_fts, rowid, search_text, preview_text) VALUES ('delete', old.rowid, old.search_text, old.preview_text);
+  INSERT INTO entries_fts(rowid, search_text, preview_text) VALUES (new.rowid, new.search_text, new.preview_text);
+END;
 `

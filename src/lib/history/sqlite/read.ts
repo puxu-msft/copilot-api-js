@@ -38,6 +38,18 @@ interface WhereClause {
   params: Array<SqlBinding>
 }
 
+/**
+ * FTS5 minimum needle length. The trigram tokenizer indexes 3-character grams,
+ * so a MATCH needle shorter than 3 chars can't be served by the index — those
+ * fall back to a LIKE scan (rare, and cheap on the short tail of short queries).
+ */
+const FTS_MIN_NEEDLE = 3
+
+/** Wrap a needle as an FTS5 string literal (double-quote + escape inner quotes) so trigram does a substring match and special chars stay literal. */
+function ftsLiteral(needle: string): string {
+  return `"${needle.replaceAll('"', '""')}"`
+}
+
 function applyWhere(opts: QueryOptions | undefined): WhereClause {
   const where: Array<string> = []
   const params: Array<SqlBinding> = []
@@ -74,9 +86,22 @@ function applyWhere(opts: QueryOptions | undefined): WhereClause {
     params.push("failed")
   }
   if (opts?.search) {
-    where.push("(search_text LIKE ? OR preview_text LIKE ?)")
-    const pattern = `%${opts.search}%`
-    params.push(pattern, pattern)
+    // Substring search via the trigram FTS index for ≥3-char needles
+    // (index-backed, scales with retention); LIKE fallback for the short tail
+    // the trigram tokenizer can't index. Both branches are case-insensitive
+    // substring matches; they match identically for ASCII, but differ for
+    // non-ASCII text — the trigram tokenizer case-folds full Unicode whereas
+    // SQLite's LIKE only folds ASCII A–Z. So the ≥3-char path is a (slight)
+    // superset of the old LIKE-only behavior for accented/Cyrillic/Greek text;
+    // this is an improvement, not a regression.
+    if (opts.search.length >= FTS_MIN_NEEDLE) {
+      where.push("rowid IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?)")
+      params.push(ftsLiteral(opts.search))
+    } else {
+      where.push("(search_text LIKE ? OR preview_text LIKE ?)")
+      const pattern = `%${opts.search}%`
+      params.push(pattern, pattern)
+    }
   }
   if (opts?.pid !== undefined) {
     where.push("pid = ?")

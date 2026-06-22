@@ -9,7 +9,11 @@ import {
   createDatabase,
   type SqliteDatabase,
 } from "./driver"
-import { SCHEMA_SQL } from "./schema"
+import {
+  //
+  FTS_SCHEMA_SQL,
+  SCHEMA_SQL,
+} from "./schema"
 
 /**
  * SQLite-backed history store. The driver layer abstracts over the runtime —
@@ -70,6 +74,14 @@ export function openDatabase(dbPath: string): Database {
   migrateEntriesColumns(db)
   reclaimOrphanedActiveRows(db)
   maybeVacuumOnStartup(db, dbPath)
+  // Build the search index AFTER any startup VACUUM: a full VACUUM renumbers
+  // entries_v2's implicit rowid (TEXT PK), and the external-content FTS keys on
+  // that rowid — building/rebuilding here guarantees the index reflects the
+  // post-VACUUM rowids.
+  ensureSearchIndex(db)
+  // Seed planner statistics once so the (now several) candidate indexes per
+  // query get chosen on selectivity, not heuristics.
+  seedAnalyzeIfNeeded(db)
   if (dbPath !== ":memory:") consola.info(`[history/sqlite] opened ${dbPath}`)
   return db
 }
@@ -116,6 +128,10 @@ function maybeVacuumOnStartup(database: Database, dbPath: string): void {
     database.exec("PRAGMA auto_vacuum = INCREMENTAL;") // activated by the VACUUM below
     database.exec("VACUUM;")
     const afterBytes = pragmaInt(database, "page_count") * pageSize
+    // VACUUM renumbers entries_v2's implicit rowid (TEXT PK), invalidating the
+    // external-content FTS index which keys on rowid. Rebuild it if it already
+    // exists (a first-ever open builds it later in ensureSearchIndex, post-VACUUM).
+    rebuildSearchIndexIfPresent(database)
     consola.info(
       `[history/sqlite] startup VACUUM reclaimed ${((totalBytes - afterBytes) / 1048576).toFixed(0)}MB (${(totalBytes / 1048576).toFixed(0)}MB → ${(afterBytes / 1048576).toFixed(0)}MB)`,
     )
@@ -140,7 +156,80 @@ export function incrementalVacuum(database: Database): void {
 }
 
 /**
- * Startup orphan recovery (Bug 1): any head row still in a non-terminal state
+ * Create the trigram FTS5 search index (table + sync triggers) and, on a
+ * database that predates it, backfill from the existing rows. Must run AFTER
+ * migrateEntriesColumns (the triggers reference search_text / preview_text) and
+ * AFTER any startup VACUUM (rowid coupling — see schema.ts).
+ *
+ * Backfill gate: whether the `entries_fts` TABLE existed before this open — NOT
+ * `SELECT COUNT(*) FROM entries_fts`. For an external-content FTS table that
+ * COUNT reads THROUGH to the content table (entries_v2), so it returns the entry
+ * count even when the index itself is empty — gating on it would skip the
+ * one-time backfill on every upgrade and leave search returning nothing for all
+ * pre-existing rows. A freshly-created index starts empty (triggers only
+ * populate FUTURE writes), so existing rows need a one-time 'rebuild'; once the
+ * table exists from a prior open the triggers have kept it in sync. Create +
+ * backfill run in one transaction so a crash mid-backfill rolls back to "table
+ * absent" and the next open retries (instead of stranding a half-built index).
+ */
+function ensureSearchIndex(database: Database): void {
+  // Truthy check — NOT `!== undefined`: bun:sqlite's `.get()` returns `null` for
+  // no match while node:sqlite returns `undefined`. A strict `!== undefined`
+  // would read Bun's `null` as "exists" and wrongly skip the backfill forever;
+  // `Boolean(row)` is falsy for both sentinels.
+  const existed = Boolean(database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'entries_fts'").get())
+  if (existed) {
+    // Already built on a prior open; ensure triggers exist (defensive, IF NOT
+    // EXISTS) without a backfill — the triggers have maintained the index.
+    database.exec(FTS_SCHEMA_SQL)
+    return
+  }
+  const tx = database.transaction(() => {
+    database.exec(FTS_SCHEMA_SQL)
+    const { n } = database.prepare("SELECT COUNT(*) AS n FROM entries_v2").get() as { n: number }
+    if (n > 0) database.exec("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
+  })
+  tx()
+}
+
+/** Rebuild the external-content FTS index from entries_v2 — only if it exists. Used after a rowid-renumbering VACUUM. */
+function rebuildSearchIndexIfPresent(database: Database): void {
+  const row = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'entries_fts'").get() as { name: string } | undefined
+  if (row) database.exec("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
+}
+
+/**
+ * One-time planner-stats seed: run ANALYZE when no `sqlite_stat1` exists yet, so
+ * the (now several) candidate indexes per query are chosen on real selectivity
+ * from the first query rather than coarse heuristics. After the first ANALYZE,
+ * `sqlite_stat1` exists and ongoing maintenance is handled by `runOptimize` on
+ * the reaper tick. Cheap on a bounded table; never throws.
+ */
+function seedAnalyzeIfNeeded(database: Database): void {
+  try {
+    const row = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'sqlite_stat1'").get() as { name: string } | undefined
+    if (row) return
+    database.exec("ANALYZE;")
+  } catch (err: unknown) {
+    consola.warn("[history/sqlite] initial ANALYZE skipped (error — startup continues)", err)
+  }
+}
+
+/**
+ * Refresh planner statistics incrementally. `PRAGMA optimize` re-ANALYZEs only
+ * the tables that changed enough since the last run, so it's cheap to call each
+ * reaper tick and keeps a long-lived server's stats current as the table churns.
+ * Never throws.
+ */
+export function runOptimize(database: Database): void {
+  try {
+    database.exec("PRAGMA optimize;")
+  } catch (err: unknown) {
+    consola.warn("[history/sqlite] PRAGMA optimize failed", err)
+  }
+}
+
+/**
  * (pending/executing/streaming) that does NOT belong to the current process is
  * a leftover from a process that crashed before finalizing. Flip it to
  * `interrupted` so the request is discoverable (and reaper-eligible) rather than
@@ -149,13 +238,15 @@ export function incrementalVacuum(database: Database): void {
  */
 function reclaimOrphanedActiveRows(database: Database): void {
   const { pid, bootTime } = getProcessIdentity()
-  const result = database
-    .prepare(
-      `UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at)
-         WHERE status IN ('pending','executing','streaming') AND NOT (pid = ? AND boot_time = ?)`,
-    )
-    .run(pid, bootTime)
-  if (result.changes > 0) consola.info(`[history/sqlite] reclaimed ${result.changes} orphaned active row(s) from a prior process → interrupted`)
+  const where = "status IN ('pending','executing','streaming') AND NOT (pid = ? AND boot_time = ?)"
+  // Count directly rather than via `.run().changes`: once the entries_fts
+  // triggers exist, bun:sqlite folds their trigger-side writes into `changes`.
+  // (This runs before ensureSearchIndex today, but counting keeps the log
+  // accurate regardless of the open-sequence ordering.)
+  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(pid, bootTime) as { n: number }
+  if (n === 0) return
+  database.prepare(`UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at) WHERE ${where}`).run(pid, bootTime)
+  consola.info(`[history/sqlite] reclaimed ${n} orphaned active row(s) from a prior process → interrupted`)
 }
 
 /**
@@ -194,6 +285,13 @@ function migrateEntriesColumns(database: Database): void {
   }
 
   database.exec("CREATE INDEX IF NOT EXISTS idx_entries_v2_pid ON entries_v2(pid, started_at DESC)")
+  // Partial index over ONLY the active (non-terminal) rows — a handful at any
+  // instant regardless of total retention. Makes the reclaim scans
+  // (reclaimStaleActiveRows / reclaimOrphanedActiveRows, both filtering on this
+  // exact status set) O(active) instead of O(table), and stays tiny + cheap to
+  // maintain. The WHERE must match those queries' status set verbatim for the
+  // planner to use it.
+  database.exec("CREATE INDEX IF NOT EXISTS idx_entries_v2_active ON entries_v2(pid, started_at) WHERE status IN ('pending','executing','streaming')")
 }
 
 /**
