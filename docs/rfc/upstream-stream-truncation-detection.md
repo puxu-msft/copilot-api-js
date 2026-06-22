@@ -62,11 +62,20 @@ Claude Code 报 `API Error: Stream ended without receiving any events`，但 pro
 
 **不合成"成功终止符"**：用 `message_delta{stop_reason}`+`message_stop` 把残缺消息补成"完整"是错的——残缺 tool_use 是无效 JSON，补全会把截断伪装成"合法但损坏"的成功响应。
 
-### 3.3 透明重试：可行性天花板（实测裁决）
+### 3.3 透明重试：与 L2 缓冲重试的分工（修正：原"架构上不可能"论断有误）
 
-用户期望"proxy 检测到截断后透明重试、对客户端无感"。**实测架构裁决**：
+用户期望"proxy 检测到截断后透明重试、对客户端无感"。**重要修正**：本 RFC v1/v2 曾断言"流式 post-content 截断架构上无法透明重试"——**这是错的**，把"first-content gate（缓冲到首内容帧）"的能力上限误当成了"任何缓冲都不行"。真相是：
 
-**流式 post-content 截断无法透明重试**（airtight，2 轮 review + 探针实证）：重试环 S4 在拿到流对象时即退出，截断在 S5 消费帧时暴露、且帧已转发——架构隔离、无重入路径、已发字节无法收回。唯一能给流式"部分重试"的是 first-content-gate（缓冲到首内容帧再转发），但它**只覆盖极早期截断、覆盖不了本案**（截断在 content_block_start+12 帧后）。**暂缓理由是能力上限（cover 不了 post-content 截断），不是成本/架构冲突**（review S1 修正：owns-sink 的 sink 串行链本就是缓冲点、加薄 gate 不冲突；真正问题是 gate 对本案无用 = 对未证实存在的"极早期截断"场景做投机表面，违反 YAGNI）。→ **流式截断的正确处理 = §3.2 的 clean error 帧 → 客户端自行重试**（Claude Code 收 error 会重试整请求）。
+- **live 流式下确实不能透明重试**：S4 重试环在拿到流对象时即退出、截断在 S5 消费帧时暴露、且帧**已逐帧转发**——已发字节无法收回，无重入路径。这一点对**当前默认的 live 路径**成立。
+- **但全缓冲就能**：若**缓冲整个响应、只在确认 `acc.sawMessageStop` 后才一次性 commit**（而非逐帧 live 写），则 mid-stream 截断时缓冲区可整个丢弃、回 S4 取全新上游流重试——客户端在缓冲期一帧真实内容都没收到（靠 heartbeat ping 保活），故"重试"对客户端透明。这正是 **L2 事务化缓冲重试**（`docs/rfc/streaming-upstream-rst-buffered-retry.md`）的机制，且它**显式复用本 RFC 的 `sawMessageStop`** 作为 commit 门控 + 重试触发（`complete && sawMessageStop`=交付，`complete && !sawMessageStop`=半截→丢弃重试）。
+
+**L1（本 RFC）与 L2 的分工**：
+- **L1 = 检测信号 + 地板**：`sawMessageStop` 完整性判据 + 截断改判 fail + clean error 帧。**始终生效**，是 L2 重试耗尽后的兜底（L2 §3 伪码 line 78 `重试耗尽 → 维持现状(报错帧)` 即回落到 L1）。
+- **L2 = 透明重试保护**：全缓冲 + 整请求重发，让客户端拿到**一次完整生成**而非半截+错误。**opt-in**（默认关、`tool_use_only` 门控）、Anthropic 先行、靠代理的 abort 判别只重 `transport-close`/截断。
+
+**已知限制（L2，用户 2026-06 确认）**：L2 **缓冲整个响应**（生成期间无 live 流式，只有 heartbeat ping）、**不做续传**（Anthropic 协议不支持 resume 半截 tool_use，只能无状态整请求重发，靠 prompt cache 降输入成本）。即 L2 的代价是延迟（等整次生成完）+ 内存（buffer）+ 输出 token 重烧——对大 Write/Edit 场景（宁可等也要完整结果）值得，对小对话不值（故 `tool_use_only` 门控）。
+
+→ **结论修正**：流式截断的处理分两层——**默认 live 路径**靠 L1 的 clean error → 客户端自行重试（低延迟、保 live 流式）；**opt-in 保护路径**靠 L2 全缓冲透明重试（高延迟、客户端无感拿完整结果）。二者由 `sawMessageStop` 这一共同信号串起。原 §3.3 的"first-content gate 暂缓"分析作废——真正的透明重试方案是 L2 全缓冲，不是部分 gate。
 
 **非流式**（review P2 实测修正，RFC v1 把两类混为一谈）：
 
