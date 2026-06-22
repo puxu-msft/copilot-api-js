@@ -1,3 +1,5 @@
+import consola from "consola"
+
 import type {
   //
   CursorResult,
@@ -109,6 +111,11 @@ export function deleteSession(sessionId: string): boolean {
   if (!existed && deleted === 0 && inFlightMatches.length === 0) {
     return false
   }
+
+  // Destructive + irreversible (removes the session's entries, including any
+  // 'failed' diagnostic rows) → log loudly so it is never an invisible cause of
+  // disappearing records. Mirrors the clearHistory log.
+  consola.warn(`[history] DELETED session ${sessionId} (${deleted} persisted + ${inFlightMatches.length} in-flight entries) via DELETE /api/sessions/:id`)
 
   historyState.publisher?.publish({ kind: "history.session_deleted", sessionId })
   historyState.publisher?.publish({ kind: "history.stats_changed", stats: computeStats() })
