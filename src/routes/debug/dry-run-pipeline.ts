@@ -16,7 +16,7 @@
  *   mirrored (caveat).
  * - **Response side** (`stopAfter` ∈ rewrite-out/render): feed the synthetic/replayed
  *   upstream through the driver's S5 rewrite chain. The response rewrites are real
- *   (Anthropic 4 / Responses 1 fixIds / CC + Gemini = none → `rewritesAvailable:false`);
+ *   (Anthropic 5 / Responses 1 fixIds / CC + Gemini = none → `rewritesAvailable:false`);
  *   the render codec is a minimal identity shim, faithful because the driver's S6
  *   render IS identity for every format's direct/passthrough path (the non-identity
  *   work — Gemini's CC→Gemini whole-stream translation, Responses' post-render

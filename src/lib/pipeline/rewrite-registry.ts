@@ -159,6 +159,12 @@ export const BUILTIN_REQUEST_REWRITES: ReadonlyArray<RequestRewrite> = []
  *     decode.flush; the flushChain cascade — driver.ts `flushChain`).
  *   - `serverToolFilter` (300) runs LAST so its index densify sees the FINAL block set
  *     (after recover added synthesized blocks + decode finalized buffered input).
+ *   - `recoverRefusal` (400) runs AFTER all of the above (it appends a fresh `text`
+ *     block at `maxIndex + 1`, so observing the final densified index space guarantees
+ *     a non-colliding index). It is independent of the tool/thinking rewrites: a
+ *     thinking-only refusal carries no tools/downgraded-text, so recover/decode/filter
+ *     are no-ops on it, and thinking-signature-compat only reshapes the thinking start
+ *     frame (which refusal-recovery passes through untouched).
  *
  * The buffer/flush + multi-buffer cascade + index-densify invariants these orders
  * depend on are locked by tests/pipeline/response-rewrite-contract.unit.test.ts.
@@ -168,6 +174,7 @@ export const RESPONSE_REWRITE_ORDER = {
   thinkingSignatureCompat: 150,
   toolInputDecode: 200,
   serverToolFilter: 300,
+  recoverRefusal: 400,
 } as const
 
 /**

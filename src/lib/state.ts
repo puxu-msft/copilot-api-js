@@ -143,6 +143,9 @@ export interface State {
   /** 透明恢复上游 tool-call 文本降级（RFC tool-call-text-recovery）。默认 false。 */
   readonly recoverToolCallText: boolean
 
+  /** 拦截上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块），合成可用 text 完成。默认 false。 */
+  readonly recoverRefusalText: boolean
+
   /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
    * normalized model-name "family" prefixes; a model has the capability when its normalized id
@@ -847,6 +850,7 @@ export function setAnthropicBehavior(
       | "compressToolResultsBeforeTruncate"
       | "sanitizeToolNames"
       | "recoverToolCallText"
+      | "recoverRefusalText"
       | "contextEditingModels"
       | "toolSearchModels"
       | "interleavedThinkingModels"
@@ -1050,6 +1054,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
   recoverToolCallText: false,
+  recoverRefusalText: false,
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
   toolSearchModels: [
@@ -1126,6 +1131,7 @@ export function resetConfigManagedState(): void {
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+    recoverRefusalText: CONFIG_MANAGED_DEFAULTS.recoverRefusalText,
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
     toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
@@ -1194,6 +1200,7 @@ const mutableState: MutableState = {
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+  recoverRefusalText: CONFIG_MANAGED_DEFAULTS.recoverRefusalText,
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
   toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
   interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],

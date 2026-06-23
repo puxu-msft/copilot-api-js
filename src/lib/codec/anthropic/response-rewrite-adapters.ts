@@ -54,6 +54,12 @@ import {
 } from "~/lib/anthropic/decode-tool-input"
 import {
   //
+  createRefusalRecoverer,
+  recoverRefusalInResponse,
+  type RefusalRecoverer,
+} from "~/lib/anthropic/recover-refusal"
+import {
+  //
   createToolCallTextRecoverer,
   extractToolParamTypes,
   recoverToolCallTextInResponse,
@@ -241,9 +247,43 @@ const filterRewrite: ResponseRewrite = {
   },
 }
 
+// ============================================================================
+// recover-refusal (order 400, emit-only, no buffer)
+// ============================================================================
+
+interface RefusalState extends RewriteState {
+  recoverer: RefusalRecoverer
+}
+
+const refusalRewrite: ResponseRewrite = {
+  name: "recover-refusal",
+  order: RESPONSE_REWRITE_ORDER.recoverRefusal,
+  // Only when enabled. A thinking-only refusal otherwise passes through unchanged;
+  // skipping the rewrite entirely is byte-identical to that passthrough.
+  appliesTo: (env) => ANTHROPIC(env) && state.recoverRefusalText,
+  createState: (env): RefusalState => ({
+    recoverer: createRefusalRecoverer({
+      onRecover: () => {
+        env.ctx.recordFeature("refusal-recovered")
+        consola.info("[REFUSAL] synthesized a text completion over a thinking-only refusal")
+      },
+    }),
+  }),
+  // Never buffers: emits the passthrough frame, or (at the refusal message_delta) the
+  // synthetic text triplet + the rewritten end_turn delta.
+  transform: (frame, st): FrameAction => ({
+    kind: "emit",
+    frames: (st as RefusalState).recoverer.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage) as Array<UpstreamFrame>,
+  }),
+  // Non-streaming: append a synthetic text block + flip stop_reason → end_turn on the
+  // whole response. `appliesTo` already gated `state.recoverRefusalText`, and the helper
+  // self-guards on the thinking-only-refusal shape (non-refusal → identity).
+  transformWhole: (response): unknown => recoverRefusalInResponse(response as AnthropicMessageResponse),
+}
+
 /**
  * The Anthropic streaming response rewrites, in registry form. Ordered by `order`
  * at assembly (the array order here is cosmetic). Passed to the driver via
  * `deps.responseRewrites` by the Anthropic handler.
  */
-export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [recoverRewrite, thinkingRewrite, decodeRewrite, filterRewrite]
+export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [recoverRewrite, thinkingRewrite, decodeRewrite, filterRewrite, refusalRewrite]

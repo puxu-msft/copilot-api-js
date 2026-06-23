@@ -45,6 +45,7 @@ import {
 } from "bun:test"
 
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
+import { REFUSAL_RECOVERY_TEXT } from "~/lib/anthropic/recover-refusal"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -396,9 +397,60 @@ const S7_OUTBOUND = {
   ],
 }
 
+// S8 (recover-refusal): a thinking-only refusal (thinking start + signature_delta +
+// stop, then message_delta{stop_reason:"refusal"}) is recovered on the FORWARDED
+// stream by appending a synthetic text block (data-only, idx maxIndex+1) and
+// rewriting the delta to end_turn (stop_details cleared). The empirical shape of
+// req_1782214935133_68. Default thinking-signature-compat no-ops here (the start's
+// signature is empty + a real signature_delta follows = the standard shape).
+const REFUSAL_DELTA = ev("message_delta", {
+  type: "message_delta",
+  delta: { stop_reason: "refusal", stop_details: { type: "refusal", explanation: "x" }, stop_sequence: null },
+  usage: { output_tokens: 5 },
+})
+function s8Frames(): Array<string> {
+  return [
+    messageStart(),
+    ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "SIG-REF" } }),
+    ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+    REFUSAL_DELTA,
+    messageStop(),
+    DONE,
+  ]
+}
+const S8_GOLDEN = [
+  messageStart(),
+  ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "SIG-REF" } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+  ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: REFUSAL_RECOVERY_TEXT } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+  ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_details: null, stop_sequence: null }, usage: { output_tokens: 5 } }),
+  messageStop(),
+].join("")
+// Option A: the accumulated (upstream-original) response KEEPS the thinking-only
+// refusal — recovery is forwarded-only (history 保留上游原始 refusal).
+const S8_OUTBOUND = { role: "assistant", content: [{ type: "thinking", thinking: "", signature: "SIG-REF" }] }
+
+function s6RefusalBody(): string {
+  return JSON.stringify({
+    id: "msg-ns",
+    type: "message",
+    role: "assistant",
+    model: MODEL,
+    stop_reason: "refusal",
+    stop_details: { type: "refusal", explanation: "x" },
+    stop_sequence: null,
+    usage: { input_tokens: 5, output_tokens: 6 },
+    content: [{ type: "thinking", thinking: "", signature: "SIG-REF" }],
+  })
+}
+
 // ── mock ─────────────────────────────────────────────────────────────────────
 
-type Scenario = "s1" | "s2" | "s3a" | "s3b" | "s4" | "s5" | "s7" | "s6Filter" | "s6Decode" | "s6Recover"
+type Scenario = "s1" | "s2" | "s3a" | "s3b" | "s4" | "s5" | "s7" | "s8" | "s6Filter" | "s6Decode" | "s6Recover" | "s6Refusal"
 let scenario: Scenario = "s1"
 
 const upstreamMock = mock((input: string | URL | Request, init?: RequestInit) => {
@@ -412,6 +464,7 @@ const upstreamMock = mock((input: string | URL | Request, init?: RequestInit) =>
     const body =
       scenario === "s6Filter" ? s6FilterBody()
       : scenario === "s6Decode" ? s6DecodeBody()
+      : scenario === "s6Refusal" ? s6RefusalBody()
       : s6RecoverBody()
     return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }))
   }
@@ -422,6 +475,7 @@ const upstreamMock = mock((input: string | URL | Request, init?: RequestInit) =>
     : scenario === "s3b" ? s3bFrames()
     : scenario === "s4" ? s4Frames()
     : scenario === "s7" ? s7Frames()
+    : scenario === "s8" ? s8Frames()
     : s5Frames()
   return Promise.resolve(createSseResponse(frames))
 })
@@ -551,6 +605,29 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(lastOutboundContent()).toEqual(S7_OUTBOUND)
   })
 
+  test("S8 recover-refusal: thinking-only refusal → synthesized text + end_turn (streaming)", async () => {
+    scenario = "s8"
+    setStateForTests({ recoverRefusalText: true })
+    const text = await postStream()
+    expect(text).toBe(S8_GOLDEN)
+    // The empty thinking block is kept verbatim; a synthetic text block is appended.
+    expect(text).toContain(REFUSAL_RECOVERY_TEXT)
+    expect(text).toContain('"type":"signature_delta","signature":"SIG-REF"')
+    // stop_reason rewritten away from refusal.
+    expect(text).not.toContain('"refusal"')
+    expect(text).not.toContain('"type":"ping"')
+    // Option A: history keeps the upstream-original thinking-only refusal (no synth text).
+    expect(lastOutboundContent()).toEqual(S8_OUTBOUND)
+  })
+
+  test("S8 off (default): refusal passes through byte-identical", async () => {
+    scenario = "s8"
+    const text = await postStream()
+    // No recovery: the refusal delta + empty thinking block reach the client unchanged.
+    expect(text).toContain('"stop_reason":"refusal"')
+    expect(text).not.toContain(REFUSAL_RECOVERY_TEXT)
+  })
+
   test("S6 non-streaming: server-tool blocks filtered from response", async () => {
     scenario = "s6Filter"
     const json = await postJson()
@@ -594,6 +671,26 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
       stop_sequence: null,
       usage: { input_tokens: 5, output_tokens: 6 },
       content: [{ type: "tool_use", id: SYNTH_ID, name: "search", input: { query: "weather" } }],
+    })
+  })
+
+  test("S6 non-streaming: recover-refusal thinking-only → synthesized text + end_turn", async () => {
+    scenario = "s6Refusal"
+    setStateForTests({ recoverRefusalText: true })
+    const json = await postJson()
+    expect(json).toEqual({
+      id: "msg-ns",
+      type: "message",
+      role: "assistant",
+      model: MODEL,
+      stop_reason: "end_turn",
+      stop_details: null,
+      stop_sequence: null,
+      usage: { input_tokens: 5, output_tokens: 6 },
+      content: [
+        { type: "thinking", thinking: "", signature: "SIG-REF" },
+        { type: "text", text: REFUSAL_RECOVERY_TEXT },
+      ],
     })
   })
 })

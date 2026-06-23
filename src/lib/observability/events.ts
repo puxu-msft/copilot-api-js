@@ -134,6 +134,8 @@ export type FeatureKind =
   | "transport"
   /** streaming recoverer rebuilt a tool_use from downgraded upstream text */
   | "tool-call-recovered"
+  /** recovered a thinking-only upstream refusal by synthesizing a text completion */
+  | "refusal-recovered"
   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
   | "tool-input-decode-failed"
   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */

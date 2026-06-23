@@ -526,6 +526,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   },
   {
+    configKey: "anthropic.refusal_recover_text",
+    stateKey: "recoverRefusalText",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.recoverRefusalText,
+  },
+  {
     configKey: "anthropic.tool_backfill_question",
     stateKey: "backfillQuestionFromHeader",
     sampleYamlValue: "false",
