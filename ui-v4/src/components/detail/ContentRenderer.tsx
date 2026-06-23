@@ -1,0 +1,50 @@
+import type { ContentBlock } from "@/lib/content/types"
+
+import { GenericBlock } from "@/components/detail/blocks/GenericBlock"
+import { ImageBlock } from "@/components/detail/blocks/ImageBlock"
+import { TextBlock } from "@/components/detail/blocks/TextBlock"
+import { ThinkingBlock } from "@/components/detail/blocks/ThinkingBlock"
+import { ToolResultBlock } from "@/components/detail/blocks/ToolResultBlock"
+import { ToolUseBlock } from "@/components/detail/blocks/ToolUseBlock"
+import { ErrorBoundary } from "@/components/detail/ErrorBoundary"
+import {
+  //
+  isImageBlock,
+  isRedactedThinkingBlock,
+  isTextBlock,
+  isThinkingBlock,
+  isToolResultBlock,
+  isToolUseBlock,
+} from "@/lib/content/normalize"
+
+function renderBlock(block: ContentBlock) {
+  if (isTextBlock(block)) return <TextBlock block={block} />
+  if (isThinkingBlock(block)) return <ThinkingBlock block={block} />
+  if (isRedactedThinkingBlock(block))
+    return (
+      <ThinkingBlock
+        block={block}
+        redacted
+      />
+    )
+  if (isToolUseBlock(block)) return <ToolUseBlock block={block} />
+  if (isToolResultBlock(block)) return <ToolResultBlock block={block} />
+  if (isImageBlock(block)) return <ImageBlock block={block} />
+  return <GenericBlock block={block} />
+}
+
+/** 纯分发器 —— 按 block.type 选组件(spec §9,8 类 + generic),每块包 ErrorBoundary。 */
+export function ContentRenderer({ blocks }: { blocks: Array<ContentBlock> }) {
+  return (
+    <div className="flex flex-col gap-1">
+      {blocks.map((block, i) => (
+        <ErrorBoundary
+          key={i}
+          label={block.type}
+        >
+          {renderBlock(block)}
+        </ErrorBoundary>
+      ))}
+    </div>
+  )
+}

@@ -1,4 +1,4 @@
-import { DetailPlaceholder } from "@/components/requests/DetailPlaceholder"
+import { DetailPanel } from "@/components/detail/DetailPanel"
 import { HistoryList } from "@/components/requests/HistoryList"
 import { LiveLane } from "@/components/requests/LiveLane"
 import { useLiveRequests } from "@/hooks/useLiveRequests"
@@ -13,7 +13,7 @@ export function RequestsWorkbench() {
         <HistoryList />
       </div>
       <div className="flex min-h-0 flex-1 flex-col">
-        <DetailPlaceholder />
+        <DetailPanel />
       </div>
     </div>
   )
