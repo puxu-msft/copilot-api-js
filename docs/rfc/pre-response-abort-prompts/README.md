@@ -12,16 +12,18 @@
 | **④ reaper 装牙齿**（真取消在飞上游，全传输 HTTP h2 + Responses-WS） | `d6eacf0`(C4a) + `4bd6850`(C4b) + `67b6eca`(WS) |
 | **C3b-pre1** `mapHttpErrorToEnvelope` 抽取 | `3e4b3cd` |
 | C3b-pre2 emitPingOnAttach | 判定冗余（③ 用既有 `sink.write`），无 commit |
-| **P1 Q2 oracle 实测** | ✅ 已裁决 **GO**（[exp/q2-oracle/REPORT.md](../../../exp/q2-oracle/REPORT.md)）—— CC 超时=idle 型≈60s（grace<60s 默认 40s，heartbeat<60s）；错误帧 401/400 等价、仅 429/5xx 真发散但被延迟-commit 收窄。**P2 阻塞解除** |
+| **P1 Q2 oracle 实测** | ✅ 已裁决 **GO**（[exp/q2-oracle/REPORT.md](../../../exp/q2-oracle/REPORT.md)）—— CC 超时=idle 型≈60s（grace<60s 默认 40s，heartbeat<60s）；错误帧 401/400 等价、仅 429/5xx 真发散但被延迟-commit 收窄。 |
+| **P2 ③ C3b 延迟-commit** | ✅ **已落地**：C3a `6e04f69` golden → C1 `5239328` pump 注入 sink → C2 `08b2124` post-commit-error → C3b 本体 `6dee399`(被并发 agentId 误扫入)+`e3ad9e6`(配置+测试+L1/L2)。subagent 对抗复审无 CRITICAL。 |
+| **P3 keepalive 命名重整** | ✅ **已落地** `afd2370`：`stream_fake_sse_heartbeat`→`stream_keepalive_ping_sec`(默认 45)+ `stream_keepalive_grace_sec`(40)；`protect_streaming_heartbeat` 留 L2 族；compat 零破坏迁移。 |
 
 ## 待跟进 Prompts
 
 | Prompt | 任务 | 前置 | 性质 |
 |---|---|---|---|
-| ~~[P1-q2-oracle-measurement.md](./P1-q2-oracle-measurement.md)~~ | Q2 真实客户端实测 | — | ✅ **已完成（GO）**，见上 |
-| [P2-c3b-delayed-commit.md](./P2-c3b-delayed-commit.md) | ③ 延迟-commit 实现（opus 长思考保活） | ~~P1~~（已 GO）+ 解 §4.2.1 的 2 个新 CRITICAL + 并发 L2 字段冻结 | 大特性、byte-critical |
-| [P3-keepalive-naming-taxonomy.md](./P3-keepalive-naming-taxonomy.md) | keepalive 配置命名一族重整 | L2 `protect_streaming_*` 字段冻结（建议与 P2 同期） | 重构 + compat 迁移 |
-| [P4-reaper-real-abort-repro.md](./P4-reaper-real-abort-repro.md) | reaper-真-abort 的 0-unhandled repro（强化 ④） | 无（④ 已落地） | 独立小测、可随时做 |
+| ~~[P1-q2-oracle-measurement.md](./P1-q2-oracle-measurement.md)~~ | Q2 真实客户端实测 | — | ✅ **已完成（GO）** |
+| ~~[P2-c3b-delayed-commit.md](./P2-c3b-delayed-commit.md)~~ | ③ 延迟-commit 实现 | — | ✅ **已落地**（`e3ad9e6` 等） |
+| ~~[P3-keepalive-naming-taxonomy.md](./P3-keepalive-naming-taxonomy.md)~~ | keepalive 命名一族重整 | — | ✅ **已落地**（`afd2370`） |
+| [P4-reaper-real-abort-repro.md](./P4-reaper-real-abort-repro.md) | reaper-真-abort 的 0-unhandled repro（强化 ④） | 无（④ 已落地） | 独立小测、可随时做（**唯一剩余项**） |
 
 ## 依赖 DAG
 

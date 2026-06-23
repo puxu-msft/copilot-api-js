@@ -138,6 +138,11 @@ export type FeatureKind =
   | "tool-input-decode-failed"
   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */
   | "protect-streaming-retry"
+  /** ③ pre-response-grace COMMIT — grace elapsed with the upstream still silent, the proxy opened a
+   *  200 SSE stream early. `detail: { graceSec: number, stalledAtLeastMs: number }` (RFC §4.2.6). */
+  | "pre-stream-grace-commit"
+  /** ③ pre-response-grace upstream RESOLVED after an early commit — `detail: { totalStalledMs: number }`. */
+  | "pre-stream-grace-resolved"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 

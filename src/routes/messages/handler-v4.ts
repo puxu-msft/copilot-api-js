@@ -487,6 +487,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         result = await p
       } catch (error) {
         const ctx = codec.getContext()
+        // Snapshot what the client received BEFORE settling (ctx.fail/abort finalizes the entry
+        // synchronously) — the first ping (+ heartbeat pings during the stall) are genuinely on the
+        // wire, so a POST-COMMIT FAILURE entry must record them too (richest-data-flow, mirrors the
+        // pump's recordForwarded ordering).
+        ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
         if (error instanceof Error && isAbortError(error)) {
           // Discriminate by SIGNAL STATE (§4.2.1): client/reaper/timeout are all generic AbortErrors,
           // and a pre-response reaper-cancel is NOT a StreamReaperCancelError (that's stream-drain only).
@@ -517,7 +522,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       }
       if (!result.ok) {
         // (b) decideRoute reject — RESOLVE not throw (C2), the try/catch above can't catch it.
-        codec.getContext()?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason))
+        const ctx = codec.getContext()
+        ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }) // forwarded pings before settling (richest-data-flow)
+        ctx?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason))
         await sink.writeSynthetic?.(anthropicRejectErrorFrame(result.rejection.status, result.rejection.reason))
         return
       }
@@ -528,10 +535,6 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       commitCtx?.recordFeature("pre-stream-grace-resolved", { totalStalledMs: Date.now() - commitInstant })
       await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env })
     } finally {
-      // Snapshot what the client received onto the ctx — the first ping (+ any heartbeat pings during
-      // the stall) are genuinely on the wire, so a POST-COMMIT FAILURE entry must record them too
-      // (the `ok` pump path already snapshots; re-snapshotting here is the same array, last wins).
-      commitCtx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
       sink.close?.()
       detachClientAbort()
     }

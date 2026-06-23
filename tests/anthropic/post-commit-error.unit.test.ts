@@ -38,6 +38,16 @@ describe("toAnthropicSseErrorData", () => {
     expect(toAnthropicSseErrorData(body, 400, false)).toEqual({ type: "error", error: { type: "invalid_request_error", message: "bad input" } })
   })
 
+  test("default body maps status → canonical Anthropic error.type (401/403/404/429/529)", () => {
+    const mk = (status: number) =>
+      (toAnthropicSseErrorData({ error: { message: "x", type: "error" } }, status, false) as { error: { type: string } }).error.type
+    expect(mk(401)).toBe("authentication_error")
+    expect(mk(403)).toBe("permission_error")
+    expect(mk(404)).toBe("not_found_error")
+    expect(mk(429)).toBe("rate_limit_error")
+    expect(mk(529)).toBe("overloaded_error")
+  })
+
   test("default mis-shaped body (5xx) is reshaped to canonical api_error", () => {
     const body = { error: { message: "boom", type: "error" } }
     expect(toAnthropicSseErrorData(body, 503, false)).toEqual({ type: "error", error: { type: "api_error", message: "boom" } })

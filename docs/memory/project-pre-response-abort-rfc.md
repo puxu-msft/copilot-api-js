@@ -1,17 +1,21 @@
 ---
 name: project-pre-response-abort-rfc
-description: pre-response abort 处理 + opus 长思考保活 RFC——①②④⑤已实现+C3b-pre1已落地+P1 Q2已实测裁决 GO（CC 超时=idle 型 60s→grace<60s，错误帧 401/400 等价仅 429/5xx 发散）；③(延迟-commit 保活)Q2 阻塞解除、P2 可启动，余阻塞=L2 字段冻结+2 新 CRITICAL
+description: pre-response abort 处理 + opus 长思考保活 RFC——①②④⑤+C3b-pre1+P1 Q2 GO+P2(③ 延迟-commit)+P3(keepalive 命名重整)全部已落地；③ 对 stream:true 请求 race grace timer 提前开 200 保活，POST-COMMIT 错误降级富 SSE error 帧；剩余仅 P4(reaper 0-unhandled repro,可选)
 metadata: 
   node_type: memory
   type: project
   originSessionId: 79ff48bb-02b7-4df3-a1f9-06f727721113
 ---
 
-排查 opus-4.8 流式请求在 pre-response（上游 292s 没回响应头）被客户端断开、产生 `[FAIL] ... The operation was aborted.` + `[ERR] Unexpected non-HTTP error` 双日志，产出 RFC `docs/rfc/pre-response-abort-handling.md`（设计稿，**尚未实现任何代码**）。三个缺陷：
+排查 opus-4.8 流式请求在 pre-response（上游 292s 没回响应头）被客户端断开、产生 `[FAIL] ... The operation was aborted.` + `[ERR] Unexpected non-HTTP error` 双日志，产出 RFC `docs/rfc/pre-response-abort-handling.md`。三个缺陷：
+
+**RFC 主体已全部交付（2026-06-23）**：①②④⑤ + C3b-pre1 + P1 Q2 GO + **P2(③ C3b 延迟-commit) + P3(keepalive 命名重整)** 全落地。commit 序列:C3a `6e04f69` golden → P3-naming `afd2370`(`stream_fake_sse_heartbeat`→`stream_keepalive_ping_sec` 默认 45 + 新 `stream_keepalive_grace_sec` 40 + compat 迁移；`protect_streaming_heartbeat` 留 L2 族) → C1 `5239328`(`pumpAnthropicStreamingV4` 接收注入 sink，byte-equiv) → C2 `08b2124`(`post-commit-error.ts` 富错误帧 pure helpers) → C3b 本体(race/dispatch 被并发 agentId 提交 `6dee399` 误扫入,配置+测试+L1/L2 修复 `e3ad9e6`)。落地形态见 RFC §5 C3b 行 + DESIGN「活的架构现状」流式写出行。**坑**:并发会话 `git add` 整文件把我在飞的 C3b handler 体扫进它的 agentId 提交（[[sed-touched-files-bundle-inflight-work]] 实例）——用 pathspec 补齐其余、不 rewrite 并发 commit。**剩余仅 P4**(reaper-真-abort 0-unhandled repro,强化已落地 ④,可选)。subagent 对抗复审 C1/C3b 均无 CRITICAL（修了 L-1 首 ping 入 try、L-2 失败也快照 forwarded）。
+
+三缺陷原貌：
 
 - **①** `forwardError`（`src/lib/error/forward.ts`）不分类 abort → catch-all 出 500/"Unexpected"；应分 504（response_header 超时）/499（客户端断开，靠 `c.req.raw.signal.aborted` 判别，非 error.name——http2-client 抹掉了 TimeoutError 身份）。
 - **②** pre-response 客户端断开记 `failed` 而非 `aborted`（与 mid-stream 路径 `ctx.abort()` 不一致）。② 当前仅 Anthropic handler，CC/Responses/Gemini 待 Q7 决议是否扩面。
-- **③** pre-response 静默无客户端保活（240/120s fake-sse 心跳在上游响应头到达后才起）。采**延迟-commit（grace window）**：`stream:true` 请求先 `Promise.race([runRequest, graceTimer(preStreamGraceSec)])`，grace 内上游回头走现状出正确 HTTP 状态码（零发散），耗尽才提前开 200 SSE + **立即采样首 ping**（`sink.emitPingOnAttach`，不能用不采样的 `writeSynthetic`）。可配置 `anthropic.pre_stream_grace`（0=禁用、完全 bypass race）。
+- **③** pre-response 静默无客户端保活。**已落地**:`stream:true` 请求 `Promise.race([runRequest, graceTimer(streamKeepaliveGraceSec)])`，grace 内回头走 `runUpstreamSettledPath`(现状零发散)，耗尽 COMMIT 开 200 + 立即 `sink.write` 首 ping，POST-COMMIT 错误经 `post-commit-error.ts` 降级富 SSE error 帧(signal-state 判别 client>reaper>timeout，pre-response reaper-cancel 是普通 AbortError 非 StreamReaperCancelError)。config `anthropic.stream_keepalive_grace_sec`(默认 40，<60s 硬约束)。
 
 **状态（2026-06-22）**：①已实现并提交（commit `ee4dd34`：forwardError 分类 abort + 单测，跨全格式）。②已实现并提交（commit `d4bced4`：handler-v4.ts pre-response catch → `ctx.abort()`+499；http 测 `tests/anthropic/pre-response-abort.http.test.ts` 断言 state="aborted" 区分 ①-fallback，2 pass）。①② 均 lint/type/test 全绿、subagent 实现复审通过。CC/Responses/Gemini 的 pre-response client-abort 仍 failed+499（Q7(a) 已文档化范围决策，本次不扩面）。③（C3b 延迟-commit）经 round-A（3 视角并行）+ round-B（对抗复审）**判定收敛、无设计层 CRITICAL**，含两前置子步 C3b-pre1（抽 `mapHttpErrorToEnvelope` 纯函数，因 forwardError 分派耦合在 `c.json` 内联）、C3b-pre2（sink 加 `emitPingOnAttach`）。
 

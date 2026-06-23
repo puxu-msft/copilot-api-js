@@ -25,19 +25,50 @@ import {
 
 const ANTHROPIC: ErrorWireFormat = "anthropic"
 
+/** Canonical Anthropic `error.type` for an HTTP status, for the unclassified (default-path) cases
+ *  forwardError doesn't already map (401/403/404/generic). The SDK branches on this literal (Q2). */
+function anthropicErrorTypeForStatus(status: number): string {
+  switch (status) {
+    case 400: {
+      return "invalid_request_error"
+    }
+    case 401: {
+      return "authentication_error"
+    }
+    case 403: {
+      return "permission_error"
+    }
+    case 404: {
+      return "not_found_error"
+    }
+    case 413: {
+      return "request_too_large"
+    }
+    case 429: {
+      return "rate_limit_error"
+    }
+    case 529: {
+      return "overloaded_error"
+    }
+    default: {
+      return status >= 500 ? "api_error" : "invalid_request_error"
+    }
+  }
+}
+
 /**
  * Reshape a {@link mapHttpErrorToEnvelope} `body` into VALID Anthropic SSE `error` event data.
  * The classified branches (429/413/402/422/503/…) already emit canonical
- * `{ type:"error", error:{ type, message, retry_after? } }` (verbatim SSE data). The DEFAULT
- * branch emits the mis-shaped `{ error:{ message, type:"error" } }` (no top-level `type`, inner
- * `error.type` is the literal "error", `error.message` carries the raw upstream body) — reshape
- * that to a canonical envelope so a client SDK can branch on `error.type`.
+ * `{ type:"error", error:{ type, message, retry_after? } }` (verbatim SSE data) → pass through.
+ * The DEFAULT branch emits the mis-shaped `{ error:{ message, type:"error" } }` (no top-level `type`,
+ * inner `error.type` is the literal "error", `error.message` carries the raw upstream body) — reshape
+ * it to a canonical envelope with the status-derived `error.type` so a client SDK can branch on it.
  */
 export function toAnthropicSseErrorData(body: Record<string, unknown>, status: number, classified: boolean): Record<string, unknown> {
   if (classified) return body
   const inner = (body.error ?? {}) as { message?: unknown }
   const message = typeof inner.message === "string" ? inner.message : "upstream error"
-  return { type: "error", error: { type: status >= 500 ? "api_error" : "invalid_request_error", message } }
+  return { type: "error", error: { type: anthropicErrorTypeForStatus(status), message } }
 }
 
 /** Build the Anthropic SSE `error` frame for a POST-COMMIT upstream {@link HTTPError} — reuses

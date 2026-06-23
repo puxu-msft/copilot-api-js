@@ -294,6 +294,18 @@ export const AnthropicConfigSchema = z
      */
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
+     * ③ pre-response-grace window (seconds) for `stream:true` Anthropic requests
+     * (RFC docs/rfc/pre-response-abort-handling.md §4). `0` disables ③ (full bypass
+     * → current behavior); default **40**. Claude Code's request timeout is an IDLE
+     * watchdog at ~60s (Q2 oracle), so grace MUST be `< 60s` or the client abandons
+     * the first attempt before the proxy commits. When `> 0`, the handler races
+     * `runRequest` against a grace timer: within grace → current path (real HTTP
+     * status, zero divergence); grace elapsed with upstream still silent → COMMIT a
+     * 200 SSE stream + immediate ping (opus pre-response stall keepalive), POST-COMMIT
+     * upstream errors degrading to a rich SSE `error` frame. Hot-reloaded per-request.
+     */
+    stream_keepalive_grace_sec: nullableNonnegativeInt(),
+    /**
      * L2 — transactional buffered retry for streaming generations cut short by an
      * upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit). Buffers the
      * whole response and commits only after `message_stop`, re-running the exchange

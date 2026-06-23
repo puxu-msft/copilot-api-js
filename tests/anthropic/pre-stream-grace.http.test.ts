@@ -20,6 +20,7 @@
 
 import {
   //
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -35,6 +36,7 @@ import {
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { FakeClock } from "../helpers/fake-clock"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
@@ -156,4 +158,132 @@ describe("③ pre-stream-grace — C3a golden pre-capture (current behavior, bef
       expect(entry?.state).toBe("failed")
     })
   }
+})
+
+/** Frame `type` values in forwarded order (ping/message_start/error/…), from the forwarded SSE text. */
+function frameTypesInOrder(sse: string): Array<string> {
+  const out: Array<string> = []
+  for (const line of sse.split("\n")) {
+    if (!line.startsWith("data: ")) continue
+    const data = line.slice(6)
+    if (data === "[DONE]") continue
+    try {
+      out.push((JSON.parse(data) as { type?: string }).type ?? "?")
+    } catch {
+      /* non-json keepalive */
+    }
+  }
+  return out
+}
+
+/** Parse the forwarded `event: error` frame's data (the COMMIT rich error frame). */
+function parseErrorFrame(sse: string): { type?: string; error?: { type?: string; message?: string } } | undefined {
+  for (const line of sse.split("\n")) {
+    if (!line.startsWith("data: ")) continue
+    try {
+      const obj = JSON.parse(line.slice(6)) as { type?: string; error?: { type?: string; message?: string } }
+      if (obj.type === "error" && obj.error) return obj
+    } catch {
+      /* skip */
+    }
+  }
+  return undefined
+}
+
+describe("③ pre-stream-grace — COMMIT (grace elapses, upstream silent then resolves)", () => {
+  useIsolatedRuntime()
+  const clock = new FakeClock()
+
+  let gateReached: () => void
+  let gateReachedP: Promise<void>
+  let openGate: () => void
+  let gateOpenP: Promise<void>
+  let commitMode: "complete" | "error-401" = "complete"
+
+  // A gated upstream that signals when the fetch is reached, then WITHHOLDS its Response until the
+  // test opens the gate — modelling the pre-response silence the grace window races against.
+  const gatedFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input
+      : input instanceof URL ? input.href
+      : input.url
+    if (!url.endsWith("/v1/messages")) throw new Error(`unexpected upstream URL in mock: ${url}`)
+    const payload = typeof init?.body === "string" ? (JSON.parse(init.body) as { model?: string }) : {}
+    gateReached()
+    return gateOpenP.then(() =>
+      commitMode === "error-401" ?
+        new Response(errorBody(401), { status: 401, headers: { "content-type": "application/json" } })
+      : createSseResponse(buildCompleteFrames(payload.model ?? MODEL)),
+    )
+  })
+
+  beforeEach(() => {
+    clock.install()
+    gatedFetchMock.mockClear()
+    gateReachedP = new Promise<void>((r) => (gateReached = r))
+    gateOpenP = new Promise<void>((r) => (openGate = r))
+    commitMode = "complete"
+    setStateForTests({
+      copilotToken: "test-token",
+      accountType: "individual",
+      vsCodeVersion: "1.100.0",
+      fetchTimeout: 0,
+      streamIdleTimeout: 0,
+      streamKeepalivePingSec: 0, // commit path floors to 30s; we never advance that far, so only the explicit first ping appears
+      streamKeepaliveGraceSec: 5,
+    })
+    applyFetchMock(gatedFetchMock)
+    setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
+  })
+
+  afterEach(() => clock.restore())
+
+  test("grace elapsed → 200 + immediate ping, then upstream completes → content forwarded after the ping", async () => {
+    const resP = streamRequest("grace-commit-complete")
+    await gateReachedP // upstream fetch reached, the grace race is pending
+    await clock.advance(5_000) // fire the grace timer → COMMIT (200 + first ping)
+    const res = await resP
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toContain("text/event-stream")
+
+    openGate() // upstream returns → pump forwards the content on the SAME sink
+    const text = await res.text()
+    const types = frameTypesInOrder(text)
+    expect(types[0]).toBe("ping") // the COMMIT first ping precedes all real content (③ keepalive)
+    expect(types).toContain("message_start")
+    expect(types).toContain("message_stop")
+
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "grace-commit-complete", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+  })
+
+  test("grace elapsed → 200 + ping, then upstream 401 → rich SSE error frame (HTTP status stays 200)", async () => {
+    commitMode = "error-401"
+    const resP = streamRequest("grace-commit-401")
+    await gateReachedP
+    await clock.advance(5_000) // COMMIT
+    const res = await resP
+    expect(res.status).toBe(200) // committed — the HTTP status is locked at 200, the error degrades to an SSE frame
+
+    openGate() // upstream rejects (401) → POST-COMMIT (c) branch → rich error frame on the same sink
+    const text = await res.text()
+    const types = frameTypesInOrder(text)
+    expect(types[0]).toBe("ping")
+    expect(types).toContain("error")
+    // Q2 make-or-break: the rich frame preserves the canonical error.type the client SDK branches on.
+    expect(parseErrorFrame(text)?.error?.type).toBe("authentication_error")
+
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "grace-commit-401", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    // richest-data-flow (L-2): the first ping the client genuinely received is persisted to history
+    // even on a POST-COMMIT FAILURE entry (the COMMIT finally snapshots forwardedSseEvents).
+    const forwardedTypes = (entry?.inboundResponse?.sseEvents ?? []).map((e) => {
+      try {
+        return (JSON.parse(e.raw) as { type?: string }).type
+      } catch {
+        return undefined
+      }
+    })
+    expect(forwardedTypes).toContain("ping")
+  })
 })
