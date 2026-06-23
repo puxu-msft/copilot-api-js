@@ -2,6 +2,7 @@ export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entries_v2 (
   id               TEXT PRIMARY KEY,
   session_id       TEXT,
+  agent_id         TEXT,
   started_at       INTEGER NOT NULL,
   ended_at         INTEGER,
   duration_ms      INTEGER,

@@ -212,6 +212,7 @@ export interface OutboundResponseData {
 export interface HistoryEntry {
   id: string
   sessionId?: string
+  agentId?: string
   rawPath?: string
   startedAt: number
   endedAt?: number
@@ -324,6 +325,10 @@ export interface QueryOptions {
   to?: number
   search?: string
   sessionId?: string
+  /** Filter to a specific subagent id (uses the agent_id SQL column). */
+  agentId?: string
+  /** Filter to the main agent only (entries with NULL agent_id). Mutually exclusive with `agentId`; `agentId` wins if both set. */
+  mainAgentOnly?: boolean
   /** Filter to records produced by a specific process (uses the pid SQL column). */
   pid?: number
 }
@@ -363,6 +368,7 @@ export interface HistoryStats {
 export interface EntrySummary {
   id: string
   sessionId?: string
+  agentId?: string
   rawPath?: string
   startedAt: number
   endedAt?: number

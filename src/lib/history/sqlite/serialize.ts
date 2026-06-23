@@ -17,6 +17,7 @@ import {
 export interface EntryRow {
   id: string
   session_id: string | null
+  agent_id: string | null
   started_at: number
   ended_at: number | null
   duration_ms: number | null
@@ -55,7 +56,7 @@ export interface EntryRow {
  * (the head blob is finalized once; pinning happens later), so it must never be
  * serialized into the blob — it is always derived from the column on read.
  */
-const META_KEYS = new Set<string>(["id", "sessionId", "startedAt", "endedAt", "durationMs", "endpoint", "transport", "state", "pinned"])
+const META_KEYS = new Set<string>(["id", "sessionId", "agentId", "startedAt", "endedAt", "durationMs", "endpoint", "transport", "state", "pinned"])
 
 // ============================================================================
 // Stage taxonomy (entry_stages rows)
@@ -144,6 +145,7 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
   const row: EntryRow = {
     id: entry.id,
     session_id: entry.sessionId ?? null,
+    agent_id: entry.agentId ?? null,
     started_at: entry.startedAt,
     ended_at: entry.endedAt ?? null,
     duration_ms: entry.durationMs ?? null,
@@ -187,6 +189,7 @@ export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry
     ...restored,
     id: row.id,
     sessionId: row.session_id ?? undefined,
+    agentId: row.agent_id ?? undefined,
     startedAt: row.started_at,
     endedAt: row.ended_at ?? undefined,
     durationMs: row.duration_ms ?? undefined,

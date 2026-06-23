@@ -44,6 +44,7 @@ export interface RequestContextManager {
   create(opts: {
     endpoint: EndpointType
     sessionId?: string
+    agentId?: string
     rawPath?: string
     /**
      * HTTP method of the inbound request. Stored on RequestContext.method
@@ -227,6 +228,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
       const ctx = createRequestContext({
         endpoint: opts.endpoint,
         sessionId: opts.sessionId,
+        agentId: opts.agentId,
         rawPath: opts.rawPath,
         method: opts.method,
         path: opts.path,

@@ -64,6 +64,13 @@ function applyWhere(opts: QueryOptions | undefined): WhereClause {
     where.push("session_id = ?")
     params.push(opts.sessionId)
   }
+  // agentId wins over mainAgentOnly when both set (mutually exclusive per the type).
+  if (opts?.agentId) {
+    where.push("agent_id = ?")
+    params.push(opts.agentId)
+  } else if (opts?.mainAgentOnly) {
+    where.push("agent_id IS NULL")
+  }
   if (opts?.from !== undefined) {
     where.push("started_at >= ?")
     params.push(opts.from)
@@ -130,7 +137,7 @@ export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
   const limit = opts?.limit ?? 100
   const rows = db
     .prepare(
-      `SELECT id, session_id, started_at, ended_at, duration_ms,
+      `SELECT id, session_id, agent_id, started_at, ended_at, duration_ms,
               model, endpoint, transport, status,
               input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
               stop_reason, error_message,
@@ -153,6 +160,7 @@ function rowToSummary(r: SummaryRow): EntrySummary {
   return {
     id: r.id,
     sessionId: r.session_id ?? undefined,
+    agentId: r.agent_id ?? undefined,
     startedAt: r.started_at,
     endedAt: r.ended_at ?? undefined,
     endpoint: r.endpoint as EntrySummary["endpoint"],

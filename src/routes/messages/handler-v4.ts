@@ -92,7 +92,11 @@ import {
   isAbortError,
 } from "~/lib/error"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
-import { getSessionIdFromHeaders } from "~/lib/history/store"
+import {
+  //
+  getAgentIdFromHeaders,
+  getSessionIdFromHeaders,
+} from "~/lib/history/store"
 import { resolveModelName } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
@@ -107,6 +111,13 @@ import { state } from "~/lib/state"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
+import {
+  //
+  anthropicErrorFrame,
+  anthropicHttpErrorFrame,
+  anthropicRejectErrorFrame,
+  classifyPostCommitAbort,
+} from "./post-commit-error"
 import { retryMetaFeature } from "./retry-meta-feature"
 import {
   //
@@ -219,6 +230,7 @@ function createWebSearchContext(
   const reqCtx = manager.create({
     endpoint: "anthropic-messages",
     sessionId: getSessionIdFromHeaders(c.req.raw.headers),
+    agentId: getAgentIdFromHeaders(c.req.raw.headers),
     rawPath: c.req.path,
     method: c.req.method,
     path: c.req.path,
@@ -316,93 +328,211 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     },
   })
 
-  let result: DriverRequestResult
-  try {
-    result = await driver.runRequest({
-      body: wireBody,
-      originalBodyForHistory: clientRaw,
-      headers: c.req.raw.headers,
-      method: c.req.method,
-      path: c.req.path,
-      preResolved: { name: resolvedName, model: args.selectedModel },
-      clientAbortSignal: clientAbort.signal,
-    })
-  } catch (error) {
-    // Any failure after parse created the ctx (parse-period sanitize/translate
-    // throw, or an exchange failure). Settle it — `codec.getContext()` reaches the
-    // ctx even when the throw happened before the envelope was otherwise capturable.
-    // (Outbound header legs are written by the driver during the exchange, RFC Phase 2.)
-    const ctx = codec.getContext()
-    if (ctx) {
-      c.set("requestContext", ctx)
-      // A pre-response CLIENT disconnect is a cancellation, not a failure: record
-      // the distinct `aborted` terminal state (parity with the mid-stream pump's
-      // settled-abort path, pumpAnthropicStreamingV4) instead of `failed`, and
-      // return 499 rather than rethrowing into forwardError's catch-all. Discriminate
-      // via our own clientAbort controller (here, pre-streamSSE, only the
-      // client-disconnect bridge flips it) — NOT error.name (the http2 client
-      // synthesizes a generic AbortError; a response-header timeout does NOT flip
-      // clientAbort, so it correctly falls through to fail → forwardError 504).
-      if (error instanceof Error && isAbortError(error) && clientAbort.signal.aborted) {
-        ctx.abort(resolvedName)
-        detachClientAbort()
-        return c.body(null, 499 as ContentfulStatusCode)
-      }
-      ctx.fail(resolvedName, error)
-    }
-    detachClientAbort()
-    throw error
-  }
+  // ③ (RFC §4.2.1): runRequest is fired OUTSIDE so it can race a grace timer. `p` runs the whole
+  // S1–S4 pipeline (incl. the internal retry loop); the grace race only decides WHEN/WHETHER we open
+  // the client stream early — it never re-issues the request.
+  const p = driver.runRequest({
+    body: wireBody,
+    originalBodyForHistory: clientRaw,
+    headers: c.req.raw.headers,
+    method: c.req.method,
+    path: c.req.path,
+    preResolved: { name: resolvedName, model: args.selectedModel },
+    clientAbortSignal: clientAbort.signal,
+  })
 
-  // Expose the ctx so the observability middleware's safety net can finalize it
-  // from the HTTP status if a path below doesn't settle it (parity with legacy
-  // c.set("requestContext")).
-  const ctx = codec.getContext()
-  if (ctx) c.set("requestContext", ctx)
-
-  if (!result.ok) {
-    // decideRoute reject (unsupported model) — shape the Anthropic 400. The route's
-    // forwardError finishes the response; the middleware finalizes the now-c.set ctx
-    // from the 4xx status (RFC §11.5 / §1 decision 3 — not a dangling entry).
-    detachClientAbort()
-    throw new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason)
-  }
-
-  const { upstream, env } = result
-
-  if (!env.stream) {
+  // The current (pre-③) path: await the upstream-settled runRequest, then dispatch. Shared by the ③
+  // BYPASS (non-stream / grace disabled) AND the PRE-COMMIT branch (upstream returned/errored WITHIN
+  // grace) — both keep the real HTTP status (zero divergence vs real Anthropic).
+  const runUpstreamSettledPath = async (): Promise<Response> => {
+    let result: DriverRequestResult
     try {
-      const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
-      return renderNonStreamingV4(c, driver, env, resp, truncateResult)
-    } finally {
+      result = await p
+    } catch (error) {
+      // Any failure after parse created the ctx (parse-period sanitize/translate throw, or an
+      // exchange failure). Settle it — `codec.getContext()` reaches the ctx even when the throw
+      // happened before the envelope was otherwise capturable.
+      const ctx = codec.getContext()
+      if (ctx) {
+        c.set("requestContext", ctx)
+        // A pre-response CLIENT disconnect is a cancellation, not a failure: record the distinct
+        // `aborted` terminal state and return 499 rather than rethrowing into forwardError's
+        // catch-all. Discriminate via our own clientAbort controller (here, pre-streamSSE, only the
+        // client-disconnect bridge flips it) — NOT error.name (a response-header timeout does NOT
+        // flip clientAbort, so it correctly falls through to fail → forwardError 504).
+        if (error instanceof Error && isAbortError(error) && clientAbort.signal.aborted) {
+          ctx.abort(resolvedName)
+          detachClientAbort()
+          return c.body(null, 499 as ContentfulStatusCode)
+        }
+        ctx.fail(resolvedName, error)
+      }
       detachClientAbort()
+      throw error
     }
+
+    // Expose the ctx so the observability middleware's safety net can finalize it from the HTTP
+    // status if a path below doesn't settle it.
+    const ctx = codec.getContext()
+    if (ctx) c.set("requestContext", ctx)
+
+    if (!result.ok) {
+      // decideRoute reject (unsupported model) — shape the Anthropic 400. forwardError finishes the
+      // response; the middleware finalizes the now-c.set ctx from the 4xx status (not a dangling entry).
+      detachClientAbort()
+      throw new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason)
+    }
+
+    const { upstream, env } = result
+
+    if (!env.stream) {
+      try {
+        const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
+        return renderNonStreamingV4(c, driver, env, resp, truncateResult)
+      } finally {
+        detachClientAbort()
+      }
+    }
+
+    consola.debug("[Anthropic:v4] Streaming response")
+    env.ctx.transition("streaming")
+    return streamSSE(c, async (stream) => {
+      stream.onAbort(() => clientAbort.abort())
+      // RFC Phase 4: ④ capture the proxy→client response headers (streamSSE has set them
+      // synchronously before invoking this callback; finalize runs later in the pump).
+      env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
+      // C1 (RFC §4.2.1): the sink is built HERE (caller-owned) — not inside the pump — so the ③
+      // pre-response-grace commit path can emit a first ping on the SAME sink it later hands the
+      // pump. One `streamStartMs` is threaded into both the sink (forwarded offsetMs) and the pump
+      // (completion summary) for byte-equivalence (C3a golden locks this).
+      const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
+      const forwardedSseEvents: Array<SseEventRecord> = []
+      const streamStartMs = Date.now()
+      const sink = makeSseSink(stream, {
+        onForwarded: (record) => forwardedSseEvents.push(record),
+        streamStartMs,
+        ...(heartbeatSec > 0 && {
+          heartbeat: { intervalSec: heartbeatSec, pingFrame: ANTHROPIC_PING, clientAbortSignal: clientAbort.signal },
+        }),
+      })
+      try {
+        await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env })
+      } finally {
+        detachClientAbort()
+      }
+    })
   }
 
-  consola.debug("[Anthropic:v4] Streaming response")
-  env.ctx.transition("streaming")
+  // ③ gate: only stream:true requests with grace>0 enter the race; everything else bypasses to the
+  // current path verbatim (RFC §4.2.0 — env.stream mirrors clientRaw.stream, settled at parse; the
+  // bypass is byte-identical to before ③, the C3a golden locks it).
+  if (!clientRaw.stream || state.streamKeepaliveGraceSec <= 0) {
+    return runUpstreamSettledPath()
+  }
+
+  // ③ race: runRequest vs a grace timer. `p.then(ok,err)` permanently consumes p's rejection
+  // reaction so a grace-win can't unhandledRejection (the COMMIT callback's `await p` is the second
+  // reaction). setTimeout+clearTimeout only (AbortSignal.timeout is uncancellable). Tie → upstream
+  // wins naturally (p.then is a microtask, the timer is a macrotask).
+  let graceTimer: ReturnType<typeof setTimeout> | undefined
+  const graceFired = new Promise<"grace">((res) => {
+    graceTimer = setTimeout(() => res("grace"), state.streamKeepaliveGraceSec * 1000)
+    ;(graceTimer as unknown as { unref?: () => void }).unref?.()
+  })
+  const first = await Promise.race([
+    p.then(
+      () => "upstream" as const,
+      () => "upstream" as const,
+    ),
+    graceFired,
+  ])
+  clearTimeout(graceTimer)
+
+  if (first === "upstream") {
+    // PRE-COMMIT: the upstream settled within grace → current path, zero divergence.
+    return runUpstreamSettledPath()
+  }
+
+  // === COMMIT === grace elapsed with the upstream still silent (opus pre-response stall). Open a 200
+  // SSE stream early + an immediate ping so the client stays connected; the HTTP status is now locked.
+  const commitCtx = codec.getContext()
+  commitCtx?.recordFeature("pre-stream-grace-commit", { graceSec: state.streamKeepaliveGraceSec, stalledAtLeastMs: state.streamKeepaliveGraceSec * 1000 })
+  if (commitCtx) {
+    c.set("requestContext", commitCtx)
+    commitCtx.transition("streaming")
+  }
+  const commitInstant = Date.now()
   return streamSSE(c, async (stream) => {
-    stream.onAbort(() => clientAbort.abort())
-    // RFC Phase 4: ④ capture the proxy→client response headers (streamSSE has set
-    // them synchronously before invoking this callback; finalize runs later in the pump).
-    env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
-    // C1 (RFC §4.2.1): the sink is built HERE (caller-owned) — not inside the pump — so the ③
-    // pre-response-grace commit path can emit a first ping on the SAME sink it later hands the
-    // pump. One `streamStartMs` is threaded into both the sink (forwarded offsetMs) and the pump
-    // (completion summary) for byte-equivalence (C3a golden locks this).
-    const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
+    // The commit ping cadence is env-independent (env isn't resolved yet) and MUST be < 60s (the CC
+    // idle threshold, Q2) — floor a 0 (disabled live keepalive) to 30s so ③ always keeps alive.
+    const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : 30
     const forwardedSseEvents: Array<SseEventRecord> = []
     const streamStartMs = Date.now()
     const sink = makeSseSink(stream, {
       onForwarded: (record) => forwardedSseEvents.push(record),
       streamStartMs,
-      ...(heartbeatSec > 0 && {
-        heartbeat: { intervalSec: heartbeatSec, pingFrame: ANTHROPIC_PING, clientAbortSignal: clientAbort.signal },
-      }),
+      heartbeat: { intervalSec: pingSec, pingFrame: ANTHROPIC_PING, clientAbortSignal: clientAbort.signal },
     })
+    stream.onAbort(() => clientAbort.abort()) // register BEFORE the first ping (round-B L1)
+    // ④ capture proxy→client headers (set synchronously by streamSSE before this callback).
+    commitCtx?.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     try {
+      // ★ immediate first ping (sampled), before `await p`. Best-effort (`.catch`) so even a
+      // (currently-unreachable) write reject can't skip the ctx-settlement below → no dangling entry.
+      await sink.write(ANTHROPIC_PING).catch(() => {})
+      // POST-COMMIT: every exit settles ctx + (on failure) writes a rich error frame — the SSE
+      // middleware does NOT finalize an event-stream, so a silent return would leak a dangling entry.
+      let result: DriverRequestResult
+      try {
+        result = await p
+      } catch (error) {
+        const ctx = codec.getContext()
+        if (error instanceof Error && isAbortError(error)) {
+          // Discriminate by SIGNAL STATE (§4.2.1): client/reaper/timeout are all generic AbortErrors,
+          // and a pre-response reaper-cancel is NOT a StreamReaperCancelError (that's stream-drain only).
+          const kind = classifyPostCommitAbort(clientAbort.signal.aborted, ctx?.lifecycleSignal.aborted ?? false)
+          if (kind === "client-abort") {
+            ctx?.abort(resolvedName) // (e) client gone — zero further bytes, no 499 (already 200)
+            return
+          }
+          // (f) reaper-cancel (reaper already settled it; the `settled` guard dedups) / (d) timeout.
+          ctx?.fail(resolvedName, error)
+          await sink.writeSynthetic?.(
+            kind === "reaper-cancel" ?
+              anthropicErrorFrame("api_error", "Request cancelled by the stale-request reaper")
+            : anthropicErrorFrame("api_error", "Upstream timed out before sending response headers"),
+          )
+          return
+        }
+        if (error instanceof HTTPError) {
+          // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
+          // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
+          ctx?.fail(resolvedName, error)
+          await sink.writeSynthetic?.(anthropicHttpErrorFrame(error))
+          return
+        }
+        ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
+        await sink.writeSynthetic?.(anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)))
+        return
+      }
+      if (!result.ok) {
+        // (b) decideRoute reject — RESOLVE not throw (C2), the try/catch above can't catch it.
+        codec.getContext()?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason))
+        await sink.writeSynthetic?.(anthropicRejectErrorFrame(result.rejection.status, result.rejection.reason))
+        return
+      }
+      // (a) ok → hand the SAME sink to the pump (single-sink, no rebuild). The commit ping cadence
+      // baked into the sink continues as the post-commit keepalive during generation.
+      const { upstream, env } = result
+      const { buffered } = resolveBufferedAndHeartbeat(env)
+      commitCtx?.recordFeature("pre-stream-grace-resolved", { totalStalledMs: Date.now() - commitInstant })
       await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env })
     } finally {
+      // Snapshot what the client received onto the ctx — the first ping (+ any heartbeat pings during
+      // the stall) are genuinely on the wire, so a POST-COMMIT FAILURE entry must record them too
+      // (the `ok` pump path already snapshots; re-snapshotting here is the same array, last wins).
+      commitCtx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+      sink.close?.()
       detachClientAbort()
     }
   })

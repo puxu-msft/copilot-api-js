@@ -153,6 +153,7 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
   return {
     id: entry.id,
     ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
+    ...(entry.agentId ? { agentId: entry.agentId } : {}),
     rawPath: entry.rawPath,
     startedAt: entry.startedAt,
     endedAt: entry.endedAt,

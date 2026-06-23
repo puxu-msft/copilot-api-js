@@ -182,6 +182,7 @@ export class HistorySink {
       const entry: HistoryEntry = {
         id: ctx.id,
         ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+        ...(ctx.agentId ? { agentId: ctx.agentId } : {}),
         ...(ctx.rawPath ? { rawPath: ctx.rawPath } : {}),
         endpoint: ctx.endpoint,
         // Process identity injected once at insert. The in-flight merge chain
@@ -237,6 +238,7 @@ export class HistorySink {
     updateEntry(entryData.id, {
       rawPath: entryData.rawPath,
       sessionId: entryData.sessionId,
+      agentId: entryData.agentId,
       state: entryData.state,
       active: entryData.active,
       lastUpdatedAt: entryData.lastUpdatedAt,

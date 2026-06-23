@@ -97,6 +97,7 @@ export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outb
 export function createRequestContext(opts: {
   endpoint: EndpointType
   sessionId?: string
+  agentId?: string
   rawPath?: string
   /** HTTP method (or "WS" / "STDIO" for non-HTTP entry points). Default "UNKNOWN". */
   method?: string
@@ -129,6 +130,7 @@ export function createRequestContext(opts: {
   // Mutable internal state
   let _state: RequestState = "pending"
   let _sessionId = opts.sessionId
+  let _agentId = opts.agentId
   let _resolvedModel: string | null = null
   let _clientModel: string | null = null
   let _originalRequest: OriginalRequest | null = null
@@ -194,6 +196,9 @@ export function createRequestContext(opts: {
     get sessionId() {
       return _sessionId
     },
+    get agentId() {
+      return _agentId
+    },
     rawPath: opts.rawPath,
     method,
     path,
@@ -257,6 +262,10 @@ export function createRequestContext(opts: {
 
     setSessionId(sessionId: string | undefined) {
       _sessionId = sessionId
+    },
+
+    setAgentId(agentId: string | undefined) {
+      _agentId = agentId
     },
 
     setOriginalRequest(req: OriginalRequest) {
@@ -536,6 +545,7 @@ export function createRequestContext(opts: {
         id,
         endpoint: opts.endpoint,
         ...(_sessionId ? { sessionId: _sessionId } : {}),
+        ...(_agentId ? { agentId: _agentId } : {}),
         ...(opts.rawPath ? { rawPath: opts.rawPath } : {}),
         startedAt: startTime,
         endedAt,

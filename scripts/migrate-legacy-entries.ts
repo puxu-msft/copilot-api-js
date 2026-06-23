@@ -115,6 +115,7 @@ function toEntryRow(r: LegacyRow): EntryRow {
   return {
     id: r.id,
     session_id: r.session_id,
+    agent_id: null,
     started_at: r.started_at,
     ended_at: r.ended_at,
     duration_ms: r.duration_ms,

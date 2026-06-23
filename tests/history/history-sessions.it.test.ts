@@ -10,6 +10,7 @@ import {
 import {
   //
   clearHistory,
+  getAgentIdFromHeaders,
   getCurrentSession,
   getSessionIdFromHeaders,
   initHistory,
@@ -59,6 +60,14 @@ describe("history session resolution", () => {
     })
 
     expect(getSessionIdFromHeaders(headers)).toBe("ce6fd04e-a162-4cd6-bdff-81d0b110c8fb")
+  })
+
+  test("extracts the Claude Code agent id (subagent marker); main agent has none", () => {
+    // Subagent requests carry x-claude-code-agent-id; the main agent sends none → undefined.
+    expect(getAgentIdFromHeaders(new Headers({ "x-claude-code-agent-id": "acc28fdf99a8d5740" }))).toBe("acc28fdf99a8d5740")
+    expect(getAgentIdFromHeaders(new Headers())).toBeUndefined()
+    expect(getAgentIdFromHeaders(new Headers({ "x-claude-code-agent-id": "  " }))).toBeUndefined() // whitespace → undefined, never ""
+    expect(getAgentIdFromHeaders({ "x-claude-code-agent-id": "sub-1" })).toBe("sub-1") // plain-record form
   })
 
   test("uses previous response ids as real responses session anchors", () => {

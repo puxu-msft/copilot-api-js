@@ -286,6 +286,7 @@ function migrateEntriesColumns(database: Database): void {
     // Debug-pin flag. SQLite permits ALTER ADD COLUMN with a NOT NULL + constant
     // DEFAULT, so existing rows backfill to 0 (unpinned) without a rewrite.
     { name: "pinned", type: "INTEGER NOT NULL DEFAULT 0" },
+    { name: "agent_id", type: "TEXT" },
   ]
 
   for (const col of wanted) {
@@ -295,6 +296,10 @@ function migrateEntriesColumns(database: Database): void {
   }
 
   database.exec("CREATE INDEX IF NOT EXISTS idx_entries_v2_pid ON entries_v2(pid, started_at DESC)")
+  // agent_id index created here (NOT in SCHEMA_SQL): on a pre-agent_id DB, SCHEMA_SQL
+  // runs before this migration adds the column, so a CREATE INDEX referencing it there
+  // would fail. Composite (session_id, agent_id) serves per-session agent breakdown.
+  database.exec("CREATE INDEX IF NOT EXISTS idx_entries_v2_session_agent ON entries_v2(session_id, agent_id, started_at DESC)")
   // Partial index over ONLY the active (non-terminal) rows — a handful at any
   // instant regardless of total retention. Makes the reclaim scans
   // (reclaimStaleActiveRows / reclaimOrphanedActiveRows, both filtering on this

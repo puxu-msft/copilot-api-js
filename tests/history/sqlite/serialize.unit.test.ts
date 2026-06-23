@@ -101,6 +101,7 @@ describe("sqlite/serialize head+stage", () => {
     const row: EntryRow = {
       id: "legacy-1",
       session_id: null,
+      agent_id: null,
       started_at: 100,
       ended_at: 200,
       duration_ms: 100,

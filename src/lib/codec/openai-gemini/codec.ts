@@ -79,7 +79,11 @@ import {
   convertGeminiRequestToOpenAI,
   createGeminiStreamTranslator,
 } from "~/lib/gemini"
-import { getSessionIdFromHeaders } from "~/lib/history/store"
+import {
+  //
+  getAgentIdFromHeaders,
+  getSessionIdFromHeaders,
+} from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
@@ -248,6 +252,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
   const ctx = manager.create({
     endpoint: ENDPOINT_TYPE,
     sessionId: getSessionIdFromHeaders(raw.headers),
+    agentId: getAgentIdFromHeaders(raw.headers),
     ...(raw.path !== undefined && { rawPath: raw.path, path: raw.path }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),

@@ -14,7 +14,15 @@ export {
   updateEntry,
 } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
-export { deleteSession, getCurrentSession, getSessionEntries, getSessionIdFromHeaders, registerResponseSession, resolveResponseSessionId } from "./sessions"
+export {
+  deleteSession,
+  getAgentIdFromHeaders,
+  getCurrentSession,
+  getSessionEntries,
+  getSessionIdFromHeaders,
+  registerResponseSession,
+  resolveResponseSessionId,
+} from "./sessions"
 export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries, setHistoryPublisher, shutdownHistory } from "./state"
 export { exportHistory, getStats } from "./stats"
 

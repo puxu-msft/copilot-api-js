@@ -51,6 +51,16 @@ export function getSessionIdFromHeaders(headers: Headers | Record<string, string
   return undefined
 }
 
+/**
+ * Claude Code tags each subagent request with `x-claude-code-agent-id` (a stable
+ * per-subagent id); the main agent sends NO such header. So `undefined` here means
+ * the main agent — telemetry keys its agentKind dimension on this (undefined → "main").
+ */
+export function getAgentIdFromHeaders(headers: Headers | Record<string, string | undefined>): string | undefined {
+  const value = headers instanceof Headers ? headers.get("x-claude-code-agent-id") : headers["x-claude-code-agent-id"]
+  return normalizeSessionId(value)
+}
+
 export function resolveResponseSessionId(previousResponseId: string | null | undefined): string | undefined {
   const normalized = normalizeSessionId(previousResponseId)
   if (!normalized) return undefined

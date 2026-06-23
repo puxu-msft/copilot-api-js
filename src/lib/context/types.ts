@@ -149,6 +149,7 @@ export interface HistoryEntryData {
   currentStrategy?: string
   durationMs: number
   sessionId?: string
+  agentId?: string
   transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
 
@@ -239,6 +240,7 @@ export interface HistoryEntryData {
 export interface RequestContext {
   readonly id: string
   readonly sessionId: string | undefined
+  readonly agentId: string | undefined
   readonly rawPath: string | undefined
   /**
    * HTTP method of the inbound request (or "WS"/"STDIO" for non-HTTP entry
@@ -314,6 +316,7 @@ export interface RequestContext {
   readonly toolNameMapper: ToolNameMapper | null
 
   setSessionId(sessionId: string | undefined): void
+  setAgentId(agentId: string | undefined): void
   setOriginalRequest(req: OriginalRequest): void
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void

@@ -77,6 +77,7 @@ export function updateEntry(
       HistoryEntry,
       | "rawPath"
       | "sessionId"
+      | "agentId"
       | "state"
       | "active"
       | "lastUpdatedAt"

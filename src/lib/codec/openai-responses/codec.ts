@@ -86,6 +86,7 @@ import {
 } from "~/lib/fetch-utils"
 import {
   //
+  getAgentIdFromHeaders,
   getSessionIdFromHeaders,
   resolveResponseSessionId,
 } from "~/lib/history/store"
@@ -310,6 +311,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
   const ctx = manager.create({
     endpoint: ENDPOINT_TYPE,
     sessionId: getSessionIdFromHeaders(raw.headers) ?? resolveResponseSessionId(incoming.previous_response_id),
+    agentId: getAgentIdFromHeaders(raw.headers),
     ...(raw.path !== undefined && { rawPath: raw.path, path: raw.path }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),

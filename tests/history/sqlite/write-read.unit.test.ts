@@ -172,6 +172,21 @@ describe("sqlite write/read", () => {
     expect(resolveResponseSession("r1")).toBe("s-gamma")
   })
 
+  test("agent_id persists and queryEntries filters by agentId / mainAgentOnly", () => {
+    insertCompletedEntry(makeEntry({ id: "main-1", sessionId: "S", agentId: undefined }))
+    insertCompletedEntry(makeEntry({ id: "sub-a", sessionId: "S", agentId: "agent-A" }))
+    insertCompletedEntry(makeEntry({ id: "sub-b", sessionId: "S", agentId: "agent-B" }))
+
+    // Round-trip: agentId survives serialize → entries_v2.agent_id → deserialize.
+    expect(getEntryById("sub-a")?.agentId).toBe("agent-A")
+    expect(getEntryById("main-1")?.agentId).toBeUndefined()
+
+    // Filters: specific subagent / main-agent-only (agent_id IS NULL) / agentId wins when both set.
+    expect(queryEntries({ agentId: "agent-A" }).map((e) => e.id)).toEqual(["sub-a"])
+    expect(queryEntries({ mainAgentOnly: true }).map((e) => e.id)).toEqual(["main-1"])
+    expect(queryEntries({ agentId: "agent-B", mainAgentOnly: true }).map((e) => e.id)).toEqual(["sub-b"])
+  })
+
   test("pinned defaults false; setEntryPinned roundtrips through column + summary", () => {
     insertCompletedEntry(makeEntry({ id: "pin-1" }))
     expect(getEntryById("pin-1")?.pinned).toBe(false)

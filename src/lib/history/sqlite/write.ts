@@ -21,16 +21,16 @@ import {
  */
 const INSERT_ENTRY_SQL = `
 INSERT INTO entries_v2 (
-  id, session_id, started_at, ended_at, duration_ms,
+  id, session_id, agent_id, started_at, ended_at, duration_ms,
   model, endpoint, transport, status,
   input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
   stop_reason, error_message,
   message_count, preview_text, search_text,
   pid, boot_time, git_sha,
   blob_gz
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
-  session_id = excluded.session_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
+  session_id = excluded.session_id, agent_id = excluded.agent_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
   duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint,
   transport = excluded.transport, status = excluded.status,
   input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
@@ -53,6 +53,7 @@ function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void 
   db.prepare(INSERT_ENTRY_SQL).run(
     row.id,
     row.session_id,
+    row.agent_id,
     row.started_at,
     row.ended_at,
     row.duration_ms,

@@ -10,6 +10,7 @@ export {
   deleteSession,
   exportHistory,
   finalizeEntry,
+  getAgentIdFromHeaders,
   getCurrentSession,
   getEntry,
   getHistory,
