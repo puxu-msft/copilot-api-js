@@ -77,3 +77,45 @@ export function createSseResponseThenAbort(chunks: Array<string>, clientAbort: A
   })
   return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
 }
+
+/**
+ * Parse a forwarded SSE string into the ordered list of frame `type` values (`message_start`,
+ * `content_block_delta`, `ping`, `error`, …). A non-JSON `data: [DONE]` is reported as the literal
+ * `"[DONE]"`; unparseable keepalive lines are skipped. The standard order-assertion helper for the
+ * streaming golden tests (previously copy-pasted as a local `frameTypesInOrder` in several files).
+ */
+export function frameTypesInOrder(sse: string): Array<string> {
+  const out: Array<string> = []
+  for (const line of sse.split("\n")) {
+    if (!line.startsWith("data: ")) continue
+    const body = line.slice(6)
+    if (body === "[DONE]") {
+      out.push("[DONE]")
+      continue
+    }
+    try {
+      out.push((JSON.parse(body) as { type?: string }).type ?? "?")
+    } catch {
+      /* keepalive / non-json */
+    }
+  }
+  return out
+}
+
+/** Parse the `data:` JSON objects of a given `type` out of a forwarded SSE string (e.g. all `error`
+ *  frames). Complements {@link frameTypesInOrder} for tests that assert on a frame's payload. */
+export function dataFramesOfType(sse: string, type: string): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = []
+  for (const line of sse.split("\n")) {
+    if (!line.startsWith("data: ")) continue
+    const body = line.slice(6)
+    if (body === "[DONE]") continue
+    try {
+      const obj = JSON.parse(body) as Record<string, unknown>
+      if (obj.type === type) out.push(obj)
+    } catch {
+      /* keepalive / non-json */
+    }
+  }
+  return out
+}

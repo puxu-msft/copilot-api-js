@@ -35,7 +35,20 @@ import {
   setStateForTests,
 } from "~/lib/state"
 
+import {
+  //
+  DONE_FRAME,
+  MESSAGE_STOP_FRAME,
+  blockStopFrame,
+  jsonDeltaFrame,
+  messageDeltaFrame,
+  messageStartFrame,
+  textBlockStartFrame,
+  textDeltaFrame,
+  toolBlockStartFrame,
+} from "../helpers/anthropic-frames"
 import { mockModel } from "../helpers/factories"
+import { FakeClock } from "../helpers/fake-clock"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
@@ -45,6 +58,7 @@ import {
   //
   createSseResponse,
   createSseResponseThenError,
+  frameTypesInOrder,
 } from "../helpers/sse"
 
 const MODEL = "claude-opus-4.8"
@@ -52,25 +66,25 @@ const MODEL = "claude-opus-4.8"
 /** Complete generation: text + a Write tool_use + terminal sequence (input_tokens 100, output_tokens 20). */
 function buildCompleteFrames(model: string): Array<string> {
   return [
-    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_buf", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 0 } } })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Writing." } })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_buf", name: "Write", input: {} } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"file_path": "/tmp/x.md", "content": "# hi"}' } })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 1 })}\n\n`,
-    `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } })}\n\n`,
-    `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
-    "data: [DONE]\n\n",
+    messageStartFrame({ id: "msg_buf", model }),
+    textBlockStartFrame(0),
+    textDeltaFrame(0, "Writing."),
+    blockStopFrame(0),
+    toolBlockStartFrame(1, "toolu_buf", "Write"),
+    jsonDeltaFrame(1, '{"file_path": "/tmp/x.md", "content": "# hi"}'),
+    blockStopFrame(1),
+    messageDeltaFrame({ stopReason: "tool_use", outputTokens: 20 }),
+    MESSAGE_STOP_FRAME,
+    DONE_FRAME,
   ]
 }
 
 /** Up to (and including) a partial tool_use, then the upstream stream ERRORS (RST). */
 function buildPartialFrames(model: string): Array<string> {
   return [
-    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_bufr", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 0 } } })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_bufr", name: "Write", input: {} } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path": "/tmp/big.md", "content": "# partial' } })}\n\n`,
+    messageStartFrame({ id: "msg_bufr", model }),
+    toolBlockStartFrame(0, "toolu_bufr", "Write"),
+    jsonDeltaFrame(0, '{"file_path": "/tmp/big.md", "content": "# partial'),
   ]
 }
 
@@ -118,24 +132,6 @@ async function streamRequest(sessionId: string): Promise<string> {
   expect(res.status).toBe(200)
   expect(res.headers.get("content-type")).toContain("text/event-stream")
   return res.text()
-}
-
-function frameTypesInOrder(sse: string): Array<string> {
-  const out: Array<string> = []
-  for (const line of sse.split("\n")) {
-    if (!line.startsWith("data: ")) continue
-    const body = line.slice(6)
-    if (body === "[DONE]") {
-      out.push("[DONE]")
-      continue
-    }
-    try {
-      out.push((JSON.parse(body) as { type?: string }).type ?? "?")
-    } catch {
-      /* keepalive/non-json */
-    }
-  }
-  return out
 }
 
 describe("L2 buffered retry — Anthropic streaming handler wiring (protect_streaming_generation=on)", () => {
@@ -312,47 +308,6 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
 // ============================================================================
 // Forced heartbeat during the buffer window (RFC §5 / §14 🔴)
 // ============================================================================
-
-/** Minimal deterministic clock (mirrors fake-sse-heartbeat.unit.test). Only the heartbeat timer matters here. */
-class FakeClock {
-  now = 1_000_000
-  private nextId = 1
-  private timers = new Map<number, { fireAt: number; cb: () => void; cleared?: boolean }>()
-  private origSet = globalThis.setTimeout
-  private origClear = globalThis.clearTimeout
-  private origNow = Date.now
-  install(): void {
-    Date.now = () => this.now
-    ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
-      const id = this.nextId++
-      this.timers.set(id, { fireAt: this.now + ms, cb })
-      return id as unknown as ReturnType<typeof setTimeout>
-    }) as typeof setTimeout
-    ;(globalThis as { clearTimeout: typeof clearTimeout }).clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
-      const e = this.timers.get(id as unknown as number)
-      if (e) e.cleared = true
-    }) as typeof clearTimeout
-  }
-  restore(): void {
-    Date.now = this.origNow
-    globalThis.setTimeout = this.origSet
-    globalThis.clearTimeout = this.origClear
-  }
-  async advance(ms: number): Promise<void> {
-    const target = this.now + ms
-    for (;;) {
-      const due = [...this.timers.entries()].filter(([, t]) => !t.cleared && t.fireAt <= target).sort(([, a], [, b]) => a.fireAt - b.fireAt)
-      if (due.length === 0) break
-      const [id, entry] = due[0]
-      this.now = entry.fireAt
-      this.timers.delete(id)
-      entry.cb()
-      await Promise.resolve()
-      await Promise.resolve()
-    }
-    this.now = target
-  }
-}
 
 describe("L2 buffered retry — forced heartbeat during the buffer window (streamKeepalivePingSec=0)", () => {
   useIsolatedRuntime()

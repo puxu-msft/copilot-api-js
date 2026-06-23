@@ -17,7 +17,7 @@ export class FakeClock {
     Date.now = () => this.now
     ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
       const id = this.nextId++
-      this.timers.set(id, { fireAt: this.now + ms, cb })
+      this.timers.set(id, { fireAt: this.now + (ms || 0), cb })
       return id as unknown as ReturnType<typeof setTimeout>
     }) as typeof setTimeout
     ;(globalThis as { clearTimeout: typeof clearTimeout }).clearTimeout = ((id: ReturnType<typeof setTimeout>) => {

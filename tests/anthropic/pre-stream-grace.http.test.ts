@@ -35,6 +35,16 @@ import {
   setStateForTests,
 } from "~/lib/state"
 
+import {
+  //
+  DONE_FRAME,
+  MESSAGE_STOP_FRAME,
+  blockStopFrame,
+  messageDeltaFrame,
+  messageStartFrame,
+  textBlockStartFrame,
+  textDeltaFrame,
+} from "../helpers/anthropic-frames"
 import { mockModel } from "../helpers/factories"
 import { FakeClock } from "../helpers/fake-clock"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -45,20 +55,22 @@ import {
 import {
   //
   createSseResponse,
+  dataFramesOfType,
+  frameTypesInOrder,
 } from "../helpers/sse"
 
 const MODEL = "claude-opus-4.8"
 
-/** A clean text + tool_use generation with the terminal sequence (no decode/filter trigger). */
+/** A clean text generation with the terminal sequence (no decode/filter trigger). */
 function buildCompleteFrames(model: string): Array<string> {
   return [
-    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_grace", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 0 } } })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Thinking done." } })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
-    `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 12 } })}\n\n`,
-    `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
-    "data: [DONE]\n\n",
+    messageStartFrame({ id: "msg_grace", model }),
+    textBlockStartFrame(0),
+    textDeltaFrame(0, "Thinking done."),
+    blockStopFrame(0),
+    messageDeltaFrame({ stopReason: "end_turn", outputTokens: 12 }),
+    MESSAGE_STOP_FRAME,
+    DONE_FRAME,
   ]
 }
 
@@ -160,36 +172,6 @@ describe("③ pre-stream-grace — C3a golden pre-capture (current behavior, bef
   }
 })
 
-/** Frame `type` values in forwarded order (ping/message_start/error/…), from the forwarded SSE text. */
-function frameTypesInOrder(sse: string): Array<string> {
-  const out: Array<string> = []
-  for (const line of sse.split("\n")) {
-    if (!line.startsWith("data: ")) continue
-    const data = line.slice(6)
-    if (data === "[DONE]") continue
-    try {
-      out.push((JSON.parse(data) as { type?: string }).type ?? "?")
-    } catch {
-      /* non-json keepalive */
-    }
-  }
-  return out
-}
-
-/** Parse the forwarded `event: error` frame's data (the COMMIT rich error frame). */
-function parseErrorFrame(sse: string): { type?: string; error?: { type?: string; message?: string } } | undefined {
-  for (const line of sse.split("\n")) {
-    if (!line.startsWith("data: ")) continue
-    try {
-      const obj = JSON.parse(line.slice(6)) as { type?: string; error?: { type?: string; message?: string } }
-      if (obj.type === "error" && obj.error) return obj
-    } catch {
-      /* skip */
-    }
-  }
-  return undefined
-}
-
 describe("③ pre-stream-grace — COMMIT (grace elapses, upstream silent then resolves)", () => {
   useIsolatedRuntime()
   const clock = new FakeClock()
@@ -271,7 +253,7 @@ describe("③ pre-stream-grace — COMMIT (grace elapses, upstream silent then r
     expect(types[0]).toBe("ping")
     expect(types).toContain("error")
     // Q2 make-or-break: the rich frame preserves the canonical error.type the client SDK branches on.
-    expect(parseErrorFrame(text)?.error?.type).toBe("authentication_error")
+    expect((dataFramesOfType(text, "error")[0]?.error as { type?: string } | undefined)?.type).toBe("authentication_error")
 
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "grace-commit-401", limit: 5 }).entries[0]
     expect(entry?.state).toBe("failed")

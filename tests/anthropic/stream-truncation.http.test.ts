@@ -28,13 +28,27 @@ import {
   setStateForTests,
 } from "~/lib/state"
 
+import {
+  //
+  DONE_FRAME,
+  MESSAGE_STOP_FRAME,
+  blockStopFrame,
+  jsonDeltaFrame,
+  messageDeltaFrame,
+  messageStartFrame,
+  toolBlockStartFrame,
+} from "../helpers/anthropic-frames"
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
   applyFetchMock,
 } from "../helpers/mock-fetch"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  dataFramesOfType,
+} from "../helpers/sse"
 
 const MODEL = "claude-opus-4.8"
 
@@ -42,9 +56,9 @@ const MODEL = "claude-opus-4.8"
 // message_delta, NO message_stop, NO [DONE] — exactly the real GHC mid-stream cutoff.
 function buildTruncatedFrames(model: string): Array<string> {
   return [
-    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_trunc", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_trunc", name: "Agent", input: {} } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"description": "x", "subagent' } })}\n\n`,
+    messageStartFrame({ id: "msg_trunc", model, inputTokens: 10 }),
+    toolBlockStartFrame(0, "toolu_trunc", "Agent"),
+    jsonDeltaFrame(0, '{"description": "x", "subagent'),
     // EOF here — the ReadableStream closes with no protocol terminator.
   ]
 }
@@ -52,13 +66,13 @@ function buildTruncatedFrames(model: string): Array<string> {
 // Complete upstream (regression baseline): same shape WITH the terminal sequence.
 function buildCompleteFrames(model: string): Array<string> {
   return [
-    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_ok", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_ok", name: "Agent", input: {} } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"description": "x", "subagent_type": "general-purpose"}' } })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
-    `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 8 } })}\n\n`,
-    `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
-    "data: [DONE]\n\n",
+    messageStartFrame({ id: "msg_ok", model, inputTokens: 10 }),
+    toolBlockStartFrame(0, "toolu_ok", "Agent"),
+    jsonDeltaFrame(0, '{"description": "x", "subagent_type": "general-purpose"}'),
+    blockStopFrame(0),
+    messageDeltaFrame({ stopReason: "tool_use", outputTokens: 8 }),
+    MESSAGE_STOP_FRAME,
+    DONE_FRAME,
   ]
 }
 
@@ -88,23 +102,6 @@ async function streamRequest(sessionId: string): Promise<string> {
   expect(res.status).toBe(200)
   expect(res.headers.get("content-type")).toContain("text/event-stream")
   return res.text()
-}
-
-/** Extract parsed `data:` JSON objects of a given event type from forwarded SSE text. */
-function dataFramesOfType(sse: string, type: string): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = []
-  for (const line of sse.split("\n")) {
-    if (!line.startsWith("data: ")) continue
-    const body = line.slice(6)
-    if (body === "[DONE]") continue
-    try {
-      const obj = JSON.parse(body) as Record<string, unknown>
-      if (obj.type === type) out.push(obj)
-    } catch {
-      // non-JSON keepalive — skip
-    }
-  }
-  return out
 }
 
 describe("POST /v1/messages — upstream stream truncation detection", () => {

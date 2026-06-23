@@ -13,6 +13,8 @@ import type { SseEventRecord } from "~/lib/history/store"
 
 import { startForwardedSseHeartbeat } from "~/routes/messages/web-search-direct"
 
+import { FakeClock } from "../helpers/fake-clock"
+
 /**
  * Tests for the synthetic SSE heartbeat (anthropic.stream_keepalive_ping_sec). Uses
  * a fake timer + a stub SSEStreamingApi so the suite stays deterministic and
@@ -33,57 +35,6 @@ function makeStubStream(): { stream: SSEStreamingApi; written: Array<WrittenFram
     },
   } as unknown as SSEStreamingApi
   return { stream, written }
-}
-
-interface TimerEntry {
-  fireAt: number
-  cb: () => void
-  cleared?: boolean
-}
-
-class FakeClock {
-  now = 1_000_000
-  private nextId = 1
-  private timers = new Map<number, TimerEntry>()
-  private originalSetTimeout = globalThis.setTimeout
-  private originalClearTimeout = globalThis.clearTimeout
-  private originalDateNow = Date.now
-
-  install(): void {
-    Date.now = () => this.now
-    ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
-      const id = this.nextId++
-      this.timers.set(id, { fireAt: this.now + ms, cb })
-      return id as unknown as ReturnType<typeof setTimeout>
-    }) as typeof setTimeout
-    ;(globalThis as { clearTimeout: typeof clearTimeout }).clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
-      const entry = this.timers.get(id as unknown as number)
-      if (entry) entry.cleared = true
-    }) as typeof clearTimeout
-  }
-
-  restore(): void {
-    Date.now = this.originalDateNow
-    globalThis.setTimeout = this.originalSetTimeout
-    globalThis.clearTimeout = this.originalClearTimeout
-  }
-
-  async advance(ms: number): Promise<void> {
-    const target = this.now + ms
-    while (true) {
-      const due = [...this.timers.entries()].filter(([, t]) => !t.cleared && t.fireAt <= target).sort(([, a], [, b]) => a.fireAt - b.fireAt)
-      if (due.length === 0) break
-      const [id, entry] = due[0]
-      this.now = entry.fireAt
-      this.timers.delete(id)
-      entry.cb()
-      // Let microtasks (pending writeSerialized awaits) drain so subsequent
-      // assertions see all forwarded frames before continuing.
-      await Promise.resolve()
-      await Promise.resolve()
-    }
-    this.now = target
-  }
 }
 
 describe("stream_keepalive_ping_sec", () => {

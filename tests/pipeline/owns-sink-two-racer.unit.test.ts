@@ -40,47 +40,7 @@ import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { guardSseIterable } from "~/lib/stream"
 
-// ── fake clock (drives BOTH the heartbeat timer and the guard's idle timer) ───
-
-class FakeClock {
-  now = 1_000_000
-  private nextId = 1
-  private timers = new Map<number, { fireAt: number; cb: () => void; cleared?: boolean }>()
-  private origSet = globalThis.setTimeout
-  private origClear = globalThis.clearTimeout
-  private origNow = Date.now
-  install(): void {
-    Date.now = () => this.now
-    ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
-      const id = this.nextId++
-      this.timers.set(id, { fireAt: this.now + (ms || 0), cb })
-      return id as unknown as ReturnType<typeof setTimeout>
-    }) as typeof setTimeout
-    ;(globalThis as { clearTimeout: typeof clearTimeout }).clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
-      const e = this.timers.get(id as unknown as number)
-      if (e) e.cleared = true
-    }) as typeof clearTimeout
-  }
-  restore(): void {
-    Date.now = this.origNow
-    globalThis.setTimeout = this.origSet
-    globalThis.clearTimeout = this.origClear
-  }
-  async advance(ms: number): Promise<void> {
-    const target = this.now + ms
-    for (;;) {
-      const due = [...this.timers.entries()].filter(([, t]) => !t.cleared && t.fireAt <= target).sort(([, a], [, b]) => a.fireAt - b.fireAt)
-      if (due.length === 0) break
-      const [id, entry] = due[0]
-      this.now = entry.fireAt
-      this.timers.delete(id)
-      entry.cb()
-      await Promise.resolve()
-      await Promise.resolve()
-    }
-    this.now = target
-  }
-}
+import { FakeClock } from "../helpers/fake-clock"
 
 // ── minimal identity driver scaffolding ──────────────────────────────────────
 

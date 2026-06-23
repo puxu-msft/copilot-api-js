@@ -34,7 +34,11 @@ import {
   //
   applyFetchMock,
 } from "../helpers/mock-fetch"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  dataFramesOfType,
+} from "../helpers/sse"
 
 // Upstream stream: the non-standard embedded-signature thinking block (signature
 // on content_block_start, NO signature_delta), then a text block, then close.
@@ -95,23 +99,6 @@ async function streamRequest(sessionId?: string): Promise<string> {
   expect(res.status).toBe(200)
   expect(res.headers.get("content-type")).toContain("text/event-stream")
   return res.text()
-}
-
-/** Extract parsed `data:` JSON objects of a given event type from a forwarded SSE text. */
-function dataFramesOfType(sse: string, type: string): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = []
-  for (const line of sse.split("\n")) {
-    if (!line.startsWith("data: ")) continue
-    const body = line.slice(6)
-    if (body === "[DONE]") continue
-    try {
-      const obj = JSON.parse(body) as Record<string, unknown>
-      if (obj.type === type) out.push(obj)
-    } catch {
-      // non-JSON keepalive — skip
-    }
-  }
-  return out
 }
 
 describe("POST /v1/messages — thinking-signature compatibility shim", () => {

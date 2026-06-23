@@ -38,7 +38,11 @@ import {
   //
   applyFetchMock,
 } from "../../helpers/mock-fetch"
-import { createSseResponse } from "../../helpers/sse"
+import {
+  //
+  createSseResponse,
+  dataFramesOfType,
+} from "../../helpers/sse"
 
 // ============================================================================
 // Upstream mock — routes by URL suffix, scripts the two hops + search
@@ -712,19 +716,6 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(responsesHits).toBe(0) // never reached the search
   })
 })
-
-/** Extract parsed `data:` JSON objects of a given event type from a forwarded SSE text. */
-function dataFramesOfType(sse: string, type: string): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = []
-  for (const line of sse.split("\n")) {
-    if (!line.startsWith("data: ")) continue
-    const body = line.slice(6)
-    if (body === "[DONE]") continue
-    const obj = safeParse(body)
-    if (obj?.type === type) out.push(obj)
-  }
-  return out
-}
 
 /** Parse an SSE `data:` payload to an object, or undefined when not JSON. */
 function safeParse(raw: string): Record<string, unknown> | undefined {

@@ -33,6 +33,18 @@ import {
   setStateForTests,
 } from "~/lib/state"
 
+import {
+  //
+  DONE_FRAME,
+  MESSAGE_STOP_FRAME,
+  blockStopFrame,
+  jsonDeltaFrame,
+  messageDeltaFrame,
+  messageStartFrame,
+  textBlockStartFrame,
+  textDeltaFrame,
+  toolBlockStartFrame,
+} from "../helpers/anthropic-frames"
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
@@ -43,6 +55,7 @@ import {
   //
   createSseResponse,
   createSseResponseThenError,
+  frameTypesInOrder,
 } from "../helpers/sse"
 
 const MODEL = "claude-opus-4.8"
@@ -50,25 +63,25 @@ const MODEL = "claude-opus-4.8"
 /** thinking-less complete generation: text block + a Write tool_use block + terminal sequence. */
 function buildCompleteFrames(model: string): Array<string> {
   return [
-    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_l2", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 0 } } })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Writing the file." } })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_l2", name: "Write", input: {} } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"file_path": "/tmp/x.md", "content": "# hi"}' } })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 1 })}\n\n`,
-    `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } })}\n\n`,
-    `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
-    "data: [DONE]\n\n",
+    messageStartFrame({ id: "msg_l2", model }),
+    textBlockStartFrame(0),
+    textDeltaFrame(0, "Writing the file."),
+    blockStopFrame(0),
+    toolBlockStartFrame(1, "toolu_l2", "Write"),
+    jsonDeltaFrame(1, '{"file_path": "/tmp/x.md", "content": "# hi"}'),
+    blockStopFrame(1),
+    messageDeltaFrame({ stopReason: "tool_use", outputTokens: 20 }),
+    MESSAGE_STOP_FRAME,
+    DONE_FRAME,
   ]
 }
 
 /** Up to (and including) the partial tool_use, then the upstream stream ERRORS (RST). */
 function buildPartialFrames(model: string): Array<string> {
   return [
-    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_l2r", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 0 } } })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_l2r", name: "Write", input: {} } })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path": "/tmp/big.md", "content": "# partial' } })}\n\n`,
+    messageStartFrame({ id: "msg_l2r", model }),
+    toolBlockStartFrame(0, "toolu_l2r", "Write"),
+    jsonDeltaFrame(0, '{"file_path": "/tmp/big.md", "content": "# partial'),
     // then controller.error(NGHTTP2_CANCEL) — see createSseResponseThenError below.
   ]
 }
@@ -104,24 +117,6 @@ async function streamRequest(sessionId: string): Promise<string> {
   expect(res.status).toBe(200)
   expect(res.headers.get("content-type")).toContain("text/event-stream")
   return res.text()
-}
-
-function frameTypesInOrder(sse: string): Array<string> {
-  const out: Array<string> = []
-  for (const line of sse.split("\n")) {
-    if (!line.startsWith("data: ")) continue
-    const body = line.slice(6)
-    if (body === "[DONE]") {
-      out.push("[DONE]")
-      continue
-    }
-    try {
-      out.push((JSON.parse(body) as { type?: string }).type ?? "?")
-    } catch {
-      /* keepalive/non-json */
-    }
-  }
-  return out
 }
 
 describe("L2 baseline — Anthropic live streaming (locked before L2 lands)", () => {
