@@ -9,7 +9,7 @@
 ## ▶ 当前位置 / 下一步（防呆——每会话先看这里）
 
 - **已完成到**：**🎉 v4 重构整体完成（P0/P1/P2/P3 全 ✅）**。P3 统一收尾全部提交：`0c9cb91` **P3.1**（透传矩阵测试）、`ce072a2`+`4b8c61c` **P3.2b**（上游 sseEvents 下沉 driver + 边界文档）、`1a3aff4` **P3.3a**（等价测试改纯 v4）、`9d509e9` **P3.3b**（删 legacy handler+flag+死代码+Azure 迁 v4，−2254 行）、`e95bca8` **P3.4**（DESIGN.md 指向 v4）。每 commit subagent review + 主线亲自核验;**全 backend 2751 pass / 0 fail 经 v4**（另有 2 个无关 FileSink 预存失败,属 observability-rewrite WIP 域,非本迁移引入）。knip src/ 零悬空(探针验证)。
-- **下一步**：**无（v4 重构收官）**。剩余 deferred items 见「遗留与决策追踪」（P3.2b-D1 forwarded 边界 / P3.3-D1 web_search 保留 legacy Anthropic 路径 / P3.3-D2 createResponsesAdapter 测试用 / P2.6-D1 web_search 双跳进 driver / P2.6-D2 onMeta-vs-onRetry / P2.4-D1 WS 改进型副作用 等），均为低优先、需用户日后定夺的独立改进，不阻塞收官。
+- **下一步**：**v4 P0-P3 + Stage A + Stage B 均已收官**（Stage B 全 5 格式 owns-sink，详见下方两章）。后续为独立改进线（operational-stats RFC：`/metrics` Prometheus + telemetry model 维度 cap 等，见 git log）。剩余 deferred items 见「遗留与决策追踪」（P3.2b-D1 forwarded 边界 / P3.3-D1 web_search 保留 legacy Anthropic 路径 / P3.3-D2 createResponsesAdapter 测试用 / P2.6-D1 web_search 双跳进 driver / P2.6-D2 onMeta-vs-onRetry / P2.4-D1 WS 改进型副作用 等），均为低优先、需用户日后定夺的独立改进，不阻塞收官。
 - **历史**：P2.6（Anthropic 切 driver）RFC 4 轮收敛（[docs/rfc/p2.6-anthropic-driver-migration.md](../rfc/p2.6-anthropic-driver-migration.md)）;P2 各格式逐格式翻 flag ON 作 canary;P3.3 删除 flag 机制（driver-flags.ts），v4 成为唯一路径。
 
 ### Stage A（response-pipeline RFC）— ✅ 完成（2026-06-21）
@@ -28,7 +28,7 @@ v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 
 
 **受影响 deferred items 现状**：**P2.4-D2**（响应 finishing 留 handler、S5 registry 空）→ **Stage A 解决**；**P2.1-M2**（flushChain 单 buffer 假设）→ **Task3 解决**（双 buffer 确定契约）。**未变（Stage A 设计上不动，Stage B 评估）**：P3.2b-D1（forwarded 采样 handler-side）、P1.5-OQ1（heartbeat 抗逐帧）、P2.6-D1（web_search 双跳仍 legacy bypass，未进 driver）。Stage A 出口 = generator 模型不变，heartbeat/forwarded 采样/WS-HTTP 写出仍 handler-side。**Stage B（driver-owned-writeout）不预承诺**——重走 OQ1 见 RFC §5/§10。
 
-### Stage B（driver-owned-writeout）— 🟡 进行中（2026-06-21，用户裁决 GO）
+### Stage B（driver-owned-writeout）— ✅ 完成（全 5 格式 owns-sink，收尾 2026-06-23）
 
 `runResponse` generator → **owns-the-sink**（driver 持 `ClientSink` 自己写客户端，forwarded 采样/heartbeat/终态统一进 driver）。计划 [docs/rfc/response-pipeline/stage-b-plan.md](../rfc/response-pipeline/stage-b-plan.md)（4 轮 multi-perspective review 硬化）。**当前位置看该 plan 顶部「▶ 当前位置」banner**。
 
@@ -38,8 +38,11 @@ v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 
 | B1 | `ClientSink`/`ResponseOutcome`(无 accumulator)/`makeSse·Ws·ArraySink`/`runResponseSink` shim + 对抗 review | ✅ | 4418072/9cb2ace |
 | B2 | `runResponseSink` 丢 `[DONE]` 哨兵 + heartbeat forward-idle racer 进 sink（两-racer 不合并、additive） | ✅ | 4085fe2/5b59253 |
 | **Anthropic cut-over canary** | 活的 `pumpAnthropicStreamingV4` 切 owns-sink（**第一个 byte-critical commit**，collapse B2-整合+B3a+B4-Anthropic） | ✅ | cdca98e |
-| CC / Responses-HTTP / Responses-WS / Gemini | 逐格式 cut-over（CC 多 marker+via-responses DONE；WS 须加早停信号；Gemini=B5 逐帧化最硬） | ⬜ **下一步 CC** | — |
-| 收尾 | 删 generator `runResponse`+旧 heartbeat（scope 仅 driver 消费者，web_search bypass 仍用）；文档同步 | ⬜ | — |
+| **CC cut-over** | `pumpStreamingV4` 切 owns-sink（多 verbose-marker + via-responses 合成 `[DONE]` + 新 `onRenderedFrame` 钩子承载 render-后 accumulate + forwarded-only tool-name restore） | ✅ | 230c934 |
+| **Responses-HTTP cut-over** | 切 owns-sink（复用 `onRenderedFrame`、`restoreAndAccumulate` 共享 helper、fallback flushResponse closing、session 注册、skip empty 帧） | ✅ | d35c1b5 |
+| **Responses-WS cut-over** | `handleResponseCreateV4` 切 owns-sink（新 `stopAfterFrame` 终态早停谓词、`sendErrorAndClose`+1011、`makeWsSink` onForwarded） | ✅ | deb8f07 |
+| **Gemini cut-over（B5 最硬）** | 切 owns-sink（CC→Gemini 整流翻译迁进 codec `createGeminiStreamTranslator`/`renderFrame`/`flush`/`getMeta` + meta channel + forwardedType 覆盖） | ✅ | 433c9ba |
+| 收尾 | generator `runResponse` **评估后保留**（`runResponseSink` 包它作共享引擎 + dry-run inspector 仍消费，非待删）；旧 heartbeat web_search bypass 仍用（保留）；统一 abort/H3 覆盖 `d428daa`；流式 error 帧抽 `openAIStreamErrorFrame` 4→1 `828776f`；**B4 流末收口进 driver finalize — 评估后驳回**（过度设计 + WS 不适配，`ffbe68f`，见 finalize-stream-redesign.md EVALUATED-REJECTED） | ✅ | — |
 
 **B0/B1/B2 全 additive**（零 handler 切换、零行为变化）。**Anthropic canary（`cdca98e`）= 第一个 byte-critical cut-over**：`runResponseSink` 据 outcome.kind（`complete`/`stream-error{raw error}`/`settled-abort`）映射终态；forwarded 采样进 sink（`onForwarded`）、H3 走非采样 `writeSynthetic`、heartbeat ping 采 forwarded 跳 sseEvents（H2/H3 非对称 B0-c 锁）；4 退出 close 泄漏矩阵 + 两-racer 整合不变量 + abort 零字节（`tests/pipeline/owns-sink-two-racer.unit.test.ts`）；**id/retry SSE framing 转发保真**（subagent review 抓出旧 B1 sink 静默收窄，已修 + SseFrame 增 id/retry）。B0 goldens 逐字节连跑 20×、全 backend 2842 pass（除预存 file-sink）。3 subagent 对抗 review + 主线亲核（修 C1 id/retry + types.ts writeSynthetic doc rot）。**关键裁决**（已并入 plan + design §3.2/§3.3）：`ResponseOutcome` **剥 accumulator**（handler 自持）；heartbeat **两-racer 不合并**；`writeSynthetic`=非采样写（H3）、ping 采样由内部 timer；`[DONE]` 由 `runResponseSink` 丢、per-format 尾终止符 handler 合成。**下一格式 cut-over = CC**（多 verbose-marker streaming + via-responses `[DONE]` 合成）。
 
@@ -65,7 +68,9 @@ v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 
 | P1 改写 registry 化（请求侧） | 4 | 4/4 | ✅ |
 | P1.5/P1.6（响应侧）→ 折入 P2 | — | — | ↪ 见 P1.5-SCOPE |
 | P2 driver + 逐格式 | 6 | 6/6 | ✅ |
-| P3 统一收尾 | 4 | 0/4 | ⬜ |
+| P3 统一收尾 | 4 | 4/4 | ✅ |
+| Stage A 响应管线 registry 激活 | 7 Task | 7/7 | ✅ |
+| Stage B driver-owned-writeout | 5 格式 | 5/5 | ✅ |
 
 > **P1 范围修订（2026-06-16，调研后）**：P1 原计划 6 commit。请求侧 4 个（P1.1 接口 + P1.2/P1.3 Anthropic full + P1.4 OpenAI focused）有干净 seam，已全部完成、字节等价、subagent reviewed。**响应侧 P1.5（响应改写注册）/ P1.6（错误帧→codec.formatError）经调研判定折入 P2**——其消费者（P1.5 的 S5 per-frame chain、P1.6 的 codec）是 P2 的交付物，强塞进 P1 = 半重构 byte-critical 流式 pump（forwarded SSE 字节风险）+ 过早造 codec stub，且与 P2.6 重叠。详见 P1.5-SCOPE / P1.5-OQ1（heartbeat 已裁决 option ①）。P1.1 的 `ResponseRewrite` 接口已前瞻定义 + 测试，P2 落地即消费。
 
