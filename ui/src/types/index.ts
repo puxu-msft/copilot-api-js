@@ -40,3 +40,10 @@ export type {
   WarningMessage,
   WebSearchToolResultContentBlock,
 } from "~backend/lib/history/store"
+
+export type {
+  //
+  DimensionBreakdownSnapshot,
+  DimensionKeySnapshot,
+  DimensionSeriesPoint,
+} from "~backend/lib/request-telemetry"

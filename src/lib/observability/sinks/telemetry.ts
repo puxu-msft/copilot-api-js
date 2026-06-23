@@ -22,7 +22,11 @@ import type {
   ObservabilityEvent,
 } from "../index"
 
-import { extractTelemetryKeys } from "../telemetry-dimensions"
+import {
+  //
+  CAPPED_DIMENSION_NAMES,
+  extractTelemetryKeys,
+} from "../telemetry-dimensions"
 
 export class TelemetrySink {
   private readonly unsubscribe: () => void
@@ -45,12 +49,19 @@ export class TelemetrySink {
     if (event.kind !== "request.completed" && event.kind !== "request.failed") return
 
     const entry = event.entry
-    recordSettledRequest(extractTelemetryKeys(entry, event.ctx), {
-      startedAt: entry.startedAt,
-      endedAt: entry.endedAt,
-      success: entry.outboundResponse?.success ?? event.kind === "request.completed",
-      usage: entry.outboundResponse?.usage,
-    })
+    recordSettledRequest(
+      extractTelemetryKeys(entry, event.ctx),
+      {
+        startedAt: entry.startedAt,
+        endedAt: entry.endedAt,
+        success: entry.outboundResponse?.success ?? event.kind === "request.completed",
+        usage: entry.outboundResponse?.usage,
+        // Per-token cost: the billing multiplier rides on the ctx snapshot
+        // (state.modelIndex-resolved), not the entry. Undefined for token-based accounts.
+        multiplier: event.ctx.multiplier,
+      },
+      CAPPED_DIMENSION_NAMES,
+    )
   }
 }
 

@@ -246,13 +246,13 @@ Anthropic handler 把所有角色塞进一个手写 pump（`processOneStreamEven
 
 ### 5.5 history 存储层
 
-`store.ts`(barrel) / `entries.ts`（CRUD + `finalizeEntry`(122 显式终态写库) + 增量持久化 persistEntryEager/Status/Stages） / `in-flight.ts`(内存映射 WS 源) / `sqlite/`（schema `entries_v2` head + `entry_stages` 按 stage/attempt 拆 blob + `entry_lineage` + `sessions`；serialize/write/read/compression/reaper）。生命周期：insertEntry→updateEntry/persistStages→finalizeEntry。
+`store.ts`(barrel) / `entries.ts`（CRUD + `finalizeEntry`(122 显式终态写库) + 增量持久化 persistEntryEager/Status/Stages） / `in-flight.ts`(内存映射 WS 源) / `sqlite/`（schema `entries_v2` head〔含 `session_id`/`agent_id` 列〕 + `entry_stages` 按 stage/attempt 拆 blob；serialize/write/read/compression/reaper）。生命周期：insertEntry→updateEntry/persistStages→finalizeEntry。**注**：`entry_lineage`/`entry_produced_tool_ids`/`sessions` 物化表已退役（lineage 删除 + sessions 改 entries-derived `GROUP BY session_id`，connection 启动期 DROP 旧表）。
 
 ### 5.6 三大能力提供方（稳定契约不可破）
 
 | 能力 | 提供方 | 契约 |
 |---|---|---|
-| ① 全面 API | `routes/history/route.ts` REST（`/history/api/entries`(:24)、`/entries/:id`(:49 全量)、`/lineage`、`/stats`、`/export`、`/conversations`、`/sessions`…） | `/entries/:id` 返回全量双轨 HistoryEntry |
+| ① 全面 API | `routes/history/route.ts` REST（`/history/api/entries`(:24)、`/entries/:id`(:49 全量)、`/stats`、`/export`…）+ `routes/stats/route.ts`（`/api/stats` 运营维度 breakdown） | `/entries/:id` 返回全量双轨 HistoryEntry；`/lineage`·`/conversations`·`/sessions` 已退役 |
 | ② 日志访问 | `/api/logs`(logs/route.ts:19)、`/api/status`(status/route.ts:35)、`ConsoleSink`、`request-telemetry`、WS topic history/status | getHistorySummaries 形状、WS wire 协议 |
 | ③ 原始数据记录 | `HistoryEntryData`+`toHistoryEntry()`+`HistorySink`+sqlite `entry_stages` | 双轨字段集 + per-attempt 全量 |
 

@@ -131,8 +131,9 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 | `src/lib/abort-bridge.ts` | client abort → 上游 AbortSignal 桥接，被全部 v4 handler + web-search-handler 消费。 |
 | `src/lib/adaptive-rate-limiter.ts` | 3 模式自适应速率限制（Normal/Rate-limited/Recovering），stateful singleton，在 transport 内消化 429。 |
 | `src/lib/stream.ts`、`src/lib/shutdown.ts`、`src/lib/state.ts` | 通用流工具（raceIteratorNext/combineAbortSignals）/ 优雅关闭（drain + abort）/ 全局运行时状态。详见 `docs/shutdown.md`。 |
+| `src/lib/request-telemetry.ts` | **持久运营遥测的 dimension/measure registry 框架**（per-process `dimSinceStart` + 5min×7d 持久 `dimBuckets`，独立 JSON 文件、不随 SQLite GC 蒸发）。**反直觉契约**：维度提取下沉到 sink 层（`observability/telemetry-dimensions.ts`，entry/ctx in-scope），本文件只收 key-bag（type-light，只 import `UsageData`）；counters 是**开放 bag**（measure=数据非 schema），持久 envelope V3 泛型迭代所有维度（加维度/measure 零版本 bump，未知维度 forward-compat round-trip）；`dimSinceStart` 加载后保持空（进程生命周期）。被 `observability/sinks/telemetry.ts` 写入、`routes/status` (model 摘要) + `routes/stats`（`/api/stats` 泛型 breakdown）+ 前端 dashboard 消费。capped 维度（client/tool）基数有界（≥200 并入 `"other"`），成本 per-token-type（`tokens × ctx.multiplier`）。设计见 [rfc/operational-stats-and-lineage-removal.md](rfc/operational-stats-and-lineage-removal.md)。 |
 
-> 纯工具裸文件（`utils.ts`/`atomic-fs.ts`/`fetch-utils.ts`/`copilot-api.ts`/`proxy.ts`/`process-identity.ts`/`request-telemetry.ts`/`codex-config.ts`/`repetition-detector.ts`/`upstream-diagnostics.ts`）不入图——文件名自明、无跨文件关系。
+> 纯工具裸文件（`utils.ts`/`atomic-fs.ts`/`fetch-utils.ts`/`copilot-api.ts`/`proxy.ts`/`process-identity.ts`/`codex-config.ts`/`repetition-detector.ts`/`upstream-diagnostics.ts`）不入图——文件名自明、无跨文件关系。
 
 **图维度规则（维护约定，DESIGN.md 自约束）**：每节点 ≤2 行；三问命中 ≥1 才入图——① provenance/演进（怎么来的、取代了什么）② consumed-by/契约（谁跨域消费、对调用方的不变量）③ 反直觉决策（与朴素预期相反、不读注释会踩坑）。纯复述文件名 / barrel re-export / 纯工具函数**不入图**；叶子文件清单交 `git ls-files src/lib` / codemap 派生，**绝不在此手列**（手列叶子是高 churn + 低密度 + 必然漂移成死条目，由 `tests/infra/design-doc-tree.unit.test.ts` L1 守卫挡死条目复发）；**字段级配置指针归 [运行时选项](#运行时选项) 配置表，不在模块图复述**。粒度：≤~12 文件单职责→目录级；>20 文件或多子职责→子目录级（anthropic/history/openai）。
 
@@ -183,7 +184,8 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 |------|------|
 | `/api/models` | 模型列表（内部格式：完整 Copilot 模型数据） |
 | `/api/models/:model` | 单个模型详情（内部格式） |
-| `/api/status` | 服务器状态 |
+| `/api/status` | 服务器状态（含 `requestTelemetry` 的 **model 维度摘要**——运营 stats 的其余维度故意不塞此 health-poll，见 `/api/stats`） |
+| `/api/stats` | 运营 stats：`?dimension=<model\|endpoint\|client\|agentKind\|tool\|…>&window=<sinceStart\|7d>&limit=<N>` 返回任意注册维度的泛型 breakdown（server-side top-N + `"other"`）。持久 telemetry registry（`lib/request-telemetry.ts`）的唯一泛型读出口。设计见 [rfc/operational-stats-and-lineage-removal.md](rfc/operational-stats-and-lineage-removal.md) |
 | `/api/tokens` | Token 信息 |
 | `/api/config` | 配置信息 |
 | `/api/config/yaml` | config.yaml 编辑 |

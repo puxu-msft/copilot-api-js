@@ -343,4 +343,67 @@ describe("management and history HTTP routes", () => {
     expect(body.sessionId).toBe(entry.sessionId)
     expect(body.inboundRequest.model).toBe("claude-sonnet-4.6")
   })
+
+  test("GET /api/stats returns a per-dimension breakdown for a registered dimension", async () => {
+    const now = Date.now()
+    // 2 main-agent + 1 subagent settled requests via the model-keyed telemetry record.
+    recordSettledRequest({ agentKind: "main" }, { startedAt: now, endedAt: now + 100, success: true, usage: { input_tokens: 10, output_tokens: 4 } })
+    recordSettledRequest({ agentKind: "main" }, { startedAt: now, endedAt: now + 100, success: true, usage: { input_tokens: 6, output_tokens: 2 } })
+    recordSettledRequest({ agentKind: "subagent" }, { startedAt: now, endedAt: now + 100, success: true, usage: { input_tokens: 5, output_tokens: 1 } })
+
+    const res = await app.request("/api/stats?dimension=agentKind&window=7d")
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      dimension: string
+      window: string
+      totalKeys: number
+      truncated: boolean
+      keys: Array<{ key: string; counters: Record<string, number>; series: Array<{ timestamp: number; counters: Record<string, number> }> }>
+    }
+    expect(body.dimension).toBe("agentKind")
+    expect(body.window).toBe("7d")
+    expect(body.totalKeys).toBe(2)
+    expect(body.truncated).toBe(false)
+    const main = body.keys.find((k) => k.key === "main")
+    const subagent = body.keys.find((k) => k.key === "subagent")
+    expect(main?.counters.requestCount).toBe(2)
+    expect(main?.counters.inputTokens).toBe(16)
+    expect(subagent?.counters.requestCount).toBe(1)
+    // 7d window carries a per-key series.
+    expect(main?.series.length).toBeGreaterThan(0)
+  })
+
+  test("GET /api/stats top-N folds the remainder into an 'other' key", async () => {
+    const now = Date.now()
+    for (let i = 0; i < 5; i++) {
+      // Distinct endpoint-like keys via the generic record path (endpoint is uncapped, so all 5 distinct keys exist).
+      recordSettledRequest({ endpoint: `ep-${i}` }, { startedAt: now, endedAt: now + 1, success: true, usage: { input_tokens: i + 1, output_tokens: 0 } })
+    }
+    const res = await app.request("/api/stats?dimension=endpoint&limit=2")
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { totalKeys: number; truncated: boolean; keys: Array<{ key: string }> }
+    expect(body.totalKeys).toBe(5)
+    expect(body.truncated).toBe(true)
+    expect(body.keys).toHaveLength(3) // top-2 + "other"
+    expect(body.keys.some((k) => k.key === "other")).toBe(true)
+  })
+
+  test("GET /api/stats rejects an unknown dimension with 400 + the valid list", async () => {
+    const res = await app.request("/api/stats?dimension=bogus")
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string; dimensions: Array<string> }
+    expect(body.error).toContain("bogus")
+    expect(body.dimensions).toContain("agentKind")
+  })
+
+  test("GET /api/status stays a totals summary — it does NOT carry the new dimension breakdowns", async () => {
+    const res = await app.request("/api/status")
+    const body = (await res.json()) as { requestTelemetry: Record<string, unknown> }
+    // Only the back-compat model projection lives on the health poll; the
+    // endpoint/client/agentKind/tool breakdowns are /api/stats-only.
+    expect(body.requestTelemetry).toHaveProperty("modelsSinceStart")
+    expect(body.requestTelemetry).not.toHaveProperty("dimensions")
+    expect(body.requestTelemetry).not.toHaveProperty("agentKind")
+    expect(body.requestTelemetry).not.toHaveProperty("endpoint")
+  })
 })

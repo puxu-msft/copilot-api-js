@@ -1,5 +1,7 @@
 # RFC: Request Lineage — Cross-Request Conversation Reconstruction
 
+> **⚠️ DEPRECATED / 已废弃（2026-06-23）**：lineage 子系统已整体删除——内容哈希重建对话树在实测中零聚类（rootHash 含每轮漂移的 system[0]），仅 anthropic 路径、UI 零消费、codex 已有 `previous_response_id`。`lineage/*` 模块、`entry_lineage`/`entry_produced_tool_ids` 表、`/lineage`·`/conversations` REST 全部删除（commit `eacae48`/`3128b9b`/`cd54f21`）。本文仅作历史设计记录保留。后继方向是持久运营 stats，见 [operational-stats-and-lineage-removal.md](operational-stats-and-lineage-removal.md)。
+
 **Status:** v3.1 — round-3 verification PASS; only spec-type and prose polish items remained from v3 and have been applied. Consensus reached across 3 adversarial review rounds.
 **Author:** ECC, grounded in empirical probes of live history at `localhost:4141` on 2026-06-15.
 **Driver:** No reliable way today to answer *"which earlier request did this one descend from?"* — `sessionId` covers only Responses-API chains and clients that send `x-session-id` headers (neither Claude Code nor the typical Anthropic-shaped clients do). History UI cannot show a conversation tree, debugging tool-call regressions across turns is manual, and there is no infrastructure to compute *"this request is a retry/fork/continuation of that one."*

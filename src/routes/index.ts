@@ -26,6 +26,7 @@ import {
 } from "./models/route"
 import { responsesRoutes } from "./responses/route"
 import { initResponsesWebSocket } from "./responses/ws"
+import { statsRoutes } from "./stats/route"
 import { statusRoutes } from "./status/route"
 import { tokenRoutes } from "./token/route"
 import {
@@ -74,6 +75,7 @@ export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
 
   // Management API
   app.route("/api/status", statusRoutes)
+  app.route("/api/stats", statsRoutes)
   app.route("/api/tokens", tokenRoutes)
   app.route("/api/config", configRoutes)
   app.route("/api/logs", logsRoutes)

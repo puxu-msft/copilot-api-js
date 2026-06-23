@@ -15,14 +15,13 @@ const WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 const PERSIST_INTERVAL_MS = 60 * 1000
 
 /**
- * The per-settled-request measure increments. Single source of truth so
- * `applyMeasures` and the snapshot projectors check against the same key set
- * (a counter typo would otherwise read `undefined → NaN` silently). Adding a
- * measure (e.g. a future `estCost`) = one entry here + one line in
- * `applyMeasures`; the open counters bag + generic (de)serializer mean no
- * persistence-version bump.
+ * The BASE per-settled-request measures — the original always-present nine.
+ * Single source of truth for: (a) the V2-file validity check
+ * (`isValidPersistedModelTelemetry`), which must NOT require any measure a
+ * legacy V2 file predates, and (b) the back-compat model-snapshot aggregation.
+ * A counter typo would otherwise read `undefined → NaN` silently.
  */
-const MEASURE_NAMES = [
+const BASE_MEASURE_NAMES = [
   "requestCount",
   "successCount",
   "failureCount",
@@ -33,6 +32,30 @@ const MEASURE_NAMES = [
   "cacheCreationInputTokens",
   "reasoningTokens",
 ] as const
+
+/**
+ * Per-token-type estimated-cost measures (`tokens_of_type × multiplier`,
+ * accumulated per request). We keep the cost SPLIT per token type rather than a
+ * single `estCost` scalar because the billing `multiplier` varies per request —
+ * once aggregated it cannot be re-derived, so a per-type split is the only form
+ * that preserves the ability to apply differentiated per-token-type pricing
+ * later. Only written when `opts.multiplier` is defined (token-based accounts
+ * leave the multiplier undefined → these stay 0, i.e. the cost segment is absent).
+ */
+const COST_MEASURE_NAMES = ["costInputTokens", "costOutputTokens", "costCacheReadInputTokens", "costCacheCreationInputTokens", "costReasoningTokens"] as const
+
+/**
+ * All measures present in a fresh accumulator. `createAccumulator` initializes
+ * every one to 0 so the `+=` increments never touch an `undefined` (the project
+ * has no `noUncheckedIndexedAccess`, so a `Record<string,number>` index is typed
+ * `number`; structural pre-init is what keeps that honest). Adding a measure =
+ * one entry here + one line in `applySettledMeasures`; the open counters bag +
+ * generic (de)serializer mean no persistence-version bump.
+ */
+const MEASURE_NAMES = [...BASE_MEASURE_NAMES, ...COST_MEASURE_NAMES] as const
+
+/** High-cardinality dimensions (client/tool) bound their key count at this cap; overflow merges into `"other"`. */
+const CARDINALITY_CAP = 200
 
 /** The back-compat dimension projected to `modelsSinceStart` / `modelsLast7d`. */
 const MODEL_DIMENSION = "model"
@@ -117,12 +140,50 @@ export interface RequestTelemetrySnapshot {
   modelsLast7d: Array<RequestTelemetryModelSeriesSnapshot>
 }
 
+/** One time-bucket of a dimension key's counters (only present for the `7d` window). */
+export interface DimensionSeriesPoint {
+  timestamp: number
+  counters: Record<string, number>
+}
+
+/** A single dimension key (e.g. one model / endpoint / tool) with its aggregated counters + optional per-bucket series. */
+export interface DimensionKeySnapshot {
+  key: string
+  counters: Record<string, number>
+  series: Array<DimensionSeriesPoint>
+}
+
+/**
+ * Generic per-dimension breakdown — the shape `/api/stats` returns for ANY
+ * registered dimension. Server-side top-N (by request count, then total tokens):
+ * the leading `limit` keys are returned verbatim and the remainder is folded into
+ * a single `"other"` key so a high-cardinality dimension can't blow up the payload.
+ * `counters` is the open bag (includes the per-token cost measures when present),
+ * so adding a measure needs no API-shape bump.
+ */
+export interface DimensionBreakdownSnapshot {
+  dimension: string
+  window: "sinceStart" | "7d"
+  bucketSizeMinutes: number
+  windowDays: number
+  /** Distinct key count BEFORE top-N truncation (so callers know how many were folded into `"other"`). */
+  totalKeys: number
+  truncated: boolean
+  keys: Array<DimensionKeySnapshot>
+}
+
 /** Settled-request inputs (the measure source). */
 interface SettledTelemetryInput {
   startedAt: number
   endedAt: number
   success: boolean
   usage?: UsageData
+  /**
+   * Billing multiplier for the resolved model (from `ctx.multiplier`). When
+   * present, drives the per-token-type cost measures. Undefined for token-based
+   * accounts → the cost segment stays 0.
+   */
+  multiplier?: number
 }
 
 /**
@@ -182,6 +243,17 @@ function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput)
   c.cacheReadInputTokens += usage?.cache_read_input_tokens ?? 0
   c.cacheCreationInputTokens += usage?.cache_creation_input_tokens ?? 0
   c.reasoningTokens += usage?.output_tokens_details?.reasoning_tokens ?? 0
+
+  // Per-token-type cost: only when a billing multiplier is known (subscription
+  // accounts). Token-based accounts leave it undefined → cost stays 0.
+  const multiplier = opts.multiplier
+  if (multiplier !== undefined) {
+    c.costInputTokens += (usage?.input_tokens ?? 0) * multiplier
+    c.costOutputTokens += (usage?.output_tokens ?? 0) * multiplier
+    c.costCacheReadInputTokens += (usage?.cache_read_input_tokens ?? 0) * multiplier
+    c.costCacheCreationInputTokens += (usage?.cache_creation_input_tokens ?? 0) * multiplier
+    c.costReasoningTokens += (usage?.output_tokens_details?.reasoning_tokens ?? 0) * multiplier
+  }
 }
 
 function getOrCreateDimKey(target: Map<string, Map<string, StatAccumulator>>, dimName: string, key: string): StatAccumulator {
@@ -284,10 +356,10 @@ function buildLast7dModelSnapshots(now = Date.now()): Array<RequestTelemetryMode
       let target = aggregate.get(model)
       if (!target) {
         target = {}
-        for (const measure of MEASURE_NAMES) target[measure] = 0
+        for (const measure of BASE_MEASURE_NAMES) target[measure] = 0
         aggregate.set(model, target)
       }
-      for (const measure of MEASURE_NAMES) target[measure] += acc.counters[measure]
+      for (const measure of BASE_MEASURE_NAMES) target[measure] += acc.counters[measure]
 
       let buckets = series.get(model)
       if (!buckets) {
@@ -362,7 +434,7 @@ function loadV3Dimensions(raw: Record<string, unknown>): void {
 function isValidPersistedModelTelemetry(value: unknown): value is PersistedModelTelemetry {
   if (!value || typeof value !== "object") return false
   const stats = value as Record<string, unknown>
-  return MEASURE_NAMES.every((name) => typeof stats[name] === "number")
+  return BASE_MEASURE_NAMES.every((name) => typeof stats[name] === "number")
 }
 
 /** V2 → V3 migration: the legacy `modelBuckets[ts][model]` becomes the `model` dimension's buckets. */
@@ -455,20 +527,47 @@ export function recordAcceptedRequest(timestamp = Date.now()): void {
 }
 
 /**
- * Record one settled request across every dimension. `keys` is the sink-resolved
- * `Record<dimName, key | null>` (see `observability/telemetry-dimensions.ts`); a
- * `null` key skips that dimension for this request. Each non-null key is
- * normalized (`trim() || "unknown"`) and accumulated into the process-lifetime
- * `dimSinceStart` + the request's 5-minute bucket (`bucketTimestamp = startedAt`).
+ * Resolve a capped dimension's effective key against `dimSinceStart` (the
+ * process-lifetime superset, used as the single authority so the sinceStart and
+ * per-bucket writes land under the SAME key). A new key past the cap merges into
+ * `"other"`, bounding the per-dimension key count at `CARDINALITY_CAP + 1`.
  */
-export function recordSettledRequest(keys: Record<string, string | null>, opts: SettledTelemetryInput): void {
+function resolveCappedKey(dimName: string, key: string): string {
+  const dim = dimSinceStart.get(dimName)
+  if (!dim) return key
+  if (dim.has(key)) return key
+  if (dim.size >= CARDINALITY_CAP) return "other"
+  return key
+}
+
+/**
+ * Record one settled request across every dimension. `keys` is the sink-resolved
+ * `Record<dimName, key | key[] | null>` (see `observability/telemetry-dimensions.ts`):
+ * a `null` value skips that dimension; an array (multi-key, e.g. one request that
+ * invoked several tools) accumulates once per DISTINCT key (deduped so a repeated
+ * tool isn't double-counted). Each key is normalized (`trim() || "unknown"`),
+ * cardinality-capped if `dimName ∈ cappedDimensions`, and accumulated into the
+ * process-lifetime `dimSinceStart` + the request's 5-minute bucket (`startedAt`).
+ */
+export function recordSettledRequest(
+  keys: Record<string, string | Array<string> | null>,
+  opts: SettledTelemetryInput,
+  cappedDimensions?: ReadonlySet<string>,
+): void {
   const bucketTimestamp = getBucketStart(opts.startedAt)
   const bucketDims = getOrCreateBucketDims(bucketTimestamp)
-  for (const [dimName, rawKey] of Object.entries(keys)) {
-    if (rawKey === null) continue
-    const key = normalizeKey(rawKey)
-    applySettledMeasures(getOrCreateDimKey(dimSinceStart, dimName, key), opts)
-    applySettledMeasures(getOrCreateDimKey(bucketDims, dimName, key), opts)
+  for (const [dimName, rawValue] of Object.entries(keys)) {
+    if (rawValue === null) continue
+    const capped = cappedDimensions?.has(dimName) ?? false
+    const seen = new Set<string>()
+    for (const rawKey of Array.isArray(rawValue) ? rawValue : [rawValue]) {
+      const normalized = normalizeKey(rawKey)
+      const key = capped ? resolveCappedKey(dimName, normalized) : normalized
+      if (seen.has(key)) continue
+      seen.add(key)
+      applySettledMeasures(getOrCreateDimKey(dimSinceStart, dimName, key), opts)
+      applySettledMeasures(getOrCreateDimKey(bucketDims, dimName, key), opts)
+    }
   }
   pruneBuckets(opts.startedAt)
 }
@@ -486,6 +585,140 @@ export function getRequestTelemetrySnapshot(now = Date.now()): RequestTelemetryS
     buckets,
     modelsSinceStart: buildModelSnapshots(dimSinceStart.get(MODEL_DIMENSION)),
     modelsLast7d: buildLast7dModelSnapshots(now),
+  }
+}
+
+/** Default top-N for a dimension breakdown (the rest folds into `"other"`). */
+const DEFAULT_BREAKDOWN_LIMIT = 20
+
+/** Add a counters bag into a `Map<string, number>` accumulator (Map.get → `| undefined`, so `?? 0` is honest). */
+function sumCountersInto(target: Map<string, number>, counters: Record<string, number>): void {
+  for (const [name, value] of Object.entries(counters)) target.set(name, (target.get(name) ?? 0) + value)
+}
+
+function mapToRecord(map: Map<string, number>): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [name, value] of map.entries()) out[name] = value
+  return out
+}
+
+/** Sort key for breakdown top-N: request count desc, then total tokens desc, then key asc (deterministic). */
+function compareDimensionKeys(left: DimensionKeySnapshot, right: DimensionKeySnapshot): number {
+  // counters always carry the base measures (createAccumulator pre-fills them, and
+  // the loader generic-copies them), so direct index access is type-honest here.
+  const leftTokens = left.counters.inputTokens + left.counters.outputTokens
+  const rightTokens = right.counters.inputTokens + right.counters.outputTokens
+  return right.counters.requestCount - left.counters.requestCount || rightTokens - leftTokens || left.key.localeCompare(right.key)
+}
+
+/**
+ * Project ANY registered dimension into a {@link DimensionBreakdownSnapshot}. The
+ * sole generic readout consumed by `/api/stats` — `model` keeps its dedicated
+ * back-compat snapshot via {@link getRequestTelemetrySnapshot}; everything else
+ * (endpoint / client / agentKind / tool / future dims) is read through here.
+ *
+ * `window="sinceStart"` projects the process-lifetime cumulative counters (no
+ * series); `window="7d"` aggregates the rolling buckets and attaches a per-bucket
+ * `series` per key. Top-N keeps the leading `limit` keys and folds the rest into
+ * `"other"` (merged with any cardinality-cap `"other"` already present).
+ */
+export function getDimensionBreakdown(
+  dimension: string,
+  window: "sinceStart" | "7d" = "7d",
+  limit = DEFAULT_BREAKDOWN_LIMIT,
+  now = Date.now(),
+): DimensionBreakdownSnapshot {
+  pruneBuckets(now)
+
+  const aggregate = new Map<string, Map<string, number>>()
+  const seriesByKey = new Map<string, Array<DimensionSeriesPoint>>()
+
+  if (window === "sinceStart") {
+    const dim = dimSinceStart.get(dimension)
+    if (dim) {
+      for (const [key, acc] of dim.entries()) {
+        const counters = new Map<string, number>()
+        sumCountersInto(counters, acc.counters)
+        aggregate.set(key, counters)
+      }
+    }
+  } else {
+    for (const [timestamp, dims] of dimBuckets.entries()) {
+      const dim = dims.get(dimension)
+      if (!dim) continue
+      for (const [key, acc] of dim.entries()) {
+        let counters = aggregate.get(key)
+        if (!counters) {
+          counters = new Map()
+          aggregate.set(key, counters)
+        }
+        sumCountersInto(counters, acc.counters)
+        let series = seriesByKey.get(key)
+        if (!series) {
+          series = []
+          seriesByKey.set(key, series)
+        }
+        series.push({ timestamp, counters: { ...acc.counters } })
+      }
+    }
+  }
+
+  const allKeys: Array<DimensionKeySnapshot> = [...aggregate.entries()].map(([key, counters]) => ({
+    key,
+    counters: mapToRecord(counters),
+    series: (seriesByKey.get(key) ?? []).sort((left, right) => left.timestamp - right.timestamp),
+  }))
+  allKeys.sort(compareDimensionKeys)
+
+  const totalKeys = allKeys.length
+  const top = allKeys.slice(0, Math.max(0, limit))
+  const rest = allKeys.slice(Math.max(0, limit))
+
+  if (rest.length > 0) {
+    const otherCounters = new Map<string, number>()
+    const otherSeries = new Map<number, Map<string, number>>()
+    // Fold any existing top-N "other" (from the cardinality cap) into the same bucket so it isn't duplicated.
+    const existingOtherIndex = top.findIndex((entry) => entry.key === "other")
+    if (existingOtherIndex !== -1) {
+      const [existingOther] = top.splice(existingOtherIndex, 1)
+      sumCountersInto(otherCounters, existingOther.counters)
+      for (const point of existingOther.series) {
+        let bucket = otherSeries.get(point.timestamp)
+        if (!bucket) {
+          bucket = new Map()
+          otherSeries.set(point.timestamp, bucket)
+        }
+        sumCountersInto(bucket, point.counters)
+      }
+    }
+    for (const entry of rest) {
+      sumCountersInto(otherCounters, entry.counters)
+      for (const point of entry.series) {
+        let bucket = otherSeries.get(point.timestamp)
+        if (!bucket) {
+          bucket = new Map()
+          otherSeries.set(point.timestamp, bucket)
+        }
+        sumCountersInto(bucket, point.counters)
+      }
+    }
+    top.push({
+      key: "other",
+      counters: mapToRecord(otherCounters),
+      series: [...otherSeries.entries()]
+        .map(([timestamp, counters]) => ({ timestamp, counters: mapToRecord(counters) }))
+        .sort((left, right) => left.timestamp - right.timestamp),
+    })
+  }
+
+  return {
+    dimension,
+    window,
+    bucketSizeMinutes: BUCKET_MS / (60 * 1000),
+    windowDays: WINDOW_MS / (24 * 60 * 60 * 1000),
+    totalKeys,
+    truncated: rest.length > 0,
+    keys: top,
   }
 }
 

@@ -14,6 +14,7 @@ import {
   //
   _resetRequestTelemetryForTests,
   _setRequestTelemetryFilePathForTests,
+  getDimensionBreakdown,
   getRequestTelemetrySnapshot,
   initRequestTelemetry,
   persistRequestTelemetry,
@@ -329,5 +330,161 @@ describe("request telemetry", () => {
     }
     expect(reloaded.version).toBe(3)
     expect(reloaded.dimensions.endpoint.buckets[String(bucketTs)]["anthropic-messages"].requestCount).toBe(1)
+  })
+})
+
+/**
+ * Persist + re-read the file to inspect raw per-dimension counters (the snapshot
+ * surface only projects `model` until commit 8's `getDimensionBreakdown`). This
+ * exercises the real generic persistence path, so it doubles as a serializer test.
+ */
+async function persistedDimensions(): Promise<Record<string, { buckets: Record<string, Record<string, Record<string, number>>> }>> {
+  await persistRequestTelemetry()
+  const parsed = JSON.parse(await fs.readFile(telemetryFile, "utf8")) as {
+    dimensions: Record<string, { buckets: Record<string, Record<string, Record<string, number>>> }>
+  }
+  return parsed.dimensions
+}
+
+describe("dimension/measure framework", () => {
+  test("accumulates multiple dimensions for one request (model + endpoint + agentKind)", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    recordSettledRequest(
+      { model: "claude-opus-4.8", endpoint: "anthropic-messages", agentKind: "subagent" },
+      { startedAt: now, endedAt: now + 100, success: true, usage: { input_tokens: 10, output_tokens: 4 } },
+    )
+    const dims = await persistedDimensions()
+    expect(dims.model.buckets[String(bucketTs)]["claude-opus-4.8"].requestCount).toBe(1)
+    expect(dims.endpoint.buckets[String(bucketTs)]["anthropic-messages"].inputTokens).toBe(10)
+    expect(dims.agentKind.buckets[String(bucketTs)].subagent.outputTokens).toBe(4)
+  })
+
+  test("multi-key dimension accumulates once per DISTINCT key (deduped)", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    recordSettledRequest(
+      { tool: ["Read", "Bash", "Read"] }, // duplicate Read → counted once
+      { startedAt: now, endedAt: now + 50, success: true, usage: { input_tokens: 8, output_tokens: 2 } },
+    )
+    const tool = (await persistedDimensions()).tool.buckets[String(bucketTs)]
+    expect(tool.Read.requestCount).toBe(1)
+    expect(tool.Bash.requestCount).toBe(1)
+    // Each tool key gets the full request's tokens (multi-key dimensions overlap — documented caveat).
+    expect(tool.Read.inputTokens).toBe(8)
+  })
+
+  test("null key skips the dimension; empty multi-key array records nothing", async () => {
+    const now = Date.now()
+    recordSettledRequest(
+      { model: "m", client: null, tool: [] },
+      { startedAt: now, endedAt: now + 10, success: true, usage: { input_tokens: 1, output_tokens: 1 } },
+    )
+    const dims = await persistedDimensions()
+    expect(dims.model).toBeDefined()
+    expect(dims.client).toBeUndefined()
+    expect(dims.tool).toBeUndefined()
+  })
+
+  test("per-token-type cost accumulates tokens × multiplier; omitted when multiplier is undefined", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    // multiplier = 3 (e.g. opus): cost_x = tokens_x × 3
+    recordSettledRequest(
+      { model: "opus" },
+      {
+        startedAt: now,
+        endedAt: now + 10,
+        success: true,
+        multiplier: 3,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 40,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 5,
+          output_tokens_details: { reasoning_tokens: 12 },
+        },
+      },
+    )
+    // No multiplier (token-based account): cost stays 0.
+    recordSettledRequest({ model: "free" }, { startedAt: now, endedAt: now + 10, success: true, usage: { input_tokens: 50, output_tokens: 10 } })
+
+    const model = (await persistedDimensions()).model.buckets[String(bucketTs)]
+    expect(model.opus.costInputTokens).toBe(300)
+    expect(model.opus.costOutputTokens).toBe(120)
+    expect(model.opus.costCacheReadInputTokens).toBe(60)
+    expect(model.opus.costCacheCreationInputTokens).toBe(15)
+    expect(model.opus.costReasoningTokens).toBe(36)
+    expect(model.free.costInputTokens).toBe(0)
+    expect(model.free.costOutputTokens).toBe(0)
+  })
+
+  test("capped dimension bounds its key count and merges overflow into 'other'", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    // 250 distinct client keys; cap is 200 → 200 real keys + 1 "other".
+    for (let i = 0; i < 250; i++) {
+      recordSettledRequest(
+        { client: `client-${i}` },
+        { startedAt: now, endedAt: now + 1, success: true, usage: { input_tokens: 1, output_tokens: 0 } },
+        new Set(["client"]),
+      )
+    }
+    const client = (await persistedDimensions()).client.buckets[String(bucketTs)]
+    const keyCount = Object.keys(client).length
+    expect(keyCount).toBe(201) // 200 + "other"
+    expect(client.other.requestCount).toBe(50) // the 50 overflow keys
+    // An UNcapped dimension is never collapsed (no cappedDimensions set passed).
+  })
+
+  test("uncapped dimension keeps every distinct key (no 'other' collapse)", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    for (let i = 0; i < 250; i++) {
+      recordSettledRequest({ endpoint: `ep-${i}` }, { startedAt: now, endedAt: now + 1, success: true })
+    }
+    const endpoint = (await persistedDimensions()).endpoint.buckets[String(bucketTs)]
+    expect(Object.keys(endpoint).length).toBe(250)
+    expect(endpoint.other).toBeUndefined()
+  })
+})
+
+describe("getDimensionBreakdown", () => {
+  test("sinceStart window projects cumulative counters with no series; sorts by request count", () => {
+    const now = Date.now()
+    recordSettledRequest({ tool: ["Read", "Read", "Bash"] }, { startedAt: now, endedAt: now + 1, success: true })
+    recordSettledRequest({ tool: ["Read"] }, { startedAt: now, endedAt: now + 1, success: true })
+
+    const breakdown = getDimensionBreakdown("tool", "sinceStart", 20, now)
+    expect(breakdown.window).toBe("sinceStart")
+    expect(breakdown.totalKeys).toBe(2)
+    expect(breakdown.keys[0].key).toBe("Read") // 2 requests
+    expect(breakdown.keys[0].counters.requestCount).toBe(2)
+    expect(breakdown.keys[0].series).toEqual([]) // no series for sinceStart
+    expect(breakdown.keys[1].key).toBe("Bash")
+  })
+
+  test("7d top-N folds the tail into 'other', merging with a cap-induced 'other'", () => {
+    const now = Date.now()
+    // 250 distinct capped client keys → 200 real + cap "other". The cap "other"
+    // is high-frequency (50 requests) so it lands in top-N; the top-N tail merge
+    // must fold into it (not duplicate the key).
+    for (let i = 0; i < 250; i++) {
+      recordSettledRequest({ client: `c-${i}` }, { startedAt: now, endedAt: now + 1, success: true }, new Set(["client"]))
+    }
+    const breakdown = getDimensionBreakdown("client", "7d", 5, now)
+    expect(breakdown.totalKeys).toBe(201) // 200 + cap "other"
+    expect(breakdown.truncated).toBe(true)
+    const otherEntries = breakdown.keys.filter((k) => k.key === "other")
+    expect(otherEntries).toHaveLength(1) // exactly one "other", not duplicated
+    // The single "other" absorbed the 50 cap-overflow requests + the folded tail.
+    expect(otherEntries[0].counters.requestCount).toBeGreaterThanOrEqual(50)
+  })
+
+  test("unknown dimension yields an empty breakdown", () => {
+    const breakdown = getDimensionBreakdown("does-not-exist", "7d")
+    expect(breakdown.totalKeys).toBe(0)
+    expect(breakdown.keys).toEqual([])
+    expect(breakdown.truncated).toBe(false)
   })
 })

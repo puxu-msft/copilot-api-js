@@ -2,10 +2,12 @@
 import { computed } from "vue"
 
 import CompactTimelineBarChart from "@/components/charts/CompactTimelineBarChart.vue"
+import DashboardBreakdownPanel from "@/components/dashboard/DashboardBreakdownPanel.vue"
 import DashboardRateLimiterPanel from "@/components/dashboard/DashboardRateLimiterPanel.vue"
 import { useDashboardStatus } from "@/composables/useDashboardStatus"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { useModelTelemetry } from "@/composables/useModelTelemetry"
+import { useOperationalStats } from "@/composables/useOperationalStats"
 import {
   //
   formatDate,
@@ -108,6 +110,8 @@ const {
   getMetricValue: getModelMetricValue,
   compressTimeline: compressModelTimeline,
 } = useModelTelemetry(requestTelemetry)
+
+const { endpoint: endpointBreakdown, client: clientBreakdown, agentKind: agentKindBreakdown, tool: toolBreakdown } = useOperationalStats()
 </script>
 
 <template>
@@ -564,6 +568,34 @@ const {
           </div>
         </v-sheet>
       </section>
+
+      <section class="breakdown-grid px-4 px-md-6 pb-6">
+        <DashboardBreakdownPanel
+          eyebrow="Disposition"
+          title="Main vs Subagent"
+          :breakdown="agentKindBreakdown"
+          metric="inputTokens"
+          empty-text="No agent-tagged requests yet."
+        />
+        <DashboardBreakdownPanel
+          eyebrow="Surface"
+          title="Per Endpoint"
+          :breakdown="endpointBreakdown"
+          empty-text="No endpoint telemetry yet."
+        />
+        <DashboardBreakdownPanel
+          eyebrow="Origin"
+          title="Per Client"
+          :breakdown="clientBreakdown"
+          empty-text="No client telemetry yet."
+        />
+        <DashboardBreakdownPanel
+          eyebrow="Usage"
+          title="Per Tool"
+          :breakdown="toolBreakdown"
+          empty-text="No tool calls recorded yet."
+        />
+      </section>
     </div>
   </div>
 </template>
@@ -658,6 +690,13 @@ const {
 }
 
 .workspace-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.breakdown-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
@@ -817,6 +856,7 @@ const {
 @media (max-width: 1100px) {
   .metric-grid,
   .workspace-grid,
+  .breakdown-grid,
   .hero-grid {
     grid-template-columns: 1fr;
   }

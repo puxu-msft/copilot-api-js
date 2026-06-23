@@ -1,6 +1,7 @@
 import type {
   //
   SummaryResult,
+  DimensionBreakdownSnapshot,
   HistoryEntry,
   HistoryStats,
   QueryOptions,
@@ -97,6 +98,13 @@ export const api = {
   /** Fetch server status (dashboard) */
   async fetchStatus(): Promise<Record<string, unknown>> {
     return requestRoot<Record<string, unknown>>("/api/status")
+  },
+
+  /** Fetch a per-dimension operational-stats breakdown (dashboard) */
+  async fetchDimensionStats(dimension: string, window: "sinceStart" | "7d" = "7d", limit?: number): Promise<DimensionBreakdownSnapshot> {
+    const params = new URLSearchParams({ dimension, window })
+    if (limit) params.set("limit", String(limit))
+    return requestRoot<DimensionBreakdownSnapshot>(`/api/stats?${params.toString()}`)
   },
 
   /** Fetch server config (dashboard) */
