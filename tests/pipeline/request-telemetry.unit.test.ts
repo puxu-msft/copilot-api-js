@@ -58,27 +58,33 @@ describe("request telemetry", () => {
 
   test("aggregates per-model request counts, duration, and token usage", () => {
     const now = Date.UTC(2026, 3, 1, 12, 0, 0)
-    recordSettledRequest("claude-sonnet-4.6", {
-      startedAt: now,
-      endedAt: now + 1_500,
-      success: true,
-      usage: {
-        input_tokens: 100,
-        output_tokens: 40,
-        cache_read_input_tokens: 20,
-        cache_creation_input_tokens: 5,
-        output_tokens_details: { reasoning_tokens: 12 },
+    recordSettledRequest(
+      { model: "claude-sonnet-4.6" },
+      {
+        startedAt: now,
+        endedAt: now + 1_500,
+        success: true,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 40,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 5,
+          output_tokens_details: { reasoning_tokens: 12 },
+        },
       },
-    })
-    recordSettledRequest("claude-sonnet-4.6", {
-      startedAt: now + 301_000,
-      endedAt: now + 302_000,
-      success: false,
-      usage: {
-        input_tokens: 20,
-        output_tokens: 0,
+    )
+    recordSettledRequest(
+      { model: "claude-sonnet-4.6" },
+      {
+        startedAt: now + 301_000,
+        endedAt: now + 302_000,
+        success: false,
+        usage: {
+          input_tokens: 20,
+          output_tokens: 0,
+        },
       },
-    })
+    )
 
     const snapshot = getRequestTelemetrySnapshot(now + 302_000)
     expect(snapshot.modelsSinceStart).toHaveLength(1)
@@ -158,15 +164,18 @@ describe("request telemetry", () => {
     const now = Date.now()
 
     recordAcceptedRequest(now)
-    recordSettledRequest("gpt-5.2", {
-      startedAt: now,
-      endedAt: now + 500,
-      success: true,
-      usage: {
-        input_tokens: 10,
-        output_tokens: 5,
+    recordSettledRequest(
+      { model: "gpt-5.2" },
+      {
+        startedAt: now,
+        endedAt: now + 500,
+        success: true,
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+        },
       },
-    })
+    )
     await persistRequestTelemetry()
 
     _resetRequestTelemetryForTests()
@@ -197,12 +206,15 @@ describe("request telemetry", () => {
   test("concurrent persists serialize and produce a readable file (no torn writes)", async () => {
     const now = Date.now()
     for (let i = 0; i < 50; i++) {
-      recordSettledRequest(`model-${i % 3}`, {
-        startedAt: now - i,
-        endedAt: now,
-        success: true,
-        usage: { input_tokens: i, output_tokens: i * 2 },
-      })
+      recordSettledRequest(
+        { model: `model-${i % 3}` },
+        {
+          startedAt: now - i,
+          endedAt: now,
+          success: true,
+          usage: { input_tokens: i, output_tokens: i * 2 },
+        },
+      )
     }
 
     // Fire many persists in parallel — the periodic timer and shutdown can
@@ -239,5 +251,83 @@ describe("request telemetry", () => {
     const siblings = await fs.readdir(tempDir)
     expect(siblings.some((name) => name.includes(".corrupted."))).toBe(true)
     expect(siblings).not.toContain(path.basename(telemetryFile))
+  })
+
+  test("migrates a legacy V2 file (modelBuckets → model dimension); since-start stays empty", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    const v2 = {
+      version: 2,
+      buckets: { [String(bucketTs)]: 3 },
+      modelBuckets: {
+        [String(bucketTs)]: {
+          "claude-opus-4.8": {
+            requestCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            totalDurationMs: 4_000,
+            inputTokens: 200,
+            outputTokens: 80,
+            cacheReadInputTokens: 10,
+            cacheCreationInputTokens: 5,
+            reasoningTokens: 30,
+          },
+        },
+      },
+    }
+    await fs.writeFile(telemetryFile, JSON.stringify(v2), "utf8")
+    await initRequestTelemetry()
+
+    const snapshot = getRequestTelemetrySnapshot(now)
+    expect(snapshot.modelsSinceStart).toEqual([]) // C2: since-start is process-ephemeral, never seeded from buckets on load
+    expect(snapshot.modelsLast7d).toHaveLength(1)
+    expect(snapshot.modelsLast7d[0]).toMatchObject({
+      model: "claude-opus-4.8",
+      requestCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      totalDurationMs: 4_000,
+      averageDurationMs: 2_000,
+      usage: { inputTokens: 200, outputTokens: 80, totalTokens: 280, cacheReadInputTokens: 10, cacheCreationInputTokens: 5, reasoningTokens: 30 },
+    })
+  })
+
+  test("round-trips an unknown future dimension without loss (forward-compat)", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    const acc = {
+      requestCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      totalDurationMs: 100,
+      inputTokens: 5,
+      outputTokens: 3,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningTokens: 0,
+    }
+    // A V3 file carrying an "endpoint" dimension this build registers no extractor for.
+    const v3 = {
+      version: 3,
+      buckets: { [String(bucketTs)]: 1 },
+      dimensions: {
+        model: { buckets: { [String(bucketTs)]: { m1: acc } } },
+        endpoint: { buckets: { [String(bucketTs)]: { "anthropic-messages": acc } } },
+      },
+    }
+    await fs.writeFile(telemetryFile, JSON.stringify(v3), "utf8")
+    await initRequestTelemetry()
+
+    // The known model dimension still projects; the unknown endpoint dim loaded into storage.
+    expect(getRequestTelemetrySnapshot(now).modelsLast7d).toHaveLength(1)
+
+    // Persist round-trips the unknown dimension (no allow-list drop).
+    await persistRequestTelemetry()
+    const reloaded = JSON.parse(await fs.readFile(telemetryFile, "utf8")) as {
+      version: number
+      dimensions: Record<string, { buckets: Record<string, Record<string, { requestCount: number }>> }>
+    }
+    expect(reloaded.version).toBe(3)
+    expect(reloaded.dimensions.endpoint.buckets[String(bucketTs)]["anthropic-messages"].requestCount).toBe(1)
   })
 })

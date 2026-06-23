@@ -14,6 +14,29 @@ const BUCKET_MS = 5 * 60 * 1000
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 const PERSIST_INTERVAL_MS = 60 * 1000
 
+/**
+ * The per-settled-request measure increments. Single source of truth so
+ * `applyMeasures` and the snapshot projectors check against the same key set
+ * (a counter typo would otherwise read `undefined → NaN` silently). Adding a
+ * measure (e.g. a future `estCost`) = one entry here + one line in
+ * `applyMeasures`; the open counters bag + generic (de)serializer mean no
+ * persistence-version bump.
+ */
+const MEASURE_NAMES = [
+  "requestCount",
+  "successCount",
+  "failureCount",
+  "totalDurationMs",
+  "inputTokens",
+  "outputTokens",
+  "cacheReadInputTokens",
+  "cacheCreationInputTokens",
+  "reasoningTokens",
+] as const
+
+/** The back-compat dimension projected to `modelsSinceStart` / `modelsLast7d`. */
+const MODEL_DIMENSION = "model"
+
 interface RequestTelemetryFileV1 {
   version: 1
   buckets: Record<string, number>
@@ -37,7 +60,14 @@ interface RequestTelemetryFileV2 {
   modelBuckets: Record<string, Record<string, PersistedModelTelemetry>>
 }
 
-type RequestTelemetryFile = RequestTelemetryFileV1 | RequestTelemetryFileV2
+/** Generic envelope: dimensions are data, not schema. A new dimension/measure does NOT bump the version. */
+interface RequestTelemetryFileV3 {
+  version: 3
+  buckets: Record<string, number>
+  dimensions: Record<string, { buckets: Record<string, Record<string, Record<string, number>>> }>
+}
+
+type RequestTelemetryFile = RequestTelemetryFileV1 | RequestTelemetryFileV2 | RequestTelemetryFileV3
 
 export interface RequestTelemetryBucket {
   timestamp: number
@@ -87,22 +117,30 @@ export interface RequestTelemetrySnapshot {
   modelsLast7d: Array<RequestTelemetryModelSeriesSnapshot>
 }
 
-interface MutableModelTelemetry {
-  requestCount: number
-  successCount: number
-  failureCount: number
-  totalDurationMs: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadInputTokens: number
-  cacheCreationInputTokens: number
-  reasoningTokens: number
+/** Settled-request inputs (the measure source). */
+interface SettledTelemetryInput {
+  startedAt: number
+  endedAt: number
+  success: boolean
+  usage?: UsageData
+}
+
+/**
+ * Per-key accumulator: an OPEN counters bag (not a fixed struct). Generic so a
+ * future sibling field (e.g. a `hist?: number[]` for latency percentiles) round-
+ * trips through the loader without a version bump — provided the (de)serializer
+ * copies `counters` generically rather than enumerating fields.
+ */
+interface StatAccumulator {
+  counters: Record<string, number>
 }
 
 let acceptedSinceStart = 0
 let bucketCounts = new Map<number, number>()
-let modelStatsSinceStart = new Map<string, MutableModelTelemetry>()
-let modelBucketStats = new Map<number, Map<string, MutableModelTelemetry>>()
+/** dimName → key → accumulator. Process-lifetime; NOT persisted (resets each process). */
+let dimSinceStart = new Map<string, Map<string, StatAccumulator>>()
+/** bucketTimestamp → dimName → key → accumulator. 5min × 7d rolling window; persisted. */
+let dimBuckets = new Map<number, Map<string, Map<string, StatAccumulator>>>()
 let persistTimer: ReturnType<typeof setInterval> | null = null
 let telemetryFilePath = PATHS.REQUEST_TELEMETRY
 
@@ -119,106 +157,63 @@ function getBucketStart(timestamp: number): number {
   return Math.floor(timestamp / BUCKET_MS) * BUCKET_MS
 }
 
-function createEmptyModelTelemetry(): MutableModelTelemetry {
-  return {
-    requestCount: 0,
-    successCount: 0,
-    failureCount: 0,
-    totalDurationMs: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadInputTokens: 0,
-    cacheCreationInputTokens: 0,
-    reasoningTokens: 0,
-  }
+function createAccumulator(): StatAccumulator {
+  const counters: Record<string, number> = {}
+  for (const measure of MEASURE_NAMES) counters[measure] = 0
+  return { counters }
 }
 
-function isValidPersistedModelTelemetry(value: unknown): value is PersistedModelTelemetry {
-  if (!value || typeof value !== "object") return false
-  const stats = value as Record<string, unknown>
-  return (
-    typeof stats.requestCount === "number"
-    && typeof stats.successCount === "number"
-    && typeof stats.failureCount === "number"
-    && typeof stats.totalDurationMs === "number"
-    && typeof stats.inputTokens === "number"
-    && typeof stats.outputTokens === "number"
-    && typeof stats.cacheReadInputTokens === "number"
-    && typeof stats.cacheCreationInputTokens === "number"
-    && typeof stats.reasoningTokens === "number"
-  )
+/** Normalize a dimension key: trim + empty/whitespace → "unknown" (matches the legacy model normalization). */
+function normalizeKey(key: string): string {
+  return key.trim() || "unknown"
 }
 
-function copyPersistedTelemetry(stats: PersistedModelTelemetry): MutableModelTelemetry {
-  return {
-    requestCount: stats.requestCount,
-    successCount: stats.successCount,
-    failureCount: stats.failureCount,
-    totalDurationMs: stats.totalDurationMs,
-    inputTokens: stats.inputTokens,
-    outputTokens: stats.outputTokens,
-    cacheReadInputTokens: stats.cacheReadInputTokens,
-    cacheCreationInputTokens: stats.cacheCreationInputTokens,
-    reasoningTokens: stats.reasoningTokens,
-  }
-}
-
-function getOrCreateModelStats(target: Map<string, MutableModelTelemetry>, model: string): MutableModelTelemetry {
-  const normalizedModel = model.trim() || "unknown"
-  let stats = target.get(normalizedModel)
-  if (!stats) {
-    stats = createEmptyModelTelemetry()
-    target.set(normalizedModel, stats)
-  }
-  return stats
-}
-
-function getOrCreateModelBucket(timestamp: number): Map<string, MutableModelTelemetry> {
-  let bucket = modelBucketStats.get(timestamp)
-  if (!bucket) {
-    bucket = new Map()
-    modelBucketStats.set(timestamp, bucket)
-  }
-  return bucket
-}
-
-function applySettledTelemetry(
-  stats: MutableModelTelemetry,
-  opts: {
-    startedAt: number
-    endedAt: number
-    success: boolean
-    usage?: UsageData
-  },
-): void {
+function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput): void {
   const durationMs = Math.max(0, opts.endedAt - opts.startedAt)
   const usage = opts.usage
+  const c = acc.counters
 
-  stats.requestCount += 1
-  if (opts.success) {
-    stats.successCount += 1
-  } else {
-    stats.failureCount += 1
+  c.requestCount += 1
+  if (opts.success) c.successCount += 1
+  else c.failureCount += 1
+  c.totalDurationMs += durationMs
+  c.inputTokens += usage?.input_tokens ?? 0
+  c.outputTokens += usage?.output_tokens ?? 0
+  c.cacheReadInputTokens += usage?.cache_read_input_tokens ?? 0
+  c.cacheCreationInputTokens += usage?.cache_creation_input_tokens ?? 0
+  c.reasoningTokens += usage?.output_tokens_details?.reasoning_tokens ?? 0
+}
+
+function getOrCreateDimKey(target: Map<string, Map<string, StatAccumulator>>, dimName: string, key: string): StatAccumulator {
+  let dim = target.get(dimName)
+  if (!dim) {
+    dim = new Map()
+    target.set(dimName, dim)
   }
-  stats.totalDurationMs += durationMs
-  stats.inputTokens += usage?.input_tokens ?? 0
-  stats.outputTokens += usage?.output_tokens ?? 0
-  stats.cacheReadInputTokens += usage?.cache_read_input_tokens ?? 0
-  stats.cacheCreationInputTokens += usage?.cache_creation_input_tokens ?? 0
-  stats.reasoningTokens += usage?.output_tokens_details?.reasoning_tokens ?? 0
+  let acc = dim.get(key)
+  if (!acc) {
+    acc = createAccumulator()
+    dim.set(key, acc)
+  }
+  return acc
+}
+
+function getOrCreateBucketDims(timestamp: number): Map<string, Map<string, StatAccumulator>> {
+  let bucket = dimBuckets.get(timestamp)
+  if (!bucket) {
+    bucket = new Map()
+    dimBuckets.set(timestamp, bucket)
+  }
+  return bucket
 }
 
 function pruneBuckets(now = Date.now()): void {
   const earliest = getBucketStart(now - WINDOW_MS)
   for (const key of bucketCounts.keys()) {
-    if (key < earliest) {
-      bucketCounts.delete(key)
-    }
+    if (key < earliest) bucketCounts.delete(key)
   }
-  for (const key of modelBucketStats.keys()) {
-    if (key < earliest) {
-      modelBucketStats.delete(key)
-    }
+  for (const key of dimBuckets.keys()) {
+    if (key < earliest) dimBuckets.delete(key)
   }
 }
 
@@ -239,88 +234,85 @@ function buildFilledBuckets(now = Date.now()): Array<RequestTelemetryBucket> {
   return result
 }
 
-function buildModelSnapshots(source: Iterable<[string, MutableModelTelemetry]>): Array<RequestTelemetryModelSnapshot> {
-  return [...source]
-    .map(([model, stats]) => toModelSnapshot(model, stats))
-    .sort(
-      (left, right) =>
-        right.requestCount - left.requestCount
-        || right.usage.totalTokens - left.usage.totalTokens
-        || right.totalDurationMs - left.totalDurationMs
-        || left.model.localeCompare(right.model),
-    )
-}
-
-function toUsageTotals(stats: MutableModelTelemetry): RequestTelemetryUsageTotals {
+function toUsageTotals(c: Record<string, number>): RequestTelemetryUsageTotals {
   return {
-    inputTokens: stats.inputTokens,
-    outputTokens: stats.outputTokens,
-    totalTokens: stats.inputTokens + stats.outputTokens,
-    cacheReadInputTokens: stats.cacheReadInputTokens,
-    cacheCreationInputTokens: stats.cacheCreationInputTokens,
-    reasoningTokens: stats.reasoningTokens,
+    inputTokens: c.inputTokens,
+    outputTokens: c.outputTokens,
+    totalTokens: c.inputTokens + c.outputTokens,
+    cacheReadInputTokens: c.cacheReadInputTokens,
+    cacheCreationInputTokens: c.cacheCreationInputTokens,
+    reasoningTokens: c.reasoningTokens,
   }
 }
 
-function toModelSnapshot(model: string, stats: MutableModelTelemetry): RequestTelemetryModelSnapshot {
+function toModelSnapshot(model: string, c: Record<string, number>): RequestTelemetryModelSnapshot {
   return {
     model,
-    requestCount: stats.requestCount,
-    successCount: stats.successCount,
-    failureCount: stats.failureCount,
-    totalDurationMs: stats.totalDurationMs,
-    averageDurationMs: stats.requestCount > 0 ? stats.totalDurationMs / stats.requestCount : 0,
-    usage: toUsageTotals(stats),
+    requestCount: c.requestCount,
+    successCount: c.successCount,
+    failureCount: c.failureCount,
+    totalDurationMs: c.totalDurationMs,
+    averageDurationMs: c.requestCount > 0 ? c.totalDurationMs / c.requestCount : 0,
+    usage: toUsageTotals(c),
   }
+}
+
+/** The 4-key tiebreak comparator (load-bearing for byte-equivalence — do NOT re-derive ad hoc). */
+function compareModelSnapshots(left: RequestTelemetryModelSnapshot, right: RequestTelemetryModelSnapshot): number {
+  return (
+    right.requestCount - left.requestCount
+    || right.usage.totalTokens - left.usage.totalTokens
+    || right.totalDurationMs - left.totalDurationMs
+    || left.model.localeCompare(right.model)
+  )
+}
+
+function buildModelSnapshots(source: Map<string, StatAccumulator> | undefined): Array<RequestTelemetryModelSnapshot> {
+  if (!source) return []
+  return [...source].map(([model, acc]) => toModelSnapshot(model, acc.counters)).sort(compareModelSnapshots)
 }
 
 function buildLast7dModelSnapshots(now = Date.now()): Array<RequestTelemetryModelSeriesSnapshot> {
   pruneBuckets(now)
-  const aggregate = new Map<string, MutableModelTelemetry>()
+  const aggregate = new Map<string, Record<string, number>>()
   const series = new Map<string, Array<RequestTelemetryModelBucket>>()
 
-  for (const [timestamp, bucket] of modelBucketStats.entries()) {
-    for (const [model, stats] of bucket.entries()) {
-      const target = getOrCreateModelStats(aggregate, model)
-      target.requestCount += stats.requestCount
-      target.successCount += stats.successCount
-      target.failureCount += stats.failureCount
-      target.totalDurationMs += stats.totalDurationMs
-      target.inputTokens += stats.inputTokens
-      target.outputTokens += stats.outputTokens
-      target.cacheReadInputTokens += stats.cacheReadInputTokens
-      target.cacheCreationInputTokens += stats.cacheCreationInputTokens
-      target.reasoningTokens += stats.reasoningTokens
+  for (const [timestamp, dims] of dimBuckets.entries()) {
+    const modelDim = dims.get(MODEL_DIMENSION)
+    if (!modelDim) continue
+    for (const [model, acc] of modelDim.entries()) {
+      let target = aggregate.get(model)
+      if (!target) {
+        target = {}
+        for (const measure of MEASURE_NAMES) target[measure] = 0
+        aggregate.set(model, target)
+      }
+      for (const measure of MEASURE_NAMES) target[measure] += acc.counters[measure]
 
       let buckets = series.get(model)
       if (!buckets) {
         buckets = []
         series.set(model, buckets)
       }
+      const requestCount = acc.counters.requestCount
       buckets.push({
         timestamp,
-        requestCount: stats.requestCount,
-        successCount: stats.successCount,
-        failureCount: stats.failureCount,
-        totalDurationMs: stats.totalDurationMs,
-        averageDurationMs: stats.requestCount > 0 ? stats.totalDurationMs / stats.requestCount : 0,
-        usage: toUsageTotals(stats),
+        requestCount,
+        successCount: acc.counters.successCount,
+        failureCount: acc.counters.failureCount,
+        totalDurationMs: acc.counters.totalDurationMs,
+        averageDurationMs: requestCount > 0 ? acc.counters.totalDurationMs / requestCount : 0,
+        usage: toUsageTotals(acc.counters),
       })
     }
   }
 
   return [...aggregate.entries()]
-    .map(([model, stats]) => ({
-      ...toModelSnapshot(model, stats),
+    .map(([model, c]) => ({
+      ...toModelSnapshot(model, c),
       buckets: (series.get(model) ?? []).sort((left, right) => left.timestamp - right.timestamp),
     }))
-    .sort(
-      (left, right) =>
-        right.requestCount - left.requestCount
-        || right.usage.totalTokens - left.usage.totalTokens
-        || right.totalDurationMs - left.totalDurationMs
-        || left.model.localeCompare(right.model),
-    )
+    .sort(compareModelSnapshots)
 }
 
 function startPeriodicPersistence(): void {
@@ -336,38 +328,66 @@ function stopPeriodicPersistence(): void {
   persistTimer = null
 }
 
-function loadModelBuckets(
-  // Runtime JSON: values may be null/non-objects despite the optimistic type.
-  raw: Record<string, Record<string, PersistedModelTelemetry> | null | undefined>,
-): void {
-  modelBucketStats = new Map(
-    Object.entries(raw)
-      .map(([bucketKey, bucketValue]) => {
-        const bucketTimestamp = Number(bucketKey)
-        if (!Number.isFinite(bucketTimestamp) || !bucketValue || typeof bucketValue !== "object") {
-          return null
-        }
+/** Build a StatAccumulator from a persisted counters object — GENERIC copy (preserves any future sibling counters). */
+function loadAccumulator(raw: Record<string, unknown>): StatAccumulator {
+  const acc = createAccumulator()
+  for (const [name, value] of Object.entries(raw)) {
+    if (typeof value === "number" && Number.isFinite(value)) acc.counters[name] = value
+  }
+  return acc
+}
 
-        const bucket = new Map<string, MutableModelTelemetry>()
-        for (const [model, stats] of Object.entries(bucketValue)) {
-          if (isValidPersistedModelTelemetry(stats)) {
-            bucket.set(model, copyPersistedTelemetry(stats))
-          }
-        }
+/** V3 generic loader: iterates ALL dimension names (no allow-list) so an unknown future dimension round-trips. */
+function loadV3Dimensions(raw: Record<string, unknown>): void {
+  for (const [dimName, dimValue] of Object.entries(raw)) {
+    if (!dimValue || typeof dimValue !== "object") continue
+    const buckets = (dimValue as { buckets?: unknown }).buckets
+    if (!buckets || typeof buckets !== "object") continue
+    for (const [bucketKey, keysValue] of Object.entries(buckets as Record<string, unknown>)) {
+      const bucketTimestamp = Number(bucketKey)
+      if (!Number.isFinite(bucketTimestamp) || !keysValue || typeof keysValue !== "object") continue
+      const bucketDims = getOrCreateBucketDims(bucketTimestamp)
+      let dim = bucketDims.get(dimName)
+      if (!dim) {
+        dim = new Map()
+        bucketDims.set(dimName, dim)
+      }
+      for (const [key, counters] of Object.entries(keysValue as Record<string, unknown>)) {
+        if (counters && typeof counters === "object") dim.set(key, loadAccumulator(counters as Record<string, unknown>))
+      }
+    }
+  }
+}
 
-        return [bucketTimestamp, bucket] as const
-      })
-      // eslint-disable-next-line unicorn/prefer-native-coercion-functions -- type predicate narrows (X | null)[] → X[]; replacing with Boolean drops the narrowing and breaks the Map<> constructor signature
-      .filter((entry): entry is readonly [number, Map<string, MutableModelTelemetry>] => Boolean(entry)),
-  )
+function isValidPersistedModelTelemetry(value: unknown): value is PersistedModelTelemetry {
+  if (!value || typeof value !== "object") return false
+  const stats = value as Record<string, unknown>
+  return MEASURE_NAMES.every((name) => typeof stats[name] === "number")
+}
+
+/** V2 → V3 migration: the legacy `modelBuckets[ts][model]` becomes the `model` dimension's buckets. */
+function loadV2ModelBuckets(raw: Record<string, Record<string, PersistedModelTelemetry> | null | undefined>): void {
+  for (const [bucketKey, models] of Object.entries(raw)) {
+    const bucketTimestamp = Number(bucketKey)
+    if (!Number.isFinite(bucketTimestamp) || !models || typeof models !== "object") continue
+    const bucketDims = getOrCreateBucketDims(bucketTimestamp)
+    let dim = bucketDims.get(MODEL_DIMENSION)
+    if (!dim) {
+      dim = new Map()
+      bucketDims.set(MODEL_DIMENSION, dim)
+    }
+    for (const [model, stats] of Object.entries(models)) {
+      if (isValidPersistedModelTelemetry(stats)) dim.set(model, loadAccumulator(stats as unknown as Record<string, unknown>))
+    }
+  }
 }
 
 export async function initRequestTelemetry(): Promise<void> {
   stopPeriodicPersistence()
   acceptedSinceStart = 0
   bucketCounts = new Map()
-  modelStatsSinceStart = new Map()
-  modelBucketStats = new Map()
+  dimSinceStart = new Map()
+  dimBuckets = new Map()
 
   let raw: string
   try {
@@ -412,8 +432,15 @@ export async function initRequestTelemetry(): Promise<void> {
     )
   }
 
-  if (parsed.version === 2 && parsed.modelBuckets && typeof parsed.modelBuckets === "object") {
-    loadModelBuckets(parsed.modelBuckets)
+  // Dimension buckets: V3 generic, else migrate legacy V2 modelBuckets → the model
+  // dimension. `dimSinceStart` is intentionally left EMPTY on load (it is process-
+  // lifetime, never persisted — exactly as the legacy modelStatsSinceStart was).
+  const dimensionsRaw = (parsed as { dimensions?: unknown }).dimensions
+  const modelBucketsRaw = (parsed as { modelBuckets?: unknown }).modelBuckets
+  if (parsed.version === 3 && dimensionsRaw && typeof dimensionsRaw === "object") {
+    loadV3Dimensions(dimensionsRaw as Record<string, unknown>)
+  } else if (parsed.version === 2 && modelBucketsRaw && typeof modelBucketsRaw === "object") {
+    loadV2ModelBuckets(modelBucketsRaw as Record<string, Record<string, PersistedModelTelemetry> | null | undefined>)
   }
 
   pruneBuckets()
@@ -427,23 +454,22 @@ export function recordAcceptedRequest(timestamp = Date.now()): void {
   pruneBuckets(timestamp)
 }
 
-export function recordSettledRequest(
-  model: string,
-  opts: {
-    startedAt: number
-    endedAt: number
-    success: boolean
-    usage?: UsageData
-  },
-): void {
-  const normalizedModel = model.trim() || "unknown"
-  const sinceStartStats = getOrCreateModelStats(modelStatsSinceStart, normalizedModel)
-  applySettledTelemetry(sinceStartStats, opts)
-
+/**
+ * Record one settled request across every dimension. `keys` is the sink-resolved
+ * `Record<dimName, key | null>` (see `observability/telemetry-dimensions.ts`); a
+ * `null` key skips that dimension for this request. Each non-null key is
+ * normalized (`trim() || "unknown"`) and accumulated into the process-lifetime
+ * `dimSinceStart` + the request's 5-minute bucket (`bucketTimestamp = startedAt`).
+ */
+export function recordSettledRequest(keys: Record<string, string | null>, opts: SettledTelemetryInput): void {
   const bucketTimestamp = getBucketStart(opts.startedAt)
-  const bucket = getOrCreateModelBucket(bucketTimestamp)
-  const bucketStats = getOrCreateModelStats(bucket, normalizedModel)
-  applySettledTelemetry(bucketStats, opts)
+  const bucketDims = getOrCreateBucketDims(bucketTimestamp)
+  for (const [dimName, rawKey] of Object.entries(keys)) {
+    if (rawKey === null) continue
+    const key = normalizeKey(rawKey)
+    applySettledMeasures(getOrCreateDimKey(dimSinceStart, dimName, key), opts)
+    applySettledMeasures(getOrCreateDimKey(bucketDims, dimName, key), opts)
+  }
   pruneBuckets(opts.startedAt)
 }
 
@@ -458,7 +484,7 @@ export function getRequestTelemetrySnapshot(now = Date.now()): RequestTelemetryS
     windowDays: WINDOW_MS / (24 * 60 * 60 * 1000),
     totalLast7d,
     buckets,
-    modelsSinceStart: buildModelSnapshots(modelStatsSinceStart.entries()),
+    modelsSinceStart: buildModelSnapshots(dimSinceStart.get(MODEL_DIMENSION)),
     modelsLast7d: buildLast7dModelSnapshots(now),
   }
 }
@@ -474,30 +500,31 @@ let persistFailureLogged = false
 
 const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
   pruneBuckets()
-  const file: RequestTelemetryFileV2 = {
-    version: 2,
+  // Build per-dimension bucket maps first (Map.get returns `| undefined`, so the
+  // lookup-then-create is type-honest), then project to the plain-object envelope.
+  const byDimension = new Map<string, Record<string, Record<string, Record<string, number>>>>()
+  for (const [bucketTimestamp, dims] of dimBuckets.entries()) {
+    for (const [dimName, keys] of dims.entries()) {
+      let byTimestamp = byDimension.get(dimName)
+      if (!byTimestamp) {
+        byTimestamp = {}
+        byDimension.set(dimName, byTimestamp)
+      }
+      const bucketEntry: Record<string, Record<string, number>> = {}
+      for (const [key, acc] of keys.entries()) {
+        // Generic copy of `counters` — preserves any future sibling counter without a version bump.
+        bucketEntry[key] = { ...acc.counters }
+      }
+      byTimestamp[String(bucketTimestamp)] = bucketEntry
+    }
+  }
+  const dimensions: RequestTelemetryFileV3["dimensions"] = {}
+  for (const [dimName, buckets] of byDimension.entries()) dimensions[dimName] = { buckets }
+
+  const file: RequestTelemetryFileV3 = {
+    version: 3,
     buckets: Object.fromEntries([...bucketCounts.entries()].map(([key, value]) => [String(key), value])),
-    modelBuckets: Object.fromEntries(
-      [...modelBucketStats.entries()].map(([bucketTimestamp, bucket]) => [
-        String(bucketTimestamp),
-        Object.fromEntries(
-          [...bucket.entries()].map(([model, stats]) => [
-            model,
-            {
-              requestCount: stats.requestCount,
-              successCount: stats.successCount,
-              failureCount: stats.failureCount,
-              totalDurationMs: stats.totalDurationMs,
-              inputTokens: stats.inputTokens,
-              outputTokens: stats.outputTokens,
-              cacheReadInputTokens: stats.cacheReadInputTokens,
-              cacheCreationInputTokens: stats.cacheCreationInputTokens,
-              reasoningTokens: stats.reasoningTokens,
-            },
-          ]),
-        ),
-      ]),
-    ),
+    dimensions,
   }
 
   try {
@@ -527,8 +554,8 @@ export function _resetRequestTelemetryForTests(): void {
   stopPeriodicPersistence()
   acceptedSinceStart = 0
   bucketCounts = new Map()
-  modelStatsSinceStart = new Map()
-  modelBucketStats = new Map()
+  dimSinceStart = new Map()
+  dimBuckets = new Map()
   telemetryFilePath = PATHS.REQUEST_TELEMETRY
 }
 

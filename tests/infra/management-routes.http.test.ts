@@ -247,15 +247,18 @@ describe("management and history HTTP routes", () => {
     // window — getRequestTelemetrySnapshot() prunes against the wall clock.
     const now = Date.now()
     recordAcceptedRequest(now)
-    recordSettledRequest("claude-sonnet-4.6", {
-      startedAt: now,
-      endedAt: now + 1_250,
-      success: true,
-      usage: {
-        input_tokens: 120,
-        output_tokens: 80,
+    recordSettledRequest(
+      { model: "claude-sonnet-4.6" },
+      {
+        startedAt: now,
+        endedAt: now + 1_250,
+        success: true,
+        usage: {
+          input_tokens: 120,
+          output_tokens: 80,
+        },
       },
-    })
+    )
 
     setStateForTests({
       githubToken: "ghp_test",
