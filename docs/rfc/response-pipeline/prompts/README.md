@@ -48,3 +48,14 @@ docs/rfc/response-pipeline/stage-a-plan.md     # master plan(本 phase 对应 Ta
 docs/v4/05-progress.md                         # v4 deferred items(P3.2b-D1/P1.5-OQ1/P2.1-M2/P2.2-D1 是本重构来由)
 docs/DESIGN.md                                 # v4 七阶段管线现状
 ```
+
+## Stage B — Kick-off Prompts（driver-owned-writeout）
+
+Stage B 主体（全 5 格式 owns-sink）已落地；下面是 Stage B 的 kick-off prompts。
+
+| Prompt | 内容 | 状态 |
+|---|---|---|
+| [stage-b-anthropic-cutover.md](./stage-b-anthropic-cutover.md) | Anthropic cut-over canary（第一个 byte-critical 格式切 owns-sink） | ✅ 已落地（`cdca98e`） |
+| [stage-b-b4-s6-flush.md](./stage-b-b4-s6-flush.md) | B4：流末 drain 收口进 driver S6 flush（Responses/Gemini；CC `[DONE]` 归宿裁定）——架构对称收尾，非功能修复，可正当不做 | ⬜ 待新会话（含"不做"的正当退出路径） |
+
+> CC / Responses-HTTP / Responses-WS / Gemini 的 cut-over 未单列 prompt（按 Anthropic canary 同一手法逐格式切，已全部落地）。Stage B 进度权威看 [stage-b-plan.md](../stage-b-plan.md) 顶部「▶ 当前位置」banner。

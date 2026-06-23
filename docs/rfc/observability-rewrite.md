@@ -239,7 +239,11 @@ export function resetBusForTests(): ObservabilityBus { _bus = createBus(); retur
 1. HistorySink (must persist before any WS notify so a downstream `GET /history/api/entries/:id` finds the row)
 2. TelemetrySink (records counters before WS so the next stats event is consistent)
 3. WsSink (broadcasts to clients; subscribes to `history.*` emitted by HistorySink)
-4. ConsoleSink (last; pure read-only display)
+4. ConsoleSink (pure read-only display)
+
+The *binding* invariant is **HistorySink-before-WsSink** (1 before 3). The other positions are softer: TelemetrySink/ConsoleSink only read event payloads and never mutate shared state or query history, so their absolute position is benign.
+
+Implementation note (later refinement): ConsoleSink + FileSink (the two log-stream sinks) are now attached *first*, in a `start.ts` "Phase 1.5" bootstrap that also installs the consola republish hijack — done before the boot banner so the whole startup (version/process/data-dir/rate-limiter init/config-parse errors) is captured to the rotating `copilot-api.log`, not just request-time logs. History/Telemetry/Ws still attach later (after their backing stores init), preserving HistorySink-before-WsSink. ConsoleSink subscribing first is harmless precisely because it is read-only display. So the live subscription order is Console → File → History → Telemetry → Ws; only the History-before-Ws pair is load-bearing.
 
 Order is enforced by `start.ts` and validated by an integration test that:
 - Installs a custom HistorySink wrapping the real one in `queueMicrotask(() => realWrite())` (artificially delays the SQLite write)

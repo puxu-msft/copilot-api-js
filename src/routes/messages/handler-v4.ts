@@ -83,7 +83,7 @@ import {
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search/detect"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrites"
+import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrite-adapters"
 import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {

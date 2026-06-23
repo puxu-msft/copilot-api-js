@@ -35,13 +35,13 @@
 经两个独立 subagent full review + 主线亲手核对 entries.ts/in-flight.ts/server-tool-filter.ts 数据流，确认以下修正：
 
 - **[C1 注入点] pid 注入在 `consumers.ts:57` 的 entry 字面量**（`field==="originalRequest"` 分支），不碰 `entries.ts:insertEntry`，不进 `updateEntry` 的 `Pick<>` 白名单（白名单不含 process，加了会 TS 编译失败）。亲手验证数据流：`putInFlight` 写内存 → 后续 `updateInFlight` 的 `{...existing,...patch}` spread 天然保留 process → `finalizeEntry` 读 merged 对象落库。pid 只 insert 注入一次即可。
-- **[FIX-1.1 fallback 污染] `initProcessIdentity` 必须在 server 监听前调用**（server 未监听时无请求进来，杜绝竞态）。fallback（bootTime:0）走 `consola.warn` 一次或标 `synthetic:true`，让"未初始化即写入"在数据里可见，不静默（原则8）。
+- **[FIX-1.1 fallback 污染] `initProcessIdentity` 必须在 server 监听前调用**（server 未监听时无请求进来，杜绝竞态）。fallback（bootTime:0）走 `consola.warn` 一次或标 `synthetic:true`，让"未初始化即写入"在数据里可见，不静默（best-complete-solution）。
 - **[FIX-1.3 索引迁移陷阱] `CREATE INDEX idx_entries_v2_pid` 必须放在 migrate 函数内、ALTER 之后**，不能塞进 SCHEMA_SQL——因为 `openDatabase` 先 `exec(SCHEMA_SQL)`(:48) 再 migrate(:49)，旧库执行 SCHEMA_SQL 时 pid 列还没 ALTER，索引引用不存在列会崩。
-- **[H3 命名] `migrateEntriesSummaryColumns` 泛化重命名为 `migrateEntriesColumns`**（原则8 命名反映职责），`wanted` 数组作唯一权威加列清单。
-- **[FIX-9.1 类型权威] `types.ts` 用 `import type { ProcessIdentity }` 引用，不内联展开**（原则9）。前端通过 `HistoryEntry["process"]` 结构性获得，无需单独 `~backend` re-export（YAGNI）。
+- **[H3 命名] `migrateEntriesSummaryColumns` 泛化重命名为 `migrateEntriesColumns`**（best-complete-solution 命名反映职责），`wanted` 数组作唯一权威加列清单。
+- **[FIX-9.1 类型权威] `types.ts` 用 `import type { ProcessIdentity }` 引用，不内联展开**（single-source-of-truth-types）。前端通过 `HistoryEntry["process"]` 结构性获得，无需单独 `~backend` re-export（YAGNI）。
 - **[H2 双写契约] `serialize.ts` 加注释钉死**："列是 blob 的只读镜像，仅供 SQL 过滤；还原一律走 blob"。process 不进 META_KEYS → 自动完整进 blob（含 version/gitDirty）；列侧 serializeEntry 显式从 `entry.process` 取 pid/boot_time/git_sha。deserialize 零改动（`...restored` 自带 process）。
 - **[Phase 2 证据力边界——关键认知修正] 离线重放只反映"磁盘当前代码对存档上游帧的转发结果"，不反映"历史运行时进程做了什么"。** 真正裁决 shim 谜题的关键路径是 **Phase 1 的 `git_sha` 列 + 已存档的 `forwardedSseEvents`**（坏数据记录的 sha 是否含 shim commit），而非 Phase 2 重放。Phase 2 重新定位为"shim 修复后的离线回归 + 通用 forwarding 复现器"。
-- **[Phase 2 纯函数破裂] `replayAnthropicForwarding` 不是纯函数**——`serverToolFilter`(闭包持 filteredIndices/clientIndexMap/nextClientIndex)、`toolInputDecoder`(buffering Map)、`streamState` 都跨帧累积状态（已读 server-tool-filter.ts:103-113 实证）。必须"每次重放新建一组实例 + 严格按存档顺序喂帧"。且 `forwardToClient`(handler.ts:716) 耦合 `stream.writeSSE`，需解耦"产出转发帧"与"写 stream"（原则8 根因重构）。
+- **[Phase 2 纯函数破裂] `replayAnthropicForwarding` 不是纯函数**——`serverToolFilter`(闭包持 filteredIndices/clientIndexMap/nextClientIndex)、`toolInputDecoder`(buffering Map)、`streamState` 都跨帧累积状态（已读 server-tool-filter.ts:103-113 实证）。必须"每次重放新建一组实例 + 严格按存档顺序喂帧"。且 `forwardToClient`(handler.ts:716) 耦合 `stream.writeSSE`，需解耦"产出转发帧"与"写 stream"（best-complete-solution 根因重构）。
 - **[范围收敛] Phase 3 砍掉**（与裁决谜题无关，重打上游引入非确定性反降诊断可重复性，YAGNI）→ 降级为 backlog 文档。**Phase 4 仅保留"按 git_sha/pid 分组 + corrupt thinking 计数"一条 SQL** 前置到 Phase 1 收尾（直接回答"哪个 sha 在产坏数据"），其余异常扫描推迟。需扩 `QueryOptions.pid?` + `applyWhere` 的 `pid=?` 分支。
 - **[测试归属] `process-identity` 测试归 `tests/infra/`**（被测在 `src/lib/` 根，非 history 域）；`replay-forwarding` 按是否起 runtime 拆 `.unit`(纯 fixture 帧) / `.it`(读 history entry)。
 
@@ -73,7 +73,7 @@
 
 ## Phase 2 解耦具体方案（forwardToClient 拆 IO）
 
-根因重构（原则8）：把"产出转发帧"与"写 stream"拆两层，线上与重放共用单帧处理逻辑，消除两份顺序逻辑漂移。
+根因重构（best-complete-solution）：把"产出转发帧"与"写 stream"拆两层，线上与重放共用单帧处理逻辑，消除两份顺序逻辑漂移。
 
 1. **抽 `computeForwardedFrames(ev, knownParsed, serverToolFilter, offsetMs)`**：跑 `serverToolFilter.rewriteEvent` 算转发帧 + 构造 SseEventRecord，**不写 stream**。返回 `[{record, ev}]`（0/1/多）。
 2. **`forwardToClient` 变薄**：调 `computeForwardedFrames` → push `forwardedSseEvents` + `stream.writeSSE`。线上字节级不变（record 与写出 data 同源），回归靠现有 SSE 测试。
@@ -101,7 +101,7 @@
 - entries_v2 加列 `pid INTEGER`、`boot_time INTEGER`、`git_sha TEXT`。
 - `migrateEntriesSummaryColumns` 的 `wanted` 数组追加这三列（幂等加列，旧库自动迁移，向后兼容）。
 - `serializeEntry`：row 填 pid/boot_time/git_sha；`META_KEYS` 不变（process 整体仍进 blob 保留完整 version/dirty，列只为过滤）。
-  - **决策点**：pid 等既进列又进 blob（列供 SQL 过滤，blob 供完整还原）。轻微冗余换查询能力，符合原则7（数据以最丰富形式流动）。
+  - **决策点**：pid 等既进列又进 blob（列供 SQL 过滤，blob 供完整还原）。轻微冗余换查询能力，符合richest-data-flow（数据以最丰富形式流动）。
 - 加索引 `idx_entries_v2_pid ON entries_v2(pid, started_at DESC)`。
 - `EntryRow` 接口加 `pid/boot_time/git_sha` 字段；`deserializeEntry` 从 blob 还原 process（列只是镜像）。
 
@@ -113,7 +113,7 @@
 **2.1 提取可重放的转发管线**
 - 现状：[handler.ts](../../src/routes/messages/handler.ts) `processOneStreamEvent` 把"上游帧→（shim+filter+decoder）→转发帧"耦合在流式 handler 里。
 - 重构：抽出纯函数 `replayAnthropicForwarding(upstreamSseEvents, config): forwardedSseEvents`，喂存档 `sseEvents` 复现 `inboundResponse.sseEvents`。
-  - 复用真实 `applyThinkingSignatureCompat` / `createServerToolBlockFilter` / `createToolInputStreamDecoder`，确保与线上同源（原则8）。
+  - 复用真实 `applyThinkingSignatureCompat` / `createServerToolBlockFilter` / `createToolInputStreamDecoder`，确保与线上同源（best-complete-solution）。
 - **本阶段直接价值**：离线对任意历史 entry 跑重放，对比"重放转发帧 vs 存档转发帧 vs 期望帧"，一眼定位 shim 是否生效——本次 bug 用这个工具 30 秒可裁决，不必反复重启。
 
 **2.2 重放 API** [debug/route.ts](../../src/routes/debug/route.ts) 加 `POST /api/debug/replay-forwarding`
@@ -148,7 +148,7 @@
 - **向后兼容**：旧 history 库无新列 → 迁移加列（值 NULL）；无 process 字段的旧 entry → 读出 undefined，UI/查询容忍。
 - **测试隔离**：fs I/O 用注入临时目录，绝不碰真实 `$HOME`/真实 history.db（原则 + memory）。DI/fetch-mock，不用 mock.module。
 - **文档**：完成后更新 [DESIGN.md](../../docs/DESIGN.md) history 段 + 新增 `docs/record-replay.md`。
-- **不启服务器**：仅 typecheck/test，重启由用户手动（原则3）。
+- **不启服务器**：仅 typecheck/test，重启由用户手动（no-auto-server-no-kill）。
 
 ## 落地顺序建议
 

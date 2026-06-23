@@ -72,12 +72,12 @@
 
 **silent-strip 防护仍强制**（[[feedback-pass-null-clean-not-self-validating]]）：扁平虽无嵌套放大，但漏一个 `renameLeaf` 仍会让旧键落入 `.strict()` 被静默丢弃。故每个改名键一条 **compat 往返测试**（旧 yaml in → 断言新 state 值 out），34 键全参数化。hot-reload 完整性守卫只证"新键在矩阵"、**不证 compat 映射存在**，故往返测试不可省。Phase 4 **不得**把跨 section 键（shutdown/openai_responses）误并进 anthropic。
 
-## 7. 暂缓项（完整文档化供未来决策）——根因据实修订
+## 7. 暂缓项的最终处置（已落定，无遗留）
 
-| 项 | 根因/现状（实测修订） | 理想架构 | 为何暂缓 | 若做需改什么 |
-|---|---|---|---|---|
-| **响应侧改写重组**（#5 响应半边） | **Stage B 实测不碰 `codec/anthropic/response-rewrites.ts` 定义文件**（其触点是 `pipeline/{sink,driver,stream}`、`streaming-pump.ts`、各 `handler-v4.ts`）；真正冲突在**消费点 `messages/handler-v4.ts`**——Stage B 正重写其 pump，而它 import response-rewrites | 与请求侧对称两层命名 + 收拢 | 时序冲突在 handler-v4.ts（非 response-rewrites.ts 文件硬冲突）；等 Stage B 落定最省 merge | Stage B 落定后，response-rewrites 命名与 sink 设计一起定 |
-| **跨全格式统一**（含 #8 strategies ×3、`openai/sanitize.ts`、`codec/openai-responses/response-rewrites.ts`） | 其它格式较 anthropic 轻 | 泛化 registry + 统一组织 + 统一 strategies 命名 | YAGNI——模式先在最乱的 anthropic 验证；#3 旁路复用挡通用化 | anthropic-first 稳定后逐格式套同一 rename 规约 |
+| 原暂缓项 | 处置 | 理由 |
+|---|---|---|
+| **响应侧改写重组**（#5 响应半边） | **DONE（Phase 3）**：`codec/anthropic/response-rewrites.ts` → `response-rewrite-adapters.ts`，镜像 `request-rewrite-adapter.ts`。Stage B 全 5 格式 owns-sink 落定后解锁。**实测响应侧无请求侧那种硬债**（无文件碰撞、无两层类型重影、footgun 已 Phase 2 修、算法核已良好命名），故 Phase 3 仅一处 cosmetic 对称 rename。 | 纯命名对称；2 功能消费者；逐字节等价 |
+| **跨全格式统一**（曾含 strategies ×3、`openai/sanitize.ts`、`codec/openai-responses/response-rewrites.ts`） | **撤销（非真债）** | **该统一的契约层早已统一**（`RequestRewrite`/`ResponseRewrite` 接口 + driver registry 装配 = format-agnostic 核心），**不该统一的逻辑层格式专属是正确的**（各格式改写操作各自协议帧，合并=假抽象）。同 stem 出现在**不同格式目录**（`codec/anthropic/strategies.ts` vs `codec/openai-cc/strategies.ts`）是**好的平行结构**（同角色不同格式），非碰撞——碰撞特指**同 dir 内**两同名文件（请求侧 `request-rewrites.ts ×2` 那种真陷阱，已 Phase 1 修）。强行跨目录起异名反破坏平行性。按 YAGNI + "纯主观无缺陷风格偏好跳过"撤销。 |
 
 ## 8. Phase 拆分 + commit invariants
 
@@ -89,7 +89,7 @@
 - **Phase 4** — config 重组（#7）。Invariant: **每键 compat 往返测试绿**（旧扁平 yaml → 新 state 值）+ hot-reload 矩阵完整性守卫绿 + 无跨 section 误并。
 - **收尾** — 同步 DESIGN 现状表 + 配置表 + coding-conventions + memory。
 
-（Phase 3 = 响应侧，暂缓，见 §7。）
+（Phase 3 = 响应侧，**DONE**：Stage B 落定后解锁，仅一处 cosmetic 对称 rename，见 §7。）
 
 ## 9. 验证策略——Phase-1 oracle 改正
 

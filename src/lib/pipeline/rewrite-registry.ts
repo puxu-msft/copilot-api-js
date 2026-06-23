@@ -174,7 +174,7 @@ export const RESPONSE_REWRITE_ORDER = {
  * Built-in (module-global) response rewrites — **intentionally empty by design**
  * (same rationale as {@link BUILTIN_REQUEST_REWRITES}). Per-format response
  * rewrites come via `deps.responseRewrites`: Anthropic's four
- * (`ANTHROPIC_RESPONSE_REWRITES` in `codec/anthropic/response-rewrites.ts`) and
+ * (`ANTHROPIC_RESPONSE_REWRITES` in `codec/anthropic/response-rewrite-adapters.ts`) and
  * Responses' fixIds (`RESPONSES_RESPONSE_REWRITES`). Don't look here for them.
  */
 export const BUILTIN_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = []

@@ -237,6 +237,40 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   // ===========================================================================
+  // Phase 1.5: Observability bootstrap (console + file capture of the WHOLE boot)
+  // ===========================================================================
+  // Stand up the bus + ConsoleSink + FileSink + the single consola hijack BEFORE
+  // the boot banner so every info-level-and-above startup line (version, process
+  // identity, data dir, rate limiter init, config-parse errors) is captured to the
+  // rotating copilot-api.log — not just request-time logs. Previously this block
+  // lived in Phase 3 (after the banner + rate limiter init), so those early lines
+  // reached stdout via the raw consola reporter but never the file sink; a hang or
+  // crash during early boot left no on-disk trace of how far startup got. (consola
+  // gates by level before the reporter runs, so debug-level lines — e.g. proxy init
+  // — are still file-captured only under --verbose, same as before this change.)
+  //
+  // Only the two log-stream sinks (Console, File) + the system publisher are wired
+  // here — they have no backing-store dependency (FileSink self-creates its dir and
+  // PATHS.COPILOT_LOG is a module constant). The request/history sinks (History,
+  // Telemetry, Ws) need their stores initialized first and so attach in Phase 3;
+  // the only ordering invariant that matters is HistorySink-before-WsSink (history
+  // persists before WS broadcasts), which Phase 3 still preserves. ConsoleSink
+  // subscribing first is harmless: it renders from the event payload and never
+  // queries history. FileSink uses synchronous appendFileSync, so even a line
+  // emitted immediately before process.exit() is flushed to disk.
+  //
+  // ensurePaths() moves up from Phase 2.5: FileSink needs APP_DIR to exist, and it
+  // must still precede loadRawConfigFile() (which reads CONFIG_YAML under APP_DIR).
+  await ensurePaths()
+  const bus = initBus()
+  const systemPublisher = bus.scope("system")
+  setShutdownPublisher(systemPublisher)
+  setRateLimitPublisher(systemPublisher)
+  attachConsoleSink(bus)
+  attachFileSink(bus, { path: PATHS.COPILOT_LOG })
+  installConsolaRepublish(systemPublisher)
+
+  // ===========================================================================
   // Phase 2: Version and Configuration Display
   // ===========================================================================
   consola.info(`copilot-api v${packageJson.version}`)
@@ -246,6 +280,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // process produced it. Printed to the boot banner for at-a-glance attribution.
   const procId = initProcessIdentity(packageJson.version)
   consola.info(`Process: pid=${procId.pid}${procId.gitSha ? ` sha=${procId.gitSha}${procId.gitDirty ? "-dirty" : ""}` : ""}`)
+  consola.info(`Data directory: ${PATHS.APP_DIR}`)
 
   // Set global state from CLI options. accountType is only set here when
   // the user passed it explicitly — otherwise we leave the state default
@@ -260,10 +295,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   // Phase 2.5: Load config.yaml and apply runtime settings
   // ===========================================================================
-  // ensurePaths must run first so the config directory exists
-  await ensurePaths()
-  consola.info(`Data directory: ${PATHS.APP_DIR}`)
-
   // Boot-time strict parse of the user's config.yaml. A malformed file (duplicate
   // keys, YAML spec violations) is silently lossy with the default permissive
   // parser — `parse()` keeps the last value on a duplicate key, so the operator's
@@ -309,16 +340,40 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const proxyUrl = options.proxy ?? config.proxy
   initProxy({ url: proxyUrl, fromEnv: !proxyUrl && options.httpProxyFromEnv })
 
-  // Rate limiter configuration (used in Phase 3)
+  // ===========================================================================
+  // Phase 3: Initialize backing stores, their sinks, and the rate limiter
+  // ===========================================================================
+  // The log-stream sinks (Console, File) + system publisher were wired in
+  // Phase 1.5. Here we init the request/history backing stores and attach the
+  // sinks that depend on them, then the rate limiter (now AFTER the bus +
+  // setRateLimitPublisher + installConsolaRepublish, so its "[RateLimiter]
+  // Initialized" line is captured by the file sink and the --mock-rate-limiter-
+  // throttled forced state transition actually reaches the bus).
+  initHistory(true)
+  await initRequestTelemetry()
+
+  // Sinks are AUTHORITATIVE (RFC docs/rfc/observability-rewrite.md §2.4-2.5) —
+  // manager.ts publishes request.* events; entries.ts/sessions.ts publish
+  // history.* events via the publisher installed by setHistoryPublisher. The
+  // one attach-order invariant that matters: HistorySink BEFORE WsSink, so a
+  // terminal entry is persisted before the history.entry_updated broadcast (a
+  // client receiving the WS notification and immediately querying
+  // GET /history/api/entries/:id must not find an empty row). ConsoleSink/
+  // FileSink already subscribed in Phase 1.5; they render/persist from the
+  // event payload and never query history, so their earlier position is benign.
+  const historyPublisher = bus.scope("history")
+  setHistoryPublisher(historyPublisher)
+  attachHistorySink(bus, { publisher: historyPublisher })
+  attachTelemetrySink(bus)
+  attachWsSink(bus)
+
+  // Rate limiter — config-driven, constructed after observability is live so
+  // its init log + any boot-time state transition are captured/published.
   const rlConfig = config.rate_limiter
   const rlRetryInterval = rlConfig?.retry_interval ?? 10
   const rlRequestInterval = rlConfig?.request_interval ?? 10
   const rlRecoveryInterval = rlConfig?.recovery_interval ?? 600
   const rlConsecutiveSuccesses = rlConfig?.consecutive_successes ?? 5
-
-  // ===========================================================================
-  // Phase 3: Initialize Internal Services (rate limiter, history)
-  // ===========================================================================
   if (options.rateLimit) {
     initAdaptiveRateLimiter({
       baseRetryIntervalSeconds: rlRetryInterval,
@@ -334,36 +389,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     }
     setMockRateLimiterThrottled(true)
   }
-
-  initHistory(true)
-  await initRequestTelemetry()
-
-  // Observability bus + sinks (RFC docs/rfc/observability-rewrite.md §2.4-2.5).
-  // Sinks are AUTHORITATIVE — manager.ts publishes request.* events;
-  // entries.ts/sessions.ts publish history.* events via the publisher
-  // installed by setHistoryPublisher; shutdown.ts and adaptive-rate-limiter.ts
-  // publish system.* events via setShutdownPublisher / setRateLimitPublisher.
-  // Sinks subscribe and own the WS broadcast / SQLite persist / TUI render
-  // contracts. Attach order is contract: HistorySink → TelemetrySink → WsSink
-  // → ConsoleSink (so history persists before WS broadcasts, etc.).
-  const bus = initBus()
-  const historyPublisher = bus.scope("history")
-  const systemPublisher = bus.scope("system")
-  setHistoryPublisher(historyPublisher)
-  setShutdownPublisher(systemPublisher)
-  setRateLimitPublisher(systemPublisher)
-  attachHistorySink(bus, { publisher: historyPublisher })
-  attachTelemetrySink(bus)
-  attachWsSink(bus)
-  // ConsoleSink renders request lifecycle lines + the republished consola
-  // stream (system.log) to stdout with the active-request footer. FileSink
-  // persists that same consola stream to a rotating copilot-api.log so it
-  // survives a crash/hang (the original incident: no logs when the process
-  // hung). Both must subscribe BEFORE installConsolaRepublish installs the
-  // single consola hijack — otherwise early republished logs reach no sink.
-  attachConsoleSink(bus)
-  attachFileSink(bus, { path: PATHS.COPILOT_LOG })
-  installConsolaRepublish(systemPublisher)
 
   // Initialize request context manager with the request.* publisher so
   // every lifecycle / context_updated event reaches HistorySink + WsSink +
@@ -387,9 +412,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   // Start stale request reaper (periodic cleanup of stuck active contexts)
   contextManager.startReaper()
-
-  // ConsoleSink is attached above via attachConsoleSink — no separate
-  // tuiLogger init needed (commit 4 deleted lib/tui).
 
   // ===========================================================================
   // Phase 4: External Dependencies (network)
