@@ -230,7 +230,7 @@ ui/
    ├── config/  pipeline/  streaming/  shutdown/  context/  infra/
    ├── e2e/         # 真实网络/需 token（getE2EMode 门控，不进 offline 全集）
    ├── e2e-ui/      # Playwright（浏览器）
-   ├── helpers/     # 共享测试基建（mock-fetch、state-fixture、test-bootstrap、factories、sse、history-fixtures、ws-mock…）
+   ├── helpers/     # 共享测试基建（mock-fetch、state-fixture、test-bootstrap、factories、sse〔含 frameTypesInOrder/dataFramesOfType 解析〕、anthropic-frames〔composable SSE 帧 atoms〕、fake-clock〔确定性时钟〕、history-fixtures、ws-mock…）
    └── fixtures/    # 磁盘样本 payload
    ```
    归属规则：看被测行为所属的 `~/lib/<域>/` 路径，机械可判；新增 src 模块时测试自动有归属。`history/sqlite/` 镜像 src 子目录。
