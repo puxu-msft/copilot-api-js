@@ -23,7 +23,7 @@
 | ~~[P1-q2-oracle-measurement.md](./P1-q2-oracle-measurement.md)~~ | Q2 真实客户端实测 | — | ✅ **已完成（GO）** |
 | ~~[P2-c3b-delayed-commit.md](./P2-c3b-delayed-commit.md)~~ | ③ 延迟-commit 实现 | — | ✅ **已落地**（`e3ad9e6` 等） |
 | ~~[P3-keepalive-naming-taxonomy.md](./P3-keepalive-naming-taxonomy.md)~~ | keepalive 命名一族重整 | — | ✅ **已落地**（`afd2370`） |
-| [P4-reaper-real-abort-repro.md](./P4-reaper-real-abort-repro.md) | reaper-真-abort 的 0-unhandled repro（强化 ④） | 无（④ 已落地） | 独立小测、可随时做（**唯一剩余项**） |
+| ~~[P4-reaper-real-abort-repro.md](./P4-reaper-real-abort-repro.md)~~ | reaper-真-abort 的 0-unhandled repro（强化 ④） | — | ✅ **已落地**：`tests/transport/reaper-abort-unhandled.it.test.ts`（4 例）+ `exp/reaper-real-abort/repro.ts`（abort-driven 负对照证 observer 是因）。**RFC 全部完成。** |
 
 ## 依赖 DAG
 

@@ -1,6 +1,6 @@
 ---
 name: project-pre-response-abort-rfc
-description: pre-response abort 处理 + opus 长思考保活 RFC——①②④⑤+C3b-pre1+P1 Q2 GO+P2(③ 延迟-commit)+P3(keepalive 命名重整)全部已落地；③ 对 stream:true 请求 race grace timer 提前开 200 保活，POST-COMMIT 错误降级富 SSE error 帧；剩余仅 P4(reaper 0-unhandled repro,可选)
+description: pre-response abort 处理 + opus 长思考保活 RFC——①②④⑤+C3b-pre1+P1 Q2 GO+P2(③ 延迟-commit)+P3(keepalive 命名重整)+P4(reaper 0-unhandled repro)全部已落地，RFC 100% 完成；③ 对 stream:true 请求 race grace timer 提前开 200 保活，POST-COMMIT 错误降级富 SSE error 帧
 metadata: 
   node_type: memory
   type: project
@@ -9,7 +9,7 @@ metadata:
 
 排查 opus-4.8 流式请求在 pre-response（上游 292s 没回响应头）被客户端断开、产生 `[FAIL] ... The operation was aborted.` + `[ERR] Unexpected non-HTTP error` 双日志，产出 RFC `docs/rfc/pre-response-abort-handling.md`。三个缺陷：
 
-**RFC 主体已全部交付（2026-06-23）**：①②④⑤ + C3b-pre1 + P1 Q2 GO + **P2(③ C3b 延迟-commit) + P3(keepalive 命名重整)** 全落地。commit 序列:C3a `6e04f69` golden → P3-naming `afd2370`(`stream_fake_sse_heartbeat`→`stream_keepalive_ping_sec` 默认 45 + 新 `stream_keepalive_grace_sec` 40 + compat 迁移；`protect_streaming_heartbeat` 留 L2 族) → C1 `5239328`(`pumpAnthropicStreamingV4` 接收注入 sink，byte-equiv) → C2 `08b2124`(`post-commit-error.ts` 富错误帧 pure helpers) → C3b 本体(race/dispatch 被并发 agentId 提交 `6dee399` 误扫入,配置+测试+L1/L2 修复 `e3ad9e6`)。落地形态见 RFC §5 C3b 行 + DESIGN「活的架构现状」流式写出行。**坑**:并发会话 `git add` 整文件把我在飞的 C3b handler 体扫进它的 agentId 提交（[[sed-touched-files-bundle-inflight-work]] 实例）——用 pathspec 补齐其余、不 rewrite 并发 commit。**剩余仅 P4**(reaper-真-abort 0-unhandled repro,强化已落地 ④,可选)。subagent 对抗复审 C1/C3b 均无 CRITICAL（修了 L-1 首 ping 入 try、L-2 失败也快照 forwarded）。
+**RFC 主体已全部交付（2026-06-23）**：①②④⑤ + C3b-pre1 + P1 Q2 GO + **P2(③ C3b 延迟-commit) + P3(keepalive 命名重整)** 全落地。commit 序列:C3a `6e04f69` golden → P3-naming `afd2370`(`stream_fake_sse_heartbeat`→`stream_keepalive_ping_sec` 默认 45 + 新 `stream_keepalive_grace_sec` 40 + compat 迁移；`protect_streaming_heartbeat` 留 L2 族) → C1 `5239328`(`pumpAnthropicStreamingV4` 接收注入 sink，byte-equiv) → C2 `08b2124`(`post-commit-error.ts` 富错误帧 pure helpers) → C3b 本体(race/dispatch 被并发 agentId 提交 `6dee399` 误扫入,配置+测试+L1/L2 修复 `e3ad9e6`)。落地形态见 RFC §5 C3b 行 + DESIGN「活的架构现状」流式写出行。**坑**:并发会话 `git add` 整文件把我在飞的 C3b handler 体扫进它的 agentId 提交（[[sed-touched-files-bundle-inflight-work]] 实例）——用 pathspec 补齐其余、不 rewrite 并发 commit。**P4 已落地**(reaper-真-abort 0-unhandled repro,强化 ④:`tests/transport/reaper-abort-unhandled.it.test.ts` 4 例 + `exp/reaper-real-abort/repro.ts` abort-driven 负对照证 observer 是因;harness 折≥2 signal 走 AbortSignal.any prod 路径)——**RFC 100% 完成**。subagent 对抗复审 C1/C3b/P4 均无 CRITICAL（修了 L-1 首 ping 入 try、L-2 失败也快照 forwarded、P4 的 HIGH-2 AbortSignal.any 保真 + MEDIUM-2 负对照因果）。
 
 三缺陷原貌：
 
