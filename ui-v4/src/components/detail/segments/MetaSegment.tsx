@@ -13,7 +13,7 @@ function Row({ label, value }: { label: string; value?: string | number }) {
 export function MetaSegment({ entry }: { entry: HistoryEntry }) {
   const usage = entry.outboundResponse?.usage
   return (
-    <div className="mono flex flex-col gap-2 text-[10px] text-[#aaa]">
+    <div className="mono flex flex-col gap-2 text-[13px] text-[#aaa]">
       <Row
         label="strategy"
         value={entry.currentStrategy}
@@ -42,7 +42,7 @@ export function MetaSegment({ entry }: { entry: HistoryEntry }) {
       : null}
       {entry.warningMessages && entry.warningMessages.length > 0 ?
         <div>
-          <div className="text-[8px] uppercase tracking-wider text-[var(--color-warn)]">warnings</div>
+          <div className="text-[11px] uppercase tracking-wider text-[var(--color-warn)]">warnings</div>
           {entry.warningMessages.map((w, i) => (
             <div
               key={i}

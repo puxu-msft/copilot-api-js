@@ -18,7 +18,7 @@ const SIGNAL_COLOR: Record<Signal, string> = {
 export function DiagnosticBar({ entry }: { entry: HistoryEntry }) {
   const tokens = entry.outboundResponse?.usage
   return (
-    <div className="mono flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] bg-[#1c1c22] px-3 py-1.5 text-[10px] text-[#cdb]">
+    <div className="mono flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] bg-[#1c1c22] px-3 py-1.5 text-[13px] text-[#cdb]">
       <span style={{ color: SIGNAL_COLOR[statusSignal(entry.state ?? "")] }}>{entry.state ?? "—"}</span>
       <span className="text-[var(--color-primary)]">{entry.endpoint}</span>
       {entry.durationMs === undefined ? null : <span className="text-[#888]">{formatDuration(entry.durationMs)}</span>}

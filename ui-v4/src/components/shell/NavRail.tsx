@@ -11,12 +11,12 @@ const ITEMS = [
 export function NavRail() {
   return (
     <nav className="mono flex w-[120px] flex-col border-r border-[var(--color-border)] bg-[#15151a]">
-      <div className="px-3 py-2.5 text-xs font-bold text-[var(--color-primary)]">◆ copilot-api</div>
+      <div className="px-3 py-2.5 text-sm font-bold text-[var(--color-primary)]">◆ copilot-api</div>
       {ITEMS.map((it) => (
         <NavLink
           key={it.to}
           to={it.to}
-          className={({ isActive }) => `px-3 py-1.5 text-[11px] ${isActive ? "bg-[#3a2f1a] text-[#f0d8a8]" : "text-[#999]"}`}
+          className={({ isActive }) => `px-3 py-1.5 text-[14px] ${isActive ? "bg-[#3a2f1a] text-[#f0d8a8]" : "text-[#999]"}`}
         >
           {it.label}
         </NavLink>

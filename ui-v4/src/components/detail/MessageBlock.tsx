@@ -15,7 +15,7 @@ export function MessageBlock({ message }: { message: MessageContent }) {
   return (
     <div className="border-b border-[#1e1e24] py-1.5">
       <div
-        className="mono mb-1 text-[8px] uppercase tracking-wider"
+        className="mono mb-1 text-[11px] uppercase tracking-wider"
         style={{ color: ROLE_COLOR[message.role] ?? "#888" }}
       >
         {message.role}

@@ -7,8 +7,8 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
   return (
     <div>
       {system ?
-        <div className="mono mb-2 border-l-2 border-[var(--color-muted)] bg-[#161616] px-2 py-1 text-[10px] text-[#999]">
-          <div className="text-[8px] uppercase tracking-wider">system</div>
+        <div className="mono mb-2 border-l-2 border-[var(--color-muted)] bg-[#161616] px-2 py-1 text-[13px] text-[#999]">
+          <div className="text-[11px] uppercase tracking-wider">system</div>
           <div className="whitespace-pre-wrap break-words">{typeof system === "string" ? system : JSON.stringify(system, null, 2)}</div>
         </div>
       : null}

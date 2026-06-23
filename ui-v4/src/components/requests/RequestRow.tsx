@@ -28,7 +28,7 @@ export function RequestRow({ state, model, durationMs, selected, live, onClick }
     <button
       type="button"
       onClick={onClick}
-      className={`mono flex w-full items-center gap-3 border-b border-[#222] px-2 py-1 text-left text-[11px] ${
+      className={`mono flex w-full items-center gap-3 border-b border-[#222] px-2 py-1 text-left text-[14px] ${
         selected ? "border-l-2 border-l-[var(--color-primary)] bg-[#3a2f1a] text-[#f0d8a8]" : "text-[#aaa]"
       }`}
     >

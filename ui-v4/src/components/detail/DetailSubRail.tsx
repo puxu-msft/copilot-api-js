@@ -15,7 +15,7 @@ export function DetailSubRail({ active, onSelect }: DetailSubRailProps) {
           key={s}
           type="button"
           onClick={() => onSelect(s)}
-          className={`px-2 py-1.5 text-left text-[9px] ${active === s ? "bg-[#3a2f1a] text-[var(--color-primary)]" : "text-[#999]"}`}
+          className={`px-2 py-1.5 text-left text-[12px] ${active === s ? "bg-[#3a2f1a] text-[var(--color-primary)]" : "text-[#999]"}`}
         >
           {s}
         </button>

@@ -22,7 +22,7 @@ body {
   background: var(--color-bg);
   color: var(--color-text);
   font-family: ui-sans-serif, system-ui, sans-serif;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 /* 工业骨架：全局锐角、左对齐(不居中) */

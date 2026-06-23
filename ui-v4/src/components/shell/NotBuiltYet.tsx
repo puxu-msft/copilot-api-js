@@ -9,9 +9,9 @@ export function NotBuiltYet() {
   const name = pathname.replace(/^\//, "").split("/")[0] || "page"
   return (
     <div className="mono flex h-full flex-col items-start justify-center gap-2 p-6">
-      <div className="text-[9px] uppercase tracking-wider text-[var(--color-muted)]">{name}</div>
+      <div className="text-[12px] uppercase tracking-wider text-[var(--color-muted)]">{name}</div>
       <div className="text-lg font-bold text-[var(--color-primary)]">即将推出</div>
-      <div className="max-w-[60ch] text-[11px] text-[#999]">本页面在后续实现计划中交付（见 docs/plans/）。当前仅 Requests 已接线。</div>
+      <div className="max-w-[60ch] text-[14px] text-[#999]">本页面在后续实现计划中交付（见 docs/plans/）。当前仅 Requests 已接线。</div>
     </div>
   )
 }

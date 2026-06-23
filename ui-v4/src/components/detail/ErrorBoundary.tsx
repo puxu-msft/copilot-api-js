@@ -28,7 +28,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   override render(): ReactNode {
     if (this.state.error) {
       return (
-        <div className="mono border border-[var(--color-fail)] px-2 py-1 text-[10px] text-[var(--color-fail)]">
+        <div className="mono border border-[var(--color-fail)] px-2 py-1 text-[13px] text-[var(--color-fail)]">
           ⚠ {this.props.label ?? "block"} 渲染失败:{this.state.error.message}
         </div>
       )

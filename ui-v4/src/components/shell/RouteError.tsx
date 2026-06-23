@@ -17,12 +17,12 @@ export function RouteError() {
   const title = isRouteErrorResponse(error) ? `${String(error.status)} ${error.statusText}` : "Application error"
   return (
     <div className="mono flex h-full flex-col items-start justify-center gap-2 p-6">
-      <div className="text-[9px] uppercase tracking-wider text-[var(--color-muted)]">inspector</div>
+      <div className="text-[12px] uppercase tracking-wider text-[var(--color-muted)]">inspector</div>
       <div className="text-lg font-bold text-[var(--color-fail)]">{title}</div>
-      <div className="max-w-[60ch] text-[11px] text-[#999]">{errorDetail(error)}</div>
+      <div className="max-w-[60ch] text-[14px] text-[#999]">{errorDetail(error)}</div>
       <a
         href="#/requests"
-        className="mt-2 text-[11px] text-[var(--color-primary)] underline"
+        className="mt-2 text-[14px] text-[var(--color-primary)] underline"
       >
         ← 回到 Requests
       </a>

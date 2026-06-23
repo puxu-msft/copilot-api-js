@@ -9,7 +9,7 @@ const LEGS = [
 
 export function HeadersSegment({ entry }: { entry: HistoryEntry }) {
   const headers = entry.httpHeaders
-  if (!headers) return <div className="mono p-2 text-[10px] text-[var(--color-muted)]">无 headers</div>
+  if (!headers) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无 headers</div>
   return (
     <div className="flex flex-col gap-2">
       {LEGS.map(([key, label]) => {
@@ -20,8 +20,8 @@ export function HeadersSegment({ entry }: { entry: HistoryEntry }) {
             key={key}
             className="border border-[var(--color-border)]"
           >
-            <div className="mono bg-[#1a1a1f] px-2 py-1 text-[8px] uppercase tracking-wider text-[var(--color-primary)]">{label}</div>
-            <table className="mono w-full text-[10px]">
+            <div className="mono bg-[#1a1a1f] px-2 py-1 text-[11px] uppercase tracking-wider text-[var(--color-primary)]">{label}</div>
+            <table className="mono w-full text-[13px]">
               <tbody>
                 {Object.entries(h).map(([k, v]) => (
                   <tr

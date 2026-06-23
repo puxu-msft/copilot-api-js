@@ -27,7 +27,7 @@ export function HistoryList() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="mono flex items-center gap-2 border-b border-[#222] px-2 py-1 text-[9px] uppercase tracking-wider text-[var(--color-muted)]">
+      <div className="mono flex items-center gap-2 border-b border-[#222] px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-muted)]">
         <span>History · {total} total</span>
         <span className="ml-auto">{tailOn ? "▶ live" : "⏸ paused"}</span>
         {!tailOn && (
@@ -43,7 +43,7 @@ export function HistoryList() {
       {bufferedIds.length > 0 && (
         <button
           type="button"
-          className="mono border-b border-[#4a3a55] bg-[#2a2230] py-1 text-center text-[11px] text-[#caa6e0]"
+          className="mono border-b border-[#4a3a55] bg-[#2a2230] py-1 text-center text-[14px] text-[#caa6e0]"
           onClick={() => dispatch({ kind: "flush" })}
         >
           ↓ {bufferedIds.length} 条新请求 —— 点此合入
@@ -69,7 +69,7 @@ export function HistoryList() {
         {hasNextPage && (
           <button
             type="button"
-            className="mono w-full py-2 text-[10px] text-[var(--color-primary)]"
+            className="mono w-full py-2 text-[13px] text-[var(--color-primary)]"
             onClick={() => void fetchNextPage()}
           >
             加载更多
