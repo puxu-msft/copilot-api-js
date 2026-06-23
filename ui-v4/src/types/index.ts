@@ -9,5 +9,6 @@ export type {
   HistoryStats,
   QueryOptions,
   RequestLifecycleState,
+  SessionSummary,
   SummaryResult,
 } from "~backend/lib/history/store"

@@ -165,6 +165,13 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     responses: ok200("Deletion result"),
   })
   registry.registerPath({ method: "get", path: "/history/api/stats", tags: historyTag, summary: "History store statistics", responses: ok200("Stats") })
+  registry.registerPath({
+    method: "get",
+    path: "/history/api/sessions",
+    tags: historyTag,
+    summary: "Per-session aggregate summaries",
+    responses: ok200("Session summaries"),
+  })
   registry.registerPath({ method: "get", path: "/history/api/export", tags: historyTag, summary: "Export history", responses: ok200("Exported history") })
   registry.registerPath({
     method: "delete",

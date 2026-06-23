@@ -20,6 +20,7 @@ export {
   getCurrentSession,
   getSessionEntries,
   getSessionIdFromHeaders,
+  getSessionSummaries,
   registerResponseSession,
   resolveResponseSessionId,
 } from "./sessions"
@@ -48,6 +49,7 @@ export type {
   SanitizationInfo,
   ServerToolResultContentBlock,
   ServerToolUseContentBlock,
+  SessionSummary,
   SseEventRecord,
   SummaryResult,
   SystemBlock,

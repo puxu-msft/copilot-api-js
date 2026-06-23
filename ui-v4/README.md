@@ -33,11 +33,12 @@ React 18 · TypeScript strict · Vite 7 · **Tailwind v4**（`@tailwindcss/vite`
 
 工业风 **Terminal Amber**：暖近黑 + amber 主色、全局锐角 `rounded:0`、左对齐（拒绝居中标题）、hairline 网格、IBM Plex Mono 承载数据、green/red/amber 状态信号。主题 token 在 `src/styles/theme.css`（CSS vars 单一来源）。
 
-## 现状（Plan 06 Overview/Models/Config）
+## 现状（Plan 05 Sessions+Agent —— nav 5 项全接线）
 
 - **Plan 01 地基**：应用壳层（NavRail + TopBar）+ WS 状态指示 + 主题切换 + 路由 errorElement/catch-all 占位。
 - **Plan 02 Requests 工作台**：主从一体——左 **Live 泳道**（WS `active_request_changed` 驱动）+ **History 游标列表**（缓冲横幅 + tail 暂停/恢复 + 选中粘滞）；右按 URL `:id` 独立 fetch 详情（深链 §4.1/§4.2）。
 - **Plan 03 详情 C 布局 + 双格式内容渲染管线**：DiagnosticBar + sticky sub-rail（Convo/Stages/Headers/Meta 懒加载）；`normalizeToContentBlocks` 双格式归一化 → 块组件（各包 ErrorBoundary）→ ContentRenderer 分发；Stages 7 腿 / Headers 4 腿 / Meta 诊断。
-- **Plan 06 Overview/Models/Config**（无后端改动）：**Overview** 精简健康（In-flight/limiter/quota/active/history/WS）+ Grafana 入口；**Models** 目录表（id/name/vendor/version + raw JSON 切换）；**Config** 结构化 JSON 编辑器 + 保存（PUT `/api/config/yaml` partial）。
-- **已接线 nav**：Overview / Requests / Models / Config。**仅 Sessions 仍"即将推出"占位**（待 Plan 05）。
-- 详情 diff（SSE 帧/消息级/stages 并排）→ Plan 03b；请求内搜索 → Plan 04；Sessions+Agent + 后端聚合 → Plan 05；Config 结构化分组表单 → Plan 06b；视觉打磨+响应式 → Plan 07。见 `docs/plans/`。
+- **Plan 06 Overview/Models/Config**：**Overview** 精简健康 + Grafana 入口；**Models** 目录表 + raw JSON 切换；**Config** 结构化 JSON 编辑器 + 保存。
+- **Plan 05 Sessions+Agent**：**后端新增**（只读）`GET /history/api/sessions`（entries_v2 GROUP BY session_id 聚合）+ `/entries?agentId=&mainAgentOnly=` 过滤接线；前端 **Sessions** 列表（聚合行：#req/#agents/tokens/时长/状态）+ **Session 详情**（agent 泳道时间线：main + subagent 按 agentId 分泳道，请求块深链 `/requests/:id`；subagent 标签为不透明 agentId，header 无种类名）。
+- **nav 5 项全是真页**：Overview / Requests / Sessions / Models / Config。catch-all 仅兜真未知路径。
+- 后续：详情 diff（SSE 帧/消息级/stages 并排）→ Plan 03b；请求内搜索 → Plan 04；视觉打磨+响应式 → Plan 07；Config 结构化分组表单 → Plan 06b；Session client/cost 列 + 工作台 group-by + subagent 种类名 → Plan 05b。见 `docs/plans/`。

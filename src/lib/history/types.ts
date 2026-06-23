@@ -365,6 +365,27 @@ export interface HistoryStats {
   activeSessions: number
 }
 
+/**
+ * Per-session aggregate row (GROUP BY session_id over terminal entries_v2 rows).
+ *
+ * `agentCount` is `COUNT(DISTINCT agent_id)`, which by SQL semantics does NOT
+ * count NULL — main-agent requests carry a NULL agent_id, so a main-agent-only
+ * session yields `agentCount = 0`. This is intentional: it counts the distinct
+ * SUBagents that participated in the session.
+ */
+export interface SessionSummary {
+  sessionId: string
+  requestCount: number
+  agentCount: number
+  inputTokens: number
+  outputTokens: number
+  firstStartedAt: number
+  lastStartedAt: number
+  completed: number
+  failed: number
+  models: Array<string>
+}
+
 export interface EntrySummary {
   id: string
   sessionId?: string

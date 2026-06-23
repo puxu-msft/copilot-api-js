@@ -7,6 +7,7 @@ import {
   exportHistory,
   getEntry,
   getHistorySummaries,
+  getSessionSummaries,
   getStats,
   isHistoryEnabled,
   setPinned,
@@ -32,11 +33,28 @@ export function handleGetEntries(c: Context) {
     to: query.to ? Number.parseInt(query.to, 10) : undefined,
     search: query.search || undefined,
     sessionId: query.sessionId || undefined,
+    agentId: query.agentId || undefined,
+    mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
     pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
   }
 
   const result = getHistorySummaries(options)
   return c.json(result)
+}
+
+/**
+ * GET /history/api/sessions — per-session aggregate view (GROUP BY session_id over
+ * terminal entries_v2 rows). `?limit=N` caps the number of sessions returned
+ * (defaults to the store's internal cap when absent). Returns `{ sessions: [...] }`.
+ */
+export function handleGetSessions(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+
+  const limitRaw = c.req.query("limit")
+  const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined
+  return c.json({ sessions: getSessionSummaries(limit) })
 }
 
 export function handleGetEntry(c: Context) {

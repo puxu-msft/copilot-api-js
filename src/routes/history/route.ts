@@ -7,6 +7,7 @@ import {
   handleExport,
   handleGetEntries,
   handleGetEntry,
+  handleGetSessions,
   handleGetStats,
   handlePinEntry,
   handleUnpinEntry,
@@ -31,6 +32,7 @@ historyRoutes.post("/api/entries/:id/pin", handlePinEntry)
 historyRoutes.post("/api/entries/:id/unpin", handleUnpinEntry)
 historyRoutes.delete("/api/entries", handleDeleteEntries)
 historyRoutes.get("/api/stats", handleGetStats)
+historyRoutes.get("/api/sessions", handleGetSessions)
 historyRoutes.get("/api/export", handleExport)
 
 /** Session endpoints */

@@ -8,6 +8,8 @@ import { ConfigPage } from "@/components/config/ConfigPage"
 import { ModelsPage } from "@/components/models/ModelsPage"
 import { OverviewPage } from "@/components/overview/OverviewPage"
 import { RequestsWorkbench } from "@/components/requests/RequestsWorkbench"
+import { SessionDetailPage } from "@/components/sessions/SessionDetailPage"
+import { SessionsPage } from "@/components/sessions/SessionsPage"
 import { AppShell } from "@/components/shell/AppShell"
 import { NotBuiltYet } from "@/components/shell/NotBuiltYet"
 import { RouteError } from "@/components/shell/RouteError"
@@ -32,6 +34,8 @@ export const router = createHashRouter([
       { path: "overview", element: <OverviewPage /> },
       { path: "models", element: <ModelsPage /> },
       { path: "config", element: <ConfigPage /> },
+      { path: "sessions", element: <SessionsPage /> },
+      { path: "sessions/:id", element: <SessionDetailPage /> },
       { path: "*", element: <NotBuiltYet /> },
     ],
   },

@@ -17,6 +17,7 @@ import {
   queryEntries,
   resolveResponseSession,
 } from "./sqlite/read"
+import { querySessionSummaries } from "./sqlite/sessions-agg"
 import { computeStats } from "./sqlite/stats"
 import {
   //
@@ -24,6 +25,11 @@ import {
   upsertResponseSession,
 } from "./sqlite/write"
 import { historyState } from "./state"
+
+/** Per-session aggregate view (GROUP BY session_id over terminal entries_v2 rows). */
+export function getSessionSummaries(limit?: number): ReturnType<typeof querySessionSummaries> {
+  return querySessionSummaries(limit)
+}
 
 // `x-claude-code-session-id` is what Claude Code actually sends (a stable per-conversation UUID,
 // reused across every request in the session) — it must lead the list so anthropic traffic aggregates.

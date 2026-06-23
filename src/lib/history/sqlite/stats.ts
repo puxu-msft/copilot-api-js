@@ -27,7 +27,7 @@ const EMPTY_STATS: HistoryStats = {
  * "completed + failed (+ aborted + interrupted)" rather than counting requests
  * still in flight.
  */
-const NOT_ACTIVE = `status NOT IN ('pending','executing','streaming')`
+export const NOT_ACTIVE = `status NOT IN ('pending','executing','streaming')`
 
 export function computeStats(): HistoryStats {
   if (!isDatabaseOpen()) return EMPTY_STATS
