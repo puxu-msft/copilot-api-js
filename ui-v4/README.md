@@ -33,6 +33,9 @@ React 18 · TypeScript strict · Vite 7 · **Tailwind v4**（`@tailwindcss/vite`
 
 工业风 **Terminal Amber**：暖近黑 + amber 主色、全局锐角 `rounded:0`、左对齐（拒绝居中标题）、hairline 网格、IBM Plex Mono 承载数据、green/red/amber 状态信号。主题 token 在 `src/styles/theme.css`（CSS vars 单一来源）。
 
-## 现状（Plan 01 地基）
+## 现状（Plan 02 工作台）
 
-已打通端到端骨架：应用壳层（NavRail + TopBar）+ 真实拉取 `/history/api/entries` 的最小 Requests 列表 + WS 状态指示 + 主题切换。**仅 `/requests` 路由已接线**，Overview/Sessions/Models/Config 为后续 Plan（导航为预期占位）。工作台主从布局 / Live 泳道 / 详情 C 布局 / 请求内搜索 / Sessions+Agent 见 `docs/plans/` 后续子计划。
+- **Plan 01 地基**：应用壳层（NavRail + TopBar）+ WS 状态指示 + 主题切换 + 路由 errorElement/catch-all 占位。
+- **Plan 02 Requests 工作台**：主从一体——左侧 **Live 泳道**（常驻固定高度、WS `active_request_changed` 驱动的在飞请求）+ **History 游标列表**（缓冲横幅 + tail 暂停/恢复 + 选中粘滞，spec §4.2）；右侧按 URL `:id` **独立 `fetchEntry` 的详情**（深链 `/requests/:id`，spec §4.1）。详情当前为 raw JSON **占位**，完整 C 布局见 Plan 03。
+- **仅 `/requests`/`/requests/:id` 已接线**；Overview/Sessions/Models/Config 点击显示"即将推出"占位（NotBuiltYet），后续 Plan 交付。
+- 详情 C 布局/7 腿/内容渲染管线 → Plan 03；请求内搜索 → Plan 04；Sessions+Agent + 后端聚合 → Plan 05。见 `docs/plans/`。

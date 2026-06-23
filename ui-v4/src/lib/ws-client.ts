@@ -3,12 +3,19 @@ import type {
   EntrySummary,
   HistoryStats,
 } from "@/types"
+import type {
+  //
+  ActiveRequestChangedInfo,
+  ConnectedInfo,
+} from "@/types/ws"
 
 export interface WsCallbacks {
   onEntryAdded?: (s: EntrySummary) => void
   onEntryUpdated?: (s: EntrySummary) => void
   onStatsUpdated?: (s: HistoryStats) => void
   onStatusChange?: (connected: boolean) => void
+  onActiveRequestChanged?: (info: ActiveRequestChangedInfo) => void
+  onConnected?: (info: ConnectedInfo) => void
 }
 
 interface WsClientOptions {
@@ -87,6 +94,14 @@ export function createWsClient(options: WsClientOptions) {
         }
         case "stats_updated": {
           cb.onStatsUpdated?.(msg.data as HistoryStats)
+          break
+        }
+        case "active_request_changed": {
+          cb.onActiveRequestChanged?.(msg.data as ActiveRequestChangedInfo)
+          break
+        }
+        case "connected": {
+          cb.onConnected?.(msg.data as ConnectedInfo)
           break
         }
         default: {

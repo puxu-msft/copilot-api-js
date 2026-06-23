@@ -1,4 +1,8 @@
-import { useEffect } from "react"
+import {
+  //
+  useEffect,
+  useRef,
+} from "react"
 
 import {
   //
@@ -6,12 +10,21 @@ import {
   type WsCallbacks,
 } from "@/lib/ws-client"
 
-/** 订阅 WS;StrictMode 下 acquire/release 配对，模块单例复用同一连接。 */
+/** 订阅 WS;latest-ref:挂载时 acquire 一个稳定 wrapper,每次事件读最新 callbacks(避免 stale 闭包)。 */
 export function useWs(callbacks: WsCallbacks): void {
+  const ref = useRef(callbacks)
+  ref.current = callbacks
   useEffect(() => {
-    const release = wsClient.acquire(callbacks)
+    const stable: WsCallbacks = {
+      onEntryAdded: (s) => ref.current.onEntryAdded?.(s),
+      onEntryUpdated: (s) => ref.current.onEntryUpdated?.(s),
+      onStatsUpdated: (s) => ref.current.onStatsUpdated?.(s),
+      onStatusChange: (c) => ref.current.onStatusChange?.(c),
+      onActiveRequestChanged: (i) => ref.current.onActiveRequestChanged?.(i),
+      onConnected: (i) => ref.current.onConnected?.(i),
+    }
+    const release = wsClient.acquire(stable)
     return release
-    // callbacks 由调用方用 useMemo 稳定;此处刻意只在挂载/卸载 acquire/release。
-    // (本仓库 eslint 未启用 react-hooks 插件,故无 exhaustive-deps 规则需 disable。)
+    // wrapper 稳定(只挂载一次 acquire,ref-count 不抖);事件读 ref.current 命中最新 callbacks。
   }, [])
 }

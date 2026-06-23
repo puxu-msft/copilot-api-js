@@ -67,4 +67,34 @@ describe("ws-client ref-count", () => {
     r2() // final release
     expect(sockets[1].closed).toBe(true) // 活的 S2 被真正关闭(未泄漏)
   })
+
+  it("dispatches active_request_changed and connected to callbacks", () => {
+    let active = 0
+    let snapshot = -1
+    const listeners: Record<string, (ev: { data: string }) => void> = {}
+    const client = createWsClient({
+      url: "ws://test/ws",
+      socketFactory: () =>
+        ({
+          close() {},
+          addEventListener(type: string, fn: (ev: { data: string }) => void) {
+            listeners[type] = fn
+          },
+          removeEventListener() {},
+          send() {},
+        }) as unknown as WebSocket,
+    })
+    client.acquire({
+      onActiveRequestChanged: () => {
+        active++
+      },
+      onConnected: (info) => {
+        snapshot = info.activeRequests.length
+      },
+    })
+    listeners.message?.({ data: JSON.stringify({ type: "active_request_changed", data: { action: "created", activeCount: 1 }, timestamp: 0 }) })
+    listeners.message?.({ data: JSON.stringify({ type: "connected", data: { clientCount: 1, activeRequests: [{ id: "a" }] }, timestamp: 0 }) })
+    expect(active).toBe(1)
+    expect(snapshot).toBe(1)
+  })
 })
