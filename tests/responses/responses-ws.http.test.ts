@@ -27,6 +27,7 @@ import {
   setModels,
   setStateForTests,
 } from "~/lib/state"
+import { StreamClientAbortError } from "~/lib/stream"
 import { closeAllClients } from "~/lib/ws"
 
 import { mockModel } from "../helpers/factories"
@@ -34,7 +35,11 @@ import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
 import { createMockServer } from "../helpers/mock-server"
 import { createMockTracker } from "../helpers/mock-tracker"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenError,
+} from "../helpers/sse"
 
 let capturedPayload: ResponsesPayload | undefined
 /** When true, the mock upstream emits a real event AFTER response.completed (to test the terminal-event break). */
@@ -511,15 +516,50 @@ describe("Responses WebSocket transport", () => {
     await shutdownPromise
   })
 
-  // NOTE (Stage B owns-sink settled-abort): the WS client-disconnect path (onClose →
-  // wsClientAborts.abort() → upstream teardown → settled-abort → ctx.abort) is NOT exercised
-  // here — a real client-initiated mid-stream `ws.close()` does not propagate to the server's
-  // onClose→settle chain within the bare-Hono + `Bun.serve` test harness (no existing WS test
-  // does a client-initiated mid-stream close either). The settled-abort OUTCOME mapping is
-  // covered: driver classification by `owns-sink-two-racer.unit.test.ts`, and the handler
-  // outcome→ctx.abort mapping by the HTTP formats' "owns-sink streaming client-abort" tests
-  // (chat-completions-v4 / responses-v4 / gemini-v4 / anthropic-v4). The WS H3 path (mid-stream
-  // shutdown → error frame + 1011) is covered by the test above.
+  test("owns-sink settled-abort: upstream client-abort mid-stream → entry aborted, no error frame, no close", async () => {
+    setModels({ object: "list", data: [mockModel("gpt-resp", { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+    // Forward response.created, then the upstream read surfaces a StreamClientAbortError.
+    // guardSseIterable re-throws a source rejection unchanged (stream.ts next() catch→`throw error`),
+    // so the driver classifies `client-abort` → `settled-abort`, exercising the WS handler's
+    // settled-abort branch (ctx.abort + ZERO further bytes, NO error frame, NO ws.close) — the
+    // OUTCOME→ctx mapping the NOTE below otherwise leaves correct-by-trace. This injects the
+    // equivalent client-abort error at the transport boundary, since a real client-initiated
+    // mid-stream ws.close() can't be driven in this harness (see NOTE).
+    const created = `event: response.created\ndata: ${JSON.stringify({
+      type: "response.created",
+      sequence_number: 0,
+      response: createBaseResponsesResponse("gpt-resp", "in_progress"),
+    })}\n\n`
+    applyFetchMock(mock(() => Promise.resolve(createSseResponseThenError([created], new StreamClientAbortError()))))
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const messages: Array<Record<string, unknown>> = []
+    ws.addEventListener("message", (event) => messages.push(JSON.parse(String(event.data)) as Record<string, unknown>))
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-resp", input: "hi" } }))
+
+    // settled-abort returns WITHOUT closing the socket (the real client is already gone), so there
+    // is no close event to await — poll the history entry to its terminal state instead.
+    let entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    for (let i = 0; i < 200 && entry?.state !== "aborted"; i++) {
+      await new Promise((r) => setTimeout(r, 10))
+      entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    }
+
+    expect(entry?.state).toBe("aborted")
+    // settled-abort writes nothing further: the client never receives an `error` frame.
+    expect(messages.some((m) => m.type === "error")).toBe(false)
+    ws.close()
+  })
+
+  // NOTE (Stage B owns-sink settled-abort): the test above exercises the WS handler's
+  // settled-abort OUTCOME→ctx.abort mapping by injecting a client-abort error at the transport
+  // boundary. The full CLIENT-INITIATED path (a real mid-stream `ws.close()` → onClose →
+  // wsClientAborts.abort() → upstream teardown → settled-abort) is still NOT driven here: a
+  // client-initiated mid-stream close does not propagate to the server's onClose→settle chain
+  // within the bare-Hono + `Bun.serve` test harness. That trigger is covered by the abort-bridge /
+  // connection-level mechanisms; the outcome mapping is now resident here.
 
   test("rejects new connections beyond maxClientWsConnections", async () => {
     setStateForTests({ maxClientWsConnections: 1 })

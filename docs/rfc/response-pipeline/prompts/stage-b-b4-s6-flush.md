@@ -1,5 +1,7 @@
 # Stage B — B4：流末 drain 收口进 driver S6 flush（收尾架构对称，非功能修复）
 
+> **🛑 已评估后驳回（2026-06-23）——不要执行本 kick-off。** B4-as-scoped + 升级版 finalize 重设计经 3 轮对抗 subagent review + 主线亲核判**过度设计 + 结构上不适配 WS**（`makeWsSink` 无 `writeSynthetic`/`close`、终态走 `sendErrorAndClose`+1011）；byte-critical 机器早已统一在 `client-sink.ts`、"S6 flush 镜像 S5 flushChain" 是假对称。最终落地 γ（保留流末 handler-side + 抽 `openAIStreamErrorFrame` 微 DRY + 修注释/文档）。**完整裁决见 [../finalize-stream-redesign.md](../finalize-stream-redesign.md)（EVALUATED-REJECTED）。** 以下原 kick-off 内容仅作历史记录。
+
 > **粘贴进新会话直接执行。** 这是 response-pipeline RFC **Stage B** 的最后一项收尾。Stage B 主体（全 5 格式 owns-sink）+ 统一 abort/H3 覆盖已全部落地（见下「已就绪」）；本步把各格式**仍在 handler-side 的流末 drain** 收口进 driver 的 `runResponseSink`，作「S6 flush 镜像 S5 flushChain」的阶段对称收尾。**这是纯架构收口、无功能缺陷**——当前 handler-side drain 是正确的、字节等价的；B4 只为让"流末交付"和"逐帧改写 flush"一样归 driver 所有，使 handler 进一步薄化。若评估后认为收益不抵 byte-critical 回归面，**可正当地不做**（带文档结论即可，见 §6）。
 >
 > 设计稿 [design.md](../design.md) §3.2/§3.3；master plan [stage-b-plan.md](../stage-b-plan.md) Task B4。
