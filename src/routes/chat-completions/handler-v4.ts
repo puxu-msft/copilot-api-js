@@ -56,7 +56,7 @@ import {
   accumulateOpenAIStreamEvent,
   createOpenAIStreamAccumulator,
 } from "~/lib/openai/stream-accumulator"
-import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
+import { openAIStreamErrorFrame } from "~/lib/openai/stream-error"
 import {
   //
   restoreChatCompletionsChunkToolNames,
@@ -362,10 +362,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     const error = outcome.error
     env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     consola.error("[ChatCompletions:v4] Stream error:", error)
-    await sink.writeSynthetic?.({
-      data: JSON.stringify({ error: { message: error instanceof Error ? error.message : String(error), type: streamErrorToOpenAIErrorType(error) } }),
-      event: "error",
-    })
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(error))
     return
   }
 
@@ -384,10 +381,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     const truncErr = new Error("Upstream stream truncated before completion (no finish_reason)")
     consola.error(`[ChatCompletions:v4] Upstream truncated for ${acc.model || model}: drained without a finish_reason`)
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
-    await sink.writeSynthetic?.({
-      event: "error",
-      data: JSON.stringify({ error: { message: truncErr.message, type: streamErrorToOpenAIErrorType(truncErr) } }),
-    })
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr))
     return
   }
   await sink.write({ data: "[DONE]" })

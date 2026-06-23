@@ -12,9 +12,10 @@
  * frames; `undefined` return skips empty/unparseable frames), samples the forwarded track
  * inside the sink (`onForwarded`), and after a clean drain handles the format-specific
  * finishing the codec/driver do NOT: the fallback closing-lifecycle flush (`codec.flushResponse`,
- * the CC→Responses translator's stream-end drain — deferred B4 moves it into the driver's S6
- * flush) and session registration (fallback eager pre-stream; direct post-loop via
- * `acc.responseId`). The stateful `fixStreamEventIds` (DIRECT only) runs in the driver's S5
+ * the CC→Responses translator's stream-end drain — kept handler-side; see
+ * docs/rfc/response-pipeline/finalize-stream-redesign.md for why the "move flush into the driver
+ * S6 flush" idea was evaluated and rejected) and session registration (fallback eager pre-stream;
+ * direct post-loop via `acc.responseId`). The stateful `fixStreamEventIds` (DIRECT only) runs in the driver's S5
  * response-rewrite registry (A.C), shared with the WS transport. The error frame is built
  * inline (raw upstream message) rather than via `codec.formatError` (P2.2-D4). Responses has
  * no `[DONE]` (it ends with `response.completed`) and no H2 (the accumulator tracks no
@@ -61,7 +62,7 @@ import {
   accumulateResponsesStreamEvent,
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
-import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
+import { openAIStreamErrorFrame } from "~/lib/openai/stream-error"
 import {
   //
   restoreResponsesOutputToolNames,
@@ -306,10 +307,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     const error = outcome.error
     env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     consola.error("[Responses:v4] Stream error:", error)
-    await sink.writeSynthetic?.({
-      event: "error",
-      data: JSON.stringify({ error: { message: error instanceof Error ? error.message : String(error), type: streamErrorToOpenAIErrorType(error) } }),
-    })
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(error))
     return
   }
 
@@ -319,7 +317,10 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // — the per-frame renderResponse has no stream-end hook (mirrors how CC synthesizes [DONE]).
     // Each closing frame goes through restoreAndAccumulate (response.completed sets responseId/usage)
     // + the sink (sampled). Not progress-counted (legacy `forwardFrame` drain did not count).
-    // (Deferred: B4 moves this drain into the driver's `finally` as an S6 flush mirroring S5 flushChain.)
+    // (Kept handler-side: the "move this into a driver S6 flush" idea was evaluated and rejected —
+    // the stream-end terminal handling is entangled with format-specific truncation detection +
+    // ctx settling, so a uniform driver flush is over-engineering. See
+    // docs/rfc/response-pipeline/finalize-stream-redesign.md.)
     for (const closing of codec.flushResponse(env)) {
       const out = restoreAndAccumulate(closing)
       if (out) await sink.write(out)
@@ -344,10 +345,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
     consola.error(`[Responses:v4] Upstream truncated for ${acc.model || model}: drained without a terminal response event`)
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
-    await sink.writeSynthetic?.({
-      event: "error",
-      data: JSON.stringify({ error: { message: truncErr.message, type: streamErrorToOpenAIErrorType(truncErr) } }),
-    })
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr))
     return
   }
 

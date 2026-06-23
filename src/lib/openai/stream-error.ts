@@ -6,7 +6,11 @@
  * shutdown / idle-timeout / other failure identically.
  */
 
-import type { StreamErrorKind } from "~/lib/stream"
+import type {
+  //
+  SseFrame,
+  StreamErrorKind,
+} from "~/lib/stream"
 
 import { classifyStreamError } from "~/lib/stream"
 
@@ -45,4 +49,21 @@ export function streamErrorKindToOpenAIErrorType(kind: StreamErrorKind): string 
  */
 export function streamErrorToOpenAIErrorType(error: unknown): string {
   return streamErrorKindToOpenAIErrorType(classifyStreamError(error))
+}
+
+/**
+ * Build the OpenAI-shaped SSE error frame for a streaming lifecycle error — used by BOTH the
+ * mid-stream throw (H3) and the clean-drain truncation paths of the Chat Completions + Responses
+ * (HTTP) handlers. Single source for the `{error:{message,type}}` frame shape so the four sites
+ * (CC H3 / CC truncation / Responses H3 / Responses truncation) cannot drift apart.
+ *
+ * The Responses-WS path does NOT use this — its error/truncation terminator is the transport-coupled
+ * `sendErrorAndClose` (1011 close), which cannot be modeled as a written frame — but it derives the
+ * same `type` via {@link streamErrorToOpenAIErrorType}, so the classification stays unified.
+ */
+export function openAIStreamErrorFrame(error: unknown): SseFrame {
+  return {
+    event: "error",
+    data: JSON.stringify({ error: { message: error instanceof Error ? error.message : String(error), type: streamErrorToOpenAIErrorType(error) } }),
+  }
 }
