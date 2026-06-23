@@ -2,7 +2,7 @@
 
 > copilot-api 请求历史查看器前端的 React 全面重构。本文是 brainstorm 阶段定稿的**权威设计规格**。chronological 决策草稿见同目录 [decisions.md](decisions.md)（已被本文 supersede，仅留档）。
 >
-> 状态：设计定稿、待用户复审 → 转 implementation plan。日期：2026-06-23。
+> 状态：设计定稿、**已过 3-subagent 对抗 review + 主会话逐条核验 + 3 项用户拍板**、待用户复审 → 转 implementation plan。日期：2026-06-23。review 修订追溯见 §12。
 
 ## 1. 目标与定位
 
@@ -27,16 +27,21 @@
 | server-state | **TanStack Query**（缓存/SWR/失效），WS 事件喂 Query cache |
 | client-state | **Zustand**（UI 偏好/过滤/tail 状态等） |
 | 实时 | 移植现有类式 **WSClient**（auto-reconnect 指数退避 + topic 订阅） |
-| JSON 查看器 | **@uiw/react-json-view**（主题化成 amber 工业调） |
+| JSON 查看器 | **可控渲染器**（CodeMirror 6 JSON + 可控 search/fold，或自建虚拟化树）——见下方修订说明，**不用** @uiw/react-json-view |
 | diff | **jsdiff**（叶子文本/词 diff）+ 自建按 role/帧类型领域对齐（逐字移植 `block-diff.ts`） |
 | 消息文本 | **纯文本 + 搜索高亮**默认，**逐块「原文 ↔ markdown 预览」可切换**（markdown 用 react-markdown + rehype，按需加载） |
-| 测试 | 镜像现有双系统：`bun test`（纯逻辑）+ Vitest + React Testing Library（组件，jsdom）+ Playwright（e2e-ui） |
+| 样式 | **Tailwind v4**（oxide/lightningcss 预编译 `.node`——按 `docs/DESIGN.md` 审计判据**显式认定为「构建工具预编译产物，仅构建期、不进 dist 运行时」豁免**，同 @rollup/@oxc 那批） |
+| 测试 | 镜像现有双系统 + e2e：`bun test`（纯逻辑：normalize/类型守卫/block-diff/utils）+ Vitest + React Testing Library（组件，jsdom）+ Playwright（e2e-ui）。**bun vs Vitest 选择规则**：无 DOM 纯逻辑→bun test；需挂载/交互→Vitest（镜像 `ui/CLAUDE.md` 的双系统判据，避免两边漂移） |
+
+> **JSON 查看器修订**：早先选 `@uiw/react-json-view`，但请求内搜索（§6）要在折叠/未渲染 JSON 子树里计数+高亮+跳转定位，该库**无法被外部搜索驱动**展开/定位。故 JSON 段改用**可控渲染器**（CodeMirror 6 JSON + 可控 search/fold，或自建虚拟化树），全段走统一数据模型搜索。`@uiw/react-json-view` 不采用。
 
 ### Workspace / 构建集成
 
 - ui-v4 = 新 bun workspace 成员（根 `workspaces:["ui","ui-v4"]`，单一根 `bun.lock`）。
-- 自有 `package.json`（FE 依赖与脚本）；别名 `@/*`→`ui-v4/src/*`、`~backend/*`→`../src/*`。
-- 后端**新增 `/ui-v4` 静态路由**挂 `ui-v4/dist`（与现有 `/ui` 并存，可部署并行构建）；开发期用 `--external-ui-url` 指向 vite dev。
+- 自有 `package.json`，**FE 库（jsdiff、react-markdown、CodeMirror 等）声明进 `ui-v4/package.json`**（不放根——现有 `diff` 错放在根 package.json 是既有不一致，不照搬；是否迁回 ui workspace 属 ui/ 范围、需另行授权）。
+- 别名三条（**`~/*` 不可漏**，因后端源码内部用 `~/*` 自引用，ui-v4 跨引用后端源码时必须能解析）：`@/*`→`ui-v4/src/*`、`~backend/*`→`../src/*`、`~/*`→`../src/*`。vite.config + tsconfig 都要配。
+- 后端**新增 `/ui-v4` 静态路由**挂 `ui-v4/dist`（与 `/ui` 并存，可部署并行构建）；开发期 `--external-ui-url` 指向 vite dev。
+- **WSClient React 生命周期**：类式 WSClient 提为**React 树外的模块单例 + 引用计数 connect/disconnect**，而非每个 hook 实例一个连接——规避 StrictMode 开发期 effect 双挂载（connect→disconnect→connect 竞态）与 HMR 连接泄漏。
 
 ### 后端契约
 
@@ -58,23 +63,41 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 - 选中请求 ID 编码进 URL：`/requests/:id` = 唯一深链（复制 / 新标签页 / 书签），与旧 `/activity/:id` 等价。
 - 过滤/搜索序列化进 query（`?model=opus&q=...`）。
 - **详情按 ID 独立 `fetchEntry(id)`**，不依赖该行是否在当前已加载列表窗口 → 被实时流滚出也能完整深链显示。
+  - 实证 `src/lib/history/queries.ts:64` `getEntry = getInFlight(id) ?? getEntryById(id)`：**在飞请求 GET `/entries/:id` 返回 in-flight 全量数据（非 404）**，已持久化条目走 SQLite。边界：reaper 已淘汰/已删的 id → 404，前端需处理"条目已不存在"态。
 
-### 4.2 列表稳定性（解决「在飞破坏分页 / 新请求涌入致选不中」）
+### 4.2 列表稳定性（解决「新请求涌入致选不中 / 深分页新条目丢失 / 终态抖动」）
 
-根因：旧版把「在飞请求（WS active 事件、内存、无游标锚点）」与「已完成条目（SQLite 游标分页）」混进一个列表。修复 = 尊重后端已有的数据分离，前端分两条数据源。
+**修正起点**（review 核实）：现有 `ui/src/pages/vuetify/VActivityPage.vue:116-128` **已有独立 In-flight section**（`inflightRows`，来自 dashboard WS active 流，按 `historyIds` 去重）——所以"在飞与已完成混在一个列表"**不是真实债**。真实未解决债是：
 
-1. **Live 泳道**：独立、常驻、固定高度、内部独立滚动；只放在飞请求；始终显示（空时空态）、不可折叠、不因空消失；完成后离开本泳道进 History；**永不参与游标分页**。
-2. **缓冲 + "N 条新"横幅**：新完成条目先缓冲，交互时列表冻结不跳；点横幅/滚到顶才合入。
+- `useHistoryWS.ts` 仅在 `prevCursor===null`（列表在顶部）时 prepend 新条目 → 用户向下翻页时新完成条目**静默丢失**。
+- active→completed 瞬间，active 流与 history WS 两路各自更新 → **去重抖动**。
+- 失败终态（`failed`/`aborted`/`interrupted`，见 `src/lib/history/types.ts:31` 七态）如何离开 Live 泳道**未定义**。
+- 注：后端 `/entries` 游标 API 本身经 `getHistorySummaries`（`queries.ts:112-116`）**已 merge 在飞 + 持久化并按 id 去重**——前端若想"Live 泳道只放在飞、History 永不含在飞"，需显式按 `state` 过滤（当前 handler 暴露 `?state=` 精确单值，但**无 active/非active 二分过滤**，见 §7 端点改动）。
+
+三件套（client-state，归 **Zustand**，不塞 Query cache）：
+
+1. **Live 泳道**：独立、常驻、固定高度、内部独立滚动；只放在飞请求（WS `active_request_changed` 流）；始终显示（空时空态）、不可折叠、不因空消失；**七态终结后离开本泳道**——`completed` 进 History 并正常着色，`failed`/`aborted`/`interrupted` 也离场并标红（带 terminal reason）；**永不参与游标分页**。
+2. **缓冲 + "N 条新"横幅**：新完成条目先缓冲，交互时列表冻结不跳；点横幅/滚到顶才合入（同时修上面的 prepend-gap 与去重抖动）。
 3. **选中按 ID 粘滞**：选中是 ID 不是位置；列表重排/涌入都不偷走目标。
 4. **tail**：默认 tail-on；选中某行**或**向上滚动 → 自动切 paused（列表冻结）；一键 ▶ 恢复。
 
 ### 4.3 详情面板（C · 混合 sticky sub-rail 分段）
 
-- 顶部诊断摘要条常驻（status / model / ↑bytes / 时长 / attempts / tokens / cost）。
-- 左侧 sticky 迷你 rail 跳转分段：**Convo / Stages / Headers / SSE / Attempts / Meta**，各段懒加载 + 独立滚动（解决「DetailPanel 过大」债）。
-- **Stages 段单屏并排** Inbound│Effective│Wire 直接对比（免来回切标签）——保留 v4 的 7 阶段「腿」模型：Inbound / Effective / Wire(per-attempt) / Upstream(raw sse) / Forwarded / Meta / Attempts。
+- **诊断摘要条常驻**：status / model / ↑bytes / 时长 / attempts / tokens（含 cache token）/ cost / **terminal reason**（client disconnected / process N died——一眼看失败原因，源 `DiagnosticSummary.vue:18-22`）。
+- 左侧 sticky 迷你 rail 跳转分段，各段懒加载 + 独立滚动（解决「DetailPanel 过大」债）。**分段需完整覆盖现有 7 腿 + 横切诊断**（review 核实现有 `ui/src/components/detail/` 全量能力，逐一归位，不得丢失）：
+
+  | 分段 | 内容（覆盖现有腿/组件） |
+  |---|---|
+  | **Convo** | 渲染后对话（请求侧消息）；含 **inbound↔effective 消息级 rewrite diff**——`MessageBlock` 的 modified/rewritten badge + `↔ effective` 跳转 + 「diff」开富 modal（`MessageBlock.vue:119,202-221`、`MessageDiffView.vue`） |
+  | **Request stages** | Inbound│Effective│Wire **请求侧三腿单屏并排对比**（per-attempt wire）+ 每腿顶部 headers（见 Headers 段） |
+  | **Response** | Upstream（上游原始响应：headers + 解析块 + upstream SSE）与 Forwarded（客户端实收）；含 **`SseFrameDiff`：forwarded vs upstream 帧按类型对齐 diff**（same/modified/dropped/added，`SseFrameDiff.vue`)——现有最核心的流式诊断，**必须保留** |
+  | **Headers** | 四腿对比（inboundRequest / outboundRequest / outboundResponse / inboundResponse），request 两腿做 **Client→Proxy vs Proxy→Upstream 并排 diff 高亮**（`HeadersComparisonSection.vue:45-52`）。**注**：现有 headers 是内嵌在每个 stage 顶部；本段集中呈现四腿对比表，stage 内保留指向本段的锚 |
+  | **Attempts** | per-attempt 时间线 + per-attempt wire payload 消息级 diff（`AttemptsTimeline.vue`、`AttemptDiff.vue`） |
+  | **Meta** | queueWaitMs / transport / currentStrategy / stop_reason / warningMessages / pipelineInfo（truncation/preprocessing/sanitization 计数）/ repetition 诊断 / truncation divider（`MetaInfo.vue:238-340`、`TruncationDivider.vue`） |
+
+- **7 腿映射**：请求侧 Inbound/Effective/Wire→Request stages 段；响应侧 Upstream/Forwarded→Response 段（含帧 diff）；横切 Meta→Meta 段、Attempts→Attempts 段。**SSE 是两套数据**（`entry.sseEvents` 上游原始 + `entry.inboundResponse.sseEvents` 客户端实收）+ 二者 diff，归 Response 段。
 - 窄屏退化成横向标签式（见 §8）。
-- 待定子项：阶段间 diff 默认并排 vs 按需开（取决于 diff 高频程度）。
+- 待定子项：Request stages 段间 diff 默认并排 vs 按需开（取决于 diff 高频程度）。
 
 ## 5. Sessions + Agent
 
@@ -83,21 +106,23 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 - `sessionId` ← header `x-claude-code-session-id`（每会话稳定 UUID）。
 - `agentId` ← header `x-claude-code-agent-id`（每 subagent 一个**不透明 id**；main agent 不发此 header，undefined = main）。
 - **header 不含 subagent 种类名**；语义名仅能从 payload（Task `subagent_type`）尽力推断 → 后续增强、非 v1 承诺。
-- `/entries` **已支持** `?sessionId=` 与 `?agentId=` 过滤。
+- `/entries` 底层 `read.ts` **支持** `?sessionId=` 与 `?agentId=`/`mainAgentOnly` 过滤，**但 HTTP `handler.ts:23-36` 当前只接线 `sessionId`、未读 `agentId`**（review 核实）→ 「按 agent 查看 requests」需**补 handler 接线**（非"已就绪"）。
 
 设计：
 
 - 新增顶级 **Sessions** 页：session 列表，每行聚合 client / #req / #agents / tokens / cost / 时长 / 状态分布 sparkline。
 - **Session 详情**：agent 树 + 请求时间线（行=agent[main + subagents]，块=请求，颜色=结果，点块→打开 C 详情）。可按 agent 折叠/筛选；整 session 一键删除（已有 `deleteSession` + `DELETE /api/sessions/:id`）。
-- **按 agent 查看 requests**：Requests 工作台加「Group by: None / Session / Agent」开关 + agentId 过滤（后端过滤已就绪）。是否再升格独立 Agents 顶级页 = 视实现时需要（默认以分组/过滤满足）。
+- **按 agent 查看 requests**：Requests 工作台加「Group by: None / Session / Agent」开关 + agentId 过滤（**需补 HTTP handler 接线**，见 §7）。是否再升格独立 Agents 顶级页 = 视实现时需要（默认以分组/过滤满足）。
 
 ## 6. 两级搜索
 
 - **全局搜索**（顶栏，⌘K 或点击）：跨历史**定位**请求，后端 trigram FTS5 子串搜索。
-- **请求内搜索**（详情内，聚焦详情时 Ctrl/Cmd-F，Esc 关）：限定当前请求。
+- **请求内搜索**（详情内，聚焦详情时 Ctrl/Cmd-F，Esc 关）：限定当前请求。**⚠ 这是全新高难度工程、非"移植"**——现有内搜索仅一个 ref 字符串 + DOM/v-html 高亮、只覆盖 3 个 stage、无虚拟化/regex/badge（review 核实 `formatters.ts:39-45`、`DetailPanel.vue:104-118`）。作为**高风险新功能单列 plan 阶段**。
   - **作用于底层数据模型**（全段源数据），非已渲染 DOM。
-  - 折叠/未懒加载段的匹配照常计数；sub-rail 每段显示命中数 badge；跳转（n/N、↑↓）时自动展开/加载该段并定位，当前匹配高亮加深。
+  - 折叠/未懒加载段的匹配照常计数；sub-rail 每段显示命中数 badge；跳转（n/N、↑↓）时自动展开/加载该段并滚动定位，当前匹配高亮加深。
   - **全功能**：regex / 大小写(Aa) / 整词 + 匹配总数 + 上/下一处导航。
+  - **JSON 段（已决）**：用**可控渲染器**（CodeMirror 6 / 自建虚拟化树）渲染 wire/forwarded/tool-input JSON，使搜索能在折叠/未渲染子树里计数+高亮+展开定位（`@uiw/react-json-view` 因无法被外部驱动而不采用，见 §2）。
+  - **已知难点**（plan 须显式处理）：虚拟化列表 + scrollToIndex 与匹配索引映射、懒加载段先加载再等布局稳定再滚的异步编排、SSE/diff 段内匹配定位。
 - 只做单请求内搜索；session 级用「全局搜索 + sessionId 过滤」覆盖。
 
 ## 7. 其他页面
@@ -106,6 +131,7 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 
 - **留**（实时/运维可执行/依赖代理自身状态）：In-flight 数 + 实时活动、Rate limiter 状态 + queue、Quota/token source/过期、Upstream/WS 健康、近期 outcomes 一瞥、Memory pressure。
 - **→ Grafana**（消费 `/metrics`）：历史请求量/token/cost 趋势、跨窗口深度维度 breakdown。Overview 放"打开 Grafana ↗"入口。
+- **成本口径**（已决持久化 multiplier）：per-session/per-entry cost 用**请求时定价**（entries_v2 持久 multiplier × token 列）；聚合窗口 cost（sinceStart/7d）仍可经 `/api/stats` telemetry registry。两者口径一致、不再有"单条无成本源"缺口。
 
 ### Models
 
@@ -115,11 +141,15 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 
 **默认进 raw YAML 页**（整体编辑），**可切回结构化分组表单**（与现有相反）。结构化表单：左侧 section 导航 + 字段控件 + 校验高亮；保存走 `PUT /api/config/yaml`。
 
-### 新增后端 HTTP API（已同意，只读、改动小）
+### 新增/改动后端
 
-- `GET /history/api/sessions` —— **新增**：session 摘要聚合列表（client / req 数 / agent 数 / token / cost / 时间跨度 / 状态分布），支持分页/排序。
-- （可选）`GET /history/api/agents` —— 跨 session agent 运行聚合，仅当决定做独立 Agents 顶级页才需要。
-- 既有 `/entries?sessionId=&agentId=` 过滤复用。
+> **本轮焦点 = UI 基础设施 + 全面可用。成本相关的持久化暂缓**（用户定，2026-06-23）：下列 ① 的 `multiplier`/`client` 列与成本口径**本轮不做、不阻塞 UI**；Sessions/详情的 cost 列先留位（显示 `—` 或读时近似），待后续单独成轮。本轮后端只做让 UI 可用的最小项（② sessions 聚合除 cost 外、③ agentId 接线）。
+
+1. **（暂缓，非本轮）entries_v2 新增持久化列** `multiplier`/`client` + 写路径（serialize/write）——成本历史保真用；本轮 cost 列留位。
+2. **`GET /history/api/sessions`**（新增只读聚合，本轮做）：session 摘要——`#req` / `#agents`(COUNT DISTINCT agent_id) / tokens(SUM) / 时间跨度 / 状态分布 / client（本轮 client 可读单条 entry blob 近似，免新列）。**cost 字段本轮留空/省略**。entries-derived（参 `stats.ts`）。
+3. **`/entries` HTTP handler 补 `agentId`/`mainAgentOnly` 接线**（本轮做，`handler.ts:23-36` 当前缺）+ 视需要 active/非active 二分过滤（支撑 Live 泳道与 History 切分）。
+4. **（可选）`GET /history/api/agents`**：跨 session agent 聚合，仅当做独立 Agents 顶级页才需要。
+5. **类型 single-source**：新增 `SessionSummary` 等类型在后端 `src/lib/history/` 定义、经 `store.ts` barrel 导出，前端 `~backend/*` re-export。
 
 ## 8. 视觉方向 —— 工业风（A · Terminal Amber）
 
@@ -138,23 +168,52 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 ## 9. 内容渲染管线（移植）
 
 ```
-DetailPanel → 段(Convo) → MessageBlock → ContentRenderer
-  → TextBlock / ThinkingBlock / ToolUseBlock / ToolResultBlock / ImageBlock / DiffView / GenericBlock
+DetailPanel → 段(Convo / Response) → MessageBlock → ContentRenderer
+  → TextBlock / ThinkingBlock / RedactedThinkingBlock / ToolUseBlock / ToolResultBlock / ImageBlock / DiffView / GenericBlock
+SystemMessage（独立支路，不走 ContentRenderer）→ system-reminder 标签解析 + original↔rewritten 切换 + SideBySideView
 ```
 
 - 纯逻辑层（`normalizeToContentBlocks()` 统一 Anthropic + OpenAI 双格式、类型守卫、`block-diff.ts` via jsdiff）**逐字移植成 TS**。
 - Vue SFC 块组件 → React 组件，包在 React **ErrorBoundary**；ContentRenderer 按 `content.type` 纯分发。
+- **8 种块类型**（review 核实 `ContentRenderer.vue:71-100`，含 `redacted_thinking`——勿漏，否则加密 thinking 掉进 GenericBlock 降级）。
+- **system prompt 走独立 `SystemMessage` 组件**（不经 ContentRenderer）：保留 system-reminder/ide_opened_file 等标签解析过滤 + original↔rewritten diff 切换。
+- 不仅 Convo 段，**Response 段的 upstream 解析响应块**也复用同一 MessageBlock/ContentRenderer 管线。
 - OpenAI `tool_calls` → 虚拟 `tool_use` 块（与现有一致）。
 
 ## 10. 已知债顺带修复
 
 - HTTP 客户端错误处理统一（TanStack Query 统一失败/重试语义）。
-- WSClient 重连改指数退避 + jitter（移植时落实）。
 - DetailPanel 过大 → C 布局分段懒加载天然拆分。
+- 列表实时更新真实债（§4.2）：`useHistoryWS` prepend-gap（仅 `prevCursor===null`）+ active→completed 去重抖动 + 失败终态离场。
+- **勘误**：现有 WSClient（`ui/src/api/ws.ts:186-196`）**已是**指数退避 1s→30s + ±25% jitter——`ui/CLAUDE.md:180` 列的「固定延迟需改」是**假债**（与源码及自身 :157 行矛盾）。移植时**不需要**"改退避"，仅需正确处理 React 生命周期（§2）。同步纠正 `ui/CLAUDE.md` 此条。
 
 ## 11. 待定子项（实现期定夺，不阻塞）
 
-- 详情 Stages 段间 diff：默认并排 vs 按需开。
+- 详情 Request stages 段间 diff：默认并排 vs 按需开。
 - brand 区是否放实时全局指标（倾向极简，指标放 Overview）。
 - 是否升格独立 Agents 顶级页（默认以分组/过滤满足）。
 - grotesque sans 具体字族。
+- JSON 段可控渲染器具体选型（CodeMirror 6 JSON vs 自建虚拟化树）——实现期评测搜索集成成本后定。
+- **成本持久化（multiplier/client 列 + 写路径 + cost 口径）整体暂缓**——非本轮焦点（用户定 2026-06-23），本轮 UI cost 列留位，待后续单独成轮。
+
+## 12. Review 核实与修订追溯
+
+3 个 general-purpose subagent 按本项目裁判轴（长远正确 + 完整，非 ROI/YAGNI）并行审：后端契约保真 / 领域保真 / React 栈可行。主会话逐条读引用 `file:line` 核验，结论：
+
+**已核实属实并修订进 spec：**
+- §5/§7 `agentId` HTTP 过滤"已就绪"为假——`handler.ts:23-36` 未接线，改为"需补接线"。
+- §4.2 根因表述错——现有 `VActivityPage.vue:116-128` 已分离 in-flight 泳道；改为真实债（prepend-gap + 去重抖动 + 失败终态离场）。
+- §4.3 把 7 腿降成"请求 3 腿并排"——补齐响应侧 Upstream/Forwarded、`SseFrameDiff`（forwarded vs upstream 帧 diff）、`HeadersComparisonSection` 四腿对比、消息级 inbound↔effective rewrite diff、terminal reason 的分段归位。
+- §9 漏 `redacted_thinking`（实为 8 类）+ SystemMessage 独立支路——补全。
+- §6 请求内搜索系全新工程非"移植"+ JSON viewer 无法外部驱动——重标为高风险新功能、JSON 段改可控渲染器。
+- §10 "WSClient 改退避"系假债（源码 `ws.ts:186-196` 已退避+jitter）——删除、改为 React 生命周期处理 + 同步纠正 `ui/CLAUDE.md`。
+- §2 补 `~/*` 传递别名、WSClient 模块单例+引用计数、Live 泳道归 Zustand（不塞 Query cache）、FE 依赖声明进 ui-v4/package.json。
+
+**主会话纠正 reviewer 夸大：**
+- reviewer 称"per-session cost 不可重算"——核验后 cost = Σ(token 列 × multiplier(model))，model 已存、multiplier 是 per-model，**可重算**。仅"当前定价 vs 历史定价"取舍。用户已决**写时持久化 multiplier**（历史保真）。
+
+**用户拍板 3 决策：** ① cost = 写时持久化 multiplier；② JSON 段用可控渲染器；③ Tailwind v4（native 二进制按审计判据豁免）。
+
+**bun-first 实测：** subagent `find node_modules -name binding.gyp` 为空，选型全过；唯一需显式认定的是 Tailwind v4 的 oxide/lightningcss 预编译 `.node`（同 @rollup/@oxc 构建工具豁免，§2 已记）。
+
+**范围影响：** 本轮焦点 = **UI 基础设施 + 全面可用**（用户定 2026-06-23）。后端只做让 UI 可用的最小项（sessions 聚合〔除 cost〕+ agentId 接线）；**成本持久化（multiplier/client 列 + 写路径）整体暂缓、不阻塞本轮**，cost 列先留位。

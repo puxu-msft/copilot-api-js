@@ -177,5 +177,5 @@ DetailPanel → SectionBlock → MessageBlock → ContentRenderer
 ### 需要改进
 
 1. **HTTP 客户端错误处理不一致**：`http.ts` 部分函数 try-catch 后静默返回空数组，部分直接抛出。应统一策略。
-2. **WSClient 重连逻辑**：固定延迟值，应改为指数退避 + jitter。
+2. **~~WSClient 重连逻辑~~**（勘误：非真实债）：`api/ws.ts` 的 `scheduleReconnect` 实际**已是**指数退避（1s→30s）+ ±25% jitter；本条原述"固定延迟值"与源码及上文 §157 矛盾，作废。
 3. **DetailPanel 过大**：~200 行模板，应将请求/响应区域提取为子组件。
