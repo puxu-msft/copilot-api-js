@@ -1,0 +1,35 @@
+{
+  "name": "copilot-api-ui-v4",
+  "version": "0.0.0",
+  "description": "Request inspector UI for copilot-api (React + Tailwind v4 + Vite).",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun run test:bun && bun run test:vitest",
+    "test:bun": "bun test .bun.test",
+    "test:vitest": "vitest run"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.62.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
+    "tailwindcss": "^4.0.0",
+    "vite": "^7.0.0",
+    "vitest": "^4.0.0"
+  }
+}

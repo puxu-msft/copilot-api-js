@@ -30,14 +30,17 @@
     "config.example.yaml"
   ],
   "workspaces": [
-    "ui"
+    "ui",
+    "ui-v4"
   ],
   "scripts": {
     "build": "npm run build:ui && npm run build:backend",
     "build:backend": "npx tsdown",
     "build:ui": "bun run --filter copilot-api-ui build",
+    "build:ui-v4": "bun run --filter copilot-api-ui-v4 build",
     "dev": "bun run --watch ./src/main.ts",
     "dev:ui": "bun run --filter copilot-api-ui dev",
+    "dev:ui-v4": "bun run --filter copilot-api-ui-v4 dev",
     "generate:config-schema": "bun run scripts/generate-config-json-schema.ts",
     "knip": "knip-bun",
     "lint": "eslint --cache",
@@ -61,16 +64,18 @@
     "test:e2e-ui": "bunx playwright test",
     "test:e2e-ui:local": "PLAYWRIGHT_BASE_URL=http://localhost:4141 bunx playwright test",
     "test:ui": "bun run --filter copilot-api-ui test",
+    "test:ui-v4": "bun run --filter copilot-api-ui-v4 test",
     "test:ui:bun": "bun run --filter copilot-api-ui test:bun",
     "test:ui:vitest": "bun run --filter copilot-api-ui test:vitest",
     "typecheck": "tsc && tsc --noEmit --project tests/e2e-ui/tsconfig.json",
-    "typecheck:ui": "bun run --filter copilot-api-ui typecheck"
+    "typecheck:ui": "bun run --filter copilot-api-ui typecheck",
+    "typecheck:ui-v4": "bun run --filter copilot-api-ui-v4 typecheck"
   },
   "simple-git-hooks": {
     "pre-commit": "bun x lint-staged"
   },
   "lint-staged": {
-    "*.{ts,js,mjs,cjs,vue}": "bun run lint"
+    "*.{ts,tsx,js,jsx,mjs,cjs,vue}": "bun run lint"
   },
   "dependencies": {
     "@google/genai": "^2.9.0",

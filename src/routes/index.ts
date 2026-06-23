@@ -37,10 +37,19 @@ import {
 } from "./ui/route"
 
 /**
+ * Options for HTTP route registration. Carries the static-UI mount config for
+ * the default `/ui` (legacy) plus the parallel `/ui-v4` mount.
+ */
+export interface RegisterHttpRoutesOptions extends UiRoutesOptions {
+  /** External UI URL for the `/ui-v4` mount (vite dev proxy mode). */
+  externalUiV4Url?: string
+}
+
+/**
  * Register all HTTP routes on the given Hono app.
  */
 
-export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
+export function registerHttpRoutes(app: Hono, options: RegisterHttpRoutesOptions = {}) {
   // OpenAI-compatible endpoints
   app.route("/chat/completions", chatCompletionRoutes)
   app.route("/models", modelsRoutes)
@@ -85,7 +94,8 @@ export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
 
   // History API and standalone Web UI entry
   app.route("/history", historyRoutes)
-  app.route("/ui", createUiRoutes(options))
+  app.route("/ui", createUiRoutes({ externalUiUrl: options.externalUiUrl }))
+  app.route("/ui-v4", createUiRoutes({ mountPrefix: "/ui-v4", uiWorkspace: "ui-v4", externalUiUrl: options.externalUiV4Url }))
 
   // Prometheus text-exposition endpoint (operational stats bridge).
   app.route("/metrics", metricsRoutes)

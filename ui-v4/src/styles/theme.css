@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+/* 工业风 Terminal Amber —— 全局 token(spec §8)。锐角/暖近黑/amber 主色/信号色。 */
+@theme {
+  --radius-none: 0px;
+  --color-bg: #141210;
+  --color-surface: #16161a;
+  --color-border: #2a2a32;
+  --color-text: #d8cdbb;
+  --color-muted: #8a7a55;
+  --color-primary: #d4a04a;
+  --color-ok: #7fd99a;
+  --color-warn: #d4a04a;
+  --color-fail: #e08a8a;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+:root { color-scheme: dark; }
+
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+}
+
+/* 工业骨架：全局锐角、左对齐(不居中) */
+*, *::before, *::after { border-radius: 0 !important; box-sizing: border-box; }
+.mono { font-family: var(--font-mono); }

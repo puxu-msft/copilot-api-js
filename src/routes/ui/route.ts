@@ -18,9 +18,12 @@ import { getMimeType } from "../history/assets"
 
 export interface UiRoutesOptions {
   externalUiUrl?: string
+  /** Mount prefix, default "/ui". ui-v4 passes "/ui-v4". */
+  mountPrefix?: string
+  /** dist subdir under the workspace, default "ui". ui-v4 passes "ui-v4". */
+  uiWorkspace?: string
 }
 
-const UI_MOUNT_PREFIX = "/ui"
 const TEXT_RESPONSE_TYPES = ["text/html", "text/css", "text/javascript", "application/javascript", "application/x-javascript"]
 const JAVASCRIPT_RESPONSE_TYPES = ["text/javascript", "application/javascript", "application/x-javascript"]
 const VITE_DEV_PATH_PREFIXES = ["/@vite", "/@fs/", "/@id/", "/src/", "/node_modules/", "/__vite_ping", "/__open-in-editor", "/vite.svg"]
@@ -30,12 +33,10 @@ const VITE_DEV_PATH_PREFIXES = ["/@vite", "/@fs/", "/@id/", "/src/", "/node_modu
  * In dev mode this file lives at src/routes/ui/ — 3 levels below project root.
  * In bundled mode (dist/main.mjs) — 1 level below project root.
  */
-function resolveUiDir(subpath: string): string {
-  const candidates = [join(import.meta.dirname, "../../..", "ui", subpath), join(import.meta.dirname, "..", "ui", subpath)]
+function resolveUiDir(workspace: string, subpath: string): string {
+  const candidates = [join(import.meta.dirname, "../../..", workspace, subpath), join(import.meta.dirname, "..", workspace, subpath)]
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
 }
-
-const uiDir = resolveUiDir("dist")
 
 function stripTrailingSlash(pathname: string): string {
   return pathname !== "/" ? pathname.replace(/\/+$/, "") : pathname
@@ -67,12 +68,12 @@ function joinUrlPath(basePathname: string, requestPathname: string): string {
   return `${normalizedBase}${normalizedRequest}`
 }
 
-function stripUiMountPrefix(pathname: string): string {
-  if (pathname === UI_MOUNT_PREFIX) {
+function stripUiMountPrefix(pathname: string, mountPrefix: string): string {
+  if (pathname === mountPrefix) {
     return "/"
   }
-  if (pathname.startsWith(`${UI_MOUNT_PREFIX}/`)) {
-    return pathname.slice(UI_MOUNT_PREFIX.length)
+  if (pathname.startsWith(`${mountPrefix}/`)) {
+    return pathname.slice(mountPrefix.length)
   }
   return pathname
 }
@@ -85,8 +86,8 @@ function isJavaScriptResponse(contentType: string | null): boolean {
   return JAVASCRIPT_RESPONSE_TYPES.some((value) => contentType?.includes(value))
 }
 
-function rewriteBaseUrlLiteral(content: string): string {
-  return content.replaceAll(/("BASE_URL"\s*:\s*")\/(")/g, `$1${UI_MOUNT_PREFIX}/$2`)
+function rewriteBaseUrlLiteral(content: string, mountPrefix: string): string {
+  return content.replaceAll(/("BASE_URL"\s*:\s*")\/(")/g, `$1${mountPrefix}/$2`)
 }
 
 function rewriteQuotedPathPrefixes(content: string, fromPrefix: string, toPrefix: string): string {
@@ -99,15 +100,15 @@ function rewriteParenthesizedPathPrefixes(content: string, fromPrefix: string, t
   return content.replace(parenthesizedPattern, `$1${toPrefix}`)
 }
 
-function rewriteProxyTextResponse(content: string, externalUiUrl: string, contentType: string | null): string {
+function rewriteProxyTextResponse(content: string, externalUiUrl: string, contentType: string | null, mountPrefix: string): string {
   const externalBase = new URL(externalUiUrl)
   const externalBasePath = stripTrailingSlash(externalBase.pathname)
-  const rewrittenBase = rewriteBaseUrlLiteral(content)
+  const rewrittenBase = rewriteBaseUrlLiteral(content, mountPrefix)
   const rewriteBareParenthesizedPaths = !isJavaScriptResponse(contentType)
 
   return VITE_DEV_PATH_PREFIXES.reduce((current, vitePathPrefix) => {
     const externalPathPrefix = externalBasePath === "/" ? vitePathPrefix : `${externalBasePath}${vitePathPrefix}`
-    const localPathPrefix = `${UI_MOUNT_PREFIX}${vitePathPrefix}`
+    const localPathPrefix = `${mountPrefix}${vitePathPrefix}`
     const absoluteExternalPrefix = `${externalBase.origin}${externalPathPrefix}`
     const rewrittenQuotedAbsolute = rewriteQuotedPathPrefixes(current, absoluteExternalPrefix, localPathPrefix)
     const rewrittenQuotedRelative = rewriteQuotedPathPrefixes(rewrittenQuotedAbsolute, externalPathPrefix, localPathPrefix)
@@ -121,7 +122,7 @@ function rewriteProxyTextResponse(content: string, externalUiUrl: string, conten
   }, rewrittenBase)
 }
 
-function rewriteLocationHeader(location: string, externalUiUrl: string): string {
+function rewriteLocationHeader(location: string, externalUiUrl: string, mountPrefix: string): string {
   const externalBase = new URL(externalUiUrl)
   const resolvedLocation = new URL(location, externalBase)
   const isSameOrigin = resolvedLocation.origin === externalBase.origin
@@ -133,7 +134,7 @@ function rewriteLocationHeader(location: string, externalUiUrl: string): string 
   const externalBasePath = stripTrailingSlash(externalBase.pathname)
   const localPathname = computeLocalPathname(externalBasePath, resolvedLocation.pathname)
 
-  return `${UI_MOUNT_PREFIX}${localPathname}${resolvedLocation.search}${resolvedLocation.hash}`
+  return `${mountPrefix}${localPathname}${resolvedLocation.search}${resolvedLocation.hash}`
 }
 
 export function normalizeExternalUiUrl(externalUiUrl: string): string {
@@ -150,7 +151,7 @@ export function normalizeExternalUiUrl(externalUiUrl: string): string {
   return `${url.origin}${normalizedPathname === "/" ? "" : normalizedPathname}`
 }
 
-async function serveIndexHtml(c: Context) {
+async function serveIndexHtml(c: Context, uiDir: string) {
   try {
     await access(join(uiDir, "index.html"), constants.R_OK)
     const content = await readFile(join(uiDir, "index.html"), "utf8")
@@ -160,7 +161,7 @@ async function serveIndexHtml(c: Context) {
   }
 }
 
-async function serveStaticAsset(c: Context) {
+async function serveStaticAsset(c: Context, uiDir: string) {
   const assetsIdx = c.req.path.indexOf("/assets/")
   if (assetsIdx === -1) return c.notFound()
 
@@ -182,11 +183,11 @@ async function serveStaticAsset(c: Context) {
   }
 }
 
-async function proxyExternalUiRequest(c: Context, externalUiUrl: string) {
+async function proxyExternalUiRequest(c: Context, externalUiUrl: string, mountPrefix: string) {
   const requestUrl = new URL(c.req.url)
   const externalBase = new URL(externalUiUrl)
   const upstreamUrl = new URL(externalBase)
-  upstreamUrl.pathname = joinUrlPath(externalBase.pathname, stripUiMountPrefix(c.req.path))
+  upstreamUrl.pathname = joinUrlPath(externalBase.pathname, stripUiMountPrefix(c.req.path, mountPrefix))
   upstreamUrl.search = requestUrl.search
 
   const requestHeaders = new Headers(c.req.raw.headers)
@@ -205,13 +206,13 @@ async function proxyExternalUiRequest(c: Context, externalUiUrl: string) {
   const responseHeaders = new Headers(upstreamResponse.headers)
   const location = responseHeaders.get("location")
   if (location) {
-    responseHeaders.set("location", rewriteLocationHeader(location, externalUiUrl))
+    responseHeaders.set("location", rewriteLocationHeader(location, externalUiUrl, mountPrefix))
   }
 
   if (isTextResponse(responseHeaders.get("content-type"))) {
     const content = await upstreamResponse.text()
     const contentType = responseHeaders.get("content-type")
-    const rewritten = rewriteProxyTextResponse(content, externalUiUrl, contentType)
+    const rewritten = rewriteProxyTextResponse(content, externalUiUrl, contentType, mountPrefix)
     responseHeaders.delete("content-length")
     return new Response(rewritten, {
       status: upstreamResponse.status,
@@ -229,15 +230,17 @@ async function proxyExternalUiRequest(c: Context, externalUiUrl: string) {
 
 export function createUiRoutes(options: UiRoutesOptions = {}): Hono {
   const uiRoutes = new Hono()
+  const mountPrefix = options.mountPrefix ?? "/ui"
+  const uiDir = resolveUiDir(options.uiWorkspace ?? "ui", "dist")
 
   if (options.externalUiUrl) {
     const normalizedExternalUiUrl = normalizeExternalUiUrl(options.externalUiUrl)
-    uiRoutes.all("/", (c) => proxyExternalUiRequest(c, normalizedExternalUiUrl))
-    uiRoutes.all("/*", (c) => proxyExternalUiRequest(c, normalizedExternalUiUrl))
+    uiRoutes.all("/", (c) => proxyExternalUiRequest(c, normalizedExternalUiUrl, mountPrefix))
+    uiRoutes.all("/*", (c) => proxyExternalUiRequest(c, normalizedExternalUiUrl, mountPrefix))
     return uiRoutes
   }
 
-  uiRoutes.get("/", serveIndexHtml)
-  uiRoutes.get("/assets/*", serveStaticAsset)
+  uiRoutes.get("/", (c) => serveIndexHtml(c, uiDir))
+  uiRoutes.get("/assets/*", (c) => serveStaticAsset(c, uiDir))
   return uiRoutes
 }

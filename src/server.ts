@@ -16,6 +16,7 @@ import { registerOpenApiDocs } from "./routes/openapi"
 
 export interface ServerOptions {
   externalUiUrl?: string
+  externalUiV4Url?: string
 }
 
 /**
@@ -104,7 +105,7 @@ export function createServer(options: ServerOptions = {}) {
 
   // Register HTTP routes. WebSocket routes are injected later in start.ts after
   // a shared adapter is created for the concrete runtime/server instance.
-  registerHttpRoutes(server, { externalUiUrl: options.externalUiUrl })
+  registerHttpRoutes(server, { externalUiUrl: options.externalUiUrl, externalUiV4Url: options.externalUiV4Url })
 
   // Management-API OpenAPI 3.1 doc (/openapi.json) + Scalar UI (/docs). Must run
   // after registerHttpRoutes so the management routers' definitions are mounted.
