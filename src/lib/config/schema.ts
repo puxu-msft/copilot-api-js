@@ -277,19 +277,22 @@ export const AnthropicConfigSchema = z
      */
     tool_backfill_question: nullableBoolean(),
     /**
-     * Synthetic SSE keepalive interval for the client-facing Anthropic stream.
-     * `0` disables (default). Any positive integer is the minimum seconds
-     * between forwarded events that must pass before the proxy injects an
-     * Anthropic-protocol `event: ping` frame to prevent the client from
-     * timing out while upstream stalls (e.g. opus-4.8 adaptive thinking that
-     * goes silent after `content_block_start`). Heartbeats are
-     * PROXY-originated and do NOT reset the upstream idle-timeout (so a
-     * genuinely dead upstream still fails). Recorded in `forwardedSseEvents`
-     * (visible diagnostic), never in the raw upstream `sseEvents`. The
-     * interval is captured at stream start — in-flight streams keep their
-     * original value across hot-reload; new streams pick up the new value.
+     * Synthetic SSE keepalive ping cadence (seconds) for the client-facing live
+     * Anthropic stream. `0` disables; default **45**. Claude Code's request
+     * timeout is an IDLE watchdog at ~60s (Q2 oracle), so the cadence must be
+     * < 60s to keep the client alive — the prior 120s default was ineffective.
+     * Any positive integer is the minimum seconds between forwarded events that
+     * must pass before the proxy injects an Anthropic-protocol `event: ping`
+     * frame — covers BOTH mid-stream idle gaps (opus-4.8 adaptive thinking that
+     * goes silent after `content_block_start`) AND the ③ pre-response-grace
+     * commit keepalive. Heartbeats are PROXY-originated and do NOT reset the
+     * upstream idle-timeout (so a genuinely dead upstream still fails). Recorded
+     * in `forwardedSseEvents` (visible diagnostic), never in the raw upstream
+     * `sseEvents`. The interval is captured at stream start — in-flight streams
+     * keep their original value across hot-reload; new streams pick up the new
+     * value. (Renamed from `stream_fake_sse_heartbeat`; old key auto-migrates.)
      */
-    stream_fake_sse_heartbeat: nullableNonnegativeInt(),
+    stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
      * L2 — transactional buffered retry for streaming generations cut short by an
      * upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit). Buffers the
@@ -347,7 +350,7 @@ export const AnthropicConfigSchema = z
      * Forced heartbeat interval (seconds) for the buffered-retry path. The buffered
      * sink withholds all real frames until `message_stop`, so the client would idle
      * out without a ping; the buffered path constructs a heartbeat UNCONDITIONALLY,
-     * using `stream_fake_sse_heartbeat` when positive, otherwise this fallback.
+     * using `stream_keepalive_ping_sec` when positive, otherwise this fallback.
      * Default 15.
      */
     protect_streaming_heartbeat: nullableNonnegativeInt(),

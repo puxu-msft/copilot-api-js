@@ -301,7 +301,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   let eventsIn = 0
 
   // The driver-owned client sink: SSE write-out + forwarded sampling. No heartbeat (CC has
-  // no stream_fake_sse_heartbeat). The sink preserves SSE id/retry framing it is given.
+  // no stream_keepalive_ping_sec). The sink preserves SSE id/retry framing it is given.
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,

@@ -27,7 +27,6 @@
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
-import type { SSEStreamingApi } from "hono/streaming"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
@@ -49,6 +48,8 @@ import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
+  ClientFrame,
+  ClientSink,
   DriverRequestResult,
   UpstreamFrame,
   UpstreamStream,
@@ -385,8 +386,22 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // RFC Phase 4: ④ capture the proxy→client response headers (streamSSE has set
     // them synchronously before invoking this callback; finalize runs later in the pump).
     env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
+    // C1 (RFC §4.2.1): the sink is built HERE (caller-owned) — not inside the pump — so the ③
+    // pre-response-grace commit path can emit a first ping on the SAME sink it later hands the
+    // pump. One `streamStartMs` is threaded into both the sink (forwarded offsetMs) and the pump
+    // (completion summary) for byte-equivalence (C3a golden locks this).
+    const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
+    const forwardedSseEvents: Array<SseEventRecord> = []
+    const streamStartMs = Date.now()
+    const sink = makeSseSink(stream, {
+      onForwarded: (record) => forwardedSseEvents.push(record),
+      streamStartMs,
+      ...(heartbeatSec > 0 && {
+        heartbeat: { intervalSec: heartbeatSec, pingFrame: ANTHROPIC_PING, clientAbortSignal: clientAbort.signal },
+      }),
+    })
     try {
-      await pumpAnthropicStreamingV4({ stream, driver, upstream, env, clientAbortSignal: clientAbort.signal })
+      await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env })
     } finally {
       detachClientAbort()
     }
@@ -512,12 +527,45 @@ function renderNonStreamingV4(
 // Streaming pump (byte-critical primitives reused from streaming-pump.ts)
 // ============================================================================
 
+/** The Anthropic-protocol synthetic keepalive frame. One literal, shared by the sink's
+ *  heartbeat and the ③ pre-response-grace commit first-ping (RFC §4.2.1). */
+const ANTHROPIC_PING: ClientFrame = { event: "ping", data: JSON.stringify({ type: "ping" }) }
+
+/**
+ * Resolve the buffered-retry routing flag + the live heartbeat cadence for an Anthropic
+ * streaming request. Single source for both (DRY) — the caller builds the sink (heartbeat)
+ * and routes the pump (buffered) from one call.
+ *
+ * - `buffered` (L2, RFC §9): `"on"` buffers every stream; `"tool_use_only"` buffers only
+ *   when the request carries `tools`.
+ * - `heartbeatSec`: the buffered path withholds ALL real frames until message_stop, so it
+ *   FORCES a heartbeat (`streamKeepalivePingSec` when set, else `protectStreamingHeartbeat`
+ *   fallback). The live path heartbeats only when the operator set `streamKeepalivePingSec`.
+ */
+function resolveBufferedAndHeartbeat(env: RequestEnvelope): { buffered: boolean; heartbeatSec: number } {
+  const anthropicPayload = env.body as MessagesPayload
+  const buffered =
+    state.protectStreamingGeneration === "on"
+    || (state.protectStreamingGeneration === "tool_use_only" && Array.isArray(anthropicPayload.tools) && anthropicPayload.tools.length > 0)
+  const forcedHeartbeatSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : state.protectStreamingHeartbeat
+  const heartbeatSec = buffered ? forcedHeartbeatSec : state.streamKeepalivePingSec
+  return { buffered, heartbeatSec }
+}
+
 interface PumpAnthropicStreamingV4Options {
-  stream: SSEStreamingApi
+  /** The driver-owned client sink (SSE write-out + forwarded sampling + heartbeat). Built by
+   *  the caller so the ③ commit path can emit a first ping on the SAME sink (RFC §4.2.1 C1). */
+  sink: ClientSink
+  /** L2 buffered-retry routing — resolved by the caller via {@link resolveBufferedAndHeartbeat}. */
+  buffered: boolean
+  /** The caller-owned forwarded-track array the sink samples into; the pump snapshots it onto ctx. */
+  forwardedSseEvents: Array<SseEventRecord>
+  /** Stream-start instant (ms) — threaded from the caller so the sink's forwarded `offsetMs`
+   *  and the pump's completion summary share one origin (byte-equivalence). */
+  streamStartMs: number
   driver: ReturnType<typeof createPipelineDriver>
   upstream: UpstreamStream
   env: RequestEnvelope
-  clientAbortSignal: AbortSignal
 }
 
 /**
@@ -545,17 +593,9 @@ interface PumpAnthropicStreamingV4Options {
  * modified tools are reflected (via `createState(env)`).
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
-  const { stream, driver, upstream, env, clientAbortSignal } = opts
+  const { sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env } = opts
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
-
-  // L2 — transactional buffered retry selector (RFC §9). `on` buffers every streaming
-  // response; `tool_use_only` buffers only when the request carries tools (the large
-  // Write/Edit scenario, where mid-stream RST is observed). Default false → live path
-  // (`runResponseSink`), byte-identical to before L2 (the Phase 0 baseline locks this).
-  const buffered =
-    state.protectStreamingGeneration === "on"
-    || (state.protectStreamingGeneration === "tool_use_only" && Array.isArray(anthropicPayload.tools) && anthropicPayload.tools.length > 0)
 
   // These four upstream-side accumulators are reset BETWEEN buffered attempts (onAttemptReset):
   // each retry is a fresh generation, so reusing them would double-count usage/tokens/bytes and
@@ -569,16 +609,14 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   // in buffered mode via ctx.commitAttemptSseEvents). Reset per attempt so the final error log
   // reflects the LAST (failing) attempt's frames, not all attempts concatenated.
   let sseEvents: Array<SseEventRecord> = []
-  // Forwarded SSE frames — what the client ACTUALLY received (post-S5-rewrite). Filled by
-  // the sink's `onForwarded` sampler (real frames + heartbeat ping), NOT the H3 synth error.
-  // NOT reset across buffered attempts (RFC §10 correction): the client received one continuous
-  // SSE stream, so the heartbeat pings emitted during EARLIER (failed) attempts are genuinely on
-  // the wire and must stay in this "what the client received" record; content frames enter it
-  // only once, at the final commit flush, so they can never double.
-  const forwardedSseEvents: Array<SseEventRecord> = []
+  // `forwardedSseEvents` (what the client ACTUALLY received) is CALLER-OWNED and injected: the sink
+  // samples real frames + heartbeat pings into it via `onForwarded`, and the pump snapshots it onto
+  // ctx. NOT reset across buffered attempts (RFC §10 correction): the client received one continuous
+  // SSE stream, so heartbeat pings from EARLIER (failed) attempts genuinely stay on the wire; content
+  // frames enter it only once, at the final commit flush, so they can never double.
 
   let streamState: StreamPumpState = {
-    streamStartMs: Date.now(),
+    streamStartMs,
     bytesIn: 0,
     eventsIn: 0,
     currentBlockType: "",
@@ -603,29 +641,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     }
     recordUpstreamFrame({ rawEvent, parsed, streamState, sseEvents, reqCtx: env.ctx, checkRepetition })
   }
-
-  // The driver-owned client sink: SSE write-out + forwarded sampling + (optional) the
-  // stream_fake_sse_heartbeat forward-idle racer. Heartbeats are proxy-originated: sampled ONLY
-  // into forwardedSseEvents (via onForwarded), never sseEvents (the driver's raw track).
-  //
-  // L2 🔴 (RFC §5 / §14): the buffered path withholds ALL real frames until message_stop, so the
-  // client would idle out during the whole generation without a heartbeat. The buffered path
-  // therefore FORCES a heartbeat: it uses `anthropicFakeSseHeartbeat` when the user set it, else
-  // falls back to `protectStreamingHeartbeat` (default 15). The live path is unchanged (heartbeat
-  // only when the user explicitly set `anthropicFakeSseHeartbeat > 0`).
-  const forcedHeartbeatSec = state.anthropicFakeSseHeartbeat > 0 ? state.anthropicFakeSseHeartbeat : state.protectStreamingHeartbeat
-  const heartbeatSec = buffered ? forcedHeartbeatSec : state.anthropicFakeSseHeartbeat
-  const sink = makeSseSink(stream, {
-    onForwarded: (record) => forwardedSseEvents.push(record),
-    streamStartMs: streamState.streamStartMs,
-    ...(heartbeatSec > 0 && {
-      heartbeat: {
-        intervalSec: heartbeatSec,
-        pingFrame: { event: "ping", data: JSON.stringify({ type: "ping" }) },
-        clientAbortSignal,
-      },
-    }),
-  })
 
   // Snapshot the forwarded track onto the ctx (R3-④: forwardedSseEvents is aliased by
   // entry.inboundResponse — `close()` in runResponseSink's finally already stopped the

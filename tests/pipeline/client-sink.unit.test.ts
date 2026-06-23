@@ -156,7 +156,7 @@ describe("makeSseSink heartbeat (B2 forward-idle racer)", () => {
     const { stream } = stubSseStream()
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 0, pingFrame: PING } })
     // writeSynthetic (H3 non-sampled error frame) + close (no-op timer teardown) must
-    // always exist — the default Anthropic path runs with anthropicFakeSseHeartbeat=0.
+    // always exist — the default Anthropic path runs with streamKeepalivePingSec=0.
     expect(typeof sink.writeSynthetic).toBe("function")
     expect(typeof sink.close).toBe("function")
   })

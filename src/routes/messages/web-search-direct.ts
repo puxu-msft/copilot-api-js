@@ -382,7 +382,7 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
     recoverFeatureLogged: false,
   }
 
-  // Synthetic SSE keepalive (anthropic.stream_fake_sse_heartbeat, seconds; 0 = off).
+  // Synthetic SSE keepalive (anthropic.stream_keepalive_ping_sec, seconds; 0 = off).
   // Emits Anthropic-protocol `event: ping` whenever no real frame has been
   // forwarded for >= intervalMs, so clients (e.g. Claude Code ~258s) don't
   // disconnect while upstream stalls mid-stream (e.g. opus-4.8 adaptive
@@ -391,7 +391,7 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
   // upstream still fails via `timeouts.stream_idle`), and they are recorded
   // ONLY in `forwardedSseEvents`, never in the raw upstream `sseEvents`.
   const heartbeat = startForwardedSseHeartbeat({
-    intervalSec: state.anthropicFakeSseHeartbeat,
+    intervalSec: state.streamKeepalivePingSec,
     stream,
     forwardedSseEvents,
     streamState,

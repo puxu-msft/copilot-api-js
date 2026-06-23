@@ -264,11 +264,11 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   },
   {
-    configKey: "anthropic.stream_fake_sse_heartbeat",
-    stateKey: "anthropicFakeSseHeartbeat",
+    configKey: "anthropic.stream_keepalive_ping_sec",
+    stateKey: "streamKeepalivePingSec",
     sampleYamlValue: "15",
     expectedStateValue: 15,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   },
   {
     configKey: "anthropic.protect_streaming_generation",

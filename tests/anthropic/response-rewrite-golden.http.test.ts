@@ -25,7 +25,7 @@
  *       server-tool filter / tool-input decode / recover.
  *
  * Heartbeat isolation (Task0 item 7): every streaming case runs with the default
- * `anthropicFakeSseHeartbeat=0`, so no synthetic `ping` is ever interleaved — the
+ * `streamKeepalivePingSec=0`, so no synthetic `ping` is ever interleaved — the
  * forwarded byte stream is deterministic. (Ping timing is covered separately by
  * `fake-sse-heartbeat.unit.test.ts`.)
  *

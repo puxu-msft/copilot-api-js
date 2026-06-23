@@ -14,7 +14,7 @@ import type { SseEventRecord } from "~/lib/history/store"
 import { startForwardedSseHeartbeat } from "~/routes/messages/web-search-direct"
 
 /**
- * Tests for the synthetic SSE heartbeat (anthropic.stream_fake_sse_heartbeat). Uses
+ * Tests for the synthetic SSE heartbeat (anthropic.stream_keepalive_ping_sec). Uses
  * a fake timer + a stub SSEStreamingApi so the suite stays deterministic and
  * fast (no real wait).
  */
@@ -86,7 +86,7 @@ class FakeClock {
   }
 }
 
-describe("stream_fake_sse_heartbeat", () => {
+describe("stream_keepalive_ping_sec", () => {
   const clock = new FakeClock()
   beforeEach(() => {
     clock.install()

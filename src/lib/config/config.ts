@@ -467,7 +467,7 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.anthropic) {
     const a = config.anthropic
     if (a.tool_strip_server !== undefined) setAnthropicBehavior({ stripServerTools: a.tool_strip_server })
-    if (a.stream_fake_sse_heartbeat !== undefined) setAnthropicBehavior({ anthropicFakeSseHeartbeat: a.stream_fake_sse_heartbeat })
+    if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: a.stream_keepalive_ping_sec })
     if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
     if (a.protect_streaming_max_retries !== undefined) setAnthropicBehavior({ protectStreamingMaxRetries: a.protect_streaming_max_retries })
     if (a.protect_streaming_heartbeat !== undefined) setAnthropicBehavior({ protectStreamingHeartbeat: a.protect_streaming_heartbeat })
@@ -558,7 +558,7 @@ export async function applyConfigToState(): Promise<Config> {
   // Checked on the EFFECTIVE state (post-apply, so bundled defaults + hot-reload retain are reflected).
   warnProtectStreamingHeartbeatOnce({
     protectStreamingGeneration: state.protectStreamingGeneration,
-    fakeHeartbeat: state.anthropicFakeSseHeartbeat,
+    fakeHeartbeat: state.streamKeepalivePingSec,
     protectHeartbeat: state.protectStreamingHeartbeat,
   })
 

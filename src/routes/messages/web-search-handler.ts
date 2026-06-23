@@ -153,7 +153,7 @@ export async function handleWebSearchCompletion(
     stream.onAbort(() => clientAbort.abort())
 
     // Pings emitted on this client-facing stream (the upfront flush below +
-    // any synthetic keepalives from `stream_fake_sse_heartbeat` during the second
+    // any synthetic keepalives from `stream_keepalive_ping_sec` during the second
     // hop) are collected here and merged into the final forwardedSseEvents
     // so history reflects exactly what the client received. Indices use
     // `streamStartMs` so the timeline lines up with the synthesized event
@@ -161,7 +161,7 @@ export async function handleWebSearchCompletion(
     const streamStartMs = Date.now()
     const prefixForwardedSse: Array<SseEventRecord> = []
     const heartbeat = startForwardedSseHeartbeat({
-      intervalSec: state.anthropicFakeSseHeartbeat,
+      intervalSec: state.streamKeepalivePingSec,
       stream,
       forwardedSseEvents: prefixForwardedSse,
       streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
@@ -206,7 +206,7 @@ export async function handleWebSearchCompletion(
  *
  * `prefixForwardedSse` (streaming path only) carries any frames the client
  * already received before the synthesized events fire — currently the upfront
- * `ping` (always) plus any `stream_fake_sse_heartbeat` pings emitted during the
+ * `ping` (always) plus any `stream_keepalive_ping_sec` pings emitted during the
  * second hop. They are prepended to the forwarded record so history reflects
  * what the client actually received, in order.
  */

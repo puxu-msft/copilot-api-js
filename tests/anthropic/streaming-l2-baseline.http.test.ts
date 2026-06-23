@@ -136,7 +136,7 @@ describe("L2 baseline — Anthropic live streaming (locked before L2 lands)", ()
       vsCodeVersion: "1.100.0",
       fetchTimeout: 0,
       streamIdleTimeout: 0,
-      anthropicFakeSseHeartbeat: 0,
+      streamKeepalivePingSec: 0,
     })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })

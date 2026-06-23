@@ -183,8 +183,8 @@ anthropic:
   # This is the unconditional global switch. Even when false, a server tool the upstream rejects with 400 ("web search tool is not supported") is learned and stripped pre-emptively for that (endpoint, model) on subsequent requests (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
   tool_strip_server: false
 
-  # Synthetic SSE keepalive interval (seconds) for the client-facing stream. 0 = disabled (default). When >0, the proxy injects an Anthropic-protocol `event: ping` frame whenever no real upstream event has been forwarded for that many seconds — prevents the client (e.g. Claude Code ~258s) from disconnecting while upstream is silent (notably opus-4.8 adaptive thinking that stalls after content_block_start). Heartbeats DO NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle) and are recorded only in forwardedSseEvents, never in raw upstream sseEvents.
-  stream_fake_sse_heartbeat: 120
+  # Synthetic SSE keepalive ping cadence (seconds) for the client-facing live stream. 0 = disabled; default 45. Claude Code's request timeout is an IDLE watchdog at ~60s (exp/q2-oracle Q2 oracle), so the cadence MUST be < 60s to keep the client alive — the prior 120s default was ineffective. When >0, the proxy injects an Anthropic-protocol `event: ping` frame whenever no real upstream event has been forwarded for that many seconds — covers BOTH mid-stream idle gaps (opus-4.8 adaptive thinking stalling after content_block_start) AND the ③ pre-response-grace commit keepalive. Heartbeats DO NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle) and are recorded only in forwardedSseEvents, never in raw upstream sseEvents. (Renamed from stream_fake_sse_heartbeat; old key auto-migrates.)
+  stream_keepalive_ping_sec: 45
 
   # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
   #   false:           disabled (default) — live streaming, no buffering.
@@ -193,7 +193,7 @@ anthropic:
   protect_streaming_generation: false
   # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
   protect_streaming_max_retries: 3
-  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until message_stop, so a heartbeat is constructed UNCONDITIONALLY — using stream_fake_sse_heartbeat when >0, else this fallback.
+  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until message_stop, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
   protect_streaming_heartbeat: 15
   # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection — a live RST fails as today). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
   protect_streaming_buffer_cap_bytes: 16777216

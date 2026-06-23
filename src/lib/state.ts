@@ -158,20 +158,27 @@ export interface State {
   readonly stripServerTools: boolean
 
   /**
-   * Synthetic SSE keepalive interval (seconds) for the client-facing Anthropic
-   * stream. `0` disables (default). When positive, the handler injects an
+   * Synthetic SSE keepalive ping cadence (seconds) for the client-facing live
+   * Anthropic stream. `0` disables. Default **45** — Claude Code's request
+   * timeout is an IDLE watchdog at ~60s (Q2 oracle, exp/q2-oracle/REPORT.md),
+   * so a ping interval BELOW 60s is required to keep the client alive; the prior
+   * 120s default was ineffective. When positive, the handler injects an
    * Anthropic-protocol `event: ping` frame whenever no real upstream event has
-   * been forwarded for this many seconds, preventing clients (e.g. Claude
-   * Code, which gives up around 258s) from disconnecting while upstream is
-   * silently thinking. Heartbeats are PROXY-originated and DO NOT reset the
-   * upstream idle-timeout — a genuinely dead upstream still fails per
-   * `timeouts.stream_idle`. Recorded in `forwardedSseEvents` (the diagnostic
-   * "what the client received"), never in the raw upstream `sseEvents`.
+   * been forwarded for this many seconds, both for MID-STREAM idle gaps (opus
+   * adaptive-thinking pauses) AND as the ③ pre-response-grace commit keepalive
+   * (when ③ commits early, this is the post-commit ping cadence; a 0 here floors
+   * to 30s for the ③ commit path specifically). Heartbeats are PROXY-originated
+   * and DO NOT reset the upstream idle-timeout — a genuinely dead upstream still
+   * fails per `timeouts.stream_idle`. Recorded in `forwardedSseEvents` (the
+   * diagnostic "what the client received"), never in the raw upstream `sseEvents`.
    *
-   * Hot-reload note: the interval is captured at stream-start. In-flight
-   * streams keep their original value; new streams pick up the new value.
+   * Hot-reload note: the interval is captured at stream-start. In-flight streams
+   * keep their original value; new streams pick up the new value. (Renamed from
+   * `anthropic.stream_fake_sse_heartbeat` / `anthropicFakeSseHeartbeat` — "fake"
+   * mis-described the synthetic-but-real `event: ping`; compat migrates the old
+   * keys. See docs/rfc/pre-response-abort-handling.md §4.2.3.1.)
    */
-  readonly anthropicFakeSseHeartbeat: number
+  readonly streamKeepalivePingSec: number
 
   /**
    * L2 — transactional buffered retry for streaming Anthropic generations cut
@@ -183,7 +190,7 @@ export interface State {
   readonly protectStreamingGeneration: false | "on" | "tool_use_only"
   /** Max transport-close / truncation retries for the buffered-retry path (loop/cost guard; 0 = no retry). */
   readonly protectStreamingMaxRetries: number
-  /** Forced heartbeat interval (seconds) for the buffered-retry path; falls back here when `anthropicFakeSseHeartbeat` is 0. */
+  /** Forced heartbeat interval (seconds) for the buffered-retry path; falls back here when `streamKeepalivePingSec` is 0. */
   readonly protectStreamingHeartbeat: number
   /** Max bytes to buffer before retreating to live forwarding (OOM guard; 0 = unlimited). */
   readonly protectStreamingBufferCapBytes: number
@@ -794,7 +801,7 @@ export function setAnthropicBehavior(
     Pick<
       MutableState,
       | "stripServerTools"
-      | "anthropicFakeSseHeartbeat"
+      | "streamKeepalivePingSec"
       | "protectStreamingGeneration"
       | "protectStreamingMaxRetries"
       | "protectStreamingHeartbeat"
@@ -989,7 +996,7 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
  */
 export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
-  anthropicFakeSseHeartbeat: 0,
+  streamKeepalivePingSec: 45,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   protectStreamingMaxRetries: 3,
   protectStreamingHeartbeat: 15,
@@ -1071,7 +1078,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
 export function resetConfigManagedState(): void {
   setAnthropicBehavior({
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
-    anthropicFakeSseHeartbeat: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
+    streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
     protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
     protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
@@ -1178,7 +1185,7 @@ const mutableState: MutableState = {
   cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
-  anthropicFakeSseHeartbeat: CONFIG_MANAGED_DEFAULTS.anthropicFakeSseHeartbeat,
+  streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
   protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
   protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,

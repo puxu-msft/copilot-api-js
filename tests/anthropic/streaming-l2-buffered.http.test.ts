@@ -154,7 +154,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       fetchTimeout: 0,
       streamIdleTimeout: 0,
       staleRequestMaxAge: 0,
-      anthropicFakeSseHeartbeat: 0,
+      streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
       protectStreamingMaxRetries: 3,
       protectStreamingHeartbeat: 15,
@@ -354,7 +354,7 @@ class FakeClock {
   }
 }
 
-describe("L2 buffered retry — forced heartbeat during the buffer window (anthropicFakeSseHeartbeat=0)", () => {
+describe("L2 buffered retry — forced heartbeat during the buffer window (streamKeepalivePingSec=0)", () => {
   useIsolatedRuntime()
   const clock = new FakeClock()
 
@@ -414,7 +414,7 @@ describe("L2 buffered retry — forced heartbeat during the buffer window (anthr
       streamIdleTimeout: 0,
       staleRequestMaxAge: 0,
       // User did NOT configure a heartbeat — the buffered path must FORCE one from protect_streaming_heartbeat.
-      anthropicFakeSseHeartbeat: 0,
+      streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
       protectStreamingMaxRetries: 3,
       protectStreamingHeartbeat: 10,

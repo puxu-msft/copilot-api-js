@@ -122,7 +122,8 @@ describe("config compat — legacy key migration (file load)", () => {
     { old: "rewrite_system_reminders", new: "system_rewrite_reminders", value: true },
     { old: "strip_beta_headers", new: "beta_strip_headers", value: { "claude-x": ["foo"] } },
     { old: "reject_body_fields", new: "retry_reject_body_fields", value: { "claude-x": ["foo"] } },
-    { old: "fake_sse_heartbeat", new: "stream_fake_sse_heartbeat", value: 30 },
+    { old: "fake_sse_heartbeat", new: "stream_keepalive_ping_sec", value: 30 },
+    { old: "stream_fake_sse_heartbeat", new: "stream_keepalive_ping_sec", value: 30 },
   ]
 
   for (const { old: oldKey, new: newKey, value } of CONCERN_PREFIX_RENAMES) {

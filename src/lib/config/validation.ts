@@ -52,7 +52,7 @@ export function _resetConfigValidationWarnTrackingForTests(): void {
 /**
  * Cross-field config warning (L2): the buffered path (`protect_streaming_generation != false`)
  * withholds ALL real frames until `message_stop`, so it relies on a FORCED heartbeat to keep the
- * client alive during the buffer window. If BOTH `stream_fake_sse_heartbeat` AND
+ * client alive during the buffer window. If BOTH `stream_keepalive_ping_sec` AND
  * `protect_streaming_heartbeat` are 0, the buffer window has no keepalive and the client idles out
  * (config self-harm). Warn once (reuses the same once-tracking as schema issues, reset for tests).
  */
@@ -65,7 +65,7 @@ export function warnProtectStreamingHeartbeatOnce(opts: {
   if (opts.fakeHeartbeat > 0 || opts.protectHeartbeat > 0) return
   warnIssueOnce(
     "protect_streaming_heartbeat",
-    "anthropic.protect_streaming_generation is enabled but BOTH stream_fake_sse_heartbeat and protect_streaming_heartbeat are 0 — the buffer window has no keepalive, clients will idle out. Set protect_streaming_heartbeat > 0 (default 15).",
+    "anthropic.protect_streaming_generation is enabled but BOTH stream_keepalive_ping_sec and protect_streaming_heartbeat are 0 — the buffer window has no keepalive, clients will idle out. Set protect_streaming_heartbeat > 0 (default 15).",
   )
 }
 

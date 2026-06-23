@@ -95,7 +95,7 @@ describe("GET /api/config — effective config snapshot", () => {
       "thinkingBlockSanitizeCheck",
       "systemMessagesSanitize",
       "rewriteHistoryServerTools",
-      "anthropicFakeSseHeartbeat",
+      "streamKeepalivePingSec",
       "sanitizeToolNames",
     ]) {
       expect(key in body).toBe(true)

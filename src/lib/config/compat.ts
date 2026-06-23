@@ -204,7 +204,8 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("anthropic.rewrite_system_reminders", "anthropic.system_rewrite_reminders"),
   renameLeaf("anthropic.strip_beta_headers", "anthropic.beta_strip_headers"),
   renameLeaf("anthropic.reject_body_fields", "anthropic.retry_reject_body_fields"),
-  renameLeaf("anthropic.fake_sse_heartbeat", "anthropic.stream_fake_sse_heartbeat"),
+  renameLeaf("anthropic.fake_sse_heartbeat", "anthropic.stream_keepalive_ping_sec"),
+  renameLeaf("anthropic.stream_fake_sse_heartbeat", "anthropic.stream_keepalive_ping_sec"),
   // rate_limiter unit unification: minutes → seconds (value auto-converted ×60)
   renameLeaf("rate_limiter.recovery_timeout", "rate_limiter.recovery_interval", {
     transform: (v) => (typeof v === "number" ? v * 60 : v),
