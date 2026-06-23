@@ -4,7 +4,7 @@ function Row({ label, value }: { label: string; value?: string | number }) {
   if (value === undefined) return null
   return (
     <div className="flex gap-2">
-      <span className="w-[80px] text-[var(--color-muted)]">{label}</span>
+      <span className="w-[100px] text-[var(--color-muted)]">{label}</span>
       <span>{value}</span>
     </div>
   )

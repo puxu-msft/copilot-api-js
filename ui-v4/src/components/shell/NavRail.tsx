@@ -10,7 +10,7 @@ const ITEMS = [
 
 export function NavRail() {
   return (
-    <nav className="mono flex w-[120px] flex-col border-r border-[var(--color-border)] bg-[#15151a]">
+    <nav className="mono flex w-[150px] flex-col border-r border-[var(--color-border)] bg-[#15151a]">
       <div className="px-3 py-2.5 text-sm font-bold text-[var(--color-primary)]">◆ copilot-api</div>
       {ITEMS.map((it) => (
         <NavLink

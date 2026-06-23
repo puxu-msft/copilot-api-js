@@ -9,7 +9,7 @@ interface DetailSubRailProps {
 
 export function DetailSubRail({ active, onSelect }: DetailSubRailProps) {
   return (
-    <div className="mono flex w-[64px] flex-col border-r border-[var(--color-border)] bg-[#14141a]">
+    <div className="mono flex w-[84px] flex-col border-r border-[var(--color-border)] bg-[#14141a]">
       {SEGMENTS.map((s) => (
         <button
           key={s}

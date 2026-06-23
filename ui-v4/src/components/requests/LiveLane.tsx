@@ -8,7 +8,7 @@ export function LiveLane() {
   return (
     <div className="border-b-2 border-[#2f6f3f] bg-[#14201a]">
       <div className="mono px-2 py-1 text-[12px] uppercase tracking-wider text-[#7fd99a]">● Live · {rows.length} in-flight</div>
-      <div className="max-h-[120px] overflow-y-auto">
+      <div className="max-h-[150px] overflow-y-auto">
         {rows.length === 0 ?
           <div className="mono px-2 py-2 text-[13px] text-[#4a6a4a]">无在飞请求</div>
         : rows.map((r) => (
