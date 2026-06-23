@@ -33,10 +33,11 @@ React 18 · TypeScript strict · Vite 7 · **Tailwind v4**（`@tailwindcss/vite`
 
 工业风 **Terminal Amber**：暖近黑 + amber 主色、全局锐角 `rounded:0`、左对齐（拒绝居中标题）、hairline 网格、IBM Plex Mono 承载数据、green/red/amber 状态信号。主题 token 在 `src/styles/theme.css`（CSS vars 单一来源）。
 
-## 现状（Plan 03 详情 C 布局）
+## 现状（Plan 06 Overview/Models/Config）
 
 - **Plan 01 地基**：应用壳层（NavRail + TopBar）+ WS 状态指示 + 主题切换 + 路由 errorElement/catch-all 占位。
-- **Plan 02 Requests 工作台**：主从一体——左侧 **Live 泳道**（常驻固定高度、WS `active_request_changed` 驱动）+ **History 游标列表**（缓冲横幅 + tail 暂停/恢复 + 选中粘滞，spec §4.2）；右侧按 URL `:id` 独立 fetch 详情（深链 `/requests/:id`，spec §4.1）。
-- **Plan 03 详情 C 布局 + 双格式内容渲染管线**：详情从 raw JSON 升级为 **C 布局**——常驻 DiagnosticBar（state/endpoint/时长/attempts/tokens）+ sticky sub-rail（Convo/Stages/Headers/Meta，懒加载仅挂当前段）。**内容渲染管线**：`normalizeToContentBlocks` 双格式归一化（Anthropic ContentBlock[] / OpenAI text+tool_calls / tool 响应）→ 块组件（Text/Thinking/RedactedThinking/ToolUse/ToolResult/Image/Generic，各包 ErrorBoundary）→ ContentRenderer 分发。Stages 段展示 7 腿（Inbound/Effective/Wire/Upstream/Forwarded），Headers 段 4 腿，Meta 段诊断。
-- **仅 `/requests`/`/requests/:id` 已接线**；Overview/Sessions/Models/Config 显示"即将推出"占位。
-- 详情 diff（SSE 帧/消息级/stages 并排）→ Plan 03b；请求内搜索 + 可控 JSON 渲染器 → Plan 04；Sessions+Agent + 后端聚合 → Plan 05。见 `docs/plans/`。
+- **Plan 02 Requests 工作台**：主从一体——左 **Live 泳道**（WS `active_request_changed` 驱动）+ **History 游标列表**（缓冲横幅 + tail 暂停/恢复 + 选中粘滞）；右按 URL `:id` 独立 fetch 详情（深链 §4.1/§4.2）。
+- **Plan 03 详情 C 布局 + 双格式内容渲染管线**：DiagnosticBar + sticky sub-rail（Convo/Stages/Headers/Meta 懒加载）；`normalizeToContentBlocks` 双格式归一化 → 块组件（各包 ErrorBoundary）→ ContentRenderer 分发；Stages 7 腿 / Headers 4 腿 / Meta 诊断。
+- **Plan 06 Overview/Models/Config**（无后端改动）：**Overview** 精简健康（In-flight/limiter/quota/active/history/WS）+ Grafana 入口；**Models** 目录表（id/name/vendor/version + raw JSON 切换）；**Config** 结构化 JSON 编辑器 + 保存（PUT `/api/config/yaml` partial）。
+- **已接线 nav**：Overview / Requests / Models / Config。**仅 Sessions 仍"即将推出"占位**（待 Plan 05）。
+- 详情 diff（SSE 帧/消息级/stages 并排）→ Plan 03b；请求内搜索 → Plan 04；Sessions+Agent + 后端聚合 → Plan 05；Config 结构化分组表单 → Plan 06b；视觉打磨+响应式 → Plan 07。见 `docs/plans/`。

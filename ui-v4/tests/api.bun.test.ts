@@ -26,4 +26,11 @@ describe("api client", () => {
     const api = createApi(fetchMock as unknown as typeof fetch)
     await expect(api.get("/history/api/stats")).rejects.toBeInstanceOf(ApiError)
   })
+
+  it("put sends body and parses json", async () => {
+    const fetchMock = mock(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    const api = createApi(fetchMock as unknown as typeof fetch)
+    const res = await api.put<{ ok: boolean }>("/api/config/yaml", { a: 1 })
+    expect(res.ok).toBe(true)
+  })
 })
