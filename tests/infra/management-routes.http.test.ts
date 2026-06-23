@@ -406,4 +406,23 @@ describe("management and history HTTP routes", () => {
     expect(body.requestTelemetry).not.toHaveProperty("agentKind")
     expect(body.requestTelemetry).not.toHaveProperty("endpoint")
   })
+
+  test("GET /metrics returns Prometheus exposition projecting the telemetry registry", async () => {
+    const now = Date.now()
+    recordAcceptedRequest(now)
+    recordSettledRequest(
+      { model: "claude-opus-4.8", endpoint: "anthropic-messages", agentKind: "main" },
+      { startedAt: now, endedAt: now + 100, success: true, usage: { input_tokens: 30, output_tokens: 8 } },
+    )
+
+    const res = await app.request("/metrics")
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toBe("text/plain; version=0.0.4; charset=utf-8")
+    const text = await res.text()
+    expect(text).toContain("# TYPE copilot_api_request_count_total counter")
+    expect(text).toContain('copilot_api_request_count_total{dimension="model",key="claude-opus-4.8"} 1')
+    expect(text).toContain('copilot_api_input_tokens_total{dimension="endpoint",key="anthropic-messages"} 30')
+    expect(text).toContain('copilot_api_request_count_total{dimension="agentKind",key="main"} 1')
+    expect(text).toMatch(/copilot_api_accepted_requests_total \d+/)
+  })
 })

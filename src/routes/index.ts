@@ -18,6 +18,7 @@ import { geminiRoutes } from "./gemini/route"
 import { historyRoutes } from "./history/route"
 import { logsRoutes } from "./logs/route"
 import { messagesRoutes } from "./messages/route"
+import { metricsRoutes } from "./metrics/route"
 import {
   //
   anthropicModelsRoutes,
@@ -85,6 +86,9 @@ export function registerHttpRoutes(app: Hono, options: UiRoutesOptions = {}) {
   // History API and standalone Web UI entry
   app.route("/history", historyRoutes)
   app.route("/ui", createUiRoutes(options))
+
+  // Prometheus text-exposition endpoint (operational stats bridge).
+  app.route("/metrics", metricsRoutes)
 }
 
 /**

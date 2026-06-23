@@ -224,6 +224,15 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     summary: 'Liveness probe (returns "Server running")',
     responses: { 200: { description: "Server running", content: { "text/plain": { schema: z.string() } } } },
   })
+  registry.registerPath({
+    method: "get",
+    path: "/metrics",
+    tags: ["infra"],
+    summary: "Prometheus metrics (operational stats bridge)",
+    description:
+      "Prometheus text exposition (v0.0.4) projecting the telemetry registry — `copilot_api_*_total{dimension,key}` counters. Same data as /api/stats, sinceStart window.",
+    responses: { 200: { description: "Prometheus exposition", content: { "text/plain": { schema: z.string() } } } },
+  })
 
   // ── WebSocket endpoints (101 Switching Protocols upgrade) ─────────────────
   // OpenAPI 3.1 has no first-class WebSocket modeling; documented as GET upgrade

@@ -54,6 +54,9 @@ const COST_MEASURE_NAMES = ["costInputTokens", "costOutputTokens", "costCacheRea
  */
 const MEASURE_NAMES = [...BASE_MEASURE_NAMES, ...COST_MEASURE_NAMES] as const
 
+/** The full measure name list (base + cost) — exported for the `/metrics` Prometheus projection so it stays single-sourced. */
+export const TELEMETRY_MEASURE_NAMES: ReadonlyArray<string> = MEASURE_NAMES
+
 /** High-cardinality dimensions (client/tool) bound their key count at this cap; overflow merges into `"other"`. */
 const CARDINALITY_CAP = 200
 

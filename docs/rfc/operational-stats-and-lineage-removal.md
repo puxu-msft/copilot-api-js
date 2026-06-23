@@ -37,7 +37,7 @@ OTel 的形状仍可后续以 **`/metrics` Prometheus-text 桥**桥接（见 §6
 
 | 维度 | extract | cardinality | 备注 |
 |---|---|---|---|
-| `model` | `outboundResponse?.model ?? inboundRequest.model ?? "unknown"` | bounded | back-compat 维度，投影到 `modelsSinceStart`/`modelsLast7d` |
+| `model` | `outboundResponse?.model ?? inboundRequest.model ?? "unknown"` | capped | back-compat 维度，投影到 `modelsSinceStart`/`modelsLast7d`。**capped**：key 取自 client 可控的原始 model 串（未知 model 原样转发、上游 400、仍 settle failed 被记），故须有界（见 §3.6 + CRITICAL-1 修复 `1da0cf5`） |
 | `endpoint` | `entry.endpoint`（EndpointType，恒存在） | bounded | |
 | `client` | `normalizeClient(httpHeaders?.inboundRequest)` | capped | user-agent 归一到产品 token（`claude-cli/1.2.3`→`claude-cli`，折叠版本号），无 UA→`null`（跳过） |
 | `agentKind` | `entry.agentId ? "subagent" : "main"` | bounded | 来自 `x-claude-code-agent-id`，已端到端 plumb 并落 `entries_v2.agent_id` 列 |
@@ -75,7 +75,7 @@ OTel 的形状仍可后续以 **`/metrics` Prometheus-text 桥**桥接（见 §6
 
 ### 3.6 基数 cap（高基数维度内存/JSON 防护）
 
-`client`/`tool` 是 user/agent 驱动、潜在无界。capped 维度的 key 数 ≥ `CARDINALITY_CAP`（200）时新 key 并入 `"other"`。cap **按 store 独立解析**——`dimSinceStart` 与目标 bucket 各为自己的 cap 权威，故每个 bucket 的 key 数独立有界 `CAP + 1`，且**无视进程重启**：load 时 `dimSinceStart` 重置为空、`dimBuckets` 却保留已达上限的 keys，若用单一 `dimSinceStart` 权威则重启后落入同一 bucket 的新流量会绕过 cap 把该 bucket 撑爆（实测探针 401，已修，commit `f3469cd`）。代价是一个 capped key 可能在 sinceStart 窗口为真名、在 7d 窗口为 `"other"`（两窗口回答不同查询、cap 是有损边界，可接受）。`normalizeClient` 先把 UA 折叠到产品 token 降基数；model/endpoint/agentKind 低基数免 cap（review H1）。
+`model`/`client`/`tool` 都是 client 可控、潜在无界（`model` 的 key 是 client 原始 model 串——未知 model 原样转发、上游 400、仍 settle failed 被 telemetry sink 记，故与 user-agent/tool 名同样可被滥用，CRITICAL-1）。capped 维度的 key 数 ≥ `CARDINALITY_CAP`（200）时新 key 并入 `"other"`。cap **按 store 独立解析**——`dimSinceStart` 与目标 bucket 各为自己的 cap 权威，故每个 bucket 的 key 数独立有界 `CAP + 1`，且**无视进程重启**：load 时 `dimSinceStart` 重置为空、`dimBuckets` 却保留已达上限的 keys，若用单一 `dimSinceStart` 权威则重启后落入同一 bucket 的新流量会绕过 cap 把该 bucket 撑爆（实测探针 401，已修，commit `f3469cd`）。代价是一个 capped key 可能在 sinceStart 窗口为真名、在 7d 窗口为 `"other"`（两窗口回答不同查询、cap 是有损边界，可接受）。`normalizeClient` 先把 UA 折叠到产品 token 降基数；只有 `endpoint`（4 值路由 enum）/`agentKind`（main/subagent）是真 bounded、免 cap（review H1 + CRITICAL-1）。
 
 ## 4. `/api/stats` 端点
 
@@ -87,9 +87,18 @@ OTel 的形状仍可后续以 **`/metrics` Prometheus-text 桥**桥接（见 §6
 
 `useOperationalStats` 并行轮询 endpoint/client/agentKind/tool 各 breakdown（10s，window=7d + top-N）。`DashboardBreakdownPanel`（泛型 per-key 条 + req/tok/cost subline）。`VDashboardPage` 新增 breakdown 区：main-vs-subagent token 占比 / per-endpoint / per-client / per-tool。类型从 `~backend/lib/request-telemetry` re-export。`model` 维度保留专属 `useModelTelemetry` 面板（喂 `/api/status`）。
 
-## 6. 暂缓项（registry 已铺 seam，未来一行接）
+## 6. `/metrics` Prometheus 桥（已落地）
 
-- **`/metrics` Prometheus-text 桥**——registry 落地后，`/metrics` = 对 `DIMENSIONS × keys × counters` 的通用投影（~30 行、零依赖、不引 OTel SDK）。本次只铺 seam（registry + breakdown 形状使其后续 trivial），endpoint 本体 default-off 暂缓。
+`GET /metrics`（**常开**——它暴露的 token/cost/请求计数与已公开的 `/api/stats` 完全同源，无新增暴露面；空闲端点零成本，故不设 config 开关，与 `/api/stats`·`/openapi.json` 一致）。registry 落地使其成为纯机械投影：遍历 `TELEMETRY_DIMENSION_NAMES` × keys × `TELEMETRY_MEASURE_NAMES`，复用 `getDimensionBreakdown(dim, "sinceStart")` 输出 Prometheus 文本（v0.0.4，零依赖、不引 OTel SDK）。`src/lib/metrics-exposition.ts`（纯函数 `renderPrometheusMetrics` + live 包装 `buildMetricsExposition`）+ `src/routes/metrics/route.ts`（plain Hono，text/plain）。
+
+设计要点：
+- **数据源 = `dimSinceStart`（进程生命周期累积）**——Prometheus counter 须单调累积；5min×7d rolling 窗口会 prune、非单调，故不用。进程重启 = counter reset，正是 `rate()` 已处理的语义。
+- **命名** `copilot_api_<measure_snake>_total{dimension,key}`（counter 后缀 `_total`、label 不编码进名）+ 全局 `copilot_api_accepted_requests_total`；measure 名经 camelCase→snake_case。
+- **跨维度语义**：一个 settled 请求计入每个维度，故同一总数在每维度各出现一次——**平行视图、非加性**，消费者按 `dimension` label 过滤、绝不跨维度求和（输出顶部有注释 + 镜像 `/api/stats`）。
+- **基数**：capped 维度（model/client/tool）已 ≤201 keys/维度（cap），故 series 数有界，`ALL_KEYS_LIMIT` 全量导出仍安全；label value 转义 `\ " \n` + strip `\r`，非有限值映射 `+Inf`/`-Inf`/`NaN`。
+
+## 7. 暂缓项（registry 已铺 seam，未来一行接）
+
 - **latency 百分位（p50/p95）**——sum-only counters 结构做不了百分位，结构性必需 histogram slot。当前 `StatAccumulator.counters` 是开放 bag，未来加 `hist?: number[]`（log-spaced buckets）走同一泛型 (de)serializer round-trip，零版本 bump。本次**未填字段**（YAGNI：无需求时不铺投机性表面），但开放 bag + 泛型复制器使其不被 foreclose——加时无需 V4。
 - **tool restored-name 投影进 entry**——见 §3.4，默认 sanitize off 时无差异，暂缓。
 

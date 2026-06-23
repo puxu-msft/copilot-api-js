@@ -121,10 +121,12 @@ describe("extractTelemetryKeys", () => {
 })
 
 describe("CAPPED_DIMENSION_NAMES", () => {
-  test("marks the user/agent-driven dimensions as capped, not model/endpoint/agentKind", () => {
+  test("marks the client-controlled dimensions (model/client/tool) as capped, not the bounded enums", () => {
+    // model is capped too: its key is the raw client-supplied model string (recorded even on
+    // upstream-400 failures), so it's client-controllable and must be bounded — see CRITICAL-1.
+    expect(CAPPED_DIMENSION_NAMES.has("model")).toBe(true)
     expect(CAPPED_DIMENSION_NAMES.has("client")).toBe(true)
     expect(CAPPED_DIMENSION_NAMES.has("tool")).toBe(true)
-    expect(CAPPED_DIMENSION_NAMES.has("model")).toBe(false)
     expect(CAPPED_DIMENSION_NAMES.has("endpoint")).toBe(false)
     expect(CAPPED_DIMENSION_NAMES.has("agentKind")).toBe(false)
   })

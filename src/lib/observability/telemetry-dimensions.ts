@@ -98,9 +98,16 @@ export function extractToolNames(entry: HistoryEntryData): Array<string> {
  * The registered dimensions. Order is irrelevant (keys are name-addressed).
  * `model` is the back-compat dimension projected to
  * `RequestTelemetrySnapshot.modelsSinceStart` / `modelsLast7d`.
+ *
+ * **Cardinality**: `model`/`client`/`tool` are all `capped` — their keys derive
+ * from CLIENT-controlled input (the raw `inboundRequest.model` is forwarded
+ * verbatim and recorded even on an upstream-400 failure; user-agent; tool names),
+ * so an abusive/buggy client could otherwise grow the key set without bound (memory
+ * leak + a `/metrics` cardinality bomb). Only `endpoint` (a 4-value route enum) and
+ * `agentKind` (`main`/`subagent`) are genuinely `bounded` and skip the cap.
  */
 export const TELEMETRY_DIMENSIONS: ReadonlyArray<StatDimension> = [
-  { name: "model", cardinality: "bounded", extract: (entry) => entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown" },
+  { name: "model", cardinality: "capped", extract: (entry) => entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown" },
   { name: "endpoint", cardinality: "bounded", extract: (entry) => entry.endpoint },
   { name: "client", cardinality: "capped", extract: (entry) => normalizeClient(entry.httpHeaders?.inboundRequest) },
   { name: "agentKind", cardinality: "bounded", extract: (entry) => (entry.agentId ? "subagent" : "main") },
