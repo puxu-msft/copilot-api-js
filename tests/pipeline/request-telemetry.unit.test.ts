@@ -447,6 +447,32 @@ describe("dimension/measure framework", () => {
     expect(Object.keys(endpoint).length).toBe(250)
     expect(endpoint.other).toBeUndefined()
   })
+
+  test("cardinality cap stays bounded ACROSS a restart that writes into a loaded bucket", async () => {
+    // Regression for the per-store cap fix: pre-fix, the cap consulted only the
+    // (post-load empty) dimSinceStart, so post-restart traffic into the same 5-min
+    // bucket blew past the cap (probe: 401). Each store must bound its OWN bucket.
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    for (let i = 0; i < 250; i++) {
+      recordSettledRequest({ client: `c-${i}` }, { startedAt: now, endedAt: now + 1, success: true }, new Set(["client"]))
+    }
+    await persistRequestTelemetry()
+
+    // Simulate a restart: reset process state, reload the persisted file.
+    _resetRequestTelemetryForTests()
+    _setRequestTelemetryFilePathForTests(telemetryFile)
+    await initRequestTelemetry()
+
+    // Fresh traffic into the SAME bucket the loaded keys live in.
+    for (let i = 0; i < 250; i++) {
+      recordSettledRequest({ client: `d-${i}` }, { startedAt: now, endedAt: now + 1, success: true }, new Set(["client"]))
+    }
+    // The bucket must still be bounded at CAP + "other" — not 401.
+    const client = (await persistedDimensions()).client.buckets[String(bucketTs)]
+    expect(Object.keys(client).length).toBe(201)
+    expect(client.other).toBeDefined()
+  })
 })
 
 describe("getDimensionBreakdown", () => {

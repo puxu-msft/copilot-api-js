@@ -75,7 +75,7 @@ OTel 的形状仍可后续以 **`/metrics` Prometheus-text 桥**桥接（见 §6
 
 ### 3.6 基数 cap（高基数维度内存/JSON 防护）
 
-`client`/`tool` 是 user/agent 驱动、潜在无界。capped 维度的 key 数 ≥ `CARDINALITY_CAP`（200）时新 key 并入 `"other"`。以 `dimSinceStart`（进程生命周期超集）为单一权威决定 effective key，使 sinceStart 与各 bucket 写入落在**同一** key，每维度 key 数有界 `CAP + 1`。`normalizeClient` 先把 UA 折叠到产品 token 降基数；model/endpoint/agentKind 低基数免 cap（review H1）。
+`client`/`tool` 是 user/agent 驱动、潜在无界。capped 维度的 key 数 ≥ `CARDINALITY_CAP`（200）时新 key 并入 `"other"`。cap **按 store 独立解析**——`dimSinceStart` 与目标 bucket 各为自己的 cap 权威，故每个 bucket 的 key 数独立有界 `CAP + 1`，且**无视进程重启**：load 时 `dimSinceStart` 重置为空、`dimBuckets` 却保留已达上限的 keys，若用单一 `dimSinceStart` 权威则重启后落入同一 bucket 的新流量会绕过 cap 把该 bucket 撑爆（实测探针 401，已修，commit `f3469cd`）。代价是一个 capped key 可能在 sinceStart 窗口为真名、在 7d 窗口为 `"other"`（两窗口回答不同查询、cap 是有损边界，可接受）。`normalizeClient` 先把 UA 折叠到产品 token 降基数；model/endpoint/agentKind 低基数免 cap（review H1）。
 
 ## 4. `/api/stats` 端点
 

@@ -527,13 +527,19 @@ export function recordAcceptedRequest(timestamp = Date.now()): void {
 }
 
 /**
- * Resolve a capped dimension's effective key against `dimSinceStart` (the
- * process-lifetime superset, used as the single authority so the sinceStart and
- * per-bucket writes land under the SAME key). A new key past the cap merges into
- * `"other"`, bounding the per-dimension key count at `CARDINALITY_CAP + 1`.
+ * Resolve a capped dimension's effective key against ONE store (the process-lifetime
+ * `dimSinceStart` OR the target 5-minute bucket). Each store is its own cap authority
+ * so its key count is bounded at `CARDINALITY_CAP + 1` INDEPENDENTLY — critical across
+ * a restart: on load `dimSinceStart` resets to empty while a loaded bucket keeps its
+ * (already-capped) keys, so a single shared authority (the old `dimSinceStart`-only
+ * design) would let post-restart writes blow past the cap in that bucket. Resolving
+ * per store keeps each bucket bounded regardless of restart. The trade-off — a key may
+ * be a real name in the sinceStart window but `"other"` in the 7d window (or vice
+ * versa) at the margin — is acceptable (the two windows answer different queries; the
+ * cap is a lossy bound by design).
  */
-function resolveCappedKey(dimName: string, key: string): string {
-  const dim = dimSinceStart.get(dimName)
+function resolveCappedKey(store: Map<string, Map<string, StatAccumulator>>, dimName: string, key: string): string {
+  const dim = store.get(dimName)
   if (!dim) return key
   if (dim.has(key)) return key
   if (dim.size >= CARDINALITY_CAP) return "other"
@@ -546,8 +552,8 @@ function resolveCappedKey(dimName: string, key: string): string {
  * a `null` value skips that dimension; an array (multi-key, e.g. one request that
  * invoked several tools) accumulates once per DISTINCT key (deduped so a repeated
  * tool isn't double-counted). Each key is normalized (`trim() || "unknown"`),
- * cardinality-capped if `dimName ∈ cappedDimensions`, and accumulated into the
- * process-lifetime `dimSinceStart` + the request's 5-minute bucket (`startedAt`).
+ * cardinality-capped PER STORE if `dimName ∈ cappedDimensions`, and accumulated into
+ * the process-lifetime `dimSinceStart` + the request's 5-minute bucket (`startedAt`).
  */
 export function recordSettledRequest(
   keys: Record<string, string | Array<string> | null>,
@@ -559,14 +565,23 @@ export function recordSettledRequest(
   for (const [dimName, rawValue] of Object.entries(keys)) {
     if (rawValue === null) continue
     const capped = cappedDimensions?.has(dimName) ?? false
-    const seen = new Set<string>()
-    for (const rawKey of Array.isArray(rawValue) ? rawValue : [rawValue]) {
-      const normalized = normalizeKey(rawKey)
-      const key = capped ? resolveCappedKey(dimName, normalized) : normalized
-      if (seen.has(key)) continue
-      seen.add(key)
-      applySettledMeasures(getOrCreateDimKey(dimSinceStart, dimName, key), opts)
-      applySettledMeasures(getOrCreateDimKey(bucketDims, dimName, key), opts)
+    // Distinct raw keys first (a request that invoked the same tool twice counts once),
+    // then resolve + dedup PER STORE (a capped key may land on `"other"` in one store
+    // but a real name in the other, so each store needs its own seen-set).
+    const distinct = new Set((Array.isArray(rawValue) ? rawValue : [rawValue]).map((rawKey) => normalizeKey(rawKey)))
+    const seenSince = new Set<string>()
+    const seenBucket = new Set<string>()
+    for (const normalized of distinct) {
+      const sinceKey = capped ? resolveCappedKey(dimSinceStart, dimName, normalized) : normalized
+      if (!seenSince.has(sinceKey)) {
+        seenSince.add(sinceKey)
+        applySettledMeasures(getOrCreateDimKey(dimSinceStart, dimName, sinceKey), opts)
+      }
+      const bucketKey = capped ? resolveCappedKey(bucketDims, dimName, normalized) : normalized
+      if (!seenBucket.has(bucketKey)) {
+        seenBucket.add(bucketKey)
+        applySettledMeasures(getOrCreateDimKey(bucketDims, dimName, bucketKey), opts)
+      }
     }
   }
   pruneBuckets(opts.startedAt)
