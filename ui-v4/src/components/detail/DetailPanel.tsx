@@ -10,6 +10,7 @@ import { DiagnosticBar } from "@/components/detail/DiagnosticBar"
 import { ConvoSegment } from "@/components/detail/segments/ConvoSegment"
 import { HeadersSegment } from "@/components/detail/segments/HeadersSegment"
 import { MetaSegment } from "@/components/detail/segments/MetaSegment"
+import { ResponseSegment } from "@/components/detail/segments/ResponseSegment"
 import { StagesSegment } from "@/components/detail/segments/StagesSegment"
 import { useEntry } from "@/hooks/useEntry"
 
@@ -37,6 +38,9 @@ export function DetailPanel() {
           : null}
           {segment === "Stages" ?
             <StagesSegment entry={data} />
+          : null}
+          {segment === "Response" ?
+            <ResponseSegment entry={data} />
           : null}
           {segment === "Headers" ?
             <HeadersSegment entry={data} />

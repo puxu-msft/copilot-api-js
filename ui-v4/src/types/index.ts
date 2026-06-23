@@ -10,5 +10,7 @@ export type {
   QueryOptions,
   RequestLifecycleState,
   SessionSummary,
+  SseEventRecord,
   SummaryResult,
+  SystemBlock,
 } from "~backend/lib/history/store"

@@ -1,65 +1,73 @@
-import type { ReactNode } from "react"
+import { useState } from "react"
 
+import type { MessageContent } from "@/lib/content/types"
 import type { HistoryEntry } from "@/types"
 
 import { ConversationView } from "@/components/detail/ConversationView"
-import { MessageBlock } from "@/components/detail/MessageBlock"
+import { MessageDiffView } from "@/components/detail/diff/MessageDiffView"
+import { LegShell } from "@/components/detail/segments/LegShell"
 
-function LegShell({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="mb-2 border border-[var(--color-border)]">
-      <div className="mono bg-[#1a1a1f] px-2 py-1 text-[11px] uppercase tracking-wider text-[var(--color-primary)]">{label}</div>
-      <div className="p-2">{children}</div>
-    </div>
-  )
+function RequestLegBody({ messages, fallback }: { messages?: Array<MessageContent>; fallback?: unknown }) {
+  if (messages) return <ConversationView messages={messages} />
+  return <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{JSON.stringify(fallback, null, 2)}</pre>
 }
 
 export function StagesSegment({ entry }: { entry: HistoryEntry }) {
+  const [showDiff, setShowDiff] = useState(false)
+  const inboundMessages = entry.inboundRequest.messages
+  const effectiveMessages = entry.effectiveRequest?.messages
+  const canDiff = inboundMessages !== undefined && effectiveMessages !== undefined
+
   return (
     <div>
-      <LegShell label="Inbound (client → proxy)">
-        <ConversationView messages={entry.inboundRequest.messages ?? []} />
-      </LegShell>
-      {entry.effectiveRequest ?
-        <LegShell label="Effective (after rewrites)">
-          {entry.effectiveRequest.messages ?
-            <ConversationView messages={entry.effectiveRequest.messages} />
-          : <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">
-              {JSON.stringify(entry.effectiveRequest.payload ?? entry.effectiveRequest, null, 2)}
-            </pre>
-          }
-        </LegShell>
+      {canDiff ?
+        <>
+          <button
+            type="button"
+            onClick={() => setShowDiff((v) => !v)}
+            className={`mono mb-2 border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${showDiff ? "text-[var(--color-warn)]" : "text-[var(--color-primary)]"}`}
+          >
+            ↔ inbound vs effective diff
+          </button>
+          {showDiff ?
+            <LegShell label="Inbound ↔ Effective diff">
+              <MessageDiffView
+                left={inboundMessages}
+                right={effectiveMessages}
+              />
+            </LegShell>
+          : null}
+        </>
       : null}
-      {entry.outboundRequest ?
-        <LegShell label="Wire (proxy → upstream)">
-          {entry.outboundRequest.messages ?
-            <ConversationView messages={entry.outboundRequest.messages} />
-          : <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">
-              {JSON.stringify(entry.outboundRequest.payload ?? entry.outboundRequest, null, 2)}
-            </pre>
-          }
-        </LegShell>
-      : null}
-      {entry.outboundResponse ?
-        <LegShell label="Upstream (upstream → proxy)">
-          <div className="mono mb-1 text-[13px] text-[#888]">
-            status {entry.outboundResponse.status ?? "—"} · {entry.outboundResponse.model} · {entry.outboundResponse.success ? "ok" : "fail"}
+      <div className="@container">
+        <div className="grid grid-cols-1 gap-2 @4xl:grid-cols-3">
+          <div className="min-w-0">
+            <LegShell label="Inbound (client → proxy)">
+              <RequestLegBody messages={entry.inboundRequest.messages ?? []} />
+            </LegShell>
           </div>
-          {entry.outboundResponse.content ?
-            <MessageBlock message={entry.outboundResponse.content} />
-          : <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">
-              {entry.outboundResponse.rawBody ?? entry.outboundResponse.error ?? "(no content)"}
-            </pre>
-          }
-        </LegShell>
-      : null}
-      {entry.inboundResponse ?
-        <LegShell label="Forwarded (proxy → client)">
-          <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">
-            {JSON.stringify(entry.inboundResponse.content ?? `(${entry.inboundResponse.sseEvents?.length ?? 0} sse frames)`, null, 2)}
-          </pre>
-        </LegShell>
-      : null}
+          {entry.effectiveRequest ?
+            <div className="min-w-0">
+              <LegShell label="Effective (after rewrites)">
+                <RequestLegBody
+                  messages={entry.effectiveRequest.messages}
+                  fallback={entry.effectiveRequest.payload ?? entry.effectiveRequest}
+                />
+              </LegShell>
+            </div>
+          : null}
+          {entry.outboundRequest ?
+            <div className="min-w-0">
+              <LegShell label="Wire (proxy → upstream)">
+                <RequestLegBody
+                  messages={entry.outboundRequest.messages}
+                  fallback={entry.outboundRequest.payload ?? entry.outboundRequest}
+                />
+              </LegShell>
+            </div>
+          : null}
+        </div>
+      </div>
     </div>
   )
 }

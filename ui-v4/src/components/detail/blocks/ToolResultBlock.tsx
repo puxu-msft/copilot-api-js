@@ -1,11 +1,30 @@
-import type { ToolResultContentBlock } from "@/lib/content/types"
+import type {
+  //
+  ContentBlock,
+  ToolResultContentBlock,
+} from "@/lib/content/types"
+
+import { ContentRenderer } from "@/components/detail/ContentRenderer"
+
+type ToolResultContent = ToolResultContentBlock["content"]
+type ToolResultBlockArray = Extract<ToolResultContent, Array<unknown>>
+
+/** content 是非空的 content-block 数组(每个元素是带 `type` 的对象)时,走递归渲染。 */
+function isContentBlockArray(content: ToolResultContent): content is ToolResultBlockArray {
+  return Array.isArray(content) && content.length > 0
+}
+
+function renderContent(content: ToolResultContent) {
+  if (typeof content === "string") return <pre className="whitespace-pre-wrap break-all text-[#9a9]">{content}</pre>
+  if (isContentBlockArray(content)) return <ContentRenderer blocks={content as Array<ContentBlock>} />
+  return <pre className="whitespace-pre-wrap break-all text-[#9a9]">{JSON.stringify(content, null, 2)}</pre>
+}
 
 export function ToolResultBlock({ block }: { block: ToolResultContentBlock }) {
-  const text = typeof block.content === "string" ? block.content : JSON.stringify(block.content, null, 2)
   return (
     <div className="mono border-l-2 border-[#4a6a4a] bg-[#141a14] px-2 py-1 text-[13px]">
       <div className="text-[11px] uppercase tracking-wider text-[var(--color-muted)]">tool_result · {block.tool_use_id}</div>
-      <pre className="whitespace-pre-wrap break-all text-[#9a9]">{text}</pre>
+      {renderContent(block.content)}
     </div>
   )
 }

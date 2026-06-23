@@ -14,7 +14,7 @@
 4. **项目原则**：根 `CLAUDE.md` + `docs/DESIGN.md`（后端架构、bun-first、测试组织）。
 5. **设计草稿/决策**：`ui-v4/docs/decisions.md`（已被 DESIGN.md supersede）。
 
-## 已完成（Plan 01/02/03/05/06，nav 5 项全是真页）
+## 已完成（Plan 01/02/03/03b/05/06，nav 5 项全是真页 + 详情 diff）
 
 - **栈**：React 18 + TS strict + Vite 7 + **Tailwind v4**（`@tailwindcss/vite`，CSS-first `@theme`，主题 token 在 `src/styles/theme.css`）+ **TanStack Query**（server-state）+ **Zustand**（client-state）+ React Router 6 **hash 路由** + 移植的类式 **WSClient**（模块单例 + 引用计数 + latest-ref，规避 StrictMode churn）。视觉 **工业风 Terminal Amber**（暖近黑 + amber、锐角 rounded:0、左对齐拒绝居中、hairline、IBM Plex Mono、green/red/amber 信号色）。
 - **Plan 01**：应用壳层（NavRail/TopBar/AppShell）+ WS 状态 + 主题切换 + 路由 errorElement/catch-all。
@@ -22,16 +22,18 @@
 - **Plan 03**：详情 **C 布局**（DiagnosticBar + sticky sub-rail 懒加载段）+ **双格式内容渲染管线**（`normalizeToContentBlocks` 归一化 Anthropic/OpenAI → 块组件各包 ErrorBoundary → ContentRenderer 分发）+ Convo/Stages(7 腿)/Headers(4 腿)/Meta 段（**展示，无 diff**）。
 - **Plan 06**：Overview（精简健康 + Grafana 入口）/ Models（表 + raw 切换）/ Config（结构化 JSON 编辑器 + 保存）。**无后端改动**。
 - **Plan 05**：Sessions+Agent —— **后端新增**只读 `GET /history/api/sessions`（GROUP BY session_id 聚合）+ `/entries?agentId=&mainAgentOnly=` 接线；前端 Sessions 列表 + Session 详情（agent 泳道时间线，按 agentId 分 main/subagent，块深链）。
+- **Plan 03b**：详情 **diff**（**无后端改动**）——移植 `block-diff.ts` 算法核（jsdiff 词/行 diff + role/帧类型领域 aligner）→ `InlineParts`/`DiffRow` 渲染原语；**新增 Response 段**（sub-rail 五项）承载 `SseFrameDiff`（upstream↔forwarded 帧对齐，cap 守卫）+ 响应展示；`MessageDiffView`（inbound↔effective 消息 diff，Stages 顶部切换）；Stages 请求三腿 **容器查询并排**（`@container` 窄→单列/宽→三列）；`SystemMessage` 独立支路（original↔rewritten↔diff，`UnifiedLineDiff` 首消费 `diffLinesRich`，自动转义）；tool_result 内嵌块递归走 ContentRenderer。**注**：DESIGN §9 提及的 "formatters.ts 标签过滤" 经实证不存在（详情应展示完整 system prompt），故未做。
 - 全局**字号上调一档**（8→11/9→12/10→13/11→14，基准 13→15）+ 配套加宽固定容器消除溢出。
 
-## 下一步（增强，挑一个；非缺页）
+## 下一步（增强，挑一个；非缺页）—— **plan 文档已写好，直接执行**
 
-- **Plan 03b**：详情 **diff** —— SSE 帧 diff（forwarded vs upstream）、消息级 inbound↔effective rewrite diff、stages 并排对比。**用 jsdiff**（移植旧 `ui/src/utils/block-diff.ts`：jsdiff 做叶子词/行 diff + 自建按 role/帧类型领域对齐）；SystemMessage 独立支路 + tool_result 内嵌块递归也归这里。
-- **Plan 04**：**请求内搜索** —— 搜底层数据模型（非 DOM）、跨段命中计数 badge、n/N 导航、regex/大小写/整词；**JSON 段需可控渲染器**（CodeMirror 6 或自建虚拟化树，因 @uiw/react-json-view 无法被外部驱动）。详情见 DESIGN.md §6。
-- **Plan 07**：视觉打磨 + **响应式退化**（spec §8：≥1200 三栏 / 768-1200 图标 rail / <768 列表-详情全屏切换 + sub-rail 转横向标签）+ 命令面板(⌘K) + 全局搜索实装（后端有 trigram FTS5）。
-- **Plan 06b**：Config 结构化分组表单（左 section 导航 + 字段控件 + 校验，spec §7）。
-- **Plan 05b**：Session client/cost 列（需后端 entries_v2 加 multiplier/client 列 + 写路径，成本持久化 spec 已定暂缓）+ 工作台 Group-by(None/Session/Agent) + subagent 种类名（从 Task payload `subagent_type` 推断）。
-- **tooling 待办**：本仓库 eslint 无 `eslint-plugin-react-hooks` → ui-v4 hooks 拿不到 rules-of-hooks/exhaustive-deps 校验，建议补。
+- **Plan 04**（`plans/2026-06-23-04-in-request-search.md`）：**请求内搜索** —— 搜底层数据模型、跨段命中计数、n/N、regex/大小写/整词 + **可控 JSON 渲染器**（CodeMirror/自建树）。⚠ 全新高风险工程，含技术尖刺。
+- **Plan 07**（`plans/2026-06-23-07-polish-responsive.md`）：**视觉打磨 + 响应式**（三断点）+ 命令面板(⌘K) + 全局搜索实装 + shadcn 基底 + 补 react-hooks eslint。
+- **Plan 06b**（`plans/2026-06-23-06b-config-form.md`）：Config **结构化分组表单**（section 导航 + 字段控件 + 校验，移植旧 UI config 组件）。
+- **Plan 05b**（`plans/2026-06-23-05b-session-enrich.md`）：Session **client/cost 列**（依赖成本轮：entries_v2 加 multiplier/client 列）+ 工作台 **group-by** + subagent **种类名**推断。
+- **tooling 待办**：本仓库 eslint 无 `eslint-plugin-react-hooks` → ui-v4 hooks 拿不到 rules-of-hooks/exhaustive-deps 校验（已并入 Plan 07 Task 6）。
+
+> 这些 plan 文档是**计划级**（goal/architecture/数据契约 deep-read 指针/文件结构/任务分解 + 锚点/验收/暂缓）。执行时若某任务需要，先 deep-read 后端真实类型把该任务展开成 bite-sized（带真实代码），再派 subagent——参照已执行的 01/02/03/05/06 的 bite-sized 详细度。
 
 ## 工作方法（务必遵守）
 

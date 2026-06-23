@@ -33,6 +33,23 @@ describe("detail segments", () => {
     render(<StagesSegment entry={base} />)
     expect(screen.getByText(/Inbound/)).toBeDefined()
   })
+  it("StagesSegment renders all three request legs side-by-side in a container-query grid", () => {
+    const e = {
+      ...base,
+      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
+      outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
+    } as unknown as HistoryEntry
+    const { container } = render(<StagesSegment entry={e} />)
+    expect(screen.getByText(/Inbound \(client → proxy\)/)).toBeDefined()
+    expect(screen.getByText(/Effective \(after rewrites\)/)).toBeDefined()
+    expect(screen.getByText(/Wire \(proxy → upstream\)/)).toBeDefined()
+    const cq = container.querySelector(String.raw`.\@container`)
+    expect(cq).not.toBeNull()
+    const grid = cq?.querySelector("div")
+    expect(grid?.className).toContain("grid")
+    expect(grid?.className).toContain("grid-cols-1")
+    expect(grid?.className).toContain("@4xl:grid-cols-3")
+  })
   it("HeadersSegment shows a header key/leg", () => {
     const e = { ...base, httpHeaders: { inboundRequest: { "x-test": "v1" } } } as HistoryEntry
     render(<HeadersSegment entry={e} />)
