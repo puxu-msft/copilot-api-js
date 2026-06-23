@@ -2,6 +2,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { StreamEvent } from "~/types/api/anthropic"
 
+import { anthropicSseFrame } from "../sse-frame"
 import {
   //
   findDowngradeMarkPos,
@@ -28,8 +29,11 @@ export interface ToolCallTextRecoverer {
 // 完整 `<invoke name="X">`（跨度 16+len(X)），固定窗口对长 MCP 工具名会泄漏 call/半截开标签。
 const MARK_LOOKAHEAD_FLOOR = 32
 
+// Synthesized frames must carry the `event:` line (= their `type`) or the Anthropic
+// SDK decoder drops them — see anthropic/sse-frame.ts. Frames replayed from buffered
+// upstream (rollback / passthrough) already keep their original event line.
 function sse(obj: Record<string, unknown>): ServerSentEventMessage {
-  return { data: JSON.stringify(obj) }
+  return anthropicSseFrame(obj as { type: string } & Record<string, unknown>)
 }
 
 /**

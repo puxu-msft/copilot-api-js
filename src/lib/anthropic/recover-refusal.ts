@@ -43,6 +43,8 @@ import type {
   StreamEvent,
 } from "~/types/api/anthropic"
 
+import { anthropicSseFrame } from "./sse-frame"
+
 /**
  * The synthetic completion text shown to the client when a thinking-only refusal
  * is recovered. Fixed (not config-driven) — there is no real need for per-deployment
@@ -61,19 +63,14 @@ export function isThinkingOnlyRefusal(stopReason: string | null | undefined, saw
 
 /**
  * Build the synthetic `text` content-block frames (start → delta → stop) at `index`.
- *
- * Each frame carries an `event:` line matching its `type` — a frame with only a
- * `data:` line decodes to `sse.event === null`, which the Anthropic SDK's stream
- * decoder (`@anthropic-ai/sdk` core/streaming) silently DROPS (it dispatches on the
- * SSE event name, not the parsed `data.type`; even the SSE-spec `"message"` default
- * is not applied — `event` stays `null`). Real Anthropic frames always send the
- * `event:` line, so the synthetic frames must too or Claude Code shows an empty turn.
+ * Each frame carries an `event:` line (= its `type`) via {@link anthropicSseFrame} —
+ * a `data:`-only frame is dropped by the Anthropic SDK decoder (see sse-frame.ts).
  */
 export function buildSyntheticTextFrames(index: number): Array<ServerSentEventMessage> {
   return [
-    { event: "content_block_start", data: JSON.stringify({ type: "content_block_start", index, content_block: { type: "text", text: "" } }) },
-    { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index, delta: { type: "text_delta", text: REFUSAL_RECOVERY_TEXT } }) },
-    { event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index }) },
+    anthropicSseFrame({ type: "content_block_start", index, content_block: { type: "text", text: "" } }),
+    anthropicSseFrame({ type: "content_block_delta", index, delta: { type: "text_delta", text: REFUSAL_RECOVERY_TEXT } }),
+    anthropicSseFrame({ type: "content_block_stop", index }),
   ]
 }
 

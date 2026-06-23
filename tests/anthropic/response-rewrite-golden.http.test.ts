@@ -70,9 +70,41 @@ function ev(event: string, obj: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`
 }
 
-/** A data-only SSE frame (recoverer-synthesized frames carry no `event:` line). */
-function dat(obj: unknown): string {
-  return `data: ${JSON.stringify(obj)}\n\n`
+/**
+ * Invariant guard: every forwarded Anthropic SSE frame MUST carry an `event:` line
+ * that is a recognized Anthropic stream event name. The `@anthropic-ai/sdk` decoder
+ * dispatches on the event NAME — a `data:`-only frame decodes to `sse.event === null`
+ * and is silently DROPPED (it doesn't apply the SSE `"message"` default), so an
+ * event-less synthesized frame vanishes for Claude Code (verified against the real SDK
+ * in exp/refusal-sse-event-verify/). Once yielded, the SDK re-derives behavior from the
+ * parsed `data.type`, so `event` need not EQUAL `type` (thinking-signature-compat emits
+ * a signature_delta under `event: content_block_start` — benign, since that event name
+ * is accepted and the parsed type drives accumulation). This locks the class so no
+ * future synthesizer can emit an event-less (dropped) frame.
+ */
+const SDK_STREAM_EVENTS = new Set([
+  "message_start",
+  "message_delta",
+  "message_stop",
+  "content_block_start",
+  "content_block_delta",
+  "content_block_stop",
+  "ping",
+  "error",
+])
+function assertEventLineInvariant(wire: string): void {
+  for (const blk of wire.split("\n\n")) {
+    if (!blk.trim()) continue
+    const lines = blk.split("\n")
+    const data = lines.find((l) => l.startsWith("data: "))?.slice(6)
+    if (!data || data === "[DONE]") continue
+    if ((JSON.parse(data) as { type?: string }).type === undefined) continue
+    const event = lines.find((l) => l.startsWith("event: "))?.slice(7)
+    expect(
+      SDK_STREAM_EVENTS.has(event ?? ""),
+      `frame ${data.slice(0, 60)} must carry a recognized "event:" line — the Anthropic SDK drops event-less/unknown frames (got ${JSON.stringify(event)})`,
+    ).toBe(true)
+  }
 }
 
 const DONE = "data: [DONE]\n\n"
@@ -291,14 +323,14 @@ const S2_GOLDEN = [
   messageStop(),
 ].join("")
 
-// S3a: text start forwarded, deltas buffered; COMMIT emits stopFrame + synth tool_use (upstream idx1, no event line).
+// S3a: text start forwarded, deltas buffered; COMMIT emits stopFrame + synth tool_use (upstream idx1; synth frames carry event: lines = their type).
 const S3A_GOLDEN = [
   messageStart(),
   ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
   ev("content_block_stop", { type: "content_block_stop", index: 0 }),
-  dat({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: SYNTH_ID, name: "search", input: {} } }),
-  dat({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ query: "weather" }) } }),
-  dat({ type: "content_block_stop", index: 1 }),
+  ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: SYNTH_ID, name: "search", input: {} } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ query: "weather" }) } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 1 }),
   messageDelta("tool_use"),
   messageStop(),
 ].join("")
@@ -339,9 +371,9 @@ const S5_GOLDEN = [
   messageStart(),
   ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
   ev("content_block_stop", { type: "content_block_stop", index: 0 }),
-  dat({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: SYNTH_ID, name: "search", input: {} } }),
-  dat({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ query: "weather" }) } }),
-  dat({ type: "content_block_stop", index: 1 }),
+  ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: SYNTH_ID, name: "search", input: {} } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ query: "weather" }) } }),
+  ev("content_block_stop", { type: "content_block_stop", index: 1 }),
   messageDelta("tool_use"),
   messageStop(),
 ].join("")
@@ -399,7 +431,7 @@ const S7_OUTBOUND = {
 
 // S8 (recover-refusal): a thinking-only refusal (thinking start + signature_delta +
 // stop, then message_delta{stop_reason:"refusal"}) is recovered on the FORWARDED
-// stream by appending a synthetic text block (data-only, idx maxIndex+1) and
+// stream by appending a synthetic text block (event: lines = type, idx maxIndex+1) and
 // rewriting the delta to end_turn (stop_details cleared). The empirical shape of
 // req_1782214935133_68. Default thinking-signature-compat no-ops here (the start's
 // signature is empty + a real signature_delta follows = the standard shape).
@@ -522,6 +554,10 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
     applyFetchMock(upstreamMock)
     await resetAnthropicFeatureNegotiationForTesting()
+  })
+
+  test("invariant: every forwarded golden frame carries event: === data.type (SDK drops event-less)", () => {
+    for (const g of [S1_GOLDEN, S2_GOLDEN, S3A_GOLDEN, S3B_GOLDEN, S4_GOLDEN, S5_GOLDEN, S7_GOLDEN, S8_GOLDEN]) assertEventLineInvariant(g)
   })
 
   test("S1 server-tool suppress + index densify (streaming)", async () => {
