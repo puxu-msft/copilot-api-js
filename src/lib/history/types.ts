@@ -232,6 +232,13 @@ export interface HistoryEntry {
   currentStrategy?: string
   durationMs?: number
   /**
+   * Top-level failure reason for non-success terminal states (failed / aborted /
+   * interrupted), projected from `outboundResponse.error` else the last attempt's
+   * error — so triage need not crawl the per-leg errors (RFC pre-response-abort Q3).
+   * A projection, not a new capture; absent for successful / non-terminal entries.
+   */
+  failureReason?: string
+  /**
    * Wire byte size of the request the proxy sent upstream (↑). DERIVED at
    * serialize time from the best available stored payload (outbound → effective
    * → inbound). Persisted in the `entries_v2.request_bytes` column for list

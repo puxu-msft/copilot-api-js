@@ -39,6 +39,7 @@ refusal 只在 `message_delta` 才可知，那时 thinking 帧已转发、无法
 
 - 纯逻辑：[src/lib/anthropic/recover-refusal.ts](../src/lib/anthropic/recover-refusal.ts) —— `createRefusalRecoverer`（流式逐帧状态机）+ `recoverRefusalInResponse`（非流式整体）+ 纯助手（`isThinkingOnlyRefusal`/`buildSyntheticTextFrames`/`rewriteRefusalMessageDelta`）。
 - 接入：作为第 5 条 Anthropic `ResponseRewrite`（`order: 400`，跑在最后）加入 [response-rewrite-adapters.ts](../src/lib/codec/anthropic/response-rewrite-adapters.ts) 的 `ANTHROPIC_RESPONSE_REWRITES`，由 driver S5 链（流式 `transform` / 非流式 `transformWhole`）驱动。`appliesTo` 关时 driver 整条跳过 = 逐字节透传。
+- 合成帧契约：`buildSyntheticTextFrames` 经 [src/lib/anthropic/sse-frame.ts](../src/lib/anthropic/sse-frame.ts) 的 `anthropicSseFrame`（`event:` = 帧 `type`）构造——**合成 SSE 帧必须带 `event:` 行**，否则 Anthropic SDK（Claude Code 所封装）按 SSE event 名分发时 `event=null`（纯 `data:` 帧）整帧静默丢弃（连 SSE `"message"` 默认都不应用），客户端会收到空 `end_turn` 轮。recover-tool-call 与本模块共享这一单一 synth 入口，golden 的 `assertEventLineInvariant` 守卫钉死该不变量。详见 memory `reference-anthropic-sdk-drops-eventless-sse-frames`。
 - 激活记 `ctx.recordFeature("refusal-recovered")` + 一行 `[REFUSAL]` info 日志。
 
 ## History 保真

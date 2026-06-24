@@ -221,7 +221,10 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
     cache_creation: usage?.cache_creation_input_tokens ?? null,
     reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
     stop_reason: entry.outboundResponse?.stop_reason ?? null,
-    error_message: entry.outboundResponse?.error ?? null,
+    // Backfill from the top-level failureReason projection so an entry whose
+    // outboundResponse leg is absent (orphan / interrupted) still surfaces its
+    // failure reason in the list view (RFC pre-response-abort Q3).
+    error_message: entry.outboundResponse?.error ?? entry.failureReason ?? null,
     message_count: entry.inboundRequest.messages?.length ?? null,
     preview_text: extractPreviewText(entry),
     search_text: extractSearchText(entry),

@@ -575,6 +575,15 @@ export function createRequestContext(opts: {
         entry.outboundResponse = _response
       }
 
+      // Top-level failure-reason projection (RFC pre-response-abort Q3): surface the
+      // failure reason at the entry level from the richest available source — the
+      // settled response error else the last attempt's error — so triage need not
+      // crawl outboundResponse / per-attempt errors. Only for non-success terminals.
+      if (_state === "failed" || _state === "aborted" || _state === "interrupted") {
+        const reason = _response?.error ?? _attempts.at(-1)?.error?.message
+        if (reason) entry.failureReason = reason
+      }
+
       if (_forwardedResponse) {
         entry.inboundResponse = _forwardedResponse
       }

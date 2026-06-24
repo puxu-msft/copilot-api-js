@@ -64,6 +64,7 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { buildOpenAIResponseData } from "~/lib/request"
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
@@ -236,8 +237,11 @@ function renderNonStreamingV4(
   // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
   const httpResponse = c.json(clientResponse)
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
-  env.ctx.complete({
-    success: true,
+
+  // Non-streaming semantic-truncation gate (missing finish_reason → fail, not silent complete).
+  const truncationReason = openaiNonStreamingTruncation(choice.finish_reason)
+  const responseData = {
+    success: !truncationReason,
     model: response.model,
     usage: {
       input_tokens: usage?.prompt_tokens ?? 0,
@@ -246,7 +250,16 @@ function renderNonStreamingV4(
     },
     stop_reason: choice.finish_reason ?? undefined,
     content: choice.message,
-  })
+  }
+  if (truncationReason) {
+    env.ctx.fail(response.model, new Error(truncationReason), {
+      usage: responseData.usage,
+      stop_reason: responseData.stop_reason,
+      content: responseData.content,
+    })
+  } else {
+    env.ctx.complete(responseData)
+  }
 
   return httpResponse
 }

@@ -100,6 +100,7 @@ import {
 import { resolveModelName } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -640,8 +641,13 @@ function renderNonStreamingV4(
   // (proxy→client), THEN complete — finalize must see the inboundResponse leg.
   const clientResponse = c.json(finalResponse)
   reqCtx.setInboundResponseHeaders(Object.fromEntries(clientResponse.headers.entries()))
-  reqCtx.complete({
-    success: true,
+
+  // Non-streaming semantic-truncation gate: a 200 without stop_reason is a
+  // semantically truncated response — record fail() (not silent complete) while
+  // still forwarding the upstream body + preserving the partial (richest-data-flow).
+  const truncationReason = anthropicNonStreamingTruncation(response.stop_reason)
+  const responseData = {
+    success: !truncationReason,
     model: response.model,
     usage: {
       input_tokens: response.usage.input_tokens,
@@ -651,7 +657,16 @@ function renderNonStreamingV4(
     },
     stop_reason: response.stop_reason ?? undefined,
     content: { role: "assistant", content: response.content },
-  })
+  }
+  if (truncationReason) {
+    reqCtx.fail(response.model, new Error(truncationReason), {
+      usage: responseData.usage,
+      stop_reason: responseData.stop_reason,
+      content: responseData.content,
+    })
+  } else {
+    reqCtx.complete(responseData)
+  }
 
   return clientResponse
 }

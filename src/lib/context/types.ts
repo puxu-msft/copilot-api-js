@@ -148,6 +148,15 @@ export interface HistoryEntryData {
   attemptCount: number
   currentStrategy?: string
   durationMs: number
+  /**
+   * Top-level failure reason for non-success terminal states (failed / aborted /
+   * interrupted), projected from the richest available source —
+   * `outboundResponse.error` else the last attempt's error. A convenience surface
+   * so triage need not crawl `outboundResponse` / `attempts[].error` (RFC
+   * pre-response-abort Q3; the per-leg data is unchanged — this is a projection,
+   * not a new capture). Absent for successful / non-terminal entries.
+   */
+  failureReason?: string
   sessionId?: string
   agentId?: string
   transport?: RequestTransport

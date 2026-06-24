@@ -193,6 +193,30 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(ctx.currentAttempt!.durationMs).toBeGreaterThanOrEqual(0)
   })
 
+  test("toHistoryEntry projects a top-level failureReason for failed entries (from outboundResponse.error)", () => {
+    const { ctx } = makeContext()
+    ctx.fail("claude-opus-4.8", new Error("upstream blew up"))
+    const entry = ctx.toHistoryEntry()
+    expect(entry.state).toBe("failed")
+    expect(entry.failureReason).toBe("upstream blew up")
+  })
+
+  test("toHistoryEntry surfaces a top-level failureReason for aborted entries", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.setAttemptError({ type: "network_error", status: 0, raw: new Error("RST"), message: "connection reset" })
+    ctx.abort("claude-opus-4.8") // abort() sets _response.error = "client disconnected"
+    const entry = ctx.toHistoryEntry()
+    expect(entry.state).toBe("aborted")
+    expect(entry.failureReason).toBe("client disconnected")
+  })
+
+  test("toHistoryEntry leaves failureReason absent for successful entries", () => {
+    const { ctx } = makeContext()
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
+    expect(ctx.toHistoryEntry().failureReason).toBeUndefined()
+  })
+
   test("setAttemptTransport updates current and effective transport", () => {
     const { ctx } = makeContext()
     ctx.beginAttempt({})

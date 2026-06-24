@@ -56,6 +56,7 @@ GitHub Copilot 的 Anthropic 上游偶发把工具调用渲染成命名空间剥
 2. **默认 off、彻底 no-op。** flag 默认 `false`，关闭时转发链零开销。
 3. **失败回退零丢失。** 门控不过 / 解析失败 / round-trip 不符 / 流中断 → 原样透传缓冲帧，绝不改写、绝不丢字节。
 4. **保守优先 + 绝不部分成功。** 「解析成功但内容腰斩/错位」比「干净失败」危险得多（客户端拿残缺工具调用执行真实副作用，用户无感）。§4.3 的 round-trip 校验专门消灭这类。漏报（退回现状）永远优于误报。
+5. **合成帧必须带 `event:` 行。** 合成的 `content_block_*` 帧经 [src/lib/anthropic/sse-frame.ts](../../src/lib/anthropic/sse-frame.ts) 的 `anthropicSseFrame`（`event:` = 帧 `type`）构造——Anthropic SDK 按 SSE event 名分发，纯 `data:` 帧解码成 `event=null` 被**静默丢弃**（连 SSE `"message"` 默认都不应用）。早期 `sse()` 漏发 event 行，SDK 客户端（Claude Code）会整帧丢失合成的 tool_use；现收敛到单一 synth 入口（与 recover-refusal 共享）+ golden `assertEventLineInvariant` 守卫。详见 memory `reference-anthropic-sdk-drops-eventless-sse-frames`。
 
 ### 1.1 不做（YAGNI）
 - **不重试上游**（唯一硬理由：降级概率性、无收敛上界，重试不保证不再降级）。

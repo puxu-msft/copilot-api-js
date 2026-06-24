@@ -171,7 +171,7 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     messageCount: entry.inboundRequest.messages?.length ?? 0,
     responseModel: entry.outboundResponse?.model,
     responseSuccess: entry.outboundResponse?.success,
-    responseError: entry.outboundResponse?.error,
+    responseError: entry.outboundResponse?.error ?? entry.failureReason,
     usage: entry.outboundResponse?.usage,
     durationMs: entry.durationMs,
     requestBytes: entry.requestBytes,

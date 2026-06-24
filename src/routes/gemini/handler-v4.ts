@@ -56,6 +56,7 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { state } from "~/lib/state"
 import { classifyStreamError } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
@@ -198,8 +199,11 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
   // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
   const httpResponse = c.json(gemini)
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
-  env.ctx.complete({
-    success: true,
+
+  // Non-streaming semantic-truncation gate (Gemini renders from a CC response → check finish_reason).
+  const truncationReason = openaiNonStreamingTruncation(choice.finish_reason)
+  const responseData = {
+    success: !truncationReason,
     model: chat.model,
     usage: {
       input_tokens: usage?.prompt_tokens ?? 0,
@@ -208,7 +212,12 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
     },
     stop_reason: choice.finish_reason ?? undefined,
     content: choice.message,
-  })
+  }
+  if (truncationReason) {
+    env.ctx.fail(chat.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+  } else {
+    env.ctx.complete(responseData)
+  }
 
   return httpResponse
 }
