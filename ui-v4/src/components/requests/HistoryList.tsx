@@ -1,8 +1,4 @@
-import {
-  //
-  useNavigate,
-  useParams,
-} from "react-router-dom"
+import { useNavigate } from "react-router-dom"
 
 import { RequestRow } from "@/components/requests/RequestRow"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
@@ -11,7 +7,7 @@ import { useListStore } from "@/stores/list-store"
 /** History —— 游标分页 + 缓冲横幅 + tail 暂停 + 选中粘滞(spec §4.2)。 */
 export function HistoryList() {
   const navigate = useNavigate()
-  const { id: selectedId } = useParams()
+  const selectedId = useListStore((s) => s.selectedId)
   const { entries, total, isLoading, hasNextPage, fetchNextPage } = useHistoryInfinite()
   const bufferedIds = useListStore((s) => s.bufferedIds)
   const tailOn = useListStore((s) => s.tailOn)

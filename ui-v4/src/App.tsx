@@ -7,7 +7,8 @@ import {
 import { ConfigPage } from "@/components/config/ConfigPage"
 import { ModelsPage } from "@/components/models/ModelsPage"
 import { OverviewPage } from "@/components/overview/OverviewPage"
-import { RequestsWorkbench } from "@/components/requests/RequestsWorkbench"
+import { RequestDetailPage } from "@/components/requests/RequestDetailPage"
+import { RequestsListPage } from "@/components/requests/RequestsListPage"
 import { SessionDetailPage } from "@/components/sessions/SessionDetailPage"
 import { SessionsPage } from "@/components/sessions/SessionsPage"
 import { AppShell } from "@/components/shell/AppShell"
@@ -29,8 +30,8 @@ export const router = createHashRouter([
           />
         ),
       },
-      { path: "requests", element: <RequestsWorkbench /> },
-      { path: "requests/:id", element: <RequestsWorkbench /> },
+      { path: "requests", element: <RequestsListPage /> },
+      { path: "requests/:id", element: <RequestDetailPage /> },
       { path: "overview", element: <OverviewPage /> },
       { path: "models", element: <ModelsPage /> },
       { path: "config", element: <ConfigPage /> },

@@ -1,8 +1,11 @@
+import { useNavigate } from "react-router-dom"
+
 import { RequestRow } from "@/components/requests/RequestRow"
 import { useLiveStore } from "@/stores/live-store"
 
 /** Live 泳道 —— spec §4.2:常驻、固定高度、内部独立滚动、空时空态、永不分页。 */
 export function LiveLane() {
+  const navigate = useNavigate()
   const byId = useLiveStore((s) => s.byId)
   const rows = Object.values(byId)
   return (
@@ -17,6 +20,7 @@ export function LiveLane() {
               state={r.state}
               model={r.model}
               durationMs={r.durationMs}
+              onClick={() => navigate(`/requests/${r.id}`)}
               live
             />
           ))
