@@ -116,8 +116,33 @@ describe("DetailTocTree", () => {
     const activeRow = screen.getByText("assistant · hi").closest("div")
     const inactiveRow = screen.getByText("user · hello").closest("div")
 
+    // Active row: left accent bar + amber text; inactive row has neither.
     expect(activeRow?.className).toContain("text-[var(--color-primary)]")
+    expect(activeRow?.className).toContain("border-l-[var(--color-primary)]")
     expect(inactiveRow?.className).not.toContain("text-[var(--color-primary)]")
+    expect(inactiveRow?.className).not.toContain("border-l-[var(--color-primary)]")
+  })
+
+  it("renders a kind-colored marker per node", () => {
+    render(
+      <DetailTocTree
+        nodes={tree}
+        onSelect={() => {}}
+      />,
+    )
+
+    // The kind dot is the marker element immediately preceding each label button.
+    // user role → amber primary; assistant role → soft blue (#9ad) — mirrors
+    // MessageBlock's ROLE_COLOR so the two views stay consistent.
+    const userRow = screen.getByText("user · hello").closest("div")
+    const assistantRow = screen.getByText("assistant · hi").closest("div")
+
+    const userDot = userRow?.querySelector("span[aria-hidden]")
+    const assistantDot = assistantRow?.querySelector("span[aria-hidden]")
+
+    expect(userDot).not.toBeNull()
+    expect((userDot as HTMLElement).style.color).toBe("var(--color-primary)")
+    expect((assistantDot as HTMLElement).style.color).toBe("rgb(153, 170, 221)")
   })
 
   it("renders recursively to arbitrary depth", () => {

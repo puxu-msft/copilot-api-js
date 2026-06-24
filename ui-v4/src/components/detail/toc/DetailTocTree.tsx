@@ -8,6 +8,34 @@ interface DetailTocTreeProps {
   activeAnchor?: string
 }
 
+/**
+ * `kind` → leading-dot color. Role kinds mirror `MessageBlock`'s `ROLE_COLOR`
+ * for cross-view consistency; block kinds reuse existing theme tokens / the
+ * code-highlight palette (purple thinking, olive-green ok) so the tree reads in
+ * the same Terminal Amber vocabulary as the content pane.
+ */
+const KIND_COLOR: Record<string, string> = {
+  // roles (mirror MessageBlock ROLE_COLOR)
+  user: "var(--color-primary)",
+  assistant: "#9ad",
+  system: "var(--color-muted)",
+  tool: "#4a6a4a",
+  // Stages leg
+  leg: "var(--color-primary)",
+  // block types
+  text: "var(--color-muted)",
+  tool_use: "#7fae7f",
+  tool_result: "#7fae7f",
+  thinking: "#9a8ad0",
+  redacted_thinking: "#9a8ad0",
+  image: "#9ad",
+}
+
+/** Resolve a kind's marker color, falling back to muted for unknown kinds. */
+function kindColor(kind: string): string {
+  return KIND_COLOR[kind] ?? "var(--color-muted)"
+}
+
 /** Collect the anchorIds of every node that has children (for default-collapse). */
 function collectParentAnchors(nodes: Array<TocNode>): Array<string> {
   return nodes.flatMap((node) => (node.children && node.children.length > 0 ? [node.anchorId, ...collectParentAnchors(node.children)] : []))
@@ -15,14 +43,13 @@ function collectParentAnchors(nodes: Array<TocNode>): Array<string> {
 
 interface TocRowProps {
   node: TocNode
-  depth: number
   collapsed: Set<string>
   onToggle: (anchorId: string) => void
   onSelect: (anchorId: string) => void
   activeAnchor?: string
 }
 
-function TocRow({ node, depth, collapsed, onToggle, onSelect, activeAnchor }: TocRowProps) {
+function TocRow({ node, collapsed, onToggle, onSelect, activeAnchor }: TocRowProps) {
   const children = node.children ?? []
   const hasChildren = children.length > 0
   const isCollapsed = collapsed.has(node.anchorId)
@@ -31,8 +58,12 @@ function TocRow({ node, depth, collapsed, onToggle, onSelect, activeAnchor }: To
   return (
     <div>
       <div
-        className={`mono flex items-center text-[12px] leading-tight ${isActive ? "bg-[#3a2f1a] text-[var(--color-primary)]" : "text-[#999]"}`}
-        style={{ paddingLeft: `${depth * 12}px` }}
+        data-active={isActive ? "" : undefined}
+        className={`mono flex items-center border-l-2 text-[11px] leading-tight transition-colors ${
+          isActive ?
+            "border-l-[var(--color-primary)] bg-[#221b0e] text-[var(--color-primary)]"
+          : "border-l-transparent text-[#9a8f78] hover:bg-[#1c1a14] hover:text-[var(--color-text)]"
+        }`}
       >
         {hasChildren ?
           <button
@@ -42,31 +73,40 @@ function TocRow({ node, depth, collapsed, onToggle, onSelect, activeAnchor }: To
               e.stopPropagation()
               onToggle(node.anchorId)
             }}
-            className="w-4 shrink-0 text-left text-[var(--color-muted)]"
+            className="flex w-4 shrink-0 items-center justify-center text-[10px] text-[var(--color-muted)] transition-transform hover:text-[var(--color-text)]"
+            style={{ transform: isCollapsed ? "rotate(0deg)" : "rotate(90deg)" }}
           >
-            {isCollapsed ? "▸" : "▾"}
+            ▸
           </button>
         : <span className="w-4 shrink-0" />}
+        <span
+          aria-hidden="true"
+          className="mr-1.5 shrink-0 text-[8px] leading-none"
+          style={{ color: kindColor(node.kind) }}
+        >
+          ●
+        </span>
         <button
           type="button"
           onClick={() => onSelect(node.anchorId)}
-          className="flex-1 truncate px-1 py-0.5 text-left"
+          className="flex-1 truncate py-0.5 pr-1 text-left"
         >
           {node.label}
         </button>
       </div>
       {hasChildren && !isCollapsed ?
-        children.map((child) => (
-          <TocRow
-            key={child.anchorId}
-            node={child}
-            depth={depth + 1}
-            collapsed={collapsed}
-            onToggle={onToggle}
-            onSelect={onSelect}
-            activeAnchor={activeAnchor}
-          />
-        ))
+        <div className="ml-2 border-l border-[var(--color-border)]/60 pl-1">
+          {children.map((child) => (
+            <TocRow
+              key={child.anchorId}
+              node={child}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              onSelect={onSelect}
+              activeAnchor={activeAnchor}
+            />
+          ))}
+        </div>
       : null}
     </div>
   )
@@ -77,6 +117,10 @@ function TocRow({ node, depth, collapsed, onToggle, onSelect, activeAnchor }: To
  * active highlight. No data fetching and no scroll/anchor logic (Task 3's hook
  * owns that). Block children start COLLAPSED so the tree shows message-level
  * nodes first; clicking a node's toggle reveals its children.
+ *
+ * Hierarchy reads as a tree via a per-level vertical guide hairline + a
+ * `kind`-colored leading dot; the active row gets a left accent bar + soft
+ * amber tint instead of a solid block.
  */
 export function DetailTocTree({ nodes, onSelect, activeAnchor }: DetailTocTreeProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collectParentAnchors(nodes)))
@@ -99,7 +143,6 @@ export function DetailTocTree({ nodes, onSelect, activeAnchor }: DetailTocTreePr
         <TocRow
           key={node.anchorId}
           node={node}
-          depth={0}
           collapsed={collapsed}
           onToggle={toggle}
           onSelect={onSelect}
