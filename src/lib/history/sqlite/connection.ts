@@ -252,7 +252,13 @@ function reclaimOrphanedActiveRows(database: Database): void {
   // accurate regardless of the open-sequence ordering.)
   const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(pid, bootTime) as { n: number }
   if (n === 0) return
-  database.prepare(`UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at) WHERE ${where}`).run(pid, bootTime)
+  // Backfill a failure reason (richest-data-flow) so the orphaned row surfaces WHY in the
+  // list view; COALESCE preserves any real reason already persisted before the crash.
+  database
+    .prepare(
+      `UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at), error_message = COALESCE(error_message, 'orphaned by a prior process — recovered on restart') WHERE ${where}`,
+    )
+    .run(pid, bootTime)
   consola.info(`[history/sqlite] reclaimed ${n} orphaned active row(s) from a prior process → interrupted`)
 }
 

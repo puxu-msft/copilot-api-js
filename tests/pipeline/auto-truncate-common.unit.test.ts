@@ -134,4 +134,10 @@ describe("tryParseAndLearnLimit", () => {
     const result = tryParseAndLearnLimit(error, "test-model")
     expect(result).toBeNull()
   })
+
+  test("returns null for 400 with invalid_request_error type but non-token message", () => {
+    // type matches but the message doesn't match the token-limit pattern (migrated from auto-truncate.it)
+    const error = new HTTPError("Bad request", 400, JSON.stringify({ error: { type: "invalid_request_error", message: "messages: field required" } }))
+    expect(tryParseAndLearnLimit(error, "test-model")).toBeNull()
+  })
 })

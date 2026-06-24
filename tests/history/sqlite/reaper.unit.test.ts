@@ -21,13 +21,19 @@ import {
   //
   getEntryById,
   queryEntryCount,
+  querySummaries,
 } from "~/lib/history/sqlite/read"
-import { runReaperOnce } from "~/lib/history/sqlite/reaper"
+import {
+  //
+  reclaimStaleActiveRows,
+  runReaperOnce,
+} from "~/lib/history/sqlite/reaper"
 import {
   //
   insertCompletedEntry,
   setEntryPinned,
 } from "~/lib/history/sqlite/write"
+import { getProcessIdentity } from "~/lib/process-identity"
 
 /** Seed `n` entries with the given lifecycle state, ids prefixed by state. */
 function seed(n: number, status: RequestLifecycleState = "completed", startBase = 1_000): void {
@@ -162,5 +168,37 @@ describe("reaper (per-status buckets)", () => {
 
   test("setEntryPinned on an unknown id returns false", () => {
     expect(setEntryPinned("nope", true)).toBe(false)
+  })
+})
+
+describe("reclaimStaleActiveRows — interrupted reclassification (MEDIUM-2)", () => {
+  beforeEach(() => {
+    closeDatabase()
+    openInMemoryDatabase()
+  })
+
+  test("reclaims a stale active row → interrupted AND backfills a failure reason for the list view", () => {
+    const { pid } = getProcessIdentity()
+    // An active (executing) row from THIS pid, started long ago, with no response leg.
+    insertCompletedEntry({
+      id: "stuck-0",
+      endpoint: "anthropic-messages",
+      startedAt: 1_000, // far older than any sane cutoff
+      durationMs: 0,
+      state: "executing",
+      active: true,
+      lastUpdatedAt: 1_000,
+      transport: "http",
+      process: { pid },
+      inboundRequest: { model: "m" },
+    } as HistoryEntry)
+
+    const reclaimed = reclaimStaleActiveRows(1) // maxAge 1ms → cutoff ≈ now-1, so started_at 1000 qualifies
+    expect(reclaimed).toBe(1)
+
+    const summary = querySummaries().find((s) => s.id === "stuck-0")
+    expect(summary?.state).toBe("interrupted")
+    // The list view now shows WHY (richest-data-flow), not a null reason.
+    expect(summary?.responseError).toContain("maximum age")
   })
 })

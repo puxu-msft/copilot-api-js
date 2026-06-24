@@ -227,7 +227,7 @@ function renderNonStreamingV4(
     }
   }
 
-  const choice = response.choices[0]
+  const choice = response.choices.at(0)
   const usage = response.usage
 
   // Restore tool_call names (upstream → original) on the client-facing response.
@@ -238,8 +238,10 @@ function renderNonStreamingV4(
   const httpResponse = c.json(clientResponse)
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
 
-  // Non-streaming semantic-truncation gate (missing finish_reason → fail, not silent complete).
-  const truncationReason = openaiNonStreamingTruncation(choice.finish_reason)
+  // Non-streaming semantic-truncation gate. `.at(0)` (not `[0]`) so an EMPTY choices
+  // array (itself a truncation form) flows through as a missing finish_reason → fail,
+  // rather than throwing a TypeError before the gate.
+  const truncationReason = openaiNonStreamingTruncation(choice?.finish_reason)
   const responseData = {
     success: !truncationReason,
     model: response.model,
@@ -248,8 +250,8 @@ function renderNonStreamingV4(
       output_tokens: usage?.completion_tokens ?? 0,
       ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && { cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens }),
     },
-    stop_reason: choice.finish_reason ?? undefined,
-    content: choice.message,
+    stop_reason: choice?.finish_reason ?? undefined,
+    content: choice?.message,
   }
   if (truncationReason) {
     env.ctx.fail(response.model, new Error(truncationReason), {

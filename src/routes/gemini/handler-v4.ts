@@ -192,7 +192,7 @@ export async function handleStreamGenerateContentV4(c: Context, modelId: string)
 
 function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: ChatCompletionResponse, modelId: string): Response {
   const gemini: GenerateContentResponse = convertOpenAIResponseToGemini(chat, modelId)
-  const choice = chat.choices[0]
+  const choice = chat.choices.at(0)
   const usage = chat.usage
 
   env.ctx.setForwardedResponse({ content: gemini })
@@ -200,8 +200,9 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
   const httpResponse = c.json(gemini)
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
 
-  // Non-streaming semantic-truncation gate (Gemini renders from a CC response → check finish_reason).
-  const truncationReason = openaiNonStreamingTruncation(choice.finish_reason)
+  // Non-streaming semantic-truncation gate (Gemini renders from a CC response → check
+  // finish_reason; `.at(0)` so an empty choices array flows through as a fail, not a throw).
+  const truncationReason = openaiNonStreamingTruncation(choice?.finish_reason)
   const responseData = {
     success: !truncationReason,
     model: chat.model,
@@ -210,8 +211,8 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
       output_tokens: usage?.completion_tokens ?? 0,
       ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && { cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens }),
     },
-    stop_reason: choice.finish_reason ?? undefined,
-    content: choice.message,
+    stop_reason: choice?.finish_reason ?? undefined,
+    content: choice?.message,
   }
   if (truncationReason) {
     env.ctx.fail(chat.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })

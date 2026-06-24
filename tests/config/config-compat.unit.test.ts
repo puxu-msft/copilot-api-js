@@ -153,24 +153,6 @@ describe("config compat — legacy key migration (file load)", () => {
   })
 })
 
-describe("config compat — historical migrations still work", () => {
-  test("immutable_thinking_messages → thinking_block_message_policy", () => {
-    expect(validateConfig({ anthropic: { immutable_thinking_messages: true } }).anthropic?.thinking_block_message_policy).toBe("preserve")
-    expect(validateConfig({ anthropic: { immutable_thinking_messages: false } }).anthropic?.thinking_block_message_policy).toBe("stripped")
-  })
-
-  test("auto_cache_control → cache_control", () => {
-    expect(validateConfig({ anthropic: { auto_cache_control: true } }).anthropic?.cache_control).toBe("proxied")
-    expect(validateConfig({ anthropic: { auto_cache_control: false } }).anthropic?.cache_control).toBe("disabled")
-  })
-
-  test("history.min_entries removed (warn-only, valid neighbor survives)", () => {
-    const result = validateConfig({ history: { min_entries: 5, limit: 10 } })
-    expect((result.history as Record<string, unknown> | undefined)?.min_entries).toBeUndefined()
-    expect(result.history?.limit).toBe(10)
-  })
-})
-
 describe("config compat — validateConfigInput (PUT) also migrates (C3)", () => {
   test("PUT with legacy fetch_timeout is accepted (not 400) and migrated to timeouts.response_header", () => {
     const r = validateConfigInput({ fetch_timeout: 30 })

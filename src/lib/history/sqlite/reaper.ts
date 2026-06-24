@@ -102,7 +102,11 @@ export function reclaimStaleActiveRows(maxAgeMs: number = state.staleRequestMaxA
   const tx = db.transaction(() => {
     const { n } = db.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...ACTIVE_STATUSES, pid, cutoff) as { n: number }
     if (n > 0)
-      db.prepare(`UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, ?) WHERE ${where}`).run(cutoff, ...ACTIVE_STATUSES, pid, cutoff)
+      // Backfill a failure reason (richest-data-flow) so the reclaimed row surfaces WHY in
+      // the list view (responseError ← error_message); COALESCE keeps any real reason already set.
+      db.prepare(
+        `UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, ?), error_message = COALESCE(error_message, 'request exceeded maximum age — reaped as stale') WHERE ${where}`,
+      ).run(cutoff, ...ACTIVE_STATUSES, pid, cutoff)
     reclaimed = n
   })
   tx()

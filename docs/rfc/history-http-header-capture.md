@@ -128,7 +128,7 @@ anthropic-beta 语义消费（`codec.ts:325` 读 + `request-preparation.ts:208` 
 2. **④ WS 客户端语义**：Responses 客户端 WS（`ws.ts`）经 WS 帧收响应、无 HTTP 响应头——④ 对 WS 存空（真无源，非裁剪；WS 仍经历 ②③ 出站腿、照常记）。是否另记 WS 帧元数据（首帧时间）属另一可观测维度，倾向空 + 文档化。
 3. **② per-attempt 跨 attempt dedup**：多 attempt 头近乎相同，是否 dedup（zstd 已压、倾向不 dedup 保完整）？
 4. **Phase 6 入站上移与 reject 路径**：reject 保留入站捕获是否让 reject 也建 entry？
-5. **响应 trailers（未来完整性占位）**：GHC h2 响应理论上可带 trailers，当前 transport 不暴露（`UpstreamStream` 无 trailers 字段）——属"真实可能发生但当前无数据源"。未来若 transport 暴露 trailers，应归入 ③ 完整记录范畴。当前不建表面（无源），仅记此占位。
+5. **响应 trailers ✅ 已实现（2026-06-24）**：GHC h2 响应理论上可带 trailers。探针实证 Bun `node:http2` 确实 emit `trailers` 事件（data 帧后、end 前），故"无数据源"实为"没接线"。已接线：`UpstreamFetchInit.onTrailers` 回调 → `http2-client` 注册 `req.once("trailers")` 归一成 record → `http-transport` 接到 `ctx.setOutboundResponseTrailers` → 存 `httpHeaders.outboundResponseTrailers`（第 5 个 header 腿），经 head blob round-trip。事件序保证回调先于 handler settle 落地。明文 http 路径无 trailers、不调。capture-when-present（GHC 当前少发→多缺省，与其它可选腿同语义，非永空投机表面）。
 
 ## 7. 测试策略
 

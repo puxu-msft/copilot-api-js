@@ -12,7 +12,7 @@ import { state } from "~/lib/state"
 import { ensureModels } from "./shared"
 
 /** Strip internal fields that should not be exposed to external consumers. */
-function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
+export function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
   const { request_headers: _requestHeaders, ...rest } = model
   return rest
 }

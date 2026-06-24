@@ -1,6 +1,5 @@
 import {
   //
-  beforeEach,
   describe,
   expect,
   test,
@@ -8,13 +7,7 @@ import {
 
 import type { Model } from "~/lib/models/client"
 
-import {
-  //
-  setModels,
-  state,
-} from "~/lib/state"
-
-import { autoRestoreState } from "../helpers/state-fixture"
+import { stripInternalFields } from "~/routes/models/internal"
 
 function mockModel(id: string, overrides?: Partial<Model>): Model {
   return {
@@ -31,110 +24,28 @@ function mockModel(id: string, overrides?: Partial<Model>): Model {
   }
 }
 
-function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
-  const { request_headers: _requestHeaders, ...rest } = model
-  return rest
-}
-
-describe("Models endpoint logic", () => {
-  autoRestoreState()
-  const testModels = [
-    mockModel("claude-opus-4.6", { vendor: "Anthropic", name: "Claude Opus 4.6" }),
-    mockModel("gpt-4o", { vendor: "OpenAI", name: "GPT-4o" }),
-    mockModel("gemini-2.5-pro", { vendor: "Google", name: "Gemini 2.5 Pro" }),
-  ]
-
-  beforeEach(() => {
-    setModels({ object: "list", data: testModels })
+// The production `/api/models` field-exposure helper (src/routes/models/internal.ts). Tested at the
+// function level here (a fast capability lock on the SECURITY-relevant `request_headers` strip) —
+// the route wiring that calls it is covered at the flow level by tests/infra/basic-routes.http.
+describe("stripInternalFields — internal /api/models field exposure", () => {
+  test("strips request_headers (internal-only — must not leak upstream auth to clients)", () => {
+    const exposed = stripInternalFields(
+      mockModel("claude-opus-4.6", { vendor: "Anthropic", name: "Claude Opus 4.6", request_headers: { authorization: "Bearer upstream-secret" } }),
+    )
+    expect(exposed).not.toHaveProperty("request_headers")
+    expect(exposed).toMatchObject({ id: "claude-opus-4.6", name: "Claude Opus 4.6", vendor: "Anthropic", object: "model" })
   })
 
-  describe("model lookup", () => {
-    test("should find model by exact id", () => {
-      const model = state.models?.data.find((m) => m.id === "claude-opus-4.6")
-      expect(model).toBeDefined()
-      expect(model?.id).toBe("claude-opus-4.6")
-      expect(model?.vendor).toBe("Anthropic")
-    })
-
-    test("should return undefined for non-existent model", () => {
-      const model = state.models?.data.find((m) => m.id === "nonexistent-model")
-      expect(model).toBeUndefined()
-    })
-
-    test("should list all models", () => {
-      const models = state.models?.data
-      expect(models).toHaveLength(3)
-      const ids = models?.map((m) => m.id)
-      expect(ids).toContain("claude-opus-4.6")
-      expect(ids).toContain("gpt-4o")
-      expect(ids).toContain("gemini-2.5-pro")
-    })
+  test("passes the remaining upstream fields through unchanged (no fabricated/renamed fields)", () => {
+    const exposed = stripInternalFields(mockModel("test-model"))
+    expect(exposed).not.toHaveProperty("created")
+    expect(exposed).not.toHaveProperty("owned_by")
+    expect(exposed).not.toHaveProperty("display_name")
+    expect(exposed.object).toBe("model")
   })
 
-  describe("passthrough contract", () => {
-    test("should expose all upstream fields except request_headers", () => {
-      const model = mockModel("claude-opus-4.6", {
-        vendor: "Anthropic",
-        name: "Claude Opus 4.6",
-        request_headers: { "x-secret": "should-not-appear" },
-      })
-
-      const exposed = stripInternalFields(model)
-
-      expect(exposed).toEqual({
-        id: "claude-opus-4.6",
-        name: "Claude Opus 4.6",
-        vendor: "Anthropic",
-        object: "model",
-        model_picker_enabled: true,
-        preview: false,
-        version: "claude-opus-4.6",
-        is_chat_default: false,
-        is_chat_fallback: false,
-      })
-      expect(exposed).not.toHaveProperty("request_headers")
-    })
-
-    test("should keep capabilities when present", () => {
-      const model = mockModel("test-model", {
-        capabilities: {
-          supports: {
-            tool_calls: true,
-            parallel_tool_calls: true,
-            vision: true,
-          },
-        },
-      })
-
-      const exposed = stripInternalFields(model)
-      expect(exposed.capabilities).toBeDefined()
-      const supports = (exposed.capabilities as Record<string, Record<string, boolean>>)?.supports
-      expect(supports?.tool_calls).toBe(true)
-      expect(supports?.parallel_tool_calls).toBe(true)
-    })
-
-    test("should handle model without capabilities", () => {
-      const exposed = stripInternalFields(mockModel("test-model"))
-      expect(exposed.capabilities).toBeUndefined()
-    })
-
-    test("should not inject fabricated or renamed fields", () => {
-      const exposed = stripInternalFields(mockModel("test-model"))
-
-      expect(exposed).not.toHaveProperty("type")
-      expect(exposed).not.toHaveProperty("created")
-      expect(exposed).not.toHaveProperty("created_at")
-      expect(exposed).not.toHaveProperty("owned_by")
-      expect(exposed).not.toHaveProperty("display_name")
-      expect(exposed).not.toHaveProperty("has_more")
-    })
-
-    test("should preserve each model object identity fields across the list", () => {
-      const exposed = testModels.map(stripInternalFields)
-      for (const model of exposed) {
-        expect(model.object).toBe("model")
-        expect(model.id).toBeTruthy()
-      }
-    })
+  test("keeps capabilities when present", () => {
+    const exposed = stripInternalFields(mockModel("test-model", { capabilities: { supports: { tool_calls: true, vision: true } } }))
+    expect((exposed.capabilities as Record<string, Record<string, boolean>> | undefined)?.supports?.tool_calls).toBe(true)
   })
 })

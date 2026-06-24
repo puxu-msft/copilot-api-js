@@ -190,11 +190,11 @@ describe("http2-client", () => {
       })
       stream.end(JSON.stringify({ hi: 1 }))
     }
-    let trailers: Record<string, string> | null = null
-    const res = await http2Fetch(`${url}/t`, { onTrailers: (t) => (trailers = t) })
+    const captured: { trailers: Record<string, string> | null } = { trailers: null }
+    const res = await http2Fetch(`${url}/t`, { onTrailers: (t) => (captured.trailers = t) })
     expect(await res.json()).toEqual({ hi: 1 })
     await new Promise((r) => setTimeout(r, 20))
-    expect(trailers).toEqual({ "x-upstream-status": "ok", "grpc-status": "0" })
+    expect(captured.trailers).toEqual({ "x-upstream-status": "ok", "grpc-status": "0" })
   })
 
   test("no trailers → onTrailers is never called", async () => {

@@ -30,7 +30,6 @@ import {
   //
   compressCompactedReadResult,
   compressToolResultContent,
-  getLearnedLimits,
   hasKnownLimits,
   onTokenLimitExceeded,
   resetAllLimitsForTesting,
@@ -822,108 +821,6 @@ describe("Anthropic Token Counting", () => {
 // =============================================================================
 // Tests for reactive auto-truncate helpers (new in refactoring)
 // =============================================================================
-
-describe("tryParseAndLearnLimit", () => {
-  beforeEach(() => {
-    resetAllLimitsForTesting()
-  })
-
-  test("should detect OpenAI format token limit error", () => {
-    const error = new HTTPError(
-      "Token limit",
-      400,
-      JSON.stringify({
-        error: {
-          code: "model_max_prompt_tokens_exceeded",
-          message: "prompt token count of 135355 exceeds the limit of 128000",
-        },
-      }),
-      "claude-sonnet-4",
-    )
-
-    const result = tryParseAndLearnLimit(error, "claude-sonnet-4")
-
-    expect(result).not.toBeNull()
-    expect(result?.type).toBe("token_limit")
-    expect(result?.limit).toBe(128000)
-    expect(result?.current).toBe(135355)
-
-    // Should have learned the limit
-    expect(hasKnownLimits("claude-sonnet-4")).toBe(true)
-    const learned = getLearnedLimits("claude-sonnet-4")
-    expect(learned).toBeDefined()
-    expect(learned!.tokenLimit).toBe(128000)
-  })
-
-  test("should detect Anthropic format token limit error", () => {
-    const error = new HTTPError(
-      "Token limit",
-      400,
-      JSON.stringify({
-        error: {
-          type: "invalid_request_error",
-          message: "prompt is too long: 208598 tokens > 200000 maximum",
-        },
-      }),
-      "claude-sonnet-4",
-    )
-
-    const result = tryParseAndLearnLimit(error, "claude-sonnet-4")
-
-    expect(result).not.toBeNull()
-    expect(result?.type).toBe("token_limit")
-    expect(result?.limit).toBe(200000)
-    expect(result?.current).toBe(208598)
-  })
-
-  test("should return null for non-limit errors", () => {
-    // 500 Internal Server Error
-    const error500 = new HTTPError("Server error", 500, "Internal error")
-    expect(tryParseAndLearnLimit(error500, "claude-sonnet-4")).toBeNull()
-
-    // 429 Rate limit
-    const error429 = new HTTPError("Rate limited", 429, '{"error":{"code":"rate_limited"}}')
-    expect(tryParseAndLearnLimit(error429, "claude-sonnet-4")).toBeNull()
-
-    // 400 but not a token limit error
-    const error400Other = new HTTPError(
-      "Bad request",
-      400,
-      JSON.stringify({
-        error: {
-          code: "invalid_api_key",
-          message: "Invalid API key",
-        },
-      }),
-    )
-    expect(tryParseAndLearnLimit(error400Other, "claude-sonnet-4")).toBeNull()
-  })
-
-  test("should return null for 400 with unparseable body", () => {
-    const error = new HTTPError("Bad request", 400, "not valid json")
-    expect(tryParseAndLearnLimit(error, "claude-sonnet-4")).toBeNull()
-  })
-
-  test("should return null for 400 with invalid_request_error but non-token message", () => {
-    const error = new HTTPError(
-      "Bad request",
-      400,
-      JSON.stringify({
-        error: {
-          type: "invalid_request_error",
-          message: "messages: field required",
-        },
-      }),
-    )
-    // type matches but message doesn't match token limit pattern
-    expect(tryParseAndLearnLimit(error, "claude-sonnet-4")).toBeNull()
-  })
-
-  test("should return null for 413 (not a token limit error)", () => {
-    const error = new HTTPError("Request Entity Too Large", 413, "Payload too large")
-    expect(tryParseAndLearnLimit(error, "claude-sonnet-4")).toBeNull()
-  })
-})
 
 describe("hasKnownLimits", () => {
   beforeEach(() => {

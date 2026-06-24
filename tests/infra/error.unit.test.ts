@@ -70,36 +70,6 @@ describe("HTTPError", () => {
   })
 })
 
-describe("Error message formats", () => {
-  test("OpenAI token limit error format should be parseable", () => {
-    // Test the format that parseTokenLimitError handles internally
-    const openaiMessage = "prompt token count of 135355 exceeds the limit of 128000"
-    const match = openaiMessage.match(/prompt token count of (\d+) exceeds the limit of (\d+)/)
-
-    expect(match).not.toBeNull()
-    expect(Number.parseInt(match![1], 10)).toBe(135355)
-    expect(Number.parseInt(match![2], 10)).toBe(128000)
-  })
-
-  test("Anthropic token limit error format should be parseable", () => {
-    const anthropicMessage = "prompt is too long: 208598 tokens > 200000 maximum"
-    const match = anthropicMessage.match(/prompt is too long: (\d+) tokens > (\d+) maximum/)
-
-    expect(match).not.toBeNull()
-    expect(Number.parseInt(match![1], 10)).toBe(208598)
-    expect(Number.parseInt(match![2], 10)).toBe(200000)
-  })
-
-  test("should not match unrelated error messages", () => {
-    const unrelatedMessage = "Invalid API key"
-    const openaiMatch = unrelatedMessage.match(/prompt token count of (\d+) exceeds the limit of (\d+)/)
-    const anthropicMatch = unrelatedMessage.match(/prompt is too long: (\d+) tokens > (\d+) maximum/)
-
-    expect(openaiMatch).toBeNull()
-    expect(anthropicMatch).toBeNull()
-  })
-})
-
 // ─── parseTokenLimitError (from characterization/retry-loop.test.ts) ───
 
 describe("parseTokenLimitError", () => {
