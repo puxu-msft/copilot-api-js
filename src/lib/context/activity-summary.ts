@@ -66,9 +66,25 @@ export function buildHistoryActivityPatch(
   context: RequestContext,
 ): Pick<
   HistoryEntry,
-  "rawPath" | "startedAt" | "state" | "active" | "lastUpdatedAt" | "queueWaitMs" | "attemptCount" | "currentStrategy" | "durationMs" | "transport"
+  | "rawPath"
+  | "startedAt"
+  | "state"
+  | "active"
+  | "lastUpdatedAt"
+  | "queueWaitMs"
+  | "attemptCount"
+  | "currentStrategy"
+  | "durationMs"
+  | "transport"
+  | "multiplier"
 > {
   const snapshot = summarizeRequestContext(context)
+  // Resolve the per-request billing multiplier from the SAME source as
+  // snapshotWithSummary (state.modelIndex billing) so history records the
+  // write-time price factor (e.g. 3 for opus). Lands on the persisted entry via
+  // every updateEntry merge, so it survives to finalize even if the model is
+  // later unregistered. Omitted when the model has no billing entry.
+  const billing = context.resolvedModel ? state.modelIndex.get(context.resolvedModel)?.billing : undefined
 
   return {
     ...(snapshot.rawPath ? { rawPath: snapshot.rawPath } : {}),
@@ -81,6 +97,7 @@ export function buildHistoryActivityPatch(
     currentStrategy: snapshot.currentStrategy,
     durationMs: snapshot.durationMs,
     ...(snapshot.transport ? { transport: snapshot.transport } : {}),
+    ...(billing?.multiplier !== undefined ? { multiplier: billing.multiplier } : {}),
   }
 }
 

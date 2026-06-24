@@ -98,6 +98,7 @@ export function updateEntry(
       | "attempts"
       | "transport"
       | "warningMessages"
+      | "multiplier"
     >
   >,
 ): void {

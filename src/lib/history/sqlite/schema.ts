@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS entries_v2 (
   boot_time        INTEGER,
   git_sha          TEXT,
   pinned           INTEGER NOT NULL DEFAULT 0,
+  request_bytes    INTEGER,
+  response_bytes   INTEGER,
+  multiplier       REAL,
   blob_gz          BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_entries_v2_started_at ON entries_v2(started_at DESC);

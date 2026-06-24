@@ -27,8 +27,9 @@ INSERT INTO entries_v2 (
   stop_reason, error_message,
   message_count, preview_text, search_text,
   pid, boot_time, git_sha,
+  request_bytes, response_bytes, multiplier,
   blob_gz
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   session_id = excluded.session_id, agent_id = excluded.agent_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
   duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint,
@@ -39,6 +40,7 @@ ON CONFLICT(id) DO UPDATE SET
   error_message = excluded.error_message, message_count = excluded.message_count,
   preview_text = excluded.preview_text, search_text = excluded.search_text,
   pid = excluded.pid, boot_time = excluded.boot_time, git_sha = excluded.git_sha,
+  request_bytes = excluded.request_bytes, response_bytes = excluded.response_bytes, multiplier = excluded.multiplier,
   blob_gz = excluded.blob_gz
 `
 
@@ -74,6 +76,9 @@ function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void 
     row.pid,
     row.boot_time,
     row.git_sha,
+    row.request_bytes,
+    row.response_bytes,
+    row.multiplier,
     row.blob_gz,
   )
 }

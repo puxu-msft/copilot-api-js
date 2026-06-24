@@ -287,6 +287,13 @@ function migrateEntriesColumns(database: Database): void {
     // DEFAULT, so existing rows backfill to 0 (unpinned) without a rewrite.
     { name: "pinned", type: "INTEGER NOT NULL DEFAULT 0" },
     { name: "agent_id", type: "TEXT" },
+    // Per-request byte sizes (↑request wire / ↓response) + billing multiplier.
+    // Additive nullable ALTER ADD COLUMN — old rows backfill NULL (→ undefined on
+    // read), no table rewrite. Bytes are DERIVED at serialize time from the stored
+    // payloads; multiplier is the write-time-resolved per-request value off the ctx.
+    { name: "request_bytes", type: "INTEGER" },
+    { name: "response_bytes", type: "INTEGER" },
+    { name: "multiplier", type: "REAL" },
   ]
 
   for (const col of wanted) {

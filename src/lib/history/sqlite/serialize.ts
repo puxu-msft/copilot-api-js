@@ -47,6 +47,13 @@ export interface EntryRow {
   // keeps its DEFAULT 0 on insert and survives every eager status re-upsert).
   // Read-only from the entry's perspective; the column is the single source.
   pinned: number
+  // Per-request byte sizes (DERIVED at serialize time from the stored payloads:
+  // request from the outbound/effective wire body, response from sse frames or
+  // the non-streaming raw body) + the write-time billing multiplier. Column-only
+  // mirrors (in META_KEYS → excluded from the head blob, restored from the row).
+  request_bytes: number | null
+  response_bytes: number | null
+  multiplier: number | null
   blob_gz: Uint8Array
 }
 
@@ -56,7 +63,25 @@ export interface EntryRow {
  * (the head blob is finalized once; pinning happens later), so it must never be
  * serialized into the blob — it is always derived from the column on read.
  */
-const META_KEYS = new Set<string>(["id", "sessionId", "agentId", "startedAt", "endedAt", "durationMs", "endpoint", "transport", "state", "pinned"])
+const META_KEYS = new Set<string>([
+  "id",
+  "sessionId",
+  "agentId",
+  "startedAt",
+  "endedAt",
+  "durationMs",
+  "endpoint",
+  "transport",
+  "state",
+  "pinned",
+  // Column-mirrored numeric fields — stored in dedicated columns, restored from
+  // the row in deserializeEntry; kept OUT of the head blob to avoid duplication.
+  // requestBytes/responseBytes are derived at serialize time (never authored on
+  // the entry); multiplier is the write-time-resolved factor carried on the entry.
+  "requestBytes",
+  "responseBytes",
+  "multiplier",
+])
 
 // ============================================================================
 // Stage taxonomy (entry_stages rows)
@@ -131,6 +156,43 @@ function stripAttemptBodies(attempt: Record<string, unknown>): Record<string, un
   return out
 }
 
+/** Byte length of a JSON-serializable payload; null when absent (so callers can fall through). */
+function payloadBytes(payload: unknown): number | null {
+  if (payload === undefined || payload === null) return null
+  return Buffer.byteLength(JSON.stringify(payload))
+}
+
+/**
+ * DERIVE the request wire byte size (↑) from the best available stored payload:
+ * the outbound (final-attempt wire) body the proxy actually sent upstream, then
+ * the effective body, then the inbound messages as a last resort. This is an
+ * approximation of the on-the-wire size (it re-serializes the parsed payload
+ * rather than echoing the exact upstream bytes), which is acceptable for the
+ * list-display purpose. Returns null when no payload is available.
+ */
+function deriveRequestBytes(entry: HistoryEntry): number | null {
+  return payloadBytes(entry.outboundRequest?.payload) ?? payloadBytes(entry.effectiveRequest?.payload) ?? payloadBytes(entry.inboundRequest.messages)
+}
+
+/**
+ * DERIVE the response byte size (↓). Streaming: sum of the upstream SSE frames'
+ * `raw` bytes. Non-streaming: the raw upstream body if captured, else the
+ * serialized response content. Returns null when nothing is available. Like
+ * deriveRequestBytes this is an approximation of the wire size, acceptable for
+ * the list display.
+ */
+function deriveResponseBytes(entry: HistoryEntry): number | null {
+  if (entry.sseEvents && entry.sseEvents.length > 0) {
+    let total = 0
+    for (const ev of entry.sseEvents) total += Buffer.byteLength(ev.raw)
+    return total
+  }
+  const resp = entry.outboundResponse
+  if (!resp) return null
+  if (resp.rawBody !== undefined) return Buffer.byteLength(resp.rawBody)
+  return payloadBytes(resp.content)
+}
+
 /**
  * Serialize an entry into its HEAD row (indexed columns + head-meta blob) and
  * the list of stage payloads to persist into `entry_stages`. The head-meta blob
@@ -172,6 +234,12 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
     // column (pinned is owned by setEntryPinned). On a fresh insert the column
     // takes DEFAULT 0; this value is intentionally ignored by the head upsert.
     pinned: entry.pinned ? 1 : 0,
+    // Derived wire byte sizes (↑request / ↓response) + write-time billing
+    // multiplier. Bytes computed from the stored payloads here (no sink/context
+    // byte plumbing); multiplier comes from the entry (resolved at write time).
+    request_bytes: deriveRequestBytes(entry),
+    response_bytes: deriveResponseBytes(entry),
+    multiplier: entry.multiplier ?? null,
     blob_gz: headBlob,
   }
   return { row, stages: extractStagePayloads(entry) }
@@ -198,6 +266,11 @@ export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry
     state: (row.status as HistoryEntry["state"]) ?? restored.state ?? "completed",
     active: false,
     pinned: row.pinned === 1,
+    // Column-mirrored numeric fields (kept out of the head blob). Old rows have
+    // these columns NULL → undefined.
+    ...(row.request_bytes !== null && { requestBytes: row.request_bytes }),
+    ...(row.response_bytes !== null && { responseBytes: row.response_bytes }),
+    ...(row.multiplier !== null && { multiplier: row.multiplier }),
     lastUpdatedAt: row.ended_at ?? row.started_at,
     // Contract floor: `inboundRequest` is non-optional on HistoryEntry, but a
     // head-only row (e.g. a degraded tombstone whose inbound_request stage was

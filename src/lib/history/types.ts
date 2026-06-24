@@ -231,6 +231,26 @@ export interface HistoryEntry {
   attemptCount?: number
   currentStrategy?: string
   durationMs?: number
+  /**
+   * Wire byte size of the request the proxy sent upstream (↑). DERIVED at
+   * serialize time from the best available stored payload (outbound → effective
+   * → inbound). Persisted in the `entries_v2.request_bytes` column for list
+   * display. Absent on old rows (column NULL → undefined).
+   */
+  requestBytes?: number
+  /**
+   * Byte size of the upstream response (↓): sum of SSE frame `raw` bytes for
+   * streaming, or the non-streaming raw/serialized body. DERIVED at serialize
+   * time; persisted in `entries_v2.response_bytes`. Absent on old rows.
+   */
+  responseBytes?: number
+  /**
+   * Billing multiplier resolved for this request (e.g. 3 for opus, 0.33 for
+   * haiku). Captured at WRITE time off the request context (historical-pricing
+   * fidelity — see DESIGN §12); persisted in `entries_v2.multiplier`. Absent on
+   * old rows and on requests whose model had no billing entry.
+   */
+  multiplier?: number
   transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
   /**
@@ -417,6 +437,12 @@ export interface EntrySummary {
     cache_creation_input_tokens?: number
   }
   durationMs?: number
+  /** Wire byte size of the upstream request (↑). Derived at serialize time; column-backed. */
+  requestBytes?: number
+  /** Byte size of the upstream response (↓). Derived at serialize time; column-backed. */
+  responseBytes?: number
+  /** Billing multiplier (e.g. 3 for opus) captured at write time. Column-backed. */
+  multiplier?: number
   previewText: string
   searchText: string
 }

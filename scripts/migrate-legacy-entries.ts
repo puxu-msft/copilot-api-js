@@ -137,6 +137,10 @@ function toEntryRow(r: LegacyRow): EntryRow {
     boot_time: null,
     git_sha: null,
     pinned: 0,
+    // Legacy v1 rows have no byte/multiplier data → NULL (→ undefined on read).
+    request_bytes: null,
+    response_bytes: null,
+    multiplier: null,
     blob_gz: r.blob_gz,
   }
 }

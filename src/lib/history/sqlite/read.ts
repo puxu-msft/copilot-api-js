@@ -141,7 +141,8 @@ export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
               model, endpoint, transport, status,
               input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
               stop_reason, error_message,
-              message_count, preview_text, search_text, pid, pinned
+              message_count, preview_text, search_text, pid, pinned,
+              request_bytes, response_bytes, multiplier
          FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, 0) as Array<SummaryRow>
@@ -184,6 +185,9 @@ function rowToSummary(r: SummaryRow): EntrySummary {
         }
       : undefined,
     durationMs: r.duration_ms ?? undefined,
+    requestBytes: r.request_bytes ?? undefined,
+    responseBytes: r.response_bytes ?? undefined,
+    multiplier: r.multiplier ?? undefined,
     previewText: r.preview_text ?? "",
     searchText: r.search_text ?? "",
   }

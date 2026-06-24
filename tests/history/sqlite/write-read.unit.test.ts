@@ -215,4 +215,93 @@ describe("sqlite write/read", () => {
   test("setEntryPinned returns false for an unknown id", () => {
     expect(setEntryPinned("ghost", true)).toBe(false)
   })
+
+  test("request_bytes/response_bytes derived + multiplier persisted → EntrySummary + full entry", () => {
+    // Streaming entry: response bytes = sum of sse frame `raw` bytes; request
+    // bytes derived from the outbound wire payload; multiplier carried on the entry.
+    const wirePayload = { model: "claude-opus-4-8", messages: [{ role: "user", content: "hi" }] }
+    const frames = [
+      { offsetMs: 1, type: "message_start", raw: '{"type":"message_start"}' },
+      { offsetMs: 2, type: "message_stop", raw: '{"type":"message_stop"}' },
+    ]
+    const expectedReq = Buffer.byteLength(JSON.stringify(wirePayload))
+    const expectedResp = frames.reduce((n, f) => n + Buffer.byteLength(f.raw), 0)
+
+    insertCompletedEntry(
+      makeEntry({
+        id: "bytes-stream",
+        multiplier: 3,
+        outboundRequest: { model: "claude-opus-4-8", payload: wirePayload },
+        sseEvents: frames,
+      }),
+    )
+
+    const summary = querySummaries({ limit: 10 }).find((s) => s.id === "bytes-stream")
+    expect(summary?.requestBytes).toBe(expectedReq)
+    expect(summary?.responseBytes).toBe(expectedResp)
+    expect(summary?.multiplier).toBe(3)
+
+    // Full entry read projects the same column-backed fields.
+    const full = getEntryById("bytes-stream")
+    expect(full?.requestBytes).toBe(expectedReq)
+    expect(full?.responseBytes).toBe(expectedResp)
+    expect(full?.multiplier).toBe(3)
+  })
+
+  test("non-streaming response_bytes derived from rawBody, then content fallback", () => {
+    // rawBody present → counted directly.
+    insertCompletedEntry(
+      makeEntry({
+        id: "bytes-raw",
+        outboundRequest: { model: "m", payload: { a: 1 } },
+        outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, content: null, rawBody: "abcde" },
+      }),
+    )
+    expect(getEntryById("bytes-raw")?.responseBytes).toBe(5)
+
+    // No rawBody → serialized content bytes.
+    const content = { role: "assistant", content: "hello" }
+    insertCompletedEntry(
+      makeEntry({
+        id: "bytes-content",
+        outboundRequest: { model: "m", payload: { a: 1 } },
+        outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, content },
+      }),
+    )
+    expect(getEntryById("bytes-content")?.responseBytes).toBe(Buffer.byteLength(JSON.stringify(content)))
+  })
+
+  test("absent payloads/multiplier → null columns → undefined fields (old-row backward compat)", () => {
+    // An entry with no outbound/effective request payload, no sse, no rawBody/content,
+    // no multiplier mirrors what an OLD row (NULL columns) deserializes to: undefined.
+    insertCompletedEntry(
+      makeEntry({
+        id: "bytes-absent",
+        inboundRequest: { model: "m" }, // no messages → request bytes null
+        outboundResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null },
+      }),
+    )
+
+    const summary = querySummaries({ limit: 10 }).find((s) => s.id === "bytes-absent")
+    expect(summary?.requestBytes).toBeUndefined()
+    expect(summary?.responseBytes).toBeUndefined()
+    expect(summary?.multiplier).toBeUndefined()
+
+    const full = getEntryById("bytes-absent")
+    expect(full?.requestBytes).toBeUndefined()
+    expect(full?.responseBytes).toBeUndefined()
+    expect(full?.multiplier).toBeUndefined()
+  })
+
+  test("request_bytes falls back to inbound messages when no outbound/effective payload", () => {
+    const messages = [{ role: "user", content: "fallback request" }]
+    insertCompletedEntry(
+      makeEntry({
+        id: "bytes-fallback",
+        inboundRequest: { model: "m", messages },
+        // No outboundRequest / effectiveRequest payload.
+      }),
+    )
+    expect(getEntryById("bytes-fallback")?.requestBytes).toBe(Buffer.byteLength(JSON.stringify(messages)))
+  })
 })
