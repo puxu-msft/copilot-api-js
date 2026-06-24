@@ -4,6 +4,7 @@ import type {
   ToolResultContentBlock,
 } from "@/lib/content/types"
 
+import { CodeBlock } from "@/components/detail/CodeBlock"
 import { ContentRenderer } from "@/components/detail/ContentRenderer"
 
 type ToolResultContent = ToolResultContentBlock["content"]
@@ -17,7 +18,12 @@ function isContentBlockArray(content: ToolResultContent): content is ToolResultB
 function renderContent(content: ToolResultContent) {
   if (typeof content === "string") return <pre className="whitespace-pre-wrap break-all text-[#9a9]">{content}</pre>
   if (isContentBlockArray(content)) return <ContentRenderer blocks={content as Array<ContentBlock>} />
-  return <pre className="whitespace-pre-wrap break-all text-[#9a9]">{JSON.stringify(content, null, 2)}</pre>
+  return (
+    <CodeBlock
+      code={JSON.stringify(content, null, 2)}
+      lang="json"
+    />
+  )
 }
 
 export function ToolResultBlock({ block }: { block: ToolResultContentBlock }) {

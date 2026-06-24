@@ -17,11 +17,8 @@ export function LiveLane() {
         : rows.map((r) => (
             <RequestRow
               key={r.id}
-              state={r.state}
-              model={r.model}
-              durationMs={r.durationMs}
+              live={{ state: r.state, model: r.model, durationMs: r.durationMs }}
               onClick={() => navigate(`/requests/${r.id}`)}
-              live
             />
           ))
         }

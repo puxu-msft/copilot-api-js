@@ -33,3 +33,20 @@ export function formatDuration(ms: number): string {
   const s = Math.round((ms % 60_000) / 1000)
   return `${m}m${s}s`
 }
+
+/** epoch ms → HH:MM:SS (local). */
+export function formatTime(ts: number): string {
+  const d = new Date(ts)
+  const h = String(d.getHours()).padStart(2, "0")
+  const m = String(d.getMinutes()).padStart(2, "0")
+  const s = String(d.getSeconds()).padStart(2, "0")
+  return `${h}:${m}:${s}`
+}
+
+/** Compact count: 1234→"1.2K", 1.2M→"1.2M", undefined/null→"-". */
+export function formatNumber(n: number | undefined | null): string {
+  if (n === undefined || n === null) return "-"
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M"
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K"
+  return n.toString()
+}

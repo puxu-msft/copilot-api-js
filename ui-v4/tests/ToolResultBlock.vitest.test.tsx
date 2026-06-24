@@ -40,8 +40,10 @@ describe("ToolResultBlock", () => {
     expect(screen.queryByText(/"plain string"/)).toBeNull()
   })
 
-  it("falls back to JSON dump for non-array object content", () => {
+  it("falls back to CodeBlock JSON highlight for non-array object content", () => {
     render(<ToolResultBlock block={{ type: "tool_result", tool_use_id: "tu_3", content: { some: "object" } as never }} />)
-    expect(screen.getByText(/"some": "object"/)).toBeDefined()
+    // CodeBlock splits the JSON into hljs token spans, so the key and value live in separate nodes.
+    expect(screen.getByText('"some"')).toBeDefined()
+    expect(screen.getByText('"object"')).toBeDefined()
   })
 })

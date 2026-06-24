@@ -8,6 +8,8 @@ import {
 import {
   //
   formatDuration,
+  formatNumber,
+  formatTime,
   statusSignal,
 } from "@/lib/format"
 
@@ -25,5 +27,18 @@ describe("format", () => {
     expect(statusSignal("aborted")).toBe("fail")
     expect(statusSignal("streaming")).toBe("live")
     expect(statusSignal("rate_limited")).toBe("warn")
+  })
+
+  it("formatTime epoch ms → HH:MM:SS (local)", () => {
+    const ts = new Date(2026, 0, 1, 9, 5, 3).getTime()
+    expect(formatTime(ts)).toBe("09:05:03")
+  })
+
+  it("formatNumber compacts counts", () => {
+    expect(formatNumber(undefined)).toBe("-")
+    expect(formatNumber(null)).toBe("-")
+    expect(formatNumber(250)).toBe("250")
+    expect(formatNumber(1500)).toBe("1.5K")
+    expect(formatNumber(2_400_000)).toBe("2.4M")
   })
 })

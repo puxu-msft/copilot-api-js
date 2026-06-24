@@ -54,9 +54,7 @@ export function HistoryList() {
         : entries.map((e) => (
             <RequestRow
               key={e.id}
-              state={e.state ?? ""}
-              model={e.responseModel ?? e.requestModel}
-              durationMs={e.durationMs}
+              entry={e}
               selected={e.id === selectedId}
               onClick={() => selectRow(e.id)}
             />
