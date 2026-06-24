@@ -162,6 +162,22 @@ export function http2Fetch(url: string | URL, init: UpstreamFetchInit): Promise<
           else if (value !== undefined) responseHeaders.set(key, value)
         }
 
+        // Best-effort response-trailers capture (richest-data-flow): node:http2 emits
+        // a `trailers` event (after the data frames, before `end`) when the upstream
+        // sends a trailing HEADERS frame. Currently rare from GHC, but the transport
+        // observes them, so capture-when-present instead of silently discarding.
+        if (init.onTrailers) {
+          req.once("trailers", (t: http2.IncomingHttpHeaders) => {
+            const record: Record<string, string> = {}
+            for (const [key, value] of Object.entries(t)) {
+              if (key.startsWith(":")) continue
+              if (Array.isArray(value)) record[key] = value.join(", ")
+              else if (value !== undefined) record[key] = value
+            }
+            if (Object.keys(record).length > 0) init.onTrailers?.(record)
+          })
+        }
+
         const body = new ReadableStream<Uint8Array>({
           start(controller) {
             let ended = false

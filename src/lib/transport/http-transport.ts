@@ -78,6 +78,9 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
           headersCapture,
           clientAbortSignal: deps.clientAbortSignal,
           reaperSignal: env.ctx.lifecycleSignal,
+          // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
+          // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
+          onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
           ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
         }),
       )

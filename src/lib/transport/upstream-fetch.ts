@@ -42,6 +42,13 @@ export interface UpstreamFetchInit {
   headers?: Record<string, string>
   body?: string
   signal?: AbortSignal | undefined
+  /**
+   * Best-effort HTTP/2 response-trailers callback. Invoked (h2 path only) when the
+   * upstream sends a trailing HEADERS frame — fired AFTER the body's data frames and
+   * BEFORE `end`, so a consumer that settles on stream end sees the trailers first.
+   * The plain-`http` (undici) path does not surface trailers and never calls this.
+   */
+  onTrailers?: (trailers: Record<string, string>) => void
 }
 
 type UpstreamFetchFn = (url: string | URL, init: UpstreamFetchInit) => Promise<Response>

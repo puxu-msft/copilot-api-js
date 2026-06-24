@@ -143,6 +143,7 @@ export function createRequestContext(opts: {
     outboundRequest?: Record<string, string>
     outboundResponse?: Record<string, string>
     inboundResponse?: Record<string, string>
+    outboundResponseTrailers?: Record<string, string>
   } | null = null
   let _queueWaitMs = 0
   const _warningMessages: Array<WarningMessage> = []
@@ -318,6 +319,13 @@ export function createRequestContext(opts: {
       // sends to the client), captured at the handler write-out point. Completes the
       // four-leg model. Publishes for in-flight visibility (Phase 5).
       _httpHeaders = { ..._httpHeaders, inboundResponse: headers }
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
+    },
+
+    setOutboundResponseTrailers(trailers: Record<string, string>) {
+      // Best-effort h2 response-trailers leg (richest-data-flow). The transport fires
+      // this before stream end, so it lands before complete()/fail() snapshots the entry.
+      _httpHeaders = { ..._httpHeaders, outboundResponseTrailers: trailers }
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 

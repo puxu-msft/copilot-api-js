@@ -85,6 +85,8 @@ export interface SendUpstreamHttpParams {
    * shutdown signal is not aborted for it). The Anthropic v4 transport opts in.
    */
   rewriteShutdownAbort?: boolean
+  /** Best-effort HTTP/2 response-trailers sink (h2 path only); the driver wires it to `ctx.setOutboundResponseTrailers`. */
+  onTrailers?: (trailers: Record<string, string>) => void
 }
 
 /**
@@ -118,6 +120,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
       headers,
       body: JSON.stringify(body),
       signal: fetchSignal,
+      ...(params.onTrailers && { onTrailers: params.onTrailers }),
     })
   } catch (error) {
     // rewriteShutdownAbort (Anthropic v4 transport opt-in): a SHUTDOWN-caused abort

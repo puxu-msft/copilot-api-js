@@ -207,6 +207,8 @@ export interface HistoryEntryData {
     outboundRequest?: Record<string, string>
     outboundResponse?: Record<string, string>
     inboundResponse?: Record<string, string>
+    /** HTTP/2 response trailers (trailing HEADERS frame) from upstream, when present — rare from GHC, captured best-effort. */
+    outboundResponseTrailers?: Record<string, string>
   }
   attempts?: Array<{
     index: number
@@ -306,6 +308,8 @@ export interface RequestContext {
     outboundRequest?: Record<string, string>
     outboundResponse?: Record<string, string>
     inboundResponse?: Record<string, string>
+    /** HTTP/2 response trailers from upstream, when present (best-effort h2 capture). */
+    outboundResponseTrailers?: Record<string, string>
   } | null
   readonly transport: RequestTransport | null
 
@@ -335,6 +339,8 @@ export interface RequestContext {
   setHttpHeaders(capture: HeadersCapture): void
   setInboundRequestHeaders(headers: Record<string, string>): void
   setInboundResponseHeaders(headers: Record<string, string>): void
+  /** Record upstream HTTP/2 response trailers (best-effort; the h2 transport fires this before stream end). */
+  setOutboundResponseTrailers(trailers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void
   setAttemptSanitization(info: SanitizationInfo): void

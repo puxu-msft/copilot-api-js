@@ -181,4 +181,31 @@ describe("http2-client", () => {
     setTimeout(() => ac.abort(), 30)
     await expect(p).rejects.toThrow(/abort/i)
   })
+
+  test("captures HTTP/2 response trailers via onTrailers (after body, before end)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200, "content-type": "application/json" }, { waitForTrailers: true })
+      stream.on("wantTrailers", () => {
+        stream.sendTrailers({ "x-upstream-status": "ok", "grpc-status": "0" })
+      })
+      stream.end(JSON.stringify({ hi: 1 }))
+    }
+    let trailers: Record<string, string> | null = null
+    const res = await http2Fetch(`${url}/t`, { onTrailers: (t) => (trailers = t) })
+    expect(await res.json()).toEqual({ hi: 1 })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(trailers).toEqual({ "x-upstream-status": "ok", "grpc-status": "0" })
+  })
+
+  test("no trailers → onTrailers is never called", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    let called = false
+    const res = await http2Fetch(`${url}/n`, { onTrailers: () => (called = true) })
+    await res.text()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(called).toBe(false)
+  })
 })

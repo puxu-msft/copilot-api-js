@@ -217,6 +217,13 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(ctx.toHistoryEntry().failureReason).toBeUndefined()
   })
 
+  test("setOutboundResponseTrailers records the h2 trailers leg on the entry", () => {
+    const { ctx } = makeContext()
+    ctx.setOutboundResponseTrailers({ "x-upstream-status": "ok", "grpc-status": "0" })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
+    expect(ctx.toHistoryEntry().httpHeaders?.outboundResponseTrailers).toEqual({ "x-upstream-status": "ok", "grpc-status": "0" })
+  })
+
   test("setAttemptTransport updates current and effective transport", () => {
     const { ctx } = makeContext()
     ctx.beginAttempt({})

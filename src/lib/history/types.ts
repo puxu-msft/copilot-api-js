@@ -295,6 +295,8 @@ export interface HistoryEntry {
     outboundResponse?: Record<string, string>
     /** Proxy → Client (inbound response) — reserved for future use */
     inboundResponse?: Record<string, string>
+    /** Upstream API → Proxy HTTP/2 response trailers (trailing HEADERS), when present — best-effort h2 capture. */
+    outboundResponseTrailers?: Record<string, string>
   }
   sseEvents?: Array<SseEventRecord>
   pipelineInfo?: PipelineInfo
