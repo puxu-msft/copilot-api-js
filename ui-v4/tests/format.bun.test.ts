@@ -9,6 +9,7 @@ import {
   //
   formatBytes,
   formatDuration,
+  formatElapsed,
   formatNumber,
   formatTime,
   statusSignal,
@@ -20,6 +21,13 @@ describe("format", () => {
     expect(formatDuration(900)).toBe("900ms")
     expect(formatDuration(1200)).toBe("1.2s")
     expect(formatDuration(65_000)).toBe("1m5s")
+  })
+
+  it("formatElapsed always renders +<seconds>s, never minutes", () => {
+    expect(formatElapsed(0)).toBe("+0.0s")
+    expect(formatElapsed(1200)).toBe("+1.2s")
+    expect(formatElapsed(123_400)).toBe("+123.4s")
+    expect(formatElapsed(90_000)).toBe("+90.0s")
   })
 
   it("statusSignal maps outcome to signal class", () => {

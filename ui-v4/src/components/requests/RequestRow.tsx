@@ -16,6 +16,7 @@ import {
   //
   formatBytes,
   formatDuration,
+  formatElapsed,
   formatTime,
   statusSignal,
   type Signal,
@@ -65,11 +66,14 @@ function LiveRow({ live, selected, onClick }: { live: LiveRowInfo; selected?: bo
   )
 }
 
-/** cacheRead 单元格文本:命中 miss 异常显 "(miss)",有值显 "(N)",无则空。 */
-function cacheCellText(cacheRead: string, cacheMiss: boolean): string {
-  if (cacheMiss) return "(miss)"
-  if (cacheRead === "-") return ""
-  return `(${cacheRead})`
+/**
+ * Tokens 单元格文本:`↑<in>(+<cacheRead>c) ↓<out>`,把 cache-read 命中量并入
+ * 上行(input)方向显示,无 cache read(`tokenCacheRead`→"-")时省略 `+Nc` 后缀。
+ * 例:`↑1.5K+340c ↓250` / `↑1.5K ↓250` / `↑- ↓-`(无 usage)。
+ */
+function tokensCellText(input: string, output: string, cacheRead: string): string {
+  const cached = cacheRead === "-" ? "" : `+${cacheRead}c`
+  return `↑${input}${cached} ↓${output}`
 }
 
 /**
@@ -83,12 +87,13 @@ function bytesCellText(requestBytes: number | undefined, responseBytes: number |
   return [up, down].filter(Boolean).join(" ")
 }
 
-/** History 富行 —— 状态·时间·模型·端点·↑in↓out·cacheRead·×N·时长·预览/失败摘要(spec §4.2)。 */
+/** History 富行 —— 状态·时间·+耗时·模型·(Nx)·端点·字节·token·×N·预览/失败摘要(spec §4.2)。 */
 function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selected?: boolean; onClick?: () => void }) {
   const state = requestState(entry)
   const completed = state === "completed"
   const cacheRead = tokenCacheRead(entry)
   const anomaly = rowAnomaly(entry)
+  const showMultiplier = entry.multiplier !== undefined && entry.multiplier !== 1
 
   return (
     <button
@@ -103,27 +108,27 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
         ● {state}
       </span>
       <span className="w-[68px] shrink-0 text-[#777]">{formatTime(entry.startedAt)}</span>
+      <span
+        className={`w-[64px] shrink-0 ${anomaly.slow ? "row-anomaly text-[var(--color-warn)]" : "text-[#888]"}`}
+        title={anomaly.slow ? "slow request (>60s)" : undefined}
+      >
+        {entry.durationMs === undefined ? "" : formatElapsed(entry.durationMs)}
+      </span>
       <span className="w-[180px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#cdb]">{modelName(entry)}</span>
-      {entry.multiplier === undefined ? null : <span className="w-[34px] shrink-0 text-[var(--color-muted)]">({entry.multiplier}x)</span>}
+      {showMultiplier ?
+        <span className="w-[34px] shrink-0 text-[var(--color-muted)]">({entry.multiplier}x)</span>
+      : null}
       <span className="w-[90px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#777]">{endpointLabel(entry)}</span>
-      <span className="w-[52px] shrink-0 text-right text-[#9a9]">↑{tokenIn(entry)}</span>
-      <span className="w-[52px] shrink-0 text-right text-[#9a9]">↓{tokenOut(entry)}</span>
       <span className="w-[118px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-[var(--color-muted)]">
         {bytesCellText(entry.requestBytes, entry.responseBytes)}
       </span>
       <span
-        className={`w-[52px] shrink-0 text-right ${anomaly.cacheMiss ? "row-anomaly text-[var(--color-warn)]" : "text-[#7fb3b3]"}`}
+        className={`w-[130px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right ${anomaly.cacheMiss ? "row-anomaly text-[var(--color-warn)]" : "text-[#9a9]"}`}
         title={anomaly.cacheMiss ? "cache miss: large input with no cache read" : undefined}
       >
-        {cacheCellText(cacheRead, anomaly.cacheMiss)}
+        {tokensCellText(tokenIn(entry), tokenOut(entry), cacheRead)}
       </span>
       <span className="w-[40px] shrink-0 text-right text-[#a87]">{entry.attemptCount && entry.attemptCount > 1 ? `×${entry.attemptCount}` : ""}</span>
-      <span
-        className={`w-[52px] shrink-0 text-right ${anomaly.slow ? "row-anomaly text-[var(--color-warn)]" : "text-[#888]"}`}
-        title={anomaly.slow ? "slow request (>60s)" : undefined}
-      >
-        {entry.durationMs === undefined ? "" : formatDuration(entry.durationMs)}
-      </span>
       {completed ?
         <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a8a7a]">{truncPreview(entry)}</span>
       : <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--color-fail)]">{failureSummary(entry)}</span>}

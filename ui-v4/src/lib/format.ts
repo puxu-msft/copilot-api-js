@@ -34,6 +34,11 @@ export function formatDuration(ms: number): string {
   return `${m}m${s}s`
 }
 
+/** 毫秒→始终以秒计的 elapsed,带 `+` 前缀(`+1.2s` / `+123.4s`,绝不折成分钟)。用于请求行紧贴起始时间的耗时单元格。 */
+export function formatElapsed(ms: number): string {
+  return `+${(ms / 1000).toFixed(1)}s`
+}
+
 /** epoch ms → HH:MM:SS (local). */
 export function formatTime(ts: number): string {
   const d = new Date(ts)
