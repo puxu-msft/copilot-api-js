@@ -35,6 +35,7 @@ Session header 候选（按优先级）：`x-session-id` → `x-conversation-id`
 - `startedAt: number` — 请求开始时间戳（ms），必填，用于排序和时间范围过滤
 - `endedAt?: number` — 请求结束时间戳
 - `durationMs?: number` — `endedAt - startedAt`
+- `failureReason?: string` — 非成功终态（failed/aborted/interrupted）的**顶层失败原因投影**，取自 `outboundResponse.error ?? 末尝试 error`（纯投影非新捕获，经 head blob round-trip）。`EntrySummary.responseError` 回填同源，故列表视图恒显原因；reaper/重启恢复对 SQL-only 的 interrupted 行另用 `error_message` COALESCE 兜底
 
 **代理管线四段命名**（与 `httpHeaders` 的 inbound/outbound 术语对齐）：
 
@@ -43,6 +44,8 @@ Session header 候选（按优先级）：`x-session-id` → `x-conversation-id`
 - `outboundRequest?` — proxy → upstream：发往上游的最终 wire 请求（含 payload）
 - `outboundResponse?` — upstream → proxy：上游原始响应
 - `inboundResponse?` — proxy → client：实际转发给客户端的响应（经 server-tool 过滤 / tool-name 还原 / tool-input decode 改写后）。`{ content?, sseEvents? }`——非流式存改写后 content，流式存转发帧序列。与 `sseEvents`（上游原始流）并存，构成"上游发了什么 vs 客户端收到什么"对照视图
+
+`httpHeaders` 持四腿 HTTP header（`inboundRequest`/`outboundRequest`/`outboundResponse`/`inboundResponse`，存原始未脱敏）+ 第 5 腿 `outboundResponseTrailers?`（上游 HTTP/2 响应 trailing HEADERS，best-effort capture-when-present——`http2-client` 的 `trailers` 事件经 `setOutboundResponseTrailers` 落 ctx；明文 http 无）。
 
 `sseEvents: Array<SseEventRecord>` 记录上游原始 SSE 流，`SseEventRecord = { offsetMs, type, raw }`——`raw` 为上游 `data:` 原始字节串（含 keepalive，无 parse 往返丢失），`type` 供索引。
 

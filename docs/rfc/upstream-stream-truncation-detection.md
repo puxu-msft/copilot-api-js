@@ -102,7 +102,7 @@ web_search 双跳（`web-search-handler.ts:236`）也用 `createAnthropicStreamA
 - **Phase 3（非流式）✅ 实证确认无需代码**：探针 + 代码核验确认非流式上游截断**当前已正确处理**——解析失败（残缺/非法 JSON、h2 "closed before end"）归 `bad_request`、无 strategy 匹配 → **FAIL**（非静默）；socket 级错误（ECONNRESET 等）归 `network_error` → 重试（非流式无已转发字节，可安全重试）。**语义残缺检测已实现（2026-06-24）**：合法但语义残缺 JSON（HTTP 200 + 完整 JSON 但缺协议终止符 stop_reason/finish_reason/非终态 status）此前静默 complete，现各非流式 handler 在 `complete` 前过 `lib/pipeline/non-streaming-completeness.ts` gate——缺终止符（含 CC/Gemini 空 choices）→ `ctx.fail`（诚实分类 + 保留残缺 content）、仍转发上游 200 body。保守只 gate 终止符缺失（镜像流式 sawMessageStop 不变量），不误判"有终止符但 content 空"的 legit refusal。
 - **Phase 4（doc-sync）进行中**：DESIGN.md "活的架构现状" 表 + 本 RFC 状态回填 + memory 提炼。无 config 开关（截断检测硬连线为正确行为，非偏好），故运行时选项表无新增。
 
-first-content-gate 透明重试（§3.3）+ web_search 旁路检测（§3.4）+ 非流式语义残缺检测（Phase 3）**均不进当前实现**——暂缓项，文档化于此。
+first-content-gate 透明重试（§3.3）+ web_search 旁路检测（§3.4）**不进当前实现**——暂缓项，文档化于此。**非流式语义残缺检测（Phase 3）已实现**（2026-06-24，见上 Phase 3 行 + `lib/pipeline/non-streaming-completeness.ts`）。
 
 ## 5. Open questions（实现前需实证/定夺）
 

@@ -225,6 +225,7 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/status` | GET | Server status (uptime, account type, model count, in-flight, etc.) |
+| `/api/stats` | GET | Operational stats — per-dimension breakdown (`?dimension=model\|endpoint\|client\|agentKind\|tool&window=sinceStart\|7d&limit=N`) with token/cost counters + latency/queue/token percentiles |
 | `/api/tokens` | GET | GitHub + Copilot token info (masked unless `--show-github-token`) |
 | `/api/models` | GET | Internal model catalog (full Copilot data) |
 | `/api/models/:model` | GET | Single model (internal full shape) |
@@ -232,6 +233,7 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 | `/api/config/yaml` | GET / PUT | Read / replace `config.yaml` (triggers full re-apply) |
 | `/api/logs` | GET | Recent request logs (in-memory ring buffer) |
 | `/api/event_logging/batch` | POST | Silently consumes Anthropic event-logging beacons |
+| `/metrics` | GET | Prometheus text exposition (v0.0.4) — `copilot_api_*_total{dimension,key}` counters + per-dimension histograms (duration/queue/token) |
 | `/health` | GET | Liveness probe (200 / 503) |
 | `/ui/*` | GET | Vuetify-based History Web UI (static SPA) |
 
