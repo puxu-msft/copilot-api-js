@@ -74,20 +74,20 @@ const baseEntry = (effectiveMessages?: Array<MessageContent>): HistoryEntry =>
 describe("StagesSegment inbound↔effective toggle", () => {
   it("shows the diff toggle button when both message sets exist", () => {
     render(<StagesSegment entry={baseEntry([msg("user", "hello rewritten")])} />)
-    expect(screen.getByText(/inbound vs effective diff/)).toBeDefined()
+    expect(screen.getByText(/show full diff/)).toBeDefined()
   })
 
   it("hides the diff toggle when there is no effective request", () => {
     render(<StagesSegment entry={baseEntry()} />)
-    expect(screen.queryByText(/inbound vs effective diff/)).toBeNull()
+    expect(screen.queryByText(/show full diff/)).toBeNull()
   })
 
   it("reveals the MessageDiffView when the toggle is clicked", () => {
     render(<StagesSegment entry={baseEntry([msg("user", "hello rewritten")])} />)
     expect(screen.queryByText(/Inbound ↔ Effective diff/)).toBeNull()
-    fireEvent.click(screen.getByText(/inbound vs effective diff/))
+    fireEvent.click(screen.getByText(/show full diff/))
     expect(screen.getByText(/Inbound ↔ Effective diff/)).toBeDefined()
-    // the rewritten word surfaces in the inline diff
-    expect(screen.getByText("rewritten")).toBeDefined()
+    // the rewritten word surfaces in the inline diff (also appears as a rewrite badge)
+    expect(screen.getAllByText("rewritten").length).toBeGreaterThan(0)
   })
 })

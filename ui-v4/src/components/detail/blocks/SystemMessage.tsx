@@ -3,6 +3,7 @@ import { useState } from "react"
 import type { SystemBlock } from "@/types"
 
 import { UnifiedLineDiff } from "@/components/detail/diff/UnifiedLineDiff"
+import { LineNumberedText } from "@/components/detail/LineNumberedText"
 import { diffLinesRich } from "@/lib/diff/block-diff"
 
 type SystemValue = string | Array<SystemBlock>
@@ -43,7 +44,9 @@ function SystemBlocksBody({ blocks }: { blocks: Array<SystemBlock> }) {
               : null}
             </div>
           : null}
-          <pre className="mono whitespace-pre-wrap break-words text-[13px] text-[var(--color-text)]">{block.text}</pre>
+          <div className="text-[var(--color-text)]">
+            <LineNumberedText text={block.text} />
+          </div>
         </div>
       ))}
     </div>

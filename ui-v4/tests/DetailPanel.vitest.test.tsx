@@ -58,6 +58,6 @@ describe("DetailPanel", () => {
   it("switches segment via sub-rail", () => {
     renderAt("/requests/r1")
     fireEvent.click(screen.getByText("Stages"))
-    expect(screen.getByText(/Inbound \(client → proxy\)/)).toBeDefined()
+    expect(screen.getAllByText(/Inbound \(client → proxy\)/).length).toBeGreaterThan(0)
   })
 })

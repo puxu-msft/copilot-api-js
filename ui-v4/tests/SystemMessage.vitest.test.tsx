@@ -24,6 +24,15 @@ describe("SystemMessage", () => {
     expect(screen.queryByText("modified")).toBeNull()
   })
 
+  it("renders system text with a line-number gutter", () => {
+    render(<SystemMessage system={["first line", "second line"].join("\n")} />)
+    // LineNumberedText renders a per-line gutter with 1-based numbers.
+    expect(screen.getByText("1")).toBeDefined()
+    expect(screen.getByText("2")).toBeDefined()
+    expect(screen.getByText(/first line/)).toBeDefined()
+    expect(screen.getByText(/second line/)).toBeDefined()
+  })
+
   it("shows modified badge + toggle when rewrittenSystem differs", () => {
     render(
       <SystemMessage

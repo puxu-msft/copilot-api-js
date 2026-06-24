@@ -98,6 +98,13 @@ export function diffLinesRich(a: string, b: string): Array<DiffLineRow> {
 
 export type AlignKind = "same" | "added" | "removed" | "modified"
 
+/**
+ * A per-message rewrite marker derived from an aligned diff row, used to visually
+ * distinguish messages changed by the inbound→effective rewrites. `"same"` rows
+ * carry no mark (undefined); only the three change kinds are surfaced.
+ */
+export type RewriteMark = "modified" | "added" | "removed"
+
 export interface AlignRow<T> {
   kind: AlignKind
   left?: T

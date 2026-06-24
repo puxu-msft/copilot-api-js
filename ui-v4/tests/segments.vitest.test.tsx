@@ -41,54 +41,106 @@ describe("detail segments", () => {
   })
   it("StagesSegment shows Inbound leg label", () => {
     render(<StagesSegment entry={base} />)
-    expect(screen.getByText(/Inbound \(client → proxy\)/)).toBeDefined()
+    // Selected-leg header carries the full leg label.
+    expect(screen.getAllByText(/Inbound \(client → proxy\)/).length).toBeGreaterThan(0)
   })
-  it("StagesSegment renders all three request legs side-by-side in a container-query grid", () => {
-    const e = {
-      ...base,
-      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
-      outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
-    } as unknown as HistoryEntry
-    const { container } = render(<StagesSegment entry={e} />)
-    expect(screen.getByText(/Inbound \(client → proxy\)/)).toBeDefined()
-    expect(screen.getByText(/Effective \(after rewrites\)/)).toBeDefined()
-    expect(screen.getByText(/Wire \(proxy → upstream\)/)).toBeDefined()
-    const cq = container.querySelector(String.raw`.\@container`)
-    expect(cq).not.toBeNull()
-    const grid = cq?.querySelector("div")
-    expect(grid?.className).toContain("grid")
-    expect(grid?.className).toContain("grid-cols-1")
-    expect(grid?.className).toContain("@4xl:grid-cols-3")
-  })
-  it("StagesSegment renders a leg→message→block TOC tree with leg + message anchors", () => {
+  it("StagesSegment shows ONLY the first (Inbound) leg by default, not all three at once", () => {
     const e = {
       ...base,
       effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
       outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
     } as unknown as HistoryEntry
     render(<StagesSegment entry={e} />)
-    // 3 leg nodes in the TOC.
+    // Inbound content rendered; Effective/Wire content NOT both rendered simultaneously.
+    expect(screen.getByText(/convo hello/)).toBeDefined()
+    expect(screen.queryByText(/eff hello/)).toBeNull()
+    expect(screen.queryByText(/wire hello/)).toBeNull()
+    // Only the selected leg's anchor is in the DOM.
+    expect(document.querySelector("#stage-inbound")).not.toBeNull()
+    expect(document.querySelector("#stage-effective")).toBeNull()
+    expect(document.querySelector("#stage-wire")).toBeNull()
+  })
+  it("StagesSegment TOC has all three leg nodes + message anchors for the selected leg", () => {
+    const e = {
+      ...base,
+      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
+      outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
+    } as unknown as HistoryEntry
+    render(<StagesSegment entry={e} />)
+    // 3 leg nodes in the TOC (short labels).
     expect(screen.getByText("Inbound")).toBeDefined()
     expect(screen.getByText("Effective")).toBeDefined()
     expect(screen.getByText("Wire")).toBeDefined()
-    // Leg wrapper anchors exist in the DOM.
+    // The selected (inbound) leg renders its anchors.
     expect(document.querySelector("#stage-inbound")).not.toBeNull()
-    expect(document.querySelector("#stage-effective")).not.toBeNull()
-    expect(document.querySelector("#stage-wire")).not.toBeNull()
-    // A leg's first message anchor exists (from buildMessageTocNodes / ConversationView).
     expect(document.querySelector("#stage-inbound-msg-0")).not.toBeNull()
-    expect(document.querySelector("#stage-effective-msg-0")).not.toBeNull()
-    expect(document.querySelector("#stage-wire-msg-0")).not.toBeNull()
   })
-  it("StagesSegment scrolls a leg into view when its TOC node is clicked", () => {
+  it("StagesSegment switches the content to the Effective leg when its TOC node is clicked", () => {
     const e = {
       ...base,
       effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
       outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
     } as unknown as HistoryEntry
     render(<StagesSegment entry={e} />)
-    fireEvent.click(screen.getByText("Wire"))
-    expect(scrollIntoView).toHaveBeenCalled()
+    // Initially Inbound is shown.
+    expect(screen.getByText(/convo hello/)).toBeDefined()
+    expect(screen.queryByText(/eff hello/)).toBeNull()
+    fireEvent.click(screen.getByText("Effective"))
+    // Now Effective is shown, Inbound content gone.
+    expect(screen.getByText(/eff hello/)).toBeDefined()
+    expect(screen.queryByText(/convo hello/)).toBeNull()
+    expect(document.querySelector("#stage-effective")).not.toBeNull()
+    expect(document.querySelector("#stage-inbound")).toBeNull()
+  })
+  it("StagesSegment Rendered/Raw toggle shows the selected leg's raw JSON body", () => {
+    const e = {
+      ...base,
+      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
+    } as unknown as HistoryEntry
+    render(<StagesSegment entry={e} />)
+    // Rendered (default): conversation body.
+    expect(screen.getByText(/convo hello/)).toBeDefined()
+    fireEvent.click(screen.getByText("Raw"))
+    // Raw view: the inbound raw body JSON renders (CodeBlock). The endpoint field appears.
+    expect(screen.getAllByText(/messages/).length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByText("Rendered"))
+    expect(screen.getByText(/convo hello/)).toBeDefined()
+  })
+  it("StagesSegment marks rewritten messages and leaves unchanged ones unmarked", () => {
+    const e = {
+      ...base,
+      inboundRequest: {
+        messages: [
+          { role: "user", content: "keep me" },
+          { role: "assistant", content: "original text" },
+        ],
+      },
+      effectiveRequest: {
+        messages: [
+          { role: "user", content: "keep me" },
+          { role: "assistant", content: "rewritten text" },
+        ],
+      },
+    } as unknown as HistoryEntry
+    render(<StagesSegment entry={e} />)
+    // Switch to Effective leg where the modified mark lives.
+    fireEvent.click(screen.getByText("Effective"))
+    // The modified message carries a "rewritten" badge (amber).
+    const badges = screen.getAllByText(/^rewritten$/)
+    expect(badges.length).toBe(1)
+    // Unchanged message ("keep me") is not marked — only one badge total.
+    expect(badges[0].style.color).toContain("--color-warn")
+  })
+  it("StagesSegment keeps the inbound↔effective full-diff toggle", () => {
+    const e = {
+      ...base,
+      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
+    } as unknown as HistoryEntry
+    render(<StagesSegment entry={e} />)
+    const diffBtn = screen.getByText(/show full diff/)
+    expect(diffBtn).toBeDefined()
+    fireEvent.click(diffBtn)
+    expect(screen.getByText(/Inbound ↔ Effective diff/)).toBeDefined()
   })
   it("HeadersSegment shows a header key/leg", () => {
     const e = { ...base, httpHeaders: { inboundRequest: { "x-test": "v1" } } } as HistoryEntry
