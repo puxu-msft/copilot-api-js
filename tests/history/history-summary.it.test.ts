@@ -143,7 +143,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toBe("")
   })
 
-  test("previewText skips OpenAI tool response messages (role=tool)", () => {
+  test("previewText faithfully summarizes the last message when it is an OpenAI tool response (role=tool)", () => {
     const entry = insertHistoryEntry("openai-chat-completions", {
       model: "gpt-4o",
       messages: [
@@ -158,8 +158,8 @@ describe("summary correctness (toSummary)", () => {
     })
 
     const summary = getSummary(entry.id)!
-    // Should skip role=tool and find the last user message
-    expect(summary.previewText).toBe("What is 2+2?")
+    // Last message is the tool result — show it faithfully (NOT hunt back to the user message).
+    expect(summary.previewText).toBe("[tool_result: call_1]")
   })
 
   test("previewText shows tool_call name when only assistant tool_calls remain", () => {
@@ -190,7 +190,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toContain("call_1")
   })
 
-  test("previewText skips user messages with only tool_result content blocks", () => {
+  test("previewText faithfully shows the last message when it is a user message with only tool_result blocks", () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [
@@ -201,8 +201,8 @@ describe("summary correctness (toSummary)", () => {
     })
 
     const summary = getSummary(entry.id)!
-    // Should skip the tool_result-only user message and find "Analyze this code"
-    expect(summary.previewText).toBe("Analyze this code")
+    // Last message is the tool_result — show it faithfully (NOT hunt back to "Analyze this code").
+    expect(summary.previewText).toBe("[tool_result: t1]")
   })
 
   test("previewText for openai-responses endpoint", () => {

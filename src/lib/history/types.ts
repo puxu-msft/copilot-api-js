@@ -413,6 +413,8 @@ export interface SessionSummary {
   completed: number
   failed: number
   models: Array<string>
+  /** Preview text of the latest (max started_at) terminal entry in this session. */
+  preview: string
 }
 
 export interface EntrySummary {

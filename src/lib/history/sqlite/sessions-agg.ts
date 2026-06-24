@@ -34,9 +34,9 @@ export function querySessionSummaries(limit = 200): Array<SessionSummary> {
         ORDER BY lastStartedAt DESC
         LIMIT ?`,
     )
-    .all(limit) as Array<Omit<SessionSummary, "models">>
+    .all(limit) as Array<Omit<SessionSummary, "models" | "preview">>
 
-  return rows.map((r) => ({ ...r, models: querySessionModels(db, r.sessionId) }))
+  return rows.map((r) => ({ ...r, models: querySessionModels(db, r.sessionId), preview: querySessionLastPreview(db, r.sessionId) }))
 }
 
 /** Distinct non-NULL model names recorded for one session (used to fill `SessionSummary.models`). */
@@ -45,4 +45,12 @@ function querySessionModels(db: Database, sessionId: string): Array<string> {
     model: string
   }>
   return rows.map((r) => r.model)
+}
+
+/** Preview text of the latest (max started_at) terminal entry in one session (fills `SessionSummary.preview`). */
+function querySessionLastPreview(db: Database, sessionId: string): string {
+  const row = db.prepare(`SELECT preview_text FROM entries_v2 WHERE session_id = ? AND ${NOT_ACTIVE} ORDER BY started_at DESC LIMIT 1`).get(sessionId) as {
+    preview_text: string | null
+  } | null
+  return row?.preview_text ?? ""
 }

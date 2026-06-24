@@ -34,6 +34,9 @@ interface SeedOpts {
   state: "completed" | "failed"
   inputTokens: number
   outputTokens: number
+  startedAt?: number
+  /** First user message text — drives the persisted preview_text. */
+  text?: string
 }
 
 /** Insert + finalize one terminal entry so it lands in entries_v2 as a non-active row. */
@@ -43,11 +46,11 @@ function seedEntry(opts: SeedOpts): void {
     id,
     sessionId: opts.sessionId,
     agentId: opts.agentId,
-    startedAt: Date.now(),
+    startedAt: opts.startedAt ?? Date.now(),
     endpoint: opts.endpoint ?? "anthropic-messages",
     inboundRequest: {
       model: opts.model,
-      messages: [{ role: "user", content: "hi" }],
+      messages: [{ role: "user", content: opts.text ?? "hi" }],
       stream: true,
     },
   }
@@ -109,5 +112,25 @@ describe("querySessionSummaries", () => {
     expect(b!.completed).toBe(1)
     expect(b!.failed).toBe(0)
     expect(b!.models).toEqual(["gpt-x"])
+  })
+
+  test("preview reflects the latest (max started_at) entry's preview text", () => {
+    const base = Date.now()
+    // Earlier then later entry in the same session — preview must follow the later one.
+    seedEntry({ sessionId: "session-P", model: "claude-a", state: "completed", inputTokens: 10, outputTokens: 5, startedAt: base, text: "older message" })
+    seedEntry({
+      sessionId: "session-P",
+      model: "claude-a",
+      state: "completed",
+      inputTokens: 10,
+      outputTokens: 5,
+      startedAt: base + 1000,
+      text: "newer message",
+    })
+
+    const summaries = querySessionSummaries()
+    const p = summaries.find((s) => s.sessionId === "session-P")
+    expect(p).toBeDefined()
+    expect(p!.preview).toBe("newer message")
   })
 })
