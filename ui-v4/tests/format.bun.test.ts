@@ -7,6 +7,7 @@ import {
 
 import {
   //
+  formatBytes,
   formatDuration,
   formatNumber,
   formatTime,
@@ -40,5 +41,17 @@ describe("format", () => {
     expect(formatNumber(250)).toBe("250")
     expect(formatNumber(1500)).toBe("1.5K")
     expect(formatNumber(2_400_000)).toBe("2.4M")
+  })
+
+  it("formatBytes compacts sizes with B/KB/MB suffix", () => {
+    expect(formatBytes(undefined)).toBe("")
+    expect(formatBytes(0)).toBe("0B")
+    expect(formatBytes(900)).toBe("900B")
+    expect(formatBytes(1023)).toBe("1023B")
+    expect(formatBytes(1024)).toBe("1.0KB")
+    expect(formatBytes(1536)).toBe("1.5KB")
+    expect(formatBytes(1_048_575)).toBe("1024.0KB")
+    expect(formatBytes(1_048_576)).toBe("1.0MB")
+    expect(formatBytes(2_516_582)).toBe("2.4MB")
   })
 })

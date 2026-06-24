@@ -14,6 +14,7 @@ import {
 } from "@/lib/activity-row"
 import {
   //
+  formatBytes,
   formatDuration,
   formatTime,
   statusSignal,
@@ -71,6 +72,17 @@ function cacheCellText(cacheRead: string, cacheMiss: boolean): string {
   return `(${cacheRead})`
 }
 
+/**
+ * Bytes 单元格文本:`↑<req> ↓<resp>` 数据大小(区别于 token 计数的 ↑in↓out)。
+ * 按侧分别拼接:仅一侧有值(如失败行有请求字节、无响应字节)只渲染该侧,
+ * 不留悬空箭头;二者皆缺(老行无 request/response_bytes 列)→ ""。
+ */
+function bytesCellText(requestBytes: number | undefined, responseBytes: number | undefined): string {
+  const up = requestBytes === undefined ? "" : `↑${formatBytes(requestBytes)}`
+  const down = responseBytes === undefined ? "" : `↓${formatBytes(responseBytes)}`
+  return [up, down].filter(Boolean).join(" ")
+}
+
 /** History 富行 —— 状态·时间·模型·端点·↑in↓out·cacheRead·×N·时长·预览/失败摘要(spec §4.2)。 */
 function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selected?: boolean; onClick?: () => void }) {
   const state = requestState(entry)
@@ -92,9 +104,13 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
       </span>
       <span className="w-[68px] shrink-0 text-[#777]">{formatTime(entry.startedAt)}</span>
       <span className="w-[180px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#cdb]">{modelName(entry)}</span>
+      {entry.multiplier === undefined ? null : <span className="w-[34px] shrink-0 text-[var(--color-muted)]">({entry.multiplier}x)</span>}
       <span className="w-[90px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#777]">{endpointLabel(entry)}</span>
       <span className="w-[52px] shrink-0 text-right text-[#9a9]">↑{tokenIn(entry)}</span>
       <span className="w-[52px] shrink-0 text-right text-[#9a9]">↓{tokenOut(entry)}</span>
+      <span className="w-[118px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-[var(--color-muted)]">
+        {bytesCellText(entry.requestBytes, entry.responseBytes)}
+      </span>
       <span
         className={`w-[52px] shrink-0 text-right ${anomaly.cacheMiss ? "row-anomaly text-[var(--color-warn)]" : "text-[#7fb3b3]"}`}
         title={anomaly.cacheMiss ? "cache miss: large input with no cache read" : undefined}

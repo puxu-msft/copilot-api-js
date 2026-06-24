@@ -50,3 +50,14 @@ export function formatNumber(n: number | undefined | null): string {
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "K"
   return n.toString()
 }
+
+/**
+ * Compact byte size (mirrors backend `src/lib/observability/projections/format.ts`):
+ * 0→"0B", 900→"900B", 1536→"1.5KB", 2.4MB→"2.4MB". undefined→"".
+ */
+export function formatBytes(n: number | undefined): string {
+  if (n === undefined) return ""
+  if (n < 1024) return `${n}B`
+  if (n < 1_048_576) return `${(n / 1024).toFixed(1)}KB`
+  return `${(n / 1_048_576).toFixed(1)}MB`
+}

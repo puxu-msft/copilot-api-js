@@ -96,4 +96,58 @@ describe("RequestRow", () => {
     expect(screen.queryByText(/↑/)).toBeNull()
     expect(screen.queryByText(/↓/)).toBeNull()
   })
+
+  it("history row renders ↑req↓resp bytes and the (Nx) multiplier badge when present", () => {
+    render(
+      <RequestRow
+        entry={base({
+          state: "completed",
+          responseModel: "claude-opus-4.8",
+          usage: { input_tokens: 1500, output_tokens: 250 },
+          requestBytes: 1536,
+          responseBytes: 2_516_582,
+          multiplier: 3,
+        })}
+      />,
+    )
+    expect(screen.getByText("↑1.5KB ↓2.4MB")).toBeDefined()
+    expect(screen.getByText("(3x)")).toBeDefined()
+    // token arrows remain their own cells, distinct from byte arrows
+    expect(screen.getByText("↑1.5K")).toBeDefined()
+    expect(screen.getByText("↓250")).toBeDefined()
+  })
+
+  it("history row with only request bytes renders ↑ side only (no dangling ↓)", () => {
+    // Failed/aborted rows can have request bytes but no response bytes.
+    render(
+      <RequestRow
+        entry={base({
+          state: "failed",
+          responseModel: "claude-opus-4.8",
+          requestBytes: 1536,
+        })}
+      />,
+    )
+    // getByText is an exact text-content match → the bytes cell is exactly
+    // "↑1.5KB" (would be "↑1.5KB ↓" if the ↓ side dangled). The token cell's
+    // own ↓ is a separate element, so we assert the combined dangling form is absent.
+    expect(screen.getByText("↑1.5KB")).toBeDefined()
+    expect(screen.queryByText("↑1.5KB ↓")).toBeNull()
+  })
+
+  it("old history row without bytes/multiplier renders no byte arrows and no multiplier badge", () => {
+    render(
+      <RequestRow
+        entry={base({
+          state: "completed",
+          responseModel: "claude-opus-4.8",
+          usage: { input_tokens: 1500, output_tokens: 250 },
+        })}
+      />,
+    )
+    // token arrows still present, but no KB/MB byte arrows and no (Nx) badge
+    expect(screen.getByText("↑1.5K")).toBeDefined()
+    expect(screen.queryByText(/↑.*KB|↑.*MB/)).toBeNull()
+    expect(screen.queryByText(/\(\d+x\)/)).toBeNull()
+  })
 })

@@ -174,6 +174,9 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     responseError: entry.outboundResponse?.error,
     usage: entry.outboundResponse?.usage,
     durationMs: entry.durationMs,
+    requestBytes: entry.requestBytes,
+    responseBytes: entry.responseBytes,
+    multiplier: entry.multiplier,
     previewText: cached.preview,
     searchText: cached.search,
   }

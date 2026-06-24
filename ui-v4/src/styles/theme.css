@@ -53,3 +53,8 @@ body {
   background: #2a2212;
   transition: outline-color 1s ease-out, background-color 1s ease-out;
 }
+
+/* 列表行异常单元格(慢 >60s / 缓存未命中)——除琥珀字色外加粗以更醒目(RequestRow 的 row-anomaly 标记)。 */
+.row-anomaly {
+  font-weight: 600;
+}

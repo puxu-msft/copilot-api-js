@@ -14,7 +14,7 @@
 4. **项目原则**：根 `CLAUDE.md` + `docs/DESIGN.md`（后端架构、bun-first、测试组织）。
 5. **设计草稿/决策**：`ui-v4/docs/decisions.md`（已被 DESIGN.md supersede）。
 
-## 已完成（Plan 01/02/03/03b/05/06/08，nav 5 项全是真页 + 详情 diff + 两路由分离 + TOC 树）
+## 已完成（Plan 01/02/03/03b/05/06/08/09，nav 5 项全是真页 + 详情 diff + 两路由分离 + TOC 树 + 行统计/行号/高亮/字节·成本）
 
 - **栈**：React 18 + TS strict + Vite 7 + **Tailwind v4**（`@tailwindcss/vite`，CSS-first `@theme`，主题 token 在 `src/styles/theme.css`）+ **TanStack Query**（server-state）+ **Zustand**（client-state）+ React Router 6 **hash 路由** + 移植的类式 **WSClient**（模块单例 + 引用计数 + latest-ref，规避 StrictMode churn）。视觉 **工业风 Terminal Amber**（暖近黑 + amber、锐角 rounded:0、左对齐拒绝居中、hairline、IBM Plex Mono、green/red/amber 信号色）。
 - **Plan 01**：应用壳层（NavRail/TopBar/AppShell）+ WS 状态 + 主题切换 + 路由 errorElement/catch-all。
@@ -24,6 +24,7 @@
 - **Plan 05**：Sessions+Agent —— **后端新增**只读 `GET /history/api/sessions`（GROUP BY session_id 聚合）+ `/entries?agentId=&mainAgentOnly=` 接线；前端 Sessions 列表 + Session 详情（agent 泳道时间线，按 agentId 分 main/subagent，块深链）。
 - **Plan 03b**：详情 **diff**（**无后端改动**）——移植 `block-diff.ts` 算法核（jsdiff 词/行 diff + role/帧类型领域 aligner）→ `InlineParts`/`DiffRow` 渲染原语；**新增 Response 段**（sub-rail 五项）承载 `SseFrameDiff`（upstream↔forwarded 帧对齐，cap 守卫）+ 响应展示；`MessageDiffView`（inbound↔effective 消息 diff，Stages 顶部切换）；Stages 请求三腿 **容器查询并排**（`@container` 窄→单列/宽→三列）；`SystemMessage` 独立支路（original↔rewritten↔diff，`UnifiedLineDiff` 首消费 `diffLinesRich`，自动转义）；tool_result 内嵌块递归走 ContentRenderer。**注**：DESIGN §9 提及的 "formatters.ts 标签过滤" 经实证不存在（详情应展示完整 system prompt），故未做。
 - **Plan 08**：详情页 **两路由全屏分离**（**无后端改动**）——`/requests` 列表全屏 + `/requests/:id` 详情全屏（返回钮）、点行/深链导航、退役 `RequestsWorkbench`（反转 DESIGN §4 主从一体，用户定 2026-06-24）；**Convo/Stages 左侧 TOC 树**——`buildMessageTocNodes` builder（锚点契约 `${prefix}-msg-${i}/-blk-${j}`，blocks 源 normalizeToContentBlocks）+ `DetailTocTree`（可折叠递归、默认折叠块、activeAnchor 高亮）+ `anchorPrefix` 贯穿渲染锚点（未锚定调用方 DOM 不变）+ `useAnchorScroll`（scrollIntoView + `.toc-flash` 瞬时高亮）；Convo `[TOC|内容]`、Stages `leg→message→block` 树 `[TOC|@container 三腿]`。
+- **Plan 09**：详情/列表**打磨**——① 列表行丰富统计（RequestRow `entry`/`live` union：time/endpoint/model/(Nx)·↑in↓out·cacheRead·↑req↓resp·×attempt·dur·preview/failureSummary·异常高亮，移植 `activity-row` 助手）；② 文本块行号 gutter（`LineNumberedText`+`LineGutter`，>500 截断）；③ JSON/代码块语法高亮（`lowlight` hast→React，**无 dangerouslySetInnerHTML**，amber `.hljs-*` 自写主题，ToolUse/Generic/ToolResult）；④ TOC 树美化（树线/kind 色/旋转 chevron/hover/左 accent 条）；⑤ **后端**字节/成本（entries_v2 加 `request_bytes`/`response_bytes`/`multiplier`，写时 multiplier 经 ctx billing、字节 serialize 派生，EntrySummary 投影，解锁 cost 留位）。⚠ 本任务执行期 implementer 误跑 `git stash` 卷走并发会话工作→已完整恢复（diff 验证、零丢失），后续 subagent prompt 加「绝对禁 git」红线。
 - 全局**字号上调一档**（8→11/9→12/10→13/11→14，基准 13→15）+ 配套加宽固定容器消除溢出。
 
 ## 下一步（增强，挑一个；非缺页）—— **plan 文档已写好，直接执行**
