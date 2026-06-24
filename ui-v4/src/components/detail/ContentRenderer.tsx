@@ -33,18 +33,33 @@ function renderBlock(block: ContentBlock) {
   return <GenericBlock block={block} />
 }
 
-/** 纯分发器 —— 按 block.type 选组件(spec §9,8 类 + generic),每块包 ErrorBoundary。 */
-export function ContentRenderer({ blocks }: { blocks: Array<ContentBlock> }) {
+interface ContentRendererProps {
+  blocks: Array<ContentBlock>
+  /** When paired with `messageIndex`, each block is wrapped in a div with id `${anchorPrefix}-msg-${messageIndex}-blk-${i}`. */
+  anchorPrefix?: string
+  messageIndex?: number
+}
+
+/** 纯分发器 —— 按 block.type 选组件(spec §9,8 类 + generic),每块包 ErrorBoundary。锚定时(anchorPrefix+messageIndex)才额外包 id 锚点 div,未锚定调用方 DOM 不变。 */
+export function ContentRenderer({ blocks, anchorPrefix, messageIndex }: ContentRendererProps) {
+  const anchored = anchorPrefix !== undefined && messageIndex !== undefined
   return (
     <div className="flex flex-col gap-1">
-      {blocks.map((block, i) => (
-        <ErrorBoundary
-          key={i}
-          label={block.type}
-        >
-          {renderBlock(block)}
-        </ErrorBoundary>
-      ))}
+      {blocks.map((block, i) =>
+        anchored ?
+          <div
+            key={i}
+            id={`${anchorPrefix}-msg-${messageIndex}-blk-${i}`}
+          >
+            <ErrorBoundary label={block.type}>{renderBlock(block)}</ErrorBoundary>
+          </div>
+        : <ErrorBoundary
+            key={i}
+            label={block.type}
+          >
+            {renderBlock(block)}
+          </ErrorBoundary>,
+      )}
     </div>
   )
 }

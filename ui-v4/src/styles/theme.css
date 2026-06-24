@@ -28,3 +28,10 @@ body {
 /* 工业骨架：全局锐角、左对齐(不居中) */
 *, *::before, *::after { border-radius: 0 !important; box-sizing: border-box; }
 .mono { font-family: var(--font-mono); }
+
+/* TOC 跳转后的瞬态高亮(useAnchorScroll 加/移 .toc-flash);outline + 暖底,~1.2s 后由 hook 移除并淡出。 */
+.toc-flash {
+  outline: 1px solid var(--color-primary);
+  background: #2a2212;
+  transition: outline-color 1s ease-out, background-color 1s ease-out;
+}

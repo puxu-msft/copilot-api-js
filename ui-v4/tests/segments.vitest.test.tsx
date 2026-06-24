@@ -1,13 +1,16 @@
 import {
   //
+  fireEvent,
   render,
   screen,
 } from "@testing-library/react"
 import {
   //
+  beforeEach,
   describe,
   expect,
   it,
+  vi,
 } from "vitest"
 
 import type { HistoryEntry } from "@/types"
@@ -25,13 +28,20 @@ const base = {
 } as unknown as HistoryEntry
 
 describe("detail segments", () => {
+  const scrollIntoView = vi.fn()
+  beforeEach(() => {
+    // jsdom lacks scrollIntoView — useAnchorScroll calls it on TOC node click.
+    scrollIntoView.mockClear()
+    Element.prototype.scrollIntoView = scrollIntoView
+  })
   it("ConvoSegment renders inbound conversation", () => {
     render(<ConvoSegment entry={base} />)
-    expect(screen.getByText(/convo hello/)).toBeDefined()
+    // "convo hello" appears in both the TOC label and the content body.
+    expect(screen.getAllByText(/convo hello/).length).toBeGreaterThan(0)
   })
   it("StagesSegment shows Inbound leg label", () => {
     render(<StagesSegment entry={base} />)
-    expect(screen.getByText(/Inbound/)).toBeDefined()
+    expect(screen.getByText(/Inbound \(client → proxy\)/)).toBeDefined()
   })
   it("StagesSegment renders all three request legs side-by-side in a container-query grid", () => {
     const e = {
@@ -49,6 +59,36 @@ describe("detail segments", () => {
     expect(grid?.className).toContain("grid")
     expect(grid?.className).toContain("grid-cols-1")
     expect(grid?.className).toContain("@4xl:grid-cols-3")
+  })
+  it("StagesSegment renders a leg→message→block TOC tree with leg + message anchors", () => {
+    const e = {
+      ...base,
+      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
+      outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
+    } as unknown as HistoryEntry
+    render(<StagesSegment entry={e} />)
+    // 3 leg nodes in the TOC.
+    expect(screen.getByText("Inbound")).toBeDefined()
+    expect(screen.getByText("Effective")).toBeDefined()
+    expect(screen.getByText("Wire")).toBeDefined()
+    // Leg wrapper anchors exist in the DOM.
+    expect(document.querySelector("#stage-inbound")).not.toBeNull()
+    expect(document.querySelector("#stage-effective")).not.toBeNull()
+    expect(document.querySelector("#stage-wire")).not.toBeNull()
+    // A leg's first message anchor exists (from buildMessageTocNodes / ConversationView).
+    expect(document.querySelector("#stage-inbound-msg-0")).not.toBeNull()
+    expect(document.querySelector("#stage-effective-msg-0")).not.toBeNull()
+    expect(document.querySelector("#stage-wire-msg-0")).not.toBeNull()
+  })
+  it("StagesSegment scrolls a leg into view when its TOC node is clicked", () => {
+    const e = {
+      ...base,
+      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
+      outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
+    } as unknown as HistoryEntry
+    render(<StagesSegment entry={e} />)
+    fireEvent.click(screen.getByText("Wire"))
+    expect(scrollIntoView).toHaveBeenCalled()
   })
   it("HeadersSegment shows a header key/leg", () => {
     const e = { ...base, httpHeaders: { inboundRequest: { "x-test": "v1" } } } as HistoryEntry

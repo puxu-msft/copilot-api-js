@@ -129,7 +129,8 @@ describe("RequestDetailPage", () => {
     renderDetail()
     expect(screen.getByText(/‹ 返回列表/)).toBeDefined()
     expect(screen.getByText(/anthropic-messages/)).toBeDefined()
-    expect(screen.getByText(/convo body text/)).toBeDefined()
+    // "convo body text" appears in both the TOC label and the content body.
+    expect(screen.getAllByText(/convo body text/).length).toBeGreaterThan(0)
   })
   it("navigates back to /requests when the back button is clicked", () => {
     renderDetail()

@@ -52,11 +52,12 @@ describe("DetailPanel", () => {
   it("renders diagnostic bar + default Convo segment", () => {
     renderAt("/requests/r1")
     expect(screen.getByText(/anthropic-messages/)).toBeDefined()
-    expect(screen.getByText(/convo body text/)).toBeDefined()
+    // "convo body text" appears in both the TOC label and the content body.
+    expect(screen.getAllByText(/convo body text/).length).toBeGreaterThan(0)
   })
   it("switches segment via sub-rail", () => {
     renderAt("/requests/r1")
     fireEvent.click(screen.getByText("Stages"))
-    expect(screen.getByText(/Inbound/)).toBeDefined()
+    expect(screen.getByText(/Inbound \(client → proxy\)/)).toBeDefined()
   })
 })

@@ -10,17 +10,32 @@ const ROLE_COLOR: Record<string, string> = {
   tool: "#4a6a4a",
 }
 
-export function MessageBlock({ message }: { message: MessageContent }) {
+interface MessageBlockProps {
+  message: MessageContent
+  /** When paired with `messageIndex`, the outer wrapper gets id `${anchorPrefix}-msg-${messageIndex}`. */
+  anchorPrefix?: string
+  messageIndex?: number
+}
+
+export function MessageBlock({ message, anchorPrefix, messageIndex }: MessageBlockProps) {
   const blocks = normalizeToContentBlocks(message)
+  const anchored = anchorPrefix !== undefined && messageIndex !== undefined
   return (
-    <div className="border-b border-[#1e1e24] py-1.5">
+    <div
+      id={anchored ? `${anchorPrefix}-msg-${messageIndex}` : undefined}
+      className="border-b border-[#1e1e24] py-1.5"
+    >
       <div
         className="mono mb-1 text-[11px] uppercase tracking-wider"
         style={{ color: ROLE_COLOR[message.role] ?? "#888" }}
       >
         {message.role}
       </div>
-      <ContentRenderer blocks={blocks} />
+      <ContentRenderer
+        blocks={blocks}
+        anchorPrefix={anchorPrefix}
+        messageIndex={messageIndex}
+      />
     </div>
   )
 }

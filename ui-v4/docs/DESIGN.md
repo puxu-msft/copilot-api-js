@@ -56,6 +56,8 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 
 ## 4. Requests 工作台（核心）
 
+> **落地态修订（Plan 08，用户定 2026-06-24）**：本节原设计的"主从一体（列表与详情同屏、不再是两个路由）"**已反转为两路由全屏分离**——`/requests` = 列表全屏、`/requests/:id` = 详情全屏（返回钮），点行/深链导航；`RequestsWorkbench` 已退役。深链（§4.1）、列表稳定性三件套（§4.2）、详情 C 布局分段（§4.3）均保留，只是列表与详情各占一整屏而非同屏。另：Convo/Stages 段加了左侧 TOC 树导航（消息→块 / leg→消息→块，点击滚动跳转 + 高亮）。详见 [README 现状](../README.md) 与 [plans/2026-06-23 ... 08-detail-page-split-toc-tree.md](plans/2026-06-24-08-detail-page-split-toc-tree.md)。下文为原始设计稿，保留作设计意图参考。
+
 主从一体（DevTools/Network 范式）：左侧实时列表 + 右侧就地详情，**列表与详情不再是两个路由**。
 
 ### 4.1 深链
