@@ -9,10 +9,11 @@ interface DetailTocTreeProps {
 }
 
 /**
- * `kind` → leading-dot color. Role kinds mirror `MessageBlock`'s `ROLE_COLOR`
+ * `kind` → text-tint color. Role kinds mirror `MessageBlock`'s `ROLE_COLOR`
  * for cross-view consistency; block kinds reuse existing theme tokens / the
  * code-highlight palette (purple thinking, olive-green ok) so the tree reads in
- * the same Terminal Amber vocabulary as the content pane.
+ * the same Terminal Amber vocabulary as the content pane. The color tints the
+ * row's label text (no separate dot) so numbered rows stay uncluttered.
  */
 const KIND_COLOR: Record<string, string> = {
   // roles (mirror MessageBlock ROLE_COLOR)
@@ -31,7 +32,7 @@ const KIND_COLOR: Record<string, string> = {
   image: "#9ad",
 }
 
-/** Resolve a kind's marker color, falling back to muted for unknown kinds. */
+/** Resolve a kind's tint color, falling back to muted for unknown kinds. */
 function kindColor(kind: string): string {
   return KIND_COLOR[kind] ?? "var(--color-muted)"
 }
@@ -43,13 +44,15 @@ function collectParentAnchors(nodes: Array<TocNode>): Array<string> {
 
 interface TocRowProps {
   node: TocNode
+  /** Hierarchical, presentational sequence number (e.g. `1`, `1.2`, `1.2.3`). */
+  number: string
   collapsed: Set<string>
   onToggle: (anchorId: string) => void
   onSelect: (anchorId: string) => void
   activeAnchor?: string
 }
 
-function TocRow({ node, collapsed, onToggle, onSelect, activeAnchor }: TocRowProps) {
+function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: TocRowProps) {
   const children = node.children ?? []
   const hasChildren = children.length > 0
   const isCollapsed = collapsed.has(node.anchorId)
@@ -59,10 +62,8 @@ function TocRow({ node, collapsed, onToggle, onSelect, activeAnchor }: TocRowPro
     <div>
       <div
         data-active={isActive ? "" : undefined}
-        className={`mono flex items-center border-l-2 text-[11px] leading-tight transition-colors ${
-          isActive ?
-            "border-l-[var(--color-primary)] bg-[#221b0e] text-[var(--color-primary)]"
-          : "border-l-transparent text-[#9a8f78] hover:bg-[#1c1a14] hover:text-[var(--color-text)]"
+        className={`mono flex items-center border-l-2 text-[13px] leading-tight transition-colors ${
+          isActive ? "border-l-[var(--color-primary)] bg-[#221b0e] text-[var(--color-primary)]" : "border-l-transparent hover:bg-[#1c1a14]"
         }`}
       >
         {hasChildren ?
@@ -73,33 +74,34 @@ function TocRow({ node, collapsed, onToggle, onSelect, activeAnchor }: TocRowPro
               e.stopPropagation()
               onToggle(node.anchorId)
             }}
-            className="flex w-4 shrink-0 items-center justify-center text-[10px] text-[var(--color-muted)] transition-transform hover:text-[var(--color-text)]"
-            style={{ transform: isCollapsed ? "rotate(0deg)" : "rotate(90deg)" }}
+            className="flex w-4 shrink-0 items-center justify-center text-[12px] font-bold text-[var(--color-muted)] hover:text-[var(--color-text)]"
           >
-            ▸
+            {isCollapsed ? "+" : "−"}
           </button>
         : <span className="w-4 shrink-0" />}
         <span
           aria-hidden="true"
-          className="mr-1.5 shrink-0 text-[8px] leading-none"
-          style={{ color: kindColor(node.kind) }}
+          className="mr-1.5 shrink-0 text-[12px] text-[var(--color-muted)] select-none"
         >
-          ●
+          {number}
         </span>
         <button
           type="button"
+          title={node.label}
           onClick={() => onSelect(node.anchorId)}
           className="flex-1 truncate py-0.5 pr-1 text-left"
+          style={isActive ? undefined : { color: kindColor(node.kind) }}
         >
           {node.label}
         </button>
       </div>
       {hasChildren && !isCollapsed ?
         <div className="ml-2 border-l border-[var(--color-border)]/60 pl-1">
-          {children.map((child) => (
+          {children.map((child, j) => (
             <TocRow
               key={child.anchorId}
               node={child}
+              number={`${number}.${j + 1}`}
               collapsed={collapsed}
               onToggle={onToggle}
               onSelect={onSelect}
@@ -118,9 +120,10 @@ function TocRow({ node, collapsed, onToggle, onSelect, activeAnchor }: TocRowPro
  * owns that). Block children start COLLAPSED so the tree shows message-level
  * nodes first; clicking a node's toggle reveals its children.
  *
- * Hierarchy reads as a tree via a per-level vertical guide hairline + a
- * `kind`-colored leading dot; the active row gets a left accent bar + soft
- * amber tint instead of a solid block.
+ * Each row carries a hierarchical sequence number (`1`, `1.1`, `1.1.1`…)
+ * computed during render, a `+`/`−` collapse toggle, and a `kind`-tinted label
+ * (the active row instead gets a left accent bar + soft amber tint). The label
+ * gets a `title` so truncated rows reveal their full text on hover.
  */
 export function DetailTocTree({ nodes, onSelect, activeAnchor }: DetailTocTreeProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collectParentAnchors(nodes)))
@@ -139,10 +142,11 @@ export function DetailTocTree({ nodes, onSelect, activeAnchor }: DetailTocTreePr
 
   return (
     <div className="flex flex-col">
-      {nodes.map((node) => (
+      {nodes.map((node, i) => (
         <TocRow
           key={node.anchorId}
           node={node}
+          number={`${i + 1}`}
           collapsed={collapsed}
           onToggle={toggle}
           onSelect={onSelect}

@@ -41,8 +41,8 @@ describe("ConvoSegment", () => {
 
   it("renders the TOC tree with message-level labels", () => {
     render(<ConvoSegment entry={entry} />)
-    expect(screen.getByText(/user · first hello/)).toBeDefined()
-    expect(screen.getByText(/assistant · second hi/)).toBeDefined()
+    expect(screen.getByText(/user: first hello/)).toBeDefined()
+    expect(screen.getByText(/assistant: second hi/)).toBeDefined()
   })
 
   it("renders DOM anchors matching the buildMessageTocNodes contract", () => {
@@ -59,15 +59,15 @@ describe("ConvoSegment", () => {
     const scrollSpy = vi.fn()
     Element.prototype.scrollIntoView = scrollSpy
     render(<ConvoSegment entry={entry} />)
-    fireEvent.click(screen.getByText(/assistant · second hi/))
+    fireEvent.click(screen.getByText(/assistant: second hi/))
     expect(scrollSpy).toHaveBeenCalledTimes(1)
     expect(scrollSpy).toHaveBeenCalledWith({ block: "start", behavior: "smooth" })
   })
 
   it("highlights the clicked node (activeAnchor) after selection", () => {
     render(<ConvoSegment entry={entry} />)
-    fireEvent.click(screen.getByText(/assistant · second hi/))
-    const activeRow = screen.getByText(/assistant · second hi/).closest("div")
+    fireEvent.click(screen.getByText(/assistant: second hi/))
+    const activeRow = screen.getByText(/assistant: second hi/).closest("div")
     expect(activeRow?.className).toContain("text-[var(--color-primary)]")
   })
 

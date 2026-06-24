@@ -34,12 +34,12 @@ describe("buildMessageTocNodes", () => {
     expect(nodes).toHaveLength(1)
     expect(nodes[0].anchorId).toBe("pfx-msg-0")
     expect(nodes[0].kind).toBe("user")
-    expect(nodes[0].label.startsWith("user · ")).toBe(true)
+    expect(nodes[0].label.startsWith("user: ")).toBe(true)
 
     expect(nodes[0].children).toHaveLength(1)
     expect(nodes[0].children![0].anchorId).toBe("pfx-msg-0-blk-0")
     expect(nodes[0].children![0].kind).toBe("text")
-    expect(nodes[0].children![0].label).toBe("hello")
+    expect(nodes[0].children![0].label).toBe("text: hello")
   })
 
   test("assistant message with text + tool_use blocks → two children with blk-indexed anchors", () => {
@@ -65,7 +65,7 @@ describe("buildMessageTocNodes", () => {
     const [textChild, toolChild] = nodes[0].children!
     expect(textChild.anchorId).toBe("pfx-msg-0-blk-0")
     expect(textChild.kind).toBe("text")
-    expect(textChild.label).toBe("hi")
+    expect(textChild.label).toBe("text: hi")
 
     expect(toolChild.anchorId).toBe("pfx-msg-0-blk-1")
     expect(toolChild.kind).toBe("tool_use")
@@ -82,6 +82,17 @@ describe("buildMessageTocNodes", () => {
     // Assert
     expect(nodes).toHaveLength(1)
     expect(nodes[0].children).toBeUndefined()
+  })
+
+  test("tool-only message → label is the bare role (no trailing `: `)", () => {
+    // Arrange: no text blocks → empty snippet
+    const messages: Array<MessageContent> = [{ role: "assistant", content: [{ type: "tool_use", id: "x", name: "Edit", input: {} }] }]
+
+    // Act
+    const nodes = buildMessageTocNodes(messages, "pfx")
+
+    // Assert
+    expect(nodes[0].label).toBe("assistant")
   })
 
   test("multiple messages → indices increment", () => {
@@ -102,7 +113,7 @@ describe("buildMessageTocNodes", () => {
 })
 
 describe("messagePreview", () => {
-  test("truncates strings longer than 40 chars with an ellipsis", () => {
+  test("truncates strings longer than 32 chars with an ellipsis", () => {
     // Arrange
     const long = "x".repeat(50)
 
@@ -110,19 +121,30 @@ describe("messagePreview", () => {
     const preview = messagePreview({ role: "user", content: long })
 
     // Assert
-    expect(preview).toBe(`${"x".repeat(40)}…`)
-    expect(preview.length).toBe(41)
+    expect(preview).toBe(`${"x".repeat(32)}…`)
+    expect(preview.length).toBe(33)
   })
 
   test("collapses newlines and whitespace runs to single spaces", () => {
     // Arrange
-    const content = "line one\n\n  line   two\tline three"
+    const content = "one\n\n  two\tthree"
 
     // Act
     const preview = messagePreview({ role: "user", content })
 
     // Assert
-    expect(preview).toBe("line one line two line three")
+    expect(preview).toBe("one two three")
+  })
+
+  test("tool-only message (no text blocks) projects to empty string", () => {
+    // Arrange
+    const content: MessageContent = {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "x", name: "Edit", input: {} }],
+    }
+
+    // Act / Assert
+    expect(messagePreview(content)).toBe("")
   })
 
   test("block content projects joined text of text blocks", () => {
@@ -143,7 +165,7 @@ describe("messagePreview", () => {
 
 describe("blockLabel", () => {
   test("derives the right label per block type", () => {
-    expect(blockLabel({ type: "text", text: "  some\ntext  " })).toBe("some text")
+    expect(blockLabel({ type: "text", text: "  some\ntext  " })).toBe("text: some text")
     expect(blockLabel({ type: "tool_use", id: "x", name: "Bash", input: {} })).toBe("tool_use: Bash")
     expect(blockLabel({ type: "tool_result", tool_use_id: "x", content: "ok" })).toBe("tool_result")
     expect(blockLabel({ type: "thinking", thinking: "...", signature: "s" })).toBe("thinking")
@@ -151,11 +173,11 @@ describe("blockLabel", () => {
     expect(blockLabel({ type: "image", source: { type: "base64", media_type: "image/png", data: "" } })).toBe("image")
   })
 
-  test("truncates long text-block labels", () => {
+  test("truncates long text-block labels to the short cap, keeping the `text:` lead", () => {
     // Arrange
     const text = "y".repeat(60)
 
     // Act / Assert
-    expect(blockLabel({ type: "text", text })).toBe(`${"y".repeat(40)}…`)
+    expect(blockLabel({ type: "text", text })).toBe(`text: ${"y".repeat(24)}…`)
   })
 })

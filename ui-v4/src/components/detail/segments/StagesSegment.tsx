@@ -8,6 +8,7 @@ import { ConversationView } from "@/components/detail/ConversationView"
 import { MessageDiffView } from "@/components/detail/diff/MessageDiffView"
 import { LegShell } from "@/components/detail/segments/LegShell"
 import { DetailTocTree } from "@/components/detail/toc/DetailTocTree"
+import { TocSidebar } from "@/components/detail/toc/TocSidebar"
 import { useAnchorScroll } from "@/hooks/useAnchorScroll"
 import { buildMessageTocNodes } from "@/lib/content/toc"
 
@@ -50,13 +51,13 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
   return (
     <div className="flex gap-2">
       {tocNodes.length > 0 ?
-        <nav className="sticky top-0 max-h-[calc(100vh-200px)] w-[200px] shrink-0 self-start overflow-auto border-r border-[var(--color-border)] pr-1">
+        <TocSidebar>
           <DetailTocTree
             nodes={tocNodes}
             onSelect={scrollTo}
             activeAnchor={activeAnchor}
           />
-        </nav>
+        </TocSidebar>
       : null}
       <div className="min-w-0 flex-1">
         {canDiff ?

@@ -32,8 +32,11 @@ export interface TocNode {
   children?: Array<TocNode>
 }
 
-/** Max characters before a preview/label is truncated with an ellipsis. */
-const PREVIEW_MAX = 40
+/** Max characters before a message preview/label is truncated with an ellipsis. */
+const PREVIEW_MAX = 32
+
+/** Shorter cap for block-text labels, so the leading `text:` type stays visible. */
+const BLOCK_TEXT_MAX = 24
 
 /** Collapse all runs of whitespace (incl. newlines) to single spaces and trim. */
 function collapseWhitespace(s: string): string {
@@ -45,11 +48,17 @@ function truncate(s: string): string {
   return s.length > PREVIEW_MAX ? `${s.slice(0, PREVIEW_MAX)}…` : s
 }
 
+/** Truncate to `BLOCK_TEXT_MAX` chars, appending `…` when the source was longer. */
+function truncateShort(s: string): string {
+  return s.length > BLOCK_TEXT_MAX ? `${s.slice(0, BLOCK_TEXT_MAX)}…` : s
+}
+
 /**
  * Short, single-line text projection of a message for a tree label.
  *
- * String content is used verbatim; block content joins the text of any
- * text blocks, falling back to a JSON projection when there is no text.
+ * String content is used verbatim; block content joins the text of any text
+ * blocks. A message with no text (e.g. tool-only) projects to an empty string —
+ * callers lead the label with `role` and append this snippet only when present.
  */
 export function messagePreview(m: MessageContent): string {
   if (typeof m.content === "string") {
@@ -64,14 +73,13 @@ export function messagePreview(m: MessageContent): string {
     .map((b) => b.text)
     .join(" ")
 
-  const projection = text.length > 0 ? text : JSON.stringify(m.content)
-  return truncate(collapseWhitespace(projection))
+  return truncate(collapseWhitespace(text))
 }
 
 /** Short label for a single content block (block-type aware). */
 export function blockLabel(block: ContentBlock): string {
   if (isTextBlock(block)) {
-    return truncate(collapseWhitespace(block.text))
+    return `text: ${truncateShort(collapseWhitespace(block.text))}`
   }
   if (isToolUseBlock(block)) {
     return `tool_use: ${block.name}`
@@ -112,8 +120,9 @@ export function buildMessageTocNodes(messages: Array<MessageContent>, anchorPref
       kind: block.type,
     }))
 
+    const snippet = messagePreview(message)
     const node: TocNode = {
-      label: `${message.role} · ${messagePreview(message)}`,
+      label: snippet.length > 0 ? `${message.role}: ${snippet}` : message.role,
       anchorId: `${anchorPrefix}-msg-${i}`,
       kind: message.role,
     }

@@ -3,6 +3,7 @@ import type { HistoryEntry } from "@/types"
 import { SystemMessage } from "@/components/detail/blocks/SystemMessage"
 import { ConversationView } from "@/components/detail/ConversationView"
 import { DetailTocTree } from "@/components/detail/toc/DetailTocTree"
+import { TocSidebar } from "@/components/detail/toc/TocSidebar"
 import { useAnchorScroll } from "@/hooks/useAnchorScroll"
 import { buildMessageTocNodes } from "@/lib/content/toc"
 
@@ -17,13 +18,13 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
   return (
     <div className="flex gap-2">
       {messages.length > 0 ?
-        <nav className="sticky top-0 max-h-[calc(100vh-200px)] w-[200px] shrink-0 self-start overflow-auto border-r border-[var(--color-border)] pr-1">
+        <TocSidebar>
           <DetailTocTree
             nodes={nodes}
             onSelect={scrollTo}
             activeAnchor={activeAnchor}
           />
-        </nav>
+        </TocSidebar>
       : null}
       <div className="min-w-0 flex-1">
         {system ?
