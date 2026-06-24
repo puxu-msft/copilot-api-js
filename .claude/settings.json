@@ -30,15 +30,29 @@
       "WebFetch",
       "WebSearch"
     ],
-    "deny": [
-      "Bash(git stash)",
-      "Bash(git stash push)",
-      "Bash(git stash pop)"
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "Bash(git restore:*)",
+      "Bash(git checkout:*)",
+      "Bash(git stash drop:*)",
+      "Bash(git stash clear:*)",
+      "Bash(git branch -d:*)",
+      "Bash(git branch -D:*)",
+      "Bash(git rebase:*)",
+      "Bash(gh pr create:*)",
+      "Bash(git add -A:*)",
+      "Bash(git add --all:*)",
+      "Bash(git add .:*)",
+      "Bash(git commit -a:*)",
+      "Bash(git commit -am:*)"
     ]
   },
   "enabledPlugins": {
     "feature-dev@claude-plugins-official": true,
     "frontend-design@claude-plugins-official": true,
-    "typescript-lsp@claude-plugins-official": true
+    "playwright@claude-plugins-official": true,
+    "context7-plugin@context7-marketplace": true
   }
 }
