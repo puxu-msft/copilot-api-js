@@ -27,6 +27,7 @@ import {
   setModels,
   setStateForTests,
 } from "~/lib/state"
+import { StreamClientAbortError } from "~/lib/stream"
 import { closeAllClients } from "~/lib/ws"
 
 import { mockModel } from "../helpers/factories"
@@ -37,6 +38,7 @@ import { createMockTracker } from "../helpers/mock-tracker"
 import {
   //
   createSseResponse,
+  createSseResponseThenError,
 } from "../helpers/sse"
 
 let capturedPayload: ResponsesPayload | undefined
@@ -514,14 +516,50 @@ describe("Responses WebSocket transport", () => {
     await shutdownPromise
   })
 
-  // NOTE (Stage B owns-sink settled-abort): not separately tested for WS — the WS settled-abort
-  // branch (ws.ts: `recordForwarded() → ctx.abort() → return`, zero writes, no close) is a verbatim
-  // structural copy of the Responses-HTTP one (handler-v4.ts), which IS tested
-  // (responses-v4.http.test.ts "owns-sink streaming client-abort"). Nothing WS-specific lives in
-  // this branch — the WS-specific terminal handling (sendErrorAndClose + 1011, 1000-close, caps) is
-  // in the H3 / shutdown / truncation branches, which DO have WS tests above. The driver's
-  // upstream-error → settled-abort classification is locked by owns-sink-two-racer.unit.test.ts.
-  // A 5th near-identical settled-abort assertion here would be correct-by-inspection over-coverage.
+  test("mid-stream client-abort → history aborted, no error frame, socket left OPEN (unlike H3/shutdown 1011)", async () => {
+    setModels({ object: "list", data: [mockModel("gpt-resp", { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+    // Forward response.created, then the upstream read surfaces a client-abort. guardSseIterable
+    // re-throws a source rejection unchanged (stream.ts next() catch → `throw error`), so the driver
+    // classifies `client-abort` → `settled-abort`, exercising the WS handler's settled-abort branch
+    // (ctx.abort + ZERO further bytes + NO ws.close).
+    //
+    // The abort is injected at the TRANSPORT BOUNDARY because the full client-INITIATED path (a real
+    // mid-stream `ws.close()` → onClose → `wsClientAborts.abort()` → signal) does not propagate to the
+    // server's onClose in the bare-Hono + `Bun.serve` test harness (verified: the request stays
+    // `executing`). The onClose→abort glue is a ~2-line correct-by-inspection wiring; what this test
+    // uniquely LOCKS is the WS-specific terminal DIVERGENCE — settled-abort leaves the socket OPEN and
+    // sends no frame, whereas every other WS terminal (H3/shutdown/truncation) closes with 1011.
+    const created = `event: response.created\ndata: ${JSON.stringify({
+      type: "response.created",
+      sequence_number: 0,
+      response: createBaseResponsesResponse("gpt-resp", "in_progress"),
+    })}\n\n`
+    applyFetchMock(mock(() => Promise.resolve(createSseResponseThenError([created], new StreamClientAbortError()))))
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const messages: Array<Record<string, unknown>> = []
+    let closeCode: number | undefined
+    ws.addEventListener("message", (event) => messages.push(JSON.parse(String(event.data)) as Record<string, unknown>))
+    ws.addEventListener("close", (event) => (closeCode = event.code))
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-resp", input: "hi" } }))
+
+    // settled-abort returns WITHOUT closing the socket, so there is no close event to await — poll the
+    // history entry to its terminal state instead (mirrors the HTTP client-abort assertion).
+    let entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    for (let i = 0; i < 200 && entry?.state !== "aborted"; i++) {
+      await new Promise((r) => setTimeout(r, 10))
+      entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    }
+
+    expect(entry?.state).toBe("aborted")
+    // settled-abort sends NO error frame (it writes nothing further) and does NOT close the socket —
+    // the WS-specific divergence from H3/shutdown/truncation, which all close with 1011.
+    expect(messages.some((m) => m.type === "error")).toBe(false)
+    expect(closeCode).toBeUndefined()
+    ws.close()
+  })
 
   test("rejects new connections beyond maxClientWsConnections", async () => {
     setStateForTests({ maxClientWsConnections: 1 })
