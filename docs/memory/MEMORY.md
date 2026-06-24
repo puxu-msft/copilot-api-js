@@ -3,7 +3,7 @@
 - [空明文thinking毒化+client兜底](thinking-empty-plaintext-poison-client-masks.md) — opus-4.8 thinking "cannot be modified" 400 完整诊断:上游空明文+签名 thinking 某块毒化 baked 进客户端历史;inline role:system 驱动 GHC 坍缩使其落进 latest-assistant 严格校验(as_user 减轻但救不回);剥全部 thinking→200;proxy 无修复,Claude Code 剥 thinking 重试兜底(92 条 0-thinking 成功 entry 指纹);暂缓 proxy 修复
 - [先用证据自解再问](feedback-resolve-by-evidence-before-asking.md) — 歧义先用代码+invariant 自裁(自解就别问,仪式化提问浪费来回);只在答案真正取决于用户偏好/风险取舍时才问;spec 自身内部不一致=强"该问"信号
 - [golden fixture 预捕获](methodology-golden-fixture-pre-capture.md) — 流/输出行为保持重构:golden 测试先锁在改动前旧代码上跑通(只在改后才存在的 golden 证明不了);捕序列+判别字段、归一化易变字段;提升/上移=结果等价非机制等价
-- [绝不 git checkout 用户文件](feedback_never_git_checkout_user_files.md) — 绝不 checkout/restore/reset --hard/clean/stash drop 或 rm/unlink 工作区文件;曾用 `git checkout HEAD --` 静默抹掉用户未暂存的工作,不可逆、无备份
+- [绝不 git checkout 用户文件](feedback_never_git_checkout_user_files.md) — 判据是**可恢复性**(git 救不救得回):绝不 checkout/restore/reset --hard/clean/stash drop,或 rm/覆盖**带未暂存改动/未追踪**的文件(曾用 `git checkout HEAD --` 静默抹掉用户未暂存工作,不可逆无备份);**但干净的已追踪文件用户明确要求时可删**(历史可恢复,优先 git rm,先确认无未暂存改动)。我曾把教训过度推广成"绝不删任何源文件"已纠正
 - [真实问题优先于风险](feedback_real_problems_over_risk.md) — 按"问题是否存在"分流,而非按风险/ROI;事后 subagent review;抓到的缺口=测试覆盖不足
 - [完整根因修复](feedback_complete_root_cause_fix.md) — 成本(工期/复杂度/改动量)无关紧要;选结构性修复而非小修;暂缓项要完整文档化供用户未来决策
 - [reviewer 也要批判核验](feedback_reviewer_verify_critically.md) — 在 ExitPlanMode/交付前主动跑 subagent audit(不等用户提醒);逐条批判分析 subagent 每条发现、绝不跳过、用任意多个新 subagent 复核;不信任何声音权威;用实测裁决(flaky 连跑 10–25×、文档冲突时写探针、绝对断言对照代码复核)
@@ -36,7 +36,7 @@
 - [自洽需独立 oracle](feedback-self-consistent-needs-independent-oracle.md) — wire/协议正确性不能用自己 encode↔decode 的自洽来判(两端可共享同一错误假设);用独立 oracle 裁决——协议规范、参考实现、或真实对端(GHC)。对三套兼容层至关重要
 - [方向明确就别停下来问](feedback-dont-stop-when-direction-clear.md) — 方向明确?别停下问"先做 A/B/C 哪个"——多数 A/B/C 只是执行顺序,不是授权岔路。只为以下而停:破坏性操作/真 either-or/上下文不足/选项有实质架构后果差异(→ 则用 give-user-decision)。是 no-unilateral-action 的反面
 - [知识归类:文档 vs 记忆](feedback-knowledge-routing-docs-vs-memory.md) — 已完成+项目特定→项目文档;未完成+可复用+通用→记忆;不两处重复。把 CLAUDE.md knowledge-routing 延伸到它未覆盖的记忆/文档轴
-- [完成时同步文档](feedback-completion-updates-docs.md) — doc-sync 是"完成"的一部分,非可选收尾:删过时 pending 记忆 + 把已落地机制回填进活文档(DESIGN/README/模块文档)。"代码改完但文档没同步"=未完成
+- [完成时同步文档](feedback-completion-updates-docs.md) — doc-sync 是"完成"的一部分:删过时 pending 记忆 + 把已落地机制回填进活文档(DESIGN/README/模块文档/记忆)。**且"doc-sync 完成"本身是通过性结论、不能口头宣告**——收尾必做跨文档 `grep` 扫描验证(旧状态词暂缓/暂未/无源全清零 + 新端点/字段逐个核对),否则只改最显眼处必漏其余(2026-06-24 漏 5 处惨痛教训)。"代码改完文档没同步"=未完成;"以为同步完了"未扫描=未验证声称
 - [边界提炼经验+维护库](feedback-distill-lessons-at-boundaries.md) — 在 phase/会话/交接边界主动提炼可复用教训 + 维护既有记忆库(陈旧→修/近义→互链/冗余→删)。判断某记忆是否已覆盖时,读它正文——一行索引钩子会掩盖"写窄了"
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化 bug(canonicalized 键/id、prefix 处理、call_/fc_)在多处比较点复发;grep 全仓逐处修,最好抽成单一共享 primitive——只修显眼那处会留其余复发。是 complete-root-cause-fix 在比较点场景的实例
 - [全面行动、完成即提交](feedback-act-comprehensively-commit-on-done.md) — 每完成一个阶段就主动提交(别问"要我提交吗");在已确认范围内全面思考行动——别逐句字面执行、别把显然正确的后续甩成一堆问题。只有真正不可逆/either-or/上下文不足的才交给用户
