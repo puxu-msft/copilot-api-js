@@ -32,6 +32,7 @@ import {
   //
   initHistory,
   setHistoryPublisher,
+  startPreviewBackfill,
 } from "./lib/history"
 import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
@@ -533,6 +534,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // so the handler has access to the server instance when closing.
   setServerInstance(serverInstance)
   setupShutdownHandlers()
+
+  // Fire-and-forget the one-time preview_text recompute in the BACKGROUND now
+  // that the server is listening. It is async/chunked/inbound-only and yields
+  // between batches, so it never blocks startup or starves request serving;
+  // guarded by PRAGMA user_version → a no-op once already migrated. Returns
+  // immediately (the work trickles in the background) and never throws.
+  startPreviewBackfill()
 
   // Inject the single shared WebSocket upgrade handler into each Node.js HTTP server (no-op under Bun)
   if (wsAdapter.injectWebSocket && serverInstance.nodeServers) {

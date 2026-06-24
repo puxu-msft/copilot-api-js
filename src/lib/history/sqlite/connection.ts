@@ -9,7 +9,6 @@ import {
   createDatabase,
   type SqliteDatabase,
 } from "./driver"
-import { maybeBackfillPreview } from "./preview-backfill"
 import {
   //
   FTS_SCHEMA_SQL,
@@ -90,11 +89,11 @@ export function openDatabase(dbPath: string): Database {
   // Seed planner statistics once so the (now several) candidate indexes per
   // query get chosen on selectivity, not heuristics.
   seedAnalyzeIfNeeded(db)
-  // One-time recompute of the denormalized preview_text column after an
-  // extractPreviewText logic change. MUST run AFTER ensureSearchIndex: the
-  // UPDATEs fire entries_v2_fts_au, which re-syncs FTS from the new preview_text.
-  // Guarded by PRAGMA user_version → runs once; never throws.
-  maybeBackfillPreview(db)
+  // NOTE: the one-time preview_text recompute (extractPreviewText logic bumps)
+  // is NO LONGER run here — it decompressed each entry's full lifecycle and
+  // blocked startup on a large DB. It now runs async/chunked/inbound-only in the
+  // BACKGROUND after the server is listening (start.ts → startPreviewBackfill →
+  // backfillPreviewInBackground), guarded by PRAGMA user_version.
   if (dbPath !== ":memory:") consola.info(`[history/sqlite] opened ${dbPath}`)
   return db
 }

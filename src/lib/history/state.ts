@@ -1,3 +1,5 @@
+import consola from "consola"
+
 import type { ScopedPublisher } from "~/lib/observability"
 
 import { PATHS } from "~/lib/config/paths"
@@ -16,8 +18,11 @@ import { clearInFlight } from "./in-flight"
 import {
   //
   closeDatabase,
+  getDatabase,
+  isDatabaseOpen,
   openDatabase,
 } from "./sqlite/connection"
+import { backfillPreviewInBackground } from "./sqlite/preview-backfill"
 import {
   //
   startReaper,
@@ -88,4 +93,18 @@ export function shutdownHistory(): void {
 
 export function setHistoryMaxEntries(): void {
   startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
+}
+
+/**
+ * Fire-and-forget the one-time `preview_text` recompute in the BACKGROUND. Called
+ * once from start.ts AFTER the server is listening so it never blocks startup —
+ * `backfillPreviewInBackground` is async/chunked/inbound-only and yields between
+ * batches. No-op when history is disabled / the DB is not open. Returns
+ * immediately; the work trickles in the background and never throws (it catches
+ * internally, and this `.catch` is a belt-and-suspenders guard against an
+ * unhandledRejection crashing the process).
+ */
+export function startPreviewBackfill(): void {
+  if (!enabled || !isDatabaseOpen()) return
+  void backfillPreviewInBackground(getDatabase()).catch((err: unknown) => consola.warn("[history] preview backfill failed", err))
 }

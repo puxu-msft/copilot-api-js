@@ -33,6 +33,7 @@ export {
   setHistoryPublisher,
   setPinned,
   shutdownHistory,
+  startPreviewBackfill,
   updateEntry,
 } from "./store"
 

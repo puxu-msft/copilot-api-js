@@ -113,8 +113,15 @@ function summarizeMessage(msg: MessageContent): string {
  * last message yields nothing displayable (e.g. empty), scan backward for the
  * most recent non-empty summary so the list stays readable. "" only when
  * nothing is summarizable.
+ *
+ * CONTRACT COUPLING: the `Pick<…, "inboundRequest">` param is load-bearing. The
+ * preview backfill (`sqlite/preview-backfill.ts`) reconstructs ONLY
+ * `inboundRequest` (inbound-only, for startup performance — it never decompresses
+ * sse_events/other stages). If this function is ever changed to read any field
+ * beyond `inboundRequest.messages`, the backfill MUST be updated to load that data
+ * too, else it silently computes wrong previews on historical rows.
  */
-export function extractPreviewText(entry: HistoryEntry): string {
+export function extractPreviewText(entry: Pick<HistoryEntry, "inboundRequest">): string {
   const messages = entry.inboundRequest.messages
   if (!messages || messages.length === 0) return ""
 

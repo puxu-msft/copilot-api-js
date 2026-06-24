@@ -387,6 +387,36 @@ function decodeStageRows(stageRows: Array<StageRow>): Array<RequestGroupMember> 
 }
 
 /**
+ * Extract ONLY the `inboundRequest` payload from a single stage blob, decoding a
+ * `request_group` container frame (B3) when needed. Used by the preview backfill,
+ * which recomputes `extractPreviewText` (reads only `inboundRequest.messages`)
+ * and therefore must decompress ONLY request-side data — NEVER the response legs
+ * or `sse_events`.
+ *
+ * `stage` is the row's stage name and `blob` its compressed bytes:
+ *   - `inbound_request` (standalone, in-flight / eager rows) → the blob IS the
+ *     inboundRequest object.
+ *   - `request_group` (finalized rows) → the dedup frame holds the redundant
+ *     request bodies (inbound + per-attempt effective/outbound request); the
+ *     inbound_request member's payload is the inboundRequest object. NO response
+ *     / sse_events data lives in this frame, so this stays inbound-only.
+ *
+ * Returns undefined when the blob carries no inbound_request member (the caller
+ * then falls back to the legacy head-blob path).
+ */
+export function extractInboundRequestFromStageBlob(stage: string, blob: Uint8Array): HistoryEntry["inboundRequest"] | undefined {
+  if (stage === STAGE.inboundRequest) {
+    return decompress(blob) as HistoryEntry["inboundRequest"]
+  }
+  if (stage === STAGE.requestGroup) {
+    const members = decompress(blob) as Array<RequestGroupMember>
+    const inbound = members.find((m) => m.stage === STAGE.inboundRequest)
+    if (inbound) return inbound.payload as HistoryEntry["inboundRequest"]
+  }
+  return undefined
+}
+
+/**
  * Partition finalize-time stage payloads into the request-group dedup frame
  * (one `request_group` StagePayload whose payload is the JSON array of members,
  * compressed as a single zstd frame so the >90%-redundant request bodies share
