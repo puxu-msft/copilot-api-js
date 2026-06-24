@@ -2,6 +2,7 @@ import {
   //
   render,
   screen,
+  waitFor,
 } from "@testing-library/react"
 import {
   //
@@ -40,10 +41,17 @@ describe("ToolResultBlock", () => {
     expect(screen.queryByText(/"plain string"/)).toBeNull()
   })
 
-  it("falls back to CodeBlock JSON highlight for non-array object content", () => {
-    render(<ToolResultBlock block={{ type: "tool_result", tool_use_id: "tu_3", content: { some: "object" } as never }} />)
-    // CodeBlock splits the JSON into hljs token spans, so the key and value live in separate nodes.
-    expect(screen.getByText('"some"')).toBeDefined()
-    expect(screen.getByText('"object"')).toBeDefined()
+  it("falls back to CodeBlock JSON highlight for non-array object content", async () => {
+    const { container } = render(<ToolResultBlock block={{ type: "tool_result", tool_use_id: "tu_3", content: { some: "object" } as never }} />)
+    // The JSON renders (plaintext-first, then shiki-highlighted). shiki splits the
+    // key/value into separate token spans (and separates the surrounding quotes),
+    // so the highlighted output lands `some`/`object` in their own colored token
+    // spans. Wait for the highlighted split to settle (no regression: the content
+    // renders either way).
+    await waitFor(() => {
+      const spans = Array.from(container.querySelectorAll<HTMLSpanElement>("span[style*='color']"))
+      expect(spans.some((s) => s.textContent === "some")).toBe(true)
+      expect(spans.some((s) => s.textContent === "object")).toBe(true)
+    })
   })
 })

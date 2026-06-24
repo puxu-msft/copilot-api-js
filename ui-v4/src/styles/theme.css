@@ -29,23 +29,8 @@ body {
 *, *::before, *::after { border-radius: 0 !important; box-sizing: border-box; }
 .mono { font-family: var(--font-mono); }
 
-/* 语法高亮 —— hljs token class → Terminal Amber 调色板(CodeBlock 经 lowlight 渲染 <span class="hljs-*">,
- * 不引预制 hljs 主题 CSS——那些与 amber 方向冲突;此处自写最小映射,在近黑底(--color-bg)上清晰可读。 */
-.hljs-string { color: #9fbf7a; }                       /* string → 暖橄榄绿(--color-ok 的去饱和) */
-.hljs-number { color: var(--color-primary); }          /* number → amber 主色 */
-.hljs-literal,
-.hljs-keyword,
-.hljs-built_in { color: #9a8ad0; }                     /* true/false/null/关键字 → 克制的柔紫 */
-.hljs-attr,
-.hljs-property,
-.hljs-name,
-.hljs-tag,
-.hljs-title { color: var(--color-primary); }           /* JSON property key / 标签名 → amber */
-.hljs-comment,
-.hljs-meta { color: var(--color-muted); font-style: italic; }  /* 注释 → muted/dim */
-.hljs-punctuation { color: var(--color-text); }        /* 标点 → 默认文本色 */
-.hljs-variable,
-.hljs-symbol { color: #c9a9d4; }                        /* shell 变量等 → 浅紫,与 literal 同族但更亮 */
+/* 语法高亮 —— shiki(VS Code TextMate grammars/themes)把 token 颜色 baked 进每个 token span 的内联
+ * style="color:#..."(无 token CSS class),调色板见 src/lib/highlight/amber-theme.ts 的 AMBER_THEME。 */
 
 /* TOC 跳转后的瞬态高亮(useAnchorScroll 加/移 .toc-flash);outline + 暖底,~1.2s 后由 hook 移除并淡出。 */
 .toc-flash {
