@@ -60,7 +60,12 @@ function LiveRow({ live, selected, onClick }: { live: LiveRowInfo; selected?: bo
       className={`${ROW_CLASS} ${selectionClass(selected)}`}
     >
       <span style={{ color: SIGNAL_COLOR[statusSignal(live.state)] }}>◐ {live.state}</span>
-      <span className="text-[#cdb]">{live.model ?? "—"}</span>
+      <span
+        className="text-[#cdb]"
+        title={live.model ?? undefined}
+      >
+        {live.model ?? "—"}
+      </span>
       <span className="ml-auto text-[#888]">{live.durationMs === undefined ? "" : formatDuration(live.durationMs)}</span>
     </button>
   )
@@ -87,6 +92,26 @@ function bytesCellText(requestBytes: number | undefined, responseBytes: number |
   return [up, down].filter(Boolean).join(" ")
 }
 
+/**
+ * Human-readable hover title for the tokens cell. Uses raw `entry.usage` counts
+ * when present (`input 1500 · cached 340 · output 250`), else falls back to the
+ * already-formatted compact cell text so a truncated string still shows in full.
+ */
+function tokensCellTitle(entry: EntrySummary, fallback: string): string {
+  if (!entry.usage) return fallback
+  const parts = [`input ${entry.usage.input_tokens}`]
+  if (entry.usage.cache_read_input_tokens) parts.push(`cached ${entry.usage.cache_read_input_tokens}`)
+  parts.push(`output ${entry.usage.output_tokens}`)
+  return parts.join(" · ")
+}
+
+/** Human-readable hover title for the bytes cell (`request 1.5KB · response 2.4MB`). */
+function bytesCellTitle(requestBytes: number | undefined, responseBytes: number | undefined): string {
+  const up = requestBytes === undefined ? "" : `request ${formatBytes(requestBytes)}`
+  const down = responseBytes === undefined ? "" : `response ${formatBytes(responseBytes)}`
+  return [up, down].filter(Boolean).join(" · ")
+}
+
 /** History 富行 —— 状态·时间·+耗时·模型·(Nx)·端点·字节·token·×N·预览/失败摘要(spec §4.2)。 */
 function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selected?: boolean; onClick?: () => void }) {
   const state = requestState(entry)
@@ -94,6 +119,9 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
   const cacheRead = tokenCacheRead(entry)
   const anomaly = rowAnomaly(entry)
   const showMultiplier = entry.multiplier !== undefined && entry.multiplier !== 1
+  const tokensText = tokensCellText(tokenIn(entry), tokenOut(entry), cacheRead)
+  const bytesText = bytesCellText(entry.requestBytes, entry.responseBytes)
+  const previewTitle = completed ? entry.previewText || truncPreview(entry) : failureSummary(entry)
 
   return (
     <button
@@ -107,31 +135,60 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
       >
         ● {state}
       </span>
-      <span className="w-[68px] shrink-0 text-[#777]">{formatTime(entry.startedAt)}</span>
+      <span
+        className="w-[68px] shrink-0 text-[#777]"
+        title={new Date(entry.startedAt).toISOString()}
+      >
+        {formatTime(entry.startedAt)}
+      </span>
       <span
         className={`w-[64px] shrink-0 ${anomaly.slow ? "row-anomaly text-[var(--color-warn)]" : "text-[#888]"}`}
         title={anomaly.slow ? "slow request (>60s)" : undefined}
       >
         {entry.durationMs === undefined ? "" : formatElapsed(entry.durationMs)}
       </span>
-      <span className="w-[180px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#cdb]">{modelName(entry)}</span>
+      <span
+        className="w-[180px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#cdb]"
+        title={modelName(entry)}
+      >
+        {modelName(entry)}
+      </span>
       {showMultiplier ?
         <span className="w-[34px] shrink-0 text-[var(--color-muted)]">({entry.multiplier}x)</span>
       : null}
-      <span className="w-[90px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#777]">{endpointLabel(entry)}</span>
-      <span className="w-[118px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-[var(--color-muted)]">
-        {bytesCellText(entry.requestBytes, entry.responseBytes)}
+      <span
+        className="w-[90px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#777]"
+        title={endpointLabel(entry)}
+      >
+        {endpointLabel(entry)}
+      </span>
+      <span
+        className="w-[118px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-[var(--color-muted)]"
+        title={bytesCellTitle(entry.requestBytes, entry.responseBytes)}
+      >
+        {bytesText}
       </span>
       <span
         className={`w-[130px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right ${anomaly.cacheMiss ? "row-anomaly text-[var(--color-warn)]" : "text-[#9a9]"}`}
-        title={anomaly.cacheMiss ? "cache miss: large input with no cache read" : undefined}
+        title={anomaly.cacheMiss ? "cache miss: large input with no cache read" : tokensCellTitle(entry, tokensText)}
       >
-        {tokensCellText(tokenIn(entry), tokenOut(entry), cacheRead)}
+        {tokensText}
       </span>
       <span className="w-[40px] shrink-0 text-right text-[#a87]">{entry.attemptCount && entry.attemptCount > 1 ? `×${entry.attemptCount}` : ""}</span>
       {completed ?
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a8a7a]">{truncPreview(entry)}</span>
-      : <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--color-fail)]">{failureSummary(entry)}</span>}
+        <span
+          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a8a7a]"
+          title={previewTitle}
+        >
+          {truncPreview(entry)}
+        </span>
+      : <span
+          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--color-fail)]"
+          title={previewTitle}
+        >
+          {failureSummary(entry)}
+        </span>
+      }
     </button>
   )
 }

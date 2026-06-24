@@ -230,4 +230,50 @@ describe("RequestRow", () => {
     expect(screen.queryByText(/↑.*KB|↑.*MB/)).toBeNull()
     expect(screen.queryByText(/\(\d+x\)/)).toBeNull()
   })
+
+  it("preview cell carries the full untruncated previewText as its hover title", () => {
+    const long = "this is a very long preview that the row will visually ellipsize ".repeat(5).trim()
+    render(
+      <RequestRow
+        entry={base({
+          state: "completed",
+          responseModel: "claude-opus-4.8",
+          previewText: long,
+        })}
+      />,
+    )
+    // the visible text is truncated (≤120 + "..."), but the title is the FULL preview
+    const cell = screen.getByText((_, el) => el?.getAttribute("title") === long)
+    expect(cell).toBeDefined()
+    expect(cell.getAttribute("title")).toBe(long)
+  })
+
+  it("model cell carries the full model name as its hover title", () => {
+    render(
+      <RequestRow
+        entry={base({
+          state: "completed",
+          responseModel: "claude-opus-4.8",
+          usage: { input_tokens: 100, output_tokens: 10 },
+        })}
+      />,
+    )
+    const model = screen.getByText("claude-opus-4.8")
+    expect(model.getAttribute("title")).toBe("claude-opus-4.8")
+  })
+
+  it("failed history row carries the full failure summary as the cell title", () => {
+    render(
+      <RequestRow
+        entry={base({
+          state: "failed",
+          currentStrategy: "auto-truncate",
+          attemptCount: 3,
+          responseError: "413 too large",
+        })}
+      />,
+    )
+    const cell = screen.getByText("failed · auto-truncate · ×3 · 413 too large")
+    expect(cell.getAttribute("title")).toBe("failed · auto-truncate · ×3 · 413 too large")
+  })
 })

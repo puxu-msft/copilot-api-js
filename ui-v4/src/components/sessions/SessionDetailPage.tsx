@@ -46,7 +46,9 @@ export function SessionDetailPage() {
           {id.slice(0, 16)}… · {entries.length} req · {lanes.length} lanes
         </span>
       </div>
-      <div className="text-[11px] text-[#666]">subagent 标签为不透明 agentId(header 无种类名,spec §5)</div>
+      <div className="text-[11px] text-[#666]">
+        每个 agent 一组:表标题(名 · 计数 · token · failed)+ 请求列表;subagent 标签为不透明 agentId(无种类名,spec §5)
+      </div>
       {lanes.map((lane) => (
         <AgentLane
           key={lane.name}

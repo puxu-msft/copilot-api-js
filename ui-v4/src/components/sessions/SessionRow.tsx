@@ -24,7 +24,12 @@ export function SessionRow({ s }: { s: SessionSummary }) {
         style={{ background: hasFailures ? "var(--color-fail)" : "var(--color-ok)" }}
         title={hasFailures ? `${s.failed} failed` : "all ok"}
       />
-      <span className="shrink-0 text-[var(--color-primary)]">{s.sessionId.slice(0, 12)}…</span>
+      <span
+        className="shrink-0 text-[var(--color-primary)]"
+        title={s.sessionId}
+      >
+        {s.sessionId.slice(0, 12)}…
+      </span>
       <span className="shrink-0">{s.requestCount} req</span>
       <span className="shrink-0 text-[#888]">{s.agentCount} agents</span>
       <span className="shrink-0 text-[#888]">
@@ -33,7 +38,12 @@ export function SessionRow({ s }: { s: SessionSummary }) {
       {hasFailures ?
         <span className="shrink-0 text-[var(--color-fail)]">{s.failed} fail</span>
       : null}
-      <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a8a7a]">{s.preview || "—"}</span>
+      <span
+        className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a8a7a]"
+        title={s.preview || undefined}
+      >
+        {s.preview || "—"}
+      </span>
       <span className="shrink-0 text-[#888]">{formatDuration(span)}</span>
     </button>
   )

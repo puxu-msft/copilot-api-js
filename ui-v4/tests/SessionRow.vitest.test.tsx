@@ -70,4 +70,17 @@ describe("SessionRow", () => {
     // formatNumber compacts 1500 → "1.5K", 500 stays "500"
     expect(screen.getByText("↑1.5K ↓500")).toBeDefined()
   })
+
+  it("preview cell carries the full preview text as its hover title", () => {
+    const preview = "the full last-message summary that visually ellipsizes in the row"
+    renderRow(base({ preview }))
+    const cell = screen.getByText(preview)
+    expect(cell.getAttribute("title")).toBe(preview)
+  })
+
+  it("sessionId cell shows a truncated id but carries the full id as its hover title", () => {
+    renderRow(base({ sessionId: "a3f1aaaaaaaa9c2" }))
+    const cell = screen.getByText("a3f1aaaaaaaa…")
+    expect(cell.getAttribute("title")).toBe("a3f1aaaaaaaa9c2")
+  })
 })

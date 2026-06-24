@@ -22,9 +22,27 @@ vi.mock("@/hooks/useSessionEntries", () => ({
   useSessionEntries: () => ({
     data: {
       entries: [
-        { id: "r1", startedAt: 1, state: "completed" },
-        { id: "r2", agentId: "agent-explore-xyz", startedAt: 2, state: "completed" },
-        { id: "r3", agentId: "agent-explore-xyz", startedAt: 3, state: "failed" },
+        { id: "r1", startedAt: 1, state: "completed", endpoint: "anthropic-messages", messageCount: 0, previewText: "", searchText: "" },
+        {
+          id: "r2",
+          agentId: "agent-explore-xyz",
+          startedAt: 2,
+          state: "completed",
+          endpoint: "anthropic-messages",
+          messageCount: 0,
+          previewText: "",
+          searchText: "",
+        },
+        {
+          id: "r3",
+          agentId: "agent-explore-xyz",
+          startedAt: 3,
+          state: "failed",
+          endpoint: "anthropic-messages",
+          messageCount: 0,
+          previewText: "",
+          searchText: "",
+        },
       ],
       total: 3,
     },
