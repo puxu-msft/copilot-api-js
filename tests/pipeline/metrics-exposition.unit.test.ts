@@ -54,7 +54,7 @@ function breakdown(dimension: string, keys: Array<{ key: string; counters: Recor
     windowDays: 7,
     totalKeys: keys.length,
     truncated: false,
-    keys: keys.map((k) => ({ ...k, series: [] })),
+    keys: keys.map((k) => ({ ...k, series: [], histograms: {} })),
   }
 }
 
@@ -145,5 +145,17 @@ describe("buildMetricsExposition (live registry)", () => {
 
   test("content-type is the Prometheus v0.0.4 exposition type", () => {
     expect(PROMETHEUS_CONTENT_TYPE).toBe("text/plain; version=0.0.4; charset=utf-8")
+  })
+
+  test("emits standard Prometheus histograms (cumulative _bucket{le} + _sum + _count)", () => {
+    const now = Date.now()
+    for (let i = 0; i < 4; i++) recordSettledRequest({ model: "claude-opus-4.8" }, { startedAt: now, endedAt: now + 50, success: true })
+    const text = buildMetricsExposition(now)
+    expect(text).toContain("# TYPE copilot_api_duration_ms histogram")
+    // 50ms → bucket le="50"; cumulative count reaches 4 by le="50" and stays 4 at +Inf.
+    expect(text).toContain('copilot_api_duration_ms_bucket{dimension="model",key="claude-opus-4.8",le="50"} 4')
+    expect(text).toContain('copilot_api_duration_ms_bucket{dimension="model",key="claude-opus-4.8",le="+Inf"} 4')
+    expect(text).toContain('copilot_api_duration_ms_sum{dimension="model",key="claude-opus-4.8"} 200')
+    expect(text).toContain('copilot_api_duration_ms_count{dimension="model",key="claude-opus-4.8"} 4')
   })
 })

@@ -5,7 +5,11 @@ import {
   test,
 } from "vitest"
 
-import type { DimensionBreakdownSnapshot } from "@/types"
+import type {
+  //
+  DimensionBreakdownSnapshot,
+  HistogramSummary,
+} from "@/types"
 
 import DashboardBreakdownPanel from "@/components/dashboard/DashboardBreakdownPanel.vue"
 
@@ -38,6 +42,10 @@ function counters(overrides: Record<string, number> = {}): Record<string, number
   }
 }
 
+function latency(p50: number, p95: number): HistogramSummary {
+  return { count: 10, sum: p50 * 10, average: p50, p50, p90: p95, p95, p99: p95, boundaries: [50, 100, 250], buckets: [5, 5, 0, 0] }
+}
+
 function breakdown(): DimensionBreakdownSnapshot {
   return {
     dimension: "agentKind",
@@ -47,8 +55,13 @@ function breakdown(): DimensionBreakdownSnapshot {
     totalKeys: 2,
     truncated: false,
     keys: [
-      { key: "main", counters: counters({ requestCount: 18, inputTokens: 1000, outputTokens: 400 }), series: [] },
-      { key: "subagent", counters: counters({ requestCount: 7, inputTokens: 300, outputTokens: 120 }), series: [] },
+      {
+        key: "main",
+        counters: counters({ requestCount: 18, inputTokens: 1000, outputTokens: 400 }),
+        series: [],
+        histograms: { duration_ms: latency(40, 180) },
+      },
+      { key: "subagent", counters: counters({ requestCount: 7, inputTokens: 300, outputTokens: 120 }), series: [], histograms: {} },
     ],
   }
 }
@@ -69,6 +82,13 @@ describe("DashboardBreakdownPanel", () => {
     expect(text).toContain("subagent")
     expect(text).toContain("18") // main requestCount (default metric)
     expect(text).toContain("7") // subagent requestCount
+  })
+
+  test("surfaces p50/p95 latency when the key carries a duration histogram", () => {
+    const w = mountPanel({ eyebrow: "x", title: "y", breakdown: breakdown() })
+    const text = w.text()
+    expect(text).toContain("p50 40ms")
+    expect(text).toContain("p95 180ms")
   })
 
   test("bar share is normalized to the max metric value (top key fills 100%)", () => {

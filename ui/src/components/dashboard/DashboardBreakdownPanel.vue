@@ -25,6 +25,8 @@ interface BreakdownRow {
   totalTokens: number
   costTokens: number
   share: number
+  p50: number | null
+  p95: number | null
 }
 
 const rows = computed<Array<BreakdownRow>>(() => {
@@ -39,6 +41,7 @@ const rows = computed<Array<BreakdownRow>>(() => {
       + (counters.costCacheReadInputTokens ?? 0)
       + (counters.costCacheCreationInputTokens ?? 0)
       + (counters.costReasoningTokens ?? 0)
+    const latency = entry.histograms?.duration_ms
     return {
       key: entry.key,
       value,
@@ -46,11 +49,14 @@ const rows = computed<Array<BreakdownRow>>(() => {
       totalTokens: (counters.inputTokens ?? 0) + (counters.outputTokens ?? 0),
       costTokens,
       share: (value / max) * 100,
+      p50: latency ? Math.round(latency.p50) : null,
+      p95: latency ? Math.round(latency.p95) : null,
     }
   })
 })
 
 const hasCost = computed(() => rows.value.some((row) => row.costTokens > 0))
+const hasLatency = computed(() => rows.value.some((row) => row.p50 !== null))
 
 function barColor(key: string): string {
   if (key === "other") return "secondary"
@@ -113,6 +119,7 @@ function barColor(key: string): string {
           <span>{{ formatNumber(row.requestCount) }} req</span>
           <span>{{ formatNumber(row.totalTokens) }} tok</span>
           <span v-if="hasCost">{{ formatNumber(Math.round(row.costTokens)) }} cost</span>
+          <span v-if="hasLatency && row.p50 !== null">p50 {{ row.p50 }}ms · p95 {{ row.p95 }}ms</span>
         </div>
       </div>
     </div>

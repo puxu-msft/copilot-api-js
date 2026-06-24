@@ -514,3 +514,112 @@ describe("getDimensionBreakdown", () => {
     expect(breakdown.truncated).toBe(false)
   })
 })
+
+describe("distribution histograms", () => {
+  test("computes interpolated latency percentiles from the duration_ms histogram", () => {
+    const now = Date.now()
+    // 5 requests at 10ms, 5 at 100ms → duration_ms buckets [.,5@le10,.,.,5@le100,...].
+    for (let i = 0; i < 5; i++) recordSettledRequest({ model: "m" }, { startedAt: now, endedAt: now + 10, success: true })
+    for (let i = 0; i < 5; i++) recordSettledRequest({ model: "m" }, { startedAt: now, endedAt: now + 100, success: true })
+
+    const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms.duration_ms
+    expect(hist.count).toBe(10)
+    expect(hist.sum).toBe(550) // 5*10 + 5*100
+    expect(hist.average).toBe(55)
+    // p50 lands at the top of the 10ms bucket; p90 interpolates into the 100ms bucket.
+    expect(hist.p50).toBe(10)
+    expect(hist.p90).toBeCloseTo(90, 5)
+    expect(hist.p99).toBeCloseTo(99, 5)
+    expect(hist.buckets.reduce((a, b) => a + b, 0)).toBe(10) // Σbuckets == count
+  })
+
+  test("input/output token + queue-wait histograms observe their respective quantities", () => {
+    const now = Date.now()
+    recordSettledRequest(
+      { model: "m" },
+      { startedAt: now, endedAt: now + 5, success: true, queueWaitMs: 250, usage: { input_tokens: 4000, output_tokens: 80 } },
+    )
+    const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms
+    expect(hist.input_tokens.count).toBe(1)
+    expect(hist.input_tokens.sum).toBe(4000)
+    expect(hist.output_tokens.sum).toBe(80)
+    expect(hist.queue_wait_ms.sum).toBe(250)
+    expect(hist.queue_wait_ms.p50).toBeGreaterThan(100) // 250 lands in the (100,250] bucket
+  })
+
+  test("histograms round-trip through persistence (the __histograms sibling)", async () => {
+    const now = Date.now()
+    for (let i = 0; i < 3; i++) recordSettledRequest({ model: "m" }, { startedAt: now, endedAt: now + 50, success: true })
+    await persistRequestTelemetry()
+
+    // Raw file carries __histograms.
+    const parsed = JSON.parse(await fs.readFile(telemetryFile, "utf8")) as {
+      dimensions: Record<string, { buckets: Record<string, Record<string, { __histograms?: Record<string, { buckets: Array<number>; sum: number }> }>> }>
+    }
+    const bucketTs = String(Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000))
+    expect(parsed.dimensions.model.buckets[bucketTs].m.__histograms?.duration_ms.buckets).toBeDefined()
+
+    // Reload → histograms survive into the 7d window.
+    _resetRequestTelemetryForTests()
+    _setRequestTelemetryFilePathForTests(telemetryFile)
+    await initRequestTelemetry()
+    const hist = getDimensionBreakdown("model", "7d", 20, now).keys[0].histograms.duration_ms
+    expect(hist.count).toBe(3)
+  })
+
+  test("a legacy V3 file WITHOUT __histograms loads cleanly (back-compat, histograms start empty)", async () => {
+    const now = Date.now()
+    const bucketTs = String(Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000))
+    const legacy = {
+      version: 3,
+      buckets: { [bucketTs]: 1 },
+      dimensions: { model: { buckets: { [bucketTs]: { m: { requestCount: 1, inputTokens: 10, outputTokens: 5 } } } } },
+    }
+    await fs.writeFile(telemetryFile, JSON.stringify(legacy), "utf8")
+    await initRequestTelemetry()
+
+    const key = getDimensionBreakdown("model", "7d", 20, now).keys[0]
+    expect(key.counters.requestCount).toBe(1) // counters intact
+    expect(key.histograms).toEqual({}) // no histogram observations → empty summary
+  })
+
+  test("histogram sum/count stay consistent across a window straddling a pre-histogram upgrade (H1)", async () => {
+    // A legacy bucket carries only counters (totalDurationMs, no __histograms); a new
+    // bucket carries the self-tracked histogram. Aggregating the 7d window must NOT mix
+    // the legacy counter's duration into the histogram's sum (which would skew average +
+    // violate the Prometheus _sum/_count contract). count + sum derive from the same obs.
+    const now = Date.now()
+    const bucketMs = 5 * 60 * 1000
+    const tsOld = String(Math.floor((now - bucketMs) / bucketMs) * bucketMs)
+    const tsNew = String(Math.floor(now / bucketMs) * bucketMs)
+    const durationBuckets = Array.from({ length: 16 }, () => 0)
+    durationBuckets[3] = 2 // 2 observations in the le=50 bucket
+    const file = {
+      version: 3,
+      buckets: {},
+      dimensions: {
+        model: {
+          buckets: {
+            [tsOld]: { m: { requestCount: 10, totalDurationMs: 100_000 } }, // legacy: 10 reqs, NO histogram
+            [tsNew]: { m: { requestCount: 2, totalDurationMs: 100, __histograms: { duration_ms: { buckets: durationBuckets, sum: 100 } } } },
+          },
+        },
+      },
+    }
+    await fs.writeFile(telemetryFile, JSON.stringify(file), "utf8")
+    await initRequestTelemetry()
+
+    const hist = getDimensionBreakdown("model", "7d", 20, now).keys[0].histograms.duration_ms
+    expect(hist.count).toBe(2) // only the 2 histogram-observed requests
+    expect(hist.sum).toBe(100) // the histogram's OWN sum, NOT the legacy 100_000 counter
+    expect(hist.average).toBe(50) // 100/2 — sane, not the skewed 50_050
+  })
+
+  test("clamps a negative observation (clock-skewed queueWaitMs) into bucket 0 without polluting the sum (M2)", () => {
+    const now = Date.now()
+    recordSettledRequest({ model: "m" }, { startedAt: now, endedAt: now + 5, success: true, queueWaitMs: -250 })
+    const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms.queue_wait_ms
+    expect(hist.count).toBe(1)
+    expect(hist.sum).toBe(0) // -250 clamped to 0, not subtracted
+  })
+})

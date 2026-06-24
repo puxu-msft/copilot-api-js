@@ -46,4 +46,5 @@ export type {
   DimensionBreakdownSnapshot,
   DimensionKeySnapshot,
   DimensionSeriesPoint,
+  HistogramSummary,
 } from "~backend/lib/request-telemetry"

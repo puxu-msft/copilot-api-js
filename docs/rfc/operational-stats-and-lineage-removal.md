@@ -99,7 +99,7 @@ OTel 的形状仍可后续以 **`/metrics` Prometheus-text 桥**桥接（见 §6
 
 ## 7. 暂缓项（registry 已铺 seam，未来一行接）
 
-- **latency 百分位（p50/p95）**——sum-only counters 结构做不了百分位，结构性必需 histogram slot。当前 `StatAccumulator.counters` 是开放 bag，未来加 `hist?: number[]`（log-spaced buckets）走同一泛型 (de)serializer round-trip，零版本 bump。本次**未填字段**（YAGNI：无需求时不铺投机性表面），但开放 bag + 泛型复制器使其不被 foreclose——加时无需 V4。
+- **~~latency 百分位（p50/p95）~~（已落地）**——见 [telemetry-histograms.md](telemetry-histograms.md)。每 `(dim,key)` 挂 `{buckets,sum}` 自track直方图（duration_ms/queue_wait_ms/input_tokens/output_tokens），存进开放 bag 的 `__histograms` sibling（零版本 bump、旧 V3 无损升级），breakdown 投影 p50/p90/p95/p99，`/metrics` 出标准 Prometheus histogram。验证了 §3 histogram slot 的"开放 bag 不 foreclose"判断。
 - **tool restored-name 投影进 entry**——见 §3.4，默认 sanitize off 时无差异，暂缓。
 
 ## 7. 删除明细（lineage + sessions）

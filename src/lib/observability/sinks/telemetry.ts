@@ -59,6 +59,8 @@ export class TelemetrySink {
         // Per-token cost: the billing multiplier rides on the ctx snapshot
         // (state.modelIndex-resolved), not the entry. Undefined for token-based accounts.
         multiplier: event.ctx.multiplier,
+        // Queue-wait distribution: time spent queued by the rate limiter before dispatch.
+        queueWaitMs: entry.queueWaitMs,
       },
       CAPPED_DIMENSION_NAMES,
     )

@@ -45,6 +45,14 @@ const BASE_MEASURE_NAMES = [
 const COST_MEASURE_NAMES = ["costInputTokens", "costOutputTokens", "costCacheReadInputTokens", "costCacheCreationInputTokens", "costReasoningTokens"] as const
 
 /**
+ * Extra cumulative measures outside the V2-era base nine — present in fresh
+ * accumulators (so histogram `_sum` siblings never read `undefined`) but NOT
+ * required by the V2-file validity check. `queueWaitMs` is the `_sum` partner for
+ * the `queue_wait_ms` histogram.
+ */
+const EXTRA_MEASURE_NAMES = ["queueWaitMs"] as const
+
+/**
  * All measures present in a fresh accumulator. `createAccumulator` initializes
  * every one to 0 so the `+=` increments never touch an `undefined` (the project
  * has no `noUncheckedIndexedAccess`, so a `Record<string,number>` index is typed
@@ -52,13 +60,91 @@ const COST_MEASURE_NAMES = ["costInputTokens", "costOutputTokens", "costCacheRea
  * one entry here + one line in `applySettledMeasures`; the open counters bag +
  * generic (de)serializer mean no persistence-version bump.
  */
-const MEASURE_NAMES = [...BASE_MEASURE_NAMES, ...COST_MEASURE_NAMES] as const
+const MEASURE_NAMES = [...BASE_MEASURE_NAMES, ...COST_MEASURE_NAMES, ...EXTRA_MEASURE_NAMES] as const
 
 /** The full measure name list (base + cost) — exported for the `/metrics` Prometheus projection so it stays single-sourced. */
 export const TELEMETRY_MEASURE_NAMES: ReadonlyArray<string> = MEASURE_NAMES
 
 /** High-cardinality dimensions (client/tool) bound their key count at this cap; overflow merges into `"other"`. */
 const CARDINALITY_CAP = 200
+
+/**
+ * A registered distribution histogram (the third registry kind, alongside
+ * dimension + measure). Each `(dimension, key)` accumulator carries one
+ * `{ buckets, sum }` per histogram. `boundaries` are ascending, log-spaced, and
+ * FIXED so buckets stay mergeable across time-buckets and dimensions. The histogram
+ * self-tracks its own observation `sum` (NOT a shared counter) so `count` and `sum`
+ * always derive from the SAME observations — critical for `average` + the Prometheus
+ * `_sum`/`_count` contract to survive a 7d window that straddles a pre-histogram
+ * upgrade boundary. Adding a histogram = one entry here; everything is generic over
+ * the registry.
+ */
+interface StatHistogram {
+  name: string
+  boundaries: ReadonlyArray<number>
+  /** This request's observation for the histogram. `undefined` = not observed (no bucket incremented). Negatives clamp to 0. */
+  extract: (opts: SettledTelemetryInput, durationMs: number) => number | undefined
+}
+
+const HISTOGRAMS: ReadonlyArray<StatHistogram> = [
+  {
+    name: "duration_ms",
+    boundaries: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000, 300_000],
+    extract: (_opts, durationMs) => durationMs,
+  },
+  {
+    name: "queue_wait_ms",
+    boundaries: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 30_000],
+    extract: (opts) => opts.queueWaitMs,
+  },
+  {
+    name: "input_tokens",
+    boundaries: [100, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000],
+    extract: (opts) => opts.usage?.input_tokens,
+  },
+  {
+    name: "output_tokens",
+    boundaries: [50, 100, 250, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000, 100_000],
+    extract: (opts) => opts.usage?.output_tokens,
+  },
+]
+
+/** A histogram's per-key accumulation: bucket counts (length = boundaries.length + 1) + the self-tracked observation sum. */
+interface HistogramAccumulator {
+  buckets: Array<number>
+  sum: number
+}
+
+/** Reserved per-key persistence sibling holding the histogram bucket-count arrays (kept out of the flat counters bag). */
+const HISTOGRAMS_KEY = "__histograms"
+
+/** Registered histogram metadata (name + boundaries) — exported for the `/metrics` Prometheus histogram projection (decoupled from the extract closures). */
+export const TELEMETRY_HISTOGRAMS: ReadonlyArray<{ name: string; boundaries: ReadonlyArray<number> }> = HISTOGRAMS.map((histogram) => ({
+  name: histogram.name,
+  boundaries: histogram.boundaries,
+}))
+
+/** First bucket index whose boundary is ≥ value (Prometheus `le` semantics); `boundaries.length` = the `+Inf` overflow bucket. */
+function histogramBucketIndex(boundaries: ReadonlyArray<number>, value: number): number {
+  for (const [index, boundary] of boundaries.entries()) {
+    if (value <= boundary) return index
+  }
+  return boundaries.length
+}
+
+/** Project an accumulator's histograms for persistence — only the ones with at least one observation (lean file + hist-less back-compat shape). */
+function serializeHistograms(histograms: Record<string, HistogramAccumulator>): Record<string, HistogramAccumulator> | null {
+  const out: Record<string, HistogramAccumulator> = {}
+  let any = false
+  for (const histogram of HISTOGRAMS) {
+    const acc = histograms[histogram.name]
+    if (acc.buckets.some((count) => count > 0)) {
+      out[histogram.name] = { buckets: [...acc.buckets], sum: acc.sum }
+      any = true
+    }
+  }
+  return any ? out : null
+}
 
 /** The back-compat dimension projected to `modelsSinceStart` / `modelsLast7d`. */
 const MODEL_DIMENSION = "model"
@@ -90,7 +176,8 @@ interface RequestTelemetryFileV2 {
 interface RequestTelemetryFileV3 {
   version: 3
   buckets: Record<string, number>
-  dimensions: Record<string, { buckets: Record<string, Record<string, Record<string, number>>> }>
+  // Per-key value is the flat counters bag + an optional `__histograms` sibling (object of bucket-count arrays).
+  dimensions: Record<string, { buckets: Record<string, Record<string, Record<string, unknown>>> }>
 }
 
 type RequestTelemetryFile = RequestTelemetryFileV1 | RequestTelemetryFileV2 | RequestTelemetryFileV3
@@ -149,11 +236,30 @@ export interface DimensionSeriesPoint {
   counters: Record<string, number>
 }
 
-/** A single dimension key (e.g. one model / endpoint / tool) with its aggregated counters + optional per-bucket series. */
+/** A distribution histogram's window-aggregated summary: percentiles + count/sum/average + the raw cumulative-able buckets. */
+export interface HistogramSummary {
+  /** Total observations (= Σ buckets = requestCount). */
+  count: number
+  /** Sum of observed values (from the paired counter), enabling exact average. */
+  sum: number
+  average: number
+  p50: number
+  p90: number
+  p95: number
+  p99: number
+  /** Ascending bucket upper boundaries (`le`); a final implicit `+Inf` bucket follows. */
+  boundaries: Array<number>
+  /** Per-bucket observation counts (length = boundaries.length + 1; last is `+Inf`). */
+  buckets: Array<number>
+}
+
+/** A single dimension key (e.g. one model / endpoint / tool) with its aggregated counters + optional per-bucket series + distribution histograms. */
 export interface DimensionKeySnapshot {
   key: string
   counters: Record<string, number>
   series: Array<DimensionSeriesPoint>
+  /** histName → window-aggregated distribution summary (latency / queue-wait / token-size percentiles). */
+  histograms: Record<string, HistogramSummary>
 }
 
 /**
@@ -187,6 +293,8 @@ interface SettledTelemetryInput {
    * accounts → the cost segment stays 0.
    */
   multiplier?: number
+  /** Time the request spent queued (rate-limiter) before dispatch — the `queue_wait_ms` histogram observation + `queueWaitMs` sum. */
+  queueWaitMs?: number
 }
 
 /**
@@ -197,6 +305,8 @@ interface SettledTelemetryInput {
  */
 interface StatAccumulator {
   counters: Record<string, number>
+  /** histName → bucket counts + self-tracked sum. Generic-serialized under `__histograms`. */
+  histograms: Record<string, HistogramAccumulator>
 }
 
 let acceptedSinceStart = 0
@@ -224,7 +334,9 @@ function getBucketStart(timestamp: number): number {
 function createAccumulator(): StatAccumulator {
   const counters: Record<string, number> = {}
   for (const measure of MEASURE_NAMES) counters[measure] = 0
-  return { counters }
+  const histograms: Record<string, HistogramAccumulator> = {}
+  for (const histogram of HISTOGRAMS) histograms[histogram.name] = { buckets: Array.from({ length: histogram.boundaries.length + 1 }, () => 0), sum: 0 }
+  return { counters, histograms }
 }
 
 /** Normalize a dimension key: trim + empty/whitespace → "unknown" (matches the legacy model normalization). */
@@ -246,6 +358,7 @@ function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput)
   c.cacheReadInputTokens += usage?.cache_read_input_tokens ?? 0
   c.cacheCreationInputTokens += usage?.cache_creation_input_tokens ?? 0
   c.reasoningTokens += usage?.output_tokens_details?.reasoning_tokens ?? 0
+  c.queueWaitMs += opts.queueWaitMs ?? 0
 
   // Per-token-type cost: only when a billing multiplier is known (subscription
   // accounts). Token-based accounts leave it undefined → cost stays 0.
@@ -256,6 +369,20 @@ function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput)
     c.costCacheReadInputTokens += (usage?.cache_read_input_tokens ?? 0) * multiplier
     c.costCacheCreationInputTokens += (usage?.cache_creation_input_tokens ?? 0) * multiplier
     c.costReasoningTokens += (usage?.output_tokens_details?.reasoning_tokens ?? 0) * multiplier
+  }
+
+  // Distribution histograms: each registered histogram observes at most one value
+  // per request (undefined = skip), incrementing exactly one bucket AND adding the
+  // value to its OWN sum (not a shared counter) so count + sum derive from the same
+  // observations (survives a 7d window straddling a pre-histogram upgrade). Negatives
+  // (e.g. clock-skewed queueWaitMs) clamp to 0.
+  for (const histogram of HISTOGRAMS) {
+    const observed = histogram.extract(opts, durationMs)
+    if (observed === undefined) continue
+    const value = Math.max(0, observed)
+    const hist = acc.histograms[histogram.name]
+    hist.buckets[histogramBucketIndex(histogram.boundaries, value)] += 1
+    hist.sum += value
   }
 }
 
@@ -403,11 +530,29 @@ function stopPeriodicPersistence(): void {
   persistTimer = null
 }
 
-/** Build a StatAccumulator from a persisted counters object — GENERIC copy (preserves any future sibling counters). */
+/** Build a StatAccumulator from a persisted per-key object — GENERIC copy of number counters + the `__histograms` arrays. */
 function loadAccumulator(raw: Record<string, unknown>): StatAccumulator {
   const acc = createAccumulator()
   for (const [name, value] of Object.entries(raw)) {
+    if (name === HISTOGRAMS_KEY) continue
     if (typeof value === "number" && Number.isFinite(value)) acc.counters[name] = value
+  }
+  // Histograms: load each `{ buckets, sum }` whose bucket length matches the current
+  // boundaries (a boundary change across versions invalidates old counts — drop, start
+  // from 0). `sum` is the histogram's self-tracked observation sum.
+  const rawHistograms = raw[HISTOGRAMS_KEY]
+  if (rawHistograms && typeof rawHistograms === "object") {
+    for (const histogram of HISTOGRAMS) {
+      const entry = (rawHistograms as Record<string, unknown>)[histogram.name]
+      if (!entry || typeof entry !== "object") continue
+      const counts = (entry as { buckets?: unknown }).buckets
+      if (!Array.isArray(counts) || counts.length !== histogram.boundaries.length + 1) continue
+      const rawSum = (entry as { sum?: unknown }).sum
+      acc.histograms[histogram.name] = {
+        buckets: counts.map((count) => (typeof count === "number" && Number.isFinite(count) ? count : 0)),
+        sum: typeof rawSum === "number" && Number.isFinite(rawSum) ? rawSum : 0,
+      }
+    }
   }
   return acc
 }
@@ -620,6 +765,61 @@ function mapToRecord(map: Map<string, number>): Record<string, number> {
   return out
 }
 
+/** Element-wise add a histogram's `{ buckets, sum }` into a `Map<histName, HistogramAccumulator>` aggregator (lazily sized to the registered length). */
+function addHistogramInto(target: Map<string, HistogramAccumulator>, name: string, source: HistogramAccumulator): void {
+  let acc = target.get(name)
+  if (!acc) {
+    acc = { buckets: Array.from({ length: source.buckets.length }, () => 0), sum: 0 }
+    target.set(name, acc)
+  }
+  for (let index = 0; index < source.buckets.length && index < acc.buckets.length; index++) acc.buckets[index] += source.buckets[index]
+  acc.sum += source.sum
+}
+
+/** Interpolated quantile from cumulative bucket counts (Prometheus `histogram_quantile` semantics); overflow clamps to the last finite boundary. */
+function quantile(boundaries: ReadonlyArray<number>, counts: ReadonlyArray<number>, q: number): number {
+  // boundaries is a non-empty registered constant; `?? 0` only guards the impossible empty case (keeps the types/lint honest).
+  const lastBoundary = boundaries.at(-1) ?? 0
+  const total = counts.reduce((sum, count) => sum + count, 0)
+  if (total === 0) return 0
+  const target = q * total
+  let cumulative = 0
+  for (const [index, count] of counts.entries()) {
+    const previous = cumulative
+    cumulative += count
+    if (cumulative >= target) {
+      const lower = index === 0 ? 0 : (boundaries[index - 1] ?? 0)
+      const upper = index < boundaries.length ? (boundaries[index] ?? lastBoundary) : lastBoundary
+      if (count === 0 || upper <= lower) return upper
+      return lower + (upper - lower) * ((target - previous) / count)
+    }
+  }
+  return lastBoundary
+}
+
+/** Build the per-key histogram summaries from aggregated `{ buckets, sum }` (count + sum derive from the SAME observations — see HistogramAccumulator). */
+function summarizeHistograms(histograms: Map<string, HistogramAccumulator>): Record<string, HistogramSummary> {
+  const out: Record<string, HistogramSummary> = {}
+  for (const histogram of HISTOGRAMS) {
+    const acc = histograms.get(histogram.name)
+    if (!acc) continue
+    const count = acc.buckets.reduce((sum, value) => sum + value, 0)
+    if (count === 0) continue
+    out[histogram.name] = {
+      count,
+      sum: acc.sum,
+      average: count > 0 ? acc.sum / count : 0,
+      p50: quantile(histogram.boundaries, acc.buckets, 0.5),
+      p90: quantile(histogram.boundaries, acc.buckets, 0.9),
+      p95: quantile(histogram.boundaries, acc.buckets, 0.95),
+      p99: quantile(histogram.boundaries, acc.buckets, 0.99),
+      boundaries: [...histogram.boundaries],
+      buckets: [...acc.buckets],
+    }
+  }
+  return out
+}
+
 /** Sort key for breakdown top-N: request count desc, then total tokens desc, then key asc (deterministic). */
 function compareDimensionKeys(left: DimensionKeySnapshot, right: DimensionKeySnapshot): number {
   // counters always carry the base measures (createAccumulator pre-fills them, and
@@ -627,6 +827,14 @@ function compareDimensionKeys(left: DimensionKeySnapshot, right: DimensionKeySna
   const leftTokens = left.counters.inputTokens + left.counters.outputTokens
   const rightTokens = right.counters.inputTokens + right.counters.outputTokens
   return right.counters.requestCount - left.counters.requestCount || rightTokens - leftTokens || left.key.localeCompare(right.key)
+}
+
+/** Internal per-key aggregation carrying the RAW (still-mergeable) counter + histogram accumulators before the final summary projection. */
+interface AggregatedKey {
+  key: string
+  counters: Map<string, number>
+  histograms: Map<string, HistogramAccumulator>
+  series: Array<DimensionSeriesPoint>
 }
 
 /**
@@ -637,8 +845,10 @@ function compareDimensionKeys(left: DimensionKeySnapshot, right: DimensionKeySna
  *
  * `window="sinceStart"` projects the process-lifetime cumulative counters (no
  * series); `window="7d"` aggregates the rolling buckets and attaches a per-bucket
- * `series` per key. Top-N keeps the leading `limit` keys and folds the rest into
- * `"other"` (merged with any cardinality-cap `"other"` already present).
+ * `series` per key. Distribution histograms (latency / queue-wait / token sizes)
+ * are window-aggregated per key into percentile summaries. Top-N keeps the leading
+ * `limit` keys and folds the rest into `"other"` (merged with any cardinality-cap
+ * `"other"` already present, summing counters + histogram buckets + series).
  */
 export function getDimensionBreakdown(
   dimension: string,
@@ -648,16 +858,23 @@ export function getDimensionBreakdown(
 ): DimensionBreakdownSnapshot {
   pruneBuckets(now)
 
-  const aggregate = new Map<string, Map<string, number>>()
-  const seriesByKey = new Map<string, Array<DimensionSeriesPoint>>()
+  const aggregate = new Map<string, AggregatedKey>()
+  const ensureKey = (key: string): AggregatedKey => {
+    let entry = aggregate.get(key)
+    if (!entry) {
+      entry = { key, counters: new Map(), histograms: new Map(), series: [] }
+      aggregate.set(key, entry)
+    }
+    return entry
+  }
 
   if (window === "sinceStart") {
     const dim = dimSinceStart.get(dimension)
     if (dim) {
       for (const [key, acc] of dim.entries()) {
-        const counters = new Map<string, number>()
-        sumCountersInto(counters, acc.counters)
-        aggregate.set(key, counters)
+        const entry = ensureKey(key)
+        sumCountersInto(entry.counters, acc.counters)
+        for (const [name, hist] of Object.entries(acc.histograms)) addHistogramInto(entry.histograms, name, hist)
       }
     }
   } else {
@@ -665,42 +882,44 @@ export function getDimensionBreakdown(
       const dim = dims.get(dimension)
       if (!dim) continue
       for (const [key, acc] of dim.entries()) {
-        let counters = aggregate.get(key)
-        if (!counters) {
-          counters = new Map()
-          aggregate.set(key, counters)
-        }
-        sumCountersInto(counters, acc.counters)
-        let series = seriesByKey.get(key)
-        if (!series) {
-          series = []
-          seriesByKey.set(key, series)
-        }
-        series.push({ timestamp, counters: { ...acc.counters } })
+        const entry = ensureKey(key)
+        sumCountersInto(entry.counters, acc.counters)
+        for (const [name, hist] of Object.entries(acc.histograms)) addHistogramInto(entry.histograms, name, hist)
+        entry.series.push({ timestamp, counters: { ...acc.counters } })
       }
     }
   }
 
-  const allKeys: Array<DimensionKeySnapshot> = [...aggregate.entries()].map(([key, counters]) => ({
-    key,
-    counters: mapToRecord(counters),
-    series: (seriesByKey.get(key) ?? []).sort((left, right) => left.timestamp - right.timestamp),
-  }))
-  allKeys.sort(compareDimensionKeys)
+  // Pair each raw aggregate with its projected snapshot, sort together — so "other"
+  // can re-sum the RAW histogram arrays (not lossy summaries) without re-lookups.
+  const pairs = [...aggregate.values()].map((raw) => {
+    const counters = mapToRecord(raw.counters)
+    return {
+      raw,
+      snapshot: {
+        key: raw.key,
+        counters,
+        series: raw.series.sort((left, right) => left.timestamp - right.timestamp),
+        histograms: summarizeHistograms(raw.histograms),
+      } satisfies DimensionKeySnapshot,
+    }
+  })
+  pairs.sort((left, right) => compareDimensionKeys(left.snapshot, right.snapshot))
 
-  const totalKeys = allKeys.length
-  const top = allKeys.slice(0, Math.max(0, limit))
-  const rest = allKeys.slice(Math.max(0, limit))
+  const totalKeys = pairs.length
+  const safeLimit = Math.max(0, limit)
+  const topPairs = pairs.slice(0, safeLimit)
+  const restPairs = pairs.slice(safeLimit)
+  const top = topPairs.map((pair) => pair.snapshot)
+  const rest = restPairs.map((pair) => pair.raw)
 
   if (rest.length > 0) {
-    const otherCounters = new Map<string, number>()
+    const other: AggregatedKey = { key: "other", counters: new Map(), histograms: new Map(), series: [] }
     const otherSeries = new Map<number, Map<string, number>>()
-    // Fold any existing top-N "other" (from the cardinality cap) into the same bucket so it isn't duplicated.
-    const existingOtherIndex = top.findIndex((entry) => entry.key === "other")
-    if (existingOtherIndex !== -1) {
-      const [existingOther] = top.splice(existingOtherIndex, 1)
-      sumCountersInto(otherCounters, existingOther.counters)
-      for (const point of existingOther.series) {
+    const foldRaw = (raw: AggregatedKey): void => {
+      for (const [name, value] of raw.counters.entries()) other.counters.set(name, (other.counters.get(name) ?? 0) + value)
+      for (const [name, counts] of raw.histograms.entries()) addHistogramInto(other.histograms, name, counts)
+      for (const point of raw.series) {
         let bucket = otherSeries.get(point.timestamp)
         if (!bucket) {
           bucket = new Map()
@@ -709,23 +928,23 @@ export function getDimensionBreakdown(
         sumCountersInto(bucket, point.counters)
       }
     }
-    for (const entry of rest) {
-      sumCountersInto(otherCounters, entry.counters)
-      for (const point of entry.series) {
-        let bucket = otherSeries.get(point.timestamp)
-        if (!bucket) {
-          bucket = new Map()
-          otherSeries.set(point.timestamp, bucket)
-        }
-        sumCountersInto(bucket, point.counters)
-      }
+    // Fold any existing top-N "other" (from the cardinality cap) into the same accumulator so it isn't duplicated.
+    const existingOther = topPairs.find((pair) => pair.snapshot.key === "other")
+    if (existingOther) {
+      const index = top.findIndex((entry) => entry.key === "other")
+      if (index !== -1) top.splice(index, 1)
+      foldRaw(existingOther.raw)
     }
+    for (const raw of rest) foldRaw(raw)
+
+    const otherCounters = mapToRecord(other.counters)
     top.push({
       key: "other",
-      counters: mapToRecord(otherCounters),
+      counters: otherCounters,
       series: [...otherSeries.entries()]
         .map(([timestamp, counters]) => ({ timestamp, counters: mapToRecord(counters) }))
         .sort((left, right) => left.timestamp - right.timestamp),
+      histograms: summarizeHistograms(other.histograms),
     })
   }
 
@@ -753,7 +972,7 @@ const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
   pruneBuckets()
   // Build per-dimension bucket maps first (Map.get returns `| undefined`, so the
   // lookup-then-create is type-honest), then project to the plain-object envelope.
-  const byDimension = new Map<string, Record<string, Record<string, Record<string, number>>>>()
+  const byDimension = new Map<string, Record<string, Record<string, Record<string, unknown>>>>()
   for (const [bucketTimestamp, dims] of dimBuckets.entries()) {
     for (const [dimName, keys] of dims.entries()) {
       let byTimestamp = byDimension.get(dimName)
@@ -761,10 +980,14 @@ const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
         byTimestamp = {}
         byDimension.set(dimName, byTimestamp)
       }
-      const bucketEntry: Record<string, Record<string, number>> = {}
+      const bucketEntry: Record<string, Record<string, unknown>> = {}
       for (const [key, acc] of keys.entries()) {
         // Generic copy of `counters` — preserves any future sibling counter without a version bump.
-        bucketEntry[key] = { ...acc.counters }
+        const entry: Record<string, unknown> = { ...acc.counters }
+        // Histograms only when there's a non-zero observation (keeps the file lean + back-compat shape for hist-less keys).
+        const histograms = serializeHistograms(acc.histograms)
+        if (histograms) entry[HISTOGRAMS_KEY] = histograms
+        bucketEntry[key] = entry
       }
       byTimestamp[String(bucketTimestamp)] = bucketEntry
     }

@@ -19,13 +19,18 @@
  * dimensions. This mirrors `/api/stats`. A leading comment in the output says so.
  */
 
-import type { DimensionBreakdownSnapshot } from "./request-telemetry"
+import type {
+  //
+  DimensionBreakdownSnapshot,
+  HistogramSummary,
+} from "./request-telemetry"
 
 import { TELEMETRY_DIMENSION_NAMES } from "./observability/telemetry-dimensions"
 import {
   //
   getDimensionBreakdown,
   getRequestTelemetrySnapshot,
+  TELEMETRY_HISTOGRAMS,
   TELEMETRY_MEASURE_NAMES,
 } from "./request-telemetry"
 
@@ -104,6 +109,33 @@ export function renderPrometheusMetrics(breakdowns: ReadonlyArray<DimensionBreak
     }
     // Emit the family even with zero samples so scrapers see a stable schema.
     lines.push(`# HELP ${metricName} Cumulative ${measure} per (dimension,key) since process start.`, `# TYPE ${metricName} counter`, ...samples)
+  }
+
+  // Distribution histograms: standard Prometheus histogram (cumulative `_bucket{le}` +
+  // `_sum` + `_count`) so scrapers compute quantiles via `histogram_quantile()`.
+  for (const histogram of TELEMETRY_HISTOGRAMS) {
+    const base = `${METRIC_PREFIX}${histogram.name}`
+    const samples: Array<string> = []
+    for (const breakdown of breakdowns) {
+      const dimensionLabel = escapeLabelValue(breakdown.dimension)
+      for (const entry of breakdown.keys) {
+        const summary = entry.histograms[histogram.name] as HistogramSummary | undefined
+        if (!summary) continue
+        const labels = `dimension="${dimensionLabel}",key="${escapeLabelValue(entry.key)}"`
+        let cumulative = 0
+        for (let index = 0; index < summary.boundaries.length; index++) {
+          cumulative += summary.buckets[index] ?? 0
+          samples.push(`${base}_bucket{${labels},le="${formatValue(summary.boundaries[index])}"} ${cumulative}`)
+        }
+        cumulative += summary.buckets[summary.boundaries.length] ?? 0
+        samples.push(
+          `${base}_bucket{${labels},le="+Inf"} ${cumulative}`,
+          `${base}_sum{${labels}} ${formatValue(summary.sum)}`,
+          `${base}_count{${labels}} ${cumulative}`,
+        )
+      }
+    }
+    lines.push(`# HELP ${base} Distribution of ${histogram.name} per (dimension,key) since process start.`, `# TYPE ${base} histogram`, ...samples)
   }
 
   // Prometheus requires a trailing newline.
