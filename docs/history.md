@@ -76,7 +76,7 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 - **专列独占写**：`pinned` 列**故意不进** `INSERT_ENTRY_SQL` 的列清单与 `ON CONFLICT DO UPDATE SET`——首次插入取 `DEFAULT 0`，后续所有 eager 状态 upsert（pending→streaming→completed）都不会重置它。唯一写者是 `setEntryPinned(id, pinned)`（`write.ts`）的专用 `UPDATE`。
 - **非 blob**：`pinned` 是 DB-only 标志（blob 在 finalize 时一次写定，pin 发生在之后），故进 `META_KEYS`、永不序列化进 blob，读时一律由列派生。
-- **存在性判定不读 `.run().changes`**：`entries_fts` 的 AFTER UPDATE 触发器写入会被 bun:sqlite 计入 `changes`，故 `setEntryPinned` 用 `SELECT 1` 判断行是否存在。
+- **存在性判定不读 `.run().changes`**：任何 AFTER-write 触发器/级联都可能把额外写入计入 bun:sqlite 的 `changes`，故 `setEntryPinned` 用 `SELECT 1` 判断行是否存在（防御性——旧 `entries_fts` 触发器即此类，P3 已移除但模式保留）。
 - **in-flight 同步**：`setPinned`（`entries.ts`）切换列后调 `updateInFlight(id, { pinned })` 同步内存副本——因 `getEntry` 是 in-flight 优先，eager-persisted 但未 finalize 的 entry 否则会读到旧 `pinned`（HTTP 响应与广播都会失真）；`toEntrySummary` 也带 `pinned`，避免 producer 丢字段。
 - **广播**：同步后 `publishEntryUpdated`，已连接的 WS 客户端实时反映 `pinned`（不改 stats——pinning 不影响 completed/failed 计数）。
 - **只豁免自动 reaper，非永久不可删**：pin 仅挡后台 reaper 的自动淘汰；显式 `DELETE /history/api/sessions/:id`（删 session）与 `DELETE /history/api/entries`（clear-all）仍会删除 pinned 条目。
@@ -142,7 +142,8 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 - `id TEXT PRIMARY KEY`、`session_id TEXT`、`started_at`/`ended_at INTEGER`
 - `model`/`endpoint`/`status TEXT` — 基础元数据（`status` 即 `RequestLifecycleState`）
 - token 计数、`duration_ms`、`pid`/`boot_time`/`git_sha`（进程身份镜像列，供 SQL 过滤）
-- `preview_text`/`search_text` — 列表/搜索用
+- `preview_text` — 列表 preview 快筛用（denormalized；`search_text` 列已于 search_index P3 DROP）
+- `prev_req_id TEXT` — best-effort 对话血缘（组内时间最近一条、无 FK、与搜索解耦、待线程化）
 - `blob_gz BLOB NOT NULL` — gzip 的 **head-meta** JSON（`process`/`pipelineInfo`/`warningMessages`/`attempts` 摘要/`httpHeaders` 等；**不含**被拆到 stage 行的重字段）
 
 **`entry_stages`（1:N 子表）** —— 重 blob 按腿/按 attempt 分行：
@@ -173,6 +174,31 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 | `DELETE /history/api/sessions/:id` | 删除 session（`deleteSession` → 删该 session 的所有 entries）。破坏性、不可逆 |
 | `GET /history/api/stats` | 聚合统计数据 |
 | `GET /history/api/export` | 导出历史（JSON/CSV） |
+| `GET /history/api/search` | **内容寻址全文搜索**（`?source=&q=&limit=&cursor=`，`source` ∈ `inbound`/`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers` 5 源单选）。返回 `{rows, nextCursor, partial, builtPct?}`——backfill 未完成时 inbound 结果 `partial:true` |
+| `GET /history/api/search/contains` | `?hash=` 懒取引用某消息 hash 的全部请求 id（inbound 搜索结果行不内联，可达数百） |
+
+> **列表快筛 vs 专门搜索**：列表 `GET /history/api/entries?search=` 是轻量 `preview_text` 子串快筛（as-you-type）；深度全文搜索（5 源）走专门 `GET /history/api/search`。两路分离，见下文 search_index。
+
+## 内容寻址搜索 (search_index)
+
+请求历史的全文搜索由内容寻址 `search_index` 子系统提供（取代旧 trigram FTS5 + `search_text` 列，P3 已 DROP）。设计见 [rfc/search-index-content-addressed.md](rfc/search-index-content-addressed.md)。
+
+**表**（`schema.ts`）：
+
+- `msg_blob(hash PK, text)` — 每条 **distinct 归一化消息**按内容哈希只存一次（git-blob 式）。跨请求/跨轮去重，实测 ~42× 压缩。无 FK，靠孤儿 GC 回收。
+- `req_msg(req_id, pos, hash, PK(req_id,pos), FK→entries_v2 CASCADE)` — 请求引用哪些消息（按位置）。索引 `idx_req_msg_hash` 服务 hash→请求查找 + GC 探测。
+- `req_aux(req_id, source, text, PK(req_id,source), FK CASCADE)` — 4 个 flat per-request 源：`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers`。
+- `history_meta(key PK, value)` — backfill 完成标志（`search_index_version`）+ 续跑游标 + dedup-ratio tripwire stat。
+
+**归一化**（`normalize-message.ts`，单一 owner）：`normalizeMessageForIndex(msg, format)` 同时是哈希输入 AND 存储搜索文本，**config-无关、确定、稳定**。递归剥 `cache_control`（Claude Code 每轮前移 ephemeral 断点的唯一易变源，实测剥后同消息跨轮哈希相等）+ own-line `<system-reminder>`/`<ide_*>` 注入块（边界锚定、保留 inline 字面提及）+ sorted-key canonical JSON。绝不复用 config 驱动的 `removeSystemReminderTags`。
+
+**写入**：`insertCompletedEntry` 事务外算 `buildSearchIndexForEntry`（normalize+hash inbound 消息、jsdiff `alignMessages` 算 rewrites 改动文本、拼 headers；整体 try/catch 降级——build 抛则该 entry 索引置空、绝不阻断 finalize），事务内 `persistSearchIndex` 幂等写。
+
+**孤儿 GC**：`msg_blob` 无 FK，删请求时 `req_msg`/`req_aux` 经 CASCADE 自动清，但 blob 须显式 GC `DELETE FROM msg_blob WHERE NOT EXISTS(SELECT 1 FROM req_msg WHERE hash=…)`——接 reaper（门控 `deleted>0`）/`deleteSession`/`clearAllEntries` **三删除点**（漏一处则清空后 msg_blob 永久死空间）。
+
+**backfill**（`search-index-backfill.ts`）：历史行建索引 + 重算 preview，**可恢复后台**。`history_meta(search_index_version)` 守卫（非 `user_version`）、compound `(started_at,id)` keyset 续跑、协作式 `stopSearchIndexBackfill()`（`shutdownHistory` 在 `closeDatabase` 前调）、完成才置标志、dedup-ratio tripwire（远低于 ~40× 即 WARN）。`start.ts` 监听后 fire-and-forget、批间让出 event loop、绝不进 `openDatabase` 同步路径。
+
+**`prev_req_id`**：entries_v2 上的 best-effort 对话血缘列（组内时间最近一条、无 FK、**与搜索完全解耦**），待将来对话线程化消费。
 
 > **破坏性删除必高声记录**：`clearHistory`/`deleteSession` 都 `consola.warn` 打印删除条目数 + 触发来源（`clearHistory`：`CLEARED ALL entries (N persisted + M in-flight) via DELETE /api/entries`；`deleteSession` 类似）。一次不可逆全量销毁绝不静默——否则它与持久化 bug 不可分辨（曾因 `clearHistory` 无日志，一条已落盘的失败记录"消失"耗费长时间盲查才定位是 dev UI 误触发 `DELETE /api/entries`）。
 

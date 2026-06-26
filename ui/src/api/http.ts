@@ -5,6 +5,8 @@ import type {
   HistoryEntry,
   HistoryStats,
   QueryOptions,
+  SearchResult,
+  SearchSource,
 } from "@/types"
 import type {
   //
@@ -14,6 +16,17 @@ import type {
 } from "@/types/config"
 
 const BASE = "/history/api"
+
+/** Parameters for the dedicated `/search` endpoint. */
+export interface SearchParams {
+  source: SearchSource
+  q: string
+  limit?: number
+  cursor?: string
+  model?: string
+  endpoint?: string
+  sessionId?: string
+}
 
 class ApiError extends Error {
   constructor(
@@ -91,6 +104,24 @@ export const api = {
 
   getExportUrl(format: "json" | "csv"): string {
     return BASE + "/export?format=" + format
+  },
+
+  // Dedicated content-addressed search (5 facets)
+  async search(params: SearchParams): Promise<SearchResult> {
+    const qs = new URLSearchParams()
+    qs.set("source", params.source)
+    qs.set("q", params.q)
+    if (params.limit) qs.set("limit", String(params.limit))
+    if (params.cursor) qs.set("cursor", params.cursor)
+    if (params.model) qs.set("model", params.model)
+    if (params.endpoint) qs.set("endpoint", params.endpoint)
+    if (params.sessionId) qs.set("sessionId", params.sessionId)
+    return request<SearchResult>("/search?" + qs.toString())
+  },
+
+  /** Lazy companion: every request id referencing a given message hash. */
+  async searchContains(hash: string): Promise<{ hash: string; reqIds: Array<string> }> {
+    return request<{ hash: string; reqIds: Array<string> }>("/search/contains?hash=" + encodeURIComponent(hash))
   },
 
   // --- New endpoints for pages ---

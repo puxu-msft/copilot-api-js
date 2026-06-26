@@ -10,6 +10,8 @@ import {
   handleGetSessions,
   handleGetStats,
   handlePinEntry,
+  handleSearch,
+  handleSearchContains,
   handleUnpinEntry,
 } from "./handler"
 
@@ -34,6 +36,9 @@ historyRoutes.delete("/api/entries", handleDeleteEntries)
 historyRoutes.get("/api/stats", handleGetStats)
 historyRoutes.get("/api/sessions", handleGetSessions)
 historyRoutes.get("/api/export", handleExport)
+// Dedicated full-text search (content-addressed index) + lazy hash→requests companion.
+historyRoutes.get("/api/search", handleSearch)
+historyRoutes.get("/api/search/contains", handleSearchContains)
 
 /** Session endpoints */
 historyRoutes.delete("/api/sessions/:id", handleDeleteSession)

@@ -174,6 +174,20 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
   })
   registry.registerPath({ method: "get", path: "/history/api/export", tags: historyTag, summary: "Export history", responses: ok200("Exported history") })
   registry.registerPath({
+    method: "get",
+    path: "/history/api/search",
+    tags: historyTag,
+    summary: "Dedicated full-text search over the content-addressed index (5 facets: inbound / rewrites-req / rewrites-resp / req-headers / resp-headers)",
+    responses: ok200("Search results (partial while backfill runs)"),
+  })
+  registry.registerPath({
+    method: "get",
+    path: "/history/api/search/contains",
+    tags: historyTag,
+    summary: "Lazy companion: request ids referencing a given message hash",
+    responses: ok200("Containing request ids"),
+  })
+  registry.registerPath({
     method: "delete",
     path: "/history/api/sessions/{id}",
     tags: historyTag,

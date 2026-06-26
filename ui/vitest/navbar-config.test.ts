@@ -80,7 +80,7 @@ describe("NavBar", () => {
     const wrapper = await mountNavBarAt("/config")
     const labels = wrapper.findAll('[data-testid="v-tab"]').map((node) => node.text())
 
-    expect(labels).toEqual(["Dashboard", "Config", "Models", "Activity"])
+    expect(labels).toEqual(["Dashboard", "Config", "Models", "Activity", "Search"])
     expect(wrapper.find('[data-testid="v-app-bar"]').exists()).toBe(true)
     expect(wrapper.text()).toContain("System")
   })

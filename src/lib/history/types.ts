@@ -455,7 +455,6 @@ export interface EntrySummary {
   /** Billing multiplier (e.g. 3 for opus) captured at write time. Column-backed. */
   multiplier?: number
   previewText: string
-  searchText: string
 }
 
 export interface SummaryResult {
@@ -463,4 +462,34 @@ export interface SummaryResult {
   total: number
   nextCursor: string | null
   prevCursor: string | null
+}
+
+/** The five search facets exposed by the dedicated `/api/search` endpoint. */
+export type SearchSource = "inbound" | "rewrites-req" | "rewrites-resp" | "req-headers" | "resp-headers"
+
+/**
+ * One row of a dedicated full-text search result (RFC search-index, reviewer M5).
+ * For the content-addressed `inbound` source, `hash` is the matched message hash
+ * and `ownerReqId` is the EARLIEST (min started_at) request referencing it — the
+ * "eliminate previous" dedup so a message recurring across N requests is ONE row.
+ * For the flat `rewrites-*` / `*-headers` sources, `hash` is absent and
+ * `ownerReqId` is the matching request itself. `snippet` is a window centered on
+ * the match (computed in JS — LIKE only proves existence, not offset).
+ */
+export interface SearchResultRow {
+  source: SearchSource
+  hash?: string
+  ownerReqId: string
+  snippet: string
+  summary: EntrySummary
+}
+
+/** A page of search results plus a partial-completion hint while the backfill runs. */
+export interface SearchResult {
+  rows: Array<SearchResultRow>
+  nextCursor: string | null
+  /** True while the backfill is incomplete — `inbound` results cover only already-built rows. */
+  partial: boolean
+  /** Rough fraction (0–1) of rows indexed so far, when `partial`. */
+  builtPct?: number
 }

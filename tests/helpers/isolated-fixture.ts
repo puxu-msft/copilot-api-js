@@ -40,6 +40,7 @@ import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
 import { __setTerminalWriterForTests } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetModelsEtagForTests } from "~/lib/models/client"
 import {
   //
@@ -93,6 +94,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // Not `*ForTests`-named (a production reset) but a module-global counter that
   // leaks across tests, so reset it here too.
   { name: "resetHistoryPersistErrorStats", reset: resetHistoryPersistErrorStats },
+  // search_index backfill module-global stop/running flags.
+  { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
 ]
 
 /** Names registered in RESETTERS — consumed by the L1 completeness guard. */

@@ -2,7 +2,7 @@
  * Tests for the EntrySummary layer: toSummary, getSummary, getHistorySummaries.
  *
  * Covers:
- * - Summary correctness (fields, previewText, searchText)
+ * - Summary correctness (fields, previewText)
  * - getSummary lookup
  * - getHistorySummaries filtering, pagination, search
  * - updateEntry({request}) path (originalRequest timing fix)
@@ -215,14 +215,16 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toBe("Hello from Responses API")
   })
 
-  test("search finds entries by model name", () => {
+  test("list free-text search no longer matches the model name (use the model filter)", () => {
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
     })
 
-    const results = getHistorySummaries({ search: "claude-sonnet-4-20250514" })
-    expect(results.entries).toHaveLength(1)
+    // RFC v5: list search is message/preview-only. The model is a structural
+    // filter, not a free-text dimension.
+    expect(getHistorySummaries({ search: "claude-sonnet-4-20250514" }).entries).toHaveLength(0)
+    expect(getHistorySummaries({ model: "claude-sonnet-4-20250514" }).entries).toHaveLength(1)
   })
 
   test("search finds entries by message content", () => {
@@ -235,15 +237,16 @@ describe("summary correctness (toSummary)", () => {
     expect(results.entries).toHaveLength(1)
   })
 
-  test("search finds entries by system prompt", () => {
+  test("list free-text search does NOT match the system prompt (intentionally excluded)", () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hi" }],
       system: "You are a helpful coding assistant",
     })
 
+    // RFC: the inbound index covers message blocks only, never the system prompt.
     const results = getHistorySummaries({ search: "helpful coding assistant" })
-    expect(results.entries).toHaveLength(1)
+    expect(results.entries).toHaveLength(0)
   })
 
   test("search finds entries by tool_use names from content blocks", () => {
@@ -384,10 +387,11 @@ describe("updateEntry (request)", () => {
     expect(after.messageCount).toBe(3)
     expect(after.previewText).toBe("Thanks")
 
-    // searchText is lazy — verify via search API instead of direct field inspection
-    expect(getHistorySummaries({ search: "claude-sonnet-4-20250514" }).entries).toHaveLength(1)
+    // List search matches MESSAGE content; the model uses the structural filter;
+    // the system prompt is intentionally excluded from the index.
+    expect(getHistorySummaries({ model: "claude-sonnet-4-20250514" }).entries).toHaveLength(1)
     expect(getHistorySummaries({ search: "what is 2+2" }).entries).toHaveLength(1)
-    expect(getHistorySummaries({ search: "be concise" }).entries).toHaveLength(1)
+    expect(getHistorySummaries({ search: "be concise" }).entries).toHaveLength(0)
   })
 
   test("full lifecycle: empty insert → request update → response update", () => {
@@ -640,7 +644,7 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].id).toBe(mid.id)
   })
 
-  test("search matches against pre-computed searchText", () => {
+  test("search matches message content", () => {
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Tell me about quantum computing" }],
@@ -665,17 +669,17 @@ describe("getHistorySummaries", () => {
     expect(getHistorySummaries({ search: "HELLO WORLD" }).total).toBe(1)
   })
 
-  test("search matches model names", () => {
+  test("model is matched via the model filter, not free-text search", () => {
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hi" }],
     })
 
-    const result = getHistorySummaries({ search: "sonnet" })
-    expect(result.total).toBe(1)
+    expect(getHistorySummaries({ model: "sonnet" }).total).toBe(1)
+    expect(getHistorySummaries({ search: "sonnet" }).total).toBe(0)
   })
 
-  test("search matches error messages after response update", () => {
+  test("error messages are not free-text searchable (use the failed-status filter)", () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hi" }],
@@ -690,8 +694,9 @@ describe("getHistorySummaries", () => {
       },
     })
 
-    const result = getHistorySummaries({ search: "overloaded" })
-    expect(result.total).toBe(1)
+    // RFC: the outbound response (incl. error) is not indexed for text search.
+    expect(getHistorySummaries({ search: "overloaded" }).total).toBe(0)
+    expect(getHistorySummaries({ success: false }).total).toBe(1)
   })
 
   test("filters by sessionId", () => {

@@ -106,7 +106,6 @@ interface LegacyRow {
   error_message: string | null
   message_count: number | null
   preview_text: string | null
-  search_text: string | null
   blob_gz: Uint8Array
 }
 
@@ -132,7 +131,6 @@ function toEntryRow(r: LegacyRow): EntryRow {
     error_message: r.error_message,
     message_count: r.message_count,
     preview_text: r.preview_text,
-    search_text: r.search_text,
     pid: null,
     boot_time: null,
     git_sha: null,

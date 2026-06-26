@@ -12,6 +12,7 @@ import {
   incrementalVacuum,
   runOptimize,
 } from "./connection"
+import { GC_ORPHAN_MSG_BLOB_SQL } from "./write"
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -74,6 +75,10 @@ export function runReaperOnce(successLimit: number, failureLimit: number): numbe
     consola.info(
       `[history/sqlite] reaper evicted ${deletedSuccess} success (limit=${successLimit}) + ${deletedFailure} failure (limit=${failureLimit}) entries`,
     )
+    // Sweep msg_blob rows orphaned by this eviction. GATED on `deleted>0` so a
+    // no-op tick never scans (req_msg/req_aux cascade-removed with the head rows;
+    // only the un-FK'd content-addressed blobs need the NOT EXISTS sweep — RFC C3).
+    db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
   }
   return deleted
 }
@@ -92,12 +97,11 @@ export function reclaimStaleActiveRows(maxAgeMs: number = state.staleRequestMaxA
   const cutoff = Date.now() - maxAgeMs
   const placeholders = ACTIVE_STATUSES.map(() => "?").join(",")
   const where = `status IN (${placeholders}) AND pid = ? AND started_at < ?`
-  // Count the matched rows directly rather than reading `.run().changes`: the
-  // entries_fts AFTER-UPDATE trigger also writes (trigram rows), and bun:sqlite
-  // folds those trigger-side writes into `changes`, which would inflate the
+  // Count the matched rows directly rather than reading `.run().changes`: an
+  // AFTER-write trigger/cascade can inflate `.changes`, which would inflate the
   // reclaim count. COUNT+UPDATE run in one transaction so the returned number is
   // exactly what was flipped (mirrors evictBucket avoiding `.changes` under
-  // cascade/trigger fan-out).
+  // cascade fan-out).
   let reclaimed = 0
   const tx = db.transaction(() => {
     const { n } = db.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...ACTIVE_STATUSES, pid, cutoff) as { n: number }

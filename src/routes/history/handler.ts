@@ -10,9 +10,12 @@ import {
   getSessionSummaries,
   getStats,
   isHistoryEnabled,
+  searchContains,
+  searchHistory,
   setPinned,
   type EndpointType,
   type QueryOptions,
+  type SearchSource,
 } from "~/lib/history"
 
 export function handleGetEntries(c: Context) {
@@ -166,4 +169,62 @@ export function handleDeleteSession(c: Context) {
   }
 
   return c.json({ success: true, message: "Session deleted" })
+}
+
+const SEARCH_SOURCES: ReadonlySet<SearchSource> = new Set<SearchSource>(["inbound", "rewrites-req", "rewrites-resp", "req-headers", "resp-headers"])
+
+/**
+ * GET /history/api/search — dedicated full-text search over the content-addressed
+ * index. `?source=` selects one of the five facets (default `inbound`), `?q=` the
+ * needle, plus the same structural filters as the list. While the backfill runs,
+ * `inbound` results carry `{ partial: true, builtPct }`.
+ */
+export function handleSearch(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+
+  const query = c.req.query()
+  const source = (query.source || "inbound") as SearchSource
+  if (!SEARCH_SOURCES.has(source)) {
+    return c.json({ error: `Invalid source '${source}'. Expected one of: ${[...SEARCH_SOURCES].join(", ")}` }, 400)
+  }
+
+  const filters: QueryOptions = {
+    model: query.model || undefined,
+    endpoint: query.endpoint as EndpointType | undefined,
+    success: query.success ? query.success === "true" : undefined,
+    state: (query.state as QueryOptions["state"]) || undefined,
+    from: query.from ? Number.parseInt(query.from, 10) : undefined,
+    to: query.to ? Number.parseInt(query.to, 10) : undefined,
+    sessionId: query.sessionId || undefined,
+    agentId: query.agentId || undefined,
+    mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
+    pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
+  }
+
+  const result = searchHistory({
+    source,
+    q: query.q || "",
+    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+    cursor: query.cursor || undefined,
+    filters,
+  })
+  return c.json(result)
+}
+
+/**
+ * GET /history/api/search/contains?hash= — lazy companion to the `inbound` search:
+ * every request id that references a given message hash (can be hundreds, so it is
+ * NOT inlined into the search result rows).
+ */
+export function handleSearchContains(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+  const hash = c.req.query("hash")
+  if (!hash) {
+    return c.json({ error: "hash query parameter is required" }, 400)
+  }
+  return c.json({ hash, reqIds: searchContains(hash) })
 }

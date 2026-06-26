@@ -22,7 +22,6 @@ import {
   //
   clearInFlight,
   extractPreviewText,
-  extractSearchText,
   putInFlight,
   toEntrySummary,
   updateInFlight,
@@ -53,7 +52,7 @@ afterEach(() => {
 })
 
 describe("toEntrySummary memoization (M4)", () => {
-  test("returns the same preview/search text on repeated calls with the same entry instance", () => {
+  test("returns the same preview text on repeated calls with the same entry instance", () => {
     const entry = makeEntry("e1", 5)
     putInFlight(entry)
 
@@ -63,10 +62,8 @@ describe("toEntrySummary memoization (M4)", () => {
 
     expect(s1.previewText).toBe(s2.previewText)
     expect(s2.previewText).toBe(s3.previewText)
-    expect(s1.searchText).toBe(s2.searchText)
     // Sanity: the values match a direct extraction
     expect(s1.previewText).toBe(extractPreviewText(entry))
-    expect(s1.searchText).toBe(extractSearchText(entry))
   })
 
   test("updateInFlight produces a fresh entry instance — cache rebuilds for the new instance", () => {
@@ -82,7 +79,6 @@ describe("toEntrySummary memoization (M4)", () => {
     const s1 = toEntrySummary(original)
     const s2 = toEntrySummary(updated)
     expect(s1.previewText).toBe(s2.previewText)
-    expect(s1.searchText).toBe(s2.searchText)
   })
 
   test("carries the pinned flag through to the summary (producer must not drop it)", () => {

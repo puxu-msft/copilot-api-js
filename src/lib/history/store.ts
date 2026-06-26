@@ -14,6 +14,7 @@ export {
   updateEntry,
 } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
+export { searchContains, searchHistory } from "./search"
 export {
   deleteSession,
   getAgentIdFromHeaders,
@@ -24,7 +25,7 @@ export {
   registerResponseSession,
   resolveResponseSessionId,
 } from "./sessions"
-export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries, setHistoryPublisher, shutdownHistory, startPreviewBackfill } from "./state"
+export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries, setHistoryPublisher, shutdownHistory, startSearchIndexBackfill } from "./state"
 export { exportHistory, getStats } from "./stats"
 
 export type {
@@ -47,6 +48,9 @@ export type {
   RequestLifecycleState,
   RequestTransport,
   SanitizationInfo,
+  SearchResult,
+  SearchResultRow,
+  SearchSource,
   ServerToolResultContentBlock,
   ServerToolUseContentBlock,
   SessionSummary,

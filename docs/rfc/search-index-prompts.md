@@ -1,6 +1,6 @@
 # Prompts: search_index 内容寻址搜索 —— 每 phase kickoff
 
-> 配 [search-index-plan.md](search-index-plan.md)（HOW + factory-anchor）+ [search-index-delta-forest.md](search-index-delta-forest.md)（WHY + 契约）。每个 prompt **自包含**：控制者按 DAG 顺序贴给 implementer subagent（general-purpose、全量工具）；每 phase 收尾派 spec-review + quality-review subagent。
+> 配 [search-index-plan.md](search-index-plan.md)（HOW + factory-anchor）+ [search-index-content-addressed.md](search-index-content-addressed.md)（WHY + 契约）。每个 prompt **自包含**：控制者按 DAG 顺序贴给 implementer subagent（general-purpose、全量工具）；每 phase 收尾派 spec-review + quality-review subagent。
 >
 > **每个 prompt 必带的公共头**（控制者粘贴时附上）：
 > - **⛔ GIT**：可 `git add -p`/`git commit`（细粒度 pathspec、绝不 `-A`/`.`/`-am`、提交前 `git diff --cached --stat` 复核仅本次改动）；**绝不** push/改写历史/`git checkout` 他人文件/`git stash`。本仓库有并发会话——只提交你本 phase 的精确文件。
@@ -99,7 +99,7 @@
 
 **任务**：
 1. 验证下次开库 `maybeVacuumOnStartup` 回收 2.77G FTS + search_text 列空间（freelist≫25% 阈值触发）——确认触发、无需新代码;必要时 `exp/` 实测大库副本。
-2. `docs/DESIGN.md` history 行更新（FTS→search_index 内容寻址 + 归一化 + 门控 GC + prev_req_id 解耦待线程化）;`docs/history.md` 相关;**RFC 文件重命名** `search-index-delta-forest.md`→`search-index-content-addressed.md` + plan/prompts 交叉引用更新。
+2. `docs/DESIGN.md` history 行更新（FTS→search_index 内容寻址 + 归一化 + 门控 GC + prev_req_id 解耦待线程化）;`docs/history.md` 相关;**RFC 文件重命名** `search-index-content-addressed.md`→`search-index-content-addressed.md` + plan/prompts 交叉引用更新。
 3. 验收：全套件绿;backfill 可恢复 + VACUUM 回收实测背书;memory 提炼（内容寻址搜索/归一化哈希/可恢复 backfill 教训）。
 
 **commit invariant**：文档与代码同步、RFC 名正、实测背书。

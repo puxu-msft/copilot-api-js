@@ -565,62 +565,6 @@ describe("getHistory", () => {
     expect(result.entries[0].endpoint).toBe("openai-chat-completions")
   })
 
-  // Search filter is not wired through the SQLite query layer yet (preserved
-  // here as a skipped spec; behaviour-level coverage can be restored once
-  // search_text is indexed and consulted by applyWhere).
-  test.skip("search finds OpenAI tool_calls by function name", () => {
-    const e1 = insertHistoryEntry("openai-chat-completions", {
-      model: "gpt-4o",
-      messages: [
-        { role: "user", content: "search the web" },
-        {
-          role: "assistant",
-          content: "Let me search for that.",
-          tool_calls: [
-            {
-              id: "call_123",
-              type: "function",
-              function: { name: "web_search", arguments: '{"query":"test"}' },
-            },
-          ],
-        } as any,
-      ],
-    })
-    completeEntry(e1.id)
-    const e2 = insertHistoryEntry("anthropic-messages", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "hello" }],
-    })
-    completeEntry(e2.id)
-
-    const result = getHistory({ search: "web_search" })
-    expect(result.total).toBe(1)
-    expect(result.entries[0].inboundRequest.model).toBe("gpt-4o")
-  })
-
-  test.skip("search finds OpenAI tool_calls by function arguments", () => {
-    const e = insertHistoryEntry("openai-chat-completions", {
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "assistant",
-          content: "",
-          tool_calls: [
-            {
-              id: "call_456",
-              type: "function",
-              function: { name: "calculator", arguments: '{"expression":"2+2"}' },
-            },
-          ],
-        } as any,
-      ],
-    })
-    completeEntry(e.id)
-
-    const result = getHistory({ search: "expression" })
-    expect(result.total).toBe(1)
-  })
-
   test("filters by startedAt range (to)", () => {
     const now = Date.now()
     const sessionId = getCurrentSession("anthropic-messages", generateId())!

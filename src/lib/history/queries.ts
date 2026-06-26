@@ -13,12 +13,14 @@ import {
   listInFlight,
   toEntrySummary,
 } from "./in-flight"
+import { extractInboundSearchText } from "./normalize-message"
 import {
   //
   getEntryById,
   queryEntries,
   querySummaries,
 } from "./sqlite/read"
+import { formatFromEndpoint } from "./sqlite/search-index-write"
 
 function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.sessionId && entry.sessionId !== opts.sessionId) return false
@@ -51,13 +53,25 @@ function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boole
   if (opts.success === false && summary.responseSuccess !== false) return false
   if (opts.state && summary.state !== opts.state) return false
   if (opts.pid !== undefined && summary.pid !== opts.pid) return false
-  if (opts.search) {
-    const needle = opts.search.toLowerCase()
-    const preview = summary.previewText.toLowerCase()
-    const searchText = summary.searchText.toLowerCase()
-    if (!preview.includes(needle) && !searchText.includes(needle)) return false
-  }
+  // NOTE: the `search` needle is intentionally NOT matched here — for in-flight
+  // (not-yet-indexed) entries it is scanned against the normalized message text
+  // in `inFlightMatchesSearch` (full-text parity with the persisted index), not
+  // against the summary's preview. The persisted list path filters `search` in
+  // SQL (preview_text LIKE).
   return true
+}
+
+/**
+ * In-flight full-text search: scan the active entry's inbound messages with the
+ * SAME normalization projection the persisted index uses, so a streaming entry
+ * matches identically to a finalized one. No needle → always matches.
+ */
+function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined): boolean {
+  if (!needle) return true
+  const messages = entry.inboundRequest.messages ?? []
+  if (messages.length === 0) return false
+  const text = extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
+  return text.toLowerCase().includes(needle.toLowerCase())
 }
 
 export function getEntry(id: string): HistoryEntry | undefined {
@@ -74,7 +88,7 @@ export function getSummary(id: string): EntrySummary | undefined {
 export function getHistory(options: QueryOptions = {}): HistoryResult {
   const { limit = 50 } = options
 
-  const inFlightMatches = listInFlight().filter((entry) => matchesFilters(entry, options))
+  const inFlightMatches = listInFlight().filter((entry) => matchesFilters(entry, options) && inFlightMatchesSearch(entry, options.search))
   const persisted = queryEntries({ ...options, limit: 1_000_000 })
 
   const seen = new Set<string>()
@@ -110,6 +124,7 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   const { limit = 50, cursor } = options
 
   const inFlightSummaries = listInFlight()
+    .filter((entry) => inFlightMatchesSearch(entry, options.search))
     .map((entry) => toEntrySummary(entry))
     .filter((summary) => summaryMatchesFilters(summary, options))
   // Fetch a larger slice from SQLite so cursor-based slicing works.

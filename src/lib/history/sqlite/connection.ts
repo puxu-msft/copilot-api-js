@@ -9,11 +9,7 @@ import {
   createDatabase,
   type SqliteDatabase,
 } from "./driver"
-import {
-  //
-  FTS_SCHEMA_SQL,
-  SCHEMA_SQL,
-} from "./schema"
+import { SCHEMA_SQL } from "./schema"
 
 /**
  * SQLite-backed history store. The driver layer abstracts over the runtime —
@@ -78,24 +74,60 @@ export function openDatabase(dbPath: string): Database {
   // Sessions materialized aggregate table removed — operational stats are now
   // telemetry-based; drop the orphan table on existing DBs.
   db.exec("DROP TABLE IF EXISTS sessions")
+  // Decommission the legacy trigram FTS + its backing `search_text` column BEFORE
+  // any entries_v2 write below — the FTS triggers reference search_text, so a write
+  // (reclaimOrphanedActiveRows) would fire a trigger against a half-dropped schema.
+  // Must run before migrateEntriesColumns too is fine (it no longer wants search_text).
+  dropLegacyFtsAndSearchText(db)
   migrateEntriesColumns(db)
   reclaimOrphanedActiveRows(db)
   maybeVacuumOnStartup(db, dbPath)
-  // Build the search index AFTER any startup VACUUM: a full VACUUM renumbers
-  // entries_v2's implicit rowid (TEXT PK), and the external-content FTS keys on
-  // that rowid — building/rebuilding here guarantees the index reflects the
-  // post-VACUUM rowids.
-  ensureSearchIndex(db)
   // Seed planner statistics once so the (now several) candidate indexes per
   // query get chosen on selectivity, not heuristics.
   seedAnalyzeIfNeeded(db)
-  // NOTE: the one-time preview_text recompute (extractPreviewText logic bumps)
-  // is NO LONGER run here — it decompressed each entry's full lifecycle and
-  // blocked startup on a large DB. It now runs async/chunked/inbound-only in the
-  // BACKGROUND after the server is listening (start.ts → startPreviewBackfill →
-  // backfillPreviewInBackground), guarded by PRAGMA user_version.
+  // NOTE: the search_index + preview_text backfill is NO LONGER run here — it
+  // decompresses each entry's lifecycle and would block startup on a large DB. It
+  // runs async/chunked/resumable in the BACKGROUND after the server is listening
+  // (start.ts → startSearchIndexBackfill → runSearchIndexBackfill), guarded by
+  // history_meta(search_index_version).
   if (dbPath !== ":memory:") consola.info(`[history/sqlite] opened ${dbPath}`)
   return db
+}
+
+/**
+ * One-time decommission of the legacy trigram FTS (table + triggers) and its
+ * backing `search_text` column — the search path now uses the content-addressed
+ * search_index (msg_blob / req_msg / req_aux). Idempotent + never-throws:
+ *   - Skips entirely when neither the FTS table nor the column is present (fresh
+ *     DBs created post-decommission, or a DB already migrated).
+ *   - STRICT order inside one tx: DROP the triggers FIRST, then the entries_fts
+ *     table, THEN `ALTER TABLE … DROP COLUMN search_text` — the triggers reference
+ *     the column, so dropping the column while they exist throws "no such column".
+ *   - Verifies the column is actually gone afterwards (a silent BUSY would leave
+ *     it; the next open retries).
+ */
+function dropLegacyFtsAndSearchText(database: Database): void {
+  try {
+    const columns = database.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>
+    const hasSearchText = columns.some((c) => c.name === "search_text")
+    const hasFts = Boolean(database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'entries_fts'").get())
+    if (!hasSearchText && !hasFts) return
+
+    const tx = database.transaction(() => {
+      database.exec("DROP TRIGGER IF EXISTS entries_v2_fts_ai")
+      database.exec("DROP TRIGGER IF EXISTS entries_v2_fts_ad")
+      database.exec("DROP TRIGGER IF EXISTS entries_v2_fts_au")
+      database.exec("DROP TABLE IF EXISTS entries_fts")
+      if (hasSearchText) database.exec("ALTER TABLE entries_v2 DROP COLUMN search_text")
+    })
+    tx()
+
+    const stillHas = (database.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>).some((c) => c.name === "search_text")
+    if (stillHas) consola.warn("[history/sqlite] search_text column still present after DROP (locked?) — will retry on next open")
+    else consola.info("[history/sqlite] decommissioned legacy FTS + search_text column")
+  } catch (err: unknown) {
+    consola.warn("[history/sqlite] FTS/search_text decommission skipped (error — startup continues)", err)
+  }
 }
 
 /** Read a single-value PRAGMA as an integer (0 if absent / non-numeric). */
@@ -140,10 +172,6 @@ function maybeVacuumOnStartup(database: Database, dbPath: string): void {
     database.exec("PRAGMA auto_vacuum = INCREMENTAL;") // activated by the VACUUM below
     database.exec("VACUUM;")
     const afterBytes = pragmaInt(database, "page_count") * pageSize
-    // VACUUM renumbers entries_v2's implicit rowid (TEXT PK), invalidating the
-    // external-content FTS index which keys on rowid. Rebuild it if it already
-    // exists (a first-ever open builds it later in ensureSearchIndex, post-VACUUM).
-    rebuildSearchIndexIfPresent(database)
     consola.info(
       `[history/sqlite] startup VACUUM reclaimed ${((totalBytes - afterBytes) / 1048576).toFixed(0)}MB (${(totalBytes / 1048576).toFixed(0)}MB → ${(afterBytes / 1048576).toFixed(0)}MB)`,
     )
@@ -165,49 +193,6 @@ export function incrementalVacuum(database: Database): void {
   } catch (err: unknown) {
     consola.warn("[history/sqlite] incremental_vacuum failed", err)
   }
-}
-
-/**
- * Create the trigram FTS5 search index (table + sync triggers) and, on a
- * database that predates it, backfill from the existing rows. Must run AFTER
- * migrateEntriesColumns (the triggers reference search_text / preview_text) and
- * AFTER any startup VACUUM (rowid coupling — see schema.ts).
- *
- * Backfill gate: whether the `entries_fts` TABLE existed before this open — NOT
- * `SELECT COUNT(*) FROM entries_fts`. For an external-content FTS table that
- * COUNT reads THROUGH to the content table (entries_v2), so it returns the entry
- * count even when the index itself is empty — gating on it would skip the
- * one-time backfill on every upgrade and leave search returning nothing for all
- * pre-existing rows. A freshly-created index starts empty (triggers only
- * populate FUTURE writes), so existing rows need a one-time 'rebuild'; once the
- * table exists from a prior open the triggers have kept it in sync. Create +
- * backfill run in one transaction so a crash mid-backfill rolls back to "table
- * absent" and the next open retries (instead of stranding a half-built index).
- */
-function ensureSearchIndex(database: Database): void {
-  // Truthy check — NOT `!== undefined`: bun:sqlite's `.get()` returns `null` for
-  // no match while node:sqlite returns `undefined`. A strict `!== undefined`
-  // would read Bun's `null` as "exists" and wrongly skip the backfill forever;
-  // `Boolean(row)` is falsy for both sentinels.
-  const existed = Boolean(database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'entries_fts'").get())
-  if (existed) {
-    // Already built on a prior open; ensure triggers exist (defensive, IF NOT
-    // EXISTS) without a backfill — the triggers have maintained the index.
-    database.exec(FTS_SCHEMA_SQL)
-    return
-  }
-  const tx = database.transaction(() => {
-    database.exec(FTS_SCHEMA_SQL)
-    const { n } = database.prepare("SELECT COUNT(*) AS n FROM entries_v2").get() as { n: number }
-    if (n > 0) database.exec("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
-  })
-  tx()
-}
-
-/** Rebuild the external-content FTS index from entries_v2 — only if it exists. Used after a rowid-renumbering VACUUM. */
-function rebuildSearchIndexIfPresent(database: Database): void {
-  const row = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'entries_fts'").get() as { name: string } | undefined
-  if (row) database.exec("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
 }
 
 /**
@@ -251,10 +236,8 @@ export function runOptimize(database: Database): void {
 function reclaimOrphanedActiveRows(database: Database): void {
   const { pid, bootTime } = getProcessIdentity()
   const where = "status IN ('pending','executing','streaming') AND NOT (pid = ? AND boot_time = ?)"
-  // Count directly rather than via `.run().changes`: once the entries_fts
-  // triggers exist, bun:sqlite folds their trigger-side writes into `changes`.
-  // (This runs before ensureSearchIndex today, but counting keeps the log
-  // accurate regardless of the open-sequence ordering.)
+  // Count directly rather than via `.run().changes` (kept defensive: any future
+  // AFTER-write trigger on entries_v2 would otherwise fold its writes into `changes`).
   const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(pid, bootTime) as { n: number }
   if (n === 0) return
   // Backfill a failure reason (richest-data-flow) so the orphaned row surfaces WHY in the
@@ -274,8 +257,12 @@ function reclaimOrphanedActiveRows(database: Database): void {
  * EXISTS for indexes.
  *
  * Columns covered:
- *   - summary columns (message_count, preview_text, search_text)
+ *   - summary columns (message_count, preview_text)
  *   - process-identity columns (pid, boot_time, git_sha)
+ *
+ * NOTE: `search_text` is deliberately NOT in `wanted` — the legacy FTS column is
+ * decommissioned (dropLegacyFtsAndSearchText). Re-adding it here would resurrect
+ * the column on every open.
  *
  * The pid index is created HERE rather than in SCHEMA_SQL: on a pre-pid
  * database, openDatabase runs SCHEMA_SQL before this migration, so an index on
@@ -290,7 +277,6 @@ function migrateEntriesColumns(database: Database): void {
   const wanted: Array<{ name: string; type: string }> = [
     { name: "message_count", type: "INTEGER" },
     { name: "preview_text", type: "TEXT" },
-    { name: "search_text", type: "TEXT" },
     { name: "pid", type: "INTEGER" },
     { name: "boot_time", type: "INTEGER" },
     { name: "git_sha", type: "TEXT" },
@@ -305,6 +291,12 @@ function migrateEntriesColumns(database: Database): void {
     { name: "request_bytes", type: "INTEGER" },
     { name: "response_bytes", type: "INTEGER" },
     { name: "multiplier", type: "REAL" },
+    // Best-effort conversation lineage (search_index RFC): the most-recent prior
+    // request in the same (session, agent) group. NOT in CREATE TABLE entries_v2
+    // — added here so fresh AND existing DBs get it via this single ALTER path.
+    // No FK (a dangling ref when the predecessor is reaped is harmless — threading
+    // UI handles it); deliberately decoupled from search (never read by search).
+    { name: "prev_req_id", type: "TEXT" },
   ]
 
   for (const col of wanted) {

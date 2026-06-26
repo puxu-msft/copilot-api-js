@@ -21,6 +21,7 @@ const navLinks = [
   { path: "/config", label: "Config" },
   { path: "/models", label: "Models" },
   { path: "/activity", label: "Activity" },
+  { path: "/search", label: "Search" },
 ]
 
 const activeTab = computed(() => {

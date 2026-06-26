@@ -21,7 +21,7 @@ import {
 } from "@/utils/activity-helpers"
 
 function entry(over: Partial<EntrySummary> = {}): EntrySummary {
-  return { id: "e", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "", searchText: "", ...over }
+  return { id: "e", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "", ...over }
 }
 
 describe("requestState", () => {

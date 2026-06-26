@@ -43,9 +43,9 @@ function fullEntry(id: string): HistoryEntry {
   } as HistoryEntry
 }
 const summaries: Array<EntrySummary> = [
-  { id: "req_a", startedAt: 3, endpoint: "anthropic-messages", messageCount: 1, previewText: "", searchText: "" },
-  { id: "req_b", startedAt: 2, endpoint: "anthropic-messages", messageCount: 1, previewText: "", searchText: "" },
-  { id: "req_c", startedAt: 1, endpoint: "anthropic-messages", messageCount: 1, previewText: "", searchText: "" },
+  { id: "req_a", startedAt: 3, endpoint: "anthropic-messages", messageCount: 1, previewText: "" },
+  { id: "req_b", startedAt: 2, endpoint: "anthropic-messages", messageCount: 1, previewText: "" },
+  { id: "req_c", startedAt: 1, endpoint: "anthropic-messages", messageCount: 1, previewText: "" },
 ]
 
 // Mock the API (real store + real component tree exercise the actual integration).

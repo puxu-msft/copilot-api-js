@@ -22,12 +22,16 @@ import {
   isDatabaseOpen,
   openDatabase,
 } from "./sqlite/connection"
-import { backfillPreviewInBackground } from "./sqlite/preview-backfill"
 import {
   //
   startReaper,
   stopReaper,
 } from "./sqlite/reaper"
+import {
+  //
+  runSearchIndexBackfill,
+  stopSearchIndexBackfill,
+} from "./sqlite/search-index-backfill"
 
 let enabled = false
 let unsubscribeHistoryLimit: (() => void) | undefined
@@ -82,6 +86,11 @@ export function shutdownHistory(): void {
   unsubscribeHistoryLimit?.()
   unsubscribeHistoryLimit = undefined
   stopReaper()
+  // Signal the background backfill to stop BEFORE closing the DB (it runs in
+  // graceful Phase 1, long before the Phase-3 abort signal exists — a post-close
+  // prepare would throw on a dead handle). The loop saves its cursor per batch, so
+  // whatever it has not yet reached resumes on the next start.
+  stopSearchIndexBackfill()
   // Last-chance drain BEFORE closing the DB: the reaper is now stopped, so each
   // still-pending deferred finalize that fails again will tombstone (its
   // `isReaperRunning()` gate is now false) instead of re-retaining — nothing
@@ -96,15 +105,15 @@ export function setHistoryMaxEntries(): void {
 }
 
 /**
- * Fire-and-forget the one-time `preview_text` recompute in the BACKGROUND. Called
- * once from start.ts AFTER the server is listening so it never blocks startup —
- * `backfillPreviewInBackground` is async/chunked/inbound-only and yields between
- * batches. No-op when history is disabled / the DB is not open. Returns
+ * Fire-and-forget the recoverable search_index + preview backfill in the
+ * BACKGROUND. Called once from start.ts AFTER the server is listening so it never
+ * blocks startup — `runSearchIndexBackfill` is async/chunked/resumable and yields
+ * between batches. No-op when history is disabled / the DB is not open. Returns
  * immediately; the work trickles in the background and never throws (it catches
- * internally, and this `.catch` is a belt-and-suspenders guard against an
+ * internally; this `.catch` is a belt-and-suspenders guard against an
  * unhandledRejection crashing the process).
  */
-export function startPreviewBackfill(): void {
+export function startSearchIndexBackfill(): void {
   if (!enabled || !isDatabaseOpen()) return
-  void backfillPreviewInBackground(getDatabase()).catch((err: unknown) => consola.warn("[history] preview backfill failed", err))
+  void runSearchIndexBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] search-index backfill failed", err))
 }

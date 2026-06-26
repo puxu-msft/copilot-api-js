@@ -29,6 +29,11 @@ export const routes: Array<RouteRecordRaw> = [
     component: () => import("@/pages/vuetify/VDetailPage.vue"),
   },
   {
+    path: "/search",
+    name: "search",
+    component: () => import("@/pages/vuetify/VSearchPage.vue"),
+  },
+  {
     path: "/config",
     name: "config",
     component: () => import("@/pages/vuetify/VConfigPage.vue"),

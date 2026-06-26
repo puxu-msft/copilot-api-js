@@ -8,26 +8,22 @@ import type {
 const entries = new Map<string, HistoryEntry>()
 
 /**
- * Memoized preview/search text per HistoryEntry instance.
+ * Memoized preview text per HistoryEntry instance.
  *
- * `extractPreviewText` / `extractSearchText` iterate the entire messages array
- * and every content block; for long conversations with frequent SSE-driven
- * `updateInFlight` calls (attempt count, queueWaitMs, pipelineInfo changes),
- * the cost is O(updates × messages × blocks) and the result was previously
- * recomputed on every WebSocket push. Cache keyed by HistoryEntry identity:
- * each `putInFlight` / `updateInFlight` produces a fresh entry object (due to
- * `{ ...existing, ...patch }`), so the WeakMap entry is naturally invalidated
- * — we compute once per entry instance and never again.
+ * `extractPreviewText` iterates the messages array and content blocks; for long
+ * conversations with frequent SSE-driven `updateInFlight` calls the cost is
+ * O(updates × messages × blocks) and the result was previously recomputed on
+ * every WebSocket push. Cache keyed by HistoryEntry identity: each `putInFlight`
+ * / `updateInFlight` produces a fresh entry object (due to `{ ...existing,
+ * ...patch }`), so the WeakMap entry is naturally invalidated — we compute once
+ * per entry instance and never again.
  */
-const summaryTextCache = new WeakMap<HistoryEntry, { preview: string; search: string }>()
+const summaryTextCache = new WeakMap<HistoryEntry, { preview: string }>()
 
-function getCachedSummaryText(entry: HistoryEntry): { preview: string; search: string } {
+function getCachedSummaryText(entry: HistoryEntry): { preview: string } {
   const hit = summaryTextCache.get(entry)
   if (hit) return hit
-  const computed = {
-    preview: extractPreviewText(entry),
-    search: extractSearchText(entry),
-  }
+  const computed = { preview: extractPreviewText(entry) }
   summaryTextCache.set(entry, computed)
   return computed
 }
@@ -114,12 +110,11 @@ function summarizeMessage(msg: MessageContent): string {
  * most recent non-empty summary so the list stays readable. "" only when
  * nothing is summarizable.
  *
- * CONTRACT COUPLING: the `Pick<…, "inboundRequest">` param is load-bearing. The
- * preview backfill (`sqlite/preview-backfill.ts`) reconstructs ONLY
- * `inboundRequest` (inbound-only, for startup performance — it never decompresses
- * sse_events/other stages). If this function is ever changed to read any field
- * beyond `inboundRequest.messages`, the backfill MUST be updated to load that data
- * too, else it silently computes wrong previews on historical rows.
+ * Reads ONLY `inboundRequest.messages`. The `Pick<…, "inboundRequest">` param
+ * keeps that contract explicit. (The search_index backfill —
+ * `sqlite/search-index-backfill.ts` — decodes the FULL entry via
+ * `assembleFullEntry` to build the index, so preview recompute rides along with
+ * the full object available; no special inbound-only loading is needed there.)
  */
 export function extractPreviewText(entry: Pick<HistoryEntry, "inboundRequest">): string {
   const messages = entry.inboundRequest.messages
@@ -131,48 +126,6 @@ export function extractPreviewText(entry: Pick<HistoryEntry, "inboundRequest">):
   }
 
   return ""
-}
-
-/** Build a searchable text blob from request/response fields */
-export function extractSearchText(entry: HistoryEntry): string {
-  const parts: Array<string> = []
-  if (entry.inboundRequest.model) parts.push(entry.inboundRequest.model)
-  if (entry.outboundResponse?.model) parts.push(entry.outboundResponse.model)
-  parts.push(entry.endpoint)
-  if (entry.outboundResponse?.error) parts.push(entry.outboundResponse.error)
-
-  const system = entry.inboundRequest.system
-  if (typeof system === "string") parts.push(system)
-  else if (Array.isArray(system)) {
-    for (const block of system) {
-      if (typeof block === "object" && "text" in block && typeof block.text === "string") {
-        parts.push(block.text)
-      }
-    }
-  }
-
-  const messages = entry.inboundRequest.messages ?? []
-  for (const msg of messages) {
-    if (typeof msg.content === "string") {
-      parts.push(msg.content)
-    } else if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (!block || typeof block !== "object") continue
-        const b = block as Record<string, unknown>
-        if (b.type === "text" && typeof b.text === "string") parts.push(b.text)
-        else if (b.type === "tool_use" && typeof b.name === "string") parts.push(b.name)
-        else if (b.type === "tool_result" && typeof b.content === "string") parts.push(b.content)
-      }
-    }
-    const toolCalls = (msg as { tool_calls?: Array<{ function?: { name?: string } }> }).tool_calls
-    if (Array.isArray(toolCalls)) {
-      for (const tc of toolCalls) {
-        if (tc.function?.name) parts.push(tc.function.name)
-      }
-    }
-  }
-
-  return parts.join(" ")
 }
 
 /**
@@ -210,6 +163,5 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     responseBytes: entry.responseBytes,
     multiplier: entry.multiplier,
     previewText: cached.preview,
-    searchText: cached.search,
   }
 }

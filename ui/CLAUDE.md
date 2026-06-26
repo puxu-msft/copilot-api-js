@@ -105,6 +105,7 @@ Hash 路由（`createWebHashHistory`），所有路由懒加载：
 | `/dashboard` | VDashboardPage — 运维看板 |
 | `/activity` | VActivityPage — 请求历史列表 |
 | `/activity/:id` | VDetailPage — 请求详情 |
+| `/search` | VSearchPage — 内容寻址全文搜索（5 源单选切换，消费 `/history/api/search` + `/search/contains`；与 `/activity` 列表的轻量 preview 快筛分离） |
 | `/config` | VConfigPage — config.yaml 编辑器 |
 | `/models` | VModelsPage — 模型目录 |
 

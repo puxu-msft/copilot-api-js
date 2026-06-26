@@ -1,6 +1,6 @@
 # Plan: search_index 内容寻址搜索 —— 实现交接稿
 
-> 配 [search-index-delta-forest.md](search-index-delta-forest.md)（RFC v4，设计/WHY/契约）。本文是 **HOW**：phase DAG + factory-anchor 表（精确文件/函数/符号增删改）+ 命名常量 + 每 phase commit invariant + 验收。执行用 subagent-driven-development（每 phase 一 implementer + spec/quality review）。
+> 配 [search-index-content-addressed.md](search-index-content-addressed.md)（RFC v4，设计/WHY/契约）。本文是 **HOW**：phase DAG + factory-anchor 表（精确文件/函数/符号增删改）+ 命名常量 + 每 phase commit invariant + 验收。执行用 subagent-driven-development（每 phase 一 implementer + spec/quality review）。
 > 硬约束贯穿全程：bun-first（`bun run typecheck`/`test:backend`，非 npm）、不分号、严格 TS 无 any、`eslint --fix`、细粒度 pathspec 提交、subagent 全量工具 + 显式裁判轴（长远正确+完整，非 ROI）。
 
 ## Phase DAG

@@ -363,7 +363,7 @@ describe("filter setters", () => {
     mockFetchEntries.mockImplementationOnce(() => stalePromise)
     mockFetchEntries.mockImplementationOnce(() =>
       Promise.resolve({
-        entries: [{ id: "NEW", startedAt: 1, endpoint: "anthropic-messages", messageCount: 0, previewText: "", searchText: "" }],
+        entries: [{ id: "NEW", startedAt: 1, endpoint: "anthropic-messages", messageCount: 0, previewText: "" }],
         total: 1,
         nextCursor: null,
         prevCursor: null,
@@ -375,7 +375,7 @@ describe("filter setters", () => {
     expect(store.entries.map((e) => e.id)).toEqual(["NEW"])
     // Now the stale seq=1 resolves LATE — it must be discarded, not applied.
     resolveStale?.({
-      entries: [{ id: "OLD", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "", searchText: "" }],
+      entries: [{ id: "OLD", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "" }],
       total: 99,
       nextCursor: null,
       prevCursor: null,

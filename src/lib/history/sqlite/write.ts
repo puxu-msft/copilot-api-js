@@ -7,6 +7,11 @@ import { compress } from "./compression"
 import { getDatabase } from "./connection"
 import {
   //
+  buildSearchIndexForEntry,
+  persistSearchIndex,
+} from "./search-index-write"
+import {
+  //
   type EntryRow,
   partitionStagesForWrite,
   serializeHeadEntry,
@@ -25,11 +30,11 @@ INSERT INTO entries_v2 (
   model, endpoint, transport, status,
   input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
   stop_reason, error_message,
-  message_count, preview_text, search_text,
+  message_count, preview_text,
   pid, boot_time, git_sha,
   request_bytes, response_bytes, multiplier,
   blob_gz
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   session_id = excluded.session_id, agent_id = excluded.agent_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
   duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint,
@@ -38,7 +43,7 @@ ON CONFLICT(id) DO UPDATE SET
   cache_read = excluded.cache_read, cache_creation = excluded.cache_creation,
   reasoning_tokens = excluded.reasoning_tokens, stop_reason = excluded.stop_reason,
   error_message = excluded.error_message, message_count = excluded.message_count,
-  preview_text = excluded.preview_text, search_text = excluded.search_text,
+  preview_text = excluded.preview_text,
   pid = excluded.pid, boot_time = excluded.boot_time, git_sha = excluded.git_sha,
   request_bytes = excluded.request_bytes, response_bytes = excluded.response_bytes, multiplier = excluded.multiplier,
   blob_gz = excluded.blob_gz
@@ -72,7 +77,6 @@ function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void 
     row.error_message,
     row.message_count,
     row.preview_text,
-    row.search_text,
     row.pid,
     row.boot_time,
     row.git_sha,
@@ -96,6 +100,9 @@ function runStageInsert(db: ReturnType<typeof getDatabase>, entryId: string, sta
 export function insertCompletedEntry(entry: HistoryEntry): void {
   const db = getDatabase()
   const { row, stages } = serializeHeadEntry(entry)
+  // Build the search index OUTSIDE the tx (normalize/hash/jsdiff are CPU-heavy);
+  // a malformed-shape throw degrades to an empty index without aborting finalize.
+  const built = buildSearchIndexForEntry(entry)
   const now = Date.now()
 
   const tx = db.transaction(() => {
@@ -106,6 +113,9 @@ export function insertCompletedEntry(entry: HistoryEntry): void {
     const { groupRow, rest } = partitionStagesForWrite(stages)
     for (const stage of rest) runStageInsert(db, row.id, stage, now)
     if (groupRow) runStageInsert(db, row.id, groupRow, now)
+    // Build the content-addressed search index, atomic with head/stage. This is
+    // now the SOLE search write path — the legacy search_text/FTS is decommissioned.
+    persistSearchIndex(db, row.id, built)
   })
   tx()
 }
@@ -142,10 +152,9 @@ export function upsertStageRow(entryId: string, stage: StagePayload): void {
  * column; INSERT_ENTRY_SQL deliberately omits it, so a head re-upsert never
  * resets a pinned row.
  *
- * Existence is read via a SELECT, NOT `.run().changes`: the entries_fts AFTER
- * UPDATE trigger writes trigram rows that bun:sqlite folds into `changes`, which
- * would misreport whether the head row matched (see
- * reference-bun-sqlite-get-null-and-trigger-changes).
+ * Existence is read via a SELECT, NOT `.run().changes`: an UPDATE's `changes`
+ * count can be inflated by any AFTER-write trigger/cascade, which would misreport
+ * whether the head row matched (see reference-bun-sqlite-get-null-and-trigger-changes).
  */
 export function setEntryPinned(id: string, pinned: boolean): boolean {
   const db = getDatabase()
@@ -154,6 +163,15 @@ export function setEntryPinned(id: string, pinned: boolean): boolean {
   db.prepare("UPDATE entries_v2 SET pinned = ? WHERE id = ?").run(pinned ? 1 : 0, id)
   return true
 }
+
+/**
+ * Reclaim orphaned `msg_blob` rows — content-addressed blobs no longer referenced
+ * by ANY `req_msg` (no FK, so CASCADE can't remove them). MUST run after a delete
+ * that removed req_msg rows. `req_msg` / `req_aux` themselves CASCADE from
+ * entries_v2 automatically (FK ON DELETE CASCADE). Shared by deleteSession + the
+ * reaper (RFC C3: GC must hook EVERY delete site, else freed messages leak forever).
+ */
+export const GC_ORPHAN_MSG_BLOB_SQL = "DELETE FROM msg_blob WHERE NOT EXISTS (SELECT 1 FROM req_msg WHERE req_msg.hash = msg_blob.hash)"
 
 export function deleteSession(sessionId: string): number {
   const db = getDatabase()
@@ -165,6 +183,8 @@ export function deleteSession(sessionId: string): number {
     const { n } = db.prepare("SELECT COUNT(*) AS n FROM entries_v2 WHERE session_id = ?").get(sessionId) as { n: number }
     deleted = n
     db.prepare("DELETE FROM entries_v2 WHERE session_id = ?").run(sessionId)
+    // req_msg/req_aux cascade-removed with the entries; sweep the now-orphaned blobs.
+    if (deleted > 0) db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
   })
   tx()
   return deleted
@@ -173,12 +193,15 @@ export function deleteSession(sessionId: string): number {
 export function clearAllEntries(): void {
   const db = getDatabase()
   const tx = db.transaction(() => {
-    // entry_stages cascades from entries_v2 on row delete, but a bare
-    // `DELETE FROM entries_v2` (no WHERE) still fires per-row cascade; the
-    // explicit delete is belt-and-suspenders and clearer intent.
+    // entry_stages / req_msg / req_aux cascade from entries_v2 on row delete, but a
+    // bare `DELETE FROM entries_v2` (no WHERE) still fires per-row cascade; the
+    // explicit deletes are belt-and-suspenders and clearer intent. Clearing ALL
+    // entries orphans EVERY msg_blob, so a bare DELETE beats a NOT EXISTS scan.
     db.prepare("DELETE FROM entry_stages").run()
     db.prepare("DELETE FROM entries_v2").run()
     db.prepare("DELETE FROM response_sessions").run()
+    db.prepare("DELETE FROM msg_blob").run()
+    db.prepare("DELETE FROM req_aux").run()
   })
   tx()
 }

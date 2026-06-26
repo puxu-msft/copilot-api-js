@@ -64,7 +64,6 @@ export function createHistoryUiScenario(): HistoryUiScenario {
     },
     durationMs: 4500,
     previewText: "Summarize the build failures and recommend the next fix.",
-    searchText: "summarize build failures next fix",
   }
 
   const addedSummary = {
@@ -91,7 +90,6 @@ export function createHistoryUiScenario(): HistoryUiScenario {
     },
     durationMs: 620,
     previewText: "Fresh websocket activity arrived after the initial page load.",
-    searchText: "fresh websocket activity arrived",
   }
 
   const primaryEntry = {
