@@ -27,6 +27,7 @@ import type {
   EndpointType,
   HistoryEntry,
   MessageContent,
+  SearchSource,
   SseEventRecord,
 } from "~/lib/history/types"
 
@@ -50,10 +51,7 @@ import type { Database } from "./connection"
 /** Separator between header legs / entries in a concatenated `req_aux` text. */
 export const HEADER_SEP = "\x1e"
 
-/** The five search facets (RFC decision 4). `inbound` is content-addressed; the rest are flat `req_aux`. */
-export type SearchSource = "inbound" | "rewrites-req" | "rewrites-resp" | "req-headers" | "resp-headers"
-
-/** The four non-inbound facets stored flat in `req_aux`. */
+/** The five search facets (RFC decision 4). `SearchSource` is the single-source-of-truth in `~/lib/history/types`. `inbound` is content-addressed; the rest are flat `req_aux`. */
 export type AuxSource = Exclude<SearchSource, "inbound">
 
 /** One content-addressed inbound message reference. */
