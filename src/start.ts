@@ -358,6 +358,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // serving. A failure is a HARD refuse-to-start: schema DDL is foundational, so
   // serving on a half-migrated schema is worse than not starting (mirrors the
   // config-parse abort above; deliberately NOT left to global unhandledRejection).
+  // initHistory also armed the reaper, but that is only an unref'd setInterval
+  // (default 600s, no synchronous schema work) so its first tick lands long after
+  // migrations complete — the ordering is benign even when 001+ is non-empty.
   try {
     await applyForwardMigrations(getDatabase())
   } catch (err: unknown) {

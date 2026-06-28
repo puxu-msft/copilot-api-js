@@ -37,7 +37,9 @@ export const MIGRATIONS_RUN_KEY = "schema_migrations"
 
 /** Read one history_meta value (null when absent). */
 export function getMeta(db: Database, key: string): string | null {
-  const row = db.prepare("SELECT value FROM history_meta WHERE key = ?").get(key) as { value: string | null } | null
+  // .get() returns null on bun:sqlite / undefined on node:sqlite when no row
+  // matches; the `row ?` below treats both falsy results as "absent".
+  const row = db.prepare("SELECT value FROM history_meta WHERE key = ?").get(key) as { value: string | null } | null | undefined
   return row ? row.value : null
 }
 

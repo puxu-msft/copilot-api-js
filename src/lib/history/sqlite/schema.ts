@@ -1,3 +1,13 @@
+/**
+ * Single-source DDL for the `history_meta` key/value table. Shared by SCHEMA_SQL
+ * (the openDatabase floor) and HistoryMetaStorage's bare-DB guard (the migration
+ * runner) so the two definitions can never drift apart.
+ */
+export const HISTORY_META_DDL = `CREATE TABLE IF NOT EXISTS history_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+)`
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entries_v2 (
   id               TEXT PRIMARY KEY,
@@ -106,8 +116,5 @@ CREATE TABLE IF NOT EXISTS req_aux (
 );
 CREATE INDEX IF NOT EXISTS idx_req_aux_src ON req_aux(source);
 -- history_meta: migration guard (search_index_version) + backfill cursor.
-CREATE TABLE IF NOT EXISTS history_meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT
-);
+${HISTORY_META_DDL};
 `

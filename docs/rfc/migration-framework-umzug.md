@@ -1,8 +1,9 @@
 # RFC: 历史 schema 迁移框架 —— 采纳 Umzug(有序 run-once 迁移账本）
 
-> Status: **DRAFT**（设计阶段，未实现；git 即版本线）。
+> Status: **LANDED**（2026-06-28 实现，P0–P4 全交付；权威落地态见 docs/DESIGN.md `src/lib/history/` 行的 "Umzug forward-runner（hybrid）" 段）。
 > 决策经 2 路对抗 subagent 实证 + operator 拍板：**弃 drizzle-kit、取 Umzug**。基础经**亲手实测**坐实（`exp/umzug-bun-spike/`，非信文档——drizzle 选型时曾因信 beta 文档误判）。
 > 立意（operator）：这是**架构级模块化**改进——把"schema 演进"从散落在 `openDatabase` 的命令式 reconcile 逻辑，提升为**一等的、有序的、有账本的迁移模块**。
+> 落地态（hybrid，对抗 review 修正后）：openDatabase 地板（conceptual 000）不动 + 独立 async `applyForwardMigrations`（001+ 前向，`HistoryMetaStorage` over `history_meta(schema_migrations)`），干净避开初稿 primary 的 async ripple + chicken-egg。`MIGRATIONS` 当前空（地板=当前 schema）。
 
 ## 为什么是 Umzug（决策记录）
 
@@ -88,17 +89,18 @@ await applyForwardMigrations(getDatabase())   // Umzug 只跑 001+ 前向迁移;
 - 版本可内省(`umzug.executed()`/`pending()`),不再靠读源码行序推断顺序。
 - 为 entries_v3 大重构铺好框架:DDL 一条迁移、数据一个后台 job、都在账本里。
 
-## 实现 phase（hybrid,review 修正后）
+## 实现 phase（hybrid,review 修正后）—— **全 LANDED（2026-06-28）**
 
-- **P0 spike(扩展现有 exp/)**:bun:sqlite **已验**;补 **node:sqlite** 同样实测;`find node_modules -name binding.gyp` 仍空。
-- **P1**:`HistoryMetaStorage`（UmzugStorage over history_meta,**构造/首用 `CREATE TABLE IF NOT EXISTS history_meta` + `executed()` 表缺返 `[]`**——修 chicken-egg）+ `migrations/index.ts`(初始 **001+ 为空数组**、地板在 openDatabase 不动)+ `applyForwardMigrations(db)`(new Umzug + up()、**no-any `MigrationFn<SqliteDatabase>`** + **consola logger 适配器**)+ 单测(隔离:裸 `:memory:` 建地板 schema 后 applyForwardMigrations no-op + run-once + storage round-trip)。
-- **P2**:接入——start.ts 的 async runServer 内、`initHistory(true)` 之后、`startServer` 之前加 `await applyForwardMigrations(getDatabase())` + **targeted try/catch → 清晰错误 + `process.exit(1)`**(schema 失败硬阻断,镜像 config-parse abort)。**openDatabase/initHistory/测试全不动**(地板照建全 schema)。
-- **P3**:双 runtime 端到端实测(node:sqlite 腿);单写者假设文档化(Umzug 无并发锁、未来非幂等 001+ DDL 在重叠重启下无保护);**不写 `down`**(forward-only,YAGNI);`wanted` 保留作内部 idempotent-ADD-COLUMN primitive。
-- **P4**:doc-sync;增量收编 `user_version`/版本标志。
+- **P0 spike(扩展现有 exp/)** ✅ `46df204`:bun:sqlite **已验**;补 **node:sqlite** 实测(`exp/umzug-bun-spike/spike-node.ts`,故意不预建 history_meta→**复现** chicken-egg 再证 guard 规避);`find node_modules -name binding.gyp` 仍空。
+- **P1** ✅ `9f67f5d`:`HistoryMetaStorage`(UmzugStorage over history_meta,构造 `CREATE TABLE IF NOT EXISTS history_meta` + `executed()` 表缺返 `[]`——修 chicken-egg)+ `migrations/index.ts`(`MIGRATIONS` 初始空数组、地板在 openDatabase 不动)+ `applyForwardMigrations(db)`(new Umzug + up()、no-any `MigrationFn<SqliteDatabase>` + consola logger 适配器)+ 单测 `tests/history/sqlite/migrations.it.test.ts`(裸 `:memory:`、5 用例)。
+- **P2** ✅ `86f2e43`:接入——start.ts 的 async runServer 内、`initHistory(true)` 之后、`startServer` 之前加 `await applyForwardMigrations(getDatabase())` + targeted try/catch → `consola.error` + `process.exit(1)`(schema 失败硬阻断,镜像 config-parse abort)。openDatabase/initHistory/测试全不动,全套件 3176 pass。
+- **P3** ✅ `816190c`:node:sqlite **端到端实测真实生产模块**(`exp/umzug-bun-spike/e2e-node.ts`,经 `bun build --target node` bundle 后真 Node 跑);单写者假设文档化(`run.ts` JSDoc + 本 OQ-D);**不写 `down`**(forward-only,YAGNI);`wanted` 保留作内部 idempotent-ADD-COLUMN primitive。
+- **P4** ✅:doc-sync(本文 + DESIGN.md `src/lib/history/` 行 + memory);`user_version`/版本标志增量收编记 OQ-C(非一次性)。
 
 ## Open Questions
 
 - **OQ-A**:首条真实 001+ 迁移加列时——复用 `migrateEntriesColumns` 的 `wanted` 幂等 primitive,还是独立有序迁移?倾向独立有序(可内省),但 `wanted` primitive 保留可用。
 - **OQ-B**:~~schema 迁移失败策略~~——**已定:硬阻断 + targeted 清晰错误 + `process.exit(1)`**(DDL 是基础;与数据 backfill never-throw 相反)。
-- **OQ-C**:`user_version`(preview-logic gen)增量收编进 history_meta 账本(不阻塞本 RFC)。
+- **OQ-C(landed-review 复核,已 moot)**:`user_version`/散落版本标志收编——**经 grep 实证无需做、且天真"收编"反而是错的**。(a) `PRAGMA user_version` 当前**零 live 读写**(仅 `search-index-backfill.ts` 注释提及"故意不读 user_version"),旧 preview-backfill 早已迁到 `history_meta(search_index_version)`,迁移已发生、无残留可收编。(b) 余下标志(`search_index_version`/`..._backfill_cursor`/`..._dedup_ratio`)**已在 `history_meta`** 统一 KV 表内,且是**数据-backfill** 标志(never-throw、resumable、监听后后台)——与 `schema_migrations` 账本的 **schema-硬阻断** 失败策略**正相反**;把它们折进 Umzug forward-runner 会**conflate 这两个对立失败策略**(本 RFC 刻意区分的 OQ-B 边界),故**应保持分离**。结论:OQ-C 无实现工作。
 - **OQ-D(review 补)**:并发迁移——首批全幂等故安全;未来非幂等 001+ DDL 是否接 Umzug `FileLocker` vs 文档化"单写者假设"。倾向后者(本项目单进程为主,重叠重启是边缘)。
+- **OQ-E(landed-review 补,已解)**:**partial-DDL wedge**——Umzug 不把 `up` 包事务、仅 resolve 后记账,SQLite 未显式开事务时每条 DDL 自动 commit,故多语句迁移中途抛→前缀已 commit 但未记账→重启从头重跑撞「already exists」永久卡死。"硬阻断 rethrow"(OQ-B)挡不住此 wedge。**已解:`sqlMigration(name, body)`** 把 body 包进 driver `transaction()`(SQLite 事务化 DDL,bun native + node:sqlite 手搓 BEGIN/COMMIT/ROLLBACK 两 runtime 实测 rollback 一致)使多语句 all-or-nothing、可重试;非事务型迁移须逐语句 re-entrant。教训:"idempotent up"不够,须"partial-application 后可重入"。

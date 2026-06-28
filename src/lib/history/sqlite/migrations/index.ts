@@ -15,8 +15,9 @@ import type { SqliteDatabase } from "../driver"
  * A single forward schema migration.
  *
  * `up` is async because Umzug's `MigrationFn` returns `Promise<unknown>`;
- * synchronous DDL is fine inside an async body:
- *   `{ name: "001-x", up: async ({ context }) => { context.exec("ALTER …") } }`
+ * synchronous DDL is fine inside an async body. PREFER `sqlMigration` below over
+ * a hand-written `up` for DDL — it wraps the body in a transaction so a
+ * mid-body failure rolls back atomically (see the partial-DDL wedge note there).
  */
 export interface HistoryMigration {
   name: string
@@ -24,10 +25,40 @@ export interface HistoryMigration {
 }
 
 /**
+ * Build a DDL migration whose body runs ATOMICALLY in one transaction.
+ *
+ * PARTIAL-DDL WEDGE (why this is the preferred constructor): Umzug does NOT wrap
+ * `up` in a transaction and records a migration as applied only AFTER `up`
+ * resolves. SQLite auto-commits each DDL statement when not inside an explicit
+ * transaction, so a multi-statement migration that throws mid-body would leave
+ * the earlier statements committed but the migration UNLOGGED — on the next
+ * restart it re-runs from the top and dies on the already-applied statement
+ * (e.g. "table already exists"), wedging EVERY future start. `applyForwardMigrations`
+ * rethrows → refuse-to-start, but that does not undo the partial mutation.
+ *
+ * Wrapping the body in the driver's `transaction()` makes multi-statement DDL
+ * all-or-nothing (SQLite supports transactional DDL), so a failed migration
+ * leaves the DB exactly as before and is safely retryable. Use this for any DDL
+ * migration. A migration that genuinely cannot run in a transaction (a
+ * non-transactional PRAGMA, or a long data backfill) must instead be written
+ * individually re-entrant: every statement guarded by `IF NOT EXISTS` or a
+ * `PRAGMA table_info` probe (see `migrateEntriesColumns` for the primitive).
+ */
+export function sqlMigration(name: string, body: (db: SqliteDatabase) => void): HistoryMigration {
+  return {
+    name,
+    up: async ({ context }) => {
+      context.transaction(() => body(context))()
+    },
+  }
+}
+
+/**
  * INTENTIONALLY EMPTY: the floor already builds the current schema, so there is
  * nothing to migrate yet. The first real schema change lands here as
- * `001-<slug>` with an IDEMPOTENT `up` — SQLite has no `ADD COLUMN IF NOT EXISTS`,
- * so additive columns must probe `PRAGMA table_info` first (see
- * `migrateEntriesColumns` for the reusable primitive). Array order IS apply order.
+ * `001-<slug>`, preferably via `sqlMigration` (atomic) — or, if it cannot run in
+ * a transaction, written individually re-entrant (SQLite has no
+ * `ADD COLUMN IF NOT EXISTS`, so additive columns probe `PRAGMA table_info`
+ * first; see `migrateEntriesColumns`). Array order IS apply order.
  */
 export const MIGRATIONS: Array<HistoryMigration> = []

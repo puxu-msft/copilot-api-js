@@ -137,6 +137,8 @@ REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedA
 
 SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重数据从单表单 blob 拆为 **head 表 + stage 子表**的 1:N 模型，使 reaper 分桶 / stats 聚合 / 游标分页 / session 重算继续只作用于 head 表 `entries_v2`（每请求恰一行）。
 
+**schema 演进（hybrid 迁移框架）**：两层。① **地板（conceptual 000）**= `openDatabase` 的 inline 幂等 reconcile（`SCHEMA_SQL` + `connection.ts::migrateEntriesColumns` 按 `wanted` 补列 + bespoke drop），每次开库跑、**不进账本**；② **前向 001+** = `sqlite/migrations/` 的 Umzug forward-runner（`applyForwardMigrations` 在 `start.ts` 的 `initHistory(true)` 后、`startServer` 前跑一次），已应用迁移名记进 `history_meta(schema_migrations)` 账本（与 backfill 标志同表、统一账本）。`MIGRATIONS` 初始空（地板=当前 schema）。**失败硬阻断**：迁移抛 → `process.exit(1)`（半迁移 schema 比不启动危险，与数据-backfill 的 never-throw 相反）。首条真实迁移优先用 `sqlMigration(name, body)`——包 driver `transaction()` 使多语句 DDL all-or-nothing、防 partial-DDL wedge（Umzug 不包事务 + SQLite DDL 自动 commit → 中途抛会留半截未记账、重启卡死）；非事务型迁移须逐语句 re-entrant。设计见 [rfc/migration-framework-umzug.md](rfc/migration-framework-umzug.md)。
+
 **`entries_v2`（HEAD，每请求一行）** 主要列：
 
 - `id TEXT PRIMARY KEY`、`session_id TEXT`、`started_at`/`ended_at INTEGER`
@@ -186,7 +188,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 - `msg_blob(hash PK, text)` — 每条 **distinct 归一化消息**按内容哈希只存一次（git-blob 式）。跨请求/跨轮去重，实测 ~42× 压缩。无 FK，靠孤儿 GC 回收。
 - `req_msg(req_id, pos, hash, PK(req_id,pos), FK→entries_v2 CASCADE)` — 请求引用哪些消息（按位置）。索引 `idx_req_msg_hash` 服务 hash→请求查找 + GC 探测。
 - `req_aux(req_id, source, text, PK(req_id,source), FK CASCADE)` — 4 个 flat per-request 源：`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers`。
-- `history_meta(key PK, value)` — backfill 完成标志（`search_index_version`）+ 续跑游标 + dedup-ratio tripwire stat。
+- `history_meta(key PK, value)` — 统一 KV 账本：backfill 完成标志（`search_index_version`）+ 续跑游标 + dedup-ratio tripwire stat + **schema 迁移账本（`schema_migrations`，Umzug 已应用迁移名 JSON `string[]`）**。DDL 经 `schema.ts` 的 `HISTORY_META_DDL` 单一源（地板与 `HistoryMetaStorage` 的 bare-DB guard 共用，不漂移）。
 
 **归一化**（`normalize-message.ts`，单一 owner）：`normalizeMessageForIndex(msg, format)` 同时是哈希输入 AND 存储搜索文本，**config-无关、确定、稳定**。递归剥 `cache_control`（Claude Code 每轮前移 ephemeral 断点的唯一易变源，实测剥后同消息跨轮哈希相等）+ own-line `<system-reminder>`/`<ide_*>` 注入块（边界锚定、保留 inline 字面提及）+ sorted-key canonical JSON。绝不复用 config 驱动的 `removeSystemReminderTags`。
 

@@ -18,3 +18,15 @@
 
 **双 runtime 门:PASS**——bun:sqlite + node:sqlite 两腿均跑通有序/run-once/账本。采纳 Umzug(hybrid:openDatabase 地板不动 + 独立 async forward-runner)。
 
+## P3 node:sqlite 端到端(真实生产模块)
+
+`e2e-node.ts` 驱动 **真实生产模块**(`createDatabase`→node:sqlite `DatabaseSync`+手搓 tx wrapper、真实 `HistoryMetaStorage`、真实 `applyForwardMigrations`)——非 P0 的手搓 storage。Node 不解析 src 树内部的无扩展名相对 import(`./index`),故经 `bun build --target node` 打 node-target bundle(production tsdown 同类产物)后用**真 Node 运行时**跑:
+
+```
+bun build exp/umzug-bun-spike/e2e-node.ts --target node --outfile exp/umzug-bun-spike/e2e-node.bundle.mjs
+node exp/umzug-bun-spike/e2e-node.bundle.mjs   # runtime=node;bundle 为临时产物,不入 git
+```
+
+全断言 PASS:`applyForwardMigrations` 空 MIGRATIONS 在 bare DB no-op(chicken-egg guard 自足);真实 `HistoryMetaStorage` + Umzug 有序应用 [001,002]、schema 真变(x,y)、run-once(二次 up 空、up body 不重跑)、ledger 持久 `history_meta`。证明 node:sqlite 的手搓 BEGIN/COMMIT 事务路径 + DatabaseSync 与 Umzug/真实 storage 端到端可用,不只 bun:sqlite。
+
+

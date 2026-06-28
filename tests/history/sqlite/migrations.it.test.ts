@@ -4,9 +4,13 @@
  * Uses a bare in-memory DB straight from the driver (NOT openDatabase) so the
  * floor is absent — this is exactly the chicken-egg surface: Umzug calls
  * `storage.executed()` before any migration runs, and on a floor-less DB
- * `history_meta` does not exist yet. The storage's constructor guard
- * (CREATE TABLE IF NOT EXISTS) plus the executed() table-missing guard must make
- * the runner self-sufficient regardless of open order.
+ * `history_meta` does not exist yet. The storage's constructor guard plus the
+ * executed() table-missing guard must make the runner self-sufficient regardless
+ * of open order.
+ *
+ * Tests drive the REAL exported `applyForwardMigrations` (via its injectable
+ * `migrations` arg), not a copy of its wiring, so the production runner — logger
+ * adapter, storage construction, up() — is the unit under test.
  *
  * No history runtime / module-global singletons are touched (every test gets its
  * own throwaway `:memory:` db), so no isolation fixture is needed.
@@ -19,7 +23,6 @@ import {
   expect,
   test,
 } from "bun:test"
-import { Umzug } from "umzug"
 
 import {
   //
@@ -30,11 +33,13 @@ import {
   //
   getMeta,
   MIGRATIONS_RUN_KEY,
+  setMeta,
 } from "~/lib/history/sqlite/meta"
 import {
   //
   type HistoryMigration,
   MIGRATIONS,
+  sqlMigration,
 } from "~/lib/history/sqlite/migrations/index"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import { HistoryMetaStorage } from "~/lib/history/sqlite/migrations/storage"
@@ -45,6 +50,10 @@ function freshDb(): SqliteDatabase {
   const db = createDatabase(":memory:")
   openDbs.push(db)
   return db
+}
+
+function tableExists(db: SqliteDatabase, name: string): boolean {
+  return Boolean(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name))
 }
 
 afterEach(() => {
@@ -64,6 +73,20 @@ describe("HistoryMetaStorage", () => {
     const storage = new HistoryMetaStorage(db)
     db.exec("DROP TABLE history_meta")
     expect(await storage.executed()).toEqual([])
+  })
+
+  test("readLedger tolerates corrupt / non-array / mixed values", async () => {
+    const db = freshDb()
+    const storage = new HistoryMetaStorage(db)
+
+    setMeta(db, MIGRATIONS_RUN_KEY, "{not json")
+    expect(await storage.executed()).toEqual([])
+
+    setMeta(db, MIGRATIONS_RUN_KEY, JSON.stringify({ a: 1 })) // non-array
+    expect(await storage.executed()).toEqual([])
+
+    setMeta(db, MIGRATIONS_RUN_KEY, JSON.stringify(["001-a", 5, "002-b"])) // mixed
+    expect(await storage.executed()).toEqual(["001-a", "002-b"])
   })
 
   test("log/unlog round-trips through the history_meta ledger", async () => {
@@ -92,14 +115,15 @@ describe("applyForwardMigrations", () => {
     const db = freshDb()
     await applyForwardMigrations(db) // no floor, no migrations → no-op, no throw
 
-    const storage = new HistoryMetaStorage(db)
-    expect(await storage.executed()).toEqual([])
+    expect(await new HistoryMetaStorage(db).executed()).toEqual([])
   })
 
-  test("ordered apply + run-once + persistent ledger (temporary test migrations)", async () => {
+  test("ordered apply + run-once + persistent ledger (real runner, injected migrations)", async () => {
     const db = freshDb()
     const applied: Array<string> = []
-    const testMigrations: Array<HistoryMigration> = [
+    // 002's ALTER requires 001's CREATE, so the assertion is order-sensitive: a
+    // reversed apply order would throw "no such table: t".
+    const migrations: Array<HistoryMigration> = [
       {
         name: "001-create-t",
         up: async ({ context }) => {
@@ -116,31 +140,56 @@ describe("applyForwardMigrations", () => {
       },
     ]
 
-    // Drive the same machinery as applyForwardMigrations, but with injectable
-    // migrations (the shipped MIGRATIONS is intentionally empty).
-    const run = async (): Promise<Array<string>> => {
-      const umzug = new Umzug<SqliteDatabase>({
-        migrations: testMigrations,
-        context: db,
-        storage: new HistoryMetaStorage(db),
-        logger: undefined,
-      })
-      return (await umzug.up()).map((m) => m.name)
-    }
-
-    // Ordered apply.
-    expect(await run()).toEqual(["001-create-t", "002-add-col"])
-    expect(applied).toEqual(["001", "002"])
-
-    // Schema actually changed.
+    await applyForwardMigrations(db, migrations)
+    expect(applied).toEqual(["001", "002"]) // ordered
     const cols = (db.prepare("PRAGMA table_info(t)").all() as Array<{ name: string }>).map((c) => c.name)
-    expect(cols).toEqual(["x", "y"])
+    expect(cols).toEqual(["x", "y"]) // schema actually changed
+    expect(await new HistoryMetaStorage(db).executed()).toEqual(["001-create-t", "002-add-col"])
 
-    // Run-once: a second up applies nothing and does NOT re-run the up bodies.
-    expect(await run()).toEqual([])
+    // Run-once: a second call applies nothing and does NOT re-run the up bodies.
+    await applyForwardMigrations(db, migrations)
     expect(applied).toEqual(["001", "002"])
-
-    // Ledger persisted in history_meta.
     expect(JSON.parse(getMeta(db, MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-create-t", "002-add-col"])
+  })
+
+  test("a throwing migration RETHROWS and is not logged (hard-abort contract)", async () => {
+    const db = freshDb()
+    const migrations: Array<HistoryMigration> = [
+      {
+        name: "001-boom",
+        up: async () => {
+          throw new Error("boom")
+        },
+      },
+    ]
+    await expect(applyForwardMigrations(db, migrations)).rejects.toThrow("boom")
+    // Failed migration stays pending (unlogged) so it re-runs next start.
+    expect(await new HistoryMetaStorage(db).executed()).toEqual([])
+  })
+
+  test("sqlMigration rolls back a mid-body throw (no partial schema → retryable, not wedged)", async () => {
+    const db = freshDb()
+    const migrations: Array<HistoryMigration> = [
+      sqlMigration("001-partial", (d) => {
+        d.exec("CREATE TABLE a (x TEXT)")
+        throw new Error("mid-body failure after first statement")
+      }),
+    ]
+    await expect(applyForwardMigrations(db, migrations)).rejects.toThrow("mid-body")
+    // The transaction rolled back, so the early CREATE did NOT persist — a retry
+    // on the next start re-runs cleanly instead of dying on "table a already exists".
+    expect(tableExists(db, "a")).toBe(false)
+    expect(await new HistoryMetaStorage(db).executed()).toEqual([])
+
+    // Sanity: a clean sqlMigration commits its whole body.
+    const ok: Array<HistoryMigration> = [
+      sqlMigration("001-ok", (d) => {
+        d.exec("CREATE TABLE b (x TEXT)")
+        d.exec("ALTER TABLE b ADD COLUMN y TEXT")
+      }),
+    ]
+    await applyForwardMigrations(db, ok)
+    expect(tableExists(db, "b")).toBe(true)
+    expect(await new HistoryMetaStorage(db).executed()).toEqual(["001-ok"])
   })
 })

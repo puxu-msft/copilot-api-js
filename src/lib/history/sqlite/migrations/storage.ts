@@ -17,6 +17,7 @@ import {
   MIGRATIONS_RUN_KEY,
   setMeta,
 } from "../meta"
+import { HISTORY_META_DDL } from "../schema"
 
 /**
  * history_meta-backed Umzug ledger.
@@ -35,7 +36,9 @@ export class HistoryMetaStorage implements UmzugStorage<SqliteDatabase> {
 
   constructor(db: SqliteDatabase) {
     this.db = db
-    this.db.exec("CREATE TABLE IF NOT EXISTS history_meta (key TEXT PRIMARY KEY, value TEXT)")
+    // Single-sourced with SCHEMA_SQL (the floor) so the bare-DB guard and the
+    // floor can never define history_meta differently.
+    this.db.exec(HISTORY_META_DDL)
   }
 
   /** Applied migration names (empty when the table or key is absent). */
