@@ -4,7 +4,7 @@
  * `POST /api/debug/dry-run-pipeline` feeds a synthetic/replayed request context +
  * upstream response through the REAL v4 driver, short-circuits GHC, and emits the
  * selected stage's intermediate state — turning "wait for the symptom to recur"
- * into deterministic replay (motive: docs/rfc/pipeline-dry-run-inspector.md).
+ * into deterministic replay (motive: docs/archive/2606-landed-rfcs/pipeline-dry-run-inspector.md).
  *
  * Phase 3 (all formats):
  * - **Request side** (`stopAfter` ∈ parse/translate/rewrite-in): build the REAL

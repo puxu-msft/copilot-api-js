@@ -46,7 +46,7 @@ Claude Code 客户端报 `InputValidationError: AskUserQuestion ... parameter qu
 
 ## 3. dry-run inspector：配置经 env/deps 注入消竞态（2026-06-21，Phase 3 收尾记）
 
-dry-run inspector（`POST /api/debug/dry-run-pipeline`）Phase 1-3 已全部落地（全格式 + 请求/响应侧，见 [rfc/pipeline-dry-run-inspector.md](../rfc/pipeline-dry-run-inspector.md) §8）。MVP 故意**砸掉 `configOverrides`**——dry-run 一律用当前 live 配置。
+dry-run inspector（`POST /api/debug/dry-run-pipeline`）Phase 1-3 已全部落地（全格式 + 请求/响应侧，见 [archive/2606-landed-rfcs/pipeline-dry-run-inspector.md](../archive/2606-landed-rfcs/pipeline-dry-run-inspector.md) §8）。MVP 故意**砸掉 `configOverrides`**——dry-run 一律用当前 live 配置。
 
 ### 为何暂缓（根因 + 当前行为）
 响应侧 rewrites **逐帧读 module-global `state`**（`response-rewrites.ts` 的 thinking 逐帧读 `state.thinkingSignatureCompat`、`appliesTo`/`prepareWire` 每次读 global）。若要支持"按不同配置对比回放"，朴素做法是 temp state-swap，但其窗口=**整条响应流时长**（opus 长 thinking 数十秒~数百秒），会长时间污染并发真实请求配置（评审 C1 实证）。且回放本就该用 live 配置——`configOverrides` 是投机表面。

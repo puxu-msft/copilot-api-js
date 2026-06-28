@@ -287,7 +287,7 @@ export interface RunResponseOpts {
 
 /**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
- * docs/rfc/streaming-upstream-rst-buffered-retry.md). Extends {@link RunResponseOpts}
+ * docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md). Extends {@link RunResponseOpts}
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
  * attempt) with the buffered-retry control surface.
  */
@@ -430,7 +430,7 @@ export interface PipelineDriver {
    * Inspect the request side S1→`stopAfter`, NEVER entering S4 (no GHC call). Returns a
    * per-stage envelope snapshot (`body` is `structuredClone`d so later stages don't mutate
    * earlier snapshots) + the S3 per-rewrite `{name, changed}` log. For dry-run / debugging
-   * the request-rewrite chain (`docs/rfc/pipeline-dry-run-inspector.md` §4). Synchronous —
+   * the request-rewrite chain (`docs/archive/2606-landed-rfcs/pipeline-dry-run-inspector.md` §4). Synchronous —
    * S1-S3 have no `await`. Isolation (the global manager touched by `codec.parse`) is the
    * caller's concern, NOT this method's.
    */

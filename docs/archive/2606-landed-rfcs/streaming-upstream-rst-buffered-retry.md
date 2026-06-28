@@ -1,3 +1,5 @@
+> **✅ 已落地并归档** — 见同目录 [README.md](README.md)。本 RFC 顶部原状态行陈旧（写草案/待实现），其机制已完整实现于 `src/`，活的现状以 docs/DESIGN.md「活的架构现状」为准。
+
 # RFC: 流式响应的事务化缓冲重试 — 保护大 Write/Edit 生成不被上游 mid-stream RST 砍断
 
 **Status:** 设计稿待评审（2026-06-22）

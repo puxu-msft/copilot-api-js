@@ -1,7 +1,9 @@
+> **✅ 已落地并归档** — 见同目录 [README.md](README.md)。本 RFC 顶部原状态行陈旧（写草案/待实现），其机制已完整实现于 `src/`，活的现状以 docs/DESIGN.md「活的架构现状」为准。
+
 # RFC: Telemetry 分布直方图（latency 百分位 + token/queue 分布）
 
 **Status:** 实现中（2026-06-23）。`operational-stats-and-lineage-removal.md` §7 把 histogram slot 列为暂缓；operator 指示「弱化 YAGNI、尽可能丰富」，故本 RFC 把它做满。
-**Builds on:** [operational-stats-and-lineage-removal.md](operational-stats-and-lineage-removal.md)（dimension/measure registry 框架、开放 counters bag、通用 V3 持久、`/api/stats`、`/metrics`）。
+**Builds on:** [operational-stats-and-lineage-removal.md](../../rfc/operational-stats-and-lineage-removal.md)（dimension/measure registry 框架、开放 counters bag、通用 V3 持久、`/api/stats`、`/metrics`）。
 **Driver:** sum-only counters 给不出分布形状——p50/p95/p99 latency、请求/响应体量分布、排队延迟分布都需要 histogram。registry 的开放 bag 已不 foreclose（§7 预留），本 RFC 沿同一框架把分布做成第一类公民。
 
 ---

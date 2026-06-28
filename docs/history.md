@@ -163,13 +163,11 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 | 端点 | 说明 |
 |------|------|
-| `GET /history/api/entries` | 分页查询 entries（支持 model、endpoint、from/to 等过滤） |
+| `GET /history/api/entries` | 分页查询 entries（`?cursor=&limit=` 分页；`?model=&endpoint=&from=&to=&sessionId=&search=` 过滤——`sessionId` 取某 session 的 entries，`search` 是 `preview_text` 子串快筛） |
 | `GET /history/api/entries/:id` | 获取单个 entry |
 | `POST /history/api/entries/:id/pin` | 钉住该 entry（`pinned=1`）：豁免 reaper 淘汰+计数，返回更新后的完整 entry；未知 id → 404 |
 | `POST /history/api/entries/:id/unpin` | 取消钉住（`pinned=0`），恢复正常淘汰资格；返回更新后的完整 entry |
-| `GET /history/api/sessions` | 列出所有 sessions |
-| `GET /history/api/sessions/:id` | 获取 session 详情 |
-| `GET /history/api/sessions/:id/entries` | 获取 session 的所有 entries |
+| `GET /history/api/sessions` | 列出 per-session 聚合摘要（`?limit=N`）。**无独立 session-detail 端点**——某 session 的 entries 经 `GET /history/api/entries?sessionId=<id>` 取 |
 | `DELETE /history/api/entries` | **清空全部** history（`clearHistory` → 删所有表）。破坏性、不可逆 |
 | `DELETE /history/api/sessions/:id` | 删除 session（`deleteSession` → 删该 session 的所有 entries）。破坏性、不可逆 |
 | `GET /history/api/stats` | 聚合统计数据 |
@@ -214,10 +212,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 ## Web UI
 
-| 版本 | 技术栈 | 路径 |
-|------|--------|------|
-| v1 | 原生 HTML/JS | `/history/v1/` |
-| v3 | Vue 3 + Vite | `/ui/` |
+当前 UI 是 Vue 3 + Vite 应用，服务于 `/ui/`（`GET /history` 302 重定向到 `/ui#/v/activity`）。早期的 v1 原生 HTML/JS UI（`/history/v1/`）已移除——代码中唯一 UI 是 `/ui` 的 Vue 应用。
 
 前端类型统一从后端 re-export（`~backend/lib/history/store`），不重复定义。
 

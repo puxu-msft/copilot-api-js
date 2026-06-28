@@ -10,11 +10,11 @@
 
 - **已完成到**：**🎉 v4 重构整体完成（P0/P1/P2/P3 全 ✅）**。P3 统一收尾全部提交：`0c9cb91` **P3.1**（透传矩阵测试）、`ce072a2`+`4b8c61c` **P3.2b**（上游 sseEvents 下沉 driver + 边界文档）、`1a3aff4` **P3.3a**（等价测试改纯 v4）、`9d509e9` **P3.3b**（删 legacy handler+flag+死代码+Azure 迁 v4，−2254 行）、`e95bca8` **P3.4**（DESIGN.md 指向 v4）。每 commit subagent review + 主线亲自核验;**全 backend 2751 pass / 0 fail 经 v4**（另有 2 个无关 FileSink 预存失败,属 observability-rewrite WIP 域,非本迁移引入）。knip src/ 零悬空(探针验证)。
 - **下一步**：**v4 P0-P3 + Stage A + Stage B 均已收官**（Stage B 全 5 格式 owns-sink，详见下方两章）。后续为独立改进线（operational-stats RFC：`/metrics` Prometheus + telemetry model 维度 cap 等，见 git log）。剩余 deferred items 见「遗留与决策追踪」（P3.2b-D1 forwarded 边界 / P3.3-D1 web_search 保留 legacy Anthropic 路径 / P3.3-D2 createResponsesAdapter 测试用 / P2.6-D1 web_search 双跳进 driver / P2.6-D2 onMeta-vs-onRetry / P2.4-D1 WS 改进型副作用 等），均为低优先、需用户日后定夺的独立改进，不阻塞收官。
-- **历史**：P2.6（Anthropic 切 driver）RFC 4 轮收敛（[docs/rfc/p2.6-anthropic-driver-migration.md](../rfc/p2.6-anthropic-driver-migration.md)）;P2 各格式逐格式翻 flag ON 作 canary;P3.3 删除 flag 机制（driver-flags.ts），v4 成为唯一路径。
+- **历史**：P2.6（Anthropic 切 driver）RFC 4 轮收敛（[docs/archive/2606-landed-rfcs/p2.6-anthropic-driver-migration.md](../archive/2606-landed-rfcs/p2.6-anthropic-driver-migration.md)）;P2 各格式逐格式翻 flag ON 作 canary;P3.3 删除 flag 机制（driver-flags.ts），v4 成为唯一路径。
 
 ### Stage A（response-pipeline RFC）— ✅ 完成（2026-06-21）
 
-v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 `docs/rfc/response-pipeline/`，master plan `stage-a-plan.md`）已全部落地：把请求/响应改写从 codec/handler 内联迁进 driver 的 registry，终态 = **"新增一条拦截/修复 = 注册一个 Request/ResponseRewrite 条目"** 在所有格式 × 流式/非流式 × HTTP/WS 成立。
+v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 `docs/archive/2606-landed-rfcs/response-pipeline/`，master plan `stage-a-plan.md`）已全部落地：把请求/响应改写从 codec/handler 内联迁进 driver 的 registry，终态 = **"新增一条拦截/修复 = 注册一个 Request/ResponseRewrite 条目"** 在所有格式 × 流式/非流式 × HTTP/WS 成立。
 
 | Phase | 内容 | 状态 |
 |---|---|---|
@@ -30,7 +30,7 @@ v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 
 
 ### Stage B（driver-owned-writeout）— ✅ 完成（全 5 格式 owns-sink，收尾 2026-06-23）
 
-`runResponse` generator → **owns-the-sink**（driver 持 `ClientSink` 自己写客户端，forwarded 采样/heartbeat/终态统一进 driver）。计划 [docs/rfc/response-pipeline/stage-b-plan.md](../rfc/response-pipeline/stage-b-plan.md)（4 轮 multi-perspective review 硬化）。**当前位置看该 plan 顶部「▶ 当前位置」banner**。
+`runResponse` generator → **owns-the-sink**（driver 持 `ClientSink` 自己写客户端，forwarded 采样/heartbeat/终态统一进 driver）。计划 [docs/archive/2606-landed-rfcs/response-pipeline/stage-b-plan.md](../archive/2606-landed-rfcs/response-pipeline/stage-b-plan.md)（4 轮 multi-perspective review 硬化）。**当前位置看该 plan 顶部「▶ 当前位置」banner**。
 
 | Phase | 内容 | 状态 | commit |
 |---|---|---|---|

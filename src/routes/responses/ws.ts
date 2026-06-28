@@ -350,7 +350,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     // a driver S6 flush" idea was evaluated and rejected — besides the truncation-detection entanglement,
     // the WS sink has no `writeSynthetic`/`close` and its error terminator is the transport-coupled
     // `sendErrorAndClose`+1011, which a uniform driver finalize cannot model. See
-    // docs/rfc/response-pipeline/finalize-stream-redesign.md.)
+    // docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md.)
     for (const closing of codec.flushResponse(env)) {
       const out = restoreAccumulateCount(closing)
       if (out) await sink.write(out)

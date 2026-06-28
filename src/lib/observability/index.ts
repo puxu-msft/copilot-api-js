@@ -5,7 +5,7 @@
  * `ScopedPublisher<NS>`) and the formatting projections for sinks.
  *
  * Sinks live in `./sinks/*` and are wired in `src/start.ts` (see RFC
- * `docs/rfc/observability-rewrite.md` §2.5 for the init order).
+ * `docs/archive/2606-landed-rfcs/observability-rewrite.md` §2.5 for the init order).
  *
  * Dependency contract (enforced by ESLint `no-restricted-imports`, added
  * in this commit):

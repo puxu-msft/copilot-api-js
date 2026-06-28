@@ -245,10 +245,9 @@ REST under `/history/api/`:
 |----------|--------|-------------|
 | `/history/api/entries` | GET | Paginated entry list (filter by model / endpoint / status / session / time) |
 | `/history/api/entries/:id` | GET | Single entry (decoded payload + response, headers, timing, billing) |
-| `/history/api/entries` | DELETE | Bulk delete (by id list, session, or full clear) |
+| `/history/api/entries` | DELETE | Full clear of all history (destructive). Per-session delete is `DELETE /api/sessions/:id` |
 | `/history/api/stats` | GET | Aggregate counts, token totals, billing multipliers, model breakdown |
 | `/history/api/sessions` | GET | Session list (Claude Code / Codex sessions inferred from headers) |
-| `/history/api/sessions/:id` | GET | Session detail (aggregate + entry refs) |
 | `/history/api/sessions/:id` | DELETE | Delete all entries for a session |
 | `/history/api/export` | GET | Export history as JSON |
 

@@ -13,7 +13,7 @@
  * inside the sink (`onForwarded`), and after a clean drain handles the format-specific
  * finishing the codec/driver do NOT: the fallback closing-lifecycle flush (`codec.flushResponse`,
  * the CC→Responses translator's stream-end drain — kept handler-side; see
- * docs/rfc/response-pipeline/finalize-stream-redesign.md for why the "move flush into the driver
+ * docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md for why the "move flush into the driver
  * S6 flush" idea was evaluated and rejected) and session registration (fallback eager pre-stream;
  * direct post-loop via `acc.responseId`). The stateful `fixStreamEventIds` (DIRECT only) runs in the driver's S5
  * response-rewrite registry (A.C), shared with the WS transport. The error frame is built
@@ -329,7 +329,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // (Kept handler-side: the "move this into a driver S6 flush" idea was evaluated and rejected —
     // the stream-end terminal handling is entangled with format-specific truncation detection +
     // ctx settling, so a uniform driver flush is over-engineering. See
-    // docs/rfc/response-pipeline/finalize-stream-redesign.md.)
+    // docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md.)
     for (const closing of codec.flushResponse(env)) {
       const out = restoreAndAccumulate(closing)
       if (out) await sink.write(out)

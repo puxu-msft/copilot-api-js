@@ -56,7 +56,7 @@ Phase 1 的信号忽略确保这种情况不会导致意外退出。
 `RequestContextManager`（`src/lib/context/manager.ts`）跟踪所有活跃请求的生命周期：
 
 - 每个请求创建一个 `RequestContext`（`src/lib/context/request.ts`）
-- 状态机：`pending` → `streaming` → `completed` / `failed`
+- 状态机：非终态 `pending` → `executing` → `streaming`，终态 `completed` / `failed` / `aborted` / `interrupted`（`RequestLifecycleState`，`src/lib/history/types.ts`）
 - 生命周期事件经 observability bus 发布（`src/lib/observability/`），各 sink（console / file / history / telemetry / ws）订阅消费：请求完成时落盘 / 广播（取代已删除的 `consumers.ts` 消费者注册模型）
 
 ### Stale Request Reaper

@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-当一个大重构的 RFC **要交给一组独立实现者分别完成**（而非自己一路实现）时，文档产物拆成**三层物理结构**（仿 `docs/v4/`，活范例见 `docs/rfc/response-pipeline/`）：
+当一个大重构的 RFC **要交给一组独立实现者分别完成**（而非自己一路实现）时，文档产物拆成**三层物理结构**（仿 `docs/v4/`，活范例见 `docs/archive/2606-landed-rfcs/response-pipeline/`）：
 
 1. **`design.md`（RFC）** — 为什么这么改 + 接口契约（§接口）+ 各 phase 的 Stage 划分 + 与既有 deferred items 的推翻/取代关系（§deferred）。回答"WHY + 契约"。
 2. **`<stage>-plan.md`（master plan）** — 每个 Task 的 TDD 步骤 + **factory/锚点表**（被迁移/复用的现有函数 `file:line` + order 常量）。回答"HOW + 锚在哪"。

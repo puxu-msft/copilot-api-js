@@ -1,8 +1,10 @@
+> **✅ 已落地并归档** — 见 [../README.md](../README.md)。Stage A+B owns-sink 全落地，活的现状见 docs/DESIGN.md。
+
 # RFC — 响应管线 driver-owned 化 + transform registry 激活
 
 > **状态**：设计稿（brainstorm + 3 轮对抗 architect review 收敛，2026-06-20）。
-> **前置**：v4 重构 P0–P3 已完成（见 [docs/v4/](../../v4/)）。本 RFC 是 v4 之后的下一个大重构，**推翻并取代**若干 P2/P3 deferred items（见 §8）。
-> **方法论**：[CLAUDE.md](../../../CLAUDE.md) big-feature-pipeline（≥1000 行 byte-critical 重构走 RFC + commit-invariants + 多轮对抗 review）。
+> **前置**：v4 重构 P0–P3 已完成（见 [docs/v4/](../../../v4/)）。本 RFC 是 v4 之后的下一个大重构，**推翻并取代**若干 P2/P3 deferred items（见 §8）。
+> **方法论**：[CLAUDE.md](../../../../CLAUDE.md) big-feature-pipeline（≥1000 行 byte-critical 重构走 RFC + commit-invariants + 多轮对抗 review）。
 
 原则用 ASCII slug 句柄标识，引用时用 slug。
 
@@ -29,7 +31,7 @@ v4 已有 transform 抽象但**未充分启用**：
 
 P2.6/P3 的 deferred item [P3.2b-D1](#83-本-rfc-推翻--解决的-deferred-items) 把"forwarded 采样永久 handler-side"定为架构边界，核心论据是：**forwarded 真实字节在 handler 写出点产生，`driver.runResponse` 是 generator（driver yield、handler 写），driver 看不到写出点。**
 
-**这个论据被一个架构翻转推翻**：把 `runResponse` 从 generator 改成 **owns-the-sink**——driver 持有抽象写出口 `ClientSink`、driver 自己写客户端，handler 退化为 `streamSSE(c, s => driver.runResponse(upstream, env, makeSseSink(s)))`。翻转后写出点进 driver 内，**forwarded 采样 / heartbeat 串行化 / 整流翻译全部统一进 driver**。这是 v4 设计目标 [D1](../../v4/00-decisions.md)"控制流彻底统一"的逻辑终点。
+**这个论据被一个架构翻转推翻**：把 `runResponse` 从 generator 改成 **owns-the-sink**——driver 持有抽象写出口 `ClientSink`、driver 自己写客户端，handler 退化为 `streamSSE(c, s => driver.runResponse(upstream, env, makeSseSink(s)))`。翻转后写出点进 driver 内，**forwarded 采样 / heartbeat 串行化 / 整流翻译全部统一进 driver**。这是 v4 设计目标 [D1](../../../v4/00-decisions.md)"控制流彻底统一"的逻辑终点。
 
 附带洞察：之前判 heartbeat / 整流翻译"抗拒 driver"是**误判**——它们抗拒的是**逐帧 `transform(frame)` 抽象**，不是 driver。driver 的响应**循环**（非 transform）完全能容纳 idle-race；heartbeat 本就是 transport idle 计时器的"soft 档"（到点注帧续命）vs"hard 档"（到点杀流），现状被错位劈成两个独立 setTimeout（一个在 transport `raceIteratorNext`、一个在 handler `startForwardedSseHeartbeat`）。
 
@@ -225,7 +227,7 @@ WS（`responses/ws.ts`）消费同一 `driver.runResponse`（同 Responses HTTP�
 
 ### 8.1 实现 v4 北极星
 
-本 RFC 是 v4 [D1](../../v4/00-decisions.md)"控制流彻底统一"的逻辑终点——v4 P2/P3 务实地把响应编排留在 handler，本 RFC 把它收进 driver。
+本 RFC 是 v4 [D1](../../../v4/00-decisions.md)"控制流彻底统一"的逻辑终点——v4 P2/P3 务实地把响应编排留在 handler，本 RFC 把它收进 driver。
 
 ### 8.2 transform 概念被精确收窄（反 over-abstract）
 

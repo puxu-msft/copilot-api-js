@@ -311,7 +311,7 @@ export const AnthropicConfigSchema = z
      * upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit). Buffers the
      * whole response and commits only after `message_stop`, re-running the exchange
      * on a transport-close / truncation, transparently to the client. See
-     * docs/rfc/streaming-upstream-rst-buffered-retry.md.
+     * docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md.
      *   "on":            buffer every streaming Anthropic response.
      *   "tool_use_only": buffer only when the request carries `tools` (the large
      *                    Write/Edit scenario); pure-text chat stays live (no latency).

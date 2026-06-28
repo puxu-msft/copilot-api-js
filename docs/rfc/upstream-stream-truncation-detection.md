@@ -1,6 +1,6 @@
 # RFC：上游流截断检测与处理（stream completeness detection）
 
-状态：Phase 0–2 已落地（4 条流式格式：Anthropic/CC/Responses/Gemini），Phase 3 实证确认无需代码，Phase 4 doc-sync 进行中｜作者：调试 req_1782109585894_535 触发｜关联：[[methodology-persistence-swallow-plus-lossy-fallback-loses-data]]、`docs/rfc/response-pipeline/`（Stage B owns-sink，已全部落地）
+状态：Phase 0–2 已落地（4 条流式格式：Anthropic/CC/Responses/Gemini），Phase 3 实证确认无需代码，Phase 4 doc-sync 进行中｜作者：调试 req_1782109585894_535 触发｜关联：[[methodology-persistence-swallow-plus-lossy-fallback-loses-data]]、`docs/archive/2606-landed-rfcs/response-pipeline/`（Stage B owns-sink，已全部落地）
 
 ## 1. 背景与症状
 
@@ -24,7 +24,7 @@ Claude Code 报 `API Error: Stream ended without receiving any events`，但 pro
 - [handler-v4.ts:622-628](../../src/routes/messages/handler-v4.ts)：`acc.streamError` 未置位（无 error 事件）→ 落入 `else` → **`ctx.complete(...)`**。
 - [stream-accumulator.ts:156-159 / 374](../../src/lib/anthropic/stream-accumulator.ts)：`message_stop` 事件 case 是 no-op（不追踪）；`acc.stopReason` 仅在 `message_delta` 时置位。截断流二者皆无 → accumulator **没有任何"消息是否真正收尾"的概念**。
 
-**Stage B 现状（review 实测修正）**：五条流式路径（Anthropic / CC / Responses-HTTP / Responses-WS / Gemini）**已全部切 owns-sink `runResponseSink`**，generator `runResponse` 仅剩 dry-run 消费。故四格式截断检测是**统一形态**："`complete` outcome + accumulator/meta 缺协议终止符"，**无格式走旁路 generator**（`docs/rfc/response-pipeline/stage-b-plan.md` 的"当前位置"标注已陈旧，待 doc-sync 修）。
+**Stage B 现状（review 实测修正）**：五条流式路径（Anthropic / CC / Responses-HTTP / Responses-WS / Gemini）**已全部切 owns-sink `runResponseSink`**，generator `runResponse` 仅剩 dry-run 消费。故四格式截断检测是**统一形态**："`complete` outcome + accumulator/meta 缺协议终止符"，**无格式走旁路 generator**（`docs/archive/2606-landed-rfcs/response-pipeline/stage-b-plan.md` 的"当前位置"标注已陈旧，待 doc-sync 修）。
 
 四格式同构（都在 `outcome.kind==="complete"` 时无条件 `ctx.complete`，无完整性校验）：
 
@@ -67,7 +67,7 @@ Claude Code 报 `API Error: Stream ended without receiving any events`，但 pro
 用户期望"proxy 检测到截断后透明重试、对客户端无感"。**重要修正**：本 RFC v1/v2 曾断言"流式 post-content 截断架构上无法透明重试"——**这是错的**，把"first-content gate（缓冲到首内容帧）"的能力上限误当成了"任何缓冲都不行"。真相是：
 
 - **live 流式下确实不能透明重试**：S4 重试环在拿到流对象时即退出、截断在 S5 消费帧时暴露、且帧**已逐帧转发**——已发字节无法收回，无重入路径。这一点对**当前默认的 live 路径**成立。
-- **但全缓冲就能**：若**缓冲整个响应、只在确认 `acc.sawMessageStop` 后才一次性 commit**（而非逐帧 live 写），则 mid-stream 截断时缓冲区可整个丢弃、回 S4 取全新上游流重试——客户端在缓冲期一帧真实内容都没收到（靠 heartbeat ping 保活），故"重试"对客户端透明。这正是 **L2 事务化缓冲重试**（`docs/rfc/streaming-upstream-rst-buffered-retry.md`）的机制，且它**显式复用本 RFC 的 `sawMessageStop`** 作为 commit 门控 + 重试触发（`complete && sawMessageStop`=交付，`complete && !sawMessageStop`=半截→丢弃重试）。
+- **但全缓冲就能**：若**缓冲整个响应、只在确认 `acc.sawMessageStop` 后才一次性 commit**（而非逐帧 live 写），则 mid-stream 截断时缓冲区可整个丢弃、回 S4 取全新上游流重试——客户端在缓冲期一帧真实内容都没收到（靠 heartbeat ping 保活），故"重试"对客户端透明。这正是 **L2 事务化缓冲重试**（`docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md`）的机制，且它**显式复用本 RFC 的 `sawMessageStop`** 作为 commit 门控 + 重试触发（`complete && sawMessageStop`=交付，`complete && !sawMessageStop`=半截→丢弃重试）。
 
 **L1（本 RFC）与 L2 的分工**：
 - **L1 = 检测信号 + 地板**：`sawMessageStop` 完整性判据 + 截断改判 fail + clean error 帧。**始终生效**，是 L2 重试耗尽后的兜底（L2 §3 伪码 line 78 `重试耗尽 → 维持现状(报错帧)` 即回落到 L1）。

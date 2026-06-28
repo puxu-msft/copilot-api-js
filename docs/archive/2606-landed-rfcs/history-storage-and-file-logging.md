@@ -1,3 +1,5 @@
+> **✅ 已落地并归档** — 见同目录 [README.md](README.md)。本 RFC 顶部原状态行陈旧（写草案/待实现），其机制已完整实现于 `src/`，活的现状以 docs/DESIGN.md「活的架构现状」为准。
+
 # RFC: History 存储瘦身（VACUUM + zstd + 合并帧 dedup）与文件日志 sink
 
 **状态：** 草案 — 待对抗 review + 用户确认后实现。
@@ -75,7 +77,7 @@
 
 > 不引入版本号字节：magic bytes 已足够判别 gzip vs zstd；合并帧的成员边界由 §2.3 的 **JSON 数组**自身表达（非二进制 framing），且只出现在 `stage='request_group'` 行，读侧按 stage 名分流，无歧义。
 >
-> **命名（H3）：** SQLite 列名 `blob_gz` 是历史遗留、**不改**（避免 schema 迁移），但内容已是 magic 自描述的 gzip|zstd。`EntryRow`/`StageRow` 的 **TS 字段改名 `blob_gz`→`blob`** 并在 SQL 映射处注释说明，避免命名谎报（项目原则8）。
+> **命名（H3）：** SQLite 列名 `blob_gz` 是历史遗留、**不改**（避免 schema 迁移），但内容已是 magic 自描述的 gzip|zstd。`EntryRow`/`StageRow` 的 **TS 字段改名 `blob_gz`→`blob`** 并在 SQL 映射处注释说明，避免命名谎报（项目best-complete-solution）。
 
 ### 2.1 B1 — 空间回收（启动期 VACUUM + auto_vacuum=INCREMENTAL + reaper 增量）
 

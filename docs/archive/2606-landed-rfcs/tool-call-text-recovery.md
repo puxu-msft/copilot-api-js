@@ -1,3 +1,5 @@
+> **✅ 已落地并归档** — 见同目录 [README.md](README.md)。本 RFC 顶部原状态行陈旧（写草案/待实现），其机制已完整实现于 `src/`，活的现状以 docs/DESIGN.md「活的架构现状」为准。
+
 # RFC: 上游 tool-call 文本降级的透明恢复（Tool-Call Text Recovery）
 
 **Status:** v3 draft（2 轮 4+2 路对抗 subagent 审查 + 主线逐条对码/对字节亲验已 incorporate；§11 open questions 待用户裁决）

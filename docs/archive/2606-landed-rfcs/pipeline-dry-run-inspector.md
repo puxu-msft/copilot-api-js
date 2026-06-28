@@ -1,3 +1,5 @@
+> **✅ 已落地并归档** — 见同目录 [README.md](README.md)。本 RFC 顶部原状态行陈旧（写草案/待实现），其机制已完整实现于 `src/`，活的现状以 docs/DESIGN.md「活的架构现状」为准。
+
 # RFC: 流水线 dry-run / inspector endpoint
 
 状态：草案 v2（已纳入第一轮 3 人对抗评审）。会话：2026-06-21。

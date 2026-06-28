@@ -1,6 +1,6 @@
 # 04 — 渐进迁移计划
 
-> ✅ **已执行完毕**：P0-P3 全部落地（进度见 [05-progress.md](./05-progress.md)）；v4 之后的 Stage A/B 见 [docs/rfc/response-pipeline/](../rfc/response-pipeline/)。本文件是迁移期计划，作历史记录。
+> ✅ **已执行完毕**：P0-P3 全部落地（进度见 [05-progress.md](./05-progress.md)）；v4 之后的 Stage A/B 见 [docs/archive/2606-landed-rfcs/response-pipeline/](../archive/2606-landed-rfcs/response-pipeline/)。本文件是迁移期计划，作历史记录。
 
 **核心纪律**：每个 commit 结束时系统必须 ① typecheck 绿 ② 全测试绿 ③ 三大能力（API/日志/原始记录）不破 ④ 所有格式可正常代理。渐进混合——逐模块选提升或重写，旧路径并存到切换完成。
 

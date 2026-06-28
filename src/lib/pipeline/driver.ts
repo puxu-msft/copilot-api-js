@@ -105,7 +105,7 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
    */
   runResponseSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts?: RunResponseOpts): Promise<ResponseOutcome>
   /**
-   * L2 — transactional buffered retry (docs/rfc/streaming-upstream-rst-buffered-retry.md).
+   * L2 — transactional buffered retry (docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md).
    * Buffers each attempt's rendered frames instead of writing them live; commits (flushes to
    * `sink`) ONLY on a clean drain that saw `message_stop`; on a transport-close RST (or a
    * truncation = clean drain without message_stop) re-runs the exchange for a fresh stream and
@@ -501,7 +501,7 @@ async function runResponseSink(
 }
 
 /**
- * L2 — transactional buffered retry (design §3, docs/rfc/streaming-upstream-rst-buffered-retry.md).
+ * L2 — transactional buffered retry (design §3, docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md).
  *
  * Buffers each attempt's rendered frames (does NOT write them live), then commits the WHOLE
  * buffer to `sink` ONLY when the attempt drained cleanly AND the handler's accumulator saw

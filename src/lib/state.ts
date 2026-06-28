@@ -206,7 +206,7 @@ export interface State {
    * short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit).
    * `false` (default) = live streaming, no buffering. `"on"` = buffer every
    * streaming response. `"tool_use_only"` = buffer only when the request carries
-   * `tools`. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
+   * `tools`. See docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md.
    */
   readonly protectStreamingGeneration: false | "on" | "tool_use_only"
   /** Max transport-close / truncation retries for the buffered-retry path (loop/cost guard; 0 = no retry). */

@@ -4,7 +4,7 @@
 
 **Goal:** 在代理层透明恢复 GitHub Copilot 上游偶发把 Anthropic 工具调用降级成纯文本（`call<invoke>…`）的响应，把它重建成标准 `tool_use` block 转发给客户端，默认 off。
 
-**Architecture:** 自包含模块 `src/lib/anthropic/recover-tool-call/`：纯函数 core（检测 + 位置不变量解析 + schema 定型）+ 依赖注入的 SSE transform（`processEvent`/`flush`，对标 `decode-tool-input.ts`）+ 非流式 helper。core 零依赖、可独立单测；transform 不读任何 handler 全局、所有依赖构造期注入，使其既能接入当前 `messages/handler.ts`，又能作为一个 transform stage 被未来 v4 pipeline 复用。设计依据见 [docs/rfc/tool-call-text-recovery.md](../../rfc/tool-call-text-recovery.md)。
+**Architecture:** 自包含模块 `src/lib/anthropic/recover-tool-call/`：纯函数 core（检测 + 位置不变量解析 + schema 定型）+ 依赖注入的 SSE transform（`processEvent`/`flush`，对标 `decode-tool-input.ts`）+ 非流式 helper。core 零依赖、可独立单测；transform 不读任何 handler 全局、所有依赖构造期注入，使其既能接入当前 `messages/handler.ts`，又能作为一个 transform stage 被未来 v4 pipeline 复用。设计依据见 [docs/archive/2606-landed-rfcs/tool-call-text-recovery.md](../../archive/2606-landed-rfcs/tool-call-text-recovery.md)。
 
 **v4 对位（docs/v4/03-spec/rewrite-registry.md）：** 本恢复器精确对应 v4 的一个 **S5 `ResponseRewrite`**——`name: "tool-call-text-recover"`、`order: 150`（在 `thinking-sig-compat`(100) 后、`tool-input-decode`(200) 与 `server-tool-filter`(300) 前；**必须 <300** 以便下游 server-tool-filter 做 wire→client name 还原 + index densify）、`appliesTo: env.format==="anthropic" ∧ state.recoverToolCallText`。v4 的 `transform(frame, state) → FrameAction{emit/suppress/buffer}` + `flush(state)` 与本计划的 `processEvent(parsed, raw) → frames[]` + `flush()` **同构**：`emit{frames}`≈`frames[]`、`buffer`≈返回`[]`并累积、CANDIDATE/COMMIT 跨帧状态≈v4 的 `RewriteState`（单请求单 rewrite 私有可变状态）。故 P1 rewrite-registry 落地时，迁移是机械包装（把 `frames[]` 包成 `{kind:"emit",frames}`、BUFFERING 返回 `{kind:"buffer"}`），core 与 transform 逻辑零改动。这与 v4「改写注册式 transform、顺序契约从注释升为 order 键」一致。
 
@@ -682,7 +682,7 @@ Expected: PASS（含 `every config key is tested or exempt` 守卫——证明�
 
 ```yaml
   # 透明恢复上游偶发把工具调用降级成纯文本（call<invoke>…）的响应，重建为标准 tool_use block。
-  # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/rfc/tool-call-text-recovery.md。
+  # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/archive/2606-landed-rfcs/tool-call-text-recovery.md。
   recover_tool_call_text: false
 ```
 
@@ -1372,7 +1372,7 @@ git commit -m "chore(recover): lint fixes"
 ```markdown
 # recover-tool-call
 
-上游 tool-call 文本降级的透明恢复。详见 [docs/rfc/tool-call-text-recovery.md](../../../../docs/rfc/tool-call-text-recovery.md)。
+上游 tool-call 文本降级的透明恢复。详见 [docs/archive/2606-landed-rfcs/tool-call-text-recovery.md](../../archive/2606-landed-rfcs/tool-call-text-recovery.md)。
 
 ## 结构
 - `core.ts` — 纯函数：检测（findDowngradeMarkPos）、位置不变量解析（validateInvokeRegion / recoverDowngradeTail）、门控谓词、schema 定型、合成 id。零依赖、零 I/O，可任意管线调用。

@@ -1,6 +1,6 @@
 # recover-tool-call
 
-上游 tool-call 文本降级的透明恢复。详见 [docs/rfc/tool-call-text-recovery.md](../../../../docs/rfc/tool-call-text-recovery.md)。
+上游 tool-call 文本降级的透明恢复。详见 [docs/archive/2606-landed-rfcs/tool-call-text-recovery.md](../../../../docs/archive/2606-landed-rfcs/tool-call-text-recovery.md)。
 
 ## 结构
 - `core.ts` — 纯函数：检测（findDowngradeMarkPos）、whitespace-tolerant 位置不变量解析（validateInvokeRegion / recoverDowngradeTail）、门控谓词（isResidueWhitespaceAdjacent / isInvokeTerminal）、schema 定型、合成 id（synthesizeToolUseId）。零依赖、零 I/O，可任意管线调用。

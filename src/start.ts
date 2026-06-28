@@ -353,7 +353,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   initHistory(true)
   await initRequestTelemetry()
 
-  // Sinks are AUTHORITATIVE (RFC docs/rfc/observability-rewrite.md §2.4-2.5) —
+  // Sinks are AUTHORITATIVE (RFC docs/archive/2606-landed-rfcs/observability-rewrite.md §2.4-2.5) —
   // manager.ts publishes request.* events; entries.ts/sessions.ts publish
   // history.* events via the publisher installed by setHistoryPublisher. The
   // one attach-order invariant that matters: HistorySink BEFORE WsSink, so a
