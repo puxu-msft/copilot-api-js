@@ -135,6 +135,7 @@ describe("prepareAnthropicRequest", () => {
 
   test("injects cache_control onto the last non-deferred tool and last system block", () => {
     setStateForTests({
+      cacheControlMode: "proxied", // default is now passthrough; this exercises proxied injection
       copilotToken: "test-token",
       vsCodeVersion: "1.100.0",
       accountType: "individual",
@@ -168,7 +169,7 @@ describe("prepareAnthropicRequest", () => {
     ])
   })
 
-  test("proxied mode strips client cache_control in messages then injects on tools/system", () => {
+  test("proxied mode strips client cache_control then re-injects message + tools/system breakpoints", () => {
     setStateForTests({
       cacheControlMode: "proxied",
       copilotToken: "test-token",
@@ -199,7 +200,9 @@ describe("prepareAnthropicRequest", () => {
       tools: [{ name: "Read", input_schema: { type: "object" } }],
     })
 
-    // Client cache_control in messages is stripped; proxy injects on tool + system
+    // Client cache_control stripped; proxy re-injects GHC-style: terminal assistant
+    // (no tool_use) + current plain user message, then tools + system on spare slots.
+    // The older user(a,b) is above the current user message → no breakpoint.
     expect(prepared.wire.messages).toEqual([
       {
         role: "user",
@@ -208,8 +211,8 @@ describe("prepareAnthropicRequest", () => {
           { type: "text", text: "b" },
         ],
       },
-      { role: "assistant", content: [{ type: "text", text: "c" }] },
-      { role: "user", content: [{ type: "text", text: "d" }] },
+      { role: "assistant", content: [{ type: "text", text: "c", cache_control: { type: "ephemeral" } }] },
+      { role: "user", content: [{ type: "text", text: "d", cache_control: { type: "ephemeral" } }] },
     ])
     expect(prepared.wire.tools).toEqual([{ name: "Read", input_schema: { type: "object" }, cache_control: { type: "ephemeral" } }])
     expect(prepared.wire.system).toEqual([{ type: "text", text: "system", cache_control: { type: "ephemeral" } }])
@@ -564,9 +567,10 @@ describe("cache_control modes", () => {
 
       const prepared = prepareAnthropicRequest(payloadWithScopedCacheControl())
 
-      // Client cache_control on messages stripped
+      // Client scope field stripped; proxy re-injects a clean ephemeral breakpoint on
+      // the current user message (last block).
       const messages = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
-      expect("cache_control" in messages[0].content[0]).toBe(false)
+      expect(messages[0].content[0].cache_control).toEqual({ type: "ephemeral" })
 
       // Proxy injected on last tool and last system block
       const tools = prepared.wire.tools as Array<Record<string, unknown>>
@@ -575,14 +579,15 @@ describe("cache_control modes", () => {
       const system = prepared.wire.system as Array<Record<string, unknown>>
       // sys1: no injection (not last)
       expect("cache_control" in system[0]).toBe(false)
-      // sys2: proxy-injected (last block)
+      // sys2: proxy-injected (last block), scope stripped
       expect(system[1].cache_control).toEqual({ type: "ephemeral" })
     })
 
     test("respects four-breakpoint limit after stripping client breakpoints", () => {
       setStateForTests({ ...stateBase, cacheControlMode: "proxied" })
 
-      // 6 client breakpoints — all stripped, then proxy injects only 2 (tool + system)
+      // 6 client breakpoints — all stripped. Proxy re-injects: 1 on the current user
+      // message (last block) + tool + system = 3, within the limit of 4.
       const prepared = prepareAnthropicRequest({
         model: "claude-opus-4-6",
         max_tokens: 1024,
@@ -603,17 +608,157 @@ describe("cache_control modes", () => {
         tools: [{ name: "Read", input_schema: { type: "object" } }],
       })
 
-      // Messages: all cache_control stripped
+      // Messages: client breakpoints stripped, proxy re-injects only on the LAST block.
       const messages = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
-      for (const block of messages[0].content) {
+      for (const block of messages[0].content.slice(0, 5)) {
         expect("cache_control" in block).toBe(false)
       }
+      expect(messages[0].content[5].cache_control).toEqual({ type: "ephemeral" })
 
-      // Proxy injected on tool + system (2 breakpoints, well within limit)
+      // Proxy injected on tool + system (spare slots after the 1 message breakpoint)
       const tools = prepared.wire.tools as Array<Record<string, unknown>>
       expect(tools[0].cache_control).toEqual({ type: "ephemeral" })
       const system = prepared.wire.system as Array<Record<string, unknown>>
       expect(system[0].cache_control).toEqual({ type: "ephemeral" })
+    })
+
+    // Helper: assert whether a message's blocks carry a cache_control breakpoint.
+    const msgHasBreakpoint = (msg: { content: unknown }): boolean =>
+      Array.isArray(msg.content) && msg.content.some((b: Record<string, unknown>) => "cache_control" in b)
+
+    test("agentic loop: breakpoints on each round's tool_result + current user prompt, tool-use assistants untouched", () => {
+      setStateForTests({ ...stateBase, cacheControlMode: "proxied" })
+
+      // prompt → assistant(tool_use) → tool_result → assistant(tool_use) → tool_result(latest)
+      const prepared = prepareAnthropicRequest({
+        model: "claude-opus-4-6",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: [{ type: "text", text: "do X" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "r1" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "Edit", input: {} }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "t2", content: "r2" }] },
+        ],
+      })
+
+      const messages = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
+      expect(msgHasBreakpoint(messages[0])).toBe(true) // current user prompt
+      expect(msgHasBreakpoint(messages[1])).toBe(false) // assistant tool_use
+      expect(msgHasBreakpoint(messages[2])).toBe(true) // tool_result round 1
+      expect(msgHasBreakpoint(messages[3])).toBe(false) // assistant tool_use
+      expect(msgHasBreakpoint(messages[4])).toBe(true) // tool_result round 2 (latest)
+    })
+
+    test("tool_result (user role) is treated as GHC Tool, not User — does not flip isBelowCurrentUserMessage", () => {
+      setStateForTests({ ...stateBase, cacheControlMode: "proxied" })
+
+      // If tool_result wrongly flipped isBelow, the real prompt (index 0) would be seen
+      // as "above current user message" and miss its breakpoint. Two split tool_results:
+      // only the last-in-round gets one.
+      const prepared = prepareAnthropicRequest({
+        model: "claude-opus-4-6",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: [{ type: "text", text: "prompt" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "t", name: "Bash", input: {} }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "r1" }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "r2" }] },
+        ],
+      })
+
+      const messages = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
+      expect(msgHasBreakpoint(messages[0])).toBe(true) // real prompt still gets one (isBelow stayed true)
+      expect(msgHasBreakpoint(messages[1])).toBe(false) // assistant tool_use
+      expect(msgHasBreakpoint(messages[2])).toBe(false) // r1 — not last in round
+      expect(msgHasBreakpoint(messages[3])).toBe(true) // r2 — last in round
+    })
+
+    test("inline role:system messages (including at the tail) are skipped without crashing or flipping isBelow", () => {
+      setStateForTests({ ...stateBase, cacheControlMode: "proxied" })
+
+      const prepared = prepareAnthropicRequest({
+        model: "claude-opus-4-6",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: [{ type: "text", text: "prompt" }] },
+          { role: "assistant", content: [{ type: "text", text: "answer" }] },
+          // Non-standard inline system message that survives when systemMessagesSanitize is off.
+          { role: "system", content: [{ type: "text", text: "reminder" }] } as never,
+        ],
+      })
+
+      const messages = prepared.wire.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>
+      expect(msgHasBreakpoint(messages[2])).toBe(false) // inline system: untouched
+      expect(msgHasBreakpoint(messages[1])).toBe(true) // terminal assistant
+      expect(msgHasBreakpoint(messages[0])).toBe(true) // current user prompt (isBelow not flipped by system)
+    })
+
+    test("breakpoint lands on the last non-thinking block, never on a thinking block", () => {
+      setStateForTests({ ...stateBase, cacheControlMode: "proxied" })
+
+      const prepared = prepareAnthropicRequest({
+        model: "claude-opus-4-6",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: [{ type: "text", text: "q" }] },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "reasoning", signature: "sig" },
+              { type: "text", text: "answer" },
+            ],
+          },
+        ],
+      })
+
+      const messages = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
+      const asst = messages[1].content
+      expect("cache_control" in asst[0]).toBe(false) // thinking block never marked
+      expect(asst[1].cache_control).toEqual({ type: "ephemeral" }) // text block marked
+    })
+
+    test("string-content user message is converted to a text block carrying the breakpoint", () => {
+      setStateForTests({ ...stateBase, cacheControlMode: "proxied" })
+
+      const prepared = prepareAnthropicRequest({
+        model: "claude-opus-4-6",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "just a string prompt" }],
+      })
+
+      const messages = prepared.wire.messages as Array<{ content: unknown }>
+      expect(messages[0].content).toEqual([{ type: "text", text: "just a string prompt", cache_control: { type: "ephemeral" } }])
+    })
+
+    test("messages saturate the four-breakpoint budget → tools and system get none", () => {
+      setStateForTests({ ...stateBase, cacheControlMode: "proxied" })
+
+      // Walking back: tool_result(latest) + terminal assistant + plain user + terminal
+      // assistant = 4 message breakpoints, leaving 0 for tools/system.
+      const prepared = prepareAnthropicRequest({
+        model: "claude-opus-4-6",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: [{ type: "text", text: "p" }] },
+          { role: "assistant", content: [{ type: "text", text: "a1" }] },
+          { role: "user", content: [{ type: "text", text: "p2" }] },
+          { role: "assistant", content: [{ type: "text", text: "a2" }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "r" }] },
+        ],
+        system: [{ type: "text", text: "sys" }],
+        tools: [{ name: "Read", input_schema: { type: "object" } }],
+      })
+
+      const messages = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
+      // 4 message breakpoints (msg1..4); msg0 not reached after budget exhausted.
+      const placed = messages.filter(msgHasBreakpoint).length
+      expect(placed).toBe(4)
+
+      const tools = prepared.wire.tools as Array<Record<string, unknown>>
+      expect("cache_control" in tools[0]).toBe(false)
+      const system = prepared.wire.system as Array<Record<string, unknown>>
+      expect("cache_control" in system[0]).toBe(false)
     })
   })
 

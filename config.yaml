@@ -303,10 +303,14 @@ anthropic:
 
   # Cache control mode for prompt caching.
   #   disabled:    strip all cache_control fields (no caching)
-  #   passthrough: forward client cache_control as-is
+  #   passthrough: forward client cache_control as-is (default) — clients like Claude Code send
+  #                their own well-tuned conversation breakpoints; the proxy stays out of the way
   #   sanitize:    forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
-  #   proxied:     proxy controls injection — auto-add breakpoints on tools/system (default)
-  cache_control: proxied
+  #   proxied:     proxy controls injection — strip client breakpoints, then re-inject GHC-style:
+  #                message-level breakpoints (last tool_result per round + current user message +
+  #                terminal assistant) caching the conversation, then tools/system on spare slots.
+  #                Use for clients that don't send their own cache_control.
+  cache_control: passthrough
 
   # Additional tool names that should never be deferred when tool_search is enabled.
   # tool_non_deferred:

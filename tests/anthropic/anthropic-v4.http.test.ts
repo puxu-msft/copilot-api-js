@@ -237,6 +237,8 @@ describe("Anthropic v4 driver path", () => {
     // client JSON is the upstream body verbatim.
     expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
     expect(capturedWire?.model).toBe("claude-sonnet-4.6")
+    // Default mode is passthrough — no proxy cache_control injection; the request (which
+    // carries none) reaches the wire verbatim.
     expect(capturedWire?.messages).toEqual([{ role: "user", content: "Hello" }])
     expect(capturedWire?.stream).toBe(false)
   })
@@ -307,8 +309,9 @@ describe("Anthropic v4 driver path", () => {
     expect(v4?.outboundRequest?.format).toBe("anthropic-messages")
     expect(v4?.outboundRequest?.messageCount).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number")
-    // Byte-fidelity of the effective/outbound bodies (richest-data-flow). Golden =
-    // the request body (a plain request: sanitize + prepare are no-ops here).
+    // Byte-fidelity of the effective/outbound bodies (richest-data-flow). Golden = the
+    // request body verbatim: passthrough (default) forwards client cache_control as-is, and
+    // this request carries none, so prepare leaves the payload shape untouched.
     const goldenBody = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
     expect(v4?.effectiveRequest?.payload).toEqual(goldenBody)
     expect(v4?.outboundRequest?.payload).toEqual(goldenBody)

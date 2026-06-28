@@ -6,10 +6,12 @@ import { copilotHeaders } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
 import {
   //
+  type MessageParam,
   type MessagesPayload,
   type OutputConfig,
   type Tool,
   EFFORT_LEVELS,
+  isToolResultBlock,
 } from "~/types/api/anthropic"
 
 import {
@@ -663,7 +665,10 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
  * - disabled:    strip all cache_control from the wire payload
  * - passthrough: leave everything as-is
  * - sanitize:    normalize all cache_control to { type: "ephemeral" }
- * - proxied:     strip client cache_control then auto-inject breakpoints
+ * - proxied:     strip client cache_control then auto-inject breakpoints —
+ *                message-level breakpoints first (GHC `addCacheBreakpoints`
+ *                strategy, caches the growing conversation), then tools+system
+ *                with any spare slots.
  */
 function applyCacheControlMode(wire: Record<string, unknown>): void {
   switch (state.cacheControlMode) {
@@ -683,6 +688,10 @@ function applyCacheControlMode(wire: Record<string, unknown>): void {
       // GHC reconstructs content from scratch so client cache_control never passes through;
       // only proxy-controlled breakpoints exist in the final payload.
       walkCacheControl(wire, () => undefined)
+      // Message-level breakpoints (GHC's primary strategy) before tools+system
+      // fallback; the latter recomputes its budget from existing breakpoints, so
+      // message breakpoints injected here automatically reduce its spare slots.
+      addMessageCacheControl(wire.messages as Array<MessageParam> | undefined)
       addToolsAndSystemCacheControl(wire)
       break
     }
@@ -785,6 +794,111 @@ function findLastIndex<T>(items: Array<T>, predicate: (item: T) => boolean): num
   }
 
   return -1
+}
+
+// ============================================================================
+// Message-level cache breakpoints (proxied mode)
+// ============================================================================
+
+/**
+ * Inject cache_control breakpoints into the message history, porting GHC's
+ * `addCacheBreakpoints` strategy (refs `cacheBreakpoints.ts`). Walks messages in
+ * reverse placing ephemeral breakpoints on: the last tool_result of each round
+ * below the current user message, the current (plain) user message, and terminal
+ * assistant messages (no tool_use) above it — caching the growing conversation
+ * prefix. Runs before `addToolsAndSystemCacheControl`, which then claims spare slots.
+ *
+ * GHC role → Anthropic block mapping: GHC's `Tool` role = a user message containing
+ * tool_result blocks (`isToolResultMessage`); GHC's `User` role = a user message
+ * WITHOUT tool_result (a real prompt); GHC's `Assistant` with no tool calls = an
+ * assistant message with no tool_use block. Inline `role:"system"` messages (which
+ * survive when `systemMessagesSanitize` is off) are skipped without flipping
+ * `isBelowCurrentUserMessage`, mirroring GHC's first-pass handling of
+ * `Raw.ChatRole.System`.
+ *
+ * Note: GHC runs on the pre-merge `Raw.ChatMessage[]` (one Tool message per result);
+ * here the wire is post-merge, so a round's parallel tool_results already sit in one
+ * user message — the per-round breakpoint count matches because merge collapses what
+ * GHC's `isLastToolResultInRound` de-duplicates.
+ */
+function addMessageCacheControl(messages: Array<MessageParam> | undefined): void {
+  if (!Array.isArray(messages) || messages.length === 0) return
+  let remaining = CACHE_CONTROL_BREAKPOINT_LIMIT - countCacheControlOccurrences(messages)
+  if (remaining <= 0) return
+
+  let isBelowCurrentUserMessage = true
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (remaining <= 0) break
+    const message = messages[index]
+
+    // Inline role:"system" message (non-standard, survives sanitize when off):
+    // skip without placing or flipping isBelowCurrentUserMessage.
+    if (message.role === "system") continue
+    // Defensive: proxied already stripped all breakpoints, so this never trips;
+    // kept to mirror GHC's `continue` on an already-marked message.
+    if (messageHasCacheControl(message)) continue
+
+    const isToolResultMsg = isToolResultMessage(message)
+    // `later` (chronologically next) undefined at the tail → treated as non-tool-result.
+    // GHC's `reversedMsgs.at(idx-1)` instead wraps to the FIRST (oldest) message at the
+    // tail; the two diverge only when messages[0] is itself a tool_result message —
+    // unreachable here because the Anthropic protocol requires messages[0] to be a real
+    // user prompt (a tool_result must reference a preceding tool_use).
+    const isLastToolResultInRound = isToolResultMsg && !isToolResultMessage(messages[index + 1])
+    const isPlainUser = message.role === "user" && !isToolResultMsg
+    const isAssistantWithoutToolUse = message.role === "assistant" && !messageHasToolUse(message)
+
+    if (((isBelowCurrentUserMessage && (isLastToolResultInRound || isPlainUser)) || isAssistantWithoutToolUse) && placeCacheControlOnLastBlock(message))
+      remaining -= 1
+
+    if (isPlainUser) isBelowCurrentUserMessage = false
+  }
+}
+
+/** True when a user message carries at least one tool_result block (GHC's `Tool` role). */
+function isToolResultMessage(message: MessageParam | undefined): boolean {
+  return message !== undefined && message.role === "user" && Array.isArray(message.content) && message.content.some((block) => isToolResultBlock(block))
+}
+
+/** True when an assistant message carries at least one tool_use block. */
+function messageHasToolUse(message: MessageParam): boolean {
+  return Array.isArray(message.content) && message.content.some((block) => block.type === "tool_use")
+}
+
+/** True when any top-level content block already carries a cache_control breakpoint. */
+function messageHasCacheControl(message: MessageParam): boolean {
+  if (!Array.isArray(message.content)) return false
+  return message.content.some((block) => Boolean((block as { cache_control?: unknown }).cache_control))
+}
+
+/**
+ * Place an ephemeral cache_control breakpoint on the last cache-control-supporting
+ * block of a message. Returns true when one was placed (so the caller decrements its
+ * budget). thinking / redacted_thinking blocks cannot carry cache_control (no field
+ * in the SDK type), so they are skipped — mirrors GHC's `contentBlockSupportsCacheControl`.
+ *
+ * When no block can carry the breakpoint (e.g. an all-thinking message), this returns
+ * false and the slot is reclaimed for an earlier message. GHC instead pushes a
+ * `{text:" "}` placeholder block to host its CacheBreakpoint part; we deliberately skip
+ * to avoid injecting whitespace noise (such messages are vanishingly rare in proxied).
+ */
+function placeCacheControlOnLastBlock(message: MessageParam): boolean {
+  // String content → a single text block carrying the breakpoint. GHC does the same
+  // when merging (string → [{type:"text", text}]), so upstream treats them as equivalent.
+  if (typeof message.content === "string") {
+    if (message.content.length === 0) return false
+    message.content = [{ type: "text", text: message.content, cache_control: EPHEMERAL_CACHE_CONTROL }]
+    return true
+  }
+  if (!Array.isArray(message.content)) return false
+
+  const index = findLastIndex(message.content, (block) => block.type !== "thinking" && block.type !== "redacted_thinking")
+  if (index < 0) return false
+
+  const block = message.content[index] as { cache_control?: typeof EPHEMERAL_CACHE_CONTROL }
+  if (block.cache_control) return false
+  block.cache_control = EPHEMERAL_CACHE_CONTROL
+  return true
 }
 
 /**

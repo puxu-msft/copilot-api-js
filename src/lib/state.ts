@@ -366,10 +366,13 @@ export interface State {
   /**
    * Cache control mode for Anthropic requests.
    * - "disabled": strip all cache_control fields
-   * - "passthrough": forward client cache_control as-is
+   * - "passthrough": forward client cache_control as-is (default — clients like Claude Code
+   *   send their own well-tuned conversation breakpoints)
    * - "sanitize": forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
-   * - "proxied": proxy controls injection (auto-add breakpoints on tools/system)
-   * Default: "proxied".
+   * - "proxied": proxy controls injection — strip client breakpoints, then re-inject GHC-style
+   *   message-level breakpoints (caching the conversation) + tools/system fallback. For clients
+   *   that don't send their own cache_control. See request-preparation.ts addMessageCacheControl.
+   * Default: "passthrough".
    */
   readonly cacheControlMode: CacheControlMode
   /** Additional tool names that should never be deferred (merged with built-in list) */
@@ -1040,7 +1043,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   contextEditingKeepTools: 3,
   contextEditingKeepThinking: 1,
   toolSearchEnabled: true,
-  cacheControlMode: "proxied" as CacheControlMode,
+  cacheControlMode: "passthrough" as CacheControlMode,
   nonDeferredTools: [] as ReadonlyArray<string>,
   rewriteSystemReminders: false as const,
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
