@@ -362,7 +362,7 @@ ui/
 | [tool-use.md](tool-use.md) | Tool Use 机制、server tools、tool_search |
 | [anthropic-compat.md](anthropic-compat.md) | Anthropic API 兼容性、功能矩阵 |
 | [gemini-compat.md](gemini-compat.md) | Gemini API 兼容性、客户端配置、限制 |
-| [history.md](history.md) | History 系统、存储、WebSocket、Memory Pressure |
+| [history.md](history.md) | History 系统、存储、WebSocket |
 | [streaming.md](streaming.md) | 流式处理、WebSocket Transport、重复性检测 |
 | [shutdown.md](shutdown.md) | 优雅关闭、请求生命周期、Stale Reaper |
 | [bun-runtime-timeout.md](bun-runtime-timeout.md) | Bun 原生 fetch 内建 300s 超时陷阱、`timeout: false` 修复 |
