@@ -34,6 +34,8 @@ import {
   setHistoryPublisher,
   startSearchIndexBackfill,
 } from "./lib/history"
+import { getDatabase } from "./lib/history/sqlite/connection"
+import { applyForwardMigrations } from "./lib/history/sqlite/migrations/run"
 import { cacheModels } from "./lib/models/client"
 import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { normalizeForMatching } from "./lib/models/model-name"
@@ -351,6 +353,17 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Initialized" line is captured by the file sink and the --mock-rate-limiter-
   // throttled forced state transition actually reaches the bus).
   initHistory(true)
+  // Apply forward (001+) schema migrations now that the DB is open (initHistory
+  // → openDatabase built the floor + history_meta) and BEFORE the server starts
+  // serving. A failure is a HARD refuse-to-start: schema DDL is foundational, so
+  // serving on a half-migrated schema is worse than not starting (mirrors the
+  // config-parse abort above; deliberately NOT left to global unhandledRejection).
+  try {
+    await applyForwardMigrations(getDatabase())
+  } catch (err: unknown) {
+    consola.error("[history/sqlite] schema migration failed; refusing to start (a half-migrated schema is more dangerous than not starting)", err)
+    process.exit(1)
+  }
   await initRequestTelemetry()
 
   // Sinks are AUTHORITATIVE (RFC docs/archive/2606-landed-rfcs/observability-rewrite.md §2.4-2.5) —

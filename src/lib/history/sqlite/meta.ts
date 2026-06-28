@@ -27,6 +27,14 @@ export const SEARCH_BACKFILL_CURSOR_KEY = "search_index_backfill_cursor"
  */
 export const SEARCH_INDEX_DEDUP_RATIO_KEY = "search_index_dedup_ratio"
 
+/**
+ * `history_meta` key: the Umzug forward-migration ledger — a JSON `string[]` of
+ * applied migration names (see migrations/storage.ts). Kept in history_meta so
+ * schema-migration provenance lives in the same single ledger as the search
+ * index flags rather than a separate migrations table.
+ */
+export const MIGRATIONS_RUN_KEY = "schema_migrations"
+
 /** Read one history_meta value (null when absent). */
 export function getMeta(db: Database, key: string): string | null {
   const row = db.prepare("SELECT value FROM history_meta WHERE key = ?").get(key) as { value: string | null } | null

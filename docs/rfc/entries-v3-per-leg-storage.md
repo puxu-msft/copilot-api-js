@@ -1,6 +1,8 @@
 # RFC: entries_v3 —— 每生命周期腿一等列存储
 
-> Status: **DRAFT v2**（设计阶段，未实现）。本 RFC 走 [[big-feature-pipeline]]：设计稿 → 3+ 轮对抗 subagent review → companion plan + per-phase prompts → 按 phase 实现。
+> ⚠️ **Status: DRAFT v2 — 部分前提已陈旧（FTS-era，待刷新后再规划 v3）**。本 RFC 写于 trigram FTS 时代,其**搜索/存储相关前提已被 search_index 取代**:① `entries_fts` trigram FTS(那 2.5G 大头)+ `search_text` 列**均已退役**(见 [search-index-delta-forest.md](search-index-delta-forest.md) → 内容寻址 `msg_blob`/`req_msg`/`req_aux`,`connection.ts` 已 `dropLegacyFtsAndSearchText`);② 故本文的"2.5GB FTS 失衡"存储画像、C3/C4 的"FTS rebuild / 两表搜索窗口 / VACUUM 后 rebuild FTS"、`search_text` 派生列、OQ-B(FTS 失衡治理)**全部作废或需重写**。③ 迁移机制改用 **Umzug 有序账本**(见 [migration-framework-umzug.md](migration-framework-umzug.md)):v3 的 DDL(建 entries_v3/attempt_legs)作一条 Umzug 迁移、数据搬迁作它 kick 的后台 job、都记 `history_meta` 账本。**仍有效的核心**:每腿一等列存储形状(弃 request_group 容器、定向读一腿不解压它腿)+ 数据重构走 canonical 写路径重派生(C1-C4 数据移动骨架)。**v3 真正动工前须先刷新本 RFC** 对齐 search_index + Umzug 现状。
+>
+> ~~Status: DRAFT v2（设计阶段，未实现）。本 RFC 走 [[big-feature-pipeline]]：设计稿 → 3+ 轮对抗 subagent review → companion plan + per-phase prompts → 按 phase 实现。~~
 > v2 修订：吸收第 1 轮 3 个对抗 subagent review 的发现 + 实测校正存储画像。触发：preview backfill 事故暴露 `request_group` 合并帧"为读一腿要解压三腿"的劣势（见 [[methodology-derived-column-backfill-targeted-and-nonblocking]]）。
 
 ## 决策记录（operator 已定 + review 后定的硬约束）
