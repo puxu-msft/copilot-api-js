@@ -22,6 +22,7 @@ import {
 import { getEntryById } from "~/lib/history/sqlite/read"
 import {
   //
+  drainPendingFinalizations,
   getHistory,
   listInFlightEntries,
 } from "~/lib/history/store"
@@ -486,6 +487,8 @@ describe("POST /v1/messages — web_search double-hop", () => {
     // verify the heavy fields (inboundRequest / sseEvents / inboundResponse /
     // outboundResponse — all stored as STAGE_TOP_KEYS in entry_stages, not the
     // head blob) survive finalization for the re-dispatch path.
+    // Finalize is async now (libuv-offloaded compression) — drain it before asserting.
+    await drainPendingFinalizations()
     expect(listInFlightEntries().some((e) => e.id === entry.id)).toBe(false) // finalized
     const persisted = getEntryById(entry.id)
     expect(persisted).toBeDefined()

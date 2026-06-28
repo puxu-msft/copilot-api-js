@@ -16,7 +16,11 @@ import {
   toEntrySummary,
   updateInFlight,
 } from "./in-flight"
-import { runHistoryWrite } from "./persist-guard"
+import {
+  //
+  runHistoryWrite,
+  runHistoryWriteAsync,
+} from "./persist-guard"
 import {
   //
   getEntryById,
@@ -122,8 +126,25 @@ const MAX_FINALIZE_RETRIES = 5
 /** id → consecutive transient finalize-failure count (entries retained in-flight for reaper-tick retry). */
 const finalizeRetries = new Map<string, number>()
 
-/** The terminal (full) write. Swappable for tests to exercise the failure paths. */
-type TerminalWriter = (entry: HistoryEntry) => void
+/**
+ * Ids currently inside an in-flight (async) finalize — the re-entrancy guard
+ * (RFC history-finalize-async-offload I2). A finalize now spans `await`s
+ * (libuv compression), so a reaper retry tick or a duplicate terminal event can
+ * re-enter `finalizeEntry(id)` for the same id mid-flight; the guard makes the
+ * second call a no-op rather than a double write / double removeInFlight.
+ */
+const finalizing = new Set<string>()
+
+/**
+ * Promises for in-flight async finalizes — drained by `drainPendingFinalizations`
+ * BEFORE the DB is closed at shutdown (I4). This is the SELF-OWNED drain handle;
+ * it does NOT rely on the observability bus (HistorySink only subscribes to
+ * `request.*`, so its finalize promise never enters any `publishAndFlush` set).
+ */
+const pendingFinalizations = new Set<Promise<void>>()
+
+/** The terminal (full) write — async (compresses on the libuv threadpool). Swappable for tests. */
+type TerminalWriter = (entry: HistoryEntry) => Promise<void>
 let terminalWriter: TerminalWriter = insertCompletedEntry
 
 /**
@@ -134,6 +155,18 @@ let terminalWriter: TerminalWriter = insertCompletedEntry
  */
 export function __setTerminalWriterForTests(fn?: TerminalWriter): void {
   terminalWriter = fn ?? insertCompletedEntry
+}
+
+/**
+ * Await every in-flight async finalize. Loops until quiescent so a finalize that
+ * is kicked DURING the drain (e.g. a request settling at shutdown) is also waited
+ * on. Never rejects (each finalize swallows its own errors). Used by
+ * `shutdownHistory` before `closeDatabase` (I4) and by tests.
+ */
+export async function drainPendingFinalizations(): Promise<void> {
+  while (pendingFinalizations.size > 0) {
+    await Promise.allSettled(pendingFinalizations)
+  }
 }
 
 /**
@@ -161,15 +194,41 @@ export function __setTerminalWriterForTests(fn?: TerminalWriter): void {
  * + the small inbound_request/outbound_response stages) so the FACT of the
  * request is never lost.
  */
-export function finalizeEntry(id: string): void {
+export async function finalizeEntry(id: string): Promise<void> {
   if (!historyState.enabled) return
   const entry = getInFlight(id)
   if (!entry) {
     finalizeRetries.delete(id)
     return
   }
+  // I2: a finalize is already in flight for this id (reaper retry tick / a duplicate
+  // terminal event landing during the async CPU phase) → no-op, and do NOT touch
+  // finalizeRetries (the in-flight finalize owns the retain/retry decision).
+  if (finalizing.has(id)) return
+  finalizing.add(id)
+  const p = doFinalizeEntry(id, entry)
+  pendingFinalizations.add(p)
+  try {
+    await p
+  } finally {
+    // Clear the in-flight tracking set FIRST, then the re-entrancy guard LAST —
+    // `doFinalizeEntry` has already done its removeInFlight / finalizeRetries.set
+    // mutation by the time `p` settles, so releasing the guard here lets a later
+    // reaper tick re-enter cleanly for a transient-retained entry (I2 ③).
+    pendingFinalizations.delete(p)
+    finalizing.delete(id)
+  }
+}
 
-  const result = runHistoryWrite("finalize", () => terminalWriter(entry))
+/**
+ * The actual finalize work, run once per id (guarded by `finalizing`). Awaits the
+ * async terminal write (libuv-offloaded compression + sync tx), then applies the
+ * non-lossy outcome: success → removeInFlight; transient + reaper running → retain
+ * for a later retry; permanent / exhausted / no-reaper → degraded tombstone. Never
+ * throws (every write goes through the guard).
+ */
+async function doFinalizeEntry(id: string, entry: HistoryEntry): Promise<void> {
+  const result = await runHistoryWriteAsync("finalize", () => terminalWriter(entry))
   if (result.ok) {
     finalizeRetries.delete(id)
     removeInFlight(id)
@@ -218,18 +277,22 @@ export function finalizeEntry(id: string): void {
  * transiently and were retained in-flight. Each retry runs the full finalize path
  * (success → persisted + removed; still-failing → re-queued, or past
  * MAX_FINALIZE_RETRIES → tombstoned + dropped), so a permanently-unwritable entry
- * cannot accumulate. No-op when nothing is pending.
+ * cannot accumulate. No-op when nothing is pending. Returns a promise so the
+ * shutdown drain can await the kicked finalizes (I4); the reaper hook fires it
+ * fire-and-forget (it never rejects).
  */
-export function retryPendingFinalizations(): void {
+export async function retryPendingFinalizations(): Promise<void> {
   if (finalizeRetries.size === 0) return
-  for (const id of finalizeRetries.keys()) finalizeEntry(id)
+  await Promise.allSettled([...finalizeRetries.keys()].map((id) => finalizeEntry(id)))
 }
 
 // Register the drain on every reaper tick. Done here (not in state.ts) so the
 // reaper stays decoupled from the store layer — it invokes an opaque callback,
 // and the store owns what that callback does. Safe at module load: the hook is
 // just stored; the timer that calls it is started later by initHistory.
-setReaperTickHook(retryPendingFinalizations)
+// Fire-and-forget: retryPendingFinalizations is async now but never rejects
+// (every finalize swallows its own errors), so the tick doesn't await it.
+setReaperTickHook(() => void retryPendingFinalizations())
 
 /**
  * Eager incremental persistence: write the head row (+ whatever stage rows are

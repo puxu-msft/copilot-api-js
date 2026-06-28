@@ -11,9 +11,12 @@ import {
 
 // Function-only cyclic import (state ↔ entries): used solely inside
 // `shutdownHistory` at call time, never at module eval, so it is safe — by then
-// both modules are fully initialized (entries' `retryPendingFinalizations` is a
-// hoisted function declaration).
-import { retryPendingFinalizations } from "./entries"
+// both modules are fully initialized (these are hoisted function declarations).
+import {
+  //
+  drainPendingFinalizations,
+  retryPendingFinalizations,
+} from "./entries"
 import { clearInFlight } from "./in-flight"
 import {
   //
@@ -82,20 +85,42 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   unsubscribeHistoryLimit = onHistoryLimitChange(setHistoryMaxEntries)
 }
 
-export function shutdownHistory(): void {
+/**
+ * Stop history BACKGROUND work WITHOUT closing the DB (graceful Phase 1).
+ *
+ * The DB must stay open through Phase 2/3 request drain: a request completing
+ * during drain triggers an ASYNC finalize (RFC history-finalize-async-offload),
+ * which writes to the DB after this point. Closing here (the pre-refactor
+ * behavior) would make every such finalize hit a dead handle and lose the entry
+ * (§4.1 CRITICAL). The DB is closed later by `shutdownHistory`, invoked from the
+ * shutdown `finalize()` step AFTER drain.
+ *
+ * Stops the reaper + backfill so no new background writes start, but leaves
+ * `enabled` true so in-flight finalizes still persist.
+ */
+export function stopHistoryBackgroundWork(): void {
   unsubscribeHistoryLimit?.()
   unsubscribeHistoryLimit = undefined
   stopReaper()
-  // Signal the background backfill to stop BEFORE closing the DB (it runs in
-  // graceful Phase 1, long before the Phase-3 abort signal exists — a post-close
-  // prepare would throw on a dead handle). The loop saves its cursor per batch, so
-  // whatever it has not yet reached resumes on the next start.
+  // Signal the background backfill to stop BEFORE the DB closes (it saves its
+  // cursor per batch and resumes on next start — a post-close prepare would throw).
   stopSearchIndexBackfill()
-  // Last-chance drain BEFORE closing the DB: the reaper is now stopped, so each
-  // still-pending deferred finalize that fails again will tombstone (its
-  // `isReaperRunning()` gate is now false) instead of re-retaining — nothing
-  // transiently-deferred is silently lost on graceful shutdown.
-  retryPendingFinalizations()
+}
+
+/**
+ * Final history teardown (graceful `finalize()` step, AFTER request drain): await
+ * every in-flight async finalize, run a last-chance retry for transient-deferred
+ * entries (the reaper is stopped, so a re-failure tombstones instead of leaking),
+ * drain once more in case the retry kicked new finalizes, THEN close the DB. This
+ * is the I4 drain that makes async finalize lossless at shutdown. Async; awaited
+ * by the shutdown sequence before process exit.
+ */
+export async function shutdownHistory(): Promise<void> {
+  // Idempotent: a direct call (tests / non-graceful paths) must also stop background work.
+  stopHistoryBackgroundWork()
+  await drainPendingFinalizations()
+  await retryPendingFinalizations()
+  await drainPendingFinalizations()
   closeDatabase()
   enabled = false
 }

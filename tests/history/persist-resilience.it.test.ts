@@ -26,6 +26,7 @@ import { upsertHeadRow } from "~/lib/history/sqlite/write"
 import {
   //
   __setTerminalWriterForTests,
+  drainPendingFinalizations,
   finalizeEntry,
   getInFlightEntry,
   initHistory,
@@ -72,22 +73,22 @@ function sqliteError(message: string, code?: string): Error {
 }
 
 describe("history persistence resilience", () => {
-  beforeEach(() => {
-    shutdownHistory()
+  beforeEach(async () => {
+    await shutdownHistory()
     setHistoryConfig({ historyDbPath: ":memory:" })
     initHistory(true)
     openInMemoryDatabase()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     __setTerminalWriterForTests(undefined)
-    shutdownHistory()
+    await shutdownHistory()
     closeDatabase()
     setHistoryConfig({ historyDbPath: "" })
   })
 
   // ── Fix C: stage persistence is head-first / FK-safe ────────────────────────
-  test("persistEntryStages writes head-first when the head row is not yet persisted (no swallowed FK)", () => {
+  test("persistEntryStages writes head-first when the head row is not yet persisted (no swallowed FK)", async () => {
     // In-flight only — NO persistEntryEager, so there is no head row in SQLite yet.
     insertEntry(baseEntry("s1"))
     expect(getEntryById("s1")).toBeUndefined()
@@ -102,7 +103,7 @@ describe("history persistence resilience", () => {
   })
 
   // ── Fix B: finalize is non-lossy ────────────────────────────────────────────
-  test("finalize retains the in-flight entry on a TRANSIENT write error, then a reaper drain persists it", () => {
+  test("finalize retains the in-flight entry on a TRANSIENT write error, then a reaper drain persists it", async () => {
     insertEntry(baseEntry("t1"))
     markFailed("t1")
 
@@ -110,7 +111,7 @@ describe("history persistence resilience", () => {
     __setTerminalWriterForTests(() => {
       throw sqliteError("database is locked", "SQLITE_BUSY")
     })
-    finalizeEntry("t1")
+    await finalizeEntry("t1")
 
     // NOT dropped: retained in-flight, nothing written, no silent loss.
     expect(getInFlightEntry("t1")).toBeDefined()
@@ -118,12 +119,12 @@ describe("history persistence resilience", () => {
 
     // Contention clears → reaper-tick drain re-attempts and the entry persists.
     __setTerminalWriterForTests(undefined)
-    retryPendingFinalizations()
+    await retryPendingFinalizations()
     expect(getInFlightEntry("t1")).toBeUndefined()
     expect(getEntryById("t1")?.state).toBe("failed")
   })
 
-  test("finalize degrades to a tombstone on a PERMANENT write error (the FACT survives, never silently lost)", () => {
+  test("finalize degrades to a tombstone on a PERMANENT write error (the FACT survives, never silently lost)", async () => {
     insertEntry(baseEntry("p1"))
     markFailed("p1")
 
@@ -133,7 +134,7 @@ describe("history persistence resilience", () => {
     __setTerminalWriterForTests(() => {
       throw sqliteError("string or blob too big", "SQLITE_TOOBIG")
     })
-    finalizeEntry("p1")
+    await finalizeEntry("p1")
     __setTerminalWriterForTests(undefined)
 
     // In-flight dropped (bounded memory), but the tombstone is READABLE and
@@ -149,7 +150,7 @@ describe("history persistence resilience", () => {
     expect(row?.outboundResponse?.error).toContain("NGHTTP2_CANCEL")
   })
 
-  test("with the reaper disabled/stopped, a transient failure tombstones immediately (no in-flight leak)", () => {
+  test("with the reaper disabled/stopped, a transient failure tombstones immediately (no in-flight leak)", async () => {
     insertEntry(baseEntry("d1"))
     markFailed("d1")
     stopReaper() // no drain will ever come → retaining would leak forever
@@ -157,7 +158,7 @@ describe("history persistence resilience", () => {
     __setTerminalWriterForTests(() => {
       throw sqliteError("database is locked", "SQLITE_BUSY")
     })
-    finalizeEntry("d1")
+    await finalizeEntry("d1")
     __setTerminalWriterForTests(undefined)
 
     // Must NOT be retained in-flight (would leak); degrades straight to tombstone.
@@ -165,19 +166,19 @@ describe("history persistence resilience", () => {
     expect(getEntryById("d1")?.state).toBe("failed")
   })
 
-  test("the reaper timer (transient-retry drain) runs with retention limits=0 — drain not coupled to eviction config", () => {
+  test("the reaper timer (transient-retry drain) runs with retention limits=0 — drain not coupled to eviction config", async () => {
     // A user setting both limits to 0 ("unlimited retention") must NOT lose the
     // deferred-finalize drain: the timer is gated on the interval knob, not on
     // the limits. Without the decouple, limits=0 forced every transient finalize
     // failure straight to a lossy tombstone.
-    shutdownHistory()
+    await shutdownHistory()
     setHistoryConfig({ historyDbPath: ":memory:", historySuccessLimit: 0, historyFailureLimit: 0 })
     initHistory(true)
     expect(isReaperRunning()).toBe(true)
     setHistoryConfig({ historySuccessLimit: 50, historyFailureLimit: 200 }) // restore for sibling tests
   })
 
-  test("a head-only row (no stage rows) reads back without crashing — inboundRequest is floored", () => {
+  test("a head-only row (no stage rows) reads back without crashing — inboundRequest is floored", async () => {
     // Simulate the worst case: even the tombstone stage write failed, leaving a
     // head-only row. The read path must floor inboundRequest so consumers
     // (`entry.inboundRequest.messages`, CSV export) never crash on a partial row.
@@ -193,16 +194,16 @@ describe("history persistence resilience", () => {
     expect(() => row?.inboundRequest?.messages?.length).not.toThrow()
   })
 
-  test("finalize succeeds normally when the write works (baseline — entry persisted + removed from in-flight)", () => {
+  test("finalize succeeds normally when the write works (baseline — entry persisted + removed from in-flight)", async () => {
     insertEntry(baseEntry("ok1"))
     markFailed("ok1")
-    finalizeEntry("ok1")
+    await finalizeEntry("ok1")
     expect(getInFlightEntry("ok1")).toBeUndefined()
     expect(getEntryById("ok1")?.state).toBe("failed")
   })
 
   // ── Fix D: the reaper tick drains deferred finalizations (hook wiring) ───────
-  test("a reaper tick drains a transiently-deferred finalize via the registered hook", () => {
+  test("a reaper tick drains a transiently-deferred finalize via the registered hook", async () => {
     insertEntry(baseEntry("r1"))
     markFailed("r1")
 
@@ -210,13 +211,15 @@ describe("history persistence resilience", () => {
     __setTerminalWriterForTests(() => {
       throw sqliteError("database is locked", "SQLITE_BUSY")
     })
-    finalizeEntry("r1")
+    await finalizeEntry("r1")
     expect(getInFlightEntry("r1")).toBeDefined()
 
     // The writer recovers; one reaper tick runs the auto-registered drain hook
-    // (retryPendingFinalizations) + a WAL checkpoint, persisting the entry.
+    // (retryPendingFinalizations) + a WAL checkpoint, persisting the entry. The
+    // hook is fire-and-forget (async finalize), so drain the kicked finalize.
     __setTerminalWriterForTests(undefined)
     runReaperTick(100, 200)
+    await drainPendingFinalizations()
     expect(getInFlightEntry("r1")).toBeUndefined()
     expect(getEntryById("r1")?.state).toBe("failed")
   })

@@ -26,24 +26,24 @@ import {
 import { setStateForTests } from "~/lib/state"
 
 describe("history session resolution", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setStateForTests({ historyDbPath: ":memory:" })
     openInMemoryDatabase()
     initHistory(true, 200)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     clearHistory()
-    shutdownHistory()
+    await shutdownHistory()
     closeDatabase()
     setStateForTests({ historyDbPath: "" })
   })
 
-  test("does not create a synthetic session when no id is provided", () => {
+  test("does not create a synthetic session when no id is provided", async () => {
     expect(getCurrentSession("anthropic-messages")).toBeUndefined()
   })
 
-  test("extracts a real client session id from headers", () => {
+  test("extracts a real client session id from headers", async () => {
     const headers = new Headers({
       "x-request-id": "req-only",
       "x-interaction-id": "interaction-123",
@@ -52,7 +52,7 @@ describe("history session resolution", () => {
     expect(getSessionIdFromHeaders(headers)).toBe("interaction-123")
   })
 
-  test("extracts the Claude Code session id and prefers it over generic candidates", () => {
+  test("extracts the Claude Code session id and prefers it over generic candidates", async () => {
     // Claude Code sends `x-claude-code-session-id` (a stable per-conversation UUID).
     const headers = new Headers({
       "x-claude-code-session-id": "ce6fd04e-a162-4cd6-bdff-81d0b110c8fb",
@@ -62,7 +62,7 @@ describe("history session resolution", () => {
     expect(getSessionIdFromHeaders(headers)).toBe("ce6fd04e-a162-4cd6-bdff-81d0b110c8fb")
   })
 
-  test("extracts the Claude Code agent id (subagent marker); main agent has none", () => {
+  test("extracts the Claude Code agent id (subagent marker); main agent has none", async () => {
     // Subagent requests carry x-claude-code-agent-id; the main agent sends none → undefined.
     expect(getAgentIdFromHeaders(new Headers({ "x-claude-code-agent-id": "acc28fdf99a8d5740" }))).toBe("acc28fdf99a8d5740")
     expect(getAgentIdFromHeaders(new Headers())).toBeUndefined()
@@ -70,7 +70,7 @@ describe("history session resolution", () => {
     expect(getAgentIdFromHeaders({ "x-claude-code-agent-id": "sub-1" })).toBe("sub-1") // plain-record form
   })
 
-  test("uses previous response ids as real responses session anchors", () => {
+  test("uses previous response ids as real responses session anchors", async () => {
     expect(resolveResponseSessionId("resp_root")).toBe("resp_root")
 
     registerResponseSession("resp_followup", "resp_root")

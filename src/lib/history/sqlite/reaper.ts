@@ -125,11 +125,18 @@ export function reclaimStaleActiveRows(maxAgeMs: number = state.staleRequestMaxA
  */
 export function runReaperTick(successLimit: number, failureLimit: number): void {
   const db = getDatabase()
-  // Drain transiently-deferred history finalizations FIRST, so freshly-persisted
-  // rows are counted/bucketed in the eviction pass this same tick.
+  // Kick the transiently-deferred finalize drain. Since finalize is async
+  // (libuv-offloaded compression, RFC history-finalize-async-offload), the hook is
+  // fire-and-forget — a re-attempted finalize persists on a later microtask, so its
+  // row is counted/bucketed by the NEXT tick's eviction, not this one. Benign: a
+  // one-tick delay in counting a freshly-persisted retry never evicts it early.
   tickHook?.()
   // Reclaim stale active rows so freshly-interrupted rows are eligible for
-  // failure-bucket eviction in the same tick.
+  // failure-bucket eviction in the same tick. Independent of in-flight finalizes:
+  // it flips PERSISTED rows by status only. A row mid async-finalize is still
+  // `streaming` here and may be flipped to `interrupted`, but the finalize's
+  // terminal head upsert overwrites it back to its real terminal state (I3 benign —
+  // finalize always wins; no loss/corruption, only a transient blip).
   reclaimStaleActiveRows()
   runReaperOnce(successLimit, failureLimit)
   // Return the pages just freed by eviction to the OS (no-op unless

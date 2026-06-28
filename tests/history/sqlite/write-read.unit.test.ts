@@ -54,21 +54,21 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
 }
 
 describe("sqlite write/read", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     closeDatabase()
     openInMemoryDatabase()
   })
 
-  test("insert and query by id", () => {
+  test("insert and query by id", async () => {
     const entry = makeEntry({ id: "e1", sessionId: "s1" })
-    insertCompletedEntry(entry)
+    await insertCompletedEntry(entry)
     const got = getEntryById("e1")
     expect(got?.id).toBe("e1")
     expect(got?.outboundResponse?.usage.input_tokens).toBe(1)
   })
 
-  test("queryEntries filters by model", () => {
-    insertCompletedEntry(
+  test("queryEntries filters by model", async () => {
+    await insertCompletedEntry(
       makeEntry({
         id: "a",
         inboundRequest: { model: "m1" },
@@ -80,7 +80,7 @@ describe("sqlite write/read", () => {
         },
       }),
     )
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "b",
         inboundRequest: { model: "m2" },
@@ -96,11 +96,11 @@ describe("sqlite write/read", () => {
     expect(byM1.map((e) => e.id)).toEqual(["a"])
   })
 
-  test("queryEntries filters by exact state (granular, beats coarse success); pid filter works", () => {
-    insertCompletedEntry(makeEntry({ id: "c", state: "completed", process: { pid: 100, bootTime: 1, version: "v" } }))
-    insertCompletedEntry(makeEntry({ id: "f", state: "failed", process: { pid: 100, bootTime: 1, version: "v" } }))
-    insertCompletedEntry(makeEntry({ id: "ab", state: "aborted", process: { pid: 200, bootTime: 1, version: "v" } }))
-    insertCompletedEntry(makeEntry({ id: "intr", state: "interrupted", process: { pid: 200, bootTime: 1, version: "v" } }))
+  test("queryEntries filters by exact state (granular, beats coarse success); pid filter works", async () => {
+    await insertCompletedEntry(makeEntry({ id: "c", state: "completed", process: { pid: 100, bootTime: 1, version: "v" } }))
+    await insertCompletedEntry(makeEntry({ id: "f", state: "failed", process: { pid: 100, bootTime: 1, version: "v" } }))
+    await insertCompletedEntry(makeEntry({ id: "ab", state: "aborted", process: { pid: 200, bootTime: 1, version: "v" } }))
+    await insertCompletedEntry(makeEntry({ id: "intr", state: "interrupted", process: { pid: 200, bootTime: 1, version: "v" } }))
 
     // state filter is exact (not just completed/failed like `success`).
     expect(queryEntries({ state: "aborted", limit: 10 }).map((e) => e.id)).toEqual(["ab"])
@@ -119,15 +119,15 @@ describe("sqlite write/read", () => {
     expect(sums.every((s) => s.pid === 100)).toBe(true)
   })
 
-  test("querySummaries does not decompress blob but returns meta", () => {
-    insertCompletedEntry(makeEntry({ id: "s-a" }))
+  test("querySummaries does not decompress blob but returns meta", async () => {
+    await insertCompletedEntry(makeEntry({ id: "s-a" }))
     const summaries = querySummaries({ limit: 10 })
     expect(summaries.length).toBeGreaterThan(0)
     expect(summaries[0].id).toBe("s-a")
   })
 
-  test("querySummaries returns messageCount and previewText from stored columns", () => {
-    insertCompletedEntry(
+  test("querySummaries returns messageCount and previewText from stored columns", async () => {
+    await insertCompletedEntry(
       makeEntry({
         id: "s-summary",
         inboundRequest: {
@@ -148,16 +148,16 @@ describe("sqlite write/read", () => {
     expect(summary?.previewText).toBe("follow-up question from user")
   })
 
-  test("deleteSession removes entries", () => {
-    insertCompletedEntry(makeEntry({ id: "x1", sessionId: "del" }))
-    insertCompletedEntry(makeEntry({ id: "x2", sessionId: "del" }))
+  test("deleteSession removes entries", async () => {
+    await insertCompletedEntry(makeEntry({ id: "x1", sessionId: "del" }))
+    await insertCompletedEntry(makeEntry({ id: "x2", sessionId: "del" }))
     const removed = deleteSession("del")
     expect(removed).toBe(2)
     expect(queryEntryCount({ sessionId: "del" })).toBe(0)
   })
 
-  test("clearAllEntries empties all tables", () => {
-    insertCompletedEntry(makeEntry({ id: "z", sessionId: "z" }))
+  test("clearAllEntries empties all tables", async () => {
+    await insertCompletedEntry(makeEntry({ id: "z", sessionId: "z" }))
     upsertResponseSession("resp-1", "z")
     expect(queryEntryCount()).toBe(1)
     clearAllEntries()
@@ -165,17 +165,17 @@ describe("sqlite write/read", () => {
     expect(resolveResponseSession("resp-1")).toBeUndefined()
   })
 
-  test("response_session roundtrip", () => {
+  test("response_session roundtrip", async () => {
     upsertResponseSession("r1", "s-beta")
     expect(resolveResponseSession("r1")).toBe("s-beta")
     upsertResponseSession("r1", "s-gamma")
     expect(resolveResponseSession("r1")).toBe("s-gamma")
   })
 
-  test("agent_id persists and queryEntries filters by agentId / mainAgentOnly", () => {
-    insertCompletedEntry(makeEntry({ id: "main-1", sessionId: "S", agentId: undefined }))
-    insertCompletedEntry(makeEntry({ id: "sub-a", sessionId: "S", agentId: "agent-A" }))
-    insertCompletedEntry(makeEntry({ id: "sub-b", sessionId: "S", agentId: "agent-B" }))
+  test("agent_id persists and queryEntries filters by agentId / mainAgentOnly", async () => {
+    await insertCompletedEntry(makeEntry({ id: "main-1", sessionId: "S", agentId: undefined }))
+    await insertCompletedEntry(makeEntry({ id: "sub-a", sessionId: "S", agentId: "agent-A" }))
+    await insertCompletedEntry(makeEntry({ id: "sub-b", sessionId: "S", agentId: "agent-B" }))
 
     // Round-trip: agentId survives serialize → entries_v2.agent_id → deserialize.
     expect(getEntryById("sub-a")?.agentId).toBe("agent-A")
@@ -187,8 +187,8 @@ describe("sqlite write/read", () => {
     expect(queryEntries({ agentId: "agent-B", mainAgentOnly: true }).map((e) => e.id)).toEqual(["sub-b"])
   })
 
-  test("pinned defaults false; setEntryPinned roundtrips through column + summary", () => {
-    insertCompletedEntry(makeEntry({ id: "pin-1" }))
+  test("pinned defaults false; setEntryPinned roundtrips through column + summary", async () => {
+    await insertCompletedEntry(makeEntry({ id: "pin-1" }))
     expect(getEntryById("pin-1")?.pinned).toBe(false)
     expect(querySummaries({ limit: 10 }).find((s) => s.id === "pin-1")?.pinned).toBe(false)
 
@@ -200,23 +200,23 @@ describe("sqlite write/read", () => {
     expect(getEntryById("pin-1")?.pinned).toBe(false)
   })
 
-  test("a later head upsert (eager status transition) does NOT reset the pin flag", () => {
+  test("a later head upsert (eager status transition) does NOT reset the pin flag", async () => {
     const entry = makeEntry({ id: "pin-keep" })
-    insertCompletedEntry(entry)
+    await insertCompletedEntry(entry)
     expect(setEntryPinned("pin-keep", true)).toBe(true)
     // Eager incremental writers re-upsert the head row; INSERT_ENTRY_SQL omits
     // the pinned column, so the dedicated flag must survive untouched.
     upsertHeadRow(entry, "streaming")
     expect(getEntryById("pin-keep")?.pinned).toBe(true)
-    insertCompletedEntry(entry) // full re-finalize too
+    await insertCompletedEntry(entry) // full re-finalize too
     expect(getEntryById("pin-keep")?.pinned).toBe(true)
   })
 
-  test("setEntryPinned returns false for an unknown id", () => {
+  test("setEntryPinned returns false for an unknown id", async () => {
     expect(setEntryPinned("ghost", true)).toBe(false)
   })
 
-  test("request_bytes/response_bytes derived + multiplier persisted → EntrySummary + full entry", () => {
+  test("request_bytes/response_bytes derived + multiplier persisted → EntrySummary + full entry", async () => {
     // Streaming entry: response bytes = sum of sse frame `raw` bytes; request
     // bytes derived from the outbound wire payload; multiplier carried on the entry.
     const wirePayload = { model: "claude-opus-4-8", messages: [{ role: "user", content: "hi" }] }
@@ -227,7 +227,7 @@ describe("sqlite write/read", () => {
     const expectedReq = Buffer.byteLength(JSON.stringify(wirePayload))
     const expectedResp = frames.reduce((n, f) => n + Buffer.byteLength(f.raw), 0)
 
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "bytes-stream",
         multiplier: 3,
@@ -248,9 +248,9 @@ describe("sqlite write/read", () => {
     expect(full?.multiplier).toBe(3)
   })
 
-  test("non-streaming response_bytes derived from rawBody, then content fallback", () => {
+  test("non-streaming response_bytes derived from rawBody, then content fallback", async () => {
     // rawBody present → counted directly.
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "bytes-raw",
         outboundRequest: { model: "m", payload: { a: 1 } },
@@ -261,7 +261,7 @@ describe("sqlite write/read", () => {
 
     // No rawBody → serialized content bytes.
     const content = { role: "assistant", content: "hello" }
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "bytes-content",
         outboundRequest: { model: "m", payload: { a: 1 } },
@@ -271,10 +271,10 @@ describe("sqlite write/read", () => {
     expect(getEntryById("bytes-content")?.responseBytes).toBe(Buffer.byteLength(JSON.stringify(content)))
   })
 
-  test("absent payloads/multiplier → null columns → undefined fields (old-row backward compat)", () => {
+  test("absent payloads/multiplier → null columns → undefined fields (old-row backward compat)", async () => {
     // An entry with no outbound/effective request payload, no sse, no rawBody/content,
     // no multiplier mirrors what an OLD row (NULL columns) deserializes to: undefined.
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "bytes-absent",
         inboundRequest: { model: "m" }, // no messages → request bytes null
@@ -293,9 +293,9 @@ describe("sqlite write/read", () => {
     expect(full?.multiplier).toBeUndefined()
   })
 
-  test("request_bytes falls back to inbound messages when no outbound/effective payload", () => {
+  test("request_bytes falls back to inbound messages when no outbound/effective payload", async () => {
     const messages = [{ role: "user", content: "fallback request" }]
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "bytes-fallback",
         inboundRequest: { model: "m", messages },

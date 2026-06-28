@@ -1,0 +1,4 @@
+# Captured real history data — contains raw unsanitized auth headers (DESIGN: "存原始未脱敏"). NEVER commit.
+entry-*.json
+frames-*.json
+*.cpuprofile

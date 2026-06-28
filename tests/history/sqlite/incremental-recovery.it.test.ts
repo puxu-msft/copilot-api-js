@@ -50,15 +50,15 @@ function makeEntry(overrides: Partial<HistoryEntry>): HistoryEntry {
 }
 
 describe("history incremental persistence + recovery", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     closeDatabase()
     openInMemoryDatabase()
   })
-  afterEach(() => {
+  afterEach(async () => {
     closeDatabase()
   })
 
-  test("eager head row (pending) is queryable before terminal, then finalize overwrites it", () => {
+  test("eager head row (pending) is queryable before terminal, then finalize overwrites it", async () => {
     const entry = makeEntry({ id: "r1", state: "pending" })
     upsertHeadRow(entry, "pending")
 
@@ -72,7 +72,7 @@ describe("history incremental persistence + recovery", () => {
     expect(pending?.inboundRequest?.messages).toBeUndefined()
 
     // Finalize with full data.
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "r1",
         state: "completed",
@@ -85,7 +85,7 @@ describe("history incremental persistence + recovery", () => {
     expect(done?.outboundResponse?.usage.input_tokens).toBe(3)
   })
 
-  test("upsertHeadRow status update does NOT cascade-delete stage rows", () => {
+  test("upsertHeadRow status update does NOT cascade-delete stage rows", async () => {
     // Eager head + inbound_request stage (one transaction), then a status bump.
     const entry = makeEntry({ id: "r2", state: "pending" })
     upsertHeadRow(entry, "pending", [{ stage: "inbound_request", attemptIndex: -1, payload: entry.inboundRequest }])
@@ -97,11 +97,11 @@ describe("history incremental persistence + recovery", () => {
     expect(getEntryById("r2")?.state).toBe("streaming")
   })
 
-  test("reaper: aborted/interrupted go to the failure bucket; active rows are exempt", () => {
-    insertCompletedEntry(makeEntry({ id: "c1", state: "completed" }))
-    insertCompletedEntry(makeEntry({ id: "f1", state: "failed" }))
-    insertCompletedEntry(makeEntry({ id: "a1", state: "aborted" }))
-    insertCompletedEntry(makeEntry({ id: "i1", state: "interrupted" }))
+  test("reaper: aborted/interrupted go to the failure bucket; active rows are exempt", async () => {
+    await insertCompletedEntry(makeEntry({ id: "c1", state: "completed" }))
+    await insertCompletedEntry(makeEntry({ id: "f1", state: "failed" }))
+    await insertCompletedEntry(makeEntry({ id: "a1", state: "aborted" }))
+    await insertCompletedEntry(makeEntry({ id: "i1", state: "interrupted" }))
     // Active rows (never evicted, never counted in buckets).
     upsertHeadRow(makeEntry({ id: "p1", state: "pending" }), "pending")
     upsertHeadRow(makeEntry({ id: "s1", state: "streaming" }), "streaming")
@@ -115,8 +115,8 @@ describe("history incremental persistence + recovery", () => {
     expect(getEntryById("c1")?.state).toBe("completed")
   })
 
-  test("deleting a head row cascades to its stage rows", () => {
-    insertCompletedEntry(
+  test("deleting a head row cascades to its stage rows", async () => {
+    await insertCompletedEntry(
       makeEntry({
         id: "casc",
         state: "completed",
@@ -129,8 +129,8 @@ describe("history incremental persistence + recovery", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM entry_stages WHERE entry_id='casc'").get()).toEqual({ n: 0 })
   })
 
-  test("aggregates exclude active (pending) rows: total = terminal only", () => {
-    insertCompletedEntry(
+  test("aggregates exclude active (pending) rows: total = terminal only", async () => {
+    await insertCompletedEntry(
       makeEntry({
         id: "t1",
         sessionId: "S",
@@ -138,7 +138,7 @@ describe("history incremental persistence + recovery", () => {
         outboundResponse: { success: true, model: "m", usage: { input_tokens: 5, output_tokens: 1 }, content: null },
       }),
     )
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "t2",
         sessionId: "S",
@@ -153,20 +153,20 @@ describe("history incremental persistence + recovery", () => {
     expect(stats.successfulRequests).toBe(2)
   })
 
-  test("stats break out aborted/interrupted distinctly; failedRequests stays = only 'failed'", () => {
-    insertCompletedEntry(
+  test("stats break out aborted/interrupted distinctly; failedRequests stays = only 'failed'", async () => {
+    await insertCompletedEntry(
       makeEntry({ id: "c", state: "completed", outboundResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null } }),
     )
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "f",
         state: "failed",
         outboundResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, error: "boom", content: null },
       }),
     )
-    insertCompletedEntry(makeEntry({ id: "a", state: "aborted" }))
-    insertCompletedEntry(makeEntry({ id: "i1", state: "interrupted" }))
-    insertCompletedEntry(makeEntry({ id: "i2", state: "interrupted" }))
+    await insertCompletedEntry(makeEntry({ id: "a", state: "aborted" }))
+    await insertCompletedEntry(makeEntry({ id: "i1", state: "interrupted" }))
+    await insertCompletedEntry(makeEntry({ id: "i2", state: "interrupted" }))
 
     const s = computeStats()
     expect(s.successfulRequests).toBe(1)
@@ -177,7 +177,7 @@ describe("history incremental persistence + recovery", () => {
     expect(s.totalRequests).toBe(s.successfulRequests + s.failedRequests + s.abortedRequests + s.interruptedRequests)
   })
 
-  test("runtime stale reclaim flips this process's old pending rows to interrupted", () => {
+  test("runtime stale reclaim flips this process's old pending rows to interrupted", async () => {
     // A current-process pending row, started long ago.
     upsertHeadRow(makeEntry({ id: "stale", state: "pending", startedAt: 1, process: { pid: process.pid, bootTime: 0, version: "test" } }), "pending")
     // A fresh current-process pending row (within maxAge) must NOT be reclaimed.
@@ -189,7 +189,7 @@ describe("history incremental persistence + recovery", () => {
     expect(getEntryById("fresh")?.state).toBe("pending")
   })
 
-  test("reclaimStaleActiveRows(0) is a no-op (disabled)", () => {
+  test("reclaimStaleActiveRows(0) is a no-op (disabled)", async () => {
     upsertHeadRow(makeEntry({ id: "p", state: "pending", startedAt: 1, process: { pid: process.pid, bootTime: 0, version: "test" } }), "pending")
     expect(reclaimStaleActiveRows(0)).toBe(0)
     expect(getEntryById("p")?.state).toBe("pending")
@@ -200,16 +200,16 @@ describe("history startup orphan recovery (file-backed reopen)", () => {
   let dir: string
   let dbPath: string
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "history-recovery-"))
     dbPath = path.join(dir, "history.db")
   })
-  afterEach(() => {
+  afterEach(async () => {
     closeDatabase()
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  test("a pending row from a prior (foreign-pid) process becomes interrupted on reopen", () => {
+  test("a pending row from a prior (foreign-pid) process becomes interrupted on reopen", async () => {
     openDatabase(dbPath)
     // Simulate a row left by a DEAD process: foreign pid.
     upsertHeadRow(makeEntry({ id: "orphan", state: "pending", process: { pid: 999_999, bootTime: 123, version: "old" } }), "pending")

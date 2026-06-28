@@ -43,29 +43,29 @@ function baseEntry(id: string): HistoryEntry {
 }
 
 describe("history persistence boundary", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     // Ensure any previous db is closed, then force initHistory to use in-memory
-    shutdownHistory()
+    await shutdownHistory()
     setHistoryConfig({ historyDbPath: ":memory:" })
     initHistory(true)
     // Guard: openInMemoryDatabase is idempotent if already in-memory
     openInMemoryDatabase()
   })
 
-  afterEach(() => {
-    shutdownHistory()
+  afterEach(async () => {
+    await shutdownHistory()
     closeDatabase()
     setHistoryConfig({ historyDbPath: "" })
   })
 
-  test("pending entry stays out of sqlite", () => {
+  test("pending entry stays out of sqlite", async () => {
     insertEntry(baseEntry("e1"))
     expect(queryEntryCount()).toBe(0)
     expect(getEntry("e1")?.state).toBe("pending")
     expect(getEntryById("e1")).toBeUndefined()
   })
 
-  test("only writes to sqlite on completion", () => {
+  test("only writes to sqlite on completion", async () => {
     insertEntry(baseEntry("e2"))
     updateEntry("e2", { state: "streaming", active: true, lastUpdatedAt: Date.now() })
     expect(queryEntryCount()).toBe(0)
@@ -85,7 +85,7 @@ describe("history persistence boundary", () => {
     // updateEntry no longer auto-persists; finalizeEntry is the explicit step
     // (see entries.ts docstring). State alone is not a side-effect trigger.
     expect(queryEntryCount()).toBe(0)
-    finalizeEntry("e2")
+    await finalizeEntry("e2")
     expect(queryEntryCount()).toBe(1)
     // After finalize the entry lives in SQLite (not in-flight) — getEntry
     // reads SQLite as fallback, so we still see "completed" via that path.
@@ -94,7 +94,7 @@ describe("history persistence boundary", () => {
     expect(getEntryById("e2")?.state).toBe("completed")
   })
 
-  test("failed entries are also persisted", () => {
+  test("failed entries are also persisted", async () => {
     insertEntry(baseEntry("e3"))
     updateEntry("e3", {
       state: "failed",
@@ -109,7 +109,7 @@ describe("history persistence boundary", () => {
         error: "timeout",
       },
     })
-    finalizeEntry("e3")
+    await finalizeEntry("e3")
     expect(queryEntryCount()).toBe(1)
     expect(getEntryById("e3")).toBeDefined()
   })

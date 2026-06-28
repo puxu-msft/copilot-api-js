@@ -1,6 +1,7 @@
 export {
   __setTerminalWriterForTests,
   clearHistory,
+  drainPendingFinalizations,
   finalizeEntry,
   getInFlightEntry,
   insertEntry,
@@ -25,7 +26,16 @@ export {
   registerResponseSession,
   resolveResponseSessionId,
 } from "./sessions"
-export { historyState, initHistory, isHistoryEnabled, setHistoryMaxEntries, setHistoryPublisher, shutdownHistory, startSearchIndexBackfill } from "./state"
+export {
+  historyState,
+  initHistory,
+  isHistoryEnabled,
+  setHistoryMaxEntries,
+  setHistoryPublisher,
+  shutdownHistory,
+  startSearchIndexBackfill,
+  stopHistoryBackgroundWork,
+} from "./state"
 export { exportHistory, getStats } from "./stats"
 
 export type {

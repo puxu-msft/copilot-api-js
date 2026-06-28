@@ -15,11 +15,13 @@
  * target" posture; bun:sqlite/node:sqlite already require Node ≥22.5).
  */
 
+import { promisify } from "node:util"
 import {
   //
   constants as zlibConstants,
   gunzipSync,
   gzipSync,
+  zstdCompress,
   zstdCompressSync,
   zstdDecompressSync,
 } from "node:zlib"
@@ -29,10 +31,27 @@ export const STORAGE_ZSTD_LEVEL = 3
 
 const ZSTD_OPTS = { params: { [zlibConstants.ZSTD_c_compressionLevel]: STORAGE_ZSTD_LEVEL } } as const
 
+/** Promisified async zstd — runs on the libuv threadpool, OFF the event loop. */
+const zstdCompressAsync = promisify(zstdCompress)
+
 /** Compress a JSON-serializable value into a zstd-framed blob for storage. */
 export function compress(value: unknown): Uint8Array {
   const json = JSON.stringify(value)
   return zstdCompressSync(json, ZSTD_OPTS)
+}
+
+/**
+ * Async twin of {@link compress}: identical zstd-framed output (zstd L3 is
+ * deterministic, so the bytes are byte-equal to `compress`), but the compression
+ * runs on the libuv threadpool instead of blocking the event loop. The finalize
+ * write path uses this so a multi-MB request_group frame no longer freezes every
+ * concurrent in-flight stream (~96ms/request measured — see
+ * docs/rfc/history-finalize-async-offload.md). JSON.stringify still runs on the
+ * main thread (cheap relative to the compress); only the zstd work offloads.
+ */
+export async function compressAsync(value: unknown): Promise<Uint8Array> {
+  const json = JSON.stringify(value)
+  return zstdCompressAsync(json, ZSTD_OPTS)
 }
 
 /**

@@ -61,21 +61,21 @@ function createEmptyEntry(endpoint: EndpointType): HistoryEntry {
   return entry
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
   initHistory(true, 200)
 })
 
-afterEach(() => {
+afterEach(async () => {
   clearHistory()
-  shutdownHistory()
+  await shutdownHistory()
   setStateForTests({ historyDbPath: "" })
 })
 
 // ─── Summary correctness ───
 
 describe("summary correctness (toSummary)", () => {
-  test("basic fields are copied from entry", () => {
+  test("basic fields are copied from entry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -93,7 +93,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary!.messageCount).toBe(1)
   })
 
-  test("previewText extracts last user message content (string)", () => {
+  test("previewText extracts last user message content (string)", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [
@@ -107,7 +107,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toBe("follow-up question")
   })
 
-  test("previewText extracts from content blocks", () => {
+  test("previewText extracts from content blocks", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [
@@ -122,7 +122,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toBe("block-based content")
   })
 
-  test("previewText truncates at 100 characters", () => {
+  test("previewText truncates at 100 characters", async () => {
     const longText = "a".repeat(200)
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
@@ -133,7 +133,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toHaveLength(100)
   })
 
-  test("previewText is empty when no messages", () => {
+  test("previewText is empty when no messages", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [],
@@ -143,7 +143,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toBe("")
   })
 
-  test("previewText faithfully summarizes the last message when it is an OpenAI tool response (role=tool)", () => {
+  test("previewText faithfully summarizes the last message when it is an OpenAI tool response (role=tool)", async () => {
     const entry = insertHistoryEntry("openai-chat-completions", {
       model: "gpt-4o",
       messages: [
@@ -162,7 +162,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toBe("[tool_result: call_1]")
   })
 
-  test("previewText shows tool_call name when only assistant tool_calls remain", () => {
+  test("previewText shows tool_call name when only assistant tool_calls remain", async () => {
     const entry = insertHistoryEntry("openai-chat-completions", {
       model: "gpt-4o",
       messages: [
@@ -179,7 +179,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toContain("web_search")
   })
 
-  test("previewText shows tool_result when last message is role=tool", () => {
+  test("previewText shows tool_result when last message is role=tool", async () => {
     const entry = insertHistoryEntry("openai-chat-completions", {
       model: "gpt-4o",
       messages: [{ role: "tool", content: "result data", tool_call_id: "call_1" } as any],
@@ -190,7 +190,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toContain("call_1")
   })
 
-  test("previewText faithfully shows the last message when it is a user message with only tool_result blocks", () => {
+  test("previewText faithfully shows the last message when it is a user message with only tool_result blocks", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [
@@ -205,7 +205,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toBe("[tool_result: t1]")
   })
 
-  test("previewText for openai-responses endpoint", () => {
+  test("previewText for openai-responses endpoint", async () => {
     const entry = insertHistoryEntry("openai-responses", {
       model: "gpt-4o",
       messages: [{ role: "user", content: "Hello from Responses API" }],
@@ -215,7 +215,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.previewText).toBe("Hello from Responses API")
   })
 
-  test("list free-text search no longer matches the model name (use the model filter)", () => {
+  test("list free-text search no longer matches the model name (use the model filter)", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -227,7 +227,7 @@ describe("summary correctness (toSummary)", () => {
     expect(getHistorySummaries({ model: "claude-sonnet-4-20250514" }).entries).toHaveLength(1)
   })
 
-  test("search finds entries by message content", () => {
+  test("search finds entries by message content", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "find the unique phrase" }],
@@ -237,7 +237,7 @@ describe("summary correctness (toSummary)", () => {
     expect(results.entries).toHaveLength(1)
   })
 
-  test("list free-text search does NOT match the system prompt (intentionally excluded)", () => {
+  test("list free-text search does NOT match the system prompt (intentionally excluded)", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hi" }],
@@ -249,7 +249,7 @@ describe("summary correctness (toSummary)", () => {
     expect(results.entries).toHaveLength(0)
   })
 
-  test("search finds entries by tool_use names from content blocks", () => {
+  test("search finds entries by tool_use names from content blocks", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [
@@ -264,7 +264,7 @@ describe("summary correctness (toSummary)", () => {
     expect(results.entries).toHaveLength(1)
   })
 
-  test("search finds entries by OpenAI tool_calls function names", () => {
+  test("search finds entries by OpenAI tool_calls function names", async () => {
     insertHistoryEntry("openai-chat-completions", {
       model: "gpt-4o",
       messages: [
@@ -280,7 +280,7 @@ describe("summary correctness (toSummary)", () => {
     expect(results.entries).toHaveLength(1)
   })
 
-  test("search is case-insensitive", () => {
+  test("search is case-insensitive", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "Claude-Sonnet",
       messages: [{ role: "user", content: "HELLO WORLD" }],
@@ -291,7 +291,7 @@ describe("summary correctness (toSummary)", () => {
     expect(results.entries).toHaveLength(1)
   })
 
-  test("response fields are undefined before updateEntry", () => {
+  test("response fields are undefined before updateEntry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
@@ -305,7 +305,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.durationMs).toBeUndefined()
   })
 
-  test("response fields are populated after updateEntry", () => {
+  test("response fields are populated after updateEntry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -330,7 +330,7 @@ describe("summary correctness (toSummary)", () => {
     expect(summary.durationMs).toBe(250)
   })
 
-  test("error response populates responseError", () => {
+  test("error response populates responseError", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
@@ -355,7 +355,7 @@ describe("summary correctness (toSummary)", () => {
 // ─── updateEntry with request field ───
 
 describe("updateEntry (request)", () => {
-  test("updates request data and rebuilds summary", () => {
+  test("updates request data and rebuilds summary", async () => {
     // Simulate context timing: insertEntry with empty request, then update with real data
     const entry = createEmptyEntry("anthropic-messages")
 
@@ -394,7 +394,7 @@ describe("updateEntry (request)", () => {
     expect(getHistorySummaries({ search: "be concise" }).entries).toHaveLength(0)
   })
 
-  test("full lifecycle: empty insert → request update → response update", () => {
+  test("full lifecycle: empty insert → request update → response update", async () => {
     const entry = createEmptyEntry("anthropic-messages")
 
     // Step 1: Verify empty summary
@@ -435,7 +435,7 @@ describe("updateEntry (request)", () => {
 // ─── getHistorySummaries ───
 
 describe("getHistorySummaries", () => {
-  test("returns summaries sorted by startedAt descending", () => {
+  test("returns summaries sorted by startedAt descending", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "model-a",
       messages: [{ role: "user", content: "first" }],
@@ -450,7 +450,7 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].startedAt).toBeGreaterThanOrEqual(result.entries[1].startedAt)
   })
 
-  test("paginates results", () => {
+  test("paginates results", async () => {
     for (let i = 0; i < 5; i++) {
       insertHistoryEntry("anthropic-messages", {
         model: "test",
@@ -475,7 +475,7 @@ describe("getHistorySummaries", () => {
     expect(page3.nextCursor).toBeNull()
   })
 
-  test("filters by model name (partial, case-insensitive)", () => {
+  test("filters by model name (partial, case-insensitive)", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "a" }],
@@ -490,7 +490,7 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].requestModel).toContain("claude")
   })
 
-  test("model filter matches response model too", () => {
+  test("model filter matches response model too", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "a" }],
@@ -508,7 +508,7 @@ describe("getHistorySummaries", () => {
     expect(result.total).toBe(1)
   })
 
-  test("filters by endpoint", () => {
+  test("filters by endpoint", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "a" }],
@@ -523,7 +523,7 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].endpoint).toBe("openai-chat-completions")
   })
 
-  test("filters by success status", () => {
+  test("filters by success status", async () => {
     const e1 = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "a" }],
@@ -554,7 +554,7 @@ describe("getHistorySummaries", () => {
     expect(failures.entries[0].id).toBe(e2.id)
   })
 
-  test("filters by startedAt range (from)", () => {
+  test("filters by startedAt range (from)", async () => {
     const now = Date.now()
     const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
@@ -581,7 +581,7 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].id).toBe(recent.id)
   })
 
-  test("filters by startedAt range (to)", () => {
+  test("filters by startedAt range (to)", async () => {
     const now = Date.now()
     const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
@@ -608,7 +608,7 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].id).toBe(old.id)
   })
 
-  test("filters by startedAt range (from + to)", () => {
+  test("filters by startedAt range (from + to)", async () => {
     const now = Date.now()
     const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
@@ -644,7 +644,7 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].id).toBe(mid.id)
   })
 
-  test("search matches message content", () => {
+  test("search matches message content", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "Tell me about quantum computing" }],
@@ -659,7 +659,7 @@ describe("getHistorySummaries", () => {
     expect(result.entries[0].requestModel).toBe("claude-sonnet-4-20250514")
   })
 
-  test("search is case-insensitive", () => {
+  test("search is case-insensitive", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "Hello World" }],
@@ -669,7 +669,7 @@ describe("getHistorySummaries", () => {
     expect(getHistorySummaries({ search: "HELLO WORLD" }).total).toBe(1)
   })
 
-  test("model is matched via the model filter, not free-text search", () => {
+  test("model is matched via the model filter, not free-text search", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hi" }],
@@ -679,7 +679,7 @@ describe("getHistorySummaries", () => {
     expect(getHistorySummaries({ search: "sonnet" }).total).toBe(0)
   })
 
-  test("error messages are not free-text searchable (use the failed-status filter)", () => {
+  test("error messages are not free-text searchable (use the failed-status filter)", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hi" }],
@@ -699,7 +699,7 @@ describe("getHistorySummaries", () => {
     expect(getHistorySummaries({ success: false }).total).toBe(1)
   })
 
-  test("filters by sessionId", () => {
+  test("filters by sessionId", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hi" }],
@@ -709,7 +709,7 @@ describe("getHistorySummaries", () => {
     expect(getHistorySummaries({ sessionId: "nonexistent" }).total).toBe(0)
   })
 
-  test("returns empty result when no entries match", () => {
+  test("returns empty result when no entries match", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
@@ -725,7 +725,7 @@ describe("getHistorySummaries", () => {
 // ─── Summary cache consistency ───
 
 describe("summary cache consistency", () => {
-  test("clearHistory clears summaryIndex", () => {
+  test("clearHistory clears summaryIndex", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
@@ -737,7 +737,7 @@ describe("summary cache consistency", () => {
     expect(getHistorySummaries().total).toBe(0)
   })
 
-  test("initHistory clears summaryIndex", () => {
+  test("initHistory clears summaryIndex", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
@@ -748,7 +748,7 @@ describe("summary cache consistency", () => {
     expect(getSummary(entry.id)).toBeUndefined()
   })
 
-  test.skip("FIFO eviction removes summary from cache", () => {
+  test.skip("FIFO eviction removes summary from cache", async () => {
     initHistory(true, 3)
 
     const entries: Array<HistoryEntry> = []
@@ -773,7 +773,7 @@ describe("summary cache consistency", () => {
     expect(getHistorySummaries().total).toBe(3)
   })
 
-  test("multiple updateEntry calls rebuild summary correctly each time", () => {
+  test("multiple updateEntry calls rebuild summary correctly each time", async () => {
     const entry = createEmptyEntry("anthropic-messages")
 
     // Update 1: request data
@@ -816,7 +816,7 @@ describe("summary cache consistency", () => {
     expect(final.durationMs).toBe(200)
   })
 
-  test("getHistorySummaries and getSummary return consistent data", () => {
+  test("getHistorySummaries and getSummary return consistent data", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],

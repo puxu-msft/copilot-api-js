@@ -46,7 +46,7 @@ interface SeedOpts {
 }
 
 /** Insert + finalize one completed terminal entry so it lands in entries_v2 as a non-active row. */
-function seedEntry(opts: SeedOpts): string {
+async function seedEntry(opts: SeedOpts): Promise<string> {
   const id = generateId()
   const entry: HistoryEntry = {
     id,
@@ -61,15 +61,15 @@ function seedEntry(opts: SeedOpts): string {
     state: "completed",
     outboundResponse: { success: true, model: opts.model, usage: { input_tokens: 10, output_tokens: 5 }, content: null },
   })
-  finalizeEntry(id)
+  await finalizeEntry(id)
   return id
 }
 
 describe("GET /history/api/sessions + entries agent filters", () => {
   test("returns { sessions: [...] } aggregate across sessions", async () => {
-    seedEntry({ sessionId: "session-A", agentId: "agent-1", model: "claude-a" })
-    seedEntry({ sessionId: "session-A", model: "claude-b" })
-    seedEntry({ sessionId: "session-B", model: "gpt-x" })
+    await seedEntry({ sessionId: "session-A", agentId: "agent-1", model: "claude-a" })
+    await seedEntry({ sessionId: "session-A", model: "claude-b" })
+    await seedEntry({ sessionId: "session-B", model: "gpt-x" })
 
     const res = await app.request("/history/api/sessions")
     expect(res.status).toBe(200)
@@ -85,8 +85,8 @@ describe("GET /history/api/sessions + entries agent filters", () => {
   })
 
   test("?agentId=X filters to that subagent's entries", async () => {
-    seedEntry({ sessionId: "session-C", agentId: "agent-9", model: "claude-a" })
-    seedEntry({ sessionId: "session-C", model: "claude-b" })
+    await seedEntry({ sessionId: "session-C", agentId: "agent-9", model: "claude-a" })
+    await seedEntry({ sessionId: "session-C", model: "claude-b" })
 
     const res = await app.request("/history/api/entries?agentId=agent-9")
     expect(res.status).toBe(200)
@@ -96,8 +96,8 @@ describe("GET /history/api/sessions + entries agent filters", () => {
   })
 
   test("?mainAgentOnly=true returns only NULL agent_id entries", async () => {
-    seedEntry({ sessionId: "session-D", agentId: "agent-7", model: "claude-a" })
-    seedEntry({ sessionId: "session-D", model: "claude-b" })
+    await seedEntry({ sessionId: "session-D", agentId: "agent-7", model: "claude-a" })
+    await seedEntry({ sessionId: "session-D", model: "claude-b" })
 
     const res = await app.request("/history/api/entries?mainAgentOnly=true")
     expect(res.status).toBe(200)

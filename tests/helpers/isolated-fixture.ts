@@ -38,7 +38,11 @@ import { resetProtectStreamingStatsForTests } from "~/lib/anthropic/protect-stre
 import { resetAllLimitsForTesting } from "~/lib/auto-truncate/engine"
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
-import { __setTerminalWriterForTests } from "~/lib/history/entries"
+import {
+  //
+  __setTerminalWriterForTests,
+  drainPendingFinalizations,
+} from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetModelsEtagForTests } from "~/lib/models/client"
@@ -165,6 +169,12 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
   })
 
   afterEach(async () => {
+    // Drain any fire-and-forget async finalize (a request that settled during the
+    // test kicks one via the history sink) BEFORE resetTestRuntime swaps/closes the
+    // DB — otherwise the in-flight finalize lands on a closed handle ("Cannot use a
+    // closed database") or leaks into the next test. Mirrors the production shutdown
+    // drain (RFC history-finalize-async-offload I4).
+    await drainPendingFinalizations()
     restoreStateForTests(snapshot)
     resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget

@@ -40,7 +40,7 @@ interface SeedOpts {
 }
 
 /** Insert + finalize one terminal entry so it lands in entries_v2 as a non-active row. */
-function seedEntry(opts: SeedOpts): void {
+async function seedEntry(opts: SeedOpts): Promise<void> {
   const id = generateId()
   const entry: HistoryEntry = {
     id,
@@ -64,27 +64,27 @@ function seedEntry(opts: SeedOpts): void {
       content: null,
     },
   })
-  finalizeEntry(id)
+  await finalizeEntry(id)
 }
 
 describe("querySessionSummaries", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setStateForTests({ historyDbPath: ":memory:" })
     initHistory(true, 200)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     clearHistory()
-    shutdownHistory()
+    await shutdownHistory()
     setStateForTests({ historyDbPath: "" })
   })
 
-  test("aggregates entries by session_id with per-session breakdowns", () => {
+  test("aggregates entries by session_id with per-session breakdowns", async () => {
     // Session A: 2 entries (one from a subagent), models claude-a + claude-b.
-    seedEntry({ sessionId: "session-A", agentId: "agent-1", model: "claude-a", state: "completed", inputTokens: 100, outputTokens: 20 })
-    seedEntry({ sessionId: "session-A", model: "claude-b", state: "failed", inputTokens: 50, outputTokens: 0 })
+    await seedEntry({ sessionId: "session-A", agentId: "agent-1", model: "claude-a", state: "completed", inputTokens: 100, outputTokens: 20 })
+    await seedEntry({ sessionId: "session-A", model: "claude-b", state: "failed", inputTokens: 50, outputTokens: 0 })
     // Session B: 1 entry, main agent only.
-    seedEntry({ sessionId: "session-B", model: "gpt-x", state: "completed", inputTokens: 10, outputTokens: 5 })
+    await seedEntry({ sessionId: "session-B", model: "gpt-x", state: "completed", inputTokens: 10, outputTokens: 5 })
 
     const summaries = querySessionSummaries()
     expect(summaries).toHaveLength(2)
@@ -114,11 +114,11 @@ describe("querySessionSummaries", () => {
     expect(b!.models).toEqual(["gpt-x"])
   })
 
-  test("preview reflects the latest (max started_at) entry's preview text", () => {
+  test("preview reflects the latest (max started_at) entry's preview text", async () => {
     const base = Date.now()
     // Earlier then later entry in the same session — preview must follow the later one.
-    seedEntry({ sessionId: "session-P", model: "claude-a", state: "completed", inputTokens: 10, outputTokens: 5, startedAt: base, text: "older message" })
-    seedEntry({
+    await seedEntry({ sessionId: "session-P", model: "claude-a", state: "completed", inputTokens: 10, outputTokens: 5, startedAt: base, text: "older message" })
+    await seedEntry({
       sessionId: "session-P",
       model: "claude-a",
       state: "completed",

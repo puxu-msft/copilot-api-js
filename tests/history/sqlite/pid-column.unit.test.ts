@@ -44,17 +44,17 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
 }
 
 describe("history pid column", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     closeDatabase()
     openInMemoryDatabase()
   })
 
-  test("CRITICAL-1: process identity is written to the pid column, not just the blob", () => {
+  test("CRITICAL-1: process identity is written to the pid column, not just the blob", async () => {
     // Regression guard for the INSERT_ENTRY_SQL omission: serializeEntry can fill
     // row.pid correctly, but if the INSERT statement doesn't list the pid column
     // the value silently never lands and `WHERE pid = ?` matches nothing. Assert
     // the raw column directly.
-    insertCompletedEntry(
+    await insertCompletedEntry(
       makeEntry({
         id: "with-pid",
         process: { pid: 4242, bootTime: 1_700_000_000_000, version: "9.9.9", gitSha: "abc1234", gitDirty: true },
@@ -72,8 +72,8 @@ describe("history pid column", () => {
     expect(row.git_sha).toBe("abc1234")
   })
 
-  test("the full process object round-trips through the blob (including version/gitDirty not in columns)", () => {
-    insertCompletedEntry(
+  test("the full process object round-trips through the blob (including version/gitDirty not in columns)", async () => {
+    await insertCompletedEntry(
       makeEntry({
         id: "blob-roundtrip",
         process: { pid: 7, bootTime: 123, version: "1.2.3", gitSha: "deadbee", gitDirty: false },
@@ -83,10 +83,10 @@ describe("history pid column", () => {
     expect(got?.process).toEqual({ pid: 7, bootTime: 123, version: "1.2.3", gitSha: "deadbee", gitDirty: false })
   })
 
-  test("queryEntries filters by pid via the SQL column", () => {
-    insertCompletedEntry(makeEntry({ id: "p100-a", process: { pid: 100, bootTime: 1, version: "v" } }))
-    insertCompletedEntry(makeEntry({ id: "p100-b", process: { pid: 100, bootTime: 1, version: "v" } }))
-    insertCompletedEntry(makeEntry({ id: "p200", process: { pid: 200, bootTime: 1, version: "v" } }))
+  test("queryEntries filters by pid via the SQL column", async () => {
+    await insertCompletedEntry(makeEntry({ id: "p100-a", process: { pid: 100, bootTime: 1, version: "v" } }))
+    await insertCompletedEntry(makeEntry({ id: "p100-b", process: { pid: 100, bootTime: 1, version: "v" } }))
+    await insertCompletedEntry(makeEntry({ id: "p200", process: { pid: 200, bootTime: 1, version: "v" } }))
 
     const fromP100 = queryEntries({ pid: 100, limit: 10 })
     expect(fromP100.map((e) => e.id).sort()).toEqual(["p100-a", "p100-b"])
@@ -95,15 +95,15 @@ describe("history pid column", () => {
     expect(fromP200.map((e) => e.id)).toEqual(["p200"])
   })
 
-  test("an entry with no process identity stores NULL columns and is omitted from pid filters", () => {
-    insertCompletedEntry(makeEntry({ id: "no-proc" }))
+  test("an entry with no process identity stores NULL columns and is omitted from pid filters", async () => {
+    await insertCompletedEntry(makeEntry({ id: "no-proc" }))
     const db = getDatabase()
     const row = db.prepare("SELECT pid FROM entries_v2 WHERE id = ?").get("no-proc") as { pid: number | null }
     expect(row.pid).toBeNull()
     expect(queryEntries({ pid: 100, limit: 10 }).map((e) => e.id)).not.toContain("no-proc")
   })
 
-  test("migration is idempotent and the pid index exists", () => {
+  test("migration is idempotent and the pid index exists", async () => {
     // openInMemoryDatabase already ran the migration once in beforeEach. The
     // pid index must exist, and re-running the column migration path (via a
     // fresh open on the same connection lifecycle) must not throw.

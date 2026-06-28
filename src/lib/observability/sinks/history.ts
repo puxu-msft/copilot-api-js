@@ -279,7 +279,10 @@ export class HistorySink {
       ...(entryData.httpHeaders && { httpHeaders: entryData.httpHeaders }),
       ...(entryData.attempts && { attempts: toHistoryAttempts(entryData.attempts) }),
     })
-    finalizeEntry(entryData.id)
+    // Fire-and-forget: finalize is now async (libuv-offloaded compression). It
+    // tracks itself in `pendingFinalizations` for the shutdown drain and never
+    // rejects, so the synchronous bus handler doesn't await it.
+    void finalizeEntry(entryData.id)
   }
 }
 

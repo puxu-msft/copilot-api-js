@@ -54,7 +54,7 @@ import { insertHistoryEntry } from "../helpers/history-fixtures"
 import { autoRestoreState } from "../helpers/state-fixture"
 
 /** Mark an entry as completed so session stats are persisted to SQLite. */
-function completeEntry(entryId: string, overrides: Partial<Parameters<typeof updateEntry>[1]> = {}): void {
+async function completeEntry(entryId: string, overrides: Partial<Parameters<typeof updateEntry>[1]> = {}): Promise<void> {
   updateEntry(entryId, {
     state: "completed",
     outboundResponse: {
@@ -67,7 +67,7 @@ function completeEntry(entryId: string, overrides: Partial<Parameters<typeof upd
   })
   // updateEntry no longer auto-persists on terminal state — the explicit
   // finalizeEntry call mirrors the consumer pipeline behavior.
-  finalizeEntry(entryId)
+  await finalizeEntry(entryId)
 }
 
 /** Count persisted + in-flight entries. */
@@ -84,37 +84,37 @@ function totalEntryCount(): number {
 autoRestoreState()
 
 // Reset history state before each test
-beforeEach(() => {
+beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
   initHistory(true, 200)
 })
 
-afterEach(() => {
+afterEach(async () => {
   clearHistory()
-  shutdownHistory()
+  await shutdownHistory()
   setStateForTests({ historyDbPath: "" })
 })
 
 // ─── initHistory ───
 
 describe("initHistory", () => {
-  test("enables history when enabled=true", () => {
+  test("enables history when enabled=true", async () => {
     initHistory(true, 100)
     expect(isHistoryEnabled()).toBe(true)
   })
 
-  test("disables history when enabled=false", () => {
+  test("disables history when enabled=false", async () => {
     initHistory(false, 100)
     expect(isHistoryEnabled()).toBe(false)
   })
 
-  test("tracks history limit from state", () => {
+  test("tracks history limit from state", async () => {
     setStateForTests({ historySuccessLimit: 50 })
     initHistory(true, 50)
     expect(state.historySuccessLimit).toBe(50)
   })
 
-  test("resets entries and sessions", () => {
+  test("resets entries and sessions", async () => {
     // Add some data first
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
@@ -131,7 +131,7 @@ describe("initHistory", () => {
 // ─── insertEntry ───
 
 describe("insertEntry", () => {
-  test("inserts entry and makes it retrievable", () => {
+  test("inserts entry and makes it retrievable", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -142,7 +142,7 @@ describe("insertEntry", () => {
     expect(getEntry(entry.id)).toBeDefined()
   })
 
-  test("does not insert when disabled", () => {
+  test("does not insert when disabled", async () => {
     initHistory(false, 100)
     const sessionId = "test-session"
     const entry: HistoryEntry = {
@@ -160,7 +160,7 @@ describe("insertEntry", () => {
     expect(listInFlightEntries().length).toBe(0)
   })
 
-  test("creates entry with correct fields", () => {
+  test("creates entry with correct fields", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -184,7 +184,7 @@ describe("insertEntry", () => {
     expect(stored!.outboundResponse).toBeUndefined()
   })
 
-  test("keeps an explicit sessionId on the entry", () => {
+  test("keeps an explicit sessionId on the entry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "test" }],
@@ -193,7 +193,7 @@ describe("insertEntry", () => {
     expect(entry.sessionId).toBeTruthy()
   })
 
-  test("stores entries without a session when none is provided", () => {
+  test("stores entries without a session when none is provided", async () => {
     const entry: HistoryEntry = {
       id: generateId(),
       startedAt: Date.now(),
@@ -215,7 +215,7 @@ describe("insertEntry", () => {
 // ─── updateEntry (response) ───
 
 describe("updateEntry (response)", () => {
-  test("updates entry with response data", () => {
+  test("updates entry with response data", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -242,7 +242,7 @@ describe("updateEntry (response)", () => {
     expect(stored!.durationMs).toBe(500)
   })
 
-  test("preserves cache_creation_input_tokens in usage", () => {
+  test("preserves cache_creation_input_tokens in usage", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -268,7 +268,7 @@ describe("updateEntry (response)", () => {
     expect(stored!.outboundResponse!.usage.cache_creation_input_tokens).toBe(20)
   })
 
-  test("records error response", () => {
+  test("records error response", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -290,7 +290,7 @@ describe("updateEntry (response)", () => {
     expect(stored!.outboundResponse!.error).toBe("Rate limited")
   })
 
-  test("does nothing when disabled", () => {
+  test("does nothing when disabled", async () => {
     initHistory(false, 100)
     updateEntry("nonexistent", {
       outboundResponse: {
@@ -307,7 +307,7 @@ describe("updateEntry (response)", () => {
 // ─── updateEntry (rewrites) ───
 
 describe("updateEntry (rewrites)", () => {
-  test("adds rewrite info to entry", () => {
+  test("adds rewrite info to entry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -336,7 +336,7 @@ describe("updateEntry (rewrites)", () => {
     expect(stored!.pipelineInfo!.messageMapping).toEqual([0])
   })
 
-  test("stores truncation within pipelineInfo", () => {
+  test("stores truncation within pipelineInfo", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -359,7 +359,7 @@ describe("updateEntry (rewrites)", () => {
     expect(stored!.pipelineInfo!.truncation!.removedMessageCount).toBe(3)
   })
 
-  test("stores effectiveRequest via updateEntry", () => {
+  test("stores effectiveRequest via updateEntry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -420,7 +420,7 @@ describe("updateEntry (rewrites)", () => {
     })
   })
 
-  test("stores attempts via updateEntry", () => {
+  test("stores attempts via updateEntry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", { model: "m", messages: undefined })
 
     updateEntry(entry.id, {
@@ -436,7 +436,7 @@ describe("updateEntry (rewrites)", () => {
     expect(stored!.attempts![1].effectiveMessageCount).toBe(5)
   })
 
-  test("stores transport via updateEntry", () => {
+  test("stores transport via updateEntry", async () => {
     const entry = insertHistoryEntry("openai-responses", {
       model: "gpt-5.2",
       messages: [{ role: "user", content: "hello" }],
@@ -450,7 +450,7 @@ describe("updateEntry (rewrites)", () => {
     expect(stored!.transport).toBe("upstream-ws-fallback")
   })
 
-  test("stores warningMessages via updateEntry", () => {
+  test("stores warningMessages via updateEntry", async () => {
     const entry = insertHistoryEntry("openai-chat-completions", {
       model: "gpt-5-resp",
       messages: [{ role: "user", content: "hello" }],
@@ -474,7 +474,7 @@ describe("updateEntry (rewrites)", () => {
     ])
   })
 
-  test("stores response with status, rawBody, and headers", () => {
+  test("stores response with status, rawBody, and headers", async () => {
     const entry = insertHistoryEntry("anthropic-messages", { model: "m", messages: undefined })
 
     updateEntry(entry.id, {
@@ -502,7 +502,7 @@ describe("updateEntry (rewrites)", () => {
 // ─── getHistory ───
 
 describe("getHistory", () => {
-  test("returns entries sorted by startedAt descending", () => {
+  test("returns entries sorted by startedAt descending", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "model-a",
       messages: [{ role: "user", content: "first" }],
@@ -517,7 +517,7 @@ describe("getHistory", () => {
     expect(result.entries[0].startedAt).toBeGreaterThanOrEqual(result.entries[1].startedAt)
   })
 
-  test("paginates results", () => {
+  test("paginates results", async () => {
     for (let i = 0; i < 5; i++) {
       insertHistoryEntry("anthropic-messages", {
         model: "model",
@@ -535,7 +535,7 @@ describe("getHistory", () => {
     expect(page2.entries.length).toBe(2)
   })
 
-  test("filters by model name", () => {
+  test("filters by model name", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "a" }],
@@ -550,7 +550,7 @@ describe("getHistory", () => {
     expect(result.entries[0].inboundRequest.model).toContain("claude")
   })
 
-  test("filters by endpoint", () => {
+  test("filters by endpoint", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "a" }],
@@ -565,7 +565,7 @@ describe("getHistory", () => {
     expect(result.entries[0].endpoint).toBe("openai-chat-completions")
   })
 
-  test("filters by startedAt range (to)", () => {
+  test("filters by startedAt range (to)", async () => {
     const now = Date.now()
     const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
@@ -592,7 +592,7 @@ describe("getHistory", () => {
     expect(result.entries[0].id).toBe(old.id)
   })
 
-  test("filters by startedAt range (from + to)", () => {
+  test("filters by startedAt range (from + to)", async () => {
     const now = Date.now()
     const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
@@ -632,7 +632,7 @@ describe("getHistory", () => {
 // ─── updateEntry: sseEvents ───
 
 describe("updateEntry stores sseEvents", () => {
-  test("sseEvents are persisted via updateEntry", () => {
+  test("sseEvents are persisted via updateEntry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hi" }],
@@ -651,7 +651,7 @@ describe("updateEntry stores sseEvents", () => {
     expect(updated?.sseEvents).toHaveLength(3)
   })
 
-  test("sseEvents can be set alongside response", () => {
+  test("sseEvents can be set alongside response", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hi" }],
@@ -678,7 +678,7 @@ describe("updateEntry stores sseEvents", () => {
 // ─── getSessionEntries pagination ───
 
 describe("getSessionEntries pagination", () => {
-  test("returns paginated results with default limit", () => {
+  test("returns paginated results with default limit", async () => {
     const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     for (let i = 0; i < 5; i++) {
@@ -690,7 +690,7 @@ describe("getSessionEntries pagination", () => {
         inboundRequest: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
       }
       insertEntry(entry)
-      completeEntry(entry.id)
+      await completeEntry(entry.id)
     }
 
     const result = getSessionEntries(sessionId)
@@ -699,7 +699,7 @@ describe("getSessionEntries pagination", () => {
     expect(result.prevCursor).toBeNull()
   })
 
-  test("respects cursor and limit", () => {
+  test("respects cursor and limit", async () => {
     const sessionId = getCurrentSession("anthropic-messages", generateId())!
 
     for (let i = 0; i < 10; i++) {
@@ -711,7 +711,7 @@ describe("getSessionEntries pagination", () => {
         inboundRequest: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
       }
       insertEntry(entry)
-      completeEntry(entry.id)
+      await completeEntry(entry.id)
     }
 
     // First page: no cursor
@@ -730,7 +730,7 @@ describe("getSessionEntries pagination", () => {
     expect(page1.entries[0].id).not.toBe(page2.entries[0].id)
   })
 
-  test("returns empty for non-existent session", () => {
+  test("returns empty for non-existent session", async () => {
     const result = getSessionEntries("nonexistent")
     expect(result.total).toBe(0)
     expect(result.entries).toHaveLength(0)
@@ -740,12 +740,12 @@ describe("getSessionEntries pagination", () => {
 // ─── clearHistory ───
 
 describe("clearHistory", () => {
-  test("removes all entries", () => {
+  test("removes all entries", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
     })
-    completeEntry(entry.id)
+    await completeEntry(entry.id)
 
     expect(totalEntryCount()).toBe(1)
 
@@ -754,7 +754,7 @@ describe("clearHistory", () => {
     expect(totalEntryCount()).toBe(0)
   })
 
-  test("clears in-flight entries", () => {
+  test("clears in-flight entries", async () => {
     insertHistoryEntry("anthropic-messages", {
       model: "test",
       messages: [{ role: "user", content: "hello" }],
@@ -768,7 +768,7 @@ describe("clearHistory", () => {
 // ─── getStats ───
 
 describe("getStats", () => {
-  test("returns aggregate statistics", () => {
+  test("returns aggregate statistics", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
@@ -784,7 +784,7 @@ describe("getStats", () => {
       },
       durationMs: 500,
     })
-    finalizeEntry(entry.id)
+    await finalizeEntry(entry.id)
 
     const stats = getStats()
     expect(stats.totalRequests).toBe(1)
@@ -801,7 +801,7 @@ describe("getStats", () => {
 // ─── Max entries enforcement ───
 
 describe("Max entries enforcement", () => {
-  test("reaper removes oldest entries when exceeding limit", () => {
+  test("reaper removes oldest entries when exceeding limit", async () => {
     const baseTime = Date.now()
     const entries: Array<HistoryEntry> = []
     for (let i = 0; i < 5; i++) {
@@ -820,7 +820,7 @@ describe("Max entries enforcement", () => {
       entries.push(entry)
     }
     // Complete all entries so they are persisted to SQLite
-    for (const entry of entries) completeEntry(entry.id)
+    for (const entry of entries) await completeEntry(entry.id)
 
     expect(queryEntryCount()).toBe(5)
 

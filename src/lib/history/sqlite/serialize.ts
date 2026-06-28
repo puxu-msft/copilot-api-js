@@ -196,9 +196,18 @@ function deriveResponseBytes(entry: HistoryEntry): number | null {
  * pending/streaming without mutating the entry object.
  */
 export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string): { row: EntryRow; stages: Array<StagePayload> } {
-  const usage = entry.outboundResponse?.usage
-  const headBlob = compress(extractHeadMetaPayload(entry))
+  return { row: buildHeadRow(entry, statusOverride, compress(extractHeadMetaPayload(entry))), stages: extractStagePayloads(entry) }
+}
 
+/**
+ * Build the indexed HEAD row from an entry + an ALREADY-COMPRESSED head-meta blob.
+ * Split out from {@link serializeHeadEntry} so the async finalize path
+ * (insertCompletedEntry) can compress the head blob off the event loop
+ * (`compressAsync`) and inject it here, while sync/incremental callers keep
+ * compressing inline. See docs/rfc/history-finalize-async-offload.md.
+ */
+export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undefined, headBlob: Uint8Array): EntryRow {
+  const usage = entry.outboundResponse?.usage
   const row: EntryRow = {
     id: entry.id,
     session_id: entry.sessionId ?? null,
@@ -239,7 +248,7 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
     multiplier: entry.multiplier ?? null,
     blob_gz: headBlob,
   }
-  return { row, stages: extractStagePayloads(entry) }
+  return row
 }
 
 /**

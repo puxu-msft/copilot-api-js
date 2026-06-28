@@ -27,7 +27,11 @@ import type { ServerInstance } from "./serve"
 
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { getRequestContextManager } from "./context/manager"
-import { shutdownHistory } from "./history"
+import {
+  //
+  shutdownHistory,
+  stopHistoryBackgroundWork,
+} from "./history"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { shutdownRequestTelemetry } from "./request-telemetry"
 import { state } from "./state"
@@ -374,9 +378,12 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     // Context manager may not be initialized in tests or early shutdown
   }
 
-  // Stop background services
+  // Stop background services. History BACKGROUND work stops here (reaper /
+  // backfill), but the DB stays OPEN through Phase 2/3 drain — a request settling
+  // during drain triggers an async finalize that must still persist. The DB is
+  // drained + closed later in finalize() (RFC history-finalize-async-offload §4.1).
   stopRefresh()
-  shutdownHistory()
+  stopHistoryBackgroundWork()
   closeHttp2Sessions()
   peekUpstreamWsManager()?.stopNew()
 
@@ -498,6 +505,12 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
   await setPhase("finalized")
 
   shutdownDrainAbortController = null
+
+  // Drain in-flight async finalizes, then close the history DB (I4). This runs
+  // AFTER Phase 2/3 request drain on EVERY exit path (the choke point), so every
+  // request that settled during drain has had its async finalize kicked; we await
+  // those here so none writes to a closed DB / is lost. Never throws.
+  await shutdownHistory()
   // Release any upstream WS connections that survived the graceful path.
   // `closeAll()` is idempotent, so this is a no-op if Phase 4 already ran.
   // Without this, drain-success paths (Phase 2/3 drained) leave upstream

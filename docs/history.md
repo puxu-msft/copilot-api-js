@@ -192,7 +192,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 **归一化**（`normalize-message.ts`，单一 owner）：`normalizeMessageForIndex(msg, format)` 同时是哈希输入 AND 存储搜索文本，**config-无关、确定、稳定**。递归剥 `cache_control`（Claude Code 每轮前移 ephemeral 断点的唯一易变源，实测剥后同消息跨轮哈希相等）+ own-line `<system-reminder>`/`<ide_*>` 注入块（边界锚定、保留 inline 字面提及）+ sorted-key canonical JSON。绝不复用 config 驱动的 `removeSystemReminderTags`。
 
-**写入**：`insertCompletedEntry` 事务外算 `buildSearchIndexForEntry`（normalize+hash inbound 消息、jsdiff `alignMessages` 算 rewrites 改动文本、拼 headers；整体 try/catch 降级——build 抛则该 entry 索引置空、绝不阻断 finalize），事务内 `persistSearchIndex` 幂等写。
+**写入**（异步两相，见 [rfc/history-finalize-async-offload.md](rfc/history-finalize-async-offload.md)）：`insertCompletedEntry` 是 async——phase1 事务**外**算 `buildSearchIndexChunked`（normalize+hash inbound 消息逐批协作让出、jsdiff `alignMessages` 算 rewrites 改动文本、拼 headers；整体 try/catch 降级——build 抛则该 entry 索引置空、绝不阻断 finalize）+ `compressAsync` 经 libuv 线程池并发压缩所有 blob（移出事件循环，消除 ~164ms/请求阻塞），phase2 才开**严格同步**事务 `persistSearchIndex` + 插已压缩 buffer（I7：bun:sqlite 跨 await 不回滚，绝不在 tx 回调内 await）。同步 `buildSearchIndexForEntry` 仍服务 backfill。
 
 **孤儿 GC**：`msg_blob` 无 FK，删请求时 `req_msg`/`req_aux` 经 CASCADE 自动清，但 blob 须显式 GC `DELETE FROM msg_blob WHERE NOT EXISTS(SELECT 1 FROM req_msg WHERE hash=…)`——接 reaper（门控 `deleted>0`）/`deleteSession`/`clearAllEntries` **三删除点**（漏一处则清空后 msg_blob 永久死空间）。
 

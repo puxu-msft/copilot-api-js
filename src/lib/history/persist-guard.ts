@@ -85,10 +85,29 @@ export function runHistoryWrite(stage: string, fn: () => void): PersistResult {
     fn()
     return { ok: true, transient: false }
   } catch (err: unknown) {
-    const transient = isTransientSqliteError(err)
-    const key = `${stage}:${transient ? "transient" : "permanent"}`
-    persistErrorCounts.set(key, (persistErrorCounts.get(key) ?? 0) + 1)
-    consola.error(`[history] ${stage} persist failed (${transient ? "transient" : "permanent"})`, err)
-    return { ok: false, transient }
+    return recordWriteFailure(stage, err)
   }
+}
+
+/**
+ * Async twin of {@link runHistoryWrite} for the offloaded finalize path
+ * (`insertCompletedEntry` is async — it compresses on the libuv threadpool
+ * before its synchronous tx). Same classify/log/count/never-throw contract.
+ */
+export async function runHistoryWriteAsync(stage: string, fn: () => Promise<void>): Promise<PersistResult> {
+  try {
+    await fn()
+    return { ok: true, transient: false }
+  } catch (err: unknown) {
+    return recordWriteFailure(stage, err)
+  }
+}
+
+/** Shared failure path: classify, ERROR-log, count, return the outcome. */
+function recordWriteFailure(stage: string, err: unknown): PersistResult {
+  const transient = isTransientSqliteError(err)
+  const key = `${stage}:${transient ? "transient" : "permanent"}`
+  persistErrorCounts.set(key, (persistErrorCounts.get(key) ?? 0) + 1)
+  consola.error(`[history] ${stage} persist failed (${transient ? "transient" : "permanent"})`, err)
+  return { ok: false, transient }
 }

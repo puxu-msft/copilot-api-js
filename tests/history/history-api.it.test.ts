@@ -58,7 +58,12 @@ app.delete("/api/sessions/:id", handleDeleteSession)
 
 // ─── Helpers ───
 
-function createEntry(endpoint: EndpointType, model: string, messages: HistoryEntry["inboundRequest"]["messages"], extra?: Partial<HistoryEntry>): HistoryEntry {
+async function createEntry(
+  endpoint: EndpointType,
+  model: string,
+  messages: HistoryEntry["inboundRequest"]["messages"],
+  extra?: Partial<HistoryEntry>,
+): Promise<HistoryEntry> {
   const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
@@ -78,7 +83,7 @@ function createEntry(endpoint: EndpointType, model: string, messages: HistoryEnt
       content: null,
     },
   })
-  finalizeEntry(entry.id)
+  await finalizeEntry(entry.id)
   return entry
 }
 
@@ -100,14 +105,14 @@ async function json<T = unknown>(res: Response): Promise<T> {
 
 // ─── Setup / Teardown ───
 
-beforeEach(() => {
+beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
   initHistory(true, 200)
 })
 
-afterEach(() => {
+afterEach(async () => {
   clearHistory()
-  shutdownHistory()
+  await shutdownHistory()
   setStateForTests({ historyDbPath: "" })
 })
 
@@ -123,8 +128,8 @@ describe("GET /api/entries", () => {
   })
 
   test("returns summaries sorted by startedAt descending", async () => {
-    createEntry("anthropic-messages", "model-a", [{ role: "user", content: "first" }])
-    createEntry("anthropic-messages", "model-b", [{ role: "user", content: "second" }])
+    await createEntry("anthropic-messages", "model-a", [{ role: "user", content: "first" }])
+    await createEntry("anthropic-messages", "model-b", [{ role: "user", content: "second" }])
 
     const res = await get("/api/entries")
     const body = await json<{ entries: Array<{ requestModel: string; startedAt: number }> }>(res)
@@ -134,7 +139,7 @@ describe("GET /api/entries", () => {
 
   test("paginates with cursor and limit params", async () => {
     for (let i = 0; i < 5; i++) {
-      createEntry("anthropic-messages", "test", [{ role: "user", content: `msg-${i}` }])
+      await createEntry("anthropic-messages", "test", [{ role: "user", content: `msg-${i}` }])
     }
 
     const res1 = await get("/api/entries?limit=2")
@@ -165,8 +170,8 @@ describe("GET /api/entries", () => {
   // API tests focus on query param parsing and passthrough.
 
   test("passes filter params to getHistorySummaries correctly", async () => {
-    createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "quantum" }])
-    createEntry("openai-chat-completions", "gpt-4o", [{ role: "user", content: "poetry" }])
+    await createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "quantum" }])
+    await createEntry("openai-chat-completions", "gpt-4o", [{ role: "user", content: "poetry" }])
 
     // Verify a representative filter to confirm param passthrough
     const res = await get("/api/entries?model=claude&endpoint=anthropic-messages")
@@ -175,7 +180,7 @@ describe("GET /api/entries", () => {
   })
 
   test("ignores empty string params", async () => {
-    createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
 
     const res = await get("/api/entries?model=&search=&sessionId=")
     const body = await json<{ total: number }>(res)
@@ -188,7 +193,7 @@ describe("GET /api/entries", () => {
 
 describe("GET /api/entries/:id", () => {
   test("returns full entry by id", async () => {
-    const entry = createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "hello" }], {
+    const entry = await createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "hello" }], {
       effectiveRequest: {
         model: "claude-sonnet-4-20250514",
         format: "anthropic-messages",
@@ -261,7 +266,7 @@ describe("GET /api/entries/:id", () => {
 
 describe("POST /api/entries/:id/pin and /unpin", () => {
   test("pin returns the updated entry with pinned=true and persists it", async () => {
-    const entry = createEntry("anthropic-messages", "test", [{ role: "user", content: "keep me" }])
+    const entry = await createEntry("anthropic-messages", "test", [{ role: "user", content: "keep me" }])
 
     const res = await post(`/api/entries/${entry.id}/pin`)
     expect(res.status).toBe(200)
@@ -275,7 +280,7 @@ describe("POST /api/entries/:id/pin and /unpin", () => {
   })
 
   test("unpin clears the flag", async () => {
-    const entry = createEntry("anthropic-messages", "test", [{ role: "user", content: "toggle" }])
+    const entry = await createEntry("anthropic-messages", "test", [{ role: "user", content: "toggle" }])
     await post(`/api/entries/${entry.id}/pin`)
 
     const res = await post(`/api/entries/${entry.id}/unpin`)
@@ -319,8 +324,8 @@ describe("POST /api/entries/:id/pin and /unpin", () => {
 
 describe("DELETE /api/entries", () => {
   test("clears all history", async () => {
-    createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
-    createEntry("anthropic-messages", "test", [{ role: "user", content: "world" }])
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "world" }])
 
     const res = await del("/api/entries")
     expect(res.status).toBe(200)
@@ -338,7 +343,7 @@ describe("DELETE /api/entries", () => {
 
 describe("GET /api/stats", () => {
   test("returns stats object", async () => {
-    createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
 
     const res = await get("/api/stats")
     expect(res.status).toBe(200)
@@ -352,7 +357,7 @@ describe("GET /api/stats", () => {
 
 describe("GET /api/export", () => {
   test("exports as JSON by default", async () => {
-    createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
 
     const res = await get("/api/export")
     expect(res.headers.get("Content-Type")).toContain("application/json")
@@ -360,7 +365,7 @@ describe("GET /api/export", () => {
   })
 
   test("exports as CSV when format=csv", async () => {
-    createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
 
     const res = await get("/api/export?format=csv")
     expect(res.headers.get("Content-Type")).toContain("text/csv")
@@ -372,7 +377,7 @@ describe("GET /api/export", () => {
 
 describe("sessions API", () => {
   test("DELETE /api/sessions/:id deletes session", async () => {
-    const entry = createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
+    const entry = await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
     const sessionId = entry.sessionId
 
     const res = await del(`/api/sessions/${sessionId}`)

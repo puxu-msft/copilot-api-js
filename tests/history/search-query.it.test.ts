@@ -23,14 +23,14 @@ import { getDatabase } from "~/lib/history/sqlite/connection"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
-function seed(entry: HistoryEntry, patch?: Partial<HistoryEntry>): void {
+async function seed(entry: HistoryEntry, patch?: Partial<HistoryEntry>): Promise<void> {
   insertEntry(entry)
   updateEntry(entry.id, {
     state: "completed",
     outboundResponse: { success: true, model: entry.inboundRequest.model ?? "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
     ...patch,
   })
-  finalizeEntry(entry.id)
+  await finalizeEntry(entry.id)
 }
 
 function entry(id: string, messages: Array<MessageContent>, startedAt: number, extra?: Partial<HistoryEntry>): HistoryEntry {
@@ -52,10 +52,10 @@ function markComplete(): void {
 describe("dedicated search (search-query)", () => {
   useIsolatedRuntime()
 
-  test("inbound: substring match returns the owning request, deduped across requests", () => {
+  test("inbound: substring match returns the owning request, deduped across requests", async () => {
     const shared: MessageContent = { role: "user", content: "find the UNIQUE_NEEDLE here" }
-    seed(entry("o1", [shared], 1000)) // earliest owner
-    seed(entry("o2", [shared, { role: "assistant", content: "reply" }], 2000))
+    await seed(entry("o1", [shared], 1000)) // earliest owner
+    await seed(entry("o2", [shared, { role: "assistant", content: "reply" }], 2000))
     markComplete()
 
     const result = searchHistory({ source: "inbound", q: "UNIQUE_NEEDLE" })
@@ -67,10 +67,10 @@ describe("dedicated search (search-query)", () => {
     expect(result.rows[0].source).toBe("inbound")
   })
 
-  test("contains: lists every request referencing a matched hash", () => {
+  test("contains: lists every request referencing a matched hash", async () => {
     const shared: MessageContent = { role: "user", content: "CONTAINS_PROBE message" }
-    seed(entry("c1", [shared], 1000))
-    seed(entry("c2", [shared], 2000))
+    await seed(entry("c1", [shared], 1000))
+    await seed(entry("c2", [shared], 2000))
     markComplete()
 
     const result = searchHistory({ source: "inbound", q: "CONTAINS_PROBE" })
@@ -79,9 +79,9 @@ describe("dedicated search (search-query)", () => {
     expect(ids.sort()).toEqual(["c1", "c2"])
   })
 
-  test("LIKE wildcards in the needle are escaped (matched literally)", () => {
-    seed(entry("w1", [{ role: "user", content: "literal 100% match" }], 1000))
-    seed(entry("w2", [{ role: "user", content: "should not match via wildcard" }], 2000))
+  test("LIKE wildcards in the needle are escaped (matched literally)", async () => {
+    await seed(entry("w1", [{ role: "user", content: "literal 100% match" }], 1000))
+    await seed(entry("w2", [{ role: "user", content: "should not match via wildcard" }], 2000))
     markComplete()
 
     // "100%" must match the literal percent, not act as a LIKE wildcard.
@@ -95,17 +95,17 @@ describe("dedicated search (search-query)", () => {
     expect(wild.rows[0].ownerReqId).toBe("w1")
   })
 
-  test("CJK 2-character substring matches", () => {
-    seed(entry("cjk1", [{ role: "user", content: "请处理这个问题谢谢" }], 1000))
+  test("CJK 2-character substring matches", async () => {
+    await seed(entry("cjk1", [{ role: "user", content: "请处理这个问题谢谢" }], 1000))
     markComplete()
     const result = searchHistory({ source: "inbound", q: "问题" })
     expect(result.rows).toHaveLength(1)
     expect(result.rows[0].ownerReqId).toBe("cjk1")
   })
 
-  test("structural filters AND with the text match", () => {
-    seed(entry("f1", [{ role: "user", content: "FILTER_NEEDLE one" }], 1000, { sessionId: "alpha" }))
-    seed(entry("f2", [{ role: "user", content: "FILTER_NEEDLE two" }], 2000, { sessionId: "beta" }))
+  test("structural filters AND with the text match", async () => {
+    await seed(entry("f1", [{ role: "user", content: "FILTER_NEEDLE one" }], 1000, { sessionId: "alpha" }))
+    await seed(entry("f2", [{ role: "user", content: "FILTER_NEEDLE two" }], 2000, { sessionId: "beta" }))
     markComplete()
 
     const result = searchHistory({ source: "inbound", q: "FILTER_NEEDLE", filters: { sessionId: "beta" } })
@@ -113,10 +113,10 @@ describe("dedicated search (search-query)", () => {
     expect(result.rows[0].ownerReqId).toBe("f2")
   })
 
-  test("rewrites-req facet finds removed-side changed text", () => {
+  test("rewrites-req facet finds removed-side changed text", async () => {
     const m1: MessageContent = { role: "user", content: "kept" }
     const m2: MessageContent = { role: "user", content: "REWRITE_FACET_NEEDLE dropped" }
-    seed(entry("rw1", [m1, m2], 1000), { outboundRequest: { messages: [m1] } })
+    await seed(entry("rw1", [m1, m2], 1000), { outboundRequest: { messages: [m1] } })
     markComplete()
 
     const result = searchHistory({ source: "rewrites-req", q: "REWRITE_FACET_NEEDLE" })
@@ -125,16 +125,16 @@ describe("dedicated search (search-query)", () => {
     expect(result.rows[0].hash).toBeUndefined()
   })
 
-  test("resp-headers facet matches stored header text", () => {
-    seed(entry("h1", [{ role: "user", content: "q" }], 1000), { httpHeaders: { outboundResponse: { "x-trace": "HEADER_FACET_NEEDLE" } } })
+  test("resp-headers facet matches stored header text", async () => {
+    await seed(entry("h1", [{ role: "user", content: "q" }], 1000), { httpHeaders: { outboundResponse: { "x-trace": "HEADER_FACET_NEEDLE" } } })
     markComplete()
     const result = searchHistory({ source: "resp-headers", q: "HEADER_FACET_NEEDLE" })
     expect(result.rows).toHaveLength(1)
     expect(result.rows[0].ownerReqId).toBe("h1")
   })
 
-  test("pagination: cursor walks the result set without overlap", () => {
-    for (let i = 0; i < 5; i++) seed(entry(`p${i}`, [{ role: "user", content: `PAGE_NEEDLE row ${i}` }], 1000 + i))
+  test("pagination: cursor walks the result set without overlap", async () => {
+    for (let i = 0; i < 5; i++) await seed(entry(`p${i}`, [{ role: "user", content: `PAGE_NEEDLE row ${i}` }], 1000 + i))
     markComplete()
 
     const page1 = searchHistory({ source: "inbound", q: "PAGE_NEEDLE", limit: 2 })
@@ -146,8 +146,8 @@ describe("dedicated search (search-query)", () => {
     for (const r of page2.rows) expect(ids1.has(r.ownerReqId)).toBe(false)
   })
 
-  test("partial flag is set for inbound while the backfill is incomplete", () => {
-    seed(entry("pp1", [{ role: "user", content: "PARTIAL_PROBE" }], 1000))
+  test("partial flag is set for inbound while the backfill is incomplete", async () => {
+    await seed(entry("pp1", [{ role: "user", content: "PARTIAL_PROBE" }], 1000))
     // No markComplete() → version flag absent → partial.
     const result = searchHistory({ source: "inbound", q: "PARTIAL_PROBE" })
     expect(result.partial).toBe(true)
@@ -156,8 +156,8 @@ describe("dedicated search (search-query)", () => {
     expect(result.rows).toHaveLength(1)
   })
 
-  test("empty needle returns no rows", () => {
-    seed(entry("e1", [{ role: "user", content: "anything" }], 1000))
+  test("empty needle returns no rows", async () => {
+    await seed(entry("e1", [{ role: "user", content: "anything" }], 1000))
     markComplete()
     expect(searchHistory({ source: "inbound", q: "" }).rows).toHaveLength(0)
   })

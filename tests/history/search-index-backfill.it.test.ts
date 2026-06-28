@@ -54,7 +54,7 @@ function reqMsgCount(id: string): number {
 }
 
 /** Persist a completed entry through the REAL write path (insert → update → finalize). */
-function persistToolResultLastEntry(id: string, startedAt: number): void {
+async function persistToolResultLastEntry(id: string, startedAt: number): Promise<void> {
   const entry = {
     id,
     endpoint: "openai-chat-completions",
@@ -79,7 +79,7 @@ function persistToolResultLastEntry(id: string, startedAt: number): void {
     endedAt: startedAt,
     outboundResponse: { success: true, model: "gpt-5", usage: { input_tokens: 5, output_tokens: 3 }, content: null },
   })
-  finalizeEntry(id)
+  await finalizeEntry(id)
 }
 
 /** Wipe the dual-written index + flags so a row looks like a legacy (pre-index) row. */
@@ -94,14 +94,14 @@ function makeLegacy(id: string): void {
 describe("sqlite search_index backfill", () => {
   useIsolatedRuntime()
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // P1 dual-write already indexes new rows; these tests simulate legacy rows by
     // wiping the index + flags, then assert the backfill rebuilds them.
     getDatabase().exec("PRAGMA user_version = 0")
   })
 
   test("builds the index + recomputes preview, sets the completion flag", async () => {
-    persistToolResultLastEntry("bf1", 1000)
+    await persistToolResultLastEntry("bf1", 1000)
     makeLegacy("bf1")
     expect(reqMsgCount("bf1")).toBe(0)
     expect(storedPreview("bf1")).toBe("STALE")
@@ -119,7 +119,7 @@ describe("sqlite search_index backfill", () => {
   })
 
   test("guards on history_meta — runs even when PRAGMA user_version is already 1", async () => {
-    persistToolResultLastEntry("uv1", 1000)
+    await persistToolResultLastEntry("uv1", 1000)
     makeLegacy("uv1")
     // A DB migrated by the OLD preview-backfill sits at user_version=1; the new
     // backfill must NOT read user_version (it would wrongly skip).
@@ -132,7 +132,7 @@ describe("sqlite search_index backfill", () => {
   })
 
   test("is a no-op once the completion flag is set (re-run skips everything)", async () => {
-    persistToolResultLastEntry("g1", 1000)
+    await persistToolResultLastEntry("g1", 1000)
     makeLegacy("g1")
     await runSearchIndexBackfill(getDatabase())
     expect(getMeta(getDatabase(), SEARCH_INDEX_VERSION_KEY)).toBe("1")
@@ -148,7 +148,7 @@ describe("sqlite search_index backfill", () => {
     // loop hits `await sleep(0)` — we set the stop flag DURING that yield so the
     // second batch sees it and breaks (flag never set).
     for (let i = 0; i < 60; i++) {
-      persistToolResultLastEntry(`r${String(i).padStart(2, "0")}`, 1000 + i)
+      await persistToolResultLastEntry(`r${String(i).padStart(2, "0")}`, 1000 + i)
       makeLegacy(`r${String(i).padStart(2, "0")}`)
     }
 
@@ -174,16 +174,16 @@ describe("sqlite search_index backfill", () => {
     // p0/p1 done in a first complete pass; then clear the flag, add p2/p3 as legacy,
     // and set the cursor to p1's started_at — resume must build p2/p3, re-include p1
     // (skip-built, no dup), and leave p0 (already built, below cursor) intact.
-    persistToolResultLastEntry("q0", 2000)
-    persistToolResultLastEntry("q1", 2001)
+    await persistToolResultLastEntry("q0", 2000)
+    await persistToolResultLastEntry("q1", 2001)
     makeLegacy("q0")
     makeLegacy("q1")
     await runSearchIndexBackfill(getDatabase()) // builds q0,q1; flag set
     expect(reqMsgCount("q0")).toBe(3)
     expect(reqMsgCount("q1")).toBe(3)
 
-    persistToolResultLastEntry("q2", 2002)
-    persistToolResultLastEntry("q3", 2003)
+    await persistToolResultLastEntry("q2", 2002)
+    await persistToolResultLastEntry("q3", 2003)
     makeLegacy("q2")
     makeLegacy("q3")
     const db = getDatabase()
@@ -216,7 +216,7 @@ describe("sqlite search_index backfill", () => {
       } as unknown as HistoryEntry
       insertEntry(e)
       updateEntry(e.id, { state: "completed", outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null } })
-      finalizeEntry(e.id)
+      await finalizeEntry(e.id)
       makeLegacy(`d${i}`)
     }
     await runSearchIndexBackfill(getDatabase())
@@ -229,7 +229,7 @@ describe("sqlite search_index backfill", () => {
     // 60 rows all at the SAME started_at (batch size is 50) — keyset pagination by
     // (started_at, id) must process all 60, not lose the 10 past the first batch.
     for (let i = 0; i < 60; i++) {
-      persistToolResultLastEntry(`tie${String(i).padStart(2, "0")}`, 5000)
+      await persistToolResultLastEntry(`tie${String(i).padStart(2, "0")}`, 5000)
       makeLegacy(`tie${String(i).padStart(2, "0")}`)
     }
     await runSearchIndexBackfill(getDatabase())

@@ -26,6 +26,7 @@ import type {
   //
   EndpointType,
   HistoryEntry,
+  MessageContent,
   SseEventRecord,
 } from "~/lib/history/types"
 
@@ -42,6 +43,7 @@ import {
   type MessageFormat,
   normalizeMessageForIndex,
 } from "~/lib/history/normalize-message"
+import { sleep } from "~/lib/utils"
 
 import type { Database } from "./connection"
 
@@ -93,11 +95,33 @@ export function formatFromEndpoint(endpoint: EndpointType): MessageFormat {
 /** Content-addressed inbound messages: normalize + hash each, position-ordered. */
 function buildInboundMsgs(entry: HistoryEntry, format: MessageFormat): Array<BuiltMsg> {
   const messages = entry.inboundRequest.messages ?? []
-  return messages.map((msg, pos) => ({
-    pos,
-    hash: hashMessage(msg, format),
-    text: normalizeMessageForIndex(msg, format),
-  }))
+  return messages.map((msg, pos) => buildBuiltMsg(msg, pos, format))
+}
+
+/** One content-addressed message row (normalize + hash). Shared by the sync + chunked builders. */
+function buildBuiltMsg(msg: MessageContent, pos: number, format: MessageFormat): BuiltMsg {
+  return { pos, hash: hashMessage(msg, format), text: normalizeMessageForIndex(msg, format) }
+}
+
+/** Messages per cooperative-yield batch in the chunked builder (RFC P3 — probed at 24ms max-gap). */
+const INDEX_BUILD_BATCH = 50
+
+/**
+ * Cooperative-yield twin of {@link buildInboundMsgs}: identical output, but yields
+ * to the event loop every {@link INDEX_BUILD_BATCH} messages so the per-message
+ * normalize/hash (the dominant ~37ms of the index build on a large request) does not
+ * block concurrent streams in one go. The `messages` array reference is captured up
+ * front (I8): finalize-window mutations touch flags/headers, not the request input
+ * messages, so the chunked read stays consistent.
+ */
+async function buildInboundMsgsChunked(entry: HistoryEntry, format: MessageFormat): Promise<Array<BuiltMsg>> {
+  const messages = entry.inboundRequest.messages ?? []
+  const out: Array<BuiltMsg> = []
+  for (const [pos, message] of messages.entries()) {
+    out.push(buildBuiltMsg(message, pos, format))
+    if (pos % INDEX_BUILD_BATCH === INDEX_BUILD_BATCH - 1) await sleep(0)
+  }
+  return out
 }
 
 /** Collect changed-row text (added ∪ removed ∪ both sides of modified) from aligned messages. */
@@ -217,6 +241,26 @@ export function buildSearchIndexForEntry(entry: HistoryEntry): SearchIndexBuilt 
   try {
     const format = formatFromEndpoint(entry.endpoint)
     return { msgs: buildInboundMsgs(entry, format), aux: buildAux(entry) }
+  } catch (err: unknown) {
+    consola.warn(`[search-index] build failed for ${entry.id}; entry indexed empty`, err)
+    return EMPTY_BUILT
+  }
+}
+
+/**
+ * Cooperative-yield twin of {@link buildSearchIndexForEntry} for the offloaded
+ * finalize path (RFC history-finalize-async-offload §5 P3). The per-message
+ * inbound build yields to the event loop in batches; `buildAux` (a monolithic
+ * jsdiff message-align, ~23ms — not chunkable without forking jsdiff, a Stage-3
+ * worker candidate) stays synchronous after one yield. Output is identical to the
+ * sync builder (I6 — same msgs/aux), and the same try/catch degrades a
+ * malformed-shape throw to an empty index (all-or-nothing, M3).
+ */
+export async function buildSearchIndexChunked(entry: HistoryEntry): Promise<SearchIndexBuilt> {
+  try {
+    const format = formatFromEndpoint(entry.endpoint)
+    const msgs = await buildInboundMsgsChunked(entry, format)
+    return { msgs, aux: buildAux(entry) }
   } catch (err: unknown) {
     consola.warn(`[search-index] build failed for ${entry.id}; entry indexed empty`, err)
     return EMPTY_BUILT

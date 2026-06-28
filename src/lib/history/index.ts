@@ -8,6 +8,7 @@
 export {
   clearHistory,
   deleteSession,
+  drainPendingFinalizations,
   exportHistory,
   finalizeEntry,
   getAgentIdFromHeaders,
@@ -36,6 +37,7 @@ export {
   setPinned,
   shutdownHistory,
   startSearchIndexBackfill,
+  stopHistoryBackgroundWork,
   updateEntry,
 } from "./store"
 

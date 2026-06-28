@@ -8,6 +8,7 @@ import {
 import {
   //
   compress,
+  compressAsync,
   decompress,
   gzipJsonLegacy,
 } from "~/lib/history/sqlite/compression"
@@ -56,5 +57,23 @@ describe("sqlite/compression", () => {
 
   test("decompress throws on an unrecognized magic", () => {
     expect(() => decompress(new Uint8Array([0, 1, 2, 3, 4]))).toThrow(/unrecognized blob magic/)
+  })
+
+  // P1 (RFC history-finalize-async-offload §5): compressAsync is the libuv-offloaded
+  // twin of compress. zstd L3 is deterministic, so the output must be byte-equal —
+  // the finalize refactor (P2) swaps compress→compressAsync and relies on this for I6.
+  test("compressAsync output is byte-equal to compress (deterministic zstd L3)", async () => {
+    const payloads = [
+      { messages: [{ role: "user", content: "hello 压缩" }], meta: { a: 1, b: null } },
+      { big: "x".repeat(50_000), arr: Array.from({ length: 200 }, (_, i) => ({ i, t: `frame ${i}` })) },
+      [],
+      "scalar string 标量",
+    ]
+    for (const p of payloads) {
+      const sync = compress(p)
+      const async = await compressAsync(p)
+      expect(Buffer.from(async)).toEqual(Buffer.from(sync))
+      expect(decompress(async)).toEqual(p)
+    }
   })
 })

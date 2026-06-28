@@ -3,16 +3,23 @@ import type {
   HistoryEntry,
 } from "~/lib/history/types"
 
-import { compress } from "./compression"
+import {
+  //
+  compress,
+  compressAsync,
+} from "./compression"
 import { getDatabase } from "./connection"
 import {
   //
-  buildSearchIndexForEntry,
+  buildSearchIndexChunked,
   persistSearchIndex,
 } from "./search-index-write"
 import {
   //
+  buildHeadRow,
   type EntryRow,
+  extractHeadMetaPayload,
+  extractStagePayloads,
   partitionStagesForWrite,
   serializeHeadEntry,
   type StagePayload,
@@ -92,29 +99,49 @@ function runStageInsert(db: ReturnType<typeof getDatabase>, entryId: string, sta
   db.prepare(INSERT_STAGE_SQL).run(entryId, stage.stage, stage.attemptIndex, now, compress(stage.payload))
 }
 
+/** Persist one stage row from an ALREADY-COMPRESSED blob (the async finalize path compresses off the event loop). */
+function runStageInsertBlob(db: ReturnType<typeof getDatabase>, entryId: string, stage: string, attemptIndex: number, blob: Uint8Array, now: number): void {
+  db.prepare(INSERT_STAGE_SQL).run(entryId, stage, attemptIndex, now, blob)
+}
+
 /**
  * Finalize a terminal entry: upsert the head row (terminal status), replace all
  * its stage rows, and recompute the session aggregate — atomically. Replacing
  * stage rows (DELETE + re-insert) keeps re-finalization idempotent.
+ *
+ * Two-phase (RFC history-finalize-async-offload §3): Phase 1 does the CPU-heavy
+ * work (search-index build + zstd compression of every blob) OFF the event loop —
+ * `compressAsync` runs on the libuv threadpool — with NO DB lock held. Phase 2 is a
+ * fast SYNCHRONOUS transaction that only inserts the already-computed buffers.
+ *
+ * INVARIANT I7 (critical): the `db.transaction()` callback MUST stay synchronous —
+ * bun:sqlite cannot provide atomicity across an `await` (an async callback's throw
+ * does NOT roll back; `tx()` returns a pending Promise instead of throwing). All
+ * awaiting happens in Phase 1, BEFORE the transaction opens.
  */
-export function insertCompletedEntry(entry: HistoryEntry): void {
+export async function insertCompletedEntry(entry: HistoryEntry): Promise<void> {
   const db = getDatabase()
-  const { row, stages } = serializeHeadEntry(entry)
-  // Build the search index OUTSIDE the tx (normalize/hash/jsdiff are CPU-heavy);
-  // a malformed-shape throw degrades to an empty index without aborting finalize.
-  const built = buildSearchIndexForEntry(entry)
+  // ── Phase 1 — CPU off the event loop (no DB lock held) ──────────────────────
+  // Build the search index (normalize/hash/jsdiff is CPU-heavy); the chunked builder
+  // yields per message batch (P3) so it doesn't block concurrent streams in one go.
+  // A malformed-shape throw degrades to an empty index without aborting finalize.
+  const built = await buildSearchIndexChunked(entry)
+  // Pack the redundant request bodies into one request_group dedup frame (B3);
+  // response/sse stages stay individual. Compress the head blob + every stage blob
+  // concurrently on the libuv threadpool. `rest`-then-group insert order is preserved.
+  const { groupRow, rest } = partitionStagesForWrite(extractStagePayloads(entry))
+  const stagesToCompress = groupRow ? [...rest, groupRow] : rest
+  const [headBlob, ...stageBlobs] = await Promise.all([compressAsync(extractHeadMetaPayload(entry)), ...stagesToCompress.map((s) => compressAsync(s.payload))])
+  const row = buildHeadRow(entry, undefined, headBlob)
+  const precompressed = stagesToCompress.map((s, i) => ({ stage: s.stage, attemptIndex: s.attemptIndex, blob: stageBlobs[i] }))
   const now = Date.now()
 
+  // ── Phase 2 — fast SYNCHRONOUS transaction (I7: callback MUST be sync) ───────
   const tx = db.transaction(() => {
     runHeadInsert(db, row)
     db.prepare("DELETE FROM entry_stages WHERE entry_id = ?").run(row.id)
-    // Pack the redundant request bodies into one request_group dedup frame
-    // (B3); response/sse stages stay individual. DELETE+rewrite stays atomic.
-    const { groupRow, rest } = partitionStagesForWrite(stages)
-    for (const stage of rest) runStageInsert(db, row.id, stage, now)
-    if (groupRow) runStageInsert(db, row.id, groupRow, now)
-    // Build the content-addressed search index, atomic with head/stage. This is
-    // now the SOLE search write path — the legacy search_text/FTS is decommissioned.
+    for (const s of precompressed) runStageInsertBlob(db, row.id, s.stage, s.attemptIndex, s.blob, now)
+    // Content-addressed search index, atomic with head/stage. Sole search write path.
     persistSearchIndex(db, row.id, built)
   })
   tx()
