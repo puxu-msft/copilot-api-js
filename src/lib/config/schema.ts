@@ -153,6 +153,23 @@ export const AnthropicConfigSchema = z
      */
     strict_response_headers: nullableBoolean(),
     /**
+     * Pass the client's native inbound HTTP headers through to the upstream (GHC)
+     * request. `false` (default) = passthrough (forward everything except the core
+     * keys the proxy itself sets and the sensitive denylist); `true` = strict (send
+     * only the proxy-rebuilt allowlist — the pre-feature behavior). Request-side mirror
+     * of `strict_response_headers`. Anthropic path only. See `lib/strip-headers.ts`.
+     */
+    strict_request_headers: nullableBoolean(),
+    /**
+     * Glob list (header name, `*`/`?`) of passed-through client headers to strip from
+     * the upstream request. Only acts on the passthrough subset (never the proxy's own
+     * core/anthropic-beta headers), so it is a no-op when `strict_request_headers: true`.
+     * Default `["x-anthropic-billing-header"]` removes Claude Code's attribution header
+     * (it breaks prompt caching on the Copilot gateway). `[]` clears (attribution then
+     * passes through). Empty-string items rejected; absence retains the running value.
+     */
+    strip_request_headers: nullableNonemptyStringArray(),
+    /**
      * Inject Claude Code official tool stubs (Bash, Read, Write, …) when
      * referenced in message history but missing from the request's tools
      * array. Default true. Disable for non-Claude-Code clients to save
@@ -264,8 +281,6 @@ export const AnthropicConfigSchema = z
     tool_search: nullableBoolean(),
     cache_control: nullableEnum(["disabled", "passthrough", "sanitize", "proxied"] as const),
     tool_non_deferred: nullableNonemptyStringArray(),
-    strict_request_headers: nullableBoolean(),
-    strip_request_headers: nullableNonemptyStringArray(),
     api_key: nullableString(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
     // Free-form Records — key = model-name pattern, value = list

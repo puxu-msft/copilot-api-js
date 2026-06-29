@@ -271,6 +271,22 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   },
   {
+    configKey: "anthropic.strict_request_headers",
+    stateKey: "strictRequestHeaders",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
+  },
+  {
+    configKey: "anthropic.strip_request_headers",
+    stateKey: "stripRequestHeaders",
+    // Sample MUST differ from the (non-empty) default ["x-anthropic-billing-header"]
+    // so R1/R2 prove the wiring rather than coincidentally matching the default.
+    sampleYamlValue: `\n  - x-custom-attr`,
+    expectedStateValue: ["x-custom-attr"],
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripRequestHeaders,
+  },
+  {
     configKey: "anthropic.stream_keepalive_ping_sec",
     stateKey: "streamKeepalivePingSec",
     sampleYamlValue: "15",

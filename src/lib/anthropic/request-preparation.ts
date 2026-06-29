@@ -6,6 +6,11 @@ import { copilotHeaders } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
 import {
   //
+  pruneHeaders,
+  selectPassthroughHeaders,
+} from "~/lib/strip-headers"
+import {
+  //
   type MessageParam,
   type MessagesPayload,
   type OutputConfig,
@@ -70,6 +75,13 @@ interface PrepareAnthropicRequestOptions {
    * Mirrors GHC #4945 fix.
    */
   clientAnthropicBeta?: string
+  /**
+   * Client's raw inbound HTTP headers (lowercased keys). When passthrough is
+   * enabled (`state.strictRequestHeaders === false`), the safe subset is merged
+   * UNDER the proxy's core headers — see `buildAnthropicHeaders`. Absent/undefined
+   * means no passthrough source (the request behaves as strict).
+   */
+  clientRequestHeaders?: Record<string, string>
   /**
    * Per-attempt overrides supplied by retry strategies (see PrepareHints in
    * lib/request/pipeline.ts). These are unioned with the persistent
@@ -228,7 +240,10 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
   const mergedBeta = mergeAnthropicBeta(opts.clientAnthropicBeta, localBeta["anthropic-beta"])
   const filteredBeta = filterUnsupportedBetas(model, mergedBeta, opts.excludeBetas)
 
-  const headers: Record<string, string> = {
+  // Core = the proxy's own upstream headers, ALWAYS authoritative. anthropic-beta
+  // is folded in HERE (before passthrough/strip) so it lives in `core` and is
+  // therefore immune to both client override and the strip glob below.
+  const core: Record<string, string> = {
     ...copilotHeaders(state, {
       vision: enableVision && modelSupportsVision,
       modelRequestHeaders: opts.resolvedModel?.request_headers,
@@ -237,7 +252,25 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
     "X-Initiator": isAgentCall ? "agent" : "user",
     "anthropic-version": "2023-06-01",
   }
-  if (filteredBeta) headers["anthropic-beta"] = filteredBeta
+  if (filteredBeta) core["anthropic-beta"] = filteredBeta
+
+  // Optional client-header passthrough (anthropic.strict_request_headers === false,
+  // the default). The guard is NOT the spread order — `new Headers()` JOINS
+  // case-variant duplicate keys ("authorization" + "Authorization" → "a, b"), so a
+  // raw spread would smuggle client credentials in. Instead `selectPassthroughHeaders`
+  // removes EVERY core key (lowercased, dynamically derived so it covers vision +
+  // modelRequestHeaders) plus the sensitive denylist BEFORE the merge → passthrough ∩
+  // core = ∅, and `{ ...pass, ...core }` is collision-free. Strip runs on the
+  // passthrough subset only, so `["*"]` just empties passthrough (back to allowlist).
+  let headers = core
+  if (!state.strictRequestHeaders && opts.clientRequestHeaders) {
+    const coreLower = new Set(Object.keys(core).map((k) => k.toLowerCase()))
+    // copilot-vision-request is a conditional core key (set only when vision is on).
+    // Reserve it unconditionally so a client can't forge it on a non-vision request.
+    coreLower.add("copilot-vision-request")
+    const passthrough = pruneHeaders(selectPassthroughHeaders(opts.clientRequestHeaders, coreLower), state.stripRequestHeaders)
+    headers = { ...passthrough, ...core }
+  }
 
   // Context_management injection: normally gated by `contextEditingMode != off` (isContextEditingEnabled).
   // L2 escalation (opts.contextEscalation) ALSO injects — FORCING an aggressive clear_tool_uses even

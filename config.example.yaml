@@ -200,6 +200,20 @@ anthropic:
   # Strip server-side tools (web_search, etc.) from requests
   strip_server_tools: false
 
+  # Forward upstream (GitHub Copilot) response headers to the client. The proxy is
+  # otherwise fully isolating (it synthesizes its own response headers), so upstream
+  # request-id / anthropic-ratelimit-* / anthropic-organization-id never reach the client.
+  #   false (default): permissive — forward everything EXCEPT a proxy-controlled blacklist
+  #                    (content-length / content-type / content-encoding / transfer-encoding /
+  #                    connection / hop-by-hop / cache-control / date / set-cookie). The
+  #                    blacklist is mandatory in BOTH modes (a stale upstream content-length
+  #                    after the proxy re-serializes the body corrupts client parsing).
+  #   true:            strict — forward ONLY request-id / x-request-id / anthropic-ratelimit-* /
+  #                    anthropic-organization-id / retry-after.
+  # Only non-committed write-out paths forward (non-streaming + streaming settled within the
+  # commit window); a delayed-commit stream that already flushed its 200 forwards nothing.
+  strict_response_headers: false
+
   # Synthetic SSE keepalive interval (seconds) for the client-facing stream.
   # 0 = disabled (default). A positive integer N injects an Anthropic-protocol
   # `event: ping` frame whenever no real upstream event has been forwarded for

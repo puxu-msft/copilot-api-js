@@ -171,6 +171,21 @@ export interface State {
   readonly strictResponseHeaders: boolean
 
   /**
+   * Pass the client's native inbound HTTP request headers through to the upstream
+   * request (Anthropic path). `false` (default) = passthrough (everything except the
+   * proxy's core keys + the sensitive denylist); `true` = strict (proxy-rebuilt
+   * allowlist only). Request-side mirror of `strictResponseHeaders`.
+   */
+  readonly strictRequestHeaders: boolean
+  /**
+   * Glob list of passed-through client headers to strip from the upstream request.
+   * Acts on the passthrough subset only (no-op when `strictRequestHeaders` is true).
+   * Default removes `x-anthropic-billing-header` (Claude Code attribution → breaks
+   * Copilot prompt caching).
+   */
+  readonly stripRequestHeaders: ReadonlyArray<string>
+
+  /**
    * Client-proxy keepalive ping cadence (seconds) for the streaming Anthropic stream.
    * `0` disables. Default **20**, clamped < `CLIENT_IDLE_DEADLINE_SEC` (60) — Claude
    * Code's request timeout is an IDLE watchdog at ~60s (Q2 oracle, exp/q2-oracle/REPORT.md).
@@ -683,6 +698,7 @@ function cloneState(source: MutableState): MutableState {
     rejectBodyFields: cloneStripBetaHeaders(source.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(source.decodeToolInputFields),
     disabledModels: [...source.disabledModels],
+    stripRequestHeaders: [...source.stripRequestHeaders],
     models: cloneModels(source.models),
     rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
     systemPromptOverrides: [...source.systemPromptOverrides],
@@ -737,6 +753,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("disabledModels" in patch) {
     cloned.disabledModels = patch.disabledModels ? [...patch.disabledModels] : undefined
+  }
+  if ("stripRequestHeaders" in patch) {
+    cloned.stripRequestHeaders = patch.stripRequestHeaders ? [...patch.stripRequestHeaders] : undefined
   }
 
   return cloned
@@ -822,6 +841,8 @@ export function setAnthropicBehavior(
       MutableState,
       | "stripServerTools"
       | "strictResponseHeaders"
+      | "strictRequestHeaders"
+      | "stripRequestHeaders"
       | "streamKeepalivePingSec"
       | "streamCommitAfterSec"
       | "protectStreamingGeneration"
@@ -1020,6 +1041,8 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
 export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
   strictResponseHeaders: false,
+  strictRequestHeaders: false,
+  stripRequestHeaders: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
   streamKeepalivePingSec: 20,
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
@@ -1105,6 +1128,8 @@ export function resetConfigManagedState(): void {
   setAnthropicBehavior({
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
+    strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
+    stripRequestHeaders: [...CONFIG_MANAGED_DEFAULTS.stripRequestHeaders],
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
@@ -1216,6 +1241,8 @@ const mutableState: MutableState = {
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
+  strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
+  stripRequestHeaders: [...CONFIG_MANAGED_DEFAULTS.stripRequestHeaders],
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,

@@ -102,7 +102,7 @@ const upstreamFetchMock = mock(async (input: string | URL | Request) => {
 const { createFullTestApp } = await import("../helpers/test-app")
 const app = createFullTestApp()
 
-function messagesRequest(stream: boolean): Promise<Response> {
+async function messagesRequest(stream: boolean): Promise<Response> {
   return app.request("/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-session-id": `hdr-fwd-${stream ? "stream" : "json"}` },

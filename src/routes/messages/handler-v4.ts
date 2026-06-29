@@ -642,6 +642,9 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
  */
 function applyForwardedAnthropicResponseHeaders(c: Context, upstreamHeaders: Headers): void {
   const forward = selectForwardableResponseHeaders(upstreamHeaders, state.strictResponseHeaders)
+  // `upstreamHeaders` is a validated `Headers` (the transport builds it via `new Headers(...)`),
+  // so every value already passed WHATWG validation — `c.header()` re-set cannot throw on it
+  // (a CR/LF/NUL value would have been rejected upstream, never reaching here). No guard needed.
   for (const [name, value] of Object.entries(forward)) c.header(name, value)
 }
 

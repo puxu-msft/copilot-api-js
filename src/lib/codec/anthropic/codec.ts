@@ -143,6 +143,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   let requestContext: RequestContext | undefined
   let truncateBaseline: MessagesPayload | undefined
   let clientAnthropicBeta: string | undefined
+  let clientRequestHeaders: Record<string, string> | undefined
   let initialSanitizationInfo: SanitizationInfo | undefined
   let resanitize: AnthropicSanitizeFn | undefined
   let latestEffectiveMessages: Array<unknown> | undefined
@@ -168,6 +169,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       requestContext = parsed.env.ctx
       truncateBaseline = parsed.baseline
       clientAnthropicBeta = parsed.clientAnthropicBeta
+      clientRequestHeaders = parsed.clientRequestHeaders
       resanitize = parsed.resanitize
       return parsed.env
     },
@@ -213,6 +215,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       return prepareAnthropicWire(env, {
         betaProbe: args.betaProbe,
         clientAnthropicBeta,
+        clientRequestHeaders,
         requestContext,
         // requested = the client's original thinking type, from the FIXED truncate
         // baseline (never the per-attempt env.body, which legacy-thinking-retry
@@ -245,6 +248,8 @@ interface ParseAnthropicResult {
   env: RequestEnvelope
   baseline: MessagesPayload
   clientAnthropicBeta: string | undefined
+  /** Client's raw inbound HTTP headers (lowercased keys), for optional upstream passthrough. */
+  clientRequestHeaders: Record<string, string>
   resanitize: AnthropicSanitizeFn
 }
 
@@ -328,6 +333,10 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
     env,
     baseline: anthropicPayload,
     clientAnthropicBeta: raw.headers.get("anthropic-beta") ?? undefined,
+    // Capture the client's raw headers (Headers.entries() yields lowercased keys)
+    // for optional passthrough. Taken straight from raw.headers — NOT the ctx
+    // inbound copy — to stay decoupled from the History sanitization policy.
+    clientRequestHeaders: Object.fromEntries(raw.headers.entries()),
     resanitize,
   }
 }
@@ -362,6 +371,8 @@ function decideAnthropicRoute(env: RequestEnvelope): RouteDecision {
 interface PrepareWireDeps {
   betaProbe: BetaProbe
   clientAnthropicBeta: string | undefined
+  /** Client's raw inbound headers (lowercased) for optional upstream passthrough. */
+  clientRequestHeaders: Record<string, string> | undefined
   requestContext: RequestContext | undefined
   /**
    * Client's original `thinking.type` (fixed across retries — from the truncate
@@ -385,6 +396,7 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
   const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
     ...(model && { resolvedModel: model }),
     ...(deps.clientAnthropicBeta !== undefined && { clientAnthropicBeta: deps.clientAnthropicBeta }),
+    ...(deps.clientRequestHeaders !== undefined && { clientRequestHeaders: deps.clientRequestHeaders }),
     ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
     ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
     ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
