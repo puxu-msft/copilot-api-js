@@ -413,11 +413,12 @@ anthropic:
 
   # 透明恢复上游偶发把工具调用降级成纯文本（call<invoke>…）的响应，重建为标准 tool_use block。
   # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/rfc/tool-call-text-recovery.md。
-  tool_recover_call_text: false
+  tool_recover_call_text: true
 
   # 拦截上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块、无 text/tool_use），追加一个合成 text 块说明拒绝并把 stop_reason 改成 end_turn。
   # 否则客户端（Claude Code）拿到空/坏轮、工作流卡住。仅作用于转发流（history 的 sseEvents 保留上游原始 refusal）。默认 false。详见 docs/refusal-recovery.md。
-  refusal_recover_text: false
+  refusal_recover_text: true
+
   # tool_backfill_question: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").
   #   Upstream models occasionally emit such items. When true, each item that is MISSING the `question` key (present-but-empty is left untouched) and whose `header` is a non-empty string gets `question = header`.
   #   Applies on the response wire only (streaming + non-streaming), after tool_decode_input_fields; history keeps the upstream-original form. Default: true.
