@@ -14,6 +14,7 @@ metadata:
 **项目实证（反复踩的坑，知道往哪查）：**
 - Executor 误判："0 个消费者"实有 3 个；bugfix subagent 跑 3 次声称修好 flaky，独立连跑 12 次抓出 3 次失败。
 - Reviewer 误判：基于不全 grep / 设计意图偏差；或基于**过时文档**——曾提 CRITICAL"Bun 不支持 fake timers"，最小探针验证 bun 1.3.8 实际支持，推翻该 CRITICAL。
+- **Reviewer "我亲测了"但喂合成样本**：审 spec 时 reviewer 跑 `jsonrepair` 得 CRITICAL"修成合法但语义改坏"，但它测的是**自己捏造的** `{"q":"\\\\u67b6"}`；主线用**真实 history 字节**（entry `req_1782740067043_965`）复跑证明 jsonrepair 正确补 `]}`、中文语义保真→推翻该 CRITICAL（同会话另 3 个 CRITICAL 复跑全确认）。教训：声音权威的"empirical demo"也是声音权威，**先查它测的是真实工件还是合成代理**——empirical≠可信若输入失真；用真实样本（history sqlite 原始字节）复跑才裁决。
 - 逐条核 subagent 抓真 bug：commit 审计标"main.ts 与 ConsoleSink double consola hijack"，`grep -n setReporters` 确认 `initConsolaReporter()`+新加 `attachConsoleSink` 都调 setReporters → 真问题，`hijackConsola:false` 修；没查验就会当"过度警惕"跳过。
 - 第一个 review agent 把 rate_limiter 单位换算判"识别了但低估"，第二个 agent 才挖出 `recoveryTimeoutMinutes`+`DEFAULT_CONFIG` 双默认值全链路——**必要时发起任意多次新 subagent 交叉核实，次数不设上限**。
 - 连 subagent"跑了 20 次全过"也自复跑 25 次才采信。
