@@ -422,6 +422,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       try {
         await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env })
       } finally {
+        sink.close?.() // symmetric with the commit path: keep the heartbeat-timer-stop invariant local
         detachClientAbort()
       }
     })

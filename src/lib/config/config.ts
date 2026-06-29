@@ -144,13 +144,13 @@ const CLIENT_IDLE_DEADLINE_SEC = 60
 const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
 let warnedKeepaliveClamp = false
 
-/** Clamp a keepalive cadence (0 = disabled) to stay WELL below the client idle deadline; warn once. */
+/** Clamp a keepalive interval/window (0 = disabled) to stay WELL below the client idle deadline; warn once. */
 function clampKeepaliveCadence(sec: number): number {
   if (sec <= 0 || sec <= KEEPALIVE_CADENCE_MAX) return sec
   if (!warnedKeepaliveClamp) {
     warnedKeepaliveClamp = true
     consola.warn(
-      `keepalive cadence ${sec}s leaves too little margin under the ~${CLIENT_IDLE_DEADLINE_SEC}s client idle deadline — clamped to ${KEEPALIVE_CADENCE_MAX}s`,
+      `keepalive interval ${sec}s leaves too little margin under the ~${CLIENT_IDLE_DEADLINE_SEC}s client idle deadline — clamped to ${KEEPALIVE_CADENCE_MAX}s`,
     )
   }
   return KEEPALIVE_CADENCE_MAX
@@ -490,6 +490,7 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.anthropic) {
     const a = config.anthropic
     if (a.tool_strip_server !== undefined) setAnthropicBehavior({ stripServerTools: a.tool_strip_server })
+    if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
     if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
     if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampKeepaliveCadence(a.stream_commit_after_sec) })
     if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })

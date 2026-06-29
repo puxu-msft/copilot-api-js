@@ -9,6 +9,12 @@ import { LegShell } from "@/components/detail/segments/LegShell"
  * in the separate SSE tab (SseEventsSegment).
  */
 export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
+  // Gated on semantic content only — raw SSE frames live in the SSE tab, so a
+  // frame-only entry intentionally shows "无响应数据" here (the rendered answer
+  // isn't there) while its frames render under SSE. This relies on the history
+  // invariant that `sseEvents` and `outboundResponse` are written together at
+  // finalization (onTerminal); in-flight entries mirror neither. If in-flight
+  // frame mirroring is ever added, revisit this gate so Response/SSE don't split.
   const hasUpstream = Boolean(entry.outboundResponse)
   const hasForwarded = entry.inboundResponse?.content !== undefined
 
