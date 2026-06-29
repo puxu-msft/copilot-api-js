@@ -3,14 +3,14 @@
   "version": "0.8.4-beta.10",
   "description": "Turn GitHub Copilot into an OpenAI/Anthropic API compatible provider. Use Gemini and Claude models with Codex CLI through your Copilot subscription.",
   "keywords": [
-    "github-copilot",
-    "claude",
-    "codex-cli",
-    "proxy",
-    "openai-compatible",
     "anthropic-compatible",
+    "claude-code",
+    "claude",
+    "codex",
     "gemini",
-    "codex-plugin"
+    "github-copilot",
+    "openai-compatible",
+    "proxy"
   ],
   "homepage": "https://github.com/puxu-msft/copilot-api-js",
   "bugs": "https://github.com/puxu-msft/copilot-api-js/issues",
@@ -47,7 +47,7 @@
     "lint": "eslint --cache",
     "lint:all": "eslint --cache .",
     "prepack": "bun run build",
-    "prepare": "bun run build && (command -v bun >/dev/null 2>&1 && simple-git-hooks || true)",
+    "prepare": "bun run build",
     "preview:ui": "bun run --filter copilot-api-ui preview",
     "release": "bumpp && bun publish --access public",
     "start": "NODE_ENV=production bun run ./src/main.ts",
@@ -71,12 +71,6 @@
     "typecheck": "tsc && tsc --noEmit --project tests/e2e-ui/tsconfig.json",
     "typecheck:ui": "bun run --filter copilot-api-ui typecheck",
     "typecheck:ui-v4": "bun run --filter copilot-api-ui-v4 typecheck"
-  },
-  "simple-git-hooks": {
-    "pre-commit": "bun x lint-staged --no-stash"
-  },
-  "lint-staged": {
-    "*.{ts,tsx,js,jsx,mjs,cjs,vue}": "bun run lint"
   },
   "dependencies": {
     "@google/genai": "^2.10.0",
@@ -112,10 +106,8 @@
     "eslint": "^9.39.4",
     "eslint-plugin-vue": "^10.9.2",
     "knip": "^6.23.0",
-    "lint-staged": "^17.0.8",
     "openai": "^6.45.0",
     "prettier-plugin-packagejson": "^3.0.2",
-    "simple-git-hooks": "^2.13.1",
     "tsdown": "^0.22.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.62.0",
