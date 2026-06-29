@@ -66,6 +66,10 @@ describe("findDowngradeMarkPos", () => {
     expect(text.slice(pos)).toMatch(/^<invoke name="Bash"/)
   })
 
+  test("court 残留前缀紧贴 <invoke> → markPos 指向 court", () => {
+    expect(findDowngradeMarkPos(`court<invoke name="Write"></invoke>`, tools)).toBe(0)
+  })
+
   test("invoke 工具名不在工具集 → -1", () => {
     expect(findDowngradeMarkPos(`call<invoke name="Unknown"></invoke>`, tools)).toBe(-1)
   })
@@ -119,6 +123,13 @@ describe("recoverDowngradeTail", () => {
   test("schema 缺失工具 → 全字段字符串", () => {
     const tail = `call<invoke name="Bash"><parameter name="command">ls</parameter></invoke>`
     const r = recoverDowngradeTail(tail, new Map())
+    expect(r.recovered).toBe(true)
+    if (r.blocks[0].type === "tool_use") expect(r.blocks[0].input).toEqual({ command: "ls" })
+  })
+
+  test("court 残留前缀被剥除 → 1 tool_use", () => {
+    const tail = `court<invoke name="Bash"><parameter name="command">ls</parameter></invoke>`
+    const r = recoverDowngradeTail(tail, schemas)
     expect(r.recovered).toBe(true)
     if (r.blocks[0].type === "tool_use") expect(r.blocks[0].input).toEqual({ command: "ls" })
   })

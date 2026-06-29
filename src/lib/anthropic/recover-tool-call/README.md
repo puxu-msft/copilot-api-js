@@ -10,7 +10,7 @@
 - `index.ts` — barrel re-export。
 
 ## 问题
-GitHub Copilot 的 Anthropic 上游偶发把工具调用渲染成命名空间被剥离的纯文本（`call<invoke name="X"><parameter name="K">V</parameter></invoke>`）塞进 text block，而不发标准 tool_use content block，`stop_reason` 仍是 tool_use（变体 A）或 end_turn（变体 B）。下游 Claude Code 期望 tool_use，收到 `<invoke>` 文本 → 解析失败、对话卡死。本模块在代理层检测并重建为标准 tool_use block。默认 off（`anthropic.tool_recover_call_text`）。
+GitHub Copilot 的 Anthropic 上游偶发把工具调用渲染成命名空间被剥离的纯文本（`call<invoke name="X"><parameter name="K">V</parameter></invoke>`，残留前缀亦见 `court`/`function_calls`/`<function_calls>` 等变体）塞进 text block，而不发标准 tool_use content block，`stop_reason` 仍是 tool_use（变体 A）或 end_turn（变体 B）。下游 Claude Code 期望 tool_use，收到 `<invoke>` 文本 → 解析失败、对话卡死。本模块在代理层检测并重建为标准 tool_use block。默认 off（`anthropic.tool_recover_call_text`）。
 
 ## 不变量
 - **history 保真**：仅作用于转发给客户端的流（forwardedSseEvents）；raw sseEvents + accumulator 保留上游降级原貌。
