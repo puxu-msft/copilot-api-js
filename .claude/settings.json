@@ -34,13 +34,15 @@
       "/home/xp/.claude/my/**",
       "/home/xp/.claude/projects/-home-xp-src-copilot-api-js/**",
       "/home/xp/.local/share/copilot-api/**",
-      "/home/xp/src/copilot-api-js/**"
+      "/home/xp/src/copilot-api-js/**",
+      "/.worktree/**",
+      "/docs/memory/**"
     ]
   },
   "enabledPlugins": {
+    "context7-plugin@context7-marketplace": true,
     "feature-dev@claude-plugins-official": true,
     "frontend-design@claude-plugins-official": true,
-    "playwright@claude-plugins-official": true,
-    "context7-plugin@context7-marketplace": true
+    "playwright@claude-plugins-official": true
   }
 }
