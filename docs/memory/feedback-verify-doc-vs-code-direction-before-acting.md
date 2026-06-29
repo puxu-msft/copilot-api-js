@@ -1,15 +1,12 @@
 ---
 name: feedback-verify-doc-vs-code-direction-before-acting
-description: 判定文档与代码不一致前先用 git 确证方向（陈旧/未实现/代码缺陷），尤其提交或改动非自己创建的内容；局部正确不证明整体有效，方向赌对≠验证过
+description: 文档与代码不一致时,动手改/提交前先用 git 确证方向——陈旧/未实现/代码缺陷三者后果完全相反(改文档 vs 掩盖缺口 vs 固化 bug 成规范);提交或改动非自己创建的内容须逐条核,局部正确≠整体有效,方向赌对≠验证过。定向工具+处置见 skill verifying-authoritative-claims
 metadata:
   type: feedback
 ---
 
-文档与代码对不上时，**动手改/提交之前必须先用 git 确证 discrepancy 的方向**，三种可能后果完全相反：① **文档陈旧**（代码演进/特性删除，文档没跟上）→ 改文档匹配代码 ② **文档尚未实现**（文档是 spec/意图，代码没做）→ 删文档行会**掩盖未实现的缺口**，该建代码或保留待办 ③ **代码缺陷**（文档是对的，代码错了/退化）→ 改文档迁就代码会**把 bug 固化成"规范"**。
+文档与代码对不上时，改/提交前**先用 git 确证 discrepancy 方向**（三种后果相反）：① **陈旧**（代码演进/特性删，文档没跟）→ 改文档配代码 ② **未实现**（文档是 spec/意图，代码没做）→ 删文档行会**掩盖缺口**，该建代码/留待办 ③ **代码缺陷**（文档对、代码退化）→ 改文档迁就会**把 bug 固化成"规范"**。
 
-**Why**：本会话我连犯两错——(a) 把一份**自己没写、几个月前的** `docs/shutdown.md` 整体提交，只验了两点就当全文准确；(b) 发现 3 处不一致后直接"改文档匹配代码"，**假设**是"陈旧"而没验证方向。事后 `git log -S` 才证明 3 处确实都是陈旧（`memory-pressure.ts` df840b5 加、7561a7b 删；WS-close 设计性移到 Phase 4；consumers.ts→bus/sinks）——但**方向赌对不等于做对了**，用户连续两次戳这个点。这是 [[feedback-pass-null-clean-not-self-validating]]（局部正确不自证整体）+ CLAUDE.md "didn't create it → surface, don't proceed" 的具体失败。
+**Why（本会话连犯两错）：** (a) 把自己没写、几个月前的 `docs/shutdown.md` 整体提交只验两点就当全文准确；(b) 发现 3 处不一致直接"改文档配代码"，**假设**陈旧没验方向。事后 `git log -S` 才证 3 处确实陈旧（`memory-pressure.ts` df840b5 加/7561a7b 删；WS-close 设计性移 Phase 4；consumers.ts→bus/sinks）——但**方向赌对≠验证过**，用户连戳两次。
 
-**How to apply**：
-- **定方向的工具**：`git log -S "<符号>" -- <path>`（该符号何时被加/删，看最近一次是 + 还是 −）、`git log --oneline -- <file>`（文档最近真实提交时间——几个月前 = 大概率陈旧但仍须验代码）、`grep 全树确认符号当前是否存在`、对照实现文件逐条核。**方向定了才改**。
-- **提交非自己创建的内容**：逐条核验其每个声明对照当前代码，"部分准确（如某文件确实已删）"绝不外推成"整体准确"。宁可先 surface 给用户也不擅自提交。
-- **陈旧文档的处置**：不是简单删行——加注解说明陈旧原因（特性删除 commit/日期），移入 `docs/archive/` 适当位置（必要时重命名），保留历史可追溯。**特别**：`*_实施状况.md` 类实施跟踪文档天然是 point-in-time 产物，工作完成/特性删除后即成历史，应归档而非留在活文档区误导。
+**How to apply:** 定向工具 `git log -S "<符号>" -- <path>`（最近一次 + 还是 −）、`git log --oneline -- <file>`（文档多久没动）、grep 全树确认符号现存；**方向定了才改**。提交非自己创建的内容逐条核对当前代码，"部分准确"绝不外推"整体准确"，宁可先 surface 不擅自提交。陈旧文档加注解（删除 commit/日期）移入 `docs/archive/`，不简单删行。通用定向手法与处置见 skill [[verifying-authoritative-claims]]；同 [[feedback-pass-null-clean-not-self-validating]]（局部正确不自证整体）。

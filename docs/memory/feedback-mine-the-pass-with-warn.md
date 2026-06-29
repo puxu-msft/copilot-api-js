@@ -7,7 +7,7 @@ metadata:
   originSessionId: 74cbbf78-f572-4505-b8b0-b822b5e0292e
 ---
 
-延伸自 [[feedback-subagent-feedback-also-critically-verify]]：subagent 审计经常以「PASS 但有 1 个 WARN」或「WARN 低优先级」收尾。默认的诱惑是直接交付。**别这么做。** 把这个 WARN 再往深挖一层——它往往是 subagent 只抓到一半的真实回归的可见冰山一角。
+延伸自 [[feedback_reviewer_verify_critically]]：subagent 审计经常以「PASS 但有 1 个 WARN」或「WARN 低优先级」收尾。默认的诱惑是直接交付。**别这么做。** 把这个 WARN 再往深挖一层——它往往是 subagent 只抓到一半的真实回归的可见冰山一角。
 
 **Why:** subagent 擅长表层检查（grep、type、lint、基础 test）。它们在多步因果链上较弱。它们标记的某个「死导出」之所以死，可能是因为你破坏了调用契约——而调用契约被破坏就是一个回归，只是 subagent 没有回溯到的那个。
 
@@ -24,4 +24,4 @@ metadata:
 - 重新 grep 该保护机制的目的，而不只是它的存在。（`broadcastAndFlush` 听起来不危险；「强制关闭前的 WS TCP drain」听起来就危险。）
 - 如果发现真实回归，提交前就修掉它，而不是在后续补丁里修。按 [[feedback_complete_root_cause_fix]] / best-complete-solution。
 
-Related: [[feedback-subagent-feedback-also-critically-verify]], [[feedback_reviewer_verify_critically]], [[feedback_complete_root_cause_fix]]。
+Related: [[feedback_reviewer_verify_critically]], [[feedback_reviewer_verify_critically]], [[feedback_complete_root_cause_fix]]。

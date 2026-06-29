@@ -22,7 +22,7 @@ metadata:
 - **(b)** 错误帧**部分等价**：`error.type` 富帧保真（`mapHttpErrorToEnvelope` 已落地 `3e4b3cd`）→ 各类错误正确显示（401 触发 CC "请 /login"）；**401/400/不可重试类完全等价**（不重试本就正确）；**仅 429 及 5xx 可重试类真发散**（CC 对 HTTP-429 重试 ≥7×、对 200+SSE-error-429 一次即弃）。E3 证流式 commit 后即便真错误 CC 也不重试（协议固有）→ 唯一真发散 = 长 stall>grace 后才到的可重试错误。
 - **裁决 GO**：keepalive 机制实证可行 + 残余被延迟-commit 收窄到病态少数 + 显示保真。**P2（C3b）可启动**，余阻塞 = **并发 L2 字段冻结 + §4.2.1 的 2 新 CRITICAL（pump 自建 sink / decideRoute resolve 非 throw），非 Q2**。RFC §6 Q2 / §4.2.3 grace 默认 40s / §4.2.5 / §5 C3b 行已据实测更新。
 
-关联 [[project-v4-pipeline-rearchitecture]]（同属 v4 管线域；注意有[[git-concurrent-sessions-pathspec-commit]] 说的并发会话在做 L2 streaming，③ 的 sink/driver 改动可能与之相邻，实现前先看活的架构现状表）。
+关联 [[project-v4-pipeline-rearchitecture]]（同属 v4 管线域；注意 CLAUDE.md `concurrent-sessions-line-coexistence` 说的并发会话在做 L2 streaming，③ 的 sink/driver 改动可能与之相邻，实现前先看活的架构现状表）。
 
 **第二起 incident（2026-06-22）增补缺陷④⑤**（详见 RFC §2 + [[orphaned-promise-abort-crashes-server]]）：911s stale-reaper force-fail + 未捕获 AbortError 崩服务器。
 - **⑤（已修，commit `c824df4`）**：孤儿（无 awaiter）上游 fetch 的 abort 拒绝经 `main.ts` unhandledRejection→exit(1) 崩整服务器；修在产生点 `http2Fetch` 挂防御性 `withRejectionObserver`。

@@ -20,7 +20,7 @@ metadata:
 1. **先 brainstorm/审计**：拿到一份具体的债务清单（file:line 证据）——别从「感觉坏了」开始设计
 2. **写 RFC** 到 `docs/rfc/<topic>.md`：问题陈述、架构、依赖方向、type union、sinks/模块、cutover 计划（commit，NOT phase）、范围外、给用户的开放问题、验证
 3. **subagent 对抗式 review**，用明确的 prompt：「找遗漏的事件源、跨章节矛盾、虚假的自我主张、潜伏的 bug」。不要用泛泛的「review this RFC」prompt。
-4. **查验 subagent 的发现**，按 [[feedback-subagent-feedback-also-critically-verify]]
+4. **查验 subagent 的发现**，按 [[feedback_reviewer_verify_critically]]
 5. **重复**直到 subagent 报告零 FAIL/WARN（通常 2-4 轮）
 6. **请用户**在写代码前解答 §6 里的开放问题
 7. **实现**，带 commit invariants，按 [[methodology-commit-invariants]]
@@ -29,4 +29,4 @@ metadata:
 
 交付物组织（当 RFC 要分派给一组独立实现者并行做时，文档拆 design/plan/prompts 三层 + per-phase self-contained kick-off）见 [[methodology-rfc-multi-phase-doc-structure]]——本条记流程，那条记产物结构。
 
-Related: [[feedback-architecture-health-is-user-need]], [[methodology-commit-invariants]], [[feedback-subagent-feedback-also-critically-verify]], [[methodology-rfc-multi-phase-doc-structure]]。
+Related: [[feedback-architecture-health-is-user-need]], [[methodology-commit-invariants]], [[feedback_reviewer_verify_critically]], [[methodology-rfc-multi-phase-doc-structure]]。
