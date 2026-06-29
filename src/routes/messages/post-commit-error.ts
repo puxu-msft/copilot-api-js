@@ -1,8 +1,11 @@
 /**
- * POST-COMMIT error-frame synthesis for the Anthropic ③ pre-response-grace path (RFC §4.2.5).
+ * POST-COMMIT error-frame synthesis for the Anthropic delayed-commit streaming path
+ * (③ in docs/spec/pre-response-abort-handling.md §4.2.5 — the mechanism lives on, renamed from the
+ * old "grace" knob to the `streamCommitAfterSec` window).
  *
- * Once ③ commits a 200 SSE stream (grace elapsed, upstream still silent), the HTTP status is
- * locked — any subsequent upstream failure can only be delivered as an Anthropic `event: error`
+ * Once the proxy commits a 200 SSE stream (the delayed-commit window elapsed with the upstream
+ * still silent), the HTTP status is locked — any subsequent upstream failure can only be delivered
+ * as an Anthropic `event: error`
  * SSE frame. These pure builders synthesize that frame while preserving the canonical `error.type`
  * (+ `retry_after` for rate limits) so the client SDK can still branch correctly (Q2 oracle: the
  * `error.type` literal IS what Claude Code / the Anthropic SDK display + branch on — see

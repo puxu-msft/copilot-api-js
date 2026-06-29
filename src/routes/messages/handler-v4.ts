@@ -731,7 +731,7 @@ function renderNonStreamingV4(
 // ============================================================================
 
 /** The Anthropic-protocol synthetic keepalive frame. One literal, shared by the sink's
- *  heartbeat and the ③ pre-response-grace commit first-ping (RFC §4.2.1). */
+ *  heartbeat and the cold-start commit's immediate first ping. */
 const ANTHROPIC_PING: ClientFrame = { event: "ping", data: JSON.stringify({ type: "ping" }) }
 
 /**
