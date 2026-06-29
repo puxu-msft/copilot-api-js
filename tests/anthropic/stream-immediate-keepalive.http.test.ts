@@ -1,21 +1,9 @@
 /**
- * ③ pre-response delayed-commit (pre_stream_grace) — golden pre-capture + behavior.
- *
- * C3a (this commit): lock the CURRENT (pre-③) live-streaming behavior BEFORE the
- * delayed-commit lands, so the byte-equivalence invariants are guarded through the
- * C1 sink-injection refactor and the C3b ③ body:
- *   1. a complete stream:true generation → EXACT forwarded SSE bytes (literal lock).
- *      ③ with grace disabled (or grace>0 + a fast upstream = PRE-COMMIT) MUST stay
- *      byte-identical to this.
- *   2. a pre-response upstream HTTPError (before any response header) → the proxy
- *      emits the real HTTP status (forwardError). This is the PRE-COMMIT baseline:
- *      ③ with grace>0 + a fast-erroring upstream MUST still produce the same HTTP
- *      status (zero divergence); only a stall PAST the grace window downgrades to a
- *      200 + rich SSE error frame (added in C3b).
- *
- * The grace-race + COMMIT branches (200 + ping + rich error frame) are added to this
- * file in C3b, driven by a gate + FakeClock (deterministic, no real timers). See
- * docs/rfc/pre-response-abort-handling.md §4 + exp/q2-oracle/REPORT.md (Q2 GO).
+ * Immediate client-proxy keepalive (no grace race): streaming /v1/messages opens 200 on
+ * request receipt and runs a connection-level heartbeat decoupled from the upstream.
+ *   1. a complete stream:true generation with ping=0 → EXACT forwarded SSE bytes (no ping).
+ *   2. a pre-response upstream HTTPError → 200 SSE stream + rich error frame (status already 200).
+ *   3. a stalled upstream + cadence ping → ping precedes content / degrades 401 to an SSE frame.
  */
 
 import {
@@ -112,7 +100,7 @@ async function streamRequest(sessionId: string): Promise<Response> {
   })
 }
 
-describe("③ pre-stream-grace — C3a golden pre-capture (current behavior, before ③)", () => {
+describe("immediate-keepalive — complete + pre-response error", () => {
   useIsolatedRuntime()
 
   beforeEach(() => {
@@ -126,6 +114,7 @@ describe("③ pre-stream-grace — C3a golden pre-capture (current behavior, bef
       streamIdleTimeout: 0,
       // No synthetic heartbeat → the forwarded byte stream is fully deterministic.
       streamKeepalivePingSec: 0,
+      streamCommitAfterSec: 0, // commit immediately → pre-response errors degrade to 200 SSE frames
     })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
@@ -147,24 +136,18 @@ describe("③ pre-stream-grace — C3a golden pre-capture (current behavior, bef
   })
 
   for (const status of [400, 401] as const) {
-    test(`pre-response upstream ${status} → proxy emits HTTP ${status} (PRE-COMMIT baseline, no stream opened)`, async () => {
+    test(`pre-response upstream ${status} → 200 SSE stream + rich error frame (immediate-keepalive)`, async () => {
       mode = { kind: "http-error", status }
       const res = await streamRequest(`grace-c3a-${status}`)
 
-      // Current behavior: runRequest throws the HTTPError before streamSSE → forwardError
-      // emits the real HTTP status (NOT a 200 SSE stream). ③ with grace>0 + a fast upstream
-      // (resolves within grace) keeps this exact shape — the divergence only appears for a
-      // stall past the grace window (C3b).
-      expect(res.status).toBe(status)
-      expect(res.headers.get("content-type")).toContain("application/json")
-      // Current forwardError default-path Anthropic envelope: `{ error: { message, type:"error" } }`
-      // — note the mis-shaped axis (no top-level `type`, inner `error.type` is the literal "error",
-      // `error.message` carries the raw upstream body). C3b's `toAnthropicSseErrorData` reshapes
-      // this into a canonical SSE error frame for the COMMIT path; the HTTP (PRE-COMMIT) path here
-      // is unchanged. Locking the faithful current shape so a regression is caught.
-      const body = (await res.json()) as { type?: string; error?: { type?: string; message?: string } }
-      expect(body.error?.type).toBe("error")
-      expect(body.error?.message).toContain(`mock ${status}`)
+      // New behavior: streaming opens 200 on request receipt (immediate keepalive), runRequest runs
+      // inside the stream. A pre-response upstream HTTPError degrades to a rich SSE error frame on the
+      // already-200 stream — the canonical error.type is preserved so the client SDK still branches.
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+      const text = await res.text()
+      const types = frameTypesInOrder(text)
+      expect(types).toContain("error")
 
       const entry = getHistory({ endpoint: "anthropic-messages", sessionId: `grace-c3a-${status}`, limit: 5 }).entries[0]
       expect(entry?.state).toBe("failed")
@@ -172,7 +155,7 @@ describe("③ pre-stream-grace — C3a golden pre-capture (current behavior, bef
   }
 })
 
-describe("③ pre-stream-grace — COMMIT (grace elapses, upstream silent then resolves)", () => {
+describe("immediate-keepalive — stall cadence ping", () => {
   useIsolatedRuntime()
   const clock = new FakeClock()
 
@@ -211,8 +194,8 @@ describe("③ pre-stream-grace — COMMIT (grace elapses, upstream silent then r
       vsCodeVersion: "1.100.0",
       fetchTimeout: 0,
       streamIdleTimeout: 0,
-      streamKeepalivePingSec: 0, // commit path floors to 30s; we never advance that far, so only the explicit first ping appears
-      streamKeepaliveGraceSec: 5,
+      streamKeepalivePingSec: 2,
+      streamCommitAfterSec: 2, // window fires at 2s → commit 200; heartbeat then pings every 2s
     })
     applyFetchMock(gatedFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
@@ -220,10 +203,10 @@ describe("③ pre-stream-grace — COMMIT (grace elapses, upstream silent then r
 
   afterEach(() => clock.restore())
 
-  test("grace elapsed → 200 + immediate ping, then upstream completes → content forwarded after the ping", async () => {
+  test("upstream stalls → cadence ping precedes content, then completes → content forwarded after the ping", async () => {
     const resP = streamRequest("grace-commit-complete")
-    await gateReachedP // upstream fetch reached, the grace race is pending
-    await clock.advance(5_000) // fire the grace timer → COMMIT (200 + first ping)
+    await gateReachedP // upstream fetch reached, stream already 200, heartbeat armed
+    await clock.advance(5_000) // cadence elapses with no real frame → forced keepalive ping
     const res = await resP
     expect(res.status).toBe(200)
     expect(res.headers.get("content-type")).toContain("text/event-stream")
@@ -231,7 +214,7 @@ describe("③ pre-stream-grace — COMMIT (grace elapses, upstream silent then r
     openGate() // upstream returns → pump forwards the content on the SAME sink
     const text = await res.text()
     const types = frameTypesInOrder(text)
-    expect(types[0]).toBe("ping") // the COMMIT first ping precedes all real content (③ keepalive)
+    expect(types[0]).toBe("ping") // the cadence ping precedes all real content (keepalive during stall)
     expect(types).toContain("message_start")
     expect(types).toContain("message_stop")
 
@@ -239,13 +222,13 @@ describe("③ pre-stream-grace — COMMIT (grace elapses, upstream silent then r
     expect(entry?.state).toBe("completed")
   })
 
-  test("grace elapsed → 200 + ping, then upstream 401 → rich SSE error frame (HTTP status stays 200)", async () => {
+  test("upstream stalls → cadence ping, then upstream 401 → rich SSE error frame (HTTP status stays 200)", async () => {
     commitMode = "error-401"
     const resP = streamRequest("grace-commit-401")
     await gateReachedP
-    await clock.advance(5_000) // COMMIT
+    await clock.advance(5_000) // cadence ping during the stall
     const res = await resP
-    expect(res.status).toBe(200) // committed — the HTTP status is locked at 200, the error degrades to an SSE frame
+    expect(res.status).toBe(200) // already committed — HTTP status locked at 200, the error degrades to an SSE frame
 
     openGate() // upstream rejects (401) → POST-COMMIT (c) branch → rich error frame on the same sink
     const text = await res.text()

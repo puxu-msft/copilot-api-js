@@ -460,9 +460,9 @@ export function formatThinkingTag(thinking: { requested?: string; effective: str
  */
 function renderFeatureTag(feature: string, detail?: Record<string, unknown>): string | undefined {
   switch (feature) {
-    // Pre-stream grace lifecycle is operational noise — not surfaced as a TUI tag.
-    case "pre-stream-grace-commit":
-    case "pre-stream-grace-resolved": {
+    // Stream keepalive lifecycle is operational noise — not surfaced as a TUI tag.
+    case "stream-immediate-keepalive":
+    case "stream-upstream-resolved": {
       return undefined
     }
     case "truncated":

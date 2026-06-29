@@ -392,6 +392,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     const { upstream, env } = result
 
     if (!env.stream) {
+      // Non-streaming: render the real HTTP status with the upstream-decided body.
       try {
         const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
         return renderNonStreamingV4(c, driver, env, resp, truncateResult)
@@ -400,17 +401,14 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       }
     }
 
-    consola.debug("[Anthropic:v4] Streaming response")
+    // Streaming settled WITHIN the commit window: open 200 + pump on the same keepalive sink. The
+    // upstream already returned ok, so this is the fast path (no pre-response stall); heartbeat still
+    // covers mid-stream gaps. Real upstream errors were caught above → real HTTP status, never here.
+    consola.debug("[Anthropic:v4] Streaming response (settled within window)")
     env.ctx.transition("streaming")
     return streamSSE(c, async (stream) => {
       stream.onAbort(() => clientAbort.abort())
-      // RFC Phase 4: ④ capture the proxy→client response headers (streamSSE has set them
-      // synchronously before invoking this callback; finalize runs later in the pump).
       env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
-      // C1 (RFC §4.2.1): the sink is built HERE (caller-owned) — not inside the pump — so the ③
-      // pre-response-grace commit path can emit a first ping on the SAME sink it later hands the
-      // pump. One `streamStartMs` is threaded into both the sink (forwarded offsetMs) and the pump
-      // (completion summary) for byte-equivalence (C3a golden locks this).
       const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
       const forwardedSseEvents: Array<SseEventRecord> = []
       const streamStartMs = Date.now()
@@ -429,63 +427,62 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     })
   }
 
-  // ③ gate: only stream:true requests with grace>0 enter the race; everything else bypasses to the
-  // current path verbatim (RFC §4.2.0 — env.stream mirrors clientRaw.stream, settled at parse; the
-  // bypass is byte-identical to before ③, the C3a golden locks it).
-  if (!clientRaw.stream || state.streamKeepaliveGraceSec <= 0) {
+  // Non-streaming: await the upstream-settled runRequest, then render the real HTTP status.
+  if (!clientRaw.stream) {
     return runUpstreamSettledPath()
   }
 
-  // ③ race: runRequest vs a grace timer. `p.then(ok,err)` permanently consumes p's rejection
-  // reaction so a grace-win can't unhandledRejection (the COMMIT callback's `await p` is the second
-  // reaction). setTimeout+clearTimeout only (AbortSignal.timeout is uncancellable). Tie → upstream
-  // wins naturally (p.then is a microtask, the timer is a macrotask).
-  let graceTimer: ReturnType<typeof setTimeout> | undefined
-  const graceFired = new Promise<"grace">((res) => {
-    graceTimer = setTimeout(() => res("grace"), state.streamKeepaliveGraceSec * 1000)
-    ;(graceTimer as unknown as { unref?: () => void }).unref?.()
-  })
-  const first = await Promise.race([
-    p.then(
-      () => "upstream" as const,
-      () => "upstream" as const,
-    ),
-    graceFired,
-  ])
-  clearTimeout(graceTimer)
-
-  if (first === "upstream") {
-    // PRE-COMMIT: the upstream settled within grace → current path, zero divergence.
-    return runUpstreamSettledPath()
+  // === STREAMING: delayed-commit window. Wait up to streamCommitAfterSec for runRequest to settle
+  // BEFORE opening the 200 SSE stream — an upstream return/error within the window keeps its real
+  // HTTP status (the client retains native retry/backoff/token-refresh). Only when the window elapses
+  // with the upstream still silent (opus pre-response thinking) do we COMMIT a 200 + connection-level
+  // keepalive; later errors then degrade to a rich SSE error frame. 0 = commit immediately.
+  if (state.streamCommitAfterSec > 0) {
+    let windowTimer: ReturnType<typeof setTimeout> | undefined
+    const windowFired = new Promise<"window">((res) => {
+      windowTimer = setTimeout(() => res("window"), state.streamCommitAfterSec * 1000)
+      ;(windowTimer as unknown as { unref?: () => void }).unref?.()
+    })
+    // p.then consumes p's rejection so a window-win can't unhandledRejection (the commit body's
+    // `await p` is the second reaction). Tie → upstream wins (microtask beats the macrotask timer).
+    const first = await Promise.race([
+      p.then(
+        () => "upstream" as const,
+        () => "upstream" as const,
+      ),
+      windowFired,
+    ])
+    clearTimeout(windowTimer)
+    if (first === "upstream") return runUpstreamSettledPath() // settled within window → real HTTP status
   }
 
-  // === COMMIT === grace elapsed with the upstream still silent (opus pre-response stall). Open a 200
-  // SSE stream early + an immediate ping so the client stays connected; the HTTP status is now locked.
+  // COMMIT: open 200 + start the connection-level keepalive, runRequest continues inside.
   const commitCtx = codec.getContext()
-  commitCtx?.recordFeature("pre-stream-grace-commit", { graceSec: state.streamKeepaliveGraceSec, stalledAtLeastMs: state.streamKeepaliveGraceSec * 1000 })
+  commitCtx?.recordFeature("stream-immediate-keepalive", {})
   if (commitCtx) {
     c.set("requestContext", commitCtx)
     commitCtx.transition("streaming")
   }
   const commitInstant = Date.now()
   return streamSSE(c, async (stream) => {
-    // The commit ping cadence is env-independent (env isn't resolved yet) and MUST be < 60s (the CC
-    // idle threshold, Q2) — floor a 0 (disabled live keepalive) to 30s so ③ always keeps alive.
-    const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : 30
+    // Cadence: streamKeepalivePingSec when set, else the protect-streaming heartbeat (buffered needs
+    // a forced heartbeat; live tolerates it). 0 = both disabled. P2 lowers the default + clamps < 60.
+    const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : state.protectStreamingHeartbeat
     const forwardedSseEvents: Array<SseEventRecord> = []
     const streamStartMs = Date.now()
     const sink = makeSseSink(stream, {
       onForwarded: (record) => forwardedSseEvents.push(record),
       streamStartMs,
-      heartbeat: { intervalSec: pingSec, pingFrame: ANTHROPIC_PING, clientAbortSignal: clientAbort.signal },
+      ...(pingSec > 0 && {
+        heartbeat: { intervalSec: pingSec, pingFrame: ANTHROPIC_PING, clientAbortSignal: clientAbort.signal },
+      }),
     })
     stream.onAbort(() => clientAbort.abort()) // register BEFORE the first ping (round-B L1)
     // ④ capture proxy→client headers (set synchronously by streamSSE before this callback).
     commitCtx?.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     try {
-      // ★ immediate first ping (sampled), before `await p`. Best-effort (`.catch`) so even a
-      // (currently-unreachable) write reject can't skip the ctx-settlement below → no dangling entry.
-      await sink.write(ANTHROPIC_PING).catch(() => {})
+      // No immediate ping: the heartbeat fires on cadence (< client idle deadline), or never if a
+      // real frame arrives first. "Wait a window, then must start" — never an instant t0 ping.
       // POST-COMMIT: every exit settles ctx + (on failure) writes a rich error frame — the SSE
       // middleware does NOT finalize an event-stream, so a silent return would leak a dangling entry.
       let result: DriverRequestResult
@@ -538,7 +535,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // baked into the sink continues as the post-commit keepalive during generation.
       const { upstream, env } = result
       const { buffered } = resolveBufferedAndHeartbeat(env)
-      commitCtx?.recordFeature("pre-stream-grace-resolved", { totalStalledMs: Date.now() - commitInstant })
+      commitCtx?.recordFeature("stream-upstream-resolved", { totalStalledMs: Date.now() - commitInstant })
       await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env })
     } finally {
       sink.close?.()
@@ -832,114 +829,124 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     }
   }
 
-  const outcome =
-    buffered ?
-      await driver.runResponseBufferedSink(upstream, env, sink, {
-        onUpstreamFrame,
-        sawMessageStop: () => acc.sawMessageStop,
-        // H2 (a terminal upstream `error` frame) is a clean drain WITHOUT message_stop — the same
-        // shape as an RST-truncation. This lets the buffered sink COMMIT it (the handler then fails
-        // via acc.streamError, mirroring live) instead of wastefully retrying it as a truncation.
-        sawUpstreamError: () => acc.streamError !== undefined,
-        onAttemptReset,
-        retryCap: state.protectStreamingMaxRetries,
-        bufferCapBytes: state.protectStreamingBufferCapBytes,
-        // L2 escalation (RFC §8, opt-in): on each retry FORCE a progressively aggressive
-        // clear_tool_uses (halve the input-token trigger, shrink keep) so the regenerated response
-        // is smaller/faster — more likely to finish before the next RST. Independent of
-        // context_editing config; request-preparation skips it when the model lacks support.
-        ...(state.protectStreamingEscalateContext && {
-          escalate: (e: RequestEnvelope, attempt: number): RequestEnvelope =>
-            e.with({
-              prepareHints: {
-                ...e.prepareHints,
-                contextEscalation: {
-                  trigger: Math.max(ESCALATE_MIN_TRIGGER, Math.floor(state.contextEditingTrigger / 2 ** attempt)),
-                  keepTools: Math.max(1, state.contextEditingKeepTools - attempt),
-                  keepThinking: Math.max(1, state.contextEditingKeepThinking),
+  // The await is INSIDE the try so a throw from the driver/sink still records forwarded + settles the
+  // entry (catch) — no dangling entry, no lost keepalive track. finally re-guards. The driver returns
+  // a ResponseOutcome on the handled paths; only an unexpected throw reaches catch.
+  try {
+    const outcome =
+      buffered ?
+        await driver.runResponseBufferedSink(upstream, env, sink, {
+          onUpstreamFrame,
+          sawMessageStop: () => acc.sawMessageStop,
+          // H2 (a terminal upstream `error` frame) is a clean drain WITHOUT message_stop — the same
+          // shape as an RST-truncation. This lets the buffered sink COMMIT it (the handler then fails
+          // via acc.streamError, mirroring live) instead of wastefully retrying it as a truncation.
+          sawUpstreamError: () => acc.streamError !== undefined,
+          onAttemptReset,
+          retryCap: state.protectStreamingMaxRetries,
+          bufferCapBytes: state.protectStreamingBufferCapBytes,
+          // L2 escalation (RFC §8, opt-in): on each retry FORCE a progressively aggressive
+          // clear_tool_uses (halve the input-token trigger, shrink keep) so the regenerated response
+          // is smaller/faster — more likely to finish before the next RST. Independent of
+          // context_editing config; request-preparation skips it when the model lacks support.
+          ...(state.protectStreamingEscalateContext && {
+            escalate: (e: RequestEnvelope, attempt: number): RequestEnvelope =>
+              e.with({
+                prepareHints: {
+                  ...e.prepareHints,
+                  contextEscalation: {
+                    trigger: Math.max(ESCALATE_MIN_TRIGGER, Math.floor(state.contextEditingTrigger / 2 ** attempt)),
+                    keepTools: Math.max(1, state.contextEditingKeepTools - attempt),
+                    keepThinking: Math.max(1, state.contextEditingKeepThinking),
+                  },
                 },
-              },
-            }),
-        }),
-        // L2 hit-rate telemetry (RFC §10): aggregate counter (→ /api/status.protect_streaming) +
-        // a per-entry feature tag + an operator log line — recorded ONLY for an actual L2 engagement:
-        // a save after ≥1 retry, an exhaustion, or a buffer-cap retreat. A clean first-try commit
-        // (retries === 0, no RST) is the silent buffered happy path — tagging/counting it would put
-        // `protect-streaming-retry` on essentially every 200 and inflate the "success" hit-rate with
-        // requests L2 never actually engaged on.
-        onBufferedResolve: (outcome, retries) => {
-          if (outcome === "success" && retries === 0) return
-          recordProtectStreamingOutcome(outcome, retries)
-          env.ctx.recordFeature("protect-streaming-retry", { outcome, retries })
-          consola.debug(`[protect-stream] ${outcome} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
-        },
+              }),
+          }),
+          // L2 hit-rate telemetry (RFC §10): aggregate counter (→ /api/status.protect_streaming) +
+          // a per-entry feature tag + an operator log line — recorded ONLY for an actual L2 engagement:
+          // a save after ≥1 retry, an exhaustion, or a buffer-cap retreat. A clean first-try commit
+          // (retries === 0, no RST) is the silent buffered happy path — tagging/counting it would put
+          // `protect-streaming-retry` on essentially every 200 and inflate the "success" hit-rate with
+          // requests L2 never actually engaged on.
+          onBufferedResolve: (outcome, retries) => {
+            if (outcome === "success" && retries === 0) return
+            recordProtectStreamingOutcome(outcome, retries)
+            env.ctx.recordFeature("protect-streaming-retry", { outcome, retries })
+            consola.debug(`[protect-stream] ${outcome} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
+          },
+        })
+      : await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
+
+    recordForwarded() // before any ctx.settle (settle finalizes the entry); finally re-guards a throw
+    if (outcome.kind === "settled-abort") {
+      // Client disconnected mid-stream — the stream is dead, write ZERO further bytes
+      // (B0-d). Settle as aborted (forwarded snapshot guaranteed by the finally).
+      consola.debug("[Stream] Client disconnected mid-stream — recording aborted")
+      env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined })
+      return
+    }
+
+    if (outcome.kind === "stream-error") {
+      // H3 — the upstream iterable (or a sink write) threw a non-abort error. Settle as
+      // fail (with the partial accumulated so far) + synthesize the Anthropic error frame
+      // through the NON-sampling writeSynthetic path (so H3 never enters the forwarded track).
+      const error = outcome.error
+      env.ctx.fail(acc.model || model, error, {
+        usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
+        stop_reason: acc.stopReason || undefined,
       })
-    : await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
+      logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorType = anthropicStreamErrorType(error)
+      await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
+      return
+    }
 
-  if (outcome.kind === "settled-abort") {
-    // Client disconnected mid-stream — the stream is dead, write ZERO further bytes
-    // (B0-d). Record what was forwarded so far, then settle as aborted.
-    recordForwarded()
-    consola.debug("[Stream] Client disconnected mid-stream — recording aborted")
-    env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined })
-    return
-  }
+    // outcome.kind === "complete" — the upstream drained cleanly.
+    const summaryParts = [`↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`]
+    if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
+    const ctxEdits = summarizeAppliedEdits(acc.appliedContextEdits)
+    if (ctxEdits.count > 0) {
+      summaryParts.push(`ctx_cleared:${ctxEdits.clearedInputTokens}tok×${ctxEdits.count}`)
+      env.ctx.recordFeature("context-edits-applied", { count: ctxEdits.count, clearedInputTokens: ctxEdits.clearedInputTokens, types: ctxEdits.types })
+    }
+    consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
-  recordForwarded()
-
-  if (outcome.kind === "stream-error") {
-    // H3 — the upstream iterable (or a sink write) threw a non-abort error. Settle as
-    // fail (with the partial accumulated so far) + synthesize the Anthropic error frame
-    // through the NON-sampling writeSynthetic path (so H3 never enters the forwarded track).
-    const error = outcome.error
+    if (acc.streamError) {
+      // H2 — a terminal upstream `error` SSE event was forwarded as a content frame (clean
+      // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
+      consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
+      env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
+    } else if (!acc.sawMessageStop) {
+      // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
+      // (GHC mid-stream cutoff). The driver sees a clean drain → `complete`, but the message
+      // never finished. Settle as FAIL (not a silent `[ OK ]`) — preserving the accumulated
+      // partial (richest-data-flow) — and emit a synthetic Anthropic `error` so the client SDK
+      // gets a clean terminator. See docs/spec/upstream-stream-truncation-detection.md.
+      const partial = buildAnthropicResponseData(acc, model)
+      consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+      env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
+        usage: partial.usage,
+        stop_reason: partial.stop_reason,
+        content: partial.content,
+      })
+      await sink.writeSynthetic?.({
+        event: "error",
+        data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
+      })
+    } else {
+      env.ctx.complete(buildAnthropicResponseData(acc, model))
+    }
+  } catch (error) {
+    // Unexpected throw from the driver/sink (not a returned outcome): settle the entry so it isn't
+    // dangling, surface a synthetic error frame, and let finally persist what the client received.
     env.ctx.fail(acc.model || model, error, {
       usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
       stop_reason: acc.stopReason || undefined,
     })
-    logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    const errorType = anthropicStreamErrorType(error)
-    await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
-    return
-  }
-
-  // outcome.kind === "complete" — the upstream drained cleanly.
-  const summaryParts = [`↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`]
-  if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
-  const ctxEdits = summarizeAppliedEdits(acc.appliedContextEdits)
-  if (ctxEdits.count > 0) {
-    summaryParts.push(`ctx_cleared:${ctxEdits.clearedInputTokens}tok×${ctxEdits.count}`)
-    env.ctx.recordFeature("context-edits-applied", { count: ctxEdits.count, clearedInputTokens: ctxEdits.clearedInputTokens, types: ctxEdits.types })
-  }
-  consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
-
-  if (acc.streamError) {
-    // H2 — a terminal upstream `error` SSE event was forwarded as a content frame (clean
-    // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
-    consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
-    env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
-  } else if (!acc.sawMessageStop) {
-    // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
-    // (GHC mid-stream cutoff — e.g. a half-streamed tool_use with invalid JSON). The
-    // driver sees a clean drain → `complete`, but the message never finished. Settle as
-    // FAIL (not a silent `[ OK ]`) — preserving the accumulated partial on the entry
-    // (richest-data-flow) — and emit a synthetic Anthropic `error` event to the client so
-    // its SDK gets a clean terminator instead of a dangling, unterminated stream. This is
-    // the complete-but-truncated branch, NOT the H3 stream-error path: the writeSynthetic
-    // is NEW here (non-sampling wire write — the error frame never enters the forwarded
-    // track). See docs/spec/upstream-stream-truncation-detection.md.
-    const partial = buildAnthropicResponseData(acc, model)
-    consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
-    env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
-      usage: partial.usage,
-      stop_reason: partial.stop_reason,
-      content: partial.content,
-    })
-    await sink.writeSynthetic?.({
-      event: "error",
-      data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
-    })
-  } else {
-    env.ctx.complete(buildAnthropicResponseData(acc, model))
+    const msg = error instanceof Error ? error.message : String(error)
+    await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) })
+  } finally {
+    recordForwarded()
   }
 }

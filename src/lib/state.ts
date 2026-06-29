@@ -161,45 +161,31 @@ export interface State {
   readonly stripServerTools: boolean
 
   /**
-   * Synthetic SSE keepalive ping cadence (seconds) for the client-facing live
-   * Anthropic stream. `0` disables. Default **45** — Claude Code's request
-   * timeout is an IDLE watchdog at ~60s (Q2 oracle, exp/q2-oracle/REPORT.md),
-   * so a ping interval BELOW 60s is required to keep the client alive; the prior
-   * 120s default was ineffective. When positive, the handler injects an
-   * Anthropic-protocol `event: ping` frame whenever no real upstream event has
-   * been forwarded for this many seconds, both for MID-STREAM idle gaps (opus
-   * adaptive-thinking pauses) AND as the ③ pre-response-grace commit keepalive
-   * (when ③ commits early, this is the post-commit ping cadence; a 0 here floors
-   * to 30s for the ③ commit path specifically). Heartbeats are PROXY-originated
-   * and DO NOT reset the upstream idle-timeout — a genuinely dead upstream still
-   * fails per `timeouts.stream_idle`. Recorded in `forwardedSseEvents` (the
-   * diagnostic "what the client received"), never in the raw upstream `sseEvents`.
+   * Client-proxy keepalive ping cadence (seconds) for the streaming Anthropic stream.
+   * `0` disables. Default **20**, clamped < `CLIENT_IDLE_DEADLINE_SEC` (60) — Claude
+   * Code's request timeout is an IDLE watchdog at ~60s (Q2 oracle, exp/q2-oracle/REPORT.md).
+   * After the delayed-commit window opens the 200 SSE stream, a connection-level heartbeat
+   * (decoupled from the upstream) injects an Anthropic `event: ping` whenever no client write
+   * happened for this many seconds — covering mid-stream (adaptive-thinking pauses) + buffered
+   * stalls. When 0, the protect-streaming heartbeat is the fallback. Heartbeats are PROXY-
+   * originated and DO NOT reset the upstream idle-timeout. Recorded in `forwardedSseEvents`.
+   * `forwardedSseEvents` (what the client received), never in raw upstream `sseEvents`.
    *
-   * Hot-reload note: the interval is captured at stream-start. In-flight streams
-   * keep their original value; new streams pick up the new value. (Renamed from
-   * `anthropic.stream_fake_sse_heartbeat` / `anthropicFakeSseHeartbeat` — "fake"
-   * mis-described the synthetic-but-real `event: ping`; compat migrates the old
-   * keys. See docs/spec/pre-response-abort-handling.md §4.2.3.1.)
+   * Hot-reload note: the cadence is captured at stream-start. In-flight streams keep
+   * their value; new streams pick up the new one. (Renamed from `stream_fake_sse_heartbeat`;
+   * the grace knob became `streamCommitAfterSec` — keepalive starts once the commit window opens 200.)
    */
   readonly streamKeepalivePingSec: number
 
   /**
-   * ③ pre-response-grace window (seconds) for `stream:true` Anthropic requests
-   * (RFC docs/spec/pre-response-abort-handling.md §4). `0` disables ③ (the request
-   * fully bypasses the grace race → current behavior). Default **40** — Claude
-   * Code's request timeout is an IDLE watchdog at ~60s (Q2 oracle), so grace MUST
-   * be `< 60s` or the client abandons the first attempt before the proxy can commit.
-   *
-   * When `> 0`, the handler races `driver.runRequest` against a grace timer: if the
-   * upstream returns/errors WITHIN grace, the current path runs (real HTTP status,
-   * zero divergence); if grace elapses with the upstream still silent (opus
-   * adaptive-thinking pre-response stall), the proxy COMMITS — opens a 200 SSE
-   * stream + an immediate ping + `streamKeepalivePingSec`-cadence keepalive — so
-   * the client stays connected. POST-COMMIT upstream errors then degrade to a rich
-   * SSE `error` frame (the residual divergence Q2 judged acceptable). Hot-reloaded
-   * per-request (next request picks up a new value); in-flight requests keep theirs.
+   * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this long
+   * for runRequest to settle BEFORE opening the 200 SSE stream: if the upstream returns/errors within
+   * the window, the real HTTP status is forwarded (the client keeps its native retry/backoff). If the
+   * window elapses with the upstream still silent (opus pre-response thinking, empirically ≤~13s but
+   * can run longer), the proxy commits a 200 + keepalive and any later error degrades to an SSE frame.
+   * `0` disables (commit immediately at t0). Clamped < CLIENT_IDLE_DEADLINE_SEC (60). Default 20.
    */
-  readonly streamKeepaliveGraceSec: number
+  readonly streamCommitAfterSec: number
 
   /**
    * L2 — transactional buffered retry for streaming Anthropic generations cut
@@ -826,7 +812,7 @@ export function setAnthropicBehavior(
       MutableState,
       | "stripServerTools"
       | "streamKeepalivePingSec"
-      | "streamKeepaliveGraceSec"
+      | "streamCommitAfterSec"
       | "protectStreamingGeneration"
       | "protectStreamingMaxRetries"
       | "protectStreamingHeartbeat"
@@ -1022,8 +1008,8 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
  */
 export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
-  streamKeepalivePingSec: 45,
-  streamKeepaliveGraceSec: 40,
+  streamKeepalivePingSec: 20,
+  streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   protectStreamingMaxRetries: 3,
   protectStreamingHeartbeat: 15,
@@ -1107,7 +1093,7 @@ export function resetConfigManagedState(): void {
   setAnthropicBehavior({
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
-    streamKeepaliveGraceSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveGraceSec,
+    streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
     protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
     protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
@@ -1217,7 +1203,7 @@ const mutableState: MutableState = {
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
-  streamKeepaliveGraceSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveGraceSec,
+  streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
   protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
   protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,

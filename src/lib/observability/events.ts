@@ -140,11 +140,11 @@ export type FeatureKind =
   | "tool-input-decode-failed"
   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */
   | "protect-streaming-retry"
-  /** ③ pre-response-grace COMMIT — grace elapsed with the upstream still silent, the proxy opened a
-   *  200 SSE stream early. `detail: { graceSec: number, stalledAtLeastMs: number }` (RFC §4.2.6). */
-  | "pre-stream-grace-commit"
-  /** ③ pre-response-grace upstream RESOLVED after an early commit — `detail: { totalStalledMs: number }`. */
-  | "pre-stream-grace-resolved"
+  /** Streaming keepalive: proxy opened a 200 SSE stream on request receipt and started the connection-
+   *  level heartbeat immediately, decoupled from the upstream. `detail: {}`. */
+  | "stream-immediate-keepalive"
+  /** Upstream resolved after the immediate keepalive commit — `detail: { totalStalledMs: number }`. */
+  | "stream-upstream-resolved"
   /**
    * Upstream applied context_management edits — its authoritative receipt that our injected
    * `context_management` (context_editing / L2 escalation) actually cleared context.

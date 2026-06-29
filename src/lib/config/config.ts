@@ -133,6 +133,25 @@ let configLastMtimeMs: number = 0
 let lastStatTimeMs: number = 0
 const STAT_DEBOUNCE_MS = 2000
 
+/**
+ * Claude Code's request timeout is an IDLE watchdog at ~60s (Q2 oracle). Any client-proxy keepalive
+ * cadence MUST stay below this or the client abandons the connection before the next ping. A single
+ * authority for the deadline; keepalive cadences are clamped to one tick under it.
+ */
+const CLIENT_IDLE_DEADLINE_SEC = 60
+const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 1
+let warnedKeepaliveClamp = false
+
+/** Clamp a keepalive cadence (0 = disabled) below the client idle deadline; warn once if exceeded. */
+function clampKeepaliveCadence(sec: number): number {
+  if (sec <= 0 || sec <= KEEPALIVE_CADENCE_MAX) return sec
+  if (!warnedKeepaliveClamp) {
+    warnedKeepaliveClamp = true
+    consola.warn(`keepalive cadence ${sec}s >= client idle deadline ${CLIENT_IDLE_DEADLINE_SEC}s — clamped to ${KEEPALIVE_CADENCE_MAX}s to stay connected`)
+  }
+  return KEEPALIVE_CADENCE_MAX
+}
+
 /** Bundled defaults cache — file is immutable for the process lifetime. */
 let cachedBundledConfig: Config | null = null
 
@@ -467,11 +486,11 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.anthropic) {
     const a = config.anthropic
     if (a.tool_strip_server !== undefined) setAnthropicBehavior({ stripServerTools: a.tool_strip_server })
-    if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: a.stream_keepalive_ping_sec })
-    if (a.stream_keepalive_grace_sec !== undefined) setAnthropicBehavior({ streamKeepaliveGraceSec: a.stream_keepalive_grace_sec })
+    if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
+    if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampKeepaliveCadence(a.stream_commit_after_sec) })
     if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
     if (a.protect_streaming_max_retries !== undefined) setAnthropicBehavior({ protectStreamingMaxRetries: a.protect_streaming_max_retries })
-    if (a.protect_streaming_heartbeat !== undefined) setAnthropicBehavior({ protectStreamingHeartbeat: a.protect_streaming_heartbeat })
+    if (a.protect_streaming_heartbeat !== undefined) setAnthropicBehavior({ protectStreamingHeartbeat: clampKeepaliveCadence(a.protect_streaming_heartbeat) })
     if (a.protect_streaming_buffer_cap_bytes !== undefined) setAnthropicBehavior({ protectStreamingBufferCapBytes: a.protect_streaming_buffer_cap_bytes })
     if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
     // Model-capability allowlists (retain-on-absence per sub-key; an explicit empty list clears).

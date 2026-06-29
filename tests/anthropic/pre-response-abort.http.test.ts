@@ -89,9 +89,9 @@ describe("pre-response client abort → aborted + 499 (②)", () => {
 
   test("streaming, client gone pre-response → 499 + history state 'aborted' (NOT 'failed')", async () => {
     const res = await postStreaming()
-    // 499 alone is ambiguous (forwardError ① also returns 499 for a client-gone
-    // rethrow); the `aborted` terminal is what proves ②'s ctx.abort() fired rather
-    // than the ctx.fail() fallback.
+    // The delayed-commit window (default 20s) holds the stream un-opened; a pre-response client
+    // disconnect settles within the window → settled path → 499 + `aborted` terminal (NOT failed),
+    // not a committed 200. The `aborted` terminal proves ②'s ctx.abort() fired, not ctx.fail().
     expect(res.status).toBe(499)
     expect(getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state).toBe("aborted")
   })

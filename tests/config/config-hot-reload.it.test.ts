@@ -271,11 +271,11 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   },
   {
-    configKey: "anthropic.stream_keepalive_grace_sec",
-    stateKey: "streamKeepaliveGraceSec",
-    sampleYamlValue: "30",
-    expectedStateValue: 30,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamKeepaliveGraceSec,
+    configKey: "anthropic.stream_commit_after_sec",
+    stateKey: "streamCommitAfterSec",
+    sampleYamlValue: "15",
+    expectedStateValue: 15,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   },
   {
     configKey: "anthropic.protect_streaming_generation",
