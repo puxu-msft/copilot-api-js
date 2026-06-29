@@ -5,7 +5,7 @@ description: 当需要在 copilot-api-js 实测裁决而非凭推断时使用—
 
 # 实证诊断手法
 
-裁判前先实测：dispatch 被调/请求 200/wall 变快/测试绿/grep 空 **都不自证**（pass-null 盲点）。探针 harness 必须复制生产全部接线（中间件/序列化前缀）否则结论反向。
+裁判前先实测：dispatch 被调/请求 200/wall 变快/测试绿/grep 空 **都不自证**（pass-null 盲点）。探针 harness 必须复制生产全部接线（中间件/序列化前缀）否则结论反向。判断「该不该信某条声音权威主张、用哪种独立裁决」的通用决策法见 user-level skill `verifying-authoritative-claims`——本 skill 是其在本项目的探针落地（4141/ss/metronome…）。
 
 ## 4141 探针（上游/协议主张）
 

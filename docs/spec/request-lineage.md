@@ -725,4 +725,4 @@ This RFC is empirically grounded — every claim in §2 has a reproducible probe
 Findings the round-1 review made that did NOT change the design:
 - **Embedded `<system-reminder>` in tool_result strings drift** (edge-cases C2) — empirically falsified: 0/679 mismatches on adjacent-pair long-conversation probe. Documented as v1.1 watch item.
 
-The methodology mirrors [[empirical-probe-via-history-api]] (test against live data, not reason about it), [[feedback-subagent-feedback-also-critically-verify]] (re-verify every subagent finding myself), and [[feedback_real_problems_over_risk]] (the problem is real: today, `entry.sessionId === null` for 200/200 Anthropic requests, and there is no way to ask "what came before this?").
+The methodology mirrors [[empirical-probe-via-history-api]] (test against live data, not reason about it), [[feedback_reviewer_verify_critically]] (re-verify every subagent finding myself), and [[feedback_real_problems_over_risk]] (the problem is real: today, `entry.sessionId === null` for 200/200 Anthropic requests, and there is no way to ask "what came before this?").

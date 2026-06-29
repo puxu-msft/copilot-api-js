@@ -377,4 +377,4 @@ reaper 按全局 success/failure 桶 `ORDER BY started_at ASC` 淘汰最旧 entr
 第 1 轮 4 reviewer + 主线逐条复核（含**纠正 reviewer**：否决"server_tool_use 进 producedToolUseIds"无效修复——backToolUseId 语义所限）。关键裁决全部读码/实测：
 - web_search 纯 hash_only（digest.ts:51-60 + 67-76）、thinking 进合成（synthesize.ts:92）、blob 不压缩（hash.ts:73-80）、loadDigest null（query.ts:92-97）、hash_only 跨删误连（query.ts:139-148 + reaper）、querySummariesByIds 不存在（read.ts）、循环导入（query.ts:17）、v1 文档债（grep 0）、普通 backfill 不升级（backfill-lineage.ts:90）、in-flight 不可见（finalizeEntry only）。
 
-方法论：[[feedback-subagent-feedback-also-critically-verify]]（reviewer 结论逐条复核、否决无效建议）、[[feedback-architecture-health-is-user-need]]（对话一等公民 + focus 正交）、[[feedback_complete_root_cause_fix]]（孤儿不误连是根因修复）、[[methodology-commit-invariants]]（merge 基线 + 每 commit 独立绿）、[[empirical-probe-via-history-api]]（web_search echo 待真实流量校准）。
+方法论：[[feedback_reviewer_verify_critically]]（reviewer 结论逐条复核、否决无效建议）、[[feedback-architecture-health-is-user-need]]（对话一等公民 + focus 正交）、[[feedback_complete_root_cause_fix]]（孤儿不误连是根因修复）、[[methodology-commit-invariants]]（merge 基线 + 每 commit 独立绿）、[[empirical-probe-via-history-api]]（web_search echo 待真实流量校准）。
