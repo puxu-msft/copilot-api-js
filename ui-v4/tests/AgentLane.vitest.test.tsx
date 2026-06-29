@@ -27,7 +27,6 @@ const base = (over: Partial<EntrySummary>): EntrySummary => ({
   endpoint: "anthropic-messages",
   messageCount: 0,
   previewText: "",
-  searchText: "",
   ...over,
 })
 
