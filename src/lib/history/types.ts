@@ -406,14 +406,19 @@ export interface SessionSummary {
   sessionId: string
   requestCount: number
   agentCount: number
+  /** Total billed input tokens (fresh input + cache reads + cache creation) — cache dominates agentic traffic, so excluding it understates usage by ~60×. */
   inputTokens: number
   outputTokens: number
   firstStartedAt: number
   lastStartedAt: number
   completed: number
   failed: number
+  /** aborted + interrupted terminal entries; with completed+failed sums to requestCount, so the UI shows every request. */
+  aborted: number
   models: Array<string>
-  /** Preview text of the latest (max started_at) terminal entry in this session. */
+  /** First real user message of the earliest (min started_at) entry — the session's opening intent. */
+  firstPreview: string
+  /** Last real user message of the latest (max started_at) entry — where the conversation left off. */
   preview: string
 }
 
