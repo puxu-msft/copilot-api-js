@@ -13,6 +13,7 @@ import {
 
 import { getAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
 import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
+import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
 import { listInFlightEntries } from "~/lib/history/store"
@@ -60,6 +61,7 @@ const ServerStatusSchema = z
     models: z.object({ totalCount: z.number().int(), availableCount: z.number().int() }),
     upstream_ws: z.record(z.string(), z.unknown()),
     protect_streaming: z.record(z.string(), z.unknown()),
+    tool_input_repair: z.record(z.string(), z.unknown()),
   })
   .openapi("ServerStatus")
 
@@ -223,6 +225,13 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       protect_streaming: {
         enabled: state.protectStreamingGeneration,
         ...getProtectStreamingStats(),
+      },
+
+      // Malformed tool-input repair outcome counters (P6): since-restart aggregate
+      // (strip = Layer 1 fixes, jsonrepair = Layer 2 fixes, unrepairable = both failed).
+      tool_input_repair: {
+        enabled: state.toolRepairMalformedInput,
+        ...getToolInputRepairStats(),
       },
     },
     200,

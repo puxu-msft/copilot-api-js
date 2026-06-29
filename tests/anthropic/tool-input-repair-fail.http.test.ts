@@ -18,9 +18,12 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
+import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getHistory } from "~/lib/history/store"
 import {
   //
@@ -231,5 +234,100 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
     expect(dataFramesOfType(sse, "error")).toHaveLength(1)
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry.state).toBe("failed")
+  })
+
+  test("audit C1: a DISCARDED buffered attempt's unrepairable signal must NOT fail the recovered commit", async () => {
+    // Attempt 1 emits an unrepairable tool block (sets a per-attempt repair outcome) then truncates
+    // (no message_stop) → buffer discarded + retried. Attempt 2 is clean + commits. The request MUST
+    // settle `completed`, with NO error frame and an UN-inflated counter — the per-attempt outcomes
+    // are cleared in onAttemptReset, so the discarded attempt's signal can't poison the committed one.
+    configure("repair")
+    setStateForTests({ protectStreamingGeneration: "on", protectStreamingMaxRetries: 3 })
+    let attempt = 0
+    frameBuilder = (model: string): Array<string> =>
+      attempt++ === 0 ?
+        [
+          messageStartFrame({ id: "msg_a1", model, inputTokens: 10 }),
+          toolBlockStartFrame(0, "toolu_a1", "TodoWrite"),
+          jsonDeltaFrame(0, UNREPAIRABLE_INPUT),
+          blockStopFrame(0),
+          // EOF — no message_stop → truncation → buffered discard + retry.
+        ]
+      : [
+          messageStartFrame({ id: "msg_a2", model, inputTokens: 10 }),
+          toolBlockStartFrame(0, "toolu_a2", "TodoWrite"),
+          jsonDeltaFrame(0, '{"todos":[]}'),
+          blockStopFrame(0),
+          messageDeltaFrame({ stopReason: "tool_use", outputTokens: 8 }),
+          MESSAGE_STOP_FRAME,
+          DONE_FRAME,
+        ]
+    const sessionId = "c1-recovered"
+    const sse = await streamRequest(sessionId)
+
+    expect(dataFramesOfType(sse, "error")).toHaveLength(0)
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
+    expect(entry.state).toBe("completed")
+    // The discarded attempt's unrepairable outcome must NOT inflate the per-request counter.
+    expect(getToolInputRepairStats().unrepairable).toBe(0)
+    expect(attempt).toBeGreaterThanOrEqual(2) // proves a retry actually happened
+  })
+})
+
+// Repairable only by Layer 2 (jsonrepair) — missing closing brackets, no antml tags.
+function buildJsonrepairComplete(model: string): Array<string> {
+  return [
+    messageStartFrame({ id: "msg_jr", model, inputTokens: 10 }),
+    toolBlockStartFrame(0, "toolu_jr", "TodoWrite"),
+    jsonDeltaFrame(0, '{"todos":[1,2,3'),
+    blockStopFrame(0),
+    messageDeltaFrame({ stopReason: "tool_use", outputTokens: 8 }),
+    MESSAGE_STOP_FRAME,
+    DONE_FRAME,
+  ]
+}
+
+describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () => {
+  useIsolatedRuntime()
+
+  beforeEach(() => {
+    upstreamFetchMock.mockClear()
+  })
+
+  test("Layer 1 (strip) repair increments the `strip` counter + logs [REWRITE]", async () => {
+    const infoSpy = spyOn(consola, "info").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.info)
+    try {
+      configure("tags")
+      frameBuilder = buildRepairableComplete
+      await streamRequest("tele-strip")
+      expect(getToolInputRepairStats().strip).toBe(1)
+      expect(getToolInputRepairStats().jsonrepair).toBe(0)
+      const logged = infoSpy.mock.calls.map((c) => String(c[0]))
+      expect(logged.some((m) => m.includes("[REWRITE] tool-input-repair") && m.includes("layer=strip") && m.includes("tool=TodoWrite"))).toBe(true)
+    } finally {
+      infoSpy.mockRestore()
+    }
+  })
+
+  test("Layer 2 (jsonrepair) repair increments the `jsonrepair` counter", async () => {
+    configure("repair")
+    frameBuilder = buildJsonrepairComplete
+    await streamRequest("tele-jsonrepair")
+    expect(getToolInputRepairStats().jsonrepair).toBe(1)
+    expect(getToolInputRepairStats().strip).toBe(0)
+  })
+
+  test("an unrepairable input increments the `unrepairable` counter", async () => {
+    configure("repair")
+    frameBuilder = buildUnrepairableComplete
+    await streamRequest("tele-unrep")
+    expect(getToolInputRepairStats().unrepairable).toBe(1)
+  })
+
+  test("repair off: no counter movement (default behavior)", async () => {
+    configure(false)
+    frameBuilder = buildUnrepairableComplete
+    await streamRequest("tele-off")
+    expect(getToolInputRepairStats()).toEqual({ strip: 0, jsonrepair: 0, unrepairable: 0 })
   })
 })

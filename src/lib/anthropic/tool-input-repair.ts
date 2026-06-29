@@ -93,8 +93,8 @@ export function tryJsonRepair(input: string): string | undefined {
   }
 }
 
-/** Outcome of a layered repair attempt. */
-export type RepairResult = { repaired: unknown } | { unrepairable: true }
+/** Outcome of a layered repair attempt. `layer` names which layer produced the fix. */
+export type RepairResult = { repaired: unknown; layer: "strip" | "jsonrepair" } | { unrepairable: true }
 
 function parseJsonOrFail(s: string): { ok: true; value: unknown } | { ok: false } {
   try {
@@ -105,6 +105,16 @@ function parseJsonOrFail(s: string): { ok: true; value: unknown } | { ok: false 
 }
 
 /**
+ * A tool_use `input` is ALWAYS a JSON object (the tool's argument map). Gating on this rejects
+ * jsonrepair's aggressive fabrications — e.g. `jsonrepair("not json")` → the bare string
+ * `"not json"`, which parses but is a meaningless tool input (audit H3). A bare string / number /
+ * array / null repaired result is treated as unrepairable rather than forwarded as a "success".
+ */
+function isPlausibleToolInput(v: unknown): boolean {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+
+/**
  * Layered repair orchestration for a malformed tool_use input JSON string.
  *
  * `tags`   — Layer 1 only: strip antml tags, revalidate.
@@ -112,19 +122,22 @@ function parseJsonOrFail(s: string): { ok: true; value: unknown } | { ok: false 
  *            form, so a hybrid tag-bleed + structural break is handled without
  *            jsonrepair tripping over the tags) → revalidate.
  *
- * Returns the parsed object from the first layer that yields valid JSON, else
- * `{ unrepairable: true }`. The caller decides what to do with an unrepairable
- * result (forward-as-is vs fail). Idempotent on already-valid input (Layer 1 is
- * a no-op on tag-free JSON, so a valid string repairs to itself).
+ * Each layer's result must parse AND be a plausible tool input (a JSON object). Returns the parsed
+ * object (with the winning `layer`) from the first layer that satisfies both, else
+ * `{ unrepairable: true }`. The caller decides what to do with an unrepairable result (forward-as-is
+ * vs fail). Idempotent on already-valid input (Layer 1 is a no-op on tag-free JSON).
  */
 export function repairToolInput(raw: string, mode: "tags" | "repair"): RepairResult {
   const stripped = stripAntmlTagsOutsideStrings(raw)
   const afterStrip = parseJsonOrFail(stripped)
-  if (afterStrip.ok) return { repaired: afterStrip.value }
+  if (afterStrip.ok && isPlausibleToolInput(afterStrip.value)) return { repaired: afterStrip.value, layer: "strip" }
 
   if (mode === "repair") {
     const repaired = tryJsonRepair(stripped)
-    if (repaired !== undefined) return { repaired: JSON.parse(repaired) as unknown }
+    if (repaired !== undefined) {
+      const parsed = JSON.parse(repaired) as unknown
+      if (isPlausibleToolInput(parsed)) return { repaired: parsed, layer: "jsonrepair" }
+    }
   }
 
   return { unrepairable: true }

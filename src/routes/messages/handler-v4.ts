@@ -82,6 +82,7 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { flushToolInputRepairObservability } from "~/lib/anthropic/tool-input-repair-stats"
 import {
   //
   handleWarmupRequest,
@@ -681,6 +682,10 @@ function renderNonStreamingV4(
 
   finalResponse = driver.runResponseWhole(finalResponse, env) as AnthropicMessageResponse
 
+  // Flush tool-input repair outcomes (telemetry + feature tag + log). Non-streaming is single-attempt,
+  // so this records once; the unrepairable fail-gate below reads the derived `unrepairableToolInput`.
+  flushToolInputRepairObservability(reqCtx)
+
   // error mode: a thinking-only refusal surfaces as an HTTP error body (not a 200) + ctx.fail.
   // Detected on the UPSTREAM-ORIGINAL `response` (in error mode transformWhole left it unchanged);
   // mirrors the streaming refusal-error branch + the truncation fail-gate's header/inbound timing
@@ -901,6 +906,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     acc = createAnthropicStreamAccumulator()
     checkRepetition = createStreamRepetitionChecker(model)
     sseEvents = []
+    // Discard the prior attempt's tool-input repair outcomes so a discarded buffered attempt's
+    // unrepairable/repair signal never leaks into the committed one (audit C1/H1).
+    env.ctx.resetRepairOutcomesForAttempt()
     streamState = {
       streamStartMs: streamState.streamStartMs,
       bytesIn: 0,
@@ -960,6 +968,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       : await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
 
     recordForwarded() // before any ctx.settle (settle finalizes the entry); finally re-guards a throw
+    // Flush the COMMITTED attempt's tool-input repair outcomes once (telemetry + feature tag + log).
+    // Per-attempt outcomes were reset in onAttemptReset, so only the committed attempt's remain — the
+    // counters reflect per-request outcomes, not the buffered-retry count. The unrepairable fail-gate
+    // below reads the derived `unrepairableToolInput` (this does not clear it).
+    flushToolInputRepairObservability(env.ctx)
     if (outcome.kind === "settled-abort") {
       // Client disconnected mid-stream — the stream is dead, write ZERO further bytes
       // (B0-d). Settle as aborted (forwarded snapshot guaranteed by the finally).

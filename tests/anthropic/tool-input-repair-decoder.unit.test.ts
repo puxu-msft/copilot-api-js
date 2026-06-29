@@ -198,4 +198,14 @@ describe("decodeToolInputBlocksInResponse — non-streaming malformed-string rep
     expect(out.content[0].input).toEqual({ todos: [] })
     expect(failures).toHaveLength(0)
   })
+
+  test("audit H3: jsonrepair-fabricated non-object garbage is unrepairable, not forwarded as success", () => {
+    // jsonrepair turns `not json at all` into the bare string `"not json at all"` — parseable but
+    // NOT a plausible tool input (always an object). The plausibility gate rejects it as unrepairable
+    // rather than forwarding a meaningless value as a "repair".
+    const failures: Array<DecodeFailureInfo> = []
+    const out = decodeNS("not json at all", "repair", failures)
+    expect(out.content[0].input).toBe("not json at all") // unchanged — kept malformed
+    expect(failures.some((f) => f.reason === "input-unrepairable")).toBe(true)
+  })
 })

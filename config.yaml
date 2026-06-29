@@ -514,6 +514,18 @@ anthropic:
   # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/rfc/tool-call-text-recovery.md。
   tool_recover_call_text: false
 
+  # Repair malformed tool_use input JSON that the upstream occasionally leaks (antml wrapper tags like `…]</parameter></invoke>` bleeding into the input, or structurally truncated JSON). Forwarded stream only — history's sseEvents keeps the upstream-original malformed bytes. Three modes:
+  #   false    = off (default) — forward the malformed bytes as-is.
+  #   "tags"   = Layer 1 only: structure-aware antml-tag stripping (fixes the tag-bleed case).
+  #   "repair" = Layer 1 + Layer 2 (jsonrepair) — also covers missing-bracket / truncated structures (heuristic; opt-in).
+  # If both layers fail, the request is recorded failed + a synthetic error frame is emitted (never a silent broken tool call). See docs/spec/anthropic-malformed-tool-input-repair.md.
+  # 修复上游偶发漏出的畸形 tool_use input JSON（antml 包裹标签如 `…]</parameter></invoke>` 溢入 input、或结构截断）。仅作用于转发流——history 的 sseEvents 保留上游原始畸形字节。三选一：
+  #   false    = 关（默认）——原样转发畸形字节。
+  #   "tags"   = 仅 Layer 1：结构感知剥 antml 标签（修标签溢出）。
+  #   "repair" = Layer 1 + Layer 2（jsonrepair）——额外覆盖缺括号/截断结构（启发式；opt-in）。
+  # 两层都修不了则请求记为失败 + 发合成 error 帧（绝不静默转发坏的工具调用）。详见 docs/spec/anthropic-malformed-tool-input-repair.md。
+  tool_repair_malformed_input: false
+
   # How to handle the upstream thinking-only refusal (stop_reason:"refusal" with only a thinking block, no text/tool_use). Three modes:
   #   "refusal"  = pass the upstream refusal through unchanged (client gets a dead/empty turn).
   #   "end_turn" = append a synthetic text block explaining the refusal + flip stop_reason to end_turn (a usable completion).

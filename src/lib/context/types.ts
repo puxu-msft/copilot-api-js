@@ -248,6 +248,18 @@ export interface HistoryEntryData {
 
 // ─── RequestContext Interface ───
 
+/** One malformed tool-input repair outcome for the current attempt (see `recordRepairOutcome`). */
+export interface RepairOutcomeRecord {
+  /** `strip` = fixed by Layer 1, `jsonrepair` = fixed by Layer 2, `unrepairable` = both layers failed. */
+  outcome: "strip" | "jsonrepair" | "unrepairable"
+  /** The tool whose input was repaired / found unrepairable. */
+  tool: string
+  /** Raw malformed JSON length (repaired outcomes only; for the `[REWRITE]` log). */
+  beforeLength?: number
+  /** Repaired JSON length (repaired outcomes only). */
+  afterLength?: number
+}
+
 export interface RequestContext {
   readonly id: string
   readonly sessionId: string | undefined
@@ -385,16 +397,19 @@ export interface RequestContext {
    */
   reapInFlight(): void
   /**
-   * Mark that an UNREPAIRABLE malformed tool_use input was seen during S5
-   * response rewriting (Layer 1 strip + Layer 2 jsonrepair both failed). Carried
-   * on the ctx — NOT the stream accumulator, which is rebuilt across buffered-
-   * retry attempts (`onAttemptReset`) and would lose the signal — so the
-   * handler's complete-branch can fail the request with a precise root cause.
-   * Records the FIRST offending tool name; later calls are no-ops.
+   * Record one tool-input repair outcome for the CURRENT attempt (S5 decode). Accumulated on the
+   * ctx and RESET per L2 buffered-retry attempt (`resetRepairOutcomesForAttempt`) so a discarded
+   * attempt's outcomes never leak into the committed one. The handler flushes these at the committed
+   * settle point (telemetry counter + feature tag + log + the unrepairable fail-gate), so counters
+   * reflect per-request outcomes — NOT the buffered retry count.
    */
-  markUnrepairableToolInput(tool: string): void
-  /** The tool name of the first unrepairable tool_use input seen this request, or null. */
+  recordRepairOutcome(record: RepairOutcomeRecord): void
+  /** The repair outcomes accumulated for the current (committed) attempt. */
+  readonly repairOutcomes: ReadonlyArray<RepairOutcomeRecord>
+  /** Derived: the first UNREPAIRABLE tool of the current attempt, or null (drives the handler fail-gate). */
   readonly unrepairableToolInput: string | null
+  /** Reset the per-attempt repair outcomes — called by the L2 buffered-retry `onAttemptReset`. */
+  resetRepairOutcomesForAttempt(): void
   toHistoryEntry(): HistoryEntryData
 
   // ─── Observability emit surface (added in commit 3a; callers wired in 3b-3d) ───

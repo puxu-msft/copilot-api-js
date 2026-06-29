@@ -182,3 +182,13 @@ plan 草稿描述接线时"镜像既有模式"但臆造了符号名与数据流�
 - **非流式 fail 通道**：`runResponseWhole` 无错误返回；经 `transformWhole` 的 `onDecodeFailure`→ctx 标志，handler L681/695 区增读（§2.5）。
 - **FeatureKind 排序**：`recordFeature` 的 kind 是封闭联合，须在首个打 tag 的 phase 前扩展（plan P0/P3 前置，非 P6）。
 - **happy-path ON 时序**：合法块新纳入缓冲后改为 stop 时整块到达（有意时序变化，同 recover/decode），**内容**仍 byte-identical 且**不**重打包（`finalize` 对未变 input 原样 replay `rawDeltas`）。reviewer 的"re-pack 单 delta"担忧方向错，真实是时序。
+
+### 7.2 实现后 whole-domain subagent audit 修正（第三轮，主线复核 + 实测复现后修）
+
+实现 P0-P6 后派 subagent 做 whole-domain audit，**主线逐条复现裁决**（非照搬），抓到三个真问题并修（commit `fix(anthropic): isolate per-attempt repair outcomes …`）：
+
+- **C1（CRITICAL，已修）**：§2.4/§7.1 把 fail 信号"挂 ctx 非 acc"当目标，但**只挂不清**是缺陷——ctx 标志 set-once（`??=`）从不清空，L2 buffered-retry 中**被丢弃尝试**（attempt 1 畸形块到 `content_block_stop` 触发 `onDecodeFailure` 置标志、随后截断 → buffer 丢弃重试）的 unrepairable 信号会**污染后续成功 commit**（attempt 2 干净却被判 FAIL + 在合法内容后补 error 帧）。audit 用 http 测试复现（CALLS:2、HISTORY:failed）。**修**：改 set-once 标志为 **per-attempt 累积** `ctx.repairOutcomes`，`onAttemptReset` 清空之，**committed settle 点**一次性 flush；`unrepairableToolInput` 改为从 committed 累积派生。回归测试锁"discarded 尝试不污染 recovered commit"。
+- **H1（HIGH，已修，同根）**：遥测计数器在 decode 闭包内 per-attempt 触发 → 被 retry 次数膨胀（audit 复现 4 尝试 → unrepairable=4）。**修**：随 C1 把 `recordToolInputRepair` + feature tag + 日志全移到 committed settle 点的 `flushToolInputRepairObservability`（镜像 protect-streaming `onBufferedResolve` 的 commit-时记录），计数反映 per-request 结果。
+- **H3（HIGH，已修）**：jsonrepair 过度激进，把非 JSON 垃圾（`not json` → 裸 string `"not json"`）"修"成可 parse 但无意义的值，re-parse gate 只验可 parse 不验合理。**修**：加 plausibility gate——tool input 恒为 JSON object，裸 string/number/array/null 不算修好 → unrepairable。
+- **H2（HIGH，文档化为已知局限）**：antml tags 溢入**被截断的 string 值内部**时（如 `{"cmd":"echo hi</parameter>`），Layer 1 正确不剥（在 string 内），Layer 2 jsonrepair 闭合 string 把标签封进 `cmd` 值。这是 jsonrepair 启发式对此特定形状的固有局限（无法在不误伤合法含 `</parameter>` 内容的前提下 gate）；`repair` 档本就是 opt-in 的激进启发式，before/after 审计留痕。real 1304/965 样本的标签都在结构边界（Layer 1 干净处理），H2 是另一形状。
+- **VERIFIED CLEAN**（audit 实测确认）：off=byte-identical、event-line 不变量、流式/非流式 precedence 定序、history 保上游原貌、jsonrepair try/catch + Layer 2 跑 stripped 形态、server_tool_use 排除、FeatureKind 注册齐全。

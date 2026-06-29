@@ -51,6 +51,7 @@ import {
   createToolInputStreamDecoder,
   decodeToolInputBlocksInResponse,
   reportDecodeFailure,
+  type DecodeFailureInfo,
 } from "~/lib/anthropic/decode-tool-input"
 import {
   //
@@ -184,6 +185,23 @@ interface DecodeState extends RewriteState {
   decoder: ReturnType<typeof createToolInputStreamDecoder>
 }
 
+/**
+ * Observability hooks for malformed tool-input repair (P6), shared by the streaming decoder
+ * (`createState`) and the non-streaming `transformWhole`. Each repair / unrepairable is recorded
+ * as a per-attempt outcome on the ctx; the handler FLUSHES these at the committed settle point
+ * (`flushToolInputRepairObservability`) so telemetry/feature counts reflect per-request outcomes,
+ * not the L2 buffered-retry count, and a discarded attempt's outcome never fails the committed one.
+ */
+function repairObservers(ctx: RequestContext): Pick<Parameters<typeof createToolInputStreamDecoder>[1] & object, "onRepair" | "onDecodeFailure"> {
+  return {
+    onRepair: (info) => ctx.recordRepairOutcome({ outcome: info.layer, tool: info.tool, beforeLength: info.beforeLength, afterLength: info.afterLength }),
+    onDecodeFailure: (info: DecodeFailureInfo) => {
+      reportDecodeFailure(info, ctx)
+      if (info.reason === "input-unrepairable") ctx.recordRepairOutcome({ outcome: "unrepairable", tool: info.tool })
+    },
+  }
+}
+
 const decodeRewrite: ResponseRewrite = {
   name: "tool-input-decode",
   order: RESPONSE_REWRITE_ORDER.toolInputDecode,
@@ -202,12 +220,7 @@ const decodeRewrite: ResponseRewrite = {
       {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
         repairMalformedInput: state.toolRepairMalformedInput,
-        onDecodeFailure: (info) => {
-          reportDecodeFailure(info, env.ctx)
-          // An unrepairable malformed tool_use input is a hard failure: flag the ctx so the
-          // handler's complete-branch fails the request (P4) rather than forwarding broken JSON.
-          if (info.reason === "input-unrepairable") env.ctx.markUnrepairableToolInput(info.tool)
-        },
+        ...repairObservers(env.ctx),
       },
     ),
   }),
@@ -223,10 +236,7 @@ const decodeRewrite: ResponseRewrite = {
       {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
         repairMalformedInput: state.toolRepairMalformedInput,
-        onDecodeFailure: (info) => {
-          reportDecodeFailure(info, env.ctx)
-          if (info.reason === "input-unrepairable") env.ctx.markUnrepairableToolInput(info.tool)
-        },
+        ...repairObservers(env.ctx),
       },
     ),
 }

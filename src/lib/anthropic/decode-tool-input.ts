@@ -61,6 +61,12 @@ export interface ToolInputRewriteOptions {
    */
   repairMalformedInput?: "tags" | "repair" | false
   /**
+   * Called when a malformed tool_use input was successfully repaired before forwarding.
+   * `layer` names the winning repair layer; `beforeLength`/`afterLength` are the raw-vs-repaired
+   * JSON sizes (for the `[REWRITE]` log + outcome telemetry). Fires once per repaired block.
+   */
+  onRepair?: (info: { tool: string; layer: "strip" | "jsonrepair"; beforeLength: number; afterLength: number }) => void
+  /**
    * Called when a tool_use input the decoder buffered (selected for field decoding OR `AskUserQuestion` header backfill) couldn't be rewritten:
    *   - `input-parse-failed` — the whole buffered input JSON didn't parse (a COMPLETE block, not an abort). Fires for ANY buffered tool, including a backfill-only selection.
    *   - `field-undecodable` — an explicitly-configured decode field stayed a string. Fires ONLY for fields named in `cfg.fields[tool]` (never for `cfg.all`-discovered plain strings).
@@ -191,6 +197,7 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
       if ("repaired" in result) {
         inputObj = result.repaired
         wasRepaired = true
+        opts.onRepair?.({ tool: buf.name, layer: result.layer, beforeLength: full.length, afterLength: JSON.stringify(result.repaired).length })
       } else {
         // `input-unrepairable` (repair was attempted and both layers failed) vs `input-parse-failed`
         // (repair disabled) — the former drives the handler's fail-gate (P4); both replay originals.
@@ -291,8 +298,10 @@ export function decodeToolInputBlocksInResponse(
     // the malformed original and report `input-unrepairable` (the ctx-flag closure drives the fail).
     if (repairEnabled && typeof input === "string" && !isParseableJson(input)) {
       const result = repairToolInput(input, repairMode)
-      if ("repaired" in result) input = result.repaired
-      else {
+      if ("repaired" in result) {
+        opts.onRepair?.({ tool: b.name, layer: result.layer, beforeLength: input.length, afterLength: JSON.stringify(result.repaired).length })
+        input = result.repaired
+      } else {
         report({ tool: b.name, reason: "input-unrepairable" })
         return block
       }
