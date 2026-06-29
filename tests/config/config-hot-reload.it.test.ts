@@ -216,6 +216,22 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   },
   {
+    configKey: "forward_client_query",
+    stateKey: "forwardClientQuery",
+    // Default is true, so sample MUST differ (false) to prove the wiring.
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.forwardClientQuery,
+  },
+  {
+    configKey: "forward_client_query_exclude",
+    stateKey: "forwardClientQueryExclude",
+    // Default is [], so sample MUST be non-empty to prove R1/R2 wiring.
+    sampleYamlValue: `\n  - x-trace-id`,
+    expectedStateValue: ["x-trace-id"],
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.forwardClientQueryExclude,
+  },
+  {
     configKey: "auto_truncate.enabled",
     stateKey: "autoTruncate",
     sampleYamlValue: "true",

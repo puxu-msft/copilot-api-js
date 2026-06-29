@@ -19,6 +19,7 @@ import {
   setAnthropicBehavior,
   setAutoTruncateConfig,
   setDisabledModels,
+  setForwardClientQuery,
   setHistoryConfig,
   setModelOverrides,
   setResponsesConfig,
@@ -632,6 +633,10 @@ export async function applyConfigToState(): Promise<Config> {
 
   // Tool-name sanitization (cross-protocol top-level toggle; scalar override)
   if (config.sanitize_tool_names !== undefined) setAnthropicBehavior({ sanitizeToolNames: config.sanitize_tool_names })
+
+  // Client query-string forwarding (cross-protocol top-level toggle + extra exclude list)
+  if (config.forward_client_query !== undefined) setForwardClientQuery({ forwardClientQuery: config.forward_client_query })
+  if (config.forward_client_query_exclude !== undefined) setForwardClientQuery({ forwardClientQueryExclude: config.forward_client_query_exclude })
 
   // History settings (nested: override only when present)
   if (config.history) {

@@ -618,6 +618,15 @@ export const ConfigSchema = z
      * Top-level (not under `anthropic.*`) because it is cross-protocol.
      */
     sanitize_tool_names: nullableBoolean(),
+    /**
+     * Forward the client's inbound query string to the upstream completion
+     * endpoint (Anthropic / Chat Completions / Responses / Gemini). Format-agnostic,
+     * top-level (not under `anthropic.*`). Security-floor keys
+     * (api-version/key/access_token/alt) are always stripped. Default true.
+     */
+    forward_client_query: nullableBoolean(),
+    /** Extra query keys to strip beyond the built-in floor (case-insensitive union). */
+    forward_client_query_exclude: z.array(z.string()).optional(),
     history: nullableSection(HistoryConfigSchema),
     web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),

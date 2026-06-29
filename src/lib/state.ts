@@ -140,6 +140,19 @@ export interface State {
    */
   readonly sanitizeToolNames: boolean
 
+  /**
+   * 把客户端入站 query string 忠实转发到上游完成端点（Anthropic / Chat Completions /
+   * Responses / Gemini）。格式无关。安全底线键（api-version/key/access_token/alt）始终剥离，
+   * 见 `transport/query-forward.ts` 的 `UPSTREAM_QUERY_EXCLUDE`。默认 true。
+   */
+  readonly forwardClientQuery: boolean
+
+  /**
+   * 在内置安全底线之外，额外剥离的 query 键（大小写不敏感、与底线取并集）。
+   * 对应 config `forward_client_query_exclude`。默认空数组。
+   */
+  readonly forwardClientQueryExclude: ReadonlyArray<string>
+
   /** 透明恢复上游 tool-call 文本降级（RFC tool-call-text-recovery）。默认 false。 */
   readonly recoverToolCallText: boolean
 
@@ -943,6 +956,14 @@ export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchE
   updateState(patch)
 }
 
+/**
+ * 客户端 query string 转发配置（格式无关：Anthropic / CC / Responses / Gemini）。
+ * `forwardClientQuery` 总开关（默认 true）、`forwardClientQueryExclude` 额外剥离键。
+ */
+export function setForwardClientQuery(patch: Partial<Pick<MutableState, "forwardClientQuery" | "forwardClientQueryExclude">>): void {
+  updateState(patch)
+}
+
 export function setAutoTruncateConfig(
   patch: Partial<Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold">>,
 ): void {
@@ -1081,6 +1102,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   autoTruncateCompressThreshold: 10000,
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
+  forwardClientQuery: true,
+  forwardClientQueryExclude: [] as ReadonlyArray<string>,
   recoverToolCallText: false,
   toolRepairMalformedInput: false as "tags" | "repair" | false,
   refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
@@ -1202,6 +1225,10 @@ export function resetConfigManagedState(): void {
     webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
     webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
   })
+  setForwardClientQuery({
+    forwardClientQuery: CONFIG_MANAGED_DEFAULTS.forwardClientQuery,
+    forwardClientQueryExclude: [...CONFIG_MANAGED_DEFAULTS.forwardClientQueryExclude],
+  })
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
@@ -1232,6 +1259,8 @@ const mutableState: MutableState = {
   tokenBasedBilling: false,
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+  forwardClientQuery: CONFIG_MANAGED_DEFAULTS.forwardClientQuery,
+  forwardClientQueryExclude: [...CONFIG_MANAGED_DEFAULTS.forwardClientQueryExclude],
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   toolRepairMalformedInput: CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput,
   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
