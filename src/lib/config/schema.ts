@@ -157,7 +157,7 @@ export const AnthropicConfigSchema = z
      * request. `false` (default) = passthrough (forward everything except the core
      * keys the proxy itself sets and the sensitive denylist); `true` = strict (send
      * only the proxy-rebuilt allowlist — the pre-feature behavior). Request-side mirror
-     * of `strict_response_headers`. Anthropic path only. See `lib/anthropic/strip-headers.ts`.
+     * of `strict_response_headers`. Anthropic path only. See `lib/anthropic/request-header-forward.ts`.
      */
     strict_request_headers: nullableBoolean(),
     /**

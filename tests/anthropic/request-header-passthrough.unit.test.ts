@@ -9,7 +9,7 @@ import {
   //
   pruneHeaders,
   selectPassthroughHeaders,
-} from "~/lib/anthropic/strip-headers"
+} from "~/lib/anthropic/request-header-forward"
 
 describe("selectPassthroughHeaders", () => {
   const core = new Set(["authorization", "content-type", "x-github-api-version", "openai-intent", "anthropic-version", "anthropic-beta"])

@@ -1,6 +1,8 @@
 /**
- * Operator-configurable header policy (glob strip + client passthrough), all
- * case-insensitive over the header *name*.
+ * Request-side header-boundary policy: forward the client's inbound HTTP request
+ * headers to the upstream (passthrough), with a glob strip layer. Request-side
+ * mirror of `./response-header-forward.ts`. All matching is case-insensitive over
+ * the header *name*.
  *
  * Two distinct guard sets live here, with opposite purposes — do NOT conflate:
  *   - `PROTECTED_HEADERS` (STRIP side): names `pruneHeaders` must never drop,
@@ -11,10 +13,8 @@
  *     enabled (`anthropic.strict_request_headers: false`), regardless of strip
  *     config.
  *
- * Currently wired for the upstream REQUEST only (Anthropic v4 path: passthrough
- * + strip in `buildAnthropicHeaders`). Client-bound RESPONSE header policy is
- * handled by a separate module — `./response-header-forward.ts`
- * (`strict_response_headers`) — not here.
+ * Wired for the upstream REQUEST only (Anthropic v4 path: passthrough + strip in
+ * `buildAnthropicHeaders`). The client-bound RESPONSE side is `./response-header-forward.ts`.
  */
 
 import { matchesHeaderName } from "./header-name-match"

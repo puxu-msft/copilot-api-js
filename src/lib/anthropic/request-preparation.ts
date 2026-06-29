@@ -43,7 +43,7 @@ import {
   //
   pruneHeaders,
   selectPassthroughHeaders,
-} from "./strip-headers"
+} from "./request-header-forward"
 
 export interface PreparedAnthropicRequest {
   wire: Record<string, unknown>
