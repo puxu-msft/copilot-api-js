@@ -193,41 +193,64 @@ anthropic:
   # 注：只有非 committed 写出路径会转发（非流式 + 流式在 commit 窗口内 settle）。延迟-commit 已 flush 200 的流无法转发（上游头在响应头已上线后才到）。history 忠实记录客户端实收（inboundResponse）+ 上游全量（outboundResponse）。
   strict_response_headers: false
 
-  # Synthetic SSE keepalive ping cadence (seconds) for the client-facing live stream. 0 = disabled; default 45. Claude Code's request timeout is an IDLE watchdog at ~60s (exp/q2-oracle Q2 oracle), so the cadence MUST be < 60s to keep the client alive — the prior 120s default was ineffective. When >0, the proxy injects an Anthropic-protocol `event: ping` frame whenever no real upstream event has been forwarded for that many seconds — covers BOTH mid-stream idle gaps (opus-4.8 adaptive thinking stalling after content_block_start) AND the ③ pre-response-grace commit keepalive. Heartbeats DO NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle) and are recorded only in forwardedSseEvents, never in raw upstream sseEvents. (Renamed from stream_fake_sse_heartbeat; old key auto-migrates.)
-  stream_keepalive_ping_sec: 45
+  # Pass the client's native inbound HTTP request headers through to the upstream (GitHub Copilot) request. The proxy is otherwise fully isolating — it rebuilds the upstream headers from a fixed allowlist, so client headers (except the anthropic-beta value) are dropped. This is the request-side mirror of strict_response_headers.
+  #   false (default): passthrough — forward the client's headers EXCEPT the proxy's own core keys (Authorization / editor-version / x-request-id / openai-intent / x-github-api-version / anthropic-version / anthropic-beta / …, which always win) and a sensitive denylist (cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded chain / hop-by-hop, plus the x-github-* and openai-* namespaces). Forwarding a stale content-length/encoding after the proxy rebuilds the body would corrupt the upstream exchange.
+  #   true: strict — send ONLY the proxy-rebuilt allowlist (the pre-feature behavior); no client header passthrough.
+  # 把客户端原生入站 HTTP 请求头透传给上游（GitHub Copilot）。代理默认完全隔离——从固定 allowlist 重建上游头，故客户端头（除 anthropic-beta 值）全被丢弃。本项是 strict_response_headers 的请求侧镜像。
+  #   false（默认）：透传——转发客户端头，但代理自有 core 键（Authorization / editor-version / x-request-id / openai-intent / x-github-api-version / anthropic-version / anthropic-beta 等，永远优先）与敏感黑名单（cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded 链 / hop-by-hop，加 x-github-* 与 openai-* 命名空间）除外。代理重建 body 后转发陈旧的 content-length/encoding 会破坏上游交互。
+  #   true：严格——只发代理重建的 allowlist（特性前的行为）；不透传客户端头。
+  strict_request_headers: false
 
-  # ③ pre-response-grace window (seconds) for stream:true requests. 0 = disabled (full bypass → current behavior); default 40. opus-4.8 can stay silent for tens~hundreds of seconds BEFORE the first response header (server-side adaptive thinking); Claude Code's idle watchdog (~60s, Q2 oracle) then drops the connection. When >0, the proxy races runRequest against this grace timer: upstream returns/errors WITHIN grace → current path (real HTTP status, zero divergence); grace elapses with upstream still silent → COMMIT a 200 SSE stream + immediate ping + stream_keepalive_ping_sec-cadence keepalive so the client stays connected. MUST be < 60s (the client idle threshold). POST-COMMIT upstream errors degrade to a rich SSE error frame (the residual Q2 judged acceptable). See docs/rfc/pre-response-abort-handling.md §4.
-  stream_keepalive_grace_sec: 40
+  # Glob list (header name; * / ?) of passed-through client headers to strip from the upstream request. Acts on the passthrough subset ONLY (never the proxy's own core/anthropic-beta headers), so "*" just empties the passthrough set (= back to the strict allowlist) and is harmless. Default removes x-anthropic-billing-header (Claude Code's attribution header — it breaks prompt caching on the Copilot gateway). NOTE: a no-op when strict_request_headers is true (there is no passthrough subset to strip).
+  # retain-on-absence: the default applies on first load / PUT /api/config reset only; deleting this key KEEPS the running value; [] clears it (attribution then passes through). To restore the default, reset (PUT /api/config) rather than deleting the key.
+  # 从上游请求里剥离的、已透传客户端头的 glob 列表（头名；* / ?）。只作用于透传子集（绝不动代理自有 core/anthropic-beta 头），故 "*" 只是清空透传集（= 回到严格 allowlist），无害。默认剥 x-anthropic-billing-header（Claude Code 的 attribution 头——它会破坏 Copilot 网关的 prompt caching）。注：strict_request_headers 为 true 时本项是 no-op（无透传子集可剥）。
+  # retain-on-absence：默认仅在首次加载 / PUT /api/config reset 时生效；删除此键会保留当前运行值；[] 清空（attribution 随后透传）。要恢复默认请用 reset（PUT /api/config），而非删键。
+  strip_request_headers:
+    - x-anthropic-billing-header
+
+  # Delayed-commit window (seconds) for streaming. 0 = commit immediately; default 20. Before opening the 200 SSE stream, the proxy waits up to N seconds for the upstream to settle: if it returns/errors WITHIN the window the real HTTP status is forwarded (the client keeps native retry/backoff/token-refresh); if it stays silent past the window (opus pre-response thinking) the proxy COMMITS a 200 + an immediate cold-start ping, and later errors degrade to a rich SSE error frame. Clamped well under the ~60s client idle deadline.
+  # 流式延迟-commit 窗口秒数。0 = 立即 commit；默认 20。开 200 SSE 流之前，代理最多等 N 秒让上游 settle：窗口内返回/报错→转发真 HTTP 状态（客户端保留原生重试/退避/token 刷新）；超窗口仍静默（opus pre-response thinking）→ COMMIT 200 + 立即冷启动 ping，之后错误降级成富 SSE error 帧。clamp 到远低于 ~60s 客户端空闲死线。
+  stream_commit_after_sec: 20
+
+  # Client-proxy keepalive ping cadence (seconds) for streaming. 0 = disabled; default 20. After the commit window opens the 200 SSE stream, a connection-level heartbeat (decoupled from the upstream) pings every N seconds since the last client write — whether the upstream is silent, thinking, or buffered — so a long mid-stream/buffered stall never trips Claude Code's ~60s idle watchdog. Cadence = the MINIMUM interval between pings (a real frame or ping advances the anchor); a cold-start commit fires one immediate ping, then this throttles the rest. Clamped to a large margin under 60 (empirical safe ceiling ~45s). Heartbeats do NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle); recorded only in forwardedSseEvents.
+  # 客户端-代理流式 keepalive ping cadence 秒数。0 = 禁用；默认 20。commit 窗口开 200 后，连接级心跳（与上游解耦）距上次写客户端 N 秒就发一帧 ping——无论上游静默/thinking/buffered——故长 mid-stream/buffered 停滞绝不触发 Claude Code ~60s 空闲看门狗。cadence = ping 之间的最小间隔（真帧或 ping 都推进锚点）；冷启动 commit 先发一个立即 ping，之后由它节流。clamp 到远低于 60 的大余量（实测安全上界 ~45s）。心跳不重置上游 idle-timeout；只记入 forwardedSseEvents。
+  stream_keepalive_ping_sec: 20
 
   # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
-  #   false:           disabled (default) — live streaming, no buffering.
-  #   on:              buffer every streaming Anthropic response.
-  #   tool_use_only:   buffer only when the request carries `tools` (the large Write/Edit scenario); pure-text chat stays live.
+  # L2——针对被上游流中途 RST（超大上下文里大 Write/Edit 触发 GHC NGHTTP2_CANCEL）砍断的流式生成的事务化缓冲重试。缓冲整响应、`message_stop` 后才 commit，transport-close/truncation 则重跑上游交换——客户端透明地拿到一次完整生成而非半截流 + 错误。详见 docs/rfc/streaming-upstream-rst-buffered-retry.md。
+  #   false:           disabled (default) — live streaming, no buffering. / 禁用（默认）——实时流式，不缓冲。
+  #   on:              buffer every streaming Anthropic response. / 缓冲每个流式 Anthropic 响应。
+  #   tool_use_only:   buffer only when the request carries `tools` (the large Write/Edit scenario); pure-text chat stays live. / 仅当请求带 `tools`（大 Write/Edit 场景）才缓冲；纯文本对话仍实时。
   protect_streaming_generation: false
   # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
+  # transport-close/truncation 最大重试次数（loop/成本闸，非超时闸——客户端由下方强制心跳保活）。0 = 不重试。
   protect_streaming_max_retries: 3
   # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until message_stop, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
+  # 缓冲路径的强制心跳间隔秒数：缓冲期在 message_stop 前不发任何真实帧，故无条件构造心跳——stream_keepalive_ping_sec >0 时取其值，否则用本值兜底。
   protect_streaming_heartbeat: 15
   # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection — a live RST fails as today). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
+  # 缓冲路径内存守卫：累计缓冲超此字节即放弃缓冲、本响应剩余部分退回实时转发（随之失去 L2 保护——实时 RST 仍如现状失败）。防止病态超大生成无界缓冲导致 OOM。0 = 无限制。默认 16MiB。
   protect_streaming_buffer_cap_bytes: 16777216
   # On each buffered RST/truncation retry, FORCE a progressively aggressive native clear_tool_uses context_management edit (lower trigger + smaller keep) to compress the context so the generation finishes faster — within the next RST window. Independent of context_editing (retry-only emergency compression); skipped when the model doesn't support context_management. Changes request semantics (drops more old context). Default false (opt-in; enable only after telemetry shows plain retry's hit rate is low for over-budget requests).
+  # 每次缓冲 RST/truncation 重试时，FORCE 一次渐进激进的原生 clear_tool_uses context_management（更低 trigger + 更少 keep）压缩上下文，让生成更快、更可能在下个 RST 窗口前完成。独立于 context_editing（仅重试时的应急压缩）；模型不支持 context_management 时跳过。改变请求语义（删更多旧上下文）。默认 false（opt-in；建议遥测证实裸重试命中率低后再开）。
   protect_streaming_escalate_context: false
 
   # Model-capability allowlists — which models get each Anthropic capability.
+  # 模型能力名单——哪些模型获得各项 Anthropic 能力。
   # Each list holds model-name "family" prefixes (normalized: lowercase, dots→dashes).
-  # A model has the capability when its normalized id EQUALS an entry or starts with
-  # `entry + "-"` — so `claude-opus-4` matches `claude-opus-4` and the whole
-  # `claude-opus-4-x` family, but NOT the unrelated `claude-opus-40`.
-  # These mirror GitHub Copilot Chat's capability checks; edit to add/remove models
-  # (e.g. a new Claude release) WITHOUT a code change. Entries may be dotted or dashed.
+  # 每个列表存模型名的 "family" 前缀（归一化：小写、点号→连字符）。
+  # A model has the capability when its normalized id EQUALS an entry or starts with `entry + "-"` — so `claude-opus-4` matches `claude-opus-4` and the whole `claude-opus-4-x` family, but NOT the unrelated `claude-opus-40`.
+  # 模型具该能力当且仅当其归一化 id 等于某项或以 `项 + "-"` 开头——故 `claude-opus-4` 匹配 `claude-opus-4` 及整个 `claude-opus-4-x` 族，但不匹配无关的 `claude-opus-40`。
+  # These mirror GitHub Copilot Chat's capability checks; edit to add/remove models (e.g. a new Claude release) WITHOUT a code change. Entries may be dotted or dashed.
+  # 这些镜像 GitHub Copilot Chat 的能力判定；增删模型（如新 Claude 版本）只改这里、无需改码。项可写点号或连字符形态。
   model_capabilities:
-    # context_management (clear_tool_uses / clear_thinking) support.
+    # context_management (clear_tool_uses / clear_thinking) support. / context_management（clear_tool_uses / clear_thinking）支持。
     context_editing:
       - claude-haiku-4-5
       - claude-sonnet-4
       - claude-opus-4
       - claude-opus-41
-    # Native server-side tool_search support.
+    # Native server-side tool_search support. / 原生服务端 tool_search 支持。
     tool_search:
       - claude-sonnet-4-5
       - claude-sonnet-4-6

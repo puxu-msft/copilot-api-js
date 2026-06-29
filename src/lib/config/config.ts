@@ -134,9 +134,10 @@ let lastStatTimeMs: number = 0
 const STAT_DEBOUNCE_MS = 2000
 
 /**
- * Claude Code's request timeout is an IDLE watchdog at ~60s (Q2 oracle). Any client-proxy keepalive
- * cadence MUST stay below this or the client abandons the connection before the next ping. A single
- * authority for the deadline; keepalive cadences are clamped to one tick under it.
+ * Claude Code's request timeout is a body-idle watchdog at ~60s (Q2 oracle, exp/q2-oracle). Any
+ * client-proxy keepalive interval (the ping cadence AND the delayed-commit window) MUST stay WELL
+ * below this — clamped to a large margin, not one tick — so even a jittery interval never approaches
+ * the deadline. Single authority for the deadline.
  */
 const CLIENT_IDLE_DEADLINE_SEC = 60
 // Cap leaves a LARGE margin (≥20s) under the deadline — not just 1 tick. Even a jittery interval must
@@ -491,6 +492,8 @@ export async function applyConfigToState(): Promise<Config> {
     const a = config.anthropic
     if (a.tool_strip_server !== undefined) setAnthropicBehavior({ stripServerTools: a.tool_strip_server })
     if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
+    if (a.strict_request_headers !== undefined) setAnthropicBehavior({ strictRequestHeaders: a.strict_request_headers })
+    if (a.strip_request_headers !== undefined) setAnthropicBehavior({ stripRequestHeaders: a.strip_request_headers })
     if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
     if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampKeepaliveCadence(a.stream_commit_after_sec) })
     if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
@@ -541,8 +544,6 @@ export async function applyConfigToState(): Promise<Config> {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
     }
     if (a.tool_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_non_deferred })
-    if (a.strict_request_headers !== undefined) setAnthropicBehavior({ strictRequestHeaders: a.strict_request_headers })
-    if (a.strip_request_headers !== undefined) setAnthropicBehavior({ stripRequestHeaders: a.strip_request_headers })
     if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
     if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
     // Collection fields: retain-on-absence semantic — a missing key keeps the
