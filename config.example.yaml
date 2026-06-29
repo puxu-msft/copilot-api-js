@@ -399,10 +399,31 @@ anthropic:
   # applied; runtime-learned entries survive restarts.
   #
   # Default: none (no pre-filter; rely on runtime negotiation only).
-  strip_beta_headers:
+  beta_strip_headers:
     claude-opus-4.7-1m-internal:
       - context-1m-2025-08-07
       - mid-conversation-system-2026-04-07
+
+  # ---------------------------------------------------------------------------
+  # Partner-model feature pre-filter
+  # ---------------------------------------------------------------------------
+  # Strip the payload for partner-model features the upstream org policy disallows.
+  # Keys are model-name substrings; "*" applies to every model. The value is the
+  # feature NAME (not an internal field path).
+  #
+  # Config twin of the runtime negotiation cache (partnerFeatures): declared
+  # features are stripped on the FIRST request — no reactive 400 + degrade-warn
+  # round-trip. Config ∪ runtime-learned, the same union as beta_strip_headers.
+  #
+  # Currently only `structured_outputs` has a wired strip action (→ drops the
+  # `output_config.format` field). Use case: GHC accounts routed to Vertex AI
+  # whose org policy `allowedPartnerModelFeatures` blocks structured_outputs
+  # while clients (e.g. Claude Code's title generator) send `output_config.format`.
+  #
+  # Default: none (rely on runtime negotiation only).
+  # partner_strip_features:
+  #   claude-sonnet-4.6:
+  #     - structured_outputs
 
   # ---------------------------------------------------------------------------
   # Body field pre-filter
@@ -416,7 +437,7 @@ anthropic:
   # permitted` 400 errors (persisted in negotiation-states.json).
   #
   # Default: none (only built-in inference_geo strip + runtime negotiation).
-  # reject_body_fields:
+  # retry_reject_body_fields:
   #   "*": [some_global_field]
   #   claude-opus-4.7: [model_specific_field]
 
