@@ -494,6 +494,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
     if (a.strict_request_headers !== undefined) setAnthropicBehavior({ strictRequestHeaders: a.strict_request_headers })
     if (a.strip_request_headers !== undefined) setAnthropicBehavior({ stripRequestHeaders: a.strip_request_headers })
+    if (a.strip_attribution_header !== undefined) setAnthropicBehavior({ stripAttributionHeader: a.strip_attribution_header })
     if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
     if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampKeepaliveCadence(a.stream_commit_after_sec) })
     if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })

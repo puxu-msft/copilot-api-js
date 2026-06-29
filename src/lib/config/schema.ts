@@ -170,6 +170,15 @@ export const AnthropicConfigSchema = z
      */
     strip_request_headers: nullableNonemptyStringArray(),
     /**
+     * Strip the Claude Code attribution billing line carried as a `system` block in
+     * the request BODY. Current Claude Code injects `x-anthropic-billing-header: …`
+     * as `system[0]` (a header-shaped line inside the body), which the HTTP-header
+     * `strip_request_headers` cannot reach. `true` (default) removes the leading
+     * billing line from the system param (string or `system[0]`); a block emptied by
+     * the strip is dropped. Anthropic path only; complements `strip_request_headers`.
+     */
+    strip_attribution_header: nullableBoolean(),
+    /**
      * Inject Claude Code official tool stubs (Bash, Read, Write, …) when
      * referenced in message history but missing from the request's tools
      * array. Default true. Disable for non-Claude-Code clients to save

@@ -187,6 +187,14 @@ export interface State {
    * Copilot prompt caching).
    */
   readonly stripRequestHeaders: ReadonlyArray<string>
+  /**
+   * Strip the Claude Code attribution billing line carried as a `system` block in
+   * the request BODY (current Claude Code injects `x-anthropic-billing-header: …`
+   * as `system[0]`, not as an HTTP header — so `stripRequestHeaders` cannot reach
+   * it). `true` (default) removes the leading billing line from the system param.
+   * Anthropic path only. Complements the HTTP-header `stripRequestHeaders`.
+   */
+  readonly stripAttributionHeader: boolean
 
   /**
    * Client-proxy keepalive ping cadence (seconds) for the streaming Anthropic stream.
@@ -846,6 +854,7 @@ export function setAnthropicBehavior(
       | "strictResponseHeaders"
       | "strictRequestHeaders"
       | "stripRequestHeaders"
+      | "stripAttributionHeader"
       | "streamKeepalivePingSec"
       | "streamCommitAfterSec"
       | "protectStreamingGeneration"
@@ -1047,6 +1056,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   strictResponseHeaders: false,
   strictRequestHeaders: false,
   stripRequestHeaders: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
+  stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
@@ -1135,6 +1145,7 @@ export function resetConfigManagedState(): void {
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
     strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
     stripRequestHeaders: [...CONFIG_MANAGED_DEFAULTS.stripRequestHeaders],
+    stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
@@ -1250,6 +1261,7 @@ const mutableState: MutableState = {
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
   stripRequestHeaders: [...CONFIG_MANAGED_DEFAULTS.stripRequestHeaders],
+  stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,

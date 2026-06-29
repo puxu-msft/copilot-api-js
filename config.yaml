@@ -230,6 +230,10 @@ anthropic:
   strip_request_headers:
     - x-anthropic-billing-header
 
+  # Strip the Claude Code attribution billing line carried as a `system` block in the request BODY. Current Claude Code no longer sends attribution as an HTTP header — it injects `x-anthropic-billing-header: cc_version=…; cc_entrypoint=…;` as the FIRST `system` text block (a header-shaped line inside the body), which the HTTP-header `strip_request_headers` above cannot reach. true (default) removes that leading billing line from the system param (string or system[0]); a block emptied by the strip is dropped. Position-anchored + whole-line match (only system[0]'s leading line), so the literal name appearing later in real prose is never touched. Anthropic path only; complements (does not replace) the HTTP-header strip. The source-side lever is the client's own CLAUDE_CODE_ATTRIBUTION_HEADER=0.
+  # 剥离以请求体 `system` 块形式携带的 Claude Code attribution billing 行。当前 Claude Code 不再以 HTTP 头发送 attribution，而是把 `x-anthropic-billing-header: cc_version=…; cc_entrypoint=…;` 注入为**第一个** `system` 文本块（请求体内一行伪装成 header 的文本），上面那个针对 HTTP 头的 `strip_request_headers` 够不到它。true（默认）从 system 参数（string 或 system[0]）剥掉这个前导 billing 行；被剥空的块会被丢弃。位置锚定 + 整行匹配（只看 system[0] 的前导行），故正文里后出现的同名字面量绝不被误剥。仅 Anthropic 路径；与 HTTP 头剥离互补（而非替代）。源头杠杆是客户端自身的 CLAUDE_CODE_ATTRIBUTION_HEADER=0。
+  strip_attribution_header: true
+
   # Model-capability allowlists — which models get each Anthropic capability.
   # 模型能力名单——哪些模型获得各项 Anthropic 能力。
   # Each list holds model-name "family" prefixes (normalized: lowercase, dots→dashes).

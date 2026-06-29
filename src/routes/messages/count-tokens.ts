@@ -8,6 +8,7 @@ import {
   countTotalInputTokens,
 } from "~/lib/anthropic/auto-truncate"
 import { sanitizeInlineSystemMessages } from "~/lib/anthropic/sanitize/system-messages"
+import { stripSystemAttribution } from "~/lib/anthropic/sanitize/system-prompt"
 import { hasKnownLimits } from "~/lib/auto-truncate"
 import { createFetchSignal } from "~/lib/fetch-utils"
 import { resolveModelName } from "~/lib/models/resolver"
@@ -43,7 +44,10 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
   // Strip inline role:"system" messages the same way the request path does —
   // otherwise the real Anthropic endpoint rejects them with `Unexpected role
   // "system"` and we waste a failed upstream request before falling back.
-  const inlineSystem = sanitizeInlineSystemMessages(payload.messages, payload.system, state.systemMessagesSanitize)
+  // Also strip the attribution billing line from system[0] so the count matches
+  // what the request path forwards upstream (parity with strip_attribution_header).
+  const attributionStrippedSystem = stripSystemAttribution(payload.system, state.stripAttributionHeader).system
+  const inlineSystem = sanitizeInlineSystemMessages(payload.messages, attributionStrippedSystem, state.systemMessagesSanitize)
   const countPayload = { ...payload, model, system: inlineSystem.system, messages: inlineSystem.messages }
 
   try {
