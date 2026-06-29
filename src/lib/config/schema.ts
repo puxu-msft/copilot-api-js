@@ -301,6 +301,20 @@ export const AnthropicConfigSchema = z
      */
     tool_backfill_question: nullableBoolean(),
     /**
+     * Repair malformed `tool_use` input that upstream emitted as invalid JSON
+     * (antml tag bleed / unescaped fragments) on the Anthropic response wire.
+     * `"tags"` = structure-aware antml-tag stripping (Layer 1); `"repair"` = also
+     * run jsonrepair (Layer 2) for broader structural breakage; `false` (default)
+     * = off. History keeps the upstream-original bytes — only the forwarded
+     * stream/response is repaired.
+     */
+    tool_repair_malformed_input: z
+      .union([z.literal(false), z.literal("tags"), z.literal("repair"), z.null()], {
+        error: "Must be one of: false, tags, repair",
+      })
+      .optional()
+      .transform((v) => v ?? undefined),
+    /**
      * Synthetic SSE keepalive ping cadence (seconds) for the client-facing live
      * Anthropic stream. `0` disables; default **20**, clamped to a large margin
      * under the ~60s Claude Code body-idle deadline (Q2 oracle; empirical safe

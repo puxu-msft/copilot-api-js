@@ -107,6 +107,15 @@ describe("validateConfig — type errors", () => {
     expect(warnedMessages().some((m) => m.includes("anthropic.cache_control"))).toBe(true)
   })
 
+  test("tool_repair_malformed_input: valid values accepted, invalid stripped", () => {
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "tags" } }).anthropic?.tool_repair_malformed_input).toBe("tags")
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "repair" } }).anthropic?.tool_repair_malformed_input).toBe("repair")
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: false } }).anthropic?.tool_repair_malformed_input).toBe(false)
+    const bad = validateConfig({ anthropic: { tool_repair_malformed_input: "bogus" } })
+    expect(bad.anthropic?.tool_repair_malformed_input).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("anthropic.tool_repair_malformed_input"))).toBe(true)
+  })
+
   test("negative number rejected", () => {
     const result = validateConfig({ history: { limit: -5 } })
     expect(result.history?.limit).toBeUndefined()

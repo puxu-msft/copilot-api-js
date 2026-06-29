@@ -549,6 +549,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   },
   {
+    configKey: "anthropic.tool_repair_malformed_input",
+    stateKey: "toolRepairMalformedInput",
+    sampleYamlValue: "repair",
+    expectedStateValue: "repair",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput,
+  },
+  {
     configKey: "anthropic.refusal_recover_text",
     stateKey: "recoverRefusalText",
     sampleYamlValue: "true",

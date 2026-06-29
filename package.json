@@ -90,6 +90,7 @@
     "fetch-event-stream": "^0.1.6",
     "gpt-tokenizer": "^3.4.0",
     "hono": "^4.12.27",
+    "jsonrepair": "^3.14.1",
     "picocolors": "^1.1.1",
     "proxy-from-env": "^2.1.0",
     "socks": "^2.8.9",

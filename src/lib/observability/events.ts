@@ -152,6 +152,10 @@ export type FeatureKind =
    * `applied_edits` is non-empty (an empty receipt means upstream cleared nothing).
    */
   | "context-edits-applied"
+  /** a malformed tool_use input was repaired before forwarding — `detail: { tool, layer: "tags"|"repair" }` */
+  | "tool-input-repaired"
+  /** a malformed tool_use input could not be repaired (strip + jsonrepair both failed) — `detail: { tool }` */
+  | "tool-input-unrepairable"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 
