@@ -18,6 +18,7 @@
 import type {
   //
   EffectiveRequest,
+  InboundQuery,
   WireRequest,
 } from "~/lib/context/types"
 import type { ApiError } from "~/lib/error"
@@ -203,6 +204,14 @@ export interface RawHttpRequest {
   readonly method?: string
   /** Inbound URL path (codec.parse forwards it to `manager.create` as path + rawPath). */
   readonly path?: string
+  /**
+   * Client inbound query string + the filtered form to forward upstream.
+   * The route computes `forwarded` at handler entry (via `filterUpstreamQuery`
+   * gated on `state.forwardClientQuery`); codec.parse forwards this to
+   * `manager.create` so the transport adapter can append `forwarded` to the
+   * upstream URL. Absent when the inbound request carried no query.
+   */
+  readonly query?: InboundQuery
   /** Model override injected by Azure deployment routing (codec.parse reads it). */
   readonly modelOverride?: string
   /**

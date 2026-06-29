@@ -37,6 +37,7 @@ import type {
   EffectiveRequest,
   HeadersCapture,
   HistoryEntryData,
+  InboundQuery,
   OriginalRequest,
   PartialResponseInfo,
   RepairOutcomeRecord,
@@ -53,6 +54,7 @@ export type {
   EffectiveRequest,
   HeadersCapture,
   HistoryEntryData,
+  InboundQuery,
   OriginalRequest,
   PartialResponseInfo,
   RepairOutcomeRecord,
@@ -105,6 +107,8 @@ export function createRequestContext(opts: {
   method?: string
   /** Inbound URL path. Default "/". */
   path?: string
+  /** Client inbound query string + filtered upstream form (set-once, like path). */
+  query?: InboundQuery
   /** Inbound Content-Length, if present. */
   requestBodySize?: number
   /**
@@ -219,6 +223,7 @@ export function createRequestContext(opts: {
     rawPath: opts.rawPath,
     method,
     path,
+    ...(opts.query !== undefined && { query: opts.query }),
     get requestBodySize() {
       return requestBodySize
     },

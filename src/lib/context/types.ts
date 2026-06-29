@@ -260,6 +260,19 @@ export interface RepairOutcomeRecord {
   afterLength?: number
 }
 
+/**
+ * Client inbound query string captured for upstream forwarding.
+ * `raw` = verbatim inbound query (with a leading `?` when present, else `""`);
+ * `forwarded` = the filtered form actually sent upstream (security-floor +
+ * config-excluded keys removed, also `""` when empty). See
+ * `transport/query-forward.ts` for the filter and `state.forwardClientQuery`
+ * for the toggle. Both forms are recorded in history (richest-data-flow).
+ */
+export interface InboundQuery {
+  readonly raw: string
+  readonly forwarded: string
+}
+
 export interface RequestContext {
   readonly id: string
   readonly sessionId: string | undefined
@@ -283,6 +296,12 @@ export interface RequestContext {
    * rules.
    */
   readonly path: string
+  /**
+   * Client inbound query string + the filtered form forwarded upstream.
+   * Set-once at construction (like `path`); undefined for non-HTTP entry points
+   * or when the inbound request carried no query.
+   */
+  readonly query?: InboundQuery
   /**
    * Inbound HTTP `Content-Length` header value, if present. Used by the
    * console sink to display the request body size in the [ OK ] / [FAIL]

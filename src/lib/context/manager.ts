@@ -31,6 +31,7 @@ import { state } from "~/lib/state"
 
 import type {
   //
+  InboundQuery,
   RequestContext,
 } from "./request"
 
@@ -53,6 +54,8 @@ export interface RequestContextManager {
     method?: string
     /** Inbound URL path. Default "/" if omitted. */
     path?: string
+    /** Client inbound query string + filtered upstream form (codec.parse forwards it). */
+    query?: InboundQuery
     /** Inbound Content-Length header value, if present. */
     requestBodySize?: number
   }): RequestContext
@@ -232,6 +235,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         rawPath: opts.rawPath,
         method: opts.method,
         path: opts.path,
+        query: opts.query,
         requestBodySize: opts.requestBodySize,
         // Pure resource-management hook — remove the context from the active
         // map when it settles. Lifecycle events reach the bus via the context's
