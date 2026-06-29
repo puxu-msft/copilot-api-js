@@ -73,6 +73,11 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import {
   //
+  isThinkingOnlyRefusal,
+  REFUSAL_ERROR_MESSAGE,
+} from "~/lib/anthropic/recover-refusal"
+import {
+  //
   preprocessAnthropicMessages,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
@@ -108,7 +113,6 @@ import { resolveModelName } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
-import { isThinkingOnlyRefusal, REFUSAL_ERROR_MESSAGE } from "~/lib/anthropic/recover-refusal"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //

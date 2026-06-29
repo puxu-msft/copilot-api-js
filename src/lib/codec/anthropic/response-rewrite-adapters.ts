@@ -312,8 +312,7 @@ const refusalRewrite: ResponseRewrite = {
   // helper self-guards on the thinking-only-refusal shape). `error` (and the skipped `refusal`)
   // leave the body UNCHANGED here — error's non-streaming failure is handled in renderNonStreamingV4,
   // which must see the upstream-original refusal, so transformWhole must NOT mutate it.
-  transformWhole: (response): unknown =>
-    state.refusalSseRewrite === "end_turn" ? recoverRefusalInResponse(response as AnthropicMessageResponse) : response,
+  transformWhole: (response): unknown => (state.refusalSseRewrite === "end_turn" ? recoverRefusalInResponse(response as AnthropicMessageResponse) : response),
 }
 
 /**
