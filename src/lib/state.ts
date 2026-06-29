@@ -174,25 +174,34 @@ export interface State {
   readonly strictResponseHeaders: boolean
 
   /**
-   * Pass the client's native inbound HTTP request headers through to the upstream
-   * request (Anthropic path). `false` (default) = passthrough (everything except the
-   * proxy's core keys + the sensitive denylist); `true` = strict (proxy-rebuilt
-   * allowlist only). Request-side mirror of `strictResponseHeaders`.
+   * Client→upstream request-header forwarding MODE (Anthropic path). `false`
+   * (default) = BLACKLIST mode: forward client headers except `requestHeaderBlacklist`.
+   * `true` = WHITELIST mode: forward ONLY client headers matching `requestHeaderWhitelist`.
+   * Both modes apply the same security floor first (proxy core keys win + sensitive
+   * denylist always removed). Request-side mirror of `strictResponseHeaders`.
    */
   readonly strictRequestHeaders: boolean
   /**
-   * Glob list of passed-through client headers to strip from the upstream request.
-   * Acts on the passthrough subset only (no-op when `strictRequestHeaders` is true).
-   * Default removes `x-anthropic-billing-header` (Claude Code attribution → breaks
-   * Copilot prompt caching).
+   * BLACKLIST-mode glob list: client header names stripped from the forwarded set
+   * (active when `strictRequestHeaders` is false). Acts on the security-floor subset
+   * only. Default removes the HTTP-header form of `x-anthropic-billing-header`
+   * (defensive — current Claude Code carries attribution in the body, see
+   * `stripAttributionHeader`).
    */
-  readonly stripRequestHeaders: ReadonlyArray<string>
+  readonly requestHeaderBlacklist: ReadonlyArray<string>
+  /**
+   * WHITELIST-mode glob list: the ONLY client header names forwarded (active when
+   * `strictRequestHeaders` is true), beyond the proxy's rebuilt core headers. `[]`
+   * forwards nothing (core-only). Listing a true core header is a no-op (stripped by
+   * the security floor, re-injected as core).
+   */
+  readonly requestHeaderWhitelist: ReadonlyArray<string>
   /**
    * Strip the Claude Code attribution billing line carried as a `system` block in
    * the request BODY (current Claude Code injects `x-anthropic-billing-header: …`
-   * as `system[0]`, not as an HTTP header — so `stripRequestHeaders` cannot reach
+   * as `system[0]`, not as an HTTP header — so `requestHeaderBlacklist` cannot reach
    * it). `true` (default) removes the leading billing line from the system param.
-   * Anthropic path only. Complements the HTTP-header `stripRequestHeaders`.
+   * Anthropic path only. Complements the HTTP-header `requestHeaderBlacklist`.
    */
   readonly stripAttributionHeader: boolean
 
@@ -709,7 +718,8 @@ function cloneState(source: MutableState): MutableState {
     rejectBodyFields: cloneStripBetaHeaders(source.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(source.decodeToolInputFields),
     disabledModels: [...source.disabledModels],
-    stripRequestHeaders: [...source.stripRequestHeaders],
+    requestHeaderBlacklist: [...source.requestHeaderBlacklist],
+    requestHeaderWhitelist: [...source.requestHeaderWhitelist],
     models: cloneModels(source.models),
     rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
     systemPromptOverrides: [...source.systemPromptOverrides],
@@ -765,8 +775,11 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("disabledModels" in patch) {
     cloned.disabledModels = patch.disabledModels ? [...patch.disabledModels] : undefined
   }
-  if ("stripRequestHeaders" in patch) {
-    cloned.stripRequestHeaders = patch.stripRequestHeaders ? [...patch.stripRequestHeaders] : undefined
+  if ("requestHeaderBlacklist" in patch) {
+    cloned.requestHeaderBlacklist = patch.requestHeaderBlacklist ? [...patch.requestHeaderBlacklist] : undefined
+  }
+  if ("requestHeaderWhitelist" in patch) {
+    cloned.requestHeaderWhitelist = patch.requestHeaderWhitelist ? [...patch.requestHeaderWhitelist] : undefined
   }
 
   return cloned
@@ -853,7 +866,8 @@ export function setAnthropicBehavior(
       | "stripServerTools"
       | "strictResponseHeaders"
       | "strictRequestHeaders"
-      | "stripRequestHeaders"
+      | "requestHeaderBlacklist"
+      | "requestHeaderWhitelist"
       | "stripAttributionHeader"
       | "streamKeepalivePingSec"
       | "streamCommitAfterSec"
@@ -1055,7 +1069,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
-  stripRequestHeaders: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
+  requestHeaderBlacklist: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
+  requestHeaderWhitelist: ["accept", "anthropic-dangerous-direct-browser-access", "x-app", "x-claude-code-*", "x-stainless-*"] as ReadonlyArray<string>,
   stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
   streamCommitAfterSec: 20,
@@ -1144,7 +1159,8 @@ export function resetConfigManagedState(): void {
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
     strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
-    stripRequestHeaders: [...CONFIG_MANAGED_DEFAULTS.stripRequestHeaders],
+    requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
+    requestHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderWhitelist],
     stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
@@ -1260,7 +1276,8 @@ const mutableState: MutableState = {
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
-  stripRequestHeaders: [...CONFIG_MANAGED_DEFAULTS.stripRequestHeaders],
+  requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
+  requestHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderWhitelist],
   stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,

@@ -215,20 +215,29 @@ web_search:
 # Settings for Anthropic API tool handling and timeouts. / Anthropic API 的工具处理与超时设置。
 
 anthropic:
-  # Pass the client's native inbound HTTP request headers through to the upstream (GitHub Copilot) request. The proxy is otherwise fully isolating — it rebuilds the upstream headers from a fixed allowlist, so client headers (except the anthropic-beta value) are dropped. This is the request-side mirror of strict_response_headers.
-  #   false (default): passthrough — forward the client's headers EXCEPT the proxy's own core keys (Authorization / editor-version / x-request-id / openai-intent / x-github-api-version / anthropic-version / anthropic-beta / …, which always win) and a sensitive denylist (cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded chain / hop-by-hop, plus the x-github-* and openai-* namespaces). Forwarding a stale content-length/encoding after the proxy rebuilds the body would corrupt the upstream exchange.
-  #   true: strict — send ONLY the proxy-rebuilt allowlist (the pre-feature behavior); no client header passthrough.
-  # 把客户端原生入站 HTTP 请求头透传给上游（GitHub Copilot）。代理默认完全隔离——从固定 allowlist 重建上游头，故客户端头（除 anthropic-beta 值）全被丢弃。本项是 strict_response_headers 的请求侧镜像。
-  #   false（默认）：透传——转发客户端头，但代理自有 core 键（Authorization / editor-version / x-request-id / openai-intent / x-github-api-version / anthropic-version / anthropic-beta 等，永远优先）与敏感黑名单（cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded 链 / hop-by-hop，加 x-github-* 与 openai-* 命名空间）除外。代理重建 body 后转发陈旧的 content-length/encoding 会破坏上游交互。
-  #   true：严格——只发代理重建的 allowlist（特性前的行为）；不透传客户端头。
+  # Client→upstream request-header forwarding MODE (Anthropic path). Selects which list below is active. Both modes apply the same security floor first: the proxy's own core keys (Authorization / editor-version / x-request-id / openai-intent / x-github-api-version / anthropic-version / anthropic-beta / …) always win, and a sensitive denylist (cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded chain / hop-by-hop + x-github-* / openai-* namespaces) is ALWAYS removed — the whitelist cannot re-admit a credential. Request-side mirror of strict_response_headers.
+  #   false (default) = BLACKLIST mode: forward client headers EXCEPT request_header_blacklist globs.
+  #   true            = WHITELIST mode: forward ONLY client headers matching request_header_whitelist globs (plus the rebuilt core).
+  # 客户端→上游请求头转发模式（Anthropic 路径）。决定下面哪个名单生效。两模式都先过同一安全地板：代理自有 core 键永远优先、敏感黑名单（cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded 链 / hop-by-hop + x-github-* / openai- 命名空间）永远剥除——whitelist 不能重新放行凭据。是 strict_response_headers 的请求侧镜像。
+  #   false（默认）= BLACKLIST 模式：转发客户端头，但剥除 request_header_blacklist glob 命中者。
+  #   true        = WHITELIST 模式：只转发 request_header_whitelist glob 命中的客户端头（外加重建的 core）。
   strict_request_headers: false
 
-  # Glob list (header name; * / ?) of passed-through client headers to strip from the upstream request. Acts on the passthrough subset ONLY (never the proxy's own core/anthropic-beta headers), so "*" just empties the passthrough set (= back to the strict allowlist) and is harmless. Default removes x-anthropic-billing-header (Claude Code's attribution header — it breaks prompt caching on the Copilot gateway). NOTE: a no-op when strict_request_headers is true (there is no passthrough subset to strip).
-  # retain-on-absence: the default applies on first load / PUT /api/config reset only; deleting this key KEEPS the running value; [] clears it (attribution then passes through). To restore the default, reset (PUT /api/config) rather than deleting the key.
-  # 从上游请求里剥离的、已透传客户端头的 glob 列表（头名；* / ?）。只作用于透传子集（绝不动代理自有 core/anthropic-beta 头），故 "*" 只是清空透传集（= 回到严格 allowlist），无害。默认剥 x-anthropic-billing-header（Claude Code 的 attribution 头——它会破坏 Copilot 网关的 prompt caching）。注：strict_request_headers 为 true 时本项是 no-op（无透传子集可剥）。
-  # retain-on-absence：默认仅在首次加载 / PUT /api/config reset 时生效；删除此键会保留当前运行值；[] 清空（attribution 随后透传）。要恢复默认请用 reset（PUT /api/config），而非删键。
-  strip_request_headers:
+  # BLACKLIST-mode glob list (header name; * / ?): client headers stripped from the forwarded set (active when strict_request_headers is false). Acts on the security-floor subset ONLY (never the proxy's own core/anthropic-beta headers), so "*" just empties it (= core-only) and is harmless. Default strips the HTTP-header form of x-anthropic-billing-header. NOTE: that header is now DEFENSIVE — current Claude Code carries attribution in the request body (system[0]), handled by strip_attribution_header below; this HTTP-header entry only catches older clients / the header form.
+  # retain-on-absence: the default applies on first load / PUT /api/config reset only; deleting this key KEEPS the running value; [] clears it. To restore the default, reset (PUT /api/config) rather than deleting the key.
+  # BLACKLIST 模式 glob 列表（头名；* / ?）：从转发集里剥除的客户端头（strict_request_headers 为 false 时生效）。只作用于安全地板子集（绝不动代理自有 core/anthropic-beta 头），故 "*" 只是清空它（= 仅 core），无害。默认剥 x-anthropic-billing-header 的 HTTP 头形态。注：该头现为防御性——当前 Claude Code 把 attribution 放在请求体（system[0]）、由下面的 strip_attribution_header 接管；本 HTTP 头项只覆盖旧版客户端 / HTTP 头形态。
+  # retain-on-absence：默认仅在首次加载 / PUT /api/config reset 时生效；删除此键会保留当前运行值；[] 清空。要恢复默认请用 reset（PUT /api/config），而非删键。
+  request_header_blacklist:
     - x-anthropic-billing-header
+
+  # WHITELIST-mode glob list (header name; * / ?): the ONLY client headers forwarded (active when strict_request_headers is true), beyond the proxy's rebuilt core. [] forwards nothing (core-only). NOTE: listing a true core header (e.g. user-agent) is a no-op — the security floor strips it and the proxy re-injects core regardless; only NON-core client headers are meaningfully whitelistable. Default = the safe Claude Code / SDK headers beyond core. retain-on-absence (same semantics as the blacklist).
+  # WHITELIST 模式 glob 列表（头名；* / ?）：除代理重建 core 外、唯一被转发的客户端头（strict_request_headers 为 true 时生效）。[] 表示不转发任何客户端头（仅 core）。注：白名单里写真 core 头（如 user-agent）是 no-op——安全地板会剥掉它、core 由代理兜底重注入；只有非 core 客户端头才可被有效白名单放行。默认 = core 之外的安全 Claude Code / SDK 头。retain-on-absence（语义同 blacklist）。
+  request_header_whitelist:
+    - accept
+    - anthropic-dangerous-direct-browser-access
+    - x-app
+    - x-claude-code-*
+    - x-stainless-*
 
   # Strip the Claude Code attribution billing line carried as a `system` block in the request BODY. Current Claude Code no longer sends attribution as an HTTP header — it injects `x-anthropic-billing-header: cc_version=…; cc_entrypoint=…;` as the FIRST `system` text block (a header-shaped line inside the body), which the HTTP-header `strip_request_headers` above cannot reach. true (default) removes that leading billing line from the system param (string or system[0]); a block emptied by the strip is dropped. Position-anchored + whole-line match (only system[0]'s leading line), so the literal name appearing later in real prose is never touched. Anthropic path only; complements (does not replace) the HTTP-header strip. The source-side lever is the client's own CLAUDE_CODE_ATTRIBUTION_HEADER=0.
   # 剥离以请求体 `system` 块形式携带的 Claude Code attribution billing 行。当前 Claude Code 不再以 HTTP 头发送 attribution，而是把 `x-anthropic-billing-header: cc_version=…; cc_entrypoint=…;` 注入为**第一个** `system` 文本块（请求体内一行伪装成 header 的文本），上面那个针对 HTTP 头的 `strip_request_headers` 够不到它。true（默认）从 system 参数（string 或 system[0]）剥掉这个前导 billing 行；被剥空的块会被丢弃。位置锚定 + 整行匹配（只看 system[0] 的前导行），故正文里后出现的同名字面量绝不被误剥。仅 Anthropic 路径；与 HTTP 头剥离互补（而非替代）。源头杠杆是客户端自身的 CLAUDE_CODE_ATTRIBUTION_HEADER=0。

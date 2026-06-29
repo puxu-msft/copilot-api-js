@@ -35,6 +35,7 @@ import {
 } from "./features"
 import {
   //
+  keepHeaders,
   pruneHeaders,
   selectPassthroughHeaders,
 } from "./header-policy"
@@ -254,22 +255,27 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
   }
   if (filteredBeta) core["anthropic-beta"] = filteredBeta
 
-  // Optional client-header passthrough (anthropic.strict_request_headers === false,
-  // the default). The guard is NOT the spread order — `new Headers()` JOINS
-  // case-variant duplicate keys ("authorization" + "Authorization" → "a, b"), so a
-  // raw spread would smuggle client credentials in. Instead `selectPassthroughHeaders`
-  // removes EVERY core key (lowercased, dynamically derived so it covers vision +
-  // modelRequestHeaders) plus the sensitive denylist BEFORE the merge → passthrough ∩
-  // core = ∅, and `{ ...pass, ...core }` is collision-free. Strip runs on the
-  // passthrough subset only, so `["*"]` just empties passthrough (back to allowlist).
+  // Client-header forwarding policy, two modes selected by `strict_request_headers`.
+  // BOTH modes share the same security floor: `selectPassthroughHeaders` removes EVERY
+  // core key (lowercased, dynamically derived so it covers vision + modelRequestHeaders)
+  // plus the sensitive denylist (credentials + framing) BEFORE the mode split — so the
+  // whitelist can never re-admit a credential. The guard is NOT the spread order:
+  // `new Headers()` JOINS case-variant duplicate keys ("authorization" + "Authorization"
+  // → "a, b"), so the floor removes them by name first → selected ∩ core = ∅, and
+  // `{ ...selected, ...core }` is collision-free with core authoritative.
+  //   - blacklist mode (strict_request_headers: false): keep the safe set MINUS the
+  //     `request_header_blacklist` globs. `["*"]` empties the set (back to core-only).
+  //   - whitelist mode (strict_request_headers: true): keep ONLY the safe-set headers
+  //     matching `request_header_whitelist` globs. `[]` → core-only (old strict behavior).
   let headers = core
-  if (!state.strictRequestHeaders && opts.clientRequestHeaders) {
+  if (opts.clientRequestHeaders) {
     const coreLower = new Set(Object.keys(core).map((k) => k.toLowerCase()))
     // copilot-vision-request is a conditional core key (set only when vision is on).
     // Reserve it unconditionally so a client can't forge it on a non-vision request.
     coreLower.add("copilot-vision-request")
-    const passthrough = pruneHeaders(selectPassthroughHeaders(opts.clientRequestHeaders, coreLower), state.stripRequestHeaders)
-    headers = { ...passthrough, ...core }
+    const safe = selectPassthroughHeaders(opts.clientRequestHeaders, coreLower)
+    const selected = state.strictRequestHeaders ? keepHeaders(safe, state.requestHeaderWhitelist) : pruneHeaders(safe, state.requestHeaderBlacklist)
+    headers = { ...selected, ...core }
   }
 
   // Context_management injection: normally gated by `contextEditingMode != off` (isContextEditingEnabled).

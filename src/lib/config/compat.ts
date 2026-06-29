@@ -180,7 +180,10 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // synthesize-text behavior), false → "refusal" (the old passthrough). Same bool→enum shape as
   // auto_cache_control above.
   renameLeaf("anthropic.refusal_recover_text", "anthropic.refusal_sse_rewrite", {
-    transform: (v) => (typeof v === "boolean" ? (v ? "end_turn" : "refusal") : undefined),
+    transform: (v) => {
+      if (typeof v !== "boolean") return undefined
+      return v ? "end_turn" : "refusal"
+    },
     message: 'anthropic.refusal_recover_text is removed; use refusal_sse_rewrite ("refusal" | "end_turn" | "error")',
   }),
   removeKey("history.min_entries", "history.min_entries is removed (was tied to the deleted in-memory history store); ignoring"),
@@ -210,6 +213,10 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("anthropic.backfill_question_from_header", "anthropic.tool_backfill_question"),
   renameLeaf("anthropic.rewrite_system_reminders", "anthropic.system_rewrite_reminders"),
   renameLeaf("anthropic.strip_beta_headers", "anthropic.beta_strip_headers"),
+  // strip_request_headers → request_header_blacklist: the HTTP request-header strip is
+  // now the BLACKLIST half of the blacklist/whitelist forwarding model (sibling
+  // request_header_whitelist added). Same glob[]→glob[] shape, no value transform.
+  renameLeaf("anthropic.strip_request_headers", "anthropic.request_header_blacklist"),
   renameLeaf("anthropic.reject_body_fields", "anthropic.retry_reject_body_fields"),
   renameLeaf("anthropic.fake_sse_heartbeat", "anthropic.stream_keepalive_ping_sec"),
   renameLeaf("anthropic.stream_fake_sse_heartbeat", "anthropic.stream_keepalive_ping_sec"),

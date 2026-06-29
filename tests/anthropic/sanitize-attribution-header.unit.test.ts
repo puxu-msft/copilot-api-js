@@ -23,7 +23,7 @@ import {
  * Background: current Claude Code injects its attribution as the FIRST `system`
  * text block formatted like an HTTP header line:
  *   "x-anthropic-billing-header: cc_version=...; cc_entrypoint=claude-vscode;"
- * It is NOT an HTTP header, so the HTTP-header strip (`strip_request_headers`)
+ * It is NOT an HTTP header, so the HTTP-header strip (`request_header_blacklist`)
  * cannot reach it. This strip removes that leading line from the system param.
  */
 
