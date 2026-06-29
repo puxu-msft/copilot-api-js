@@ -10,7 +10,7 @@
  * `0\r\n\r\n` chunk terminator, but undici (HTTP/1.1 AND `allowH2`) never
  * finalizes the body; Node + the same undici works in 0.4s; curl works in
  * 0.4s. The endpoint is natively HTTP/2 — `node:http2` speaks it and works on
- * both runtimes. See docs/rfc/upstream-http2-transport.md.
+ * both runtimes. See docs/spec/upstream-http2-transport.md.
  *
  * POC-verified behaviours baked into this module:
  * - The `.body` ReadableStream is HAND-BUILT from `req` events — `Readable.toWeb`

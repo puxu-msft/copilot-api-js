@@ -364,7 +364,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   // an empty `acc.status` after the drain means the upstream truncated before any terminal. Mirrors
   // the HTTP handler, but the WS sink has NO `writeSynthetic` — use `sendErrorAndClose` (the WS H3
   // analog, 1011) to emit the error + close. Checked AFTER the viaFallback drain (whose synthesized
-  // `response.completed` sets `acc.status`). See docs/rfc/upstream-stream-truncation-detection.md.
+  // `response.completed` sets `acc.status`). See docs/spec/upstream-stream-truncation-detection.md.
   if (acc.status === "") {
     recordForwarded()
     const partial = buildResponsesResponseData(acc, resolvedModel)

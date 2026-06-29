@@ -2,7 +2,7 @@
  * Backend block-alignment core (ported from the live UI tree
  * `ui/src/utils/block-diff.ts`).
  *
- * Per the search_index design (docs/rfc/search-index-content-addressed.md): a mature
+ * Per the search_index design (docs/spec/search-index-content-addressed.md): a mature
  * library (jsdiff) handles the algorithmically-hard LCS alignment; we add only
  * the DOMAIN pairing a generic diff lib cannot express — aligning two message
  * sequences by role, with in-place "modified" pairing of an adjacent

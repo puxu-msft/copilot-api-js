@@ -5,7 +5,7 @@
  *   1. the HASH input (`hashMessage`) — identity for cross-turn message dedup, and
  *   2. the STORED search text — what LIKE/substring search scans.
  * Equality, dedup, and search therefore see one consistent view (see
- * docs/rfc/search-index-content-addressed.md, decision 8 + reviewer Finding 5).
+ * docs/spec/search-index-content-addressed.md, decision 8 + reviewer Finding 5).
  *
  * It is **config-independent, deterministic, and stable**: the same message
  * always yields the same string, regardless of runtime config. Two properties

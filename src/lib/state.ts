@@ -179,13 +179,13 @@ export interface State {
    * keep their original value; new streams pick up the new value. (Renamed from
    * `anthropic.stream_fake_sse_heartbeat` / `anthropicFakeSseHeartbeat` — "fake"
    * mis-described the synthetic-but-real `event: ping`; compat migrates the old
-   * keys. See docs/rfc/pre-response-abort-handling.md §4.2.3.1.)
+   * keys. See docs/spec/pre-response-abort-handling.md §4.2.3.1.)
    */
   readonly streamKeepalivePingSec: number
 
   /**
    * ③ pre-response-grace window (seconds) for `stream:true` Anthropic requests
-   * (RFC docs/rfc/pre-response-abort-handling.md §4). `0` disables ③ (the request
+   * (RFC docs/spec/pre-response-abort-handling.md §4). `0` disables ③ (the request
    * fully bypasses the grace race → current behavior). Default **40** — Claude
    * Code's request timeout is an IDLE watchdog at ~60s (Q2 oracle), so grace MUST
    * be `< 60s` or the client abandons the first attempt before the proxy can commit.

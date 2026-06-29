@@ -315,7 +315,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   // ends with finish_reason → accumulated into the meta DURING streaming). `getStreamMeta()`
   // defaults to FINISH_REASON_UNSPECIFIED when none was seen — a truncated upstream. Detect BEFORE
   // the flush: `codec.flushResponse` would otherwise write a terminal frame carrying that misleading
-  // UNSPECIFIED finishReason to the client (P-Gem). See docs/rfc/upstream-stream-truncation-detection.md.
+  // UNSPECIFIED finishReason to the client (P-Gem). See docs/spec/upstream-stream-truncation-detection.md.
   const meta = codec.getStreamMeta()
   if (meta.finishReason === "FINISH_REASON_UNSPECIFIED") {
     // Forward any buffered partial content the translator accumulated (e.g. a tool_call whose
@@ -323,7 +323,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     // the delta-streaming formats), but DROP the translator's terminal frame: it carries the
     // misleading UNSPECIFIED finishReason (the error frame below is the real terminator). The
     // terminal is the only flushed frame with `candidates[0].finishReason`; tool_call frames
-    // carry a `functionCall` part and no finishReason. See docs/rfc/upstream-stream-truncation-detection.md.
+    // carry a `functionCall` part and no finishReason. See docs/spec/upstream-stream-truncation-detection.md.
     for (const frame of codec.flushResponse(env)) {
       if (!isGeminiTerminalFrame(frame)) await sink.write(frame)
     }

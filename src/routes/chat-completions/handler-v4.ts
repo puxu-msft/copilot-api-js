@@ -390,7 +390,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // always terminates with one, so a clean drain without it means the upstream truncated
     // mid-stream. Settle FAIL (preserving the partial) + emit an OpenAI error frame instead of
     // the normal `[DONE]`, so the client gets a clean terminator rather than a finish_reason-less
-    // stream it silently treats as done. See docs/rfc/upstream-stream-truncation-detection.md.
+    // stream it silently treats as done. See docs/spec/upstream-stream-truncation-detection.md.
     recordForwarded()
     const partial = buildOpenAIResponseData(acc, model)
     const truncErr = new Error("Upstream stream truncated before completion (no finish_reason)")

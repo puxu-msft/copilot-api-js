@@ -347,7 +347,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // viaFallback drain (whose synthesized closing lifecycle sets `acc.status`), so a real direct
   // truncation is caught while a normal fallback close is not. (A truncated *underlying CC*
   // stream under fallback still gets a synthesized `response.completed` here — that narrower gap
-  // is documented in docs/rfc/upstream-stream-truncation-detection.md §3.1/Q2.)
+  // is documented in docs/spec/upstream-stream-truncation-detection.md §3.1/Q2.)
   if (acc.status === "") {
     recordForwarded()
     const partial = buildResponsesResponseData(acc, model)

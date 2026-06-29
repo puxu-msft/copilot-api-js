@@ -46,7 +46,7 @@ export function compress(value: unknown): Uint8Array {
  * runs on the libuv threadpool instead of blocking the event loop. The finalize
  * write path uses this so a multi-MB request_group frame no longer freezes every
  * concurrent in-flight stream (~96ms/request measured — see
- * docs/rfc/history-finalize-async-offload.md). JSON.stringify still runs on the
+ * docs/spec/history-finalize-async-offload.md). JSON.stringify still runs on the
  * main thread (cheap relative to the compress); only the zstd work offloads.
  */
 export async function compressAsync(value: unknown): Promise<Uint8Array> {

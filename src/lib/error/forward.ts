@@ -357,7 +357,7 @@ interface ErrorEnvelopeLog {
 /**
  * Map an upstream {@link HTTPError} to its wire envelope for `format` — the PURE
  * status→{body,status} dispatch shared by {@link forwardError} (→ `c.json`) and the
- * streaming POST-COMMIT error-frame synthesis (RFC ③, docs/rfc/pre-response-abort-handling.md §4.2.5).
+ * streaming POST-COMMIT error-frame synthesis (RFC ③, docs/spec/pre-response-abort-handling.md §4.2.5).
  * NO side effects: the `log` descriptor is emitted by the caller (keeps the branching
  * single-sourced), and `classified` (false only on the default fall-through) tells the
  * caller where tool-diagnostics augmentation applies. The Anthropic helper outputs are

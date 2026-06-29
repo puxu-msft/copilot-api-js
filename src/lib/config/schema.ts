@@ -296,7 +296,7 @@ export const AnthropicConfigSchema = z
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
      * ③ pre-response-grace window (seconds) for `stream:true` Anthropic requests
-     * (RFC docs/rfc/pre-response-abort-handling.md §4). `0` disables ③ (full bypass
+     * (RFC docs/spec/pre-response-abort-handling.md §4). `0` disables ③ (full bypass
      * → current behavior); default **40**. Claude Code's request timeout is an IDLE
      * watchdog at ~60s (Q2 oracle), so grace MUST be `< 60s` or the client abandons
      * the first attempt before the proxy commits. When `> 0`, the handler races

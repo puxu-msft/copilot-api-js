@@ -204,7 +204,7 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
  * Split out from {@link serializeHeadEntry} so the async finalize path
  * (insertCompletedEntry) can compress the head blob off the event loop
  * (`compressAsync`) and inject it here, while sync/incremental callers keep
- * compressing inline. See docs/rfc/history-finalize-async-offload.md.
+ * compressing inline. See docs/spec/history-finalize-async-offload.md.
  */
 export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undefined, headBlob: Uint8Array): EntryRow {
   const usage = entry.outboundResponse?.usage
