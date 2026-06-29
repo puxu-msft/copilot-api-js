@@ -26,6 +26,7 @@
   "files": [
     "dist",
     "ui/dist",
+    "ui-v4/dist",
     "config.yaml",
     "config.example.yaml"
   ],
@@ -34,7 +35,7 @@
     "ui-v4"
   ],
   "scripts": {
-    "build": "npm run build:ui && npm run build:backend",
+    "build": "npm run build:ui && npm run build:ui-v4 && npm run build:backend",
     "build:backend": "npx tsdown",
     "build:ui": "bun run --filter copilot-api-ui build",
     "build:ui-v4": "bun run --filter copilot-api-ui-v4 build",
