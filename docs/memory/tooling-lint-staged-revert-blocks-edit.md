@@ -1,12 +1,14 @@
 ---
 name: tooling-lint-staged-revert-blocks-edit
-description: 本项目 pre-commit 已 dc27883 加 --no-stash 消除 lint-staged stash/revert 工作区破坏;通用机制/检测/取证已上行 user-level skill
+description: 本项目已彻底移除 lint-staged/simple-git-hooks pre-commit hook（无 pre-commit 门禁）；通用 rollback 机制/检测/取证见 user-level skill
 metadata:
   node_type: memory
   type: project
   originSessionId: f6c2d80a-0cbf-4799-89e9-96768edc3a13
 ---
 
-**本项目落地态(2026-06-29 dc27883)**:`package.json` 的 `simple-git-hooks.pre-commit` = `bun x lint-staged --no-stash`(原为裸 `bun x lint-staged`)。本项目 lint task 纯校验(`bun run lint`=`eslint --cache`、无 `--fix`),`--no-stash` 消除了对纯校验零收益却破坏工作区的 stash/revert 沙箱,lint 门禁仍在(真错误照样拦 commit)。改 package.json 后须 `bunx simple-git-hooks` 重装 `.git/hooks/pre-commit`。**改回裸 lint-staged 会复现** ghost edit(Edit 报 success 却不落盘)/stale staged blob/peer-collision revert 三模式。
+**本项目落地态(2026-06-29 起)**:已**彻底移除** lint-staged 与 simple-git-hooks——`package.json` 删去 `lint-staged`/`simple-git-hooks` 配置块与 devDeps、`prepare` 脚本不再调 `simple-git-hooks`、`.git/hooks/pre-commit` 不再安装。**本项目现无任何 pre-commit 门禁**,lint 校验靠手动 `bun run lint`/`lint:all` 与 subagent review,提交不被 hook 拦截或改写工作区。
 
-通用机制、检测(Edit success 不自证→`sed` 验证落盘)、`--no-stash` 根治、ghost-edit 取证脚本均已上行 user-level skill **`git-commit-discipline:disarming-lint-staged-rollback`**——本条只留本项目落地态,通用教训不在此复述。相关 [[feedback-pass-null-clean-not-self-validating]]。
+历史:曾(更早 dc27883)用 `simple-git-hooks.pre-commit = bun x lint-staged --no-stash` 消除 stash/revert 沙箱破坏,后并发会话在一个 grab-bag 'update' 里误删一半(删 deps/config 却留下悬挂 `prepare` 调用 + 空 `simple-git-hooks:{}` 块);本次历史整理按用户最终决策彻底删净并补齐残骸。
+
+通用 lint-staged stash/revert 三失败模式(ghost edit/stale staged blob/peer-collision)、检测(Edit success 不自证→`sed` 验证落盘)、`--no-stash` 根治、取证脚本均在 user-level skill **`git-commit-discipline:disarming-lint-staged-rollback`**——若将来重新引入 lint-staged 必读。相关 [[feedback-pass-null-clean-not-self-validating]]。
