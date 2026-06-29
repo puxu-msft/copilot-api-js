@@ -14,6 +14,10 @@
  * original form is never lost.
  */
 
+import type { InboundQuery } from "~/lib/context/types"
+
+import { state } from "~/lib/state"
+
 /**
  * Query keys ALWAYS removed before forwarding upstream — the security/conflict
  * floor. Matched case-insensitively. Not overridable via config (auth keys must
@@ -52,4 +56,26 @@ export function filterUpstreamQuery(rawSearch: string, extraExclude?: ReadonlyAr
 
   const out = params.toString()
   return out ? `?${out}` : ""
+}
+
+/**
+ * Resolve the client query-forwarding decision for an inbound request URL.
+ *
+ * Reads runtime state (`forwardClientQuery` toggle + `forwardClientQueryExclude`)
+ * and produces the `{ raw, forwarded }` pair carried on `RequestContext.query`.
+ * Returns `undefined` for the common no-query case so `ctx.query` stays absent
+ * (no empty objects in ctx / history). When forwarding is disabled, `forwarded`
+ * is `""` (strip everything) while `raw` still records the client's original
+ * query for history (richest-data-flow).
+ *
+ * This is the single state-aware entry point shared by all handler/web_search
+ * call sites; `filterUpstreamQuery` above stays pure for unit testing.
+ *
+ * @param rawUrl  The full inbound request URL (e.g. Hono's `c.req.url`).
+ */
+export function resolveInboundQuery(rawUrl: string): InboundQuery | undefined {
+  const raw = new URL(rawUrl).search // "" when no query, else "?..."
+  if (!raw) return undefined
+  const forwarded = state.forwardClientQuery ? filterUpstreamQuery(raw, state.forwardClientQueryExclude) : ""
+  return { raw, forwarded }
 }

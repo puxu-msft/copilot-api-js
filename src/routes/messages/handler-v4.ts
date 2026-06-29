@@ -123,6 +123,7 @@ import {
 import { state } from "~/lib/state"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+import { resolveInboundQuery } from "~/lib/transport/query-forward"
 
 import {
   //
@@ -247,6 +248,7 @@ function createWebSearchContext(
     rawPath: c.req.path,
     method: c.req.method,
     path: c.req.path,
+    query: resolveInboundQuery(c.req.url),
     ...(reqBodySize !== undefined && Number.isFinite(reqBodySize) && { requestBodySize: reqBodySize }),
   })
   c.set("requestContext", reqCtx)
@@ -350,6 +352,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     headers: c.req.raw.headers,
     method: c.req.method,
     path: c.req.path,
+    query: resolveInboundQuery(c.req.url),
     preResolved: { name: resolvedName, model: args.selectedModel },
     clientAbortSignal: clientAbort.signal,
   })

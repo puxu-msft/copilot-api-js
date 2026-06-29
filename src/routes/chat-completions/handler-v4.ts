@@ -69,6 +69,7 @@ import { buildOpenAIResponseData } from "~/lib/request"
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+import { resolveInboundQuery } from "~/lib/transport/query-forward"
 
 /** CC has no learning-budget strategy; the value is inert (passed for completeness). */
 const MAX_LEARNING_RETRIES = 32
@@ -151,6 +152,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
+      query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
       clientAbortSignal: clientAbort.signal,

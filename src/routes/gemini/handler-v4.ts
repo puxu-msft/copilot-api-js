@@ -61,6 +61,7 @@ import { state } from "~/lib/state"
 import { classifyStreamError } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+import { resolveInboundQuery } from "~/lib/transport/query-forward"
 
 /** Gemini reuses the CC strategies (network → token-refresh → auto-truncate); no learning budget. */
 const MAX_LEARNING_RETRIES = 32
@@ -124,6 +125,7 @@ async function runGeminiRequest(
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
+      query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel },
       clientAbortSignal: clientAbort.signal,
     })

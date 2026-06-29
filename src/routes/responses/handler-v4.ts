@@ -74,6 +74,7 @@ import { responsesNonStreamingTruncation } from "~/lib/pipeline/non-streaming-co
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
+import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 
 /** Responses has no learning-budget strategy; the value is inert (passed for completeness). */
@@ -125,6 +126,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
+      query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
       clientAbortSignal: clientAbort.signal,

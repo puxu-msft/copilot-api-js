@@ -254,6 +254,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
     sessionId: getSessionIdFromHeaders(raw.headers),
     agentId: getAgentIdFromHeaders(raw.headers),
     ...(raw.path !== undefined && { rawPath: raw.path, path: raw.path }),
+    ...(raw.query !== undefined && { query: raw.query }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
   })
