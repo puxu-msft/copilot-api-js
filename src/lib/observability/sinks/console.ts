@@ -330,6 +330,7 @@ export class ConsoleSink {
       requestBodySize: ctx.requestBodySize,
       responseBodySize: entry.streamBytesIn,
       extra,
+      reqId: isError ? ctx.id : undefined,
       isError,
     } satisfies LogLineParts)
     this.printLog(message)
@@ -459,6 +460,11 @@ export function formatThinkingTag(thinking: { requested?: string; effective: str
  */
 function renderFeatureTag(feature: string, detail?: Record<string, unknown>): string | undefined {
   switch (feature) {
+    // Pre-stream grace lifecycle is operational noise — not surfaced as a TUI tag.
+    case "pre-stream-grace-commit":
+    case "pre-stream-grace-resolved": {
+      return undefined
+    }
     case "truncated":
     case "via-chat-completions-fallback":
     case "via-responses":

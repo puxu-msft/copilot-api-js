@@ -44,6 +44,8 @@ export interface LogLineParts {
   extra?: string
   /** Dim metadata appended at the end (e.g. "(retryable: network-retry, wait 1.0s)") */
   retryableMeta?: string
+  /** Request id (e.g. "req_178..."), appended dim on error lines for history lookup */
+  reqId?: string
   isError?: boolean
   isRetry?: boolean
   isDim?: boolean
@@ -77,6 +79,7 @@ export function formatLogLine(parts: LogLineParts): string {
     queueWait,
     extra,
     retryableMeta,
+    reqId,
     isError,
     isRetry,
     isDim,
@@ -140,7 +143,10 @@ export function formatLogLine(parts: LogLineParts): string {
   // Dim metadata (e.g. retry strategy info) appended after the error message.
   const retryableMetaPart = retryableMeta ? ` ${pc.dim(retryableMeta)}` : ""
 
+  // Request id appended dim at the very end (only when provided, e.g. error lines) for history lookup.
+  const reqIdPart = reqId ? ` ${pc.dim(reqId)}` : ""
+
   const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
 
-  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}${retryableMetaPart}`
+  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}${retryableMetaPart}${reqIdPart}`
 }
