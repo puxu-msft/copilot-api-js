@@ -18,6 +18,7 @@ import {
   //
   endpointLabel,
   failureSummary,
+  isTerminalSummary,
   modelName,
   requestState,
   rowAnomaly,
@@ -52,6 +53,30 @@ describe("requestState", () => {
   })
   test("no signal → pending", () => {
     expect(requestState(base({}))).toBe("pending")
+  })
+})
+
+// ── isTerminalSummary (gates whether a WS summary belongs to History vs Live) ──
+
+describe("isTerminalSummary", () => {
+  test("terminal states are terminal", () => {
+    for (const state of ["completed", "failed", "aborted", "interrupted"] as const) {
+      expect(isTerminalSummary(base({ state }))).toBe(true)
+    }
+  })
+  test("non-terminal states are not terminal", () => {
+    for (const state of ["pending", "executing", "streaming"] as const) {
+      expect(isTerminalSummary(base({ state }))).toBe(false)
+    }
+  })
+  test("active flag forces non-terminal even without a non-terminal state", () => {
+    // A freshly-created in-flight summary may carry active:true with no state yet.
+    expect(isTerminalSummary(base({ active: true }))).toBe(false)
+    expect(isTerminalSummary(base({ active: true, state: "completed" }))).toBe(false)
+  })
+  test("no state and not active → terminal (persisted rows read active:false)", () => {
+    expect(isTerminalSummary(base({ active: false }))).toBe(true)
+    expect(isTerminalSummary(base({}))).toBe(true)
   })
 })
 

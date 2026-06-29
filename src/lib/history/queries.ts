@@ -38,6 +38,19 @@ function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   return true
 }
 
+/** Non-terminal lifecycle states — these are the entries the Live lane owns. */
+const NON_TERMINAL_STATES = new Set<EntrySummary["state"]>(["pending", "executing", "streaming"])
+
+/**
+ * Whether a summary represents an active in-flight request (vs a terminal one).
+ * `active` is the canonical flag the request lifecycle sets while streaming;
+ * `state` is the belt-and-suspenders check for an eager-persisted `streaming`
+ * SQLite head row (which reads back `active: false`). Used by `terminalOnly`.
+ */
+function isInFlightSummary(summary: EntrySummary): boolean {
+  return summary.active === true || NON_TERMINAL_STATES.has(summary.state)
+}
+
 function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boolean {
   if (opts.sessionId && summary.sessionId !== opts.sessionId) return false
   if (opts.endpoint && summary.endpoint !== opts.endpoint) return false
@@ -121,7 +134,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
 }
 
 export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
-  const { limit = 50, cursor } = options
+  const { limit = 50, cursor, terminalOnly } = options
 
   const inFlightSummaries = listInFlight()
     .filter((entry) => inFlightMatchesSearch(entry, options.search))
@@ -145,15 +158,22 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
     }
   }
 
-  merged.sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id))
+  // terminalOnly: drop active in-flight rows so streaming requests stay out of
+  // the History list (consumers like ui-v4 show them in a dedicated Live lane).
+  // Source-agnostic by state — catches both the live in-flight map and any
+  // eager-persisted `streaming` SQLite head row, and keeps terminal entries
+  // regardless of which source they came from.
+  const visible = terminalOnly ? merged.filter((summary) => !isInFlightSummary(summary)) : merged
 
-  const total = merged.length
+  visible.sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id))
+
+  const total = visible.length
   let startIdx = 0
   if (cursor) {
-    const cursorIdx = merged.findIndex((entry) => entry.id === cursor)
+    const cursorIdx = visible.findIndex((entry) => entry.id === cursor)
     if (cursorIdx !== -1) startIdx = cursorIdx + 1
   }
-  const entries = merged.slice(startIdx, startIdx + limit)
+  const entries = visible.slice(startIdx, startIdx + limit)
   const nextCursor = startIdx + limit < total ? (entries.at(-1)?.id ?? null) : null
   const prevCursor = startIdx > 0 ? (entries[0]?.id ?? null) : null
 

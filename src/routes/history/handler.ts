@@ -32,6 +32,7 @@ export function handleGetEntries(c: Context) {
     endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,
     state: (query.state as QueryOptions["state"]) || undefined,
+    terminalOnly: query.terminalOnly === "true" ? true : undefined,
     from: query.from ? Number.parseInt(query.from, 10) : undefined,
     to: query.to ? Number.parseInt(query.to, 10) : undefined,
     search: query.search || undefined,

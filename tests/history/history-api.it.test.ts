@@ -187,6 +187,30 @@ describe("GET /api/entries", () => {
     // Empty strings should not filter — all entries returned
     expect(body.total).toBe(1)
   })
+
+  test("terminalOnly=true excludes active in-flight (streaming) entries", async () => {
+    const done = await createEntry("anthropic-messages", "test", [{ role: "user", content: "done" }])
+    // Active in-flight streaming entry (what the Live lane shows) — not finalized.
+    const live: HistoryEntry = {
+      id: generateId(),
+      startedAt: Date.now() + 1,
+      endpoint: "anthropic-messages",
+      state: "streaming",
+      active: true,
+      inboundRequest: { model: "test", messages: [{ role: "user", content: "live" }], stream: true },
+    }
+    insertEntry(live)
+
+    // Default merges in-flight (richest data): both ids present.
+    const all = await json<{ entries: Array<{ id: string }>; total: number }>(await get("/api/entries"))
+    expect(all.total).toBe(2)
+    expect(all.entries.map((e) => e.id).sort()).toEqual([done.id, live.id].sort())
+
+    // terminalOnly drops the in-flight row.
+    const terminal = await json<{ entries: Array<{ id: string }>; total: number }>(await get("/api/entries?terminalOnly=true"))
+    expect(terminal.total).toBe(1)
+    expect(terminal.entries.map((e) => e.id)).toEqual([done.id])
+  })
 })
 
 // ─── handleGetEntry ───

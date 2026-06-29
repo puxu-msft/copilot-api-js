@@ -21,7 +21,15 @@ export interface ActiveRequestInfo {
 }
 
 export interface ActiveRequestChangedInfo {
-  action: "created" | "state_changed" | "completed" | "failed"
+  /**
+   * Backend lifecycle action (`src/lib/observability/sinks/ws.ts`). The three
+   * terminal actions (`completed`/`failed`/`aborted`) carry only `requestId`
+   * and must remove the row from the Live lane; `created`/`state_changed` carry
+   * the full `request`. `attempt_failed`/`feature_applied` are non-terminal,
+   * `requestId`-only signals the front-end intentionally ignores (they fall
+   * through `applyActiveEvent` to the `!request` no-op).
+   */
+  action: "created" | "state_changed" | "completed" | "failed" | "aborted" | "attempt_failed" | "feature_applied"
   request?: ActiveRequestInfo
   requestId?: string
   activeCount: number

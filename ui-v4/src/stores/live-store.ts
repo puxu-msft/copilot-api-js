@@ -12,7 +12,9 @@ export interface LiveState {
 
 /** 纯 reducer —— 把一个 active 事件应用到在飞集合(不可变,返回新对象)。 */
 export function applyActiveEvent(state: LiveState, ev: ActiveRequestChangedInfo): LiveState {
-  if (ev.action === "completed" || ev.action === "failed") {
+  // 三个终态 action(completed/failed/aborted)只带 requestId,都必须离开 Live 泳道。
+  // 漏掉 aborted 曾让被中止的请求永久卡在泳道里(后端 ws.ts 对 request.aborted 发 action:"aborted")。
+  if (ev.action === "completed" || ev.action === "failed" || ev.action === "aborted") {
     const id = ev.requestId ?? ev.request?.id
     if (id === undefined || !(id in state.byId)) return state
     const { [id]: _removed, ...rest } = state.byId

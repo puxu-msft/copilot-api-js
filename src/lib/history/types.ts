@@ -350,6 +350,15 @@ export interface QueryOptions {
    * source and stays correct across cursor pagination.
    */
   state?: RequestLifecycleState
+  /**
+   * Exclude active in-flight (non-terminal: pending/executing/streaming) entries
+   * from the result, returning only terminal rows (completed/failed/aborted/
+   * interrupted). The default merges in-flight summaries (richest data — the v3
+   * combined activity view); consumers with a dedicated live lane (ui-v4) pass
+   * `true` so streaming requests don't also appear in the History list. Filters
+   * the merged result by state, so `total` and cursor pagination stay correct.
+   */
+  terminalOnly?: boolean
   from?: number
   to?: number
   search?: string

@@ -4,11 +4,31 @@ import type { EntrySummary } from "@/types"
 
 import { formatNumber } from "@/lib/format"
 
+/**
+ * Display-only state label for a row. Heuristic (falls back to `responseSuccess`
+ * then `"pending"`); **do NOT reuse for Live/History routing** — that gate is
+ * `isTerminalSummary` below, which mirrors the backend exactly.
+ */
 export function requestState(entry: EntrySummary): string {
   if (entry.state) return entry.state
   if (entry.responseSuccess === false) return "failed"
   if (entry.responseSuccess) return "completed"
   return "pending"
+}
+
+/** Non-terminal lifecycle states — these requests belong to the Live lane, not History. */
+const NON_TERMINAL_STATES = new Set<EntrySummary["state"]>(["pending", "executing", "streaming"])
+
+/**
+ * Whether a request summary is terminal (belongs in the History list) vs an
+ * active in-flight one (belongs in the Live lane). Mirrors the backend
+ * `isInFlightSummary` (queries.ts): `active:true` or a non-terminal `state`
+ * means in-flight. Used to gate WS `entry_added`/`entry_updated` events so a
+ * request only enters the History flow once it actually reaches a terminal
+ * state (completed/failed/aborted/interrupted).
+ */
+export function isTerminalSummary(entry: EntrySummary): boolean {
+  return entry.active !== true && !NON_TERMINAL_STATES.has(entry.state)
 }
 
 export function modelName(entry: EntrySummary): string {

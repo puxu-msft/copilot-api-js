@@ -31,6 +31,16 @@ describe("live-store reducer applyActiveEvent", () => {
     const next = applyActiveEvent(s, { action: "completed", requestId: "a", activeCount: 1 })
     expect(Object.keys(next.byId)).toEqual(["b"])
   })
+  it("aborted removes from the map (terminal — must leave the Live lane)", () => {
+    const s: LiveState = { byId: { a: req("a"), b: req("b") } }
+    const next = applyActiveEvent(s, { action: "aborted", requestId: "a", activeCount: 1 })
+    expect(Object.keys(next.byId)).toEqual(["b"])
+  })
+  it("non-terminal requestId-only actions (attempt_failed/feature_applied) are a no-op", () => {
+    const s: LiveState = { byId: { a: req("a") } }
+    expect(applyActiveEvent(s, { action: "attempt_failed", requestId: "a", activeCount: 1 })).toBe(s)
+    expect(applyActiveEvent(s, { action: "feature_applied", requestId: "a", activeCount: 1 })).toBe(s)
+  })
   it("returns a NEW object (immutable)", () => {
     const s: LiveState = { byId: {} }
     const next = applyActiveEvent(s, { action: "created", request: req("a"), activeCount: 1 })

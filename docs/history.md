@@ -108,7 +108,7 @@ REST 用法见下文 `POST /history/api/entries/:id/pin|unpin`。
 
 **双源一致性契约**：active 请求同时有 in-flight 内存对象与 SQLite 的 head + 部分 stage 行。读取优先 in-flight（`getEntry = getInFlight(id) ?? getEntryById(id)`），故 active 请求恒读内存全量、不读半截 SQLite。SQLite 仅作持久化、WS 仅作实时，二者 schema 不同、互不校验。崩溃后 in-flight 消失，SQLite 半截行经回收为 `interrupted` 才被读取。
 
-REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedAt` DESC 排序，按 id 去重）。
+REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedAt` DESC 排序，按 id 去重）。**例外**：`GET /history/api/entries?terminalOnly=true` 按 state 剔除 active 在飞行（pending/executing/streaming，含 eager-persisted 的 streaming head 行），只返回终态条目——给有独立 Live 泳道的消费者（ui-v4）用，使 streaming 请求不会同时出现在 History 列表里。过滤作用于 merge 后结果，故 `total`/游标分页保持正确。
 
 ## 持久化韧性（写失败不静默丢数据）
 
@@ -165,7 +165,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 | 端点 | 说明 |
 |------|------|
-| `GET /history/api/entries` | 分页查询 entries（`?cursor=&limit=` 分页；`?model=&endpoint=&from=&to=&sessionId=&search=` 过滤——`sessionId` 取某 session 的 entries，`search` 是 `preview_text` 子串快筛） |
+| `GET /history/api/entries` | 分页查询 entries（`?cursor=&limit=` 分页；`?model=&endpoint=&from=&to=&sessionId=&search=` 过滤——`sessionId` 取某 session 的 entries，`search` 是 `preview_text` 子串快筛；`?terminalOnly=true` 剔除 active 在飞行、只返回终态条目，给有独立 Live 泳道的消费者用） |
 | `GET /history/api/entries/:id` | 获取单个 entry |
 | `POST /history/api/entries/:id/pin` | 钉住该 entry（`pinned=1`）：豁免 reaper 淘汰+计数，返回更新后的完整 entry；未知 id → 404 |
 | `POST /history/api/entries/:id/unpin` | 取消钉住（`pinned=0`），恢复正常淘汰资格；返回更新后的完整 entry |

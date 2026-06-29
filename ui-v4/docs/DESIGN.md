@@ -69,12 +69,12 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 
 ### 4.2 列表稳定性（解决「新请求涌入致选不中 / 深分页新条目丢失 / 终态抖动」）
 
-**修正起点**（review 核实）：现有 `ui/src/pages/vuetify/VActivityPage.vue:116-128` **已有独立 In-flight section**（`inflightRows`，来自 dashboard WS active 流，按 `historyIds` 去重）——所以"在飞与已完成混在一个列表"**不是真实债**。真实未解决债是：
+**修正起点**（review 核实）：现有 `ui/src/pages/vuetify/VActivityPage.vue:116-128` **已有独立 In-flight section**（`inflightRows`，来自 dashboard WS active 流，按 `historyIds` 去重）——所以"在飞与已完成混在一个列表"**不是真实债**。真实未解决债（**均已在 ui-v4 落地**，见各条「已修」）：
 
-- `useHistoryWS.ts` 仅在 `prevCursor===null`（列表在顶部）时 prepend 新条目 → 用户向下翻页时新完成条目**静默丢失**。
-- active→completed 瞬间，active 流与 history WS 两路各自更新 → **去重抖动**。
-- 失败终态（`failed`/`aborted`/`interrupted`，见 `src/lib/history/types.ts:31` 七态）如何离开 Live 泳道**未定义**。
-- 注：后端 `/entries` 游标 API 本身经 `getHistorySummaries`（`queries.ts:112-116`）**已 merge 在飞 + 持久化并按 id 去重**——前端若想"Live 泳道只放在飞、History 永不含在飞"，需显式按 `state` 过滤（当前 handler 暴露 `?state=` 精确单值，但**无 active/非active 二分过滤**，见 §7 端点改动）。
+- ~~`useHistoryWS.ts` 仅在 `prevCursor===null`（列表在顶部）时 prepend 新条目 → 用户向下翻页时新完成条目**静默丢失**。~~ **已修**：ui-v4 用 `useHistoryInfinite` + list-store 的 tail/buffer 三件套——向下滚动即 `scroll-up`→`tailOn=false`，paused 期间新终态条目记入 `bufferedIds`、出「N 条新」横幅，绝不静默丢失。**关键修复**：终态条目在**完成时**经 WS `entry_updated`（非 `entry_added`，后者在创建态已发）到达，而旧 `onEntryUpdated` 仅在 tailOn 时 invalidate、paused 时什么都不做 → paused 用户漏掉新完成条目。现 `entry_added`/`entry_updated` 统一经 `onEntrySettled` 按 `isTerminalSummary` 门控（`lib/activity-row.ts`，镜像后端 `isInFlightSummary`），终态才 dispatch `incoming`（tailOn→invalidate / paused→buffer）。
+- ~~active→completed 瞬间，active 流与 history WS 两路各自更新 → **去重抖动**。~~ **已修**：`terminalOnly=true` 让 History 永不含在飞（消除重复显示），且 `onEntrySettled` 在创建/进行态（active）忽略、只在终态合入——一个请求要么在 Live 泳道要么在 History，不再两路同显。
+- ~~失败终态（`failed`/`aborted`/`interrupted`，见 `src/lib/history/types.ts:31` 七态）如何离开 Live 泳道**未定义**。~~ **已修**：后端 `sinks/ws.ts` 对 `request.completed`/`failed`/`aborted` 都发 `action`=对应后缀；live-store `applyActiveEvent` 现对三者都移除（旧版漏 `aborted` → 被中止请求永久卡泳道）。`interrupted` 是 reaper 启动时对崩溃条目的 reclassify、不走 live WS 流，故不进 Live 泳道。
+- 注：后端 `/entries` 游标 API 本身经 `getHistorySummaries`（`queries.ts`）**默认 merge 在飞 + 持久化并按 id 去重**（v3 合并 activity 视图所需）。**已落地**（修「Live 与 History 混在一起」）：handler 暴露 `?terminalOnly=true` 二分过滤，按 state 剔除 active 在飞行（pending/executing/streaming），`HistoryList`（经 `useHistoryInfinite`）显式带此参数 → Live 泳道只放在飞、History 永不含在飞。过滤作用于 merge 后结果故 `total`/游标分页保持正确。早先 ui-v4 复用此端点却漏传该参数，是 streaming 请求同时出现在两处的根因。
 
 三件套（client-state，归 **Zustand**，不塞 Query cache）：
 
