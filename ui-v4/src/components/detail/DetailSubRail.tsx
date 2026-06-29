@@ -1,4 +1,4 @@
-const SEGMENTS = ["Convo", "Stages", "Response", "Headers", "Meta"] as const
+const SEGMENTS = ["Convo", "Stages", "Response", "SSE", "Headers", "Meta"] as const
 
 export type SegmentName = (typeof SEGMENTS)[number]
 

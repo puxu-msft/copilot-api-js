@@ -1,49 +1,18 @@
-import type {
-  //
-  HistoryEntry,
-  SseEventRecord,
-} from "@/types"
+import type { HistoryEntry } from "@/types"
 
-import { SseFrameDiff } from "@/components/detail/diff/SseFrameDiff"
 import { MessageBlock } from "@/components/detail/MessageBlock"
 import { LegShell } from "@/components/detail/segments/LegShell"
-import {
-  //
-  formatClockMs,
-  formatElapsed,
-} from "@/lib/format"
 
-function FrameList({ label, frames, startedAt }: { label: string; frames: Array<SseEventRecord>; startedAt: number }) {
-  return (
-    <div className="mt-2">
-      <div className="mono mb-1 text-[11px] uppercase tracking-wider text-[var(--color-muted)]">
-        {label} ({frames.length} frames)
-      </div>
-      <div className="border border-[#1e1e24]">
-        {frames.map((f, i) => (
-          <div
-            key={i}
-            className="mono overflow-hidden text-ellipsis whitespace-nowrap px-2 py-0.5 text-[13px] text-[#aaa]"
-          >
-            <span className="text-[var(--color-muted)]">
-              {formatClockMs(startedAt + f.offsetMs)} {formatElapsed(f.offsetMs)}
-            </span>{" "}
-            <span className="text-[#9ad]">{f.type}</span> {f.raw}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
+/**
+ * Rendered/semantic response view: the upstream answer (proxy-recorded) and the
+ * content actually forwarded to the client. The raw SSE wire frames + diff live
+ * in the separate SSE tab (SseEventsSegment).
+ */
 export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
-  const upstreamFrames = entry.sseEvents ?? []
-  const forwardedFrames = entry.inboundResponse?.sseEvents ?? []
-  const hasUpstream = Boolean(entry.outboundResponse) || upstreamFrames.length > 0
-  const hasForwarded = entry.inboundResponse?.content !== undefined || forwardedFrames.length > 0
-  const hasAny = hasUpstream || hasForwarded
+  const hasUpstream = Boolean(entry.outboundResponse)
+  const hasForwarded = entry.inboundResponse?.content !== undefined
 
-  if (!hasAny) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无响应数据</div>
+  if (!hasUpstream && !hasForwarded) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无响应数据</div>
 
   return (
     <div>
@@ -58,35 +27,13 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
               {entry.outboundResponse?.rawBody ?? entry.outboundResponse?.error ?? "(no content)"}
             </pre>
           }
-          {upstreamFrames.length > 0 ?
-            <FrameList
-              label="upstream sse"
-              frames={upstreamFrames}
-              startedAt={entry.startedAt}
-            />
-          : null}
         </LegShell>
       : null}
       {hasForwarded ?
         <LegShell label="Forwarded (proxy → client)">
-          {entry.inboundResponse?.content !== undefined ?
-            <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{JSON.stringify(entry.inboundResponse.content, null, 2)}</pre>
-          : null}
-          {forwardedFrames.length > 0 ?
-            <FrameList
-              label="forwarded sse"
-              frames={forwardedFrames}
-              startedAt={entry.startedAt}
-            />
-          : null}
+          <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{JSON.stringify(entry.inboundResponse?.content, null, 2)}</pre>
         </LegShell>
       : null}
-      <LegShell label="upstream vs forwarded">
-        <SseFrameDiff
-          upstream={upstreamFrames}
-          forwarded={forwardedFrames}
-        />
-      </LegShell>
     </div>
   )
 }

@@ -11,6 +11,7 @@ import { ConvoSegment } from "@/components/detail/segments/ConvoSegment"
 import { HeadersSegment } from "@/components/detail/segments/HeadersSegment"
 import { MetaSegment } from "@/components/detail/segments/MetaSegment"
 import { ResponseSegment } from "@/components/detail/segments/ResponseSegment"
+import { SseEventsSegment } from "@/components/detail/segments/SseEventsSegment"
 import { StagesSegment } from "@/components/detail/segments/StagesSegment"
 import { useEntry } from "@/hooks/useEntry"
 
@@ -41,6 +42,9 @@ export function DetailPanel() {
           : null}
           {segment === "Response" ?
             <ResponseSegment entry={data} />
+          : null}
+          {segment === "SSE" ?
+            <SseEventsSegment entry={data} />
           : null}
           {segment === "Headers" ?
             <HeadersSegment entry={data} />

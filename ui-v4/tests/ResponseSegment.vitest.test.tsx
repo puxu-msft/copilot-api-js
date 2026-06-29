@@ -42,18 +42,15 @@ const empty = {
 } as unknown as HistoryEntry
 
 describe("ResponseSegment", () => {
-  it("renders upstream content, frame lists, and the SSE diff area", () => {
+  it("renders upstream content and status line (no SSE frames here)", () => {
     render(<ResponseSegment entry={withResponse} />)
     // upstream content (via MessageBlock)
     expect(screen.getByText(/upstream answer/)).toBeDefined()
     // status line
     expect(screen.getByText(/status 200/)).toBeDefined()
-    // upstream frame list header (2 frames)
-    expect(screen.getByText(/upstream sse \(2 frames\)/)).toBeDefined()
-    // forwarded frame list header (1 frame)
-    expect(screen.getByText(/forwarded sse \(1 frames\)/)).toBeDefined()
-    // diff area label
-    expect(screen.getByText(/upstream vs forwarded/)).toBeDefined()
+    // SSE frame lists + diff moved to the SSE tab — not present here.
+    expect(screen.queryByText(/upstream sse \(/)).toBeNull()
+    expect(screen.queryByText(/upstream vs forwarded/)).toBeNull()
   })
 
   it("renders the 无响应数据 fallback when there is no response data", () => {
