@@ -198,7 +198,89 @@ export interface FrameDiffRow {
 }
 
 function frameKey(f: SseEventRecord): string {
-  return `${f.type}\0${f.raw}`
+  return `${f.type}\0${canonicalRaw(f.raw)}`
+}
+
+/**
+ * Stable byte-form of an SSE frame's `raw`: parse JSON and re-stringify with keys
+ * sorted, so semantically-equal frames whose producers emit keys in a different
+ * order (Anthropic upstream `{"delta",…,"type"}` vs forwarded `{"type",…,"delta"}`)
+ * compare equal. Non-JSON payloads (keepalive/ping) round-trip verbatim.
+ */
+function canonicalRaw(raw: string): string {
+  try {
+    return JSON.stringify(sortKeys(JSON.parse(raw)))
+  } catch {
+    return raw
+  }
+}
+
+function sortKeys(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map((x) => sortKeys(x))
+  if (v && typeof v === "object") {
+    return Object.fromEntries(
+      Object.keys(v as Record<string, unknown>)
+        .sort()
+        .map((k) => [k, sortKeys((v as Record<string, unknown>)[k])]),
+    )
+  }
+  return v
+}
+
+/**
+ * Coalesce consecutive `content_block_delta` frames that share an `index` AND a
+ * concatenable subtype into one synthetic frame carrying the joined value.
+ * Upstream and the forwarded stream chunk text at different boundaries (29 vs 27
+ * deltas for the same total), so per-chunk raw never aligns; merging by block
+ * makes equal total content compare equal. Only `text_delta` / `input_json_delta`
+ * / `thinking_delta` merge (the streamed-in-pieces fields); `signature_delta` and
+ * other one-shot subtypes never merge, so an in-place signature rewrite stays a
+ * visible `modified`. Frame `offsetMs` keeps the first chunk's; only the diff
+ * input is coalesced — FrameList still shows raw per-chunk frames.
+ */
+function coalesceDeltas(frames: ReadonlyArray<SseEventRecord>): Array<SseEventRecord> {
+  const out: Array<SseEventRecord> = []
+  for (const f of frames) {
+    const cur = deltaMerge(f)
+    const prev = out.at(-1)
+    if (cur && prev && prev.type === "content_block_delta") {
+      const p = deltaMerge(prev)
+      if (p && p.index === cur.index && p.field === cur.field) {
+        out[out.length - 1] = { ...prev, raw: mergeDeltaRaw(prev.raw, f.raw, cur.field) }
+        continue
+      }
+    }
+    out.push(f)
+  }
+  return out
+}
+
+/** Concatenable fields of a streamed content_block_delta (one-shot subtypes excluded). */
+const MERGE_FIELDS: Record<string, string> = { text_delta: "text", input_json_delta: "partial_json", thinking_delta: "thinking" }
+
+/** Block index + concatenable field of a delta frame, or null if not coalescable. */
+function deltaMerge(f: SseEventRecord): { index: number; field: string } | null {
+  if (f.type !== "content_block_delta") return null
+  try {
+    const j = JSON.parse(f.raw) as { index?: unknown; delta?: { type?: string } }
+    const field = MERGE_FIELDS[j.delta?.type ?? ""]
+    return typeof j.index === "number" && field ? { index: j.index, field } : null
+  } catch {
+    return null
+  }
+}
+
+/** Merge two content_block_delta raws by concatenating the given field's text. */
+function mergeDeltaRaw(a: string, b: string, field: string): string {
+  try {
+    const ja = JSON.parse(a) as { delta?: Record<string, string> }
+    const jb = JSON.parse(b) as { delta?: Record<string, string> }
+    const da = ja.delta ?? {}
+    da[field] = (da[field] ?? "") + (jb.delta?.[field] ?? "")
+    return JSON.stringify(ja)
+  } catch {
+    return a
+  }
 }
 
 /**
@@ -207,10 +289,10 @@ function frameKey(f: SseEventRecord): string {
  * `dropped` (removed) / `added` kinds catch filtered or synthesized frames.
  */
 export function diffSseFrames(upstream: ReadonlyArray<SseEventRecord>, forwarded: ReadonlyArray<SseEventRecord>): Array<FrameDiffRow> {
-  return alignWithModified(upstream, forwarded, frameKey, (f) => f.type).map((r) => {
+  return alignWithModified(coalesceDeltas(upstream), coalesceDeltas(forwarded), frameKey, (f) => f.type).map((r) => {
     const type = (r.right ?? r.left)?.type
     const row: FrameDiffRow = { kind: r.kind, upstream: r.left, forwarded: r.right, type }
-    if (r.kind === "modified" && r.left && r.right) row.rawDiff = diffText(r.left.raw, r.right.raw)
+    if (r.kind === "modified" && r.left && r.right) row.rawDiff = diffText(canonicalRaw(r.left.raw), canonicalRaw(r.right.raw))
     return row
   })
 }

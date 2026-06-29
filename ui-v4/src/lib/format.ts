@@ -48,6 +48,11 @@ export function formatTime(ts: number): string {
   return `${h}:${m}:${s}`
 }
 
+/** epoch ms → HH:MM:SS.mmm (local). 毫秒精度,用于 SSE 帧这类几十毫秒间隔的事件。 */
+export function formatClockMs(ts: number): string {
+  return `${formatTime(ts)}.${String(new Date(ts).getMilliseconds()).padStart(3, "0")}`
+}
+
 /** Compact count: 1234→"1.2K", 1.2M→"1.2M", undefined/null→"-". */
 export function formatNumber(n: number | undefined | null): string {
   if (n === undefined || n === null) return "-"

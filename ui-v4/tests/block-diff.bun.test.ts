@@ -318,6 +318,87 @@ describe("diffSseFrames", () => {
     expect(addedRow.upstream).toBeUndefined()
     expect(addedRow.rawDiff).toBeUndefined()
   })
+
+  test("same semantics, different JSON key order → `same` (no false modified)", () => {
+    // Anthropic upstream vs forwarded reorder keys; bytes differ, meaning identical.
+    const upstream = [frame("message_start", '{"type":"message_start","message":{"id":"m1"}}')]
+    const forwarded = [frame("message_start", '{"message":{"id":"m1"},"type":"message_start"}')]
+
+    const rows = diffSseFrames(upstream, forwarded)
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].kind).toBe("same")
+  })
+
+  test("re-chunked text_delta with identical concatenation → `same`", () => {
+    // Upstream emits 3 deltas, proxy re-chunks into 2; same total text.
+    const upstream = [
+      frame("content_block_delta", '{"index":1,"type":"content_block_delta","delta":{"type":"text_delta","text":"hel"}}'),
+      frame("content_block_delta", '{"index":1,"type":"content_block_delta","delta":{"type":"text_delta","text":"lo "}}'),
+      frame("content_block_delta", '{"index":1,"type":"content_block_delta","delta":{"type":"text_delta","text":"world"}}'),
+    ]
+    const forwarded = [
+      frame("content_block_delta", '{"type":"content_block_delta","index":1,"delta":{"text":"hello","type":"text_delta"}}'),
+      frame("content_block_delta", '{"type":"content_block_delta","index":1,"delta":{"text":" world","type":"text_delta"}}'),
+    ]
+
+    const rows = diffSseFrames(upstream, forwarded)
+
+    expect(diffStats(rows)).toMatchObject({ modified: 0, added: 0, removed: 0 })
+    expect(rows.every((r) => r.kind === "same")).toBe(true)
+  })
+
+  test("deltas on distinct blocks stay separate (different index not merged)", () => {
+    const upstream = [
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"text_delta","text":"a"}}'),
+      frame("content_block_delta", '{"index":1,"type":"content_block_delta","delta":{"type":"text_delta","text":"b"}}'),
+    ]
+    const forwarded = [
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"text_delta","text":"a"}}'),
+      frame("content_block_delta", '{"index":1,"type":"content_block_delta","delta":{"type":"text_delta","text":"b"}}'),
+    ]
+
+    const rows = diffSseFrames(upstream, forwarded)
+
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.kind === "same")).toBe(true)
+  })
+
+  test("signature_delta not coalesced — A→B signature stays `modified`", () => {
+    // thinking-signature shim rewrites one signature delta; must remain visible.
+    const upstream = [
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hm"}}'),
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"signature_delta","signature":"A"}}'),
+    ]
+    const forwarded = [
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hm"}}'),
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"signature_delta","signature":"B"}}'),
+    ]
+
+    const rows = diffSseFrames(upstream, forwarded)
+
+    expect(diffStats(rows).modified).toBe(1)
+    const mod = rows.find((r) => r.kind === "modified")!
+    expect(mod.rawDiff!.some((p) => p.removed && p.value.includes("A"))).toBe(true)
+    expect(mod.rawDiff!.some((p) => p.added && p.value.includes("B"))).toBe(true)
+  })
+
+  test("mixed subtypes on one block don't lose thinking when only text re-chunked", () => {
+    const upstream = [
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"abc"}}'),
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"signature_delta","signature":"S"}}'),
+    ]
+    const forwarded = [
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"a"}}'),
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"bc"}}'),
+      frame("content_block_delta", '{"index":0,"type":"content_block_delta","delta":{"type":"signature_delta","signature":"S"}}'),
+    ]
+
+    const rows = diffSseFrames(upstream, forwarded)
+
+    // thinking re-chunked but identical concat + same sig → no false diff.
+    expect(rows.every((r) => r.kind === "same")).toBe(true)
+  })
 })
 
 // ── Rich unified line+word diff: diffLinesRich ──

@@ -7,8 +7,13 @@ import type {
 import { SseFrameDiff } from "@/components/detail/diff/SseFrameDiff"
 import { MessageBlock } from "@/components/detail/MessageBlock"
 import { LegShell } from "@/components/detail/segments/LegShell"
+import {
+  //
+  formatClockMs,
+  formatElapsed,
+} from "@/lib/format"
 
-function FrameList({ label, frames }: { label: string; frames: Array<SseEventRecord> }) {
+function FrameList({ label, frames, startedAt }: { label: string; frames: Array<SseEventRecord>; startedAt: number }) {
   return (
     <div className="mt-2">
       <div className="mono mb-1 text-[11px] uppercase tracking-wider text-[var(--color-muted)]">
@@ -20,7 +25,10 @@ function FrameList({ label, frames }: { label: string; frames: Array<SseEventRec
             key={i}
             className="mono overflow-hidden text-ellipsis whitespace-nowrap px-2 py-0.5 text-[13px] text-[#aaa]"
           >
-            <span className="text-[var(--color-muted)]">[{f.offsetMs}]</span> <span className="text-[#9ad]">{f.type}</span> {f.raw}
+            <span className="text-[var(--color-muted)]">
+              {formatClockMs(startedAt + f.offsetMs)} {formatElapsed(f.offsetMs)}
+            </span>{" "}
+            <span className="text-[#9ad]">{f.type}</span> {f.raw}
           </div>
         ))}
       </div>
@@ -54,6 +62,7 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
             <FrameList
               label="upstream sse"
               frames={upstreamFrames}
+              startedAt={entry.startedAt}
             />
           : null}
         </LegShell>
@@ -67,6 +76,7 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
             <FrameList
               label="forwarded sse"
               frames={forwardedFrames}
+              startedAt={entry.startedAt}
             />
           : null}
         </LegShell>
