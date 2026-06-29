@@ -215,22 +215,6 @@ web_search:
 # Settings for Anthropic API tool handling and timeouts. / Anthropic API 的工具处理与超时设置。
 
 anthropic:
-  # Strip server-side tools (web_search, etc.) from requests.
-  # 从请求中剥离服务端工具（web_search 等）。
-  # This is the unconditional global switch. Even when false, a server tool the upstream rejects with 400 ("web search tool is not supported") is learned and stripped pre-emptively for that (endpoint, model) on subsequent requests (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
-  # 这是无条件的全局开关。即使为 false，被上游用 400（"web search tool is not supported"）拒绝过的服务端工具也会被学习，并对后续同 (endpoint, model) 请求预先剥离（server-tool-rejection 自愈）。详见 docs/v4/03-spec/server-tool-rejection-retry.md
-  tool_strip_server: false
-
-  # Forward upstream (GitHub Copilot) response headers to the client. The proxy is otherwise fully isolating — it synthesizes its own response headers, so upstream request-id / anthropic-ratelimit-* / anthropic-organization-id never reach the client. This opts the Anthropic path into forwarding a controlled subset.
-  #   false (default): permissive — forward EVERYTHING except a proxy-controlled blacklist (content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie). The blacklist is mandatory in BOTH modes — forwarding upstream content-length after the proxy re-serializes the body corrupts client parsing.
-  #   true: strict — forward ONLY a known allowlist: request-id / x-request-id / anthropic-ratelimit-* / anthropic-organization-id / retry-after.
-  # Note: only the non-committed write-out paths forward (non-streaming + streaming settled within the commit window). A delayed-commit stream that already flushed its 200 cannot forward (upstream headers arrive after the headers are on the wire). history records what the client actually received (inboundResponse) plus the full upstream set (outboundResponse).
-  # 把上游（GitHub Copilot）响应头透传给客户端。代理默认完全隔离——自己合成响应头，故上游 request-id / anthropic-ratelimit-* / anthropic-organization-id 到不了客户端。本项让 Anthropic 路径可控地转发一个子集。
-  #   false（默认）：尽量透传——转发除 proxy-controlled 黑名单外的全部（content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie）。黑名单在两种模式下都强制生效——代理重新序列化 body 后转发上游 content-length 会让客户端按错长度解析。
-  #   true：仅白名单——只转发 request-id / x-request-id / anthropic-ratelimit-* / anthropic-organization-id / retry-after。
-  # 注：只有非 committed 写出路径会转发（非流式 + 流式在 commit 窗口内 settle）。延迟-commit 已 flush 200 的流无法转发（上游头在响应头已上线后才到）。history 忠实记录客户端实收（inboundResponse）+ 上游全量（outboundResponse）。
-  strict_response_headers: false
-
   # Pass the client's native inbound HTTP request headers through to the upstream (GitHub Copilot) request. The proxy is otherwise fully isolating — it rebuilds the upstream headers from a fixed allowlist, so client headers (except the anthropic-beta value) are dropped. This is the request-side mirror of strict_response_headers.
   #   false (default): passthrough — forward the client's headers EXCEPT the proxy's own core keys (Authorization / editor-version / x-request-id / openai-intent / x-github-api-version / anthropic-version / anthropic-beta / …, which always win) and a sensitive denylist (cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded chain / hop-by-hop, plus the x-github-* and openai-* namespaces). Forwarding a stale content-length/encoding after the proxy rebuilds the body would corrupt the upstream exchange.
   #   true: strict — send ONLY the proxy-rebuilt allowlist (the pre-feature behavior); no client header passthrough.
@@ -246,32 +230,9 @@ anthropic:
   strip_request_headers:
     - x-anthropic-billing-header
 
-  # Delayed-commit window (seconds) for streaming. 0 = commit immediately; default 20. Before opening the 200 SSE stream, the proxy waits up to N seconds for the upstream to settle: if it returns/errors WITHIN the window the real HTTP status is forwarded (the client keeps native retry/backoff/token-refresh); if it stays silent past the window (opus pre-response thinking) the proxy COMMITS a 200 + an immediate cold-start ping, and later errors degrade to a rich SSE error frame. Clamped well under the ~60s client idle deadline.
-  # 流式延迟-commit 窗口秒数。0 = 立即 commit；默认 20。开 200 SSE 流之前，代理最多等 N 秒让上游 settle：窗口内返回/报错→转发真 HTTP 状态（客户端保留原生重试/退避/token 刷新）；超窗口仍静默（opus pre-response thinking）→ COMMIT 200 + 立即冷启动 ping，之后错误降级成富 SSE error 帧。clamp 到远低于 ~60s 客户端空闲死线。
-  stream_commit_after_sec: 20
-
-  # Client-proxy keepalive ping cadence (seconds) for streaming. 0 = disabled; default 20. After the commit window opens the 200 SSE stream, a connection-level heartbeat (decoupled from the upstream) pings every N seconds since the last client write — whether the upstream is silent, thinking, or buffered — so a long mid-stream/buffered stall never trips Claude Code's ~60s idle watchdog. Cadence = the MINIMUM interval between pings (a real frame or ping advances the anchor); a cold-start commit fires one immediate ping, then this throttles the rest. Clamped to a large margin under 60 (empirical safe ceiling ~45s). Heartbeats do NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle); recorded only in forwardedSseEvents.
-  # 客户端-代理流式 keepalive ping cadence 秒数。0 = 禁用；默认 20。commit 窗口开 200 后，连接级心跳（与上游解耦）距上次写客户端 N 秒就发一帧 ping——无论上游静默/thinking/buffered——故长 mid-stream/buffered 停滞绝不触发 Claude Code ~60s 空闲看门狗。cadence = ping 之间的最小间隔（真帧或 ping 都推进锚点）；冷启动 commit 先发一个立即 ping，之后由它节流。clamp 到远低于 60 的大余量（实测安全上界 ~45s）。心跳不重置上游 idle-timeout；只记入 forwardedSseEvents。
-  stream_keepalive_ping_sec: 20
-
-  # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
-  # L2——针对被上游流中途 RST（超大上下文里大 Write/Edit 触发 GHC NGHTTP2_CANCEL）砍断的流式生成的事务化缓冲重试。缓冲整响应、`message_stop` 后才 commit，transport-close/truncation 则重跑上游交换——客户端透明地拿到一次完整生成而非半截流 + 错误。详见 docs/rfc/streaming-upstream-rst-buffered-retry.md。
-  #   false:           disabled (default) — live streaming, no buffering. / 禁用（默认）——实时流式，不缓冲。
-  #   on:              buffer every streaming Anthropic response. / 缓冲每个流式 Anthropic 响应。
-  #   tool_use_only:   buffer only when the request carries `tools` (the large Write/Edit scenario); pure-text chat stays live. / 仅当请求带 `tools`（大 Write/Edit 场景）才缓冲；纯文本对话仍实时。
-  protect_streaming_generation: false
-  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
-  # transport-close/truncation 最大重试次数（loop/成本闸，非超时闸——客户端由下方强制心跳保活）。0 = 不重试。
-  protect_streaming_max_retries: 3
-  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until message_stop, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
-  # 缓冲路径的强制心跳间隔秒数：缓冲期在 message_stop 前不发任何真实帧，故无条件构造心跳——stream_keepalive_ping_sec >0 时取其值，否则用本值兜底。
-  protect_streaming_heartbeat: 15
-  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection — a live RST fails as today). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
-  # 缓冲路径内存守卫：累计缓冲超此字节即放弃缓冲、本响应剩余部分退回实时转发（随之失去 L2 保护——实时 RST 仍如现状失败）。防止病态超大生成无界缓冲导致 OOM。0 = 无限制。默认 16MiB。
-  protect_streaming_buffer_cap_bytes: 16777216
-  # On each buffered RST/truncation retry, FORCE a progressively aggressive native clear_tool_uses context_management edit (lower trigger + smaller keep) to compress the context so the generation finishes faster — within the next RST window. Independent of context_editing (retry-only emergency compression); skipped when the model doesn't support context_management. Changes request semantics (drops more old context). Default false (opt-in; enable only after telemetry shows plain retry's hit rate is low for over-budget requests).
-  # 每次缓冲 RST/truncation 重试时，FORCE 一次渐进激进的原生 clear_tool_uses context_management（更低 trigger + 更少 keep）压缩上下文，让生成更快、更可能在下个 RST 窗口前完成。独立于 context_editing（仅重试时的应急压缩）；模型不支持 context_management 时跳过。改变请求语义（删更多旧上下文）。默认 false（opt-in；建议遥测证实裸重试命中率低后再开）。
-  protect_streaming_escalate_context: false
+  # Strip the Claude Code attribution billing line carried as a `system` block in the request BODY. Current Claude Code no longer sends attribution as an HTTP header — it injects `x-anthropic-billing-header: cc_version=…; cc_entrypoint=…;` as the FIRST `system` text block (a header-shaped line inside the body), which the HTTP-header `strip_request_headers` above cannot reach. true (default) removes that leading billing line from the system param (string or system[0]); a block emptied by the strip is dropped. Position-anchored + whole-line match (only system[0]'s leading line), so the literal name appearing later in real prose is never touched. Anthropic path only; complements (does not replace) the HTTP-header strip. The source-side lever is the client's own CLAUDE_CODE_ATTRIBUTION_HEADER=0.
+  # 剥离以请求体 `system` 块形式携带的 Claude Code attribution billing 行。当前 Claude Code 不再以 HTTP 头发送 attribution，而是把 `x-anthropic-billing-header: cc_version=…; cc_entrypoint=…;` 注入为**第一个** `system` 文本块（请求体内一行伪装成 header 的文本），上面那个针对 HTTP 头的 `strip_request_headers` 够不到它。true（默认）从 system 参数（string 或 system[0]）剥掉这个前导 billing 行；被剥空的块会被丢弃。位置锚定 + 整行匹配（只看 system[0] 的前导行），故正文里后出现的同名字面量绝不被误剥。仅 Anthropic 路径；与 HTTP 头剥离互补（而非替代）。源头杠杆是客户端自身的 CLAUDE_CODE_ATTRIBUTION_HEADER=0。
+  strip_attribution_header: true
 
   # Model-capability allowlists — which models get each Anthropic capability.
   # 模型能力名单——哪些模型获得各项 Anthropic 能力。
@@ -307,136 +268,6 @@ anthropic:
       - claude-opus-4-7
       - claude-opus-4-8
 
-  # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
-  # 去重工具调用：false | "input" | "result"（true 兼容映射为 "input"）
-  # "input": dedup by (name, input); "result": also require identical result
-  # "input"：按 (name, input) 去重；"result"：还要求结果一致
-  tool_dedup_calls: false
-
-  # Policy for assistant messages containing thinking/redacted_thinking blocks. Thinking signatures are self-contained (encrypt the thinking content itself; no context/position binding — empirically verified), so block-level protection suffices.
-  # 含 thinking/redacted_thinking 块的 assistant 消息处理策略。thinking signature 自包含（加密 thinking 内容本身、不绑定上下文/位置——已实测验证），故块级保护即足够。
-  #   preserve: keep thinking blocks verbatim + don't reorder consecutive thinking, but allow all surrounding cleanup (default)
-  #             逐字保留 thinking 块、不重排连续 thinking，但允许周围一切清理（默认）
-  #   stripped: actively delete thinking blocks from old messages / 主动从旧消息删除 thinking 块
-  thinking_block_message_policy: preserve
-
-  # Drop corrupt thinking blocks before sending upstream — validity decided by SIGNATURE, not text (encrypted thinking has empty text + valid signature, kept).
-  # 发送上游前剥离损坏的 thinking 块——有效性由 signature 而非文本判定（加密 thinking 文本为空但有有效 signature，保留）。
-  #   empty_thinking: remove double-empty blocks (text AND signature empty) (default) / 移除双空块（文本与 signature 都空）（默认）
-  #   empty_any:      remove any thinking block with empty signature / 移除任何 signature 为空的 thinking 块
-  #   false:          disable / 禁用
-  thinking_block_sanitize: empty_thinking
-
-  # Coerce legacy thinking params for adaptive-only models (opus 4.6/4.7/4.8).
-  # 为仅支持 adaptive 的模型（opus 4.6/4.7/4.8）强制转换旧版 thinking 参数。
-  # Old clients send thinking:{type:enabled,budget_tokens} which these models reject with a 400 demanding type:adaptive. This rewrites enabled→adaptive on the wire.
-  # 旧客户端发 thinking:{type:enabled,budget_tokens}，这些模型会 400 要求 type:adaptive。本项在 wire 上把 enabled→adaptive。
-  #   basic:       coerce to {type:adaptive}, drop budget_tokens (default, mirrors GHC) / 转为 {type:adaptive} 丢弃 budget_tokens（默认，对齐 GHC）
-  #   best_effort: also map budget_tokens to output_config.effort (only if the client didn't send an explicit effort) — heuristic, GHC doesn't do this / 并把 budget_tokens 启发式换算为 output_config.effort（仅客户端未显式发 effort 时）——GHC 不这么做
-  #   false:       disable — pass client thinking config through unchanged / 禁用——原样透传客户端 thinking 配置
-  thinking_coerce_adaptive: basic
-
-  # Handle role:"system" messages mixed into the messages array — illegal for the Anthropic API (system must be the top-level param), rejected with `Unexpected role "system"`.
-  # 处理混入 messages 数组的 role:"system" 消息——Anthropic API 不接受（system 须为顶层参数），否则报 `Unexpected role "system"`。
-  # Such inline system messages come from OpenAI-habit clients or Claude Code mid-conversation context injections (hook output / rules / reminders).
-  # 这类 inline system 来自 OpenAI 习惯客户端或 Claude Code 对话中途注入的上下文（hook 输出 / 规则 / 提醒）。
-  #   as_user:      rewrite role to "user" — keeps conversation position (recommended) / 改 role 为 "user"——保留对话位置（推荐）
-  #   merge:        append their text to the top-level system, drop the messages (hurts prompt cache; loses position) / 提取文本追加到顶层 system 并删消息（损害 prompt cache；丢失位置）
-  #   drop_invalid: remove them entirely (loses the context) / 直接删除（丢失上下文）
-  #   as_assistant: rewrite role to "assistant" (experimental, NOT recommended — disguises context as model output) / 改 role 为 "assistant"（实验性、不推荐——把上下文伪装成模型输出）
-  #   false:        passthrough unchanged (default — will 400 upstream if present) / 原样透传（默认——存在时会 400）
-  system_messages_sanitize: false
-
-  # Rewrite native server-tool blocks left in message history before sending upstream.
-  # 发送上游前改写消息历史里残留的原生 server-tool 块。
-  # The web_search double-hop surfaces a synthesized server_tool_use{web_search} + web_search_tool_result pair to the client (so results are visible); the client echoes it back next turn, but the downgraded tools array no longer declares web_search as a server tool → upstream 400.
-  # web_search 双跳会把合成的 server_tool_use{web_search} + web_search_tool_result 对呈现给客户端（让结果可见）；客户端下轮回传，但降级后的 tools 数组不再声明 web_search 为 server tool → 上游 400。
-  # Recommended ON together with web_search.enabled. / 建议与 web_search.enabled 同时开启。
-  #   downgrade: rewrite the pair into plain tool_use + tool_result (splits the assistant turn so the tool_result lands in a user message) / 把该对降级为普通 tool_use + tool_result（拆分 assistant turn，使 tool_result 落入 user 消息）
-  #   false:     passthrough (default — will 400 upstream when a historical server_tool_use survives without a matching server-tool definition) / 透传（默认——残留 server_tool_use 无配套 server-tool 定义时会 400）
-  tool_rewrite_history_server: false
-
-  # Client compatibility shim for the streaming thinking frame some Copilot upstreams emit (signature embedded in content_block_start, no signature_delta) so standard clients keep the signature.
-  # 客户端兼容 shim：部分 Copilot 上游发出的流式 thinking 帧（signature 嵌在 content_block_start、无 signature_delta），重整形使标准客户端保留签名。
-  #   signature_delta (default) | redacted_thinking | false / signature_delta（默认）| redacted_thinking | false
-  thinking_signature_compat: signature_delta
-
-  # Strip <system-reminder> tags from Read tool results / 从 Read 工具结果剥离 <system-reminder> 标签
-  tool_strip_read_result_tags: false
-
-  # Server-side context editing mode. Controls how Anthropic's context_management trims older context when input grows large.
-  # 服务端上下文编辑模式。控制输入增大时 Anthropic 的 context_management 如何修剪旧上下文。
-  #   off: disabled (default). No context_management sent. / 禁用（默认），不发送 context_management。
-  #   clear-thinking: clear old thinking blocks. / 清除旧 thinking 块。
-  #   clear-tooluse: clear old tool_use/result pairs. / 清除旧 tool_use/result 对。
-  #   clear-both: apply both clear-thinking and clear-tooluse. / 同时应用 clear-thinking 与 clear-tooluse。
-  # Only effective for models that support context editing. / 仅对支持上下文编辑的模型生效。
-  context_editing: off
-
-  # Input token threshold that triggers clear_tool_uses when context_editing includes tool clearing.
-  # context_editing 含工具清理时触发 clear_tool_uses 的输入 token 阈值。
-  context_editing_trigger: 100000
-
-  # Number of most recent tool_use pairs to keep after clear_tool_uses runs. / clear_tool_uses 运行后保留的最近 tool_use 对数量。
-  context_editing_keep_tools: 3
-
-  # Number of most recent thinking turns to keep after clear_thinking runs. / clear_thinking 运行后保留的最近 thinking turn 数量。
-  context_editing_keep_thinking: 1
-
-  # Inject Copilot tool_search helper when the model supports it. / 模型支持时注入 Copilot tool_search 工具。
-  tool_search: true
-
-  # Cache control mode for prompt caching. / prompt 缓存的 cache control 模式。
-  #   disabled:    strip all cache_control fields (no caching) / 剥离所有 cache_control 字段（不缓存）
-  #   passthrough: forward client cache_control as-is (default) — clients like Claude Code send / 原样转发客户端 cache_control（默认）——Claude Code 等客户端
-  #                their own well-tuned conversation breakpoints; the proxy stays out of the way / 自带调优过的对话断点，代理不插手
-  #   sanitize:    forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope) / 转发但归一化为 { type: "ephemeral" }（剥离 scope 等非标准字段）
-  #   proxied:     proxy controls injection — strip client breakpoints, then re-inject GHC-style: / 代理控制注入——剥光客户端断点后再注入 GHC 风格：
-  #                message-level breakpoints (last tool_result per round + current user message + / 消息级断点（每轮最后一个 tool_result + 当前 user 消息 +
-  #                terminal assistant) caching the conversation, then tools/system on spare slots. / 终态 assistant）缓存对话，再用余位给 tools/system
-  #                Use for clients that don't send their own cache_control. / 适用于不自带 cache_control 的客户端
-  cache_control: passthrough
-
-  # Additional tool names that should never be deferred when tool_search is enabled.
-  # tool_search 启用时额外永不延迟的工具名。
-  # tool_non_deferred:
-  #   - my_custom_tool
-
-  # Rewrite system-reminder tags in messages. false = keep all (default), true = remove all.
-  # 改写消息中的 system-reminder 标签。false = 全部保留（默认），true = 全部移除。
-  # Or provide rewrite rules (first match wins, top-down). / 或提供改写规则（自上而下、首个匹配胜出）。
-  # Note: `model` field is NOT supported here (only in system_prompt_overrides). / 注：此处不支持 `model` 字段（仅 system_prompt_overrides 支持）。
-  # system_rewrite_reminders: false
-  # system_rewrite_reminders:
-  #   - from: "^Whenever you read a file, you should consider whether it would be considered malware"
-  #     to: ""                 # Empty = remove the tag / 空 = 移除该标签
-
-  # Policy for Claude Code "Warmup" requests. / Claude Code "Warmup" 请求处理策略。
-  # Claude Code sends warmup requests on session start to pre-fill the prompt cache. / Claude Code 在会话开始时发 warmup 请求预热 prompt 缓存。
-  # Zombie processes may send these repeatedly, generating significant traffic. / 僵尸进程可能反复发送，制造可观流量。
-  #   allow:  pass through to upstream API (default) / 透传到上游 API（默认）
-  #   reject: return HTTP 429 error / 返回 HTTP 429 错误
-  #   drop:   return minimal empty response without forwarding upstream / 返回最小空响应、不转发上游
-  #   fake:   return realistic response with cache_creation_input_tokens (recommended) / 返回带 cache_creation_input_tokens 的逼真响应（推荐）
-  warmup: fake
-
-  # Per-model supported effort levels (whitelist) for output_config.effort. / output_config.effort 的 per-model 支持档位（白名单）。
-  # Keys are model name substrings matched against the resolved model name. / 键是与解析后模型名匹配的模型名子串。
-  # Values are arrays of supported efforts from: none, low, medium, high, xhigh, max. / 值是支持档位数组，取自：none、low、medium、high、xhigh、max。
-  # Requests outside the whitelist are clamped to the nearest supported value (above max → max supported; below min → min supported). / 白名单外的请求会被钳到最近支持值（高于上限→最高支持值；低于下限→最低支持值）。
-  #
-  # Match semantics (whitelist — single source of truth): / 匹配语义（白名单——单一真相源）：
-  #   - The MOST SPECIFIC (longest) key whose substring matches the model wins. e.g. for model "claude-opus-4.7-high", the key "claude-opus-4.7-high" beats "claude-opus-4.7"; only the winning key's values apply (no union). / 最具体（最长）的匹配键胜出，如 "claude-opus-4.7-high" 击败 "claude-opus-4.7"；仅胜出键的值生效（不取并集）。
-  #   - The pseudo-key "*" is a last-resort wildcard (used only when no other key matches). / 伪键 "*" 是最后兜底通配（仅无其它键匹配时用）。
-  #
-  # Cross-validation: if a configured whitelist contains efforts the upstream model metadata does NOT declare, the out-of-range entries are dropped with a warn log. If the intersection is empty, the metadata wins (avoids guaranteed 400s from stale config). / 交叉校验：若配置白名单含上游元数据未声明的档位，超范围项被丢弃并 warn；交集为空则元数据胜出（避免陈旧配置必 400）。
-  #
-  # Runtime dynamically extends this (learned from invalid_reasoning_effort errors, persisted to negotiation-states.json). Config-sourced entries take precedence over runtime-learned, which in turn take precedence over model metadata. / 运行时动态扩展（从 invalid_reasoning_effort 错误学习，持久化到 negotiation-states.json）。优先级：config > 运行时学习 > 模型元数据。
-  # Default: no constraints (all effort levels declared by the model pass through). / 默认：无约束（模型声明的所有档位皆透传）。
-  # effort_overrides:
-  #   claude-opus-4.7: [medium]
-  #   claude-opus-4.7-1m-internal: [medium]
-
   # ---------------------------------------------------------------------------
   # anthropic-beta header pre-filter / anthropic-beta header 预过滤
   # ---------------------------------------------------------------------------
@@ -465,6 +296,179 @@ anthropic:
       - context-management-2025-06-27
       - prompt-caching-scope-2026-01-05
       - mid-conversation-system-2026-04-07
+
+  # Per-model supported effort levels (whitelist) for output_config.effort. / output_config.effort 的 per-model 支持档位（白名单）。
+  # Keys are model name substrings matched against the resolved model name. / 键是与解析后模型名匹配的模型名子串。
+  # Values are arrays of supported efforts from: none, low, medium, high, xhigh, max. / 值是支持档位数组，取自：none、low、medium、high、xhigh、max。
+  # Requests outside the whitelist are clamped to the nearest supported value (above max → max supported; below min → min supported). / 白名单外的请求会被钳到最近支持值（高于上限→最高支持值；低于下限→最低支持值）。
+  #
+  # Match semantics (whitelist — single source of truth): / 匹配语义（白名单——单一真相源）：
+  #   - The MOST SPECIFIC (longest) key whose substring matches the model wins. e.g. for model "claude-opus-4.7-high", the key "claude-opus-4.7-high" beats "claude-opus-4.7"; only the winning key's values apply (no union). / 最具体（最长）的匹配键胜出，如 "claude-opus-4.7-high" 击败 "claude-opus-4.7"；仅胜出键的值生效（不取并集）。
+  #   - The pseudo-key "*" is a last-resort wildcard (used only when no other key matches). / 伪键 "*" 是最后兜底通配（仅无其它键匹配时用）。
+  #
+  # Cross-validation: if a configured whitelist contains efforts the upstream model metadata does NOT declare, the out-of-range entries are dropped with a warn log. If the intersection is empty, the metadata wins (avoids guaranteed 400s from stale config). / 交叉校验：若配置白名单含上游元数据未声明的档位，超范围项被丢弃并 warn；交集为空则元数据胜出（避免陈旧配置必 400）。
+  #
+  # Runtime dynamically extends this (learned from invalid_reasoning_effort errors, persisted to negotiation-states.json). Config-sourced entries take precedence over runtime-learned, which in turn take precedence over model metadata. / 运行时动态扩展（从 invalid_reasoning_effort 错误学习，持久化到 negotiation-states.json）。优先级：config > 运行时学习 > 模型元数据。
+  # Default: no constraints (all effort levels declared by the model pass through). / 默认：无约束（模型声明的所有档位皆透传）。
+  # effort_overrides:
+  #   claude-opus-4.7: [medium]
+  #   claude-opus-4.7-1m-internal: [medium]
+
+  # Handle role:"system" messages mixed into the messages array — illegal for the Anthropic API (system must be the top-level param), rejected with `Unexpected role "system"`.
+  # 处理混入 messages 数组的 role:"system" 消息——Anthropic API 不接受（system 须为顶层参数），否则报 `Unexpected role "system"`。
+  # Such inline system messages come from OpenAI-habit clients or Claude Code mid-conversation context injections (hook output / rules / reminders).
+  # 这类 inline system 来自 OpenAI 习惯客户端或 Claude Code 对话中途注入的上下文（hook 输出 / 规则 / 提醒）。
+  #   as_user:      rewrite role to "user" — keeps conversation position (recommended) / 改 role 为 "user"——保留对话位置（推荐）
+  #   merge:        append their text to the top-level system, drop the messages (hurts prompt cache; loses position) / 提取文本追加到顶层 system 并删消息（损害 prompt cache；丢失位置）
+  #   drop_invalid: remove them entirely (loses the context) / 直接删除（丢失上下文）
+  #   as_assistant: rewrite role to "assistant" (experimental, NOT recommended — disguises context as model output) / 改 role 为 "assistant"（实验性、不推荐——把上下文伪装成模型输出）
+  #   false:        passthrough unchanged (default — will 400 upstream if present) / 原样透传（默认——存在时会 400）
+  system_messages_sanitize: false
+
+  # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
+  # 去重工具调用：false | "input" | "result"（true 兼容映射为 "input"）
+  # "input": dedup by (name, input); "result": also require identical result
+  # "input"：按 (name, input) 去重；"result"：还要求结果一致
+  tool_dedup_calls: false
+
+  # Inject Copilot tool_search helper when the model supports it. / 模型支持时注入 Copilot tool_search 工具。
+  tool_search: true
+
+  # Additional tool names that should never be deferred when tool_search is enabled.
+  # tool_search 启用时额外永不延迟的工具名。
+  # tool_non_deferred:
+  #   - my_custom_tool
+
+  # Strip server-side tools (web_search, etc.) from requests.
+  # 从请求中剥离服务端工具（web_search 等）。
+  # This is the unconditional global switch. Even when false, a server tool the upstream rejects with 400 ("web search tool is not supported") is learned and stripped pre-emptively for that (endpoint, model) on subsequent requests (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
+  # 这是无条件的全局开关。即使为 false，被上游用 400（"web search tool is not supported"）拒绝过的服务端工具也会被学习，并对后续同 (endpoint, model) 请求预先剥离（server-tool-rejection 自愈）。详见 docs/v4/03-spec/server-tool-rejection-retry.md
+  tool_strip_server: false
+
+  # Rewrite native server-tool blocks left in message history before sending upstream.
+  # 发送上游前改写消息历史里残留的原生 server-tool 块。
+  # The web_search double-hop surfaces a synthesized server_tool_use{web_search} + web_search_tool_result pair to the client (so results are visible); the client echoes it back next turn, but the downgraded tools array no longer declares web_search as a server tool → upstream 400.
+  # web_search 双跳会把合成的 server_tool_use{web_search} + web_search_tool_result 对呈现给客户端（让结果可见）；客户端下轮回传，但降级后的 tools 数组不再声明 web_search 为 server tool → 上游 400。
+  # Recommended ON together with web_search.enabled. / 建议与 web_search.enabled 同时开启。
+  #   downgrade: rewrite the pair into plain tool_use + tool_result (splits the assistant turn so the tool_result lands in a user message) / 把该对降级为普通 tool_use + tool_result（拆分 assistant turn，使 tool_result 落入 user 消息）
+  #   false:     passthrough (default — will 400 upstream when a historical server_tool_use survives without a matching server-tool definition) / 透传（默认——残留 server_tool_use 无配套 server-tool 定义时会 400）
+  tool_rewrite_history_server: false
+
+  # Cache control mode for prompt caching. / prompt 缓存的 cache control 模式。
+  #   disabled:    strip all cache_control fields (no caching) / 剥离所有 cache_control 字段（不缓存）
+  #   passthrough: forward client cache_control as-is (default) — clients like Claude Code send / 原样转发客户端 cache_control（默认）——Claude Code 等客户端
+  #                their own well-tuned conversation breakpoints; the proxy stays out of the way / 自带调优过的对话断点，代理不插手
+  #   sanitize:    forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope) / 转发但归一化为 { type: "ephemeral" }（剥离 scope 等非标准字段）
+  #   proxied:     proxy controls injection — strip client breakpoints, then re-inject GHC-style: / 代理控制注入——剥光客户端断点后再注入 GHC 风格：
+  #                message-level breakpoints (last tool_result per round + current user message + / 消息级断点（每轮最后一个 tool_result + 当前 user 消息 +
+  #                terminal assistant) caching the conversation, then tools/system on spare slots. / 终态 assistant）缓存对话，再用余位给 tools/system
+  #                Use for clients that don't send their own cache_control. / 适用于不自带 cache_control 的客户端
+  cache_control: passthrough
+
+  # Policy for Claude Code "Warmup" requests. / Claude Code "Warmup" 请求处理策略。
+  # Claude Code sends warmup requests on session start to pre-fill the prompt cache. / Claude Code 在会话开始时发 warmup 请求预热 prompt 缓存。
+  # Zombie processes may send these repeatedly, generating significant traffic. / 僵尸进程可能反复发送，制造可观流量。
+  #   allow:  pass through to upstream API (default) / 透传到上游 API（默认）
+  #   reject: return HTTP 429 error / 返回 HTTP 429 错误
+  #   drop:   return minimal empty response without forwarding upstream / 返回最小空响应、不转发上游
+  #   fake:   return realistic response with cache_creation_input_tokens (recommended) / 返回带 cache_creation_input_tokens 的逼真响应（推荐）
+  warmup: allow
+
+  # Rewrite system-reminder tags in messages. false = keep all (default), true = remove all.
+  # 改写消息中的 system-reminder 标签。false = 全部保留（默认），true = 全部移除。
+  # Or provide rewrite rules (first match wins, top-down). / 或提供改写规则（自上而下、首个匹配胜出）。
+  # Note: `model` field is NOT supported here (only in system_prompt_overrides). / 注：此处不支持 `model` 字段（仅 system_prompt_overrides 支持）。
+  # system_rewrite_reminders: false
+  # system_rewrite_reminders:
+  #   - from: "^Whenever you read a file, you should consider whether it would be considered malware"
+  #     to: ""                 # Empty = remove the tag / 空 = 移除该标签
+
+  # Forward upstream (GitHub Copilot) response headers to the client. The proxy is otherwise fully isolating — it synthesizes its own response headers, so upstream request-id / anthropic-ratelimit-* / anthropic-organization-id never reach the client. This opts the Anthropic path into forwarding a controlled subset.
+  #   false (default): permissive — forward EVERYTHING except a proxy-controlled blacklist (content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie). The blacklist is mandatory in BOTH modes — forwarding upstream content-length after the proxy re-serializes the body corrupts client parsing.
+  #   true: strict — forward ONLY a known allowlist: request-id / x-request-id / anthropic-ratelimit-* / anthropic-organization-id / retry-after.
+  # Note: only the non-committed write-out paths forward (non-streaming + streaming settled within the commit window). A delayed-commit stream that already flushed its 200 cannot forward (upstream headers arrive after the headers are on the wire). history records what the client actually received (inboundResponse) plus the full upstream set (outboundResponse).
+  # 把上游（GitHub Copilot）响应头透传给客户端。代理默认完全隔离——自己合成响应头，故上游 request-id / anthropic-ratelimit-* / anthropic-organization-id 到不了客户端。本项让 Anthropic 路径可控地转发一个子集。
+  #   false（默认）：尽量透传——转发除 proxy-controlled 黑名单外的全部（content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie）。黑名单在两种模式下都强制生效——代理重新序列化 body 后转发上游 content-length 会让客户端按错长度解析。
+  #   true：仅白名单——只转发 request-id / x-request-id / anthropic-ratelimit-* / anthropic-organization-id / retry-after。
+  # 注：只有非 committed 写出路径会转发（非流式 + 流式在 commit 窗口内 settle）。延迟-commit 已 flush 200 的流无法转发（上游头在响应头已上线后才到）。history 忠实记录客户端实收（inboundResponse）+ 上游全量（outboundResponse）。
+  strict_response_headers: false
+
+  # Delayed-commit window (seconds) for streaming. 0 = commit immediately; default 20. Before opening the 200 SSE stream, the proxy waits up to N seconds for the upstream to settle: if it returns/errors WITHIN the window the real HTTP status is forwarded (the client keeps native retry/backoff/token-refresh); if it stays silent past the window (opus pre-response thinking) the proxy COMMITS a 200 + an immediate cold-start ping, and later errors degrade to a rich SSE error frame. Clamped well under the ~60s client idle deadline.
+  # 流式延迟-commit 窗口秒数。0 = 立即 commit；默认 20。开 200 SSE 流之前，代理最多等 N 秒让上游 settle：窗口内返回/报错→转发真 HTTP 状态（客户端保留原生重试/退避/token 刷新）；超窗口仍静默（opus pre-response thinking）→ COMMIT 200 + 立即冷启动 ping，之后错误降级成富 SSE error 帧。clamp 到远低于 ~60s 客户端空闲死线。
+  stream_commit_after_sec: 20
+
+  # Client-proxy keepalive ping cadence (seconds) for streaming. 0 = disabled; default 20. After the commit window opens the 200 SSE stream, a connection-level heartbeat (decoupled from the upstream) pings every N seconds since the last client write — whether the upstream is silent, thinking, or buffered — so a long mid-stream/buffered stall never trips Claude Code's ~60s idle watchdog. Cadence = the MINIMUM interval between pings (a real frame or ping advances the anchor); a cold-start commit fires one immediate ping, then this throttles the rest. Clamped to a large margin under 60 (empirical safe ceiling ~45s). Heartbeats do NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle); recorded only in forwardedSseEvents.
+  # 客户端-代理流式 keepalive ping cadence 秒数。0 = 禁用；默认 20。commit 窗口开 200 后，连接级心跳（与上游解耦）距上次写客户端 N 秒就发一帧 ping——无论上游静默/thinking/buffered——故长 mid-stream/buffered 停滞绝不触发 Claude Code ~60s 空闲看门狗。cadence = ping 之间的最小间隔（真帧或 ping 都推进锚点）；冷启动 commit 先发一个立即 ping，之后由它节流。clamp 到远低于 60 的大余量（实测安全上界 ~45s）。心跳不重置上游 idle-timeout；只记入 forwardedSseEvents。
+  stream_keepalive_ping_sec: 20
+
+  # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
+  # L2——针对被上游流中途 RST（超大上下文里大 Write/Edit 触发 GHC NGHTTP2_CANCEL）砍断的流式生成的事务化缓冲重试。缓冲整响应、`message_stop` 后才 commit，transport-close/truncation 则重跑上游交换——客户端透明地拿到一次完整生成而非半截流 + 错误。详见 docs/rfc/streaming-upstream-rst-buffered-retry.md。
+  #   false:           disabled (default) — live streaming, no buffering. / 禁用（默认）——实时流式，不缓冲。
+  #   on:              buffer every streaming Anthropic response. / 缓冲每个流式 Anthropic 响应。
+  #   tool_use_only:   buffer only when the request carries `tools` (the large Write/Edit scenario); pure-text chat stays live. / 仅当请求带 `tools`（大 Write/Edit 场景）才缓冲；纯文本对话仍实时。
+  protect_streaming_generation: false
+  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
+  # transport-close/truncation 最大重试次数（loop/成本闸，非超时闸——客户端由下方强制心跳保活）。0 = 不重试。
+  protect_streaming_max_retries: 3
+  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until message_stop, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
+  # 缓冲路径的强制心跳间隔秒数：缓冲期在 message_stop 前不发任何真实帧，故无条件构造心跳——stream_keepalive_ping_sec >0 时取其值，否则用本值兜底。
+  protect_streaming_heartbeat: 15
+  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection — a live RST fails as today). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
+  # 缓冲路径内存守卫：累计缓冲超此字节即放弃缓冲、本响应剩余部分退回实时转发（随之失去 L2 保护——实时 RST 仍如现状失败）。防止病态超大生成无界缓冲导致 OOM。0 = 无限制。默认 16MiB。
+  protect_streaming_buffer_cap_bytes: 16777216
+  # On each buffered RST/truncation retry, FORCE a progressively aggressive native clear_tool_uses context_management edit (lower trigger + smaller keep) to compress the context so the generation finishes faster — within the next RST window. Independent of context_editing (retry-only emergency compression); skipped when the model doesn't support context_management. Changes request semantics (drops more old context). Default false (opt-in; enable only after telemetry shows plain retry's hit rate is low for over-budget requests).
+  # 每次缓冲 RST/truncation 重试时，FORCE 一次渐进激进的原生 clear_tool_uses context_management（更低 trigger + 更少 keep）压缩上下文，让生成更快、更可能在下个 RST 窗口前完成。独立于 context_editing（仅重试时的应急压缩）；模型不支持 context_management 时跳过。改变请求语义（删更多旧上下文）。默认 false（opt-in；建议遥测证实裸重试命中率低后再开）。
+  protect_streaming_escalate_context: false
+
+  # Policy for assistant messages containing thinking/redacted_thinking blocks. Thinking signatures are self-contained (encrypt the thinking content itself; no context/position binding — empirically verified), so block-level protection suffices.
+  # 含 thinking/redacted_thinking 块的 assistant 消息处理策略。thinking signature 自包含（加密 thinking 内容本身、不绑定上下文/位置——已实测验证），故块级保护即足够。
+  #   preserve: keep thinking blocks verbatim + don't reorder consecutive thinking, but allow all surrounding cleanup (default)
+  #             逐字保留 thinking 块、不重排连续 thinking，但允许周围一切清理（默认）
+  #   stripped: actively delete thinking blocks from old messages / 主动从旧消息删除 thinking 块
+  thinking_block_message_policy: preserve
+
+  # Drop corrupt thinking blocks before sending upstream — validity decided by SIGNATURE, not text (encrypted thinking has empty text + valid signature, kept).
+  # 发送上游前剥离损坏的 thinking 块——有效性由 signature 而非文本判定（加密 thinking 文本为空但有有效 signature，保留）。
+  #   empty_thinking: remove double-empty blocks (text AND signature empty) (default) / 移除双空块（文本与 signature 都空）（默认）
+  #   empty_any:      remove any thinking block with empty signature / 移除任何 signature 为空的 thinking 块
+  #   false:          disable / 禁用
+  thinking_block_sanitize: empty_thinking
+
+  # Coerce legacy thinking params for adaptive-only models (opus 4.6/4.7/4.8).
+  # 为仅支持 adaptive 的模型（opus 4.6/4.7/4.8）强制转换旧版 thinking 参数。
+  # Old clients send thinking:{type:enabled,budget_tokens} which these models reject with a 400 demanding type:adaptive. This rewrites enabled→adaptive on the wire.
+  # 旧客户端发 thinking:{type:enabled,budget_tokens}，这些模型会 400 要求 type:adaptive。本项在 wire 上把 enabled→adaptive。
+  #   basic:       coerce to {type:adaptive}, drop budget_tokens (default, mirrors GHC) / 转为 {type:adaptive} 丢弃 budget_tokens（默认，对齐 GHC）
+  #   best_effort: also map budget_tokens to output_config.effort (only if the client didn't send an explicit effort) — heuristic, GHC doesn't do this / 并把 budget_tokens 启发式换算为 output_config.effort（仅客户端未显式发 effort 时）——GHC 不这么做
+  #   false:       disable — pass client thinking config through unchanged / 禁用——原样透传客户端 thinking 配置
+  thinking_coerce_adaptive: basic
+
+  # Client compatibility shim for the streaming thinking frame some Copilot upstreams emit (signature embedded in content_block_start, no signature_delta) so standard clients keep the signature.
+  # 客户端兼容 shim：部分 Copilot 上游发出的流式 thinking 帧（signature 嵌在 content_block_start、无 signature_delta），重整形使标准客户端保留签名。
+  #   signature_delta (default) | redacted_thinking | false / signature_delta（默认）| redacted_thinking | false
+  thinking_signature_compat: signature_delta
+
+  # Strip <system-reminder> tags from Read tool results / 从 Read 工具结果剥离 <system-reminder> 标签
+  tool_strip_read_result_tags: false
+
+  # Server-side context editing mode. Controls how Anthropic's context_management trims older context when input grows large.
+  # 服务端上下文编辑模式。控制输入增大时 Anthropic 的 context_management 如何修剪旧上下文。
+  #   off: disabled (default). No context_management sent. / 禁用（默认），不发送 context_management。
+  #   clear-thinking: clear old thinking blocks. / 清除旧 thinking 块。
+  #   clear-tooluse: clear old tool_use/result pairs. / 清除旧 tool_use/result 对。
+  #   clear-both: apply both clear-thinking and clear-tooluse. / 同时应用 clear-thinking 与 clear-tooluse。
+  # Only effective for models that support context editing. / 仅对支持上下文编辑的模型生效。
+  context_editing: off
+
+  # Input token threshold that triggers clear_tool_uses when context_editing includes tool clearing.
+  # context_editing 含工具清理时触发 clear_tool_uses 的输入 token 阈值。
+  context_editing_trigger: 100000
+
+  # Number of most recent tool_use pairs to keep after clear_tool_uses runs. / clear_tool_uses 运行后保留的最近 tool_use 对数量。
+  context_editing_keep_tools: 3
+
+  # Number of most recent thinking turns to keep after clear_thinking runs. / clear_thinking 运行后保留的最近 thinking turn 数量。
+  context_editing_keep_thinking: 1
 
   # Per-model partner-model features the upstream org policy disallows. Config twin of the runtime negotiation cache (partnerFeatures) — declared features are stripped on the FIRST request, no reactive 400 + degrade-warn round-trip.
   # per-model 声明上游 org policy 禁用的 partner-model 特性。是运行时协商缓存（partnerFeatures）的 config 孪生——声明的特性首发即剥，免一次 400 + 降级 warn 往返。

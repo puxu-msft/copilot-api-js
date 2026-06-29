@@ -77,7 +77,7 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   let messages = payload.messages
   const originalBlocks = countAnthropicContentBlocks(messages)
 
-  const { system: sanitizedSystem } = sanitizeAnthropicSystemPrompt(payload.system)
+  const { system: sanitizedSystem } = sanitizeAnthropicSystemPrompt(payload.system, state.stripAttributionHeader)
 
   const reminderResult = removeAnthropicSystemReminders(messages)
   messages = reminderResult.messages

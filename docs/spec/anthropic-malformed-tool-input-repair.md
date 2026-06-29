@@ -75,6 +75,7 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 1. `content_block_start{type:tool_use}`（非 server）：开始缓冲该 index（repair 开时覆盖所有 tool_use）。start 帧立即透传。
 2. `input_json_delta`：缓冲，不立即转发（decode 现有行为）。
 3. `content_block_stop` → `finalize`：`JSON.parse(accumulated)`。
+   - **空累积**（`accumulated === ""`，**精确空串、非 trim**）→ 即空输入对象 `{}`（Anthropic 流式协议）：SDK 累积逻辑为 `input = jsonBuf ? partialParse(jsonBuf) : {}`，空串 falsy 短路成 `{}` 而**不** parse。零参数工具（如 `EnterPlanMode`）合法只发一个空 `input_json_delta`（甚至零 delta）。在 `JSON.parse` **之前**短路成 `{}`，绝不进分层修复/fail-gate（否则 `JSON.parse("")` 抛错被误判 unrepairable，整请求 FAIL——实测 req_1782767425295_95）。decode/backfill 对 `{}` 是 no-op，故原样 replay 缓冲帧、客户端 SDK 自行从空累积重建 `{}`。**精确 `=== ""` 而非 `.trim()`**：whitespace-only 累积（`"  "`）对 SDK 是 truthy → `partialParse("  ")` 抛错（实测），故 whitespace 是真畸形、必须落到正常 parse/repair/fail 路径，绝不救成 `{}`。非流式 `tool_use.input` 落成空串 `""` 时同理短路成 `{}`（镜像守卫，同样精确 `=== ""`）。
    - **合法** → 原样 replay 缓冲 delta + stop（happy-path 零语义变化）。
    - **非法** → §2.3 分层修复 → 修好则发**一个**修复后的 `input_json_delta` + stop（复用 decode 既有 `buildInputJsonDelta` 单帧 re-emit，line 142；该 re-emit 等价性由 recover/decode 既有 golden 作 oracle 钉死，见 §5 OQ-reemit）；修不好则 §2.4。
 

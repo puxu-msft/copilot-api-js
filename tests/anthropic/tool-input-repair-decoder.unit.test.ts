@@ -131,6 +131,37 @@ describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", ()
     expect((dataOf(out[1]) as { delta: { partial_json: string } }).delta.partial_json).toBe('{"file_path":')
     expect((dataOf(out[2]) as { delta: { partial_json: string } }).delta.partial_json).toBe('"/x"}')
   })
+
+  test("regression: empty accumulated input (zero-arg tool like EnterPlanMode) is {} not malformed → replayed byte-identical, no failure", () => {
+    // Anthropic streaming protocol: an empty `partial_json` accumulation means input `{}`. EnterPlanMode takes
+    // no args, so the upstream legitimately emits a single empty `input_json_delta`. `JSON.parse("")` throws,
+    // so before this fix repair-on misrouted it into the unrepairable fail-gate (req_1782767425295_95).
+    const failures: Array<DecodeFailureInfo> = []
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair", onDecodeFailure: (i) => failures.push(i) })
+    const out = runRaw(d, [start(0, "EnterPlanMode"), delta(0, ""), stop(0)])
+    expect(out).toHaveLength(3) // start + original empty delta + stop, byte-identical
+    expect((dataOf(out[1]) as { delta: { partial_json: string } }).delta.partial_json).toBe("")
+    expect(failures).toHaveLength(0)
+  })
+
+  test("regression: a zero-delta tool_use (no input_json_delta at all) is {} not malformed", () => {
+    // Some upstreams emit no `input_json_delta` at all for an empty-input tool. Accumulation is still "" → {}.
+    const failures: Array<DecodeFailureInfo> = []
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair", onDecodeFailure: (i) => failures.push(i) })
+    const out = runRaw(d, [start(0, "EnterPlanMode"), stop(0)])
+    expect(out).toHaveLength(2) // start + stop, no synthetic frames
+    expect(failures).toHaveLength(0)
+  })
+
+  test("boundary: whitespace-only accumulation is NOT rescued to {} — the SDK partialParses it and throws, so it stays malformed", () => {
+    // The empty-input guard is EXACTLY `full === ""`, not `.trim()`. A whitespace-only `partial_json` is TRUTHY
+    // for the Anthropic SDK (`jsonBuf ? partialParse(jsonBuf) : {}`) → partialParse("  ") throws. So whitespace
+    // is genuinely malformed and must reach the unrepairable fail-gate, not be silently turned into {}.
+    const failures: Array<DecodeFailureInfo> = []
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair", onDecodeFailure: (i) => failures.push(i) })
+    runRaw(d, [start(0, "EnterPlanMode"), delta(0, "  "), stop(0)])
+    expect(failures.some((f) => f.reason === "input-unrepairable")).toBe(true)
+  })
 })
 
 // ── non-streaming whole-response repair (P5) ───────────────────────────────
@@ -196,6 +227,14 @@ describe("decodeToolInputBlocksInResponse — non-streaming malformed-string rep
     const failures: Array<DecodeFailureInfo> = []
     const out = decodeNS({ todos: [] }, "repair", failures)
     expect(out.content[0].input).toEqual({ todos: [] })
+    expect(failures).toHaveLength(0)
+  })
+
+  test("regression: empty-string input (zero-arg tool) becomes {} not unrepairable", () => {
+    // Mirror of the streaming empty-accumulation case: a "" string input is the empty object `{}`, not malformed.
+    const failures: Array<DecodeFailureInfo> = []
+    const out = decodeNS("", "repair", failures)
+    expect(out.content[0].input).toEqual({})
     expect(failures).toHaveLength(0)
   })
 

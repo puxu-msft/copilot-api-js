@@ -188,21 +188,36 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
     const full = buf.chunks.join("")
     let inputObj: unknown
     let wasRepaired = false
-    try {
-      inputObj = JSON.parse(full)
-    } catch {
-      // Upstream sent malformed / truncated JSON for a COMPLETE block (content_block_stop,
-      // not an abort). Try layered repair when enabled; otherwise replay originals losslessly.
-      const result = repairEnabled ? repairToolInput(full, repairMode) : ({ unrepairable: true } as const)
-      if ("repaired" in result) {
-        inputObj = result.repaired
-        wasRepaired = true
-        opts.onRepair?.({ tool: buf.name, layer: result.layer, beforeLength: full.length, afterLength: JSON.stringify(result.repaired).length })
-      } else {
-        // `input-unrepairable` (repair was attempted and both layers failed) vs `input-parse-failed`
-        // (repair disabled) — the former drives the handler's fail-gate (P4); both replay originals.
-        report({ tool: buf.name, reason: repairEnabled ? "input-unrepairable" : "input-parse-failed" })
-        return [...buf.rawDeltas, stopRaw]
+    if (full === "") {
+      // An empty `partial_json` accumulation is the empty input object `{}` per the Anthropic streaming
+      // protocol — NOT malformed JSON. The Anthropic SDK does exactly this: `input = jsonBuf ? partialParse(jsonBuf) : {}`
+      // (message-stream-utils), so a falsy (empty-string) accumulation short-circuits to `{}` WITHOUT parsing.
+      // Zero-argument tools (e.g. EnterPlanMode) emit exactly this (a single empty `input_json_delta`, or none).
+      // Guarding here keeps `JSON.parse("")` from throwing and misrouting a valid empty input into the repair /
+      // unrepairable fail-gate. Decode/backfill below are no-ops on `{}`, so the original frames replay
+      // byte-identical — the client SDK reconstructs `{}` from the empty accumulation itself.
+      //
+      // The guard is EXACTLY `=== ""`, not `.trim() === ""`: a whitespace-only accumulation (`"  "`) is TRUTHY
+      // for the SDK, which then calls `partialParse("  ")` → throws. So whitespace is genuinely malformed from
+      // the client's view and must fall through to the normal parse/repair/fail path below, not be rescued.
+      inputObj = {}
+    } else {
+      try {
+        inputObj = JSON.parse(full)
+      } catch {
+        // Upstream sent malformed / truncated JSON for a COMPLETE block (content_block_stop,
+        // not an abort). Try layered repair when enabled; otherwise replay originals losslessly.
+        const result = repairEnabled ? repairToolInput(full, repairMode) : ({ unrepairable: true } as const)
+        if ("repaired" in result) {
+          inputObj = result.repaired
+          wasRepaired = true
+          opts.onRepair?.({ tool: buf.name, layer: result.layer, beforeLength: full.length, afterLength: JSON.stringify(result.repaired).length })
+        } else {
+          // `input-unrepairable` (repair was attempted and both layers failed) vs `input-parse-failed`
+          // (repair disabled) — the former drives the handler's fail-gate (P4); both replay originals.
+          report({ tool: buf.name, reason: repairEnabled ? "input-unrepairable" : "input-parse-failed" })
+          return [...buf.rawDeltas, stopRaw]
+        }
       }
     }
 
@@ -297,13 +312,20 @@ export function decodeToolInputBlocksInResponse(
     // truncated string). Mirrors the streaming finalize: repaired → continue; unrepairable → keep
     // the malformed original and report `input-unrepairable` (the ctx-flag closure drives the fail).
     if (repairEnabled && typeof input === "string" && !isParseableJson(input)) {
-      const result = repairToolInput(input, repairMode)
-      if ("repaired" in result) {
-        opts.onRepair?.({ tool: b.name, layer: result.layer, beforeLength: input.length, afterLength: JSON.stringify(result.repaired).length })
-        input = result.repaired
+      if (input === "") {
+        // Empty string == the empty input object `{}` (mirror of the streaming empty-accumulation guard in
+        // `finalize`), not malformed — never route a zero-arg tool into the unrepairable fail-gate. Exactly
+        // `=== ""` (not `.trim()`): a whitespace-only string is genuinely malformed and falls through to repair.
+        input = {}
       } else {
-        report({ tool: b.name, reason: "input-unrepairable" })
-        return block
+        const result = repairToolInput(input, repairMode)
+        if ("repaired" in result) {
+          opts.onRepair?.({ tool: b.name, layer: result.layer, beforeLength: input.length, afterLength: JSON.stringify(result.repaired).length })
+          input = result.repaired
+        } else {
+          report({ tool: b.name, reason: "input-unrepairable" })
+          return block
+        }
       }
     }
     const decoded = decodeToolUseInput(b.name, input, cfg)

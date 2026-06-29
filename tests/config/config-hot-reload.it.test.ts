@@ -303,6 +303,14 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripRequestHeaders,
   },
   {
+    configKey: "anthropic.strip_attribution_header",
+    stateKey: "stripAttributionHeader",
+    // Sample MUST differ from the default (true) so R1/R2 prove the wiring.
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
+  },
+  {
     configKey: "anthropic.stream_keepalive_ping_sec",
     stateKey: "streamKeepalivePingSec",
     sampleYamlValue: "15",
