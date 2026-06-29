@@ -448,36 +448,49 @@ export function mapHttpErrorToEnvelope(
   }
 
   // Default pass-through (unclassified) — the caller attaches tool diagnostics here.
-  // Detect an HTML error page two ways: a structural body sniff (leading `<`) OR an
-  // explicit `content-type: text/html` upstream header. The header catches HTML
-  // bodies that don't lead with `<` (BOM/whitespace prefix, bare-text fragments).
-  // The `typeof errorJson === "string"` guard keeps a (rare) html-typed-but-valid-JSON
-  // body on the JSON path, where it is more usefully handled.
-  // Scope is intentionally narrow: other markup content-types (xhtml/xml) are NOT
-  // matched on the header — broadening to `includes("html"|"xml")` would swallow
-  // legitimate `application/xml` API errors. An XHTML/XML page that leads with `<`
-  // is still caught by the structural sniff; only non-`<` xml-typed bodies slip
-  // through, which in practice GHC's edge pages never are.
+  // The body gets one of three treatments. This is a DELIBERATE decision matrix
+  // (documented in DESIGN.md error/), not incidental behavior:
+  //   1. HTML page  → REPLACED. A gateway/CDN edge page (e.g. GitHub's "502 Unicorn!")
+  //      is never a usable API error body; forwarding kilobytes of markup as
+  //      `error.message` only pollutes the client. Detected two ways: a structural body
+  //      sniff (leading `<`) OR an explicit `content-type: text/html` header (catches HTML
+  //      that doesn't lead with `<`). xhtml/xml content-types are intentionally NOT matched
+  //      on the header (would swallow legit `application/xml` errors); an xml page leading
+  //      with `<` is still caught by the sniff.
+  //   2. empty body → FILLED with a synthetic status-only message. A bare 5xx from a
+  //      gateway with no body would otherwise hand the client an empty `error.message`.
+  //   3. anything else, INCLUDING structured JSON → forwarded VERBATIM, ON PURPOSE. When
+  //      upstream returns a JSON error body it deliberately chose to expose structured
+  //      content downstream, so the proxy does NOT extract `.error.message` or reshape it —
+  //      the client sees exactly what upstream sent. History also retains the raw body
+  //      (richest-data-flow). The `typeof errorJson === "string"` guard keeps a (rare)
+  //      html-typed-but-valid-JSON body on this JSON path.
   const contentTypeIsHtml = error.responseHeaders?.get("content-type")?.toLowerCase().includes("text/html") ?? false
   const bodyIsHtml = typeof errorJson === "string" && (looksLikeHtml(errorJson) || contentTypeIsHtml)
+  const bodyIsEmpty = error.responseText.trim() === ""
+
+  // Log descriptor for a string body — priority empty > html > raw.
+  const describeStringBody = (s: string): string => {
+    if (bodyIsEmpty) return "[empty body]"
+    if (bodyIsHtml) return `[HTML ${s.length} bytes]`
+    return truncateForLog(s, 200)
+  }
   const log: ErrorEnvelopeLog =
     typeof errorJson === "string" ?
-      {
-        level: "error",
-        message: `HTTP ${error.status}: ${bodyIsHtml ? `[HTML ${errorJson.length} bytes]` : truncateForLog(errorJson, 200)}`,
-      }
+      { level: "error", message: `HTTP ${error.status}: ${describeStringBody(errorJson)}` }
     : { level: "error", message: `HTTP ${error.status}:`, data: errorJson }
 
-  // An HTML error page (gateway/CDN edge failure, e.g. GitHub's "502 Unicorn!")
-  // is never a usable API error body — forwarding kilobytes of markup as
-  // `error.message` only pollutes the client. Substitute a concise,
-  // operator-actionable message. History still retains the raw upstream body
-  // (this only shapes the client-facing wire envelope).
-  const bodyMessage =
-    bodyIsHtml ?
+  // Client message — same priority empty > html > raw so it agrees with the log
+  // (an empty html-typed body is "empty", not "an HTML page of 0 bytes"). Raw verbatim
+  // is the default (case 3): structured JSON is forwarded untouched, ON PURPOSE.
+  let bodyMessage = error.responseText
+  if (bodyIsEmpty) {
+    bodyMessage = `Upstream returned HTTP ${error.status} with an empty response body.`
+  } else if (bodyIsHtml) {
+    bodyMessage =
       `Upstream gateway returned an HTML error page (HTTP ${error.status}, ${error.responseText.length} bytes) instead of a JSON API error. `
       + `The Copilot API gateway is likely unavailable or failing at the edge; retry shortly.`
-    : error.responseText
+  }
   return { body: helpers.defaultError(bodyMessage, error.status >= 500, error.status), status: error.status, log, classified: false }
 }
 

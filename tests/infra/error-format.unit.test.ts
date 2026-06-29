@@ -397,4 +397,53 @@ describe("error response format compliance", () => {
     expect(message.toLowerCase()).not.toContain("html error page")
     expect(message).toContain("genuine upstream detail")
   })
+
+  // ── Decision matrix: empty body is filled; structured JSON is forwarded verbatim ──
+
+  test("empty 5xx body is filled with a synthetic status message (not an empty error)", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Bad gateway", 502, ""), "anthropic")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+    const message = (resp.data as any).error.message as string
+    expect(message).not.toBe("")
+    expect(message).toContain("502")
+  })
+
+  test("whitespace-only body is treated as empty and filled", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Bad gateway", 503, "   \n\t  "), "anthropic")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(503)
+    const message = (resp.data as any).error.message as string
+    expect(message.trim()).not.toBe("")
+    expect(message).toContain("503")
+  })
+
+  test("empty body takes priority over a text/html content-type (not reported as a 0-byte HTML page)", () => {
+    const { c, getLastResponse } = mockContext()
+    const headers = new Headers({ "content-type": "text/html" })
+    forwardError(c, new HTTPError("Bad gateway", 502, "", undefined, headers), "anthropic")
+
+    const resp = getLastResponse()!
+    const message = (resp.data as any).error.message as string
+    expect(message).toContain("empty")
+    expect(message).not.toContain("0 bytes")
+  })
+
+  test("structured JSON error body is forwarded VERBATIM — proxy does NOT extract .error.message (intentional)", () => {
+    const { c, getLastResponse } = mockContext()
+    // Decision (DESIGN.md error/): when upstream returns a JSON error body it deliberately
+    // chose to expose structured content downstream, so the proxy passes the raw JSON
+    // through untouched rather than extracting `.error.message`. This test pins that
+    // contract so a future "helpful" extraction can't silently regress it.
+    const body = JSON.stringify({ error: { message: "real detail", code: "upstream_boom" } })
+    forwardError(c, new HTTPError("Bad gateway", 502, body), "anthropic")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+    expect((resp.data as any).error.message).toBe(body)
+  })
 })
