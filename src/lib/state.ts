@@ -143,8 +143,8 @@ export interface State {
   /** 透明恢复上游 tool-call 文本降级（RFC tool-call-text-recovery）。默认 false。 */
   readonly recoverToolCallText: boolean
 
-  /** 拦截上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块），合成可用 text 完成。默认 false。 */
-  readonly recoverRefusalText: boolean
+  /** 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块）的处理策略：`refusal`=透传不改写、`end_turn`=合成 text 块改 end_turn、`error`=发 error SSE 帧并记请求失败（ctx.fail）。默认 `error`。 */
+  readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
 
   /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
@@ -871,7 +871,7 @@ export function setAnthropicBehavior(
       | "compressToolResultsBeforeTruncate"
       | "sanitizeToolNames"
       | "recoverToolCallText"
-      | "recoverRefusalText"
+      | "refusalSseRewrite"
       | "contextEditingModels"
       | "toolSearchModels"
       | "interleavedThinkingModels"
@@ -1078,7 +1078,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
   recoverToolCallText: false,
-  recoverRefusalText: false,
+  refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
   toolSearchModels: [
@@ -1158,7 +1158,7 @@ export function resetConfigManagedState(): void {
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
-    recoverRefusalText: CONFIG_MANAGED_DEFAULTS.recoverRefusalText,
+    refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
     toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
@@ -1227,7 +1227,7 @@ const mutableState: MutableState = {
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
-  recoverRefusalText: CONFIG_MANAGED_DEFAULTS.recoverRefusalText,
+  refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
   toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
   interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
