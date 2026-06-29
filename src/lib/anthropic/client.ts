@@ -78,6 +78,13 @@ export interface CreateAnthropicMessagesOptions {
    * letting it run to `timeouts.response_header`. Folded into the upstream fetch signal.
    */
   clientAbortSignal?: AbortSignal
+  /**
+   * The filtered client query string (with a leading `?`, or `""`) to append to
+   * the upstream `/v1/messages` URL. The web_search double-hop runs outside the
+   * driver transport adapter (which does this for the main path), so its caller
+   * threads `reqCtx.query.forwarded` here to keep the bypass hop consistent.
+   */
+  forwardedQuery?: string
 }
 
 // ============================================================================
@@ -123,7 +130,7 @@ export async function createAnthropicMessages(
   try {
     // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
     // transport/upstream-fetch.ts), so Bun upstream connections get TCP keepalive.
-    response = await upstreamFetch(`${copilotBaseUrl(state)}/v1/messages`, {
+    response = await upstreamFetch(`${copilotBaseUrl(state)}/v1/messages${opts?.forwardedQuery ?? ""}`, {
       method: "POST",
       headers,
       body: JSON.stringify(wire),

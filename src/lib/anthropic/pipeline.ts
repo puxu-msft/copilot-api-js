@@ -128,6 +128,10 @@ export function buildAnthropicAdapter(args: BuildAnthropicAdapterArgs): FormatAd
           headersCapture,
           clientAnthropicBeta,
           clientAbortSignal,
+          // web_search bypass hop runs outside the driver transport adapter, so
+          // thread the forwarded client query here to keep it consistent with the
+          // main path (Step 7 of client-query-forwarding).
+          forwardedQuery: reqCtx?.query?.forwarded,
           // PrepareHints from the previous retry attempt — forwarded into
           // request preparation so the next wire payload deterministically
           // excludes the offending fields/betas, without depending on the
