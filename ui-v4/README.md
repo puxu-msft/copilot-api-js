@@ -1,6 +1,6 @@
 # copilot-api ui-v4
 
-React + Tailwind v4 重写的请求检视台（inspector）。设计见 [docs/DESIGN.md](docs/DESIGN.md)，实现计划见 [docs/plans/](docs/plans/)。与现有 Vue 版 `ui/` 并行共存（后端 `/ui-v4` 路由），达对等后再替换。
+React + Tailwind v4 重写的请求检视台（inspector）。设计见 [docs/DESIGN.md](docs/DESIGN.md)，实现计划见 [docs/plans/](docs/plans/)。与现有 Vue 版 `ui/` 并行共存（后端 `/ui-v4` 路由），达对等后再替换——**退役 `ui/` 的功能对等补齐清单见 [docs/TODO.md](docs/TODO.md)**（逐页缺口 + 严重度 + plan 关联）。
 
 ## 开发
 
