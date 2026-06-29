@@ -9,7 +9,7 @@ description: 当需要在 copilot-api-js 实测裁决而非凭推断时使用—
 
 ## 4141 探针（上游/协议主张）
 
-`curl :4141/health` 确认在跑（别自启/kill）→ `GET /history/api/entries?limit=N` 列表 → `:id` 全量（inboundRequest/sseEvents/outbound*，含真实 thinking signature）。jq `--slurpfile` 拼最小请求、`max_tokens` 小 → POST `/v1/messages`。**无损取字节**勿 `tr -d '\n'`。验新代码用 exp 脚本喂真实 entry（live=旧码 + 自洽测试两盲点）。详 [[empirical-probe-via-history-api]]。
+`curl :4141/health` 确认在跑（别自启/kill）→ `GET /history/api/entries?limit=N` 列表 → `:id` 全量（inboundRequest/sseEvents/outbound*，含真实 thinking signature）。jq `--slurpfile` 拼最小请求、`max_tokens` 小 → POST `/v1/messages`。**无损取字节**勿 `tr -d '\n'`。验新代码用 exp 脚本喂真实 entry（live=旧码 + 自洽测试两盲点）。
 
 ## keepalive 落内核
 

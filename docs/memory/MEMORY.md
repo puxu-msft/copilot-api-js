@@ -11,7 +11,6 @@
 - [绝不因 turn 长度而停](feedback_never_stop_for_turn_length.md) — 绝不以 turn 长度或预算为由延后/设检查点;完整做完;只在真正卡在用户决策或确实做完时才停
 - [不为列宽硬折行](feedback-raise-printwidth-dont-distort-code.md) — 用户厌恶 prettier 强制折行;解法是调高 printWidth(现 160),而非缩短代码去将就。本条只记代码/printWidth 半边;散文的语义换行规则在 CLAUDE.md prose-line-per-paragraph
 - [成熟库优先于手搓](feedback_prefer_mature_libs_for_scoped_components.md) — 良好封装/算法部分(行+词 diff 等)→ 用成熟库(jsdiff),别手搓 LCS;只自建库做不了的领域层;只丢渲染壳(diff2html),保留算法核(diff)
-- [经 history API 实测探针](empirical-probe-via-history-api.md) — 如何测真实上游行为:从运行中的 4141 后端 /history/api/entries/:id 拉真实请求(含有效 thinking signature),用 jq 拼出最小请求,POST /v1/messages
 - [绝不停在编译中间态](feedback_never_stop_at_compile_intermediate.md) — 重构中代码编译不过时绝不暂停(删了函数但调用方还引用等);推进到下一个 typecheck 绿的检查点;只为用户决策/环境阻塞/完成而停
 - [并行编辑不同文件](feedback_parallel_edit_different_files.md) — 重构时跨不同文件的 Edit/工具调用一律并行提交;同文件不重叠的编辑也放一条消息;绝不串行独立调用
 - [架构健康即用户需求](feedback-architecture-health-is-user-need.md) — 长远好架构本身就是用户驱动力,不是奢侈;绝不以"目前能用"/"还没具体触发点"/"成本高"否决结构性重写;唯一正当的不重写理由是债项虚假或实证无改善
