@@ -594,3 +594,13 @@ rate_limiter:
 # Sanitize tool names that violate the target model's constraints (illegal characters like dots, over-length, or collisions) into legal names before sending upstream, then restore the client's original names in the response. Deterministic and stateless (rebuilt per request). Spans Anthropic + Chat Completions + Responses paths. Top-level (cross-protocol), not under anthropic.*. Default: false.
 # 发送上游前把违反目标模型约束的工具名（点号等非法字符、超长、冲突）清洗为合法名，再在响应里还原客户端原始名。确定性且无状态（每请求重建）。跨 Anthropic + Chat Completions + Responses 三条路径。顶层（跨协议），不在 anthropic.* 下。默认 false。
 sanitize_tool_names: true
+
+# ============================================================================
+# Client Query-String Forwarding / 客户端 query string 转发
+# ============================================================================
+# Faithfully forward the client's inbound query string to the upstream completion endpoint (Anthropic / Chat Completions / Responses / Gemini) so params like ?beta=true reach GHC. Format-agnostic, top-level (cross-protocol). A built-in security floor is ALWAYS stripped (api-version / key / access_token / alt) — auth secrets and params the proxy itself consumes. History records the client's raw query (inboundRequest) and the filtered forwarded query (outboundRequest) separately. Default: true.
+# 把客户端入站 query string 忠实转发到上游完成端点（Anthropic / Chat Completions / Responses / Gemini），让 ?beta=true 等参数到达 GHC。格式无关、顶层（跨协议）。内置安全底线键始终剥离（api-version / key / access_token / alt）——auth 密钥与代理自身消费的参数。History 分别记录客户端原始 query（inboundRequest）与过滤后转发的 query（outboundRequest）。默认 true。
+forward_client_query: true
+# Extra query keys to strip beyond the built-in floor (case-insensitive, unioned with the floor). The floor keys cannot be un-stripped.
+# 在内置安全底线之外额外剥离的 query 键（大小写不敏感，与底线取并集）。底线键无法被取消剥离。
+forward_client_query_exclude: []

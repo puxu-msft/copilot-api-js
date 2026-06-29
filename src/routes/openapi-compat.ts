@@ -84,7 +84,7 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
       method: "post",
       path: `/openai/deployments/{deployment}/${suffix}`,
       tags: ["azure"],
-      summary: `Azure classic ${label} (deployment → model; api-version query ignored)`,
+      summary: `Azure classic ${label} (deployment → model; api-version query stripped, not forwarded upstream)`,
       request: { params: z.object({ deployment: z.string() }), body: jsonContent() },
       responses: ok200(label),
     })
