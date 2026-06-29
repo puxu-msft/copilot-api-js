@@ -4,10 +4,10 @@
  * Both directions filter headers crossing the proxy boundary by the same idiom —
  * "is this (already-lowercased) header name in an exact set OR under a prefix" —
  * but with direction-specific sets and threat models:
- *   - request side (`lib/anthropic/request-header-forward.ts`): the passthrough sensitive denylist
+ *   - request side (`./request-header-forward.ts`): the passthrough sensitive denylist
  *     (`strict_request_headers`), so client credentials / proxy namespaces never
  *     reach the upstream.
- *   - response side (`lib/anthropic/response-header-forward.ts`): the strict-mode
+ *   - response side (`./response-header-forward.ts`): the strict-mode
  *     allowlist (`strict_response_headers`), so only known-safe upstream headers
  *     reach the client.
  *

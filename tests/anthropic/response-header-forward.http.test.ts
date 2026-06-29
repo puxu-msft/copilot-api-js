@@ -1,6 +1,6 @@
 /**
  * End-to-end forwarding of upstream (GHC) response headers to the client on /v1/messages,
- * gated by `anthropic.strict_response_headers` (lib/anthropic/response-header-forward.ts).
+ * gated by `anthropic.strict_response_headers` (lib/anthropic/header-policy/response-header-forward.ts).
  *
  * The proxy is otherwise fully isolating. These tests assert the two NON-committed write-out
  * paths actually forward (non-streaming + streaming settled within the commit window), that the

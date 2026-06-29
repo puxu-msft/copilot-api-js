@@ -164,7 +164,7 @@ export interface State {
    * Forward upstream (GHC) response headers to the client on the Anthropic path.
    * `false` (default) = permissive: forward everything except the proxy-controlled blacklist.
    * `true` = strict: forward only a known allowlist (request-id / anthropic-ratelimit-* / …).
-   * See `lib/anthropic/response-header-forward.ts`. Only the non-committed write-out paths
+   * See `lib/anthropic/header-policy/response-header-forward.ts`. Only the non-committed write-out paths
    * forward (non-streaming + streaming settled-within-window); a delayed-commit stream that
    * already flushed 200 cannot (upstream headers arrive too late).
    */

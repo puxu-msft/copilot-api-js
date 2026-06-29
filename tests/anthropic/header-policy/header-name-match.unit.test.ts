@@ -5,7 +5,7 @@ import {
   test,
 } from "bun:test"
 
-import { matchesHeaderName } from "~/lib/anthropic/header-name-match"
+import { matchesHeaderName } from "~/lib/anthropic/header-policy/header-name-match"
 
 describe("matchesHeaderName", () => {
   const exact = new Set(["cookie", "x-api-key"])

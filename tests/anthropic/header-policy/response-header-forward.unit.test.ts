@@ -21,7 +21,7 @@ import {
   //
   PROXY_CONTROLLED_RESPONSE_HEADERS,
   selectForwardableResponseHeaders,
-} from "~/lib/anthropic/response-header-forward"
+} from "~/lib/anthropic/header-policy/response-header-forward"
 
 describe("selectForwardableResponseHeaders", () => {
   describe("strict mode (allowlist only)", () => {

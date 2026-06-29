@@ -33,17 +33,17 @@ import {
   modelHasAdaptiveThinking,
   modelSupportsContextEditing,
 } from "./features"
+import {
+  //
+  pruneHeaders,
+  selectPassthroughHeaders,
+} from "./header-policy"
 import { stripServerTools } from "./message-tools"
 import {
   //
   collectAllMatching,
   findMostSpecific,
 } from "./per-model-config"
-import {
-  //
-  pruneHeaders,
-  selectPassthroughHeaders,
-} from "./request-header-forward"
 
 export interface PreparedAnthropicRequest {
   wire: Record<string, unknown>

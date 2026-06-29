@@ -67,10 +67,10 @@ import {
   summarizeAppliedEdits,
 } from "~/lib/anthropic/applied-context-edits"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
+import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
-import { selectForwardableResponseHeaders } from "~/lib/anthropic/response-header-forward"
 import {
   //
   preprocessAnthropicMessages,
@@ -628,7 +628,7 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
 
 /**
  * Forward a controlled subset of the upstream (GHC) response headers onto the client
- * response, gated by `anthropic.strict_response_headers` (see `lib/anthropic/response-header-forward.ts`).
+ * response, gated by `anthropic.strict_response_headers` (see `lib/anthropic/header-policy/response-header-forward.ts`).
  *
  * MUST be called BEFORE the response is constructed (`streamSSE` / `c.json`): `c.header()`
  * seeds Hono's prepared-header map, so a call afterwards would not reach `c.res` (and the

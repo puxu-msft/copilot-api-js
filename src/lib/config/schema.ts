@@ -149,7 +149,7 @@ export const AnthropicConfigSchema = z
     /**
      * Forward upstream (GHC) response headers to the client. `false` (default) = permissive
      * (everything except the proxy-controlled blacklist); `true` = strict (known allowlist only).
-     * See `lib/anthropic/response-header-forward.ts`.
+     * See `lib/anthropic/header-policy/response-header-forward.ts`.
      */
     strict_response_headers: nullableBoolean(),
     /**
@@ -157,7 +157,7 @@ export const AnthropicConfigSchema = z
      * request. `false` (default) = passthrough (forward everything except the core
      * keys the proxy itself sets and the sensitive denylist); `true` = strict (send
      * only the proxy-rebuilt allowlist — the pre-feature behavior). Request-side mirror
-     * of `strict_response_headers`. Anthropic path only. See `lib/anthropic/request-header-forward.ts`.
+     * of `strict_response_headers`. Anthropic path only. See `lib/anthropic/header-policy/request-header-forward.ts`.
      */
     strict_request_headers: nullableBoolean(),
     /**
