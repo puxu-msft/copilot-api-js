@@ -147,35 +147,65 @@ export const AnthropicConfigSchema = z
   .object({
     tool_strip_server: nullableBoolean(),
     /**
-     * Forward upstream (GHC) response headers to the client. `false` (default) = permissive
-     * (everything except the proxy-controlled blacklist); `true` = strict (known allowlist only).
+     * Upstream→client response-header forwarding MODE (Anthropic path). `false`
+     * (default) = BLACKLIST: forward everything except `response_header_blacklist`.
+     * `true` = WHITELIST: forward ONLY headers matching `response_header_whitelist`.
+     * Both modes apply the same security floor first (`PROXY_CONTROLLED_RESPONSE_HEADERS`
+     * always removed). Client-side mirror of `strict_request_headers`.
      * See `lib/anthropic/header-policy/response-header-forward.ts`.
      */
     strict_response_headers: nullableBoolean(),
     /**
-     * Pass the client's native inbound HTTP headers through to the upstream (GHC)
-     * request. `false` (default) = passthrough (forward everything except the core
-     * keys the proxy itself sets and the sensitive denylist); `true` = strict (send
-     * only the proxy-rebuilt allowlist — the pre-feature behavior). Request-side mirror
-     * of `strict_response_headers`. Anthropic path only. See `lib/anthropic/header-policy/request-header-forward.ts`.
+     * BLACKLIST-mode glob list (header name, `*`/`?`): upstream response header names
+     * stripped from the forwarded set (active when `strict_response_headers: false`). Acts
+     * on the security-floor subset only (never `PROXY_CONTROLLED_RESPONSE_HEADERS`). Default
+     * `[]` strips nothing — equivalent to the old permissive `strict_response_headers:false`.
+     * `[]` clears; absence retains the running value. Empty-string items rejected.
+     */
+    response_header_blacklist: nullableNonemptyStringArray(),
+    /**
+     * WHITELIST-mode glob list (header name, `*`/`?`): the ONLY upstream response header
+     * names forwarded (active when `strict_response_headers: true`). `[]` forwards nothing
+     * (full isolation). Default = the known-safe allowlist (request-id, x-request-id,
+     * anthropic-ratelimit-*, anthropic-organization-id, retry-after) — equivalent to the old
+     * strict `strict_response_headers:true`. Absence retains; empty-string items rejected.
+     */
+    response_header_whitelist: nullableNonemptyStringArray(),
+    /**
+     * Client→upstream request-header forwarding MODE (Anthropic path). `false`
+     * (default) = BLACKLIST: forward client headers except `request_header_blacklist`.
+     * `true` = WHITELIST: forward ONLY client headers matching `request_header_whitelist`.
+     * Both modes apply the same security floor first (proxy core keys win + sensitive
+     * denylist always removed; the whitelist cannot re-admit a credential). Request-side
+     * mirror of `strict_response_headers`. See `lib/anthropic/header-policy/request-header-forward.ts`.
      */
     strict_request_headers: nullableBoolean(),
     /**
-     * Glob list (header name, `*`/`?`) of passed-through client headers to strip from
-     * the upstream request. Only acts on the passthrough subset (never the proxy's own
-     * core/anthropic-beta headers), so it is a no-op when `strict_request_headers: true`.
-     * Default `["x-anthropic-billing-header"]` removes Claude Code's attribution header
-     * (it breaks prompt caching on the Copilot gateway). `[]` clears (attribution then
-     * passes through). Empty-string items rejected; absence retains the running value.
+     * BLACKLIST-mode glob list (header name, `*`/`?`): client header names stripped
+     * from the forwarded set (active when `strict_request_headers: false`). Acts on the
+     * security-floor subset only (never the proxy core/anthropic-beta headers), so `["*"]`
+     * empties the set (= core-only). Default `["x-anthropic-billing-header"]` strips the
+     * HTTP-header form of Claude Code's attribution (defensive — current Claude Code carries
+     * attribution in the body, handled by `strip_attribution_header`). `[]` clears; absence
+     * retains the running value. Empty-string items rejected.
      */
-    strip_request_headers: nullableNonemptyStringArray(),
+    request_header_blacklist: nullableNonemptyStringArray(),
+    /**
+     * WHITELIST-mode glob list (header name, `*`/`?`): the ONLY client header names
+     * forwarded (active when `strict_request_headers: true`), beyond the proxy's rebuilt
+     * core headers. `[]` forwards nothing (core-only). Listing a true core header is a
+     * no-op (stripped by the floor, re-injected as core). Default covers the safe Claude
+     * Code / SDK headers beyond core (x-stainless-*, x-claude-code-*, x-app, accept,
+     * anthropic-dangerous-direct-browser-access). Absence retains; empty-string items rejected.
+     */
+    request_header_whitelist: nullableNonemptyStringArray(),
     /**
      * Strip the Claude Code attribution billing line carried as a `system` block in
      * the request BODY. Current Claude Code injects `x-anthropic-billing-header: …`
      * as `system[0]` (a header-shaped line inside the body), which the HTTP-header
-     * `strip_request_headers` cannot reach. `true` (default) removes the leading
+     * `request_header_blacklist` cannot reach. `true` (default) removes the leading
      * billing line from the system param (string or `system[0]`); a block emptied by
-     * the strip is dropped. Anthropic path only; complements `strip_request_headers`.
+     * the strip is dropped. Anthropic path only; complements `request_header_blacklist`.
      */
     strip_attribution_header: nullableBoolean(),
     /**

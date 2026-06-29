@@ -493,8 +493,11 @@ export async function applyConfigToState(): Promise<Config> {
     const a = config.anthropic
     if (a.tool_strip_server !== undefined) setAnthropicBehavior({ stripServerTools: a.tool_strip_server })
     if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
+    if (a.response_header_blacklist !== undefined) setAnthropicBehavior({ responseHeaderBlacklist: a.response_header_blacklist })
+    if (a.response_header_whitelist !== undefined) setAnthropicBehavior({ responseHeaderWhitelist: a.response_header_whitelist })
     if (a.strict_request_headers !== undefined) setAnthropicBehavior({ strictRequestHeaders: a.strict_request_headers })
-    if (a.strip_request_headers !== undefined) setAnthropicBehavior({ stripRequestHeaders: a.strip_request_headers })
+    if (a.request_header_blacklist !== undefined) setAnthropicBehavior({ requestHeaderBlacklist: a.request_header_blacklist })
+    if (a.request_header_whitelist !== undefined) setAnthropicBehavior({ requestHeaderWhitelist: a.request_header_whitelist })
     if (a.strip_attribution_header !== undefined) setAnthropicBehavior({ stripAttributionHeader: a.strip_attribution_header })
     if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
     if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampKeepaliveCadence(a.stream_commit_after_sec) })

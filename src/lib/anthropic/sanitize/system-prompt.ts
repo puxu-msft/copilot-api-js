@@ -22,7 +22,7 @@ const ATTRIBUTION_BILLING_LINE = /^x-anthropic-billing-header\s*:[^\n]*\n?/i
  *
  * Current Claude Code injects its attribution as the first `system` block (a line
  * formatted like an HTTP header but carried in the request BODY). The HTTP-header
- * strip (`anthropic.strip_request_headers`) cannot reach a body field, so this
+ * strip (`anthropic.request_header_blacklist`) cannot reach a body field, so this
  * removes the leading billing line(s) instead. Only consumes consecutive matches
  * at the very start; anything past the first non-billing line is untouched.
  */

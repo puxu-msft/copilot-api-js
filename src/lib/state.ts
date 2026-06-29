@@ -177,35 +177,61 @@ export interface State {
   readonly stripServerTools: boolean
 
   /**
-   * Forward upstream (GHC) response headers to the client on the Anthropic path.
-   * `false` (default) = permissive: forward everything except the proxy-controlled blacklist.
-   * `true` = strict: forward only a known allowlist (request-id / anthropic-ratelimit-* / …).
-   * See `lib/anthropic/header-policy/response-header-forward.ts`. Only the non-committed write-out paths
-   * forward (non-streaming + streaming settled-within-window); a delayed-commit stream that
-   * already flushed 200 cannot (upstream headers arrive too late).
+   * Upstream→client response-header forwarding MODE (Anthropic path). `false`
+   * (default) = BLACKLIST mode: forward everything except `responseHeaderBlacklist`.
+   * `true` = WHITELIST mode: forward ONLY headers matching `responseHeaderWhitelist`.
+   * Both modes apply the same security floor first (`PROXY_CONTROLLED_RESPONSE_HEADERS`
+   * always removed). Client-side mirror of `strictRequestHeaders`. See
+   * `lib/anthropic/header-policy/response-header-forward.ts`. Only the non-committed write-out
+   * paths forward (non-streaming + streaming settled-within-window); a delayed-commit stream
+   * that already flushed 200 cannot (upstream headers arrive too late).
    */
   readonly strictResponseHeaders: boolean
+  /**
+   * BLACKLIST-mode glob list: upstream response header names stripped from the
+   * forwarded set (active when `strictResponseHeaders` is false). Acts on the
+   * security-floor subset only (never `PROXY_CONTROLLED_RESPONSE_HEADERS`). Default
+   * `[]` strips nothing — equivalent to the old permissive `strict_response_headers:false`.
+   */
+  readonly responseHeaderBlacklist: ReadonlyArray<string>
+  /**
+   * WHITELIST-mode glob list: the ONLY upstream response header names forwarded
+   * (active when `strictResponseHeaders` is true). `[]` forwards nothing (full
+   * isolation). Default = the known-safe allowlist (request-id / x-request-id /
+   * anthropic-ratelimit-* / anthropic-organization-id / retry-after) — equivalent
+   * to the old strict `strict_response_headers:true`.
+   */
+  readonly responseHeaderWhitelist: ReadonlyArray<string>
 
   /**
-   * Pass the client's native inbound HTTP request headers through to the upstream
-   * request (Anthropic path). `false` (default) = passthrough (everything except the
-   * proxy's core keys + the sensitive denylist); `true` = strict (proxy-rebuilt
-   * allowlist only). Request-side mirror of `strictResponseHeaders`.
+   * Client→upstream request-header forwarding MODE (Anthropic path). `false`
+   * (default) = BLACKLIST mode: forward client headers except `requestHeaderBlacklist`.
+   * `true` = WHITELIST mode: forward ONLY client headers matching `requestHeaderWhitelist`.
+   * Both modes apply the same security floor first (proxy core keys win + sensitive
+   * denylist always removed). Request-side mirror of `strictResponseHeaders`.
    */
   readonly strictRequestHeaders: boolean
   /**
-   * Glob list of passed-through client headers to strip from the upstream request.
-   * Acts on the passthrough subset only (no-op when `strictRequestHeaders` is true).
-   * Default removes `x-anthropic-billing-header` (Claude Code attribution → breaks
-   * Copilot prompt caching).
+   * BLACKLIST-mode glob list: client header names stripped from the forwarded set
+   * (active when `strictRequestHeaders` is false). Acts on the security-floor subset
+   * only. Default removes the HTTP-header form of `x-anthropic-billing-header`
+   * (defensive — current Claude Code carries attribution in the body, see
+   * `stripAttributionHeader`).
    */
-  readonly stripRequestHeaders: ReadonlyArray<string>
+  readonly requestHeaderBlacklist: ReadonlyArray<string>
+  /**
+   * WHITELIST-mode glob list: the ONLY client header names forwarded (active when
+   * `strictRequestHeaders` is true), beyond the proxy's rebuilt core headers. `[]`
+   * forwards nothing (core-only). Listing a true core header is a no-op (stripped by
+   * the security floor, re-injected as core).
+   */
+  readonly requestHeaderWhitelist: ReadonlyArray<string>
   /**
    * Strip the Claude Code attribution billing line carried as a `system` block in
    * the request BODY (current Claude Code injects `x-anthropic-billing-header: …`
-   * as `system[0]`, not as an HTTP header — so `stripRequestHeaders` cannot reach
+   * as `system[0]`, not as an HTTP header — so `requestHeaderBlacklist` cannot reach
    * it). `true` (default) removes the leading billing line from the system param.
-   * Anthropic path only. Complements the HTTP-header `stripRequestHeaders`.
+   * Anthropic path only. Complements the HTTP-header `requestHeaderBlacklist`.
    */
   readonly stripAttributionHeader: boolean
 
@@ -722,7 +748,10 @@ function cloneState(source: MutableState): MutableState {
     rejectBodyFields: cloneStripBetaHeaders(source.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(source.decodeToolInputFields),
     disabledModels: [...source.disabledModels],
-    stripRequestHeaders: [...source.stripRequestHeaders],
+    requestHeaderBlacklist: [...source.requestHeaderBlacklist],
+    requestHeaderWhitelist: [...source.requestHeaderWhitelist],
+    responseHeaderBlacklist: [...source.responseHeaderBlacklist],
+    responseHeaderWhitelist: [...source.responseHeaderWhitelist],
     models: cloneModels(source.models),
     rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
     systemPromptOverrides: [...source.systemPromptOverrides],
@@ -778,8 +807,17 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("disabledModels" in patch) {
     cloned.disabledModels = patch.disabledModels ? [...patch.disabledModels] : undefined
   }
-  if ("stripRequestHeaders" in patch) {
-    cloned.stripRequestHeaders = patch.stripRequestHeaders ? [...patch.stripRequestHeaders] : undefined
+  if ("requestHeaderBlacklist" in patch) {
+    cloned.requestHeaderBlacklist = patch.requestHeaderBlacklist ? [...patch.requestHeaderBlacklist] : undefined
+  }
+  if ("requestHeaderWhitelist" in patch) {
+    cloned.requestHeaderWhitelist = patch.requestHeaderWhitelist ? [...patch.requestHeaderWhitelist] : undefined
+  }
+  if ("responseHeaderBlacklist" in patch) {
+    cloned.responseHeaderBlacklist = patch.responseHeaderBlacklist ? [...patch.responseHeaderBlacklist] : undefined
+  }
+  if ("responseHeaderWhitelist" in patch) {
+    cloned.responseHeaderWhitelist = patch.responseHeaderWhitelist ? [...patch.responseHeaderWhitelist] : undefined
   }
 
   return cloned
@@ -866,7 +904,10 @@ export function setAnthropicBehavior(
       | "stripServerTools"
       | "strictResponseHeaders"
       | "strictRequestHeaders"
-      | "stripRequestHeaders"
+      | "requestHeaderBlacklist"
+      | "requestHeaderWhitelist"
+      | "responseHeaderBlacklist"
+      | "responseHeaderWhitelist"
       | "stripAttributionHeader"
       | "streamKeepalivePingSec"
       | "streamCommitAfterSec"
@@ -1076,7 +1117,10 @@ export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
-  stripRequestHeaders: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
+  requestHeaderBlacklist: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
+  requestHeaderWhitelist: ["accept", "anthropic-dangerous-direct-browser-access", "x-app", "x-claude-code-*", "x-stainless-*"] as ReadonlyArray<string>,
+  responseHeaderBlacklist: [] as ReadonlyArray<string>,
+  responseHeaderWhitelist: ["request-id", "x-request-id", "anthropic-ratelimit-*", "anthropic-organization-id", "retry-after"] as ReadonlyArray<string>,
   stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
   streamCommitAfterSec: 20,
@@ -1167,7 +1211,10 @@ export function resetConfigManagedState(): void {
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
     strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
-    stripRequestHeaders: [...CONFIG_MANAGED_DEFAULTS.stripRequestHeaders],
+    requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
+    requestHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderWhitelist],
+    responseHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderBlacklist],
+    responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
     stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
@@ -1289,7 +1336,10 @@ const mutableState: MutableState = {
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
-  stripRequestHeaders: [...CONFIG_MANAGED_DEFAULTS.stripRequestHeaders],
+  requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
+  requestHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderWhitelist],
+  responseHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderBlacklist],
+  responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
   stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,

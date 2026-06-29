@@ -650,7 +650,11 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
  * headers exist, so it forwards nothing — `inboundResponse` then faithfully records that.
  */
 function applyForwardedAnthropicResponseHeaders(c: Context, upstreamHeaders: Headers): void {
-  const forward = selectForwardableResponseHeaders(upstreamHeaders, state.strictResponseHeaders)
+  const forward = selectForwardableResponseHeaders(upstreamHeaders, {
+    strict: state.strictResponseHeaders,
+    blacklist: state.responseHeaderBlacklist,
+    whitelist: state.responseHeaderWhitelist,
+  })
   // `upstreamHeaders` is a validated `Headers` (the transport builds it via `new Headers(...)`),
   // so every value already passed WHATWG validation — `c.header()` re-set cannot throw on it
   // (a CR/LF/NUL value would have been rejected upstream, never reaching here). No guard needed.

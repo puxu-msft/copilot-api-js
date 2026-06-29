@@ -121,6 +121,7 @@ describe("config compat — legacy key migration (file load)", () => {
     { old: "backfill_question_from_header", new: "tool_backfill_question", value: false },
     { old: "rewrite_system_reminders", new: "system_rewrite_reminders", value: true },
     { old: "strip_beta_headers", new: "beta_strip_headers", value: { "claude-x": ["foo"] } },
+    { old: "strip_request_headers", new: "request_header_blacklist", value: ["x-anthropic-billing-header"] },
     { old: "reject_body_fields", new: "retry_reject_body_fields", value: { "claude-x": ["foo"] } },
     { old: "fake_sse_heartbeat", new: "stream_keepalive_ping_sec", value: 30 },
     { old: "stream_fake_sse_heartbeat", new: "stream_keepalive_ping_sec", value: 30 },
