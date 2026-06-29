@@ -3,6 +3,7 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 import pc from "picocolors"
+import { getProxyForUrl } from "proxy-from-env"
 
 import type { Model } from "./lib/models/client"
 
@@ -192,7 +193,7 @@ interface RunServerOptions {
   mockRateLimiterThrottled: boolean
   githubToken?: string
   showGitHubToken: boolean
-  /** Explicit proxy URL (CLI --proxy). Takes precedence over config.yaml and env vars. */
+  /** Explicit proxy URL (CLI --proxy). Takes precedence over env vars and config.yaml. */
   proxy?: string
   httpProxyFromEnv: boolean
   /** Reactive auto-truncate (CLI --auto-truncate / --no-auto-truncate). `undefined` when omitted → config.yaml `auto_truncate` stands. */
@@ -339,9 +340,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   // Phase 2.6: Initialize proxy (must be before any network requests)
   // ===========================================================================
-  // Priority: CLI --proxy > config.yaml proxy > env vars (--http-proxy-from-env)
-  const proxyUrl = options.proxy ?? config.proxy
-  initProxy({ url: proxyUrl, fromEnv: !proxyUrl && options.httpProxyFromEnv })
+  // Priority: CLI --proxy > env vars (--http-proxy-from-env) > config.yaml proxy.
+  // CLI is an explicit URL. Otherwise, if env proxying is enabled and the
+  // environment carries a proxy for the upstream, env wins; config is the
+  // fallback when env is disabled or has no proxy for this host.
+  const cliProxy = options.proxy
+  const envHasProxy = options.httpProxyFromEnv && getProxyForUrl(state.ghcApiBaseUrl || "https://api.githubcopilot.com") !== ""
+  const proxyUrl = cliProxy ?? (envHasProxy ? undefined : config.proxy)
+  initProxy({ url: proxyUrl, fromEnv: !cliProxy && options.httpProxyFromEnv })
 
   // ===========================================================================
   // Phase 3: Initialize backing stores, their sinks, and the rate limiter
@@ -636,7 +642,7 @@ export const start = defineCommand({
     },
     proxy: {
       type: "string",
-      description: "Proxy URL for all outgoing requests (http://, https://, socks5://, socks5h://). Overrides config.yaml and env vars.",
+      description: "Proxy URL for all outgoing requests (http://, https://, socks5://, socks5h://). Overrides env vars and config.yaml.",
     },
     "http-proxy-from-env": {
       type: "boolean",

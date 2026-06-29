@@ -1,7 +1,7 @@
 /**
  * Proxy configuration: HTTP/HTTPS and SOCKS5/5h proxy support.
  *
- * Priority: explicit proxy URL (CLI --proxy or config.yaml) > env vars (--http-proxy-from-env).
+ * Priority: explicit proxy URL (CLI --proxy) > env vars (--http-proxy-from-env) > config.yaml proxy.
  * On Node.js, proxying works via undici's global dispatcher.
  * On Bun, HTTP proxies are set via env vars (Bun handles them natively); SOCKS5 is not supported.
  */

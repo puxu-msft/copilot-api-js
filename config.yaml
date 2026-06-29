@@ -7,7 +7,7 @@
 # ============================================================================
 # Proxy URL for all outgoing requests to GitHub / Copilot APIs. Supports http://, https://, socks5://, socks5h://.
 # socks5h:// routes DNS through the proxy (recommended for privacy). Auth via URL: socks5h://user:pass@host:port
-# Takes precedence over HTTP_PROXY/HTTPS_PROXY env vars. CLI --proxy flag takes precedence over this setting.
+# Lowest priority: HTTP_PROXY/HTTPS_PROXY env vars (when --http-proxy-from-env is on) and the CLI --proxy flag both take precedence over this setting. Priority: CLI --proxy > env vars > this.
 # NOT hot-reloadable (requires restart).
 
 # proxy: "http://127.0.0.1:7890"
