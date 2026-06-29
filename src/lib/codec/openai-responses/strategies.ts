@@ -3,8 +3,11 @@
  *
  * Mirrors the legacy Responses retry-strategy set but yields driver-shaped env
  * strategies, by wrapping the unchanged legacy strategies in
- * {@link adaptLegacyStrategy}. Order + per-strategy logic stay byte-identical to
- * the legacy pipeline (02 §1.2): network → token-refresh.
+ * {@link adaptLegacyStrategy}. **v4-only addition**: `server-error-retry`
+ * (bounded backoff for upstream 5xx) is inserted right after `network-retry`,
+ * absent from the legacy pipeline. Effective order:
+ * network → server-error → token-refresh (per-strategy logic of the legacy ones
+ * stays byte-identical, 02 §1.2).
  *
  * Unlike CC, the Responses path has NO auto-truncate strategy
  * (retry-transport.md §2.2: `openai-responses: network → token-refresh`), so the
@@ -20,6 +23,7 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
+import { createServerErrorRetryStrategy } from "~/lib/request/strategies/server-error-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 
 export interface OpenAiResponsesStrategiesDeps {
@@ -40,6 +44,7 @@ export function buildOpenAiResponsesStrategies(deps: OpenAiResponsesStrategiesDe
   return [
     //
     adapt(createNetworkRetryStrategy<ResponsesPayload>()),
+    adapt(createServerErrorRetryStrategy<ResponsesPayload>()),
     adapt(createTokenRefreshStrategy<ResponsesPayload>()),
   ]
 }

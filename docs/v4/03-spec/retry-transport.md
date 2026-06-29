@@ -76,6 +76,7 @@ type RetryAction =
 | strategy | canHandle | 改 env | prepareWire 后 |
 |---|---|---|---|
 | `network-retry` | network_error ∧ 未试 | 无（waitMs:1000） | 同 wire 重发 |
+| `server-error-retry` | server_error(5xx) ∧ retries<2 | 无（指数退避 1s/2s） | 同 wire 重发（瞬时网关 502/504） |
 | `token-refresh` | auth_expired ∧ 未刷 | 无（刷新全局 token 副作用） | 同 wire（新 token） |
 | `effort-learning`（**新，提升自 client 内循环**） | bad_request ∧ invalid_reasoning_effort | `env.prepareHints` / negotiation effort | 重裁 effort |
 | `unsupported-beta` | bad_request ∧ unsupported beta | `env.prepareHints.excludeBetas`（含 laconic 子集枚举，learning） | 重裁 beta header |

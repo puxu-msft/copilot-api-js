@@ -8,9 +8,12 @@
  *   network → token-refresh → effort-learning → body-field → legacy-thinking →
  *   unsupported-beta → deferred-tool → auto-truncate
  *
- * **v4-only additions** — two reactive feature-strip strategies are inserted
- * between unsupported-beta and deferred-tool (10 strategies total), NOT
- * registered in the legacy pipeline (intentional divergence):
+ * **v4-only additions** — three strategies absent from the legacy pipeline
+ * (intentional divergence, 11 strategies total):
+ *   - `server-error-retry` — bounded backoff for upstream 5xx, inserted right
+ *     after `network-retry` (before `token-refresh`).
+ *   - two reactive feature-strip strategies inserted between unsupported-beta
+ *     and deferred-tool:
  *   - `server-tool-rejection` — learns native server tools (web_search) the
  *     upstream rejects with 400 `The use of the web search tool is not
  *     supported.`, fixates them in the negotiation cache, and strips them on
@@ -21,7 +24,7 @@
  *     400, fixates it in the negotiation cache, and strips
  *     `output_config.format` on retry (and pre-emptively in prepare).
  *
- * Unlike openai-cc (3 strategies), Anthropic has extra 400-class strategies
+ * Unlike openai-cc (4 strategies), Anthropic has extra 400-class strategies
  * (effort-learning, body-field, legacy-thinking, unsupported-beta,
  * server-tool-rejection, structured-outputs-rejection) — do not drop any. The
  * `betaProbe` is the SAME instance the codec records outbound betas into (RFC
@@ -55,6 +58,7 @@ import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferr
 import { createEffortLearningRetryStrategy } from "~/lib/request/strategies/effort-learning-retry"
 import { createLegacyThinkingRetryStrategy } from "~/lib/request/strategies/legacy-thinking-retry"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
+import { createServerErrorRetryStrategy } from "~/lib/request/strategies/server-error-retry"
 import { createServerToolRejectionStrategy } from "~/lib/request/strategies/server-tool-rejection-retry"
 import { createStructuredOutputsRejectionStrategy } from "~/lib/request/strategies/structured-outputs-rejection-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
@@ -82,6 +86,7 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
 
   return [
     adapt(createNetworkRetryStrategy<MessagesPayload>()),
+    adapt(createServerErrorRetryStrategy<MessagesPayload>()),
     adapt(createTokenRefreshStrategy<MessagesPayload>()),
     adapt(createEffortLearningRetryStrategy<MessagesPayload>()),
     adapt(createBodyFieldRejectionStrategy<MessagesPayload>()),
