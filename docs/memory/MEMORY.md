@@ -8,13 +8,10 @@
 - [完整根因修复](feedback_complete_root_cause_fix.md) — 成本(工期/复杂度/改动量)无关紧要;选结构性修复而非小修;暂缓项要完整文档化供用户未来决策
 - [reviewer 也要批判核验](feedback_reviewer_verify_critically.md) — 在 ExitPlanMode/交付前主动跑 subagent audit(不等用户提醒);逐条批判分析 subagent 每条发现、绝不跳过、用任意多个新 subagent 复核;不信任何声音权威;用实测裁决(flaky 连跑 10–25×、文档冲突时写探针、绝对断言对照代码复核)
 - [优化长期可维护性](feedback_optimize_long_term_maintainability.md) — 永远选最可维护的方案;绝不用用户从没要求的"严格零改动"自设约束去阻挡一个正确的重构
-- [GHC tool-call 文本降级](ghc-tool-call-text-downgrade.md) — Copilot 上游有时把 tool call 返回成被 antml-strip 的 `<invoke>` 文本(stop_reason 仍是 tool_use);不是 copilot-api 的 bug,经 history sseEvents 诊断
 - [测试绝不碰真实环境](feedback_tests_never_touch_real_env.md) — 测试写了真实 ~/.claude;用 DI 注入 fs 路径,别用 process.env.HOME(bun os.homedir 忽略它);mock.module 可作安全隔离;跑前先证明 sandbox
 - [绝不因 turn 长度而停](feedback_never_stop_for_turn_length.md) — 绝不以 turn 长度或预算为由延后/设检查点;完整做完;只在真正卡在用户决策或确实做完时才停
 - [不为列宽硬折行](feedback-raise-printwidth-dont-distort-code.md) — 用户厌恶 prettier 强制折行;解法是调高 printWidth(现 160),而非缩短代码去将就。本条只记代码/printWidth 半边;散文的语义换行规则在 CLAUDE.md prose-line-per-paragraph
 - [成熟库优先于手搓](feedback_prefer_mature_libs_for_scoped_components.md) — 良好封装/算法部分(行+词 diff 等)→ 用成熟库(jsdiff),别手搓 LCS;只自建库做不了的领域层;只丢渲染壳(diff2html),保留算法核(diff)
-- [thinking shim 运行时谜题](project_thinking_shim_runtime_mystery.md) — 已解决:损坏的 thinking 来自 web_search 双跳路径(Claude Code 的 WebSearch 工具 + web_search.enabled)绕过 thinking-signature shim;synthesize.ts 把 signature 嵌进 content_block_start 而无 signature_delta
-- [thinking signature 自包含](thinking-signature-self-contained.md) — 已实证:signature 加密的是 thinking 内容本身,而非上下文/位置;无关对话里的真实块/非首块/重写后均 200。推翻"绑定上下文→400"。唯一规则:原样回显,别重排连续 thinking 块
 - [经 history API 实测探针](empirical-probe-via-history-api.md) — 如何测真实上游行为:从运行中的 4141 后端 /history/api/entries/:id 拉真实请求(含有效 thinking signature),用 jq 拼出最小请求,POST /v1/messages
 - [绝不停在编译中间态](feedback_never_stop_at_compile_intermediate.md) — 重构中代码编译不过时绝不暂停(删了函数但调用方还引用等);推进到下一个 typecheck 绿的检查点;只为用户决策/环境阻塞/完成而停
 - [并行编辑不同文件](feedback_parallel_edit_different_files.md) — 重构时跨不同文件的 Edit/工具调用一律并行提交;同文件不重叠的编辑也放一条消息;绝不串行独立调用
@@ -41,7 +38,6 @@
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化 bug(canonicalized 键/id、prefix 处理、call_/fc_)在多处比较点复发;grep 全仓逐处修,最好抽成单一共享 primitive——只修显眼那处会留其余复发。是 complete-root-cause-fix 在比较点场景的实例
 - [全面行动、完成即提交](feedback-act-comprehensively-commit-on-done.md) — 每完成一个阶段就主动提交(别问"要我提交吗");在已确认范围内全面思考行动——别逐句字面执行、别把显然正确的后续甩成一堆问题。只有真正不可逆/either-or/上下文不足的才交给用户
 - [主线实现、subagent 核验](feedback-main-thread-impl-subagent-verify.md) — 实现在主线做(紧控制、连续上下文);subagent 用作密集的独立核验层,而非外包实现。refine 旧的 executor→reviewer subagent 模型
-- [上游容忍 tool_use id 格式](upstream-tool-use-id-format-tolerant.md) — REFERENCE:GHC Copilot 上游不校验 tool_use.id 格式(前缀/长度/字符集);只有 tool_use.id 与 tool_result.tool_use_id 的引用一致性要紧。任意合成 id 都 200 回显。仍合成 toolu_+24base62 作为客户端 SDK 双保险
 - [记忆用中文写](feedback-memories-in-chinese.md) — 本项目记忆一律中文:正文+description+索引钩子;保留 slug(kebab-ASCII)、code/file:line/wiki 链接/技术标识符、Why/How 英文结构标签
 - [依赖选型 bun-first](feedback-bun-first-dependency-selection.md) — 外部库选型必须能在 Bun 下原生工作;开发/运行命令 bun-only OK、Node 仅兼容目标(实测弱于 Bun);拒 node-gyp 原生绑定(better-sqlite3 已排除→bun:sqlite/node:sqlite);node-only 库(undici/@hono/node-*)仅作不进 bun 热路径的兼容依赖;审计=find binding.gyp 应空
 - [探针 harness 须代表生产](methodology-probe-harness-must-match-prod.md) — 实测裁决只在探针环境忠实复制生产接线时可信;createFullTestApp 不装 observabilityMiddleware → reject 探针误显 pending,生产实为 failed;探针的肯定性发现也不自证(pass-null 镜像)
@@ -80,3 +76,4 @@
 - [改文档前先验 doc-vs-code 方向](feedback-verify-doc-vs-code-direction-before-acting.md) — 文档与代码不一致,动手前先用 git 确证方向:①文档陈旧(改文档配代码)②尚未实现(删行会掩盖缺口)③代码缺陷(改文档会把 bug 固化成规范),三者后果相反;定向工具=git log -S "<符号>" 看最近是加是删 / git log --oneline -- <file> 看文档多久没动 / grep 全树确认符号现存;提交非自己创建的内容须逐条核验,"部分准确"绝不外推"整体准确";陈旧文档不简单删行,加注解(删除 commit/日期)移入 docs/archive。本会话连犯两错(整体提交别人几月前的 shutdown.md 只验两点+发现不一致直接假设陈旧没验方向),方向赌对≠验证过。扩展 [[feedback-pass-null-clean-not-self-validating]]
 - [prompt-cache 命中率诊断](methodology-prompt-cache-rate-diagnosis.md) — 诊断代理 prompt-cache:同 sessionId 多 turn 看 usage.cache_read(冻结=仅缓存静态 tools+system、命中率随会话递减=病态),inbound vs wire 的 messages 断点数差定位剥断点;热切 cacheControlMode:passthrough 跑几轮对照(实测 3%→99.7%、input 120K→2)隔离裁决;验新代码用 exp 脚本喂真实 entry(live=旧码+自洽两盲点)。REFERENCE:GHC addCacheBreakpoints 主缓存 messages(每轮 tool_result+当前 user+终态 assistant)、tools+system 仅余位兜底,上游认 message 断点。机制落地见 DESIGN cacheControlMode 行 + request-preparation.ts addMessageCacheControl
 - [迁移框架 hybrid forward-runner](methodology-migration-framework-hybrid-forward-runner.md) — 命令式 schema reconcile 升级为迁移框架(Umzug,弃 drizzle-kit)的集成方法论:①hybrid——既有幂等地板(openDatabase reconcile)不动作 conceptual 000、独立 async forward-runner 只追 001+,避 init-改-async 的 ~20 文件 ripple + chicken-egg(Umzug 建账本表前就调 storage.executed())②storage 构造即建表 + executed() 表缺返[] 双 guard→与开库顺序解耦可隔离测,账本落既有 history_meta KV 表(统一账本)③spike 须复现真实接线别预建被测对象(bun spike line-5 预建 history_meta 掩盖 chicken-egg;node spike 不预建→复现→证 guard)④真实模块跨-runtime e2e 需 bundle(Node strict ESM 拒 src 无扩展名 import,bun build --target node 后真 Node 跑;bun test 永走不到 Node driver 腿)⑤schema-硬阻断(DDL 失败 rethrow→exit1)vs 数据-never-throw 二分。扩展 [[methodology-sync-to-async-persistence-refactor-invariants]]
+- [context-edits 回执 telemetry 暂缓](project-context-edits-receipt-telemetry-pending.md) — applied_edits 已接成 context-edits-applied feature(f55fd93);暂缓:7d telemetry 分布 + 实证开 escalation/context_editing 后真有非空回执(现样本全空)

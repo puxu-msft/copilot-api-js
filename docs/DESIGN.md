@@ -18,7 +18,7 @@
 | HTTP 服务器 | `Bun.serve()` | `@hono/node-server` | `lib/serve.ts` |
 | WebSocket | `hono/bun` | `@hono/node-ws` | `lib/ws/adapter.ts` |
 | SQLite | `bun:sqlite` | `node:sqlite`（Node ≥22.5） | `lib/history/sqlite/driver.ts` |
-| 上游 fetch / keepalive | **https → `node:http2`**（h2 session 池 + Response 适配器 + createConnection `setKeepAlive`）；http → `undici/index.js`（子路径绕 Bun shim） | https → `node:http2`；http → `undici/index.js`（Node 本就真 undici） | `transport/http2-client.ts` / `transport/upstream-fetch.ts` / `lib/proxy.ts`，见 [bun-runtime-timeout.md](bun-runtime-timeout.md) |
+| 上游 fetch / keepalive | **https → `node:http2`**（h2 session 池 + Response 适配器 + createConnection `setKeepAlive`）；http → `undici/index.js`（子路径绕 Bun shim） | https → `node:http2`；http → `undici/index.js`（Node 本就真 undici） | `transport/http2-client.ts` / `transport/upstream-fetch.ts` / `lib/proxy.ts`，见 skill `bun-upstream-transport` |
 | 代理 | undici dispatcher（ProxyAgent / EnvProxyDispatcher，经 upstream-fetch 显式传） | 同左 + `setGlobalDispatcher` | `lib/proxy.ts` |
 
 #### 依赖选型原则：bun-first
@@ -26,7 +26,7 @@
 所选外部库本身**必须能在 Bun 下原生工作**——判据是"Bun 热路径上的库 Bun 原生可跑"，而非"禁止任何 node-only 依赖"：
 
 - **拒绝 node-gyp 原生绑定（`binding.gyp`）**——Bun 兼容性最大的雷区。标杆实例：driver.ts 刻意不用 `better-sqlite3`（Bun 1.3 加载时直接拒绝 "not yet supported in Bun"），改用两端各自的内建 SQLite，避免用户在安装时被迫二选一。
-- **node-only 库可作兼容路径，但不得进 Bun 热路径**——`@hono/node-server`、`@hono/node-ws` 只在 Node 分支被动态 `import()`。**上游 https 热路径走内建 `node:http2`**（`transport/http2-client.ts`）：Bun 的 undici HTTP 解析层对 GHC h2 端点的 chunked HTTP/1.1 响应永久挂（裸 `node:tls` 收齐字节、Node 同码 0.4s、curl 0.4s——是 undici-on-Bun 的解析 bug），而所有 https 上游皆 h2-native，故改走 node:http2（h2 + `createConnection` 上 `setKeepAlive`，`ss` 实证 idle socket 带 keepalive timer）。**`undici` 经 `undici/index.js` 子路径仅留给明文 `http://`**（本地 SearXNG）——纯 JS、无 node-gyp；走子路径是因为 Bun 把裸 `undici` 替换为内建 shim 会静默丢弃 dispatcher。pin undici 7（8 的 index.js 在 Bun 崩）。详见 [bun-runtime-timeout.md](bun-runtime-timeout.md) 与 [spec/upstream-http2-transport.md](spec/upstream-http2-transport.md)。
+- **node-only 库可作兼容路径，但不得进 Bun 热路径**——`@hono/node-server`、`@hono/node-ws` 只在 Node 分支被动态 `import()`。**上游 https 热路径走内建 `node:http2`**（`transport/http2-client.ts`）：Bun 的 undici HTTP 解析层对 GHC h2 端点的 chunked HTTP/1.1 响应永久挂（裸 `node:tls` 收齐字节、Node 同码 0.4s、curl 0.4s——是 undici-on-Bun 的解析 bug），而所有 https 上游皆 h2-native，故改走 node:http2（h2 + `createConnection` 上 `setKeepAlive`，`ss` 实证 idle socket 带 keepalive timer）。**`undici` 经 `undici/index.js` 子路径仅留给明文 `http://`**（本地 SearXNG）——纯 JS、无 node-gyp；走子路径是因为 Bun 把裸 `undici` 替换为内建 shim 会静默丢弃 dispatcher。pin undici 7（8 的 index.js 在 Bun 崩）。详见 skill `bun-upstream-transport` 与 [spec/upstream-http2-transport.md](spec/upstream-http2-transport.md)。
 - **审计手段（实测，非推断）**：`find node_modules -name binding.gyp` 应为空（零 node-gyp 依赖）；`find node_modules -name "*.node"` 命中的 `@rollup` / `@rolldown` / `@oxc-*` 都是**构建工具**预编译产物，只在构建期用、不进运行时 dist，不算违反。
 
 ### 入口点
@@ -98,7 +98,7 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 |---|---|
 | `src/lib/pipeline/` | driver 七阶段编排（S1–S7 + 错误驱动重试 + 阶段边界采样 + `onUpstreamFrame` hook 把 raw 上游帧交回 handler 做 accumulate/采样）。**registry 已激活（Stage A 完成）**：S3 跑请求改写、S5 跑响应逐帧改写（`passThrough`+`flushChain`）、`runResponseWhole` 跑非流式 `transformWhole`。**owns-the-sink 写出（Stage B 完成）**：`runResponseSink` 持注入的 `ClientSink`（`client-sink.ts` 的 `makeSseSink`/`makeWsSink`）自己写客户端 + 在 sink 内采 forwarded，全 5 格式经它统一（`runResponse` generator 是其共享引擎，仍被 dry-run 消费故不删）；钩子 `onRenderedFrame`（render-后 transform）/ `stopAfterFrame`（终态早停）。**反直觉契约**：`rewrite-registry.ts` 的 module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意留空数组**——各格式改写经 codec/handler 传入的 `deps`（Anthropic 请求/响应集、Responses fixIds），registry 本体只供装配器（`assembleRequest/ResponseRewrites` 按 `appliesTo`+`order` 装配）+ `RESPONSE_REWRITE_ORDER` 硬序常量（recover 100 < thinking 150 < decode 200 < filter 300）。`legacy-strategy-adapter` 把旧 RetryStrategy 适配成 driver env-based 重试。改写适配器在 `lib/codec/*-rewrites.ts`（**非** registry 文件）。 |
 | `src/lib/codec/` | 每格式 `FormatCodec`（parse/decideRoute/translateOut/renderResponse/prepareWire/sampleRequest）。**openai-cc 是翻译中枢**（CC↔Responses 经 `src/lib/openai/translate/`）；**openai-gemini 工厂内委托内部 openai-cc codec** 处理 CC payload；anthropic 为 bypass-direct（translate/render=identity），`getRequestRewrites()` 供 driver S3，响应改写则由 handler import `anthropic/response-rewrites.ts` 的 `ANTHROPIC_RESPONSE_REWRITES` 传入 S5。`*-strategies` 各格式组装重试策略。 |
-| `src/lib/transport/` | 格式无关上游收发。`upstream-fetch.ts` 唯一上游 fetch 入口（显式传 undici dispatcher + keepalive）。**反直觉契约**：Bun 下 GHC https 热路径走内建 `node:http2`（`http2-client.ts`）而非 undici（undici-on-Bun 对 h2 chunked 响应永久挂，见 `docs/bun-runtime-timeout.md`）；明文 http 才走 undici 子路径。**崩溃安全契约**：`http2Fetch` 返回的 promise 挂防御性 no-op rejection observer（`withRejectionObserver`）——pre-response abort 在 promise 已被遗弃（无 awaiter，如 await 链经他路先 settle）时 `reject` 否则会冒泡到 `main.ts` 的 `unhandledRejection`→`exit(1)` 把一条取消放大成整服务器崩溃；observer 标记已观察但不消费（真实 awaiter 仍独立收到 reject）。详见 [spec/pre-response-abort-handling.md](spec/pre-response-abort-handling.md) 缺陷⑤。 |
+| `src/lib/transport/` | 格式无关上游收发。`upstream-fetch.ts` 唯一上游 fetch 入口（显式传 undici dispatcher + keepalive）。**反直觉契约**：Bun 下 GHC https 热路径走内建 `node:http2`（`http2-client.ts`）而非 undici（undici-on-Bun 对 h2 chunked 响应永久挂，见 skill `bun-upstream-transport`）；明文 http 才走 undici 子路径。**崩溃安全契约**：`http2Fetch` 返回的 promise 挂防御性 no-op rejection observer（`withRejectionObserver`）——pre-response abort 在 promise 已被遗弃（无 awaiter，如 await 链经他路先 settle）时 `reject` 否则会冒泡到 `main.ts` 的 `unhandledRejection`→`exit(1)` 把一条取消放大成整服务器崩溃；observer 标记已观察但不消费（真实 awaiter 仍独立收到 reject）。详见 [spec/pre-response-abort-handling.md](spec/pre-response-abort-handling.md) 缺陷⑤。 |
 
 **格式适配域**
 
@@ -366,7 +366,8 @@ ui/
 | [refusal-recovery.md](refusal-recovery.md) | thinking-only refusal 拦截与合成 text 注入 |
 | [streaming.md](streaming.md) | 流式处理、WebSocket Transport、重复性检测 |
 | [shutdown.md](shutdown.md) | 优雅关闭、请求生命周期、Stale Reaper |
-| [bun-runtime-timeout.md](bun-runtime-timeout.md) | Bun 原生 fetch 内建 300s 超时陷阱、`timeout: false` 修复 |
+
+> Bun 上游传输三陷阱（300s/keepalive/undici shim）已迁为 skill `bun-upstream-transport`；测试隔离速查见 skill `test-isolation`；端点/schema 查阅入口见 skill `api-endpoints`、`history-sqlite-schema`。
 
 ## UI 设计原则
 
