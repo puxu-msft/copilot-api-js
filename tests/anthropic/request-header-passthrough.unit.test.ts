@@ -9,7 +9,7 @@ import {
   //
   pruneHeaders,
   selectPassthroughHeaders,
-} from "~/lib/strip-headers"
+} from "~/lib/anthropic/strip-headers"
 
 describe("selectPassthroughHeaders", () => {
   const core = new Set(["authorization", "content-type", "x-github-api-version", "openai-intent", "anthropic-version", "anthropic-beta"])
@@ -41,6 +41,9 @@ describe("selectPassthroughHeaders", () => {
       forwarded: "for=1.2.3.4",
       "x-real-ip": "1.2.3.4",
       "x-forwarded-for": "1.2.3.4",
+      "x-forwarded-port": "443",
+      "cf-connecting-ip": "1.2.3.4",
+      "true-client-ip": "1.2.3.4",
       "x-kept": "ok",
     }
     expect(selectPassthroughHeaders(client, core)).toEqual({ "x-kept": "ok" })

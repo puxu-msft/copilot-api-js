@@ -37,6 +37,17 @@ const DEFAULT_KEEPALIVE_MS = 15_000
 /** Headers illegal in HTTP/2 (connection-specific) — stripped before `session.request`. */
 const H2_ILLEGAL_HEADERS = new Set(["host", "connection", "transfer-encoding", "keep-alive", "upgrade", "proxy-connection"])
 
+/**
+ * Headers the transport owns and a caller's `init.headers` must NOT override.
+ * `accept-encoding` is forced to `identity` because node:http2 does not
+ * auto-decompress — a caller-supplied `accept-encoding: gzip` (e.g. a client
+ * header passed through by `strict_request_headers`) would make the upstream
+ * return a compressed body the SSE parser can't read. Defense-in-depth: the
+ * passthrough denylist already drops `accept-encoding`, but the transport
+ * enforces its own framing invariant rather than trusting an upstream layer.
+ */
+const TRANSPORT_OWNED_HEADERS = new Set(["accept-encoding"])
+
 /** One multiplexed h2 session per origin. */
 const sessions = new Map<string, http2.ClientHttp2Session>()
 
@@ -138,7 +149,8 @@ export function http2Fetch(url: string | URL, init: UpstreamFetchInit): Promise<
       }
       for (const [key, value] of Object.entries(init.headers ?? {})) {
         const lower = key.toLowerCase()
-        if (!H2_ILLEGAL_HEADERS.has(lower)) headers[lower] = value
+        if (H2_ILLEGAL_HEADERS.has(lower) || TRANSPORT_OWNED_HEADERS.has(lower)) continue
+        headers[lower] = value
       }
 
       const req = session.request(headers)

@@ -117,6 +117,17 @@ describe("http2-client", () => {
     expect(await res.json()).toEqual({ echo: '{"a":1}' })
   })
 
+  test("forces accept-encoding: identity even when the caller supplies it (transport-owned, non-overridable)", async () => {
+    handler = (stream, headers) => {
+      stream.respond({ ":status": 200, "content-type": "application/json" })
+      stream.end(JSON.stringify({ ae: headers["accept-encoding"] }))
+    }
+    // A passed-through client `accept-encoding: gzip` must NOT override identity —
+    // node:http2 doesn't decompress, so a compressed body would break SSE parsing.
+    const res = await http2Fetch(`${url}/ae`, { headers: { "accept-encoding": "gzip, br", "x-keep": "1" } })
+    expect(await res.json()).toEqual({ ae: "identity" })
+  })
+
   // NOTE: mid-stream truncation detection is NOT unit-testable under Bun.
   // Bun's node:http2 client delivers `response → data → end → close` (rstCode=0)
   // for ANY mid-stream termination — clean server RST_STREAM AND full

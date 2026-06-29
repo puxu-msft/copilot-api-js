@@ -12,9 +12,12 @@
  *     config.
  *
  * Currently wired for the upstream REQUEST only (Anthropic v4 path: passthrough
- * + strip in `buildAnthropicHeaders`). The client-bound RESPONSE side is not
- * wired yet.
+ * + strip in `buildAnthropicHeaders`). Client-bound RESPONSE header policy is
+ * handled by a separate module — `./response-header-forward.ts`
+ * (`strict_response_headers`) — not here.
  */
+
+import { matchesHeaderName } from "./header-name-match"
 
 /** Headers that must never be stripped, even if a glob matches them. */
 const PROTECTED_HEADERS: ReadonlySet<string> = new Set(["authorization", "content-type", "content-length", "copilot-integration-id"])
@@ -53,6 +56,11 @@ const SENSITIVE_DENYLIST: ReadonlySet<string> = new Set([
   "x-forwarded-for",
   "x-forwarded-host",
   "x-forwarded-proto",
+  "x-forwarded-port",
+  "x-forwarded-server",
+  "true-client-ip",
+  "cf-connecting-ip",
+  "x-client-ip",
 ])
 
 /**
@@ -91,7 +99,7 @@ export function pruneHeaders(headers: Record<string, string>, patterns: Readonly
 
 /** True when a (lowercased) header name is denied passthrough by name or prefix. */
 function isSensitivePassthrough(nameLower: string): boolean {
-  return SENSITIVE_DENYLIST.has(nameLower) || SENSITIVE_PREFIXES.some((prefix) => nameLower.startsWith(prefix))
+  return matchesHeaderName(nameLower, SENSITIVE_DENYLIST, SENSITIVE_PREFIXES)
 }
 
 /**

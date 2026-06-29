@@ -14,6 +14,8 @@
  * the client parse the wrong byte count).
  */
 
+import { matchesHeaderName } from "./header-name-match"
+
 /**
  * Headers the proxy itself controls / synthesizes — NEVER forwarded from upstream,
  * regardless of mode (the permissive-mode blacklist).
@@ -51,8 +53,7 @@ const STRICT_ALLOWLIST_EXACT: ReadonlySet<string> = new Set(["request-id", "x-re
 const STRICT_ALLOWLIST_PREFIXES: ReadonlyArray<string> = ["anthropic-ratelimit-"]
 
 function isStrictAllowed(lowerName: string): boolean {
-  if (STRICT_ALLOWLIST_EXACT.has(lowerName)) return true
-  return STRICT_ALLOWLIST_PREFIXES.some((prefix) => lowerName.startsWith(prefix))
+  return matchesHeaderName(lowerName, STRICT_ALLOWLIST_EXACT, STRICT_ALLOWLIST_PREFIXES)
 }
 
 /**

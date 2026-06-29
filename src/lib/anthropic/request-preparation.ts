@@ -6,11 +6,6 @@ import { copilotHeaders } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
 import {
   //
-  pruneHeaders,
-  selectPassthroughHeaders,
-} from "~/lib/strip-headers"
-import {
-  //
   type MessageParam,
   type MessagesPayload,
   type OutputConfig,
@@ -44,6 +39,11 @@ import {
   collectAllMatching,
   findMostSpecific,
 } from "./per-model-config"
+import {
+  //
+  pruneHeaders,
+  selectPassthroughHeaders,
+} from "./strip-headers"
 
 export interface PreparedAnthropicRequest {
   wire: Record<string, unknown>
