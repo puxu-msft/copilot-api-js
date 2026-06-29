@@ -384,6 +384,17 @@ export interface RequestContext {
    * request settles `failed` (not silently truncated / mis-recorded `aborted`).
    */
   reapInFlight(): void
+  /**
+   * Mark that an UNREPAIRABLE malformed tool_use input was seen during S5
+   * response rewriting (Layer 1 strip + Layer 2 jsonrepair both failed). Carried
+   * on the ctx — NOT the stream accumulator, which is rebuilt across buffered-
+   * retry attempts (`onAttemptReset`) and would lose the signal — so the
+   * handler's complete-branch can fail the request with a precise root cause.
+   * Records the FIRST offending tool name; later calls are no-ops.
+   */
+  markUnrepairableToolInput(tool: string): void
+  /** The tool name of the first unrepairable tool_use input seen this request, or null. */
+  readonly unrepairableToolInput: string | null
   toHistoryEntry(): HistoryEntryData
 
   // ─── Observability emit surface (added in commit 3a; callers wired in 3b-3d) ───

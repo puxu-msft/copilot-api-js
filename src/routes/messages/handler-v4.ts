@@ -705,7 +705,7 @@ function renderNonStreamingV4(
         cache_read_input_tokens: response.usage.cache_read_input_tokens ?? undefined,
         cache_creation_input_tokens: response.usage.cache_creation_input_tokens ?? undefined,
       },
-      stop_reason: response.stop_reason ?? undefined,
+      stop_reason: response.stop_reason,
       content: { role: "assistant", content: response.content },
     })
     return errResponse
@@ -724,8 +724,14 @@ function renderNonStreamingV4(
   // semantically truncated response — record fail() (not silent complete) while
   // still forwarding the upstream body + preserving the partial (richest-data-flow).
   const truncationReason = anthropicNonStreamingTruncation(response.stop_reason)
+  // An unrepairable malformed tool_use input (P5, mirrors the streaming fail-gate): the body is
+  // still forwarded (richest-data-flow), but the request is recorded FAILED, not a silent success.
+  // Takes priority over truncation — a more precise root cause. The flag is set by the decode S5
+  // transformWhole's onDecodeFailure closure during runResponseWhole above.
+  const unrepairableTool = reqCtx.unrepairableToolInput
+  const failReason = unrepairableTool !== null ? `unrepairable malformed tool_use input (tool=${unrepairableTool})` : truncationReason
   const responseData = {
-    success: !truncationReason,
+    success: !failReason,
     model: response.model,
     usage: {
       input_tokens: response.usage.input_tokens,
@@ -736,8 +742,8 @@ function renderNonStreamingV4(
     stop_reason: response.stop_reason ?? undefined,
     content: { role: "assistant", content: response.content },
   }
-  if (truncationReason) {
-    reqCtx.fail(response.model, new Error(truncationReason), {
+  if (failReason) {
+    reqCtx.fail(response.model, new Error(failReason), {
       usage: responseData.usage,
       stop_reason: responseData.stop_reason,
       content: responseData.content,
@@ -1016,6 +1022,23 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         stop_reason: partial.stop_reason,
         content: partial.content,
       })
+    } else if (env.ctx.unrepairableToolInput !== null) {
+      // A malformed tool_use input could not be repaired (Layer 1 strip + Layer 2 jsonrepair both
+      // failed during S5) — forwarding the broken JSON hands the client an unparseable tool call.
+      // Settle as FAIL with a precise root cause. MUST precede the truncation branch: an unrepairable
+      // block is a more specific diagnosis than a missing message_stop (the two can co-occur), and the
+      // truncation branch would otherwise emit a less-precise error frame. The flag rides the ctx (not
+      // acc, which is rebuilt across buffered-retry attempts); History keeps the upstream-original
+      // sseEvents. Preserve the accumulated partial (richest-data-flow).
+      const tool = env.ctx.unrepairableToolInput
+      const partial = buildAnthropicResponseData(acc, model)
+      consola.error(`[REPAIR] unrepairable malformed tool_use input for ${acc.model || model} (tool=${tool}) -> recorded as error`)
+      env.ctx.fail(acc.model || model, new Error(`unrepairable malformed tool_use input (tool=${tool})`), {
+        usage: partial.usage,
+        stop_reason: partial.stop_reason,
+        content: partial.content,
+      })
+      await sink.writeSynthetic?.(anthropicErrorFrame("invalid_request_error", `Tool call input for ${tool} was malformed and could not be repaired`))
     } else if (!acc.sawMessageStop) {
       // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
       // (GHC mid-stream cutoff). The driver sees a clean drain → `complete`, but the message

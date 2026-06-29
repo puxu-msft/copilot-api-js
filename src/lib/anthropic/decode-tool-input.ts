@@ -31,6 +31,7 @@ import {
   shouldDecodeToolInput,
   type DecodeToolInputConfig,
 } from "./decode-tool-input-core"
+import { repairToolInput } from "./tool-input-repair"
 
 /** Diagnostic emitted when a tool_use input selected for decode couldn't be decoded. */
 export interface DecodeFailureInfo {
@@ -38,7 +39,7 @@ export interface DecodeFailureInfo {
   tool: string
   /** The explicitly-configured field that stayed a string; undefined when the whole buffered input JSON failed to parse. */
   field?: string
-  reason: "input-parse-failed" | "field-undecodable"
+  reason: "input-parse-failed" | "field-undecodable" | "input-unrepairable"
   /** Length of the offending string value (field-undecodable only). */
   valueLength?: number
 }
@@ -51,6 +52,15 @@ export interface ToolInputRewriteOptions {
    */
   backfillAskUserQuestionHeader?: boolean
   /**
+   * Repair a malformed tool_use input that fails to `JSON.parse` at the block's
+   * `content_block_stop`, before forwarding. `"tags"` strips antml tag bleed
+   * (Layer 1); `"repair"` additionally runs jsonrepair (Layer 2); `false`
+   * (default) leaves the existing replay-originals behavior. When enabled, the
+   * decoder buffers **every** `tool_use` block (not just decode-selected ones)
+   * so any malformed input is caught — `server_tool_use` stays excluded.
+   */
+  repairMalformedInput?: "tags" | "repair" | false
+  /**
    * Called when a tool_use input the decoder buffered (selected for field decoding OR `AskUserQuestion` header backfill) couldn't be rewritten:
    *   - `input-parse-failed` — the whole buffered input JSON didn't parse (a COMPLETE block, not an abort). Fires for ANY buffered tool, including a backfill-only selection.
    *   - `field-undecodable` — an explicitly-configured decode field stayed a string. Fires ONLY for fields named in `cfg.fields[tool]` (never for `cfg.all`-discovered plain strings).
@@ -59,6 +69,16 @@ export interface ToolInputRewriteOptions {
    * Note: covers the malformed / non-decodable variant only; a value that is valid JSON decodes successfully and never reports here.
    */
   onDecodeFailure?: (info: DecodeFailureInfo) => void
+}
+
+/** True when `s` parses as JSON (used to gate non-streaming string-input repair). */
+function isParseableJson(s: string): boolean {
+  try {
+    JSON.parse(s)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Build a per-scope deduping reporter (`() => {}` when no sink). Dedup key = `tool:field:reason`. */
@@ -154,29 +174,42 @@ function buildInputJsonDelta(template: ServerSentEventMessage | undefined, index
 export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: ToolInputRewriteOptions = {}): ToolInputStreamDecoder {
   const buffering = new Map<number, BufferedToolUse>()
   const backfill = opts.backfillAskUserQuestionHeader === true
+  const repairMode = opts.repairMalformedInput ?? false
+  const repairEnabled = repairMode === "tags" || repairMode === "repair"
   const report = makeDecodeFailureReporter(opts.onDecodeFailure)
 
   function finalize(buf: BufferedToolUse, stopRaw: ServerSentEventMessage): Array<ServerSentEventMessage> {
     const full = buf.chunks.join("")
     let inputObj: unknown
+    let wasRepaired = false
     try {
       inputObj = JSON.parse(full)
     } catch {
-      // Upstream sent malformed / truncated JSON for a COMPLETE block — replay originals
-      // losslessly, but surface the anomaly (this is content_block_stop, not an abort).
-      report({ tool: buf.name, reason: "input-parse-failed" })
-      return [...buf.rawDeltas, stopRaw]
+      // Upstream sent malformed / truncated JSON for a COMPLETE block (content_block_stop,
+      // not an abort). Try layered repair when enabled; otherwise replay originals losslessly.
+      const result = repairEnabled ? repairToolInput(full, repairMode) : ({ unrepairable: true } as const)
+      if ("repaired" in result) {
+        inputObj = result.repaired
+        wasRepaired = true
+      } else {
+        // `input-unrepairable` (repair was attempted and both layers failed) vs `input-parse-failed`
+        // (repair disabled) — the former drives the handler's fail-gate (P4); both replay originals.
+        report({ tool: buf.name, reason: repairEnabled ? "input-unrepairable" : "input-parse-failed" })
+        return [...buf.rawDeltas, stopRaw]
+      }
     }
 
     // Decode stringified fields first, then backfill — so a stringified `questions` array is structured before its items are inspected.
     const decoded = decodeToolUseInput(buf.name, inputObj, cfg)
     const normalized = backfill ? backfillAskUserQuestionHeaders(buf.name, decoded) : decoded
     reportUndecodedFields(buf.name, normalized, cfg, report)
-    if (normalized === inputObj) {
-      // Nothing changed — zero-perturbation pass-through of the original bytes.
+    if (!wasRepaired && normalized === inputObj) {
+      // Input was valid and nothing changed — zero-perturbation pass-through of the original bytes.
       return [...buf.rawDeltas, stopRaw]
     }
 
+    // Either decode/backfill rewrote the input, or we repaired malformed bytes: emit a single
+    // rebuilt delta carrying the canonical JSON (never replay the malformed originals).
     const delta = buildInputJsonDelta(buf.rawDeltas[0], buf.index, JSON.stringify(normalized))
     return [delta, stopRaw]
   }
@@ -193,7 +226,7 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
         if (
           block.type === "tool_use"
           && block.name !== undefined
-          && (shouldDecodeToolInput(block.name, cfg) || (backfill && block.name === ASK_USER_QUESTION_TOOL))
+          && (repairEnabled || shouldDecodeToolInput(block.name, cfg) || (backfill && block.name === ASK_USER_QUESTION_TOOL))
         ) {
           buffering.set(parsed.index, { name: block.name, index: parsed.index, chunks: [], rawDeltas: [] })
         }
@@ -245,11 +278,26 @@ export function decodeToolInputBlocksInResponse(
   opts: ToolInputRewriteOptions = {},
 ): AnthropicMessageResponse {
   const backfill = opts.backfillAskUserQuestionHeader === true
+  const repairMode = opts.repairMalformedInput ?? false
+  const repairEnabled = repairMode === "tags" || repairMode === "repair"
   const report = makeDecodeFailureReporter(opts.onDecodeFailure)
   const content = response.content.map((block) => {
     const b = block as { type?: string; name?: string; input?: unknown }
     if (b.type !== "tool_use" || b.name === undefined) return block
-    const decoded = decodeToolUseInput(b.name, b.input, cfg)
+    let input = b.input
+    // Repair a malformed STRING input (rare in non-streaming — the upstream JSON normally parses
+    // tool_use.input to an object; this is the case where it arrived as an unparsed, antml-bled /
+    // truncated string). Mirrors the streaming finalize: repaired → continue; unrepairable → keep
+    // the malformed original and report `input-unrepairable` (the ctx-flag closure drives the fail).
+    if (repairEnabled && typeof input === "string" && !isParseableJson(input)) {
+      const result = repairToolInput(input, repairMode)
+      if ("repaired" in result) input = result.repaired
+      else {
+        report({ tool: b.name, reason: "input-unrepairable" })
+        return block
+      }
+    }
+    const decoded = decodeToolUseInput(b.name, input, cfg)
     const normalized = backfill ? backfillAskUserQuestionHeaders(b.name, decoded) : decoded
     reportUndecodedFields(b.name, normalized, cfg, report)
     return normalized === b.input ? block : ({ ...b, input: normalized } as typeof block)

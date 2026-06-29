@@ -188,16 +188,26 @@ const decodeRewrite: ResponseRewrite = {
   name: "tool-input-decode",
   order: RESPONSE_REWRITE_ORDER.toolInputDecode,
   // Active when any decode rule could fire (field decode / decode-all / AskUserQuestion
-  // header backfill). When all are off the decoder is a pure passthrough, so skipping it
-  // is byte-identical.
+  // header backfill / malformed-input repair). When all are off the decoder is a pure
+  // passthrough, so skipping it is byte-identical.
   appliesTo: (env) =>
-    ANTHROPIC(env) && (Object.keys(state.decodeToolInputFields).length > 0 || state.decodeAllToolInputFields || state.backfillQuestionFromHeader),
+    ANTHROPIC(env)
+    && (Object.keys(state.decodeToolInputFields).length > 0
+      || state.decodeAllToolInputFields
+      || state.backfillQuestionFromHeader
+      || state.toolRepairMalformedInput !== false),
   createState: (env): DecodeState => ({
     decoder: createToolInputStreamDecoder(
       { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
       {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
-        onDecodeFailure: (info) => reportDecodeFailure(info, env.ctx),
+        repairMalformedInput: state.toolRepairMalformedInput,
+        onDecodeFailure: (info) => {
+          reportDecodeFailure(info, env.ctx)
+          // An unrepairable malformed tool_use input is a hard failure: flag the ctx so the
+          // handler's complete-branch fails the request (P4) rather than forwarding broken JSON.
+          if (info.reason === "input-unrepairable") env.ctx.markUnrepairableToolInput(info.tool)
+        },
       },
     ),
   }),
@@ -212,7 +222,11 @@ const decodeRewrite: ResponseRewrite = {
       { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
       {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
-        onDecodeFailure: (info) => reportDecodeFailure(info, env.ctx),
+        repairMalformedInput: state.toolRepairMalformedInput,
+        onDecodeFailure: (info) => {
+          reportDecodeFailure(info, env.ctx)
+          if (info.reason === "input-unrepairable") env.ctx.markUnrepairableToolInput(info.tool)
+        },
       },
     ),
 }

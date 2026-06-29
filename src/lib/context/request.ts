@@ -150,6 +150,8 @@ export function createRequestContext(opts: {
   let _toolNameMapper: ToolNameMapper | null = null
   const _attempts: Array<Attempt> = []
   let _endTime: number | null = null
+  /** First unrepairable malformed tool_use input seen during S5 rewrite (null = none). */
+  let _unrepairableToolInput: string | null = null
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
   let settled = false
   /** Lifecycle abort — fired by the reaper (reapInFlight) to cancel in-flight upstream work (缺陷④). */
@@ -193,6 +195,12 @@ export function createRequestContext(opts: {
     },
     reapInFlight() {
       lifecycleAbort.abort()
+    },
+    markUnrepairableToolInput(tool: string) {
+      _unrepairableToolInput ??= tool
+    },
+    get unrepairableToolInput() {
+      return _unrepairableToolInput
     },
     get sessionId() {
       return _sessionId

@@ -92,3 +92,40 @@ export function tryJsonRepair(input: string): string | undefined {
     return undefined
   }
 }
+
+/** Outcome of a layered repair attempt. */
+export type RepairResult = { repaired: unknown } | { unrepairable: true }
+
+function parseJsonOrFail(s: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(s) }
+  } catch {
+    return { ok: false }
+  }
+}
+
+/**
+ * Layered repair orchestration for a malformed tool_use input JSON string.
+ *
+ * `tags`   — Layer 1 only: strip antml tags, revalidate.
+ * `repair` — Layer 1 → revalidate → Layer 2 (jsonrepair on the **stripped**
+ *            form, so a hybrid tag-bleed + structural break is handled without
+ *            jsonrepair tripping over the tags) → revalidate.
+ *
+ * Returns the parsed object from the first layer that yields valid JSON, else
+ * `{ unrepairable: true }`. The caller decides what to do with an unrepairable
+ * result (forward-as-is vs fail). Idempotent on already-valid input (Layer 1 is
+ * a no-op on tag-free JSON, so a valid string repairs to itself).
+ */
+export function repairToolInput(raw: string, mode: "tags" | "repair"): RepairResult {
+  const stripped = stripAntmlTagsOutsideStrings(raw)
+  const afterStrip = parseJsonOrFail(stripped)
+  if (afterStrip.ok) return { repaired: afterStrip.value }
+
+  if (mode === "repair") {
+    const repaired = tryJsonRepair(stripped)
+    if (repaired !== undefined) return { repaired: JSON.parse(repaired) as unknown }
+  }
+
+  return { unrepairable: true }
+}
