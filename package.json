@@ -73,7 +73,7 @@
     "typecheck:ui-v4": "bun run --filter copilot-api-ui-v4 typecheck"
   },
   "simple-git-hooks": {
-    "pre-commit": "bun x lint-staged"
+    "pre-commit": "bun x lint-staged --no-stash"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,mjs,cjs,vue}": "bun run lint"
