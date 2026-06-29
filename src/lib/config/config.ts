@@ -541,6 +541,8 @@ export async function applyConfigToState(): Promise<Config> {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
     }
     if (a.tool_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_non_deferred })
+    if (a.strict_request_headers !== undefined) setAnthropicBehavior({ strictRequestHeaders: a.strict_request_headers })
+    if (a.strip_request_headers !== undefined) setAnthropicBehavior({ stripRequestHeaders: a.strip_request_headers })
     if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
     if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
     // Collection fields: retain-on-absence semantic — a missing key keeps the

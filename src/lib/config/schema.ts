@@ -147,6 +147,12 @@ export const AnthropicConfigSchema = z
   .object({
     tool_strip_server: nullableBoolean(),
     /**
+     * Forward upstream (GHC) response headers to the client. `false` (default) = permissive
+     * (everything except the proxy-controlled blacklist); `true` = strict (known allowlist only).
+     * See `lib/anthropic/response-header-forward.ts`.
+     */
+    strict_response_headers: nullableBoolean(),
+    /**
      * Inject Claude Code official tool stubs (Bash, Read, Write, …) when
      * referenced in message history but missing from the request's tools
      * array. Default true. Disable for non-Claude-Code clients to save
@@ -258,6 +264,8 @@ export const AnthropicConfigSchema = z
     tool_search: nullableBoolean(),
     cache_control: nullableEnum(["disabled", "passthrough", "sanitize", "proxied"] as const),
     tool_non_deferred: nullableNonemptyStringArray(),
+    strict_request_headers: nullableBoolean(),
+    strip_request_headers: nullableNonemptyStringArray(),
     api_key: nullableString(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
     // Free-form Records — key = model-name pattern, value = list

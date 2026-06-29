@@ -70,6 +70,7 @@ import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
+import { selectForwardableResponseHeaders } from "~/lib/anthropic/response-header-forward"
 import {
   //
   preprocessAnthropicMessages,
@@ -395,7 +396,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // Non-streaming: render the real HTTP status with the upstream-decided body.
       try {
         const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
-        return renderNonStreamingV4(c, driver, env, resp, truncateResult)
+        return renderNonStreamingV4(c, driver, env, resp, truncateResult, upstream.headers)
       } finally {
         detachClientAbort()
       }
@@ -406,6 +407,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // covers mid-stream gaps. Real upstream errors were caught above → real HTTP status, never here.
     consola.debug("[Anthropic:v4] Streaming response (settled within window)")
     env.ctx.transition("streaming")
+    // Upstream settled before the 200 opened → forward its headers onto the SSE response. Must
+    // precede streamSSE so the headers are flushed with the response (and captured as inboundResponse).
+    applyForwardedAnthropicResponseHeaders(c, upstream.headers)
     return streamSSE(c, async (stream) => {
       stream.onAbort(() => clientAbort.abort())
       env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
@@ -458,6 +462,10 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   }
 
   // COMMIT: open 200 + start the connection-level keepalive, runRequest continues inside.
+  // NOTE: upstream response headers CANNOT be forwarded here (strict_response_headers) — the 200
+  // is flushed now, BEFORE the upstream settles (`await p` below), so its headers do not yet
+  // exist. This is the documented forwarding limitation for delayed-commit streams; inboundResponse
+  // faithfully records the (forward-less) headers actually sent.
   const commitCtx = codec.getContext()
   commitCtx?.recordFeature("stream-immediate-keepalive", {})
   if (commitCtx) {
@@ -615,6 +623,29 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
 }
 
 // ============================================================================
+// Upstream response-header forwarding
+// ============================================================================
+
+/**
+ * Forward a controlled subset of the upstream (GHC) response headers onto the client
+ * response, gated by `anthropic.strict_response_headers` (see `lib/anthropic/response-header-forward.ts`).
+ *
+ * MUST be called BEFORE the response is constructed (`streamSSE` / `c.json`): `c.header()`
+ * seeds Hono's prepared-header map, so a call afterwards would not reach `c.res` (and the
+ * `setInboundResponseHeaders` capture would miss it). The proxy-controlled blacklist (content
+ * framing + hop-by-hop) is always dropped, so a forwarded header can never clobber the headers
+ * `streamSSE` / `c.json` set themselves.
+ *
+ * Only callable on the NON-committed write-out paths (non-streaming + streaming settled within
+ * the commit window). A delayed-commit stream has already flushed its 200 before the upstream
+ * headers exist, so it forwards nothing — `inboundResponse` then faithfully records that.
+ */
+function applyForwardedAnthropicResponseHeaders(c: Context, upstreamHeaders: Headers): void {
+  const forward = selectForwardableResponseHeaders(upstreamHeaders, state.strictResponseHeaders)
+  for (const [name, value] of Object.entries(forward)) c.header(name, value)
+}
+
+// ============================================================================
 // Non-streaming render
 // ============================================================================
 
@@ -634,6 +665,7 @@ function renderNonStreamingV4(
   env: RequestEnvelope,
   response: AnthropicMessageResponse,
   truncateResult: AnthropicAutoTruncateResult | undefined,
+  upstreamHeaders: Headers,
 ): Response {
   const reqCtx = env.ctx
   let finalResponse = response
@@ -646,6 +678,9 @@ function renderNonStreamingV4(
   finalResponse = driver.runResponseWhole(finalResponse, env) as AnthropicMessageResponse
 
   reqCtx.setForwardedResponse({ content: { role: "assistant", content: finalResponse.content } })
+  // Forward the controlled subset of upstream response headers BEFORE c.json builds the
+  // response, so they land in clientResponse.headers (and the inboundResponse capture below).
+  applyForwardedAnthropicResponseHeaders(c, upstreamHeaders)
   // RFC Phase 4: ④ build the client response first so its headers are set, capture them
   // (proxy→client), THEN complete — finalize must see the inboundResponse leg.
   const clientResponse = c.json(finalResponse)

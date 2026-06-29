@@ -264,6 +264,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   },
   {
+    configKey: "anthropic.strict_response_headers",
+    stateKey: "strictResponseHeaders",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
+  },
+  {
     configKey: "anthropic.stream_keepalive_ping_sec",
     stateKey: "streamKeepalivePingSec",
     sampleYamlValue: "15",

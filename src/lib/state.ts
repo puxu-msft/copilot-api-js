@@ -161,6 +161,16 @@ export interface State {
   readonly stripServerTools: boolean
 
   /**
+   * Forward upstream (GHC) response headers to the client on the Anthropic path.
+   * `false` (default) = permissive: forward everything except the proxy-controlled blacklist.
+   * `true` = strict: forward only a known allowlist (request-id / anthropic-ratelimit-* / …).
+   * See `lib/anthropic/response-header-forward.ts`. Only the non-committed write-out paths
+   * forward (non-streaming + streaming settled-within-window); a delayed-commit stream that
+   * already flushed 200 cannot (upstream headers arrive too late).
+   */
+  readonly strictResponseHeaders: boolean
+
+  /**
    * Client-proxy keepalive ping cadence (seconds) for the streaming Anthropic stream.
    * `0` disables. Default **20**, clamped < `CLIENT_IDLE_DEADLINE_SEC` (60) — Claude
    * Code's request timeout is an IDLE watchdog at ~60s (Q2 oracle, exp/q2-oracle/REPORT.md).
@@ -811,6 +821,7 @@ export function setAnthropicBehavior(
     Pick<
       MutableState,
       | "stripServerTools"
+      | "strictResponseHeaders"
       | "streamKeepalivePingSec"
       | "streamCommitAfterSec"
       | "protectStreamingGeneration"
@@ -1008,6 +1019,7 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
  */
 export const CONFIG_MANAGED_DEFAULTS = {
   stripServerTools: false,
+  strictResponseHeaders: false,
   streamKeepalivePingSec: 20,
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
@@ -1092,6 +1104,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
 export function resetConfigManagedState(): void {
   setAnthropicBehavior({
     stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+    strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
@@ -1202,6 +1215,7 @@ const mutableState: MutableState = {
   cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+  strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,

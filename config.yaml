@@ -183,6 +183,16 @@ anthropic:
   # This is the unconditional global switch. Even when false, a server tool the upstream rejects with 400 ("web search tool is not supported") is learned and stripped pre-emptively for that (endpoint, model) on subsequent requests (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
   tool_strip_server: false
 
+  # Forward upstream (GitHub Copilot) response headers to the client. The proxy is otherwise fully isolating — it synthesizes its own response headers, so upstream request-id / anthropic-ratelimit-* / anthropic-organization-id never reach the client. This opts the Anthropic path into forwarding a controlled subset.
+  #   false (default): permissive — forward EVERYTHING except a proxy-controlled blacklist (content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie). The blacklist is mandatory in BOTH modes — forwarding upstream content-length after the proxy re-serializes the body corrupts client parsing.
+  #   true: strict — forward ONLY a known allowlist: request-id / x-request-id / anthropic-ratelimit-* / anthropic-organization-id / retry-after.
+  # Note: only the non-committed write-out paths forward (non-streaming + streaming settled within the commit window). A delayed-commit stream that already flushed its 200 cannot forward (upstream headers arrive after the headers are on the wire). history records what the client actually received (inboundResponse) plus the full upstream set (outboundResponse).
+  # 把上游（GitHub Copilot）响应头透传给客户端。代理默认完全隔离——自己合成响应头，故上游 request-id / anthropic-ratelimit-* / anthropic-organization-id 到不了客户端。本项让 Anthropic 路径可控地转发一个子集。
+  #   false（默认）：尽量透传——转发除 proxy-controlled 黑名单外的全部（content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie）。黑名单在两种模式下都强制生效——代理重新序列化 body 后转发上游 content-length 会让客户端按错长度解析。
+  #   true：仅白名单——只转发 request-id / x-request-id / anthropic-ratelimit-* / anthropic-organization-id / retry-after。
+  # 注：只有非 committed 写出路径会转发（非流式 + 流式在 commit 窗口内 settle）。延迟-commit 已 flush 200 的流无法转发（上游头在响应头已上线后才到）。history 忠实记录客户端实收（inboundResponse）+ 上游全量（outboundResponse）。
+  strict_response_headers: false
+
   # Synthetic SSE keepalive ping cadence (seconds) for the client-facing live stream. 0 = disabled; default 45. Claude Code's request timeout is an IDLE watchdog at ~60s (exp/q2-oracle Q2 oracle), so the cadence MUST be < 60s to keep the client alive — the prior 120s default was ineffective. When >0, the proxy injects an Anthropic-protocol `event: ping` frame whenever no real upstream event has been forwarded for that many seconds — covers BOTH mid-stream idle gaps (opus-4.8 adaptive thinking stalling after content_block_start) AND the ③ pre-response-grace commit keepalive. Heartbeats DO NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle) and are recorded only in forwardedSseEvents, never in raw upstream sseEvents. (Renamed from stream_fake_sse_heartbeat; old key auto-migrates.)
   stream_keepalive_ping_sec: 45
 
