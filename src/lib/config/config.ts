@@ -139,15 +139,19 @@ const STAT_DEBOUNCE_MS = 2000
  * authority for the deadline; keepalive cadences are clamped to one tick under it.
  */
 const CLIENT_IDLE_DEADLINE_SEC = 60
-const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 1
+// Cap leaves a LARGE margin (≥20s) under the deadline — not just 1 tick. Even a jittery interval must
+// never approach 60s; the empirical safe ceiling is ~45s (ping@45s kept CC alive), so 40 sits inside it.
+const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
 let warnedKeepaliveClamp = false
 
-/** Clamp a keepalive cadence (0 = disabled) below the client idle deadline; warn once if exceeded. */
+/** Clamp a keepalive cadence (0 = disabled) to stay WELL below the client idle deadline; warn once. */
 function clampKeepaliveCadence(sec: number): number {
   if (sec <= 0 || sec <= KEEPALIVE_CADENCE_MAX) return sec
   if (!warnedKeepaliveClamp) {
     warnedKeepaliveClamp = true
-    consola.warn(`keepalive cadence ${sec}s >= client idle deadline ${CLIENT_IDLE_DEADLINE_SEC}s — clamped to ${KEEPALIVE_CADENCE_MAX}s to stay connected`)
+    consola.warn(
+      `keepalive cadence ${sec}s leaves too little margin under the ~${CLIENT_IDLE_DEADLINE_SEC}s client idle deadline — clamped to ${KEEPALIVE_CADENCE_MAX}s`,
+    )
   }
   return KEEPALIVE_CADENCE_MAX
 }

@@ -222,6 +222,20 @@ describe("immediate-keepalive — stall cadence ping", () => {
     expect(entry?.state).toBe("completed")
   })
 
+  test("cold-start commit emits an IMMEDIATE first ping (not waiting a full cadence)", async () => {
+    // commit window 2s, but cadence 30s. The immediate cold-start ping must fire AT commit, long
+    // before the 30s cadence — proving the fast-failure/margin ping is independent of cadence.
+    setStateForTests({ streamCommitAfterSec: 2, streamKeepalivePingSec: 30 })
+    const resP = streamRequest("grace-commit-immediate")
+    await gateReachedP
+    await clock.advance(2_000) // window fires → commit + immediate ping (cadence 30s NOT reached)
+    const res = await resP
+    openGate()
+    const types = frameTypesInOrder(await res.text())
+    expect(types[0]).toBe("ping") // immediate ping present despite cadence 30s ≫ elapsed
+    expect(types).toContain("message_stop")
+  })
+
   test("upstream stalls → cadence ping, then upstream 401 → rich SSE error frame (HTTP status stays 200)", async () => {
     commitMode = "error-401"
     const resP = streamRequest("grace-commit-401")

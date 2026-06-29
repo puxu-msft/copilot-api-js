@@ -481,8 +481,14 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // ④ capture proxy→client headers (set synchronously by streamSSE before this callback).
     commitCtx?.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     try {
-      // No immediate ping: the heartbeat fires on cadence (< client idle deadline), or never if a
-      // real frame arrives first. "Wait a window, then must start" — never an instant t0 ping.
+      // Immediate first ping on a COLD-START commit (the upstream stalled past the whole window → known
+      // slow). It (a) establishes the body stream NOW so a fast upstream failure right after commit is
+      // forwarded immediately instead of after a full cadence, (b) anchors CC's body-idle on a real body
+      // frame without relying on "200 headers reset idle", (c) maxes the idle margin. The heartbeat's
+      // cadence then throttles every later ping (lastRealMs advances) → exactly ONE extra frame. Gated:
+      // only when we actually waited a window (commitAfterSec>0; the 0 immediate-bypass keeps the
+      // byte-identical path) AND keepalive is on (pingSec>0). best-effort write.
+      if (state.streamCommitAfterSec > 0 && pingSec > 0) await sink.write(ANTHROPIC_PING).catch(() => {})
       // POST-COMMIT: every exit settles ctx + (on failure) writes a rich error frame — the SSE
       // middleware does NOT finalize an event-stream, so a silent return would leak a dangling entry.
       let result: DriverRequestResult
