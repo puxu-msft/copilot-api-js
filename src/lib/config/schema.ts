@@ -294,7 +294,7 @@ export const AnthropicConfigSchema = z
     tool_decode_input_fields: z.record(z.string(), z.array(z.string())).optional(),
     tool_decode_all_input_fields: nullableBoolean(),
     tool_recover_call_text: nullableBoolean(),
-    refusal_recover_text: nullableBoolean(),
+    refusal_sse_rewrite: nullableEnum(["refusal", "end_turn", "error"] as const),
     /**
      * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
      * Only items missing the `question` key are touched. Default true.

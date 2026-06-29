@@ -512,13 +512,19 @@ anthropic:
   # 透明恢复上游偶发把工具调用降级成纯文本（call<invoke>…）的响应，重建为标准 tool_use block。
   # Default false (enable only when the upstream degradation is confirmed). See docs/rfc/tool-call-text-recovery.md.
   # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/rfc/tool-call-text-recovery.md。
-  tool_recover_call_text: true
+  tool_recover_call_text: false
 
-  # Intercept the upstream thinking-only refusal (stop_reason:"refusal" with only a thinking block, no text/tool_use), append a synthetic text block explaining the refusal, and change stop_reason to end_turn.
-  # 拦截上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块、无 text/tool_use），追加一个合成 text 块说明拒绝并把 stop_reason 改成 end_turn。
-  # Otherwise the client (Claude Code) gets an empty/broken turn and the workflow stalls. Forwarded stream only (history's sseEvents keeps the upstream-original refusal). Default false. See docs/refusal-recovery.md.
-  # 否则客户端（Claude Code）拿到空/坏轮、工作流卡住。仅作用于转发流（history 的 sseEvents 保留上游原始 refusal）。默认 false。详见 docs/refusal-recovery.md。
-  refusal_recover_text: true
+  # How to handle the upstream thinking-only refusal (stop_reason:"refusal" with only a thinking block, no text/tool_use). Three modes:
+  #   "refusal"  = pass the upstream refusal through unchanged (client gets a dead/empty turn).
+  #   "end_turn" = append a synthetic text block explaining the refusal + flip stop_reason to end_turn (a usable completion).
+  #   "error"    = emit an Anthropic `event: error` SSE frame AND record the request as failed (ctx.fail) — the refusal surfaces as an error, not a fake success.
+  # 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块、无 text/tool_use）的处理策略，三选一：
+  #   "refusal"  = 透传上游 refusal、不改写（客户端拿到空/坏轮）。
+  #   "end_turn" = 追加合成 text 块说明拒绝 + 把 stop_reason 改成 end_turn（可用的完成）。
+  #   "error"    = 发 Anthropic `event: error` SSE 帧并把请求记为失败（ctx.fail）——refusal 以错误而非伪成功呈现。
+  # Forwarded stream only (history's sseEvents keeps the upstream-original refusal). Default "error". See docs/refusal-recovery.md.
+  # 仅作用于转发流（history 的 sseEvents 保留上游原始 refusal）。默认 "error"。详见 docs/refusal-recovery.md。
+  refusal_sse_rewrite: error
 
   # tool_backfill_question: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").
   # tool_backfill_question：Claude Code 拒收有 `header` 却缺 `question` 字段的 AskUserQuestion `questions[]` item（"must have a question"）。

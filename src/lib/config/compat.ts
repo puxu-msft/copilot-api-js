@@ -176,6 +176,13 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
     },
     message: 'anthropic.auto_cache_control is removed; use cache_control ("disabled" | "passthrough" | "sanitize" | "proxied")',
   }),
+  // refusal_recover_text (boolean) → refusal_sse_rewrite (enum): true → "end_turn" (the old
+  // synthesize-text behavior), false → "refusal" (the old passthrough). Same bool→enum shape as
+  // auto_cache_control above.
+  renameLeaf("anthropic.refusal_recover_text", "anthropic.refusal_sse_rewrite", {
+    transform: (v) => (typeof v === "boolean" ? (v ? "end_turn" : "refusal") : undefined),
+    message: 'anthropic.refusal_recover_text is removed; use refusal_sse_rewrite ("refusal" | "end_turn" | "error")',
+  }),
   removeKey("history.min_entries", "history.min_entries is removed (was tied to the deleted in-memory history store); ignoring"),
 
   // ── Naming-cleanup batch ──────────────────────────────────────────────────

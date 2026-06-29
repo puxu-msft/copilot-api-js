@@ -136,6 +136,8 @@ export type FeatureKind =
   | "tool-call-recovered"
   /** recovered a thinking-only upstream refusal by synthesizing a text completion */
   | "refusal-recovered"
+  /** error mode: surfaced a thinking-only upstream refusal as an `event: error` frame + ctx.fail */
+  | "refusal-errored"
   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
   | "tool-input-decode-failed"
   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */

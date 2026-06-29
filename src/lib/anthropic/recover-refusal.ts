@@ -56,6 +56,18 @@ import { anthropicSseFrame } from "./sse-frame"
 export const REFUSAL_RECOVERY_TEXT =
   "上游模型本轮以「拒绝（refusal）」结束，未产出可用回复（仅有思考块）。这通常是上游安全策略对当前请求的瞬时拦截，不代表任务本身有问题。请基于已有上下文换一种表述或拆分步骤后重试；若多次复现，考虑调整措辞、移除可能触发策略的内容，或改用其他模型。"
 
+/**
+ * The message carried by the synthetic Anthropic `error` frame in the `error` mode (the client
+ * SDK surfaces it as the thrown `APIError`'s message). Mirrors {@link REFUSAL_RECOVERY_TEXT}'s
+ * intent (what happened + how to recover) but frames it as an error rather than a completion.
+ */
+export const REFUSAL_ERROR_MESSAGE =
+  "上游模型本轮以「拒绝（refusal）」结束、未产出可用回复（仅思考块）。已按 error 策略中断本次请求。可换表述/拆分步骤后重试，或改用其他模型。"
+
+/** The Anthropic error type carried by the synthetic refusal `error` frame (matches the truncation
+ *  detection error frame — a generic upstream-failure bucket the client SDK can branch on). */
+const REFUSAL_ERROR_TYPE = "api_error"
+
 /** A thinking-only refusal = `stop_reason:"refusal"` with no real (text/tool_use) content seen. */
 export function isThinkingOnlyRefusal(stopReason: string | null | undefined, sawRealContent: boolean): boolean {
   return stopReason === "refusal" && !sawRealContent
@@ -134,6 +146,71 @@ export function createRefusalRecoverer(deps: RefusalRecovererDeps = {}): Refusal
         const synthFrames = buildSyntheticTextFrames(maxIndex + 1)
         const rewritten: ServerSentEventMessage = { ...raw, data: JSON.stringify(rewriteRefusalMessageDelta(parsed)) }
         return [...synthFrames, rewritten]
+      }
+
+      return [raw]
+    },
+  }
+}
+
+/**
+ * Build the synthetic Anthropic `event: error` frame that REPLACES the upstream refusal
+ * terminator in `error` mode. Hand-built canonical (not via the `routes/` `anthropicErrorFrame`
+ * helper — `lib/` must not depend on `routes/`); the shape is protocol-fixed
+ * (`{ type:"error", error:{ type, message } }`) so it cannot drift from that helper.
+ */
+function buildRefusalErrorFrame(): ServerSentEventMessage {
+  return { event: "error", data: JSON.stringify({ type: "error", error: { type: REFUSAL_ERROR_TYPE, message: REFUSAL_ERROR_MESSAGE } }) }
+}
+
+/**
+ * Create a streaming refusal-to-error emitter (the `error` mode). It forwards every frame
+ * unchanged while tracking whether any real (text/tool_use) block appeared; at a thinking-only
+ * refusal `message_delta` it SUPPRESSES the original delta and emits a single Anthropic
+ * `event: error` frame in its place, then SUPPRESSES the trailing `message_stop` (otherwise the
+ * client would receive a clean turn terminator after an error — a malformed sequence). No buffering.
+ *
+ * Why suppress + replace at the rewrite layer (not append at the handler after drain): refusal is
+ * a clean drain WITH `message_stop`, so by the time the handler sees `complete` the terminator is
+ * already forwarded — only this layer can intercept it before it reaches the client. The handler's
+ * own `complete` branch independently detects the same thinking-only refusal (from its accumulator)
+ * and records `ctx.fail`; the two judgments read the same upstream-original condition (client-visible
+ * text/tool_use only — `server_tool_use` is excluded in BOTH), so they stay consistent without a
+ * cross-layer signal.
+ */
+export function createRefusalErrorEmitter(): RefusalRecoverer {
+  let sawRealContent = false
+  let emitted = false
+
+  return {
+    processEvent(parsed, raw) {
+      if (!parsed) return [raw]
+
+      if (parsed.type === "content_block_start") {
+        // Only client-visible text/tool_use counts as "real content" (server_tool_use is excluded,
+        // matching createRefusalRecoverer + the handler's accumulator-side judgment).
+        const blockType = (parsed.content_block as { type?: string }).type
+        if (blockType === "text" || blockType === "tool_use") sawRealContent = true
+        return [raw]
+      }
+
+      if (parsed.type === "message_delta") {
+        // Pure stream reshape — NO telemetry / ctx side effects here. The handler's complete branch
+        // independently detects the same refusal and owns ALL observability (ctx.fail + feature + log).
+        // Once the error frame is emitted, suppress any further refusal delta too (malformed upstream).
+        if (emitted) return []
+        if (!isThinkingOnlyRefusal(parsed.delta.stop_reason, sawRealContent)) return [raw]
+        emitted = true
+        // Suppress the original refusal delta (don't forward it) and emit the error frame instead.
+        return [buildRefusalErrorFrame()]
+      }
+
+      if (parsed.type === "message_stop") {
+        // After the error frame, suppress the mandatory terminator (a clean message_stop AFTER an
+        // error frame is a malformed sequence). Returning [] = emit zero frames (the transform
+        // adapter emits the array verbatim, so an empty array is a true suppress, not a buffer).
+        if (emitted) return []
+        return [raw]
       }
 
       return [raw]

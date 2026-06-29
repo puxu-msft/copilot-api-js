@@ -107,6 +107,7 @@ import { resolveModelName } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { isThinkingOnlyRefusal, REFUSAL_ERROR_MESSAGE } from "~/lib/anthropic/recover-refusal"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -680,6 +681,36 @@ function renderNonStreamingV4(
 
   finalResponse = driver.runResponseWhole(finalResponse, env) as AnthropicMessageResponse
 
+  // error mode: a thinking-only refusal surfaces as an HTTP error body (not a 200) + ctx.fail.
+  // Detected on the UPSTREAM-ORIGINAL `response` (in error mode transformWhole left it unchanged);
+  // mirrors the streaming refusal-error branch + the truncation fail-gate's header/inbound timing
+  // (c.json builds headers -> setInboundResponseHeaders -> fail; never `throw` -- that would skip
+  // c.json and drop the inboundResponse leg, see memory hono-onerror-consumes-throws).
+  if (
+    state.refusalSseRewrite === "error"
+    && response.stop_reason === "refusal"
+    && !(response.content as ReadonlyArray<{ type: string }>).some((b) => b.type === "text" || b.type === "tool_use")
+  ) {
+    const errorBody = { type: "error", error: { type: "api_error", message: REFUSAL_ERROR_MESSAGE } }
+    reqCtx.setForwardedResponse({ content: { role: "assistant", content: response.content } })
+    applyForwardedAnthropicResponseHeaders(c, upstreamHeaders)
+    const errResponse = c.json(errorBody, 500)
+    reqCtx.setInboundResponseHeaders(Object.fromEntries(errResponse.headers.entries()))
+    consola.error(`[REFUSAL] upstream thinking-only refusal for ${response.model} -> recorded as error (non-streaming)`)
+    reqCtx.recordFeature("refusal-errored")
+    reqCtx.fail(response.model, new Error("upstream thinking-only refusal"), {
+      usage: {
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        cache_read_input_tokens: response.usage.cache_read_input_tokens ?? undefined,
+        cache_creation_input_tokens: response.usage.cache_creation_input_tokens ?? undefined,
+      },
+      stop_reason: response.stop_reason ?? undefined,
+      content: { role: "assistant", content: response.content },
+    })
+    return errResponse
+  }
+
   reqCtx.setForwardedResponse({ content: { role: "assistant", content: finalResponse.content } })
   // Forward the controlled subset of upstream response headers BEFORE c.json builds the
   // response, so they land in clientResponse.headers (and the inboundResponse capture below).
@@ -962,6 +993,29 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
       consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
       env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
+    } else if (
+      state.refusalSseRewrite === "error"
+      && isThinkingOnlyRefusal(
+        acc.stopReason,
+        acc.contentBlocks.some((b) => b.type === "text" || b.type === "tool_use"),
+      )
+    ) {
+      // Refusal -> error (error mode): the S5 rewrite layer already emitted the Anthropic `event: error`
+      // frame (into the forwarded track, replacing the upstream terminator); the handler OWNS the
+      // terminal state + observability here. Detected on the upstream-original accumulator (acc sees
+      // pre-rewrite frames, so acc.stopReason is the genuine "refusal"); the judgment matches the
+      // rewrite's (client-visible text/tool_use only -- server_tool_use excluded). MUST precede the
+      // truncation branch: a refusal without message_stop would otherwise also hit !acc.sawMessageStop
+      // and double-emit an error frame. No writeSynthetic (frame already on the wire); preserve the
+      // partial (thinking) blocks -> richest-data-flow.
+      const partial = buildAnthropicResponseData(acc, model)
+      consola.error(`[REFUSAL] upstream thinking-only refusal for ${acc.model || model} -> recorded as error`)
+      env.ctx.recordFeature("refusal-errored")
+      env.ctx.fail(acc.model || model, new Error("upstream thinking-only refusal"), {
+        usage: partial.usage,
+        stop_reason: partial.stop_reason,
+        content: partial.content,
+      })
     } else if (!acc.sawMessageStop) {
       // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
       // (GHC mid-stream cutoff). The driver sees a clean drain → `complete`, but the message
@@ -995,3 +1049,5 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     recordForwarded()
   }
 }
+
+// MARKER_DIAG_9z

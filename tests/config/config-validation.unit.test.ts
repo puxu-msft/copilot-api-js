@@ -188,6 +188,17 @@ describe("validateConfig — deprecated keys", () => {
     expect(result.anthropic?.cache_control).toBe("disabled")
   })
 
+  test("anthropic.refusal_recover_text: true → translates to refusal_sse_rewrite end_turn", () => {
+    const result = validateConfig({ anthropic: { refusal_recover_text: true } })
+    expect(result.anthropic?.refusal_sse_rewrite).toBe("end_turn")
+    expect(warnedMessages().some((m) => m.includes("refusal_recover_text"))).toBe(true)
+  })
+
+  test("anthropic.refusal_recover_text: false → translates to refusal_sse_rewrite refusal", () => {
+    const result = validateConfig({ anthropic: { refusal_recover_text: false } })
+    expect(result.anthropic?.refusal_sse_rewrite).toBe("refusal")
+  })
+
   test("history.min_entries → warn only, no translation", () => {
     const result = validateConfig({ history: { min_entries: 20, limit: 100 } })
     expect((result.history as Record<string, unknown> | undefined)?.min_entries).toBeUndefined()

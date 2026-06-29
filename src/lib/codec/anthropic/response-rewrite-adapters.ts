@@ -54,6 +54,7 @@ import {
 } from "~/lib/anthropic/decode-tool-input"
 import {
   //
+  createRefusalErrorEmitter,
   createRefusalRecoverer,
   recoverRefusalInResponse,
   type RefusalRecoverer,
@@ -258,27 +259,37 @@ interface RefusalState extends RewriteState {
 const refusalRewrite: ResponseRewrite = {
   name: "recover-refusal",
   order: RESPONSE_REWRITE_ORDER.recoverRefusal,
-  // Only when enabled. A thinking-only refusal otherwise passes through unchanged;
-  // skipping the rewrite entirely is byte-identical to that passthrough.
-  appliesTo: (env) => ANTHROPIC(env) && state.recoverRefusalText,
+  // `refusal` mode = passthrough (skip the rewrite entirely, byte-identical). `end_turn` and
+  // `error` both need the rewrite; createState branches on the mode for the right reshaper.
+  appliesTo: (env) => ANTHROPIC(env) && state.refusalSseRewrite !== "refusal",
   createState: (env): RefusalState => ({
-    recoverer: createRefusalRecoverer({
-      onRecover: () => {
-        env.ctx.recordFeature("refusal-recovered")
-        consola.info("[REFUSAL] synthesized a text completion over a thinking-only refusal")
-      },
-    }),
+    // `end_turn` synthesizes a text completion and records the feature HERE (the handler does
+    // nothing special for a successful end_turn). `error` is a PURE stream reshape (emit error
+    // frame + suppress terminator); ALL of its observability (ctx.fail + feature + log) is owned by
+    // the handler's complete branch, so the emitter takes no callback.
+    recoverer:
+      state.refusalSseRewrite === "error" ?
+        createRefusalErrorEmitter()
+      : createRefusalRecoverer({
+          onRecover: () => {
+            env.ctx.recordFeature("refusal-recovered")
+            consola.info("[REFUSAL] synthesized a text completion over a thinking-only refusal")
+          },
+        }),
   }),
-  // Never buffers: emits the passthrough frame, or (at the refusal message_delta) the
-  // synthetic text triplet + the rewritten end_turn delta.
+  // Never buffers: emits the passthrough frame, or (at the refusal message_delta) the chosen reshape
+  // — end_turn's synthetic text triplet + rewritten end_turn delta, OR error's single `event: error`
+  // frame replacing the terminator.
   transform: (frame, st): FrameAction => ({
     kind: "emit",
     frames: (st as RefusalState).recoverer.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage) as Array<UpstreamFrame>,
   }),
-  // Non-streaming: append a synthetic text block + flip stop_reason → end_turn on the
-  // whole response. `appliesTo` already gated `state.recoverRefusalText`, and the helper
-  // self-guards on the thinking-only-refusal shape (non-refusal → identity).
-  transformWhole: (response): unknown => recoverRefusalInResponse(response as AnthropicMessageResponse),
+  // Non-streaming: `end_turn` appends a synthetic text block + flips stop_reason → end_turn (the
+  // helper self-guards on the thinking-only-refusal shape). `error` (and the skipped `refusal`)
+  // leave the body UNCHANGED here — error's non-streaming failure is handled in renderNonStreamingV4,
+  // which must see the upstream-original refusal, so transformWhole must NOT mutate it.
+  transformWhole: (response): unknown =>
+    state.refusalSseRewrite === "end_turn" ? recoverRefusalInResponse(response as AnthropicMessageResponse) : response,
 }
 
 /**

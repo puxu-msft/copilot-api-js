@@ -26,9 +26,11 @@ import type {
 import {
   //
   buildSyntheticTextFrames,
+  createRefusalErrorEmitter,
   createRefusalRecoverer,
   isThinkingOnlyRefusal,
   recoverRefusalInResponse,
+  REFUSAL_ERROR_MESSAGE,
   REFUSAL_RECOVERY_TEXT,
   rewriteRefusalMessageDelta,
 } from "~/lib/anthropic/recover-refusal"
@@ -173,6 +175,68 @@ describe("createRefusalRecoverer (streaming)", () => {
       delta: { stop_reason: "end_turn", stop_details: null, stop_sequence: null },
       usage: { output_tokens: 9 },
     })
+  })
+})
+
+describe("createRefusalErrorEmitter (streaming, error mode)", () => {
+  /** Drive events through an error-emitter; return the forwarded frames (event + data preserved). */
+  function runEmitter(events: Array<Record<string, unknown>>): Array<ServerSentEventMessage> {
+    const emitter = createRefusalErrorEmitter()
+    const out: Array<ServerSentEventMessage> = []
+    for (const ev of events) {
+      const { parsed, raw } = frame(ev)
+      for (const f of emitter.processEvent(parsed, raw)) out.push(f)
+    }
+    return out
+  }
+
+  test("thinking-only refusal: replaces the delta with an error frame, suppresses message_stop", () => {
+    const out = runEmitter([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop, refusalDelta, messageStop])
+    // 4 thinking frames pass verbatim, the refusal delta is REPLACED by 1 error frame, message_stop is SUPPRESSED → 5 total
+    expect(out).toHaveLength(5)
+    expect(out.slice(0, 4).map((f) => JSON.parse(f.data ?? ""))).toEqual([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop])
+    // the error frame carries an `event: error` line (else the Anthropic SDK drops it) + canonical body
+    expect(out[4].event).toBe("error")
+    expect(JSON.parse(out[4].data ?? "")).toEqual({ type: "error", error: { type: "api_error", message: REFUSAL_ERROR_MESSAGE } })
+    // the original refusal delta + message_stop never reach the client (pure reshape; no ctx/feature
+    // side effects — the handler's complete branch owns observability)
+    expect(out.some((f) => (f.data ?? "").includes('"stop_reason":"refusal"'))).toBe(false)
+    expect(out.some((f) => (f.data ?? "").includes('"message_stop"'))).toBe(false)
+  })
+
+  test("normal end_turn stream passes through byte-identical, including message_stop (gate never fires)", () => {
+    const events = [
+      { type: "message_start" },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
+      messageStop,
+    ]
+    const out = runEmitter(events)
+    expect(out.map((f) => f.data)).toEqual(events.map((e) => JSON.stringify(e)))
+    expect(out.some((f) => f.event === "error")).toBe(false)
+  })
+
+  test("refusal WITH a real text block: gate closed, passes through unchanged (message_stop forwarded)", () => {
+    const events = [
+      { type: "message_start" },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } },
+      { type: "content_block_stop", index: 0 },
+      refusalDelta,
+      messageStop,
+    ]
+    const out = runEmitter(events)
+    expect(out.map((f) => f.data)).toEqual(events.map((e) => JSON.stringify(e)))
+    expect(out.some((f) => f.event === "error")).toBe(false)
+  })
+
+  test("refusal with NO message_stop (truncation-compound): emits exactly one error frame", () => {
+    // Compound edge: refusal delta then a clean EOF without message_stop. The emitter emits the
+    // error frame at the delta and there is no trailing frame to suppress — it must NOT double-emit.
+    const out = runEmitter([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop, refusalDelta])
+    expect(out.filter((f) => f.event === "error")).toHaveLength(1)
   })
 })
 

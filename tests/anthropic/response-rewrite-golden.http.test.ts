@@ -539,6 +539,16 @@ async function postJson(extra?: Record<string, unknown>): Promise<unknown> {
   return res.json()
 }
 
+/** Like postJson but returns the raw Response (for asserting status — error mode returns 500). */
+async function postJsonRaw(extra?: Record<string, unknown>): Promise<Response> {
+  injectModels()
+  return app.request("/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: MODEL, max_tokens: 256, stream: false, messages: [{ role: "user", content: "go" }], ...extra }),
+  })
+}
+
 /** The upstream-original accumulated assistant response (ctx.complete → entry.outboundResponse). */
 function lastOutboundContent(): unknown {
   return getHistory({ endpoint: "anthropic-messages" }).entries[0]?.outboundResponse?.content
@@ -643,7 +653,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
 
   test("S8 recover-refusal: thinking-only refusal → synthesized text + end_turn (streaming)", async () => {
     scenario = "s8"
-    setStateForTests({ recoverRefusalText: true })
+    setStateForTests({ refusalSseRewrite: "end_turn" })
     const text = await postStream()
     expect(text).toBe(S8_GOLDEN)
     // The empty thinking block is kept verbatim; a synthetic text block is appended.
@@ -656,12 +666,44 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(lastOutboundContent()).toEqual(S8_OUTBOUND)
   })
 
-  test("S8 off (default): refusal passes through byte-identical", async () => {
+  test("S8 refusal mode: refusal passes through byte-identical", async () => {
     scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "refusal" })
     const text = await postStream()
-    // No recovery: the refusal delta + empty thinking block reach the client unchanged.
+    // refusal mode = no rewrite: the refusal delta + empty thinking block reach the client unchanged.
     expect(text).toContain('"stop_reason":"refusal"')
     expect(text).not.toContain(REFUSAL_RECOVERY_TEXT)
+  })
+
+  test("S8 error mode: thinking-only refusal → event:error frame + ctx.fail; history keeps upstream refusal", async () => {
+    scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "error" })
+    const text = await postStream()
+    // The refusal terminator is REPLACED by an Anthropic `event: error` frame (api_error).
+    expect(text).toContain("event: error")
+    expect(text).toContain('"type":"api_error"')
+    // No end_turn synthesis; the original refusal terminator + message_stop are suppressed (not forwarded).
+    expect(text).not.toContain(REFUSAL_RECOVERY_TEXT)
+    expect(text).not.toContain('"stop_reason":"end_turn"')
+    expect(text).not.toContain('"stop_reason":"refusal"')
+    // Option A: history keeps the upstream-original thinking-only refusal (forwarded-only reshape).
+    expect(lastOutboundContent()).toEqual(S8_OUTBOUND)
+    // Terminal state: recorded as FAILED (not a fake success) — aligns with the truncation invariant.
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry.state).toBe("failed")
+    expect(entry.outboundResponse?.success).toBe(false)
+  })
+
+  test("S6 error mode: non-streaming thinking-only refusal → 500 error body + ctx.fail", async () => {
+    scenario = "s6Refusal"
+    setStateForTests({ refusalSseRewrite: "error" })
+    const res = await postJsonRaw()
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ type: "error", error: { type: "api_error", message: expect.any(String) } })
+    // history FAILED, upstream-original refusal content preserved.
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry.state).toBe("failed")
+    expect(entry.outboundResponse?.success).toBe(false)
   })
 
   test("S6 non-streaming: server-tool blocks filtered from response", async () => {
@@ -712,7 +754,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
 
   test("S6 non-streaming: recover-refusal thinking-only → synthesized text + end_turn", async () => {
     scenario = "s6Refusal"
-    setStateForTests({ recoverRefusalText: true })
+    setStateForTests({ refusalSseRewrite: "end_turn" })
     const json = await postJson()
     expect(json).toEqual({
       id: "msg-ns",
