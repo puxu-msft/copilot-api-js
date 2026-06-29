@@ -1,0 +1,6 @@
+{
+  "entryId": "req_1782744516921_1304",
+  "tool": "TodoWrite",
+  "note": "Real captured malformed tool_use input — antml tag bleed (</parameter>, </invoke>) between the todos-array close and the object close. JSON.parse(raw) throws.",
+  "raw": "{\"todos\": [{\"content\":\"写 TDD 测试：HTML 错误体（502 Unicorn）应被友好化、不原样转发\",\"status\":\"in_progress\",\"activeForm\":\"写 HTML body 友好化的 TDD 测试\"},{\"content\":\"实现 looksLikeHtml helper + forward.ts 默认分支修复（日志逻辑复用同一 helper）\",\"status\":\"pending\",\"activeForm\":\"实现 looksLikeHtml + forward.ts 修复\"},{\"content\":\"跑 typecheck + 相关测试确认 GREEN 且未回归\",\"status\":\"pending\",\"activeForm\":\"跑 typecheck 与测试\"},{\"content\":\"写决策文档（docs/spec/）\",\"status\":\"pending\",\"activeForm\":\"写决策文档\"},{\"content\":\"subagent audit 复审改动\",\"status\":\"pending\",\"activeForm\":\"派 subagent 复审\"},{\"content\":\"提交\",\"status\":\"pending\",\"activeForm\":\"提交改动\"}]</parameter>\n</invoke>\n}"
+}
