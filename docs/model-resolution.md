@@ -6,10 +6,10 @@
 
 ## 解析流程
 
-1. 检查 raw name 是否在 `modelOverrides` 中（如 `opus` → `claude-opus-4.6`）
+1. 检查 raw name 是否在 `modelOverrides` 中（如 `opus` → `claude-opus-4.8`）
 2. 别名/规范化解析：短别名（`opus` → 最佳可用）、连字符版本（`claude-opus-4-6` → `claude-opus-4.6`）、日期后缀（`claude-opus-4-20250514` → 最佳可用 opus）
 3. 检查解析后的名称是否在 overrides 中
-4. 检查 family 级别的 override（如 `opus` → `claude-opus-4.6-1m` 时，`claude-opus-4-6` 也被重定向）
+4. 检查 family 级别的 override（如 `opus` → `claude-opus-4.8-1m` 时，`claude-opus-4-8` 也被重定向）
 5. Override 目标支持链式解析 + 循环检测
 
 ## 修饰符后缀
@@ -24,10 +24,10 @@
 
 ## Model Overrides
 
-用户可通过 config.yaml 的 `model_overrides` 配置任意映射（如 `gpt-4o: claude-opus-4.6`），支持链式解析和 family 级别重定向。
+用户可通过 config.yaml 的 `model_overrides` 配置任意映射（如 `gpt-4o: claude-opus-4.8`），支持链式解析和 family 级别重定向。
 
 内置默认：
-- `opus` → `claude-opus-4.6`
+- `opus`（含 4.5/4.6/4.7） → `claude-opus-4.8`
 - `sonnet` → `claude-sonnet-4.6`
 - `haiku` → `claude-haiku-4.5`
 
