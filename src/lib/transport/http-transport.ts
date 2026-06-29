@@ -114,9 +114,19 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
   }
 }
 
-/** Error label matching the legacy clients (parity for the thrown `HTTPError` message). */
-function errorLabelFor(endpointPath: string): string {
-  return endpointPath === ENDPOINT.RESPONSES ? "Failed to create responses" : "Failed to create chat completions"
+/**
+ * Error label matching the legacy clients (parity for the thrown `HTTPError`
+ * message). Keyed on the upstream `wire.url` (= the endpoint actually called),
+ * mirroring legacy parity where the chosen upstream client determines the label:
+ * a CC request routed to Responses (via-responses fallback) labels as
+ * "responses", and Gemini — translated to `/chat/completions` upstream — labels
+ * as "chat completions" (legacy gemini used the chat-completions client; there
+ * is no dedicated `generateContent` label).
+ */
+export function errorLabelFor(endpointPath: string): string {
+  if (endpointPath === ENDPOINT.RESPONSES) return "Failed to create responses"
+  if (endpointPath === ENDPOINT.MESSAGES) return "Failed to create messages"
+  return "Failed to create chat completions"
 }
 
 // eslint-disable-next-line require-yield
