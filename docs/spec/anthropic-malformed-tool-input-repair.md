@@ -31,7 +31,7 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 | **结构缺括号** | `req_1782740067043_965`（AskUserQuestion，末尾少 `]}`） | `…)"}]}`（应为 `…)"}]}]}`） | 不适用 | **正确修复**（补 `]}`，含真实中文、无字面 `\u` 残留） |
 | **同类结构** | `req_1782739645128_921`（AskUserQuestion） | 同上 | 不适用 | 待逐字节亲验（结构类，预期可修） |
 
-**既有系统已能部分检出**（修订自旧 spec "完全静默"的误述）：`decode-tool-input.ts` 默认就缓冲 `AskUserQuestion`（`backfillQuestionFromHeader` 默认开），在 `content_block_stop` 时 `JSON.parse` 失败会触发 `onUndecodable("input-parse-failed")`（line 167）——所以 965/921（AskUserQuestion）**已被既有 decode 观测到**（只是不修、原样 replay）。**真正静默的是 1304（TodoWrite）**：它不在 decode 默认选中集，decode 不缓冲它，故既无观测也无修复。这正是本特性要补的洞——把检测+修复覆盖到**所有** tool_use 块。
+**既有系统已能部分检出**（修订自旧 spec "完全静默"的误述）：`decode-tool-input.ts` 默认就缓冲 `AskUserQuestion`（`backfillQuestionFromHeader` 默认开），在 `content_block_stop` 时 `JSON.parse` 失败会触发 `onDecodeFailure` 回调（`DecodeFailureInfo.reason="input-parse-failed"`，L61/167，经 `reportDecodeFailure(info, env.ctx)` 接 ctx）——所以 965/921（AskUserQuestion）**已被既有 decode 观测到**（只是不修、原样 replay）。**真正静默的是 1304（TodoWrite）**：它不在 decode 默认选中集，decode 不缓冲它，故既无观测也无修复。这正是本特性要补的洞——把检测+修复覆盖到**所有** tool_use 块。
 
 **硬边界**：清洗**只在 `content_block_stop` 已到达**时触发。B 类截断你无法凭空补出 Write 的剩余内容，强行"修"等于伪造——清洗器绝不能碰未 stop 的块。
 
@@ -43,15 +43,16 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 
 - 在 `content_block_stop` 缓冲某 tool_use 块的 `input_json_delta` 分片（`BufferedToolUse`，line 108-114）；
 - `finalize` 时 `JSON.parse(full)`（line 163）；
-- parse 失败已有 `onUndecodable("input-parse-failed")` 回调（line 167）作"完整块但 input 非法"的钩子；
-- 中断流（无 stop）由 `emitPendingAtStreamEnd` 原样吐出（line 128）——天然实现了 §1.1 的硬边界（B 类截断不被修）。
+- parse 失败已有 `onDecodeFailure` 回调（`DecodeFailureInfo.reason`，line 41/61，默认 sink `reportDecodeFailure(info, env.ctx)` line 97）作"完整块但 input 非法"的钩子；
+- 中断流（无 stop）由 `flush` 原样吐出（emitPendingAtStreamEnd 语义）——天然实现了 §1.1 的硬边界（B 类截断不被修）。
 
-新建并行 rewrite 会造**第二个缓冲器**，对同一 tool_use 块重复 buffer+parse，违 DRY + best-complete-solution。折叠进 decode 还**一举消解** order 级联（无需在 decode 前再插一层）、反向耦合（jsonrepair 产物 → decode 二次 backfill 的顺序问题）、以及下文 C1 的 fail 信号问题（decode 的回调已有 handler 接线点）。
+新建并行 rewrite 会造**第二个缓冲器**，对同一 tool_use 块重复 buffer+parse，违 DRY + best-complete-solution。折叠进 decode 还**一举消解** order 级联（无需在 decode 前再插一层）、反向耦合（jsonrepair 产物 → decode 二次 backfill 的顺序问题）、以及下文 C1 的 fail 信号问题（decode 的 `onDecodeFailure` 闭包已 over `env.ctx`，是现成的 handler 接线点）。
 
 具体：当 `tool_repair_malformed_input ≠ false` 时，
 
-1. 解码器把**缓冲集从"配置选中工具"扩展到所有 `tool_use` 块**（`server_tool_use` 仍硬排除，line 194 的 `block.type==="tool_use"` guard 不变；其语义注释在 line 152）。纯 happy-path（input 合法）零行为变化——`finalize` parse 成功即原样 replay（仅多一次已发生的 parse）。
-2. `finalize` 的 parse-失败分支（现 `onUndecodable` 点）改为先尝试**分层修复**（§2.3）：修好 → 用修复后对象继续既有 decode/backfill 流程并 re-emit；修不好 → 触发 fail 信号（§2.4）。
+1. 解码器把**缓冲集从"配置选中工具"扩展到所有 `tool_use` 块**（`server_tool_use` 仍硬排除，line 194 的 `block.type==="tool_use"` guard 不变；其语义注释在 line 152）。纯 happy-path（input 合法）的**内容**零变化（`finalize` parse 成功即原样 replay `rawDeltas`，不重打包），但 ON 时新纳入缓冲的合法块有**有意的时序变化**（改为 stop 时整块到达，同 recover/decode 既有延迟，非"零改动"）。
+2. `finalize` 的 parse-失败分支（现 `onDecodeFailure` 上报点）改为先尝试**分层修复**（§2.3）：修好 → 用修复后对象继续既有 decode/backfill 流程并 re-emit；修不好 → 触发 fail 信号（§2.4）。
+3. **激活开关**：`toolRepairMalformedInput !== false` 须加进 decode rewrite 的 `appliesTo`（现 `response-rewrite-adapters.ts` L192-193 仅含 decode/backfill 条件），否则用户关掉默认 `backfillQuestionFromHeader` 后 repair 会静默失效；并把 repair 模式经新 cfg/opts 参数传进 `createToolInputStreamDecoder`。
 
 > 备选（未采纳）：抽"缓冲 tool_use input 到 stop + parse"为共享 primitive 供 decode 与独立 repair-rewrite 复用。比折叠更"分离关注点"，但多一层抽象 + 仍需解决 fail 信号；当前单消费者下 YAGNI。若将来 OpenAI/Responses 也需此能力（§5 OQ-范围），再抽共享 primitive。
 
@@ -90,17 +91,17 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 
 **审查 C1（确认）**：`ResponseRewrite.transform/flush` 只返回 `FrameAction = emit|suppress|buffer`（`rewrite-registry.ts:76`），**无法从 rewrite 内触发 `ctx.fail`/`sink.writeSynthetic`**。真正的 fail 决策在 **handler 的 complete-分支**读 **handler 自持的 accumulator 标志位**（`handler-v4.ts:790` "outcome 是 complete、`acc.streamError` 才翻成 `ctx.fail`"；截断检测靠 `acc.sawMessageStop`，line 858/934-939）。所以"修不好→fail"**不能**在解码器内直接做，必须新设一条 decode→handler 的信号通道。
 
-**设计（镜像 `acc.sawMessageStop` 的成熟模式）**：
+**设计（plan-review 核验修正：信号挂 `ctx` 而非 `acc`）**：
 
-1. 解码器修复失败时，经其**既有回调** `onUndecodable`（已传入解码器、handler 侧持有）上报一个新原因 `reason:"input-unrepairable"`（携 tool 名 + 原始畸形字节）。
-2. handler 在构建解码器时注册该回调，置一个 handler-持有的标志 `acc.sawUnrepairableToolInput`（与 `acc.sawMessageStop` 同层、同生命周期）。
-3. handler 的 **complete-分支**（现读 `sawMessageStop`/`streamError` 处）增读该标志：置位则 `env.ctx.fail(...)` + `sink.writeSynthetic(anthropicErrorFrame(...))`，与截断检测**同一条 fail 路径**（这才是真正的"镜像"——复用 handler complete-分支的 fail 机制，而非臆想 rewrite 内 fail）。
+1. 解码器修复失败时，经**既有 `onDecodeFailure` 回调**上报新原因 `DecodeFailureInfo.reason:"input-unrepairable"`（携 tool 名 + 原始字节）。
+2. 该回调闭包**已 over `env.ctx`**（现 `onDecodeFailure: (info) => reportDecodeFailure(info, env.ctx)`，L199/214），故在 `env.ctx` 上置一个标志（如 `ctx.sawUnrepairableToolInput`）。**必须挂 ctx 而非 acc**——handler 的 `acc` 在 buffered-retry 的 `onAttemptReset` 会被 `createAnthropicStreamAccumulator()` 重建（`handler-v4.ts` L863），挂 acc 的标志会在重试时被清掉；`ctx` 跨 attempt 存活。（修正了旧 spec "镜像 `acc.sawMessageStop`" 的错误类比——`sawMessageStop` 走 raw-上游 accumulator 轨，decode 失败走 S5 rewrite 轨，二者不同源。）
+3. handler 的 **complete-分支**（`handler-v4.ts` L949-984，现读 `acc.streamError`/`acc.sawMessageStop` 处）增读 `ctx` 该标志：置位则 `env.ctx.fail(...)` + `sink.writeSynthetic(anthropicErrorFrame(...))`，与截断检测**同一条 fail 出口**。**与截断叠加优先级**（`block_stop✓+message_stop✗` 象限）：unrepairable 在 `streamError` 之后判，与 truncation 同档（先到先判，error 帧二选一，须在 P4 定序）。
 
 history 记失败 + 保留残缺投影；客户端据合成 error 帧原生重试拿干净响应。**绝不伪造**（不发空 input、不发降级 text）。fail 兜底的**质量**依 `protect_streaming_generation` 而异，见 §2.6。
 
 ### 2.5 非流式（transformWhole）
 
-**审查 M2（修订）**：旧 spec 说非流式畸形"表现为整 body parse 失败或 input 落成字符串"——**前半不可达**：`transformWhole(response, env)` 接收的是**已 parse 的 response 对象**（`driver.ts` `runResponseWhole`），若整 body parse 失败，driver 在更早的反序列化阶段就拿不到结构化对象、`transformWhole` 根本不被调到（那种情况是上游 200+坏 JSON，归 `non-streaming-completeness` / parsing 层，不在本特性）。本特性非流式**只处理** `tool_use.input` 落成**字符串且非法**的块：走同一分层修复 + 同一 fail 兜底（非流式的 fail 直接由 `transformWhole` 调用方在 handler 侧判，无跨帧信号问题）。主要观测来自流式，非流式作平行覆盖（镜像 decode/recover 双路径）。
+**审查 M2（修订）**：旧 spec 说非流式畸形"表现为整 body parse 失败或 input 落成字符串"——**前半不可达**：`transformWhole(response, env)` 接收的是**已 parse 的 response 对象**（`driver.ts` `runResponseWhole`），若整 body parse 失败，driver 在更早的反序列化阶段就拿不到结构化对象、`transformWhole` 根本不被调到（那种情况是上游 200+坏 JSON，归 `non-streaming-completeness` / parsing 层，不在本特性）。本特性非流式**只处理** `tool_use.input` 落成**字符串且非法**的块：走同一分层修复。**非流式 fail 走同一 ctx 标志**——decode 的 `transformWhole`（L208）的 `onDecodeFailure` 闭包同样 over `env.ctx`，unrepairable 时置 `ctx.sawUnrepairableToolInput`，handler 在 `renderNonStreamingV4` 调 `runResponseWhole` **之后**（`handler-v4.ts` L681/695 区，现有 `anthropicNonStreamingTruncation` gate 旁）增读该标志判 fail（`runResponseWhole` 本身无错误回传通道，故经 ctx 标志而非返回值）。主要观测来自流式，非流式作平行覆盖。
 
 ## 2.6 独立生效性与 protect_streaming_generation 的正交关系
 
@@ -138,8 +139,9 @@ history 记失败 + 保留残缺投影；客户端据合成 error 帧原生重�
 ## 4. 测试计划
 
 - 单元（`tests/anthropic/`）：Layer 1 结构感知剥标签（含"字符串值合法含 `</parameter>` 字面量不被误伤"+ 中置标签 + 多块各自畸形 + 单层对象 的反例）；Layer 2 jsonrepair 对 **1304 抛异常被 try/catch 兜住**、对 **965 真实字节正确修复（语义保真）** 的实测断言；合法 input 零改动快路径；`server_tool_use` 不受影响。
-- 流式（`.http`）：用 1304 + 965 **真实帧序**作 fixture，断言 `tags`/`repair` 下转发 input 合法、history 保原貌；不可修复（构造一个 strip+jsonrepair 都修不了的）→ `acc.sawUnrepairableToolInput` 置位 → handler fail + 合成 error 帧。
-- 跨层信号（`.http`）：断言解码器 `onUndecodable("input-unrepairable")` → handler complete-分支 fail 的整条通道（C1 的新机制必须有 e2e 测试）。
+- 流式（`.http`）：用 1304 + 965 **真实帧序**作 fixture，断言 `tags`/`repair` 下转发 input 合法、history 保原貌、**re-emit 帧过 `assertEventLineInvariant`**（合成 `input_json_delta` 须带正确 event 行，否则 Claude Code SDK 静默丢帧，同 recover-tool-call 旧坑）；不可修复（构造一个 strip+jsonrepair 都修不了的）→ handler fail + 合成 error 帧。
+- 跨层信号（`.http`）：断言解码器 `onDecodeFailure(reason:"input-unrepairable")` → 置 `ctx` 标志 → handler complete-分支 fail 的整条通道（C1 的新机制须有 e2e 测试）。**测可观测行为**（fail + 合成 error 帧 + history 记失败），不锁内部字段名（self-consistent-needs-independent-oracle）。
+- buffered-retry：unrepairable 信号挂 ctx，断言 `onAttemptReset` 重建 acc 后信号**不丢**（若误挂 acc 会被清，此测防回归）。
 - 截断 regression：B 类（无 `content_block_stop`）**绝不**被修，仍走截断检测（`emitPendingAtStreamEnd` 原样吐）。
 - 四象限 gate（审查 M3/H-gate）：`block_stop✓ + message_stop✗`（块完整但整体截断）—— 断言修复与截断检测的交叠行为明确（修了块、整体仍 fail）；`block_stop✓ + stop_reason≠tool_use` —— 断言不误修。
 - golden：`false` 下逐字节同前（baseline lock）。
@@ -169,3 +171,14 @@ history 记失败 + 保留残缺投影；客户端据合成 error 帧原生重�
 - **C1（确认）**：`FrameAction = emit|suppress|buffer`（`rewrite-registry.ts:76`），rewrite 无 fail 路径；fail 由 handler complete-分支读 `acc`（`handler-v4.ts:790/934-939`）。→ 采纳：§2.4 新设 decode→handler 信号通道。
 - **H1（确认）**：`decode-tool-input.ts` 已缓冲 input_json_delta 到 content_block_stop + `JSON.parse`（line 163）+ `onUndecodable("input-parse-failed")`（line 167）+ 中断流原样吐（line 128）。→ 采纳：§2.0 折叠进 decode 而非并行 rewrite。并修订旧 spec "完全静默"：965/921（AskUserQuestion）decode 已检出，仅 1304（TodoWrite，非选中集）静默。
 - **C2（reviewer 实测结论部分错误，主线推翻）**：reviewer 用**自己捏造的** `{"q":"\\\\u67b6"}` 测出"jsonrepair 语义改坏"。主线用**真实 965 字节**亲测：jsonrepair **正确修复**（补缺失 `]}`，parse 后含**真实中文汉字**、无字面 `\u` 残留）——965 真因是结构缺括号非过度转义。**纠正**：jsonrepair 对结构类有效且语义保真，"语义改坏"是 reviewer 测错样本的伪结论。**保留**有效告诫：jsonrepair 对 antml-bleed 会 `throw`（须 try/catch），且为启发式（保留 before/after diff 审计）。
+
+### 7.1 plan-review 接线层核验修正（第二轮，主线逐条对照源码确认 reviewer 全对）
+
+plan 草稿描述接线时"镜像既有模式"但臆造了符号名与数据流，经主线核验全部修正：
+
+- **回调名**：臆造的 `onUndecodable` **不存在**；真实是 `ToolInputRewriteOptions.onDecodeFailure`（L61）+ `DecodeFailureInfo.reason`（L41）+ 默认 sink `reportDecodeFailure(info, env.ctx)`（L97）。全文已改。
+- **fail 信号载体 acc→ctx**：`acc.sawMessageStop` 走 raw-上游 accumulator 轨（`stream-accumulator.ts` L116/179）；decode 失败走 S5 rewrite 的 `onDecodeFailure` 闭包（over `env.ctx`，L199/214），**不同源**。且 `onAttemptReset`（`handler-v4.ts` L863）在 buffered-retry 重建 acc → 挂 acc 的标志会丢。**改为挂 `ctx`**（§2.4）。
+- **激活开关漏写**：decode `appliesTo`（L192-193）不含 `toolRepairMalformedInput`；不补则 repair 开但 decode/backfill 全关时静默失效。§2.0 已补。
+- **非流式 fail 通道**：`runResponseWhole` 无错误返回；经 `transformWhole` 的 `onDecodeFailure`→ctx 标志，handler L681/695 区增读（§2.5）。
+- **FeatureKind 排序**：`recordFeature` 的 kind 是封闭联合，须在首个打 tag 的 phase 前扩展（plan P0/P3 前置，非 P6）。
+- **happy-path ON 时序**：合法块新纳入缓冲后改为 stop 时整块到达（有意时序变化，同 recover/decode），**内容**仍 byte-identical 且**不**重打包（`finalize` 对未变 input 原样 replay `rawDeltas`）。reviewer 的"re-pack 单 delta"担忧方向错，真实是时序。
