@@ -24,6 +24,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { resetAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
+import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
   _resetShutdownState,
@@ -110,6 +111,32 @@ describe("createUpstreamHttpTransport", () => {
     await expect(transport.send(makeWire({ url: "/responses", stream: false, body: { model: "gpt-5", input: [], stream: false } }), makeEnv())).rejects.toThrow(
       /Failed to create responses/,
     )
+  })
+
+  // Guards the load-bearing wire.url contract (client-query-forwarding Step 6): the forwarded
+  // query is appended to endpointPath ONLY — `errorLabelFor(wire.url)` must keep seeing the clean
+  // path. If a future refactor mutated `wire.url` to carry the query, errorLabelFor would fall
+  // through to the generic "chat completions" label and this assertion would fail.
+  test("forwarded query present → endpointPath gets the query, errorLabelFor keeps the clean MESSAGES label", async () => {
+    let capturedUrl = ""
+    setFetchMock((input) => {
+      capturedUrl =
+        typeof input === "string" ? input
+        : input instanceof URL ? input.href
+        : input.url
+      return new Response(JSON.stringify({ error: "bad" }), { status: 400, headers: { "content-type": "application/json" } })
+    })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+    const env = {
+      model: { id: "claude" },
+      clientFormat: "anthropic",
+      ctx: { addQueueWaitMs: () => {}, query: { raw: "?beta=true", forwarded: "?beta=true" } },
+    } as unknown as RequestEnvelope
+
+    await expect(
+      transport.send(makeWire({ url: ENDPOINT.MESSAGES, stream: false, body: { model: "claude", messages: [], stream: false } }), env),
+    ).rejects.toThrow(/Failed to create messages/) // NOT the generic fallback → errorLabelFor saw the clean wire.url
+    expect(new URL(capturedUrl).searchParams.get("beta")).toBe("true") // query reached the upstream URL on the error path too
   })
 })
 
