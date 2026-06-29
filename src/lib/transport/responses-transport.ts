@@ -97,7 +97,7 @@ async function selectAndSend(wire: PreparedRequest, env: RequestEnvelope, deps: 
     reportTransport(env, "http")
   }
 
-  return sendViaHttp(wire, deps, reaperSignal)
+  return sendViaHttp(wire, deps, reaperSignal, env.ctx.query?.forwarded ?? "")
 }
 
 /** Report the chosen transport on the ctx attempt (legacy `onTransport` → `setAttemptTransport`). */
@@ -106,13 +106,20 @@ function reportTransport(env: RequestEnvelope, transport: RequestTransport): voi
 }
 
 /** HTTP send: pure fetch (no client-abort folded in — Responses-historical) + guard on stream. */
-async function sendViaHttp(wire: PreparedRequest, deps: UpstreamResponsesTransportDeps, reaperSignal?: AbortSignal): Promise<UpstreamStream> {
+async function sendViaHttp(
+  wire: PreparedRequest,
+  deps: UpstreamResponsesTransportDeps,
+  reaperSignal?: AbortSignal,
+  forwardedQuery = "",
+): Promise<UpstreamStream> {
   // Transport-local capture (RFC Phase 2 — no handler-threaded bag); fills `.response`
   // so we can surface upstream response headers as `UpstreamStream.headers` (read by
   // the driver to write ctx.httpHeaders.outboundResponse).
   const headersCapture: HeadersCapture = {}
   const result = await sendUpstreamHttp({
-    endpointPath: wire.url,
+    // Append the forwarded client query to the upstream URL ONLY (errorLabel stays
+    // the static literal; wire.url is not mutated).
+    endpointPath: wire.url + forwardedQuery,
     headers: Object.fromEntries(wire.headers.entries()),
     body: wire.body,
     stream: wire.stream,

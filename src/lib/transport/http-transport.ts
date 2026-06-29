@@ -68,7 +68,9 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
 
       const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
         sendUpstreamHttp({
-          endpointPath: wire.url,
+          // Append the forwarded client query to the upstream URL ONLY (never mutate
+          // `wire.url` — `errorLabelFor(wire.url)` below relies on `=== ENDPOINT.*`).
+          endpointPath: wire.url + (env.ctx.query?.forwarded ?? ""),
           headers,
           body: wire.body,
           stream: wire.stream,
