@@ -82,10 +82,25 @@ function responsesBody(model: string): Response {
   )
 }
 
+function chatCompletionsBody(model: string): Response {
+  return new Response(
+    JSON.stringify({
+      id: "chatcmpl_1",
+      object: "chat.completion",
+      created: 0,
+      model,
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  )
+}
+
 const upstreamFetchMock = mock((input: string | URL | Request) => {
   const url = urlOf(input)
   capturedUrls.push(url)
   if (url.includes("/responses")) return Promise.resolve(responsesBody("gpt-4o"))
+  if (url.includes("/chat/completions")) return Promise.resolve(chatCompletionsBody("gpt-4o"))
   return Promise.resolve(anthropicBody("claude-sonnet-4.6"))
 })
 
@@ -148,6 +163,16 @@ describe("client query-string forwarding (e2e)", () => {
     })
 
     expect(upstreamUrlFor("/responses").searchParams.get("trace")).toBe("abc")
+  })
+
+  test("Chat Completions (codec.parse pass-through): forwards client query upstream", async () => {
+    await app.request("/v1/chat/completions?foo=bar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "Hi" }], stream: false }),
+    })
+
+    expect(upstreamUrlFor("/chat/completions").searchParams.get("foo")).toBe("bar")
   })
 
   test("off switch: forwardClientQuery=false sends a clean upstream URL (no query)", async () => {
