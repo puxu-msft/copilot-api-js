@@ -281,6 +281,29 @@ describe("accumulateAnthropicStreamEvent", () => {
     expect(acc.outputTokens).toBe(150)
   })
 
+  test("message_delta captures non-empty context_management.applied_edits", () => {
+    const acc = createAnthropicStreamAccumulator()
+    accumulateAnthropicStreamEvent(
+      {
+        type: "message_delta",
+        delta: { stop_reason: "tool_use" },
+        usage: { output_tokens: 80 },
+        context_management: { applied_edits: [{ type: "clear_tool_uses_20250919", cleared_input_tokens: 9000 }] },
+      } as any,
+      acc,
+    )
+    expect(acc.appliedContextEdits).toEqual([{ type: "clear_tool_uses_20250919", cleared_input_tokens: 9000 }])
+  })
+
+  test("message_delta with empty applied_edits leaves accumulator untouched", () => {
+    const acc = createAnthropicStreamAccumulator()
+    accumulateAnthropicStreamEvent(
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 }, context_management: { applied_edits: [] } } as any,
+      acc,
+    )
+    expect(acc.appliedContextEdits).toEqual([])
+  })
+
   test("accumulates multiple tool calls", () => {
     const acc = createAnthropicStreamAccumulator()
 

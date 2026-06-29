@@ -145,6 +145,13 @@ export type FeatureKind =
   | "pre-stream-grace-commit"
   /** ③ pre-response-grace upstream RESOLVED after an early commit — `detail: { totalStalledMs: number }`. */
   | "pre-stream-grace-resolved"
+  /**
+   * Upstream applied context_management edits — its authoritative receipt that our injected
+   * `context_management` (context_editing / L2 escalation) actually cleared context.
+   * `detail: { count: number, clearedInputTokens: number, types: string[] }`. Only recorded when
+   * `applied_edits` is non-empty (an empty receipt means upstream cleared nothing).
+   */
+  | "context-edits-applied"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 

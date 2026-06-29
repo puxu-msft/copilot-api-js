@@ -61,6 +61,11 @@ import type {
 } from "~/types/api/anthropic"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
+import {
+  //
+  extractAppliedEdits,
+  summarizeAppliedEdits,
+} from "~/lib/anthropic/applied-context-edits"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
@@ -668,6 +673,14 @@ function renderNonStreamingV4(
     reqCtx.complete(responseData)
   }
 
+  // Diagnostic receipt: upstream reports its applied context edits at top-level context_management.
+  // Record only when it actually cleared something — the authoritative signal that our injected
+  // context_management did anything.
+  const ctxEdits = summarizeAppliedEdits(extractAppliedEdits((response as { context_management?: unknown }).context_management))
+  if (ctxEdits.count > 0) {
+    reqCtx.recordFeature("context-edits-applied", { count: ctxEdits.count, clearedInputTokens: ctxEdits.clearedInputTokens, types: ctxEdits.types })
+  }
+
   return clientResponse
 }
 
@@ -893,6 +906,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   // outcome.kind === "complete" — the upstream drained cleanly.
   const summaryParts = [`↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`]
   if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
+  const ctxEdits = summarizeAppliedEdits(acc.appliedContextEdits)
+  if (ctxEdits.count > 0) {
+    summaryParts.push(`ctx_cleared:${ctxEdits.clearedInputTokens}tok×${ctxEdits.count}`)
+    env.ctx.recordFeature("context-edits-applied", { count: ctxEdits.count, clearedInputTokens: ctxEdits.clearedInputTokens, types: ctxEdits.types })
+  }
   consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
   if (acc.streamError) {
@@ -909,7 +927,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     // its SDK gets a clean terminator instead of a dangling, unterminated stream. This is
     // the complete-but-truncated branch, NOT the H3 stream-error path: the writeSynthetic
     // is NEW here (non-sampling wire write — the error frame never enters the forwarded
-    // track). See docs/rfc/upstream-stream-truncation-detection.md.
+    // track). See docs/spec/upstream-stream-truncation-detection.md.
     const partial = buildAnthropicResponseData(acc, model)
     consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
     env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {

@@ -13,6 +13,7 @@ import type {
   RawMessageStartEvent,
 } from "~/types/api/anthropic"
 
+import { extractAppliedEdits } from "./applied-context-edits"
 import { isServerToolResultType } from "./server-tool-filter"
 
 // ============================================================================
@@ -110,11 +111,17 @@ export interface AnthropicStreamAccumulator extends BaseStreamAccumulator {
    * Whether the mandatory `message_stop` terminator was seen. A complete Anthropic
    * stream ALWAYS ends with `message_stop`; its absence on a clean-EOF `complete`
    * outcome means the upstream truncated mid-message (see
-   * `docs/rfc/upstream-stream-truncation-detection.md`).
+   * `docs/spec/upstream-stream-truncation-detection.md`).
    */
   sawMessageStop: boolean
   /** Server-side tool search request count from usage.server_tool_use */
   toolSearchRequests: number
+  /**
+   * Raw `context_management.applied_edits` from the final `message_delta` — the upstream's
+   * authoritative receipt of which context edits it actually applied (empty when nothing was
+   * cleared). Observability only; summarized via `summarizeAppliedEdits`.
+   */
+  appliedContextEdits: Array<unknown>
 }
 
 /** Create a fresh Anthropic stream accumulator */
@@ -131,6 +138,7 @@ export function createAnthropicStreamAccumulator(): AnthropicStreamAccumulator {
     copilotAnnotations: [],
     toolSearchRequests: 0,
     sawMessageStop: false,
+    appliedContextEdits: [],
   }
 }
 
@@ -159,6 +167,10 @@ export function accumulateAnthropicStreamEvent(event: StreamEvent, acc: Anthropi
     }
     case "message_delta": {
       handleMessageDelta(event.delta as MessageDelta, event.usage as MessageDeltaUsage, acc)
+      // The upstream reports its applied context edits as a sibling of delta/usage; keep the raw
+      // array for the diagnostic receipt (empty = upstream cleared nothing this turn).
+      const applied = extractAppliedEdits((event as { context_management?: unknown }).context_management)
+      if (applied.length > 0) acc.appliedContextEdits = applied
       break
     }
     case "message_stop": {

@@ -36,6 +36,7 @@ function makeAnthropicAcc(overrides: Partial<AnthropicStreamAccumulator> = {}): 
     copilotAnnotations: [],
     toolSearchRequests: 0,
     sawMessageStop: true,
+    appliedContextEdits: [],
     ...overrides,
   }
 }
