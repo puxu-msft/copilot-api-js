@@ -1,19 +1,15 @@
 /**
  * Shared header-name matching primitive for the proxy's header-boundary policies.
  *
- * Both directions filter headers crossing the proxy boundary by the same idiom —
- * "is this (already-lowercased) header name in an exact set OR under a prefix" —
- * but with direction-specific sets and threat models:
- *   - request side (`./request-header-forward.ts`): the passthrough sensitive denylist
- *     (`strict_request_headers`), so client credentials / proxy namespaces never
- *     reach the upstream.
- *   - response side (`./response-header-forward.ts`): the strict-mode
- *     allowlist (`strict_response_headers`), so only known-safe upstream headers
- *     reach the client.
+ * Tests whether an (already-lowercased) header name is in an exact set OR under a
+ * prefix. Consumed by the request side (`./request-header-forward.ts`) for the
+ * passthrough sensitive denylist (`strict_request_headers`), so client credentials /
+ * proxy namespaces never reach the upstream.
  *
- * Only this name-matching mechanic is shared; the policy sets and the selectors
- * stay in their own modules (different reserved sets, strict semantics, and the
- * request side's extra glob-strip layer make a merged selector false cohesion).
+ * NOTE: the response side (`./response-header-forward.ts`) used to consume this for its
+ * strict-mode allowlist, but its exact+prefix allowlist was migrated to the shared glob
+ * primitives in `./header-glob-strip.ts` (it now mirrors the request side's blacklist/
+ * whitelist mode), so only the request side consumes this matcher today.
  */
 
 /**

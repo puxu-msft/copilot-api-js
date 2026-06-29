@@ -147,11 +147,30 @@ export const AnthropicConfigSchema = z
   .object({
     tool_strip_server: nullableBoolean(),
     /**
-     * Forward upstream (GHC) response headers to the client. `false` (default) = permissive
-     * (everything except the proxy-controlled blacklist); `true` = strict (known allowlist only).
+     * Upstream→client response-header forwarding MODE (Anthropic path). `false`
+     * (default) = BLACKLIST: forward everything except `response_header_blacklist`.
+     * `true` = WHITELIST: forward ONLY headers matching `response_header_whitelist`.
+     * Both modes apply the same security floor first (`PROXY_CONTROLLED_RESPONSE_HEADERS`
+     * always removed). Client-side mirror of `strict_request_headers`.
      * See `lib/anthropic/header-policy/response-header-forward.ts`.
      */
     strict_response_headers: nullableBoolean(),
+    /**
+     * BLACKLIST-mode glob list (header name, `*`/`?`): upstream response header names
+     * stripped from the forwarded set (active when `strict_response_headers: false`). Acts
+     * on the security-floor subset only (never `PROXY_CONTROLLED_RESPONSE_HEADERS`). Default
+     * `[]` strips nothing — equivalent to the old permissive `strict_response_headers:false`.
+     * `[]` clears; absence retains the running value. Empty-string items rejected.
+     */
+    response_header_blacklist: nullableNonemptyStringArray(),
+    /**
+     * WHITELIST-mode glob list (header name, `*`/`?`): the ONLY upstream response header
+     * names forwarded (active when `strict_response_headers: true`). `[]` forwards nothing
+     * (full isolation). Default = the known-safe allowlist (request-id, x-request-id,
+     * anthropic-ratelimit-*, anthropic-organization-id, retry-after) — equivalent to the old
+     * strict `strict_response_headers:true`. Absence retains; empty-string items rejected.
+     */
+    response_header_whitelist: nullableNonemptyStringArray(),
     /**
      * Client→upstream request-header forwarding MODE (Anthropic path). `false`
      * (default) = BLACKLIST: forward client headers except `request_header_blacklist`.

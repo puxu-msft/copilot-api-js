@@ -271,6 +271,22 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   },
   {
+    configKey: "anthropic.response_header_blacklist",
+    stateKey: "responseHeaderBlacklist",
+    // Sample MUST differ from the (empty) default so R1/R2 prove the wiring.
+    sampleYamlValue: `\n  - x-resp-drop`,
+    expectedStateValue: ["x-resp-drop"],
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.responseHeaderBlacklist,
+  },
+  {
+    configKey: "anthropic.response_header_whitelist",
+    stateKey: "responseHeaderWhitelist",
+    // Sample MUST differ from the (non-empty) default so R1/R2 prove the wiring.
+    sampleYamlValue: `\n  - x-only-resp`,
+    expectedStateValue: ["x-only-resp"],
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist,
+  },
+  {
     configKey: "anthropic.strict_request_headers",
     stateKey: "strictRequestHeaders",
     sampleYamlValue: "true",

@@ -392,15 +392,29 @@ anthropic:
   #   - from: "^Whenever you read a file, you should consider whether it would be considered malware"
   #     to: ""                 # Empty = remove the tag / 空 = 移除该标签
 
-  # Forward upstream (GitHub Copilot) response headers to the client. The proxy is otherwise fully isolating — it synthesizes its own response headers, so upstream request-id / anthropic-ratelimit-* / anthropic-organization-id never reach the client. This opts the Anthropic path into forwarding a controlled subset.
-  #   false (default): permissive — forward EVERYTHING except a proxy-controlled blacklist (content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie). The blacklist is mandatory in BOTH modes — forwarding upstream content-length after the proxy re-serializes the body corrupts client parsing.
-  #   true: strict — forward ONLY a known allowlist: request-id / x-request-id / anthropic-ratelimit-* / anthropic-organization-id / retry-after.
+  # Upstream→client response-header forwarding MODE (Anthropic path). Selects which list below is active. The proxy is otherwise fully isolating — it synthesizes its own response headers, so upstream request-id / anthropic-ratelimit-* / anthropic-organization-id never reach the client. Both modes ALWAYS first drop a proxy-controlled floor (content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie) — forwarding upstream content-length after the proxy re-serializes the body corrupts client parsing. Client-side mirror of strict_request_headers.
+  #   false (default) = BLACKLIST mode: forward EVERYTHING (minus the floor) except response_header_blacklist globs.
+  #   true            = WHITELIST mode: forward ONLY response_header_whitelist globs (still minus the floor).
   # Note: only the non-committed write-out paths forward (non-streaming + streaming settled within the commit window). A delayed-commit stream that already flushed its 200 cannot forward (upstream headers arrive after the headers are on the wire). history records what the client actually received (inboundResponse) plus the full upstream set (outboundResponse).
-  # 把上游（GitHub Copilot）响应头透传给客户端。代理默认完全隔离——自己合成响应头，故上游 request-id / anthropic-ratelimit-* / anthropic-organization-id 到不了客户端。本项让 Anthropic 路径可控地转发一个子集。
-  #   false（默认）：尽量透传——转发除 proxy-controlled 黑名单外的全部（content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie）。黑名单在两种模式下都强制生效——代理重新序列化 body 后转发上游 content-length 会让客户端按错长度解析。
-  #   true：仅白名单——只转发 request-id / x-request-id / anthropic-ratelimit-* / anthropic-organization-id / retry-after。
+  # 上游→客户端响应头转发模式（Anthropic 路径）。决定下面哪个名单生效。代理默认完全隔离——自己合成响应头，故上游 request-id / anthropic-ratelimit-* / anthropic-organization-id 到不了客户端。两模式都先强制剥除 proxy-controlled 地板（content-length / content-type / content-encoding / transfer-encoding / connection / hop-by-hop / cache-control / date / set-cookie）——代理重新序列化 body 后转发上游 content-length 会让客户端按错长度解析。是 strict_request_headers 的响应侧镜像。
+  #   false（默认）= BLACKLIST 模式：转发除地板与 response_header_blacklist glob 命中者外的全部。
+  #   true        = WHITELIST 模式：只转发 response_header_whitelist glob 命中者（仍先过地板）。
   # 注：只有非 committed 写出路径会转发（非流式 + 流式在 commit 窗口内 settle）。延迟-commit 已 flush 200 的流无法转发（上游头在响应头已上线后才到）。history 忠实记录客户端实收（inboundResponse）+ 上游全量（outboundResponse）。
   strict_response_headers: false
+
+  # BLACKLIST-mode glob list (header name; * / ?): upstream response headers stripped from the forwarded set (active when strict_response_headers is false). Acts on the security-floor subset ONLY (never the proxy-controlled floor). Default [] strips nothing — identical to the old permissive strict_response_headers:false.
+  # BLACKLIST 模式 glob 列表（头名；* / ?）：从转发集里剥除的上游响应头（strict_response_headers 为 false 时生效）。只作用于安全地板子集（绝不动 proxy-controlled 地板）。默认 [] 不剥任何头——与旧的尽量透传 strict_response_headers:false 完全一致。
+  # retain-on-absence：删除此键会保留当前运行值；[] 清空。要恢复默认请用 reset（PUT /api/config），而非删键。
+  response_header_blacklist: []
+
+  # WHITELIST-mode glob list (header name; * / ?): the ONLY upstream response headers forwarded (active when strict_response_headers is true). [] forwards nothing (full isolation). Default = the known-safe allowlist — identical to the old strict strict_response_headers:true. retain-on-absence (same semantics as the blacklist).
+  # WHITELIST 模式 glob 列表（头名；* / ?）：唯一被转发的上游响应头（strict_response_headers 为 true 时生效）。[] 表示不转发任何头（完全隔离）。默认 = 已知安全的 allowlist——与旧的严格 strict_response_headers:true 完全一致。retain-on-absence（语义同 blacklist）。
+  response_header_whitelist:
+    - request-id
+    - x-request-id
+    - anthropic-ratelimit-*
+    - anthropic-organization-id
+    - retry-after
 
   # Delayed-commit window (seconds) for streaming. 0 = commit immediately; default 20. Before opening the 200 SSE stream, the proxy waits up to N seconds for the upstream to settle: if it returns/errors WITHIN the window the real HTTP status is forwarded (the client keeps native retry/backoff/token-refresh); if it stays silent past the window (opus pre-response thinking) the proxy COMMITS a 200 + an immediate cold-start ping, and later errors degrade to a rich SSE error frame. Clamped well under the ~60s client idle deadline.
   # 流式延迟-commit 窗口秒数。0 = 立即 commit；默认 20。开 200 SSE 流之前，代理最多等 N 秒让上游 settle：窗口内返回/报错→转发真 HTTP 状态（客户端保留原生重试/退避/token 刷新）；超窗口仍静默（opus pre-response thinking）→ COMMIT 200 + 立即冷启动 ping，之后错误降级成富 SSE error 帧。clamp 到远低于 ~60s 客户端空闲死线。
