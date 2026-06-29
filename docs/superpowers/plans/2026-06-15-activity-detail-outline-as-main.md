@@ -8,7 +8,7 @@
 
 **Tech Stack:** Vue 3 + Vuetify 4 + Vite (UI subdir); Pinia (setup store); bun test (`ui/tests/`) for composables/utils, vitest + `@vue/test-utils` + `mountWithVuetifyStubs` (`ui/vitest/`) for components; `@vueuse/core` (`useLocalStorage`, `onKeyStroke`); paths `@/*` → `ui/src/*`, `~backend/*` → `src/*`.
 
-**Reference:** `docs/rfc/activity-detail-main-outline.md` v3.1 — Selection union §2.3, id table §2.3.1, sticky logic §2.4, provider rehoming §2.5, OutlineHeader §2.6, positionMap §2.7, cross-stage §2.8, ghost §2.9, virtualization §2.11, outline visual §2.12, keyboard §2.14, deferred §9.
+**Reference:** `docs/spec/activity-detail-main-outline.md` v3.1 — Selection union §2.3, id table §2.3.1, sticky logic §2.4, provider rehoming §2.5, OutlineHeader §2.6, positionMap §2.7, cross-stage §2.8, ghost §2.9, virtualization §2.11, outline visual §2.12, keyboard §2.14, deferred §9.
 
 ---
 

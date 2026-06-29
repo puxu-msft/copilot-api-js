@@ -38,4 +38,4 @@ emit({ payload: foo })
 
 **Tested 2026-06-14, TypeScript ~5.x, bun 1.3.14.** 记录在 https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-8.html#type-only-imports-and-exports。
 
-Related: [[feedback_optimize_long_term_maintainability]]、CLAUDE.md 原则9。
+Related: [[feedback_optimize_long_term_maintainability]]、CLAUDE.md single-source-of-truth-types。

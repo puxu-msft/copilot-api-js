@@ -26,7 +26,7 @@ metadata:
 **已实现的修复（A+B 双路径设计）**：
 - pass-through（模型不搜索，最常见）→ 重派原 `anthropicPayload` 走 `handleDirectAnthropicCompletion`，获得真流式 + thinking-signature shim + 正确 tool_use（根治 corrupt thinking + 消除假流代价）。
 - searched → 保留合成 SSE；synthesize.ts `buildStartContentBlock`/`buildContentBlockDeltas` 加 thinking/redacted_thinking 防御分支（start 不嵌 signature，拆 thinking_delta+signature_delta）。
-- orchestrator 拆 `runFirstHopProbe`/`completeWebSearch`；probe 用 requestContext:undefined 不污染 reqCtx；probe usage 记入 `web_search_probe` warning（原则3）。
+- orchestrator 拆 `runFirstHopProbe`/`completeWebSearch`；probe 用 requestContext:undefined 不污染 reqCtx；probe usage 记入 `web_search_probe` warning（richest-data-flow）。
 - 代价：pass-through 多一次 probe 调用（与搜索路径对称，用户确认选最高质量方案）。
 - 经两轮 subagent review（plan + impl）+ 主线亲手复核，2213 后端测试 0 fail。计划见 .claude/plans/imperative-hopping-twilight.md。待用户重启服务器实测验证。
 

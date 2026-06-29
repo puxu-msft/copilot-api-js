@@ -15,4 +15,4 @@ metadata:
 
 **④ 内容寻址 dedup 必须有 ratio tripwire。** `total req_msg / distinct msg_blob` 远低于实测基线（~40×）即 WARN——归一化 strip-list 漏一种易变子串→该类消息每轮 re-hash→去重退化→悄悄 bloat（正是本特性要消的 2.77GB 问题）。把隐性 landmine 变可检测回归，呼应 [[feedback-pass-null-clean-not-self-validating]]。完成时 + 每启动算并存 history_meta + 日志。
 
-落地：`src/lib/history/sqlite/search-index-backfill.ts`、设计 `docs/rfc/search-index-content-addressed.md`。
+落地：`src/lib/history/sqlite/search-index-backfill.ts`、设计 `docs/spec/search-index-content-addressed.md`。

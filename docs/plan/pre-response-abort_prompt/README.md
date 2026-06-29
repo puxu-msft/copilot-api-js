@@ -51,7 +51,7 @@ P3 也独立依赖 L2 字段冻结(与 P2 解耦但建议同期,避免二次改�
 ## 通用必读（每个 prompt 开场先读，复核 file:line——代码会漂移）
 
 ```
-docs/rfc/pre-response-abort-handling.md     # RFC 设计稿(§3 ①②/§4 ③/§4.2.5 错误保真/§5 commit 表/§6 Open Qs/§2 缺陷④⑤)
+docs/spec/pre-response-abort-handling.md     # RFC 设计稿(§3 ①②/§4 ③/§4.2.5 错误保真/§5 commit 表/§6 Open Qs/§2 缺陷④⑤)
 docs/DESIGN.md                              # v4 七阶段管线现状 + "活的架构现状"表 + 运行时选项表
 docs/memory/project-pre-response-abort-rfc.md  # 项目 memory(进度 + 触发条件)
 ```

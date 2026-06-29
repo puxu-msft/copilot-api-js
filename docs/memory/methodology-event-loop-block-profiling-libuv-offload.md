@@ -5,7 +5,7 @@ metadata:
   type: reference
 ---
 
-服务器/代理找事件循环阻塞热点的方法论与一组实证事实（本项目 history finalize 异步卸载，[[project-pre-response-abort-rfc]] 邻域；活档 docs/rfc/history-finalize-async-offload.md + exp/hot-path-profile/）。
+服务器/代理找事件循环阻塞热点的方法论与一组实证事实（本项目 history finalize 异步卸载，[[project-pre-response-abort-rfc]] 邻域；活档 docs/spec/history-finalize-async-offload.md + exp/hot-path-profile/）。
 
 **裁决方法（empirical-verification，静态读只给候选）**：
 - **metronome 探针**：`setInterval(()=>记录 Bun.nanoseconds() 间隔, 1)` 量 tick jitter（max-gap/p99）。同步 CPU 期间 max-gap≈wall（全程零 tick=冻结）；真卸载后 max-gap 落到个位/十几 ms。这是裁决"某段 CPU 是否阻塞事件循环"的唯一可信探针——`dispatch 被调/请求 200/wall 变快`都不自证（pass-null 盲点，同 [[methodology-keepalive-needs-kernel-ss-probe]]）。

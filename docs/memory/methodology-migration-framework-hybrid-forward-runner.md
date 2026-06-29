@@ -22,4 +22,4 @@ metadata:
 
 **6. 选型(battle-tested-over-hand-rolled):** driver-无关纯 JS 的 Umzug 胜 drizzle-kit——后者稳定版无 node:sqlite driver(逼整个 drizzle-orm 降 beta)、autogenerate 丢部分索引 `WHERE`(本项目 reaper 依赖 `idx_..._active WHERE status IN(...)`)、裂双账本。Umzug 给的正是缺的那半"有序 run-once + 账本",无 autogenerate 错配。详见 [[feedback-bun-first-dependency-selection]]。
 
-落地权威态见 docs/DESIGN.md `src/lib/history/` 行 + docs/rfc/migration-framework-umzug.md(LANDED)。扩展 [[methodology-sync-to-async-persistence-refactor-invariants]](本次没改既有同步路径故避开了那批不变量)。
+落地权威态见 docs/DESIGN.md `src/lib/history/` 行 + docs/spec/migration-framework-umzug.md(LANDED)。扩展 [[methodology-sync-to-async-persistence-refactor-invariants]](本次没改既有同步路径故避开了那批不变量)。

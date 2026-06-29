@@ -13,6 +13,6 @@ User: "你永远不要在这种中间态停下,除非遇到需要用户参与的
 
 **How to apply:**
 - 启动多文件协同改动前在脑中(或 plan)排好"最小可编译切片",一气做完到 typecheck 绿再停。
-- 合法停顿理由仅限:(a) 真正需用户决策的歧义(原则4)、(b) 环境/工具阻塞无法自救(如工具输出污染、缺权限——见 [[empirical-probe-via-history-api]] 验证手段)、(c) 已到完成态。
+- 合法停顿理由仅限:(a) 真正需用户决策的歧义(scope-ambiguity-then-ask)、(b) 环境/工具阻塞无法自救(如工具输出污染、缺权限——见 [[empirical-probe-via-history-api]] 验证手段)、(c) 已到完成态。
 - "累了"/"上下文长"/"该汇报进度了"/"该记 memory 了"——都**不是**合法理由。记 memory/汇报全部放在 checkpoint 之后。
 - 与 [[feedback_never_stop_for_turn_length]] 是同一脉络的不同维度(那条管 turn length,这条管编译态)。

@@ -2,7 +2,7 @@
 
 > **用途**：新会话零上下文接续实现「reaper 真正取消在飞请求」（缺陷④）。本文自包含——可不读历史会话直接开工。
 > **设计权威**：[stale-reaper-cancellation.md](stale-reaper-cancellation.md)（读它，本文是实现态索引 + Phase 1 kick-off）。
-> **背景 RFC**：[pre-response-abort-handling.md](../../rfc/pre-response-abort-handling.md)（缺陷①②已落地、③待 Q2 实测、④=本文、⑤已修）。
+> **背景 RFC**：[pre-response-abort-handling.md](../../spec/pre-response-abort-handling.md)（缺陷①②已落地、③待 Q2 实测、④=本文、⑤已修）。
 > **写于**：2026-06-22，HEAD≈`102118b`，分支 `feat/openapi-and-dep-upgrade`。注：该分支有并发会话在做 OpenAPI 迁移，typecheck 有**与本任务无关的** OpenAPIHono 报错（`src/server.ts`/`src/start.ts`/`tests/helpers/test-app.ts`）——别去修它们，只确保你改的文件零**新增**错误。
 
 ---
@@ -103,7 +103,7 @@ pre-response 时 `guardSseIterable` 还没迭代第一帧。cancel 经 fetch 信
 
 - `docs/DESIGN.md` `staleRequestMaxAge` 行：把"**注**：reaper 当前只调 ctx.fail()，不取消在飞上游 fetch……缺陷④ 实现"改为"reaper force-fail 取消在飞上游 fetch（Phase 1 pre-response；mid-stream error 帧 Phase 2 待做）"。
 - `docs/rfc/stale-reaper-cancellation.md`：Phase 1 commit invariants 表标 ✅ 已落地 + commit hash。
-- `docs/rfc/pre-response-abort-handling.md` 缺陷④：标 Phase 1 已实现、指向本 RFC。
+- `docs/spec/pre-response-abort-handling.md` 缺陷④：标 Phase 1 已实现、指向本 RFC。
 - 记忆 `docs/memory/project-pre-response-abort-rfc.md` 的 ④ 状态 + `docs/memory/MEMORY.md` 索引钩子更新。
   - **注意**：`docs/memory/` 有并发会话在做 frontmatter 迁移，多文件 `M`/`??`。只改你这两个文件的内容、用 pathspec 提交，别裹入别人的迁移（[[sed-touched-files-bundle-inflight-work]]）。
 

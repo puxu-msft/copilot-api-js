@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-把 5 硬编码维度 + 6 处手抄指标的 `request-telemetry.ts` 重构成 dimension/measure registry 框架时的可复用架构教训（2026-06-23 落地，权威设计见项目文档 `docs/rfc/operational-stats-and-lineage-removal.md`）。三个支柱：
+把 5 硬编码维度 + 6 处手抄指标的 `request-telemetry.ts` 重构成 dimension/measure registry 框架时的可复用架构教训（2026-06-23 落地，权威设计见项目文档 `docs/spec/operational-stats-and-lineage-removal.md`）。三个支柱：
 
 1. **提取下沉到 sink 层、聚合叶子保持 type-light**。维度=注册的 key-extractor `(entry, ctx) => string|string[]|null`，放在 `observability/telemetry-dimensions.ts`（entry/ctx 类型 in-scope）；`request-telemetry.ts` 只收 `Record<dimName, key>` key-bag，永不 import entry/ctx（只 import `UsageData`）。加维度 = registry push 一行，record/persist/load/breakdown 全靠遍历 registry，零其它编辑。
 

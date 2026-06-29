@@ -11,7 +11,7 @@ metadata:
 
 我给了一个 2 选项的 AskUserQuestion（「post-finalize」对「create-and-take-over」中间件模式），却没有摆出每个选项的架构成本。用户回怼：别给我 yes/no，给我用来选择的数据。
 
-**Why:** 架构范围决策是用户的领地（按原则4 / [[feedback_no_unilateral_action]]）。但只有当你做好功课，用户才能做出真正的选择：读过相关代码、找出约束（例如已有注释「routing validation BEFORE ctx creation prevents dangling history entries」）、量化每个选项的 LOC + 文件数 + 对现有架构的违反。「A 还是 B？」不是一个决策——「A 是 100 LOC 且遵循现有约束，B 是 400 LOC 且违反 messages/handler.ts:163，C 推迟到 commit 4」才是一个决策。
+**Why:** 架构范围决策是用户的领地（按scope-ambiguity-then-ask / [[feedback_no_unilateral_action]]）。但只有当你做好功课，用户才能做出真正的选择：读过相关代码、找出约束（例如已有注释「routing validation BEFORE ctx creation prevents dangling history entries」）、量化每个选项的 LOC + 文件数 + 对现有架构的违反。「A 还是 B？」不是一个决策——「A 是 100 LOC 且遵循现有约束，B 是 400 LOC 且违反 messages/handler.ts:163，C 推迟到 commit 4」才是一个决策。
 
 **Pattern that worked（commit 3e 中间件范围）：**
 1. grep 出触及该区域的每个调用者、约束、注释

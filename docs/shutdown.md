@@ -8,7 +8,7 @@
 - 停止接受新请求
 - 标记服务器为 draining 状态
 - 停止后台服务（token 刷新 `stopRefresh`、关闭 HTTP/2 会话池 `closeHttp2Sessions`、停止新建上游 WebSocket `stopNew`）
-- 停止 history 后台工作（reaper / search-index backfill），但**保持 history DB 打开**——异步 finalize（[rfc/history-finalize-async-offload.md](rfc/history-finalize-async-offload.md)）的落盘要贯穿 Phase 2/3 drain，故 DB 的 drain-未决-finalize-再-close 推迟到 Finalized 阶段（`shutdownHistory`），旧的 Phase-1 同步关 DB 会丢 drain 期间 settle 的请求
+- 停止 history 后台工作（reaper / search-index backfill），但**保持 history DB 打开**——异步 finalize（[spec/history-finalize-async-offload.md](spec/history-finalize-async-offload.md)）的落盘要贯穿 Phase 2/3 drain，故 DB 的 drain-未决-finalize-再-close 推迟到 Finalized 阶段（`shutdownHistory`），旧的 Phase-1 同步关 DB 会丢 drain 期间 settle 的请求
 - 排空 rate limiter 队列
 - 停止监听新连接（`server.close(false)`，已建连接保留）
 - **注意：浏览器观察者 WS 客户端（history/status dashboard）此时不关**——它们订阅 phase 事件，Phase 1 关掉会让用户看不到后续进度；故意留到 Phase 4 才拆

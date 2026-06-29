@@ -42,7 +42,7 @@ invariant：**表驱动测试覆盖 (接入格式 × 模型 supported_endpoints)
 **完成后**：更新 `05-progress.md` P3 表，标记整体重构完成。最终全套 subagent review（factual/senior-engineer/security/consistency 多视角）。
 
 **关键坑**：
-- P3.3 删除是不可逆的高风险操作——**绝不**用 `git checkout/rm` 误删未提交改动（原则1）。删除前确保所有要保留的逻辑已迁移并测试覆盖。
+- P3.3 删除是不可逆的高风险操作——**绝不**用 `git checkout/rm` 误删未提交改动（no-destructive-workspace-loss；git 破坏性操作由 settings.json ask 强制）。删除前确保所有要保留的逻辑已迁移并测试覆盖。
 - 三大能力守卫每 commit 必过：`/history/api/entries/:id` 全量双轨、`/api/logs`+`/api/status` 形状、WS wire 协议。
-- 透传矩阵的 3 非一致默认是**有意行为**，不是 bug——统一时保留，别"顺手修正"成一致（会改变路由行为，原则4：范围外先问）。
+- 透传矩阵的 3 非一致默认是**有意行为**，不是 bug——统一时保留，别"顺手修正"成一致（会改变路由行为，scope-ambiguity-then-ask：范围外先问）。
 - 数据采集下沉后，accumulator 降为 sink 内部状态——确认 `outboundResponse`(上游原始) 与 `inboundResponse`(客户端实收) 双轨重建正确。

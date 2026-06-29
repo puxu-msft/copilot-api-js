@@ -137,7 +137,7 @@ REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedA
 
 SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重数据从单表单 blob 拆为 **head 表 + stage 子表**的 1:N 模型，使 reaper 分桶 / stats 聚合 / 游标分页 / session 重算继续只作用于 head 表 `entries_v2`（每请求恰一行）。
 
-**schema 演进（hybrid 迁移框架）**：两层。① **地板（conceptual 000）**= `openDatabase` 的 inline 幂等 reconcile（`SCHEMA_SQL` + `connection.ts::migrateEntriesColumns` 按 `wanted` 补列 + bespoke drop），每次开库跑、**不进账本**；② **前向 001+** = `sqlite/migrations/` 的 Umzug forward-runner（`applyForwardMigrations` 在 `start.ts` 的 `initHistory(true)` 后、`startServer` 前跑一次），已应用迁移名记进 `history_meta(schema_migrations)` 账本（与 backfill 标志同表、统一账本）。`MIGRATIONS` 初始空（地板=当前 schema）。**失败硬阻断**：迁移抛 → `process.exit(1)`（半迁移 schema 比不启动危险，与数据-backfill 的 never-throw 相反）。首条真实迁移优先用 `sqlMigration(name, body)`——包 driver `transaction()` 使多语句 DDL all-or-nothing、防 partial-DDL wedge（Umzug 不包事务 + SQLite DDL 自动 commit → 中途抛会留半截未记账、重启卡死）；非事务型迁移须逐语句 re-entrant。设计见 [rfc/migration-framework-umzug.md](rfc/migration-framework-umzug.md)。
+**schema 演进（hybrid 迁移框架）**：两层。① **地板（conceptual 000）**= `openDatabase` 的 inline 幂等 reconcile（`SCHEMA_SQL` + `connection.ts::migrateEntriesColumns` 按 `wanted` 补列 + bespoke drop），每次开库跑、**不进账本**；② **前向 001+** = `sqlite/migrations/` 的 Umzug forward-runner（`applyForwardMigrations` 在 `start.ts` 的 `initHistory(true)` 后、`startServer` 前跑一次），已应用迁移名记进 `history_meta(schema_migrations)` 账本（与 backfill 标志同表、统一账本）。`MIGRATIONS` 初始空（地板=当前 schema）。**失败硬阻断**：迁移抛 → `process.exit(1)`（半迁移 schema 比不启动危险，与数据-backfill 的 never-throw 相反）。首条真实迁移优先用 `sqlMigration(name, body)`——包 driver `transaction()` 使多语句 DDL all-or-nothing、防 partial-DDL wedge（Umzug 不包事务 + SQLite DDL 自动 commit → 中途抛会留半截未记账、重启卡死）；非事务型迁移须逐语句 re-entrant。设计见 [spec/migration-framework-umzug.md](spec/migration-framework-umzug.md)。
 
 **`entries_v2`（HEAD，每请求一行）** 主要列：
 
@@ -181,7 +181,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 ## 内容寻址搜索 (search_index)
 
-请求历史的全文搜索由内容寻址 `search_index` 子系统提供（取代旧 trigram FTS5 + `search_text` 列，P3 已 DROP）。设计见 [rfc/search-index-content-addressed.md](rfc/search-index-content-addressed.md)。
+请求历史的全文搜索由内容寻址 `search_index` 子系统提供（取代旧 trigram FTS5 + `search_text` 列，P3 已 DROP）。设计见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)。
 
 **表**（`schema.ts`）：
 
@@ -192,7 +192,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 **归一化**（`normalize-message.ts`，单一 owner）：`normalizeMessageForIndex(msg, format)` 同时是哈希输入 AND 存储搜索文本，**config-无关、确定、稳定**。递归剥 `cache_control`（Claude Code 每轮前移 ephemeral 断点的唯一易变源，实测剥后同消息跨轮哈希相等）+ own-line `<system-reminder>`/`<ide_*>` 注入块（边界锚定、保留 inline 字面提及）+ sorted-key canonical JSON。绝不复用 config 驱动的 `removeSystemReminderTags`。
 
-**写入**（异步两相，见 [rfc/history-finalize-async-offload.md](rfc/history-finalize-async-offload.md)）：`insertCompletedEntry` 是 async——phase1 事务**外**算 `buildSearchIndexChunked`（normalize+hash inbound 消息逐批协作让出、jsdiff `alignMessages` 算 rewrites 改动文本、拼 headers；整体 try/catch 降级——build 抛则该 entry 索引置空、绝不阻断 finalize）+ `compressAsync` 经 libuv 线程池并发压缩所有 blob（移出事件循环，消除 ~164ms/请求阻塞），phase2 才开**严格同步**事务 `persistSearchIndex` + 插已压缩 buffer（I7：bun:sqlite 跨 await 不回滚，绝不在 tx 回调内 await）。同步 `buildSearchIndexForEntry` 仍服务 backfill。
+**写入**（异步两相，见 [spec/history-finalize-async-offload.md](spec/history-finalize-async-offload.md)）：`insertCompletedEntry` 是 async——phase1 事务**外**算 `buildSearchIndexChunked`（normalize+hash inbound 消息逐批协作让出、jsdiff `alignMessages` 算 rewrites 改动文本、拼 headers；整体 try/catch 降级——build 抛则该 entry 索引置空、绝不阻断 finalize）+ `compressAsync` 经 libuv 线程池并发压缩所有 blob（移出事件循环，消除 ~164ms/请求阻塞），phase2 才开**严格同步**事务 `persistSearchIndex` + 插已压缩 buffer（I7：bun:sqlite 跨 await 不回滚，绝不在 tx 回调内 await）。同步 `buildSearchIndexForEntry` 仍服务 backfill。
 
 **孤儿 GC**：`msg_blob` 无 FK，删请求时 `req_msg`/`req_aux` 经 CASCADE 自动清，但 blob 须显式 GC `DELETE FROM msg_blob WHERE NOT EXISTS(SELECT 1 FROM req_msg WHERE hash=…)`——接 reaper（门控 `deleted>0`）/`deleteSession`/`clearAllEntries` **三删除点**（漏一处则清空后 msg_blob 永久死空间）。
 

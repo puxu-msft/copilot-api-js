@@ -5,7 +5,7 @@
 **Status:** 设计稿待实现 — 设计已收敛（基于 pre-response-abort RFC 第二起 incident + 两轮对抗 subagent 复审）。Phase 1（pre-response 半，小而完整、无 P1）可立即实现；Phase 2（mid-stream 半，需新 provenance + 5 格式 handler 改动）依赖 Phase 1。
 **Date:** 2026-06-22
 **Owner:** 排查会话（待实现会话接手）
-**关联:** [pre-response-abort-handling.md](../../rfc/pre-response-abort-handling.md) 缺陷④（本文是其展开）；缺陷⑤（孤儿 fetch abort 崩服务器）已修（commit `c824df4`），与本文正交。
+**关联:** [pre-response-abort-handling.md](../../spec/pre-response-abort-handling.md) 缺陷④（本文是其展开）；缺陷⑤（孤儿 fetch abort 崩服务器）已修（commit `c824df4`），与本文正交。
 
 ---
 
@@ -194,5 +194,5 @@ bun run lint:all
 
 - [DESIGN.md](../../DESIGN.md) `staleRequestMaxAge` 行：去掉"不取消在飞 fetch（缺陷④ 待修）"的暂缓注记，改为"reaper force-fail 取消在飞上游 fetch（Phase 1）+ mid-stream 发 error 帧（Phase 2）"。
 - [DESIGN.md](../../DESIGN.md)「活的架构现状」表：若 Phase 2 落地，stream guard 行补 reaper-cancel provenance。
-- [pre-response-abort-handling.md](../../rfc/pre-response-abort-handling.md) 缺陷④：标注已实现 + 指向本文。
+- [pre-response-abort-handling.md](../../spec/pre-response-abort-handling.md) 缺陷④：标注已实现 + 指向本文。
 - 更新记忆 [[project-pre-response-abort-rfc]] 的 ④ 状态。

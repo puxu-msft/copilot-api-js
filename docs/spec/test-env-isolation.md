@@ -90,7 +90,7 @@ history.db 30 文件清单见 subagent 审计原文(新会话用 `rg -l "bootstr
 > 复制以下整段到新会话。
 
 ```
-全面重写 copilot-api-js 的测试环境隔离机制。背景与现状已整理在 docs/rfc/test-env-isolation.md —— 先完整读它(含 §2 既有机制、§3 泄漏审计、§4 已落地的 interim preload、§6 重写方向),再开工。
+全面重写 copilot-api-js 的测试环境隔离机制。背景与现状已整理在 docs/spec/test-env-isolation.md —— 先完整读它(含 §2 既有机制、§3 泄漏审计、§4 已落地的 interim preload、§6 重写方向),再开工。
 
 裁判轴(本项目 CLAUDE.md,务必遵守,覆盖 subagent 默认的 ROI/YAGNI 价值观):唯一轴是"问题是否真实存在"和"哪个方案最终质量最高、最完整",而非风险/工期/改动量。架构健康 > 向后兼容;真实风险(测试擦写真实用户状态)必须根治,不归类为"等触发再说"。否定性/通过性结论(测试绿、"已隔离"、真实文件未变)**必须实测**,绝不靠读代码下结论——本问题最初就是栽在 paper-analysis 上。
 
