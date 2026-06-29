@@ -63,8 +63,11 @@ describe("SessionsPage", () => {
   it("renders session rows with aggregates + navigates on click", () => {
     renderPage()
     expect(screen.getByText(/34 req/)).toBeDefined()
-    expect(screen.getByText(/4 agents/)).toBeDefined()
-    expect(screen.getByText(/1 fail/)).toBeDefined()
+    // Agent count renders as the "main+N" label (NULL-agent main + N subagents).
+    expect(screen.getByText(/main\+4/)).toBeDefined()
+    // Completed/failed render as compact ✓N ✗N icons (failure count is the visible ✗1).
+    expect(screen.getByText(/✓33/)).toBeDefined()
+    expect(screen.getByText(/✗1/)).toBeDefined()
     expect(screen.getByText(/Sessions · 1/)).toBeDefined()
     fireEvent.click(screen.getByText(/34 req/))
     expect(screen.getByText("detail-page")).toBeDefined() // navigated
