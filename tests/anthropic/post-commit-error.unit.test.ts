@@ -75,6 +75,19 @@ describe("anthropicHttpErrorFrame", () => {
     expect(data.type).toBe("error")
     expect(data.error?.type).toBeDefined()
   })
+
+  test("502 HTML error page is replaced — no markup leaks into the POST-COMMIT SSE error frame", () => {
+    // The HTML substitution lives in the shared mapHttpErrorToEnvelope, so it must
+    // protect the streaming SSE error frame too — not just the non-streaming c.json path.
+    const html = "<!DOCTYPE html>\n<html><body><div>Unicorn! </div>" + "<p>You can't perform that action at this time.</p></body></html>"
+    const data = parse(anthropicHttpErrorFrame(new HTTPError("Bad gateway", 502, html)))
+    expect(data.type).toBe("error")
+    expect(data.error?.type).toBe("api_error")
+    const message = data.error?.message ?? ""
+    expect(message).not.toContain("<")
+    expect(message).not.toContain("Unicorn")
+    expect(message.toLowerCase()).toContain("html")
+  })
 })
 
 describe("anthropicRejectErrorFrame", () => {

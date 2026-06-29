@@ -285,4 +285,116 @@ describe("error response format compliance", () => {
     expect((resp.data as any).error.message).toContain("Boom")
     expect((resp.data as any).type).toBeUndefined()
   })
+
+  // ────────────────────────────────────────────────────────────────────
+  // HTML error pages (e.g. GitHub's "502 Unicorn!" edge page)
+  //
+  // Gateways/CDNs return full HTML documents on edge failures. Forwarding
+  // that verbatim pollutes the client's `error.message` with kilobytes of
+  // markup that no API client can use. The proxy substitutes a concise,
+  // operator-actionable message; History still retains the raw upstream body.
+  // ────────────────────────────────────────────────────────────────────
+
+  const UNICORN_HTML =
+    '<!DOCTYPE html>\n<html lang="en">\n<head><title>GitHub.com</title>'
+    + "<style>body{background:#f0f0f0}</style></head>\n<body>"
+    + "<div>Unicorn! </div><p>You can't perform that action at this time.</p>"
+    + '<img src="/images/error/unicorn.png"></body></html>'
+
+  test("Anthropic 502 HTML body is replaced with a concise message (no markup)", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Bad gateway", 502, UNICORN_HTML), "anthropic")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+    expect((resp.data as any).error.type).toBe("error")
+
+    const message = (resp.data as any).error.message as string
+    // No raw HTML leaks through to the client
+    expect(message).not.toContain("<")
+    expect(message).not.toContain("Unicorn")
+    expect(message).not.toBe(UNICORN_HTML)
+    // Operator-actionable: mentions the status and that it was an HTML page
+    expect(message).toContain("502")
+    expect(message.toLowerCase()).toContain("html")
+  })
+
+  test("OpenAI 502 HTML body is replaced with a concise server_error message", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Bad gateway", 502, UNICORN_HTML), "openai")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+    expect((resp.data as any).error.type).toBe("server_error")
+
+    const message = (resp.data as any).error.message as string
+    expect(message).not.toContain("<")
+    expect(message).not.toContain("Unicorn")
+    expect(message).toContain("502")
+  })
+
+  test("Gemini 502 HTML body is replaced with a concise message", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Bad gateway", 502, UNICORN_HTML), "gemini")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+
+    const message = (resp.data as any).error.message as string
+    expect(message).not.toContain("<")
+    expect(message).not.toContain("Unicorn")
+    expect(message).toContain("502")
+  })
+
+  test("HTML error body is logged as a byte-count summary, not dumped verbatim", () => {
+    const { c } = mockContext()
+    forwardError(c, new HTTPError("Bad gateway", 502, UNICORN_HTML), "anthropic")
+
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    const logMessage = errorSpy.mock.calls[0].join(" ")
+    expect(logMessage).toContain(`[HTML ${UNICORN_HTML.length} bytes]`)
+    expect(logMessage).not.toContain("Unicorn")
+  })
+
+  test("short non-HTML 5xx body is still forwarded verbatim (regression guard)", () => {
+    const { c, getLastResponse } = mockContext()
+    forwardError(c, new HTTPError("Bad gateway", 502, "upstream blew up"), "anthropic")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+    expect((resp.data as any).error.message).toBe("upstream blew up")
+  })
+
+  test("HTML detected via content-type header even when body lacks a leading <", () => {
+    const { c, getLastResponse } = mockContext()
+    // Bare-text HTML fragment that does NOT start with `<` — only the
+    // upstream content-type header reveals it as a markup page.
+    const body = "Unicorn! You can't perform that action at this time."
+    const headers = new Headers({ "content-type": "text/html; charset=utf-8" })
+    forwardError(c, new HTTPError("Bad gateway", 502, body, undefined, headers), "anthropic")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+    const message = (resp.data as any).error.message as string
+    expect(message).not.toContain("Unicorn")
+    expect(message).not.toBe(body)
+    expect(message).toContain("502")
+    expect(message.toLowerCase()).toContain("html")
+  })
+
+  test("content-type text/html with a valid JSON body stays on the JSON path (string guard)", () => {
+    const { c, getLastResponse } = mockContext()
+    // Upstream mislabels a JSON error as text/html — the `typeof === "string"`
+    // guard keeps it on the JSON path so a usable detail still reaches the client
+    // instead of being swallowed by the HTML placeholder.
+    const body = JSON.stringify({ error: { message: "genuine upstream detail" } })
+    const headers = new Headers({ "content-type": "text/html" })
+    forwardError(c, new HTTPError("Bad gateway", 502, body, undefined, headers), "anthropic")
+
+    const resp = getLastResponse()!
+    expect(resp.status).toBe(502)
+    const message = (resp.data as any).error.message as string
+    expect(message.toLowerCase()).not.toContain("html error page")
+    expect(message).toContain("genuine upstream detail")
+  })
 })

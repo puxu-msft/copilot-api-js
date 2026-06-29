@@ -40,6 +40,19 @@ function stripBunVerboseHint(message: string): string {
 }
 
 /**
+ * Detect whether an upstream error body is an HTML page rather than a JSON/text
+ * API error. Gateways and CDNs (e.g. GitHub's "502 Unicorn!" edge page) return
+ * full HTML documents on edge failures; forwarding that verbatim to API clients
+ * pollutes their `error.message` with kilobytes of markup that no client can use.
+ * Cheap structural sniff: a leading `<` after trimming covers `<!doctype html>`,
+ * `<html>`, `<head>`, and bare-tag error fragments. Shared by the log descriptor
+ * and the response-body substitution so both stay single-sourced.
+ */
+export function looksLikeHtml(text: string): boolean {
+  return text.trimStart().startsWith("<")
+}
+
+/**
  * Format error message including cause chain, with Bun noise stripped.
  * Surfaces error.cause details (e.g. underlying socket/TLS reason) inline.
  */

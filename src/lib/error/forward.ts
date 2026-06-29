@@ -16,6 +16,7 @@ import {
 import {
   //
   formatErrorWithCause,
+  looksLikeHtml,
   parseRetryAfterHeader,
 } from "./utils"
 
@@ -447,14 +448,37 @@ export function mapHttpErrorToEnvelope(
   }
 
   // Default pass-through (unclassified) — the caller attaches tool diagnostics here.
+  // Detect an HTML error page two ways: a structural body sniff (leading `<`) OR an
+  // explicit `content-type: text/html` upstream header. The header catches HTML
+  // bodies that don't lead with `<` (BOM/whitespace prefix, bare-text fragments).
+  // The `typeof errorJson === "string"` guard keeps a (rare) html-typed-but-valid-JSON
+  // body on the JSON path, where it is more usefully handled.
+  // Scope is intentionally narrow: other markup content-types (xhtml/xml) are NOT
+  // matched on the header — broadening to `includes("html"|"xml")` would swallow
+  // legitimate `application/xml` API errors. An XHTML/XML page that leads with `<`
+  // is still caught by the structural sniff; only non-`<` xml-typed bodies slip
+  // through, which in practice GHC's edge pages never are.
+  const contentTypeIsHtml = error.responseHeaders?.get("content-type")?.toLowerCase().includes("text/html") ?? false
+  const bodyIsHtml = typeof errorJson === "string" && (looksLikeHtml(errorJson) || contentTypeIsHtml)
   const log: ErrorEnvelopeLog =
     typeof errorJson === "string" ?
       {
         level: "error",
-        message: `HTTP ${error.status}: ${errorJson.trimStart().startsWith("<") ? `[HTML ${errorJson.length} bytes]` : truncateForLog(errorJson, 200)}`,
+        message: `HTTP ${error.status}: ${bodyIsHtml ? `[HTML ${errorJson.length} bytes]` : truncateForLog(errorJson, 200)}`,
       }
     : { level: "error", message: `HTTP ${error.status}:`, data: errorJson }
-  return { body: helpers.defaultError(error.responseText, error.status >= 500, error.status), status: error.status, log, classified: false }
+
+  // An HTML error page (gateway/CDN edge failure, e.g. GitHub's "502 Unicorn!")
+  // is never a usable API error body — forwarding kilobytes of markup as
+  // `error.message` only pollutes the client. Substitute a concise,
+  // operator-actionable message. History still retains the raw upstream body
+  // (this only shapes the client-facing wire envelope).
+  const bodyMessage =
+    bodyIsHtml ?
+      `Upstream gateway returned an HTML error page (HTTP ${error.status}, ${error.responseText.length} bytes) instead of a JSON API error. `
+      + `The Copilot API gateway is likely unavailable or failing at the edge; retry shortly.`
+    : error.responseText
+  return { body: helpers.defaultError(bodyMessage, error.status >= 500, error.status), status: error.status, log, classified: false }
 }
 
 export function forwardError(c: Context, error: unknown, format: ErrorWireFormat = "anthropic") {
