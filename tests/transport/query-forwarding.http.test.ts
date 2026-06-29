@@ -20,6 +20,7 @@ import {
   test,
 } from "bun:test"
 
+import { getHistory } from "~/lib/history"
 import {
   //
   setModelOverrides,
@@ -173,5 +174,18 @@ describe("client query-string forwarding (e2e)", () => {
     const params = upstreamUrlFor("/v1/messages").searchParams
     expect(params.get("beta")).toBe("true")
     expect(params.has("x-trace")).toBe(false)
+  })
+
+  test("history dual-records inbound raw + outbound forwarded query (richest-data-flow)", async () => {
+    await app.request("/v1/messages?beta=true&api-version=2024", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hi" }], max_tokens: 16, stream: false }),
+    })
+
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    // inbound = client's raw query verbatim (floor key included); outbound = forwarded (stripped).
+    expect(entry?.inboundRequest.query).toBe("?beta=true&api-version=2024")
+    expect(entry?.outboundRequest?.query).toBe("?beta=true")
   })
 })

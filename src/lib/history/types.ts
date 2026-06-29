@@ -195,6 +195,8 @@ export interface RequestLegData {
   system?: string | Array<SystemBlock>
   payload?: unknown
   headers?: Record<string, string>
+  /** The filtered query string forwarded upstream for this leg (with leading `?`), when present. */
+  query?: string
 }
 
 /** Upstream → Proxy response as recorded in history (top-level and per-attempt). */
@@ -277,6 +279,8 @@ export interface HistoryEntry {
     max_tokens?: number
     temperature?: number
     thinking?: unknown
+    /** The client's raw inbound query string (verbatim, with leading `?`), when present. */
+    query?: string
   }
   effectiveRequest?: RequestLegData
   /** Proxy → Upstream: the final wire request sent upstream (final attempt). */

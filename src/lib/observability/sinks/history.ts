@@ -198,6 +198,8 @@ export class HistorySink {
           stream: orig.stream,
           tools: orig.tools as HistoryEntry["inboundRequest"]["tools"],
           system: orig.system as HistoryEntry["inboundRequest"]["system"],
+          // Client's raw inbound query (verbatim); the forwarded form lands on outboundRequest.
+          ...(ctx.query?.raw ? { query: ctx.query.raw } : {}),
         },
       }
       insertEntry(entry)
@@ -274,6 +276,8 @@ export class HistorySink {
           // RFC Phase 3: ② per-attempt/outbound request headers (the explicit field
           // projection must carry the new leg field through HistoryEntryData→HistoryEntry).
           ...(entryData.outboundRequest.headers && { headers: entryData.outboundRequest.headers }),
+          // Same explicit-projection requirement for the forwarded query string.
+          ...(entryData.outboundRequest.query && { query: entryData.outboundRequest.query }),
         },
       }),
       ...(entryData.httpHeaders && { httpHeaders: entryData.httpHeaders }),

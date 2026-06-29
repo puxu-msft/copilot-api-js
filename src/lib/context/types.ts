@@ -172,6 +172,8 @@ export interface HistoryEntryData {
     max_tokens?: number
     temperature?: number
     thinking?: unknown
+    /** Client's raw inbound query string (verbatim, with leading `?`), when present. */
+    query?: string
   }
 
   effectiveRequest?: {
@@ -193,6 +195,8 @@ export interface HistoryEntryData {
     payload?: unknown
     /** RFC Phase 3: ② outbound/per-attempt request headers. */
     headers?: Record<string, string>
+    /** The filtered query string forwarded upstream (with leading `?`), when present. */
+    query?: string
   }
 
   /** Upstream → Proxy: the upstream-original response. */

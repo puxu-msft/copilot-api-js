@@ -86,7 +86,7 @@ export function legFromEffective(ep: EffectiveRequest): NonNullable<HistoryEntry
   }
 }
 
-export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outboundRequest"]> {
+export function legFromWire(wp: WireRequest, forwardedQuery?: string): NonNullable<HistoryEntryData["outboundRequest"]> {
   return {
     model: wp.model,
     format: wp.format,
@@ -95,6 +95,9 @@ export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outb
     system: (wp.payload as Record<string, unknown> | undefined)?.system,
     payload: wp.payload,
     headers: wp.headers,
+    // The forwarded query is URL-level (not in the wire payload) and static across
+    // attempts, so the caller threads it from ctx.query.forwarded when present.
+    ...(forwardedQuery ? { query: forwardedQuery } : {}),
   }
 }
 
@@ -639,7 +642,7 @@ export function createRequestContext(opts: {
 
       if (finalAttempt?.wireRequest) {
         const wp = finalAttempt.wireRequest
-        entry.outboundRequest = legFromWire(wp)
+        entry.outboundRequest = legFromWire(wp, opts.query?.forwarded)
       }
 
       // httpHeaders.outboundRequest/outboundResponse are written by the driver during
