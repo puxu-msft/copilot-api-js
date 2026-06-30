@@ -69,6 +69,84 @@ export function stripAntmlTagsOutsideStrings(input: string): string {
   return out
 }
 
+/** True for a single hex digit. Hand-rolled (not regex) to stay safe on out-of-range `undefined`. */
+function isHexChar(c: string | undefined): boolean {
+  if (c === undefined || c.length !== 1) return false
+  return (c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F")
+}
+
+/** True for the whitespace that may break a `\uXXXX` escape (space / tab / CR / LF). */
+function isEscapeBreakWhitespace(c: string | undefined): boolean {
+  return c === " " || c === "\t" || c === "\r" || c === "\n"
+}
+
+/**
+ * `unicode` item — conservative whitespace-broken `\uXXXX` escape repair.
+ *
+ * Upstream (opus-4.8) occasionally emits a `\uXXXX` escape with whitespace splitting the four hex
+ * digits — e.g. `默` as `\u9 ed8` (real capture req_1782778207147_144) — which makes the whole
+ * stringified JSON invalid at that escape. This removes ONLY whitespace that falls **between** hex
+ * digits when doing so yields exactly four (e.g. `\u9 ed8` → `默`). It is deliberately narrow:
+ * a legal `\uXXXX` is passed through byte-identical, and an escape that is NOT a clean
+ * whitespace-broken-quad — whitespace right after `\u`, fewer than four hex digits, or a non-hex
+ * character — is left untouched (legal JSON never has whitespace inside a `\u` escape, so the
+ * mis-repair surface is ≈0). Single forward pass with backslash-escape tracking so a non-`\u`
+ * escape (`\n`, `\"`, `\\`) is never re-scanned as the start of a `\u`.
+ */
+export function fixBadUnicodeEscapes(input: string): string {
+  let out = ""
+  let i = 0
+  const n = input.length
+  while (i < n) {
+    if (input[i] === "\\" && input[i + 1] === "u") {
+      // Already-valid `\uXXXX` (four hex immediately after) → pass through untouched.
+      if (isHexChar(input[i + 2]) && isHexChar(input[i + 3]) && isHexChar(input[i + 4]) && isHexChar(input[i + 5])) {
+        out += input.slice(i, i + 6)
+        i += 6
+        continue
+      }
+      // Collect exactly four hex digits, skipping ONLY whitespace BETWEEN digits (the first char
+      // after `\u` must be hex — whitespace immediately after `\u` is left alone, conservative).
+      if (isHexChar(input[i + 2])) {
+        const hexes = [input[i + 2]]
+        let j = i + 3
+        let consumedWhitespace = false
+        while (j < n && hexes.length < 4) {
+          const c = input[j]
+          if (isHexChar(c)) {
+            hexes.push(c)
+            j++
+          } else if (isEscapeBreakWhitespace(c)) {
+            consumedWhitespace = true
+            j++
+          } else {
+            break
+          }
+        }
+        if (hexes.length === 4 && consumedWhitespace) {
+          out += `\\u${hexes.join("")}`
+          i = j
+          continue
+        }
+      }
+      // Not a repairable whitespace-broken escape → emit the `\u` verbatim and advance past it.
+      out += input.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    if (input[i] === "\\") {
+      // A non-`\u` backslash escape (`\n`, `\"`, `\\`): copy both bytes so the escaped char is
+      // never re-interpreted as the start of a `\u` scan.
+      out += input.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    out += input[i]
+    i++
+  }
+  return out
+}
+
 /**
  * Layer 2 — jsonrepair-backed structural repair.
  *
@@ -98,16 +176,18 @@ export function tryJsonRepair(input: string): string | undefined {
  * `anthropic.tool_repair_malformed_input` is a SUBSET of these; enabling an item applies its
  * transform, cascaded in THIS order regardless of config spelling (`"jsonrepair,tags"` and
  * `"tags,jsonrepair"` behave identically). Order is the dependency order: `tags` (antml-tag strip)
- * runs before `jsonrepair` (structural repair) so jsonrepair won't trip over leaked tags.
+ * → `unicode` (whitespace-broken `\uXXXX` escape fix) → `jsonrepair` (structural repair); the
+ * cheaper / more-targeted fixes run first so jsonrepair (the broad heuristic) is the last resort.
  *
- * Item → layer/telemetry name: `tags`→`strip`, `jsonrepair`→`jsonrepair` (the layer name is the
- * repair MECHANISM name, which differs from the config ITEM name only for `tags`/`strip`).
+ * Item → layer/telemetry name: `tags`→`strip`, `unicode`→`unicode`, `jsonrepair`→`jsonrepair` (the
+ * layer name is the repair MECHANISM name, which differs from the config ITEM name only for
+ * `tags`/`strip`).
  */
-export const REPAIR_ITEMS = ["tags", "jsonrepair"] as const
+export const REPAIR_ITEMS = ["tags", "unicode", "jsonrepair"] as const
 export type RepairItem = (typeof REPAIR_ITEMS)[number]
 
 /** Outcome of a layered repair attempt. `layer` names which layer produced the fix. */
-export type RepairResult = { repaired: unknown; layer: "strip" | "jsonrepair" } | { unrepairable: true }
+export type RepairResult = { repaired: unknown; layer: "strip" | "unicode" | "jsonrepair" } | { unrepairable: true }
 
 function parseJsonOrFail(s: string): { ok: true; value: unknown } | { ok: false } {
   try {
@@ -147,6 +227,12 @@ export function repairToolInput(raw: string, items: ReadonlyArray<RepairItem>): 
     current = stripAntmlTagsOutsideStrings(current)
     const afterStrip = parseJsonOrFail(current)
     if (afterStrip.ok && isPlausibleToolInput(afterStrip.value)) return { repaired: afterStrip.value, layer: "strip" }
+  }
+
+  if (items.includes("unicode")) {
+    current = fixBadUnicodeEscapes(current)
+    const afterUnicode = parseJsonOrFail(current)
+    if (afterUnicode.ok && isPlausibleToolInput(afterUnicode.value)) return { repaired: afterUnicode.value, layer: "unicode" }
   }
 
   if (items.includes("jsonrepair")) {

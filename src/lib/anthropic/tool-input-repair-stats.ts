@@ -5,9 +5,10 @@
  * `/api/status.tool_input_repair`. Mirrors `protect-streaming-stats.ts`:
  * a live-observation counter (resets on restart), paired with the per-request
  * `recordFeature("tool-input-repaired" | "tool-input-unrepairable")` tags that
- * carry the same engagements into history. `strip` = fixed by Layer 1 (antml
- * tag strip), `jsonrepair` = fixed by Layer 2, `unrepairable` = both layers
- * failed (the request was failed by the handler).
+ * carry the same engagements into history. `strip` = fixed by the `tags` item
+ * (antml tag strip), `unicode` = fixed by the `unicode` item (whitespace-broken
+ * `\uXXXX` escape), `jsonrepair` = fixed by the `jsonrepair` item, `unrepairable`
+ * = no enabled item produced valid JSON (the request was failed by the handler).
  */
 
 import consola from "consola"
@@ -16,17 +17,19 @@ import type { RequestContext } from "~/lib/context/types"
 
 /** Repair outcome buckets. */
 export interface ToolInputRepairStats {
-  /** Repaired by Layer 1 (structure-aware antml-tag stripping). */
+  /** Repaired by the `tags` item (structure-aware antml-tag stripping). */
   strip: number
-  /** Repaired by Layer 2 (jsonrepair). */
+  /** Repaired by the `unicode` item (whitespace-broken `\uXXXX` escape fix). */
+  unicode: number
+  /** Repaired by the `jsonrepair` item (jsonrepair). */
   jsonrepair: number
-  /** Neither layer could produce valid JSON. */
+  /** No enabled repair item could produce valid JSON. */
   unrepairable: number
 }
 
 export type ToolInputRepairOutcome = keyof ToolInputRepairStats
 
-const stats: ToolInputRepairStats = { strip: 0, jsonrepair: 0, unrepairable: 0 }
+const stats: ToolInputRepairStats = { strip: 0, unicode: 0, jsonrepair: 0, unrepairable: 0 }
 
 /** Record one repair outcome. */
 export function recordToolInputRepair(outcome: ToolInputRepairOutcome): void {
@@ -41,6 +44,7 @@ export function getToolInputRepairStats(): ToolInputRepairStats {
 /** Test-only: reset the module-global counters (registered in RESETTERS). */
 export function resetToolInputRepairStatsForTests(): void {
   stats.strip = 0
+  stats.unicode = 0
   stats.jsonrepair = 0
   stats.unrepairable = 0
 }

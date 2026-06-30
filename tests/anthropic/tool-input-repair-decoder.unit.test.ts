@@ -59,6 +59,7 @@ const loadRaw = (file: string): string =>
   (JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures", "anthropic-messages", "malformed-tool-input", file), "utf8")) as { raw: string }).raw
 const RAW_1304 = loadRaw("todowrite-antml-bleed-1304.json")
 const RAW_JSONREPAIR = loadRaw("task-truncated-jsonrepair-1782641593660-64.json")
+const RAW_UNICODE = loadRaw("askuserquestion-unicode-escape-1782778207147-144.json")
 
 const noCfg = { fields: {}, all: false }
 
@@ -98,6 +99,22 @@ describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", ()
     const parsed = JSON.parse(rebuilt.delta.partial_json) as { subagent_type: string; prompt: string }
     expect(parsed.subagent_type).toBe("general-purpose")
     expect(parsed.prompt).toContain("请给出")
+  })
+
+  test(String.raw`items=[unicode]: a whitespace-broken \u escape (real AskUserQuestion capture) is repaired on the wire`, () => {
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["unicode"] })
+    const out = runRaw(d, [start(0, "AskUserQuestion"), delta(0, RAW_UNICODE), stop(0)])
+    expect(out).toHaveLength(3) // start, single rebuilt delta, stop
+    const rebuilt = dataOf(out[1]) as { delta: { partial_json: string } }
+    const parsed = JSON.parse(rebuilt.delta.partial_json) as { questions: Array<unknown> }
+    expect(parsed.questions).toHaveLength(1)
+  })
+
+  test(String.raw`items=[tags,jsonrepair] (legacy repair tier) does NOT fix the bad \u escape → original replayed (unrepairable)`, () => {
+    // The req_1782778207147_144 failure: jsonrepair throws on `\u9 ed8`, tags is a no-op → replay original.
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags", "jsonrepair"] })
+    const out = runRaw(d, [start(0, "AskUserQuestion"), delta(0, RAW_UNICODE), stop(0)])
+    expect((dataOf(out[1]) as { delta: { partial_json: string } }).delta.partial_json).toBe(RAW_UNICODE)
   })
 
   test("items=[tags]: a structural break jsonrepair-only case stays unrepaired → original deltas replayed", () => {

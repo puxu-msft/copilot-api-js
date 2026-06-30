@@ -9,6 +9,7 @@ import { join } from "node:path"
 
 import {
   //
+  fixBadUnicodeEscapes,
   repairToolInput,
   stripAntmlTagsOutsideStrings,
   tryJsonRepair,
@@ -24,6 +25,18 @@ const FIXTURE_JSONREPAIR = (
   JSON.parse(
     readFileSync(
       join(import.meta.dir, "..", "fixtures", "anthropic-messages", "malformed-tool-input", "task-truncated-jsonrepair-1782641593660-64.json"),
+      "utf8",
+    ),
+  ) as { raw: string }
+).raw
+
+// Real opus-4.8 AskUserQuestion capture (req_1782778207147_144): the upstream emitted `\u9 ed8`
+// (the `默` escape with a space breaking the 4 hex digits), so the stringified `questions` JSON is
+// invalid at the bad `\u` escape — antml-strip is a no-op (no tags) and jsonrepair THROWS on it.
+const FIXTURE_UNICODE = (
+  JSON.parse(
+    readFileSync(
+      join(import.meta.dir, "..", "fixtures", "anthropic-messages", "malformed-tool-input", "askuserquestion-unicode-escape-1782778207147-144.json"),
       "utf8",
     ),
   ) as { raw: string }
@@ -154,5 +167,84 @@ describe("repairToolInput — item-set cascade (canonical order, items stack)", 
     const r = repairToolInput(valid, ["tags", "jsonrepair"])
     expect(r).toMatchObject({ layer: "strip" })
     expect("repaired" in r && r.repaired).toEqual({ a: 1, b: [1, 2] })
+  })
+})
+
+describe(String.raw`fixBadUnicodeEscapes — conservative whitespace-broken \uXXXX repair`, () => {
+  test(String.raw`a legal \uXXXX escape is returned byte-identical (no false repair)`, () => {
+    const clean = String.raw`{"x":"\u9ed8\u8ba4"}` // 默认
+    expect(fixBadUnicodeEscapes(clean)).toBe(clean)
+  })
+
+  test(String.raw`a space breaking the 4 hex digits is removed (\u9 ed8 → \u9ed8)`, () => {
+    expect(fixBadUnicodeEscapes(String.raw`{"x":"\u9 ed8"}`)).toBe(String.raw`{"x":"\u9ed8"}`)
+  })
+
+  test(String.raw`the break can fall anywhere between the hex digits (\u9e d8 → \u9ed8)`, () => {
+    expect(fixBadUnicodeEscapes(String.raw`{"x":"\u9e d8"}`)).toBe(String.raw`{"x":"\u9ed8"}`)
+  })
+
+  test("tab and newline also count as the breaking whitespace", () => {
+    expect(fixBadUnicodeEscapes('{"x":"\\u9\ted8"}')).toBe(String.raw`{"x":"\u9ed8"}`)
+    expect(fixBadUnicodeEscapes('{"x":"\\u9\ned8"}')).toBe(String.raw`{"x":"\u9ed8"}`)
+  })
+
+  test(String.raw`CONSERVATIVE: whitespace immediately after \u (\u 9ed8) is NOT touched`, () => {
+    const input = String.raw`{"x":"\u 9ed8"}`
+    expect(fixBadUnicodeEscapes(input)).toBe(input)
+  })
+
+  test(String.raw`CONSERVATIVE: too few hex digits (\u9ed) is NOT touched`, () => {
+    const input = String.raw`{"x":"\u9ed"}`
+    expect(fixBadUnicodeEscapes(input)).toBe(input)
+  })
+
+  test(String.raw`CONSERVATIVE: non-hex characters (\uZZZZ) are NOT touched`, () => {
+    const input = String.raw`{"x":"\uZZZZ"}`
+    expect(fixBadUnicodeEscapes(input)).toBe(input)
+  })
+
+  test(String.raw`a non-\u backslash escape is left alone (\n, \")`, () => {
+    const input = String.raw`{"x":"line\nbreak \"q\""}`
+    expect(fixBadUnicodeEscapes(input)).toBe(input)
+  })
+
+  test("multiple bad escapes in one string are all repaired", () => {
+    expect(fixBadUnicodeEscapes(String.raw`{"x":"\u9 ed8\u8b a4"}`)).toBe(String.raw`{"x":"\u9ed8\u8ba4"}`)
+  })
+
+  test("idempotent: repairing an already-repaired string is a no-op", () => {
+    const once = fixBadUnicodeEscapes(String.raw`{"x":"\u9 ed8"}`)
+    expect(fixBadUnicodeEscapes(once)).toBe(once)
+  })
+
+  test(String.raw`real req_1782778207147_144 AskUserQuestion capture → fixes \u9 ed8 → valid JSON (independent oracle)`, () => {
+    expect(() => JSON.parse(FIXTURE_UNICODE)).toThrow() // precondition: malformed at the bad escape
+    const fixed = fixBadUnicodeEscapes(FIXTURE_UNICODE)
+    const parsed = JSON.parse(fixed) as { questions: Array<{ options: Array<unknown> }> }
+    expect(parsed.questions).toHaveLength(1)
+    expect(parsed.questions[0].options.length).toBeGreaterThan(0)
+  })
+})
+
+describe("repairToolInput — unicode item", () => {
+  test(String.raw`["unicode"] repairs the bad \u escape → layer "unicode"`, () => {
+    const r = repairToolInput(FIXTURE_UNICODE, ["unicode"])
+    expect(r).toMatchObject({ layer: "unicode" })
+    expect("repaired" in r && (r.repaired as { questions: Array<unknown> }).questions).toHaveLength(1)
+  })
+
+  test('["tags","unicode","jsonrepair"] full set repairs it via the unicode item', () => {
+    const r = repairToolInput(FIXTURE_UNICODE, ["tags", "unicode", "jsonrepair"])
+    expect(r).toMatchObject({ layer: "unicode" })
+  })
+
+  test(String.raw`the legacy "repair" tier (["tags","jsonrepair"]) does NOT fix a bad \u escape (jsonrepair throws) → unrepairable`, () => {
+    // This is exactly the req_1782778207147_144 failure: tags is a no-op, jsonrepair throws on `\u9 ed8`.
+    expect(repairToolInput(FIXTURE_UNICODE, ["tags", "jsonrepair"])).toEqual({ unrepairable: true })
+  })
+
+  test(String.raw`["tags"] alone does NOT fix a bad \u escape → unrepairable`, () => {
+    expect(repairToolInput(FIXTURE_UNICODE, ["tags"])).toEqual({ unrepairable: true })
   })
 })

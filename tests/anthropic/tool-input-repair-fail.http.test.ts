@@ -289,6 +289,19 @@ function buildJsonrepairComplete(model: string): Array<string> {
   ]
 }
 
+// A whitespace-broken `\uXXXX` escape (`\u9 ed8` = 默) — fixed only by the `unicode` item.
+function buildBadUnicodeComplete(model: string): Array<string> {
+  return [
+    messageStartFrame({ id: "msg_uni", model, inputTokens: 10 }),
+    toolBlockStartFrame(0, "toolu_uni", "TodoWrite"),
+    jsonDeltaFrame(0, String.raw`{"todos":"\u9 ed8"}`),
+    blockStopFrame(0),
+    messageDeltaFrame({ stopReason: "tool_use", outputTokens: 8 }),
+    MESSAGE_STOP_FRAME,
+    DONE_FRAME,
+  ]
+}
+
 describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () => {
   useIsolatedRuntime()
 
@@ -319,6 +332,22 @@ describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () 
     expect(getToolInputRepairStats().strip).toBe(0)
   })
 
+  test("unicode-item repair increments the `unicode` counter + logs [REWRITE]", async () => {
+    const infoSpy = spyOn(consola, "info").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.info)
+    try {
+      configure(["unicode"])
+      frameBuilder = buildBadUnicodeComplete
+      await streamRequest("tele-unicode")
+      expect(getToolInputRepairStats().unicode).toBe(1)
+      expect(getToolInputRepairStats().strip).toBe(0)
+      expect(getToolInputRepairStats().jsonrepair).toBe(0)
+      const logged = infoSpy.mock.calls.map((c) => String(c[0]))
+      expect(logged.some((m) => m.includes("[REWRITE] tool-input-repair") && m.includes("layer=unicode"))).toBe(true)
+    } finally {
+      infoSpy.mockRestore()
+    }
+  })
+
   test("an unrepairable input increments the `unrepairable` counter", async () => {
     configure(["tags", "jsonrepair"])
     frameBuilder = buildUnrepairableComplete
@@ -330,6 +359,6 @@ describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () 
     configure([])
     frameBuilder = buildUnrepairableComplete
     await streamRequest("tele-off")
-    expect(getToolInputRepairStats()).toEqual({ strip: 0, jsonrepair: 0, unrepairable: 0 })
+    expect(getToolInputRepairStats()).toEqual({ strip: 0, unicode: 0, jsonrepair: 0, unrepairable: 0 })
   })
 })
