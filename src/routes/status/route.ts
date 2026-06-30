@@ -228,9 +228,10 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       },
 
       // Malformed tool-input repair outcome counters (P6): since-restart aggregate
-      // (strip = Layer 1 fixes, jsonrepair = Layer 2 fixes, unrepairable = both failed).
+      // (strip = tags-item fixes, jsonrepair = jsonrepair-item fixes, unrepairable = no item fixed).
+      // `enabled` is the active repair-item set (empty = off).
       tool_input_repair: {
-        enabled: state.toolRepairMalformedInput,
+        enabled: [...state.toolRepairMalformedInput],
         ...getToolInputRepairStats(),
       },
     },

@@ -93,6 +93,19 @@ export function tryJsonRepair(input: string): string | undefined {
   }
 }
 
+/**
+ * Canonical repair-item set — also the fixed cascade order. The comma-separated config
+ * `anthropic.tool_repair_malformed_input` is a SUBSET of these; enabling an item applies its
+ * transform, cascaded in THIS order regardless of config spelling (`"jsonrepair,tags"` and
+ * `"tags,jsonrepair"` behave identically). Order is the dependency order: `tags` (antml-tag strip)
+ * runs before `jsonrepair` (structural repair) so jsonrepair won't trip over leaked tags.
+ *
+ * Item → layer/telemetry name: `tags`→`strip`, `jsonrepair`→`jsonrepair` (the layer name is the
+ * repair MECHANISM name, which differs from the config ITEM name only for `tags`/`strip`).
+ */
+export const REPAIR_ITEMS = ["tags", "jsonrepair"] as const
+export type RepairItem = (typeof REPAIR_ITEMS)[number]
+
 /** Outcome of a layered repair attempt. `layer` names which layer produced the fix. */
 export type RepairResult = { repaired: unknown; layer: "strip" | "jsonrepair" } | { unrepairable: true }
 
@@ -115,25 +128,29 @@ function isPlausibleToolInput(v: unknown): boolean {
 }
 
 /**
- * Layered repair orchestration for a malformed tool_use input JSON string.
+ * Cascade the enabled repair `items` (in canonical {@link REPAIR_ITEMS} order) over a malformed
+ * tool_use input JSON string. Each enabled item applies its transform to the running `current`
+ * string — so items **stack** (e.g. `tags`-strip THEN `jsonrepair` on the stripped form) — and
+ * re-validates; the first item whose result parses AND is a plausible tool input (a JSON object)
+ * wins, returning the parsed object with its layer name. `{ unrepairable: true }` when no enabled
+ * item yields valid JSON. Idempotent on already-valid input (each layer is a no-op on well-formed
+ * JSON). The caller decides forward-as-is vs fail on an unrepairable result.
  *
- * `tags`   — Layer 1 only: strip antml tags, revalidate.
- * `repair` — Layer 1 → revalidate → Layer 2 (jsonrepair on the **stripped**
- *            form, so a hybrid tag-bleed + structural break is handled without
- *            jsonrepair tripping over the tags) → revalidate.
- *
- * Each layer's result must parse AND be a plausible tool input (a JSON object). Returns the parsed
- * object (with the winning `layer`) from the first layer that satisfies both, else
- * `{ unrepairable: true }`. The caller decides what to do with an unrepairable result (forward-as-is
- * vs fail). Idempotent on already-valid input (Layer 1 is a no-op on tag-free JSON).
+ * `tags`-only ≡ the legacy `"tags"` tier; `["tags","jsonrepair"]` ≡ the legacy `"repair"` tier
+ * (jsonrepair on the stripped form). Decoupled items also allow new combinations the tiers
+ * couldn't express (e.g. `jsonrepair` without `tags`).
  */
-export function repairToolInput(raw: string, mode: "tags" | "repair"): RepairResult {
-  const stripped = stripAntmlTagsOutsideStrings(raw)
-  const afterStrip = parseJsonOrFail(stripped)
-  if (afterStrip.ok && isPlausibleToolInput(afterStrip.value)) return { repaired: afterStrip.value, layer: "strip" }
+export function repairToolInput(raw: string, items: ReadonlyArray<RepairItem>): RepairResult {
+  let current = raw
 
-  if (mode === "repair") {
-    const repaired = tryJsonRepair(stripped)
+  if (items.includes("tags")) {
+    current = stripAntmlTagsOutsideStrings(current)
+    const afterStrip = parseJsonOrFail(current)
+    if (afterStrip.ok && isPlausibleToolInput(afterStrip.value)) return { repaired: afterStrip.value, layer: "strip" }
+  }
+
+  if (items.includes("jsonrepair")) {
+    const repaired = tryJsonRepair(current)
     if (repaired !== undefined) {
       const parsed = JSON.parse(repaired) as unknown
       if (isPlausibleToolInput(parsed)) return { repaired: parsed, layer: "jsonrepair" }

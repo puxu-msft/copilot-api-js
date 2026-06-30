@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
+import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import {
@@ -62,8 +63,8 @@ const RAW_JSONREPAIR = loadRaw("task-truncated-jsonrepair-1782641593660-64.json"
 const noCfg = { fields: {}, all: false }
 
 describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", () => {
-  test("repair=tags: real antml-bleed TodoWrite is repaired to valid JSON on the wire", () => {
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "tags" })
+  test("items=[tags]: real antml-bleed TodoWrite is repaired to valid JSON on the wire", () => {
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags"] })
     const out = runRaw(d, [start(0, "TodoWrite"), delta(0, RAW_1304), stop(0)])
     expect(out).toHaveLength(3) // start, single rebuilt delta, stop
     expect(dataOf(out[0]).type).toBe("content_block_start")
@@ -74,23 +75,23 @@ describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", ()
     expect(parsed.todos).toHaveLength(6)
   })
 
-  test("repair=tags: the re-emitted delta carries its event line (SDK dispatch invariant)", () => {
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "tags" })
+  test("items=[tags]: the re-emitted delta carries its event line (SDK dispatch invariant)", () => {
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags"] })
     const out = runRaw(d, [start(0, "TodoWrite"), delta(0, RAW_1304), stop(0)])
     const rebuilt = out.find((m) => dataOf(m).type === "content_block_delta")
     // A `data:`-only frame (event === undefined) is silently dropped by the Anthropic SDK.
     expect(rebuilt?.event).toBe("content_block_delta")
   })
 
-  test("repair=repair: Layer 1 still suffices for the antml-bleed case (no jsonrepair needed)", () => {
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair" })
+  test("items=[tags,jsonrepair]: Layer 1 still suffices for the antml-bleed case (no jsonrepair needed)", () => {
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags", "jsonrepair"] })
     const out = runRaw(d, [start(0, "TodoWrite"), delta(0, RAW_1304), stop(0)])
     const rebuilt = dataOf(out[1]) as { delta: { partial_json: string } }
     expect((JSON.parse(rebuilt.delta.partial_json) as { todos: Array<unknown> }).todos).toHaveLength(6)
   })
 
-  test("repair=repair: structural truncation is repaired via jsonrepair (Layer 2)", () => {
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair" })
+  test("items=[tags,jsonrepair]: structural truncation is repaired via jsonrepair (Layer 2)", () => {
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags", "jsonrepair"] })
     const out = runRaw(d, [start(0, "Task"), delta(0, RAW_JSONREPAIR), stop(0)])
     expect(out).toHaveLength(3)
     const rebuilt = dataOf(out[1]) as { delta: { partial_json: string } }
@@ -99,24 +100,24 @@ describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", ()
     expect(parsed.prompt).toContain("请给出")
   })
 
-  test("repair=tags: a structural break jsonrepair-only case stays unrepaired → original deltas replayed", () => {
+  test("items=[tags]: a structural break jsonrepair-only case stays unrepaired → original deltas replayed", () => {
     // Layer 1 (tag strip) cannot fix missing brackets; P3 has no fail path yet, so it replays the
     // original malformed bytes verbatim (same as the pre-repair behavior). P4 adds the fail.
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "tags" })
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags"] })
     const out = runRaw(d, [start(0, "Task"), delta(0, RAW_JSONREPAIR), stop(0)])
     expect(out).toHaveLength(3) // start, replayed-original delta, stop
     expect((dataOf(out[1]) as { delta: { partial_json: string } }).delta.partial_json).toBe(RAW_JSONREPAIR)
   })
 
-  test("repair=false (default off): malformed input replays original bytes byte-identical", () => {
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: false })
+  test("items=[] (default off): malformed input replays original bytes byte-identical", () => {
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: [] })
     const out = runRaw(d, [start(0, "TodoWrite"), delta(0, RAW_1304), stop(0)])
     expect(out).toHaveLength(3)
     expect((dataOf(out[1]) as { delta: { partial_json: string } }).delta.partial_json).toBe(RAW_1304)
   })
 
   test("repair on: server_tool_use with malformed input is NOT buffered or repaired (passthrough)", () => {
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair" })
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags", "jsonrepair"] })
     const out = runRaw(d, [start(0, "web_search", "server_tool_use"), delta(0, RAW_1304), stop(0)])
     // server_tool_use is excluded from buffering → every frame passes through untouched.
     expect(out).toHaveLength(3)
@@ -124,7 +125,7 @@ describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", ()
   })
 
   test("repair on: a valid non-decode tool is buffered but replayed byte-identical (timing-only change)", () => {
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "tags" })
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags"] })
     const out = runRaw(d, [start(0, "Read"), delta(0, '{"file_path":'), delta(0, '"/x"}'), stop(0)])
     // Buffered (repair-on buffers all tool_use) but valid → original deltas replayed, content unchanged.
     expect(out).toHaveLength(4) // start + 2 original deltas + stop
@@ -137,7 +138,7 @@ describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", ()
     // no args, so the upstream legitimately emits a single empty `input_json_delta`. `JSON.parse("")` throws,
     // so before this fix repair-on misrouted it into the unrepairable fail-gate (req_1782767425295_95).
     const failures: Array<DecodeFailureInfo> = []
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair", onDecodeFailure: (i) => failures.push(i) })
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags", "jsonrepair"], onDecodeFailure: (i) => failures.push(i) })
     const out = runRaw(d, [start(0, "EnterPlanMode"), delta(0, ""), stop(0)])
     expect(out).toHaveLength(3) // start + original empty delta + stop, byte-identical
     expect((dataOf(out[1]) as { delta: { partial_json: string } }).delta.partial_json).toBe("")
@@ -147,7 +148,7 @@ describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", ()
   test("regression: a zero-delta tool_use (no input_json_delta at all) is {} not malformed", () => {
     // Some upstreams emit no `input_json_delta` at all for an empty-input tool. Accumulation is still "" → {}.
     const failures: Array<DecodeFailureInfo> = []
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair", onDecodeFailure: (i) => failures.push(i) })
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags", "jsonrepair"], onDecodeFailure: (i) => failures.push(i) })
     const out = runRaw(d, [start(0, "EnterPlanMode"), stop(0)])
     expect(out).toHaveLength(2) // start + stop, no synthetic frames
     expect(failures).toHaveLength(0)
@@ -158,7 +159,7 @@ describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", ()
     // for the Anthropic SDK (`jsonBuf ? partialParse(jsonBuf) : {}`) → partialParse("  ") throws. So whitespace
     // is genuinely malformed and must reach the unrepairable fail-gate, not be silently turned into {}.
     const failures: Array<DecodeFailureInfo> = []
-    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: "repair", onDecodeFailure: (i) => failures.push(i) })
+    const d = createToolInputStreamDecoder(noCfg, { repairMalformedInput: ["tags", "jsonrepair"], onDecodeFailure: (i) => failures.push(i) })
     runRaw(d, [start(0, "EnterPlanMode"), delta(0, "  "), stop(0)])
     expect(failures.some((f) => f.reason === "input-unrepairable")).toBe(true)
   })
@@ -184,48 +185,48 @@ function makeResponse(input: unknown): { content: Array<ToolUseBlock> } & Record
   }
 }
 
-const decodeNS = (input: unknown, mode: "tags" | "repair" | false, failures: Array<DecodeFailureInfo>) =>
+const decodeNS = (input: unknown, items: ReadonlyArray<RepairItem>, failures: Array<DecodeFailureInfo>) =>
   decodeToolInputBlocksInResponse(
     makeResponse(input) as unknown as AnthropicMessageResponse,
     { fields: {}, all: false },
-    { repairMalformedInput: mode, onDecodeFailure: (i) => failures.push(i) },
+    { repairMalformedInput: items, onDecodeFailure: (i) => failures.push(i) },
   ) as unknown as {
     content: Array<ToolUseBlock>
   }
 
 describe("decodeToolInputBlocksInResponse — non-streaming malformed-string repair (P5)", () => {
-  test("repair=tags: a malformed STRING input is repaired to a structured object", () => {
+  test("items=[tags]: a malformed STRING input is repaired to a structured object", () => {
     const failures: Array<DecodeFailureInfo> = []
-    const out = decodeNS(RAW_1304, "tags", failures)
+    const out = decodeNS(RAW_1304, ["tags"], failures)
     expect(typeof out.content[0].input).toBe("object")
     expect((out.content[0].input as { todos: Array<unknown> }).todos).toHaveLength(6)
     expect(failures).toHaveLength(0)
   })
 
-  test("repair=repair: a structurally-truncated STRING input is repaired via jsonrepair", () => {
+  test("items=[tags,jsonrepair]: a structurally-truncated STRING input is repaired via jsonrepair", () => {
     const failures: Array<DecodeFailureInfo> = []
-    const out = decodeNS(RAW_JSONREPAIR, "repair", failures)
+    const out = decodeNS(RAW_JSONREPAIR, ["tags", "jsonrepair"], failures)
     expect((out.content[0].input as { subagent_type: string }).subagent_type).toBe("general-purpose")
     expect(failures).toHaveLength(0)
   })
 
   test("unrepairable STRING input → block kept verbatim + input-unrepairable reported", () => {
     const failures: Array<DecodeFailureInfo> = []
-    const out = decodeNS('{"a":1,,,}', "repair", failures)
+    const out = decodeNS('{"a":1,,,}', ["tags", "jsonrepair"], failures)
     expect(out.content[0].input).toBe('{"a":1,,,}') // unchanged — the malformed original survives
     expect(failures.some((f) => f.reason === "input-unrepairable")).toBe(true)
   })
 
   test("repair off: a malformed STRING input is left untouched (no repair, no report)", () => {
     const failures: Array<DecodeFailureInfo> = []
-    const out = decodeNS(RAW_1304, false, failures)
+    const out = decodeNS(RAW_1304, [], failures)
     expect(out.content[0].input).toBe(RAW_1304)
     expect(failures).toHaveLength(0)
   })
 
   test("the common case (object input) is untouched even with repair on", () => {
     const failures: Array<DecodeFailureInfo> = []
-    const out = decodeNS({ todos: [] }, "repair", failures)
+    const out = decodeNS({ todos: [] }, ["tags", "jsonrepair"], failures)
     expect(out.content[0].input).toEqual({ todos: [] })
     expect(failures).toHaveLength(0)
   })
@@ -233,7 +234,7 @@ describe("decodeToolInputBlocksInResponse — non-streaming malformed-string rep
   test("regression: empty-string input (zero-arg tool) becomes {} not unrepairable", () => {
     // Mirror of the streaming empty-accumulation case: a "" string input is the empty object `{}`, not malformed.
     const failures: Array<DecodeFailureInfo> = []
-    const out = decodeNS("", "repair", failures)
+    const out = decodeNS("", ["tags", "jsonrepair"], failures)
     expect(out.content[0].input).toEqual({})
     expect(failures).toHaveLength(0)
   })
@@ -243,7 +244,7 @@ describe("decodeToolInputBlocksInResponse — non-streaming malformed-string rep
     // NOT a plausible tool input (always an object). The plausibility gate rejects it as unrepairable
     // rather than forwarding a meaningless value as a "repair".
     const failures: Array<DecodeFailureInfo> = []
-    const out = decodeNS("not json at all", "repair", failures)
+    const out = decodeNS("not json at all", ["tags", "jsonrepair"], failures)
     expect(out.content[0].input).toBe("not json at all") // unchanged — kept malformed
     expect(failures.some((f) => f.reason === "input-unrepairable")).toBe(true)
   })

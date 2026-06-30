@@ -9,6 +9,7 @@ import { join } from "node:path"
 
 import {
   //
+  repairToolInput,
   stripAntmlTagsOutsideStrings,
   tryJsonRepair,
 } from "~/lib/anthropic/tool-input-repair"
@@ -113,5 +114,45 @@ describe("tryJsonRepair — Layer 2 jsonrepair-backed structural repair", () => 
     // Defensive: even if jsonrepair returns without throwing, the re-parse gate
     // guards against a heuristic result that still isn't valid JSON.
     expect(tryJsonRepair("")).toBeUndefined()
+  })
+})
+
+describe("repairToolInput — item-set cascade (canonical order, items stack)", () => {
+  test('["tags"] strips antml bleed → layer "strip" (≡ legacy "tags" tier)', () => {
+    const r = repairToolInput(FIXTURE_1304, ["tags"])
+    expect(r).toMatchObject({ layer: "strip" })
+    expect("repaired" in r && (r.repaired as { todos: Array<unknown> }).todos).toHaveLength(6)
+  })
+
+  test('["tags","jsonrepair"] repairs a structural truncation via jsonrepair → layer "jsonrepair" (≡ legacy "repair" tier)', () => {
+    const r = repairToolInput(FIXTURE_JSONREPAIR, ["tags", "jsonrepair"])
+    expect(r).toMatchObject({ layer: "jsonrepair" })
+    expect("repaired" in r && (r.repaired as { subagent_type: string }).subagent_type).toBe("general-purpose")
+  })
+
+  test('["jsonrepair"] alone (no tags strip) still fixes a tag-free structural truncation', () => {
+    // The jsonrepair fixture has no antml tags, so jsonrepair runs directly on the raw bytes.
+    const r = repairToolInput(FIXTURE_JSONREPAIR, ["jsonrepair"])
+    expect(r).toMatchObject({ layer: "jsonrepair" })
+  })
+
+  test('["jsonrepair"] alone on antml-bleed is unrepairable (jsonrepair throws without a prior tags strip)', () => {
+    // jsonrepair raises on the antml bleed; with no `tags` item to strip first, nothing rescues it.
+    expect(repairToolInput(FIXTURE_1304, ["jsonrepair"])).toEqual({ unrepairable: true })
+  })
+
+  test('["tags"] alone cannot fix a tag-free structural truncation → unrepairable', () => {
+    expect(repairToolInput(FIXTURE_JSONREPAIR, ["tags"])).toEqual({ unrepairable: true })
+  })
+
+  test("empty item set never repairs → unrepairable", () => {
+    expect(repairToolInput(FIXTURE_1304, [])).toEqual({ unrepairable: true })
+  })
+
+  test("already-valid input is returned via the first enabled layer (no-op transform)", () => {
+    const valid = '{"a":1,"b":[1,2]}'
+    const r = repairToolInput(valid, ["tags", "jsonrepair"])
+    expect(r).toMatchObject({ layer: "strip" })
+    expect("repaired" in r && r.repaired).toEqual({ a: 1, b: [1, 2] })
   })
 })

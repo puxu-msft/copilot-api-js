@@ -583,8 +583,8 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
   {
     configKey: "anthropic.tool_repair_malformed_input",
     stateKey: "toolRepairMalformedInput",
-    sampleYamlValue: "repair",
-    expectedStateValue: "repair",
+    sampleYamlValue: "tags,jsonrepair",
+    expectedStateValue: ["tags", "jsonrepair"],
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput,
   },
   {

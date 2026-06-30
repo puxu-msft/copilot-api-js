@@ -23,6 +23,8 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getHistory } from "~/lib/history/store"
 import {
@@ -121,7 +123,7 @@ async function streamRequest(sessionId: string): Promise<string> {
   return res.text()
 }
 
-function configure(repair: "tags" | "repair" | false): void {
+function configure(repair: ReadonlyArray<RepairItem>): void {
   setStateForTests({
     copilotToken: "test-token",
     accountType: "individual",
@@ -144,7 +146,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("repair mode: unrepairable input → synthetic error frame + FAILED history + partial preserved", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildUnrepairableComplete
     const sessionId = "unrep-repair"
     const sse = await streamRequest(sessionId)
@@ -167,7 +169,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
 
   test("tags mode: a structural break jsonrepair could fix is unrepairable under tags-only → FAILED", async () => {
     // `{...,,,}` is unrepairable under tags too (strip is a no-op on tag-free garbage).
-    configure("tags")
+    configure(["tags"])
     frameBuilder = buildUnrepairableComplete
     const sessionId = "unrep-tags"
     const sse = await streamRequest(sessionId)
@@ -178,7 +180,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("precedence: unrepairable AND truncated → fails with the unrepairable reason, not truncation", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildUnrepairableTruncated
     const sessionId = "unrep-trunc"
     const sse = await streamRequest(sessionId)
@@ -195,7 +197,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("regression: a repairable antml-bleed still SUCCEEDS (no error frame, completed)", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildRepairableComplete
     const sessionId = "unrep-repairable-ok"
     const sse = await streamRequest(sessionId)
@@ -208,7 +210,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("repair off (default): malformed input is forwarded as-is, request still completes", async () => {
-    configure(false)
+    configure([])
     frameBuilder = buildUnrepairableComplete
     const sessionId = "unrep-off"
     const sse = await streamRequest(sessionId)
@@ -225,7 +227,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
     // accumulators via onAttemptReset. The fail flag lives on the ctx (not acc), so the
     // complete-branch still fails. If the flag were (wrongly) acc-hung, the buffered reset
     // would drop it and this would settle `completed` → RED.
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     setStateForTests({ protectStreamingGeneration: "on" })
     frameBuilder = buildUnrepairableComplete
     const sessionId = "unrep-buffered"
@@ -241,7 +243,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
     // (no message_stop) → buffer discarded + retried. Attempt 2 is clean + commits. The request MUST
     // settle `completed`, with NO error frame and an UN-inflated counter — the per-attempt outcomes
     // are cleared in onAttemptReset, so the discarded attempt's signal can't poison the committed one.
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     setStateForTests({ protectStreamingGeneration: "on", protectStreamingMaxRetries: 3 })
     let attempt = 0
     frameBuilder = (model: string): Array<string> =>
@@ -297,7 +299,7 @@ describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () 
   test("Layer 1 (strip) repair increments the `strip` counter + logs [REWRITE]", async () => {
     const infoSpy = spyOn(consola, "info").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.info)
     try {
-      configure("tags")
+      configure(["tags"])
       frameBuilder = buildRepairableComplete
       await streamRequest("tele-strip")
       expect(getToolInputRepairStats().strip).toBe(1)
@@ -310,7 +312,7 @@ describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () 
   })
 
   test("Layer 2 (jsonrepair) repair increments the `jsonrepair` counter", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildJsonrepairComplete
     await streamRequest("tele-jsonrepair")
     expect(getToolInputRepairStats().jsonrepair).toBe(1)
@@ -318,14 +320,14 @@ describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () 
   })
 
   test("an unrepairable input increments the `unrepairable` counter", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildUnrepairableComplete
     await streamRequest("tele-unrep")
     expect(getToolInputRepairStats().unrepairable).toBe(1)
   })
 
   test("repair off: no counter movement (default behavior)", async () => {
-    configure(false)
+    configure([])
     frameBuilder = buildUnrepairableComplete
     await streamRequest("tele-off")
     expect(getToolInputRepairStats()).toEqual({ strip: 0, jsonrepair: 0, unrepairable: 0 })

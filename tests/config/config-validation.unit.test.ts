@@ -107,11 +107,23 @@ describe("validateConfig — type errors", () => {
     expect(warnedMessages().some((m) => m.includes("anthropic.cache_control"))).toBe(true)
   })
 
-  test("tool_repair_malformed_input: valid values accepted, invalid stripped", () => {
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "tags" } }).anthropic?.tool_repair_malformed_input).toBe("tags")
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "repair" } }).anthropic?.tool_repair_malformed_input).toBe("repair")
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: false } }).anthropic?.tool_repair_malformed_input).toBe(false)
-    const bad = validateConfig({ anthropic: { tool_repair_malformed_input: "bogus" } })
+  test("tool_repair_malformed_input: comma-separated item set parsed (dedup + canonical order); invalid stripped", () => {
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "tags" } }).anthropic?.tool_repair_malformed_input).toEqual(["tags"])
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "tags,jsonrepair" } }).anthropic?.tool_repair_malformed_input).toEqual([
+      "tags",
+      "jsonrepair",
+    ])
+    // spelling order ignored → canonical order; duplicates collapsed
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "jsonrepair,tags,tags" } }).anthropic?.tool_repair_malformed_input).toEqual([
+      "tags",
+      "jsonrepair",
+    ])
+    // empty string == off (empty set)
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "" } }).anthropic?.tool_repair_malformed_input).toEqual([])
+    // clean break (project unreleased): the legacy "repair" tier and boolean `false` are no longer valid → stripped + warn
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "repair" } }).anthropic?.tool_repair_malformed_input).toBeUndefined()
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: false } }).anthropic?.tool_repair_malformed_input).toBeUndefined()
+    const bad = validateConfig({ anthropic: { tool_repair_malformed_input: "tags,bogus" } })
     expect(bad.anthropic?.tool_repair_malformed_input).toBeUndefined()
     expect(warnedMessages().some((m) => m.includes("anthropic.tool_repair_malformed_input"))).toBe(true)
   })

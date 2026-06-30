@@ -31,7 +31,11 @@ import {
   shouldDecodeToolInput,
   type DecodeToolInputConfig,
 } from "./decode-tool-input-core"
-import { repairToolInput } from "./tool-input-repair"
+import {
+  //
+  repairToolInput,
+  type RepairItem,
+} from "./tool-input-repair"
 
 /** Diagnostic emitted when a tool_use input selected for decode couldn't be decoded. */
 export interface DecodeFailureInfo {
@@ -53,13 +57,14 @@ export interface ToolInputRewriteOptions {
   backfillAskUserQuestionHeader?: boolean
   /**
    * Repair a malformed tool_use input that fails to `JSON.parse` at the block's
-   * `content_block_stop`, before forwarding. `"tags"` strips antml tag bleed
-   * (Layer 1); `"repair"` additionally runs jsonrepair (Layer 2); `false`
-   * (default) leaves the existing replay-originals behavior. When enabled, the
-   * decoder buffers **every** `tool_use` block (not just decode-selected ones)
-   * so any malformed input is caught — `server_tool_use` stays excluded.
+   * `content_block_stop`, before forwarding. A set of repair items (`tags` strips
+   * antml tag bleed, `jsonrepair` runs jsonrepair) cascaded in canonical order;
+   * empty/omitted = off (leaves the existing replay-originals behavior). When
+   * non-empty, the decoder buffers **every** `tool_use` block (not just
+   * decode-selected ones) so any malformed input is caught — `server_tool_use`
+   * stays excluded.
    */
-  repairMalformedInput?: "tags" | "repair" | false
+  repairMalformedInput?: ReadonlyArray<RepairItem>
   /**
    * Called when a malformed tool_use input was successfully repaired before forwarding.
    * `layer` names the winning repair layer; `beforeLength`/`afterLength` are the raw-vs-repaired
@@ -180,8 +185,8 @@ function buildInputJsonDelta(template: ServerSentEventMessage | undefined, index
 export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: ToolInputRewriteOptions = {}): ToolInputStreamDecoder {
   const buffering = new Map<number, BufferedToolUse>()
   const backfill = opts.backfillAskUserQuestionHeader === true
-  const repairMode = opts.repairMalformedInput ?? false
-  const repairEnabled = repairMode === "tags" || repairMode === "repair"
+  const repairItems = opts.repairMalformedInput ?? []
+  const repairEnabled = repairItems.length > 0
   const report = makeDecodeFailureReporter(opts.onDecodeFailure)
 
   function finalize(buf: BufferedToolUse, stopRaw: ServerSentEventMessage): Array<ServerSentEventMessage> {
@@ -207,7 +212,7 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
       } catch {
         // Upstream sent malformed / truncated JSON for a COMPLETE block (content_block_stop,
         // not an abort). Try layered repair when enabled; otherwise replay originals losslessly.
-        const result = repairEnabled ? repairToolInput(full, repairMode) : ({ unrepairable: true } as const)
+        const result = repairEnabled ? repairToolInput(full, repairItems) : ({ unrepairable: true } as const)
         if ("repaired" in result) {
           inputObj = result.repaired
           wasRepaired = true
@@ -300,8 +305,8 @@ export function decodeToolInputBlocksInResponse(
   opts: ToolInputRewriteOptions = {},
 ): AnthropicMessageResponse {
   const backfill = opts.backfillAskUserQuestionHeader === true
-  const repairMode = opts.repairMalformedInput ?? false
-  const repairEnabled = repairMode === "tags" || repairMode === "repair"
+  const repairItems = opts.repairMalformedInput ?? []
+  const repairEnabled = repairItems.length > 0
   const report = makeDecodeFailureReporter(opts.onDecodeFailure)
   const content = response.content.map((block) => {
     const b = block as { type?: string; name?: string; input?: unknown }
@@ -318,7 +323,7 @@ export function decodeToolInputBlocksInResponse(
         // `=== ""` (not `.trim()`): a whitespace-only string is genuinely malformed and falls through to repair.
         input = {}
       } else {
-        const result = repairToolInput(input, repairMode)
+        const result = repairToolInput(input, repairItems)
         if ("repaired" in result) {
           opts.onRepair?.({ tool: b.name, layer: result.layer, beforeLength: input.length, afterLength: JSON.stringify(result.repaired).length })
           input = result.repaired

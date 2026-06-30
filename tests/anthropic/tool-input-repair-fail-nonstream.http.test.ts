@@ -16,6 +16,8 @@ import {
   test,
 } from "bun:test"
 
+import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+
 import { getHistory } from "~/lib/history/store"
 import {
   //
@@ -73,7 +75,7 @@ async function nonStreamRequest(sessionId: string): Promise<Response> {
   })
 }
 
-function configure(repair: "tags" | "repair" | false): void {
+function configure(repair: ReadonlyArray<RepairItem>): void {
   setStateForTests({
     copilotToken: "test-token",
     accountType: "individual",
@@ -94,7 +96,7 @@ describe("POST /v1/messages (non-streaming) — unrepairable malformed tool-inpu
   })
 
   test("repair mode: unrepairable string input → history FAILED, partial preserved", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     toolInput = UNREPAIRABLE_INPUT
     const sessionId = "ns-unrep"
     const res = await nonStreamRequest(sessionId)
@@ -108,7 +110,7 @@ describe("POST /v1/messages (non-streaming) — unrepairable malformed tool-inpu
   })
 
   test("repair mode: a repairable antml-bleed string input → SUCCEEDS with a structured object on the wire", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     toolInput = REPAIRABLE_INPUT
     const sessionId = "ns-repairable"
     const res = await nonStreamRequest(sessionId)
@@ -123,7 +125,7 @@ describe("POST /v1/messages (non-streaming) — unrepairable malformed tool-inpu
   })
 
   test("repair off (default): unrepairable string input is forwarded as-is, request completes", async () => {
-    configure(false)
+    configure([])
     toolInput = UNREPAIRABLE_INPUT
     const sessionId = "ns-off"
     await nonStreamRequest(sessionId)

@@ -1,3 +1,4 @@
+import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type {
   //
   Model,
@@ -143,8 +144,8 @@ export interface State {
   /** 透明恢复上游 tool-call 文本降级（RFC tool-call-text-recovery）。默认 false。 */
   readonly recoverToolCallText: boolean
 
-  /** 修复上游发出的畸形 tool_use input（非法 JSON：antml 标签溢出 / 未转义片段），仅作用于 Anthropic 转发流。`tags`=结构感知剥 antml 标签、`repair`=再跑 jsonrepair（Layer 2）、`false`=关（默认）。history 保留上游原始字节。 */
-  readonly toolRepairMalformedInput: "tags" | "repair" | false
+  /** 修复上游发出的畸形 tool_use input（非法 JSON），仅作用于 Anthropic 转发流。可叠加的修复项目集（`tags`=结构感知剥 antml 标签、`jsonrepair`=jsonrepair 结构修复、`unicode`=修空白打断的 `\uXXXX` 转义），按固定规范顺序级联。空数组=关（默认）。history 保留上游原始字节。 */
+  readonly toolRepairMalformedInput: ReadonlyArray<RepairItem>
 
   /** 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块）的处理策略：`refusal`=透传不改写、`end_turn`=合成 text 块改 end_turn、`error`=发 error SSE 帧并记请求失败（ctx.fail）。默认 `error`。 */
   readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
@@ -806,6 +807,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("responseHeaderWhitelist" in patch) {
     cloned.responseHeaderWhitelist = patch.responseHeaderWhitelist ? [...patch.responseHeaderWhitelist] : undefined
   }
+  if ("toolRepairMalformedInput" in patch) {
+    cloned.toolRepairMalformedInput = patch.toolRepairMalformedInput ? [...patch.toolRepairMalformedInput] : undefined
+  }
 
   return cloned
 }
@@ -1136,7 +1140,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
   recoverToolCallText: false,
-  toolRepairMalformedInput: false as "tags" | "repair" | false,
+  toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
   refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
@@ -1221,7 +1225,7 @@ export function resetConfigManagedState(): void {
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
-    toolRepairMalformedInput: CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput,
+    toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
     refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
     toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
@@ -1291,7 +1295,7 @@ const mutableState: MutableState = {
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
-  toolRepairMalformedInput: CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput,
+  toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
   toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],

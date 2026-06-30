@@ -25,6 +25,12 @@
 
 import { z } from "zod"
 
+import {
+  //
+  REPAIR_ITEMS,
+  type RepairItem,
+} from "~/lib/anthropic/tool-input-repair"
+
 // ============================================================================
 // Leaf helpers — common error messages + `null` acceptance
 // ============================================================================
@@ -32,6 +38,7 @@ import { z } from "zod"
 const POSITIVE_INT_MSG = "Must be a non-negative integer or null"
 const BOOLEAN_MSG = "Must be a boolean or null"
 const STRING_MSG = "Must be a string or null"
+const REPAIR_ITEMS_MSG = `Must be a comma-separated subset of: ${REPAIR_ITEMS.join(", ")} (empty string = off)`
 
 function nullableNonnegativeInt() {
   return z
@@ -340,19 +347,33 @@ export const AnthropicConfigSchema = z
      */
     tool_backfill_question: nullableBoolean(),
     /**
-     * Repair malformed `tool_use` input that upstream emitted as invalid JSON
-     * (antml tag bleed / unescaped fragments) on the Anthropic response wire.
-     * `"tags"` = structure-aware antml-tag stripping (Layer 1); `"repair"` = also
-     * run jsonrepair (Layer 2) for broader structural breakage; `false` (default)
+     * Repair malformed `tool_use` input that upstream emitted as invalid JSON on
+     * the Anthropic response wire. A **comma-separated set of repair items** — a
+     * subset of `tags` (structure-aware antml-tag stripping) and `jsonrepair`
+     * (jsonrepair structural fix). Items cascade in a fixed canonical order
+     * (spelling order is ignored) and stack on each other. Empty string (default)
      * = off. History keeps the upstream-original bytes — only the forwarded
      * stream/response is repaired.
      */
     tool_repair_malformed_input: z
-      .union([z.literal(false), z.literal("tags"), z.literal("repair"), z.null()], {
-        error: "Must be one of: false, tags, repair",
+      .string({ error: REPAIR_ITEMS_MSG })
+      .nullable()
+      .transform((v, ctx): ReadonlyArray<RepairItem> | undefined => {
+        if (v === null) return undefined
+        const tokens = v
+          .split(",")
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0)
+        const invalid = tokens.filter((t) => !(REPAIR_ITEMS as ReadonlyArray<string>).includes(t))
+        if (invalid.length > 0) {
+          ctx.addIssue({ code: "custom", message: `${REPAIR_ITEMS_MSG} — got invalid item(s): ${invalid.join(", ")}` })
+          return z.NEVER
+        }
+        // Dedup + canonical order (REPAIR_ITEMS order == cascade order). Empty set = off.
+        const set = new Set(tokens)
+        return REPAIR_ITEMS.filter((it) => set.has(it))
       })
-      .optional()
-      .transform((v) => v ?? undefined),
+      .optional(),
     /**
      * Synthetic SSE keepalive ping cadence (seconds) for the client-facing live
      * Anthropic stream. `0` disables; default **20**, clamped to a large margin

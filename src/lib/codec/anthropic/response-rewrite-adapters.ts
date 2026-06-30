@@ -213,7 +213,7 @@ const decodeRewrite: ResponseRewrite = {
     && (Object.keys(state.decodeToolInputFields).length > 0
       || state.decodeAllToolInputFields
       || state.backfillQuestionFromHeader
-      || state.toolRepairMalformedInput !== false),
+      || state.toolRepairMalformedInput.length > 0),
   createState: (env): DecodeState => ({
     decoder: createToolInputStreamDecoder(
       { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
