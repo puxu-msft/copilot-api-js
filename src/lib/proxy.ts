@@ -2,18 +2,20 @@
  * Proxy configuration: HTTP/HTTPS and SOCKS5/5h proxy support.
  *
  * Priority: explicit proxy URL (CLI --proxy) > env vars (--http-proxy-from-env) > config.yaml proxy.
- * On Node.js, proxying works via undici's global dispatcher.
- * On Bun, HTTP proxies are set via env vars (Bun handles them natively); SOCKS5 is not supported.
+ *
+ * This module drives the undici dispatcher, which now serves ONLY plaintext
+ * `http://` upstreams (local SearXNG) — every `https://` upstream goes through
+ * node:http2 (transport/http2-client.ts), which honors proxy config via
+ * {@link getProxyUrlForOrigin} + transport/proxy-connect.ts (CONNECT / SOCKS5
+ * tunnel), on BOTH Bun and Node. On Bun the undici dispatcher is not consumed by
+ * the global fetch, so a SOCKS5 proxy only reaches https upstreams (h2 path), not
+ * the plaintext SearXNG path.
  */
 
 import consola from "consola"
 import tls from "node:tls"
 import { getProxyForUrl } from "proxy-from-env"
-import {
-  //
-  SocksClient,
-  type SocksProxy,
-} from "socks"
+import { SocksClient } from "socks"
 // undici via file subpath (not bare "undici"): Bun shims the bare specifier and
 // drops the dispatcher's keepalive. The subpath loads the real undici. The Agent
 // built here must be the SAME undici instance the dispatcher is fed to in
@@ -31,6 +33,7 @@ import {
   onTransportTimeoutChange,
   state,
 } from "./state"
+import { buildSocksProxy } from "./transport/proxy-connect"
 
 // ============================================================================
 // Undici timeout configuration
@@ -163,6 +166,25 @@ export function getUpstreamDispatcher(): Dispatcher {
   return currentUpstreamDispatcher
 }
 
+/**
+ * Resolve the proxy URL to use for a given upstream origin, honoring the same
+ * priority as {@link buildUpstreamDispatcher}: explicit `--proxy`/config URL wins
+ * for all origins, else env vars (NO_PROXY-aware, per-origin), else none.
+ *
+ * Consumed by the node:http2 transport (transport/http2-client.ts), which speaks
+ * h2 directly and therefore cannot use the undici dispatcher. Returns `undefined`
+ * when no proxy applies (direct connection) or before `initProxy()` has run.
+ */
+export function getProxyUrlForOrigin(origin: URL): string | undefined {
+  if (!cachedProxyOptions) return undefined
+  if (cachedProxyOptions.url) return cachedProxyOptions.url
+  if (cachedProxyOptions.fromEnv) {
+    const raw = getProxyForUrl(origin.toString())
+    return raw && raw.length > 0 ? raw : undefined
+  }
+  return undefined
+}
+
 /** Build the dispatcher serving upstream requests for the given proxy options. */
 function buildUpstreamDispatcher(options: ProxyOptions): Dispatcher {
   if (options.url) return createDispatcherForUrl(options.url)
@@ -237,17 +259,7 @@ export function createDispatcherForUrl(proxyUrl: string): Dispatcher {
  * Both protocols support username/password authentication via URL credentials.
  */
 function createSocksAgent(proxyUrl: URL): Agent {
-  const proxy: SocksProxy = {
-    host: proxyUrl.hostname,
-    port: Number(proxyUrl.port) || 1080,
-    type: 5,
-  }
-
-  // Support username/password authentication
-  if (proxyUrl.username) {
-    proxy.userId = decodeURIComponent(proxyUrl.username)
-    proxy.password = proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined
-  }
+  const proxy = buildSocksProxy(proxyUrl)
 
   return new Agent({
     // The spread's `connect` object is overridden by the explicit connector
@@ -386,28 +398,29 @@ class EnvProxyDispatcher extends Agent {
 /**
  * Initialize proxy for Bun runtime.
  * Bun handles HTTP_PROXY/HTTPS_PROXY env vars natively.
- * SOCKS5 proxies are not supported on Bun.
+ * SOCKS5 is supported on Bun for https upstreams via node:http2 (proxy-connect.ts)
+ * and for plaintext http via the explicit undici dispatcher — no longer rejected.
  */
 function initProxyBun(options: ProxyOptions): void {
   if (options.url) {
-    const url = new URL(options.url)
-    const protocol = url.protocol.toLowerCase()
+    const protocol = new URL(options.url).protocol.toLowerCase()
+    const isSocks = protocol === "socks5:" || protocol === "socks5h:"
 
-    if (protocol === "socks5:" || protocol === "socks5h:") {
-      throw new Error("SOCKS5 proxy is not supported on Bun runtime. Use Node.js or an HTTP proxy instead.")
+    // Bun's global fetch reads HTTP_PROXY/HTTPS_PROXY natively (residual
+    // global-fetch callers). Do NOT export a socks5 URL there: Bun's native fetch
+    // does not understand socks5, and the hot paths use the explicit dispatcher
+    // (plaintext http) / node:http2 tunnel (https) instead.
+    if (!isSocks) {
+      process.env.HTTP_PROXY = options.url
+      process.env.HTTPS_PROXY = options.url
     }
-
-    // Bun's global fetch reads HTTP_PROXY/HTTPS_PROXY natively. Kept for any
-    // residual global-fetch callers; the hot path uses the explicit dispatcher below.
-    process.env.HTTP_PROXY = options.url
-    process.env.HTTPS_PROXY = options.url
-    consola.debug(`Proxy configured (Bun env): ${formatProxyDisplay(options.url)}`)
+    consola.debug(`Proxy configured (Bun): ${formatProxyDisplay(options.url)}`)
   }
 
   // Bun ignores setGlobalDispatcher, so cache an explicit dispatcher carrying our
   // Agent options (timeouts + TCP keepalive). getUpstreamDispatcher() hands it to
-  // undiciFetch on the hot path — without it, Bun upstream connections get no TCP
-  // keepalive and die during long thinking silences (the whole reason for this).
+  // undiciFetch on the plaintext-http hot path; https goes through node:http2,
+  // which reads getProxyUrlForOrigin() directly for the proxy tunnel.
   cachedProxyOptions = options
   currentUpstreamDispatcher = buildUpstreamDispatcher(options)
   ensureTimeoutSubscription()

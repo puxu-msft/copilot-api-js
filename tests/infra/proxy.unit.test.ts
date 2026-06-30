@@ -15,6 +15,7 @@ import {
   //
   createDispatcherForUrl,
   formatProxyDisplay,
+  getProxyUrlForOrigin,
   getUpstreamDispatcher,
   getUpstreamKeepAliveDelayMs,
   initProxy,
@@ -25,6 +26,7 @@ import { autoRestoreState } from "../helpers/state-fixture"
 
 const originalHttpProxy = process.env.HTTP_PROXY
 const originalHttpsProxy = process.env.HTTPS_PROXY
+const originalNoProxy = process.env.NO_PROXY
 
 describe("proxy utilities", () => {
   afterEach(() => {
@@ -79,13 +81,48 @@ describe("proxy utilities", () => {
     expect(process.env.HTTPS_PROXY).toBe("http://existing-proxy:8080")
   })
 
-  test("initProxy rejects SOCKS5 proxies on Bun runtime", () => {
-    expect(() =>
-      initProxy({
-        url: "socks5://proxy.example:1080",
-        fromEnv: false,
-      }),
-    ).toThrow("SOCKS5 proxy is not supported on Bun runtime. Use Node.js or an HTTP proxy instead.")
+  test("initProxy accepts SOCKS5 on Bun without exporting it to env (honored for https via node:http2)", () => {
+    process.env.HTTP_PROXY = ""
+    process.env.HTTPS_PROXY = ""
+
+    expect(() => initProxy({ url: "socks5://proxy.example:1080", fromEnv: false })).not.toThrow()
+
+    // Bun's native fetch does not understand socks5 — it must NOT be exported to env vars.
+    expect(process.env.HTTP_PROXY).toBe("")
+    expect(process.env.HTTPS_PROXY).toBe("")
+    // But it IS resolvable for https upstreams via the h2 tunnel resolver.
+    expect(getProxyUrlForOrigin(new URL("https://api.anthropic.com"))).toBe("socks5://proxy.example:1080")
+  })
+})
+
+describe("getProxyUrlForOrigin", () => {
+  afterEach(() => {
+    process.env.HTTP_PROXY = originalHttpProxy
+    process.env.HTTPS_PROXY = originalHttpsProxy
+    process.env.NO_PROXY = originalNoProxy
+    // Reset cachedProxyOptions to a no-proxy baseline so config doesn't leak between suites.
+    initProxy({ fromEnv: false })
+  })
+
+  test("an explicit proxy URL applies to every origin", () => {
+    initProxy({ url: "http://proxy.example:8080", fromEnv: false })
+    expect(getProxyUrlForOrigin(new URL("https://api.anthropic.com"))).toBe("http://proxy.example:8080")
+    expect(getProxyUrlForOrigin(new URL("https://api.githubcopilot.com/v1"))).toBe("http://proxy.example:8080")
+  })
+
+  test("env mode resolves per-origin and honors NO_PROXY", () => {
+    process.env.HTTP_PROXY = "http://env-proxy:3128"
+    process.env.HTTPS_PROXY = "http://env-proxy:3128"
+    process.env.NO_PROXY = "api.githubcopilot.com"
+    initProxy({ fromEnv: true })
+
+    expect(getProxyUrlForOrigin(new URL("https://api.anthropic.com"))).toBe("http://env-proxy:3128")
+    expect(getProxyUrlForOrigin(new URL("https://api.githubcopilot.com"))).toBeUndefined()
+  })
+
+  test("returns undefined when no proxy is configured", () => {
+    initProxy({ fromEnv: false })
+    expect(getProxyUrlForOrigin(new URL("https://api.anthropic.com"))).toBeUndefined()
   })
 })
 
