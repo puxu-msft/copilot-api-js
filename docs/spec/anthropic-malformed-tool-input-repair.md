@@ -30,6 +30,7 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 | **antml-tag-bleed** | `req_1782744516921_1304`（TodoWrite） | `]</parameter>\n</invoke>\n}` | **修好** | **THROW**（`Colon expected at 578`）→ 不归 Layer 2 |
 | **结构缺括号** | `req_1782740067043_965`（AskUserQuestion，末尾少 `]}`） | `…)"}]}`（应为 `…)"}]}]}`） | 不适用 | **正确修复**（补 `]}`，含真实中文、无字面 `\u` 残留） |
 | **同类结构** | `req_1782739645128_921`（AskUserQuestion） | 同上 | 不适用 | 待逐字节亲验（结构类，预期可修） |
+| **坏 Unicode 转义**（后续捕获，非原 545 扫描内；motivates `unicode` 项目） | `req_1782778207147_144`（AskUserQuestion，中文 questions） | `\u9 ed8`（空格打断 4 位 hex，应为 `默`） | 不适用 | **THROW**（`Invalid unicode character`）→ Layer 1/2 皆修不了，需独立 `unicode` 项目（§2.3） |
 
 **既有系统已能部分检出**（修订自旧 spec "完全静默"的误述）：`decode-tool-input.ts` 默认就缓冲 `AskUserQuestion`（`backfillQuestionFromHeader` 默认开），在 `content_block_stop` 时 `JSON.parse` 失败会触发 `onDecodeFailure` 回调（`DecodeFailureInfo.reason="input-parse-failed"`，L61/167，经 `reportDecodeFailure(info, env.ctx)` 接 ctx）——所以 965/921（AskUserQuestion）**已被既有 decode 观测到**（只是不修、原样 replay）。**真正静默的是 1304（TodoWrite）**：它不在 decode 默认选中集，decode 不缓冲它，故既无观测也无修复。这正是本特性要补的洞——把检测+修复覆盖到**所有** tool_use 块。
 
@@ -48,11 +49,11 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 
 新建并行 rewrite 会造**第二个缓冲器**，对同一 tool_use 块重复 buffer+parse，违 DRY + best-complete-solution。折叠进 decode 还**一举消解** order 级联（无需在 decode 前再插一层）、反向耦合（jsonrepair 产物 → decode 二次 backfill 的顺序问题）、以及下文 C1 的 fail 信号问题（decode 的 `onDecodeFailure` 闭包已 over `env.ctx`，是现成的 handler 接线点）。
 
-具体：当 `tool_repair_malformed_input ≠ false` 时，
+具体：当修复项目集非空（`tool_repair_malformed_input` 非 `""`）时，
 
 1. 解码器把**缓冲集从"配置选中工具"扩展到所有 `tool_use` 块**（`server_tool_use` 仍硬排除，line 194 的 `block.type==="tool_use"` guard 不变；其语义注释在 line 152）。纯 happy-path（input 合法）的**内容**零变化（`finalize` parse 成功即原样 replay `rawDeltas`，不重打包），但 ON 时新纳入缓冲的合法块有**有意的时序变化**（改为 stop 时整块到达，同 recover/decode 既有延迟，非"零改动"）。
 2. `finalize` 的 parse-失败分支（现 `onDecodeFailure` 上报点）改为先尝试**分层修复**（§2.3）：修好 → 用修复后对象继续既有 decode/backfill 流程并 re-emit；修不好 → 触发 fail 信号（§2.4）。
-3. **激活开关**：`toolRepairMalformedInput !== false` 须加进 decode rewrite 的 `appliesTo`（现 `response-rewrite-adapters.ts` L192-193 仅含 decode/backfill 条件），否则用户关掉默认 `backfillQuestionFromHeader` 后 repair 会静默失效；并把 repair 模式经新 cfg/opts 参数传进 `createToolInputStreamDecoder`。
+3. **激活开关**：`toolRepairMalformedInput.length > 0`（landed 后由旧 `!== false` 改为项目集非空）须加进 decode rewrite 的 `appliesTo`（现 `response-rewrite-adapters.ts` L192-193 仅含 decode/backfill 条件），否则用户关掉默认 `backfillQuestionFromHeader` 后 repair 会静默失效；并把修复项目集经 cfg/opts 参数传进 `createToolInputStreamDecoder`。
 
 > 备选（未采纳）：抽"缓冲 tool_use input 到 stop + parse"为共享 primitive 供 decode 与独立 repair-rewrite 复用。比折叠更"分离关注点"，但多一层抽象 + 仍需解决 fail 信号；当前单消费者下 YAGNI。若将来 OpenAI/Responses 也需此能力（§5 OQ-范围），再抽共享 primitive。
 
@@ -60,13 +61,16 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 
 ### 2.1 配置
 
-`anthropic.tool_repair_malformed_input`：`false | "tags" | "repair"`，默认 `false`。
+`anthropic.tool_repair_malformed_input`：**逗号分隔的修复项目集**（`tags`/`unicode`/`jsonrepair` 的子集），默认 `""`（关）。
 
-- `false`：关，逐字节同前（golden 锁）。解码器缓冲集不扩展（维持现状）。
-- `"tags"`：仅 Layer 1（结构感知剥 antml 标签）。正对 antml-bleed（1304 类）。
-- `"repair"`：Layer 1 + Layer 2（jsonrepair 库）。额外覆盖结构缺括号/trailing comma 类（965 类）。
+> **配置形态演进（landed）**：原始设计为 `false | "tags" | "repair"` 三档枚举（`repair` 隐含串行层 = tags+jsonrepair）。后重构为**可叠加的逗号分隔修复项目集**——每项独立可选、按固定规范顺序 `tags → unicode → jsonrepair` 级联、每项把变换叠加在前一项输出上。**干净破坏**（项目未发布，无 compat）：旧 `false`/`"tags"`/`"repair"` 三档枚举废弃，`"repair"` 现等价 `"tags,jsonrepair"`、off 用 `""`。书写顺序无关（dedup + 规范序）。`REPAIR_ITEMS` 单一源（schema 校验/级联/遥测共用），下文 §2.3 的 "Layer 1/Layer 2" 历史措辞对应项目 `tags`/`jsonrepair`。
 
-**诚实标注覆盖率**：`"tags"` 只修 antml-bleed（实测 A 类 3 例中 1 例）；965/921 这类结构错只有 `"repair"` 能修。retain-on-absence 语义同其它 anthropic.* 标量；hot-reload 经 `applyConfigToState`。`server_tool_use` 永不受影响。
+- `""`（默认）：关，逐字节同前（golden 锁）。解码器缓冲集不扩展（维持现状）。
+- `tags`：结构感知剥 antml 标签（§2.3 Layer 1）。正对 antml-bleed（1304 类）。
+- `unicode`：修空白打断的 `\uXXXX` 转义（`\u9 ed8`→`默`，真实 case `req_1782778207147_144`）。保守只修「`\u` 后 4 位 hex 被空白字符打断」、去空白凑齐 4 位；合法 `\uXXXX`/紧跟空白/少位/非 hex 一律不动（误修面≈0，200k fuzz 实证）。**jsonrepair 对坏 `\u` 转义直接抛异常，故须独立项目修，不能靠 `jsonrepair`**。
+- `jsonrepair`：jsonrepair 库（§2.3 Layer 2）。额外覆盖结构缺括号/trailing comma 类（965 类）。
+
+**诚实标注覆盖率**：`tags` 只修 antml-bleed（实测 A 类 3 例中 1 例）；`unicode` 只修空白打断的转义；965/921 这类结构错只有 `jsonrepair` 能修。retain-on-absence 语义同其它 anthropic.* 标量；hot-reload 经 `applyConfigToState`。`server_tool_use` 永不受影响。
 
 ### 2.2 流式流程（复用 decode 缓冲 + finalize）
 
@@ -81,12 +85,13 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 
 延迟成本近零：客户端本就需完整 input 才能执行工具，input 延到 `content_block_stop` 不改变可动作时点（recover/decode 已是同款延迟，golden 锁过）。
 
-### 2.3 分层修复
+### 2.3 分层修复（项目级联，顺序 `tags → unicode → jsonrepair`）
 
-- **Layer 1 — 结构感知剥 antml 标签**（`tags`/`repair` 均含）：**修订自旧 spec 的"位置锚定"**（审查 H2：位置窗口对单样本 1304 过拟合，对中置/多处/单层对象标签会漏修或锚点退化）。改为**结构感知**：对 input 串做轻量 JSON 词法扫描，剥离**字符串字面量之外**的 antml 标签（`</invoke>`、`</parameter>`、`<invoke …>`、`<parameter …>`）——这样既能命中末尾/中置/多处 bleed，又**绝不**误伤字符串值里合法含 `</parameter>` 字面量的内容（本项目自己的文档就有该字面量）。剥后 re-validate。
-- **Layer 2 — jsonrepair 库**（仅 `repair`）：仍非法时跑 `jsonrepair`（npm，纯 JS、无 node-gyp、bun-first 合规，实测 3.14.1 活跃维护）。**必须 try/catch 包裹**——实测对 antml-bleed 会 `throw`（§7-C2），不能让异常冒泡污染改写链。jsonrepair 是**启发式**：修结构缺括号/多余括号/trailing comma 有效（965 实测正确、语义保真），但对个别输入可能产出"合法但语义偏移"的结果。故 `repair` 档**保留 before/after 字节供审计**（§3），且仅在 jsonrepair 输出能 re-parse 时采用。
+- **Layer 1 — 结构感知剥 antml 标签**（项目 `tags`）：**修订自旧 spec 的"位置锚定"**（审查 H2：位置窗口对单样本 1304 过拟合，对中置/多处/单层对象标签会漏修或锚点退化）。改为**结构感知**：对 input 串做轻量 JSON 词法扫描，剥离**字符串字面量之外**的 antml 标签（`</invoke>`、`</parameter>`、`<invoke …>`、`<parameter …>`）——这样既能命中末尾/中置/多处 bleed，又**绝不**误伤字符串值里合法含 `</parameter>` 字面量的内容（本项目自己的文档就有该字面量）。剥后 re-validate。
+- **unicode — 空白打断的 `\uXXXX` 转义修复**（项目 `unicode`，landed 后新增）：`fixBadUnicodeEscapes` 单遍扫描器。遇 `\u` → 若紧跟 4 hex 原样透传；否则从 `\u` 后收集 hex、**仅跳过 hex 之间的空白**（空格/tab/CR/LF），去空白后**恰好** 4 hex 且确实消费过空白才输出 `\u`+4hex，否则原样不动。保守边界：`\u` 紧跟空白 / 少于 4 hex / 非 hex 字符一律不修；`\\u…`（转义反斜杠 + 字面文本）经 backslash 跟踪不误判。**误修面≈0**（合法 JSON 的 `\u` 后绝无空白；200k 合法 JSON + 全控制字符转义 fuzz 零字节变更）。**必要性**：jsonrepair 对坏 `\u` 转义直接 `throw`（`Invalid unicode character`），故这类只有 `unicode` 项目能修（真实 case `req_1782778207147_144`：`默`=`\u9 ed8`）。剥后 re-validate。
+- **Layer 2 — jsonrepair 库**（项目 `jsonrepair`）：仍非法时跑 `jsonrepair`（npm，纯 JS、无 node-gyp、bun-first 合规，实测 3.14.1 活跃维护）。**必须 try/catch 包裹**——实测对 antml-bleed 与坏 `\u` 转义都会 `throw`（§7-C2），不能让异常冒泡污染改写链。jsonrepair 是**启发式**：修结构缺括号/多余括号/trailing comma 有效（965 实测正确、语义保真），但对个别输入可能产出"合法但语义偏移"的结果。故**保留 before/after 字节供审计**（§3），且仅在 jsonrepair 输出能 re-parse 时采用。
 
-每层后都 re-validate；任一层产出合法 JSON 即采用并停（Layer 1 先于 Layer 2，省 happy-path 与 antml-bleed 的 jsonrepair-throw 开销，§5 OQ1 定稿）。
+每项后都 re-validate；任一启用项产出合法 JSON（且是 plausible tool input = JSON object）即采用并停（顺序 `tags → unicode → jsonrepair`，省 happy-path 与 antml-bleed/坏转义的 jsonrepair-throw 开销，§5 OQ1 定稿）。**项目可叠加**：每项把变换叠加在前一项输出的 `current` 上（如 strip 后再 fix unicode 再 jsonrepair），故混合畸形可被组合修复。
 
 ### 2.4 不可修复兜底：判 fail 让客户端重试（含跨层信号通道设计）
 
