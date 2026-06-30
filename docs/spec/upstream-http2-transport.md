@@ -76,12 +76,13 @@
 ### 2.3 proxy.ts 改造
 `getUpstreamDispatcher()`(返回 undici `Dispatcher`)被 `getUpstreamConnector()`(返回 `createConnection` 工厂)替代。无代理:直接 `tls.connect`+keepalive。`setTimeoutConfig` 的热重载语义保留(改 keepalive 重建连接工厂/清 session 池)。
 
-### 2.4 代理(分期,登记防回归)
-现 ProxyAgent / EnvProxyDispatcher / SOCKS。node:http2 经 createConnection 做隧道:
-- HTTP(S) 代理:先 `net.connect` 到代理 → 发 `CONNECT host:443` → 收 200 → 在隧道上 `tls.connect`(ALPN h2)。
-- SOCKS:`socks` 库建隧道 socket → `tls.connect`。
-- **Phase 1(本 RFC)**:无代理直连(覆盖当前所有实际用户——已确认无 proxy 配置)。代理路径若配置了 proxy 则**启动期显式报错**"http2 transport 暂不支持 proxy,见 issue",不静默降级。
-- **Phase 2(backlog,完整文档化)**:实现 CONNECT/SOCKS 隧道 createConnection。
+### 2.4 代理(Phase 2 已落地)
+node:http2 经 createConnection 隧道,实现在 `transport/proxy-connect.ts` 的 `connectProxiedSocket`(返回裸 pre-TLS socket,http2-client 在其上 `tls.connect` ALPN h2):
+- HTTP(S) 代理:**手搓** CONNECT over raw `net`/`tls`(**不**用 `http.request({method:"CONNECT"})`——Bun 的 node:http CONNECT 坏:走 fetch 路由 `fetch() URL is invalid`,代理收不到请求,实测 exp/http2-proxy/)。`net.connect`(https 代理则 `tls.connect`)到代理 → 写 `CONNECT host:443 HTTP/1.1`(+ `Proxy-Authorization` 若有凭据) → 读 200 + CRLFCRLF(头缓冲有 64KiB 上限) → unshift 余字节 → 交回 caller TLS-wrap。
+- SOCKS:`socks` 库 `SocksClient.createConnection` 建隧道 socket → caller `tls.connect`(ALPN h2)。
+- **`getProxyUrlForOrigin(origin)`**(proxy.ts):按 url > env(NO_PROXY-aware via `getProxyForUrl`) > none 解析每 origin 的代理 URL;http2-client `createSession` 在建 session 前调它选路。
+- **Bun SOCKS5 已解除**:旧的 `initProxyBun` throw 是因 undici dispatcher 在 Bun 失效;新隧道走 `SocksClient`(纯 node:net)不经 undici,实测 Bun 下 socks→TLS→h2 GET=200。socks5 URL 在 Bun 不再 export 到 `HTTP_PROXY` env(Bun 原生 fetch 不识别)。
+- **握手 await(根因修)**:`createSession` 在建 h2 session **前** await TLS 握手(`awaitH2Handshake`:secureConnect + ALPN===h2 检测,否则 destroy+reject)——否则握手失败(RST/cert/idle)不传导到 h2 request → **挂到 app idle-timeout**(直连+代理两路皆中招,实测 exp/http2-proxy/,从 12s 挂改为 ~40ms reject)。
 
 ### 2.5 Content-Encoding
 undici 自动解压;node:http2 **不自动解压**。需在适配器按 `content-encoding`(gzip/br/deflate/zstd)用 `node:zlib` 解压(与 history codec 同模块,已验证 Bun 可用)。或请求时发 `accept-encoding: identity` 避免解压(/models POC 用 identity 正常;但 SSE 流不应 identity 强制——按响应头解压)。倾向:发 `accept-encoding: gzip, deflate, br`,适配器按响应头流式解压。

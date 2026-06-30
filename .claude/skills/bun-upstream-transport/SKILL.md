@@ -7,6 +7,13 @@ description: 当调试 copilot-api-js 上游 fetch/连接问题时使用——Bu
 
 所有上游 HTTP 统一经 `src/lib/transport/upstream-fetch.ts` 的 `upstreamFetch`：真 undici 的 fetch（`import from "undici/index.js"`）+ `getUpstreamDispatcher()`，而非 Bun 原生 `fetch()`。https 热路径更进一步走内建 `node:http2`（`transport/http2-client.ts`），undici 仅留明文 http。架构决策见 docs/spec/upstream-http2-transport.md。
 
+## 代理（https 走 node:http2 隧道层，两 runtime）
+
+https 上游绕过 undici，故代理也不能靠 undici ProxyAgent——在 `transport/proxy-connect.ts` 的 `connectProxiedSocket` 做隧道（返回裸 pre-TLS socket，http2-client `createSession` 在其上 `tls.connect` ALPN h2）。`proxy.ts` 的 `getProxyUrlForOrigin(origin)`（url>env-NO_PROXY>none）选路。坑：
+- **Bun 的 `node:http` CONNECT 坏**（走 fetch 路由 `fetch() URL is invalid`，代理收不到请求，实测 exp/http2-proxy/）→ **手搓** CONNECT over raw `net`/`tls`（写 `CONNECT host:443\r\n…`、读 200+CRLFCRLF、unshift 余字节）；给 http.Agent 的库（https-proxy-agent）拿不到裸 socket 也踩同 bug。
+- **SOCKS5 在 Bun 可跑**（`socks` 库纯 node:net，不经 undici）→ 旧 `initProxyBun` 的 socks throw 已解除；socks5 URL 不 export 到 `HTTP_PROXY`（Bun 原生 fetch 不识别）。
+- **握手 await 是 hang 的根因修**：`createSession` 建 h2 session **前** await TLS 握手（`awaitH2Handshake`：secureConnect + ALPN===h2 检测）——否则握手失败（RST/cert/idle）不传导到 h2 request，请求**挂到 app idle-timeout**（直连+代理两路皆中招，实测 12s→~40ms reject）。abort：`raceAbort` 取消「本请求的等待」而非共享 connect（不错杀并发同 origin 的其他请求）。
+
 ## Bun 原生 fetch 三陷阱
 
 | 陷阱 | 症状 | 证据 |
