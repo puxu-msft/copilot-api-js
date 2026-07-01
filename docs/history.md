@@ -173,7 +173,8 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 | `DELETE /history/api/entries` | **清空全部** history（`clearHistory` → 删所有表）。破坏性、不可逆 |
 | `DELETE /history/api/sessions/:id` | 删除 session（`deleteSession` → 删该 session 的所有 entries）。破坏性、不可逆 |
 | `GET /history/api/stats` | 聚合统计数据 |
-| `GET /history/api/export` | 导出历史（JSON/CSV） |
+| `GET /history/api/entries/:id/export` | 单条 entry 导出：`getEntry` 规范全量形式（所有 stage / per-attempt sseEvents / 各腿 headers）经 `compressAsync` 服务端 zstd 压缩为 `.json.zst` 附件（`Content-Type: application/zstd`）；未知 id → 404。两套前端 UI（`ui/` + `ui-v4/`）的 Export 按钮都走它 |
+| `GET /history/api/export` | 导出全部历史（JSON/CSV，明文；与单条 zst 导出并存） |
 | `GET /history/api/search` | **内容寻址全文搜索**（`?source=&q=&limit=&cursor=`，`source` ∈ `inbound`/`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers` 5 源单选）。返回 `{rows, nextCursor, partial, builtPct?}`——backfill 未完成时 inbound 结果 `partial:true` |
 | `GET /history/api/search/contains` | `?hash=` 懒取引用某消息 hash 的全部请求 id（inbound 搜索结果行不内联，可达数百） |
 

@@ -17,6 +17,7 @@ import {
   type QueryOptions,
   type SearchSource,
 } from "~/lib/history"
+import { compressAsync } from "~/lib/history/sqlite/compression"
 
 export function handleGetEntries(c: Context) {
   if (!isHistoryEnabled()) {
@@ -77,6 +78,42 @@ export function handleGetEntry(c: Context) {
   }
 
   return c.json(entry)
+}
+
+/**
+ * GET /history/api/entries/:id/export — download one entry as a zstd-compressed
+ * `.json.zst` file. Reads the canonical richest form via `getEntry` (in-flight
+ * map ?? `assembleFullEntry` — all stages, per-attempt sseEvents, every header
+ * leg, request_group expanded), so the export is authoritative and complete
+ * server-side rather than depending on what the UI happens to have loaded. Reuses
+ * the storage-path `compressAsync` (zstd L3, off the event loop). Guards mirror
+ * `handleGetEntry`: 400 if history disabled, 400 if id missing, 404 if unknown.
+ */
+export async function handleExportEntry(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+
+  const id = c.req.param("id")
+  if (!id) {
+    return c.json({ error: "Entry id is required" }, 400)
+  }
+  const entry = getEntry(id)
+  if (!entry) {
+    return c.json({ error: "Entry not found" }, 404)
+  }
+
+  const blob = await compressAsync(entry)
+  const model = entry.outboundResponse?.model || entry.inboundRequest.model || "unknown"
+  // Model is raw client input; keep only filename-safe chars so `/`, `:`, spaces, or a
+  // CRLF-bearing model can't break the Content-Disposition header (which would 500 the export).
+  const safeModel = model.replaceAll(/[^\w.-]/g, "_")
+  return new Response(blob, {
+    headers: {
+      "Content-Type": "application/zstd",
+      "Content-Disposition": `attachment; filename="${id}_${safeModel}.json.zst"`,
+    },
+  })
 }
 
 /**

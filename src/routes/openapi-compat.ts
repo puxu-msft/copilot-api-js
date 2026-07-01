@@ -158,6 +158,14 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     responses: { ...ok200("Entry"), 404: { description: "Not found", ...jsonContent() } },
   })
   registry.registerPath({
+    method: "get",
+    path: "/history/api/entries/{id}/export",
+    tags: historyTag,
+    summary: "Download one entry as a zstd-compressed .json.zst (full lifecycle)",
+    request: { params: z.object({ id: z.string() }) },
+    responses: { 200: { description: "zstd-compressed entry JSON" }, 404: { description: "Not found", ...jsonContent() } },
+  })
+  registry.registerPath({
     method: "delete",
     path: "/history/api/entries",
     tags: historyTag,

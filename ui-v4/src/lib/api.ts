@@ -24,6 +24,15 @@ export function createApi(fetchImpl: typeof fetch = fetch) {
   }
   return {
     get: <T>(path: string) => request<T>(path),
+    /** Fetch a binary response as a Blob (bypasses the JSON `request` helper — e.g. zstd export downloads). */
+    getBlob: async (path: string): Promise<Blob> => {
+      const res = await fetchImpl(path)
+      if (!res.ok) {
+        const body = await res.text().catch(() => "Unknown error")
+        throw new ApiError(res.status, `${res.status}: ${body}`, body)
+      }
+      return res.blob()
+    },
     put: <T>(path: string, body: unknown) => request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
     delete: async (path: string): Promise<void> => {
       await request<unknown>(path, { method: "DELETE" })

@@ -5,6 +5,7 @@ import {
   handleDeleteEntries,
   handleDeleteSession,
   handleExport,
+  handleExportEntry,
   handleGetEntries,
   handleGetEntry,
   handleGetSessions,
@@ -30,6 +31,7 @@ historyRoutes.all("/", (c) => c.json({ error: "Not Found" }, 404))
 /** API endpoints */
 historyRoutes.get("/api/entries", handleGetEntries)
 historyRoutes.get("/api/entries/:id", handleGetEntry)
+historyRoutes.get("/api/entries/:id/export", handleExportEntry)
 historyRoutes.post("/api/entries/:id/pin", handlePinEntry)
 historyRoutes.post("/api/entries/:id/unpin", handleUnpinEntry)
 historyRoutes.delete("/api/entries", handleDeleteEntries)

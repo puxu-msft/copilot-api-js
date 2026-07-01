@@ -62,7 +62,7 @@ ui-v4 在 diff/TOC/shiki/headers 上增强，但丢失三类核心**诊断**能�
 
 - **detail 内搜索 + role/type 过滤 + aggregate tools 开关**全缺（`ui/src/components/detail/DetailToolbar.vue`）。ui-v4 无任何 detail 级搜索/过滤。
 - **页面级导航全缺**：prev/next 兄弟请求（键盘 j/k，跨分页）、position label（`3/142`）、Escape 返回、Session 钻取、标题栏（model·time·duration·tokens）。ui-v4 只有一个"返回列表"按钮。
-- **复制 + export 全缺**：`ui/` 多处 copy 按钮 + 整 entry JSON 导出（`VDetailPage.vue`）。ui-v4 全 src 无 clipboard/download `[已验]`。
+- **复制全缺**：`ui/` 多处 copy 按钮。ui-v4 全 src 无 clipboard `[已验]`。（**export 已补齐**：ui-v4 详情页 DiagnosticBar 有 `ExportButton`，走后端 `GET /history/api/entries/:id/export` 下载单条全量 `.json.zst`——服务端 zstd 压缩 `getEntry` 规范全量形式，比 `ui/` 旧的前端 `JSON.stringify` 明文导出更权威。见 `ui-v4/src/components/detail/ExportButton.tsx` + `lib/export-entry.ts`。）
 - **original-vs-rewritten split 比对 modal**：`ui/` 任何 section 可弹 Raw JSON modal 并 split 对比 original/rewritten `[路径待核]`（subagent 引用的 `RawJsonModal.vue` 名不符，功能存在性确认、`ui/` 侧确切载体待核）。ui-v4 仅 inline Rendered/Raw 切换。
 - **tool_use 三项**：parse-error 横幅、display-decode（stringified JSON 字段解回结构化）、tool_use↔tool_result 聚合配对 + jump-to-call/result `[路径待核]`。**影响**：AskUserQuestion 等被 decode 的字段在 v4 看到的是 stringified JSON。
 - **tool_result error 徽章**（`is_error`）缺失，失败工具结果无视觉区分。
@@ -73,7 +73,7 @@ ui-v4 在 diff/TOC/shiki/headers 上增强，但丢失三类核心**诊断**能�
 - DiagnosticBar 失败原因文案：`ui/` `DiagnosticSummary.vue` 显示 "client disconnected"/"process N died"/error/stop_reason；ui-v4 DiagnosticBar 无 reason 行、无 pid、无 cache token。
 - TruncationDivider 语义截断标记（`ui/src/components/detail/TruncationDivider.vue` `[已验]`）：ui-v4 仅靠 rewrite marks 标 removed。
 
-**关联 plan**：detail 内搜索 → Plan 04（in-request-search，未执行）；attempts/meta 移植 + rewrite 导航 + 页面级导航 + 复制/export → **需新立项**。
+**关联 plan**：detail 内搜索 → Plan 04（in-request-search，未执行）；attempts/meta 移植 + rewrite 导航 + 页面级导航 + 复制 → **需新立项**（export 已单独补齐，见上）。
 
 ---
 
@@ -149,7 +149,7 @@ ui-v4 Overview 是**故意**精简成 6 张健康卡片 + "深度分析见 Grafa
 - **Activity 筛选层 + URL 深链同步**（六维筛选 + chips + 深链）
 - **Detail attempts 诊断移植**（timeline + per-attempt wire diff + per-attempt sse_events）—— richest-data-flow 红线
 - **Detail meta 大网格移植**（sanitization/preprocessing/truncation/cache token/process）
-- **Detail rewrite 导航 + 页面级导航 + 复制/export**
+- **Detail rewrite 导航 + 页面级导航 + 复制**（export 已补齐）
 - **Models 页基本重写**（capability 列 + billing + 标记 + 搜索/过滤/排序/行展开）
 
 **留待用户决策**：

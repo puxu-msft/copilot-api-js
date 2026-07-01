@@ -88,6 +88,16 @@ export const api = {
     return request<HistoryEntry>("/entries/" + id)
   },
 
+  /** Download one entry as a zstd-compressed `.json.zst` blob (binary — bypasses the JSON `request<T>` helper). */
+  async fetchEntryExport(id: string): Promise<Blob> {
+    const res = await fetch(BASE + "/entries/" + id + "/export")
+    if (!res.ok) {
+      const body = await res.text().catch(() => "Unknown error")
+      throw new ApiError(res.status, `${res.status}: ${body}`, body)
+    }
+    return res.blob()
+  },
+
   async deleteEntries(): Promise<void> {
     await request("/entries", { method: "DELETE" })
   },

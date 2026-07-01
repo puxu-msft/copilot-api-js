@@ -21,7 +21,7 @@ import { useDetailStages } from "@/composables/useDetailStages"
 import { useDetailViewState } from "@/composables/useDetailViewState"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { useTocTree } from "@/composables/useTocTree"
-import { downloadEntryAsJson } from "@/utils/export-entry"
+import { downloadEntryAsZst } from "@/utils/export-entry"
 import {
   //
   formatDate,
@@ -103,7 +103,7 @@ function goBack(): void {
 }
 
 function exportEntry(): void {
-  if (entry.value) downloadEntryAsJson(entry.value)
+  if (entry.value) void downloadEntryAsZst(entry.value)
 }
 
 /**

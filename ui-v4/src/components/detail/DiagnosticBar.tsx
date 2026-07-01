@@ -1,5 +1,6 @@
 import type { HistoryEntry } from "@/types"
 
+import { ExportButton } from "@/components/detail/ExportButton"
 import {
   //
   formatDuration,
@@ -28,6 +29,9 @@ export function DiagnosticBar({ entry }: { entry: HistoryEntry }) {
           ↑{tokens.input_tokens} ↓{tokens.output_tokens} tok
         </span>
       : null}
+      <span className="ml-auto">
+        <ExportButton entry={entry} />
+      </span>
     </div>
   )
 }
