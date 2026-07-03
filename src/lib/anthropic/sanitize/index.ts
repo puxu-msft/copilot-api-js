@@ -21,6 +21,7 @@ import {
   filterEmptyThinkingBlocks,
 } from "./content-blocks"
 import { deduplicateToolCalls } from "./deduplicate-tool-calls"
+import { downgradeEmptyEncryptedSearchResults } from "./empty-encrypted-search-result"
 import { stripReadToolResultTags } from "./read-tool-result-tags"
 import { finalizeAnthropicSanitization } from "./result"
 import { rewriteServerToolHistory } from "./rewrite-server-tool-history"
@@ -101,6 +102,15 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // reference validation sees the already-downgraded (plain) blocks. No-op when
   // disabled. See rewrite-server-tool-history.ts for the self-poisoning loop.
   messages = rewriteServerToolHistory(messages, state.rewriteHistoryServerTools).messages
+
+  // Fallback (always-on): downgrade any synthesized web_search turn whose result
+  // `encrypted_content` is empty/missing — upstream rejects it with "Invalid
+  // encrypted_content in search_result block" and there is no valid value we can
+  // supply (empirically, even a non-empty placeholder is rejected). Runs AFTER
+  // the config-driven downgrade (which, when enabled, already removed all
+  // server-tool history so this is a no-op) and narrowly targets only the
+  // proven-broken shape. See empty-encrypted-search-result.ts.
+  messages = downgradeEmptyEncryptedSearchResults(messages).messages
 
   // Drop corrupt (unsigned) thinking blocks BEFORE processToolBlocks so its existing
   // empty-message cleanup (content.length === 0 → drop the whole message) handles any

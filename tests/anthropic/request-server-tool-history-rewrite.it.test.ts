@@ -40,6 +40,19 @@ function webSearchTurn(id = "srvtoolu_abc", query = "anthropic tokenizer"): Mess
   ])
 }
 
+/** Same shape but with a controllable per-result `encrypted_content` (non-empty = a real, sendable result). */
+function webSearchTurnWithEncrypted(encrypted: string, id = "srvtoolu_abc"): MessageParam {
+  return assistant([
+    { type: "server_tool_use", id, name: "web_search", input: { query: "q" } },
+    {
+      type: "web_search_tool_result",
+      tool_use_id: id,
+      content: [{ type: "web_search_result", title: "Result", url: "https://example.com", encrypted_content: encrypted, page_age: null }],
+    },
+    { type: "text", text: "answer" },
+  ])
+}
+
 function payload(messages: Array<MessageParam>, tools?: Array<{ name: string }>): MessagesPayload {
   return { model: "claude-opus-4.8", max_tokens: 1024, messages, ...(tools && { tools }) } as unknown as MessagesPayload
 }
@@ -78,15 +91,29 @@ describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
     expect(toolResults[0].tool_use_id).toBe("srvtoolu_keep")
   })
 
-  test("false (default): server_tool_use is passed through unchanged", () => {
+  test("false (default): a non-poisoned server_tool_use (real encrypted_content) is passed through unchanged", () => {
     setStateForTests({ rewriteHistoryServerTools: false })
-    const out = sanitizeAnthropicMessages(payload([webSearchTurn("srvtoolu_pass")])).payload
+    const out = sanitizeAnthropicMessages(payload([webSearchTurnWithEncrypted("EhoKC3JlYWxfY2lwaGVy", "srvtoolu_pass")])).payload
 
     const serverToolUses = out.messages
       .flatMap((m) => (typeof m.content === "string" ? [] : (m.content as unknown as Array<Block>)))
       .filter((b) => b.type === "server_tool_use")
     expect(serverToolUses.length).toBe(1)
     expect(serverToolUses[0].id).toBe("srvtoolu_pass")
+  })
+
+  test("false (default): a POISONED web_search turn (empty encrypted_content) is STILL downgraded by the always-on fallback", () => {
+    // The config-driven downgrade is off, but the always-on empty-encrypted
+    // fallback (integrated into the sanitize chain) still rescues the poisoned
+    // synthesized turn — otherwise upstream 400s on `Invalid encrypted_content`.
+    setStateForTests({ rewriteHistoryServerTools: false })
+    const out = sanitizeAnthropicMessages(payload([user([{ type: "text", text: "search" }]), webSearchTurn("srvtoolu_poison")])).payload
+
+    const allBlocks = out.messages.flatMap((m) => (typeof m.content === "string" ? [] : (m.content as unknown as Array<Block>)))
+    expect(allBlocks.some((b) => b.type === "server_tool_use")).toBe(false)
+    expect(allBlocks.some((b) => b.type === "web_search_tool_result")).toBe(false)
+    // downgraded tool_use survives (paired tool_result keeps it non-orphan)
+    expect(allBlocks.some((b) => b.type === "tool_use" && b.id === "srvtoolu_poison")).toBe(true)
   })
 
   test("reproduces the root-cause scenario: server_tool_use{web_search} echoed in history with downgraded tools", () => {
