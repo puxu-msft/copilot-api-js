@@ -66,6 +66,22 @@ export function classifyError(error: unknown): ApiError {
     }
   }
 
+  // HTTP/2 REFUSED_STREAM: the peer refused the stream BEFORE performing any
+  // application processing (RFC 9113 §5.1.2 & §8.7). The protocol GUARANTEES the
+  // request was not processed, so retry is safe even for a non-idempotent POST —
+  // unlike a generic 5xx or a mid-stream NGHTTP2_CANCEL / NGHTTP2_INTERNAL_ERROR
+  // (which MAY have been partially processed). Classified as network_error so the
+  // existing network-retry strategy retries once on a fresh h2 session. Matched
+  // BEFORE isNetworkError only for locality — both map to the same envelope.
+  if (error instanceof Error && isRetryableHttp2StreamError(error)) {
+    return {
+      type: "network_error",
+      status: 0,
+      message: formatErrorWithCause(error),
+      raw: error,
+    }
+  }
+
   // Network errors: fetch failures, socket closures, connection resets, timeouts, DNS failures
   // Bun throws TypeError for some fetch failures, and plain Error for socket closures.
   // Match broadly on error message patterns to catch all network-level failures.
@@ -285,6 +301,35 @@ function isNetworkError(error: Error): boolean {
   if (NETWORK_ERROR_PATTERNS.some((pattern) => msg.includes(pattern.toLowerCase()))) return true
 
   if (error.cause instanceof Error) return isNetworkError(error.cause)
+
+  return false
+}
+
+/**
+ * HTTP/2 stream errors whose protocol semantics GUARANTEE the request was never
+ * processed by the peer, making retry safe (RFC 9113 §5.1.2 & §8.7:
+ * REFUSED_STREAM = "refused prior to performing any application processing";
+ * "Any request that was sent on the reset stream can be safely retried … even
+ * those with non-idempotent methods").
+ *
+ * Scoped deliberately to REFUSED_STREAM. It does NOT include NGHTTP2_CANCEL or
+ * NGHTTP2_INTERNAL_ERROR — those carry no zero-processing guarantee, so blindly
+ * retrying a POST could double-execute. Matching is on the message SUBSTRING, not
+ * `error.code`: node:http2 (both Node and Bun) surfaces the generic code
+ * "ERR_HTTP2_STREAM_ERROR" for REFUSED, CANCEL and INTERNAL_ERROR alike — only the
+ * message distinguishes them (empirically confirmed, exp/http2-refused-retry/report.md).
+ *
+ * ERR_HTTP2_GOAWAY_SESSION is the same protocol-safe class per RFC (streams above the
+ * GOAWAY Last-Stream-ID are unprocessed) but is not currently observed/reproduced —
+ * add its token below if it appears in production logs.
+ */
+const HTTP2_RETRYABLE_MESSAGE_TOKENS = ["NGHTTP2_REFUSED_STREAM"]
+
+function isRetryableHttp2StreamError(error: Error): boolean {
+  const msg = error.message.toUpperCase()
+  if (HTTP2_RETRYABLE_MESSAGE_TOKENS.some((token) => msg.includes(token))) return true
+
+  if (error.cause instanceof Error) return isRetryableHttp2StreamError(error.cause)
 
   return false
 }

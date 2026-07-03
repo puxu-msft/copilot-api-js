@@ -59,7 +59,7 @@ type Scenario = "ok" | "thinking" | "errorFrame" | "midStreamThrow" | "deferredT
 
 let messagesHits = 0
 let capturedWire: { model?: string; stream?: boolean; messages?: Array<unknown>; tools?: Array<{ name?: string }> } | undefined
-let throwOnce = false
+let throwOnceError: Error | null = null
 let scenario: Scenario = "ok"
 
 // ── upstream response factories ─────────────────────────────────────────────
@@ -154,9 +154,10 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   if (url.endsWith("/v1/messages")) {
     messagesHits += 1
     capturedWire = payload
-    if (throwOnce) {
-      throwOnce = false
-      throw new Error("ECONNRESET: upstream socket reset")
+    if (throwOnceError) {
+      const err = throwOnceError
+      throwOnceError = null
+      throw err
     }
     // deferred-tool: the FIRST hit of a run 400s with a tool-reference error;
     // the strategy undefers the tool and retries → the second hit succeeds.
@@ -214,7 +215,7 @@ describe("Anthropic v4 driver path", () => {
   beforeEach(() => {
     messagesHits = 0
     capturedWire = undefined
-    throwOnce = false
+    throwOnceError = null
     scenario = "ok"
     upstreamFetchMock.mockClear()
     setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
@@ -280,7 +281,22 @@ describe("Anthropic v4 driver path", () => {
   test("network-retry: a transient upstream error retries once then succeeds (2 hits)", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
-    throwOnce = true
+    throwOnceError = new Error("ECONNRESET: upstream socket reset")
+    messagesHits = 0
+    const v4 = (await (await post(body)).json()) as Record<string, unknown>
+    expect(messagesHits).toBe(2)
+    expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
+  })
+
+  // An upstream h2 REFUSED_STREAM (peer refused the stream pre-processing — GHC edge
+  // GOAWAY drain / MAX_CONCURRENT_STREAMS) is protocol-safe to retry (RFC 9113 §8.7).
+  // The message string is the EXACT wire form a Bun/Node h2 client surfaces
+  // (exp/http2-refused-retry/report.md); this locks the full chain
+  // classify → network-retry → fresh re-dispatch → success.
+  test("h2 REFUSED_STREAM retries once then succeeds (2 hits)", async () => {
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
+
+    throwOnceError = new Error("Stream closed with error code NGHTTP2_REFUSED_STREAM")
     messagesHits = 0
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     expect(messagesHits).toBe(2)

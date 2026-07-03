@@ -309,6 +309,39 @@ describe("classifyError", () => {
     expect(result.type).toBe("network_error")
   })
 
+  // HTTP/2 REFUSED_STREAM: the peer refused the stream before ANY application
+  // processing (RFC 9113 §5.1.2/§8.7 — safe to retry, even for non-idempotent POST).
+  // Message strings below are the EXACT wire form, empirically confirmed on both Node
+  // v24 and Bun v1.3 h2 clients (see exp/http2-refused-retry/report.md).
+  test("classifies http2 NGHTTP2_REFUSED_STREAM as network_error", () => {
+    const error = new Error("Stream closed with error code NGHTTP2_REFUSED_STREAM")
+    const result = classifyError(error)
+    expect(result.type).toBe("network_error")
+    expect(result.status).toBe(0)
+  })
+
+  test("classifies http2 REFUSED_STREAM wrapped in cause as network_error", () => {
+    const cause = new Error("Stream closed with error code NGHTTP2_REFUSED_STREAM")
+    const error = new Error("upstream request failed", { cause })
+    const result = classifyError(error)
+    expect(result.type).toBe("network_error")
+  })
+
+  // Guard the precise scope: only REFUSED carries the "zero processing" guarantee.
+  // NGHTTP2_CANCEL / NGHTTP2_INTERNAL_ERROR (real Bun samples, same report) may have
+  // been processed → must NOT be reclassified as retryable network errors.
+  test("does NOT reclassify http2 NGHTTP2_CANCEL as network_error (stays bad_request)", () => {
+    const error = new Error("Stream closed with error code NGHTTP2_CANCEL")
+    const result = classifyError(error)
+    expect(result.type).toBe("bad_request")
+  })
+
+  test("does NOT reclassify http2 NGHTTP2_INTERNAL_ERROR as network_error (stays bad_request)", () => {
+    const error = new Error("Stream closed with error code NGHTTP2_INTERNAL_ERROR")
+    const result = classifyError(error)
+    expect(result.type).toBe("bad_request")
+  })
+
   test("classifies generic Error as bad_request with status 0", () => {
     const error = new Error("Something went wrong")
     const result = classifyError(error)
