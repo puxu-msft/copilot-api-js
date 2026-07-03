@@ -1,0 +1,13 @@
+{
+  "model": "claude-opus-4.8",
+  "max_tokens": 16,
+  "messages": [
+    {"role":"user","content":"search test"},
+    {"role":"assistant","content":[
+      {"type":"server_tool_use","id":"srvtoolu_err01","name":"web_search","input":{"query":"test"}},
+      {"type":"web_search_tool_result","tool_use_id":"srvtoolu_err01","content":{"type":"web_search_tool_result_error","error_code":"unavailable"}},
+      {"type":"text","text":"failed"}
+    ]},
+    {"role":"user","content":"ok thanks"}
+  ]
+}
