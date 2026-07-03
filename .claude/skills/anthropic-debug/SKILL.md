@@ -17,6 +17,7 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 | 空轮/坏轮、`stop_reason:refusal` 仅 thinking | thinking-only refusal | `refusal_recover_text`。docs/refusal-recovery.md |
 | `call<invoke>…` 文本无 tool_use | GHC 偶发降级成 antml-strip 文本（`stop_reason` 仍 tool_use/或 end_turn 弱信号），标签间是 `\n` 非零间隔 | `tool_recover_call_text`（非本项目 bug，grep antml 零命中） |
 | `references web_search but not server tool` 400 | 历史残留 server_tool_use | `tool_rewrite_history_server:downgrade` + 开 web_search |
+| `Invalid encrypted_content in search_result block` 400 | web_search 双跳合成的 `web_search_tool_result` 结果项 `encrypted_content=""`（`synthesize.ts`，后端产不出真加密内容）回流历史，上游校验真实非空 string（空/null/占位全 400，error-shaped 反而 200） | **always-on 兜底自动降级**（`sanitize/empty-encrypted-search-result.ts`，无需配置）；开 `tool_rewrite_history_server:downgrade` 更宽清理。exp/encrypted-content-400 |
 | 双空块被拒 | shim 把 sig 嵌 start 无 signature_delta（web_search 双跳绕 shim 曾酿此） | `thinking_signature_compat` |
 
 ## 实测关键事实
