@@ -1,5 +1,6 @@
 import {
   //
+  fireEvent,
   render,
   screen,
 } from "@testing-library/react"
@@ -105,6 +106,17 @@ describe("ResponseSegment", () => {
     // The forwarded stream is accumulated into semantic content (not a frame summary).
     expect(screen.getByText(/forwarded client answer/)).toBeDefined()
     expect(screen.queryByText(/frames forwarded/)).toBeNull()
+  })
+
+  it("toggles to Raw view — shows the literal upstream body and forwarded SSE frames", () => {
+    render(<ResponseSegment entry={withResponse} />)
+    // Rendered mode: no raw frame internals visible.
+    expect(screen.queryByText(/text_delta/)).toBeNull()
+    fireEvent.click(screen.getByText("Raw"))
+    // Raw upstream body = JSON of outboundResponse.content (quoted string, not the rendered text).
+    expect(screen.getByText(/"upstream answer"/)).toBeDefined()
+    // Raw forwarded = the literal SSE frame lines (the raw content_block_delta payload is now shown).
+    expect(screen.getByText(/text_delta/)).toBeDefined()
   })
 
   it("renders the 无响应数据 fallback when there is no response data", () => {
