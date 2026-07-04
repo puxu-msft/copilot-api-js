@@ -688,10 +688,14 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(text).not.toContain('"stop_reason":"refusal"')
     // Option A: history keeps the upstream-original thinking-only refusal (forwarded-only reshape).
     expect(lastOutboundContent()).toEqual(S8_OUTBOUND)
-    // Terminal state: recorded as FAILED (not a fake success) — aligns with the truncation invariant.
+    // Terminal state: the REQUEST is FAILED (state), but the UPSTREAM leg SUCCEEDED (delivered a
+    // complete refusal response) — the proxy introduced the error verdict. Data-model keeps
+    // outboundResponse honest (success:true, no error); the verdict lives in failureReason.
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
+    expect(entry.outboundResponse?.success).toBe(true)
+    expect(entry.outboundResponse?.error).toBeUndefined()
+    expect(entry.failureReason?.toLowerCase()).toContain("refusal")
   })
 
   test("S6 error mode: non-streaming thinking-only refusal → 500 error body + ctx.fail", async () => {
@@ -700,10 +704,12 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     const res = await postJsonRaw()
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ type: "error", error: { type: "api_error", message: expect.any(String) } })
-    // history FAILED, upstream-original refusal content preserved.
+    // history FAILED (request state); upstream leg succeeded → outboundResponse honest, verdict in failureReason.
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
+    expect(entry.outboundResponse?.success).toBe(true)
+    expect(entry.outboundResponse?.error).toBeUndefined()
+    expect(entry.failureReason?.toLowerCase()).toContain("refusal")
   })
 
   test("S6 non-streaming: server-tool blocks filtered from response", async () => {

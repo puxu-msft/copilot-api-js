@@ -138,6 +138,11 @@ export function createRequestContext(opts: {
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
   let _forwardedResponse: ForwardedResponse | null = null
+  // Request-outcome failure reason set DIRECTLY by fail() when the failure is proxy-introduced
+  // AFTER the upstream leg succeeded (opts.upstreamSucceeded) — so `outboundResponse` stays a
+  // faithful upstream-leg record (success:true, no error) while the request verdict lives here.
+  // The failureReason projection reads this first, then falls back to `_response.error`.
+  let _failureReason: string | null = null
   let _pipelineInfo: PipelineInfo | null = null
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: {
@@ -489,34 +494,50 @@ export function createRequestContext(opts: {
       onSettled?.(id)
     },
 
-    fail(model: string, error: unknown, partial?: PartialResponseInfo) {
+    fail(model: string, error: unknown, partial?: PartialResponseInfo, opts?: { upstreamSucceeded?: boolean }) {
       if (settled) return
       settled = true
       _endTime = Date.now()
 
       const errorMsg = getErrorMessage(error)
-      _response = {
-        success: false,
-        model: normalizeModelId(model),
-        usage: partial?.usage ?? { input_tokens: 0, output_tokens: 0 },
-        error: errorMsg,
-        // Default null; the upstream-truncation path passes the accumulated partial
-        // (richest-data-flow — keep the residual content on the failed entry).
-        content: partial?.content ?? null,
-        ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
-      }
-
-      // Preserve upstream HTTP error details as structured fields
-      if (error instanceof HTTPError) {
-        if (error.responseText) {
-          _response.responseText = error.responseText
+      if (opts?.upstreamSucceeded) {
+        // Proxy-introduced failure AFTER a successful upstream leg (e.g. unrepairable malformed
+        // tool_use, thinking-only refusal): the upstream returned a complete 200 stream, so
+        // `outboundResponse` records that leg HONESTLY (success:true, no error). The request
+        // verdict lives in `_failureReason` + the "failed" state — NOT jammed into the upstream
+        // leg's error (that conflation made the upstream→proxy leg look failed when it succeeded).
+        _response = {
+          success: true,
+          model: normalizeModelId(model),
+          usage: partial?.usage ?? { input_tokens: 0, output_tokens: 0 },
+          content: partial?.content ?? null,
+          ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
         }
-        _response.status = error.status
+        _failureReason = errorMsg
+      } else {
+        _response = {
+          success: false,
+          model: normalizeModelId(model),
+          usage: partial?.usage ?? { input_tokens: 0, output_tokens: 0 },
+          error: errorMsg,
+          // Default null; the upstream-truncation path passes the accumulated partial
+          // (richest-data-flow — keep the residual content on the failed entry).
+          content: partial?.content ?? null,
+          ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+        }
 
-        // Persist hint-only tool-schema diagnostics (attached by the client on
-        // suspicious 400s) into History as a warning message.
-        if (error.diagnostics) {
-          ctx.addWarningMessage({ code: "upstream_schema_diagnostic", message: JSON.stringify(error.diagnostics) })
+        // Preserve upstream HTTP error details as structured fields
+        if (error instanceof HTTPError) {
+          if (error.responseText) {
+            _response.responseText = error.responseText
+          }
+          _response.status = error.status
+
+          // Persist hint-only tool-schema diagnostics (attached by the client on
+          // suspicious 400s) into History as a warning message.
+          if (error.diagnostics) {
+            ctx.addWarningMessage({ code: "upstream_schema_diagnostic", message: JSON.stringify(error.diagnostics) })
+          }
         }
       }
 
@@ -531,7 +552,7 @@ export function createRequestContext(opts: {
         kind: "request.failed",
         ctx: snapshotWithSummary(ctx),
         entry,
-        error: entry.outboundResponse?.error ?? "Unknown error",
+        error: entry.failureReason ?? entry.outboundResponse?.error ?? "Unknown error",
         ...(entry.outboundResponse?.status !== undefined && { statusCode: entry.outboundResponse.status }),
       })
       onSettled?.(id)
@@ -601,10 +622,12 @@ export function createRequestContext(opts: {
 
       // Top-level failure-reason projection (RFC pre-response-abort Q3): surface the
       // failure reason at the entry level from the richest available source — the
-      // settled response error else the last attempt's error — so triage need not
-      // crawl outboundResponse / per-attempt errors. Only for non-success terminals.
+      // directly-set proxy verdict (`_failureReason`, when the upstream leg succeeded but the
+      // proxy rejected the result) else the settled response error else the last attempt's
+      // error — so triage need not crawl outboundResponse / per-attempt errors. Only for
+      // non-success terminals.
       if (_state === "failed" || _state === "aborted" || _state === "interrupted") {
-        const reason = _response?.error ?? _attempts.at(-1)?.error?.message
+        const reason = _failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message
         if (reason) entry.failureReason = reason
       }
 

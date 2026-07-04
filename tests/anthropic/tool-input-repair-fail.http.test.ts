@@ -159,9 +159,16 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
+    // Data-model: the UPSTREAM leg succeeded (complete 200 stream) — the proxy rejected the
+    // malformed content. outboundResponse reflects the upstream leg HONESTLY (success:true, no
+    // error); the verdict lives in failureReason (not conflated into the upstream leg's error).
+    expect(entry.outboundResponse?.success).toBe(true)
+    expect(entry.outboundResponse?.error).toBeUndefined()
+    expect(entry.failureReason?.toLowerCase()).toContain("unrepairable")
     // richest-data-flow: the accumulated partial is kept, not nulled.
     expect(entry.outboundResponse?.content).not.toBeNull()
+    // The synthetic error frame the client received is recorded in the forwarded (proxy→client) track.
+    expect((entry.inboundResponse?.sseEvents ?? []).some((e) => e.raw.includes('"type":"error"'))).toBe(true)
     // The raw upstream track is preserved verbatim (original malformed deltas).
     const rawConcat = (entry.sseEvents ?? []).map((e) => e.raw).join("")
     expect(rawConcat).toContain(",,,")

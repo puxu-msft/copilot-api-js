@@ -438,7 +438,7 @@ describe("Anthropic v4 driver path", () => {
   // a thrown mid-stream error) is written to the WIRE but NOT sampled. The owns-sink
   // flip (B4) auto-samples in `ClientSink.write`, so it MUST route the H3 synth error
   // through a non-sampling path or H3 newly appears in the forwarded track (silent diff).
-  test("Stage B B0: H2 error frame IS in forwarded track, H3 synth error is NOT", async () => {
+  test("Stage B B0: H2 error frame AND H3 synth error are BOTH in the forwarded track", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hi" }], max_tokens: 64, stream: true }
 
     scenario = "errorFrame"
@@ -452,9 +452,12 @@ describe("Anthropic v4 driver path", () => {
     clearHistory()
     const h3Text = await (await post(body, observableApp)).text()
     const h3Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.inboundResponse?.sseEvents ?? []
-    // H3: the synthesized error reaches the WIRE but is NOT in the forwarded track.
+    // H3: the synthesized error reaches the WIRE and is ALSO recorded in the forwarded track — the
+    // client receives it, so `inboundResponse.sseEvents` must include it (richest-data-flow). Asserted
+    // against the PERSISTED history entry, the oracle that exposes the writeSynthetic→recordForwarded→
+    // fail ordering (a post-fail snapshot would miss it).
     expect(h3Text).toContain('"type":"error"')
-    expect(h3Forwarded.some((e) => e.raw.includes('"type":"error"'))).toBe(false)
+    expect(h3Forwarded.some((e) => e.raw.includes('"type":"error"'))).toBe(true)
   })
 
   test("deferred-tool retry: a tool-reference 400 undefers the tool + retries (2 hits, undeferred on the wire)", async () => {

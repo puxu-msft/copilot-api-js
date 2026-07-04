@@ -705,22 +705,32 @@ function renderNonStreamingV4(
     && !(response.content as ReadonlyArray<{ type: string }>).some((b) => b.type === "text" || b.type === "tool_use")
   ) {
     const errorBody = { type: "error", error: { type: "api_error", message: REFUSAL_ERROR_MESSAGE } }
-    reqCtx.setForwardedResponse({ content: { role: "assistant", content: response.content } })
+    // The client receives the 500 error BODY (not the upstream content) — record THAT as the
+    // forwarded (proxy→client) response so inboundResponse faithfully mirrors what the client got
+    // (the upstream-original thinking blocks are preserved on outboundResponse via fail's partial).
+    reqCtx.setForwardedResponse({ content: errorBody })
     applyForwardedAnthropicResponseHeaders(c, upstreamHeaders)
     const errResponse = c.json(errorBody, 500)
     reqCtx.setInboundResponseHeaders(Object.fromEntries(errResponse.headers.entries()))
     consola.error(`[REFUSAL] upstream thinking-only refusal for ${response.model} -> recorded as error (non-streaming)`)
     reqCtx.recordFeature("refusal-errored")
-    reqCtx.fail(response.model, new Error("upstream thinking-only refusal"), {
-      usage: {
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-        cache_read_input_tokens: response.usage.cache_read_input_tokens ?? undefined,
-        cache_creation_input_tokens: response.usage.cache_creation_input_tokens ?? undefined,
+    // Upstream leg SUCCEEDED (delivered a complete refusal response); the proxy introduced the error
+    // verdict → upstreamSucceeded keeps outboundResponse honest + routes the verdict to failureReason.
+    reqCtx.fail(
+      response.model,
+      new Error("upstream thinking-only refusal"),
+      {
+        usage: {
+          input_tokens: response.usage.input_tokens,
+          output_tokens: response.usage.output_tokens,
+          cache_read_input_tokens: response.usage.cache_read_input_tokens ?? undefined,
+          cache_creation_input_tokens: response.usage.cache_creation_input_tokens ?? undefined,
+        },
+        stop_reason: response.stop_reason,
+        content: { role: "assistant", content: response.content },
       },
-      stop_reason: response.stop_reason,
-      content: { role: "assistant", content: response.content },
-    })
+      { upstreamSucceeded: true },
+    )
     return errResponse
   }
 
@@ -756,11 +766,15 @@ function renderNonStreamingV4(
     content: { role: "assistant", content: response.content },
   }
   if (failReason) {
-    reqCtx.fail(response.model, new Error(failReason), {
-      usage: responseData.usage,
-      stop_reason: responseData.stop_reason,
-      content: responseData.content,
-    })
+    // Unrepairable = upstream delivered a COMPLETE 200 body that the proxy rejected → upstreamSucceeded
+    // keeps outboundResponse honest + routes the verdict to failureReason. Semantic truncation = an
+    // INCOMPLETE upstream body (genuine upstream failure) → stays success:false.
+    reqCtx.fail(
+      response.model,
+      new Error(failReason),
+      { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content },
+      unrepairableTool !== null ? { upstreamSucceeded: true } : undefined,
+    )
   } else {
     reqCtx.complete(responseData)
   }
@@ -990,18 +1004,23 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     }
 
     if (outcome.kind === "stream-error") {
-      // H3 — the upstream iterable (or a sink write) threw a non-abort error. Settle as
-      // fail (with the partial accumulated so far) + synthesize the Anthropic error frame
-      // through the NON-sampling writeSynthetic path (so H3 never enters the forwarded track).
+      // H3 — the upstream iterable (or a sink write) threw a non-abort error. Synthesize the
+      // Anthropic error frame + record it into the forwarded track (the client receives it, so
+      // it belongs in `inboundResponse.sseEvents`), THEN settle. Ordering is load-bearing:
+      // writeSynthetic samples the frame into `forwardedSseEvents`, recordForwarded snapshots it,
+      // and only then does ctx.fail() freeze `inboundResponse` — a post-fail snapshot would miss it.
       const error = outcome.error
+      logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorType = anthropicStreamErrorType(error)
+      await sink
+        .writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
+        .catch(() => undefined)
+      recordForwarded()
       env.ctx.fail(acc.model || model, error, {
         usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
         stop_reason: acc.stopReason || undefined,
       })
-      logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      const errorType = anthropicStreamErrorType(error)
-      await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
       return
     }
 
@@ -1033,16 +1052,19 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // pre-rewrite frames, so acc.stopReason is the genuine "refusal"); the judgment matches the
       // rewrite's (client-visible text/tool_use only -- server_tool_use excluded). MUST precede the
       // truncation branch: a refusal without message_stop would otherwise also hit !acc.sawMessageStop
-      // and double-emit an error frame. No writeSynthetic (frame already on the wire); preserve the
-      // partial (thinking) blocks -> richest-data-flow.
+      // and double-emit an error frame. No writeSynthetic (frame already on the wire + already sampled
+      // into forwarded by the pre-branch recordForwarded). The upstream leg SUCCEEDED (delivered a
+      // complete refusal response) — the proxy introduced the error verdict, so `upstreamSucceeded`
+      // keeps outboundResponse honest (success:true) and routes the verdict to failureReason.
       const partial = buildAnthropicResponseData(acc, model)
       consola.error(`[REFUSAL] upstream thinking-only refusal for ${acc.model || model} -> recorded as error`)
       env.ctx.recordFeature("refusal-errored")
-      env.ctx.fail(acc.model || model, new Error("upstream thinking-only refusal"), {
-        usage: partial.usage,
-        stop_reason: partial.stop_reason,
-        content: partial.content,
-      })
+      env.ctx.fail(
+        acc.model || model,
+        new Error("upstream thinking-only refusal"),
+        { usage: partial.usage, stop_reason: partial.stop_reason, content: partial.content },
+        { upstreamSucceeded: true },
+      )
     } else if (env.ctx.unrepairableToolInput !== null) {
       // A malformed tool_use input could not be repaired (Layer 1 strip + Layer 2 jsonrepair both
       // failed during S5) — forwarding the broken JSON hands the client an unparseable tool call.
@@ -1050,45 +1072,59 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // block is a more specific diagnosis than a missing message_stop (the two can co-occur), and the
       // truncation branch would otherwise emit a less-precise error frame. The flag rides the ctx (not
       // acc, which is rebuilt across buffered-retry attempts); History keeps the upstream-original
-      // sseEvents. Preserve the accumulated partial (richest-data-flow).
+      // sseEvents. The upstream leg SUCCEEDED (complete 200 stream) — the proxy rejected the malformed
+      // content, so `upstreamSucceeded` keeps outboundResponse honest + routes the verdict to
+      // failureReason. Order: writeSynthetic (samples the client-received error frame) → recordForwarded
+      // → fail (freezes inboundResponse) — a post-fail snapshot would miss the error frame.
       const tool = env.ctx.unrepairableToolInput
       const partial = buildAnthropicResponseData(acc, model)
       consola.error(`[REPAIR] unrepairable malformed tool_use input for ${acc.model || model} (tool=${tool}) -> recorded as error`)
-      env.ctx.fail(acc.model || model, new Error(`unrepairable malformed tool_use input (tool=${tool})`), {
-        usage: partial.usage,
-        stop_reason: partial.stop_reason,
-        content: partial.content,
-      })
-      await sink.writeSynthetic?.(anthropicErrorFrame("invalid_request_error", `Tool call input for ${tool} was malformed and could not be repaired`))
+      await sink
+        .writeSynthetic?.(anthropicErrorFrame("invalid_request_error", `Tool call input for ${tool} was malformed and could not be repaired`))
+        .catch(() => undefined)
+      recordForwarded()
+      env.ctx.fail(
+        acc.model || model,
+        new Error(`unrepairable malformed tool_use input (tool=${tool})`),
+        { usage: partial.usage, stop_reason: partial.stop_reason, content: partial.content },
+        { upstreamSucceeded: true },
+      )
     } else if (!acc.sawMessageStop) {
       // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
       // (GHC mid-stream cutoff). The driver sees a clean drain → `complete`, but the message
       // never finished. Settle as FAIL (not a silent `[ OK ]`) — preserving the accumulated
       // partial (richest-data-flow) — and emit a synthetic Anthropic `error` so the client SDK
-      // gets a clean terminator. See docs/spec/upstream-stream-truncation-detection.md.
+      // gets a clean terminator. See docs/spec/upstream-stream-truncation-detection.md. Truncation
+      // is a genuine UPSTREAM failure (partial stream), so outboundResponse stays success:false.
+      // Order: writeSynthetic (samples the error frame) → recordForwarded → fail (see H3 branch).
       const partial = buildAnthropicResponseData(acc, model)
       consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+      await sink
+        .writeSynthetic?.({
+          event: "error",
+          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
+        })
+        .catch(() => undefined)
+      recordForwarded()
       env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
         usage: partial.usage,
         stop_reason: partial.stop_reason,
         content: partial.content,
       })
-      await sink.writeSynthetic?.({
-        event: "error",
-        data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
-      })
     } else {
       env.ctx.complete(buildAnthropicResponseData(acc, model))
     }
   } catch (error) {
-    // Unexpected throw from the driver/sink (not a returned outcome): settle the entry so it isn't
-    // dangling, surface a synthetic error frame, and let finally persist what the client received.
+    // Unexpected throw from the driver/sink (not a returned outcome): surface a synthetic error
+    // frame + record it into the forwarded track, THEN settle so the persisted inboundResponse
+    // includes the client-received error frame (writeSynthetic → recordForwarded → fail).
+    const msg = error instanceof Error ? error.message : String(error)
+    await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }).catch(() => undefined)
+    recordForwarded()
     env.ctx.fail(acc.model || model, error, {
       usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
       stop_reason: acc.stopReason || undefined,
     })
-    const msg = error instanceof Error ? error.message : String(error)
-    await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) })
   } finally {
     recordForwarded()
   }

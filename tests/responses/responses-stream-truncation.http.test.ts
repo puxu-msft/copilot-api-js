@@ -95,5 +95,8 @@ describe("Responses v4 — upstream stream truncation detection", () => {
     expect(entry.state).toBe("failed")
     expect(entry.outboundResponse?.success).toBe(false)
     expect(String(entry.outboundResponse?.error)).toContain("truncated")
+    // The synthesized error frame the client received is recorded in the forwarded (proxy→client)
+    // track — asserts the writeSynthetic→recordForwarded→fail ordering on the Responses path.
+    expect((entry.inboundResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
   })
 })

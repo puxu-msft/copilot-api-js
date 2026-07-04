@@ -291,22 +291,25 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   }
 
   if (outcome.kind === "stream-error") {
-    recordForwarded()
     const error = outcome.error
     const meta = codec.getStreamMeta()
-    env.ctx.fail(model, error, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
     consola.error("[gemini:v4] Stream error:", error)
-    // Gemini-shape data-only error frame (SDK clients parse every data: frame). NOT forward-sampled
-    // (legacy never pushed it) → writeSynthetic.
+    // Gemini-shape data-only error frame (SDK clients parse every data: frame). Recorded into the
+    // forwarded track (the client receives it) via writeSynthetic → recordForwarded → fail (ordering
+    // is load-bearing: ctx.fail freezes inboundResponse, so a post-fail snapshot would miss the frame).
     const message = error instanceof Error ? error.message : String(error)
     const errorKind = classifyStreamError(error)
     const errorCode = errorKind === "shutdown" ? 503 : 500
-    await sink.writeSynthetic?.({
-      data: JSON.stringify({
-        candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-        error: { code: errorCode, message, status: geminiStreamErrorStatus(errorKind) },
-      }),
-    })
+    await sink
+      .writeSynthetic?.({
+        data: JSON.stringify({
+          candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
+          error: { code: errorCode, message, status: geminiStreamErrorStatus(errorKind) },
+        }),
+      })
+      .catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(model, error, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
     return
   }
 
@@ -327,17 +330,20 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     for (const frame of codec.flushResponse(env)) {
       if (!isGeminiTerminalFrame(frame)) await sink.write(frame)
     }
-    recordForwarded()
     const truncErr = new Error("Upstream stream truncated before completion (no finishReason)")
     consola.error(`[gemini:v4] Upstream truncated for ${model}: drained without a real finishReason`)
+    // Gemini-shape error frame (clean terminator) recorded into the forwarded track via
+    // writeSynthetic → recordForwarded → fail (ctx.fail freezes inboundResponse; a post-fail snapshot misses it).
+    await sink
+      .writeSynthetic?.({
+        data: JSON.stringify({
+          candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
+          error: { code: 500, message: truncErr.message, status: geminiStreamErrorStatus(classifyStreamError(truncErr)) },
+        }),
+      })
+      .catch(() => undefined)
+    recordForwarded()
     env.ctx.fail(model, truncErr, { usage: geminiUsageFromMeta(meta) })
-    // Gemini-shape error frame so the client gets a clean terminator. NOT forward-sampled (writeSynthetic).
-    await sink.writeSynthetic?.({
-      data: JSON.stringify({
-        candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
-        error: { code: 500, message: truncErr.message, status: geminiStreamErrorStatus(classifyStreamError(truncErr)) },
-      }),
-    })
     return
   }
 

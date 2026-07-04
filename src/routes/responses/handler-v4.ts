@@ -310,13 +310,14 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   }
 
   if (outcome.kind === "stream-error") {
-    // H3 — settle as fail (partial usage) + write the OpenAI error frame through the
-    // NON-sampling writeSynthetic path (legacy never pushed the error frame to forwarded).
-    recordForwarded()
+    // H3 — write the OpenAI error frame + record it into the forwarded track (the client receives
+    // it), THEN settle. Order is load-bearing: writeSynthetic samples the frame, recordForwarded
+    // snapshots it, and only then does ctx.fail() freeze inboundResponse (a post-fail snapshot misses it).
     const error = outcome.error
-    env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     consola.error("[Responses:v4] Stream error:", error)
-    await sink.writeSynthetic?.(openAIStreamErrorFrame(error))
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     return
   }
 
@@ -349,12 +350,14 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // stream under fallback still gets a synthesized `response.completed` here — that narrower gap
   // is documented in docs/spec/upstream-stream-truncation-detection.md §3.1/Q2.)
   if (acc.status === "") {
-    recordForwarded()
+    // Emit a Responses error frame (clean terminator) + record it into the forwarded track, THEN
+    // settle FAIL preserving the partial. Order: writeSynthetic → recordForwarded → fail.
     const partial = buildResponsesResponseData(acc, model)
     const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
     consola.error(`[Responses:v4] Upstream truncated for ${acc.model || model}: drained without a terminal response event`)
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
+    recordForwarded()
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
-    await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr))
     return
   }
 

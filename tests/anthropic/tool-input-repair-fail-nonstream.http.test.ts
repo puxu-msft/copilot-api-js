@@ -105,7 +105,11 @@ describe("POST /v1/messages (non-streaming) — unrepairable malformed tool-inpu
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
+    // Data-model: upstream delivered a complete 200 body the proxy rejected → outboundResponse stays
+    // honest (success:true, no error); the verdict is projected to failureReason.
+    expect(entry.outboundResponse?.success).toBe(true)
+    expect(entry.outboundResponse?.error).toBeUndefined()
+    expect(entry.failureReason?.toLowerCase()).toContain("unrepairable")
     expect(entry.outboundResponse?.content).not.toBeNull()
   })
 

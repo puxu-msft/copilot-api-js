@@ -181,10 +181,16 @@ export async function handleWebSearchCompletion(
           probe,
         )
       } catch (error) {
-        // Headers are already sent — surface as an Anthropic error event, then end.
-        reqCtx.fail(payload.model, error)
+        // Headers are already sent — surface as an Anthropic error event, then end. The error frame
+        // + the pings already sent (prefixForwardedSse) ARE what the client received, so record the
+        // forwarded track BEFORE settling (fail freezes inboundResponse — a later snapshot would miss
+        // it, and this failure branch previously never called setForwardedResponse at all → empty track).
         const message = error instanceof Error ? error.message : String(error)
-        await heartbeat.writeSerialized({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message } }) })
+        const errorRaw = JSON.stringify({ type: "error", error: { type: "api_error", message } })
+        prefixForwardedSse.push({ offsetMs: Date.now() - streamStartMs, type: "error", raw: errorRaw })
+        reqCtx.setForwardedResponse({ sseEvents: [...prefixForwardedSse] })
+        reqCtx.fail(payload.model, error)
+        await heartbeat.writeSerialized({ event: "error", data: errorRaw })
         return
       }
 

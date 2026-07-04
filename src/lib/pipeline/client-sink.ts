@@ -14,15 +14,19 @@
  * write still runs) — mirroring streaming-pump.ts:362-367 so the disconnect is never
  * silently swallowed into a `complete`.
  *
- * Sampling-track asymmetry (the cut-over piece, design §3.3 audit):
+ * Sampling-track: every frame written to the client — real, heartbeat, OR synthetic — is
+ * sampled into the FORWARDED track, because the forwarded track (`inboundResponse.sseEvents`)
+ * must faithfully record what the client actually received (richest-data-flow):
  *   - `write` (real upstream→client frame) samples the FORWARDED track (`onForwarded`).
  *   - the internal heartbeat timer's ping ALSO samples forwarded (a ping IS a
  *     proxy→client frame; it appears in `inboundResponse.sseEvents`, never the raw
  *     `sseEvents` upstream track — DESIGN.md 原则3).
- *   - `writeSynthetic` (handler-injected, e.g. the H3 synthesized error frame) writes
- *     to the WIRE but does NOT sample — so a handler-synthesized terminal error never
- *     enters the forwarded track (the H2-sampled / H3-unsampled asymmetry the B0-c
- *     golden locks). This is red-line-3 option "writeSynthetic 不推 onForwarded".
+ *   - `writeSynthetic` (handler-injected terminal error frame) ALSO samples forwarded — the
+ *     client receives it, so it belongs in the forwarded track. (This reverses the earlier
+ *     Stage-B "H3-unsampled" B0-c choice, which dropped the client-received error frame from
+ *     history — a data-loss bug under richest-data-flow.) The handler MUST call
+ *     `recordForwarded()` AFTER `writeSynthetic` and BEFORE `ctx.fail/complete`, since the
+ *     settle snapshots `inboundResponse` synchronously (a trailing `finally` snapshot is too late).
  */
 
 import type { SSEStreamingApi } from "hono/streaming"
@@ -153,9 +157,17 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     return writeSse(frame)
   }
 
-  // Handler-injected synthetic frame (the H3 error frame): write to the wire, NEVER
-  // sample forwarded — keeps the H2-sampled/H3-unsampled asymmetry (B0-c).
-  const writeSynthetic = (frame: ClientFrame): Promise<void> => writeSse(frame)
+  // Handler-injected synthetic frame (the terminal error frame): write to the wire AND
+  // sample forwarded — a proxy-synthesized terminal error IS a proxy→client frame the
+  // client actually receives, so it must appear in `inboundResponse.sseEvents` (richest-
+  // data-flow). Sampled enqueue-first, identical to `write`/ping ("recorded == attempted-
+  // to-send"). NOTE: the handler must `recordForwarded()` AFTER this call and BEFORE
+  // `ctx.fail/complete` — the settle snapshots `inboundResponse` synchronously, so a
+  // post-settle snapshot (e.g. a trailing `finally`) would miss this frame.
+  const writeSynthetic = (frame: ClientFrame): Promise<void> => {
+    sampleForwarded(frame)
+    return writeSse(frame)
+  }
 
   // close stops the heartbeat timer (no-op when none) — runResponseSink's `finally`
   // MUST call it on every exit so a self-rescheduling timer can't leak.
@@ -208,15 +220,20 @@ export interface WsSinkOptions {
 export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
   const { onForwarded, streamStartMs = Date.now() } = opts
   const enqueue = makeSerializer()
+  // Sample the forwarded track synchronously at call time (before the enqueued send), then
+  // write. WS frames carry only `data` (no SSE event/id/retry line), matching legacy `ws.send`.
+  const send = (frame: ClientFrame): Promise<void> => {
+    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "" })
+    return enqueue(() => {
+      ws.send(frame.data ?? "")
+    })
+  }
   return {
-    // Sample the forwarded track synchronously at call time (before the enqueued send), then
-    // write. WS frames carry only `data` (no SSE event/id/retry line), matching legacy `ws.send`.
-    write: (frame) => {
-      onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "" })
-      return enqueue(() => {
-        ws.send(frame.data ?? "")
-      })
-    },
+    write: send,
+    // A handler-synthesized terminal error frame IS a proxy→client frame (the WS analog of the
+    // HTTP `writeSynthetic`) — sample + send it identically so it lands in `inboundResponse.sseEvents`.
+    // The handler must `recordForwarded()` after this and before `ctx.fail` (see makeSseSink).
+    writeSynthetic: send,
   }
 }
 

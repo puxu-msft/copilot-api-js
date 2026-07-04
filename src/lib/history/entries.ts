@@ -88,6 +88,7 @@ export function updateEntry(
       | "queueWaitMs"
       | "attemptCount"
       | "currentStrategy"
+      | "failureReason"
       | "inboundRequest"
       | "outboundResponse"
       | "inboundResponse"

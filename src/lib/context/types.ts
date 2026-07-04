@@ -373,8 +373,14 @@ export interface RequestContext {
    * Fail the request with an error. Optional `partial` lets streaming handlers
    * preserve usage / stop_reason accumulated up to the failure point so that
    * history doesn't show all-zero diagnostics for partially-streamed requests.
+   *
+   * `opts.upstreamSucceeded` marks a PROXY-introduced failure that occurred AFTER a
+   * successful upstream leg (e.g. unrepairable malformed tool_use, thinking-only refusal):
+   * `outboundResponse` then records the upstream leg HONESTLY (success:true, no error) and the
+   * request verdict is projected to `failureReason` instead of being jammed into the upstream
+   * leg's `error`. Leave it unset for genuine upstream failures (HTTP errors, truncation, H3).
    */
-  fail(model: string, error: unknown, partial?: PartialResponseInfo): void
+  fail(model: string, error: unknown, partial?: PartialResponseInfo, opts?: { upstreamSucceeded?: boolean }): void
   /**
    * Settle the request as `aborted` — the downstream client disconnected
    * mid-stream. Distinct terminal state from complete/fail. `partial` preserves

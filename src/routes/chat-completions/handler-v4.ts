@@ -370,14 +370,15 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   }
 
   if (outcome.kind === "stream-error") {
-    // H3 — the upstream iterable (or a sink write) threw a non-abort error. Settle as fail
-    // (partial usage) + write the OpenAI error frame through the NON-sampling writeSynthetic
-    // path (legacy CC never pushed the error frame to the forwarded track).
-    recordForwarded()
+    // H3 — the upstream iterable (or a sink write) threw a non-abort error. Write the OpenAI error
+    // frame + record it into the forwarded track (the client receives it), THEN settle. Ordering is
+    // load-bearing: writeSynthetic samples the frame, recordForwarded snapshots it, and only then does
+    // ctx.fail() freeze inboundResponse — a post-fail snapshot would miss the client-received frame.
     const error = outcome.error
-    env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     consola.error("[ChatCompletions:v4] Stream error:", error)
-    await sink.writeSynthetic?.(openAIStreamErrorFrame(error))
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     return
   }
 
@@ -388,15 +389,15 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   if (acc.finishReason === "") {
     // Truncation: the rendered stream never carried a finish_reason — a complete OpenAI stream
     // always terminates with one, so a clean drain without it means the upstream truncated
-    // mid-stream. Settle FAIL (preserving the partial) + emit an OpenAI error frame instead of
-    // the normal `[DONE]`, so the client gets a clean terminator rather than a finish_reason-less
-    // stream it silently treats as done. See docs/spec/upstream-stream-truncation-detection.md.
-    recordForwarded()
+    // mid-stream. Emit an OpenAI error frame instead of the normal `[DONE]` (so the client gets a
+    // clean terminator) + record it into the forwarded track, THEN settle FAIL preserving the
+    // partial. Order: writeSynthetic → recordForwarded → fail. See docs/spec/upstream-stream-truncation-detection.md.
     const partial = buildOpenAIResponseData(acc, model)
     const truncErr = new Error("Upstream stream truncated before completion (no finish_reason)")
     consola.error(`[ChatCompletions:v4] Upstream truncated for ${acc.model || model}: drained without a finish_reason`)
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
+    recordForwarded()
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
-    await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr))
     return
   }
   await sink.write({ data: "[DONE]" })

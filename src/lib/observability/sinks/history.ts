@@ -251,6 +251,10 @@ export class HistorySink {
       durationMs: entryData.durationMs,
       transport: entryData.transport,
       sseEvents: entryData.sseEvents,
+      // Top-level failure-reason projection (proxy verdict for non-success terminals). The explicit
+      // field projection must carry it through HistoryEntryData→HistoryEntry, else it never persists
+      // (the head blob is built from THIS stored entry, not the event's entryData).
+      ...(entryData.failureReason && { failureReason: entryData.failureReason }),
       ...(entryData.inboundResponse && { inboundResponse: entryData.inboundResponse }),
       ...(entryData.warningMessages && { warningMessages: entryData.warningMessages }),
       ...(entryData.effectiveRequest && {

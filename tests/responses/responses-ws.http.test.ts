@@ -369,6 +369,9 @@ describe("Responses WebSocket transport", () => {
     const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
     expect(entry?.state).toBe("failed")
     expect(String(entry?.outboundResponse?.error)).toContain("truncated")
+    // The error frame the client received (via sendErrorAndClose) is recorded in the forwarded
+    // (proxy→client) track — asserts the WS sendErrorAndClose→recordForwarded→fail ordering.
+    expect((entry?.inboundResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
   })
 
   test("keeps socket open after response.completed when clientWebsocketKeepOpen is true", async () => {

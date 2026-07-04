@@ -121,15 +121,21 @@ function extractPayload(message: unknown): ResponsesPayload | null {
 // Error helpers
 // ============================================================================
 
-/** Send an error frame and close the WebSocket */
-function sendErrorAndClose(ws: WSContext, message: string, code?: string): void {
+/**
+ * Send an error frame and close the WebSocket. When `forwarded` is supplied (the driver-loop error
+ * branches), the sent frame is ALSO sampled into the forwarded track — it is a proxy→client frame
+ * the client receives, so it must land in `inboundResponse.sseEvents` (richest-data-flow). The
+ * caller must `recordForwarded()` after this and before `ctx.fail` (fail freezes inboundResponse).
+ * Pre-driver rejections omit `forwarded` (no forwarded track exists yet).
+ */
+function sendErrorAndClose(ws: WSContext, message: string, code?: string, forwarded?: { events: Array<SseEventRecord>; streamStartMs: number }): void {
+  const data = JSON.stringify({
+    type: "error",
+    error: { type: code ?? "server_error", message },
+  })
+  if (forwarded) forwarded.events.push({ offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data })
   try {
-    ws.send(
-      JSON.stringify({
-        type: "error",
-        error: { type: code ?? "server_error", message },
-      }),
-    )
+    ws.send(data)
   } catch {
     // WebSocket might already be closed
   }
@@ -331,15 +337,15 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   }
 
   if (outcome.kind === "stream-error") {
-    // H3 — settle as fail (partial usage) + send the OpenAI error frame and close (1011). The
-    // error frame is NOT forward-sampled (legacy never pushed it), so it goes via sendErrorAndClose
-    // (the WS analog of the HTTP writeSynthetic), not the sink.
-    recordForwarded()
+    // H3 — send the OpenAI error frame (recorded into the forwarded track via sendErrorAndClose's
+    // `forwarded` sampler) + close (1011), THEN snapshot + settle. Order is load-bearing:
+    // sample → recordForwarded → ctx.fail (fail freezes inboundResponse, so a post-fail snapshot misses it).
     const error = outcome.error
-    env.ctx.fail(acc.model || resolvedModel, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
-    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), { events: forwardedSseEvents, streamStartMs })
+    recordForwarded()
+    env.ctx.fail(acc.model || resolvedModel, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     return
   }
 
@@ -366,12 +372,14 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   // analog, 1011) to emit the error + close. Checked AFTER the viaFallback drain (whose synthesized
   // `response.completed` sets `acc.status`). See docs/spec/upstream-stream-truncation-detection.md.
   if (acc.status === "") {
-    recordForwarded()
     const partial = buildResponsesResponseData(acc, resolvedModel)
     const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
     consola.error(`[WS] Upstream truncated for ${acc.model || resolvedModel}: drained without a terminal response event`)
+    // Emit the error frame (recorded into forwarded) + close, THEN snapshot + settle (sample →
+    // recordForwarded → ctx.fail; fail freezes inboundResponse).
+    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr), { events: forwardedSseEvents, streamStartMs })
+    recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, truncErr, { usage: partial.usage, content: partial.content })
-    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr))
     return
   }
 

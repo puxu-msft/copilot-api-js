@@ -169,20 +169,25 @@ describe("makeSseSink forwarded-track sampling (onForwarded)", () => {
   beforeEach(() => clock.install())
   afterEach(() => clock.restore())
 
-  test("write samples forwarded (parsed type → offset/raw); writeSynthetic does NOT (H3 unsampled)", async () => {
+  test("write AND writeSynthetic sample forwarded (a synthesized terminal error IS a proxy→client frame)", async () => {
     const { stream, written } = stubSseStream()
     const sampled: Array<{ offsetMs: number; type: string; raw: string }> = []
     const sink = makeSseSink(stream, { onForwarded: (r) => sampled.push(r), streamStartMs: clock.now })
 
     await clock.advance(100)
     await sink.write({ event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 0 }) })
-    // H3 synthesized error frame — reaches the WIRE but must NOT be sampled.
+    // Synthesized terminal error frame — the client receives it, so it MUST be sampled into the
+    // forwarded track (richest-data-flow; reverses the earlier Stage-B H3-unsampled B0-c choice).
+    await clock.advance(50)
     await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: "boom" } }) })
 
     // Both frames hit the wire.
     expect(written.length).toBe(2)
-    // Only the real write is sampled (type from the parsed JSON, raw = verbatim data).
-    expect(sampled).toEqual([{ offsetMs: 100, type: "content_block_delta", raw: JSON.stringify({ type: "content_block_delta", index: 0 }) }])
+    // Both are sampled (type from the parsed JSON, raw = verbatim data), enqueue-first like `write`.
+    expect(sampled).toEqual([
+      { offsetMs: 100, type: "content_block_delta", raw: JSON.stringify({ type: "content_block_delta", index: 0 }) },
+      { offsetMs: 150, type: "error", raw: JSON.stringify({ type: "error", error: { type: "api_error", message: "boom" } }) },
+    ])
   })
 
   test("the heartbeat ping IS sampled into the forwarded track (proxy→client frame)", async () => {
