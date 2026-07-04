@@ -38,7 +38,6 @@ import {
 import { getDatabase } from "./lib/history/sqlite/connection"
 import { applyForwardMigrations } from "./lib/history/sqlite/migrations/run"
 import { cacheModels } from "./lib/models/client"
-import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initBus } from "./lib/observability"
@@ -85,16 +84,13 @@ function formatLimit(value?: number): string {
 }
 
 /**
- * Format a model as 3 lines: main info, features, and supported endpoints.
+ * Format a model as a single line of main info.
  *
  * Example output:
  *   - claude-opus-4.6-1m (3x) (Anthropic)          ctx:1000k prp: 936k out:  64k
- *       features:  adaptive-thinking, thinking, streaming, vision, tool-calls
- *       endpoints: /v1/messages, /chat/completions
  */
 function formatModelInfo(model: Model, disabled = false): string {
   const limits = model.capabilities?.limits
-  const supports = model.capabilities?.supports
 
   const contextK = formatLimit(limits?.max_context_window_tokens)
   const promptK = formatLimit(limits?.max_prompt_tokens)
@@ -105,27 +101,8 @@ function formatModelInfo(model: Model, disabled = false): string {
   const label = `${model.id}${billingPart} (${model.vendor})${disabledTag}`
   const padded = label.length > 45 ? `${label.slice(0, 42)}...` : label.padEnd(45)
   const mainLineRaw = `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
-  // Only the main line is recolored when disabled — features/endpoints stay
-  // in their normal dim style so the disabled marker doesn't drown out the
-  // surrounding section.
-  const mainLine = disabled ? pc.red(pc.dim(mainLineRaw)) : mainLineRaw
 
-  const features = [
-    ...Object.entries(supports ?? {})
-      .filter(([, value]) => value === true)
-      .map(([key]) => key.replaceAll("_", "-")),
-    supports?.max_thinking_budget && "thinking",
-    model.capabilities?.type === "embeddings" && "embeddings",
-    model.preview && "preview",
-  ]
-    .filter(Boolean)
-    .join(", ")
-  const featLine = features ? pc.dim(`      features:  ${features}`) : ""
-
-  const endpoints = getEffectiveEndpoints(model)
-  const endpLine = pc.dim(`      endpoints: ${endpoints?.join(", ") ?? "(unknown)"}`)
-
-  return [mainLine, featLine, endpLine].filter(Boolean).join("\n")
+  return disabled ? pc.red(pc.dim(mainLineRaw)) : mainLineRaw
 }
 
 /** Parse an integer from a string, returning a default if the result is NaN. */
