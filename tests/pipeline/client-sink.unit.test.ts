@@ -14,6 +14,8 @@ import {
 
 import type { ClientFrame } from "~/lib/pipeline/types"
 
+import type { OpenBlock } from "~/lib/pipeline/client-sink"
+
 import {
   //
   makeArraySink,
@@ -210,5 +212,73 @@ describe("makeSseSink forwarded-track sampling (onForwarded)", () => {
     await sink.write({ event: "message", data: "not json" }) // unparseable → event name
     await sink.write({ data: "" }) // no data, no event → keepalive
     expect(sampled).toEqual([{ type: "message" }, { type: "keepalive" }])
+  })
+})
+
+// ── makeSseSink block-aware keepalive (provider pingFrame) ────────────────────
+// A provider pingFrame is called with the current open content block so it can inject a
+// protocol-legal EMPTY delta (thinking→thinking_delta, text→text_delta) that resets Claude
+// Code's 300s no-real-content idle deadline — which a bare `event: ping` does NOT.
+
+describe("makeSseSink block-aware keepalive (provider pingFrame)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  const emptyDeltaFor = (ob?: OpenBlock): ClientFrame => {
+    if (ob?.type === "thinking")
+      return { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "thinking_delta", thinking: "" } }) }
+    if (ob?.type === "text")
+      return { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "text_delta", text: "" } }) }
+    return PING // no open block / unknown type → fallback ping
+  }
+  const blockStart = (index: number, type: string): ClientFrame => ({
+    event: "content_block_start",
+    data: JSON.stringify({ type: "content_block_start", index, content_block: { type } }),
+  })
+  const blockStop = (index: number): ClientFrame => ({ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index }) })
+
+  test("provider gets the open thinking block → injects an empty thinking_delta", async () => {
+    const { stream, written } = stubSseStream()
+    const seen: Array<OpenBlock | undefined> = []
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: (ob) => (seen.push(ob), emptyDeltaFor(ob)) } })
+    await sink.write(blockStart(0, "thinking"))
+    await clock.advance(15_000)
+    expect(seen).toEqual([{ index: 0, type: "thinking" }])
+    expect(written.at(-1)).toEqual({ event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "" } }) })
+    sink.close?.()
+  })
+
+  test("content_block_stop clears the open block → provider gets undefined (fallback ping)", async () => {
+    const { stream, written } = stubSseStream()
+    const seen: Array<OpenBlock | undefined> = []
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: (ob) => (seen.push(ob), emptyDeltaFor(ob)) } })
+    await sink.write(blockStart(0, "thinking"))
+    await sink.write(blockStop(0))
+    await clock.advance(15_000)
+    expect(seen).toEqual([undefined])
+    expect(written.at(-1)).toEqual({ event: "ping", data: '{"type":"ping"}' })
+    sink.close?.()
+  })
+
+  test("tracks the latest open block across start→stop→start (thinking then text)", async () => {
+    const { stream } = stubSseStream()
+    const seen: Array<OpenBlock | undefined> = []
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: (ob) => (seen.push(ob), emptyDeltaFor(ob)) } })
+    await sink.write(blockStart(0, "thinking"))
+    await sink.write(blockStop(0))
+    await sink.write(blockStart(1, "text"))
+    await clock.advance(15_000)
+    expect(seen).toEqual([{ index: 1, type: "text" }])
+    sink.close?.()
+  })
+
+  test("fixed-frame pingFrame does NOT parse blocks (byte-identical ping mode)", async () => {
+    const { stream, written } = stubSseStream()
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: PING } })
+    await sink.write(blockStart(0, "thinking")) // fixed mode ignores this for keepalive selection
+    await clock.advance(15_000)
+    expect(written.at(-1)).toEqual({ event: "ping", data: '{"type":"ping"}' })
+    sink.close?.()
   })
 })

@@ -38,17 +38,35 @@ import type { ClientFrame } from "./types"
 import type { ClientSink } from "./types"
 
 /**
- * Forward-idle heartbeat config for {@link makeSseSink} (Stage B B2). The format
- * supplies the ping FRAME (Anthropic `event: ping` / `{type:"ping"}`) — the sink stays
- * format-agnostic. `intervalSec <= 0` disables it. Mirrors `startForwardedSseHeartbeat`
- * (streaming-pump.ts) but lives in the sink so `write` naturally notes the last-real-frame
- * time. The injected ping is sampled into the forwarded track (the timer below).
+ * The currently-open content block observed on the FORWARDED stream — lets a block-aware
+ * keepalive provider pick a protocol-legal EMPTY delta matching the open block's type
+ * (thinking→thinking_delta, text→text_delta, tool_use→input_json_delta). Such an empty delta
+ * resets Claude Code's 300s no-real-content idle deadline that a bare `event: ping` does NOT
+ * (a ping is not counted as a "chunk"; see exp/cc-idle-280s/REPORT.md). Generic across
+ * content-block-structured SSE streams; the sink derives it from frames it ACTUALLY forwards,
+ * so it is correct in both live and buffered modes (buffered → nothing forwarded → undefined).
+ */
+export interface OpenBlock {
+  index: number
+  type: string
+}
+
+/**
+ * Forward-idle heartbeat config for {@link makeSseSink} (Stage B B2). The format supplies the
+ * keepalive FRAME (or a provider) — the sink stays format-agnostic. `intervalSec <= 0` disables
+ * it. Mirrors `startForwardedSseHeartbeat` (streaming-pump.ts) but lives in the sink so `write`
+ * naturally notes the last-real-frame time. The injected frame is sampled into the forwarded track.
  */
 export interface SseSinkHeartbeat {
-  /** Seconds of client-forward silence before a synthetic ping is injected (<=0 disables). */
+  /** Seconds of client-forward silence before a synthetic keepalive is injected (<=0 disables). */
   intervalSec: number
-  /** The already-terminal-form ping frame to inject (format-specific). */
-  pingFrame: ClientFrame
+  /**
+   * The keepalive frame to inject on forward-idle. Either a FIXED frame (classic `event: ping`)
+   * or a PROVIDER called with the current {@link OpenBlock} for block-aware keepalive (an empty
+   * content delta matching the open block's type). When a provider is supplied the sink tracks
+   * the open block from forwarded frames; a fixed frame does ZERO parsing (byte-identical to before).
+   */
+  pingFrame: ClientFrame | ((openBlock?: OpenBlock) => ClientFrame)
   /** Suppress pings once the client has disconnected. */
   clientAbortSignal?: AbortSignal
 }
@@ -145,6 +163,24 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // deliberately SEPARATE racers (design §3.3 / B2 two-racer) so a heartbeat can't keep a
   // silent-upstream stream alive forever.
   const heartbeatOn = heartbeat !== undefined && heartbeat.intervalSec > 0
+  // Block-aware keepalive: track the open content block ONLY when a provider pingFrame is set
+  // (fixed-frame mode does zero parsing → byte-identical to before). Generic content-block state
+  // machine reading JSON fields shared by content-block-structured SSE streams; no Anthropic import.
+  const trackOpenBlock = heartbeatOn && typeof heartbeat.pingFrame === "function"
+  let openBlock: OpenBlock | undefined
+  const noteBlockState = (frame: ClientFrame): void => {
+    if (!trackOpenBlock || frame.data === undefined) return
+    try {
+      const p = JSON.parse(frame.data) as { type?: unknown; index?: unknown; content_block?: { type?: unknown } }
+      if (p.type === "content_block_start" && typeof p.index === "number" && typeof p.content_block?.type === "string") {
+        openBlock = { index: p.index, type: p.content_block.type }
+      } else if (p.type === "content_block_stop" && typeof p.index === "number" && openBlock?.index === p.index) {
+        openBlock = undefined
+      }
+    } catch {
+      // non-JSON frame → not a content-block boundary; leave openBlock unchanged
+    }
+  }
   let lastRealMs = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
@@ -153,6 +189,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // firing mid-write sees the fresh ts and skips a redundant ping.
   const write = (frame: ClientFrame): Promise<void> => {
     lastRealMs = Date.now()
+    noteBlockState(frame) // update open-block state from real forwarded frames (provider mode only)
     sampleForwarded(frame)
     return writeSse(frame)
   }
@@ -186,11 +223,13 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     if (stopped || heartbeat.clientAbortSignal?.aborted) return
     const elapsed = Date.now() - lastRealMs
     if (elapsed >= intervalMs) {
-      // Synthetic ping — sampled into the forwarded track (a ping IS a proxy→client
-      // frame), shares the chain (no byte-interleave). Errors swallowed: the next real
-      // write hits the same closed stream and routes through the driver's outcome path.
-      sampleForwarded(heartbeat.pingFrame)
-      void writeSse(heartbeat.pingFrame).catch(() => undefined)
+      // Synthetic keepalive — a FIXED ping frame, or (provider mode) a block-aware empty delta
+      // chosen from the current open block. Sampled into the forwarded track (a keepalive IS a
+      // proxy→client frame), shares the chain (no byte-interleave). Errors swallowed: the next
+      // real write hits the same closed stream and routes through the driver's outcome path.
+      const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(openBlock) : heartbeat.pingFrame
+      sampleForwarded(frame)
+      void writeSse(frame).catch(() => undefined)
       lastRealMs = Date.now()
       timer = setTimeout(tick, intervalMs)
     } else {
