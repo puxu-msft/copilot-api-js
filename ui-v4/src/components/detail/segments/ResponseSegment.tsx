@@ -58,22 +58,6 @@ function RawPre({ children }: { children: string }) {
   return <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{children}</pre>
 }
 
-/** Raw forwarded SSE frames (proxy→client), one line per frame — the SSE tab shows the full diff. */
-function RawFrameList({ frames }: { frames: Array<SseEventRecord> }) {
-  return (
-    <div className="border border-[#1e1e24]">
-      {frames.map((f, i) => (
-        <div
-          key={i}
-          className="mono overflow-hidden text-ellipsis whitespace-nowrap px-2 py-0.5 text-[13px] text-[#aaa]"
-        >
-          <span className="text-[#9ad]">{f.type}</span> {f.raw}
-        </div>
-      ))}
-    </div>
-  )
-}
-
 /** The rewritten content actually forwarded to the client on a streaming response. */
 function ForwardedStream({ frames, endpoint }: { frames: Array<SseEventRecord>; endpoint: HistoryEntry["endpoint"] }) {
   const errorFrames = frames.filter((f) => isTerminalErrorFrame(f))
@@ -125,7 +109,7 @@ function ForwardedBody({ entry, raw }: { entry: HistoryEntry; raw: boolean }) {
     if (isMessageShaped(content)) return <MessageBlock message={content} />
     return <RawPre>{JSON.stringify(content, null, 2)}</RawPre>
   }
-  if (raw) return <RawFrameList frames={frames} />
+  if (raw) return <RawPre>{frames.map((f) => f.raw).join("\n")}</RawPre>
   return (
     <ForwardedStream
       frames={frames}
