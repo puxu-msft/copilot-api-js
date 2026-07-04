@@ -108,15 +108,17 @@ describe("ResponseSegment", () => {
     expect(screen.queryByText(/frames forwarded/)).toBeNull()
   })
 
-  it("toggles to Raw view — shows the literal upstream body and forwarded SSE frames", () => {
+  it("toggles to Code view — shows the message objects as pretty JSON", () => {
     render(<ResponseSegment entry={withResponse} />)
-    // Rendered mode: no raw frame internals visible.
-    expect(screen.queryByText(/text_delta/)).toBeNull()
-    fireEvent.click(screen.getByText("Raw"))
-    // Raw upstream body = JSON of outboundResponse.content (quoted string, not the rendered text).
+    // Rendered mode: the JSON structure is not shown verbatim.
+    expect(screen.queryByText(/"type": "text"/)).toBeNull()
+    fireEvent.click(screen.getByText("Code"))
+    // Upstream leg → outboundResponse.content as JSON.
     expect(screen.getByText(/"upstream answer"/)).toBeDefined()
-    // Raw forwarded = the literal SSE frame lines (the raw content_block_delta payload is now shown).
-    expect(screen.getByText(/text_delta/)).toBeDefined()
+    // Forwarded leg → the reconstructed client message object as JSON (role + text block).
+    expect(screen.getAllByText(/"role": "assistant"/).length).toBeGreaterThan(0)
+    expect(screen.getByText(/"type": "text"/)).toBeDefined()
+    expect(screen.getByText(/forwarded client answer/)).toBeDefined()
   })
 
   it("renders the 无响应数据 fallback when there is no response data", () => {

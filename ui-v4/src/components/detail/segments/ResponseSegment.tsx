@@ -90,26 +90,32 @@ function isMessageShaped(content: unknown): content is Parameters<typeof Message
   return typeof content === "object" && content !== null && typeof (content as { role?: unknown }).role === "string"
 }
 
-/** Upstream (upstream → proxy) leg body — rendered (MessageBlock) or raw (literal body / JSON). */
-function UpstreamBody({ resp, raw }: { resp: NonNullable<HistoryEntry["outboundResponse"]>; raw: boolean }) {
-  if (raw) {
-    const body = resp.rawBody ?? (resp.content === null ? undefined : JSON.stringify(resp.content, null, 2)) ?? resp.error ?? "(no content)"
+/** Upstream (upstream → proxy) leg body — rendered (MessageBlock) or code (message object as JSON). */
+function UpstreamBody({ resp, code }: { resp: NonNullable<HistoryEntry["outboundResponse"]>; code: boolean }) {
+  if (code) {
+    const body = resp.content === null ? (resp.rawBody ?? resp.error ?? "(no content)") : JSON.stringify(resp.content, null, 2)
     return <RawPre>{body}</RawPre>
   }
   if (resp.content) return <MessageBlock message={resp.content} />
   return <RawPre>{resp.rawBody ?? resp.error ?? "(no content)"}</RawPre>
 }
 
-/** Forwarded (proxy → client) leg body — rendered (reconstructed content) or raw (SSE frames / JSON). */
-function ForwardedBody({ entry, raw }: { entry: HistoryEntry; raw: boolean }) {
+/** Forwarded (proxy → client) leg body — rendered (reconstructed content) or code (message object as JSON). */
+function ForwardedBody({ entry, code }: { entry: HistoryEntry; code: boolean }) {
   const frames = entry.inboundResponse?.sseEvents ?? []
   const content = entry.inboundResponse?.content
   if (content !== undefined) {
-    if (raw) return <RawPre>{JSON.stringify(content, null, 2)}</RawPre>
+    if (code) return <RawPre>{JSON.stringify(content, null, 2)}</RawPre>
     if (isMessageShaped(content)) return <MessageBlock message={content} />
     return <RawPre>{JSON.stringify(content, null, 2)}</RawPre>
   }
-  if (raw) return <RawPre>{frames.map((f) => f.raw).join("\n")}</RawPre>
+  // Streaming: reconstruct the client message from the forwarded frames.
+  const message = accumulateForwardedContent(frames, entry.endpoint)
+  if (code) {
+    // The reconstructed message object as JSON; fall back to the raw frame payloads when nothing
+    // reconstructs (e.g. a stream of only pings + a terminal error frame).
+    return <RawPre>{message ? JSON.stringify(message, null, 2) : frames.map((f) => f.raw).join("\n")}</RawPre>
+  }
   return (
     <ForwardedStream
       frames={frames}
@@ -118,40 +124,40 @@ function ForwardedBody({ entry, raw }: { entry: HistoryEntry; raw: boolean }) {
   )
 }
 
-/** Rendered/Raw view toggle (mirrors StagesSegment). */
-function ViewToggle({ raw, onChange }: { raw: boolean; onChange: (raw: boolean) => void }) {
+/** Rendered/Code view toggle (mirrors StagesSegment). */
+function ViewToggle({ code, onChange }: { code: boolean; onChange: (code: boolean) => void }) {
   return (
     <div className="mb-2 flex items-center gap-2">
       <button
         type="button"
         onClick={() => onChange(false)}
-        className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${raw ? "" : "text-[var(--color-primary)]"}`}
+        className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${code ? "" : "text-[var(--color-primary)]"}`}
       >
         Rendered
       </button>
       <button
         type="button"
         onClick={() => onChange(true)}
-        className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${raw ? "text-[var(--color-primary)]" : ""}`}
+        className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${code ? "text-[var(--color-primary)]" : ""}`}
       >
-        Raw
+        Code
       </button>
     </div>
   )
 }
 
 /**
- * Response view organized by proxy leg, with a Rendered/Raw toggle:
+ * Response view organized by proxy leg, with a Rendered/Code toggle:
  *   1. Outcome — the request verdict (surfaced from failureReason) for non-success terminals.
  *   2. Upstream (upstream → proxy) — the upstream-original answer (HONEST leg outcome: after the
  *      data-model fix a proxy-introduced failure no longer marks this leg failed).
  *   3. Forwarded (proxy → client) — what the client actually received: the reconstructed content
  *      (streaming) / rewritten body (non-streaming), incl. any synthesized error frame.
- * Rendered = semantic (MessageBlock); Raw = the literal body / SSE frames. The SSE tab carries the
- * upstream-vs-forwarded frame diff.
+ * Rendered = semantic (MessageBlock); Code = the message object as pretty JSON. The SSE tab carries
+ * the raw upstream-vs-forwarded frame diff.
  */
 export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
-  const [raw, setRaw] = useState(false)
+  const [code, setCode] = useState(false)
   const hasUpstream = Boolean(entry.outboundResponse)
   const forwardedFrames = entry.inboundResponse?.sseEvents ?? []
   const hasForwarded = entry.inboundResponse?.content !== undefined || forwardedFrames.length > 0
@@ -168,8 +174,8 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
     <div>
       {hasUpstream || hasForwarded ?
         <ViewToggle
-          raw={raw}
-          onChange={setRaw}
+          code={code}
+          onChange={setCode}
         />
       : null}
       {showOutcome ?
@@ -197,7 +203,7 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
           </div>
           <UpstreamBody
             resp={entry.outboundResponse}
-            raw={raw}
+            code={code}
           />
         </LegShell>
       : null}
@@ -205,7 +211,7 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
         <LegShell label="Forwarded (proxy → client)">
           <ForwardedBody
             entry={entry}
-            raw={raw}
+            code={code}
           />
         </LegShell>
       : null}
