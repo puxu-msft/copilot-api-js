@@ -25,3 +25,7 @@ description: 当写/调 copilot-api-js 后端测试遇隔离问题时使用—�
 ## 地板防线
 
 `bunfig.toml` `[test].preload`（`tests/helpers/sandbox-paths.ts`）把 `XDG_DATA_HOME`+`CODEX_HOME` 重定向临时目录，兜住 APP_DIR 派生持久化（仅 bun test）。双守卫 sandbox-paths.unit + real-state-guard.it。完整设计 docs/spec/test-env-isolation.md（权威落地态）、DESIGN「测试组织」。相关经验 [[feedback_tests_never_touch_real_env]]、[[methodology-sync-to-async-persistence-refactor-invariants]]。
+
+## 流式 / 时序测试（heartbeat 等异步注入）
+
+测流式 handler 的异步注入(sink heartbeat、延迟-commit)用 `FakeClock`(tests/helpers/fake-clock.ts:拦 setTimeout/Date.now,`advance(ms)` 逐 due-timer fire + drain 2 microtask 让 await settle)。**mid-stream 场景**(上游发部分帧后静默):mock fetch 返回 `Response(ReadableStream)`、**test 持有 controller** 精确控帧——`ctrl.enqueue(block_start)` + `await Promise.resolve()×N` drain microtask 让 pump 消费到(内部状态如 openBlock 更新)、再 `clock.advance` 触发 timer、再 `ctrl.enqueue(rest)` + `close`。**坑**:注入的心跳帧落在预期 block **之前** = drain 步数不够(pump 还没 write 到那帧)、**非 bug**;分步 drain 修(生产中静默发生在 block 已 write 之后)。ReadableStream pull 走 microtask(FakeClock 不拦)故 drain 有效;但依赖 drain 步数本质**脆弱**,连跑 10 次确认确定性(见 user-level `verifying-authoritative-claims` flaky)。活案例 tests/anthropic/keepalive-e2e.http、stream-immediate-keepalive.http。证明「改的代码真被执行」的活路径/分层验证见 skill `empirical-verification`。

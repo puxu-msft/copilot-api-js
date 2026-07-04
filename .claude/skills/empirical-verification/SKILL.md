@@ -29,3 +29,11 @@ description: 当需要在 copilot-api-js 实测裁决而非凭推断时使用—
 - prompt-cache：同 session 多 turn 看 cache_read 是否冻结；inbound vs wire 断点数差定位；热切 cacheControlMode 对照（3%→99.7%）。
 - 记录消失先证伪 durability/重启/reaper/clear-delete 再归因；live-churn 库直读 torn，走运行进程 API；破坏性 bulk 须高声 WARN。
 - 失败查不到→查 finalize 的 catch→warn + 无条件 cleanup（吞错+有损 fallback=蒸发），靠日志 swallow 证据非 DB 快照裁决。
+
+## 客户端 SDK oracle（协议/累积/客户端解析主张）
+
+wire/协议正确性别用自洽（自己 encode↔decode，两端共享同一错误假设→假绿），也别只用服务端 4141 探针——用**真实客户端库**（`@anthropic-ai/sdk` = Claude Code 同款累积逻辑）消费受控 mock 流,直接验证「客户端如何解析/累积」。`client.messages.stream(...).finalMessage()` 取累积结果断言(baseURL 指 mock,`defaultHeaders:{"x-mock-mode"}` 切场景)。活案例 exp/tool-keepalive-safety(空 keepalive delta 拼进真实 tool_use 流 → SDK 累积的 input/thinking/signature 全对,证明「空 partial_json 拼接无害」是**实测非推理**);exp/q2-oracle(真实 `claude` CLI 作更高层 oracle,`--settings` 盖 baseURL)。比服务端探针更聚焦客户端侧解析,比 spec 推断更权威。
+
+## 活路径证明 + 分层验证（改代码后必做）
+
+改代码后先证明「这条路径**真被执行**」(不是 dead code/被绕过/只活在测试):静态追踪 route→handler→sink→driver(确认调 `runResponseSink` 非 dry-run `runResponse`)+ 端到端正样本(改后的帧真出现在响应)。是 pass-null 的正向版——「改的代码触达目标了吗」,非只「逻辑正确」。**分层意识**:应用层对 ≠ 到达消费者;验证到真正起作用的那层(keepalive 要验到 TCP flush/客户端真感知,不止 `sink.write` 被调;curl -N 看实时字节、ss 看内核 timer)。**mid-stream 时序技法**(测流式 heartbeat 等异步注入):http 测试用 `FakeClock`(拦 setTimeout)+ **test 持有 `ReadableStream` controller** 精确控帧——`ctrl.enqueue(block_start)` → `await Promise.resolve()×N` drain microtask 让 pump 消费到(openBlock 设)→ `clock.advance` 触发 heartbeat → 断言注入帧。**坑**:首跑若 keepalive 落在 block_start **之前**=drain 不够(pump 还没 write)、非 bug;drain 步进后即对(生产中静默发生在 block 已 write 之后)。活案例 tests/anthropic/keepalive-e2e.http。
