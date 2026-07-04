@@ -492,7 +492,7 @@ export interface State {
    * Applies to both streaming and non-streaming requests.
    * 0 = no timeout (rely on upstream gateway timeout).
    */
-  readonly fetchTimeout: number
+  readonly responseHeaderTimeout: number
 
   /**
    * Stream idle timeout in seconds.
@@ -1004,10 +1004,10 @@ export function setAutoTruncateConfig(
 }
 
 export function setTimeoutConfig(
-  patch: Partial<Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval" | "upstreamKeepaliveDelay">>,
+  patch: Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval" | "upstreamKeepaliveDelay">>,
 ): void {
   const transportChanged =
-    (patch.fetchTimeout !== undefined && patch.fetchTimeout !== mutableState.fetchTimeout)
+    (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
     || (patch.streamIdleTimeout !== undefined && patch.streamIdleTimeout !== mutableState.streamIdleTimeout)
     || (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
   updateState(patch)
@@ -1017,13 +1017,13 @@ export function setTimeoutConfig(
 }
 
 /**
- * Listeners notified when `fetchTimeout`, `streamIdleTimeout`, or
+ * Listeners notified when `responseHeaderTimeout`, `streamIdleTimeout`, or
  * `upstreamKeepaliveDelay` change.
  * Used by transport layer (undici dispatcher) to rebuild with new options.
  */
 const transportTimeoutListeners = new Set<() => void>()
 
-/** Subscribe to transport-relevant timeout changes (fetchTimeout, streamIdleTimeout). */
+/** Subscribe to transport-relevant timeout changes (responseHeaderTimeout, streamIdleTimeout). */
 export function onTransportTimeoutChange(listener: () => void): () => void {
   transportTimeoutListeners.add(listener)
   return () => transportTimeoutListeners.delete(listener)
@@ -1154,7 +1154,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   ] as ReadonlyArray<string>,
   interleavedThinkingModels: ["claude-sonnet-4", "claude-haiku-4-5", "claude-opus-4-5"] as ReadonlyArray<string>,
   adaptiveThinkingModels: ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"] as ReadonlyArray<string>,
-  fetchTimeout: 300,
+  responseHeaderTimeout: 300,
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
   staleRequestMaxAge: 600,
@@ -1244,7 +1244,7 @@ export function resetConfigManagedState(): void {
   setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
   setTimeoutConfig({
-    fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
+    responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
     upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
@@ -1331,7 +1331,7 @@ const mutableState: MutableState = {
   rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
-  fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
+  responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
   historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
   historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,

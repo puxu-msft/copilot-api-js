@@ -62,7 +62,7 @@ describe("pre-response client abort → aborted + 499 (②)", () => {
   let clientAbort: AbortController
 
   beforeEach(() => {
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     setModels({ object: "list", data: [mockModel("claude-opus-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
     setModelOverrides({ opus: "claude-opus-4.6" })
     clearHistory()

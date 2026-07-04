@@ -77,7 +77,7 @@ describe("POST /v1/messages — non-streaming semantic-truncation detection", ()
   beforeEach(() => {
     upstreamFetchMock.mockClear()
     stopReason = null
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
   })

@@ -165,7 +165,7 @@ describe("Phase 0 golden: httpHeaders 捕获现状（4 格式 × 完成/失败�
   beforeEach(() => {
     upstreamMock.mockClear()
     failNext = false
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamMock)
   })
 

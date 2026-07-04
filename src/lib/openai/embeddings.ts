@@ -4,7 +4,7 @@ import {
   copilotBaseUrl,
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal } from "~/lib/fetch-utils"
+import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
@@ -25,7 +25,7 @@ export const createEmbeddings = async (payload: EmbeddingRequest) => {
     body: JSON.stringify(normalizedPayload),
     // Embeddings are always non-streaming, so fold in the shutdown signal: a
     // Phase 3 abort interrupts the request instead of hanging until force-close.
-    signal: combineAbortSignals(createFetchSignal(), getShutdownSignal()),
+    signal: combineAbortSignals(createResponseHeaderTimeoutSignal(), getShutdownSignal()),
   })
 
   if (!response.ok) throw await HTTPError.fromResponse("Failed to create embeddings", response)

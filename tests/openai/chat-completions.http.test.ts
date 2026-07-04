@@ -134,7 +134,7 @@ describe("POST /chat/completions", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
     })
     applyFetchMock(upstreamFetchMock)
   })

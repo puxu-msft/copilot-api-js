@@ -30,7 +30,7 @@ import {
 import {
   //
   captureHttpHeaders,
-  createFetchSignal,
+  createResponseHeaderTimeoutSignal,
 } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
@@ -108,7 +108,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
   // terminates both stream and non-stream paths. `reaperSignal` (ctx.lifecycleSignal)
   // is always folded too so the stale reaper can cancel the (long) pre-response
   // header-wait for BOTH stream and non-stream (缺陷④).
-  const fetchSignal = combineAbortSignals(createFetchSignal(), stream ? undefined : getShutdownSignal(), clientAbortSignal, reaperSignal)
+  const fetchSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(), stream ? undefined : getShutdownSignal(), clientAbortSignal, reaperSignal)
 
   let response: Response
   try {

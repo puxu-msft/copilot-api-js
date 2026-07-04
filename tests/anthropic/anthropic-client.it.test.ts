@@ -49,7 +49,7 @@ describe("anthropic client", () => {
       accountType: "individual",
       copilotToken: "copilot-test-token",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       contextEditingMode: "off",
     })
   })
@@ -159,7 +159,7 @@ describe("anthropic client — shutdown interruption", () => {
       accountType: "individual",
       copilotToken: "copilot-test-token",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       contextEditingMode: "off",
     })
   })

@@ -10,7 +10,7 @@ import {
 import { sanitizeInlineSystemMessages } from "~/lib/anthropic/sanitize/system-messages"
 import { stripSystemAttribution } from "~/lib/anthropic/sanitize/system-prompt"
 import { hasKnownLimits } from "~/lib/auto-truncate"
-import { createFetchSignal } from "~/lib/fetch-utils"
+import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import { resolveModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
@@ -60,7 +60,7 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
         "anthropic-beta": "token-counting-2024-11-01",
       },
       body: JSON.stringify(countPayload),
-      signal: createFetchSignal(),
+      signal: createResponseHeaderTimeoutSignal(),
     })
 
     if (!response.ok) {

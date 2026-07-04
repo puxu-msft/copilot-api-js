@@ -67,7 +67,7 @@ describe("POST /chat/completions — non-streaming semantic-truncation detection
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { supported_endpoints: ["/chat/completions"] })] })
   })

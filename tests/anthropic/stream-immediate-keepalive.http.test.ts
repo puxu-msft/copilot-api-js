@@ -110,7 +110,7 @@ describe("immediate-keepalive — complete + pre-response error", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       // No synthetic heartbeat → the forwarded byte stream is fully deterministic.
       streamKeepalivePingSec: 0,
@@ -192,7 +192,7 @@ describe("immediate-keepalive — stall cadence ping", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       streamKeepalivePingSec: 2,
       streamCommitAfterSec: 2, // window fires at 2s → commit 200; heartbeat then pings every 2s

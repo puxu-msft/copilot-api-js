@@ -29,7 +29,7 @@ import type {
 
 import {
   //
-  createFetchSignal,
+  createResponseHeaderTimeoutSignal,
   getHeaderCaseInsensitive,
 } from "~/lib/fetch-utils"
 import { isWsResponsesSupported } from "~/lib/models/endpoint"
@@ -135,7 +135,7 @@ export async function attemptUpstreamResponsesWs(
   clientAbortSignal?.addEventListener("abort", onExternalAbort, { once: true })
   reaperSignal?.addEventListener("abort", onExternalAbort, { once: true })
 
-  const fetchSignal = createFetchSignal()
+  const fetchSignal = createResponseHeaderTimeoutSignal()
   const onFetchTimeout = () => {
     requestAbort.abort(new Error("Upstream WebSocket first-event timeout"))
   }

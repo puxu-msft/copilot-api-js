@@ -128,7 +128,7 @@ function configure(repair: ReadonlyArray<RepairItem>): void {
     copilotToken: "test-token",
     accountType: "individual",
     vsCodeVersion: "1.100.0",
-    fetchTimeout: 0,
+    responseHeaderTimeout: 0,
     streamIdleTimeout: 0,
     streamKeepalivePingSec: 0,
     toolRepairMalformedInput: repair,

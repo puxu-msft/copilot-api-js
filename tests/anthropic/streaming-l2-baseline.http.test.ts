@@ -129,7 +129,7 @@ describe("L2 baseline — Anthropic live streaming (locked before L2 lands)", ()
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       streamKeepalivePingSec: 0,
     })

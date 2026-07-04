@@ -44,7 +44,7 @@ test.describe("API Endpoints", () => {
 
     // Should have key configuration fields
     expect(body).toHaveProperty("autoTruncate")
-    expect(body).toHaveProperty("fetchTimeout")
+    expect(body).toHaveProperty("responseHeaderTimeout")
     expect(body).toHaveProperty("streamIdleTimeout")
     expect(body).toHaveProperty("historySuccessLimit")
     expect(body).toHaveProperty("historyFailureLimit")
@@ -54,7 +54,7 @@ test.describe("API Endpoints", () => {
     // Boolean fields
     expect(typeof body.autoTruncate).toBe("boolean")
     // Numeric fields
-    expect(typeof body.fetchTimeout).toBe("number")
+    expect(typeof body.responseHeaderTimeout).toBe("number")
     expect(typeof body.streamIdleTimeout).toBe("number")
   })
 

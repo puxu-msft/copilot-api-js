@@ -13,7 +13,7 @@
 > - **(H1/H2,CRITICAL)原 v1「全量替换 undici」over-scoped 且错误**:grep 实测 upstreamFetch 服务 `http://localhost:8080`(SearXNG,明文 HTTP 非 TLS 非 443 非 h2)、`api.anthropic.com`、github OAuth、VSCode release——全量替换会打挂它们。改为**仅 GHC h2 host 分流到 node:http2**,真实问题(GHC host 在 Bun-undici 挂)精准命中,其余零回归。
 > - **(B1,CRITICAL,已实测)`Readable.toWeb` 在 Bun 下消费 node:http2 流抛 `ERR_STREAM_PREMATURE_CLOSE`**。适配器 `.body` 必须**手搓 `new ReadableStream`**(从 `req.on('data'/'end'/'error')`),实测 25917 字符 + TextDecoderStream 在 Bun 下正常。**禁用 Readable.toWeb**。
 > - **(C2,CRITICAL,已 ss 实测)keepalive 长静默保活成立**:h2 socket idle 期 `ss -tno` 见 `timer:(keepalive,...)`(140.82.113.22:443)。原始目的满足。
-> - **(D1)删除 v1 自造的 fetchTimeout headers 定时器**——复用现有 `createFetchSignal()` 的 `AbortSignal.timeout`(消费端已传 `signal`),适配器只消费 `init.signal`,abort → `req.close(NGHTTP2_CANCEL)`。
+> - **(D1)删除 v1 自造的 responseHeaderTimeout headers 定时器**——复用现有 `createFetchSignal()` 的 `AbortSignal.timeout`(消费端已传 `signal`),适配器只消费 `init.signal`,abort → `req.close(NGHTTP2_CANCEL)`。
 > - **(E1)发 `accept-encoding: identity`**消除流式解压层(/models POC 已证常;SSE 本不压)。
 > - **(D2)补 connect/TLS 握手超时**(`tls.connect` + 握手 timeout → `network-retry`)。
 > - **(B3)上游 `RST_STREAM`(非 NO_ERROR)/GOAWAY 中断在途流 → ReadableStream error(reject reader)**,绝不静默 `{done:true}`(否则截断流被当 success,对齐 stream.ts Bug 2 防护)。
@@ -69,7 +69,7 @@
   - `body` ← `Readable.toWeb(req)`(ReadableStream,供 SSE 流式消费)
   - `json()/text()` ← 累积 body 后解析(node:http2 不自动解压——见 §2.5 Content-Encoding)
 - **超时映射**:
-  - `fetchTimeout`(response_header)→ 等到 `response` 事件的定时器;到点未收到 header → abort + reject(`HeadersTimeoutError`)。
+  - `responseHeaderTimeout`(response_header)→ 等到 `response` 事件的定时器;到点未收到 header → abort + reject(`HeadersTimeoutError`)。
   - `streamIdleTimeout` → `req.setTimeout(idleMs)`(data 间隔);触发 → abort(`StreamIdleTimeoutError`,复用现有错误类)。
   - 入站 `AbortSignal` → 监听 `abort` → `req.close(NGHTTP2_CANCEL)` → reject。
 
@@ -92,7 +92,7 @@ undici 自动解压;node:http2 **不自动解压**。需在适配器按 `content
 ## 3. Commit 顺序与 invariant
 
 1. **C1 — http2-client.ts 核心**:session 池 + Response 适配器 + 非流式请求。*Invariant:* GET /models 经新客户端返回等价 Response(status/json/headers),unit 测试(注入 mock h2 或对 httpbin-like)绿。
-2. **C2 — 流式 + 超时 + AbortSignal**:body ReadableStream、fetchTimeout/streamIdleTimeout 映射、signal→cancel。*Invariant:* SSE 流增量可读;超时触发对应错误类;abort 取消 stream。
+2. **C2 — 流式 + 超时 + AbortSignal**:body ReadableStream、responseHeaderTimeout/streamIdleTimeout 映射、signal→cancel。*Invariant:* SSE 流增量可读;超时触发对应错误类;abort 取消 stream。
 3. **C3 — 切换 productionUpstreamFetch + proxy.ts 连接工厂**:undici → http2-client;无代理直连;配 proxy 时启动报错(Phase 1)。*Invariant:* 11 消费端不改;`setUpstreamFetchForTests` 不变;全 offline 测试套件绿;Bun 下 /models 不再挂(对真实端点的 e2e 探针,门控)。
 4. **C4 — 清理**:删 undici 依赖路径(upstream 侧)/或保留作 Phase-2 代理参考;更新 DESIGN/skill bun-upstream-transport。
 

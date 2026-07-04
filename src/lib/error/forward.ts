@@ -531,7 +531,7 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       consola.debug(`Client disconnected (pre-response) in ${c.req.method} ${c.req.path}`)
       return c.json(helpers.defaultError("Client closed request", false, 499), 499 as ContentfulStatusCode)
     }
-    consola.warn(`Upstream response-header timeout in ${c.req.method} ${c.req.path} (${state.fetchTimeout}s)`)
+    consola.warn(`Upstream response-header timeout in ${c.req.method} ${c.req.path} (${state.responseHeaderTimeout}s)`)
     return c.json(helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
   }
 

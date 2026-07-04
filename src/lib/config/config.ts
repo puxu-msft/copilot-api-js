@@ -670,7 +670,7 @@ export async function applyConfigToState(): Promise<Config> {
   // Timeouts section (scalar: override only when present)
   if (config.timeouts) {
     const t = config.timeouts
-    if (t.response_header !== undefined) setTimeoutConfig({ fetchTimeout: t.response_header })
+    if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
     if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
     if (t.upstream_keepalive !== undefined) setTimeoutConfig({ upstreamKeepaliveDelay: t.upstream_keepalive })
     if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })

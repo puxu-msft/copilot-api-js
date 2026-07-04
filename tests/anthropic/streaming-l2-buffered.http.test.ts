@@ -147,7 +147,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
@@ -365,7 +365,7 @@ describe("L2 buffered retry — forced heartbeat during the buffer window (strea
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       staleRequestMaxAge: 0,
       // User did NOT configure a heartbeat — the buffered path must FORCE one from protect_streaming_heartbeat.

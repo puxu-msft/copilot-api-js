@@ -6,7 +6,7 @@ import {
   copilotHeaders,
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal } from "~/lib/fetch-utils"
+import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import {
   //
   state,
@@ -46,7 +46,7 @@ export const getModels = async (): Promise<ModelsResponse | undefined> => {
 
   const response = await upstreamFetch(`${copilotBaseUrl(state)}/models`, {
     headers,
-    signal: createFetchSignal(),
+    signal: createResponseHeaderTimeoutSignal(),
   })
 
   if (response.status === 304) {

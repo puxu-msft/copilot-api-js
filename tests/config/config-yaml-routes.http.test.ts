@@ -516,7 +516,7 @@ model_refresh_interval: 600
     expect(written).toContain("rate_limiter:")
     expect(written).toContain("system_prompt_overrides:")
 
-    expect(state.fetchTimeout).toBe(600)
+    expect(state.responseHeaderTimeout).toBe(600)
     expect(state.streamIdleTimeout).toBe(301)
     expect(state.staleRequestMaxAge).toBe(900)
     expect(state.modelRefreshInterval).toBe(0)

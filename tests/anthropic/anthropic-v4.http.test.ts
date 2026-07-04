@@ -218,7 +218,7 @@ describe("Anthropic v4 driver path", () => {
     throwOnceError = null
     scenario = "ok"
     upstreamFetchMock.mockClear()
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
   })
 

@@ -8,7 +8,7 @@ import {
 import {
   //
   captureHttpHeaders,
-  createFetchSignal,
+  createResponseHeaderTimeoutSignal,
   sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import { setStateForTests } from "~/lib/state"
@@ -35,17 +35,17 @@ describe("sanitizeHeadersForHistory", () => {
   })
 })
 
-describe("createFetchSignal", () => {
+describe("createResponseHeaderTimeoutSignal", () => {
   test("returns undefined when fetch timeout is disabled", () => {
-    setStateForTests({ fetchTimeout: 0 })
+    setStateForTests({ responseHeaderTimeout: 0 })
 
-    expect(createFetchSignal()).toBeUndefined()
+    expect(createResponseHeaderTimeoutSignal()).toBeUndefined()
   })
 
   test("returns an abort signal when fetch timeout is configured", () => {
-    setStateForTests({ fetchTimeout: 1 })
+    setStateForTests({ responseHeaderTimeout: 1 })
 
-    const signal = createFetchSignal()
+    const signal = createResponseHeaderTimeoutSignal()
 
     expect(signal).toBeDefined()
     expect(signal?.aborted).toBe(false)

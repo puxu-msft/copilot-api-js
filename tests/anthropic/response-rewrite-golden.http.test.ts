@@ -561,7 +561,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
 
   beforeEach(async () => {
     upstreamMock.mockClear()
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamMock)
     await resetAnthropicFeatureNegotiationForTesting()
   })

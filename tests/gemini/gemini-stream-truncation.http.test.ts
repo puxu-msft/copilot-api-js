@@ -88,7 +88,7 @@ describe("Gemini v4 — upstream stream truncation detection", () => {
   beforeEach(() => {
     upstreamFetchMock.mockClear()
     truncatedToolCall = false
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0, streamIdleTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0, streamIdleTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
   })
 

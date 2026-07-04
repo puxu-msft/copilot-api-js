@@ -33,7 +33,7 @@ describe("executeWebSearch — backends", () => {
   useIsolatedRuntime()
 
   beforeEach(() => {
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
   })
 
   test("searxng: parses results from JSON and formats text", async () => {

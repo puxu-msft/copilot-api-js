@@ -168,10 +168,10 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
   // ── Top-level scalars ───────────────────────────────────────────────
   {
     configKey: "timeouts.response_header",
-    stateKey: "fetchTimeout",
+    stateKey: "responseHeaderTimeout",
     sampleYamlValue: "30",
     expectedStateValue: 30,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
   },
   {
     configKey: "timeouts.stream_idle",
@@ -1016,7 +1016,7 @@ system_prompt_overrides:
 
   test("empty config does not mutate any pre-existing runtime state", async () => {
     setStateForTests({
-      fetchTimeout: 99,
+      responseHeaderTimeout: 99,
       modelOverrides: { opus: "custom-model" },
       systemPromptOverrides: [{ from: /test/, to: "keep" }],
       historySuccessLimit: 500,
@@ -1025,7 +1025,7 @@ system_prompt_overrides:
     await writeConfig("")
     await applyConfigToState()
 
-    expect(state.fetchTimeout).toBe(99)
+    expect(state.responseHeaderTimeout).toBe(99)
     expect(state.modelOverrides.opus).toBe("custom-model")
     expect(state.systemPromptOverrides).toHaveLength(1)
     expect(state.historySuccessLimit).toBe(500)
@@ -1049,7 +1049,7 @@ system_prompt_overrides:
     await writeConfig("timeouts:\n  response_header: 30\n")
     await applyConfigToState()
 
-    expect(state.fetchTimeout).toBe(30)
+    expect(state.responseHeaderTimeout).toBe(30)
     expect(state.disabledModels).toEqual(["foo"]) // NOT cleared
   })
 
@@ -1063,7 +1063,7 @@ system_prompt_overrides:
     // Sanity guard against drift in state.ts initializer.
     expect(state.stripServerTools).toBe(CONFIG_MANAGED_DEFAULTS.stripServerTools)
     expect(state.thinkingBlockMessagePolicy).toBe(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy)
-    expect(state.fetchTimeout).toBe(CONFIG_MANAGED_DEFAULTS.fetchTimeout)
+    expect(state.responseHeaderTimeout).toBe(CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout)
     expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)
     expect(state.historySuccessLimit).toBe(CONFIG_MANAGED_DEFAULTS.historySuccessLimit)
     expect(state.historyFailureLimit).toBe(CONFIG_MANAGED_DEFAULTS.historyFailureLimit)

@@ -42,7 +42,7 @@ import { buildSocksProxy } from "./transport/proxy-connect"
 /**
  * Multiplier applied to application-level timeouts when configuring undici's
  * transport-level timeouts. Ensures undici does not fire before our own
- * `streamIdleTimeout` / `fetchTimeout` watchdogs, so timeout errors surface
+ * `streamIdleTimeout` / `responseHeaderTimeout` watchdogs, so timeout errors surface
  * through the application layer with proper context.
  */
 const UNDICI_TIMEOUT_MULTIPLIER = 1.5
@@ -75,14 +75,14 @@ export function getUpstreamKeepAliveDelayMs(): number | undefined {
 /**
  * Build undici Agent options from current runtime state.
  *
- * - `headersTimeout` follows `fetchTimeout` (time to first response headers)
+ * - `headersTimeout` follows `responseHeaderTimeout` (time to first response headers)
  * - `bodyTimeout`    follows `streamIdleTimeout` (gap between body chunks)
  * - `connect.keepAliveInitialDelay` follows `upstreamKeepaliveDelay` (TCP probe)
  */
 function getUndiciAgentOptions(): Agent.Options {
   const keepAliveInitialDelay = getUpstreamKeepAliveDelayMs()
   return {
-    headersTimeout: scaleTimeout(state.fetchTimeout),
+    headersTimeout: scaleTimeout(state.responseHeaderTimeout),
     bodyTimeout: scaleTimeout(state.streamIdleTimeout),
     ...(keepAliveInitialDelay !== undefined && { connect: { keepAlive: true, keepAliveInitialDelay } }),
   }
@@ -190,7 +190,7 @@ function buildUpstreamDispatcher(options: ProxyOptions): Dispatcher {
   if (options.url) return createDispatcherForUrl(options.url)
   if (options.fromEnv) return new EnvProxyDispatcher()
   // No proxy: still use a configured Agent so undici's default 300s headers/body
-  // timeouts do not pre-empt our application-level streamIdleTimeout / fetchTimeout.
+  // timeouts do not pre-empt our application-level streamIdleTimeout / responseHeaderTimeout.
   return new Agent(getUndiciAgentOptions())
 }
 
@@ -201,7 +201,7 @@ function logDispatcherInstalled(options: ProxyOptions): void {
   } else if (options.fromEnv) {
     consola.debug("HTTP proxy configured from environment (per-URL)")
   } else {
-    consola.debug(`Undici timeouts: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`)
+    consola.debug(`Undici timeouts: headers=${state.responseHeaderTimeout}s body=${state.streamIdleTimeout}s (x${UNDICI_TIMEOUT_MULTIPLIER})`)
   }
 }
 
@@ -213,7 +213,7 @@ function ensureTimeoutSubscription(): void {
 }
 
 /**
- * Rebuild the cached upstream dispatcher when fetchTimeout / streamIdleTimeout /
+ * Rebuild the cached upstream dispatcher when responseHeaderTimeout / streamIdleTimeout /
  * upstreamKeepaliveDelay change. On Node the global dispatcher is replaced too;
  * the old one is left for in-flight requests to drain and GC. On Bun there is no
  * global dispatcher to replace — only the cached one matters.
@@ -224,7 +224,7 @@ function rebuildUpstreamDispatcher(): void {
     const dispatcher = buildUpstreamDispatcher(cachedProxyOptions)
     currentUpstreamDispatcher = dispatcher
     if (typeof Bun === "undefined") setGlobalDispatcher(dispatcher)
-    consola.debug(`Undici dispatcher reloaded: headers=${state.fetchTimeout}s body=${state.streamIdleTimeout}s keepalive=${state.upstreamKeepaliveDelay}s`)
+    consola.debug(`Undici dispatcher reloaded: headers=${state.responseHeaderTimeout}s body=${state.streamIdleTimeout}s keepalive=${state.upstreamKeepaliveDelay}s`)
   } catch (err) {
     consola.error("Undici dispatcher reload failed:", err)
   }

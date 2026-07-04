@@ -190,7 +190,7 @@ describe("management and history HTTP routes", () => {
     copilotUsageHits = 0
     upstreamFetchMock.mockClear()
     // The real getCopilotUsage checks state.githubToken before issuing fetch.
-    setStateForTests({ githubToken: "gh-test-token", fetchTimeout: 0 })
+    setStateForTests({ githubToken: "gh-test-token", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     initHistory(true, 100)
     clearHistory()

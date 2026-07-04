@@ -31,7 +31,7 @@ import {
 } from "~/lib/error"
 import {
   //
-  createFetchSignal,
+  createResponseHeaderTimeoutSignal,
   captureHttpHeaders,
 } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
@@ -110,14 +110,14 @@ export async function createAnthropicMessages(
 
   // For NON-streaming requests, fold the shutdown signal into the fetch signal
   // so a Phase 3 abort interrupts the (long) header-wait instead of hanging
-  // until fetchTimeout / Phase 4 force-close. Streaming requests deliberately
+  // until responseHeaderTimeout / Phase 4 force-close. Streaming requests deliberately
   // omit it: the stream guard in processAnthropicStream owns shutdown
   // for the streamed body, and aborting the fetch mid-body would tear down the
   // ReadableStream underneath that guard.
   // `clientAbortSignal` (when supplied) is always folded in: a client
   // disconnect should terminate the upstream call on both stream and
   // non-stream paths.
-  const upstreamSignal = combineAbortSignals(createFetchSignal(), payload.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
+  const upstreamSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(), payload.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
 
   let response: Response
   try {

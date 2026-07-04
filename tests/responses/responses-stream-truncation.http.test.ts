@@ -76,7 +76,7 @@ describe("Responses v4 — upstream stream truncation detection", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       upstreamWebSocket: false,
     })

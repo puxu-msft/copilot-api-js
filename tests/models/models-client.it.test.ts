@@ -38,7 +38,7 @@ describe("models client", () => {
       accountType: "individual",
       copilotToken: "copilot-test-token",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       models: undefined,
     })
   })

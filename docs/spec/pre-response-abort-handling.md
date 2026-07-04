@@ -46,7 +46,7 @@
 **Review round 3(2026-06-22,对抗 subagent)—— 收敛,无新设计层 CRITICAL。** 仅两处表述精度补充,已纳入:
 - ① 的 499(client-gone)分支在 ② 落地后对 **Anthropic 变死代码**(由 ② 的 `c.body(null,499)` 出),仅对 CC/Responses/Gemini 是活代码;二者互斥无重复 —— 已在 §5 C1 invariant 标注。
 - §4.2.1 的 C3b 回调伪码补 `if (ctx)` 守卫:client-abort 早于 `codec.parse` 建 ctx 时 ctx 为 undefined,直接 `ctx.abort()` 会 NPE —— 已补。
-- 经代码核验确认**无盲点**的项(无需改稿):abort 路径正确 removeInFlight + 推 `request.aborted`(与 fail 同构);非流式 Anthropic pre-response abort 共用外层 catch、② 自动获益;reaper(staleRequestMaxAge 900s)与 fetchTimeout(900s)并发被 `settled` guard 兜住无双 settle;429 在 transport 内消化、不属 pre-response-silent 场景。
+- 经代码核验确认**无盲点**的项(无需改稿):abort 路径正确 removeInFlight + 推 `request.aborted`(与 fail 同构);非流式 Anthropic pre-response abort 共用外层 catch、② 自动获益;reaper(staleRequestMaxAge 900s)与 responseHeaderTimeout(900s)并发被 `settled` guard 兜住无双 settle;429 在 transport 内消化、不属 pre-response-silent 场景。
 
 **Review round 2(2026-06-22,对抗 subagent)** —— 抓到 1 CRITICAL + 2 HIGH,已修订:
 - **[CRITICAL,已修]** C2 的 `return c.body(null, 499)` 在 C3b(方案 A early-200)下是**死路径** —— streamSSE 已提前 flush 200,pre-response client-abort 无法再返回 499。原 §5 让 C3b "继承 C2 的 499 语义"是 invariant 自相矛盾。**修订:C2 的定义性产物重述为「pre-response client-abort 统一 `ctx.abort()` 终态」**,499 仅是 C2 阶段(streamSSE 仍在 runRequest 之后)的附带 HTTP 表现;C3b 下 499 消失,终态语义(`aborted`)延续,可观测结果是"已 200 但被客户端弃读的 SSE 流"(见 §3.2 + §5 重写)。
@@ -104,7 +104,7 @@
 | 来源 | signal | 错误形态(到 forwardError 时) | 判别依据 | 当前结果 | 理想结果 |
 |---|---|---|---|---|---|
 | 客户端断开 | `clientAbort`(← `c.req.raw.signal`) | `AbortError`(http2-client 合成,name="AbortError") | `c.req.raw.signal.aborted === true` | `[ERR] Unexpected` 500 + `failed` | 良性 debug 日志 + `aborted` 终态(客户端已走,状态码无人读) |
-| response_header 超时 | `createFetchSignal()` = `AbortSignal.timeout(fetchTimeout)` ([fetch-utils.ts:17](../../src/lib/fetch-utils.ts#L17),本配置 900s) | `AbortError`(http2-client 合成,**TimeoutError 身份已丢**,见 §1.4) | `c.req.raw.signal.aborted === false`(超时打 createFetchSignal,非 raw.signal) | `[ERR] Unexpected` 500 + `failed` | `504 Gateway Timeout` + warn 日志 + `failed` |
+| response_header 超时 | `createFetchSignal()` = `AbortSignal.timeout(responseHeaderTimeout)` ([fetch-utils.ts:17](../../src/lib/fetch-utils.ts#L17),本配置 900s) | `AbortError`(http2-client 合成,**TimeoutError 身份已丢**,见 §1.4) | `c.req.raw.signal.aborted === false`(超时打 createFetchSignal,非 raw.signal) | `[ERR] Unexpected` 500 + `failed` | `504 Gateway Timeout` + warn 日志 + `failed` |
 | 优雅关闭(仅非流) | `getShutdownSignal()` | `AbortError` | `getShutdownSignal().aborted`(send.ts 已先于 forwardError 拦截) | 已被 `rewriteShutdownAbort` 改写为 retryable `529`([send.ts:119](../../src/lib/transport/send.ts#L119)) | 维持 529(已正确;流式 pre-response 不折 shutdown 是已知边缘,§6 Open Q4) |
 
 **关键:三种来源到 forwardError 时 `error.name` 全是 "AbortError"**(http2-client 合成,§1.4),**不能用 error.name 区分**。可靠判别是 `c.req.raw.signal.aborted`(客户端断开↔超时)+ `getShutdownSignal().aborted`(shutdown,且已被 send.ts 提前拦为 529)。
@@ -212,7 +212,7 @@ if (error instanceof Error && isAbortError(error)) {
 
   // 非客户端、非 shutdown(shutdown 已在 send.ts:119 被改写成 529,到不了这里)→ 只可能是
   // response_header 超时(上游在窗口内没回头)→ 504
-  consola.warn(`Upstream response-header timeout in ${c.req.method} ${c.req.path} (${state.fetchTimeout}s)`)
+  consola.warn(`Upstream response-header timeout in ${c.req.method} ${c.req.path} (${state.responseHeaderTimeout}s)`)
   return c.json(helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504)
 }
 ```
@@ -381,7 +381,7 @@ if (first === "upstream") {
 - **热重载**:per-request 读 `state.preStreamGraceSec` 构 timer,与 `anthropicFakeSseHeartbeat` 同构,纯 state 热重载(下一请求生效),不在"需重启"清单。**无 CLI flag**(跟随现有 timeout 字段惯例)。
 - **登记 config-hot-reload 测试矩阵**(round-A config M-5,**硬验证门**):新增字段必须登记 `tests/config/config-hot-reload.it.test.ts` 表驱动矩阵或豁免清单,否则完整性守卫直接 fail。C3b commit 必含此项。
 
-**默认值（✅ 已实测定，2026-06-22，[exp/q2-oracle/REPORT.md](../../exp/q2-oracle/REPORT.md)）**：约束链 `grace < 客户端超时` 且 `grace < fetchTimeout(response_header 1200s)` 且 `grace < streamIdleTimeout(stream_idle 900s)`。**客户端超时已从 single-sided 声称升级为实测 pin：CC 请求超时 = idle 型、阈值 ≈ 60s**（无字节 60s → abort + 自动重试；first-party 与 prod-faithful custom-URL 两路径 8 样本全 60.0–60.2s；ping 重置实证 idle 型——ping@30s 存活 330s、ping@45s 存活 225s 完成）。incident 的 ~258–292s 是用户中断或 headless 重试风暴，**非**单次自动超时。于是：
+**默认值（✅ 已实测定，2026-06-22，[exp/q2-oracle/REPORT.md](../../exp/q2-oracle/REPORT.md)）**：约束链 `grace < 客户端超时` 且 `grace < responseHeaderTimeout(response_header 1200s)` 且 `grace < streamIdleTimeout(stream_idle 900s)`。**客户端超时已从 single-sided 声称升级为实测 pin：CC 请求超时 = idle 型、阈值 ≈ 60s**（无字节 60s → abort + 自动重试；first-party 与 prod-faithful custom-URL 两路径 8 样本全 60.0–60.2s；ping 重置实证 idle 型——ping@30s 存活 330s、ping@45s 存活 225s 完成）。incident 的 ~258–292s 是用户中断或 headless 重试风暴，**非**单次自动超时。于是：
 - **grace 硬约束 `< 60s`**：grace≥60s 时 CC 在代理 commit 200 之前就 abort 了首尝试（idle 60s），③ 在首尝试上不触发。
 - **默认 `grace = 40s`**：留 ≥20s margin under 60s；绝大多数上游（含错误）在 40s 内回头 → PRE-COMMIT 零发散，仅真·长 stall 在 40s 后 commit。
 - **heartbeat 间隔须 `< 60s`，推荐 30–40s**：commit 后周期 ping 必须快于 60s idle 阈值才持续保活。**⚠️ ③ 原稿与既有 `anthropicFakeSseHeartbeat` 的 120s 太慢、> 60s 阈值、无效**——commit 后 ping cadence 必须改用 < 60s 的值（C3b 实现期连同 keepalive 命名重整 §4.2.3.1 定）。`protect_streaming_heartbeat`（prod 默认 15s）已 OK。

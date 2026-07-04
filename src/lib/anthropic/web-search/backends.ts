@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto"
 
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
-import { createFetchSignal } from "~/lib/fetch-utils"
+import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import { createResponses } from "~/lib/openai/responses-client"
 import { combineAbortSignals } from "~/lib/stream"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
@@ -310,10 +310,10 @@ async function searchViaSearxng(query: string, clientAbortSignal?: AbortSignal):
 
   const response = await upstreamFetch(searxngUrl(query), {
     headers: { accept: "application/json" },
-    // createFetchSignal applies the configured timeouts.response_header (and proxy via global fetch);
+    // createResponseHeaderTimeoutSignal applies the configured timeouts.response_header (and proxy via global fetch);
     // fall back to a fixed cap so a hung SearXNG can't stall the request indefinitely.
     // A client disconnect (clientAbortSignal) terminates the search immediately.
-    signal: combineAbortSignals(clientAbortSignal, createFetchSignal() ?? AbortSignal.timeout(SEARXNG_TIMEOUT_MS)),
+    signal: combineAbortSignals(clientAbortSignal, createResponseHeaderTimeoutSignal() ?? AbortSignal.timeout(SEARXNG_TIMEOUT_MS)),
   }).catch((error: unknown) => error)
 
   // A rejected fetch yields an Error. Don't use `instanceof Response` to detect
