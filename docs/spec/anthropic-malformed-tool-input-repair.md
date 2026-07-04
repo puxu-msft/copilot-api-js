@@ -4,7 +4,9 @@
 
 ## 1. 问题（实测取证）
 
-opus-4.8 在长程退化上下文里偶发把两套工具调用"语言"混用——Anthropic 原生 **JSON** tool_use 与注入 system prompt 里的 **antml-XML**（`<invoke><parameter>…</parameter></invoke>`）——在生成 tool_use 的 `input_json_delta` 时，把 antml 闭合标签漏进了 JSON。结果是一个**模型自认为完成**（`stop_reason:"tool_use"`、`content_block_stop` 已发、`message_stop` 干净到达）、但 `input` 累积起来是**非法 JSON** 的 tool_use 块。代理逐字节透传后，客户端（Claude Code）解析 input 失败回 `InputValidationError`，模型却把自己的错误误判为"harness mangled the input / 注入幻觉"，进而在退化上下文里滚雪球成系统性 confabulation（实测会话 session `88a29d95`，结尾 `/compact`=`req_1782745608380_1335` 把整段写成"工具输出严重幻觉"）。
+opus-4.8 在长程退化上下文里偶发把两套工具调用"语言"混用——Anthropic 原生 **JSON** tool_use 与注入 system prompt 里的 **antml-XML**（`<invoke><parameter>…</parameter></invoke>`）——在生成 tool_use 的 `input_json_delta` 时，把 antml 闭合标签漏进了 JSON。结果是一个**模型自认为完成**（`stop_reason:"tool_use"`、`content_block_stop` 已发、`message_stop` 干净到达）、但 `input` 累积起来是**非法 JSON** 的 tool_use 块。代理逐字节透传后，客户端（Claude Code）解析 input 失败回 `InputValidationError`——这正是本特性要拦截清洗的畸形。
+
+> 该畸形在退化上下文里还会诱发模型把**自己的错误**误判为"harness/注入幻觉"并滚雪球成 confabulation（实测 session `88a29d95`）——此 confabulation 案例（原文）已归档至 [docs/archive/hallucination/suspect-self-before-environment.md](../archive/hallucination/suspect-self-before-environment.md) §案例三，本 spec 只保留技术机制与修复设计。
 
 实测样本 `req_1782744516921_1304`（TodoWrite）的 input 末尾原始字节（xxd 确认、上游 SHA == 转发 SHA，证明是模型产物、非代理篡改）：
 
