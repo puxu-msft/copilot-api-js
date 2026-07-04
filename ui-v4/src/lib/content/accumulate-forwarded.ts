@@ -92,6 +92,11 @@ function accumulateAnthropic(frames: Array<SseEventRecord>): MessageContent | un
       content.push({ type: "tool_use", id: b.id ?? "", name: b.name ?? "", input } as ContentBlock)
     } else {
       const { partialJson: _drop, ...rest } = b
+      // A text block opened but never delta'd finalizes with `text: undefined`; the renderer
+      // (`LineNumberedText.split`) needs a string. Default text/thinking so an empty block renders
+      // as empty rather than an error box.
+      if (rest.type === "text") rest.text = rest.text ?? ""
+      else if (rest.type === "thinking") rest.thinking = rest.thinking ?? ""
       content.push(rest as ContentBlock)
     }
   }
