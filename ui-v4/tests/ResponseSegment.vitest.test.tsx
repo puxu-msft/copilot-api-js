@@ -30,8 +30,19 @@ const withResponse = {
     { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
     { offsetMs: 12, type: "content_block_delta", raw: `{"type":"content_block_delta","text":"hi"}` },
   ],
+  // A proper forwarded Anthropic text stream → the Proxy→Client section renders the reconstructed content.
   inboundResponse: {
-    sseEvents: [{ offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` }],
+    sseEvents: [
+      { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
+      { offsetMs: 2, type: "content_block_start", raw: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` },
+      {
+        offsetMs: 4,
+        type: "content_block_delta",
+        raw: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"forwarded client answer"}}`,
+      },
+      { offsetMs: 6, type: "content_block_stop", raw: `{"type":"content_block_stop","index":0}` },
+      { offsetMs: 8, type: "message_stop", raw: `{"type":"message_stop"}` },
+    ],
   },
 } as unknown as HistoryEntry
 
@@ -60,7 +71,13 @@ const streamingFailure = {
   sseEvents: [{ offsetMs: 0, type: "message_stop", raw: `{"type":"message_stop"}` }],
   inboundResponse: {
     sseEvents: [
-      { offsetMs: 10, type: "content_block_delta", raw: `{"type":"content_block_delta"}` },
+      {
+        offsetMs: 2,
+        type: "content_block_start",
+        raw: `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{}}}`,
+      },
+      { offsetMs: 4, type: "content_block_delta", raw: `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{,,,}"}}` },
+      { offsetMs: 6, type: "content_block_stop", raw: `{"type":"content_block_stop","index":0}` },
       {
         offsetMs: 20,
         type: "error",
@@ -82,11 +99,12 @@ describe("ResponseSegment", () => {
     expect(screen.queryByText(/upstream vs forwarded/)).toBeNull()
   })
 
-  it("renders a Proxy → Client section for a streaming forwarded response", () => {
+  it("renders the reconstructed client content in the Proxy → Client section for a streaming response", () => {
     render(<ResponseSegment entry={withResponse} />)
     expect(screen.getByText(/Forwarded \(proxy → client\)/)).toBeDefined()
-    // Streaming forwarded → frame summary (no semantic content), pointing to the SSE tab.
-    expect(screen.getByText(/frames forwarded/)).toBeDefined()
+    // The forwarded stream is accumulated into semantic content (not a frame summary).
+    expect(screen.getByText(/forwarded client answer/)).toBeDefined()
+    expect(screen.queryByText(/frames forwarded/)).toBeNull()
   })
 
   it("renders the 无响应数据 fallback when there is no response data", () => {
@@ -94,14 +112,15 @@ describe("ResponseSegment", () => {
     expect(screen.getByText(/无响应数据/)).toBeDefined()
   })
 
-  it("surfaces the failure verdict in an Outcome banner and the client-received error frame", () => {
+  it("surfaces the failure verdict in an Outcome banner, the reconstructed tool call, and the client-received error frame", () => {
     render(<ResponseSegment entry={streamingFailure} />)
     // Outcome banner carries the proxy verdict (failureReason), not buried in the upstream leg.
     expect(screen.getByText(/Outcome \(request verdict\)/)).toBeDefined()
     expect(screen.getAllByText(/unrepairable malformed tool_use input/).length).toBeGreaterThan(0)
     // Upstream leg is shown HONESTLY as ok (success:true) — the failure was proxy-introduced.
     expect(screen.getByText(/· ok$/)).toBeDefined()
-    // Proxy → Client section surfaces the synthesized terminal error frame the client received.
+    // Proxy → Client section reconstructs the (malformed) tool call the client received + the error frame.
+    expect(screen.getAllByText(/AskUserQuestion/).length).toBeGreaterThan(0)
     expect(screen.getByText(/invalid_request_error: Tool call input for AskUserQuestion/)).toBeDefined()
   })
 })

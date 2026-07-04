@@ -6,6 +6,7 @@ import type {
 
 import { MessageBlock } from "@/components/detail/MessageBlock"
 import { LegShell } from "@/components/detail/segments/LegShell"
+import { accumulateForwardedContent } from "@/lib/content/accumulate-forwarded"
 import {
   //
   statusSignal,
@@ -51,25 +52,28 @@ function errorFrameMessage(f: SseEventRecord): string {
 }
 
 /** The rewritten content actually forwarded to the client on a streaming response. */
-function ForwardedStream({ frames }: { frames: Array<SseEventRecord> }) {
+function ForwardedStream({ frames, endpoint }: { frames: Array<SseEventRecord>; endpoint: HistoryEntry["endpoint"] }) {
   const errorFrames = frames.filter((f) => isTerminalErrorFrame(f))
-  const last = frames.at(-1)
+  const message = accumulateForwardedContent(frames, endpoint)
   return (
     <div>
+      {message ?
+        <MessageBlock message={message} />
+      : null}
       {errorFrames.length > 0 ?
         errorFrames.map((f, i) => (
           <pre
             key={i}
-            className="mono mb-1 whitespace-pre-wrap break-all text-[13px]"
+            className="mono mt-1 whitespace-pre-wrap break-all text-[13px]"
             style={{ color: "var(--color-fail)" }}
           >
             {errorFrameMessage(f)}
           </pre>
         ))
       : null}
-      <div className="mono text-[13px] text-[var(--color-muted)]">
-        {frames.length} frames forwarded{last ? ` · ends: ${last.type}` : ""} · 完整原始帧见 SSE 标签页
-      </div>
+      {message || errorFrames.length > 0 ? null : (
+        <div className="mono text-[13px] text-[var(--color-muted)]">{frames.length} frames forwarded · 完整原始帧见 SSE 标签页</div>
+      )}
     </div>
   )
 }
@@ -133,7 +137,11 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
         <LegShell label="Forwarded (proxy → client)">
           {entry.inboundResponse?.content !== undefined ?
             <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{JSON.stringify(entry.inboundResponse.content, null, 2)}</pre>
-          : <ForwardedStream frames={forwardedFrames} />}
+          : <ForwardedStream
+              frames={forwardedFrames}
+              endpoint={entry.endpoint}
+            />
+          }
         </LegShell>
       : null}
     </div>
