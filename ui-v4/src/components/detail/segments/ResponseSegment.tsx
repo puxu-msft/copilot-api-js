@@ -1,27 +1,121 @@
-import type { HistoryEntry } from "@/types"
+import type {
+  //
+  HistoryEntry,
+  SseEventRecord,
+} from "@/types"
 
 import { MessageBlock } from "@/components/detail/MessageBlock"
 import { LegShell } from "@/components/detail/segments/LegShell"
+import {
+  //
+  statusSignal,
+  type Signal,
+} from "@/lib/format"
+
+const SIGNAL_COLOR: Record<Signal, string> = {
+  ok: "var(--color-ok)",
+  fail: "var(--color-fail)",
+  warn: "var(--color-warn)",
+  live: "var(--color-ok)",
+  muted: "var(--color-muted)",
+}
 
 /**
- * Rendered/semantic response view: the upstream answer (proxy-recorded) and the
- * content actually forwarded to the client. The raw SSE wire frames + diff live
- * in the separate SSE tab (SseEventsSegment).
+ * A forwarded SSE frame is a proxy→client TERMINAL ERROR frame when its parsed type is `"error"`
+ * (Anthropic / Chat-Completions / Responses synthesized error frames) OR — for Gemini, whose frames
+ * carry no discriminating `type` (the sink labels them `"generateContent"`) — when its raw JSON has a
+ * structured `error.code`. A bare substring test on `raw` would false-positive on ordinary content
+ * frames that merely mention `"error"`, so we parse structurally.
+ */
+function isTerminalErrorFrame(f: SseEventRecord): boolean {
+  if (f.type === "error") return true
+  try {
+    const parsed = JSON.parse(f.raw) as { error?: { code?: unknown } }
+    return typeof parsed.error?.code === "number"
+  } catch {
+    return false
+  }
+}
+
+/** Best-effort human message out of a terminal error frame's raw JSON (falls back to the raw string). */
+function errorFrameMessage(f: SseEventRecord): string {
+  try {
+    const parsed = JSON.parse(f.raw) as { error?: { message?: unknown; type?: unknown } }
+    const msg = parsed.error?.message
+    const type = parsed.error?.type
+    if (typeof msg === "string") return typeof type === "string" ? `${type}: ${msg}` : msg
+  } catch {
+    // fall through to raw
+  }
+  return f.raw
+}
+
+/** The rewritten content actually forwarded to the client on a streaming response. */
+function ForwardedStream({ frames }: { frames: Array<SseEventRecord> }) {
+  const errorFrames = frames.filter((f) => isTerminalErrorFrame(f))
+  const last = frames.at(-1)
+  return (
+    <div>
+      {errorFrames.length > 0 ?
+        errorFrames.map((f, i) => (
+          <pre
+            key={i}
+            className="mono mb-1 whitespace-pre-wrap break-all text-[13px]"
+            style={{ color: "var(--color-fail)" }}
+          >
+            {errorFrameMessage(f)}
+          </pre>
+        ))
+      : null}
+      <div className="mono text-[13px] text-[var(--color-muted)]">
+        {frames.length} frames forwarded{last ? ` · ends: ${last.type}` : ""} · 完整原始帧见 SSE 标签页
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Rendered/semantic response view organized by proxy leg:
+ *   1. Outcome — the request verdict (surfaced from failureReason) for non-success terminals.
+ *   2. Upstream (upstream → proxy) — the upstream-original answer (HONEST leg outcome: after the
+ *      data-model fix a proxy-introduced failure no longer marks this leg failed).
+ *   3. Forwarded (proxy → client) — what the client actually received: the rewritten content
+ *      (non-streaming) or the forwarded stream's terminal outcome incl. any synthesized error frame.
+ * The raw SSE wire frames + diff live in the separate SSE tab (SseEventsSegment).
  */
 export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
-  // Gated on semantic content only — raw SSE frames live in the SSE tab, so a
-  // frame-only entry intentionally shows "无响应数据" here (the rendered answer
-  // isn't there) while its frames render under SSE. This relies on the history
-  // invariant that `sseEvents` and `outboundResponse` are written together at
-  // finalization (onTerminal); in-flight entries mirror neither. If in-flight
-  // frame mirroring is ever added, revisit this gate so Response/SSE don't split.
   const hasUpstream = Boolean(entry.outboundResponse)
-  const hasForwarded = entry.inboundResponse?.content !== undefined
+  const forwardedFrames = entry.inboundResponse?.sseEvents ?? []
+  const hasForwarded = entry.inboundResponse?.content !== undefined || forwardedFrames.length > 0
 
-  if (!hasUpstream && !hasForwarded) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无响应数据</div>
+  const signal = statusSignal(entry.state ?? "")
+  const verdict = entry.failureReason ?? entry.outboundResponse?.error
+  // Show the outcome banner for non-success terminal states carrying a verdict — surfaces the
+  // proxy failure reason that would otherwise be buried in / absent from the leg sections.
+  const showOutcome = signal === "fail" && verdict !== undefined
+
+  if (!hasUpstream && !hasForwarded && !showOutcome) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无响应数据</div>
 
   return (
     <div>
+      {showOutcome ?
+        <LegShell label="Outcome (request verdict)">
+          <div className="mono flex items-center gap-2 text-[13px]">
+            <span
+              className="uppercase tracking-wider"
+              style={{ color: SIGNAL_COLOR[signal] }}
+            >
+              {entry.state}
+            </span>
+          </div>
+          <pre
+            className="mono mt-1 whitespace-pre-wrap break-all text-[13px]"
+            style={{ color: "var(--color-fail)" }}
+          >
+            {verdict}
+          </pre>
+        </LegShell>
+      : null}
       {hasUpstream ?
         <LegShell label="Upstream (upstream → proxy)">
           <div className="mono mb-1 text-[13px] text-[#888]">
@@ -37,7 +131,9 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
       : null}
       {hasForwarded ?
         <LegShell label="Forwarded (proxy → client)">
-          <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{JSON.stringify(entry.inboundResponse?.content, null, 2)}</pre>
+          {entry.inboundResponse?.content !== undefined ?
+            <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{JSON.stringify(entry.inboundResponse.content, null, 2)}</pre>
+          : <ForwardedStream frames={forwardedFrames} />}
         </LegShell>
       : null}
     </div>

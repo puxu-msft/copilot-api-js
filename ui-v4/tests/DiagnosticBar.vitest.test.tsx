@@ -36,4 +36,16 @@ describe("DiagnosticBar", () => {
     render(<DiagnosticBar entry={entry} />)
     expect(screen.getByText(/failed/)).toBeDefined()
   })
+  it("surfaces the failure verdict for a failed request", () => {
+    const entry = {
+      id: "r3",
+      startedAt: 0,
+      endpoint: "anthropic-messages",
+      state: "failed",
+      failureReason: "unrepairable malformed tool_use input (tool=AskUserQuestion)",
+      inboundRequest: {},
+    } as HistoryEntry
+    render(<DiagnosticBar entry={entry} />)
+    expect(screen.getByText(/unrepairable malformed tool_use input/)).toBeDefined()
+  })
 })
