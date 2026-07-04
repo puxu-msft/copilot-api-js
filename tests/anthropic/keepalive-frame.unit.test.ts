@@ -3,9 +3,14 @@
  * proven in exp/cc-idle-280s/REPORT.md (thinking/text/tool_use → empty delta; else fallback ping).
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { makeAnthropicKeepaliveFrame } from "~/routes/messages/handler-v4"
+import { makeAnthropicKeepaliveFrame } from "~/lib/anthropic/keepalive-frame"
 
 const PING = { event: "ping", data: '{"type":"ping"}' }
 const delta = (index: number, d: unknown) => ({ event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index, delta: d }) })

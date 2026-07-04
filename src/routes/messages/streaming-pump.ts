@@ -15,8 +15,11 @@ import type { ToolInputStreamDecoder } from "~/lib/anthropic/decode-tool-input"
 import type { ToolCallTextRecoverer } from "~/lib/anthropic/recover-tool-call"
 import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
+import type { OpenBlock } from "~/lib/pipeline/client-sink"
+import type { ClientFrame } from "~/lib/pipeline/types"
 import type { StreamEvent } from "~/types/api/anthropic"
 
+import { ANTHROPIC_PING } from "~/lib/anthropic/keepalive-frame"
 import {
   //
   createServerToolBlockFilter,
@@ -340,6 +343,26 @@ export interface StartHeartbeatOpts {
   forwardedSseEvents: Array<SseEventRecord>
   streamState: StreamPumpState
   clientAbortSignal: AbortSignal | undefined
+  /**
+   * Block-aware keepalive: a provider called with the current FORWARDED open block, or a fixed
+   * frame. Omitted → the classic bare ping. The open block is derived from frames written through
+   * `writeSerialized` (forwarded-side, so index/type match what the client actually received after
+   * server-tool filtering / decode).
+   */
+  keepaliveFrame?: ClientFrame | ((openBlock?: OpenBlock) => ClientFrame)
+}
+
+/** Derive the forwarded-track `type` from a keepalive frame (parsed JSON type → event → keepalive). */
+function deriveForwardedType(frame: ClientFrame): string {
+  if (frame.data) {
+    try {
+      const t = (JSON.parse(frame.data) as { type?: unknown }).type
+      if (typeof t === "string") return t
+    } catch {
+      // non-JSON → fall through
+    }
+  }
+  return frame.event ?? "keepalive"
 }
 
 /**
@@ -358,9 +381,29 @@ export interface StartHeartbeatOpts {
  * firing mid-write sees the fresh timestamp and skips redundant pings.
  */
 export function startForwardedSseHeartbeat(opts: StartHeartbeatOpts): ForwardedSseHeartbeat {
-  const { intervalSec, stream, forwardedSseEvents, streamState, clientAbortSignal } = opts
+  const { intervalSec, stream, forwardedSseEvents, streamState, clientAbortSignal, keepaliveFrame } = opts
+  // Forwarded-side open-block tracking for a block-aware keepalive (provider mode only). Derived
+  // from frames written through writeSerialized — what the client ACTUALLY receives (post server-
+  // tool-filter / decode), so index/type are correct. A keepalive delta is not a block boundary,
+  // so it never mutates this.
+  const trackOpenBlock = typeof keepaliveFrame === "function"
+  let openBlock: OpenBlock | undefined
+  const noteBlockFromWrite = (data: string | Promise<string> | undefined): void => {
+    if (!trackOpenBlock || typeof data !== "string") return
+    try {
+      const p = JSON.parse(data) as { type?: unknown; index?: unknown; content_block?: { type?: unknown } }
+      if (p.type === "content_block_start" && typeof p.index === "number" && typeof p.content_block?.type === "string") {
+        openBlock = { index: p.index, type: p.content_block.type }
+      } else if (p.type === "content_block_stop" && typeof p.index === "number" && openBlock?.index === p.index) {
+        openBlock = undefined
+      }
+    } catch {
+      // non-JSON → not a content-block boundary
+    }
+  }
   let writeChain: Promise<void> = Promise.resolve()
   const writeSerialized = (msg: Parameters<SSEStreamingApi["writeSSE"]>[0]): Promise<void> => {
+    noteBlockFromWrite(msg.data)
     const next = writeChain.then(() => stream.writeSSE(msg))
     writeChain = next.catch(() => undefined)
     return next
@@ -383,20 +426,21 @@ export function startForwardedSseHeartbeat(opts: StartHeartbeatOpts): ForwardedS
     if (stopped || clientAbortSignal?.aborted) return
     const elapsed = Date.now() - lastRealMs
     if (elapsed >= intervalMs) {
-      // Inject one Anthropic-protocol `ping` keepalive. Standard SDKs treat
-      // this as a benign no-op; clients that don't know `ping` still keep the
-      // TCP connection alive on byte arrival.
-      const pingData = JSON.stringify({ type: "ping" })
+      // Inject one keepalive — a block-aware empty content delta (provider mode) or a bare
+      // `event: ping`. An empty delta resets Claude Code's 300s no-real-content idle deadline that
+      // a ping does NOT (exp/cc-idle-280s); a ping still keeps the TCP connection alive on byte
+      // arrival. Recorded ONLY in forwardedSseEvents (原则3, never the raw upstream track).
+      const frame = typeof keepaliveFrame === "function" ? keepaliveFrame(openBlock) : (keepaliveFrame ?? ANTHROPIC_PING)
+      const data = frame.data ?? ""
       forwardedSseEvents.push({
         offsetMs: Date.now() - streamState.streamStartMs,
-        type: "ping",
-        raw: pingData,
+        type: deriveForwardedType(frame),
+        raw: data,
       })
-      // Serialized write — the heartbeat may race the main pump; the shared
-      // chain guarantees byte-level non-interleaving. Errors (closed stream)
-      // are swallowed: the main pump's next write will hit the same error
-      // and route through the existing settle path.
-      void writeSerialized({ event: "ping", data: pingData }).catch(() => undefined)
+      // Serialized write — the heartbeat may race the main pump; the shared chain guarantees
+      // byte-level non-interleaving. Errors (closed stream) are swallowed: the main pump's next
+      // write hits the same error and routes through the existing settle path.
+      void writeSerialized({ event: frame.event, data }).catch(() => undefined)
       lastRealMs = Date.now()
       timer = setTimeout(tick, intervalMs)
     } else {

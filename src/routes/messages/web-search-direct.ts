@@ -50,6 +50,7 @@ import {
   decodeToolInputBlocksInResponse,
   reportDecodeFailure,
 } from "~/lib/anthropic/decode-tool-input"
+import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import {
@@ -396,6 +397,7 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
     forwardedSseEvents,
     streamState,
     clientAbortSignal,
+    keepaliveFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode),
   })
 
   try {

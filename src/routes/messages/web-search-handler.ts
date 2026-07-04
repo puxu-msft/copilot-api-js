@@ -45,6 +45,7 @@ import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
+import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import {
   //
   accumulateAnthropicStreamEvent,
@@ -166,6 +167,11 @@ export async function handleWebSearchCompletion(
       forwardedSseEvents: prefixForwardedSse,
       streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
       clientAbortSignal: clientAbort.signal,
+      // During the completeWebSearch() blocking phase NO content block is forwarded yet, so the
+      // provider falls back to ping — the search-synthesis path's pre-events silence is NOT covered by
+      // content_delta (a placeholder block + index remap would be needed; deferred, see DESIGN.md).
+      // The synthesized events forwarded AFTER completeWebSearch ARE block-aware once written.
+      keepaliveFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode),
     })
 
     try {
