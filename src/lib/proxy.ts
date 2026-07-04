@@ -224,7 +224,9 @@ function rebuildUpstreamDispatcher(): void {
     const dispatcher = buildUpstreamDispatcher(cachedProxyOptions)
     currentUpstreamDispatcher = dispatcher
     if (typeof Bun === "undefined") setGlobalDispatcher(dispatcher)
-    consola.debug(`Undici dispatcher reloaded: headers=${state.responseHeaderTimeout}s body=${state.streamIdleTimeout}s keepalive=${state.upstreamKeepaliveDelay}s`)
+    consola.debug(
+      `Undici dispatcher reloaded: headers=${state.responseHeaderTimeout}s body=${state.streamIdleTimeout}s keepalive=${state.upstreamKeepaliveDelay}s`,
+    )
   } catch (err) {
     consola.error("Undici dispatcher reload failed:", err)
   }
