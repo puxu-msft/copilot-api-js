@@ -382,6 +382,14 @@ export interface ClientSink {
    */
   writeSynthetic?(frame: ClientFrame): Promise<void>
   /**
+   * Write a proxy-synthesized KEEPALIVE frame (e.g. the cold-start commit's immediate first ping) to
+   * the wire AND sample it into the forwarded track WITH a `synthetic:"keepalive"` marker — so history/
+   * UI/logs never mistake a heartbeat for real upstream content. The sink's internal heartbeat timer
+   * marks its own pings the same way; this is for keepalives the HANDLER injects out-of-band. Omitted
+   * by sinks with no heartbeat (WS/array).
+   */
+  writeKeepalive?(frame: ClientFrame): Promise<void>
+  /**
    * Release sink-held resources (the heartbeat timer). The driver's
    * `runResponseSink` `finally` MUST call this on every exit (normal / throw /
    * abort / write-reject) so a self-rescheduling timer can't leak (design §3.3).

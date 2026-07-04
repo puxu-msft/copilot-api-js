@@ -154,8 +154,13 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       }),
     )
 
-  const sampleForwarded = (frame: ClientFrame): void => {
-    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: (forwardedType ?? frameType)(frame), raw: frame.data ?? "" })
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive"): void => {
+    onForwarded?.({
+      offsetMs: Date.now() - streamStartMs,
+      type: (forwardedType ?? frameType)(frame),
+      raw: frame.data ?? "",
+      ...(synthetic ? { synthetic } : {}),
+    })
   }
 
   // Forward-idle (SOFT) racer state — only armed when a heartbeat is configured. It does
@@ -206,6 +211,14 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     return writeSse(frame)
   }
 
+  // A proxy-synthesized keepalive the HANDLER injects out-of-band (the cold-start commit's immediate
+  // first ping). Sampled into the forwarded track with a `synthetic:"keepalive"` marker so it's never
+  // mistaken for real content (the internal heartbeat timer marks its own pings the same way).
+  const writeKeepalive = (frame: ClientFrame): Promise<void> => {
+    sampleForwarded(frame, "keepalive")
+    return writeSse(frame)
+  }
+
   // close stops the heartbeat timer (no-op when none) — runResponseSink's `finally`
   // MUST call it on every exit so a self-rescheduling timer can't leak.
   const close = (): void => {
@@ -215,7 +228,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   }
 
   if (!heartbeatOn) {
-    return { write, writeSynthetic, close }
+    return { write, writeSynthetic, writeKeepalive, close }
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
@@ -228,7 +241,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       // proxy→client frame), shares the chain (no byte-interleave). Errors swallowed: the next
       // real write hits the same closed stream and routes through the driver's outcome path.
       const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(openBlock) : heartbeat.pingFrame
-      sampleForwarded(frame)
+      sampleForwarded(frame, "keepalive")
       void writeSse(frame).catch(() => undefined)
       lastRealMs = Date.now()
       timer = setTimeout(tick, intervalMs)
@@ -240,7 +253,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // unref so a leaked timer can never hold the event loop / block graceful shutdown.
   ;(timer as unknown as { unref?: () => void }).unref?.()
 
-  return { write, writeSynthetic, close }
+  return { write, writeSynthetic, writeKeepalive, close }
 }
 
 /** {@link makeWsSink} options — forwarded-track sampling (optional). */

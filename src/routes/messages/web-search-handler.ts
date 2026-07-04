@@ -176,7 +176,7 @@ export async function handleWebSearchCompletion(
 
     try {
       const upfrontPing = JSON.stringify({ type: "ping" })
-      prefixForwardedSse.push({ offsetMs: 0, type: "ping", raw: upfrontPing })
+      prefixForwardedSse.push({ offsetMs: 0, type: "ping", raw: upfrontPing, synthetic: "keepalive" })
       heartbeat.noteRealFrame()
       await heartbeat.writeSerialized({ event: "ping", data: upfrontPing })
 

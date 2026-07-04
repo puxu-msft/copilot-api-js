@@ -436,6 +436,7 @@ export function startForwardedSseHeartbeat(opts: StartHeartbeatOpts): ForwardedS
         offsetMs: Date.now() - streamState.streamStartMs,
         type: deriveForwardedType(frame),
         raw: data,
+        synthetic: "keepalive",
       })
       // Serialized write — the heartbeat may race the main pump; the shared chain guarantees
       // byte-level non-interleaving. Errors (closed stream) are swallowed: the main pump's next

@@ -135,6 +135,15 @@ export interface SseEventRecord {
   offsetMs: number
   type: string
   raw: string
+  /**
+   * Set to "keepalive" when this is a PROXY-SYNTHESIZED heartbeat frame (an `event: ping` or an
+   * empty content_delta injected during an upstream stall) rather than a real upstream frame the
+   * client received as content. Meaningful only on the FORWARDED track (`inboundResponse.sseEvents`):
+   * it lets history / UI / logs tell a stalled-upstream keepalive stream apart from genuine content,
+   * so a silent upstream is NEVER masked as normal streaming (richest-data-flow observability). An
+   * empty content_delta keepalive is otherwise byte-indistinguishable from a real content frame.
+   */
+  synthetic?: "keepalive"
 }
 
 /**

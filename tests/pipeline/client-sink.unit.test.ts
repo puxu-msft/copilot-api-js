@@ -12,9 +12,8 @@ import {
   test,
 } from "bun:test"
 
-import type { ClientFrame } from "~/lib/pipeline/types"
-
 import type { OpenBlock } from "~/lib/pipeline/client-sink"
+import type { ClientFrame } from "~/lib/pipeline/types"
 
 import {
   //
@@ -192,16 +191,16 @@ describe("makeSseSink forwarded-track sampling (onForwarded)", () => {
     ])
   })
 
-  test("the heartbeat ping IS sampled into the forwarded track (proxy→client frame)", async () => {
+  test("the heartbeat ping IS sampled into the forwarded track (proxy→client frame), marked synthetic", async () => {
     const { stream } = stubSseStream()
-    const sampled: Array<{ offsetMs: number; type: string; raw: string }> = []
+    const sampled: Array<{ offsetMs: number; type: string; raw: string; synthetic?: string }> = []
     const sink = makeSseSink(stream, {
       onForwarded: (r) => sampled.push(r),
       streamStartMs: clock.now,
       heartbeat: { intervalSec: 15, pingFrame: PING },
     })
     await clock.advance(15_000) // silence → ping fires
-    expect(sampled).toEqual([{ offsetMs: 15_000, type: "ping", raw: '{"type":"ping"}' }])
+    expect(sampled).toEqual([{ offsetMs: 15_000, type: "ping", raw: '{"type":"ping"}', synthetic: "keepalive" }])
     sink.close?.()
   })
 
@@ -212,6 +211,23 @@ describe("makeSseSink forwarded-track sampling (onForwarded)", () => {
     await sink.write({ event: "message", data: "not json" }) // unparseable → event name
     await sink.write({ data: "" }) // no data, no event → keepalive
     expect(sampled).toEqual([{ type: "message" }, { type: "keepalive" }])
+  })
+
+  test("heartbeat keepalive is marked synthetic:'keepalive'; real forwarded frames are NOT", async () => {
+    const { stream } = stubSseStream()
+    const sampled: Array<{ type: string; synthetic?: string }> = []
+    const sink = makeSseSink(stream, {
+      onForwarded: (r) => sampled.push({ type: r.type, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }),
+      streamStartMs: clock.now,
+      heartbeat: { intervalSec: 15, pingFrame: PING },
+    })
+    await sink.write({ event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 0 }) }) // a REAL upstream frame
+    await clock.advance(15_000) // stall → heartbeat keepalive
+    // The real content frame carries NO marker; the keepalive is tagged so history/UI/log can tell a
+    // stalled-upstream heartbeat apart from genuine content (richest-data-flow observability).
+    expect(sampled.find((r) => r.type === "content_block_delta")?.synthetic).toBeUndefined()
+    expect(sampled.find((r) => r.type === "ping")?.synthetic).toBe("keepalive")
+    sink.close?.()
   })
 })
 
@@ -227,7 +243,10 @@ describe("makeSseSink block-aware keepalive (provider pingFrame)", () => {
 
   const emptyDeltaFor = (ob?: OpenBlock): ClientFrame => {
     if (ob?.type === "thinking")
-      return { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "thinking_delta", thinking: "" } }) }
+      return {
+        event: "content_block_delta",
+        data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "thinking_delta", thinking: "" } }),
+      }
     if (ob?.type === "text")
       return { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "text_delta", text: "" } }) }
     return PING // no open block / unknown type → fallback ping
@@ -245,7 +264,10 @@ describe("makeSseSink block-aware keepalive (provider pingFrame)", () => {
     await sink.write(blockStart(0, "thinking"))
     await clock.advance(15_000)
     expect(seen).toEqual([{ index: 0, type: "thinking" }])
-    expect(written.at(-1)).toEqual({ event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "" } }) })
+    expect(written.at(-1)).toEqual({
+      event: "content_block_delta",
+      data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "" } }),
+    })
     sink.close?.()
   })
 

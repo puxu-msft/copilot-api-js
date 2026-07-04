@@ -82,7 +82,7 @@ describe("stream_keepalive_ping_sec", () => {
     await clock.advance(1_000) // total 15s of silence — fires
     expect(written.length).toBe(1)
     expect(written[0]).toEqual({ data: JSON.stringify({ type: "ping" }), event: "ping", id: undefined })
-    expect(forwardedSseEvents).toEqual([{ offsetMs: 15_000, type: "ping", raw: JSON.stringify({ type: "ping" }) }])
+    expect(forwardedSseEvents).toEqual([{ offsetMs: 15_000, type: "ping", raw: JSON.stringify({ type: "ping" }), synthetic: "keepalive" }])
 
     hb.stop()
   })

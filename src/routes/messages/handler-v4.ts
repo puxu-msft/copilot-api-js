@@ -507,7 +507,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // cadence then throttles every later ping (lastRealMs advances) → exactly ONE extra frame. Gated:
       // only when we actually waited a window (commitAfterSec>0; the 0 immediate-bypass keeps the
       // byte-identical path) AND keepalive is on (pingSec>0). best-effort write.
-      if (state.streamCommitAfterSec > 0 && pingSec > 0) await sink.write(ANTHROPIC_PING).catch(() => {})
+      if (state.streamCommitAfterSec > 0 && pingSec > 0) await (sink.writeKeepalive ?? sink.write)(ANTHROPIC_PING).catch(() => {})
       // POST-COMMIT: every exit settles ctx + (on failure) writes a rich error frame — the SSE
       // middleware does NOT finalize an event-stream, so a silent return would leak a dangling entry.
       let result: DriverRequestResult
