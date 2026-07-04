@@ -241,6 +241,13 @@ export interface State {
   readonly streamKeepalivePingSec: number
 
   /**
+   * Keepalive frame type for the client-facing Anthropic stream: `content_delta` injects an empty
+   * content delta matching the open block (resets CC's 300s no-real-content idle deadline that a
+   * bare ping does not; exp/cc-idle-280s), `ping` restores classic bare-ping. Default content_delta.
+   */
+  readonly streamKeepaliveMode: "ping" | "content_delta"
+
+  /**
    * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this long
    * for runRequest to settle BEFORE opening the 200 SSE stream: if the upstream returns/errors within
    * the window, the real HTTP status is forwarded (the client keeps its native retry/backoff). If the
@@ -901,6 +908,7 @@ export function setAnthropicBehavior(
       | "responseHeaderWhitelist"
       | "stripAttributionHeader"
       | "streamKeepalivePingSec"
+      | "streamKeepaliveMode"
       | "streamCommitAfterSec"
       | "protectStreamingGeneration"
       | "protectStreamingMaxRetries"
@@ -1106,6 +1114,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   responseHeaderWhitelist: ["request-id", "x-request-id", "anthropic-ratelimit-*", "anthropic-organization-id", "retry-after"] as ReadonlyArray<string>,
   stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
+  streamKeepaliveMode: "content_delta" as "ping" | "content_delta",
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   protectStreamingMaxRetries: 3,
@@ -1198,6 +1207,7 @@ export function resetConfigManagedState(): void {
     responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
     stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+    streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
     protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
@@ -1317,6 +1327,7 @@ const mutableState: MutableState = {
   responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
   stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+  streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
   protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,

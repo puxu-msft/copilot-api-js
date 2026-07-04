@@ -110,7 +110,7 @@ import {
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
 import { resolveModelName } from "~/lib/models/resolver"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeSseSink, type OpenBlock } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
@@ -426,7 +426,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         onForwarded: (record) => forwardedSseEvents.push(record),
         streamStartMs,
         ...(heartbeatSec > 0 && {
-          heartbeat: { intervalSec: heartbeatSec, pingFrame: ANTHROPIC_PING, clientAbortSignal: clientAbort.signal },
+          heartbeat: { intervalSec: heartbeatSec, pingFrame: resolveAnthropicKeepalive(), clientAbortSignal: clientAbort.signal },
         }),
       })
       try {
@@ -489,7 +489,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       onForwarded: (record) => forwardedSseEvents.push(record),
       streamStartMs,
       ...(pingSec > 0 && {
-        heartbeat: { intervalSec: pingSec, pingFrame: ANTHROPIC_PING, clientAbortSignal: clientAbort.signal },
+        heartbeat: { intervalSec: pingSec, pingFrame: resolveAnthropicKeepalive(), clientAbortSignal: clientAbort.signal },
       }),
     })
     stream.onAbort(() => clientAbort.abort()) // register BEFORE the first ping (round-B L1)
@@ -797,6 +797,42 @@ function renderNonStreamingV4(
 /** The Anthropic-protocol synthetic keepalive frame. One literal, shared by the sink's
  *  heartbeat and the cold-start commit's immediate first ping. */
 const ANTHROPIC_PING: ClientFrame = { event: "ping", data: JSON.stringify({ type: "ping" }) }
+
+/** Build a content_block_delta keepalive frame (index-matched to the open block). */
+function anthropicKeepaliveDelta(index: number, delta: Record<string, unknown>): ClientFrame {
+  return { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index, delta }) }
+}
+
+/**
+ * Block-aware keepalive frame (`stream_keepalive_mode: content_delta`): an EMPTY delta matching the
+ * current open block — thinking→thinking_delta, text→text_delta, tool_use/server_tool_use→
+ * input_json_delta. Such an empty delta resets Claude Code's 300s no-real-content idle deadline that
+ * a bare `event: ping` does NOT (all three proven in exp/cc-idle-280s/REPORT.md). No open block /
+ * redacted_thinking / unknown → fallback ANTHROPIC_PING (the block-less gap is short-lived; a ping is
+ * correct there). Exported for reuse by the web_search bypass keepalive (streaming-pump).
+ */
+export function makeAnthropicKeepaliveFrame(openBlock?: OpenBlock): ClientFrame {
+  switch (openBlock?.type) {
+    case "thinking":
+      return anthropicKeepaliveDelta(openBlock.index, { type: "thinking_delta", thinking: "" })
+    case "text":
+      return anthropicKeepaliveDelta(openBlock.index, { type: "text_delta", text: "" })
+    case "tool_use":
+    case "server_tool_use":
+      return anthropicKeepaliveDelta(openBlock.index, { type: "input_json_delta", partial_json: "" })
+    default:
+      return ANTHROPIC_PING
+  }
+}
+
+/**
+ * The keepalive to hand the sink: a block-aware provider (`content_delta` mode) or the fixed ping
+ * frame (`ping` mode). Read at stream-start so a hot-reloaded `stream_keepalive_mode` takes effect
+ * on new streams. Shared by both Anthropic sink construction sites (settled-window + cold commit).
+ */
+function resolveAnthropicKeepalive(): ClientFrame | ((openBlock?: OpenBlock) => ClientFrame) {
+  return state.streamKeepaliveMode === "content_delta" ? makeAnthropicKeepaliveFrame : ANTHROPIC_PING
+}
 
 /**
  * Resolve the buffered-retry routing flag + the live heartbeat cadence for an Anthropic

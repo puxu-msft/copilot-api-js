@@ -393,6 +393,15 @@ export const AnthropicConfigSchema = z
      */
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
+     * Keepalive FRAME type for the client-facing Anthropic stream. `content_delta` (default) injects
+     * an EMPTY content delta matching the current open block (thinking→thinking_delta, text→text_delta,
+     * tool_use→input_json_delta) — this resets Claude Code's 300s no-real-content idle deadline that a
+     * bare `event: ping` does NOT (a ping is not counted as a "chunk"; see exp/cc-idle-280s/REPORT.md).
+     * `ping` restores the classic bare-ping behavior. No open block / redacted_thinking / unknown falls
+     * back to ping either way.
+     */
+    stream_keepalive_mode: nullableEnum(["ping", "content_delta"] as const),
+    /**
      * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this
      * long for runRequest to settle before opening the 200 SSE stream — an upstream error within the
      * window keeps its real HTTP status (client retries natively); a stall past it commits 200 +
