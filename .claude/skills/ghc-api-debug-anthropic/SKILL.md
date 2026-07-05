@@ -20,7 +20,6 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 | `Invalid encrypted_content in search_result block` 400 | web_search 双跳合成的 `web_search_tool_result` 结果项 `encrypted_content=""`（`synthesize.ts`，后端产不出真加密内容）回流历史，上游校验真实非空 string（空/null/占位全 400，error-shaped 反而 200） | **always-on 兜底自动降级**（`sanitize/empty-encrypted-search-result.ts`，无需配置）；开 `tool_rewrite_history_server:downgrade` 更宽清理。exp/encrypted-content-400 |
 | 双空块被拒 | shim 把 sig 嵌 start 无 signature_delta（web_search 双跳绕 shim 曾酿此） | `thinking_signature_compat` |
 
-
 ## 实测关键事实
 
 - thinking signature **自包含**（加密 thinking 内容本身、非上下文/位置）：跨对话/非首块/重写后均 200；唯一约束=原样不改、连续序列不重排。

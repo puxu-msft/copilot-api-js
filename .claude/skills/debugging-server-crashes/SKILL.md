@@ -31,4 +31,4 @@ description: 当 copilot-api-js 服务器意外整进程退出（一条良性取
 
 ## 相关
 
-同类「后台任务逃逸 reject 崩进程」主题：`fire-and-forget` 必须 never-throw（后台 backfill / 异步持久化——见 skill `history-backfill` 与记忆 methodology-sync-to-async-persistence-refactor-invariants 的 fire-and-forget-never-throw 条）；本崩溃是 pre-response-abort RFC 的缺陷⑤（reaper `ctx.fail()` 不取消在飞 fetch = 缺陷④，暂缓）。探针 harness 须复制生产接线（[[methodology-probe-harness-must-match-prod]]）。
+同类「后台任务逃逸 reject 崩进程」主题：`fire-and-forget` 必须 never-throw（后台 backfill / 异步持久化——见 skill `history-backfill` 与记忆 methodology-sync-to-async-persistence-refactor-invariants 的 fire-and-forget-never-throw 条）；本崩溃是 pre-response-abort RFC 的缺陷⑤（reaper `ctx.fail()` 不取消在飞 fetch = 缺陷④，暂缓）。探针 harness 须复制生产接线（否则「全栈复现 0 unhandled」只证主路径安全、不证遗弃不存在），见 skill `empirical-verification`。
