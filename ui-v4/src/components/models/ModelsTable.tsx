@@ -92,11 +92,26 @@ export function ModelsTable({ models, columns, telemetryFor, maxRequests7d, sort
             <tr
               key={m.id}
               className={`border-b border-[#1e1e24] ${onSelect ? "cursor-pointer hover:bg-[#1a1a20]" : ""} ${selected ? "border-l-2 border-l-[var(--color-primary)] bg-[#3a2f1a]" : ""}`}
-              aria-selected={selected}
+              aria-current={selected ? "true" : undefined}
               onClick={onSelect ? () => onSelect(m.id) : undefined}
             >
-              <td className="px-2 py-1 text-[var(--color-primary)]">
-                {m.id}
+              <td className="px-2 py-1">
+                {onSelect ?
+                  <button
+                    type="button"
+                    // Stop propagation so keyboard/AT activation on the id doesn't also
+                    // fire the row's mouse onClick (harmless, but avoids a double select).
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onSelect(m.id)
+                    }}
+                    aria-label={`Open details for ${m.id}`}
+                    aria-expanded={selected}
+                    className="text-left text-[var(--color-primary)] hover:underline"
+                  >
+                    {m.id}
+                  </button>
+                : <span className="text-[var(--color-primary)]">{m.id}</span>}
                 {m.is_chat_default ?
                   <span className="ml-1 text-[10px] text-[var(--color-muted)]">default</span>
                 : null}

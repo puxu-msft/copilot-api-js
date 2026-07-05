@@ -19,8 +19,10 @@ import { RawJsonTab } from "@/components/models/detail-tabs/RawJsonTab"
 import { TelemetryTab } from "@/components/models/detail-tabs/TelemetryTab"
 import {
   //
+  MODEL_DETAIL_PANEL_ID,
   MODEL_DETAIL_TABS,
   ModelDetailSubRail,
+  tabId,
   type ModelDetailTab,
 } from "@/components/models/ModelDetailSubRail"
 import { useResizableWidth } from "@/hooks/useResizableWidth"
@@ -144,8 +146,9 @@ export function ModelDetail({ model, telemetry, onClose }: ModelDetailProps) {
             onSelect={setTab}
           />
           <div
+            id={MODEL_DETAIL_PANEL_ID}
             role="tabpanel"
-            aria-label={tab}
+            aria-labelledby={tabId(tab)}
             className="min-h-0 flex-1 overflow-auto p-3"
           >
             {body}
