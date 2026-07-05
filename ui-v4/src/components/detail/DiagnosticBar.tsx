@@ -30,9 +30,7 @@ export function DiagnosticBar({ entry }: { entry: HistoryEntry }) {
       {entry.durationMs === undefined ? null : <span className="text-[#888]">{formatDuration(entry.durationMs)}</span>}
       {entry.attemptCount === undefined ? null : <span className="text-[#888]">{entry.attemptCount} att</span>}
       {tokens ?
-        <span className="text-[#888]">
-          {formatUsageTokens(tokens)} tok
-        </span>
+        <span className="text-[#888]">{formatUsageTokens(tokens)} tok</span>
       : null}
       {signal === "fail" && verdict !== undefined ?
         <span

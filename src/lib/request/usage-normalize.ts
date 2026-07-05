@@ -34,13 +34,7 @@ export function netInputTokens(totalInput: number, cacheRead = 0, cacheCreation 
  * cache/reasoning fields are attached only when non-zero (matching GHC's
  * `if cached else {}` shape and the existing Anthropic builder).
  */
-export function usageFromTotalInput(args: {
-  totalInput: number
-  output: number
-  cacheRead?: number
-  cacheCreation?: number
-  reasoning?: number
-}): UsageData {
+export function usageFromTotalInput(args: { totalInput: number; output: number; cacheRead?: number; cacheCreation?: number; reasoning?: number }): UsageData {
   const cacheRead = args.cacheRead ?? 0
   const cacheCreation = args.cacheCreation ?? 0
   return {
