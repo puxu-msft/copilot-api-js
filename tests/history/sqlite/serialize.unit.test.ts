@@ -114,6 +114,7 @@ describe("sqlite/serialize head+stage", () => {
       cache_read: null,
       cache_creation: null,
       reasoning_tokens: null,
+      usage_normalized: 0,
       stop_reason: null,
       error_message: null,
       message_count: 1,

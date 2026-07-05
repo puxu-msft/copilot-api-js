@@ -127,6 +127,10 @@ function toEntryRow(r: LegacyRow): EntryRow {
     cache_read: r.cache_read,
     cache_creation: r.cache_creation,
     reasoning_tokens: r.reasoning_tokens,
+    // Legacy v1 rows predate net-of-cache normalization → leave 0 so the
+    // usage-normalize-backfill picks them up (OpenAI-family legacy input_tokens
+    // still includes cached).
+    usage_normalized: 0,
     stop_reason: r.stop_reason,
     error_message: r.error_message,
     message_count: r.message_count,

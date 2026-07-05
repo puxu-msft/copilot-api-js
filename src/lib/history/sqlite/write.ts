@@ -36,19 +36,20 @@ INSERT INTO entries_v2 (
   id, session_id, agent_id, started_at, ended_at, duration_ms,
   model, endpoint, transport, status,
   input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
+  usage_normalized,
   stop_reason, error_message,
   message_count, preview_text,
   pid, boot_time, git_sha,
   request_bytes, response_bytes, multiplier,
   blob_gz
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   session_id = excluded.session_id, agent_id = excluded.agent_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
   duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint,
   transport = excluded.transport, status = excluded.status,
   input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
   cache_read = excluded.cache_read, cache_creation = excluded.cache_creation,
-  reasoning_tokens = excluded.reasoning_tokens, stop_reason = excluded.stop_reason,
+  reasoning_tokens = excluded.reasoning_tokens, usage_normalized = excluded.usage_normalized, stop_reason = excluded.stop_reason,
   error_message = excluded.error_message, message_count = excluded.message_count,
   preview_text = excluded.preview_text,
   pid = excluded.pid, boot_time = excluded.boot_time, git_sha = excluded.git_sha,
@@ -80,6 +81,7 @@ function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void 
     row.cache_read,
     row.cache_creation,
     row.reasoning_tokens,
+    row.usage_normalized,
     row.stop_reason,
     row.error_message,
     row.message_count,

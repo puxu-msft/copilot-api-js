@@ -26,6 +26,11 @@ export interface EntryRow {
   cache_read: number | null
   cache_creation: number | null
   reasoning_tokens: number | null
+  // Idempotency marker for the usage net-of-cache normalization backfill: 1 once
+  // this row's input_tokens is confirmed in the canonical NET convention. Every
+  // row written by the current code is born net → 1; pre-migration rows start at
+  // DEFAULT 0 and are flipped by usage-normalize-backfill. NOT NULL DEFAULT 0.
+  usage_normalized: number
   stop_reason: string | null
   error_message: string | null
   message_count: number | null
@@ -224,6 +229,10 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     cache_read: usage?.cache_read_input_tokens ?? null,
     cache_creation: usage?.cache_creation_input_tokens ?? null,
     reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
+    // Born net: the current producers all normalize usage to the canonical
+    // net-of-cache convention, so mark this row already-normalized (the backfill
+    // scans WHERE usage_normalized=0 and skips these). INSERT_ENTRY_SQL writes it.
+    usage_normalized: 1,
     stop_reason: entry.outboundResponse?.stop_reason ?? null,
     // Backfill from the top-level failureReason projection so an entry whose
     // outboundResponse leg is absent (orphan / interrupted) still surfaces its

@@ -297,6 +297,11 @@ function migrateEntriesColumns(database: Database): void {
     // No FK (a dangling ref when the predecessor is reaped is harmless — threading
     // UI handles it); deliberately decoupled from search (never read by search).
     { name: "prev_req_id", type: "TEXT" },
+    // Usage net-of-cache normalization marker (mirrors `pinned`'s NOT NULL DEFAULT 0
+    // ALTER — SQLite backfills existing rows to 0 without a table rewrite). Rows
+    // written by the current code set this to 1 (born net); pre-migration rows keep
+    // 0 until usage-normalize-backfill flips them. Also in SCHEMA_SQL for fresh DBs.
+    { name: "usage_normalized", type: "INTEGER NOT NULL DEFAULT 0" },
   ]
 
   for (const col of wanted) {
