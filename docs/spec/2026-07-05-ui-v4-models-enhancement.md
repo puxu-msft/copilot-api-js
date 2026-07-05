@@ -1,5 +1,7 @@
 # ui-v4 Models 页面全面增强 — 设计规格
 
+> **实现目标勘误（2026-07-05）**：本 spec 的 WHAT/WHY（数据完整性、遥测 join key 分裂、6 分区详情、过滤、CSV、未关联遥测）**框架无关、有效**。首轮实现误做进了 `ui/`（Vue，已提交保留、真实增强了旧 UI）；**真正的 ui-v4 是 React 新前端**（`ui-v4/`，跑在 5173）。React 实现规划见 [ui-v4/docs/plans/2026-07-05-06b-models-page-enhancement.md](../../ui-v4/docs/plans/2026-07-05-06b-models-page-enhancement.md)。后端改动（`request_headers` 暴露 + `normalize-id.ts` 抽取）跨前端共享、已落地。下文的 Vue 特定 HOW（§5 useModelDetail/§6 tab/§9 vitest stub/组件名）仅适用 Vue 版；React 版以上述 06b 规划为准。
+
 > 日期：2026-07-05
 > 范围：`ui/src/pages/vuetify/VModelsPage.vue` 及其组件/composable 子树
 > 类型：前端特性（不改后端）
