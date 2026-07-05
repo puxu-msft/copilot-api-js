@@ -293,6 +293,75 @@ export const VSelectStub = defineComponent({
   },
 })
 
+export const VNavigationDrawerStub = defineComponent({
+  name: "VNavigationDrawerStub",
+  props: {
+    modelValue: Boolean,
+  },
+  setup(_, { slots }) {
+    return () => h("aside", { "data-testid": "v-navigation-drawer" }, slotChildren(slots.default?.()))
+  },
+})
+
+export const VTabsStub = defineComponent({
+  name: "VTabsStub",
+  props: {
+    modelValue: {
+      type: String,
+      default: "",
+    },
+  },
+  setup(_, { slots }) {
+    return () => h("div", { "data-testid": "v-tabs", role: "tablist" }, slotChildren(slots.default?.()))
+  },
+})
+
+export const VTabStub = defineComponent({
+  name: "VTabStub",
+  props: {
+    value: {
+      type: String,
+      default: "",
+    },
+  },
+  setup(props, { slots }) {
+    return () => h("button", { type: "button", role: "tab", "data-value": props.value }, slotChildren(slots.default?.()))
+  },
+})
+
+export const VWindowStub = defineComponent({
+  name: "VWindowStub",
+  props: {
+    modelValue: {
+      type: String,
+      default: "",
+    },
+  },
+  setup(_, { slots }) {
+    return () => h("div", { "data-testid": "v-window" }, slotChildren(slots.default?.()))
+  },
+})
+
+export const VWindowItemStub = defineComponent({
+  name: "VWindowItemStub",
+  props: {
+    value: {
+      type: String,
+      default: "",
+    },
+  },
+  setup(_, { slots }) {
+    return () => h("div", { "data-testid": "v-window-item" }, slotChildren(slots.default?.()))
+  },
+})
+
+export const VTableStub = defineComponent({
+  name: "VTableStub",
+  setup(_, { slots }) {
+    return () => h("table", { "data-testid": "v-table" }, slotChildren(slots.default?.()))
+  },
+})
+
 export const vuetifyComponentStubs = {
   VAlert: VAlertStub,
   VBtn: VBtnStub,
@@ -303,13 +372,19 @@ export const vuetifyComponentStubs = {
   VChip: VChipStub,
   VDivider: VDividerStub,
   VIcon: VIconStub,
+  VNavigationDrawer: VNavigationDrawerStub,
   VProgressCircular: VProgressCircularStub,
   VSelect: VSelectStub,
   VSpacer: VSpacerStub,
   VSwitch: VSwitchStub,
+  VTab: VTabStub,
+  VTable: VTableStub,
+  VTabs: VTabsStub,
   VTextarea: VTextareaStub,
   VTextField: VTextFieldStub,
   VTooltip: VTooltipStub,
+  VWindow: VWindowStub,
+  VWindowItem: VWindowItemStub,
 }
 
 export function mountWithVuetifyStubs<T extends Component>(component: T, options: ComponentMountingOptions<T> = {}) {
