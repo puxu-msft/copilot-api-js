@@ -34,9 +34,13 @@ describe("list-store reducer", () => {
     expect(next.bufferedIds).toEqual([])
     expect(next.tailOn).toBe(true)
   })
-  it("select pauses tail and records id; scroll-up pauses", () => {
-    expect(reduceListEvent({ ...initialListState, tailOn: true }, { kind: "select", id: "a" })).toMatchObject({ tailOn: false, selectedId: "a" })
+  it("locate + scroll-up both pause tail (selection truth lives in the URL, not the store)", () => {
+    expect(reduceListEvent({ ...initialListState, tailOn: true }, { kind: "locate" })).toMatchObject({ tailOn: false })
     expect(reduceListEvent({ ...initialListState, tailOn: true }, { kind: "scroll-up" }).tailOn).toBe(false)
+  })
+  it("locate is idempotent when already paused (returns same ref → no needless re-render)", () => {
+    const paused: ListState = { ...initialListState, tailOn: false }
+    expect(reduceListEvent(paused, { kind: "locate" })).toBe(paused)
   })
   it("resume turns tail on and clears buffer", () => {
     const next = reduceListEvent({ ...initialListState, tailOn: false, bufferedIds: ["x"] }, { kind: "resume" })

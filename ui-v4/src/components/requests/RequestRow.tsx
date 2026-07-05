@@ -126,6 +126,7 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
   return (
     <button
       type="button"
+      data-entry-id={entry.id}
       onClick={onClick}
       className={`${ROW_CLASS} ${selectionClass(selected)}`}
     >

@@ -1,25 +1,27 @@
 import { create } from "zustand"
 
 export interface ListState {
-  /** 自动跟最新(tail-on);选中/上滚自动转 paused。 */
+  /** 自动跟最新(tail-on);定位/上滚自动转 paused。 */
   tailOn: boolean
   /** paused 期间到达的新完成条目 id(去重,FIFO),点横幅/resume 时合入。 */
   bufferedIds: Array<string>
-  /** URL 驱动的选中 id 的本地镜像(用于粘滞高亮;真值仍以路由为准)。 */
-  selectedId: string | null
 }
 
-export const initialListState: ListState = { tailOn: true, bufferedIds: [], selectedId: null }
+export const initialListState: ListState = { tailOn: true, bufferedIds: [] }
 
 export type ListEvent =
   | { kind: "incoming"; id: string }
   | { kind: "flush" }
   | { kind: "resume" }
-  | { kind: "select"; id: string }
+  | { kind: "locate" }
   | { kind: "scroll-up" }
   | { kind: "reset" }
 
-/** 纯 reducer —— 见 spec §4.2(三件套:Live 泳道/缓冲横幅/选中粘滞 + tail)。 */
+/**
+ * 纯 reducer —— 见 spec §4.2(Live 泳道 / 缓冲横幅 + tail)。
+ * 选中/定位的真值现由 URL(列表 `?at=<id>`、详情 `/requests/:id`)承载,不再存 store;
+ * store 只管 tail 跟随与缓冲。
+ */
 export function reduceListEvent(state: ListState, ev: ListEvent): ListState {
   switch (ev.kind) {
     case "incoming": {
@@ -31,8 +33,10 @@ export function reduceListEvent(state: ListState, ev: ListEvent): ListState {
     case "resume": {
       return { ...state, tailOn: true, bufferedIds: [] }
     }
-    case "select": {
-      return { ...state, tailOn: false, selectedId: ev.id }
+    case "locate": {
+      // 定位到具体条目(点行进详情 / URL 带 ?at=)→ 暂停 tail,避免新条目把定位行挤走。
+      // 幂等:已暂停则返回原引用,避免 at-effect 重复触发时产生无谓 re-render。
+      return state.tailOn ? { ...state, tailOn: false } : state
     }
     case "scroll-up": {
       return state.tailOn ? { ...state, tailOn: false } : state

@@ -76,21 +76,21 @@ describe("useHistoryInfinite WS terminal-gating", () => {
   })
 
   it("paused: a terminal entry_updated is buffered (was silently lost before)", () => {
-    useListStore.setState({ tailOn: false, bufferedIds: [], selectedId: null })
+    useListStore.setState({ tailOn: false, bufferedIds: [] })
     mount()
     act(() => captured?.onEntryUpdated?.(summary({ id: "done", state: "completed" })))
     expect(useListStore.getState().bufferedIds).toEqual(["done"])
   })
 
   it("paused: a terminal aborted entry is buffered too", () => {
-    useListStore.setState({ tailOn: false, bufferedIds: [], selectedId: null })
+    useListStore.setState({ tailOn: false, bufferedIds: [] })
     mount()
     act(() => captured?.onEntryUpdated?.(summary({ id: "ab", state: "aborted" })))
     expect(useListStore.getState().bufferedIds).toEqual(["ab"])
   })
 
   it("paused: a non-terminal (active/streaming) event is ignored — belongs to the Live lane", () => {
-    useListStore.setState({ tailOn: false, bufferedIds: [], selectedId: null })
+    useListStore.setState({ tailOn: false, bufferedIds: [] })
     mount()
     act(() => captured?.onEntryUpdated?.(summary({ id: "live", state: "streaming" })))
     act(() => captured?.onEntryAdded?.(summary({ id: "live2", state: "streaming", active: true })))
@@ -98,14 +98,14 @@ describe("useHistoryInfinite WS terminal-gating", () => {
   })
 
   it("tail-on: a terminal event is not buffered (it refetches into the first page)", () => {
-    useListStore.setState({ tailOn: true, bufferedIds: [], selectedId: null })
+    useListStore.setState({ tailOn: true, bufferedIds: [] })
     mount()
     act(() => captured?.onEntryUpdated?.(summary({ id: "done", state: "completed" })))
     expect(useListStore.getState().bufferedIds).toEqual([])
   })
 
   it("mounts tail-on, then pauses, then a terminal event arrives → buffered (latest-ref defeats stale tailOn)", () => {
-    useListStore.setState({ tailOn: true, bufferedIds: [], selectedId: null })
+    useListStore.setState({ tailOn: true, bufferedIds: [] })
     mount()
     act(() => useListStore.setState({ tailOn: false })) // user scrolls up / selects after mount
     act(() => captured?.onEntryUpdated?.(summary({ id: "late", state: "completed" })))

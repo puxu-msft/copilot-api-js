@@ -53,10 +53,15 @@ vi.mock("@/hooks/useEntry", () => ({
 const { RequestsListPage } = await import("@/components/requests/RequestsListPage")
 const { RequestDetailPage } = await import("@/components/requests/RequestDetailPage")
 
-/** Spy 当前 location.pathname,供导航断言。 */
+/** Spy 当前 location.pathname + search,供导航断言。 */
 function LocationProbe() {
   const loc = useLocation()
-  return <div data-testid="location">{loc.pathname}</div>
+  return (
+    <div data-testid="location">
+      {loc.pathname}
+      {loc.search}
+    </div>
+  )
 }
 
 function renderList() {
@@ -132,10 +137,25 @@ describe("RequestDetailPage", () => {
     // "convo body text" appears in both the TOC label and the content body.
     expect(screen.getAllByText(/convo body text/).length).toBeGreaterThan(0)
   })
-  it("navigates back to /requests when the back button is clicked", () => {
+  it("back button returns to the list located at the entry (/requests?at=<id>)", () => {
     renderDetail()
     expect(screen.getByTestId("location").textContent).toBe("/requests/r1")
     fireEvent.click(screen.getByText(/‹ 返回列表/))
-    expect(screen.getByTestId("location").textContent).toBe("/requests")
+    expect(screen.getByTestId("location").textContent).toBe("/requests?at=r1")
+  })
+  it("Escape key also returns to the list located at the entry", () => {
+    renderDetail()
+    expect(screen.getByTestId("location").textContent).toBe("/requests/r1")
+    fireEvent.keyDown(document.body, { key: "Escape" })
+    expect(screen.getByTestId("location").textContent).toBe("/requests?at=r1")
+  })
+  it("Escape does nothing when a modal/dialog is open (the modal handles Esc first)", () => {
+    renderDetail()
+    const dialog = document.createElement("div")
+    dialog.setAttribute("role", "dialog")
+    document.body.append(dialog)
+    fireEvent.keyDown(document.body, { key: "Escape" })
+    expect(screen.getByTestId("location").textContent).toBe("/requests/r1")
+    dialog.remove()
   })
 })
