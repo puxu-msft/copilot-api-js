@@ -4,6 +4,7 @@ import {
   render,
   screen,
 } from "@testing-library/react"
+import { MemoryRouter } from "react-router-dom"
 import {
   //
   describe,
@@ -52,9 +53,18 @@ vi.mock("@/hooks/useModelTelemetry", () => ({
 
 const { ModelsPage } = await import("@/components/models/ModelsPage")
 
+/** ModelsPage now reads selection from the URL (`?model=`), so it needs a router. */
+function renderPage() {
+  return render(
+    <MemoryRouter initialEntries={["/models"]}>
+      <ModelsPage />
+    </MemoryRouter>,
+  )
+}
+
 describe("ModelsPage", () => {
   it("renders rows, count, and raw toggle", () => {
-    render(<ModelsPage />)
+    renderPage()
     expect(screen.getByText("claude-opus-4.8")).toBeDefined()
     expect(screen.getByText("gpt-5.5")).toBeDefined()
     expect(screen.getByText(/Models · 2\/2/)).toBeDefined()
@@ -64,7 +74,7 @@ describe("ModelsPage", () => {
   })
 
   it("filters by search (id/name)", () => {
-    render(<ModelsPage />)
+    renderPage()
     fireEvent.change(screen.getByLabelText("Search models"), { target: { value: "gpt" } })
     expect(screen.getByText("gpt-5.5")).toBeDefined()
     expect(screen.queryByText("claude-opus-4.8")).toBeNull()
@@ -72,16 +82,29 @@ describe("ModelsPage", () => {
   })
 
   it("hides a column via the column menu", () => {
-    render(<ModelsPage />)
+    renderPage()
     expect(screen.getByRole("columnheader", { name: /Vendor/i })).toBeDefined()
     fireEvent.click(screen.getByRole("checkbox", { name: /Vendor/i }))
     expect(screen.queryByRole("columnheader", { name: /Vendor/i })).toBeNull()
   })
 
   it("shows the requests(7d) column when enabled and renders the joined count", () => {
-    render(<ModelsPage />)
+    renderPage()
     // requests7d is hidden by default; enable it
     fireEvent.click(screen.getByRole("checkbox", { name: /Req 7d/i }))
     expect(screen.getByText("12")).toBeDefined()
+  })
+
+  it("opens the detail panel on row click and closes it via the × button", () => {
+    renderPage()
+    expect(screen.queryByRole("region", { name: /Model detail/i })).toBeNull()
+    fireEvent.click(screen.getByText("claude-opus-4.8"))
+    const panel = screen.getByRole("region", { name: /Model detail: claude-opus-4\.8/i })
+    expect(panel).toBeDefined()
+    // Overview tab is active by default — the vertical tab rail is present.
+    expect(screen.getByRole("tab", { name: "Capabilities" })).toBeDefined()
+    expect(screen.getByRole("tab", { name: "Raw JSON" })).toBeDefined()
+    fireEvent.click(screen.getByRole("button", { name: /Close model detail/i }))
+    expect(screen.queryByRole("region", { name: /Model detail/i })).toBeNull()
   })
 })
