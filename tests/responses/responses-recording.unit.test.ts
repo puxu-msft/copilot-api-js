@@ -196,6 +196,8 @@ describe("buildResponsesResponseData", () => {
     const result = buildResponsesResponseData(acc, "fallback")
 
     expect(result.usage.cache_read_input_tokens).toBe(30)
+    // Net convention: acc.inputTokens (100, Responses TOTAL incl cached) → 100 - 30 = 70.
+    expect(result.usage.input_tokens).toBe(70)
   })
 
   test("omits reasoning tokens details when zero", () => {
@@ -234,8 +236,9 @@ describe("buildResponsesResponseData", () => {
 
     const result = buildResponsesResponseData(acc, "fallback")
 
+    // Net convention: input_tokens = 500 (TOTAL) - 150 (cached) = 350, disjoint from cache_read.
     expect(result.usage).toEqual({
-      input_tokens: 500,
+      input_tokens: 350,
       output_tokens: 200,
       output_tokens_details: { reasoning_tokens: 80 },
       cache_read_input_tokens: 150,

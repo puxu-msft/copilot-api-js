@@ -72,6 +72,7 @@ import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { responsesNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { buildResponsesResponseData } from "~/lib/request/recording"
+import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
@@ -214,14 +215,14 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
   const responseData = {
     success: !truncationReason,
     model: resp.model,
-    usage: {
-      input_tokens: resp.usage?.input_tokens ?? 0,
-      output_tokens: resp.usage?.output_tokens ?? 0,
-      ...(resp.usage?.input_tokens_details?.cached_tokens && { cache_read_input_tokens: resp.usage.input_tokens_details.cached_tokens }),
-      ...(resp.usage?.output_tokens_details?.reasoning_tokens && {
-        output_tokens_details: { reasoning_tokens: resp.usage.output_tokens_details.reasoning_tokens },
-      }),
-    },
+    // Responses `input_tokens` is the TOTAL prompt incl cached; normalize to the
+    // canonical net convention (input_tokens disjoint from cache_read).
+    usage: usageFromTotalInput({
+      totalInput: resp.usage?.input_tokens ?? 0,
+      output: resp.usage?.output_tokens ?? 0,
+      cacheRead: resp.usage?.input_tokens_details?.cached_tokens,
+      reasoning: resp.usage?.output_tokens_details?.reasoning_tokens,
+    }),
     stop_reason: resp.status,
     content: responsesOutputToContent(resp.output),
   }
@@ -305,7 +306,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
-    env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
+    env.ctx.abort(acc.model || model, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }) })
     return
   }
 
@@ -317,7 +318,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error("[Responses:v4] Stream error:", error)
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
-    env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
+    env.ctx.fail(acc.model || model, error, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }) })
     return
   }
 

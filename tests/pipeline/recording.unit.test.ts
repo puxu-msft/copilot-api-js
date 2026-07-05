@@ -397,6 +397,9 @@ describe("buildOpenAIResponseData", () => {
     const acc = makeOpenAIAcc({ cachedTokens: 25 })
     const result = buildOpenAIResponseData(acc, "fallback")
     expect(result.usage.cache_read_input_tokens).toBe(25)
+    // Net convention: acc.inputTokens (80, the OpenAI TOTAL incl cached) is net-of-cache
+    // to 80 - 25 = 55, disjoint from cache_read. See usage-normalize.ts.
+    expect(result.usage.input_tokens).toBe(55)
   })
 
   test("omits cached tokens when zero", () => {

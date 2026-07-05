@@ -57,6 +57,7 @@ import { resolveModelName } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
 import { classifyStreamError } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
@@ -206,11 +207,16 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
   const responseData = {
     success: !truncationReason,
     model: chat.model,
-    usage: {
-      input_tokens: usage?.prompt_tokens ?? 0,
-      output_tokens: usage?.completion_tokens ?? 0,
-      ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && { cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens }),
-    },
+    // Gemini non-streaming renders from a CC response: `usage.prompt_tokens` is the
+    // TOTAL prompt incl cached; normalize to the canonical net convention. The Gemini
+    // STREAMING path already nets via the codec (convert-response.ts), so this keeps
+    // both Gemini legs consistent.
+    usage: usageFromTotalInput({
+      totalInput: usage?.prompt_tokens ?? 0,
+      output: usage?.completion_tokens ?? 0,
+      cacheRead: usage?.prompt_tokens_details?.cached_tokens,
+      reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+    }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,
   }

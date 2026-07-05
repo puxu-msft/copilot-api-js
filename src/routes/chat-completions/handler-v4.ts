@@ -65,7 +65,7 @@ import {
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
-import { buildOpenAIResponseData } from "~/lib/request"
+import { buildOpenAIResponseData, usageFromTotalInput } from "~/lib/request"
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
@@ -245,11 +245,14 @@ function renderNonStreamingV4(
   const responseData = {
     success: !truncationReason,
     model: response.model,
-    usage: {
-      input_tokens: usage?.prompt_tokens ?? 0,
-      output_tokens: usage?.completion_tokens ?? 0,
-      ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && { cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens }),
-    },
+    // `usage.prompt_tokens` is the TOTAL prompt incl cached; normalize to the
+    // canonical net convention (input_tokens disjoint from cache_read).
+    usage: usageFromTotalInput({
+      totalInput: usage?.prompt_tokens ?? 0,
+      output: usage?.completion_tokens ?? 0,
+      cacheRead: usage?.prompt_tokens_details?.cached_tokens,
+      reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+    }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,
   }
@@ -365,7 +368,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // forwarded so far, then settle as aborted (mirrors settleStreamingFailure's abort branch).
     recordForwarded()
     consola.debug("[ChatCompletions:v4] Client disconnected mid-stream — recording aborted")
-    env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
+    env.ctx.abort(acc.model || model, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }) })
     return
   }
 
@@ -378,7 +381,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error("[ChatCompletions:v4] Stream error:", error)
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
-    env.ctx.fail(acc.model || model, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
+    env.ctx.fail(acc.model || model, error, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }) })
     return
   }
 

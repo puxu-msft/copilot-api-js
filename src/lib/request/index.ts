@@ -22,3 +22,6 @@ export { createAutoTruncateStrategy } from "./strategies/auto-truncate"
 // Truncation
 export type { TruncateResultInfo } from "./truncation"
 export { createTruncationMarker } from "./truncation"
+
+// Usage normalization (canonical net-of-cache convention)
+export { netInputTokens, usageFromTotalInput } from "./usage-normalize"

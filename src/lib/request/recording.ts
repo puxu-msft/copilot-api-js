@@ -10,6 +10,7 @@ import type { OpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { finalizeResponsesContent } from "~/lib/openai/responses-stream-accumulator"
 
 import { safeParseJson } from "./response"
+import { usageFromTotalInput } from "./usage-normalize"
 
 /**
  * Map Anthropic content blocks to history-friendly format.
@@ -132,14 +133,9 @@ export function buildOpenAIResponseData(acc: OpenAIStreamAccumulator, fallbackMo
   return {
     success: true,
     model: acc.model || fallbackModel,
-    usage: {
-      input_tokens: acc.inputTokens,
-      output_tokens: acc.outputTokens,
-      ...(acc.reasoningTokens > 0 && {
-        output_tokens_details: { reasoning_tokens: acc.reasoningTokens },
-      }),
-      ...(acc.cachedTokens > 0 && { cache_read_input_tokens: acc.cachedTokens }),
-    },
+    // acc.inputTokens is the OpenAI `prompt_tokens` (TOTAL incl cached); normalize
+    // to the canonical net convention. See usage-normalize.ts.
+    usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }),
     stop_reason: acc.finishReason || undefined,
     content: {
       role: "assistant",
@@ -179,14 +175,9 @@ export function buildResponsesResponseData(acc: ResponsesStreamAccumulator, fall
     success: true,
     model: acc.model || fallbackModel,
     ...(acc.responseId && { responseId: acc.responseId }),
-    usage: {
-      input_tokens: acc.inputTokens,
-      output_tokens: acc.outputTokens,
-      ...(acc.reasoningTokens > 0 && {
-        output_tokens_details: { reasoning_tokens: acc.reasoningTokens },
-      }),
-      ...(acc.cachedInputTokens > 0 && { cache_read_input_tokens: acc.cachedInputTokens }),
-    },
+    // acc.inputTokens is the Responses `input_tokens` (TOTAL incl cached); normalize
+    // to the canonical net convention. See usage-normalize.ts.
+    usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
     stop_reason: acc.status || undefined,
     content:
       finalContent || toolCalls.length > 0 ?
