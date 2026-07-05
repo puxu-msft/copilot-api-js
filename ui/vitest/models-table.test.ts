@@ -71,4 +71,61 @@ describe("ModelsTable", () => {
     const w = mountTable([model("a", { reasoning_effort: ["low", "high"] })])
     expect(w.text()).toContain("low/high")
   })
+
+  test("hides a column when the columns controller disables it", () => {
+    const columns = {
+      isVisible: (key: string) => key !== "context",
+      toggle: () => {},
+      reset: () => {},
+      ALL_COLUMNS: [],
+      visible: { value: {} },
+    }
+    const w = mountWithVuetifyStubs(ModelsTable, {
+      props: {
+        models: [model("a", {})],
+        caps: deriveCapabilities,
+        vendorColor: () => "primary",
+        fmtNum: (n?: number) => (n ? String(n) : "-"),
+        columns: columns as never,
+      },
+      global: { components: { ...vuetifyComponentStubs, VTable: VTableStub }, stubs: { JsonViewerSurface: true } },
+    })
+    expect(w.findAll("th").some((h) => h.text().startsWith("Ctx"))).toBe(false)
+  })
+
+  test("renders requests(7d) column value from telemetryFor", () => {
+    const columns = {
+      isVisible: (key: string) => key === "requests7d",
+      toggle: () => {},
+      reset: () => {},
+      ALL_COLUMNS: [],
+      visible: { value: {} },
+    }
+    const telemetryFor = () => ({
+      last7d: {
+        model: "a",
+        requestCount: 42,
+        successCount: 42,
+        failureCount: 0,
+        totalDurationMs: 0,
+        averageDurationMs: 0,
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 },
+      },
+      sinceStart: null,
+    })
+    const w = mountWithVuetifyStubs(ModelsTable, {
+      props: {
+        models: [model("a", {})],
+        caps: deriveCapabilities,
+        vendorColor: () => "primary",
+        fmtNum: (n?: number) => (n ? String(n) : "-"),
+        columns: columns as never,
+        telemetryFor,
+        maxRequests7d: 42,
+      },
+      global: { components: { ...vuetifyComponentStubs, VTable: VTableStub }, stubs: { JsonViewerSurface: true } },
+    })
+    expect(w.text()).toContain("42")
+    expect(w.findAll("th").some((h) => h.text().startsWith("Req"))).toBe(true)
+  })
 })

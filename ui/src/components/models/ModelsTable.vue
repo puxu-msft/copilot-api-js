@@ -8,15 +8,39 @@ import {
   ref,
 } from "vue"
 
+import type { JoinedModelTelemetry } from "@/composables/model-telemetry-join"
+import type {
+  //
+  ModelColumnKey,
+  UseModelColumnsReturn,
+} from "@/composables/useModelColumns"
+
 const props = defineProps<{
   models: Array<Model>
   caps: (m: Model) => DerivedCapabilities
   vendorColor: (v: string | undefined) => string
   fmtNum: (n: number | undefined) => string
   selectedId?: string | null
+  columns?: UseModelColumnsReturn
+  telemetryFor?: (id: string) => JoinedModelTelemetry | null
+  maxRequests7d?: number
 }>()
 
 const emit = defineEmits<{ select: [string] }>()
+
+/** Column is shown when no column controller is provided (standalone), or the controller says so. */
+function showCol(key: ModelColumnKey): boolean {
+  return props.columns?.isVisible(key) ?? true
+}
+
+function requests7d(m: Model): number {
+  return props.telemetryFor?.(m.id)?.last7d?.requestCount ?? 0
+}
+
+function requestShare(m: Model): number {
+  const max = props.maxRequests7d ?? 0
+  return max > 0 ? (requests7d(m) / max) * 100 : 0
+}
 
 type SortKey = "id" | "vendor" | "context" | "output" | "billing"
 const sortKey = ref<SortKey>("id")
@@ -104,6 +128,7 @@ function thinkingDetail(c: DerivedCapabilities): string {
             >
           </th>
           <th
+            v-if="showCol('vendor')"
             class="th-sort"
             @click="toggleSort('vendor')"
           >
@@ -114,6 +139,7 @@ function thinkingDetail(c: DerivedCapabilities): string {
             >
           </th>
           <th
+            v-if="showCol('context')"
             class="th-num th-sort"
             @click="toggleSort('context')"
           >
@@ -124,6 +150,7 @@ function thinkingDetail(c: DerivedCapabilities): string {
             >
           </th>
           <th
+            v-if="showCol('output')"
             class="th-num th-sort"
             @click="toggleSort('output')"
           >
@@ -133,15 +160,22 @@ function thinkingDetail(c: DerivedCapabilities): string {
               >{{ sortDesc ? "▼" : "▲" }}</span
             >
           </th>
-          <th class="th-num">Effort</th>
+          <th
+            v-if="showCol('effort')"
+            class="th-num"
+          >
+            Effort
+          </th>
           <th
             v-for="col in capCols"
+            v-show="showCol(col.key as ModelColumnKey)"
             :key="col.key"
             class="th-cap"
           >
             {{ col.label }}
           </th>
           <th
+            v-if="showCol('billing')"
             class="th-num th-sort"
             @click="toggleSort('billing')"
           >
@@ -150,6 +184,12 @@ function thinkingDetail(c: DerivedCapabilities): string {
               class="sort-caret"
               >{{ sortDesc ? "▼" : "▲" }}</span
             >
+          </th>
+          <th
+            v-if="showCol('requests7d')"
+            class="th-num"
+          >
+            Req 7d
           </th>
         </tr>
       </thead>
@@ -180,7 +220,10 @@ function thinkingDetail(c: DerivedCapabilities): string {
                 >preview</v-chip
               >
             </td>
-            <td class="dense">
+            <td
+              v-if="showCol('vendor')"
+              class="dense"
+            >
               <v-chip
                 size="x-small"
                 variant="tonal"
@@ -188,11 +231,27 @@ function thinkingDetail(c: DerivedCapabilities): string {
                 >{{ m.vendor }}</v-chip
               >
             </td>
-            <td class="td-num font-mono">{{ fmtNum(caps(m).contextWindow) }}</td>
-            <td class="td-num font-mono">{{ fmtNum(caps(m).maxOutput) }}</td>
-            <td class="td-num font-mono effort-cell">{{ caps(m).reasoningEffort.join("/") || "-" }}</td>
+            <td
+              v-if="showCol('context')"
+              class="td-num font-mono"
+            >
+              {{ fmtNum(caps(m).contextWindow) }}
+            </td>
+            <td
+              v-if="showCol('output')"
+              class="td-num font-mono"
+            >
+              {{ fmtNum(caps(m).maxOutput) }}
+            </td>
+            <td
+              v-if="showCol('effort')"
+              class="td-num font-mono effort-cell"
+            >
+              {{ caps(m).reasoningEffort.join("/") || "-" }}
+            </td>
             <td
               v-for="col in capCols"
+              v-show="showCol(col.key as ModelColumnKey)"
               :key="col.key"
               class="td-cap"
             >
@@ -213,7 +272,23 @@ function thinkingDetail(c: DerivedCapabilities): string {
                 >·</span
               >
             </td>
-            <td class="td-num font-mono">{{ m.billing?.multiplier ?? "-" }}</td>
+            <td
+              v-if="showCol('billing')"
+              class="td-num font-mono"
+            >
+              {{ m.billing?.multiplier ?? "-" }}
+            </td>
+            <td
+              v-if="showCol('requests7d')"
+              class="td-num font-mono req-cell"
+            >
+              <span class="req-count">{{ requests7d(m) || "-" }}</span>
+              <span
+                v-if="requests7d(m) > 0"
+                class="req-bar"
+                :style="{ width: `${requestShare(m)}%` }"
+              />
+            </td>
           </tr>
         </template>
       </tbody>
@@ -295,5 +370,18 @@ function thinkingDetail(c: DerivedCapabilities): string {
 
 .cap-no {
   color: rgb(var(--v-theme-surface-variant));
+}
+
+.req-cell {
+  position: relative;
+}
+
+.req-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgb(var(--v-theme-primary));
+  opacity: 0.6;
 }
 </style>
