@@ -4,7 +4,9 @@ import {
   useMemo,
   useState,
 } from "react"
+import { useSearchParams } from "react-router-dom"
 
+import { ModelDetail } from "@/components/models/ModelDetail"
 import { ModelsColumnMenu } from "@/components/models/ModelsColumnMenu"
 import { ModelsFilterBar } from "@/components/models/ModelsFilterBar"
 import { ModelsTable } from "@/components/models/ModelsTable"
@@ -44,6 +46,7 @@ function loadColumns(): ModelColumnVisibility {
 export function ModelsPage() {
   const { data, isLoading } = useModels()
   const { data: telemetry } = useModelTelemetry()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [raw, setRaw] = useState(false)
   const [columns, setColumns] = useState<ModelColumnVisibility>(loadColumns)
   const [filters, setFilters] = useState<ModelFilters>(EMPTY_FILTERS)
@@ -63,6 +66,22 @@ export function ModelsPage() {
     for (const j of index.byId.values()) max = Math.max(max, j.last7d?.requestCount ?? 0)
     return max
   }, [index])
+
+  // Selection is URL-borne (`?model=<id>`, URL-as-truth): resolve against the FULL
+  // catalog (not the filtered view) so a shared/deep link opens even when the model
+  // is filtered out of the current table.
+  const selectedId = searchParams.get("model")
+  const selectedModel = useMemo(() => (selectedId ? (models.find((m) => m.id === selectedId) ?? null) : null), [models, selectedId])
+  const select = (id: string) => {
+    const next = new URLSearchParams(searchParams)
+    next.set("model", id)
+    setSearchParams(next)
+  }
+  const clearSelection = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete("model")
+    setSearchParams(next, { replace: true })
+  }
 
   const options = useMemo(
     () => ({
@@ -117,19 +136,31 @@ export function ModelsPage() {
             onChange={onChange}
             options={options}
           />
-          <div className="min-h-0 flex-1 overflow-auto">
-            {visible.length === 0 ?
-              <div className="p-4 text-[#888]">No models match the current filters.</div>
-            : <ModelsTable
-                models={visible}
-                columns={columns}
-                telemetryFor={telemetryFor}
-                maxRequests7d={maxRequests7d}
-                sortKey={sort.key}
-                sortDesc={sort.desc}
-                onSort={onSort}
+          <div className="flex min-h-0 flex-1">
+            <div className="min-h-0 flex-1 overflow-auto">
+              {visible.length === 0 ?
+                <div className="p-4 text-[#888]">No models match the current filters.</div>
+              : <ModelsTable
+                  models={visible}
+                  columns={columns}
+                  telemetryFor={telemetryFor}
+                  maxRequests7d={maxRequests7d}
+                  sortKey={sort.key}
+                  sortDesc={sort.desc}
+                  onSort={onSort}
+                  selectedId={selectedId}
+                  onSelect={select}
+                />
+              }
+            </div>
+            {selectedModel ?
+              <ModelDetail
+                key={selectedModel.id}
+                model={selectedModel}
+                telemetry={telemetryFor(selectedModel.id)}
+                onClose={clearSelection}
               />
-            }
+            : null}
           </div>
         </>
       }
