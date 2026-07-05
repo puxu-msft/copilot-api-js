@@ -1,5 +1,10 @@
 # ui-v4 会话列表行信息重排
 
+> **实施状态：已完成**
+> **落地**：72f8214
+> **现状锚点**：`ui-v4/src/components/sessions/SessionRow.tsx` + `src/lib/history/sqlite/sessions-agg.ts`（firstPreview）
+> **备注**：后端 firstPreview 首/末 user 预览 + 前端行信息重排全落地
+
 ## Context
 ui-v4 session list 每行（[SessionRow.tsx](ui-v4/src/components/sessions/SessionRow.tsx)）当前显示：状态块 / sessionId 前 12 字符 / `N req` / `N agents` / ↑↓tokens / fail / preview / span。实测发现几处误导与浪费：`agentCount` 纯 main 恒显 `0 agents`（COUNT DISTINCT 忽略 NULL）；`preview` 取末条 entry 的最后一条消息，多是 `[tool_result: …]`/系统提醒，看不出在聊什么；只显总 span、不显起止时刻；completed/failed 未单独展示。用户确认改法：保留 sessionId 前缀、agentCount 显示 `main+N`、preview 同时显首条+末条 user、显起止请求时刻、completed/failed 单独显示。
 

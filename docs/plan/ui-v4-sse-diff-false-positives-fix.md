@@ -1,5 +1,10 @@
 # 修复 ui-v4 "upstream vs forwarded" SSE diff 满屏假差异
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：`ui-v4/src/lib/diff/block-diff.ts`（canonicalRaw/coalesceDeltas）
+> **备注**：JSON 键序规范化 + 同块 delta 合并全落地
+
 ## Context
 
 ui-v4 请求详情的 Response 段有一块 "upstream vs forwarded" diff，本意是凸显被过滤/合成/改写的帧（如 thinking-signature shim、server-tool filter）。但实测 req_1782730931656_6：upstream 38 帧、forwarded 36 帧（去 3 个 keepalive ping），累积文本逐字相同（663 字符），diff 却把 31 帧标成 modified/removed/added —— 信号被噪声淹没，没法用。

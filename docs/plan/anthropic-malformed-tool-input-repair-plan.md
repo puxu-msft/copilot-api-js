@@ -1,5 +1,10 @@
 # Plan: 拦截清洗畸形 tool_use input —— 实现交接稿（plan-review 接线修正后）
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `toolRepairMalformedInput`；spec/anthropic-malformed-tool-input-repair.md
+> **备注**：核心修复能力全落地；原三档枚举后被 tool-input-repair-composable-items 演进为可叠加项目集
+
 > 对应 spec：[docs/spec/anthropic-malformed-tool-input-repair.md](../spec/anthropic-malformed-tool-input-repair.md)（已过两轮对抗审查 + 主线核验，§7 记接线修正）。
 > 落地形态：扩展既有 `src/lib/anthropic/decode-tool-input.ts` 解码器 + handler fail 信号（**挂 ctx 非 acc**），配置 `anthropic.tool_repair_malformed_input: false|"tags"|"repair"`，默认关。
 > 范围：仅 Anthropic 路径。commit invariant：每个 phase 的 commit 都让系统**绿且不半坏**（`false` 时逐字节同前）。

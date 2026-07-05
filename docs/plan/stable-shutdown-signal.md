@@ -1,5 +1,10 @@
 # 重做:稳定的 shutdown 信号(根除 case b)
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：`src/lib/shutdown.ts` `createShutdownController`/`getShutdownSignal`；docs/shutdown.md「shutdown 不可取消」
+> **备注**：case b 根治：eager stable 信号 + thunk 移除 + 显式 listener 管理
+
 ## Context（背景）
 
 上一轮已修复 graceful shutdown 静默截断 SSE 流的 bug(已合并、三轮 review 通过)。但实施中发现一个**更深的设计缺陷 case b**,上一轮把它当作"可接受的限制"放过——这不符合"修复根本原因、选最优结构方案"的原则。本轮重做,彻底根除它。

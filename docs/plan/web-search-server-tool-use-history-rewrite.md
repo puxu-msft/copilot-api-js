@@ -1,5 +1,10 @@
 # Plan: 修复 web_search double-hop 自产 `server_tool_use{web_search}` 回传导致上游 400
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `rewriteHistoryServerTools`（config 键 tool_rewrite_history_server）；sanitize/rewrite-server-tool-history.ts
+> **备注**：消息拆分式 downgrade 落地；另有 always-on 兜底 downgradeEmptyEncryptedSearchResults 叠加
+
 ## Context（为什么要做）
 
 ### Bug 现象

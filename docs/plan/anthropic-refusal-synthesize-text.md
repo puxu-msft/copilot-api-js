@@ -1,5 +1,10 @@
 # 拦截 Anthropic upstream "refusal" 响应 — 合成可用文本完成
 
+> **实施状态：部分完成**
+> **落地**：—
+> **现状锚点**：`src/lib/anthropic/recover-refusal.ts`（createRefusalRecoverer）；docs/refusal-recovery.md；config `anthropic.refusal_sse_rewrite`
+> **备注**：本 plan 落地 bool refusal_recover_text（合成 text + end_turn），随后被 refusal-sse-rewrite-enum 升级为三值枚举；end_turn 算法核按原形状存活
+
 ## Context（为什么做）
 
 实测 `req_1782214935133_68`（opus-4.8，432k input、112 tools、adaptive thinking，正经编码轮 "修，然后再看看相关的整体范围"）：上游回了一条**只有一个 thinking 块**（empty text、**有效非空 signature**）、**无 text/tool_use**、`stop_reason:"refusal"` 的流：

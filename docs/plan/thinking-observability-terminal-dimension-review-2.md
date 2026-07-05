@@ -1,5 +1,7 @@
 # 对抗性审查:thinking observability 合并为 `{requested, effective}` 方案
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [thinking-observability-terminal-dimension.md](thinking-observability-terminal-dimension.md)。
+
 ## 裁判轴
 长远正确 + 完整。下列为亲自读 file:line 后确认的真实缺陷,按严重度排。不赞同方案"display-only、无行为变化、安全"的自我定性 —— 它在重试维度引入了**新的归因错误 + 跨 attempt 矛盾展示**,这两点是 display 正确性问题。
 

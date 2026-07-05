@@ -1,5 +1,10 @@
 # History Entry Pin/Unpin（后端 API）
 
+> **实施状态：已完成**
+> **落地**：ceab09b
+> **现状锚点**：DESIGN history pinned 契约 + `/history/api/entries/:id/pin|unpin` 路由
+> **备注**：schema/reaper/serialize/read/write/store/REST/类型全清单落地，无 config 键（纯 REST）
+
 ## Context
 
 调试时常需要保留某条 history entry 的完整原始数据（请求/响应/sseEvents/per-attempt），但 SQLite reaper 按 success/failure 两桶超额淘汰（`history.success_limit`=50 / `history.failure_limit`=200），关键样本会被挤掉而消失。本特性给 entry 增加 **pin** 状态：被 pin 的条目永不被 reaper 淘汰、且不占用保留名额，从而在 debug 期间钉住原始数据。

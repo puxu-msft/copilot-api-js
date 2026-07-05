@@ -1,5 +1,10 @@
 # 移植 GHC 的 message 级 cache 断点策略进 proxied 模式
 
+> **实施状态：已完成**
+> **落地**：7751bed
+> **现状锚点**：运行时选项 `cacheControlMode`（proxied 缓存对话历史）；request-preparation.ts addMessageCacheControl
+> **备注**：GHC message-优先断点注入 + inline system 跳过 + string→text 转换全落地
+
 ## Context（为什么做）
 
 实测发现：`cacheControlMode:"proxied"`（默认）把 Claude Code 自带的 message 级 `cache_control` 断点剥光，只在 last-tool + last-system 注入两个断点。结果对话历史（agentic loop 的大头，单轮十几万~八十万 token）**每轮全价重算**，长会话缓存率仅 2–3% 且随对话增长递减。

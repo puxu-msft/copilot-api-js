@@ -1,5 +1,10 @@
 # 拆分 success / failure history limit
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `historySuccessLimit`/`historyFailureLimit`；reaper 分桶淘汰
+> **备注**：双桶独立淘汰落地；旧 history.limit 保留为兼容垫片
+
 ## Context
 
 当前 history 写入 SQLite 后,reaper 用单一 `history.limit`(state 里 `historyLimit`,默认 200)对**全表**按 `started_at ASC` 淘汰最旧的超额行,不区分请求成败([reaper.ts:13-19](src/lib/history/sqlite/reaper.ts#L13-L19))。问题:一批刷屏的失败请求会把有价值的成功历史挤出表;反之亦然。两类记录的诊断价值和保留需求不同,应各自独立配额。

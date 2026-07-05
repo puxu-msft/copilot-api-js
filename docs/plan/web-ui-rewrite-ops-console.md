@@ -1,5 +1,10 @@
 # Web UI 重写：Activity + Detail + Models（高密度运维控制台）
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：`ui/src/utils/status-meta.ts`（单一状态表）+ ui/src/components/{activity,detail}/；后端 history/types.ts
+> **备注**：§0-§4 全落地；LifecycleStrip.vue 以 StageTabs.vue + stages/ 子组件实现，能力等价
+
 ## Context（为什么 / 目标）
 
 后端近期获得丰富可观测数据——per-attempt 真实 wire body（Bug3）、`aborted`/`interrupted` 终态、stats 分列、process(pid/version)、24 字段 EntrySummary、`/api/models` raw 全能力——但前端**完全没展示**。同时现有 UI 有结构病：状态显示 bug（aborted/interrupted 退化成 pending）、丢失搜索框、`outboundRequest` 真实 wire body 无视图、多腿无对比、Models 宽松卡片、死代码堆积、预存类型错误。

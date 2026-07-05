@@ -1,5 +1,7 @@
 # 兼容层技术正确性审查报告
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [config-rename-backcompat-layer.md](config-rename-backcompat-layer.md)。
+
 审查对象：cheeky-painting-star.md 的向后兼容迁移层。所有结论基于实际代码而非推理。
 
 ## 断言逐一裁决

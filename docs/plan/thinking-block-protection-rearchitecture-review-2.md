@@ -1,5 +1,7 @@
 # 第二轮收敛复核结论
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [thinking-block-protection-rearchitecture.md](thinking-block-protection-rearchitecture.md)。
+
 ## 逐项核实(亲手读码)
 
 ### 1. must-fix compat 值迁移 — RESOLVED(诊断+测试层),实现描述 PARTIAL

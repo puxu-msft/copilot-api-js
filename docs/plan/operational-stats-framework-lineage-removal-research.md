@@ -1,5 +1,7 @@
 # Research: OpenTelemetry vs self-built telemetry for copilot-api-js
 
+> **类型**：研究报告 —— 非独立 plan，实施状态见父 plan [operational-stats-framework-lineage-removal.md](operational-stats-framework-lineage-removal.md)。
+
 Research-only task. Deliverable = findings report below (no code changes proposed).
 
 ## Verdict

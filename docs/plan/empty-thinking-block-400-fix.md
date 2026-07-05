@@ -1,5 +1,10 @@
 # 空 thinking block 400 修复 + History 转发态记录 + 命名对齐重构
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `thinkingBlockSanitizeCheck`；`src/lib/history/sqlite/schema.ts` 四腿命名
+> **备注**：三阶段全落地；config 键落地为 thinking_block_sanitize（去 _check 后缀），能力等价
+
 ## Context
 
 **触发问题**：客户端（Claude Code）回传 `{type:"thinking", thinking:"", signature:""}` 双空 thinking block，sanitize 管道原样透传给上游 → `HTTP 400: messages.N.content.0.thinking: each thinking block must contain thinking`。

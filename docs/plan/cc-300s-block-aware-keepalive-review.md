@@ -1,5 +1,7 @@
 # 对抗性审查报告 — block-状态感知 keepalive plan
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [cc-300s-block-aware-keepalive.md](cc-300s-block-aware-keepalive.md)。
+
 审查对象：`/home/xp/.claude/plans/sorted-waddling-thimble.md`
 裁判轴：architecture-health-first / best-complete-solution / richest-data-flow（非 ROI/YAGNI）
 方法：读码 + REPORT 实测核对，非附和。

@@ -1,5 +1,10 @@
 # 修复：web_search 双跳破坏 thinking 块 + 令每个 Claude-Code 请求付出双跳代价
 
+> **实施状态：已完成**
+> **落地**：65dfe57
+> **现状锚点**：DESIGN 旁路 [bypass] web_search 行；`src/routes/messages/web-search-handler.ts`
+> **备注**：probe/complete 拆分 + pass-through 重派 + probe usage 入 history + synthesize thinking 加固全落地
+
 ## 背景
 
 **Bug（经三层运行时诊断 + pid 归因彻底定位）。** copilot-api 代理 Anthropic `/v1/messages`。`web_search` 双跳特性（config `web_search.enabled: true`）拦截任何携带 Claude Code `WebSearch` 工具的请求。Claude Code **每个请求**都声明 `WebSearch`，所以特性开启时**所有请求**都被拦截，绕过正常的 `handleDirectAnthropicCompletion → processOneStreamEvent` 路径——而 thinking-signature shim（`applyThinkingSignatureCompat`）正接在那里。

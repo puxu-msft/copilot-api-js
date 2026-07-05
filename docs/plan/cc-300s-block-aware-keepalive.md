@@ -1,5 +1,10 @@
 # 修复 Claude Code 流式 300s「no chunks received」断连 —— block-状态感知 keepalive
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `streamKeepaliveMode`（ping|content_delta）；`src/lib/anthropic/keepalive-frame.ts`
+> **备注**：Phase 0 实测 + sink block 状态机 + config + web_search 全落地
+
 ## Context（为什么做这个改动）
 
 用户报告 Claude Code 在长 opus thinking 静默（pre-content 沉默几百秒）时约 280s 断连，报 `API Error: Stream idle timeout - no chunks received`，现有 `event: ping` keepalive **无法阻止**。

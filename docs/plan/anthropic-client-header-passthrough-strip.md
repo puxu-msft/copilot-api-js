@@ -1,5 +1,10 @@
 # Anthropic 上游客户端头透传 + 头剥离
 
+> **实施状态：已完成**
+> **落地**：2026-06
+> **现状锚点**：state.ts `strictRequestHeaders`/`requestHeaderBlacklist/Whitelist`；`src/lib/anthropic/header-policy/request-header-forward.ts`
+> **备注**：原单一 strip 键先按原形状落地，后演进为 blacklist/whitelist 双模式 + 请求/响应双侧镜像，旧键经 compat 迁移
+
 ## Context
 
 排查"剥 attribution header"时实测发现更根本的架构事实：代理对发往 GHC 的上游请求头**从零重建**（`copilotHeaders` 固定 allowlist，[copilot-api.ts:76](src/lib/copilot-api.ts#L76)），客户端入站头里**只有 `anthropic-beta` 的值**被透传，其余（含 Claude Code 注入的 `x-anthropic-billing-header` attribution）在构建上游请求时全被静默丢弃（exp/attribution-header-wire-check/probe.ts 探针实证）。

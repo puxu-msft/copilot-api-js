@@ -1,5 +1,10 @@
 # 全面修复：让 https 上游重新 honor proxy 配置
 
+> **实施状态：已完成**
+> **落地**：09e4e09
+> **现状锚点**：`src/lib/transport/proxy-connect.ts`；DESIGN 运行时兼容表「代理」格；skill bun-upstream-transport
+> **备注**：node:http2 隧道 honor 代理（CONNECT/HTTPS + SOCKS5，Bun/Node 两端），Bun SOCKS5 限制解除
+
 ## Context（为什么做这个改动）
 
 **回归现状**：proxy.ts 本身功能完整（HTTP/HTTPS via `ProxyAgent`、SOCKS5/5h via 自定义 connector、env-based、热重载），但它**只织进 undici dispatcher**。自从 [ae852f0](src/lib/transport/http2-client.ts) 把 https 上游热路径从 undici 迁到 `node:http2`（根治 Bun 下 undici 对 GHC h2 chunked 响应永久挂），**所有 `https://` 上游**（GHC `api.*.githubcopilot.com`、`api.github.com`、`api.anthropic.com`——即全部真实上游）都走 [http2-client.ts:54-78](src/lib/transport/http2-client.ts#L54-L78) 的 `createConnection`，它直接 `tls.connect` 到目标 authority，**零代理支持**。只有明文 `http://`（本地 SearXNG）还经 undici dispatcher honor 代理。Bun 与 Node 两端皆如此。

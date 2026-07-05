@@ -1,5 +1,10 @@
 # 新增 `anthropic.system_messages_sanitize` 配置项:处理 messages 里混入的 inline system 消息
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `systemMessagesSanitize`；`src/lib/anthropic/sanitize/system-messages.ts`
+> **备注**：核心纯函数 + 主路径 + count_tokens + web_search 全落地，与 plan 形状一致
+
 ## Context(背景与动机)
 
 **问题**:发往 Anthropic Messages API(`/v1/messages`)的请求,若 `messages` 数组里混入了 `role:"system"` 的消息,上游返回:

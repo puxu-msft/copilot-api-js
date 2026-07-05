@@ -1,5 +1,10 @@
 # 修复：陈旧请求 reaper 空有其名 + 上游 abort 拒绝崩溃整服务器
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：`src/lib/context/request.ts`（reapInFlight/lifecycleSignal）；archive/2606-landed-rfcs/stale-reaper-cancellation.md
+> **备注**：两缺陷（reaper 空名 + abort 崩服务器）均修；命名演进为 reapInFlight/lifecycleSignal
+
 ## Context（为什么做这个）
 
 生产日志里一条 opus-4.8 流式 `/v1/messages` 请求（L2 buffered retry 开启：`protect_streaming_generation: tool_use_only`）卡住，被 stale reaper 在 911s「force-fail」，紧接着抛出一条 **未捕获的 `AbortError`**：

@@ -1,5 +1,10 @@
 # Show retryable request errors in TUI as `[RETRY-n]` lines
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：`src/lib/observability/sinks/console.ts`（[RETRY-n] prefix）+ projections/log-line.ts；DESIGN Console UI 日志原则
+> **备注**：plan 的 src/lib/tui/* 已被 observability event-bus 重写取代，[RETRY-n] 能力等价落于新架构
+
 ## Context
 
 When a request hits a retryable error (network reset, 413 token limit, deferred tool, legacy thinking, body-field rejection, unsupported beta, expired token, etc.) the pipeline silently retries and only the **final** outcome reaches the TUI — `[ OK ]` if recovery succeeded, `[FAIL]` if it didn't.

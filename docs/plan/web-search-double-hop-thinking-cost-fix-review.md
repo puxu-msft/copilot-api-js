@@ -1,5 +1,7 @@
 # 独立审查：imperative-hopping-twilight 修复方案
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [web-search-double-hop-thinking-cost-fix.md](web-search-double-hop-thinking-cost-fix.md)。
+
 亲手读完方案 + handler.ts / web-search-handler.ts / orchestrator.ts / synthesize.ts /
 thinking-signature-compat.ts / stream-accumulator.ts / request.ts / manager.ts /
 pipeline.ts(request) / pipeline.ts(anthropic) / message-tools.ts + 4 个测试文件。

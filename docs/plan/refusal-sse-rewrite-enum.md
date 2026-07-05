@@ -1,5 +1,10 @@
 # 把 `refusal_recover_text` 改造为三值枚举 `refusal_sse_rewrite`
 
+> **实施状态：已完成**
+> **落地**：d11d930
+> **现状锚点**：运行时选项 `refusalSseRewrite`（refusal|end_turn|error）；recover-refusal.ts
+> **备注**：bool→三值枚举 + error 帧/ctx.fail + compat 迁移全落地
+
 ## Context
 
 当前 `anthropic.refusal_recover_text`（布尔，state `recoverRefusalText`）只有两态：开=把上游 thinking-only refusal（`stop_reason:"refusal"` 仅有 thinking 块、无 text/tool_use）合成成一个 `end_turn` 文本轮；关=透传原始 refusal。用户要新增第三种处理——把 refusal 以**普通 error SSE** 呈现给客户端，并在代理内部**记请求失败**（对齐截断检测的"上游语义失败必须 `ctx.fail`、不可谎报 complete"不变量）。

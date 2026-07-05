@@ -1,5 +1,10 @@
 # P2.2 — `codec/openai-cc.ts`（首个 FormatCodec 实现）
 
+> **实施状态：已完成**
+> **落地**：b6f22c2
+> **现状锚点**：`src/lib/codec/openai-cc/codec.ts`（DESIGN 活的架构现状 codec 行）
+> **备注**：文件落到子目录 codec/openai-cc/codec.ts；P2.2「不接线」约束已被后续 phase 正常超越，codec 现为活路径
+
 ## Context
 
 v4 管线重构进入 P2：建 driver、逐格式从旧 handler 切到新七阶段管线。P2.1 已落地 driver 骨架（`createPipelineDriver`）+ `FormatCodec` 接口（`src/lib/pipeline/types.ts`，8 方法，**已锁**）。

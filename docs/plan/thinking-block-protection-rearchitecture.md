@@ -1,5 +1,10 @@
 # Thinking 块保护体系重构(实证驱动)
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `thinkingBlockMessagePolicy`（preserve|stripped）；`src/lib/anthropic/thinking-protection.ts`
+> **备注**：Part 1-4 全落地；旧 immutable/fixed-index policy 全仓零残留（旧文件为 deprecated shim）
+
 ## Context(为什么做这个重构)
 
 thinking 块是 Anthropic 模型的加密签名推理块。现有保护体系基于"signature 脆弱/绑定上下文/位置敏感"的**过度保守假设**,设计了三档 policy(`stripped`/`immutable`/`fixed-index`)+ 散落在 8 个清洗 pass 的短路保护。

@@ -1,5 +1,10 @@
 # Plan: model `thinking` observability as a per-request terminal dimension
 
+> **实施状态：已完成**
+> **落地**：ac7e4b0
+> **现状锚点**：`src/lib/observability/sinks/console.ts`（entry.thinking 终态渲染）
+> **备注**：按修订设计（fixed requested 源 + overwrite effective）落地；thinking-wire FeatureKind 已删
+
 ## Context
 
 A successful request logs `( thinking:adaptive, thinking-wire:adaptive )` on the `[ OK ]` line. The pair is redundant when no coercion happened, and only carries signal when the two differ (old client sends `thinking:enabled` → an adaptive-only model coerces it → `thinking:enabled→adaptive`).

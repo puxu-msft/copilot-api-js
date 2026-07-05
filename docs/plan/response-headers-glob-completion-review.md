@@ -1,5 +1,7 @@
 # 审计报告：response-header blacklist/whitelist glob 补全计划
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [response-headers-glob-completion.md](response-headers-glob-completion.md)。
+
 裁判轴：empirical-verification（探针实测、读源码逐字符）+ best-complete-solution + 向后兼容字节级。结论：**计划设计正确，向后兼容真逐字节，无安全地板绕过风险**。4 条核验全部成立，附 2 条次要收尾提示（不影响设计成立性）。
 
 ## 1. 向后兼容是否真逐字节 — 已核验成立（探针实测零 mismatch）

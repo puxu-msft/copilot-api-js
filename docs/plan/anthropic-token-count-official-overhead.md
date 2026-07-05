@@ -1,5 +1,10 @@
 # 把 Anthropic token 计数改成镜像官方结构开销算法（纯本地，无配置开关）
 
+> **实施状态：未实施（未采纳）**
+> **落地**：—
+> **现状锚点**：现状仍走 `src/lib/anthropic/auto-truncate/token-counting.ts` 的 contentToText 拍平计数
+> **备注**：结构化开销算法未移植（grep BASE_TOKENS_PER_MESSAGE 空、token-counting.ts:14 仍 contentToText）；注：同名 -review.md 是错配的无关文件
+
 ## Context（为什么做这个改动）
 
 用户洞察被实测+源码证实：**Copilot 后端不用 gpt-tokenizer 拍平文本计数**。当前 auto-truncate 的 `contentToText`（[token-counting.ts:14](src/lib/anthropic/auto-truncate/token-counting.ts#L14)）把 Anthropic message 的 block 拍平成纯文本喂 tiktoken，对 tool 密集 payload 只估出真实值的 ~1/2（factor 2x）。

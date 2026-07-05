@@ -1,5 +1,10 @@
 # 导出单条请求全量信息为 `.json.zst`
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：DESIGN 管理 API `/history/api/entries/:id/export`；ui/src/utils/export-entry.ts
+> **备注**：后端 zstd 全量导出 + 前端二进制 fetch 全落地
+
 ## Context（为什么做）
 
 ui-v4 详情页现有 "Export" 按钮走 `downloadEntryAsJson(entry.value)`（[export-entry.ts](ui/src/utils/export-entry.ts)）——在浏览器里 `JSON.stringify` 已加载的 entry 存为**明文 JSON**。两个问题：

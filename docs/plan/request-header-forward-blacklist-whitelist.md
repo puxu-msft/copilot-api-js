@@ -1,5 +1,10 @@
 # request-header 转发改造：blacklist/whitelist 双模式 + 重命名 + 新增 whitelist
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `requestHeaderBlacklist`/`requestHeaderWhitelist`/`strictRequestHeaders`；header-glob-strip.ts
+> **备注**：重命名 + 双模式 + 新 whitelist 全落地，compat 迁旧键
+
 ## Context（为什么做）
 
 当前 Anthropic 请求头转发策略由两个键控制，语义不够对称、命名不一致：

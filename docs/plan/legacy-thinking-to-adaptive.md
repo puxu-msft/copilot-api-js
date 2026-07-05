@@ -1,5 +1,10 @@
 # 旧版 thinking 参数 → 新版 adaptive thinking 转换
 
+> **实施状态：已完成**
+> **落地**：5942368（改名）
+> **现状锚点**：运行时选项 `coerceAdaptiveThinking`；request-preparation.ts coerce-thinking 步 + legacy-thinking-retry strategy
+> **备注**：plan 原名 normalizeLegacyThinking 在 Phase 4 改名为 coerceAdaptiveThinking；双层防御 + basic/best_effort 均落地
+
 ## Context（背景）
 
 **问题**：客户使用旧版 Claude Code CLI 向 Copilot 上游的 opus 4.6/4.7/4.8 等模型发请求时，body 携带旧协议的

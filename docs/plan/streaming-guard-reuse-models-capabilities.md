@@ -1,5 +1,10 @@
 # Plan: Streaming Guard 复用 + Models Capabilities 补齐
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：任务A `src/lib/stream.ts` guardSseIterable（被 handler-v4 复用）；任务B `src/lib/models/capabilities-mapper.ts` + /anthropic/v1/models
+> **备注**：两任务落地；任务A 锚点漂移——plan 的 pre-v4 handler.ts 已随 v4 迁移消失，guard 落 lib/stream.ts 由 handler-v4 复用
+
 ## Context
 
 Gemini compatible endpoint 已交付（前一份计划归档于 git 日志）。两项被 reviewer 推荐、用户确认有价值的后续重构同步推进：

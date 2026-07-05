@@ -1,5 +1,10 @@
 # 修复 ui-v4 Response 标签页信息错位 + 后端 proxy→client 数据缺失/错位
 
+> **实施状态：已完成**
+> **落地**：7302854
+> **现状锚点**：DESIGN「响应腿数据模型」段；`src/lib/context/request.ts` fail(upstreamSucceeded)/_failureReason + client-sink writeSynthetic
+> **备注**：Phase 1（forwarded 忠实记录合成帧）+ Phase 2（outboundResponse 数据模型修）均落地
+
 ## Context（为什么做）
 
 ui-v4 请求详情页 **Response** 标签页在失败请求（典型：AskUserQuestion 的 tool input 无法修复 → `unrepairable malformed tool_use input`）上信息组织错位：代理产生的失败结论被埋进 / 混淆进 "Upstream → Proxy" 腿，且**流式响应根本不渲染 "Proxy → Client" 节**。用户要求：加 proxy→client 节、正确组织所有信息；并全面检查后端内容缺失/错位并**重构修复**。

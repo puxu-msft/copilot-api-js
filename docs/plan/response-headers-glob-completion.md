@@ -1,5 +1,10 @@
 # 补全 response headers 的 blacklist/whitelist glob 处理
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `strictResponseHeaders`/`responseHeaderBlacklist`/`Whitelist`；`response-header-forward.ts`
+> **备注**：响应侧三件套对称补全，DESIGN + bundled config 同步
+
 ## Context（为何做这个改动）
 
 请求侧的客户端→上游 header 转发已是**三件套**对称结构（`strict_request_headers` 模式开关 + `request_header_blacklist` + `request_header_whitelist` 两份 glob 名单），operator 可按 glob 精确控制。

@@ -1,5 +1,10 @@
 # Plan: 可扩展运营 stats 框架（dimension/measure registry）+ 删除 lineage/sessions 物化表
 
+> **实施状态：已完成**
+> **落地**：b1ea54a
+> **现状锚点**：`/api/stats`/`/metrics` 路由 + `src/lib/request-telemetry.ts`；spec/operational-stats-and-lineage-removal.md
+> **备注**：9 commit 全落地；lineage/sessions 物化表已 DROP，/metrics 含 histogram（比 plan §7 更完整）
+
 > **执行态（2026-06-23）**：6/9 commit 已落地（删除阶段 + agentId + telemetry registry 框架），剩 commit 7-9。
 > **交接文档 + 每 commit self-contained 提示词** 见仓库 `.workflow/.scratchpad/operational-stats-handoff.md`（含已落地 commit 哈希、架构现状、并发上下文、踩坑、commit 7-9 kick-off 提示词、2 轮 review 结论）。续作先读它。
 

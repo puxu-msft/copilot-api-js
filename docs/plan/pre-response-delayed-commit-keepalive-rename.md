@@ -1,5 +1,10 @@
 # P2 + P3 — ③ pre-response 延迟-commit 保活 + keepalive 命名一族重整
 
+> **实施状态：已完成**
+> **落地**：3b9e0cb/c765a1f
+> **现状锚点**：运行时选项 `streamCommitAfterSec`+`streamKeepalivePingSec`；spec/pre-response-abort-handling.md §4
+> **备注**：③延迟-commit + keepalive 命名族均落地；plan 的 stream_keepalive_grace_sec 被 streamCommitAfterSec 取代、ping 默认 45→20
+
 ## Context
 
 opus-4.8 在发出**第一个 HTTP 响应头之前**就 server-side adaptive thinking 静默数十秒~数百秒（RFC incident，`docs/rfc/pre-response-abort-handling.md` §1）。P1 Q2 实测（`exp/q2-oracle/REPORT.md`）已 pin：**Claude Code 的请求超时是 idle 型、阈值 ≈ 60s、超时即断+自动重试**；当前代理在 pre-response 期不向客户端发任何字节 → CC 在 60s idle 后断开。①②④⑤ 已落地只把故障**记录正确**；**③ 才真正防止断线**——对 `stream:true` 请求在 grace 窗口（默认 40s，< 60s 硬约束）耗尽后提前开 200 SSE 流并周期 ping（< 60s cadence），把 opus 长思考期间的连接保活。

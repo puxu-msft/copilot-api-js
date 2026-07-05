@@ -1,5 +1,7 @@
 # 计划审计报告 — misty-sparking-candy.md
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [tui-retry-n-lines.md](tui-retry-n-lines.md)。
+
 审计对象：让 retryable 请求错误在 TUI 显示为 `[RTRY]` 行。
 计划文件：`/home/xp/.claude/plans/misty-sparking-candy.md`
 

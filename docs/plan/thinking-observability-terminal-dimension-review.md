@@ -1,5 +1,7 @@
 # 对抗性审查:thinking 可观测性合并方案
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [thinking-observability-terminal-dimension.md](thinking-observability-terminal-dimension.md)。
+
 裁判轴:长远正确 + 完整 + richest-data-flow + single-source-of-truth；YAGNI 仍成立。
 
 ## 结论速览

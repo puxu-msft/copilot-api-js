@@ -1,5 +1,10 @@
 # Plan: `anthropic.strict_response_headers` — Anthropic 上游响应头转发
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `strictResponseHeaders`；`src/lib/anthropic/header-policy/response-header-forward.ts`
+> **备注**：双模式 blacklist/whitelist + 安全地板全落地，与 plan 一致
+
 ## Context（为什么做）
 
 当前代理对**响应 header 是完全隔离**的——上游 GitHub Copilot（GHC）→ proxy 的 response header 一个都不会透传给 client。所有写出点（流式 `streamSSE`、非流式 `c.json`、错误 `forwardError`）都由 Hono/proxy 重新合成响应头。后果：`request-id`、`anthropic-ratelimit-*`（限流配额）、`anthropic-organization-id` 等运营/诊断价值高的字段对客户端不可见，客户端无法感知自己的速率预算、也无法用 request-id 与服务端对账。

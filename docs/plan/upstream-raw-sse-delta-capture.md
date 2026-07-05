@@ -1,5 +1,10 @@
 # 完整记录上游原始 SSE delta —— 补上诊断盲区
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：`src/lib/pipeline/driver.ts`（记录所有上游帧仅跳 [DONE]）；前端 SseEventsSection.vue
+> **备注**：能力落地但机制不同——v4 driver 阶段边界采样全 5 格式统一，取代 plan 的 legacy handler.ts 单点（已删）
+
 ## Context（为什么做这个改动）
 
 本会话反复出现客户端报 `Your tool call was malformed and could not be parsed`,但 copilot-api 侧 History 里这些请求全部 `status=completed`、`stop_reason=tool_use`、有正常 `output_tokens`。为定位「是上游返回问题还是代理问题」,深入代码后发现一个**诊断盲区**:

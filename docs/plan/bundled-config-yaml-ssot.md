@@ -1,5 +1,10 @@
 # Bundle a default `config.yaml` as the configuration source of truth
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：DESIGN「配置加载层级」；`config.ts` loadBundledDefaultConfig/loadConfig 深合并
+> **备注**：bundled defaults + user sparse override + retain-on-absence 全落地；CLAUDE.md 已引用此机制
+
 ## Context
 
 Today the canonical defaults for every hot-reloadable setting live as hardcoded

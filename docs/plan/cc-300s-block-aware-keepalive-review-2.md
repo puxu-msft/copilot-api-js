@@ -1,5 +1,7 @@
 # 对抗性审查：CC 300s keepalive 修复 plan 的证据充分性
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [cc-300s-block-aware-keepalive.md](cc-300s-block-aware-keepalive.md)。
+
 审查对象 plan：`/home/xp/.claude/plans/sorted-waddling-thimble.md`
 实测报告：`exp/cc-idle-280s/REPORT.md` + `mock.ts` + `run-arm.sh` + `*.mock.log`/`*.cli.log`
 

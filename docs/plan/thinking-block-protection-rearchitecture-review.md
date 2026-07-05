@@ -1,5 +1,7 @@
 # 对抗式审查结论 — thinking 块保护体系重构 plan
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [thinking-block-protection-rearchitecture.md](thinking-block-protection-rearchitecture.md)。
+
 这是只读审查，不执行重构。下方是逐项 verdict + 独立发现。
 
 ## 概要判定

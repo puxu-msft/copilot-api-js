@@ -1,5 +1,10 @@
 # 把 `tool_repair_malformed_input` 从枚举档位重构为可叠加修复项目集 + 新增坏 Unicode 转义修复
 
+> **实施状态：已完成**
+> **落地**：d66cda3
+> **现状锚点**：运行时选项 `toolRepairMalformedInput`（逗号分隔项目集）；spec/anthropic-malformed-tool-input-repair.md
+> **备注**：C1 项目集重构 + C2 unicode 修复 + C3 doc-sync 全落地（干净破坏、""=off）
+
 ## Context
 
 **问题**:常驻 4141 上一条真实 FAIL(`req_1782778207147_144`,claude-opus-4-8,AskUserQuestion)经字节级诊断,根因是上游把 `questions` 字段里一个 `\uXXXX` 转义生成坏了——`默`("默")写成 `\u9 ed8`(4 位 hex 被空格打断),整个 stringified JSON 在 position 200 报 `Bad Unicode escape`。

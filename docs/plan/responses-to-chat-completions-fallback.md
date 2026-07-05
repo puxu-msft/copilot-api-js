@@ -1,5 +1,10 @@
 # 计划 v3：引入 PR#3 的 Responses → Chat Completions Fallback
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：`src/routes/responses/fallback.ts`（shouldForceChatCompletionsFallback）；DESIGN Responses fallback 行
+> **备注**：执行主体从 executeResponsesViaChatCompletions 演进到 v4 driver 路径；previous_response_id 对话重建已补全
+
 > v3 修订（在 v2 基础上吸收第 3 轮 subagent review 的 11 项新发现 + 用户 4 项决策）
 
 ## Context

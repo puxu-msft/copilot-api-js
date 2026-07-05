@@ -1,5 +1,10 @@
 # 忠实转发客户端 query string 到上游
 
+> **实施状态：部分完成**
+> **落地**：bb3d02d（仅 P0 primitive）
+> **现状锚点**：`src/lib/transport/query-forward.ts`（filterUpstreamQuery，未接线）
+> **备注**：仅 P0 primitive + 单测落地；零消费者（http-transport.ts 仍裸 wire.url），接线/config/ctx.query/history 双记录未做——query 目前仍被丢弃
+
 ## Context（为什么做）
 
 客户端访问 `/v1/messages?beta=true`（或任何带 query 的完成端点）时，proxy 当前用固定模板 `${copilotBaseUrl(state)}${endpointPath}` 重建上游 URL（[send.ts:118](src/lib/transport/send.ts#L118)），**客户端 query string 在此被静默丢弃**——既不转发给 GHC，也不记入 history。根因：`c.req.path` 不含 query，且 `RawHttpRequest`（[types.ts:199](src/lib/pipeline/types.ts#L199)）只携带 `path`、`wire.url` 是无 query 的 `ENDPOINT.*` 裸常量。

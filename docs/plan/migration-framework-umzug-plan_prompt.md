@@ -1,5 +1,7 @@
 # Prompts: 采纳 Umzug 迁移框架 —— 每 phase kickoff（hybrid,review 修正后）
 
+> **类型**：kick-off prompt —— 非独立 plan，实施状态见父 plan [migration-framework-umzug-plan.md](migration-framework-umzug-plan.md)。
+
 > 配 [migration-framework-umzug-plan.md](migration-framework-umzug-plan.md)（HOW + factory-anchor）+ [migration-framework-umzug.md](migration-framework-umzug.md)（WHY）。每 prompt 自包含；控制者按 DAG 贴给 implementer subagent（general-purpose、全量工具），每 phase 收尾派 spec + quality review。
 > **方案 = hybrid**（openDatabase 地板不动 + 独立 async forward-runner）——initheavy primary 经实测判不可行（async ripple ~20+ 文件 + chicken-and-egg）。
 >

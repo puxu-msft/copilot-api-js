@@ -1,5 +1,7 @@
 # Prompts: 拦截清洗畸形 tool_use input —— 每 phase kickoff（接线修正后）
 
+> **类型**：kick-off prompt —— 非独立 plan，实施状态见父 plan [anthropic-malformed-tool-input-repair-plan.md](anthropic-malformed-tool-input-repair-plan.md)。
+
 > 配套 [anthropic-malformed-tool-input-repair-plan.md](./anthropic-malformed-tool-input-repair-plan.md) + [spec](../spec/anthropic-malformed-tool-input-repair.md)。每个 prompt 自含，可在新会话直接粘贴。实现前读 spec §2.0（折叠进 decode）、§2.4（fail 信号挂 **ctx 非 acc**）、§7+§7.1（实测核验 + 接线修正，尤其回调真名 `onDecodeFailure`、jsonrepair 真实行为）。
 
 ## 公共前置（每 phase 都适用）

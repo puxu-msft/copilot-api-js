@@ -1,5 +1,7 @@
 # 对抗性审查报告:重试 NGHTTP2_REFUSED_STREAM 方案
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [http2-refused-stream-retry.md](http2-refused-stream-retry.md)。
+
 ## 裁决摘要
 
 方案的**核心分类思路、strategy 复用、RFC 边界划分均正确**,并经实测/RFC 独立裁决确认。但存在若干**未文档化的运行时差异缺口**与**测试有效性缺口**,其中一个(Bun 运行时下修复静默失效 + 测试测不到真实 wire)达 HIGH。以下按严重度分级,均附 file:line 与实证。

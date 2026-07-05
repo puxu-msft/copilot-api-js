@@ -1,5 +1,10 @@
 # Test Fixture Implementation Plan
 
+> **实施状态：部分完成**
+> **落地**：—
+> **现状锚点**：`tests/fixtures/` + `tests/helpers/fixtures.ts`（loadFixture/loadFixturePair）
+> **备注**：fixture 结构 + loader 落地；capture 脚本子项未建（scripts/capture-fixtures.ts 不存在），streaming 文件名为 events.jsonl
+
 ## Goal
 Capture real Copilot API request/response pairs as test fixtures for snapshot-based regression testing.
 

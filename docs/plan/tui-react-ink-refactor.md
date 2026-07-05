@@ -1,5 +1,10 @@
 # 重构 src/tui（React-Ink 监控应用）：拆组件 + 修复 cache 双色显示
 
+> **实施状态：未实施（reverted）**
+> **落地**：曾 d09cc79/38687b4 落地，后 52e50eb 移除
+> **现状锚点**：现由 `src/lib/observability/projections/` 取代（原 src/tui 已删）
+> **备注**：React-Ink TUI 曾短期落地，后随 observability 重写整体移除；本 plan 的重构目标随之失效
+
 ## Context
 
 `src/tui/app.tsx`（511 行单文件 React-Ink 应用，`ink@6.3.1` + `react@19.2.0`，经 `startTui()` 启动，轮询 `/api/status` + `/history/api/entries?limit=20`）当前有三个真实 bug + 视觉朴素：

@@ -1,5 +1,10 @@
 # 方案:重试上游 h2 `NGHTTP2_REFUSED_STREAM`(经双 subagent 对抗审查 + RFC 9113 裁决 + 运行时确认)
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：DESIGN error/ 模块图「classify http2 重试安全族」契约；classify.ts HTTP2_RETRYABLE_MESSAGE_TOKENS
+> **备注**：按 message 子串、只 scope REFUSED（不碰 CANCEL/INTERNAL），与 RFC 9113 + 探针决策一致
+
 ## Context(为什么做)
 
 生产(**运行时 = Bun**,已确认)上 `POST /v1/messages` 等每天约 10 次以 `[FAIL] … Stream closed with error code NGHTTP2_REFUSED_STREAM` 收场、返 500、History 记 `failed`。

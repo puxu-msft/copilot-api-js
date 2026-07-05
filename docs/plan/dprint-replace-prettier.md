@@ -1,5 +1,10 @@
 # 用 dprint 替换 Prettier,并强制多参数函数签名展开
 
+> **实施状态：未实施（rejected）**
+> **落地**：—
+> **现状锚点**：项目仍用 @echristian/eslint-config + Prettier（CLAUDE.md 代码风格），printWidth 160
+> **备注**：dprint 方案未采纳；无 dprint.json 配置、package.json 无 dprint 依赖、prettier.config.mjs 仍在
+
 ## Context（为什么做这个改动）
 
 用户有两个**方向相反的逐构造格式化偏好**:

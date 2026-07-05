@@ -1,5 +1,7 @@
 # 对抗性审查报告:重试 NGHTTP2_REFUSED_STREAM 方案
 
+> **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [http2-refused-stream-retry.md](http2-refused-stream-retry.md)。
+
 裁判轴:长远架构正确 + 范围内彻底 > 改动量;真实风险必修;richest-data-flow;doc-sync;但守 YAGNI。
 
 **总评**:方案的核心机制判断正确且经实测/源码验证。分类点选对了(REFUSED 走 `isNetworkError` 分支而非 HTTPError 分支),全 4 格式 + legacy web_search 自动修好,可观测性无盲点。但有若干 HIGH/MEDIUM 需在实施前落实,尤其**测试真实错误形态触达路径**与 **GOAWAY 同源漏洞的判断依据不足**。

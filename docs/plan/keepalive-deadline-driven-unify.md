@@ -1,5 +1,10 @@
 # fix: deadline 驱动的 keepalive —— 立即首 ping + cadence 节流 + clamp 离线远
 
+> **实施状态：已完成**
+> **落地**：723ac1f
+> **现状锚点**：运行时选项 `streamKeepalivePingSec`（clampKeepaliveCadence ≤40）
+> **备注**：cadence 上限 40 + 冷启动立即首 ping 按 plan 落地
+
 ## 设计（三层协调）
 deadline(CC body-idle ≈60s, 实测 ping@45s 存活) 才是危险线，cadence 是实现手段。三层各司其职：
 

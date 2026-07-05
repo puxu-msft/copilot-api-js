@@ -1,5 +1,10 @@
 # 配置项重命名 + 独立向后兼容层
 
+> **实施状态：已完成**
+> **落地**：ecff546
+> **现状锚点**：`src/lib/config/compat.ts` CONFIG_MIGRATIONS（含 8 项改名）
+> **备注**：独立 compat 层 + 8 项改名 + rate_limiter 秒化全链路落地
+
 ## Context（背景）
 
 当前 `config.yaml` 的配置项命名存在三类**真实缺陷**（非主观偏好）：

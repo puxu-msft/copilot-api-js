@@ -1,5 +1,7 @@
 # Prompts: search_index 内容寻址搜索 —— 每 phase kickoff
 
+> **类型**：kick-off prompt —— 非独立 plan，实施状态见父 plan [search-index-plan.md](search-index-plan.md)。
+
 > 配 [search-index-plan.md](search-index-plan.md)（HOW + factory-anchor）+ [search-index-content-addressed.md](search-index-content-addressed.md)（WHY + 契约）。每个 prompt **自包含**：控制者按 DAG 顺序贴给 implementer subagent（general-purpose、全量工具）；每 phase 收尾派 spec-review + quality-review subagent。
 >
 > **每个 prompt 必带的公共头**（控制者粘贴时附上）：

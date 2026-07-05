@@ -1,5 +1,10 @@
 # Plan: 统一 config hot-reload 测试 — 表驱动 + 完整性守卫 + 语义统一
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：DESIGN「Hot-reload 语义」小节；`tests/config/config-hot-reload.it.test.ts`（表驱动 + 完整性守卫）
+> **备注**：retain-on-absence + 表驱动测试全落地；plan 旧测试路径已迁 tests/config/*.it.test.ts
+
 ## Context
 
 [tests/component/config-hot-reload.test.ts](tests/component/config-hot-reload.test.ts) 当前为每个 config 字段手写一条 test。这种 per-field 风格有两个问题：

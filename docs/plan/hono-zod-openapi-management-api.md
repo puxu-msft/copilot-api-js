@@ -1,5 +1,10 @@
 # 计划:引入 @hono/zod-openapi(管理 API)+ 全量依赖升级
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：DESIGN 路由表 `/openapi.json`+`/docs` 行；`src/routes/openapi.ts`
+> **备注**：Part 1 依赖升级 + Part 2 OpenAPI 3.1+Scalar 全落地，范围扩至全 API 表面（两档保真度）
+
 ## Context(为什么做)
 
 本项目目前没有任何 OpenAPI/JSON schema——API 的"事实来源"只有 `docs/DESIGN.md` 的路由表。对外的 OpenAI/Anthropic/Gemini 兼容端点镜像三家**上游既有契约**(用户应参考上游官方 spec),但项目**自有的管理 API**(`/api/*` + `/history/api/*`)没有任何机器可读契约,也没有交互式文档。
