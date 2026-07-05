@@ -201,6 +201,7 @@ function thinkingDetail(c: DerivedCapabilities): string {
           <tr
             class="model-row"
             :class="{ selected: m.id === selectedId }"
+            :aria-selected="m.id === selectedId"
             @click="emit('select', m.id)"
           >
             <td class="td-id font-mono">

@@ -15,20 +15,13 @@ import {
   type ActiveRequestInfo,
   type RateLimiterChangeInfo,
 } from "@/api/ws"
-import { usePolling } from "@/composables/usePolling"
 import {
   //
   parseRequestTelemetry,
-  type RequestTelemetryBucket,
-  type RequestTelemetryModelBucket,
-  type RequestTelemetryModelStats,
   type RequestTelemetrySnapshot,
 } from "@/composables/telemetry-parse"
+import { usePolling } from "@/composables/usePolling"
 import { formatNumber } from "@/utils/formatters"
-
-// Re-export the telemetry types (now owned by telemetry-parse.ts) so existing
-// consumers importing them from "./useDashboardStatus" keep working.
-export type { RequestTelemetryBucket, RequestTelemetryModelBucket, RequestTelemetryModelStats, RequestTelemetrySnapshot }
 
 export interface QuotaItem {
   label: string
@@ -239,3 +232,12 @@ export function useDashboardStatus() {
     wsConnected,
   }
 }
+
+// Re-export the telemetry types (now owned by telemetry-parse.ts) so existing
+// consumers importing them from "./useDashboardStatus" keep working.
+export {
+  type RequestTelemetryBucket,
+  type RequestTelemetryModelBucket,
+  type RequestTelemetryModelStats,
+  type RequestTelemetrySnapshot,
+} from "@/composables/telemetry-parse"
