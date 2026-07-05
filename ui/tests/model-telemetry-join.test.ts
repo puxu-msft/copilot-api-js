@@ -45,6 +45,20 @@ describe("buildModelTelemetryIndex", () => {
     expect(idx.unmatched).toEqual([])
   })
 
+  test("merges a date-suffixed failure-leg alias onto the canonical model id (spec §4.2 core)", () => {
+    // Failure legs key on the verbatim client alias, which is often the dated form
+    // `claude-opus-4-8-20250514`. normalizeModelId strips the date + dashes → `claude-opus-4.8`,
+    // so it must merge with the canonical success leg rather than scatter to unmatched.
+    const idx = buildModelTelemetryIndex(
+      snap([stats("claude-opus-4.8", { requestCount: 4, successCount: 4 }), stats("claude-opus-4-8-20250514", { requestCount: 5, failureCount: 5 })]),
+      [model("claude-opus-4.8")],
+    )
+    const joined = idx.byId.get("claude-opus-4.8")
+    expect(joined?.last7d?.requestCount).toBe(9)
+    expect(joined?.last7d?.failureCount).toBe(5)
+    expect(idx.unmatched).toEqual([])
+  })
+
   test("recomputes averageDurationMs after aggregation", () => {
     const idx = buildModelTelemetryIndex(
       snap([stats("claude-opus-4.8", { requestCount: 2, totalDurationMs: 2000 }), stats("claude-opus-4.8", { requestCount: 2, totalDurationMs: 6000 })]),
