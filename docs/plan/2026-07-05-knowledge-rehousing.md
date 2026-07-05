@@ -1,7 +1,7 @@
 # 知识重新归位工程 — 计划 + 实施状态 + 交接
 
-> **实施状态（2026-07-05）**：Phase 0/A/B1/B2 **已完成并提交**（5 commits，见下）。Phase C（记忆库降引用层）/D（CLAUDE.md 重构）/E（核验+合并）**待续**。
-> **工作位置**：worktree `.worktrees/knowledge-rehousing`，分支 `chore/knowledge-rehousing`（基于 master `d96a607`）。**所有剩余工作在此 worktree 内做**，完成后 `git merge --no-ff` 回 master。
+> **实施状态（2026-07-05）**：Phase 0/A/B1/B2 **已完成并提交**。**Phase C 记忆文件处置已完成**（25 活记忆 = 16 stub 指 skill + 5 精炼 + pass-null 合并 verification 簇 + broken-reference/route-variant + v4/ghc project stub；删 15；归档 2；**反链零悬挂**已验证）。**Phase C 仅剩 `docs/memory/MEMORY.md` 重写为引用地图**（当前 MEMORY.md 仍是旧索引、指向已删/已变记忆，必须重写）。Phase D（CLAUDE.md 重构）/E（核验+合并）待续。
+> **工作位置**：worktree `.worktrees/knowledge-rehousing`，分支 `chore/knowledge-rehousing`。提交至 `2cc1940`。
 
 ## Context（为什么做）
 
