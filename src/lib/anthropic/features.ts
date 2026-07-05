@@ -189,6 +189,15 @@ export function modelSupportsExtendedCacheTtl(modelId: string, resolvedModel?: M
   )
 }
 
+/**
+ * Memory tool support (native `memory_20250818`). Mirrors GHC's `modelSupportsMemory` (anthropic.ts) —
+ * a BROADER set than extended-cache-ttl (includes bare sonnet-4 / opus-4 / opus-4.1). Metadata-first,
+ * then the config-driven `memoryModels` list.
+ */
+export function modelSupportsMemory(modelId: string, resolvedModel?: Model): boolean {
+  return metadataCapability(resolvedModel, "memory") ?? matchModelCapability(modelId, state.memoryModels, resolvedModel?.capabilities?.family)
+}
+
 // ============================================================================
 // Anthropic Beta Headers
 // ============================================================================
@@ -212,6 +221,15 @@ export interface AnthropicBetaHeaderOptions {
    * mirrors the body — never sent when only 5m breakpoints exist.
    */
   emitExtendedCacheTtlBeta?: boolean
+  /**
+   * Force the `context-management-2025-06-27` beta because a native memory tool is present. Memory and
+   * context-management share this beta upstream (GHC: `hasMemoryTool || contextManagement`). UNLIKE
+   * `forceContextManagementBeta`, this bypasses `disableContextManagement` — that flag disables the
+   * context_management BODY field (a separate negotiation-cache signal), but the memory server tool
+   * still needs the beta HEADER or it 400s. If the beta itself is genuinely unsupported, the downstream
+   * `filterUnsupportedBetas` + unsupported-beta-retry self-heal strips it.
+   */
+  forceMemoryContextBeta?: boolean
 }
 
 /**
@@ -267,7 +285,13 @@ export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model
     betaFeatures.push("interleaved-thinking-2025-05-14")
   }
 
-  if (!opts?.disableContextManagement && (isContextEditingEnabled(modelId, resolvedModel) || opts?.forceContextManagementBeta)) {
+  // context-management-2025-06-27 is shared by context-editing AND the memory tool (GHC:
+  // `hasMemoryTool || contextManagement`). Memory forces it even when the context_management BODY field
+  // is disabled (forceMemoryContextBeta bypasses disableContextManagement). Single push = dedup.
+  const needsContextManagementBeta =
+    (!opts?.disableContextManagement && (isContextEditingEnabled(modelId, resolvedModel) || opts?.forceContextManagementBeta))
+    || Boolean(opts?.forceMemoryContextBeta)
+  if (needsContextManagementBeta) {
     betaFeatures.push("context-management-2025-06-27")
   }
 

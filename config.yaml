@@ -260,6 +260,23 @@ anthropic:
       - claude-sonnet-4-5
       - claude-sonnet-4-6
       - claude-haiku-4-5
+    # Native memory tool (memory_20250818) support. Mirrors GHC modelSupportsMemory — BROADER than
+    # extended-cache-ttl. The bare `claude-sonnet-4` / `claude-opus-4` entries are load-bearing (cover all
+    # sonnet-4.x / opus-4.x); the specific entries below are redundant but self-documenting — do NOT drop
+    # the bare ones. / 原生 memory 工具（memory_20250818）支持。镜像 GHC，比 extended-cache-ttl 更宽。裸 `claude-sonnet-4`
+    # / `claude-opus-4` 是载荷项（覆盖所有 sonnet-4.x / opus-4.x），下面的具体项冗余但自文档——别删裸项。
+    memory:
+      - claude-fable-5
+      - claude-haiku-4-5
+      - claude-sonnet-4
+      - claude-sonnet-4-5
+      - claude-sonnet-4-6
+      - claude-opus-4
+      - claude-opus-4-1
+      - claude-opus-4-5
+      - claude-opus-4-6
+      - claude-opus-4-7
+      - claude-opus-4-8
     # Native server-side tool_search is DEFAULT-ALLOW for Claude ≥4.5 (Haiku + pre-4.5 denied), mirroring
     # GHC — new Claude models are picked up automatically, no list to maintain. This map holds per-model
     # OVERRIDES only: keys are model-name substrings ("*" = wildcard), value true=force-on / false=force-off.
@@ -369,6 +386,17 @@ anthropic:
   # for all models. / tool-search 总闸（同时管 advanced-tool-use beta 头与 Copilot tool_search 工具注入）。
   # 为 true 时对能力解析放行的每个模型启用（default-allow Claude ≥4.5，由上方 tool_search_overrides 细调）；false = 全部关闭。
   tool_search: true
+
+  # Anthropic memory tool (native memory_20250818 server tool). Default FALSE — CAPI acceptance of the
+  # server-tool type is UNVERIFIED (GHC only sends it on its direct-Anthropic BYOK path, not via CAPI).
+  # When true AND the model supports memory (model_capabilities.memory above), a client tool named
+  # `memory` is rewritten to {name:"memory", type:"memory_20250818"} and the context-management-2025-06-27
+  # beta is forced (memory rides that beta upstream). The tool is executed client-side (Claude Code), so
+  # there is no response-side handling. Off → the memory tool passes through as an ordinary custom tool.
+  # Anthropic memory 工具（原生 memory_20250818）。默认 FALSE——CAPI 是否接受该 server-tool 类型未实测（GHC 仅在直连 BYOK
+  # 路径发，不经 CAPI）。为 true 且模型支持时，把客户端 `memory` 工具改写为 {name,type} 并强制 context-management beta；
+  # 由客户端执行、无响应侧处理。关闭时按普通 custom tool 透传。
+  memory_tool: false
 
   # Additional tool names that should never be deferred when tool_search is enabled.
   # tool_search 启用时额外永不延迟的工具名。

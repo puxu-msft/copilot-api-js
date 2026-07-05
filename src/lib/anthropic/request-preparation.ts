@@ -34,6 +34,7 @@ import {
   modelHasAdaptiveThinking,
   modelSupportsContextEditing,
   modelSupportsExtendedCacheTtl,
+  modelSupportsMemory,
 } from "./features"
 import {
   //
@@ -68,6 +69,12 @@ export interface PrepareContext {
    * to emit `extended-cache-ttl-2025-04-11` exactly when the body needs it (header mirrors body).
    */
   wroteExtendedTtl?: boolean
+  /**
+   * Set by the `rewrite-memory-tool` step: true iff a client tool named `memory` was rewritten to the
+   * native `{name:"memory", type:"memory_20250818"}` server tool. Read by `build-headers` to force the
+   * shared `context-management-2025-06-27` beta (memory rides it, GHC-style).
+   */
+  hasMemoryTool?: boolean
 }
 
 /** One named prepare step. Mutates `ctx.wire` and/or `ctx.headers` in place. */
@@ -294,6 +301,7 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
     disableContextManagement: contextManagementDisabled,
     forceContextManagementBeta: willInjectEscalation,
     emitExtendedCacheTtlBeta: ctx.wroteExtendedTtl,
+    forceMemoryContextBeta: ctx.hasMemoryTool,
   })
   const mergedBeta = mergeAnthropicBeta(opts.clientAnthropicBeta, localBeta["anthropic-beta"])
   const filteredBeta = filterUnsupportedBetas(model, mergedBeta, opts.excludeBetas)
@@ -375,6 +383,7 @@ export const ANTHROPIC_PREPARE_STEPS: ReadonlyArray<PrepareStep> = [
   { name: "adjust-budget", apply: (ctx) => adjustThinkingBudget(ctx.wire, ctx.opts.resolvedModel) },
   { name: "clamp-effort", apply: (ctx) => clampEffortLevel(ctx.wire, ctx.opts.resolvedModel) },
   { name: "strip-structured-outputs", apply: (ctx) => stripUnsupportedStructuredOutputs(ctx.wire) },
+  { name: "rewrite-memory-tool", apply: rewriteMemoryTool },
   { name: "cache-control", apply: (ctx) => applyCacheControlMode(ctx) },
   { name: "build-headers", apply: buildAnthropicHeaders },
 ]
@@ -753,6 +762,37 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
 }
 
 // ============================================================================
+// Memory tool
+// ============================================================================
+
+/**
+ * Rewrite a client tool named `memory` to Anthropic's native `{name:"memory", type:"memory_20250818"}`
+ * server tool, mirroring GHC's BYOK path (anthropicProvider.ts). Gated by the `memoryToolEnabled` master
+ * switch (default off — CAPI acceptance unverified) AND model support. Drops the client tool's
+ * input_schema / description / cache_control (server tools carry none). Sets `ctx.hasMemoryTool` so
+ * build-headers forces the shared context-management beta. Matched by NAME because an earlier stage
+ * (preprocessTools) may already have added an input_schema to the plain `{name:"memory"}` tool.
+ *
+ * Runs BEFORE the cache-control step so proxied/sanitize see the final server-tool shape — the
+ * server-tool is excluded from cache anchoring anyway (see addToolCacheControl), so it never carries a
+ * breakpoint.
+ */
+function rewriteMemoryTool(ctx: PrepareContext): void {
+  if (!state.memoryToolEnabled) return
+  const model = ctx.wire.model as string
+  if (!modelSupportsMemory(model, ctx.opts.resolvedModel)) return
+  const tools = ctx.wire.tools
+  if (!Array.isArray(tools)) return
+
+  const isMemoryClientTool = (tool: unknown): boolean =>
+    Boolean(tool) && typeof tool === "object" && (tool as { name?: unknown }).name === "memory" && (tool as { type?: unknown }).type === undefined
+
+  if (!tools.some((tool) => isMemoryClientTool(tool))) return
+  ctx.wire.tools = tools.map((tool) => (isMemoryClientTool(tool) ? { name: "memory", type: "memory_20250818" } : tool))
+  ctx.hasMemoryTool = true
+}
+
+// ============================================================================
 // Cache control
 // ============================================================================
 
@@ -870,7 +910,10 @@ function addToolCacheControl(
     return { tools, remaining, changed: false }
   }
 
-  const lastNonDeferredIndex = findLastIndex(tools, (tool) => tool.defer_loading !== true)
+  // Anchor on the last non-deferred FUNCTION tool. Server tools (those carrying a `type`, e.g.
+  // `tool_search_tool_regex` or the rewritten `memory_20250818`) are excluded — they don't accept a
+  // cache_control breakpoint and a 1h/5m marker on them would 400 upstream.
+  const lastNonDeferredIndex = findLastIndex(tools, (tool) => tool.defer_loading !== true && (tool as { type?: unknown }).type === undefined)
   if (lastNonDeferredIndex < 0 || tools[lastNonDeferredIndex].cache_control) {
     return { tools, remaining, changed: false }
   }

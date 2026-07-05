@@ -1137,3 +1137,84 @@ describe("extended cache TTL (extended-cache-ttl-2025-04-11)", () => {
     expect(hasBeta(prepared.headers)).toBe(false)
   })
 })
+
+describe("memory tool (native memory_20250818 rewrite)", () => {
+  const stateBase = {
+    copilotToken: "test-token",
+    vsCodeVersion: "1.100.0",
+    accountType: "individual" as const,
+  }
+  const hasCMBeta = (headers: Record<string, string>) => (headers["anthropic-beta"] ?? "").includes("context-management-2025-06-27")
+
+  function payloadWithMemoryTool(model = "claude-opus-4-6", extraTools: Array<Record<string, unknown>> = []): MessagesPayload {
+    return {
+      model,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      tools: [...extraTools, { name: "memory", input_schema: { type: "object" }, description: "client memory tool" }] as unknown as MessagesPayload["tools"],
+    }
+  }
+
+  test("enabled + supported model: rewrites memory tool to {name,type}, drops input_schema, forces context-management beta", () => {
+    setStateForTests({ ...stateBase, memoryToolEnabled: true, cacheControlMode: "passthrough", contextEditingMode: "off" })
+    const prepared = prepareAnthropicRequest(payloadWithMemoryTool())
+    const tools = prepared.wire.tools as Array<Record<string, unknown>>
+    const memory = tools.find((t) => t.name === "memory")!
+    expect(memory).toEqual({ name: "memory", type: "memory_20250818" })
+    expect("input_schema" in memory).toBe(false)
+    expect(hasCMBeta(prepared.headers)).toBe(true)
+  })
+
+  test("disabled (default) leaves the memory tool as an ordinary custom tool, no beta forced", () => {
+    setStateForTests({ ...stateBase, memoryToolEnabled: false, cacheControlMode: "passthrough", contextEditingMode: "off" })
+    const prepared = prepareAnthropicRequest(payloadWithMemoryTool())
+    const tools = prepared.wire.tools as Array<Record<string, unknown>>
+    const memory = tools.find((t) => t.name === "memory")!
+    expect(memory.type).toBeUndefined()
+    expect(memory.input_schema).toEqual({ type: "object" })
+    expect(hasCMBeta(prepared.headers)).toBe(false)
+  })
+
+  test("unsupported model: no rewrite even when enabled", () => {
+    // claude-3-5-sonnet is not in the memory model list.
+    setStateForTests({ ...stateBase, memoryToolEnabled: true, cacheControlMode: "passthrough", contextEditingMode: "off" })
+    const prepared = prepareAnthropicRequest(payloadWithMemoryTool("claude-3-5-sonnet"))
+    const tools = prepared.wire.tools as Array<Record<string, unknown>>
+    expect(tools.find((t) => t.name === "memory")!.type).toBeUndefined()
+    expect(hasCMBeta(prepared.headers)).toBe(false)
+  })
+
+  test("no tools in the request: no crash, no beta", () => {
+    setStateForTests({ ...stateBase, memoryToolEnabled: true, cacheControlMode: "passthrough", contextEditingMode: "off" })
+    const prepared = prepareAnthropicRequest({ model: "claude-opus-4-6", max_tokens: 1024, messages: [{ role: "user", content: "hi" }] })
+    expect(prepared.wire.tools).toBeUndefined()
+    expect(hasCMBeta(prepared.headers)).toBe(false)
+  })
+
+  test("proxied mode never places a cache breakpoint on the memory server tool (would 400)", () => {
+    setStateForTests({ ...stateBase, memoryToolEnabled: true, cacheControlMode: "proxied", contextEditingMode: "off" })
+    // memory is the LAST tool; a regular function tool precedes it.
+    const prepared = prepareAnthropicRequest(payloadWithMemoryTool("claude-opus-4-6", [{ name: "Read", input_schema: { type: "object" } }]))
+    const tools = prepared.wire.tools as Array<Record<string, unknown>>
+    const memory = tools.find((t) => t.name === "memory")!
+    const read = tools.find((t) => t.name === "Read")!
+    expect(memory).toEqual({ name: "memory", type: "memory_20250818" }) // no cache_control
+    expect(read.cache_control).toEqual({ type: "ephemeral" }) // the breakpoint landed on the function tool
+  })
+
+  test("memory rewrite leaves a coexisting server tool (e.g. injected tool_search) untouched", () => {
+    // By prepare time the tool pipeline may already have injected a tool_search server tool; the memory
+    // rewrite must rewrite ONLY the `memory` tool and leave the typed server tool alone.
+    setStateForTests({ ...stateBase, memoryToolEnabled: true, cacheControlMode: "passthrough", contextEditingMode: "off" })
+    const prepared = prepareAnthropicRequest(
+      payloadWithMemoryTool("claude-opus-4-6", [
+        { name: "Read", input_schema: { type: "object" } },
+        { name: "tool_search_tool_regex", type: "tool_search_tool_regex_20251119" },
+      ]),
+    )
+    const tools = prepared.wire.tools as Array<Record<string, unknown>>
+    expect(tools.find((t) => t.name === "memory")).toEqual({ name: "memory", type: "memory_20250818" })
+    // The pre-existing tool_search server tool is untouched.
+    expect(tools.find((t) => t.name === "tool_search_tool_regex")).toEqual({ name: "tool_search_tool_regex", type: "tool_search_tool_regex_20251119" })
+  })
+})

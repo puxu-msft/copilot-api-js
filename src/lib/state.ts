@@ -177,6 +177,16 @@ export interface State {
    */
   readonly toolSearchOverrides: Record<string, boolean>
 
+  /**
+   * Anthropic memory tool (native `memory_20250818` server tool). When `memoryToolEnabled` (master
+   * switch, default OFF — CAPI acceptance of the server-tool type is unverified) AND the model supports
+   * memory (`memoryModels`, mirrors GHC modelSupportsMemory), a client tool named `memory` is rewritten
+   * to `{name:"memory", type:"memory_20250818"}` and the `context-management-2025-06-27` beta is forced.
+   * Off → the tool passes through as an ordinary custom tool.
+   */
+  readonly memoryToolEnabled: boolean
+  readonly memoryModels: ReadonlyArray<string>
+
   /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
   readonly stripServerTools: boolean
 
@@ -978,6 +988,8 @@ export function setAnthropicBehavior(
       | "refusalSseRewrite"
       | "contextEditingModels"
       | "toolSearchOverrides"
+      | "memoryToolEnabled"
+      | "memoryModels"
       | "interleavedThinkingModels"
       | "adaptiveThinkingModels"
       | "anthropicApiKey"
@@ -1209,6 +1221,24 @@ export const CONFIG_MANAGED_DEFAULTS = {
   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
   // only holds per-model force-on/off overrides. Empty by default.
   toolSearchOverrides: {} as Record<string, boolean>,
+  // Memory tool: default OFF (CAPI acceptance of memory_20250818 unverified). memoryModels mirrors GHC
+  // modelSupportsMemory — the BARE `claude-sonnet-4` / `claude-opus-4` entries are load-bearing (they
+  // cover all sonnet-4.x / opus-4.x via the dash-boundary matcher); the specific entries are redundant
+  // but kept as self-documentation. Do NOT drop the bare entries.
+  memoryToolEnabled: false,
+  memoryModels: [
+    "claude-fable-5",
+    "claude-haiku-4-5",
+    "claude-sonnet-4",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4",
+    "claude-opus-4-1",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+  ] as ReadonlyArray<string>,
   interleavedThinkingModels: ["claude-sonnet-4", "claude-haiku-4-5", "claude-opus-4-5"] as ReadonlyArray<string>,
   adaptiveThinkingModels: ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"] as ReadonlyArray<string>,
   responseHeaderTimeout: 300,
@@ -1291,6 +1321,8 @@ export function resetConfigManagedState(): void {
     refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
     toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+    memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+    memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
     adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
     anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
@@ -1361,6 +1393,8 @@ const mutableState: MutableState = {
   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
   toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+  memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+  memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
   interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
   adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,

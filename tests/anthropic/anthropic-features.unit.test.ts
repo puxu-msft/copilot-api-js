@@ -13,6 +13,7 @@ import {
   modelSupportsContextEditing,
   modelSupportsExtendedCacheTtl,
   modelSupportsInterleavedThinking,
+  modelSupportsMemory,
   modelSupportsToolSearch,
 } from "~/lib/anthropic/features"
 import {
@@ -232,6 +233,66 @@ describe("buildAnthropicBetaHeaders", () => {
     expect(buildAnthropicBetaHeaders("claude-opus-4.6", undefined, { emitExtendedCacheTtlBeta: true })["anthropic-beta"] ?? "").toContain(
       "extended-cache-ttl-2025-04-11",
     )
+  })
+
+  test("forceMemoryContextBeta emits context-management even when disableContextManagement is set", () => {
+    // The negotiation cache disables the context_management BODY field, but the memory server tool still
+    // needs the beta HEADER — forceMemoryContextBeta must bypass disableContextManagement.
+    const headers = buildAnthropicBetaHeaders("claude-opus-4.6", undefined, { disableContextManagement: true, forceMemoryContextBeta: true })
+    expect(headers["anthropic-beta"] ?? "").toContain("context-management-2025-06-27")
+  })
+
+  test("context-management beta is not duplicated when both context-editing and memory want it", () => {
+    setStateForTests({ contextEditingMode: "clear-both" })
+    const headers = buildAnthropicBetaHeaders("claude-opus-4.6", undefined, { forceMemoryContextBeta: true })
+    const parts = (headers["anthropic-beta"] ?? "").split(",").filter((p) => p === "context-management-2025-06-27")
+    expect(parts.length).toBe(1)
+  })
+})
+
+describe("modelSupportsMemory (mirrors GHC; broader than extended-cache-ttl)", () => {
+  const snapshot = snapshotStateForTests()
+  afterEach(() => restoreStateForTests(snapshot))
+
+  test("supported set includes fable-5, haiku-4.5, all sonnet-4.x and opus-4.x (bare + specific)", () => {
+    for (const m of [
+      "claude-fable-5",
+      "claude-haiku-4.5",
+      "claude-sonnet-4",
+      "claude-sonnet-4.5",
+      "claude-sonnet-4.6",
+      "claude-opus-4",
+      "claude-opus-4.1",
+      "claude-opus-4.5",
+      "claude-opus-4.6",
+      "claude-opus-4.7",
+      "claude-opus-4.8",
+    ]) {
+      expect(modelSupportsMemory(m)).toBe(true)
+    }
+  })
+
+  test("bare claude-sonnet-4 / claude-opus-4 entries cover future 4.x (e.g. sonnet-4.7, opus-4.2)", () => {
+    expect(modelSupportsMemory("claude-sonnet-4.7")).toBe(true)
+    expect(modelSupportsMemory("claude-opus-4.2")).toBe(true)
+  })
+
+  test("non-Claude and prefix-accidents are denied", () => {
+    expect(modelSupportsMemory("gpt-4")).toBe(false)
+    expect(modelSupportsMemory("claude-opus-40")).toBe(false) // dash boundary
+    expect(modelSupportsMemory("claude-3-5-sonnet")).toBe(false)
+  })
+
+  test("metadata-first: declared supports.memory wins over the name-list", () => {
+    const withSupports = (supports: Record<string, unknown>) =>
+      ({ id: "m", capabilities: { supports } }) as unknown as Parameters<typeof modelSupportsMemory>[1]
+    expect(modelSupportsMemory("totally-unknown", withSupports({ memory: true }))).toBe(true)
+    expect(modelSupportsMemory("claude-opus-4.8", withSupports({ memory: false }))).toBe(false)
+  })
+
+  test("empty config list disables the capability entirely", () => {
+    setStateForTests({ memoryModels: [] })
+    expect(modelSupportsMemory("claude-opus-4.8")).toBe(false)
   })
 })
 

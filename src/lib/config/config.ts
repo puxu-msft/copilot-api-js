@@ -513,6 +513,7 @@ export async function applyConfigToState(): Promise<Config> {
       if (mc.interleaved_thinking !== undefined) setAnthropicBehavior({ interleavedThinkingModels: mc.interleaved_thinking })
       if (mc.adaptive_thinking !== undefined) setAnthropicBehavior({ adaptiveThinkingModels: mc.adaptive_thinking })
       if (mc.extended_cache_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlModels: mc.extended_cache_ttl })
+      if (mc.memory !== undefined) setAnthropicBehavior({ memoryModels: mc.memory })
       if (mc.tool_search_overrides !== undefined)
         setAnthropicBehavior({
           toolSearchOverrides: normalizeModelKeyedRecord(mc.tool_search_overrides, "anthropic.model_capabilities.tool_search_overrides"),
@@ -549,6 +550,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.context_editing_keep_tools !== undefined) setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
     if (a.context_editing_keep_thinking !== undefined) setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
     if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
+    if (a.memory_tool !== undefined) setAnthropicBehavior({ memoryToolEnabled: a.memory_tool })
     if (a.cache_control !== undefined) {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
     }

@@ -397,6 +397,20 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels,
   },
   {
+    configKey: "anthropic.model_capabilities.memory",
+    stateKey: "memoryModels",
+    sampleYamlValue: `\n  - claude-opus-4.9`,
+    expectedStateValue: ["claude-opus-4.9"],
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.memoryModels,
+  },
+  {
+    configKey: "anthropic.memory_tool",
+    stateKey: "memoryToolEnabled",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+  },
+  {
     configKey: "anthropic.extended_cache_ttl.enabled",
     stateKey: "extendedCacheTtlEnabled",
     sampleYamlValue: "true",

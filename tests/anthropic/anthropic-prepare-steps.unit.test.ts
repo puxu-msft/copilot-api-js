@@ -24,12 +24,13 @@ import {
 } from "~/lib/anthropic/request-preparation"
 
 describe("ANTHROPIC_PREPARE_STEPS order contract", () => {
-  test("steps are named and ordered: coerce → adjust → clamp → strip-structured-outputs → cache → headers", () => {
+  test("steps are named and ordered: coerce → adjust → clamp → strip-structured-outputs → rewrite-memory → cache → headers", () => {
     expect(ANTHROPIC_PREPARE_STEPS.map((s) => s.name)).toEqual([
       "coerce-thinking",
       "adjust-budget",
       "clamp-effort",
       "strip-structured-outputs",
+      "rewrite-memory-tool",
       "cache-control",
       "build-headers",
     ])
@@ -55,6 +56,14 @@ describe("ANTHROPIC_PREPARE_STEPS order contract", () => {
     }))
     const payload: MessagesPayload = { model: "claude-opus-4-6", max_tokens: 1024, messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] }
     prepareAnthropicRequest(payload, undefined, spySteps)
-    expect(calls).toEqual(["coerce-thinking", "adjust-budget", "clamp-effort", "strip-structured-outputs", "cache-control", "build-headers"])
+    expect(calls).toEqual([
+      "coerce-thinking",
+      "adjust-budget",
+      "clamp-effort",
+      "strip-structured-outputs",
+      "rewrite-memory-tool",
+      "cache-control",
+      "build-headers",
+    ])
   })
 })
