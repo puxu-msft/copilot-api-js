@@ -1,5 +1,10 @@
 # Phase 4 — Export CSV + 抽屉 a11y + 文档卫生
 
+> **实施状态：已完成**
+> **落地**：2026-07 · commits `e0ecf22`/`a51bbcf`/`209f63c`/`f71ea6a`/`33bd5b6`（best-effort）
+> **现状锚点**：[models-csv.ts](../../../ui/src/utils/models-csv.ts) · [download.ts](../../../ui/src/utils/download.ts) · [keyboard.ts](../../../ui/src/utils/keyboard.ts) · [ui/CLAUDE.md `/models`](../../../ui/CLAUDE.md)
+> **备注**：`docs/2604-ui-models/` 未追踪（`??`）故不 `git mv` 归档、留原位；活文档已无 ModelCard/行内展开 陈旧引用。lint 债（Phase 1/2 遗留）已清。
+
 > 总纲见 [README.md](README.md)。依赖 Phase 1-3。Global Constraints 隐含适用。
 > 交付：当前过滤结果 Export CSV（含遥测列，同 join 策略）；抽屉焦点/aria/Esc；文档卫生（归档 `docs/2604-ui-models/`、回填 DESIGN/ui-CLAUDE）。
 

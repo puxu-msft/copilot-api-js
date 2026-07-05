@@ -1,5 +1,10 @@
 # Phase 1 — 遥测地基（解耦 + 归一化 join）
 
+> **实施状态：已完成**
+> **落地**：2026-07 · commits `6865f0b` / `e7639e5` / `7aae293`（best-effort）
+> **现状锚点**：[ui/src/composables/telemetry-parse.ts](../../../ui/src/composables/telemetry-parse.ts) · [model-telemetry-join.ts](../../../ui/src/composables/model-telemetry-join.ts)
+> **备注**：audit 后补 date-suffix golden 测试硬化 §4.2 核心。
+
 > 总纲见 [README.md](README.md)。本 phase **纯逻辑、全 bun 测、无 UI 改动**。Global Constraints 隐含适用。
 > 交付：`telemetry-parse.ts`（从 `useDashboardStatus` 抽出的纯 parse + 类型 SSOT）、`model-telemetry-join.ts`（`normalizeModelId` 双侧归一化 join + unmatched 收集）。下游 Phase 2 的 `useModelDetail` 消费本 phase 的 join 核。
 

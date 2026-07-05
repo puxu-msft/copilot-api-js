@@ -1,5 +1,10 @@
 # Phase 3 — 表格遥测列 + 新过滤 + 列配置 + 未关联遥测小节
 
+> **实施状态：已完成**
+> **落地**：2026-07 · commits `4d72039`/`657e60e`/`ac8261e`/`45722e4`/`91ad862`/`526729a`（best-effort）
+> **现状锚点**：[useModelColumns.ts](../../../ui/src/composables/useModelColumns.ts) · [ModelsColumnMenu.vue](../../../ui/src/components/models/ModelsColumnMenu.vue) · [UnmatchedTelemetrySection.vue](../../../ui/src/components/models/UnmatchedTelemetrySection.vue)
+> **备注**：has-telemetry 过滤经注入 `telemetryHasId` 留在单一 filteredModels（无双重过滤）。audit 通过、无缺陷。
+
 > 总纲见 [README.md](README.md)。依赖 Phase 1（join）+ Phase 2（`useModelDetail.telemetryIndex`）。Global Constraints 隐含适用。
 > 交付：表格可选 req(7d) 列 + 占比条；新过滤（premium/restricted-to/policy/has-telemetry）；`useModelColumns`（列显隐 + localStorage）+ toolbar 齿轮菜单；页面底部"未关联遥测"小节。
 

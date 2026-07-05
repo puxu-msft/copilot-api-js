@@ -1,5 +1,10 @@
 # Phase 2 — 详情抽屉 + 全字段 + 后端暴露
 
+> **实施状态：已完成**
+> **落地**：2026-07 · commits `9fcc932`/`086382b`（后端）… `53a5366`/`58704a5`（best-effort）
+> **现状锚点**：[ui/src/components/models/ModelDetailDrawer.vue](../../../ui/src/components/models/ModelDetailDrawer.vue) + [detail/tabs/](../../../ui/src/components/models/detail/tabs/) · [src/routes/models/internal.ts](../../../src/routes/models/internal.ts)
+> **备注**：audit 后补 `model.name` 行（spec §3 遗漏）。抽屉替换行内展开，后端 `request_headers` 已透传。
+
 > 总纲见 [README.md](README.md)。依赖 Phase 1 的 `buildModelTelemetryIndex`/`parseRequestTelemetry`。Global Constraints 隐含适用。
 > 交付：点表格行 → 右侧抽屉（6 tab）看全字段 + 遥测；抽屉**替换**行内 JSON 展开；后端 `/api/models` 暴露 `request_headers`。
 
