@@ -10,23 +10,23 @@
 
 | 维度 | 手写现状 | TanStack Table | 结论 |
 |---|---|---|---|
-| **排序** | `model-filters.ts` `sortModels`（~30 行按 key 分支）+ ModelsPage `sort` state/`onSort`（~8 行）+ ModelsTable `caret`/`sortable`/`sortKey/sortDesc/onSort` props（~15 行） | `getSortedRowModel()` + `onSortingChange` + 每列 accessorFn;**智能默认**（数值列 desc-first、字符串 asc-first,实测）;多列排序/自定义 sortingFn 白送 | ✅ 删 ~50 行手写 plumbing,能力反增 |
-| **列可见性** | `model-columns.ts`（MODEL_COLUMNS + DEFAULT + merge，~50 行）+ ModelsPage toggle/persist + ModelsColumnMenu 驱动 | TanStack `VisibilityState`（`Record<string,boolean>`）内建;菜单只改 state | ✅ 逻辑归库,菜单/持久化仍自控 |
-| **派生列**（能力矩阵 ctx/out/caps） | ModelsTable 手写 `capsById` + 逐单元格渲染 | `accessorFn: r => r.caps.vision` —— TanStack **正确排序派生值**,零额外代码 | ✅ |
-| **join 列**（Req 7d 遥测） | 手写 `telemetryFor(id).last7d.requestCount` 单元格 | `accessorFn: r => r.req`（数据预增广 caps+req 一次）—— 可排序 | ✅ |
-| **视觉（Terminal Amber）** | 手写 `<table>` + tokens | **100% 自控**——TanStack headless,只给逻辑,我渲染同一 `<table>`/class/`data-*` | ✅ 零 styled-kit 视觉冲突 |
-| **a11y** | 我 P3/P4 手补 `<th>` scope + 排序 button + aria-sort | 同样自渲染,`getToggleSortingHandler` + `getIsSorted()`→aria-sort;键盘可达 button 保留 | ✅ 平齐 |
-| **bundle** | — | **实测 +13.7kB gzip**（index 224.5→238.2kB;raw 707→757kB），tree-shakeable（只含 import 的 row models） | ✅ 可接受 |
-| **兼容** | — | `typecheck`/`build`/`eslint`/`test` 全绿;`~backend` 仅纯模块（deriveCapabilities/Model type） | ✅ |
+| **排序** | `model-filters.ts:64-94` `sortModels`（31 行 key-switch）+ ModelsPage `sort` state/`onSort`（~3 行）+ ModelsTable `caret`/`ariaSort`/`sortable`（~26 行） | `getSortedRowModel()` + `onSortingChange` + accessorFn;智能默认（数值 desc-first，实测） | ✅ **排序逻辑本身净删 ~30 行**（sortModels 的 switch/localeCompare 被取代）；渲染层/列配置是**平移非净删**（PoC 自己重写 columns memo + thead + `ariaSortAttr`/`sortArrow`） |
+| **列可见性** | `model-columns.ts:34-52`（~19 行 merge）+ ModelsPage toggle/persist | TanStack `VisibilityState` 内建 | ✅ 逻辑归库，菜单/持久化仍自控 |
+| **派生列**（能力矩阵） | ModelsTable `capsById` + 逐单元格 | `accessorFn: r => r.caps.vision`（**渲染已验**；排序未在 PoC 断言，但库能力支持） | ✅ 渲染 |
+| **join 列**（Req 7d 遥测） | 手写单元格 | `accessorFn: r => r.req`（**渲染已验**；排序未在 PoC 断言） | ✅ 渲染 |
+| **视觉（Terminal Amber）** | 手写 `<table>` + tokens | headless → 自渲染同一 `<table>`/class（**库性质保证无自带样式；PoC 未做视觉回归断言**） | ✅ 库性质 |
+| **a11y** | P3/P4 手补 `<th>` scope + 排序 button + aria-sort | TanStack **纯逻辑到 a11y 也自写**（PoC 手写 `ariaSortAttr`/`sortArrow`）;`getIsSorted`→aria-sort | ⚠ 平齐但 a11y 仍需自写（对比 react-aria 会白送，见 ADR 待评估项） |
+| **bundle** | — | **单库、一次性手测、已还原**：+13.7kB gzip（index 224.5→238.2kB）。**四库全栈增量未测** | ⚠ 单库快照，非门禁 |
+| **兼容** | — | `typecheck`/`build`/`eslint`/`test` 全绿;`~backend` 对 `client.ts` **仅 type-only import**（运行时擦除）、对 `capabilities.ts` value import 经核不拉 client 运行时——故 rollup 图纯（注意 client.ts 本身非纯，import `~/lib/state`，前端**永不可** value-import） | ✅ |
 
 ## 关键实证细节
-- **测试 3/3 绿**：派生+join 列渲染;点表头排序（数值 desc-first 智能默认 → asc）;隐藏列不渲染。
-- **视觉自控是核心**：TanStack Table 是 headless（无任何自带样式）,与本项目 rounded:0/amber/mono 工业风零冲突——这正是"定制视觉项目该用 headless 逻辑库、不用 styled UI kit"的实证。
-- **代码净减 + 能力净增**：删 ~80 行手写排序/列 plumbing,同时白送多列排序、自定义 sortingFn、faceting、grouping、分页等（本轮未用,但零成本可开）。
-- **bundle 实测**：临时把 PoC 接进 ModelsPage build,量得 +13.7kB gzip,随即还原（ModelsPage 未改动)。
+- **测试 3/3 绿**：派生+join 列**渲染**;点表头**排序**（数值 desc-first 智能默认 → asc）;隐藏列不渲染。（未验：派生/join 列的**排序**、多列排序、faceting、视觉一致性——这些是库能力推断非 PoC 断言。）
+- **视觉自控**：TanStack Table headless（无自带样式）→ 与 rounded:0/amber/mono 工业风零冲突（**库性质保证；PoC 未做视觉回归断言**）。方向性实证："定制视觉项目该用 headless、不用 styled UI kit"。
+- **代码**：排序逻辑净删 ~30 行（`sortModels` switch 被取代）+ 列可见性归 `VisibilityState`;**渲染层/列配置平移非净删**（headless 代价）。
+- **bundle**：单库、一次性手工临时接线量得 +13.7kB gzip，随即还原。**四库全栈增量未测。**
 
 ## 落地路径（非本 PoC 范围,ADR 记录）
-PoC 成功 → 落地时用 TanStack Table 正式重写 `ModelsTable`（删手写 `sortModels`/`sort` state/`model-columns` 部分逻辑,ModelsColumnMenu 改驱动 `VisibilityState`),并作为 **Requests 列表 + 未来 6 维筛选** 的数据表地基。PoC 组件（`.poc.tsx`）在落地时删除或转正。
+PoC 成功 → 落地时用（ADR 定稿的）数据表方案正式重写 `ModelsTable`,并作 Requests 列表 + 6 维筛选地基。**PoC 组件 `.poc.tsx` + 其测试须在正式重写的同一提交删除**（否则是"未接路由组件 + 续命测试"死代码，项目 knip 假阴性活体）；此前在 `docs/todo/deferred-backlog.md` 登记 + tripwire 守护。
 
 ## 一句话
-**成功。** TanStack Table 可行、有实证收益（删 ~80 行手写 + 能力反增 + 视觉零冲突 + 仅 +13.7kB gzip），是"手写数据表 → 领域最强 headless"的典型升级,给 headless 组件栈 ADR 背书。
+**PoC 成功但需诚实标定**：TanStack Table 可行（3/3 证排序+列可见+渲染）、排序逻辑净删 ~30 行、视觉零冲突（库性质）、单库 +13.7kB gzip——**背书方向**（headless 数据表 > 手写）。但只证 **TanStack Table 一个库可行**,不证 ADR 的**四库栈是最优**——强替代 **react-aria**（单 vendor 覆盖 table/combobox/virtual/datepicker + a11y grid 白送）尚未评估，见 ADR。

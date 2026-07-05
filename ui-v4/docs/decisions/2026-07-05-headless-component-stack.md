@@ -1,8 +1,8 @@
-# ADR: ui-v4 采用 headless 组件栈(Radix + TanStack + rhf + cmdk),不采 styled UI kit
+# ADR: ui-v4 采用 headless 组件栈,不采 styled UI kit
 
-- **状态**：Accepted（方向已定，PoC 实证背书；增量落地）
+- **状态**：**Proposed**（方向定：headless + 视觉自控 > styled kit;但**四库栈 vs react-aria 的具体选型待评估**，见 §「待评估的强替代」——对抗审查 2026-07-05 指出四库栈锁定前未在表格/表单/搜索**扩展语境**下评估 react-aria）
 - **日期**：2026-07-05
-- **相关**：[decisions/2026-07-05-adopt-radix-primitives.md](2026-07-05-adopt-radix-primitives.md)（本 ADR 升级/扩展它——从"交互原语"扩到"完整组件能力栈"）、PoC 实证 [exp/tanstack-table-poc/conclusion.md](../../exp/tanstack-table-poc/conclusion.md)、[DESIGN.md §2](../DESIGN.md)（技术栈）；user-rule `60-feat-dev-workflow` `battle-tested-over-hand-rolled`
+- **相关**：[decisions/2026-07-05-adopt-radix-primitives.md](2026-07-05-adopt-radix-primitives.md)（前置 ADR，在**交互原语**语境拒 react-aria——该理由在本 ADR 的**表格/表单/搜索**新语境**不适用**）、PoC 实证 [exp/tanstack-table-poc/conclusion.md](../../exp/tanstack-table-poc/conclusion.md)、[DESIGN.md §2](../DESIGN.md)；user-rule `battle-tested-over-hand-rolled`
 
 ## 背景
 
@@ -33,10 +33,28 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 
 ### PoC 实证（TanStack Table，2026-07-05）
 [exp/tanstack-table-poc/conclusion.md](../../exp/tanstack-table-poc/conclusion.md) 用 TanStack Table 重写 Models 表格（[.poc.tsx](../../src/components/models/ModelsTableTanstack.poc.tsx) + 测试 3/3 绿）实测：
-- **删 ~80 行手写排序/列 plumbing**，能力**反增**（多列排序、自定义 sortingFn、faceting、grouping 白送）。
-- 派生列（能力矩阵）+ join 列（遥测）用 `accessorFn` 正确排序，零额外代码。
-- **视觉 100% 自控**（headless → 自渲染 Terminal Amber `<table>`），零冲突。
-- **bundle 实测 +13.7kB gzip**（tree-shakeable），typecheck/build/eslint/test 全绿，`~backend` 仅纯模块。
+- **排序逻辑净删 ~30 行**（`sortModels` 的 key-switch 被 `getSortedRowModel`+accessorFn 取代）+ 列可见性归 `VisibilityState`;**渲染层/列配置平移非净删**（headless 代价）。多列/faceting/grouping 是库能力，**PoC 未验**。
+- 派生列（能力矩阵）+ join 列（遥测）用 `accessorFn`——**渲染已验**，排序未在 PoC 断言。
+- **视觉自控**：headless 无自带样式 → 与工业风零冲突（**库性质保证；PoC 未做视觉回归断言**）。
+- **bundle**：**单库、一次性手测、已还原** +13.7kB gzip;**四库全栈增量未测**。typecheck/build/eslint/test 全绿;`~backend` 对 `client.ts` **仅 type-only import**（运行时擦除，client.ts 本身非纯、import `~/lib/state`，前端永不可 value-import），故 rollup 图纯。
+
+> PoC 只证 **TanStack Table 一个库可行**,不证四库栈是最优——尤其未对比 react-aria（见下）。
+
+## 待评估的强替代：react-aria（对抗审查 2026-07-05 指出的真漏，定稿前必评）
+
+前置 Radix ADR 在**交互原语**语境拒了 react-aria（"Radix 是既定基座、与 shadcn 同源"）。但本 ADR 把范围扩到 **表格/表单/搜索——Radix 不在场的领域**，那些拒绝理由**全部失效**。react-aria（Adobe，`react-aria-components`）作为**单一 vendor**覆盖本栈拼装的多领域：
+
+| 领域 | 四库栈 | react-aria |
+|---|---|---|
+| 表格 a11y/交互 | 自写（PoC 手写 `ariaSortAttr`/keyboard grid） | `Table`/`useTable` **白送** grid role + 键盘网格导航 |
+| 表格**数据逻辑**（排序/过滤/faceting/grouping/分页） | **TanStack Table**（强项） | react-stately 仅基础 sort，**无 faceting/grouping**——**非对手** |
+| combobox/搜索 | cmdk | `ComboBox`/`useSearchField` |
+| 虚拟列表 | TanStack Virtual | `Virtualizer` |
+| 日期选择 | （缺，需再引第五库） | `useDatePicker`/`Calendar` **白送** |
+
+**关键 nuance**：react-aria 与 TanStack Table **部分互补非纯替代**——react-aria 白送表格 **a11y/交互 shell**，但 TanStack 的**数据操作引擎**（faceting/grouping/复杂 sort）react-aria 没有。所以真正的选项其实有三：**(1)** TanStack Table + 手写 a11y（PoC 现状）;**(2)** react-aria Table（a11y 白送）+ 自写数据逻辑或 react-stately;**(3)** react-aria a11y shell + TanStack Table 数据逻辑组合。
+
+**待办（定稿前）**：在扩展语境正面对比 (1)/(2)/(3)——a11y 白送程度、数据逻辑能力、react-aria render-props/data-attr 样式桥与 Terminal Amber 契合度、单 vendor vs 多库维护面、全栈 bundle。**建议再做一个 react-aria Table PoC** 与 TanStack PoC 对照,再据实证在本 ADR 定稿"数据表方案"。在此之前四库栈是**倾向非锁定**。
 
 ## 后果
 
@@ -49,17 +67,20 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 
 ## 未采纳的方案（record-not-adopted）
 
-1. **Styled UI Kit（MUI / Ant Design / Mantine / Chakra）** —— 否。功能虽全，但**每个自带一套 Material/企业级视觉体系**，与本项目 Terminal Amber 工业风（rounded:0 / 高密度 / mono / amber）冲突，套用需持续覆写默认样式、破坏视觉一致性。这与拒绝 shadcn 成品样式（Radix ADR）、拒绝给 native `title` 套 Radix 是**同一判断**：定制视觉项目里，styled kit 的"全"换来样式对抗，得不偿失。**headless 逻辑 + 自控视觉**才是正解。
-2. **继续手写数据表 / 表单 / 搜索** —— 否。Models P3/P4 手写排序/列配置 + a11y 逐个手补已实证「反复重造 + 踩坑」；表单/搜索会重蹈。
-3. **AG Grid（专业数据表格）** —— 否。重、自带视觉、商业授权、远超需求；TanStack Table headless + 自渲染已足够。
-4. **全套 shadcn/ui CLI（带样式成品组件）** —— 否（同 Radix ADR）：取其底座栈（Radix + TanStack + rhf + cmdk），弃其成品样式。
+1. **Styled UI Kit（MUI / Ant Design / Mantine / Chakra）** —— 否。它们**技术上都有 theming API**（MUI `createTheme`、Mantine CSS 变量、Ant `ConfigProvider` design token），把 Terminal Amber 做成主题**可行**;拒绝理由不是"套不进",而是本项目视觉是**逐 token 全反默认**的极端定制（rounded:0 / 高密度 / mono / amber，与 Material/企业默认差距极大），覆写面广、持续对抗，**headless 自渲染的成本更低**。这与拒绝 shadcn 成品样式（Radix ADR）同判断。补记：**Mantine 的 `@mantine/hooks` 仅 utility hooks**、不含表格/表单的完整 headless 逻辑，故不构成栈替代。
+2. **继续手写数据表 / 表单 / 搜索** —— 否。Models P3/P4 手写排序/列 + a11y 逐个手补已实证「反复重造 + 踩坑」。
+3. **AG Grid（专业数据表格）** —— 否。重、自带视觉、商业授权、远超需求。
+4. **全套 shadcn/ui CLI（带样式成品组件）** —— 否（同 Radix ADR）：取底座、弃成品样式。
+
+> **注**：react-aria **不在**未采纳之列——它是**待评估的强替代**（见上节），尚未有拒绝理由。
 
 ## 实施
 
 **增量、分领域**，各随对应功能落地时贯彻 headless + Terminal Amber：
-- **优先 TanStack Table**（PoC 已过）：正式重写 `ModelsTable`（删手写 `sortModels`/`sort` state/部分 `model-columns` 逻辑，ColumnMenu 驱动 `VisibilityState`），并作 Requests 列表 + 6 维筛选的数据表地基。
-- **react-hook-form + zod**：随 [Config 结构化表单](../../../docs/plan/2026-07-05-ui-v4-config-form.md) 落地（其 spec 手写的 dirty/校验可接 rhf 地基）。
+- **先定数据表方案**（TanStack Table vs react-aria，见上节，建议 react-aria PoC 对照）→ 正式重写 `ModelsTable`（删手写 `sortModels`/`sort` state/部分 `model-columns`，ColumnMenu 驱动 `VisibilityState`）+ 作 Requests 列表/6 维筛选地基。**同一提交删除 PoC** `.poc.tsx` + `.poc.vitest.test.tsx`（否则是"未接路由组件 + 续命测试"死代码，项目 knip 假阴性活体）；此前在 `docs/todo/deferred-backlog.md` 登记 PoC 悬挂 + tripwire。
+- **react-hook-form + zod**：随 [Config 结构化表单](../../../docs/plan/2026-07-05-ui-v4-config-form.md) 落地。
 - **cmdk**：随全局搜索（TODO.md 退役 gating）落地。
 - **TanStack Virtual**：长列表性能触发时引（现非目标）。
+- **date-picker**（若 Requests 加时间范围筛选）：待定——Radix 无，届时评估 react-aria `useDatePicker` / react-day-picker（又一处 react-aria 白送而四库栈缺的领域）。
 
-每次落地：门禁全绿（含 `build:ui-v4` 验 bundle + `~backend` 纯）→ 细粒度提交 → subagent audit。
+每次落地：门禁全绿（含 `build:ui-v4` 验 bundle **前后对照进提交信息** + `~backend` 纯）→ 细粒度提交 → subagent audit。
