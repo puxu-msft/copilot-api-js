@@ -10,8 +10,10 @@ import { ModelDetail } from "@/components/models/ModelDetail"
 import { ModelsColumnMenu } from "@/components/models/ModelsColumnMenu"
 import { ModelsFilterBar } from "@/components/models/ModelsFilterBar"
 import { ModelsTable } from "@/components/models/ModelsTable"
+import { UnmatchedTelemetry } from "@/components/models/UnmatchedTelemetry"
 import { useModels } from "@/hooks/useModels"
 import { useModelTelemetry } from "@/hooks/useModelTelemetry"
+import { triggerDownload } from "@/lib/export-entry"
 import {
   //
   DEFAULT_COLUMN_VISIBILITY,
@@ -32,6 +34,7 @@ import {
   buildModelTelemetryIndex,
   telemetryForId,
 } from "@/lib/model-telemetry"
+import { modelsToCsv } from "@/lib/models-csv"
 
 const COLUMNS_KEY = "copilot-api-ui-v4-models-columns"
 
@@ -104,6 +107,13 @@ export function ModelsPage() {
   const toggleColumn = (key: ModelColumnKey) => setColumns((c) => ({ ...c, [key]: !c[key] }))
   const resetColumns = () => setColumns({ ...DEFAULT_COLUMN_VISIBILITY })
 
+  // Export the CURRENT filtered/sorted view (spec §7); telemetry columns use the
+  // same normalized join as the table.
+  const exportCsv = () => {
+    const csv = modelsToCsv(visible, telemetryFor)
+    triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8" }), "models.csv")
+  }
+
   if (isLoading) return <div className="mono p-4 text-[#888]">loading…</div>
 
   return (
@@ -118,6 +128,13 @@ export function ModelsPage() {
             onToggle={toggleColumn}
             onReset={resetColumns}
           />
+          <button
+            type="button"
+            className="mono border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-text)] hover:text-[var(--color-primary)]"
+            onClick={exportCsv}
+          >
+            Export CSV
+          </button>
           <button
             type="button"
             className="text-[12px] text-[var(--color-primary)]"
@@ -152,6 +169,7 @@ export function ModelsPage() {
                   onSelect={select}
                 />
               }
+              <UnmatchedTelemetry rows={index.unmatched} />
             </div>
             {selectedModel ?
               <ModelDetail
