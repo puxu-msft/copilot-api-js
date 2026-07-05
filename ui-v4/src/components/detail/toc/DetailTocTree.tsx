@@ -70,6 +70,7 @@ function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: T
           <button
             type="button"
             aria-label={isCollapsed ? "expand" : "collapse"}
+            aria-expanded={!isCollapsed}
             onClick={(e) => {
               e.stopPropagation()
               onToggle(node.anchorId)
