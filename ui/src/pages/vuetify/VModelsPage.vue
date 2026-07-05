@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import { normalizeModelId } from "~backend/lib/models/resolver"
 import {
   //
   computed,
   onMounted,
   ref,
+  watchEffect,
 } from "vue"
 
 import { api } from "@/api/http"
@@ -11,11 +13,17 @@ import ModelDetailDrawer from "@/components/models/ModelDetailDrawer.vue"
 import ModelsFilterBar from "@/components/models/ModelsFilterBar.vue"
 import ModelsTable from "@/components/models/ModelsTable.vue"
 import ModelsToolbar from "@/components/models/ModelsToolbar.vue"
+import UnmatchedTelemetrySection from "@/components/models/UnmatchedTelemetrySection.vue"
 import JsonViewerSurface from "@/components/ui/JsonViewerSurface.vue"
+import {
+  //
+  parseRequestTelemetry,
+  type RequestTelemetrySnapshot,
+} from "@/composables/telemetry-parse"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
+import { useModelColumns } from "@/composables/useModelColumns"
 import { useModelDetail } from "@/composables/useModelDetail"
 import { useModelsCatalog } from "@/composables/useModelsCatalog"
-import { parseRequestTelemetry, type RequestTelemetrySnapshot } from "@/composables/telemetry-parse"
 
 const {
   billingBounds,
@@ -27,10 +35,17 @@ const {
   featureOptions,
   filteredModels,
   fmtNum,
+  hasTelemetryFilter,
   loading,
   error: modelsError,
+  policyStateFilter,
+  policyStateOptions,
+  premiumFilter,
   rawApiResponse,
+  restrictedToFilter,
+  restrictedToOptions,
   searchQuery,
+  telemetryHasId,
   typeFilter,
   typeOptions,
   vendorColor,
@@ -38,6 +53,7 @@ const {
   vendorOptions,
   models,
 } = useModelsCatalog()
+const columns = useModelColumns()
 const isRawJsonOpen = ref(false)
 const { copy } = useCopyToClipboard()
 
@@ -64,6 +80,18 @@ const drawerOpen = computed({
   },
 })
 
+// Feed the has-telemetry filter its membership check from the joined index (no double filtering).
+watchEffect(() => {
+  const byId = detail.telemetryIndex.value.byId
+  telemetryHasId.value = (id: string) => byId.has(normalizeModelId(id))
+})
+
+const maxRequests7d = computed(() => {
+  let max = 1
+  for (const joined of detail.telemetryIndex.value.byId.values()) max = Math.max(max, joined.last7d?.requestCount ?? 0)
+  return max
+})
+
 const activeFilterCount = computed(() => {
   let count = 0
   if (searchQuery.value.trim()) count += 1
@@ -72,6 +100,10 @@ const activeFilterCount = computed(() => {
   if (featureFilters.value.length > 0) count += 1
   if (typeFilter.value) count += 1
   if (billingRange.value[0] > billingBounds.value.min || billingRange.value[1] < billingBounds.value.max) count += 1
+  if (premiumFilter.value !== null) count += 1
+  if (restrictedToFilter.value.length > 0) count += 1
+  if (policyStateFilter.value) count += 1
+  if (hasTelemetryFilter.value !== null) count += 1
   return count
 })
 
@@ -89,6 +121,7 @@ function copyModelsJson(): void {
           :total-count="models.length"
           :vendor-count="vendorOptions.length"
           :endpoint-count="endpointOptions.length"
+          :columns="columns"
           @open-raw-json="isRawJsonOpen = true"
         />
 
@@ -104,10 +137,16 @@ function copyModelsJson(): void {
             v-model:feature-filters="featureFilters"
             v-model:type-filter="typeFilter"
             v-model:billing-range="billingRange"
+            v-model:premium-filter="premiumFilter"
+            v-model:restricted-to-filter="restrictedToFilter"
+            v-model:policy-state-filter="policyStateFilter"
+            v-model:has-telemetry-filter="hasTelemetryFilter"
             :vendor-options="vendorOptions"
             :endpoint-options="endpointOptions"
             :feature-options="featureOptions"
             :type-options="typeOptions"
+            :restricted-to-options="restrictedToOptions"
+            :policy-state-options="policyStateOptions"
             :billing-bounds="billingBounds"
             :active-filter-count="activeFilterCount"
           />
@@ -154,9 +193,14 @@ function copyModelsJson(): void {
             :vendor-color="vendorColor"
             :fmt-num="fmtNum"
             :selected-id="detail.selectedId.value"
+            :columns="columns"
+            :telemetry-for="detail.telemetryFor"
+            :max-requests7d="maxRequests7d"
             @select="detail.open"
           />
         </section>
+
+        <UnmatchedTelemetrySection :rows="detail.telemetryIndex.value.unmatched" />
       </section>
     </div>
 

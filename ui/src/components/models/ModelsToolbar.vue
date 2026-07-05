@@ -1,9 +1,14 @@
 <script setup lang="ts">
+import type { UseModelColumnsReturn } from "@/composables/useModelColumns"
+
+import ModelsColumnMenu from "./ModelsColumnMenu.vue"
+
 defineProps<{
   filteredCount: number
   totalCount: number
   vendorCount: number
   endpointCount: number
+  columns: UseModelColumnsReturn
 }>()
 defineEmits<{
   openRawJson: []
@@ -19,13 +24,16 @@ defineEmits<{
       </div>
     </div>
 
-    <v-btn
-      variant="outlined"
-      class="raw-json-button"
-      @click="$emit('openRawJson')"
-    >
-      Raw JSON
-    </v-btn>
+    <div class="toolbar-actions">
+      <ModelsColumnMenu :columns="columns" />
+      <v-btn
+        variant="outlined"
+        class="raw-json-button"
+        @click="$emit('openRawJson')"
+      >
+        Raw JSON
+      </v-btn>
+    </div>
   </div>
 </template>
 
@@ -52,7 +60,10 @@ defineEmits<{
   margin-top: 4px;
 }
 
-.raw-json-button {
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
 }
 
