@@ -11,6 +11,7 @@ import {
   //
   CAPPED_DIMENSION_NAMES,
   extractTelemetryKeys,
+  extractThinkingBlockCounts,
   extractToolNames,
   normalizeClient,
 } from "~/lib/observability/telemetry-dimensions"
@@ -102,6 +103,108 @@ describe("extractToolNames", () => {
         }),
       ),
     ).toEqual([])
+  })
+})
+
+describe("extractThinkingBlockCounts", () => {
+  const withBlocks = (blocks: Array<unknown>): HistoryEntryData =>
+    makeEntry({
+      outboundResponse: {
+        success: true,
+        model: "claude-opus-4.8",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: { role: "assistant", content: blocks },
+      },
+    })
+
+  test("non-empty thinking → nonEmpty", () => {
+    expect(extractThinkingBlockCounts(withBlocks([{ type: "thinking", thinking: "let me reason", signature: "sig" }]))).toEqual({
+      nonEmpty: 1,
+      emptySigned: 0,
+      emptyUnsigned: 0,
+    })
+  })
+
+  test("empty thinking WITH signature → emptySigned (normal encrypted / compat block)", () => {
+    expect(extractThinkingBlockCounts(withBlocks([{ type: "thinking", thinking: "", signature: "EoAQ-sig" }]))).toEqual({
+      nonEmpty: 0,
+      emptySigned: 1,
+      emptyUnsigned: 0,
+    })
+  })
+
+  test("empty thinking, NO signature → emptyUnsigned (corrupt double-empty block)", () => {
+    expect(extractThinkingBlockCounts(withBlocks([{ type: "thinking", thinking: "" }]))).toEqual({
+      nonEmpty: 0,
+      emptySigned: 0,
+      emptyUnsigned: 1,
+    })
+  })
+
+  test("whitespace-only thinking counts as empty", () => {
+    expect(extractThinkingBlockCounts(withBlocks([{ type: "thinking", thinking: "   ", signature: "s" }]))).toEqual({
+      nonEmpty: 0,
+      emptySigned: 1,
+      emptyUnsigned: 0,
+    })
+  })
+
+  test("signature three-state (empty string / null / missing key) all → emptyUnsigned", () => {
+    expect(
+      extractThinkingBlockCounts(
+        withBlocks([
+          { type: "thinking", thinking: "", signature: "" },
+          { type: "thinking", thinking: "", signature: null },
+          { type: "thinking", thinking: "" },
+        ]),
+      ),
+    ).toEqual({ nonEmpty: 0, emptySigned: 0, emptyUnsigned: 3 })
+  })
+
+  test("non-string thinking field → treated as empty (falls to signature bucket)", () => {
+    expect(extractThinkingBlockCounts(withBlocks([{ type: "thinking", signature: "s" }]))).toEqual({
+      nonEmpty: 0,
+      emptySigned: 1,
+      emptyUnsigned: 0,
+    })
+  })
+
+  test("mixed blocks tally per bucket; redacted_thinking / text / tool_use excluded (redacted not mis-bucketed as emptyUnsigned)", () => {
+    expect(
+      extractThinkingBlockCounts(
+        withBlocks([
+          { type: "thinking", thinking: "reasoning", signature: "s1" }, // nonEmpty
+          { type: "thinking", thinking: "", signature: "s2" }, // emptySigned
+          { type: "thinking", thinking: "" }, // emptyUnsigned
+          { type: "redacted_thinking", data: "opaque" }, // NOT counted (has data, no thinking)
+          { type: "text", text: "answer" },
+          { type: "tool_use", id: "t", name: "Read", input: {} },
+          { type: "server_tool_use", id: "s", name: "web_search", input: {} },
+        ]),
+      ),
+    ).toEqual({ nonEmpty: 1, emptySigned: 1, emptyUnsigned: 1 })
+  })
+
+  test("CC real shape (content.content is a string) → all zero", () => {
+    const entry = makeEntry({
+      endpoint: "openai-chat-completions",
+      outboundResponse: {
+        success: true,
+        model: "gpt-5.2",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: { role: "assistant", content: "plain assistant text" },
+      },
+    })
+    expect(extractThinkingBlockCounts(entry)).toEqual({ nonEmpty: 0, emptySigned: 0, emptyUnsigned: 0 })
+  })
+
+  test("no outboundResponse / null content / empty array → all zero", () => {
+    const zero = { nonEmpty: 0, emptySigned: 0, emptyUnsigned: 0 }
+    expect(extractThinkingBlockCounts(makeEntry())).toEqual(zero)
+    expect(extractThinkingBlockCounts(withBlocks([]))).toEqual(zero)
+    expect(
+      extractThinkingBlockCounts(makeEntry({ outboundResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null } })),
+    ).toEqual(zero)
   })
 })
 

@@ -2,6 +2,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 
 import type { UsageData } from "./history/store"
+import type { ThinkingBlockCounts } from "./observability/telemetry-dimensions"
 
 import {
   //
@@ -53,6 +54,17 @@ const COST_MEASURE_NAMES = ["costInputTokens", "costOutputTokens", "costCacheRea
 const EXTRA_MEASURE_NAMES = ["queueWaitMs"] as const
 
 /**
+ * Feature-specific per-request measures outside the V2-era base nine — tallies emitted by a proxy
+ * feature's sink-layer extractor (currently the thinking-block emptiness counts from
+ * `observability/telemetry-dimensions.ts`). Like EXTRA, present in fresh accumulators but NOT
+ * required by the V2-file validity check (`isValidPersistedModelTelemetry` checks BASE only).
+ * Registration is entirely: one name here + one line in `applySettledMeasures` — the open counters
+ * bag + generic (de)serializer mean no persistence-version bump, and `/metrics` + `/api/stats` fan
+ * out over `TELEMETRY_MEASURE_NAMES` generically (no edit there).
+ */
+const FEATURE_MEASURE_NAMES = ["thinkingBlocksNonEmpty", "thinkingBlocksEmptySigned", "thinkingBlocksEmptyUnsigned"] as const
+
+/**
  * All measures present in a fresh accumulator. `createAccumulator` initializes
  * every one to 0 so the `+=` increments never touch an `undefined` (the project
  * has no `noUncheckedIndexedAccess`, so a `Record<string,number>` index is typed
@@ -60,7 +72,7 @@ const EXTRA_MEASURE_NAMES = ["queueWaitMs"] as const
  * one entry here + one line in `applySettledMeasures`; the open counters bag +
  * generic (de)serializer mean no persistence-version bump.
  */
-const MEASURE_NAMES = [...BASE_MEASURE_NAMES, ...COST_MEASURE_NAMES, ...EXTRA_MEASURE_NAMES] as const
+const MEASURE_NAMES = [...BASE_MEASURE_NAMES, ...COST_MEASURE_NAMES, ...EXTRA_MEASURE_NAMES, ...FEATURE_MEASURE_NAMES] as const
 
 /** The full measure name list (base + cost) — exported for the `/metrics` Prometheus projection so it stays single-sourced. */
 export const TELEMETRY_MEASURE_NAMES: ReadonlyArray<string> = MEASURE_NAMES
@@ -295,6 +307,11 @@ interface SettledTelemetryInput {
   multiplier?: number
   /** Time the request spent queued (rate-limiter) before dispatch — the `queue_wait_ms` histogram observation + `queueWaitMs` sum. */
   queueWaitMs?: number
+  /**
+   * Per-request thinking-block emptiness tally (from the sink's `extractThinkingBlockCounts`).
+   * Undefined for non-Anthropic / no-thinking responses → the three feature measures stay 0.
+   */
+  thinkingBlocks?: ThinkingBlockCounts
 }
 
 /**
@@ -370,6 +387,12 @@ function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput)
     c.costCacheCreationInputTokens += (usage?.cache_creation_input_tokens ?? 0) * multiplier
     c.costReasoningTokens += (usage?.output_tokens_details?.reasoning_tokens ?? 0) * multiplier
   }
+
+  // Feature measures: per-request thinking-block emptiness tally (0 when not provided — non-Anthropic
+  // / no-thinking responses). Summed across every dimension like the token measures.
+  c.thinkingBlocksNonEmpty += opts.thinkingBlocks?.nonEmpty ?? 0
+  c.thinkingBlocksEmptySigned += opts.thinkingBlocks?.emptySigned ?? 0
+  c.thinkingBlocksEmptyUnsigned += opts.thinkingBlocks?.emptyUnsigned ?? 0
 
   // Distribution histograms: each registered histogram observes at most one value
   // per request (undefined = skip), incrementing exactly one bucket AND adding the

@@ -26,6 +26,7 @@ import {
   //
   CAPPED_DIMENSION_NAMES,
   extractTelemetryKeys,
+  extractThinkingBlockCounts,
 } from "../telemetry-dimensions"
 
 export class TelemetrySink {
@@ -61,6 +62,9 @@ export class TelemetrySink {
         multiplier: event.ctx.multiplier,
         // Queue-wait distribution: time spent queued by the rate limiter before dispatch.
         queueWaitMs: entry.queueWaitMs,
+        // Per-request thinking-block emptiness tally (single-point extraction from the recorded
+        // upstream leg; feeds the thinkingBlocks* feature measures across every dimension).
+        thinkingBlocks: extractThinkingBlockCounts(entry),
       },
       CAPPED_DIMENSION_NAMES,
     )

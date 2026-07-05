@@ -419,6 +419,29 @@ describe("dimension/measure framework", () => {
     expect(model.free.costOutputTokens).toBe(0)
   })
 
+  test("thinking-block measures accumulate per request across dimensions; omitted (0) when thinkingBlocks is undefined", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    recordSettledRequest(
+      { model: "opus" },
+      { startedAt: now, endedAt: now + 10, success: true, thinkingBlocks: { nonEmpty: 2, emptySigned: 1, emptyUnsigned: 3 } },
+    )
+    recordSettledRequest(
+      { model: "opus" },
+      { startedAt: now, endedAt: now + 10, success: true, thinkingBlocks: { nonEmpty: 1, emptySigned: 0, emptyUnsigned: 1 } },
+    )
+    // No thinkingBlocks → the three measures stay 0 for this key.
+    recordSettledRequest({ model: "sonnet" }, { startedAt: now, endedAt: now + 10, success: true })
+
+    const model = (await persistedDimensions()).model.buckets[String(bucketTs)]
+    expect(model.opus.thinkingBlocksNonEmpty).toBe(3)
+    expect(model.opus.thinkingBlocksEmptySigned).toBe(1)
+    expect(model.opus.thinkingBlocksEmptyUnsigned).toBe(4)
+    expect(model.sonnet.thinkingBlocksNonEmpty).toBe(0)
+    expect(model.sonnet.thinkingBlocksEmptySigned).toBe(0)
+    expect(model.sonnet.thinkingBlocksEmptyUnsigned).toBe(0)
+  })
+
   test("capped dimension bounds its key count and merges overflow into 'other'", async () => {
     const now = Date.now()
     const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
