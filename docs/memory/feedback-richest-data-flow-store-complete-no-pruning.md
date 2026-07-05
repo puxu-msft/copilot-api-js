@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-设计 History HTTP header 捕获时，我（和默认持 DRY/YAGNI 的 subagent）用"无 UI 消费者""与另一腿字节相同""冗余双写"为由**裁剪数据模型**——砍掉 per-attempt headers、提议删除 `httpHeaders.inboundResponse`（Proxy→Client 第四腿）。operator 纠正：这违反本项目 richest-data-flow 硬约束（CLAUDE.md / DESIGN.md）："History 记录请求/响应生命周期所有可观测原始数据，**后端存储必须完整，前端展示可选择性呈现**"。
+设计 History HTTP header 捕获时，我（和默认持 DRY/YAGNI 的 subagent）用"无 UI 消费者""与另一腿字节相同""冗余双写"为由**裁剪数据模型**——砍掉 per-attempt headers、提议删除 `httpHeaders.inboundResponse`（Proxy→Client 第四腿）。operator 纠正：这违反本项目 richest-data-flow 硬约束（权威见 ADR `docs/decisions/2026-07-05-richest-data-flow.md`，CLAUDE.md / DESIGN.md 引用之）："History 记录请求/响应生命周期所有可观测原始数据，**后端存储必须完整，前端展示可选择性呈现**"。
 
 **Why**：History 是忠实的可观测记录。代理是带重试的请求/响应中继，生命周期有四条**真实的边**（①Client→Proxy 请求 ②Proxy→Upstream 请求[per-attempt] ③Upstream→Proxy 响应[per-attempt] ④Proxy→Client 响应），每条都是不同阶段的真实事件。"当前两腿字节相同"是巧合、非语义相同；"无 UI 消费"只反映前端**选择性展示**、绝不意味后端可不存；"无数据源"常是**没接线**而非真无源（如 ④ 的源是 handler 写出点 `c.res.headers`，只是没捕）。
 
