@@ -1,6 +1,6 @@
 ---
 name: empirical-verification
-description: 当需要在 copilot-api-js 实测裁决而非凭推断时使用——4141 history API 探针、ss 看内核 keepalive timer、metronome 测事件循环阻塞、SQLite 膨胀查 freelist/dbstat、流完整性看协议终止符、prompt-cache 命中率诊断、记录消失取证、探针 harness 须复制生产接线。可信度：亲手实测 > 文档 > 单方声称。
+description: 当需要在 copilot-api-js 实测裁决而非凭推断时使用——4141 history API 探针、ss 看内核 keepalive timer、metronome 测事件循环阻塞、SQLite 膨胀查 freelist/dbstat、流完整性看协议终止符、prompt-cache 命中率诊断、记录消失取证、探针 harness 须复制生产接线；以及 subagent「PASS 但有 WARN」当黄灯顺因果链、声音权威（subagent/reviewer）复核实证案例（0消费者实3、jsonrepair 真实字节复跑推翻 CRITICAL、连跑 25 次）。可信度：亲手实测 > 文档 > 单方声称。
 ---
 
 # 实证诊断手法
@@ -37,3 +37,30 @@ wire/协议正确性别用自洽（自己 encode↔decode，两端共享同一�
 ## 活路径证明 + 分层验证（改代码后必做）
 
 改代码后先证明「这条路径**真被执行**」(不是 dead code/被绕过/只活在测试):静态追踪 route→handler→sink→driver(确认调 `runResponseSink` 非 dry-run `runResponse`)+ 端到端正样本(改后的帧真出现在响应)。是 pass-null 的正向版——「改的代码触达目标了吗」,非只「逻辑正确」。**分层意识**:应用层对 ≠ 到达消费者;验证到真正起作用的那层(keepalive 要验到 TCP flush/客户端真感知,不止 `sink.write` 被调;curl -N 看实时字节、ss 看内核 timer)。**mid-stream 时序技法**(测流式 heartbeat 等异步注入):http 测试用 `FakeClock`(拦 setTimeout)+ **test 持有 `ReadableStream` controller** 精确控帧——`ctrl.enqueue(block_start)` → `await Promise.resolve()×N` drain microtask 让 pump 消费到(openBlock 设)→ `clock.advance` 触发 heartbeat → 断言注入帧。**坑**:首跑若 keepalive 落在 block_start **之前**=drain 不够(pump 还没 write)、非 bug;drain 步进后即对(生产中静默发生在 block 已 write 之后)。活案例 tests/anthropic/keepalive-e2e.http。
+
+## 「PASS with WARN」当黄灯,顺因果链
+
+subagent 审计常以「PASS 但有 1 个 WARN」或「WARN 低优先级」收尾。默认诱惑是直接交付——**别这么做**。把 WARN 再往深挖一层,它往往是 subagent 只抓到一半的真实回归的可见冰山一角。subagent 擅长表层检查(grep/type/lint/基础 test),在多步因果链上弱:它标记的某个「死导出」之所以死,可能因为你破坏了调用契约——而调用契约被破坏就是一个回归,只是 subagent 没回溯到。
+
+**因果链范例(可观测性重写 commit 4,一步步深挖):**
+- subagent:「PASS——可交付。WARN:`notifyShutdownPhaseChangedAndFlush` 是死导出(无调用者),建议删。」
+- 深挖①:该函数死掉因为 `shutdown.ts:setPhase` 现在调 `bus.publishAndFlush`。没问题。
+- 深挖②:`bus.ts` 里 `bus.publishAndFlush` 返回硬编码占位 `pendingWsBuffer: 0`。WsSink 对 `system.shutdown_phase_changed` 的 handler 是同步的——bus 不 await 它的工作。
+- **真实回归**:shutdown 的 phase frame 已发送,但 WS TCP drain 没被 await。socket 可能在 phase frame 离开本机前就关闭。旧的 `notifyShutdownPhaseChangedAndFlush` 有这个 drain 语义,迁移悄悄丢了它。
+- 修复:WsSink handler 改 `void | Promise<void>`,`needsFlush` 时返回 `broadcastAndFlush()` 的 promise;`bus.publishAndFlush` await 异步 handler,链路端到端重新接上。
+
+**怎么用:** subagent 以「PASS 但有个小 WARN」结尾时,当 YELLOW 不当 GREEN。提交前花 5-15 分钟顺 WARN 因果链走一遍。具体问:「这个被标记死/孤儿的代码在保护遗留代码做的什么事?我的迁移保留了吗?」重新 grep 该保护机制的**目的**而非只是它的存在(`broadcastAndFlush` 听着不危险;「强制关闭前的 WS TCP drain」听着就危险)。发现真实回归就提交前修掉,别甩后续补丁。
+
+## 声音权威复核:主动时机 + 项目实证案例
+
+主动时机(不等催):executor → reviewer 验收 → 主线再 sanity check;**任何重大产出(计划/设计/命名)在 ExitPlanMode/交付/报告前主动跑一轮 subagent audit**,把发现回填再请批准。门槛不设下限——连翻译/改记忆这种琐碎也不跳(简单改动的回归正因没人审才漏)。subagent 报告本身也是声音权威,**行动前读它引用的每个 file:line**,绝不整份照搬。通用裁决手法见 user-level skill `verifying-authoritative-claims`;always-on 原则见 CLAUDE.md `subagent-explicit-rubric`+`empirical-verification`。
+
+**项目实证(反复踩的坑,知道往哪查):**
+- Executor 误判:「0 个消费者」实有 3 个;bugfix subagent 跑 3 次声称修好 flaky,独立连跑 12 次抓出 3 次失败。
+- Reviewer 误判:基于不全 grep / 设计意图偏差;或基于**过时文档**——曾提 CRITICAL「Bun 不支持 fake timers」,最小探针验证 bun 1.3.8 实际支持,推翻该 CRITICAL。
+- **Reviewer「我亲测了」但喂合成样本**:审 spec 时 reviewer 跑 `jsonrepair` 得 CRITICAL「修成合法但语义改坏」,但它测的是**自己捏造的** `{"q":"\\u67b6"}`;主线用**真实 history 字节**(entry `req_1782740067043_965`)复跑证明 jsonrepair 正确补 `]}`、中文语义保真 → 推翻该 CRITICAL(同会话另 3 个 CRITICAL 复跑全确认)。教训:声音权威的「empirical demo」也是声音权威,**先查它测的是真实工件还是合成代理**——empirical≠可信若输入失真;用真实样本(history sqlite 原始字节)复跑才裁决。
+- 逐条核 subagent 抓真 bug:commit 审计标「main.ts 与 ConsoleSink double consola hijack」,`grep -n setReporters` 确认 `initConsolaReporter()`+新加 `attachConsoleSink` 都调 setReporters → 真问题,`hijackConsola:false` 修;没查验就会当「过度警惕」跳过。
+- 第一个 review agent 把 rate_limiter 单位换算判「识别了但低估」,第二个 agent 才挖出 `recoveryTimeoutMinutes`+`DEFAULT_CONFIG` 双默认值全链路——**必要时发起任意多次新 subagent 交叉核实,次数不设上限**。
+- 连 subagent「跑了 20 次全过」也自复跑 25 次才采信。
+
+**价值观冲突:** reviewer 默认持 ROI/YAGNI,与本项目「长远正确+完整」冲突,其「可安全删除/无影响/无消费者」结论尤其要对照本项目裁判轴复核(「无消费者」常是没接线非真无源,该建而非删)。报告标注每条是「经我复核 confirmed」还是「仅 reviewer 声称」。依赖随机+真实时序的测试,fake timers+mock 随机源是正确根因修复不是症状掩盖。
