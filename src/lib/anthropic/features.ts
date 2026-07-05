@@ -51,20 +51,26 @@ export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision 
 // ============================================================================
 
 /**
- * Match a model id against a config-driven capability allowlist of model-name "family" prefixes.
+ * Match a model against a config-driven capability allowlist of model-name "family" prefixes.
  *
- * A prefix `p` matches when `normalize(model) === normalize(p)` OR `normalize(model)` starts with
- * `normalize(p) + "-"`. The trailing-dash boundary is what makes `claude-opus-4` match the bare
- * `claude-opus-4` and the whole `claude-opus-4-x` family, WITHOUT matching the unrelated
- * `claude-opus-40`. Entries may be written dotted or dashed (both normalize the same). The lists
- * live in `state` (sourced from `anthropic.model_capabilities` in config.yaml — bundled defaults
- * mirror GHC's capability checks); editing config adds/removes models without a code change.
+ * A prefix `p` matches when `normalize(x) === normalize(p)` OR `normalize(x)` starts with
+ * `normalize(p) + "-"`, for `x` in {modelId, family}. The trailing-dash boundary is what makes
+ * `claude-opus-4` match the bare `claude-opus-4` and the whole `claude-opus-4-x` family, WITHOUT
+ * matching the unrelated `claude-opus-40`. Entries may be written dotted or dashed (both normalize
+ * the same). The lists live in `state` (sourced from `anthropic.model_capabilities` in config.yaml —
+ * bundled defaults mirror GHC's capability checks); editing config adds/removes models without a code change.
+ *
+ * The optional `family` mirrors GHC's `matches(id) || matches(family)` (chatModelCapabilities.ts /
+ * anthropic.ts): a model whose resolved id normalizes to a denied form but whose family is an allowed
+ * Claude family still lights the capability up. Our dash boundary is intentionally stricter than GHC's
+ * bare `startsWith` (GHC's `claude-opus-40` would match `claude-opus-4`; ours does not) — a deliberate,
+ * more-correct divergence that avoids prefix-accident false positives.
  */
-function matchModelCapability(modelId: string, prefixes: ReadonlyArray<string>): boolean {
-  const n = normalizeForMatching(modelId)
+function matchModelCapability(modelId: string, prefixes: ReadonlyArray<string>, family?: string): boolean {
+  const candidates = family ? [normalizeForMatching(modelId), normalizeForMatching(family)] : [normalizeForMatching(modelId)]
   return prefixes.some((p) => {
     const np = normalizeForMatching(p)
-    return n === np || n.startsWith(`${np}-`)
+    return candidates.some((n) => n === np || n.startsWith(`${np}-`))
   })
 }
 
@@ -94,8 +100,8 @@ function metadataCapability(resolvedModel: Model | undefined, key: string): bool
  *   modelHasAdaptiveThinking() for the runtime decision that drives the
  *   interleaved-thinking beta header.
  */
-export function modelSupportsInterleavedThinking(modelId: string): boolean {
-  return matchModelCapability(modelId, state.interleavedThinkingModels)
+export function modelSupportsInterleavedThinking(modelId: string, resolvedModel?: Model): boolean {
+  return matchModelCapability(modelId, state.interleavedThinkingModels, resolvedModel?.capabilities?.family)
 }
 
 /**
@@ -107,7 +113,7 @@ export function modelSupportsInterleavedThinking(modelId: string): boolean {
 export function modelSupportsContextEditing(modelId: string, resolvedModel?: Model): boolean {
   // Metadata-first (GHC-faithful): honor the model's declared `supports.context_editing`, else the
   // config-driven name allowlist. Mirrors chatEndpoint.ts `supports.context_editing ?? modelSupports…`.
-  return metadataCapability(resolvedModel, "context_editing") ?? matchModelCapability(modelId, state.contextEditingModels)
+  return metadataCapability(resolvedModel, "context_editing") ?? matchModelCapability(modelId, state.contextEditingModels, resolvedModel?.capabilities?.family)
 }
 
 /**
@@ -126,7 +132,7 @@ export function isContextEditingEnabled(modelId: string, resolvedModel?: Model):
  */
 export function modelSupportsToolSearch(modelId: string, resolvedModel?: Model): boolean {
   // Metadata-first (GHC-faithful): `supports.tool_search ?? modelSupportsToolSearch(this)` upstream.
-  return metadataCapability(resolvedModel, "tool_search") ?? matchModelCapability(modelId, state.toolSearchModels)
+  return metadataCapability(resolvedModel, "tool_search") ?? matchModelCapability(modelId, state.toolSearchModels, resolvedModel?.capabilities?.family)
 }
 
 // ============================================================================
@@ -177,7 +183,7 @@ export function modelHasAdaptiveThinking(modelId: string, resolvedModel?: Model)
   if (typeof supports?.max_thinking_budget === "number" && supports.max_thinking_budget > 0) return false
 
   const normalized = normalizeForMatching(modelId)
-  return matchModelCapability(normalized, state.adaptiveThinkingModels)
+  return matchModelCapability(normalized, state.adaptiveThinkingModels, resolvedModel?.capabilities?.family)
 }
 
 /**

@@ -247,6 +247,52 @@ describe("model-capability allowlists are config-driven (state-sourced)", () => 
   })
 })
 
+describe("capability matchers fall back to model.family (GHC parity: matches(id) || matches(family))", () => {
+  // GHC's capability checks are `matches(id) || matches(family)`; we mirror that so a model whose
+  // resolved id normalizes to a denied form but whose family is an allowed Claude family lights up.
+  // Pin the capability list explicitly (bun's single-process runner leaks module-global state across
+  // files, so we must not depend on the ambient default contextEditingModels here).
+  const snapshot = snapshotStateForTests()
+  afterEach(() => restoreStateForTests(snapshot))
+  const withFamily = (id: string, family: string) => ({ id, capabilities: { family } }) as unknown as Parameters<typeof modelSupportsContextEditing>[1]
+
+  test("id denied but family allowed → true (family fallback)", () => {
+    setStateForTests({ contextEditingModels: ["claude-opus-4-6"] })
+    // Unknown id, but the family is a supported opus-4.6 → matches via family.
+    expect(modelSupportsContextEditing("vendor-internal-alias-xyz")).toBe(false)
+    expect(modelSupportsContextEditing("vendor-internal-alias-xyz", withFamily("vendor-internal-alias-xyz", "claude-opus-4-6"))).toBe(true)
+  })
+
+  test("id allowed with absent/unrelated family → still true (id path preserved)", () => {
+    setStateForTests({ contextEditingModels: ["claude-opus-4-6"] })
+    expect(modelSupportsContextEditing("claude-opus-4-6", withFamily("claude-opus-4-6", "some-unrelated-family"))).toBe(true)
+  })
+
+  test("neither id nor family matches → false", () => {
+    setStateForTests({ contextEditingModels: ["claude-opus-4-6"] })
+    expect(modelSupportsContextEditing("vendor-internal-alias-xyz", withFamily("vendor-internal-alias-xyz", "some-unrelated-family"))).toBe(false)
+  })
+
+  test("metadata still wins over the family fallback", () => {
+    setStateForTests({ contextEditingModels: ["claude-opus-4-6"] })
+    // Family would match, but metadata explicitly declares false → false (metadata-first).
+    expect(
+      modelSupportsContextEditing("x", {
+        id: "x",
+        capabilities: { family: "claude-opus-4-6", supports: { context_editing: false } },
+      } as unknown as Parameters<typeof modelSupportsContextEditing>[1]),
+    ).toBe(false)
+  })
+
+  test("family fallback respects the dash boundary (no prefix-accident)", () => {
+    setStateForTests({ contextEditingModels: ["claude-opus-4"] })
+    // family "claude-opus-40" must NOT match the bare "claude-opus-4" contextEditing entry (dash boundary).
+    expect(modelSupportsContextEditing("unknown-id", withFamily("unknown-id", "claude-opus-40"))).toBe(false)
+    // …but the exact family and its dashed descendants DO match.
+    expect(modelSupportsContextEditing("unknown-id", withFamily("unknown-id", "claude-opus-4-7"))).toBe(true)
+  })
+})
+
 describe("context_editing / tool_search are metadata-first (supports.X ?? name-list)", () => {
   // A minimal Model carrying only the capability flag under test.
   const withSupports = (supports: Record<string, unknown>) =>
