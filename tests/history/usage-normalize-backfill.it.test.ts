@@ -185,6 +185,59 @@ function seedLegacyGeminiStreamingNet(id: string, startedAt: number, net: number
     .run(id, startedAt, "gemini-generate-content", "http", "completed", net, cached, 3, compress(full))
 }
 
+/**
+ * Insert a Gemini STREAMING row the way the PRE-DRIVER handler (2026-06-05..~06-20)
+ * did: NET usage, frames recorded via setForwardedResponse → `inboundResponse.sseEvents`
+ * (an `inbound_response` stage), NOT the top-level `sse_events` stage. This is the
+ * layout the first fix missed.
+ */
+async function seedGeminiStreamingInboundResponse(id: string, startedAt: number, net: number, cached: number): Promise<void> {
+  const entry = {
+    id,
+    endpoint: "gemini-generate-content",
+    startedAt,
+    state: "pending",
+    active: true,
+    lastUpdatedAt: startedAt,
+    inboundRequest: { model: "gemini-2.5-pro", messages: [{ role: "user", content: "hi" }], stream: true },
+  } as unknown as HistoryEntry
+  insertEntry(entry)
+  updateEntry(id, {
+    state: "completed",
+    active: false,
+    endedAt: startedAt,
+    inboundResponse: { sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }] },
+    outboundResponse: {
+      success: true,
+      model: "gemini-2.5-pro",
+      usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 },
+      content: null,
+    },
+  } as Partial<HistoryEntry>)
+  await finalizeEntry(id)
+  getDatabase().prepare("UPDATE entries_v2 SET usage_normalized = 0 WHERE id = ?").run(id)
+}
+
+/** Legacy single-blob Gemini STREAMING row with sseEvents under `inboundResponse` (not top-level). */
+function seedLegacyGeminiInboundResponse(id: string, startedAt: number, net: number, cached: number): void {
+  const full = {
+    inboundRequest: { model: "gemini-2.5-pro", messages: [{ role: "user", content: "legacy" }], stream: true },
+    inboundResponse: { sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }] },
+    outboundResponse: {
+      success: true,
+      model: "gemini-2.5-pro",
+      usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 },
+      content: null,
+    },
+  }
+  getDatabase()
+    .prepare(
+      "INSERT INTO entries_v2 (id, started_at, endpoint, transport, status, input_tokens, cache_read, output_tokens, usage_normalized, blob_gz) "
+        + "VALUES (?,?,?,?,?,?,?,?,0,?)",
+    )
+    .run(id, startedAt, "gemini-generate-content", "http", "completed", net, cached, 3, compress(full))
+}
+
 describe("sqlite usage-normalize backfill", () => {
   useIsolatedRuntime()
 
@@ -257,6 +310,26 @@ describe("sqlite usage-normalize backfill", () => {
     expect(col("gn1").input_tokens).toBe(600) // 1000 - 400
     expect(blobInput("gn1")).toBe(600)
     expect(col("gn1").usage_normalized).toBe(1)
+  })
+
+  test("legacy-era Gemini streaming (sseEvents in inbound_response stage, no sse_events stage): NOT re-subtracted", async () => {
+    // The pre-driver handler recorded frames under inboundResponse → an inbound_response
+    // stage, not a top-level sse_events stage. Must still be detected as already-net.
+    await seedGeminiStreamingInboundResponse("gir1", 1000, 600, 400)
+    await runUsageNormalizeBackfill(getDatabase())
+
+    expect(col("gir1").input_tokens).toBe(600) // untouched — NOT 200
+    expect(blobInput("gir1")).toBe(600)
+    expect(col("gir1").usage_normalized).toBe(1)
+  })
+
+  test("legacy single-blob Gemini streaming (sseEvents under inboundResponse in head blob): NOT re-subtracted", async () => {
+    seedLegacyGeminiInboundResponse("glir1", 1000, 600, 400)
+    await runUsageNormalizeBackfill(getDatabase())
+
+    expect(col("glir1").input_tokens).toBe(600) // untouched — NOT 200
+    expect(blobInput("glir1")).toBe(600)
+    expect(col("glir1").usage_normalized).toBe(1)
   })
 
   test("re-run is a guarded no-op (marker + version both prevent a second subtraction)", async () => {

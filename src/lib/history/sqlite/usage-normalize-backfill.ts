@@ -74,28 +74,50 @@ const OVERLAP_ENDPOINTS = new Set(["openai-chat-completions", "openai-responses"
  * STREAMING path records usage via the CC→Gemini codec, which nets
  * `promptTokenCount = max(0, prompt - cached)` (convert-response.ts, since
  * 2026-06-05) — those rows are ALREADY net and must NOT be subtracted again. The
- * NON-streaming path stored the raw total. Presence of `sseEvents` ⟺ the
- * streaming path ran (`setForwardedResponse({ sseEvents })`), so it is the
- * reliable discriminator. Checked at the STAGE level (no decompression) for
- * stage-split rows, and via the head blob for legacy single-blob rows (the
- * 2026-06-05..06-11 window wrote net Gemini rows before the stage split landed).
- * OpenAI/Responses are uniformly total across both legs → always subtracted.
+ * NON-streaming path stored the raw total. OpenAI/Responses are uniformly total
+ * across both legs → always subtracted.
+ *
+ * The reliable "streaming" signal is the presence of `sseEvents`, which lives in
+ * exactly two entry fields (verified in context/request.ts): `entry.sseEvents`
+ * (driver frame sampling → `sse_events` stage) and `entry.inboundResponse.sseEvents`
+ * (the pump's `setForwardedResponse` → `inbound_response` stage). Legacy Gemini
+ * streaming rows (2026-06-05..~06-20, before the driver's `setSseEvents` landed)
+ * carry frames ONLY in `inbound_response`, so both must be checked — in stage form
+ * (finalized rows) and inside the head blob (legacy single-blob rows). A
+ * non-streaming row has neither. Biasing toward "already net" is the safe
+ * direction: a mislabeled total row merely stays total; a net row is never
+ * corrupted.
  */
+function hasSseEvents(value: { sseEvents?: unknown; inboundResponse?: { sseEvents?: unknown } } | null): boolean {
+  if (!value) return false
+  return Boolean(value.sseEvents ?? value.inboundResponse?.sseEvents)
+}
+
 function isGeminiAlreadyNet(db: Database, id: string): boolean {
+  // Fast path: a top-level / per-attempt sse_events stage (driver-era streaming).
   if (db.prepare("SELECT 1 AS one FROM entry_stages WHERE entry_id = ? AND stage = 'sse_events' LIMIT 1").get(id)) return true
-  // Any stage row at all → this is a stage-split row; the absence of an sse_events
-  // stage above means it is the non-streaming (total) leg → subtract.
+  // The forwarded frames of a pre-driver streaming row live in the inbound_response stage.
+  const ir = db.prepare("SELECT blob_gz FROM entry_stages WHERE entry_id = ? AND stage = 'inbound_response' LIMIT 1").get(id) as
+    | { blob_gz: Uint8Array }
+    | undefined
+  if (ir) {
+    try {
+      if ((decompress(ir.blob_gz) as { sseEvents?: unknown } | null)?.sseEvents) return true
+    } catch {
+      // Undecodable inbound_response → fall through (the caller net-izes, but its
+      // outbound_response decode would fail too → skipped without marking).
+    }
+  }
+  // Any stage at all → this is a stage-split row; neither sse signal above fired
+  // → the non-streaming (total) leg → subtract.
   if (db.prepare("SELECT 1 AS one FROM entry_stages WHERE entry_id = ? LIMIT 1").get(id)) return false
-  // Legacy single-blob row: sseEvents (if any) lives inside the head blob.
+  // Legacy single-blob row: sseEvents (if any) lives inside the head blob, in either
+  // the top-level `sseEvents` or `inboundResponse.sseEvents` field.
   try {
     const head = db.prepare("SELECT blob_gz FROM entries_v2 WHERE id = ?").get(id) as { blob_gz: Uint8Array } | undefined
     if (!head) return false
-    const full = decompress(head.blob_gz) as { sseEvents?: unknown } | null
-    return Boolean(full?.sseEvents)
+    return hasSseEvents(decompress(head.blob_gz) as { sseEvents?: unknown; inboundResponse?: { sseEvents?: unknown } } | null)
   } catch {
-    // Undecodable → treat as "not provably net": the caller still net-izes, but a
-    // legacy Gemini row's head-blob usage decode would fail there too → skipped
-    // without marking (stays old). Never corrupts a decodable streaming row.
     return false
   }
 }
