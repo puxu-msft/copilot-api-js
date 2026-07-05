@@ -15,3 +15,5 @@ metadata:
 **Why:** "代码改完但文档没同步"= **未完成**;而"我以为我同步完了"在没扫描验证前 = **未验证的声称**,等价于 grep 空就说"无残留"。改一个特性会在多处文档留痕(DESIGN 可能有多行、README 端点/配置表、模块文档、RFC 暂缓行、记忆正文),只改显眼那处必漏其余——是 [[feedback-fix-all-comparison-sites]] 在文档轴的同构失败。本条与"知识归类"([[feedback-knowledge-routing-docs-vs-memory]])正交:归类决定"写哪",本条强调"doc-sync 属于 done 的定义、且其完成须被验证"。
 
 **How to apply:** 收尾**必做**一次验证扫描,不靠记忆:① `grep -rn "<旧状态词:暂缓/暂未/未实现/TODO/reserved/无源/单列>" docs/` 命中本次特性的全清零;② `grep -rln "<特性关键词:新端点/新字段/新机制>" docs/ README.md` 逐个核对该提的都提了;③ broken-link / L1 守卫测试绿。扫描出 0 残留才算 done。删 pending 记忆与更新活文档成对做。与 [[feedback-distill-lessons-at-boundaries]]、[[feedback-pass-null-clean-not-self-validating]] 配套。
+
+**Proactive 补充(2026-07-05)**:本项目 doc-first = **先写独立 spec/plan(docs/spec)、活文档 DESIGN.md 在收尾改**(非先改活文档——DESIGN.md 是"现状镜",提前改会描述未落地态)。写 spec 时就把该特性会触及的**活文档 loci 枚举进 spec 的收尾 doc-sync 小节**(DESIGN.md 具体条目/行、README 表、模块文档、config 表),别只列代码文件。本轮 spec §8 触及文件清单最初**只列代码+测试、漏了 DESIGN.md**,是用户纠正后补 §9(loci 表:request-telemetry 裸文件条目 + /api/status + 响应腿行,并钉死"/api/status.thinking_blocks 须写成 telemetry 投影、非独立计数器"的措辞)才防住收尾遗漏。proactive 枚举(spec 阶段) + reactive grep(收尾阶段)双保险,前者让后者有清单可逐条核。
