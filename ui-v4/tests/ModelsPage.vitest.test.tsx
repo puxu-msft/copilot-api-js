@@ -4,6 +4,7 @@ import {
   render,
   screen,
 } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { MemoryRouter } from "react-router-dom"
 import {
   //
@@ -102,17 +103,21 @@ describe("ModelsPage", () => {
     expect(screen.getByText(/Models · 1\/2/)).toBeDefined()
   })
 
-  it("hides a column via the column menu", () => {
+  it("hides a column via the column menu", async () => {
+    const user = userEvent.setup()
     renderPage()
     expect(screen.getByRole("columnheader", { name: /Vendor/i })).toBeDefined()
-    fireEvent.click(screen.getByRole("checkbox", { name: /Vendor/i }))
+    await user.click(screen.getByRole("button", { name: "Columns" }))
+    await user.click(screen.getByRole("menuitemcheckbox", { name: /Vendor/i }))
     expect(screen.queryByRole("columnheader", { name: /Vendor/i })).toBeNull()
   })
 
-  it("shows the requests(7d) column when enabled and renders the joined count", () => {
+  it("shows the requests(7d) column when enabled and renders the joined count", async () => {
+    const user = userEvent.setup()
     renderPage()
-    // requests7d is hidden by default; enable it
-    fireEvent.click(screen.getByRole("checkbox", { name: /Req 7d/i }))
+    // requests7d is hidden by default; enable it via the column menu
+    await user.click(screen.getByRole("button", { name: "Columns" }))
+    await user.click(screen.getByRole("menuitemcheckbox", { name: /Req 7d/i }))
     expect(screen.getByText("12")).toBeDefined()
   })
 
