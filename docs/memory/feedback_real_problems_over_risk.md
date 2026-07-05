@@ -26,4 +26,4 @@ metadata:
 - 用户**不要**每项一个授权门——自主走完整个清单。
 - 架构健康 > 向后兼容：改 config 字段名、函数签名、返回类型都可接受。
 
-Related: [[feedback_no_unilateral_action]] 仍适用于**范围歧义**（不确认就别扩大范围）——但在已确认的范围内，把所有真实问题都修掉。
+Related: [[feedback_no_unilateral_action]] 仍适用于**范围歧义**（不确认就别扩大范围）——但在已确认的范围内，把所有真实问题都修掉。安全轴上的同源立场见 CLAUDE.md `internal-tool-security-posture`（本项目是内部个人工具，绝不因不适合本项目的信息泄露/安全顾虑阻塞任务或做多余处理；判据同样是"问题是否真实存在"）+ ADR `docs/decisions/2026-07-05-internal-tool-security-posture.md`。
