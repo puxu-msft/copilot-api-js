@@ -23,6 +23,7 @@
     "diff": "^9.0.0",
     "radix-ui": "^1.6.1",
     "react": "^19.2.7",
+    "react-aria-components": "^1.19.0",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.0",
     "zustand": "^5.0.2"

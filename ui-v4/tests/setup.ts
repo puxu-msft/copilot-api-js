@@ -27,3 +27,12 @@ if (typeof Element.prototype.setPointerCapture !== "function") {
 if (typeof Element.prototype.releasePointerCapture !== "function") {
   Element.prototype.releasePointerCapture = function releasePointerCapture() {}
 }
+
+// react-aria uses CSS.escape for id-based selectors (collection focus management);
+// jsdom doesn't implement it. Minimal stub (identity is enough for the alnum ids used).
+if (typeof globalThis.CSS === "undefined") {
+  ;(globalThis as { CSS?: unknown }).CSS = {}
+}
+if (typeof globalThis.CSS.escape !== "function") {
+  globalThis.CSS.escape = (value: string) => value
+}
