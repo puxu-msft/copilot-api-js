@@ -12,6 +12,7 @@ import DetailSection from "../DetailSection.vue"
 const props = defineProps<{ model: Model; caps: DerivedCapabilities }>()
 
 const rows = computed<Array<[string, string | null]>>(() => [
+  ["Name", props.model.name ?? null],
   ["Vendor", props.model.vendor ?? null],
   ["Version", props.model.version ?? null],
   ["Family", props.model.capabilities?.family ?? null],

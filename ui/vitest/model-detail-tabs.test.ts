@@ -38,6 +38,13 @@ describe("detail tabs", () => {
     expect(w.text()).toContain("—")
   })
 
+  test("OverviewTab shows the model name (distinct from id)", () => {
+    const m = model({ id: "claude-opus-4.8", name: "Claude Opus 4.8" })
+    const w = mountWithVuetifyStubs(OverviewTab, { props: { model: m, caps: deriveCapabilities(m) } })
+    expect(w.text()).toContain("Name")
+    expect(w.text()).toContain("Claude Opus 4.8")
+  })
+
   test("CapabilitiesTab shows the FULL raw supports map, not just derived", () => {
     const m = model()
     const w = mountWithVuetifyStubs(CapabilitiesTab, { props: { model: m, caps: deriveCapabilities(m) } })
