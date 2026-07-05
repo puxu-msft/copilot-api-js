@@ -12,7 +12,7 @@ metadata:
 
 **2. storage 双 guard 使 runner 与开库顺序解耦。** `HistoryMetaStorage` 构造即 `CREATE TABLE IF NOT EXISTS history_meta` + `executed()` 表缺返 `[]`——故即便无地板也自足、可隔离测(裸 `:memory:`)。账本落**既有 KV 表**(`history_meta(schema_migrations)`,与 `search_index_version` 同表)= 统一账本,非另起 migrations 表。
 
-**3. spike 须复现真实接线、别预建被测对象。** bun spike 的 line-5 `CREATE TABLE history_meta` 预建**掩盖了 chicken-egg**;node spike 故意**不预建**→先用无 guard storage **复现** `no such table` bug→再证 guard 规避。呼应 [[empirical-probe-via-history-api]] 的 empirical-verification:别信"应该能跑",写最小探针实测,且探针要忠实复制生产顺序。
+**3. spike 须复现真实接线、别预建被测对象。** bun spike 的 line-5 `CREATE TABLE history_meta` 预建**掩盖了 chicken-egg**;node spike 故意**不预建**→先用无 guard storage **复现** `no such table` bug→再证 guard 规避。呼应 skill `empirical-verification` 的 empirical-verification:别信"应该能跑",写最小探针实测,且探针要忠实复制生产顺序。
 
 **4. 真实生产模块的跨-runtime e2e 需 bundle。** 验 node:sqlite 腿要跑**真实模块**(非手搓 storage):Node strict ESM 拒 src 树内部无扩展名相对 import(`./index`),经 `bun build --target node` 打 bundle(同 tsdown production 产物)后真 Node 跑即过。`bun test` 只覆盖 Bun 腿,Node 腿(driver `nodeFactory` 手搓 BEGIN/COMMIT)永远走不到、必须单独实测。
 

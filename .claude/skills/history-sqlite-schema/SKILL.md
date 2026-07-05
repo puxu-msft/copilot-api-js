@@ -58,3 +58,14 @@ reaper 按 status 分桶（success/failure 各上限），active+pinned 行豁�
 
 写/改后台 backfill（建索引、重算派生列、破坏性变换已存字段）见 skill `history-backfill`。
 
+## FTS5 external-content 三陷阱（全文搜索）
+
+external-content FTS5（如 `entries_fts` 建在 `entries_v2` 上）有三个腐败/穿透陷阱，全部实测确认（`exp/fts-audit/`）——`bun-node-runtime-gotchas` 的 bun:sqlite 陷阱把 history 专有的这三条指到本节：
+
+- **COUNT 穿透**：`SELECT COUNT(*) FROM entries_fts`（external-content）**穿透读 content 表**（entries_v2），即使索引为空也返回内容行数——**不能用它判索引是否已 build**（否则升级时 backfill 被跳过、老数据搜不到）。判 build 用「表是否存在 + 一次性 `'rebuild'`」，gate 在表存在性而非行数。
+- **`'delete'` 腐败**：对**从未 insert 过的内容**发 `'delete'` 会 `SQLITE_CORRUPT_VTAB`。AFTER INSERT/UPDATE/DELETE 三触发器必须严格配对（delete 用 old 值、insert 用 new 值），任何路径不得漏发 insert 就 delete。
+- **VACUUM renumber rowid**：entries_v2 是 TEXT PK → 隐式 rowid，full `VACUUM` 可能 renumber rowid，使 keyed-on-rowid 的 external-content 索引失配——故启动 VACUUM 后须 `'rebuild'`（`incremental_vacuum` 不 renumber，安全）。
+- **trigram 大小写折叠是全 Unicode**：trigram tokenizer 让 `MATCH '"子串"'` 等价 `LIKE '%子串%'`（≥3 字符、子串非 token），但**大小写折叠覆盖全 Unicode**（`LIKE` 只折 ASCII）——非 ASCII 文本 FTS 是 LIKE 的超集，属改进非回归。
+
+（触发器写入被 bun:sqlite 计入 `.run().changes`、故带触发器/级联的表行数用 `SELECT COUNT(*)` 而非 `.changes`——通用运行时分歧见 skill `bun-node-runtime-gotchas`。）
+

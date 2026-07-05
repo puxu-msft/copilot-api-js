@@ -13,6 +13,6 @@ denormalized/派生列（如 `entries_v2.preview_text` = `extractPreviewText(ent
 
 **坑② 同步跑在 `openDatabase` 里 = 卡死整个启动**（看起来像死机，最后一条日志停在 "Data directory" 后几分钟）。修法=**非阻塞后台**：移出 openDatabase，由 `start.ts` 监听之后 fire-and-forget（`startPreviewBackfill()`），核心函数 async、50/批 `await sleep(0)`（`node:timers/promises`）让出 event loop、批间**不持事务**（否则锁住 writer 整个 backfill 期）。**双重 never-throw**：后台 detached promise 的 reject 会冒泡到 `main.ts` 的 unhandledRejection→`exit(1)` 崩整服务器（见 skill `debugging-server-crashes`），故 `void fn().catch(warn)` + 内部 try/catch 都要有。
 
-**裁决哪步慢用日志时间戳实测、别假设**（[[empirical-probe-via-history-api]] 同源）：用户报"卡在 Data directory 后"，我没有因为他提了 backfill 就认定——查日志 `19:20:08 Data directory` → `19:24:01 preview backfill: recomputed 639...` 锁定是 backfill 而非启动 VACUUM（且 DB 仍 4.2G、freelist 仅 2MB → VACUUM 根本没触发，[[methodology-sqlite-bloat-check-freelist-first]]）。
+**裁决哪步慢用日志时间戳实测、别假设**（skill `empirical-verification` 同源）：用户报"卡在 Data directory 后"，我没有因为他提了 backfill 就认定——查日志 `19:20:08 Data directory` → `19:24:01 preview backfill: recomputed 639...` 锁定是 backfill 而非启动 VACUUM（且 DB 仍 4.2G、freelist 仅 2MB → VACUUM 根本没触发，skill `empirical-verification`）。
 
 **靶向解压须等价性 oracle 钉死**（[[feedback-self-consistent-needs-independent-oracle]]）：inbound-only 提取若漏某种 entry 形态会把好预览覆盖成空，比陈旧更糟。测试断言 `storedPreview(id) === extractPreviewText(getEntryById(id)!)`（后者走 `assembleFullEntry` 全路径）= 新靶向路径 ≡ 旧全路径，而非只断言一个硬编码字面量。配套：在派生函数（`extractPreviewText`）上加注释警告"backfill 是 inbound-only、若改读 inbound 外字段须同步改 backfill"——编译期没有这层耦合的强制。

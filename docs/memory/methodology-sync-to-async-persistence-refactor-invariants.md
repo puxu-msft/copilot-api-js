@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-把一条**同步持久化路径改异步**（本项目 history finalize：sync→libuv 卸载压缩+协作让出索引，活档 docs/spec/history-finalize-async-offload.md）必须守的不变量清单。漏任一条都酿静默数据丢失或进程崩。扩展 [[methodology-persistence-swallow-plus-lossy-fallback-loses-data]]。
+把一条**同步持久化路径改异步**（本项目 history finalize：sync→libuv 卸载压缩+协作让出索引，活档 docs/spec/history-finalize-async-offload.md）必须守的不变量清单。漏任一条都酿静默数据丢失或进程崩。扩展 skill `empirical-verification`。
 
 **Why**：异步化把"调用即落盘"变成"调用 kick 一个未决 promise"。原本靠"同步落盘"隐式保证的东西（shutdown 时数据已落、test 读到已写行、无并发重入）全部失效，且失效是**静默的**（编译过、fire-and-forget 类型兼容、单测偶尔过）。
 
