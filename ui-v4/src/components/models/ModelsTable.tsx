@@ -44,11 +44,10 @@ export function ModelsTable({ models, columns, telemetryFor, maxRequests7d, sort
     return map
   }, [models])
 
-  const caret = (key: ModelSortKey) =>
-    sortKey === key ?
-      sortDesc ? " ▼"
-      : " ▲"
-    : ""
+  const caret = (key: ModelSortKey) => {
+    if (sortKey !== key) return ""
+    return sortDesc ? " ▼" : " ▲"
+  }
   const sortable = (key: ModelSortKey, label: string, extra = "") => (
     <th
       className={`${HEAD} cursor-pointer select-none hover:text-[var(--color-primary)] ${extra}`}
@@ -86,7 +85,7 @@ export function ModelsTable({ models, columns, telemetryFor, maxRequests7d, sort
       </thead>
       <tbody>
         {models.map((m) => {
-          const caps = capsById.get(m.id)!
+          const caps = capsById.get(m.id) ?? deriveCapabilities(m)
           const req = telemetryFor(m.id)?.last7d?.requestCount ?? 0
           const selected = m.id === selectedId
           return (

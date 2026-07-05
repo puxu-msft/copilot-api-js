@@ -43,7 +43,7 @@ export function matchesPolicyState(model: Model, value: string | null): boolean 
 export function filterModels(models: Array<Model>, filters: ModelFilters, hasTelemetry: (id: string) => boolean): Array<Model> {
   const query = filters.search.trim().toLowerCase()
   return models.filter((m) => {
-    if (query && !m.id.toLowerCase().includes(query) && !(m.name ?? "").toLowerCase().includes(query)) return false
+    if (query && !m.id.toLowerCase().includes(query) && !m.name.toLowerCase().includes(query)) return false
     if (filters.vendor && m.vendor !== filters.vendor) return false
     if (filters.type && m.capabilities?.type !== filters.type) return false
     if (filters.capabilities.length > 0) {
@@ -65,7 +65,7 @@ export function sortModels(models: Array<Model>, key: ModelSortKey, desc: boolea
   const val = (m: Model): string | number => {
     switch (key) {
       case "vendor": {
-        return m.vendor ?? ""
+        return m.vendor
       }
       case "context": {
         return deriveCapabilities(m).contextWindow ?? 0

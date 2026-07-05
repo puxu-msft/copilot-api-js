@@ -26,11 +26,8 @@ const SELECT_CLASS = "mono border border-[var(--color-border)] bg-[var(--color-s
 
 /** Parse a select value that encodes tri-state boolean ("" | "yes" | "no"). */
 function triValue(v: boolean | null): string {
-  return (
-    v === null ? ""
-    : v ? "yes"
-    : "no"
-  )
+  if (v === null) return ""
+  return v ? "yes" : "no"
 }
 function parseTri(s: string): boolean | null {
   return s === "" ? null : s === "yes"
