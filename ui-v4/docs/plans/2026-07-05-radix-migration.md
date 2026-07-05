@@ -1,7 +1,7 @@
 # ui-v4 Radix Primitives 增量迁移 — 实施计划
 
-> **实施状态：进行中**（P0 地基 + P1 Dialog/Tabs 落地 2026-07-05；P2 Menu / P3 splitter+Select 待续）
-> **落地**：P0 `b56e7a4`/`cc48e9f`/`cafb4fe`/`3446962`（依赖+jsdom stub+样式桥+golden）· P1 `f135365`（Modal→Dialog）/`88bc9e6`（user-event dev dep）/`b053674`（ModelDetail Tabs）/`a812c65`（DetailPanel Tabs）
+> **实施状态：已完成（核心）**（P0–P3 落地 2026-07-05；两可选项按 record-not-adopted 暂缓，见 §6）
+> **落地**：P0 `b56e7a4`/`cc48e9f`/`cafb4fe`/`3446962` · P1 `f135365`/`88bc9e6`/`b053674`/`a812c65`/`2bc045f` · P2 DropdownMenu · P3 splitter 键盘 + DetailTocTree `aria-expanded`
 > **备注**：装 `radix-ui@1.6.1` + `@testing-library/user-event@14.6.1`（Radix 交互需真实 pointer/focus 序列，jsdom fireEvent.click 不触发；已成迁移测试标准手法）。Modal 迁移证明 build:ui-v4 能打包 radix-ui。Tabs 迁移删净手写 roving/方向键/aria 接线（净减 ~46+ 行 a11y 手写代码）。
 > **日期**：2026-07-05
 > **决策依据**：[decisions/2026-07-05-adopt-radix-primitives.md](../decisions/2026-07-05-adopt-radix-primitives.md)（WHY / 取舍 / 未采纳方案）
@@ -89,7 +89,15 @@
 | P0 | 装 radix-ui + jsdom stub 扩充 + 样式桥 doc + golden 补齐（含 ColumnMenu/FilterBar/DetailSubRail 独立测试） | 是（地基） |
 | P1 | Dialog（Modal）+ Tabs（两 SubRail） | 否（试点，验证模式） |
 | P2 | DropdownMenu（ColumnMenu） | 否 |
-| P3 | splitter 键盘 + Select（可选） | 否 |
+| P3 | splitter 键盘 + DetailTocTree `aria-expanded` | 否 |
+
+### 已完成 vs record-not-adopted 暂缓
+
+**已迁**：Modal→Dialog、两 tab 轨→Tabs、ColumnMenu→DropdownMenu、splitter 键盘可操作（保留手写 + APG）、DetailTocTree 折叠补 `aria-expanded`。
+
+**暂缓（可选项，非 a11y 缺陷；record-not-adopted）**：
+- **`ModelsFilterBar` 原生 `<select>` → Radix `Select`** —— **不迁，留原生**。原生 select 的 a11y 已合格（键盘/AT 原生支持），迁移纯为视觉统一（Terminal Amber 下拉面板）；对内部工具，5 个 select + 配套测试的迁移churn 不抵这点视觉收益。**这不是 a11y 降级**（a11y 本已满足），是视觉-only 的可选项按成本判断留原生。若日后要全站视觉统一再迁。
+- **`JsonTreeView` 折叠 disclosure → Radix `Collapsible`（补 `aria-expanded`）** —— 暂缓。JsonTreeView 的 toggle 是 `<div onClick>`（非 button、不可键盘聚焦），补正确 disclosure 语义需先改成 button，属独立小重构；`DetailTocTree`（toggle 本就是 button）已直接补 `aria-expanded`。JsonTreeView 留待后续。
 
 每 phase 一或多个细粒度 commit（conventional，显式 pathspec）；phase 末派 subagent audit（裁判轴：行为等价 + a11y 只增不减 + 视觉不变 + 长远正确）。
 
