@@ -6,6 +6,7 @@ import {
   render,
   screen,
 } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import {
   //
   describe,
@@ -89,8 +90,9 @@ function panelText(): string {
   return screen.getByRole("tabpanel").textContent
 }
 
-function selectTab(name: string) {
-  fireEvent.click(screen.getByRole("tab", { name }))
+/** Radix Tabs activate on a real pointer/focus sequence — use userEvent, not fireEvent.click. */
+async function selectTab(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(screen.getByRole("tab", { name }))
 }
 
 describe("ModelDetail", () => {
@@ -110,7 +112,8 @@ describe("ModelDetail", () => {
     expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true")
   })
 
-  it("Capabilities tab shows the derived matrix AND the full raw supports map (not just the subset)", () => {
+  it("Capabilities tab shows the derived matrix AND the full raw supports map (not just the subset)", async () => {
+    const user = userEvent.setup()
     render(
       <ModelDetail
         model={VISION_MODEL}
@@ -118,7 +121,7 @@ describe("ModelDetail", () => {
         onClose={() => {}}
       />,
     )
-    selectTab("Capabilities")
+    await selectTab(user, "Capabilities")
     const text = panelText()
     // Full raw supports map is rendered — an arbitrary future flag survives.
     expect(text).toContain("custom_future_flag")
@@ -127,7 +130,8 @@ describe("ModelDetail", () => {
     expect(text).toContain("reasoning_effort")
   })
 
-  it("Limits + Vision tab renders the Vision block only when limits.vision exists", () => {
+  it("Limits + Vision tab renders the Vision block only when limits.vision exists", async () => {
+    const user = userEvent.setup()
     const { rerender } = render(
       <ModelDetail
         model={VISION_MODEL}
@@ -135,7 +139,7 @@ describe("ModelDetail", () => {
         onClose={() => {}}
       />,
     )
-    selectTab("Limits + Vision")
+    await selectTab(user, "Limits + Vision")
     expect(panelText()).toContain("supported_media_types")
     expect(panelText()).toContain("image/png")
 
@@ -147,12 +151,13 @@ describe("ModelDetail", () => {
         onClose={() => {}}
       />,
     )
-    selectTab("Limits + Vision")
+    await selectTab(user, "Limits + Vision")
     expect(panelText()).not.toContain("supported_media_types")
     expect(panelText()).toContain("max_context_window_tokens")
   })
 
-  it("Billing + Policy tab shows multiplier, plan chips, and policy state", () => {
+  it("Billing + Policy tab shows multiplier, plan chips, and policy state", async () => {
+    const user = userEvent.setup()
     render(
       <ModelDetail
         model={VISION_MODEL}
@@ -160,14 +165,15 @@ describe("ModelDetail", () => {
         onClose={() => {}}
       />,
     )
-    selectTab("Billing + Policy")
+    await selectTab(user, "Billing + Policy")
     const text = panelText()
     expect(text).toContain("pro")
     expect(text).toContain("max")
     expect(text).toContain("enabled")
   })
 
-  it("Telemetry tab shows both windows with the full 6-token breakdown", () => {
+  it("Telemetry tab shows both windows with the full 6-token breakdown", async () => {
+    const user = userEvent.setup()
     render(
       <ModelDetail
         model={VISION_MODEL}
@@ -175,7 +181,7 @@ describe("ModelDetail", () => {
         onClose={() => {}}
       />,
     )
-    selectTab("Telemetry")
+    await selectTab(user, "Telemetry")
     const text = panelText()
     expect(text).toContain("Last 7 days")
     expect(text).toContain("Since start")
@@ -184,7 +190,8 @@ describe("ModelDetail", () => {
     expect(text).toContain("Unmatched telemetry") // honest failure-count note
   })
 
-  it("Telemetry tab shows a no-traffic note when nothing joined", () => {
+  it("Telemetry tab shows a no-traffic note when nothing joined", async () => {
+    const user = userEvent.setup()
     render(
       <ModelDetail
         model={VISION_MODEL}
@@ -192,11 +199,12 @@ describe("ModelDetail", () => {
         onClose={() => {}}
       />,
     )
-    selectTab("Telemetry")
+    await selectTab(user, "Telemetry")
     expect(panelText()).toContain("no runtime telemetry")
   })
 
-  it("Raw JSON tab includes request_headers (no longer stripped)", () => {
+  it("Raw JSON tab includes request_headers (no longer stripped)", async () => {
+    const user = userEvent.setup()
     render(
       <ModelDetail
         model={VISION_MODEL}
@@ -204,7 +212,7 @@ describe("ModelDetail", () => {
         onClose={() => {}}
       />,
     )
-    selectTab("Raw JSON")
+    await selectTab(user, "Raw JSON")
     const text = panelText()
     expect(text).toContain("request_headers")
     expect(text).toContain("sentinel-value")
@@ -254,7 +262,31 @@ describe("ModelDetail", () => {
     expect(document.activeElement).toBe(screen.getByRole("region", { name: /Model detail/i }))
   })
 
-  it("uses the WAI-ARIA tabs pattern: roving tabindex + arrow-key navigation", () => {
+  it("switches tab + wires panel aria + roving tabindex (Radix Tabs)", async () => {
+    const user = userEvent.setup()
+    render(
+      <ModelDetail
+        model={VISION_MODEL}
+        telemetry={null}
+        onClose={() => {}}
+      />,
+    )
+    const overview = screen.getByRole("tab", { name: "Overview" })
+    const capabilities = screen.getByRole("tab", { name: "Capabilities" })
+    expect(overview.getAttribute("aria-selected")).toBe("true")
+
+    await user.click(capabilities)
+    expect(capabilities.getAttribute("aria-selected")).toBe("true")
+    expect(overview.getAttribute("aria-selected")).toBe("false")
+    // Radix wires the panel back to the active tab (aria-labelledby → trigger id).
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(capabilities.getAttribute("id"))
+    // Roving tabindex: only the active/focused tab is Tab-focusable.
+    expect(capabilities.getAttribute("tabindex")).toBe("0")
+    expect(overview.getAttribute("tabindex")).toBe("-1")
+  })
+
+  it("keyboard nav (Radix vertical): Up/Down move, Left/Right do not", async () => {
+    const user = userEvent.setup()
     render(
       <ModelDetail
         model={VISION_MODEL}
@@ -265,40 +297,15 @@ describe("ModelDetail", () => {
     const overview = screen.getByRole("tab", { name: "Overview" })
     const capabilities = screen.getByRole("tab", { name: "Capabilities" })
     const rawJson = screen.getByRole("tab", { name: "Raw JSON" })
-    const tablist = screen.getByRole("tablist")
-    // Only the active tab is Tab-focusable (roving tabindex).
-    expect(overview.getAttribute("tabindex")).toBe("0")
-    expect(capabilities.getAttribute("tabindex")).toBe("-1")
-    // ArrowDown on the tablist activates + focuses the next tab.
-    fireEvent.keyDown(tablist, { key: "ArrowDown" })
-    expect(capabilities.getAttribute("aria-selected")).toBe("true")
-    expect(capabilities.getAttribute("tabindex")).toBe("0")
-    expect(document.activeElement).toBe(capabilities)
-    // The panel is associated back to the active tab.
-    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(capabilities.getAttribute("id"))
-    // ArrowUp from the first tab wraps to the last; Home/End jump to ends.
-    fireEvent.keyDown(tablist, { key: "ArrowUp" }) // Capabilities → Overview
-    fireEvent.keyDown(tablist, { key: "ArrowUp" }) // Overview → wrap to Raw JSON
-    expect(rawJson.getAttribute("aria-selected")).toBe("true")
-    fireEvent.keyDown(tablist, { key: "Home" })
-    expect(overview.getAttribute("aria-selected")).toBe("true")
-    fireEvent.keyDown(tablist, { key: "End" })
-    expect(rawJson.getAttribute("aria-selected")).toBe("true")
-  })
 
-  it("does NOT hijack Left/Right on the vertical tablist (APG orientation)", () => {
-    render(
-      <ModelDetail
-        model={VISION_MODEL}
-        telemetry={null}
-        onClose={() => {}}
-      />,
-    )
-    const overview = screen.getByRole("tab", { name: "Overview" })
-    expect(overview.getAttribute("aria-selected")).toBe("true")
-    fireEvent.keyDown(screen.getByRole("tablist"), { key: "ArrowRight" })
-    fireEvent.keyDown(screen.getByRole("tablist"), { key: "ArrowLeft" })
-    // Horizontal arrows are not owned by a vertical tablist — active tab unchanged.
-    expect(overview.getAttribute("aria-selected")).toBe("true")
+    await user.click(overview) // focus the tablist on the active tab
+    await user.keyboard("{ArrowDown}")
+    expect(capabilities.getAttribute("aria-selected")).toBe("true")
+    // Wrap: from the first tab ArrowUp loops to the last (Radix loop).
+    await user.keyboard("{ArrowUp}{ArrowUp}")
+    expect(rawJson.getAttribute("aria-selected")).toBe("true")
+    // Vertical tablist does NOT own Left/Right — active tab unchanged.
+    await user.keyboard("{ArrowRight}{ArrowLeft}")
+    expect(rawJson.getAttribute("aria-selected")).toBe("true")
   })
 })

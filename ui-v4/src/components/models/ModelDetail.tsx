@@ -1,6 +1,7 @@
 import type { Model } from "~backend/lib/models/client"
 
 import { deriveCapabilities } from "~backend/lib/models/capabilities"
+import { Tabs } from "radix-ui"
 import {
   //
   useEffect,
@@ -19,16 +20,17 @@ import { RawJsonTab } from "@/components/models/detail-tabs/RawJsonTab"
 import { TelemetryTab } from "@/components/models/detail-tabs/TelemetryTab"
 import {
   //
-  MODEL_DETAIL_PANEL_ID,
   MODEL_DETAIL_TABS,
   ModelDetailSubRail,
-  tabId,
   type ModelDetailTab,
 } from "@/components/models/ModelDetailSubRail"
 import { useResizableWidth } from "@/hooks/useResizableWidth"
 
 /** localStorage key for the model-detail panel width (distinct from the TOC sidebar's). */
 const MODELS_DETAIL_WIDTH_KEY = "ui-v4-models-detail-width"
+
+/** Shared class for each tab's content pane. */
+const CONTENT_CLASS = "min-h-0 flex-1 overflow-auto p-3 outline-none"
 
 /** True when focus is in a text-entry control — so a stray Escape there doesn't close the panel. */
 function isTyping(): boolean {
@@ -49,10 +51,11 @@ interface ModelDetailProps {
  *
  * Selection is URL-borne (`?model=<id>`, owned by ModelsPage) — this panel is a
  * pure view over the resolved model. Six vertical tabs (spec §3/§6) surface every
- * field. Escape closes (unless typing); on open focus moves into the panel and is
- * restored to the previously-focused element on close. The drag handle sits on the
- * panel's LEFT edge (right-docked → invert), reusing the shared deferred-apply
- * resizer (preview line during drag, single reflow on release).
+ * field, built on Radix `Tabs` (roving tabindex + Up/Down/Home/End + tab↔panel
+ * aria wiring are all Radix's — the hand-rolled versions are gone). Escape closes
+ * (unless typing); on open focus moves into the panel and is restored to the
+ * previously-focused element on close. The drag handle sits on the panel's LEFT
+ * edge (right-docked → invert), reusing the shared deferred-apply resizer.
  */
 export function ModelDetail({ model, telemetry, onClose }: ModelDetailProps) {
   const [tab, setTab] = useState<ModelDetailTab>(MODEL_DETAIL_TABS[0])
@@ -77,37 +80,6 @@ export function ModelDetail({ model, telemetry, onClose }: ModelDetailProps) {
       prevFocus?.focus()
     }
   }, [])
-
-  const body = (() => {
-    switch (tab) {
-      case "Overview": {
-        return <OverviewTab model={model} />
-      }
-      case "Capabilities": {
-        return (
-          <CapabilitiesTab
-            model={model}
-            caps={caps}
-          />
-        )
-      }
-      case "Limits + Vision": {
-        return <LimitsVisionTab model={model} />
-      }
-      case "Billing + Policy": {
-        return <BillingPolicyTab model={model} />
-      }
-      case "Telemetry": {
-        return <TelemetryTab telemetry={telemetry} />
-      }
-      case "Raw JSON": {
-        return <RawJsonTab model={model} />
-      }
-      default: {
-        return null
-      }
-    }
-  })()
 
   return (
     <div
@@ -140,20 +112,53 @@ export function ModelDetail({ model, telemetry, onClose }: ModelDetailProps) {
             ×
           </button>
         </div>
-        <div className="flex min-h-0 flex-1">
-          <ModelDetailSubRail
-            active={tab}
-            onSelect={setTab}
-          />
-          <div
-            id={MODEL_DETAIL_PANEL_ID}
-            role="tabpanel"
-            aria-labelledby={tabId(tab)}
-            className="min-h-0 flex-1 overflow-auto p-3"
+        <Tabs.Root
+          value={tab}
+          onValueChange={(v) => setTab(v as ModelDetailTab)}
+          orientation="vertical"
+          className="flex min-h-0 flex-1"
+        >
+          <ModelDetailSubRail />
+          <Tabs.Content
+            value="Overview"
+            className={CONTENT_CLASS}
           >
-            {body}
-          </div>
-        </div>
+            <OverviewTab model={model} />
+          </Tabs.Content>
+          <Tabs.Content
+            value="Capabilities"
+            className={CONTENT_CLASS}
+          >
+            <CapabilitiesTab
+              model={model}
+              caps={caps}
+            />
+          </Tabs.Content>
+          <Tabs.Content
+            value="Limits + Vision"
+            className={CONTENT_CLASS}
+          >
+            <LimitsVisionTab model={model} />
+          </Tabs.Content>
+          <Tabs.Content
+            value="Billing + Policy"
+            className={CONTENT_CLASS}
+          >
+            <BillingPolicyTab model={model} />
+          </Tabs.Content>
+          <Tabs.Content
+            value="Telemetry"
+            className={CONTENT_CLASS}
+          >
+            <TelemetryTab telemetry={telemetry} />
+          </Tabs.Content>
+          <Tabs.Content
+            value="Raw JSON"
+            className={CONTENT_CLASS}
+          >
+            <RawJsonTab model={model} />
+          </Tabs.Content>
+        </Tabs.Root>
       </aside>
       {dragging && dragEdgeX !== undefined ?
         <div
