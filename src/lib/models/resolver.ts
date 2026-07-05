@@ -11,9 +11,15 @@ import consola from "consola"
 import { state } from "~/lib/state"
 
 import { normalizeForMatching } from "./model-name"
+import {
+  //
+  extractModifierSuffix,
+  VERSIONED_RE,
+} from "./normalize-id"
 
 // Re-exported so existing importers keep using `~/lib/models/resolver`.
 export { normalizeForMatching } from "./model-name"
+export { normalizeModelId } from "./normalize-id"
 
 // ============================================================================
 // Types
@@ -39,9 +45,6 @@ export interface ToolNameRules {
 // ============================================================================
 // Normalization and Detection
 // ============================================================================
-
-/** Pre-compiled regex: claude-{family}-{major}-{minor}[-YYYYMMDD] */
-const VERSIONED_RE = /^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})(?:-\d{8,})?$/
 
 /** Pre-compiled regex: claude-{family}-{major}-YYYYMMDD (date-only suffix) */
 const DATE_ONLY_RE = /^(claude-(?:opus|sonnet|haiku)-\d+)-\d{8,}$/
@@ -114,24 +117,6 @@ function lookupModelOverride(name: string): string | undefined {
   return undefined
 }
 
-/**
- * Normalize a model ID to canonical dot-version form.
- * e.g. "claude-opus-4-6" → "claude-opus-4.6", "claude-opus-4-6-1m" → "claude-opus-4.6-1m"
- *
- * Handles modifier suffixes (-fast, -1m) and strips date suffixes (-YYYYMMDD).
- * Non-Claude models or unrecognized patterns are returned as-is.
- *
- * Used for normalizing API response model names to match `/models` endpoint IDs.
- */
-export function normalizeModelId(modelId: string): string {
-  const { base, suffix } = extractModifierSuffix(modelId)
-  const versionedMatch = base.match(VERSIONED_RE)
-  if (versionedMatch) {
-    return `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}${suffix}`
-  }
-  return modelId
-}
-
 /** Extract the model family from a model ID. */
 export function getModelFamily(modelId: string): ModelFamily | undefined {
   const normalized = normalizeForMatching(modelId)
@@ -154,23 +139,6 @@ export function isOpusModel(modelId: string): boolean {
 // ============================================================================
 // Model Resolution
 // ============================================================================
-
-/** Known model modifier suffixes (e.g., "-fast" for fast output mode, "-1m" for 1M context). */
-const KNOWN_MODIFIERS = ["-fast", "-1m"]
-
-/**
- * Extract known modifier suffix from a model name.
- * e.g. "claude-opus-4-6-fast" → { base: "claude-opus-4-6", suffix: "-fast" }
- */
-function extractModifierSuffix(model: string): { base: string; suffix: string } {
-  const lower = model.toLowerCase()
-  for (const modifier of KNOWN_MODIFIERS) {
-    if (lower.endsWith(modifier)) {
-      return { base: model.slice(0, -modifier.length), suffix: modifier }
-    }
-  }
-  return { base: model, suffix: "" }
-}
 
 /**
  * Normalize bracket notation to hyphen suffix.

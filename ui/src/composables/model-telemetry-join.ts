@@ -11,7 +11,7 @@
 
 import type { Model } from "~backend/lib/models/client"
 
-import { normalizeModelId } from "~backend/lib/models/resolver"
+import { normalizeModelId } from "~backend/lib/models/normalize-id"
 
 import type {
   //

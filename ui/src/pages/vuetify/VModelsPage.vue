@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { normalizeModelId } from "~backend/lib/models/resolver"
+import { normalizeModelId } from "~backend/lib/models/normalize-id"
 import {
   //
   computed,
