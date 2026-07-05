@@ -47,8 +47,10 @@ export function useAnchorScroll(): UseAnchorScroll {
       // CSS.escape (absent in jsdom/older runtimes) to handle ids safely.
       // eslint-disable-next-line unicorn/prefer-query-selector
       const el = document.getElementById(anchorId)
-      setActiveAnchor(anchorId)
+      // Don't record a target that isn't in the DOM — a missing element means the jump no-ops,
+      // so marking it active would lie to the TOC highlight.
       if (!el) return
+      setActiveAnchor(anchorId)
 
       // Clear any in-flight flash before starting a new one.
       clearFlash()

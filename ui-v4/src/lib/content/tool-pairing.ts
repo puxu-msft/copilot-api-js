@@ -1,5 +1,6 @@
 import type { MessageContent } from "@/lib/content/types"
 
+import { blockAnchorId } from "@/lib/content/anchors"
 import {
   //
   isToolResultBlock,
@@ -17,9 +18,9 @@ export interface ToolPair {
 
 /**
  * Walk a conversation and pair each `tool_use` (by `id`) with its `tool_result` (by `tool_use_id`),
- * recording each side's DOM anchor. Anchors mirror ContentRenderer's scheme
- * `${anchorPrefix}-msg-${messageIndex}-blk-${blockIndex}` over the SAME normalized block list, so the
- * returned ids resolve via `document.getElementById` for scroll-to-counterpart navigation.
+ * recording each side's DOM anchor. Anchors come from the shared {@link blockAnchorId} over the SAME
+ * normalized block list the renderer uses, so the returned ids resolve via `document.getElementById`
+ * for scroll-to-counterpart navigation.
  */
 export function buildToolPairing(messages: Array<MessageContent>, anchorPrefix: string): Map<string, ToolPair> {
   const pairing = new Map<string, ToolPair>()
@@ -30,7 +31,7 @@ export function buildToolPairing(messages: Array<MessageContent>, anchorPrefix: 
   for (const [messageIndex, message] of messages.entries()) {
     const blocks = normalizeToContentBlocks(message)
     for (const [blockIndex, block] of blocks.entries()) {
-      const anchor = `${anchorPrefix}-msg-${messageIndex}-blk-${blockIndex}`
+      const anchor = blockAnchorId(anchorPrefix, messageIndex, blockIndex)
       if (isToolUseBlock(block) && block.id) upsert(block.id, { useAnchor: anchor })
       else if (isToolResultBlock(block) && block.tool_use_id) upsert(block.tool_use_id, { resultAnchor: anchor })
     }

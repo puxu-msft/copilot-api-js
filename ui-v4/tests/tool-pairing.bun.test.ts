@@ -64,4 +64,28 @@ describe("buildToolPairing", () => {
     expect(pairing.get("b")?.useAnchor).toBe("convo-msg-0-blk-1")
     expect(pairing.get("b")?.resultAnchor).toBe("convo-msg-1-blk-0")
   })
+
+  it("records an orphan tool_result (tool_use_id matching no call) with only resultAnchor", () => {
+    const pairing = buildToolPairing([{ role: "user", content: [{ type: "tool_result", tool_use_id: "ghost", content: "?" }] }], "convo")
+    const pair = pairing.get("ghost")
+    expect(pair?.useAnchor).toBeUndefined()
+    expect(pair?.resultAnchor).toBe("convo-msg-0-blk-0")
+  })
+
+  it("last-writer-wins on a duplicate tool id (documented semantics)", () => {
+    const pairing = buildToolPairing(
+      [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "dup", name: "Read", input: {} },
+            { type: "tool_use", id: "dup", name: "Read", input: {} },
+          ],
+        },
+      ],
+      "convo",
+    )
+    // Two calls share id "dup"; the later block's anchor wins.
+    expect(pairing.get("dup")?.useAnchor).toBe("convo-msg-0-blk-1")
+  })
 })

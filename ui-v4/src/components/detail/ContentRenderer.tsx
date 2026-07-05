@@ -7,6 +7,7 @@ import { ThinkingBlock } from "@/components/detail/blocks/ThinkingBlock"
 import { ToolResultBlock } from "@/components/detail/blocks/ToolResultBlock"
 import { ToolUseBlock } from "@/components/detail/blocks/ToolUseBlock"
 import { ErrorBoundary } from "@/components/detail/ErrorBoundary"
+import { blockAnchorId } from "@/lib/content/anchors"
 import {
   //
   isImageBlock,
@@ -49,7 +50,7 @@ export function ContentRenderer({ blocks, anchorPrefix, messageIndex }: ContentR
         anchored ?
           <div
             key={i}
-            id={`${anchorPrefix}-msg-${messageIndex}-blk-${i}`}
+            id={blockAnchorId(anchorPrefix, messageIndex, i)}
           >
             <ErrorBoundary label={block.type}>{renderBlock(block)}</ErrorBoundary>
           </div>

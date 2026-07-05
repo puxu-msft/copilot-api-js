@@ -3,6 +3,7 @@ import type { RewriteMark } from "@/lib/diff/block-diff"
 
 import { ContentRenderer } from "@/components/detail/ContentRenderer"
 import { JsonModalButton } from "@/components/detail/JsonModalButton"
+import { messageAnchorId } from "@/lib/content/anchors"
 import { normalizeToContentBlocks } from "@/lib/content/normalize"
 
 const ROLE_COLOR: Record<string, string> = {
@@ -34,7 +35,7 @@ export function MessageBlock({ message, anchorPrefix, messageIndex, mark }: Mess
   const markMeta = mark !== undefined ? MARK_META[mark] : undefined
   return (
     <div
-      id={anchored ? `${anchorPrefix}-msg-${messageIndex}` : undefined}
+      id={anchored ? messageAnchorId(anchorPrefix, messageIndex) : undefined}
       className="group border-b border-[#1e1e24] py-1.5"
       style={markMeta ? { borderLeft: `2px solid ${markMeta.color}`, paddingLeft: "0.5rem" } : undefined}
     >

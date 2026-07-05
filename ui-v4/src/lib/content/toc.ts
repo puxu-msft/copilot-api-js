@@ -6,6 +6,11 @@ import type {
 
 import {
   //
+  blockAnchorId,
+  messageAnchorId,
+} from "@/lib/content/anchors"
+import {
+  //
   isImageBlock,
   isRedactedThinkingBlock,
   isTextBlock,
@@ -102,8 +107,8 @@ export function blockLabel(block: ContentBlock): string {
 /**
  * Build the TOC tree for a list of messages.
  *
- * Anchor id scheme (CONTRACT with Task 3/4's renderer — the renderer attaches
- * DOM elements carrying these exact ids):
+ * Anchor id scheme lives in the shared {@link blockAnchorId} / {@link messageAnchorId} (single
+ * source of truth with the renderer + tool-pairing):
  *   - message i: `${anchorPrefix}-msg-${i}`
  *   - block j of message i: `${anchorPrefix}-msg-${i}-blk-${j}`
  *
@@ -116,14 +121,14 @@ export function buildMessageTocNodes(messages: Array<MessageContent>, anchorPref
     const blocks = normalizeToContentBlocks(message)
     const children = blocks.map((block, j) => ({
       label: blockLabel(block),
-      anchorId: `${anchorPrefix}-msg-${i}-blk-${j}`,
+      anchorId: blockAnchorId(anchorPrefix, i, j),
       kind: block.type,
     }))
 
     const snippet = messagePreview(message)
     const node: TocNode = {
       label: snippet.length > 0 ? `${message.role}: ${snippet}` : message.role,
-      anchorId: `${anchorPrefix}-msg-${i}`,
+      anchorId: messageAnchorId(anchorPrefix, i),
       kind: message.role,
     }
     return children.length > 0 ? { ...node, children } : node
