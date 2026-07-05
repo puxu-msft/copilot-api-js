@@ -362,6 +362,20 @@ export const VTableStub = defineComponent({
   },
 })
 
+export const VMenuStub = defineComponent({
+  name: "VMenuStub",
+  setup(_, { slots }) {
+    return () => h("div", { "data-testid": "v-menu" }, [...slotContent(slots.activator?.({ props: {} })), ...slotChildren(slots.default?.())])
+  },
+})
+
+export const VSheetStub = defineComponent({
+  name: "VSheetStub",
+  setup(_, { slots }) {
+    return () => h("div", { "data-testid": "v-sheet" }, slotChildren(slots.default?.()))
+  },
+})
+
 export const vuetifyComponentStubs = {
   VAlert: VAlertStub,
   VBtn: VBtnStub,
@@ -372,9 +386,11 @@ export const vuetifyComponentStubs = {
   VChip: VChipStub,
   VDivider: VDividerStub,
   VIcon: VIconStub,
+  VMenu: VMenuStub,
   VNavigationDrawer: VNavigationDrawerStub,
   VProgressCircular: VProgressCircularStub,
   VSelect: VSelectStub,
+  VSheet: VSheetStub,
   VSpacer: VSpacerStub,
   VSwitch: VSwitchStub,
   VTab: VTabStub,

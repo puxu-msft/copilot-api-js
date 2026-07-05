@@ -13,6 +13,8 @@ defineProps<{
   endpointOptions: Array<string>
   featureOptions: ReadonlyArray<FeatureOption>
   typeOptions: Array<string>
+  restrictedToOptions: Array<string>
+  policyStateOptions: Array<string>
   billingBounds: { min: number; max: number }
   activeFilterCount: number
 }>()
@@ -23,6 +25,15 @@ const endpointFilter = defineModel<string | null>("endpointFilter", { required: 
 const featureFilters = defineModel<Array<string>>("featureFilters", { required: true })
 const typeFilter = defineModel<string | null>("typeFilter", { required: true })
 const billingRange = defineModel<[number, number]>("billingRange", { required: true })
+const premiumFilter = defineModel<boolean | null>("premiumFilter", { required: true })
+const restrictedToFilter = defineModel<Array<string>>("restrictedToFilter", { required: true })
+const policyStateFilter = defineModel<string | null>("policyStateFilter", { required: true })
+const hasTelemetryFilter = defineModel<boolean | null>("hasTelemetryFilter", { required: true })
+
+const tristateItems = [
+  { title: "Yes", value: true },
+  { title: "No", value: false },
+]
 </script>
 
 <template>
@@ -76,6 +87,37 @@ const billingRange = defineModel<[number, number]>("billingRange", { required: t
         placeholder="All types"
         clearable
         label="Type"
+      />
+      <v-select
+        v-model="premiumFilter"
+        :items="tristateItems"
+        placeholder="Any"
+        clearable
+        label="Premium"
+      />
+      <v-select
+        v-model="restrictedToFilter"
+        :items="restrictedToOptions"
+        placeholder="Any plan"
+        clearable
+        multiple
+        chips
+        closable-chips
+        label="Restricted to"
+      />
+      <v-select
+        v-model="policyStateFilter"
+        :items="policyStateOptions"
+        placeholder="Any policy"
+        clearable
+        label="Policy state"
+      />
+      <v-select
+        v-model="hasTelemetryFilter"
+        :items="tristateItems"
+        placeholder="Any"
+        clearable
+        label="Has telemetry"
       />
 
       <div class="billing-field">

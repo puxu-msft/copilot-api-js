@@ -49,7 +49,7 @@ export function useModelColumns(): UseModelColumnsReturn {
 
   return {
     visible: stored,
-    isVisible: (key) => stored.value[key] ?? DEFAULT_VISIBLE[key],
+    isVisible: (key) => stored.value[key],
     toggle: (key) => {
       stored.value = { ...stored.value, [key]: !stored.value[key] }
     },

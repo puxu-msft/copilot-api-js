@@ -7,9 +7,27 @@ import {
   test,
 } from "bun:test"
 
-import { matchesPolicyState, matchesPremium, matchesRestrictedTo } from "@/composables/useModelsCatalog"
+import {
+  //
+  matchesPolicyState,
+  matchesPremium,
+  matchesRestrictedTo,
+} from "@/composables/useModelsCatalog"
 
-const m = (over: Record<string, unknown> = {}): Model => ({ id: "m", name: "m", vendor: "v", object: "model", preview: false, model_picker_enabled: true, is_chat_default: false, is_chat_fallback: false, version: "1", billing: {}, ...over }) as Model
+const m = (over: Record<string, unknown> = {}): Model =>
+  ({
+    id: "m",
+    name: "m",
+    vendor: "v",
+    object: "model",
+    preview: false,
+    model_picker_enabled: true,
+    is_chat_default: false,
+    is_chat_fallback: false,
+    version: "1",
+    billing: {},
+    ...over,
+  }) as Model
 
 describe("model filter predicates", () => {
   test("matchesPremium filters by billing.is_premium; null = no filter", () => {
