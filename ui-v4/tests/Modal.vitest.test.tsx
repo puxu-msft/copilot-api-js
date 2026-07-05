@@ -72,4 +72,19 @@ describe("Modal", () => {
     fireEvent.click(screen.getByLabelText("Close"))
     expect(onClose).toHaveBeenCalledTimes(1)
   })
+
+  // a11y GAIN from the Radix Dialog migration (was intentionally absent in the
+  // hand-rolled version): focus moves into the dialog on open (Radix FocusScope).
+  it("moves focus into the dialog on open (Radix focus management)", () => {
+    render(
+      <Modal
+        title="t"
+        onClose={() => {}}
+      >
+        <div>body</div>
+      </Modal>,
+    )
+    const dialog = screen.getByRole("dialog")
+    expect(dialog.contains(document.activeElement)).toBe(true)
+  })
 })

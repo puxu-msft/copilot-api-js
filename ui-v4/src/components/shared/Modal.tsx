@@ -1,77 +1,58 @@
 import type { ReactNode } from "react"
 
-import {
-  //
-  useEffect,
-  useRef,
-} from "react"
-import { createPortal } from "react-dom"
+import { Dialog } from "radix-ui"
 
 interface ModalProps {
-  /** Optional header title; the header row is omitted when absent. */
+  /** Optional header title; rendered into the required Radix Dialog.Title (empty when absent). */
   title?: ReactNode
   onClose: () => void
   children: ReactNode
 }
 
 /**
- * Centered overlay modal, portaled to `document.body`.
+ * Centered overlay modal, built on Radix `Dialog` (headless) — styled to the
+ * Terminal Amber theme via the shared CSS tokens (see docs/radix-styling.md).
  *
- * Closes on Escape, on backdrop click, and via the header `×`. Clicks inside the
- * content area are stopped so they don't bubble to the backdrop. On open it moves
- * focus into the dialog and restores it to the previously-focused element on close
- * (baseline dialog behavior). The first shared overlay primitive in ui-v4 — styling
- * follows the Terminal Amber theme tokens; a full focus-trap / scroll-lock is
- * intentionally left out for this internal tool and can layer on without an API change.
+ * Radix provides focus-trap, scroll-lock, focus-restore-on-close, `aria-modal`,
+ * and portal — capabilities the previous hand-rolled version intentionally left
+ * out. `onClose` is driven by `onOpenChange` (Escape + the header ×). Backdrop
+ * dismissal is kept as an explicit `Overlay` click (preserving the original
+ * click-to-close contract + `data-testid`); Radix's own pointer-outside dismiss
+ * is disabled (`preventDefault`) so the two paths don't both fire `onClose`.
+ * Escape still closes (that is `onEscapeKeyDown`, independent of interact-outside).
  */
 export function Modal({ title, onClose, children }: ModalProps) {
-  const onCloseRef = useRef(onClose)
-  onCloseRef.current = onClose
-  const dialogRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    // Stable subscription: read the latest onClose via ref so a fresh handler identity
-    // on each render doesn't tear down / re-add the listener.
-    const prevFocus = document.activeElement as HTMLElement | null
-    dialogRef.current?.focus()
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current()
-    }
-    globalThis.addEventListener("keydown", onKey)
-    return () => {
-      globalThis.removeEventListener("keydown", onKey)
-      prevFocus?.focus()
-    }
-  }, [])
-
-  return createPortal(
-    <div
-      data-testid="modal-backdrop"
-      onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+  return (
+    <Dialog.Root
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
     >
-      <div
-        ref={dialogRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[85vh] w-full max-w-[900px] flex-col border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl outline-none"
-      >
-        <div className="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
-          <div className="mono text-[12px] uppercase tracking-wider text-[var(--color-muted)]">{title}</div>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            className="mono px-1 text-[16px] leading-none text-[var(--color-muted)] hover:text-[var(--color-text)]"
-          >
-            ×
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto p-3">{children}</div>
-      </div>
-    </div>,
-    document.body,
+      <Dialog.Portal>
+        <Dialog.Overlay
+          data-testid="modal-backdrop"
+          onClick={onClose}
+          className="fixed inset-0 z-50 bg-black/60 p-4"
+        />
+        <Dialog.Content
+          aria-describedby={undefined}
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-[900px] -translate-x-1/2 -translate-y-1/2 flex-col border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl outline-none"
+        >
+          <div className="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
+            <Dialog.Title className="mono text-[12px] uppercase tracking-wider text-[var(--color-muted)]">{title}</Dialog.Title>
+            <Dialog.Close
+              aria-label="Close"
+              className="mono px-1 text-[16px] leading-none text-[var(--color-muted)] hover:text-[var(--color-text)]"
+            >
+              ×
+            </Dialog.Close>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto p-3">{children}</div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }
