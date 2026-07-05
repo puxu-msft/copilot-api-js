@@ -20,6 +20,8 @@
 | jsdom 测试 stub | 无需额外（Radix 的 stub 已够） | **需 `CSS.escape` stub**（已加 setup.ts） |
 | 视觉自控（Terminal Amber） | ✅ headless | ✅ headless（render props / data-attr） |
 
+> **bundle 测法与公平性**（终审补）：两侧**同法**——各临时接进 ModelsPage 跑真 rollup build 量 index chunk gzip delta，**均为一次性手测快照、非门禁**（落地时每库须留可复现前后对照）。react-aria 侧用**命名 import**（`{ Table, Column, Row, Cell, ... }`，非整包）；`react-aria-components` 有 `sideEffects:["*.css"]` + ESM `module` 入口 → Vite 生产 tree-shaking 生效，未引用组件（Button/ComboBox/DatePicker…）不进 bundle。故 55.3kB **不是"整包 import 虚高"**，而是 `Table` 深依赖（react-stately collection/selection + react-aria interaction/keyboard + @internationalized collator）的真实下限——子路径 import 至多省个位数 kB，**动不了 4× 数量级**。
+
 ## 权衡本质（两者恰好互补）
 
 - **TanStack Table = 数据逻辑之王**：排序算法/过滤/faceting/grouping/列可见性全白送、轻（+13.7kB）；但 a11y 要自写。
@@ -29,8 +31,8 @@
 
 1. **数据表的核心价值是数据操作**（排序/过滤，尤其未来 Requests **6 维筛选的 faceting**）——正是 TanStack 领域；react-aria 这块要自写。
 2. **bundle 轻 4×**——react-aria +55kB gzip 为一个表格，对内部工具偏重。
-3. **a11y 自写模式已建、不重造**：P3/P4 已手写过 ModelsTable 的 `<th>` scope/排序 button/aria-sort，复用即可；且 react-aria 的完整**网格键盘导航**（方向键在单元格间移动）对一个**只读**数据表（用户要排序 + 点行看详情，非 Excel 式编辑）**属过度**。
-4. **react-aria 的"单 vendor"优势在本项目不成立**：交互原语层**已选 Radix 并全迁**（Dialog/Tabs/Menu/Select/Collapsible），不会为表格把已完成的 Radix 工作回迁到 react-aria；combobox 用 cmdk、datepicker 按需。
+3. **a11y 自写模式已建（判断非实测）**：P3/P4 已手写过 ModelsTable 的 `<th>` scope/排序 button/aria-sort，**判断**可低成本复用（PoC 未实测复用性）；须**如实承认**：react-aria 白送的 **grid role + 方向键网格导航 TanStack 侧确实缺失**，其对只读表 a11y **有净收益但有限**——不足以抵 4× bundle（成本/收益判断，非"零价值"）。
+4. **react-aria 的"单 vendor"优势前提已被拆散**：其卖点是"一个 vendor 统一 table+combobox+datepicker+virtual"。本项目 combobox=cmdk、交互原语=Radix（已全迁）**已拆散该前提**;react-aria 与 Radix 技术上**能共存**（可只用它做 table），但那样它**唯一的差异化（单 vendor）归零**，退化为纯 table 正面比——那一比 TanStack **轻 4× + 数据逻辑白送**胜出。
 5. **组合方案**（react-aria a11y shell + TanStack 数据）= 两库 + 复杂度，a11y 收益对只读表**不值**——排除。
 
 > 换个语境结论会反转：若本项目**尚未选交互原语层**、或数据表需要**重度网格键盘编辑/行选择**、或想**单 vendor 统一** combobox/datepicker/virtual/table，则 react-aria 更优。本项目三条都不成立，故选 TanStack Table。

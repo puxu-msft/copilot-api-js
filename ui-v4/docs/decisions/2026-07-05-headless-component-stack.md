@@ -55,9 +55,9 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 
 **二者恰好互补**（react-aria=a11y 之王、TanStack=数据逻辑之王）。**定夺：数据表选 TanStack Table**，react-aria **不采纳**——理由（据本项目语境，换语境会反转）：
 1. 数据表核心价值是**数据操作**（排序/过滤/6 维筛选 faceting）= TanStack 领域;
-2. bundle 轻 **4×**;
-3. a11y 手写模式 P3/P4 已建、不重造;react-aria 完整**网格键盘导航**对**只读**表过度;
-4. react-aria 的"**单 vendor**"优势**在本项目不成立**——交互原语层**已选 Radix 并全迁**，不会为表格回迁;combobox 用 cmdk、datepicker 按需;
+2. bundle 轻 **4×**（实测，已核实非整包-import 虚高）;
+3. a11y 手写模式 P3/P4 已建（**判断**可复用、PoC 未实测）——须承认 react-aria 白送的 **grid role + 方向键网格导航 TanStack 侧确实缺失**，对只读表**有净收益但有限，不抵 4× bundle**;
+4. react-aria 的**单-vendor 优势前提已被拆散**——其卖点是"一 vendor 统一 table+combobox+datepicker+virtual"，而本项目 combobox=cmdk、原语=Radix 已拆散该前提;它与 Radix **能共存**（可只做 table），但那样**单-vendor 差异化归零**，退化为纯 table 正面比 → TanStack 轻 4× + 数据逻辑白送胜出;
 5. 组合方案（react-aria shell + TanStack 数据）= 两库+复杂度，a11y 收益对只读表不值。
 
 ## 后果
