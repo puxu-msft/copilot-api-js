@@ -12,7 +12,7 @@ Claude Code 报 `API Error: Stream ended without receiving any events`，但 pro
 - 上游 14 帧：`message_start` → `content_block_start`(tool_use `Agent`) → 12 个 `input_json_delta`，累积出**无效 JSON**：`{"description": "对抗review:正确性/竞态视角", "subagent_type": "general-purpose"`（缺 `prompt` 字段、缺闭合 `}`）。
 - 末帧 `offsetMs=502`，但 attempt `durationMs=11179`——上游发完残缺 tool_use 后**静默约 10.6s**，然后**干净 EOF**（非 RST：若 RST 会 throw 进 catch → `stream-error`，而本案 outcome 是 `complete`）。
 - **缺失**：`content_block_stop`、`message_delta`（含 stop_reason）、`message_stop`。即上游**未发送 Anthropic 协议终止序列**。
-- history 累积出的 response tool_use 自带 `_parseError: true`——proxy 自己也解析不了这段残缺 JSON。
+- history 累积出的 response tool_use `input` 是**无法解析的残缺 JSON 原始字符串**——proxy 自己也解析不了这段残缺 JSON，故忠实保留上游发来的原始字符串（不再包装成 `{ _parseError, _rawInput }` 代理合成标记，见 [safeParseJson](../../src/lib/request/response.ts)）。
 
 对照组：正常流末帧序列 `content_block_stop → message_delta → message_stop`（实测 req_1782111018205_713，73 帧）。截断签名 = 末帧非协议终止符。
 

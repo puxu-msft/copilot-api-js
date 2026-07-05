@@ -83,11 +83,13 @@ export function normalizeToContentBlocks(msg: MessageContent): Array<ContentBloc
   // Handle OpenAI tool_calls → virtual tool_use blocks
   if (msg.tool_calls) {
     for (const tc of msg.tool_calls) {
-      let input: Record<string, unknown>
+      let input: unknown
       try {
-        input = JSON.parse(tc.function.arguments) as Record<string, unknown>
+        input = JSON.parse(tc.function.arguments)
       } catch {
-        input = { _raw: tc.function.arguments }
+        // Un-parseable arguments (truncated/malformed): keep the raw string as-is
+        // so ToolUseBlock's raw-unparsed path renders it. No fabricated marker.
+        input = tc.function.arguments
       }
       blocks.push({
         type: "tool_use",

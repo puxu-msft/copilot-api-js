@@ -57,23 +57,23 @@ describe("safeParseJson", () => {
     expect(safeParseJson(input)).toBe(input)
   })
 
-  test("preserves the raw input as a marker object for invalid JSON strings", () => {
-    expect(safeParseJson("{ nope")).toEqual({ _parseError: true, _rawInput: "{ nope" })
+  test("returns the raw string unchanged for invalid JSON (upstream fidelity, no fabricated marker)", () => {
+    expect(safeParseJson("{ nope")).toBe("{ nope")
   })
 
-  test("preserves partial JSON from aborted tool_use streams", () => {
+  test("preserves partial JSON from aborted tool_use streams as the raw string", () => {
     const partial = '{"path": "/tmp/foo", "content": "hello wo'
-    expect(safeParseJson(partial)).toEqual({ _parseError: true, _rawInput: partial })
+    expect(safeParseJson(partial)).toBe(partial)
   })
 
   test("preserves long realistic Write-tool partial truncated inside a string value", () => {
     const partial = '{"file_path":"/home/user/some/long/path","content":"function foo() {'
-    expect(safeParseJson(partial)).toEqual({ _parseError: true, _rawInput: partial })
+    expect(safeParseJson(partial)).toBe(partial)
   })
 
   test("preserves partial truncated inside an array value", () => {
     const partial = '{"command":"ls","args":["a","b'
-    expect(safeParseJson(partial)).toEqual({ _parseError: true, _rawInput: partial })
+    expect(safeParseJson(partial)).toBe(partial)
   })
 })
 

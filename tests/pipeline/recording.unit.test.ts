@@ -339,7 +339,7 @@ describe("buildAnthropicResponseData", () => {
 
   // ── Task B: partial tool_use input preservation ──
 
-  test("preserves partial JSON for tool_use blocks when streaming was interrupted", () => {
+  test("preserves partial JSON as the raw string for tool_use blocks when streaming was interrupted", () => {
     const partialJson = '{"path": "/tmp/foo", "content": "hello wo'
     const acc = makeAnthropicAcc({
       stopReason: "tool_use",
@@ -355,11 +355,13 @@ describe("buildAnthropicResponseData", () => {
 
     const result = buildAnthropicResponseData(acc, "fallback")
     const content = result.content as { role: string; content: Array<unknown> }
+    // Upstream leg must stay faithful: the truncated input is kept as the raw
+    // string exactly as upstream streamed it — never a proxy-fabricated marker.
     expect(content.content[0]).toEqual({
       type: "tool_use",
       id: "toolu_abort",
       name: "write_file",
-      input: { _parseError: true, _rawInput: partialJson },
+      input: partialJson,
     })
   })
 })
