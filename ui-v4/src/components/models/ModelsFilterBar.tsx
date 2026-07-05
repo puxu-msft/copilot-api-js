@@ -1,3 +1,5 @@
+import { Select } from "radix-ui"
+
 import type { ModelFilters } from "@/lib/model-filters"
 
 const CAPABILITY_OPTIONS = [
@@ -22,15 +24,80 @@ interface ModelsFilterBarProps {
   options: FilterOptions
 }
 
-const SELECT_CLASS = "mono border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[12px] text-[var(--color-text)]"
+const TRIGGER_CLASS =
+  "mono inline-flex items-center gap-1 border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[12px] text-[var(--color-text)] outline-none data-[state=open]:text-[var(--color-primary)]"
+const ITEM_CLASS =
+  "mono cursor-pointer px-2 py-1 text-[12px] text-[var(--color-text)] outline-none data-[highlighted]:bg-[#3a2f1a] data-[highlighted]:text-[var(--color-primary)] data-[state=checked]:text-[var(--color-primary)]"
 
-/** Parse a select value that encodes tri-state boolean ("" | "yes" | "no"). */
-function triValue(v: boolean | null): string {
-  if (v === null) return ""
+/** Radix has no empty-string item value; use this sentinel for the "all/any" option. */
+const ALL = "__all__"
+
+/**
+ * One filter dropdown on Radix `Select` (headless). Maps the "all/any" choice to
+ * `null` via a sentinel (Radix forbids empty-string item values). Styled to
+ * Terminal Amber (see docs/radix-styling.md).
+ */
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  allLabel,
+  options,
+}: {
+  label: string
+  value: string | null
+  onChange: (value: string | null) => void
+  allLabel: string
+  options: ReadonlyArray<{ value: string; label: string }>
+}) {
+  return (
+    <Select.Root
+      value={value ?? ALL}
+      onValueChange={(v) => onChange(v === ALL ? null : v)}
+    >
+      <Select.Trigger
+        aria-label={label}
+        className={TRIGGER_CLASS}
+      >
+        <Select.Value />
+        <Select.Icon>▾</Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content
+          position="popper"
+          sideOffset={4}
+          className="mono z-50 border border-[var(--color-border)] bg-[var(--color-surface)]"
+        >
+          <Select.Viewport>
+            <Select.Item
+              value={ALL}
+              className={ITEM_CLASS}
+            >
+              <Select.ItemText>{allLabel}</Select.ItemText>
+            </Select.Item>
+            {options.map((o) => (
+              <Select.Item
+                key={o.value}
+                value={o.value}
+                className={ITEM_CLASS}
+              >
+                <Select.ItemText>{o.label}</Select.ItemText>
+              </Select.Item>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  )
+}
+
+/** Encode a tri-state boolean filter as a Select string value (null = any). */
+function triToValue(v: boolean | null): string | null {
+  if (v === null) return null
   return v ? "yes" : "no"
 }
-function parseTri(s: string): boolean | null {
-  return s === "" ? null : s === "yes"
+function valueToTri(v: string | null): boolean | null {
+  return v === null ? null : v === "yes"
 }
 
 export function ModelsFilterBar({ filters, onChange, options }: ModelsFilterBarProps) {
@@ -50,77 +117,50 @@ export function ModelsFilterBar({ filters, onChange, options }: ModelsFilterBarP
         value={filters.search}
         placeholder="search id / name"
         aria-label="Search models"
-        className={SELECT_CLASS}
+        className="mono border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[12px] text-[var(--color-text)]"
         onChange={(e) => onChange({ search: e.target.value })}
       />
-      <select
-        aria-label="Vendor"
-        className={SELECT_CLASS}
-        value={filters.vendor ?? ""}
-        onChange={(e) => onChange({ vendor: e.target.value || null })}
-      >
-        <option value="">all vendors</option>
-        {options.vendors.map((v) => (
-          <option
-            key={v}
-            value={v}
-          >
-            {v}
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label="Type"
-        className={SELECT_CLASS}
-        value={filters.type ?? ""}
-        onChange={(e) => onChange({ type: e.target.value || null })}
-      >
-        <option value="">all types</option>
-        {options.types.map((t) => (
-          <option
-            key={t}
-            value={t}
-          >
-            {t}
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label="Premium"
-        className={SELECT_CLASS}
-        value={triValue(filters.premium)}
-        onChange={(e) => onChange({ premium: parseTri(e.target.value) })}
-      >
-        <option value="">premium: any</option>
-        <option value="yes">premium</option>
-        <option value="no">standard</option>
-      </select>
-      <select
-        aria-label="Policy state"
-        className={SELECT_CLASS}
-        value={filters.policyState ?? ""}
-        onChange={(e) => onChange({ policyState: e.target.value || null })}
-      >
-        <option value="">all policies</option>
-        {options.policyStates.map((p) => (
-          <option
-            key={p}
-            value={p}
-          >
-            {p}
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label="Has telemetry"
-        className={SELECT_CLASS}
-        value={triValue(filters.hasTelemetry)}
-        onChange={(e) => onChange({ hasTelemetry: parseTri(e.target.value) })}
-      >
-        <option value="">telemetry: any</option>
-        <option value="yes">has traffic</option>
-        <option value="no">no traffic</option>
-      </select>
+      <FilterSelect
+        label="Vendor"
+        value={filters.vendor}
+        onChange={(v) => onChange({ vendor: v })}
+        allLabel="all vendors"
+        options={options.vendors.map((v) => ({ value: v, label: v }))}
+      />
+      <FilterSelect
+        label="Type"
+        value={filters.type}
+        onChange={(v) => onChange({ type: v })}
+        allLabel="all types"
+        options={options.types.map((t) => ({ value: t, label: t }))}
+      />
+      <FilterSelect
+        label="Premium"
+        value={triToValue(filters.premium)}
+        onChange={(v) => onChange({ premium: valueToTri(v) })}
+        allLabel="premium: any"
+        options={[
+          { value: "yes", label: "premium" },
+          { value: "no", label: "standard" },
+        ]}
+      />
+      <FilterSelect
+        label="Policy state"
+        value={filters.policyState}
+        onChange={(v) => onChange({ policyState: v })}
+        allLabel="all policies"
+        options={options.policyStates.map((p) => ({ value: p, label: p }))}
+      />
+      <FilterSelect
+        label="Has telemetry"
+        value={triToValue(filters.hasTelemetry)}
+        onChange={(v) => onChange({ hasTelemetry: valueToTri(v) })}
+        allLabel="telemetry: any"
+        options={[
+          { value: "yes", label: "has traffic" },
+          { value: "no", label: "no traffic" },
+        ]}
+      />
 
       {options.restrictedTo.length > 0 ?
         <div className="flex items-center gap-1">
