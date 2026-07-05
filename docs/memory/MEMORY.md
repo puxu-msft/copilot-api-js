@@ -28,6 +28,7 @@
 ## 精炼保留（无 skill 域 / 独有教学价值 / 只读 skill 不覆盖）
 
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — 通用手法见 user skill `verifying-authoritative-claims`；本条是 verification 簇（合并原 self-consistent / verify-doc-vs-code）在本项目的高发实例 + 三陷阱钩子
+- [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — 本仓 lint 用 `eslint --cache`，对已提交但缓存过期文件假绿（实测掩盖 P2 5 个真 error）；核验 lint 干净须跑无缓存 `bunx eslint <path>`；`.tsx` 测试不在 test-relaxation glob
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 独有 oracle 裁决教学；按消费者契约 + 独立 oracle 裁决，别反射式"让它编译"
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多比较点复发；grep 全仓逐处修 + 抽单一共享 primitive
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 多站点联合加变体的正向版：路由到既有 outcome 复用全 handler + 类型系统前置逼出全站点
