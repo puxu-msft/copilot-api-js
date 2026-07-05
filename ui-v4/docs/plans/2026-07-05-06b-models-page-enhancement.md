@@ -65,15 +65,13 @@ ui-v4/src/
 
 **复用 util**：`lib/format.ts`（formatNumber/formatDuration/formatUsageTokens）、`lib/export-entry.ts` 的 `triggerDownload`（CSV 下载）、`lib/clipboard.ts` copyText、`shared/Modal`、`detail/CodeBlock`（shiki，Raw JSON 高亮）、`tools/JsonTreeView`（capabilities 树）。
 
-## 5. 详情呈现（待你拍板）
+## 5. 详情呈现（已定：URL 路由驱动 + 右侧 split 面板）
 
-ui-v4 无 Vue 那种右侧 v-model drawer；三个符合约定的选项：
+**决策（2026-07-05）：B 的真值来源 + C 的视觉** —— 选中态由 **URL 承载**（`/models?model=<id>` query，与 `list-store` "URL-as-truth" 约定一致、可分享/前进后退），详情渲染为 **右侧 split 面板**（非全页、非居中 Modal；页面主体 = 表格，右侧滑入固定宽面板，`flex` 分栏）。关闭 = 清 URL query（回 `/models`）。Esc 关闭复用既有键盘约定。
 
-- **A. `shared/Modal` + tab 分区（推荐）**：点行 → 居中 Modal（已有 Esc/backdrop/aria），内用 `DetailSubRail` 式 `SEGMENTS as const` 竖 tab 切 6 分区。最快、复用最多既有原语、最贴"点行看详情"。
-- **B. URL 子路由 `/models/:id`**：最贴 ui-v4 "URL-as-truth" 约定（如 `/requests/:id` → `DetailPanel`），可分享/前进后退；但需新路由 + 布局(全页或 split)。
-- **C. 右侧 split 面板**：最接近原 Vue drawer 观感，但 ui-v4 无既有 pattern，自建成本最高。
+面板内 6 分区用 `DetailSubRail` 式 `SEGMENTS as const` 竖 tab 切换（同 spec §3/§6，全字段 + 完整 raw supports + Vision 条件块 + 全 6 token）：Overview / Capabilities / Limits+Vision / Billing+Policy / Telemetry / Raw JSON。右侧面板宽度可选 `useResizableWidth`（既有 hook）持久化。
 
-6 分区（同 spec §3/§6，全字段 + 完整 raw supports + Vision 条件块 + 全 6 token）：Overview / Capabilities / Limits+Vision / Billing+Policy / Telemetry / Raw JSON。
+> ui-v4 无既有右侧 split 面板 pattern，需自建布局壳（`flex min-h-0`：左表格 `flex-1 overflow-auto` + 右面板固定/可调宽 `overflow-auto`），但选中态/tab 逻辑复用既有约定。
 
 ## 6. 表格与过滤
 
@@ -99,11 +97,11 @@ ui-v4 无 Vue 那种右侧 v-model drawer；三个符合约定的选项：
 
 每 phase：`bun run typecheck:ui-v4` + **`bun run build:ui-v4`** + `bun run test:ui-v4` 全绿 → 细粒度提交 → phase 末 subagent audit。不自启 dev server。
 
-## 10. 待你拍板
+## 10. 决策（已定 2026-07-05）
 
-1. **§5 详情呈现**：A（Modal+tab，推荐）/ B（URL 子路由）/ C（右侧 split）？
-2. **遥测**：新建 `useModelTelemetry`（无轮询、重访即加载，推荐）还是复用既有 `useStatus`（3s 轮询）？
-3. **范围**：全 4 phase 一次做完，还是先 P1+P2（表格/过滤/遥测列）看到真改动再继续？
+1. **详情呈现** → **URL 路由驱动选中（`?model=<id>`）+ 右侧 split 面板视觉**（见 §5）。
+2. **遥测数据源** → **新建 `useModelTelemetry`**（react-query，无 `refetchInterval`，挂载/重访即加载、不轮询）。
+3. **本轮范围** → **P1 + P2**（纯逻辑地基 + 表格/过滤/列配置/遥测列）；P3（详情面板）/P4（CSV+未关联遥测+a11y+文档）待 P1+P2 落地、用户看到真实改动后再继续。
 
 ## 非目标 / 复用既定
 - 不改后端（`request_headers` 暴露 + normalize-id 已做）。不引虚拟滚动（项目无）。不引新状态库（zustand/react-query 足够）。类型走 `~backend` re-export，不前端重定义。
