@@ -25,7 +25,18 @@ const stats = (model: string, over: Partial<ModelTelemetryStats> = {}): ModelTel
   usage: usage(),
   ...over,
 })
-const model = (id: string): Model => ({ id, name: id, vendor: "Anthropic", object: "model", preview: false, model_picker_enabled: true, is_chat_default: false, is_chat_fallback: false, version: "1" }) as Model
+const model = (id: string): Model =>
+  ({
+    id,
+    name: id,
+    vendor: "Anthropic",
+    object: "model",
+    preview: false,
+    model_picker_enabled: true,
+    is_chat_default: false,
+    is_chat_fallback: false,
+    version: "1",
+  }) as Model
 
 describe("parseRequestTelemetry", () => {
   it("returns null for non-object", () => {
@@ -65,7 +76,10 @@ describe("buildModelTelemetryIndex", () => {
 
   it("merges success (canonical) + failure (dashed/dated alias) legs onto same id", () => {
     const idx = buildModelTelemetryIndex(
-      { modelsSinceStart: [], modelsLast7d: [stats("claude-opus-4-8", { requestCount: 4, successCount: 4 }), stats("claude-opus-4-8-20250514", { requestCount: 5, failureCount: 5 })] },
+      {
+        modelsSinceStart: [],
+        modelsLast7d: [stats("claude-opus-4-8", { requestCount: 4, successCount: 4 }), stats("claude-opus-4-8-20250514", { requestCount: 5, failureCount: 5 })],
+      },
       [model("claude-opus-4.8")],
     )
     const joined = idx.byId.get("claude-opus-4.8")
@@ -76,14 +90,22 @@ describe("buildModelTelemetryIndex", () => {
 
   it("recomputes averageDurationMs after merge", () => {
     const idx = buildModelTelemetryIndex(
-      { modelsSinceStart: [], modelsLast7d: [stats("claude-opus-4.8", { requestCount: 2, totalDurationMs: 2000 }), stats("claude-opus-4.8", { requestCount: 2, totalDurationMs: 6000 })] },
+      {
+        modelsSinceStart: [],
+        modelsLast7d: [
+          stats("claude-opus-4.8", { requestCount: 2, totalDurationMs: 2000 }),
+          stats("claude-opus-4.8", { requestCount: 2, totalDurationMs: 6000 }),
+        ],
+      },
       [model("claude-opus-4.8")],
     )
     expect(idx.byId.get("claude-opus-4.8")?.last7d?.averageDurationMs).toBe(2000)
   })
 
   it("surfaces un-joinable telemetry in unmatched (never dropped)", () => {
-    const idx = buildModelTelemetryIndex({ modelsSinceStart: [], modelsLast7d: [stats("opus", { requestCount: 3, failureCount: 3 })] }, [model("claude-opus-4.8")])
+    const idx = buildModelTelemetryIndex({ modelsSinceStart: [], modelsLast7d: [stats("opus", { requestCount: 3, failureCount: 3 })] }, [
+      model("claude-opus-4.8"),
+    ])
     expect(idx.byId.size).toBe(0)
     expect(idx.unmatched).toHaveLength(1)
     expect(idx.unmatched[0].model).toBe("opus")
@@ -91,7 +113,10 @@ describe("buildModelTelemetryIndex", () => {
   })
 
   it("joins sinceStart + last7d windows independently", () => {
-    const idx = buildModelTelemetryIndex({ modelsSinceStart: [stats("claude-opus-4.8", { requestCount: 99 })], modelsLast7d: [stats("claude-opus-4.8", { requestCount: 7 })] }, [model("claude-opus-4.8")])
+    const idx = buildModelTelemetryIndex(
+      { modelsSinceStart: [stats("claude-opus-4.8", { requestCount: 99 })], modelsLast7d: [stats("claude-opus-4.8", { requestCount: 7 })] },
+      [model("claude-opus-4.8")],
+    )
     const joined = idx.byId.get("claude-opus-4.8")
     expect(joined?.last7d?.requestCount).toBe(7)
     expect(joined?.sinceStart?.requestCount).toBe(99)
