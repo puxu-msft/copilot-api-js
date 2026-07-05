@@ -5,7 +5,7 @@ description: 当需要在 copilot-api-js 实测裁决而非凭推断时使用—
 
 # 实证诊断手法
 
-裁判前先实测：dispatch 被调/请求 200/wall 变快/测试绿/grep 空 **都不自证**（pass-null 盲点）。探针 harness 必须复制生产全部接线（中间件/序列化前缀）否则结论反向。判断「该不该信某条声音权威主张、用哪种独立裁决」的通用决策法见 user-level skill `verifying-authoritative-claims`——本 skill 是其在本项目的探针落地（4141/ss/metronome…）。
+裁判前先实测：dispatch 被调/请求 200/wall 变快/测试绿/grep 空 **都不自证**（pass-null 盲点）。**连我自己「已创建/已提交」的操作叙述也不自证**——工具调用的产出是否真发生要用独立 oracle（文件系统/`git status`/悬挂反链）对账，别凭我的成功叙述：① Write 若被误当散文输出（编造「File created」），文件根本没写、`git status` 无改动或后续悬挂反链暴露（本工程两次踩，靠 per-file 行数对账 + `for link in $(grep -rho '\[\[...\]\]')` 检查抓出）；② `git add -A`/`.` 会被 git-discipline 护栏拦、commit 静默没发生（改用精确 pathspec `git add -- <路径>`，自己 worktree 内有意操作可 `GIT_DISCIPLINE_OK=1` 前缀绕过）。探针 harness 必须复制生产全部接线（中间件/序列化前缀）否则结论反向。判断「该不该信某条声音权威主张、用哪种独立裁决」的通用决策法见 user-level skill `verifying-authoritative-claims`——本 skill 是其在本项目的探针落地（4141/ss/metronome…）。
 
 ## 4141 探针（上游/协议主张）
 
