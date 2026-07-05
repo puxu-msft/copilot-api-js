@@ -1,49 +1,63 @@
 import {
   //
-  fireEvent,
   render,
   screen,
 } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { Tabs } from "radix-ui"
+import { useState } from "react"
 import {
   //
   describe,
   expect,
   it,
-  vi,
 } from "vitest"
 
 import {
   //
   DetailSubRail,
   SEGMENTS,
+  type SegmentName,
 } from "@/components/detail/DetailSubRail"
 
 /**
- * Golden behavior lock for `DetailSubRail` BEFORE the Radix Tabs migration (P1).
- * It is currently plain buttons with NO tab semantics — migrating to Radix Tabs
- * is a behavior UPGRADE, so locking the current click→onSelect contract first is
- * important. See plans/2026-07-05-radix-migration.md §P0.
+ * `DetailSubRail` is now a prop-less Radix `Tabs.List` — its state lives in the
+ * enclosing `Tabs.Root` (owned by DetailPanel). Test it in a minimal Tabs harness:
+ * every segment renders as a tab, and clicking one switches the active content
+ * (Radix roving/keyboard/aria are the library's; DetailPanel covers integration).
  */
-describe("DetailSubRail (golden, pre-Radix)", () => {
-  it("renders every segment", () => {
-    render(
-      <DetailSubRail
-        active="Convo"
-        onSelect={() => {}}
-      />,
-    )
-    for (const seg of SEGMENTS) expect(screen.getByText(seg)).toBeDefined()
+function Harness() {
+  const [seg, setSeg] = useState<SegmentName>("Convo")
+  return (
+    <Tabs.Root
+      value={seg}
+      onValueChange={(v) => setSeg(v as SegmentName)}
+      orientation="vertical"
+    >
+      <DetailSubRail />
+      {SEGMENTS.map((s) => (
+        <Tabs.Content
+          key={s}
+          value={s}
+        >
+          content:{s}
+        </Tabs.Content>
+      ))}
+    </Tabs.Root>
+  )
+}
+
+describe("DetailSubRail (Radix Tabs.List)", () => {
+  it("renders every segment as a tab", () => {
+    render(<Harness />)
+    for (const seg of SEGMENTS) expect(screen.getByRole("tab", { name: seg })).toBeDefined()
   })
 
-  it("calls onSelect with the clicked segment", () => {
-    const onSelect = vi.fn()
-    render(
-      <DetailSubRail
-        active="Convo"
-        onSelect={onSelect}
-      />,
-    )
-    fireEvent.click(screen.getByText("SSE"))
-    expect(onSelect).toHaveBeenCalledWith("SSE")
+  it("clicking a segment switches the active content", async () => {
+    const user = userEvent.setup()
+    render(<Harness />)
+    expect(screen.getByRole("tabpanel").textContent).toBe("content:Convo")
+    await user.click(screen.getByRole("tab", { name: "SSE" }))
+    expect(screen.getByRole("tabpanel").textContent).toBe("content:SSE")
   })
 })

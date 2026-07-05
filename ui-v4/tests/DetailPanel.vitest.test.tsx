@@ -1,9 +1,9 @@
 import {
   //
-  fireEvent,
   render,
   screen,
 } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import {
   //
   MemoryRouter,
@@ -55,9 +55,10 @@ describe("DetailPanel", () => {
     // "convo body text" appears in both the TOC label and the content body.
     expect(screen.getAllByText(/convo body text/).length).toBeGreaterThan(0)
   })
-  it("switches segment via sub-rail", () => {
+  it("switches segment via sub-rail", async () => {
+    const user = userEvent.setup()
     renderAt("/requests/r1")
-    fireEvent.click(screen.getByText("Stages"))
+    await user.click(screen.getByRole("tab", { name: "Stages" }))
     expect(screen.getAllByText(/Inbound \(client → proxy\)/).length).toBeGreaterThan(0)
   })
 })
