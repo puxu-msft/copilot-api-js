@@ -46,6 +46,7 @@ import {
 } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
+import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
 import { resetModelsEtagForTests } from "~/lib/models/client"
 import {
   //
@@ -102,6 +103,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetHistoryPersistErrorStats", reset: resetHistoryPersistErrorStats },
   // search_index backfill module-global stop/running flags.
   { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
+  { name: "resetUsageNormalizeBackfillForTests", reset: resetUsageNormalizeBackfillForTests },
 ]
 
 /** Names registered in RESETTERS — consumed by the L1 completeness guard. */

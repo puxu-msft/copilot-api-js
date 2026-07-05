@@ -35,6 +35,15 @@ export const SEARCH_INDEX_DEDUP_RATIO_KEY = "search_index_dedup_ratio"
  */
 export const MIGRATIONS_RUN_KEY = "schema_migrations"
 
+/** Completion-flag value written once the usage net-of-cache backfill finishes. */
+export const USAGE_NORMALIZE_VERSION = "1"
+
+/** `history_meta` key: set to USAGE_NORMALIZE_VERSION only when the full usage backfill completes. */
+export const USAGE_NORMALIZE_VERSION_KEY = "usage_normalize_version"
+
+/** `history_meta` key: resumable usage-backfill progress (the last processed started_at). */
+export const USAGE_NORMALIZE_CURSOR_KEY = "usage_normalize_backfill_cursor"
+
 /** Read one history_meta value (null when absent). */
 export function getMeta(db: Database, key: string): string | null {
   // .get() returns null on bun:sqlite / undefined on node:sqlite when no row

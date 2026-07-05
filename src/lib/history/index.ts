@@ -36,6 +36,7 @@ export {
   setHistoryPublisher,
   setPinned,
   shutdownHistory,
+  startHistoryBackfills,
   startSearchIndexBackfill,
   stopHistoryBackgroundWork,
   updateEntry,

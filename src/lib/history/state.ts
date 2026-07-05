@@ -35,6 +35,11 @@ import {
   runSearchIndexBackfill,
   stopSearchIndexBackfill,
 } from "./sqlite/search-index-backfill"
+import {
+  //
+  runUsageNormalizeBackfill,
+  stopUsageNormalizeBackfill,
+} from "./sqlite/usage-normalize-backfill"
 
 let enabled = false
 let unsubscribeHistoryLimit: (() => void) | undefined
@@ -102,8 +107,9 @@ export function stopHistoryBackgroundWork(): void {
   unsubscribeHistoryLimit?.()
   unsubscribeHistoryLimit = undefined
   stopReaper()
-  // Signal the background backfill to stop BEFORE the DB closes (it saves its
+  // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
+  stopUsageNormalizeBackfill()
   stopSearchIndexBackfill()
 }
 
@@ -141,4 +147,19 @@ export function setHistoryMaxEntries(): void {
 export function startSearchIndexBackfill(): void {
   if (!enabled || !isDatabaseOpen()) return
   void runSearchIndexBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] search-index backfill failed", err))
+}
+
+/**
+ * Fire-and-forget the background backfills, serialized: the usage net-of-cache
+ * normalization (fast — small blobs, guarded by usage_normalized) runs first,
+ * THEN the heavier search-index + preview backfill. Called once from start.ts
+ * AFTER the server is listening so it never blocks startup. No-op when history is
+ * disabled / the DB is not open. Both runs catch internally; the `.catch`/`.then`
+ * here are belt-and-suspenders against an unhandledRejection crashing the process.
+ */
+export function startHistoryBackfills(): void {
+  if (!enabled || !isDatabaseOpen()) return
+  void runUsageNormalizeBackfill(getDatabase())
+    .catch((err: unknown) => consola.warn("[history] usage-normalize backfill failed", err))
+    .finally(() => startSearchIndexBackfill())
 }

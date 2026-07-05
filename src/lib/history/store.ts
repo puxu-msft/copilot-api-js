@@ -33,6 +33,7 @@ export {
   setHistoryMaxEntries,
   setHistoryPublisher,
   shutdownHistory,
+  startHistoryBackfills,
   startSearchIndexBackfill,
   stopHistoryBackgroundWork,
 } from "./state"

@@ -33,7 +33,7 @@ import {
   //
   initHistory,
   setHistoryPublisher,
-  startSearchIndexBackfill,
+  startHistoryBackfills,
 } from "./lib/history"
 import { getDatabase } from "./lib/history/sqlite/connection"
 import { applyForwardMigrations } from "./lib/history/sqlite/migrations/run"
@@ -534,12 +534,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setServerInstance(serverInstance)
   setupShutdownHandlers()
 
-  // Fire-and-forget the recoverable search_index + preview_text backfill in the
-  // BACKGROUND now that the server is listening. It is async/chunked/resumable and
-  // yields between batches, so it never blocks startup or starves request serving;
-  // guarded by history_meta(search_index_version) → a no-op once already built.
+  // Fire-and-forget the recoverable background backfills now that the server is
+  // listening: the usage net-of-cache normalization first (fast, guarded by
+  // usage_normalized), then the heavier search_index + preview_text backfill.
+  // Both are async/chunked/resumable and yield between batches, so they never
+  // block startup or starve request serving; each is a no-op once already done.
   // Returns immediately (the work trickles in the background) and never throws.
-  startSearchIndexBackfill()
+  startHistoryBackfills()
 
   // Inject the single shared WebSocket upgrade handler into each Node.js HTTP server (no-op under Bun)
   if (wsAdapter.injectWebSocket && serverInstance.nodeServers) {
