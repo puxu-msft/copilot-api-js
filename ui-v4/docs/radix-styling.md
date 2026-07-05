@@ -48,3 +48,11 @@ Radix `Dialog`/`DropdownMenu`/`Select`/`Popover` 默认经 `*.Portal` 渲染到 
 ## 4. 测试地基（jsdom stub）
 
 Radix 在 jsdom 下依赖 `ResizeObserver` + pointer-capture，已在 [tests/setup.ts](../tests/setup.ts) 全局 stub；正样本验证见 [tests/radix-smoke.vitest.test.tsx](../tests/radix-smoke.vitest.test.tsx)。新迁移组件的测试直接受益，无需各自 stub。
+
+## 5. 测试交互：用 userEvent + 认清 role 变化（P1 踩坑，P2/P3 复用）
+
+- **Radix 交互必须用 `@testing-library/user-event`，不能用 `fireEvent.click`。** Radix Trigger（Tabs/DropdownMenu/Select）经真实 pointer+focus 序列激活；jsdom 的 `fireEvent.click` 不触发 focus，导致点击不生效（实测：Tabs manual/automatic 两模式下 `fireEvent.click` 均不切换）。用 `const user = userEvent.setup(); await user.click(...)` / `await user.keyboard("{ArrowDown}")`，测试须 `async`。
+- **Radix 改了 ARIA role，查询要跟着变**：`DropdownMenu.CheckboxItem` 是 `role="menuitemcheckbox"`（非 `checkbox`）、`DropdownMenu.Item` 是 `menuitem`（非 `button`）、`Tabs.Trigger` 是 `tab`、`Select` 是 `combobox`+`option`。迁移前 golden 若按旧 role 查询，迁移后须改用新 role。
+- **Portal 内容只在打开时进 DOM**：`Dialog`/`DropdownMenu`/`Select` 的 Content 经 Portal，**关闭时不在 DOM**。测试须先 `await user.click(trigger)` 打开，再查询内容（区别于旧 `<details>`——关闭时内容也在 DOM）。
+- **多选菜单保持打开**：`DropdownMenu.CheckboxItem` 默认 select 后关菜单；若要连续勾选多项（如列显隐），加 `onSelect={(e) => e.preventDefault()}`。
+- Radix 竖直 Tabs 的键盘：Up/Down/Home/End 由库提供，Left/Right 在 `orientation="vertical"` 下正确不响应（实测 react-roving-focus）。

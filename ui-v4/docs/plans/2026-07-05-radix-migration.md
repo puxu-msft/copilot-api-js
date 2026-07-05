@@ -1,6 +1,8 @@
 # ui-v4 Radix Primitives 增量迁移 — 实施计划
 
-> **实施状态：未实施**（规划待审）
+> **实施状态：进行中**（P0 地基 + P1 Dialog/Tabs 落地 2026-07-05；P2 Menu / P3 splitter+Select 待续）
+> **落地**：P0 `b56e7a4`/`cc48e9f`/`cafb4fe`/`3446962`（依赖+jsdom stub+样式桥+golden）· P1 `f135365`（Modal→Dialog）/`88bc9e6`（user-event dev dep）/`b053674`（ModelDetail Tabs）/`a812c65`（DetailPanel Tabs）
+> **备注**：装 `radix-ui@1.6.1` + `@testing-library/user-event@14.6.1`（Radix 交互需真实 pointer/focus 序列，jsdom fireEvent.click 不触发；已成迁移测试标准手法）。Modal 迁移证明 build:ui-v4 能打包 radix-ui。Tabs 迁移删净手写 roving/方向键/aria 接线（净减 ~46+ 行 a11y 手写代码）。
 > **日期**：2026-07-05
 > **决策依据**：[decisions/2026-07-05-adopt-radix-primitives.md](../decisions/2026-07-05-adopt-radix-primitives.md)（WHY / 取舍 / 未采纳方案）
 > **kick-off**：[2026-07-05-radix-migration-kickoff.md](2026-07-05-radix-migration-kickoff.md)
