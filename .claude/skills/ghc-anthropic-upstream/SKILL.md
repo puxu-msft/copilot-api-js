@@ -1,5 +1,5 @@
 ---
-name: ghc-api-debug-anthropic
+name: ghc-anthropic-upstream
 description: 当排查 copilot-api-js Anthropic 路径上游异常时使用——thinking signature "cannot be modified" 400、空明文 thinking 毒化、thinking-only refusal(stop_reason:refusal)、tool_use 降级成 antml 文本、server_tool_use 400、tool_use.id 格式。含经 history sseEvents 诊断与本地探针手法（通用实测见 empirical-verification）。
 ---
 

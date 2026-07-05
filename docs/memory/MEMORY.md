@@ -35,7 +35,7 @@
 - [信号在 committed 点记录非 per-attempt](methodology-record-signals-at-committed-outcome-not-per-attempt.md) — L2 buffered-retry 闭包内 eager 记录信号被 discarded 尝试污染;正解 per-attempt 累积+onAttemptReset 清空+committed settle 点一次 flush;不丢≠不清
 - [新 config 键必须写进 bundled config.yaml](project-new-config-key-must-document-in-bundled-config-yaml.md) — bundled config.yaml 是默认 SSOT+自文档清单;新键收尾必须加进去,别因"兜底够用/peer 在改"漏;无守卫测试靠纪律
 - [settle 冻结 history entry 快照](reference-settle-freezes-history-entry-record-before-fail.md) — ctx.fail/complete 同步冻结 entry,settle 后 setForwardedResponse 不可见→client-facing 数据须 settle 前 record;新顶层字段须进 onTerminal 投影+updateEntry allowlist
-- 散落调试参考已收编为 on-demand skills — 靠 skill 描述发现,详见各 skill 正文:`bun-node-runtime-gotchas`/`claude-code-connection`/`frontend-test-debugging`/`debugging-server-crashes`/`bun-upstream-transport`/`history-sqlite-schema`;TS6 延期见 docs/decisions ADR
+- 散落调试参考已收编为 on-demand skills — 靠 skill 描述发现,详见各 skill 正文:`bun-node-runtime-gotchas`/`claude-code-connection`/`debugging-frontend-tests`/`debugging-server-crashes`/`bun-upstream-transport`/`history-sqlite-schema`;TS6 延期见 docs/decisions ADR
 - [合成数据必须可辨识](feedback-synthetic-data-must-be-distinguishable-from-real.md) — 注入真实流的合成帧(keepalive/占位/mock/降级)必打可辨识标记否则掩盖上游沉默;上游轨绝不含合成物、合成物只进 forwarded 轨打标记
 - [多维度完备性自审](feedback-multidim-completeness-audit-before-claiming-done.md) — 声称"完备"前过维度清单(活路径真执行?传输层真到达?可观测性合成vs真实可区分?副作用污染谁?);可观测性最易漏
 - [UI 交付必跑 build 不能只 typecheck](feedback-verify-ui-with-build-not-just-typecheck.md) — 前端从 ~backend 引入模块必须纯(不 import ~/lib/state);typecheck+vitest 双假绿,只有 build:ui rollup 才暴露拖入后端运行时;UI 验收命令=build:ui

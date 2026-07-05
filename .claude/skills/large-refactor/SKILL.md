@@ -1,5 +1,5 @@
 ---
-name: large-refactor-methodology
+name: large-refactor
 description: 当在 copilot-api-js 做大型（≥1000 行）/多 commit 结构性重构时使用——RFC-first 流程（brainstorm→docs/rfc/→≥3 轮对抗 subagent review→解 open questions→带 commit invariants 实现）、commit invariants（每 commit 终态不变量、中间态绝不半坏）、过渡态显式无害（silent/hijackConsola:false flag）、golden-fixture 预捕获（改动前锁旧代码证等价）、RFC 多 phase 三层文档结构（design/plan/prompts + README DAG/红线）、sed/grep 批量改造工具箱与两大踩坑（平行块缩进误匹配、perl 宽字符 UTF-8 全文损坏）。
 ---
 

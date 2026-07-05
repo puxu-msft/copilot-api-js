@@ -2,8 +2,8 @@
 
 > **实施状态：已完成**
 > **落地**：—
-> **现状锚点**：`.claude/skills/`（api-endpoints/history-sqlite-schema/bun-upstream-transport/test-isolation/ghc-api-debug-anthropic）
-> **备注**：5 个 skill 全建（anthropic-debug 换名 ghc-api-debug-anthropic）；bun-runtime-timeout.md 已 MOVE 进 skill
+> **现状锚点**：`.claude/skills/`（api-endpoints/history-sqlite-schema/bun-upstream-transport/test-isolation/ghc-anthropic-upstream）
+> **备注**：5 个 skill 全建（anthropic-debug 换名 ghc-anthropic-upstream）；bun-runtime-timeout.md 已 MOVE 进 skill
 
 ## Context
 

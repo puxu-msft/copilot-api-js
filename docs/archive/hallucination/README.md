@@ -24,6 +24,6 @@
 
 ## 相关但不归档于此
 
-- **案例三的修复知识**（thinking 空明文毒化、tool_use 降级成 antml 文本、双空块、id 容忍）是**活的上游调试知识**，载体是 skill `ghc-api-debug-anthropic` 与 docs `refusal-recovery.md` / `anthropic-compat.md`，不属幻觉档。
+- **案例三的修复知识**（thinking 空明文毒化、tool_use 降级成 antml 文本、双空块、id 容忍）是**活的上游调试知识**，载体是 skill `ghc-anthropic-upstream` 与 docs `refusal-recovery.md` / `anthropic-compat.md`，不属幻觉档。
 - **§7 实测核验记录**（reviewer 用捏造样本测出伪结论、plan 草稿臆造符号名）留在活 spec [anthropic-malformed-tool-input-repair.md](../../spec/anthropic-malformed-tool-input-repair.md) §7 —— 那是**声音权威核验的审计线索**（empirical-verification 域），非"模型误判环境损坏"幻觉档，且不过时。
 - **`docs/v4/prompts/server-tool-rejection-handoff.md`** 主体是已落地功能的交接（正式 spec 见 [docs/v4/03-spec/server-tool-rejection-retry.md](../../v4/03-spec/server-tool-rejection-retry.md)），非主要幻觉相关，故不整体移入本目录；其背景 note 的幻觉原文已提取进案例一，handoff 内只留指针。

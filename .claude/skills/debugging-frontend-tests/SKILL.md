@@ -1,5 +1,5 @@
 ---
-name: frontend-test-debugging
+name: debugging-frontend-tests
 description: 当调 copilot-api-js ui-v4 前端测试（tests/*.vitest.test.tsx，jsdom + @testing-library/react）遇诡异失败时使用——createPortal 内容落 document.body 不在 container、jsdom 不实现 execCommand/scrollIntoView 须 stub、shiki 异步高亮把首帧 plaintext 重渲成多 span、否定断言不自证正向能力。前端 vitest/jsdom 专有坑，区别于后端单例隔离（skill test-isolation）。
 ---
 
