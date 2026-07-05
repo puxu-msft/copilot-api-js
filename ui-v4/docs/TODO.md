@@ -14,7 +14,7 @@
 |---|---|---|---|
 | Activity（请求列表） | Requests | ⚠️ 增强骨架 + 缺筛选层 | 是（筛选/深链） |
 | Detail（请求详情） | RequestDetail | ⚠️ 交互增强 + 丢核心诊断 | 是（attempts/meta） |
-| Models | Models | ❌ **占位实现**（4 列表格） | 是（基本重写） |
+| Models | Models | ✅ **对等达成且超越**（2026-07 P1–P4） | 否（已解除） |
 | Config | Config | ❌ **占位实现**（raw JSON textarea） | 是（结构化表单） |
 | Dashboard | Overview | ⚠️ 故意精简（分析外包 Grafana） | 取决于设计决策 |
 | Search（全局全文搜索） | 无 | ❌ 完全缺失 | 是（零替代品） |
@@ -78,7 +78,9 @@ ui-v4 在 diff/TOC/shiki/headers 上增强，但丢失三类核心**诊断**能�
 
 ---
 
-## Models — 占位实现，需基本重写（缺口最大）
+## Models — ✅ 对等达成且超越（2026-07 P1–P4，本节保留作历史缺口记录）
+
+> **现状勘误（2026-07-05）**：下方"占位实现"描述已过时。Models 页经 P1–P4 全面增强（富表格 + 过滤 + 遥测 join + 详情面板 6 tab + CSV + 未关联遥测 + Radix 化），**已达对等且超越 `ui/`**。规划见 [plans/2026-07-05-06b-models-page-enhancement.md](plans/2026-07-05-06b-models-page-enhancement.md)、现状见 [DESIGN.md §7](DESIGN.md)。以下为原始缺口记录。
 
 ui-v4 `ModelsPage.tsx` 全 50 行、只有 4 列（id/name/vendor/version）`[已验，亲读全文]`。`ui/` 的 `ModelsTable.vue`/`ModelsFilterBar.vue` 富表全在 `[已验存在]`。
 
@@ -151,7 +153,7 @@ ui-v4 Overview 是**故意**精简成 6 张健康卡片 + "深度分析见 Grafa
 - **Detail attempts 诊断移植**（timeline + per-attempt wire diff + per-attempt sse_events）—— richest-data-flow 红线
 - **Detail meta 大网格移植**（sanitization/preprocessing/truncation/cache token/process）
 - **Detail rewrite 导航 + 页面级导航 + 复制**（export 已补齐）
-- **Models 页基本重写**（capability 列 + billing + 标记 + 搜索/过滤/排序/行展开）
+- **Models 页基本重写** ✅ **已完成**（2026-07 P1–P4：capability 列 + billing + 标记 + 搜索/过滤/排序 + 详情面板 + CSV + 遥测）
 
 **留待用户决策**：
 - Dashboard 是否接受外包 Grafana 而随 `ui/` 退役
