@@ -4,6 +4,7 @@ import { ExportButton } from "@/components/detail/ExportButton"
 import {
   //
   formatDuration,
+  formatUsageTokens,
   statusSignal,
   type Signal,
 } from "@/lib/format"
@@ -30,7 +31,7 @@ export function DiagnosticBar({ entry }: { entry: HistoryEntry }) {
       {entry.attemptCount === undefined ? null : <span className="text-[#888]">{entry.attemptCount} att</span>}
       {tokens ?
         <span className="text-[#888]">
-          ↑{tokens.input_tokens} ↓{tokens.output_tokens} tok
+          {formatUsageTokens(tokens)} tok
         </span>
       : null}
       {signal === "fail" && verdict !== undefined ?

@@ -13,4 +13,5 @@ export type {
   SseEventRecord,
   SummaryResult,
   SystemBlock,
+  UsageData,
 } from "~backend/lib/history/store"

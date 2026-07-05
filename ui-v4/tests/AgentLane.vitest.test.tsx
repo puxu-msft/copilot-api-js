@@ -82,6 +82,15 @@ describe("AgentLane", () => {
     expect(container.querySelector(String.raw`.h-3\.5.w-6`)).toBeNull()
   })
 
+  it("surfaces the summed cache tokens in the header (disjoint from net input)", () => {
+    renderLane("cached agent", [
+      base({ id: "c1", state: "completed", usage: { input_tokens: 600, output_tokens: 250, cache_read_input_tokens: 400 } }),
+      base({ id: "c2", state: "completed", usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 200 } }),
+    ])
+    // net input 600+100=700; cache 400+200=600 (shown separately, not folded into ↑).
+    expect(screen.getByText(/2 req · ↑700 ↓300 · cache 600/)).toBeDefined()
+  })
+
   it("shows a red failed count in the header when entries failed, and rows deep-link to /requests/:id", () => {
     renderLane("subagent agent-expl", [
       base({ id: "r1", state: "completed", responseModel: "claude-opus-4.8" }),

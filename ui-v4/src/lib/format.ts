@@ -71,3 +71,23 @@ export function formatBytes(n: number | undefined): string {
   if (n < 1_048_576) return `${(n / 1024).toFixed(1)}KB`
   return `${(n / 1_048_576).toFixed(1)}MB`
 }
+
+/**
+ * Compact token breakdown for detail views. `input_tokens` is the NET uncached
+ * input (canonical convention, see backend usage-normalize.ts), so cache-read /
+ * cache-write / reasoning are disjoint additive segments — shown only when
+ * non-zero. Example: `↑600 ↓250 · cache-read 400 · reasoning 80`.
+ */
+export function formatUsageTokens(usage: {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+  output_tokens_details?: { reasoning_tokens: number }
+}): string {
+  let s = `↑${usage.input_tokens} ↓${usage.output_tokens}`
+  if (usage.cache_read_input_tokens) s += ` · cache-read ${usage.cache_read_input_tokens}`
+  if (usage.cache_creation_input_tokens) s += ` · cache-write ${usage.cache_creation_input_tokens}`
+  if (usage.output_tokens_details?.reasoning_tokens) s += ` · reasoning ${usage.output_tokens_details.reasoning_tokens}`
+  return s
+}

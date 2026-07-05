@@ -1,5 +1,7 @@
 import type { HistoryEntry } from "@/types"
 
+import { formatUsageTokens } from "@/lib/format"
+
 function Row({ label, value }: { label: string; value?: string | number }) {
   if (value === undefined) return null
   return (
@@ -37,7 +39,7 @@ export function MetaSegment({ entry }: { entry: HistoryEntry }) {
       {usage ?
         <Row
           label="tokens"
-          value={`↑${usage.input_tokens} ↓${usage.output_tokens}`}
+          value={formatUsageTokens(usage)}
         />
       : null}
       {entry.warningMessages && entry.warningMessages.length > 0 ?
