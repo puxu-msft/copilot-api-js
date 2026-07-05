@@ -48,21 +48,32 @@ function persistWidth(storageKey: string, width: number): void {
   }
 }
 
-/** Props spread onto the drag handle element to wire up pointer-based resizing. */
+/** Props spread onto the drag handle element to wire up pointer + keyboard resizing. */
 interface HandleProps {
   onPointerDown: (event: React.PointerEvent) => void
+  /** Arrow-key / Home / End resize (WAI-ARIA Window Splitter); respects `invert`. */
+  onKeyDown: (event: React.KeyboardEvent) => void
+  /** Makes the separator keyboard-focusable. */
+  tabIndex: number
 }
 
 interface UseResizableWidth {
   /** Committed width in px (clamped, restored from localStorage; updated only on drag-END). */
   width: number
+  /** Inclusive lower bound (px) — for `aria-valuemin`. */
+  min: number
+  /** Inclusive upper bound (px) — for `aria-valuemax`. */
+  max: number
   /** True while a resize drag is in progress. */
   dragging: boolean
   /** Cursor viewport-X during a drag (for the preview guide line); undefined when idle. */
   dragEdgeX: number | undefined
-  /** Props to spread onto the drag-handle element (pointer-down starts a drag). */
+  /** Props to spread onto the drag-handle element (pointer-down starts a drag; arrows resize). */
   handleProps: HandleProps
 }
+
+/** Keyboard resize step (px) per Arrow press. */
+const KEYBOARD_STEP = 16
 
 /** Per-instance sizing/behavior; each field falls back to the shared TOC_WIDTH_* defaults. */
 export interface ResizableWidthOptions {
@@ -121,6 +132,16 @@ export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY, op
   // safe to call from pointerup, a fresh pointerdown, or unmount.
   const cleanupRef = useRef<(() => void) | undefined>(undefined)
 
+  // Commit a new width: clamp to [min,max], apply (single reflow), persist.
+  const commitWidth = useCallback(
+    (w: number) => {
+      const clamped = clampWidth(w, min, max)
+      setWidth(clamped)
+      persistWidth(storageKey, clamped)
+    },
+    [storageKey, min, max],
+  )
+
   const onPointerDown = useCallback(
     (event: React.PointerEvent) => {
       // Only react to the primary button; ignore right/middle-click drags.
@@ -151,8 +172,7 @@ export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY, op
         cleanupRef.current = undefined
         setDragEdgeX(undefined)
         // Single layout change for the whole drag → one reflow of the content pane.
-        setWidth(pending)
-        persistWidth(storageKey, pending)
+        commitWidth(pending)
       }
 
       globalThis.addEventListener("pointermove", onMove)
@@ -175,7 +195,43 @@ export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY, op
         body.style.cursor = prevCursor
       }
     },
-    [storageKey, min, max, invert],
+    [storageKey, min, max, invert, commitWidth],
+  )
+
+  // Keyboard resize (WAI-ARIA Window Splitter). The separator is vertical and
+  // resizes horizontally, so Arrow Left/Right move the splitter; Home/End jump to
+  // the bounds. invert=true (left-edge handle on a right-docked panel) → ArrowLeft
+  // grows, mirroring the drag axis.
+  const onKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      const grow = invert ? "ArrowLeft" : "ArrowRight"
+      const shrink = invert ? "ArrowRight" : "ArrowLeft"
+      let next: number
+      switch (event.key) {
+        case grow: {
+          next = widthRef.current + KEYBOARD_STEP
+          break
+        }
+        case shrink: {
+          next = widthRef.current - KEYBOARD_STEP
+          break
+        }
+        case "Home": {
+          next = min
+          break
+        }
+        case "End": {
+          next = max
+          break
+        }
+        default: {
+          return
+        }
+      }
+      event.preventDefault()
+      commitWidth(next)
+    },
+    [invert, min, max, commitWidth],
   )
 
   // Unmount: tear down any in-flight drag (listeners + body-style overrides).
@@ -187,5 +243,5 @@ export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY, op
     [],
   )
 
-  return { width, dragging: dragEdgeX !== undefined, dragEdgeX, handleProps: { onPointerDown } }
+  return { width, min, max, dragging: dragEdgeX !== undefined, dragEdgeX, handleProps: { onPointerDown, onKeyDown, tabIndex: 0 } }
 }

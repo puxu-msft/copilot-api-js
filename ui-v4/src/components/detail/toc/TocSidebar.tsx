@@ -14,7 +14,7 @@ import { useResizableWidth } from "@/hooks/useResizableWidth"
  * the right edge so it stays put regardless of the tree's `overflow-auto` scroll.
  */
 export function TocSidebar({ children }: { children: ReactNode }) {
-  const { width, dragging, dragEdgeX, handleProps } = useResizableWidth()
+  const { width, min, max, dragging, dragEdgeX, handleProps } = useResizableWidth()
 
   return (
     <div
@@ -27,6 +27,9 @@ export function TocSidebar({ children }: { children: ReactNode }) {
         role="separator"
         aria-label="resize toc"
         aria-orientation="vertical"
+        aria-valuenow={Math.round(width)}
+        aria-valuemin={min}
+        aria-valuemax={max}
         title="Drag to resize"
         className="-ml-px w-[5px] shrink-0 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-[var(--color-primary)]/40"
       />

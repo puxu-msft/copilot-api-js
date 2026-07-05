@@ -59,7 +59,7 @@ interface ModelDetailProps {
  */
 export function ModelDetail({ model, telemetry, onClose }: ModelDetailProps) {
   const [tab, setTab] = useState<ModelDetailTab>(MODEL_DETAIL_TABS[0])
-  const { width, dragging, dragEdgeX, handleProps } = useResizableWidth(MODELS_DETAIL_WIDTH_KEY, { min: 320, max: 760, default: 460, invert: true })
+  const { width, min, max, dragging, dragEdgeX, handleProps } = useResizableWidth(MODELS_DETAIL_WIDTH_KEY, { min: 320, max: 760, default: 460, invert: true })
   const caps = useMemo(() => deriveCapabilities(model), [model])
 
   const panelRef = useRef<HTMLElement>(null)
@@ -91,6 +91,9 @@ export function ModelDetail({ model, telemetry, onClose }: ModelDetailProps) {
         role="separator"
         aria-label="Resize model detail"
         aria-orientation="vertical"
+        aria-valuenow={Math.round(width)}
+        aria-valuemin={min}
+        aria-valuemax={max}
         title="Drag to resize"
         className="w-[5px] shrink-0 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-[var(--color-primary)]/40"
       />
