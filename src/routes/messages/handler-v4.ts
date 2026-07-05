@@ -1020,9 +1020,13 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         .writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
         .catch(() => undefined)
       recordForwarded()
+      // C1: preserve the partial content accumulated before the throw (mirrors the
+      // truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
+      const partial = buildAnthropicResponseData(acc, model)
       env.ctx.fail(acc.model || model, error, {
-        usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
-        stop_reason: acc.stopReason || undefined,
+        usage: partial.usage,
+        stop_reason: partial.stop_reason,
+        content: partial.content,
       })
       return
     }
@@ -1041,7 +1045,14 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // H2 — a terminal upstream `error` SSE event was forwarded as a content frame (clean
       // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
       consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
-      env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
+      // C1: preserve the partial content accumulated before the terminal error frame (mirrors
+      // the truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
+      const partial = buildAnthropicResponseData(acc, model)
+      env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`), {
+        usage: partial.usage,
+        stop_reason: partial.stop_reason,
+        content: partial.content,
+      })
     } else if (
       state.refusalSseRewrite === "error"
       && isThinkingOnlyRefusal(

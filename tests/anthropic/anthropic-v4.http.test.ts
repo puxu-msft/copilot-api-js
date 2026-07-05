@@ -55,7 +55,7 @@ import {
   createSseResponseThenAbort,
 } from "../helpers/sse"
 
-type Scenario = "ok" | "thinking" | "errorFrame" | "midStreamThrow" | "deferredTool"
+type Scenario = "ok" | "thinking" | "errorFrame" | "errorFrameThinking" | "midStreamThrow" | "deferredTool"
 
 let messagesHits = 0
 let capturedWire: { model?: string; stream?: boolean; messages?: Array<unknown>; tools?: Array<{ name?: string }> } | undefined
@@ -116,6 +116,16 @@ function errorFrameStreamFrames(model: string): Array<string> {
   ]
 }
 
+/** H2 variant: emits a CORRUPT double-empty thinking block (thinking:"" + no signature) then a terminal error frame — exercises C1 partial-content preservation of the exact sample the thinking-block metrics targets. */
+function errorFrameThinkingFrames(model: string): Array<string> {
+  return [
+    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg-err-think", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 7, output_tokens: 0 } } })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
+    `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "upstream overloaded" } })}\n\n`,
+  ]
+}
+
 /** A stream that enqueues a few frames then ERRORS the ReadableStream mid-flight (H3 — the for-await throws → pump's catch synthesizes an error frame). */
 function midStreamThrowResponse(model: string): Response {
   const frames = okStreamFrames(model).slice(0, 3) // message_start + content_block_start + first text delta
@@ -170,6 +180,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
       const frames =
         scenario === "thinking" ? thinkingStreamFrames(model)
         : scenario === "errorFrame" ? errorFrameStreamFrames(model)
+        : scenario === "errorFrameThinking" ? errorFrameThinkingFrames(model)
         : okStreamFrames(model)
       return Promise.resolve(createSseResponse(frames))
     }
@@ -458,6 +469,35 @@ describe("Anthropic v4 driver path", () => {
     // fail ordering (a post-fail snapshot would miss it).
     expect(h3Text).toContain('"type":"error"')
     expect(h3Forwarded.some((e) => e.raw.includes('"type":"error"'))).toBe(true)
+  })
+
+  // C1 (spec §4.0): the H2/H3 fail path MUST preserve the accumulated partial content on
+  // `outboundResponse.content` (mirroring the truncation/refusal branches) rather than drop it
+  // to null — otherwise content emitted before the abort (esp. corrupt double-empty thinking
+  // blocks, the thinking-block-metrics target) is lost. Asserted against the persisted entry.
+  test("C1 H2: terminal error preserves the accumulated (corrupt double-empty) thinking block on outboundResponse.content", async () => {
+    scenario = "errorFrameThinking"
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hi" }], max_tokens: 64, stream: true }
+    clearHistory()
+    await (await post(body, observableApp)).text()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry?.state).toBe("failed")
+    const content = entry?.outboundResponse?.content as { content?: Array<Record<string, unknown>> } | null
+    // The double-empty thinking block (thinking:"" + no signature) survives into the recorded
+    // upstream leg (not null) — the exact sample the metrics counts as emptyUnsigned.
+    expect(content?.content?.[0]).toEqual({ type: "thinking", thinking: "" })
+  })
+
+  test("C1 H3: mid-stream throw preserves the accumulated partial content on outboundResponse.content", async () => {
+    scenario = "midStreamThrow"
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hi" }], max_tokens: 64, stream: true }
+    clearHistory()
+    await (await post(body, observableApp)).text()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry?.state).toBe("failed")
+    const content = entry?.outboundResponse?.content as { content?: Array<Record<string, unknown>> } | null
+    // The partial text forwarded before the throw is preserved (not null).
+    expect(content?.content?.[0]).toEqual({ type: "text", text: "Hello from mocked stream" })
   })
 
   test("deferred-tool retry: a tool-reference 400 undefers the tool + retries (2 hits, undeferred on the wire)", async () => {
