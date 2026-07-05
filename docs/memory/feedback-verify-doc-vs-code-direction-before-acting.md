@@ -9,4 +9,4 @@ metadata:
 
 **Why（本会话连犯两错）：** (a) 把自己没写、几个月前的 `docs/shutdown.md` 整体提交只验两点就当全文准确；(b) 发现 3 处不一致直接"改文档配代码"，**假设**陈旧没验方向。事后 `git log -S` 才证 3 处确实陈旧（`memory-pressure.ts` df840b5 加/7561a7b 删；WS-close 设计性移 Phase 4；consumers.ts→bus/sinks）——但**方向赌对≠验证过**，用户连戳两次。
 
-**How to apply:** 定向工具 `git log -S "<符号>" -- <path>`（最近一次 + 还是 −）、`git log --oneline -- <file>`（文档多久没动）、grep 全树确认符号现存；**方向定了才改**。提交非自己创建的内容逐条核对当前代码，"部分准确"绝不外推"整体准确"，宁可先 surface 不擅自提交。陈旧文档加注解（删除 commit/日期）移入 `docs/archive/`，不简单删行。通用定向手法与处置见 skill [[verifying-authoritative-claims]]；同 [[feedback-pass-null-clean-not-self-validating]]（局部正确不自证整体）。
+**How to apply:** 定向工具 `git log -S "<符号>" -- <path>`（最近一次 + 还是 −）、`git log --oneline -- <file>`（文档多久没动）、grep 全树确认符号现存；**方向定了才改**。提交非自己创建的内容逐条核对当前代码，"部分准确"绝不外推"整体准确"，宁可先 surface 不擅自提交。陈旧文档加注解（删除 commit/日期）移入 `docs/archive/`，不简单删行。通用定向手法与处置见 skill skill `verifying-authoritative-claims`；同 [[feedback-pass-null-clean-not-self-validating]]（局部正确不自证整体）。

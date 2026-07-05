@@ -11,4 +11,4 @@ metadata:
 
 **具体失败模式（mock 上游比真上游宽松）：** fetch-mock 接受任何 wire，故"协议有效性"bug 过绿测却在生产 400。2026-06 实证：L2 escalation force-inject `context_management`（mode=off）漏配套 `context-management-2025-06-27` beta header——GHC 要求 body 与 beta 成对，缺则 400；buffered http 测试用 mock 上游、只断言 `wire.context_management` 存在没校验 beta header → 假绿（亲自核 reviewer 的 M2 时顺藤摸到）。**修法二选一**：① 测试显式断言 wire 协议不变量（必需 header/字段成对关系，把隐性要求钉成显式断言）；② 用 ghc-api-reference 官方实现作 oracle 核对 body↔header↔beta 配对。
 
-通用裁决手法见 skill [[verifying-authoritative-claims]]，always-on 默认在 CLAUDE.md `empirical-verification`；用 [[empirical-probe-via-history-api]] 拉真实请求/响应做 oracle，姊妹 [[methodology-probe-harness-must-match-prod]]（harness 缺中间件），呼应 skill `empirical-verification`。
+通用裁决手法见 skill skill `verifying-authoritative-claims`，always-on 默认在 CLAUDE.md `empirical-verification`；用 [[empirical-probe-via-history-api]] 拉真实请求/响应做 oracle，姊妹 [[methodology-probe-harness-must-match-prod]]（harness 缺中间件），呼应 skill `empirical-verification`。

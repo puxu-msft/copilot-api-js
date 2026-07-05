@@ -6,6 +6,8 @@
 
 合并相近、清理陈旧/冗余记忆时 **deep-read 正文**比对，不只凭索引钩子判断。在 phase/会话/交接边界主动提炼可复用教训并维护既有记忆库（陈旧→修、近义→互链、冗余→删）。
 
+记忆文件正文 / frontmatter `description` / MEMORY.md 索引钩子一律用中文；逐字保留 ASCII 的：文件名与 `name:`/slug、`file:line`、`[[slug]]` 内 slug、code/JSON/shell 与行内 `code`、技术标识符（tool_use、signature、printWidth、SSE 等）；结构标签 `**Why:**`/`**How to apply:**`/`**Related:**` 保留英文。
+
 ## 开发原则
 
 项目决策见 [docs/decisions/](docs/decisions/)。

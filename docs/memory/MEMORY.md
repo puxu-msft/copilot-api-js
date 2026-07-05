@@ -6,8 +6,10 @@
 - [通过/空/干净不自证](feedback-pass-null-clean-not-self-validating.md) — 否定性/通过性结果(测试绿/grep 空/无问题/diff 干净)不自证;先证检查真触达目标(空≠不存在、通过≠健全);假阴性伪装成已确认安全
 - [自洽需独立 oracle](feedback-self-consistent-needs-independent-oracle.md) — wire/协议正确性不能用自己 encode↔decode 自洽判(两端共享同一错误假设);用独立 oracle(规范/参考实现/真实对端 GHC)
 - [方向明确就别停下来问](feedback-dont-stop-when-direction-clear.md) — 方向明确别停问"先做A/B/C";多数是执行顺序非授权岔路;只为破坏性/真 either-or/上下文不足/实质架构后果差异停
+- [全面行动、完成即提交](feedback-act-comprehensively-commit-on-done.md) — 每完成阶段主动提交(别问"要我提交吗");已确认范围内全面思考行动;只有真不可逆/either-or/上下文不足才交用户
 - [知识归类:文档 vs 记忆](feedback-knowledge-routing-docs-vs-memory.md) — 已完成+项目特定→项目文档;未完成+可复用+通用→记忆;不两处重复
 - [完成时同步文档](feedback-completion-updates-docs.md) — doc-sync 是"完成"一部分:删过时 pending 记忆+回填已落地机制进活文档;须跨文档 grep 扫描验证(旧状态词清零+新端点逐个核对),否则漏
+- [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化 bug(canonical 键/id、prefix、call_/fc_)多处比较点复发;grep 全仓逐处修,最好抽单一共享 primitive
 - [边界提炼经验+维护库](feedback-distill-lessons-at-boundaries.md) — phase/会话/交接边界主动提炼可复用教训+维护记忆库(陈旧修/近义互链/冗余删);判某记忆是否覆盖须读正文非索引钩子
 - [主线实现、subagent 核验](feedback-main-thread-impl-subagent-verify.md) — 实现在主线(紧控制、连续上下文);subagent 作密集独立核验层非外包实现
 - [实验放仓库 exp/ 不放 /tmp](feedback-experiments-in-repo-exp-dir.md) — 探测/实验代码+报告+ss 输出放 exp/<name>/ 不放 /tmp(别名不解析易丢);派探针 subagent 也告知

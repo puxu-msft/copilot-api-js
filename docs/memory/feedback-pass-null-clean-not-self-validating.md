@@ -11,4 +11,4 @@ metadata:
 
 **Why:** 假阴性比假阳性危险——伪装成"已确认安全"让你停止追查，是承重判断（"无消费者""可安全删除""已覆盖"）翻车的高发口。
 
-**How to apply:** 拿到 pass/empty/clean 先反问"这检查真触达目标了吗"，用一个已知应命中的正样本做正向对照（确认 grep/测试确实会响应），再相信它的"无"。通用裁决手法见 skill [[verifying-authoritative-claims]]，always-on 默认在 CLAUDE.md `empirical-verification`。配 skill `empirical-verification`（PASS+WARN 当黄灯）、skill `empirical-verification`（绝对断言要复核）。
+**How to apply:** 拿到 pass/empty/clean 先反问"这检查真触达目标了吗"，用一个已知应命中的正样本做正向对照（确认 grep/测试确实会响应），再相信它的"无"。通用裁决手法见 skill skill `verifying-authoritative-claims`，always-on 默认在 CLAUDE.md `empirical-verification`。配 skill `empirical-verification`（PASS+WARN 当黄灯）、skill `empirical-verification`（绝对断言要复核）。
