@@ -137,7 +137,14 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 
 ### Models
 
-目录表：基线 + 扩展字段（vendor / ctx / vision / tools / reasoning / family）；工具栏过滤(vendor/能力) + 搜索 + raw JSON 切换。
+**全面增强已落地**（P1–P4，2026-07-05；规划见 [docs/plans/2026-07-05-06b-models-page-enhancement.md](plans/2026-07-05-06b-models-page-enhancement.md)、设计 WHAT/WHY 见 [docs/spec/2026-07-05-ui-v4-models-enhancement.md](../../docs/spec/2026-07-05-ui-v4-models-enhancement.md)）。
+
+- **密集目录表**：id/name/vendor/version/ctx/out/effort/能力矩阵(vision/tools/parallel/structured/streaming/thinking)/$×/req(7d)；表头点击排序；列显隐由齿轮菜单控制并 localStorage 持久化。能力矩阵同源后端 `deriveCapabilities`（`~backend`，前端不重实现）。
+- **过滤栏**：search(id/name) / vendor / type / capability(多选 AND) / premium / restricted-to plan(多选) / policy state / has-telemetry。纯谓词在 `lib/model-filters.ts`（bun 测）。
+- **运行遥测 join**：`/api/status.requestTelemetry` 经 `lib/model-telemetry.ts` 按 `normalizeModelId` 归一 join（成功腿=规范名 / 失败腿=客户端别名双侧归一），无轮询、重访即刷新（`useModelTelemetry` 独立 queryKey）。归一后仍无 catalog 匹配的遥测收进**「未关联遥测」小节**（表下方）显式呈现，不静默丢弃（richest-data-flow）。
+- **详情面板**：选中态由 URL 承载（`?model=<id>`，URL-as-truth、可深链），渲染为右侧可调宽 split 面板（`useResizableWidth` invert）。6 竖 tab（WAI-ARIA tabs：roving tabindex + 方向键 + tab↔panel 关联）：Overview（身份 + picker 标志 + 端点含 `(inferred)` 标注）/ Capabilities（派生矩阵 + **完整 raw supports map**）/ Limits+Vision（Vision 条件块）/ Billing+Policy / Telemetry（双窗口 + 全 6 token + 失败计数诚实标注）/ Raw JSON（完整对象含 `request_headers`）。Esc 关闭（isTyping 守卫）、开面板移焦、关闭还焦。
+- **Export CSV**：当前过滤/排序视图扁平导出（`lib/models-csv.ts`，RFC-4180）；遥测列同 join。
+- **后端**：`/api/models` 移除 `stripInternalFields` 对 `request_headers` 的剥离（ADR internal-tool-security-posture）；`src/lib/models/normalize-id.ts` 纯模块供前端 join 复用。
 
 ### Config
 

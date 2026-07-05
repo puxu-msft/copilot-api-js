@@ -1,9 +1,9 @@
 # Models 页面全面增强（ui-v4 / React）— 实施规划
 
-> **实施状态：部分完成**（P1+P2 已落地 2026-07；P3 详情面板 + P4 CSV/未关联遥测/a11y/文档 待续）
-> **落地**：commits `5971d7e`/`a6e8252`（P1）· `557eb71`/`1f6a3f5`/`0628a25`（P2）（best-effort）
-> **现状锚点**：[ui-v4/src/components/models/](../../src/components/models/)（ModelsPage/ModelsTable/ModelsFilterBar/ModelsColumnMenu）+ [ui-v4/src/lib/{model-telemetry,models-csv,model-columns,model-filters}.ts](../../src/lib/) + [hooks/{useModels,useModelTelemetry}.ts](../../src/hooks/)
-> **备注**：build:ui-v4 已验证（bundle 纯净、~backend 仅纯模块/type-only）；遥测 join 与 Vue 版逐行等价；P2 audit 通过（queryKey 已解耦）。CSV 序列化器 + unmatched 数据已在 P1 备好待 P4 接 UI。
+> **实施状态：已完成**（P1+P2 落地 2026-07；P3 详情面板 + P4 CSV/未关联遥测/a11y/文档 落地 2026-07-05）
+> **落地**：commits `5971d7e`/`a6e8252`（P1）· `557eb71`/`1f6a3f5`/`0628a25`（P2）· `2063754`/`ae18df9`/`638616f`/`7463d71`/`f402a1f`（P3）· P4（CSV + 未关联遥测 + a11y 补全 + 文档回填）
+> **现状锚点**：[ui-v4/src/components/models/](../../src/components/models/)（ModelsPage/ModelsTable/ModelsFilterBar/ModelsColumnMenu/**ModelDetail**/**ModelDetailSubRail**/**UnmatchedTelemetry** + **detail-tabs/**）+ [ui-v4/src/lib/{model-telemetry,models-csv,model-columns,model-filters}.ts](../../src/lib/) + [hooks/{useModels,useModelTelemetry,useResizableWidth}.ts](../../src/hooks/)
+> **备注**：build:ui-v4 已验证（bundle 纯净、~backend 仅纯模块/type-only：Model type / deriveCapabilities / getEffectiveEndpoints / normalizeModelId）；遥测 join 与 Vue 版逐行等价；4 phase 均 subagent audit 通过；活文档 §7 Models 已回填 [ui-v4/docs/DESIGN.md](../DESIGN.md)。
 
 > 日期：2026-07-05
 > 目标前端：**`ui-v4/`（React 19 + react-router 7 + zustand + @tanstack/react-query + tailwind 4，跑在 5173）**
