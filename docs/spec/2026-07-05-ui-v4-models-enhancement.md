@@ -63,7 +63,7 @@
 | **Billing + Policy** | billing：`multiplier` · `is_premium` · `restricted_to`（plan chips）。policy：`state` · `terms` |
 | **Endpoints** | `supported_endpoints`（含 `getEffectiveEndpoints` 前端推断；推断项打 `(inferred)` 标记区分上游明确声明 vs 推断） |
 | **Telemetry** | 见 §4 |
-| **Raw JSON** | 内嵌 `JsonViewerSurface`（含 `request_headers` 等运维字段——放此不单列，避免误导为可配置项） |
+| **Raw JSON** | 内嵌 `JsonViewerSurface`（展示前端实收的完整 model 对象）。**注：`request_headers` 不在此**——`/api/models` 经 `stripInternalFields`（`src/routes/models/internal.ts:15`）有意剥离该字段（该端点也服务公开 OpenAI-compat 消费者，模型专属上游头属敏感配置），前端拿不到。是否为运维 UI 单独暴露见 §13 决策 |
 
 > 注：分区上方列为 6 tab 划分下的归并结果（§6）。Endpoints 与 Telemetry 可各自独立成 tab，也可折叠——见 §6 决策。
 
@@ -241,3 +241,21 @@ utils:
 4. **Phase 4 — Export CSV + a11y + 视觉打磨**：`models-csv.ts` + 下载 + 焦点/aria + 文档卫生（归档 2604、回填 DESIGN）。
 
 每 phase 一 commit（conventional），阶段自洽、typecheck/test 绿。
+
+---
+
+## 13. 后端字段暴露核验（已实测）
+
+`api.fetchModels()` → `/api/models`（`src/routes/models/internal.ts:72-81`）。该路由对每个 model 调 `stripInternalFields`（`:15-18`）：
+
+- **`...rest` 展开**——除被剥字段外，所有 `Model` 字段（含 `policy`/`billing.restricted_to`/`version`/`capabilities.family`/`tokenizer`/`model_picker_*`/完整 `supports` 开放 map/`limits.vision`）**及未 typed 的上游多余键**都完整透传。`getModels`（`client.ts`）本身也是 `response.json() as ModelsResponse` 纯透传、不重构字段。→ **数据完整性设计（§3）成立，后端暴露充分。**
+- **唯一被剥离字段：`request_headers`**（`Omit<Model, "request_headers">`）。前端无法获取。
+
+### 决策：`request_headers` 是否为运维 UI 暴露？
+
+`request_headers` 是 CAPI 下发的**模型专属请求头**（转发上游用，`client.ts:118`）。`stripInternalFields` 有意剥离——因 `/api/models` 同时服务公开 OpenAI-compat 消费者，暴露会泄漏内部路由配置。
+
+- **方案 A（默认，本 spec 采纳）**：接受不展示，Raw JSON 不含此字段。维持现有安全边界，不改后端（符合非目标）。
+- **方案 B**：为运维 UI 单开一个不剥离的端点（如 `/history/api/models/:id` 或给 `/api/models` 加 operator-only query flag），抽屉 Raw JSON 从该端点取。**需改后端**（突破本 spec"不改后端"非目标）。
+
+> 待用户定夺。默认走 A。若选 B，追加 Phase 0（后端端点）。
