@@ -178,6 +178,17 @@ export function modelSupportsToolSearch(modelId: string, resolvedModel?: Model):
   )
 }
 
+/**
+ * Extended prompt-cache TTL (`extended-cache-ttl-2025-04-11`) support. Mirrors GHC's
+ * `modelSupportsExtendedCacheTtl` (anthropic.ts) — a NARROWER set than context-editing/memory (no bare
+ * sonnet-4 / opus-4 / opus-4.1). Metadata-first, then the config-driven `extendedCacheTtlModels` list.
+ */
+export function modelSupportsExtendedCacheTtl(modelId: string, resolvedModel?: Model): boolean {
+  return (
+    metadataCapability(resolvedModel, "extended_cache_ttl") ?? matchModelCapability(modelId, state.extendedCacheTtlModels, resolvedModel?.capabilities?.family)
+  )
+}
+
 // ============================================================================
 // Anthropic Beta Headers
 // ============================================================================
@@ -195,6 +206,12 @@ export interface AnthropicBetaHeaderOptions {
    * of mode — the body without its beta header would 400 upstream.
    */
   forceContextManagementBeta?: boolean
+  /**
+   * Emit the `extended-cache-ttl-2025-04-11` beta. Set by the cache-control step when it actually
+   * wrote a 1h `cache_control` ttl into the body (`ctx.wroteExtendedTtl`), so the header exactly
+   * mirrors the body — never sent when only 5m breakpoints exist.
+   */
+  emitExtendedCacheTtlBeta?: boolean
 }
 
 /**
@@ -258,6 +275,11 @@ export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model
   // tool-pipeline injection in message-tools.ts), keeping the header consistent with the pipeline.
   if (state.toolSearchEnabled && modelSupportsToolSearch(modelId, resolvedModel)) {
     betaFeatures.push("advanced-tool-use-2025-11-20")
+  }
+
+  // Header mirrors body: the cache-control step reports whether it actually wrote a 1h ttl.
+  if (opts?.emitExtendedCacheTtlBeta) {
+    betaFeatures.push("extended-cache-ttl-2025-04-11")
   }
 
   if (betaFeatures.length > 0) {

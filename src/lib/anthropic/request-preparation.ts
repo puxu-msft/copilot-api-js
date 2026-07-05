@@ -1,6 +1,7 @@
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
+import type { CacheTtl } from "~/lib/state"
 
 import { copilotHeaders } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
@@ -32,6 +33,7 @@ import {
   mergeAnthropicBeta,
   modelHasAdaptiveThinking,
   modelSupportsContextEditing,
+  modelSupportsExtendedCacheTtl,
 } from "./features"
 import {
   //
@@ -60,6 +62,12 @@ export interface PrepareContext {
   wire: Record<string, unknown>
   headers: Record<string, string>
   opts: PrepareAnthropicRequestOptions
+  /**
+   * Set by the `cache-control` step: true iff the final wire carries a `cache_control` with
+   * `ttl:"1h"` (whether the proxy wrote it or a passthrough client sent it). Read by `build-headers`
+   * to emit `extended-cache-ttl-2025-04-11` exactly when the body needs it (header mirrors body).
+   */
+  wroteExtendedTtl?: boolean
 }
 
 /** One named prepare step. Mutates `ctx.wire` and/or `ctx.headers` in place. */
@@ -114,7 +122,55 @@ interface PrepareAnthropicRequestOptions {
  */
 const BUILTIN_REJECTED_FIELDS: ReadonlyArray<string> = ["inference_geo"]
 const CACHE_CONTROL_BREAKPOINT_LIMIT = 4
-const EPHEMERAL_CACHE_CONTROL = { type: "ephemeral" } as const
+/** A prompt-cache breakpoint. `ttl:"1h"` marks the extended TTL; omitting `ttl` is Anthropic's 5m default. */
+type EphemeralCacheControl = { type: "ephemeral"; ttl?: "1h" }
+
+/** Resolve the concrete breakpoint object for a per-layer TTL (5m → bare ephemeral, 1h → +ttl). */
+function ephemeralFor(ttl: CacheTtl): EphemeralCacheControl {
+  return ttl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" }
+}
+
+/** True when the request is agent-style (an assistant message is present) — the closest analog to GHC's
+ * `ChatLocation.Agent && !subagent` gate for extended cache TTL. */
+function isAgentCall(messages: MessagesPayload["messages"] | undefined): boolean {
+  return Array.isArray(messages) && messages.some((msg) => msg.role === "assistant")
+}
+
+let warnedExtendedTtlClamp = false
+
+/**
+ * Resolve the effective per-layer TTLs, clamping `messagesTtl` down to `toolsSystemTtl` (order 5m<1h).
+ * Anthropic requires longer TTLs to appear earlier in the tools→system→messages prefix order, so a
+ * messages breakpoint may not outlive the tools/system breakpoints. Warns once on clamp.
+ */
+function resolveExtendedTtls(): { toolsSystem: CacheTtl; messages: CacheTtl } {
+  const toolsSystem = state.extendedCacheTtlToolsSystem
+  let messages = state.extendedCacheTtlMessages
+  if (messages === "1h" && toolsSystem === "5m") {
+    if (!warnedExtendedTtlClamp) {
+      consola.warn(
+        `[config] anthropic.extended_cache_ttl.messages_ttl (1h) exceeds tools_system_ttl (5m); clamping messages to 5m (Anthropic requires longer TTLs earlier in the tools→system→messages order)`,
+      )
+      warnedExtendedTtlClamp = true
+    }
+    messages = "5m"
+  }
+  return { toolsSystem, messages }
+}
+
+/** True when any cache_control in the wire (system / messages / tools) carries `ttl:"1h"` — read-only. */
+function wireHasOneHourTtl(wire: Record<string, unknown>): boolean {
+  return ["system", "messages", "tools"].some((key) => hasOneHourTtlDeep(wire[key]))
+}
+
+function hasOneHourTtlDeep(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((item) => hasOneHourTtlDeep(item))
+  if (!value || typeof value !== "object") return false
+  const record = value as Record<string, unknown>
+  const cc = record.cache_control as { ttl?: unknown } | undefined
+  if (cc && cc.ttl === "1h") return true
+  return Object.values(record).some((nested) => nested !== record.cache_control && hasOneHourTtlDeep(nested))
+}
 
 /**
  * Collect the full set of body fields to strip for `modelName`:
@@ -213,7 +269,7 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
     return msg.content.some((block) => block.type === "image")
   })
 
-  const isAgentCall = messages.some((msg) => msg.role === "assistant")
+  const isAgent = isAgentCall(messages)
   const modelSupportsVision = opts.resolvedModel?.capabilities?.supports?.vision !== false
   // context_management body field is stripped by buildWirePayload when the negotiation
   // cache or rejectBodyFields config marks it unsupported. We also need to suppress
@@ -237,6 +293,7 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
   const localBeta = buildAnthropicBetaHeaders(model, opts.resolvedModel, {
     disableContextManagement: contextManagementDisabled,
     forceContextManagementBeta: willInjectEscalation,
+    emitExtendedCacheTtlBeta: ctx.wroteExtendedTtl,
   })
   const mergedBeta = mergeAnthropicBeta(opts.clientAnthropicBeta, localBeta["anthropic-beta"])
   const filteredBeta = filterUnsupportedBetas(model, mergedBeta, opts.excludeBetas)
@@ -248,9 +305,9 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
     ...copilotHeaders(state, {
       vision: enableVision && modelSupportsVision,
       modelRequestHeaders: opts.resolvedModel?.request_headers,
-      intent: isAgentCall ? "conversation-agent" : "conversation-panel",
+      intent: isAgent ? "conversation-agent" : "conversation-panel",
     }),
-    "X-Initiator": isAgentCall ? "agent" : "user",
+    "X-Initiator": isAgent ? "agent" : "user",
     "anthropic-version": "2023-06-01",
   }
   if (filteredBeta) core["anthropic-beta"] = filteredBeta
@@ -318,7 +375,7 @@ export const ANTHROPIC_PREPARE_STEPS: ReadonlyArray<PrepareStep> = [
   { name: "adjust-budget", apply: (ctx) => adjustThinkingBudget(ctx.wire, ctx.opts.resolvedModel) },
   { name: "clamp-effort", apply: (ctx) => clampEffortLevel(ctx.wire, ctx.opts.resolvedModel) },
   { name: "strip-structured-outputs", apply: (ctx) => stripUnsupportedStructuredOutputs(ctx.wire) },
-  { name: "cache-control", apply: (ctx) => applyCacheControlMode(ctx.wire) },
+  { name: "cache-control", apply: (ctx) => applyCacheControlMode(ctx) },
   { name: "build-headers", apply: buildAnthropicHeaders },
 ]
 
@@ -709,7 +766,19 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
  *                strategy, caches the growing conversation), then tools+system
  *                with any spare slots.
  */
-function applyCacheControlMode(wire: Record<string, unknown>): void {
+function applyCacheControlMode(ctx: PrepareContext): void {
+  const { wire } = ctx
+  const model = wire.model as string
+  const messages = wire.messages as MessagesPayload["messages"] | undefined
+
+  // Extended TTL upgrades the breakpoints WE write (proxied/sanitize). Gated by the master switch,
+  // model support, and an agent-style request (GHC's Agent-location analog). When inactive, both
+  // layers stay at the 5m default — identical to the pre-feature behavior.
+  const extendedTtlActive = state.extendedCacheTtlEnabled && modelSupportsExtendedCacheTtl(model, ctx.opts.resolvedModel) && isAgentCall(messages)
+  const { toolsSystem, messages: messagesTtl } = extendedTtlActive ? resolveExtendedTtls() : { toolsSystem: "5m" as CacheTtl, messages: "5m" as CacheTtl }
+  const toolsSystemEphemeral = ephemeralFor(toolsSystem)
+  const messagesEphemeral = ephemeralFor(messagesTtl)
+
   switch (state.cacheControlMode) {
     case "disabled": {
       walkCacheControl(wire, () => undefined)
@@ -719,7 +788,9 @@ function applyCacheControlMode(wire: Record<string, unknown>): void {
       break
     }
     case "sanitize": {
-      walkCacheControl(wire, () => EPHEMERAL_CACHE_CONTROL)
+      // Normalize every existing (client) breakpoint to ephemeral, per layer: message breakpoints get
+      // the messages TTL, tool/system breakpoints the tools/system TTL. Does NOT inject new breakpoints.
+      walkCacheControl(wire, (_current, section) => (section === "messages" ? messagesEphemeral : toolsSystemEphemeral))
       break
     }
     case "proxied": {
@@ -730,8 +801,8 @@ function applyCacheControlMode(wire: Record<string, unknown>): void {
       // Message-level breakpoints (GHC's primary strategy) before tools+system
       // fallback; the latter recomputes its budget from existing breakpoints, so
       // message breakpoints injected here automatically reduce its spare slots.
-      addMessageCacheControl(wire.messages as Array<MessageParam> | undefined)
-      addToolsAndSystemCacheControl(wire)
+      addMessageCacheControl(wire.messages as Array<MessageParam> | undefined, messagesEphemeral)
+      addToolsAndSystemCacheControl(wire, toolsSystemEphemeral)
       break
     }
     default: {
@@ -741,13 +812,17 @@ function applyCacheControlMode(wire: Record<string, unknown>): void {
       break
     }
   }
+
+  // Header mirrors body: emit the beta iff a 1h ttl actually landed in the wire (our write OR a
+  // passthrough client breakpoint). Independent of `extendedTtlActive` so passthrough 1h is covered.
+  ctx.wroteExtendedTtl = wireHasOneHourTtl(wire)
 }
 
-function addToolsAndSystemCacheControl(wire: Record<string, unknown>): void {
+function addToolsAndSystemCacheControl(wire: Record<string, unknown>, ephemeral: EphemeralCacheControl): void {
   let remaining = CACHE_CONTROL_BREAKPOINT_LIMIT - countExistingCacheBreakpoints(wire)
   if (remaining <= 0) return
 
-  const toolResult = addToolCacheControl(wire.tools as Array<Tool> | undefined, remaining)
+  const toolResult = addToolCacheControl(wire.tools as Array<Tool> | undefined, remaining, ephemeral)
   if (toolResult.changed) {
     wire.tools = toolResult.tools
     remaining = toolResult.remaining
@@ -755,7 +830,7 @@ function addToolsAndSystemCacheControl(wire: Record<string, unknown>): void {
 
   if (remaining <= 0) return
 
-  const systemResult = addSystemCacheControl(wire.system as MessagesPayload["system"], remaining)
+  const systemResult = addSystemCacheControl(wire.system as MessagesPayload["system"], remaining, ephemeral)
   if (systemResult.changed) {
     wire.system = systemResult.system
   }
@@ -786,7 +861,11 @@ function countCacheControlOccurrences(value: unknown): number {
   return count
 }
 
-function addToolCacheControl(tools: Array<Tool> | undefined, remaining: number): { tools: Array<Tool> | undefined; remaining: number; changed: boolean } {
+function addToolCacheControl(
+  tools: Array<Tool> | undefined,
+  remaining: number,
+  ephemeral: EphemeralCacheControl,
+): { tools: Array<Tool> | undefined; remaining: number; changed: boolean } {
   if (!tools || remaining <= 0) {
     return { tools, remaining, changed: false }
   }
@@ -799,7 +878,7 @@ function addToolCacheControl(tools: Array<Tool> | undefined, remaining: number):
   const updatedTools = [...tools]
   updatedTools[lastNonDeferredIndex] = {
     ...updatedTools[lastNonDeferredIndex],
-    cache_control: EPHEMERAL_CACHE_CONTROL,
+    cache_control: ephemeral,
   }
   return { tools: updatedTools, remaining: remaining - 1, changed: true }
 }
@@ -807,6 +886,7 @@ function addToolCacheControl(tools: Array<Tool> | undefined, remaining: number):
 function addSystemCacheControl(
   system: MessagesPayload["system"] | undefined,
   remaining: number,
+  ephemeral: EphemeralCacheControl,
 ): { system: MessagesPayload["system"] | undefined; changed: boolean } {
   if (!Array.isArray(system) || remaining <= 0) {
     return { system, changed: false }
@@ -820,7 +900,7 @@ function addSystemCacheControl(
   const updatedSystem = [...system]
   updatedSystem[lastSystemIndex] = {
     ...updatedSystem[lastSystemIndex],
-    cache_control: EPHEMERAL_CACHE_CONTROL,
+    cache_control: ephemeral,
   }
   return { system: updatedSystem, changed: true }
 }
@@ -860,7 +940,7 @@ function findLastIndex<T>(items: Array<T>, predicate: (item: T) => boolean): num
  * user message — the per-round breakpoint count matches because merge collapses what
  * GHC's `isLastToolResultInRound` de-duplicates.
  */
-function addMessageCacheControl(messages: Array<MessageParam> | undefined): void {
+function addMessageCacheControl(messages: Array<MessageParam> | undefined, ephemeral: EphemeralCacheControl): void {
   if (!Array.isArray(messages) || messages.length === 0) return
   let remaining = CACHE_CONTROL_BREAKPOINT_LIMIT - countCacheControlOccurrences(messages)
   if (remaining <= 0) return
@@ -887,7 +967,10 @@ function addMessageCacheControl(messages: Array<MessageParam> | undefined): void
     const isPlainUser = message.role === "user" && !isToolResultMsg
     const isAssistantWithoutToolUse = message.role === "assistant" && !messageHasToolUse(message)
 
-    if (((isBelowCurrentUserMessage && (isLastToolResultInRound || isPlainUser)) || isAssistantWithoutToolUse) && placeCacheControlOnLastBlock(message))
+    if (
+      ((isBelowCurrentUserMessage && (isLastToolResultInRound || isPlainUser)) || isAssistantWithoutToolUse)
+      && placeCacheControlOnLastBlock(message, ephemeral)
+    )
       remaining -= 1
 
     if (isPlainUser) isBelowCurrentUserMessage = false
@@ -921,12 +1004,12 @@ function messageHasCacheControl(message: MessageParam): boolean {
  * `{text:" "}` placeholder block to host its CacheBreakpoint part; we deliberately skip
  * to avoid injecting whitespace noise (such messages are vanishingly rare in proxied).
  */
-function placeCacheControlOnLastBlock(message: MessageParam): boolean {
+function placeCacheControlOnLastBlock(message: MessageParam, ephemeral: EphemeralCacheControl): boolean {
   // String content → a single text block carrying the breakpoint. GHC does the same
   // when merging (string → [{type:"text", text}]), so upstream treats them as equivalent.
   if (typeof message.content === "string") {
     if (message.content.length === 0) return false
-    message.content = [{ type: "text", text: message.content, cache_control: EPHEMERAL_CACHE_CONTROL }]
+    message.content = [{ type: "text", text: message.content, cache_control: ephemeral }]
     return true
   }
   if (!Array.isArray(message.content)) return false
@@ -934,22 +1017,26 @@ function placeCacheControlOnLastBlock(message: MessageParam): boolean {
   const index = findLastIndex(message.content, (block) => block.type !== "thinking" && block.type !== "redacted_thinking")
   if (index < 0) return false
 
-  const block = message.content[index] as { cache_control?: typeof EPHEMERAL_CACHE_CONTROL }
+  const block = message.content[index] as { cache_control?: EphemeralCacheControl }
   if (block.cache_control) return false
-  block.cache_control = EPHEMERAL_CACHE_CONTROL
+  block.cache_control = ephemeral
   return true
 }
 
 /**
  * Walk all cache_control occurrences in the wire payload (system, messages, tools)
- * and apply a handler. The handler receives the existing cache_control value and returns:
+ * and apply a handler. The handler receives the existing cache_control value AND the top-level
+ * section it belongs to (so sanitize can pick a per-layer TTL — nested tool_result blocks under a
+ * message stay in the "messages" section). It returns:
  * - undefined: delete the cache_control field
  * - an object: replace the cache_control field with this value
  */
-function walkCacheControl(wire: Record<string, unknown>, handler: (current: unknown) => { type: string } | undefined): void {
+type CacheControlSection = "system" | "messages" | "tools"
+
+function walkCacheControl(wire: Record<string, unknown>, handler: (current: unknown, section: CacheControlSection) => { type: string } | undefined): void {
   for (const key of ["system", "messages", "tools"] as const) {
     if (Array.isArray(wire[key])) {
-      walkCacheControlArray(wire[key] as Array<Record<string, unknown>>, handler)
+      walkCacheControlArray(wire[key] as Array<Record<string, unknown>>, handler, key)
     }
   }
 }
@@ -958,13 +1045,14 @@ function walkCacheControlArray(
   // Runtime data: items may include null / non-objects coming from JSON.parse
   // even though our internal type narrows them, so accept `unknown`-ish entries.
   items: Array<Record<string, unknown> | null | undefined>,
-  handler: (current: unknown) => { type: string } | undefined,
+  handler: (current: unknown, section: CacheControlSection) => { type: string } | undefined,
+  section: CacheControlSection,
 ): void {
   for (const item of items) {
     if (!item || typeof item !== "object") continue
 
     if ("cache_control" in item && item.cache_control) {
-      const replacement = handler(item.cache_control)
+      const replacement = handler(item.cache_control, section)
       if (replacement === undefined) {
         delete item.cache_control
       } else {
@@ -972,9 +1060,10 @@ function walkCacheControlArray(
       }
     }
 
-    // Recurse into content arrays (message.content, tool_result.content)
+    // Recurse into content arrays (message.content, tool_result.content). These stay in the SAME
+    // section (a tool_result nested in a user message is still message-layer).
     if (Array.isArray(item.content)) {
-      walkCacheControlArray(item.content as Array<Record<string, unknown>>, handler)
+      walkCacheControlArray(item.content as Array<Record<string, unknown>>, handler, section)
     }
   }
 }

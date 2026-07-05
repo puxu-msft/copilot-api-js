@@ -937,3 +937,203 @@ describe("cache_control modes", () => {
     })
   })
 })
+
+describe("extended cache TTL (extended-cache-ttl-2025-04-11)", () => {
+  const stateBase = {
+    copilotToken: "test-token",
+    vsCodeVersion: "1.100.0",
+    accountType: "individual" as const,
+  }
+
+  /** Multi-turn (agent-style: has an assistant message) payload so extended-ttl's agent gate passes. */
+  function agentPayload(model = "claude-opus-4-6"): MessagesPayload {
+    return {
+      model,
+      max_tokens: 1024,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "q1" }] },
+        { role: "assistant", content: [{ type: "text", text: "a1" }] },
+        { role: "user", content: [{ type: "text", text: "q2" }] },
+      ],
+      system: [{ type: "text", text: "sys" }],
+      tools: [{ name: "Read", input_schema: { type: "object" } }],
+    }
+  }
+
+  /** Collect every cache_control object across system/messages/tools (deep). */
+  function collectCacheControls(wire: Record<string, unknown>): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = []
+    const walk = (v: unknown): void => {
+      if (Array.isArray(v)) {
+        for (const item of v) walk(item)
+        return
+      }
+      if (!v || typeof v !== "object") return
+      const rec = v as Record<string, unknown>
+      if (rec.cache_control && typeof rec.cache_control === "object") out.push(rec.cache_control as Record<string, unknown>)
+      for (const [k, nested] of Object.entries(rec)) if (k !== "cache_control") walk(nested)
+    }
+    for (const key of ["system", "messages", "tools"]) walk(wire[key])
+    return out
+  }
+  const ttl1hCount = (wire: Record<string, unknown>) => collectCacheControls(wire).filter((cc) => cc.ttl === "1h").length
+  const hasBeta = (headers: Record<string, string>) => (headers["anthropic-beta"] ?? "").includes("extended-cache-ttl-2025-04-11")
+
+  test("proxied + enabled + supported + agent: tools/system get ttl:1h, beta emitted, ≤4 breakpoints", () => {
+    setStateForTests({
+      ...stateBase,
+      cacheControlMode: "proxied",
+      extendedCacheTtlEnabled: true,
+      extendedCacheTtlToolsSystem: "1h",
+      extendedCacheTtlMessages: "5m",
+    })
+    const prepared = prepareAnthropicRequest(agentPayload())
+
+    const tools = prepared.wire.tools as Array<Record<string, unknown>>
+    const system = prepared.wire.system as Array<Record<string, unknown>>
+    expect(tools[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
+    expect(system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
+    // messages_ttl 5m → message breakpoints carry NO ttl field.
+    const msgs = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
+    const msgCC = msgs.flatMap((m) => m.content).filter((b) => b.cache_control)
+    expect(msgCC.length).toBeGreaterThan(0)
+    for (const b of msgCC) expect(b.cache_control).toEqual({ type: "ephemeral" })
+    // Beta⇔body coupling: beta present AND at least one 1h ttl actually in the wire.
+    expect(hasBeta(prepared.headers)).toBe(true)
+    expect(ttl1hCount(prepared.wire)).toBeGreaterThan(0)
+    // ≤4 breakpoint budget preserved.
+    expect(collectCacheControls(prepared.wire).length).toBeLessThanOrEqual(4)
+  })
+
+  test("proxied + messages_ttl 1h: rolling message breakpoints also carry ttl:1h", () => {
+    setStateForTests({
+      ...stateBase,
+      cacheControlMode: "proxied",
+      extendedCacheTtlEnabled: true,
+      extendedCacheTtlToolsSystem: "1h",
+      extendedCacheTtlMessages: "1h",
+    })
+    const prepared = prepareAnthropicRequest(agentPayload())
+    const msgs = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
+    const msgCC = msgs.flatMap((m) => m.content).filter((b) => b.cache_control)
+    expect(msgCC.length).toBeGreaterThan(0)
+    for (const b of msgCC) expect(b.cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
+    expect(hasBeta(prepared.headers)).toBe(true)
+  })
+
+  test("5m (or disabled) writes bare ephemeral (no ttl field) and NO beta", () => {
+    setStateForTests({
+      ...stateBase,
+      cacheControlMode: "proxied",
+      extendedCacheTtlEnabled: true,
+      extendedCacheTtlToolsSystem: "5m",
+      extendedCacheTtlMessages: "5m",
+    })
+    const prepared = prepareAnthropicRequest(agentPayload())
+    expect(ttl1hCount(prepared.wire)).toBe(0)
+    for (const cc of collectCacheControls(prepared.wire)) expect("ttl" in cc).toBe(false)
+    expect(hasBeta(prepared.headers)).toBe(false)
+
+    setStateForTests({ ...stateBase, cacheControlMode: "proxied", extendedCacheTtlEnabled: false })
+    const prepared2 = prepareAnthropicRequest(agentPayload())
+    expect(ttl1hCount(prepared2.wire)).toBe(0)
+    expect(hasBeta(prepared2.headers)).toBe(false)
+  })
+
+  test("non-agent request (no assistant message) gets no ttl and no beta, even when enabled+1h", () => {
+    setStateForTests({
+      ...stateBase,
+      cacheControlMode: "proxied",
+      extendedCacheTtlEnabled: true,
+      extendedCacheTtlToolsSystem: "1h",
+      extendedCacheTtlMessages: "1h",
+    })
+    const prepared = prepareAnthropicRequest({
+      model: "claude-opus-4-6",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: [{ type: "text", text: "first turn" }] }],
+      system: [{ type: "text", text: "sys" }],
+      tools: [{ name: "Read", input_schema: { type: "object" } }],
+    })
+    expect(ttl1hCount(prepared.wire)).toBe(0)
+    expect(hasBeta(prepared.headers)).toBe(false)
+  })
+
+  test("non-supporting model (opus-4, not in the extended list) gets no ttl and no beta", () => {
+    setStateForTests({
+      ...stateBase,
+      cacheControlMode: "proxied",
+      extendedCacheTtlEnabled: true,
+      extendedCacheTtlToolsSystem: "1h",
+      extendedCacheTtlMessages: "1h",
+    })
+    const prepared = prepareAnthropicRequest(agentPayload("claude-opus-4"))
+    expect(ttl1hCount(prepared.wire)).toBe(0)
+    expect(hasBeta(prepared.headers)).toBe(false)
+  })
+
+  test("sanitize upgrades EXISTING client breakpoints per layer (system→toolsSystem, message→messages)", () => {
+    setStateForTests({
+      ...stateBase,
+      cacheControlMode: "sanitize",
+      extendedCacheTtlEnabled: true,
+      extendedCacheTtlToolsSystem: "1h",
+      extendedCacheTtlMessages: "5m",
+    })
+    const prepared = prepareAnthropicRequest({
+      model: "claude-opus-4-6",
+      max_tokens: 1024,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "q1" }] },
+        { role: "assistant", content: [{ type: "text", text: "a1" }] },
+        { role: "user", content: [{ type: "text", text: "q2", cache_control: { type: "ephemeral" } }] },
+      ],
+      system: [{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }],
+    })
+    const system = prepared.wire.system as Array<Record<string, unknown>>
+    const msgs = prepared.wire.messages as Array<{ content: Array<Record<string, unknown>> }>
+    // system layer → toolsSystem ttl (1h); message layer → messages ttl (5m, no ttl field).
+    expect(system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
+    expect(msgs[2].content[0].cache_control).toEqual({ type: "ephemeral" })
+    expect(hasBeta(prepared.headers)).toBe(true) // the system 1h counts
+
+    // Sanitize does NOT inject where the client set nothing.
+    const setNothing = prepareAnthropicRequest({
+      model: "claude-opus-4-6",
+      max_tokens: 1024,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "q1" }] },
+        { role: "assistant", content: [{ type: "text", text: "a1" }] },
+        { role: "user", content: [{ type: "text", text: "q2" }] },
+      ],
+      system: [{ type: "text", text: "sys" }],
+    })
+    expect(collectCacheControls(setNothing.wire).length).toBe(0)
+    expect(hasBeta(setNothing.headers)).toBe(false)
+  })
+
+  test("passthrough with a client-sent ttl:1h keeps it and emits the beta (header mirrors body)", () => {
+    setStateForTests({ ...stateBase, cacheControlMode: "passthrough", extendedCacheTtlEnabled: false })
+    const prepared = prepareAnthropicRequest({
+      model: "claude-opus-4-6",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral", ttl: "1h" } }] }],
+    })
+    expect(ttl1hCount(prepared.wire)).toBe(1)
+    expect(hasBeta(prepared.headers)).toBe(true)
+  })
+
+  test("messages_ttl is clamped down to tools_system_ttl (messages 1h + tools/system 5m → messages 5m, no beta)", () => {
+    setStateForTests({
+      ...stateBase,
+      cacheControlMode: "proxied",
+      extendedCacheTtlEnabled: true,
+      extendedCacheTtlToolsSystem: "5m",
+      extendedCacheTtlMessages: "1h",
+    })
+    const prepared = prepareAnthropicRequest(agentPayload())
+    // Clamp forces messages to 5m; nothing is 1h → no beta.
+    expect(ttl1hCount(prepared.wire)).toBe(0)
+    expect(hasBeta(prepared.headers)).toBe(false)
+  })
+})

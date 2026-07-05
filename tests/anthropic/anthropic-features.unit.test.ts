@@ -11,6 +11,7 @@ import {
   buildAnthropicBetaHeaders,
   mergeAnthropicBeta,
   modelSupportsContextEditing,
+  modelSupportsExtendedCacheTtl,
   modelSupportsInterleavedThinking,
   modelSupportsToolSearch,
 } from "~/lib/anthropic/features"
@@ -224,6 +225,52 @@ describe("buildAnthropicBetaHeaders", () => {
     // …and NOT when the master switch is off (header stays consistent with the tool pipeline).
     setStateForTests({ toolSearchEnabled: false })
     expect(buildAnthropicBetaHeaders("claude-opus-4.6")["anthropic-beta"] ?? "").not.toContain("advanced-tool-use-2025-11-20")
+  })
+
+  test("emitExtendedCacheTtlBeta option controls the extended-cache-ttl beta", () => {
+    expect(buildAnthropicBetaHeaders("claude-opus-4.6")["anthropic-beta"] ?? "").not.toContain("extended-cache-ttl-2025-04-11")
+    expect(buildAnthropicBetaHeaders("claude-opus-4.6", undefined, { emitExtendedCacheTtlBeta: true })["anthropic-beta"] ?? "").toContain(
+      "extended-cache-ttl-2025-04-11",
+    )
+  })
+})
+
+describe("modelSupportsExtendedCacheTtl (mirrors GHC; narrower than context-editing/memory)", () => {
+  const snapshot = snapshotStateForTests()
+  afterEach(() => restoreStateForTests(snapshot))
+
+  test("supported models: fable-5, opus 4.5/4.6/4.7/4.8, sonnet 4.5/4.6, haiku 4.5", () => {
+    for (const m of [
+      "claude-fable-5",
+      "claude-opus-4.5",
+      "claude-opus-4.6",
+      "claude-opus-4.7",
+      "claude-opus-4.8",
+      "claude-sonnet-4.5",
+      "claude-sonnet-4.6",
+      "claude-haiku-4.5",
+    ]) {
+      expect(modelSupportsExtendedCacheTtl(m)).toBe(true)
+    }
+  })
+
+  test("NOT the bare/older set (opus-4, opus-4.1, sonnet-4) — narrower than memory/context-editing", () => {
+    expect(modelSupportsExtendedCacheTtl("claude-opus-4")).toBe(false)
+    expect(modelSupportsExtendedCacheTtl("claude-opus-4.1")).toBe(false)
+    expect(modelSupportsExtendedCacheTtl("claude-sonnet-4")).toBe(false)
+    expect(modelSupportsExtendedCacheTtl("gpt-4")).toBe(false)
+  })
+
+  test("metadata-first: declared supports.extended_cache_ttl wins over the name-list", () => {
+    const withSupports = (supports: Record<string, unknown>) =>
+      ({ id: "m", capabilities: { supports } }) as unknown as Parameters<typeof modelSupportsExtendedCacheTtl>[1]
+    expect(modelSupportsExtendedCacheTtl("totally-unknown", withSupports({ extended_cache_ttl: true }))).toBe(true)
+    expect(modelSupportsExtendedCacheTtl("claude-opus-4.8", withSupports({ extended_cache_ttl: false }))).toBe(false)
+  })
+
+  test("empty config list disables the capability entirely", () => {
+    setStateForTests({ extendedCacheTtlModels: [] })
+    expect(modelSupportsExtendedCacheTtl("claude-opus-4.8")).toBe(false)
   })
 })
 

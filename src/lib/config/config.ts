@@ -512,6 +512,7 @@ export async function applyConfigToState(): Promise<Config> {
       if (mc.context_editing !== undefined) setAnthropicBehavior({ contextEditingModels: mc.context_editing })
       if (mc.interleaved_thinking !== undefined) setAnthropicBehavior({ interleavedThinkingModels: mc.interleaved_thinking })
       if (mc.adaptive_thinking !== undefined) setAnthropicBehavior({ adaptiveThinkingModels: mc.adaptive_thinking })
+      if (mc.extended_cache_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlModels: mc.extended_cache_ttl })
       if (mc.tool_search_overrides !== undefined)
         setAnthropicBehavior({
           toolSearchOverrides: normalizeModelKeyedRecord(mc.tool_search_overrides, "anthropic.model_capabilities.tool_search_overrides"),
@@ -550,6 +551,12 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
     if (a.cache_control !== undefined) {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
+    }
+    if (a.extended_cache_ttl) {
+      const ect = a.extended_cache_ttl
+      if (ect.enabled !== undefined) setAnthropicBehavior({ extendedCacheTtlEnabled: ect.enabled })
+      if (ect.tools_system_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlToolsSystem: ect.tools_system_ttl })
+      if (ect.messages_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlMessages: ect.messages_ttl })
     }
     if (a.tool_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_non_deferred })
     if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })

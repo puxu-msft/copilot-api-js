@@ -326,6 +326,18 @@ export const AnthropicConfigSchema = z
     context_editing_keep_thinking: nullableNonnegativeInt(),
     tool_search: nullableBoolean(),
     cache_control: nullableEnum(["disabled", "passthrough", "sanitize", "proxied"] as const),
+    // Extended prompt-cache TTL (extended-cache-ttl-2025-04-11). Upgrades the cache_control breakpoints
+    // the proxy WRITES (cache_control: proxied/sanitize) from the default 5m to 1h. `enabled` is the
+    // master switch (default off). `tools_system_ttl` / `messages_ttl` pick 5m|1h per layer; messages
+    // is clamped ≤ tools_system (Anthropic: longer TTLs must appear earlier in tools→system→messages).
+    extended_cache_ttl: z
+      .object({
+        enabled: nullableBoolean(),
+        tools_system_ttl: nullableEnum(["5m", "1h"] as const),
+        messages_ttl: nullableEnum(["5m", "1h"] as const),
+      })
+      .strict()
+      .optional(),
     tool_non_deferred: nullableNonemptyStringArray(),
     api_key: nullableString(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
@@ -462,6 +474,7 @@ export const AnthropicConfigSchema = z
         context_editing: nullableNonemptyStringArray(),
         interleaved_thinking: nullableNonemptyStringArray(),
         adaptive_thinking: nullableNonemptyStringArray(),
+        extended_cache_ttl: nullableNonemptyStringArray(),
         tool_search_overrides: z.record(z.string(), z.boolean()).optional(),
       })
       .strict()

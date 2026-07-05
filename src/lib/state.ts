@@ -28,6 +28,13 @@ export type ContextEditingMode = "off" | "clear-thinking" | "clear-tooluse" | "c
 export type CacheControlMode = "disabled" | "passthrough" | "sanitize" | "proxied"
 
 /**
+ * Per-layer prompt-cache TTL for the extended-cache-ttl feature. `"5m"` is Anthropic's default
+ * (emitted as a bare `{type:"ephemeral"}`); `"1h"` emits `{type:"ephemeral", ttl:"1h"}` and requires
+ * the `extended-cache-ttl-2025-04-11` beta. Mirrors GHC's per-layer 5m-vs-1h choice.
+ */
+export type CacheTtl = "5m" | "1h"
+
+/**
  * Policy for handling Claude Code "Warmup" requests.
  *
  * - `"allow"`  — pass through normally (default)
@@ -440,6 +447,20 @@ export interface State {
    * Default: "passthrough".
    */
   readonly cacheControlMode: CacheControlMode
+  /**
+   * Extended prompt-cache TTL (`extended-cache-ttl-2025-04-11`). Mirrors GHC: upgrade the
+   * cache_control breakpoints the proxy WRITES (proxied/sanitize modes) from the default 5m to 1h.
+   * Gated by `extendedCacheTtlEnabled` (master switch, default off) AND model support
+   * (`extendedCacheTtlModels`, mirrors GHC modelSupportsExtendedCacheTtl) AND an agent-style request
+   * (assistant message present — the closest analog to GHC's Agent-location gate). `toolsSystemTtl`
+   * applies to tool + system breakpoints, `messagesTtl` to rolling message breakpoints; `messagesTtl`
+   * is clamped ≤ `toolsSystemTtl` (Anthropic requires longer TTLs earlier in the tools→system→messages
+   * prefix order). The beta header is emitted iff a 1h ttl was actually written (mirrors the body).
+   */
+  readonly extendedCacheTtlEnabled: boolean
+  readonly extendedCacheTtlToolsSystem: CacheTtl
+  readonly extendedCacheTtlMessages: CacheTtl
+  readonly extendedCacheTtlModels: ReadonlyArray<string>
   /** Additional tool names that should never be deferred (merged with built-in list) */
   readonly nonDeferredTools: ReadonlyArray<string>
 
@@ -943,6 +964,10 @@ export function setAnthropicBehavior(
       | "contextEditingKeepThinking"
       | "toolSearchEnabled"
       | "cacheControlMode"
+      | "extendedCacheTtlEnabled"
+      | "extendedCacheTtlToolsSystem"
+      | "extendedCacheTtlMessages"
+      | "extendedCacheTtlModels"
       | "nonDeferredTools"
       | "rewriteSystemReminders"
       | "systemPromptOverrides"
@@ -1149,6 +1174,21 @@ export const CONFIG_MANAGED_DEFAULTS = {
   contextEditingKeepThinking: 1,
   toolSearchEnabled: true,
   cacheControlMode: "passthrough" as CacheControlMode,
+  // Extended prompt-cache TTL (mirrors GHC extendedTtl / extendedTtlMessages). Off by default; when
+  // enabled, tools/system default to 1h and messages to 5m (GHC's parent-on / sub-toggle-off shape).
+  extendedCacheTtlEnabled: false,
+  extendedCacheTtlToolsSystem: "1h" as CacheTtl,
+  extendedCacheTtlMessages: "5m" as CacheTtl,
+  extendedCacheTtlModels: [
+    "claude-fable-5",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+  ] as ReadonlyArray<string>,
   nonDeferredTools: [] as ReadonlyArray<string>,
   rewriteSystemReminders: false as const,
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
@@ -1237,6 +1277,10 @@ export function resetConfigManagedState(): void {
     contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
     toolSearchEnabled: CONFIG_MANAGED_DEFAULTS.toolSearchEnabled,
     cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
+    extendedCacheTtlEnabled: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlEnabled,
+    extendedCacheTtlToolsSystem: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlToolsSystem,
+    extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
+    extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
     nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
     rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
@@ -1325,6 +1369,10 @@ const mutableState: MutableState = {
   contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
   toolSearchEnabled: CONFIG_MANAGED_DEFAULTS.toolSearchEnabled,
   cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
+  extendedCacheTtlEnabled: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlEnabled,
+  extendedCacheTtlToolsSystem: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlToolsSystem,
+  extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
+  extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
   stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,

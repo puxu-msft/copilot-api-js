@@ -249,6 +249,17 @@ anthropic:
       - claude-opus-4-6
       - claude-opus-4-7
       - claude-opus-4-8
+    # extended-cache-ttl-2025-04-11 support (1h prompt cache). Mirrors GHC — NARROWER than context/memory
+    # (no bare sonnet-4 / opus-4 / opus-4.1). / extended-cache-ttl-2025-04-11 支持（1h prompt cache）。镜像 GHC，比 context/memory 更窄。
+    extended_cache_ttl:
+      - claude-fable-5
+      - claude-opus-4-5
+      - claude-opus-4-6
+      - claude-opus-4-7
+      - claude-opus-4-8
+      - claude-sonnet-4-5
+      - claude-sonnet-4-6
+      - claude-haiku-4-5
     # Native server-side tool_search is DEFAULT-ALLOW for Claude ≥4.5 (Haiku + pre-4.5 denied), mirroring
     # GHC — new Claude models are picked up automatically, no list to maintain. This map holds per-model
     # OVERRIDES only: keys are model-name substrings ("*" = wildcard), value true=force-on / false=force-off.
@@ -389,6 +400,23 @@ anthropic:
   #                terminal assistant) caching the conversation, then tools/system on spare slots. / 终态 assistant）缓存对话，再用余位给 tools/system
   #                Use for clients that don't send their own cache_control. / 适用于不自带 cache_control 的客户端
   cache_control: passthrough
+
+  # Extended prompt-cache TTL (extended-cache-ttl-2025-04-11): upgrade the cache_control breakpoints the
+  # proxy WRITES from Anthropic's default 5m to 1h. Only takes effect when the proxy owns breakpoints —
+  # i.e. cache_control: proxied (injects) or sanitize (upgrades existing client breakpoints); passthrough
+  # / disabled ignore it. Also gated by model support (model_capabilities.extended_cache_ttl above) and an
+  # agent-style request (an assistant message is present — mirrors GHC's Agent-location gate; first-turn
+  # calls get no 1h). The extended-cache-ttl-2025-04-11 beta header is sent iff a 1h ttl actually lands in
+  # the body. tools_system_ttl / messages_ttl pick 5m|1h per layer; messages is clamped ≤ tools_system
+  # (Anthropic requires longer TTLs earlier in the tools→system→messages prefix order).
+  # 扩展 prompt-cache TTL：把代理写入的 cache_control 断点从默认 5m 提到 1h。仅当代理自己写断点时生效——即 cache_control:
+  # proxied（注入）或 sanitize（升级既有客户端断点）；passthrough / disabled 忽略。还受模型支持（上方 model_capabilities.
+  # extended_cache_ttl）与 agent 式请求（存在 assistant 消息，镜像 GHC Agent 门；首轮无 1h）门控。beta 头当且仅当 body 真
+  # 落了 1h ttl 才发。tools_system_ttl / messages_ttl 逐层选 5m|1h；messages 夹到 ≤ tools_system（Anthropic 要求长 TTL 在前）。
+  extended_cache_ttl:
+    enabled: false
+    tools_system_ttl: 1h
+    messages_ttl: 5m
 
   # Policy for Claude Code "Warmup" requests. / Claude Code "Warmup" 请求处理策略。
   # Claude Code sends warmup requests on session start to pre-fill the prompt cache. / Claude Code 在会话开始时发 warmup 请求预热 prompt 缓存。
