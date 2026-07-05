@@ -304,6 +304,11 @@ describe("ModelDetail", () => {
     // Wrap: from the first tab ArrowUp loops to the last (Radix loop).
     await user.keyboard("{ArrowUp}{ArrowUp}")
     expect(rawJson.getAttribute("aria-selected")).toBe("true")
+    // Home/End jump to the ends (Radix vertical roving).
+    await user.keyboard("{Home}")
+    expect(overview.getAttribute("aria-selected")).toBe("true")
+    await user.keyboard("{End}")
+    expect(rawJson.getAttribute("aria-selected")).toBe("true")
     // Vertical tablist does NOT own Left/Right — active tab unchanged.
     await user.keyboard("{ArrowRight}{ArrowLeft}")
     expect(rawJson.getAttribute("aria-selected")).toBe("true")
