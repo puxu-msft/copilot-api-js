@@ -1,5 +1,6 @@
 import {
   //
+  fireEvent,
   render,
   screen,
 } from "@testing-library/react"
@@ -24,6 +25,23 @@ describe("ContentRenderer", () => {
     )
     expect(screen.getByText(/aaa/)).toBeDefined()
     expect(screen.getByText(/Read/)).toBeDefined()
+  })
+  it("gives every block a JSON affordance", () => {
+    render(
+      <ContentRenderer
+        blocks={[
+          { type: "text", text: "aaa" },
+          { type: "tool_use", id: "x", name: "Read", input: {} },
+        ]}
+      />,
+    )
+    // One "View block JSON" button per block.
+    expect(screen.getAllByLabelText("View block JSON")).toHaveLength(2)
+  })
+  it("opens the raw JSON modal for a block on click", () => {
+    render(<ContentRenderer blocks={[{ type: "tool_use", id: "x", name: "Read", input: {} }]} />)
+    fireEvent.click(screen.getByLabelText("View block JSON"))
+    expect(screen.getByText("tool_use JSON")).toBeDefined()
   })
   it("unknown type falls into GenericBlock", () => {
     render(<ContentRenderer blocks={[{ type: "weird_thing" } as never]} />)
