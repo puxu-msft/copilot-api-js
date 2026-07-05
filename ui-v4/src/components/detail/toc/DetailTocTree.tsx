@@ -1,4 +1,8 @@
-import { useState } from "react"
+import {
+  //
+  useMemo,
+  useState,
+} from "react"
 
 import type { TocNode } from "@/lib/content/toc"
 
@@ -6,6 +10,10 @@ interface DetailTocTreeProps {
   nodes: Array<TocNode>
   onSelect: (anchorId: string) => void
   activeAnchor?: string
+  /** Start with all parent nodes expanded (default: collapsed — message-level first). */
+  defaultExpanded?: boolean
+  /** Show a header button that expands/collapses all parents at once. */
+  showExpandAllToggle?: boolean
 }
 
 /**
@@ -126,8 +134,9 @@ function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: T
  * (the active row instead gets a left accent bar + soft amber tint). The label
  * gets a `title` so truncated rows reveal their full text on hover.
  */
-export function DetailTocTree({ nodes, onSelect, activeAnchor }: DetailTocTreeProps) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collectParentAnchors(nodes)))
+export function DetailTocTree({ nodes, onSelect, activeAnchor, defaultExpanded = false, showExpandAllToggle = false }: DetailTocTreeProps) {
+  const allParents = useMemo(() => collectParentAnchors(nodes), [nodes])
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => (defaultExpanded ? new Set<string>() : new Set(allParents)))
 
   function toggle(anchorId: string): void {
     setCollapsed((prev) => {
@@ -141,8 +150,25 @@ export function DetailTocTree({ nodes, onSelect, activeAnchor }: DetailTocTreePr
     })
   }
 
+  // "All expanded" means no parent is collapsed; the toggle flips between fully
+  // expanded and fully collapsed (a partially-collapsed tree reads as "not all
+  // expanded", so the button offers to expand all).
+  const allExpanded = collapsed.size === 0
+  function toggleAll(): void {
+    setCollapsed(allExpanded ? new Set(allParents) : new Set<string>())
+  }
+
   return (
     <div className="flex flex-col">
+      {showExpandAllToggle && allParents.length > 0 ?
+        <button
+          type="button"
+          onClick={toggleAll}
+          className="mono mb-0.5 self-start px-1 text-[11px] text-[var(--color-muted)] hover:text-[var(--color-text)]"
+        >
+          {allExpanded ? "− 全部收起" : "+ 全部展开"}
+        </button>
+      : null}
       {nodes.map((node, i) => (
         <TocRow
           key={node.anchorId}

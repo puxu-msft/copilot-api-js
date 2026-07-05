@@ -29,7 +29,7 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
   const [view, setView] = useState<ConvoView>("rendered")
   const messages = entry.inboundRequest.messages ?? []
   const { scrollTo, activeAnchor } = useAnchorScroll()
-  const nodes = buildMessageTocNodes(messages, ANCHOR_PREFIX)
+  const nodes = useMemo(() => buildMessageTocNodes(messages, ANCHOR_PREFIX), [messages])
   const pairing = useMemo(() => buildToolPairing(messages, ANCHOR_PREFIX), [messages])
 
   return (
@@ -37,9 +37,14 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
       {view === "rendered" && messages.length > 0 ?
         <TocSidebar>
           <DetailTocTree
+            // Reset expand/collapse state per request — otherwise the prior entry's
+            // collapsed anchors leak in and defeat the default-expanded intent.
+            key={entry.id}
             nodes={nodes}
             onSelect={scrollTo}
             activeAnchor={activeAnchor}
+            defaultExpanded
+            showExpandAllToggle
           />
         </TocSidebar>
       : null}

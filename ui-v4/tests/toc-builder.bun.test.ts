@@ -110,6 +110,78 @@ describe("buildMessageTocNodes", () => {
     expect(nodes[0].children![0].anchorId).toBe("pfx-msg-0-blk-0")
     expect(nodes[1].children![0].anchorId).toBe("pfx-msg-1-blk-0")
   })
+
+  test("tool_result child resolves the paired tool_use name (call in an earlier message)", () => {
+    // Arrange: assistant calls Bash, user turn returns its result.
+    const messages: Array<MessageContent> = [
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+    ]
+
+    // Act
+    const nodes = buildMessageTocNodes(messages, "pfx")
+
+    // Assert: the result block names the tool it answers.
+    expect(nodes[1].children![0].kind).toBe("tool_result")
+    expect(nodes[1].children![0].label).toBe("tool_result: Bash")
+  })
+
+  test("unpaired tool_result (no matching tool_use) stays bare", () => {
+    // Arrange
+    const messages: Array<MessageContent> = [{ role: "user", content: [{ type: "tool_result", tool_use_id: "orphan", content: "ok" }] }]
+
+    // Act / Assert
+    expect(buildMessageTocNodes(messages, "pfx")[0].children![0].label).toBe("tool_result")
+  })
+
+  test("a user turn of only tool_results labels the count (plural)", () => {
+    // Arrange
+    const messages: Array<MessageContent> = [
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "a", content: "r1" },
+          { type: "tool_result", tool_use_id: "b", content: "r2" },
+        ],
+      },
+    ]
+
+    // Act / Assert
+    expect(buildMessageTocNodes(messages, "pfx")[0].label).toBe("user: 2 tool_results")
+  })
+
+  test("a single tool_result uses the singular label", () => {
+    // Arrange
+    const messages: Array<MessageContent> = [{ role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "r1" }] }]
+
+    // Act / Assert
+    expect(buildMessageTocNodes(messages, "pfx")[0].label).toBe("user: 1 tool_result")
+  })
+
+  test("a message with text + tool_results prefers the text preview over the count", () => {
+    // Arrange
+    const messages: Array<MessageContent> = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look at this" },
+          { type: "tool_result", tool_use_id: "a", content: "r1" },
+        ],
+      },
+    ]
+
+    // Act / Assert
+    expect(buildMessageTocNodes(messages, "pfx")[0].label).toBe("user: look at this")
+  })
+
+  test("an OpenAI role:'tool' response shows its output preview, not a tool_result count", () => {
+    // normalize turns a role:"tool" message into a single tool_result block, but its
+    // string content is a useful preview — intentionally shown over "1 tool_result".
+    const messages: Array<MessageContent> = [{ role: "tool", tool_call_id: "c1", content: "command output here" } as unknown as MessageContent]
+
+    // Act / Assert
+    expect(buildMessageTocNodes(messages, "pfx")[0].label).toBe("tool: command output here")
+  })
 })
 
 describe("messagePreview", () => {
@@ -179,5 +251,16 @@ describe("blockLabel", () => {
 
     // Act / Assert
     expect(blockLabel({ type: "text", text })).toBe(`text: ${"y".repeat(24)}…`)
+  })
+
+  test("tool_result resolves a paired tool name from the map, else stays bare", () => {
+    // Arrange
+    const names = new Map([["x", "Read"]])
+
+    // Act / Assert
+    expect(blockLabel({ type: "tool_result", tool_use_id: "x", content: "ok" }, names)).toBe("tool_result: Read")
+    // Unresolved id (or no map) → bare.
+    expect(blockLabel({ type: "tool_result", tool_use_id: "y", content: "ok" }, names)).toBe("tool_result")
+    expect(blockLabel({ type: "tool_result", tool_use_id: "x", content: "ok" })).toBe("tool_result")
   })
 })

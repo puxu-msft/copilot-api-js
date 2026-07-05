@@ -51,6 +51,54 @@ describe("DetailTocTree", () => {
     expect(screen.queryByText("text: hello")).toBeNull()
   })
 
+  it("defaultExpanded reveals block children on first render", () => {
+    render(
+      <DetailTocTree
+        nodes={tree}
+        onSelect={() => {}}
+        defaultExpanded
+      />,
+    )
+
+    // All children visible up front, no manual expansion.
+    expect(screen.getByText("tool_use: Edit")).toBeDefined()
+    expect(screen.getByText("text: hello")).toBeDefined()
+    expect(screen.getByText("text: hi")).toBeDefined()
+  })
+
+  it("showExpandAllToggle offers a header button toggling all parents at once", () => {
+    render(
+      <DetailTocTree
+        nodes={tree}
+        onSelect={() => {}}
+        defaultExpanded
+        showExpandAllToggle
+      />,
+    )
+
+    // Expanded initially → children visible, button offers collapse-all.
+    expect(screen.getByText("text: hello")).toBeDefined()
+    fireEvent.click(screen.getByText(/全部收起/))
+    // All collapsed → children gone, button flips to expand-all.
+    expect(screen.queryByText("text: hello")).toBeNull()
+    expect(screen.queryByText("tool_use: Edit")).toBeNull()
+    // Expand-all restores every child in one click.
+    fireEvent.click(screen.getByText(/全部展开/))
+    expect(screen.getByText("text: hello")).toBeDefined()
+    expect(screen.getByText("tool_use: Edit")).toBeDefined()
+  })
+
+  it("has no expand-all button by default (Stages/System keep the plain tree)", () => {
+    render(
+      <DetailTocTree
+        nodes={tree}
+        onSelect={() => {}}
+      />,
+    )
+    expect(screen.queryByText(/全部展开/)).toBeNull()
+    expect(screen.queryByText(/全部收起/)).toBeNull()
+  })
+
   it("clicking a node's label calls onSelect with its anchorId", () => {
     const onSelect = vi.fn()
     render(
