@@ -12,6 +12,7 @@ defineProps<{
 }>()
 defineEmits<{
   openRawJson: []
+  exportCsv: []
 }>()
 </script>
 
@@ -26,6 +27,14 @@ defineEmits<{
 
     <div class="toolbar-actions">
       <ModelsColumnMenu :columns="columns" />
+      <v-btn
+        variant="outlined"
+        size="small"
+        prepend-icon="mdi-download"
+        @click="$emit('exportCsv')"
+      >
+        CSV
+      </v-btn>
       <v-btn
         variant="outlined"
         class="raw-json-button"

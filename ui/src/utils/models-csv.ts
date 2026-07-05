@@ -1,5 +1,6 @@
 import type { DerivedCapabilities } from "~backend/lib/models/capabilities"
 import type { Model } from "~backend/lib/models/client"
+
 import type { JoinedModelTelemetry } from "@/composables/model-telemetry-join"
 
 const HEADERS = [
@@ -27,7 +28,7 @@ function esc(value: string): string {
   return /[",\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value
 }
 
-const s = (value: unknown): string => (value == null ? "" : String(value))
+const s = (value: string | number | boolean | undefined): string => (value === undefined ? "" : String(value))
 
 /** Serialize the given models (typically the filtered view) to a flat CSV string.
  *  Telemetry columns come from the same normalized join used by the table. */

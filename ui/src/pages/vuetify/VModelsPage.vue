@@ -24,6 +24,8 @@ import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
 import { useModelColumns } from "@/composables/useModelColumns"
 import { useModelDetail } from "@/composables/useModelDetail"
 import { useModelsCatalog } from "@/composables/useModelsCatalog"
+import { triggerDownload } from "@/utils/download"
+import { modelsToCsv } from "@/utils/models-csv"
 
 const {
   billingBounds,
@@ -110,6 +112,11 @@ const activeFilterCount = computed(() => {
 function copyModelsJson(): void {
   void copy(JSON.stringify(rawApiResponse.value, null, 2), "Models JSON copied")
 }
+
+function exportCsv(): void {
+  const csv = modelsToCsv(filteredModels.value, caps, detail.telemetryFor)
+  triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8" }), `models-${new Date().toISOString().slice(0, 10)}.csv`)
+}
 </script>
 
 <template>
@@ -123,6 +130,7 @@ function copyModelsJson(): void {
           :endpoint-count="endpointOptions.length"
           :columns="columns"
           @open-raw-json="isRawJsonOpen = true"
+          @export-csv="exportCsv"
         />
 
         <v-sheet

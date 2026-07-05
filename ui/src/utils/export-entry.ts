@@ -2,16 +2,7 @@ import type { HistoryEntry } from "@/types"
 
 import { api } from "@/api/http"
 import { useToast } from "@/composables/useToast"
-
-/** Trigger a browser download of `blob` under `filename` via a transient anchor. */
-function triggerDownload(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
+import { triggerDownload } from "@/utils/download"
 
 /**
  * Export a HistoryEntry as a zstd-compressed `.json.zst` download.
