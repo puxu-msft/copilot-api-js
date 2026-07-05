@@ -1,49 +1,137 @@
-import { useState } from "react"
+import {
+  //
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
 
+import { ModelsColumnMenu } from "@/components/models/ModelsColumnMenu"
+import { ModelsFilterBar } from "@/components/models/ModelsFilterBar"
+import { ModelsTable } from "@/components/models/ModelsTable"
 import { useModels } from "@/hooks/useModels"
+import { useModelTelemetry } from "@/hooks/useModelTelemetry"
+import {
+  //
+  DEFAULT_COLUMN_VISIBILITY,
+  mergeColumnVisibility,
+  type ModelColumnKey,
+  type ModelColumnVisibility,
+} from "@/lib/model-columns"
+import {
+  //
+  EMPTY_FILTERS,
+  filterModels,
+  sortModels,
+  type ModelFilters,
+  type ModelSortKey,
+} from "@/lib/model-filters"
+import {
+  //
+  buildModelTelemetryIndex,
+  telemetryForId,
+} from "@/lib/model-telemetry"
+
+const COLUMNS_KEY = "copilot-api-ui-v4-models-columns"
+
+function loadColumns(): ModelColumnVisibility {
+  try {
+    return mergeColumnVisibility(JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? "null") as Partial<ModelColumnVisibility> | null)
+  } catch {
+    return { ...DEFAULT_COLUMN_VISIBILITY }
+  }
+}
 
 export function ModelsPage() {
   const { data, isLoading } = useModels()
+  const { data: telemetry } = useModelTelemetry()
   const [raw, setRaw] = useState(false)
+  const [columns, setColumns] = useState<ModelColumnVisibility>(loadColumns)
+  const [filters, setFilters] = useState<ModelFilters>(EMPTY_FILTERS)
+  const [sort, setSort] = useState<{ key: ModelSortKey; desc: boolean }>({ key: "id", desc: false })
+
+  useEffect(() => {
+    localStorage.setItem(COLUMNS_KEY, JSON.stringify(columns))
+  }, [columns])
+
+  const models = useMemo(() => data?.data ?? [], [data])
+
+  const index = useMemo(() => buildModelTelemetryIndex(telemetry ?? null, models), [telemetry, models])
+  const telemetryFor = useMemo(() => (id: string) => telemetryForId(index, id), [index])
+  const hasTelemetry = useMemo(() => (id: string) => telemetryForId(index, id) !== null, [index])
+  const maxRequests7d = useMemo(() => {
+    let max = 1
+    for (const j of index.byId.values()) max = Math.max(max, j.last7d?.requestCount ?? 0)
+    return max
+  }, [index])
+
+  const options = useMemo(
+    () => ({
+      vendors: [...new Set(models.map((m) => m.vendor).filter(Boolean))].sort(),
+      types: [...new Set(models.map((m) => m.capabilities?.type).filter((v): v is string => typeof v === "string" && v.length > 0))].sort(),
+      restrictedTo: [...new Set(models.flatMap((m) => m.billing?.restricted_to ?? []))].sort(),
+      policyStates: [...new Set(models.map((m) => m.policy?.state).filter((v): v is string => typeof v === "string" && v.length > 0))].sort(),
+    }),
+    [models],
+  )
+
+  const visible = useMemo(() => {
+    const filtered = filterModels(models, filters, hasTelemetry)
+    return sortModels(filtered, sort.key, sort.desc, (id) => telemetryFor(id)?.last7d?.requestCount ?? 0)
+  }, [models, filters, hasTelemetry, sort, telemetryFor])
+
+  const onChange = (patch: Partial<ModelFilters>) => setFilters((f) => ({ ...f, ...patch }))
+  const onSort = (key: ModelSortKey) =>
+    setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: key === "context" || key === "output" || key === "billing" || key === "requests7d" }))
+  const toggleColumn = (key: ModelColumnKey) => setColumns((c) => ({ ...c, [key]: !c[key] }))
+  const resetColumns = () => setColumns({ ...DEFAULT_COLUMN_VISIBILITY })
+
   if (isLoading) return <div className="mono p-4 text-[#888]">loading…</div>
-  const models = data?.data ?? []
+
   return (
-    <div className="mono p-2 text-[13px]">
-      <div className="mb-2 flex items-center gap-2">
-        <div className="text-[11px] uppercase tracking-wider text-[var(--color-muted)]">Models · {models.length}</div>
-        <button
-          type="button"
-          className="ml-auto text-[12px] text-[var(--color-primary)]"
-          onClick={() => setRaw((v) => !v)}
-        >
-          {raw ? "table" : "raw JSON"}
-        </button>
+    <div className="mono flex min-h-0 flex-1 flex-col text-[13px]">
+      <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2 py-1">
+        <div className="text-[11px] uppercase tracking-wider text-[var(--color-muted)]">
+          Models · {visible.length}/{models.length}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <ModelsColumnMenu
+            columns={columns}
+            onToggle={toggleColumn}
+            onReset={resetColumns}
+          />
+          <button
+            type="button"
+            className="text-[12px] text-[var(--color-primary)]"
+            onClick={() => setRaw((v) => !v)}
+          >
+            {raw ? "table" : "raw JSON"}
+          </button>
+        </div>
       </div>
+
       {raw ?
-        <pre className="whitespace-pre-wrap break-all text-[12px] text-[#aaa]">{JSON.stringify(models, null, 2)}</pre>
-      : <table className="w-full text-[12px]">
-          <thead>
-            <tr className="text-[11px] uppercase text-[var(--color-muted)]">
-              <th className="px-2 py-1 text-left">id</th>
-              <th className="px-2 py-1 text-left">name</th>
-              <th className="px-2 py-1 text-left">vendor</th>
-              <th className="px-2 py-1 text-left">version</th>
-            </tr>
-          </thead>
-          <tbody>
-            {models.map((m, i) => (
-              <tr
-                key={m.id ?? i}
-                className="border-b border-[#1e1e24]"
-              >
-                <td className="px-2 py-1 text-[var(--color-primary)]">{m.id ?? "—"}</td>
-                <td className="px-2 py-1 text-[#cdb]">{m.name ?? "—"}</td>
-                <td className="px-2 py-1 text-[#aaa]">{m.vendor ?? "—"}</td>
-                <td className="px-2 py-1 text-[#888]">{m.version ?? "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all p-2 text-[12px] text-[#aaa]">{JSON.stringify(models, null, 2)}</pre>
+      : <>
+          <ModelsFilterBar
+            filters={filters}
+            onChange={onChange}
+            options={options}
+          />
+          <div className="min-h-0 flex-1 overflow-auto">
+            {visible.length === 0 ?
+              <div className="p-4 text-[#888]">No models match the current filters.</div>
+            : <ModelsTable
+                models={visible}
+                columns={columns}
+                telemetryFor={telemetryFor}
+                maxRequests7d={maxRequests7d}
+                sortKey={sort.key}
+                sortDesc={sort.desc}
+                onSort={onSort}
+              />
+            }
+          </div>
+        </>
       }
     </div>
   )
