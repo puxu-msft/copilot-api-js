@@ -19,7 +19,7 @@ description: 当写/调 copilot-api-js 后端测试遇隔离问题时使用—�
 ## 铁律
 
 - 用 DI/fetch-mock，**不用 `mock.module`**（进程级无 teardown）。
-- fs I/O 用注入临时目录，**绝不写真实 $HOME/~/.claude/~/.local/share/copilot-api**。
+- fs I/O 用注入临时目录，**绝不写真实 $HOME/~/.claude/~/.local/share/copilot-api**。**Bun `os.homedir()` 忽略 `process.env.HOME` mutation**（运行时返回真实 `/home/xp`）——只能 DI `options.home`/paths 或 preload 沙箱隔离，绝不靠 env mutation、绝不把 `mock.module("node:os")` 当接缝（"修复/移除" mock 前先问它是否还承担 fs/网络封闭）。两次真实事故：把 `mock.module("node:os")` 换成 `process.env.HOME=tempDir` → `writeClaudeCodeConfig()` 覆盖真实 `~/.claude.json`；13 个 negotiation 测试里 9 个没沙箱 `PATHS.NEGOTIATION_STATES`、`resetAnthropicFeatureNegotiationForTesting()` 把空 map 持久化 → 每次 `bun test` 擦盖真实 `negotiation-states.json`、用户重启重学 beta（诊断靠 history 探针 + 未沙箱测试看真实文件 mtime，见 skill `empirical-verification`「记录消失」；paper-analysis 曾误判"无问题"被实测推翻）。**任何"test reset/teardown 助手持久化到磁盘"都是危险信号**：它写 `PATHS.X`、未沙箱即真实文件。
 - 新增 module-global 单例 → 提供 `reset*ForTests` 并登记 `RESETTERS`，否则 `resetters-complete.unit.test.ts` 守卫 fail。
 
 ## 地板防线

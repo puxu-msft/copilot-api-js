@@ -52,11 +52,28 @@ sqlite3 history.db "SELECT id,status FROM entries_v2 WHERE session_id=? ORDER BY
 
 reaper 按 status 分桶（success/failure 各上限），active+pinned 行豁免、不计名额。读取 in-flight 优先（`getInFlight ?? getEntryById`），active 请求恒读内存全量。详见 docs/history.md。
 
-## 迁移
+## 迁移（Umzug hybrid forward-runner）
 
-001+ 前向 DDL 进 `migrations/`，须幂等（`PRAGMA table_info` 探测）；openDatabase 的 inline reconcile 是 000 地板不进账本。bun:sqlite `db.transaction` 回调必须同步（跨 await 不回滚）。
+001+ 前向 DDL 进 `migrations/`，须幂等（`PRAGMA table_info` 探测）；openDatabase 的 inline reconcile 是 000 地板不进账本。bun:sqlite `db.transaction` 回调必须同步（跨 await 不回滚）。写/改后台 backfill 见 skill `history-backfill`。
 
-写/改后台 backfill（建索引、重算派生列、破坏性变换已存字段）见 skill `history-backfill`。
+把散落在 `openDatabase` 的命令式 schema reconcile **升级为一等迁移框架**（2026-06-28 采 Umzug、弃 drizzle-kit）时的可复用方法论：
+
+- **集成用 hybrid，别动既有地板。** 想把 `initHistory`/`openDatabase` 改 async + 重构成 Umzug 跑全部——实测不可行：async ripple ~20+ 文件（12+ 测试调用者 + bootstrap 扇出）+ chicken-egg（Umzug 在建账本表前就调 `storage.executed()` 读账本，账本表此刻还不存在）。正解：既有幂等 reconcile（`SCHEMA_SQL`+`migrateEntriesColumns`+bespoke drop）留作 conceptual **000 地板、不进账本**；新增独立 async `applyForwardMigrations` 只追 **001+ 前向 DDL**，在 `initHistory(true)` 后、`startServer` 前跑一句。ripple 近零（只一处接入）。
+- **storage 双 guard 使 runner 与开库顺序解耦。** `HistoryMetaStorage` 构造即 `CREATE TABLE IF NOT EXISTS history_meta` + `executed()` 表缺返 `[]`——即便无地板也自足、可隔离测（裸 `:memory:`）。账本落既有 KV 表（`history_meta(schema_migrations)`，与 `search_index_version` 同表）= 统一账本，非另起 migrations 表。
+- **spike 须复现真实接线、别预建被测对象。** bun spike 的 `CREATE TABLE history_meta` 预建掩盖了 chicken-egg；node spike 故意不预建→先用无 guard storage **复现** `no such table` bug→再证 guard 规避。呼应 skill `empirical-verification`：别信"应该能跑"，探针要忠实复制生产顺序。
+- **真实生产模块的跨-runtime e2e 需 bundle。** 验 node:sqlite 腿要跑**真实模块**（非手搓 storage）：Node strict ESM 拒 src 树内无扩展名相对 import（`./index`），经 `bun build --target node` 打 bundle（同 tsdown production 产物）后真 Node 跑才过。`bun test` 只覆盖 Bun 腿，Node 腿（driver `nodeFactory` 手搓 BEGIN/COMMIT）必须单独实测。
+- **失败策略二分：schema-硬阻断 vs 数据-never-throw。** DDL 失败 rethrow→`process.exit(1)`（半迁移 schema 比不启动危险），与数据层 backfill 的 never-throw 相反（缺派生列可恢复）。单写者假设（Umzug `FileLocker` opt-in、未接；001+ DDL 须幂等）文档化即可。
+- **partial-DDL wedge（对抗 review 抓到、两 runtime 实测确认的真坑）。** Umzug **不把 `up` 包事务**（grep umzug.js 零 BEGIN/COMMIT）且**仅在 `up` resolve 后才记账**；SQLite 未显式开事务时**每条 DDL 自动 commit**。故多语句迁移中途抛→前缀语句已 commit 但迁移**未记账**→下次重启从头重跑撞「table already exists」**永久卡死每次启动**。"硬阻断 rethrow"只挡"在半迁移 schema 上服务"，**挡不住**这个 wedge。修复在框架层：`sqlMigration(name, body)` 把 body 包进 driver `transaction()`（SQLite 支持事务化 DDL，**bun native `.transaction` 与 node:sqlite 手搓 BEGIN/COMMIT/ROLLBACK 两 runtime 实测 rollback 一致**）使多语句 all-or-nothing、失败可重试。非事务型（non-transactional PRAGMA/长数据 backfill）迁移则须逐语句 re-entrant（`IF NOT EXISTS`/`table_info` 探测）。教训："idempotent up"不够，须"**partial-application 后可重入**"；给安全构造 primitive（sqlMigration）+ 配 rollback 回归测试，比文档叮嘱作者手包事务可靠。
+- **选型（battle-tested > hand-rolled）：** driver-无关纯 JS 的 Umzug 胜 drizzle-kit——后者稳定版无 node:sqlite driver（逼整个 drizzle-orm 降 beta）、autogenerate 丢部分索引 `WHERE`（reaper 依赖 `idx_..._active WHERE status IN(...)`）、裂双账本。详见 ADR `docs/decisions/2026-07-05-dependency-selection-bun-first.md`。落地权威态见 `docs/spec/migration-framework-umzug.md`（LANDED）。异步持久化不变量见 skill `persistence-async-invariants`。
+
+## 内容寻址归一化（search_index 去重）
+
+把结构化数据（消息）做内容寻址去重（git-blob 式 hash→存一次，落地 `src/lib/history/normalize-message.ts`）时，归一化投影的三条方法论：
+
+- **① 哈希投影必须 config-无关、确定、稳定，且哈希输入 == 存储搜索文本（单一投影）。** 同消息恒同输出，与运行时 config 无关——**绝不**复用 config 驱动的清洗函数（`removeSystemReminderTags` 读 `state.rewriteSystemReminders`、默认 no-op → 投影随 config 变 + 跨运行不稳）。canonical = 递归剥易变 key（`cache_control`，Claude Code 每轮前移 ephemeral 断点的唯一易变源——实测两连续请求同消息仅此一处差、剥后字节相等）+ sorted-key JSON（key 序无关）。
+- **② 剥注入样板用 own-line 边界锚定正则，绝不用全局 `<tag>.*</tag>`。** 真实 transcript 含**合法 inline 字面提及**同名标签（文档讨论 `<system-reminder>`/`<ide_opened_file>`——实测 9 处 inline vs 1 处结构注入）。全局正则会误删真内容。正解：`(?:^|\n)[ \t]*<tag>...lazy...</tag>[ \t\r]*(?=\n|$)`——只匹配自起一行+自终一行的结构块，inline backtick 提及（行中、无 own-line 闭合）天然不匹配。**坑**：边界要容 `\r`（CRLF transcript 否则漏剥→该块进哈希→每轮 re-hash）。
+- **③ 易变子串清单靠真实数据实测枚举，不靠想象。** 从运行中后端 `/history/api/entries/:id` 拉真实消息（skill `empirical-verification`），取**同 session 连续两请求**对比哪些字段每轮变（cache_control 位置/ide_*/cwd/turn-counter）。漏一种→该类消息每轮 re-hash、去重退化、悄悄 bloat。安全网=dedup-ratio tripwire（见 skill `history-backfill`）。实测点须用 history 存储后的消息形状（经 `any`-typed content round-trip，非 live sanitize 输入）。
+- **④ 测试要独立 oracle，自洽抓不到。** 同消息含/不含 cache_control 哈希相等的 golden 取**真实连续两请求**实测 pair（非合成）；config 切 true/false 哈希不变证 config-无关；inline 字面提及保留证 own-line 锚定正确。
 
 ## FTS5 external-content 三陷阱（全文搜索）
 

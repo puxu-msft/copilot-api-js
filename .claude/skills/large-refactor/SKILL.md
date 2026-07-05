@@ -132,3 +132,17 @@ bun run typecheck 2>&1 | tail -20                        # 3. let TS find remain
 ```
 
 跨独立文件的多个 Edit **消息内并行提交**（见 CLAUDE.md `no-premature-stop`）；推过 typecheck 损坏态直到下一个 green 才停（同上）。
+
+**sed 碰过的文件会裹入在飞工作（提交 tripwire）：** 机械 sed 跨多文件后做 `git add -- <精确路径>`，若某个被 sed 碰过的文件**同时含不相关的在飞未提交工作**（别的 phase 正在改的 Stage B 等），`git add <file>` 会把**整个文件的全部改动**暂存、连带那份无关工作裹进你的 commit——`git add <file>` 暂存的是文件整个工作区状态、不只你 sed 改的那行。真实案例：config 键改名 sed 碰了 `handler-v4.ts` 一行注释，而该文件有未提交的 Stage B owns-the-sink 重写，1 行 cosmetic 改动的文件 `git diff --cached --stat` 显示 **170 行 churn** = 红旗。**tripwire**：大批 sed 后 `git diff --cached --stat` **逐文件看行数**、与"我在这文件改了几行"对账，数量级不符 → 被在飞工作污染；污染文件用 `git reset -q HEAD -- <file>` **只 unstage、不动工作区**（在飞工作完整保留）整个排除出你的 commit。别用 `git add -A`/`.`；显式 pathspec 也不够——还要 per-file 复核 cached 行数（配 CLAUDE.md `no-destructive-workspace-loss`：unstage 用 reset 不用 checkout）。
+
+## 7. 字节等价是代理，按消费者校准严格度
+
+逐字节 golden 等价不是目的、是**手段**——真 invariant 是"对**在意的消费者**无可观测行为变化"。逐字节只是它的一个代理，贴合度取决于消费者是谁，按三层校准严格度：
+
+1. **转发给客户端的响应 SSE**：消费者是不控制的、苛刻的外部 SDK 解析器（Claude Code/Anthropic SDK/`@ai-sdk/openai`），对 `signature_delta` 出现、`content_block` index 连续/densify、`event:` 行、帧顺序有硬期待。这里逐字节≈契约本身，**死磕**。语义等价但字节不同的帧流能直接挂客户端（thinking shim 400、fix-stream-ids、tool_use id 引用）。
+2. **发往上游 GHC 的 wire payload**：真 invariant 是"GHC 接受 + 同结果"，逐字节是**比需要更严的廉价代理**（key 序/空白 GHC 不在乎）。终审是 GHC 这个独立 oracle（见 skill `empirical-verification` / user-level `verifying-authoritative-claims`），非字节自洽。
+3. **history/可观测记录**：消费者是自家 UI，逐字节只是**回归 tripwire**（我重构有没有手滑改了记录的数据），可覆盖。
+
+**Why**：behavior-preserving 迁移里字节 diff 是证明它最便宜的诚实 oracle，专抓功能测试漏掉的帧重排/漏发多发/payload 漂移。收益不对称：golden 误报查 5 分钟 vs 语义漂移上线在 opus 长 thinking 沉默后悄悄挂客户端 = 难查 outage。但它绝不神圣——真实纪律是"默认逐字节、当它冻结一个错误行为时带文档覆盖"（reject 路径故意没锁 pipelineInfo，否则等于冻住"给要拒的请求白做 sanitize"这个错误行为，呼应 CLAUDE.md `architecture-health-first` 别自设"严格零改动"约束）。
+
+**How**：byte-critical 响应集死磕逐字节；请求/history 侧**优先 oracle/结构等价**而非 inline 字节字面量——对 effectiveRequest 断言 `toEqual(runAnthropicRequestRewrites(...))` 证"路径应用了链"这个性质、对偶然噪声（注入的 Claude Code stub）鲁棒，这是逐字节的精炼非放弃。任何时候逐字节挡住明确更优架构 → 覆盖它 + 文档化。**信号**：发现自己在 inline-lock 一个纯内部、纯噪声的大对象 = 该换 oracle 了。
