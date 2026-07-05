@@ -143,6 +143,19 @@ describe("buildMetricsExposition (live registry)", () => {
     expect(text).toContain('copilot_api_cost_input_tokens_total{dimension="model",key="claude-opus-4.8"} 50')
   })
 
+  test("projects the thinking-block feature measures with snake_case Prometheus names", () => {
+    const now = Date.now()
+    recordSettledRequest(
+      { model: "claude-opus-4.8", agentKind: "main" },
+      { startedAt: now, endedAt: now + 100, success: true, thinkingBlocks: { nonEmpty: 2, emptySigned: 1, emptyUnsigned: 3 } },
+    )
+    const text = buildMetricsExposition(now)
+    // camelCase measure names → snake_case metric families (thinkingBlocksNonEmpty → thinking_blocks_non_empty).
+    expect(text).toContain('copilot_api_thinking_blocks_non_empty_total{dimension="model",key="claude-opus-4.8"} 2')
+    expect(text).toContain('copilot_api_thinking_blocks_empty_signed_total{dimension="model",key="claude-opus-4.8"} 1')
+    expect(text).toContain('copilot_api_thinking_blocks_empty_unsigned_total{dimension="agentKind",key="main"} 3')
+  })
+
   test("content-type is the Prometheus v0.0.4 exposition type", () => {
     expect(PROMETHEUS_CONTENT_TYPE).toBe("text/plain; version=0.0.4; charset=utf-8")
   })
