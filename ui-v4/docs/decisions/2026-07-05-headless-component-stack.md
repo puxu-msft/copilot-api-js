@@ -1,6 +1,6 @@
 # ADR: ui-v4 采用 headless 组件栈,不采 styled UI kit
 
-- **状态**：**Proposed**（方向定：headless + 视觉自控 > styled kit;但**四库栈 vs react-aria 的具体选型待评估**，见 §「待评估的强替代」——对抗审查 2026-07-05 指出四库栈锁定前未在表格/表单/搜索**扩展语境**下评估 react-aria）
+- **状态**：**Accepted**（栈方向 + 数据表方案已据双 PoC 实证定稿：数据表选 **TanStack Table**，react-aria 评估后不采纳——见 §「已评估：react-aria」）
 - **日期**：2026-07-05
 - **相关**：[decisions/2026-07-05-adopt-radix-primitives.md](2026-07-05-adopt-radix-primitives.md)（前置 ADR，在**交互原语**语境拒 react-aria——该理由在本 ADR 的**表格/表单/搜索**新语境**不适用**）、PoC 实证 [exp/tanstack-table-poc/conclusion.md](../../exp/tanstack-table-poc/conclusion.md)、[DESIGN.md §2](../DESIGN.md)；user-rule `battle-tested-over-hand-rolled`
 
@@ -40,21 +40,25 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 
 > PoC 只证 **TanStack Table 一个库可行**,不证四库栈是最优——尤其未对比 react-aria（见下）。
 
-## 待评估的强替代：react-aria（对抗审查 2026-07-05 指出的真漏，定稿前必评）
+## 已评估：react-aria（双 PoC 同口径对照后不采纳）
 
-前置 Radix ADR 在**交互原语**语境拒了 react-aria（"Radix 是既定基座、与 shadcn 同源"）。但本 ADR 把范围扩到 **表格/表单/搜索——Radix 不在场的领域**，那些拒绝理由**全部失效**。react-aria（Adobe，`react-aria-components`）作为**单一 vendor**覆盖本栈拼装的多领域：
+对抗审查（2026-07-05）正确指出：本 ADR 把范围扩到 Radix 不覆盖的表格/表单/搜索，故前置 ADR 对 react-aria 的拒绝（交互原语语境）不适用，须重评。已做**第二个 PoC**（react-aria Table 重写同一 Models 表格）与 TanStack PoC **同口径对照**——[exp/tanstack-table-poc/react-aria-comparison.md](../../exp/tanstack-table-poc/react-aria-comparison.md)。
 
-| 领域 | 四库栈 | react-aria |
+**实测对照**（同数据/同断言/同 bundle 测法）：
+
+| | TanStack Table | react-aria |
 |---|---|---|
-| 表格 a11y/交互 | 自写（PoC 手写 `ariaSortAttr`/keyboard grid） | `Table`/`useTable` **白送** grid role + 键盘网格导航 |
-| 表格**数据逻辑**（排序/过滤/faceting/grouping/分页） | **TanStack Table**（强项） | react-stately 仅基础 sort，**无 faceting/grouping**——**非对手** |
-| combobox/搜索 | cmdk | `ComboBox`/`useSearchField` |
-| 虚拟列表 | TanStack Virtual | `Virtualizer` |
-| 日期选择 | （缺，需再引第五库） | `useDatePicker`/`Calendar` **白送** |
+| 安装 / bundle(gzip) | 2 包 / **+13.7kB** | 11 包 / **+55.3kB（4×）** |
+| a11y（grid/键盘/aria-sort/行激活） | 手写 | **白送** |
+| 排序算法/faceting/grouping/列可见 | **白送** | 手写/无 |
+| 单 vendor（combobox/datepicker/virtual） | 无 | **白送** |
 
-**关键 nuance**：react-aria 与 TanStack Table **部分互补非纯替代**——react-aria 白送表格 **a11y/交互 shell**，但 TanStack 的**数据操作引擎**（faceting/grouping/复杂 sort）react-aria 没有。所以真正的选项其实有三：**(1)** TanStack Table + 手写 a11y（PoC 现状）;**(2)** react-aria Table（a11y 白送）+ 自写数据逻辑或 react-stately;**(3)** react-aria a11y shell + TanStack Table 数据逻辑组合。
-
-**待办（定稿前）**：在扩展语境正面对比 (1)/(2)/(3)——a11y 白送程度、数据逻辑能力、react-aria render-props/data-attr 样式桥与 Terminal Amber 契合度、单 vendor vs 多库维护面、全栈 bundle。**建议再做一个 react-aria Table PoC** 与 TanStack PoC 对照,再据实证在本 ADR 定稿"数据表方案"。在此之前四库栈是**倾向非锁定**。
+**二者恰好互补**（react-aria=a11y 之王、TanStack=数据逻辑之王）。**定夺：数据表选 TanStack Table**，react-aria **不采纳**——理由（据本项目语境，换语境会反转）：
+1. 数据表核心价值是**数据操作**（排序/过滤/6 维筛选 faceting）= TanStack 领域;
+2. bundle 轻 **4×**;
+3. a11y 手写模式 P3/P4 已建、不重造;react-aria 完整**网格键盘导航**对**只读**表过度;
+4. react-aria 的"**单 vendor**"优势**在本项目不成立**——交互原语层**已选 Radix 并全迁**，不会为表格回迁;combobox 用 cmdk、datepicker 按需;
+5. 组合方案（react-aria shell + TanStack 数据）= 两库+复杂度，a11y 收益对只读表不值。
 
 ## 后果
 
@@ -72,12 +76,12 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 3. **AG Grid（专业数据表格）** —— 否。重、自带视觉、商业授权、远超需求。
 4. **全套 shadcn/ui CLI（带样式成品组件）** —— 否（同 Radix ADR）：取底座、弃成品样式。
 
-> **注**：react-aria **不在**未采纳之列——它是**待评估的强替代**（见上节），尚未有拒绝理由。
+> **注**：react-aria 已在 §「已评估：react-aria」经**双 PoC 同口径对照**评估、不采纳（bundle 4× + 单-vendor 优势在已选 Radix 前提下不成立），非未评估。
 
 ## 实施
 
 **增量、分领域**，各随对应功能落地时贯彻 headless + Terminal Amber：
-- **先定数据表方案**（TanStack Table vs react-aria，见上节，建议 react-aria PoC 对照）→ 正式重写 `ModelsTable`（删手写 `sortModels`/`sort` state/部分 `model-columns`，ColumnMenu 驱动 `VisibilityState`）+ 作 Requests 列表/6 维筛选地基。**同一提交删除 PoC** `.poc.tsx` + `.poc.vitest.test.tsx`（否则是"未接路由组件 + 续命测试"死代码，项目 knip 假阴性活体）；此前在 `docs/todo/deferred-backlog.md` 登记 PoC 悬挂 + tripwire。
+- **数据表 = TanStack Table**（双 PoC 对照已定，见上节）→ 正式重写 `ModelsTable`（删手写 `sortModels`/`sort` state/部分 `model-columns`，ColumnMenu 驱动 `VisibilityState`）+ 作 Requests 列表/6 维筛选地基。**同一提交删两个 PoC**（`ModelsTableTanstack.poc.tsx` + `ModelsTableAria.poc.tsx` + 各测试）+ **卸 `react-aria-components`**（PoC 专用，落地不用）；PoC 悬挂期 tripwire（[tests/poc-tripwire.bun.test.ts](../../tests/poc-tripwire.bun.test.ts)）守其未接生产。
 - **react-hook-form + zod**：随 [Config 结构化表单](../../../docs/plan/2026-07-05-ui-v4-config-form.md) 落地。
 - **cmdk**：随全局搜索（TODO.md 退役 gating）落地。
 - **TanStack Virtual**：长列表性能触发时引（现非目标）。
