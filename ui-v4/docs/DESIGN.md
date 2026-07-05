@@ -35,7 +35,7 @@
 
 > **JSON 查看器修订**：早先选 `@uiw/react-json-view`，但请求内搜索（§6）要在折叠/未渲染 JSON 子树里计数+高亮+跳转定位，该库**无法被外部搜索驱动**展开/定位。故 JSON 段改用**可控渲染器**（CodeMirror 6 JSON + 可控 search/fold，或自建虚拟化树），全段走统一数据模型搜索。`@uiw/react-json-view` 不采用。
 
-> **UI 组件层现状勘误 + 迁移决策（2026-07-05）**：上表的 "shadcn/ui" 在实现中初期**未落地**（交互原语 Modal/Tabs/Menu/resize 全手写、零 Radix），导致 a11y 反复手补踩坑（P4 详情面板实证）。已**采用 `radix-ui` 统一包（headless）增量迁移并落地 P0–P3**："shadcn/ui" 精化为 "Radix Primitives"（弃成品样式、保留 Terminal Amber）。已迁：Modal→`Dialog`、两 tab 轨→`Tabs`、ColumnMenu→`DropdownMenu`、splitter 键盘可操作（保留手写 + APG）。留原生：`ModelsFilterBar` 的 `<select>`（a11y 已合格，视觉-only 可选项暂缓）。→ ADR [decisions/2026-07-05-adopt-radix-primitives.md](decisions/2026-07-05-adopt-radix-primitives.md) + plan [plans/2026-07-05-radix-migration.md](plans/2026-07-05-radix-migration.md)（含 Radix 测试 gotchas [radix-styling.md](radix-styling.md)）。
+> **UI 组件层现状勘误 + 迁移决策（2026-07-05）**：上表的 "shadcn/ui" 在实现中初期**未落地**（交互原语 Modal/Tabs/Menu/resize 全手写、零 Radix），导致 a11y 反复手补踩坑（P4 详情面板实证）。已**采用 `radix-ui` 统一包（headless）增量迁移并落地 P0–P3**："shadcn/ui" 精化为 "Radix Primitives"（弃成品样式、保留 Terminal Amber）。已迁：Modal→`Dialog`、两 tab 轨→`Tabs`、ColumnMenu→`DropdownMenu`、FilterBar 的 `<select>`→`Select`、JsonTreeView 折叠→`Collapsible`、splitter 键盘可操作（保留手写 + APG）。保留原生：`title=` 截断提示（浏览器原语、a11y 已合格，不套 Radix Tooltip）。→ ADR [decisions/2026-07-05-adopt-radix-primitives.md](decisions/2026-07-05-adopt-radix-primitives.md) + plan [plans/2026-07-05-radix-migration.md](plans/2026-07-05-radix-migration.md)（含 Radix 测试 gotchas [radix-styling.md](radix-styling.md)）。
 
 ### Workspace / 构建集成
 

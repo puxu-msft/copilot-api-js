@@ -91,13 +91,12 @@
 | P2 | DropdownMenu（ColumnMenu） | 否 |
 | P3 | splitter 键盘 + DetailTocTree `aria-expanded` | 否 |
 
-### 已完成 vs record-not-adopted 暂缓
+### 已完成 vs record-not-adopted
 
-**已迁**：Modal→Dialog、两 tab 轨→Tabs、ColumnMenu→DropdownMenu、splitter 键盘可操作（保留手写 + APG）、DetailTocTree 折叠补 `aria-expanded`。
+**已迁**：Modal→Dialog、两 tab 轨→Tabs、ColumnMenu→DropdownMenu、splitter 键盘可操作（保留手写 + APG）、DetailTocTree 折叠补 `aria-expanded`、**JsonTreeView 折叠→Radix `Collapsible`**（`<div onClick>`→button，键盘可达 + aria-expanded）、**ModelsFilterBar 5 个原生 `<select>`→Radix `Select`**（视觉统一 + sentinel 映射 null）。
 
-**暂缓（可选项，非 a11y 缺陷；record-not-adopted）**：
-- **`ModelsFilterBar` 原生 `<select>` → Radix `Select`** —— **不迁，留原生**。原生 select 的 a11y 已合格（键盘/AT 原生支持），迁移纯为视觉统一（Terminal Amber 下拉面板）；对内部工具，5 个 select + 配套测试的迁移churn 不抵这点视觉收益。**这不是 a11y 降级**（a11y 本已满足），是视觉-only 的可选项按成本判断留原生。若日后要全站视觉统一再迁。
-- **`JsonTreeView` 折叠 disclosure → Radix `Collapsible`（补 `aria-expanded`）** —— 暂缓。JsonTreeView 的 toggle 是 `<div onClick>`（非 button、不可键盘聚焦），补正确 disclosure 语义需先改成 button，属独立小重构；`DetailTocTree`（toggle 本就是 button）已直接补 `aria-expanded`。JsonTreeView 留待后续。
+**保留原生（record-not-adopted，非 a11y 缺陷）**：
+- **`title=` 原生 tooltip 保留、不迁 Radix `Tooltip`** —— 全仓 ~18 处真实 `title` 集中在密集数据表行（RequestRow/SessionRow）作**截断提示**。原生 `title` 是浏览器 battle-tested 原语、a11y 已合格（屏幕阅读器播报）、轻量、长列表无性能负担；对每个单元格套 `Tooltip.Root/Trigger/Content` 会使 RequestRow 大幅膨胀、长列表多 Tooltip 实例，收益边际甚至为负。这是"hand-rolled→battle-tested"的**反面**——原生 `title` 不是该替换的手写原语。若日后要为**离散交互控件**（如 ExportButton 的长说明）加富 tooltip，可局部引入，不做全站迁移。
 
 每 phase 一或多个细粒度 commit（conventional，显式 pathspec）；phase 末派 subagent audit（裁判轴：行为等价 + a11y 只增不减 + 视觉不变 + 长远正确）。
 
