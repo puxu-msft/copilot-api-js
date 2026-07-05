@@ -5,17 +5,9 @@ import {
   z,
 } from "@hono/zod-openapi"
 
-import type { Model } from "~/lib/models/client"
-
 import { state } from "~/lib/state"
 
 import { ensureModels } from "./shared"
-
-/** Strip internal fields that should not be exposed to external consumers. */
-export function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
-  const { request_headers: _requestHeaders, ...rest } = model
-  return rest
-}
 
 // ============================================================================
 // Internal format (/api/models) — full Copilot model data
@@ -25,7 +17,8 @@ export const internalModelsRoutes = new OpenAPIHono()
 
 /** Full Copilot model object (internal format). The upstream shape is large and
  *  evolves with the Copilot catalog, so it is described as an open object rather
- *  than enumerated here (would drift). `request_headers` is stripped. */
+ *  than enumerated here (would drift). Served verbatim — no fields stripped
+ *  (ADR internal-tool-security-posture: this is an internal personal tool). */
 const ModelSchema = z.record(z.string(), z.unknown()).openapi("CopilotModel")
 
 const ModelListSchema = z
@@ -74,7 +67,7 @@ internalModelsRoutes.openapi(listModelsRoute, async (c) => {
   return c.json(
     {
       object: state.models?.object ?? "list",
-      data: state.models?.data.map((model) => stripInternalFields(model)) ?? [],
+      data: state.models?.data ?? [],
     },
     200,
   )
@@ -100,5 +93,5 @@ internalModelsRoutes.openapi(getModelRoute, async (c) => {
     )
   }
 
-  return c.json(stripInternalFields(model), 200)
+  return c.json(model, 200)
 })
