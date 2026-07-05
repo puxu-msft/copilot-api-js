@@ -1,6 +1,6 @@
 import { Tabs } from "radix-ui"
 
-const SEGMENTS = ["Convo", "Stages", "Response", "SSE", "Headers", "Meta"] as const
+const SEGMENTS = ["Convo", "System", "Stages", "Response", "SSE", "Headers", "Meta"] as const
 
 export type SegmentName = (typeof SEGMENTS)[number]
 

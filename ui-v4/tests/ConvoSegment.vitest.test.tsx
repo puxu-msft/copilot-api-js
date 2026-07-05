@@ -89,19 +89,30 @@ describe("ConvoSegment", () => {
     expect(document.querySelector("nav")).not.toBeNull()
   })
 
-  it("Raw body shows the inbound request JSON and hides the TOC + conversation", () => {
+  it("Raw body shows the messages JSON (not request-level fields) and hides the TOC + conversation", () => {
     const { container } = render(<ConvoSegment entry={entry} />)
     fireEvent.click(screen.getByText("Raw body"))
 
-    // The raw JSON exposes request-level fields not shown in the rendered view.
+    // Raw is the messages array only; request-level fields live under Stages → Inbound.
     // shiki may split tokens across spans, so assert against aggregated textContent.
     const text = container.textContent
-    expect(text).toContain("max_tokens")
-    expect(text).toContain("claude-opus-4.8")
+    expect(text).toContain("first hello")
+    expect(text).not.toContain("max_tokens")
+    expect(text).not.toContain("claude-opus-4.8")
 
     // The rendered conversation + TOC nav are hidden in raw mode.
     expect(screen.queryByText(/user: first hello/)).toBeNull()
     expect(document.querySelector("nav")).toBeNull()
+  })
+
+  it("does not render the system prompt — it now lives in the System segment", () => {
+    const withSystem = {
+      ...entry,
+      inboundRequest: { ...(entry.inboundRequest as object), system: "SYSTEM_PROMPT_MARKER" },
+    } as unknown as HistoryEntry
+    const { container } = render(<ConvoSegment entry={withSystem} />)
+    // Rendered view (default) shows only message turns — no system payload.
+    expect(container.textContent).not.toContain("SYSTEM_PROMPT_MARKER")
   })
 
   it("toggling back to Rendered restores the conversation view", () => {

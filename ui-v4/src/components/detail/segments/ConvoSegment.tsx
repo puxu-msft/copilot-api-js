@@ -6,7 +6,6 @@ import {
 
 import type { HistoryEntry } from "@/types"
 
-import { SystemMessage } from "@/components/detail/blocks/SystemMessage"
 import { CodeBlock } from "@/components/detail/CodeBlock"
 import { ConversationView } from "@/components/detail/ConversationView"
 import { DetailTocTree } from "@/components/detail/toc/DetailTocTree"
@@ -28,7 +27,6 @@ function viewClass(active: boolean): string {
 
 export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
   const [view, setView] = useState<ConvoView>("rendered")
-  const system = entry.inboundRequest.system
   const messages = entry.inboundRequest.messages ?? []
   const { scrollTo, activeAnchor } = useAnchorScroll()
   const nodes = buildMessageTocNodes(messages, ANCHOR_PREFIX)
@@ -64,16 +62,10 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
         </div>
         {view === "raw" ?
           <CodeBlock
-            code={JSON.stringify(entry.inboundRequest, null, 2)}
+            code={JSON.stringify(messages, null, 2)}
             lang="json"
           />
         : <ToolPairingProvider value={{ pairing, scrollTo }}>
-            {system ?
-              <SystemMessage
-                system={system}
-                rewrittenSystem={entry.effectiveRequest?.system}
-              />
-            : null}
             <ConversationView
               messages={messages}
               anchorPrefix={ANCHOR_PREFIX}

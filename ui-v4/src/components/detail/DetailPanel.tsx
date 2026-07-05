@@ -14,6 +14,7 @@ import { MetaSegment } from "@/components/detail/segments/MetaSegment"
 import { ResponseSegment } from "@/components/detail/segments/ResponseSegment"
 import { SseEventsSegment } from "@/components/detail/segments/SseEventsSegment"
 import { StagesSegment } from "@/components/detail/segments/StagesSegment"
+import { SystemSegment } from "@/components/detail/segments/SystemSegment"
 import { useEntry } from "@/hooks/useEntry"
 
 /** Shared class for each segment's content pane. */
@@ -44,6 +45,12 @@ export function DetailPanel() {
           className={SEG_CONTENT_CLASS}
         >
           <ConvoSegment entry={data} />
+        </Tabs.Content>
+        <Tabs.Content
+          value="System"
+          className={SEG_CONTENT_CLASS}
+        >
+          <SystemSegment entry={data} />
         </Tabs.Content>
         <Tabs.Content
           value="Stages"
