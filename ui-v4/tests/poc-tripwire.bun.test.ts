@@ -35,9 +35,9 @@ function walk(dir: string): Array<string> {
 }
 
 describe("TanStack Table PoC tripwire", () => {
-  it("is not imported by any production source file", () => {
+  it("PoC tables are not imported by any production source file", () => {
     const srcRoot = join(import.meta.dir, "..", "src")
-    const offenders = walk(srcRoot).filter((f) => !f.endsWith(".poc.tsx") && readFileSync(f, "utf8").includes("ModelsTableTanstack"))
+    const offenders = walk(srcRoot).filter((f) => !f.endsWith(".poc.tsx") && /ModelsTableTanstack|ModelsTableAria/.test(readFileSync(f, "utf8")))
     expect(offenders).toEqual([])
   })
 })
