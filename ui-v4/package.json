@@ -19,6 +19,7 @@
     "@shikijs/langs": "^4.2.0",
     "@shikijs/themes": "^4.2.0",
     "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-table": "^8.21.3",
     "diff": "^9.0.0",
     "radix-ui": "^1.6.1",
     "react": "^19.2.7",
