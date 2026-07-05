@@ -100,7 +100,14 @@ v4 请求详情页目前只有 [ConvoSegment](../../src/components/detail/segmen
 ## 后续增补（message 整体层，2026-07-05 同日）
 
 用户反馈「看不到包含 `role: user` 的那一层」——per-block 只到内容块，看不到外层 message 对象。遂把「按钮 + 开关状态 + modal」抽成可复用 **`src/components/detail/JsonModalButton.tsx`**（`{ value, label, className }`，自持 open 状态、渲染 `BlockJsonModal`）：
-- `BlockChrome` 改为复用 `JsonModalButton`（label `"View block JSON"`，只保留 group-relative 定位）。
 - **`MessageBlock` role 行内**新增 `JsonModalButton`（label `"View message JSON"`，`ml-auto`，hover 浮现），`value={message}` → 看整条 `{ role, content }` 对象；外层 div 加 `group` 触发浮现。请求侧（ConversationView）与响应侧（ResponseSegment）的每条 message 都得此入口。
 - `BlockJsonModal` 标题取值 `blockType` 扩展：无 `type` 时回退 `role`（user message → 标题 `"user JSON"`）。
-- 测试：`JsonModalButton.vitest`（按钮/开 modal/role 标题）、`MessageBlock.vitest`（message 层入口 + 仍渲染块级入口）。
+
+## 修订（2026-07-05，用户反馈二）
+
+用户进一步定：**message 层有 JSON 入口就够，内容块层不必**（message JSON 已含整个 `content` 数组，逐块 `{ }` 冗余）。据此：
+- **移除内容块级 `{ }` 入口**：删除 `BlockChrome`（连同其 test），`ContentRenderer` 恢复原「anchored 包 id div / 否则裸 ErrorBoundary」形态。`JsonModalButton` 保留（`MessageBlock` 在用）——即唯一 JSON 入口在 **message 层**。
+- **text 内容块补齐样式包装**：此前 `TextBlock` 裸渲染（正文基线）；用户要求与其它块一致，故加 `border-l-2 + bg + "text"` 标签壳（正文本体仍非 mono、保持可读）。配色 `border-[#3a4656] bg-[#12161c]`，与 thinking/tool_use/tool_result 的左边框+标签体例统一。
+- 故本文档前述「BlockChrome / per-block 覆盖全部内容块」段落描述的是中间态；**当前活状态**：JSON 入口只在 message 层，内容块层无 `{ }`。
+
+（下一步：tool_use ↔ tool_result 双向跳转，另见后续设计。）

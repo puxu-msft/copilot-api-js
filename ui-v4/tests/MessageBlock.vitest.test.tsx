@@ -24,9 +24,11 @@ describe("MessageBlock", () => {
     expect(document.body.textContent).toContain('"user"')
   })
 
-  it("still renders its content blocks (each with its own block-level affordance)", () => {
+  it("still renders its content blocks (which no longer carry their own JSON affordance)", () => {
     render(<MessageBlock message={{ role: "user", content: [{ type: "text", text: "hello" }] }} />)
     expect(screen.getByText(/hello/)).toBeDefined()
-    expect(screen.getByLabelText("View block JSON")).toBeDefined()
+    // Per feedback, the block-level { } affordance was removed — only the message level has one.
+    expect(screen.queryByLabelText("View block JSON")).toBeNull()
+    expect(screen.getByLabelText("View message JSON")).toBeDefined()
   })
 })
