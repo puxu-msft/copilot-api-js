@@ -27,6 +27,23 @@ export const CAPABILITY_FILTERS = [
   { value: "thinking", title: "Thinking" },
 ] as const
 
+/** Premium filter: null = no filter, else match billing.is_premium. */
+export function matchesPremium(model: Model, value: boolean | null): boolean {
+  return value === null || Boolean(model.billing?.is_premium) === value
+}
+
+/** Restricted-to filter: empty selection = no filter, else require plan overlap. */
+export function matchesRestrictedTo(model: Model, selected: Array<string>): boolean {
+  if (selected.length === 0) return true
+  const plans = model.billing?.restricted_to ?? []
+  return selected.some((plan) => plans.includes(plan))
+}
+
+/** Policy-state filter: null = no filter, else match policy.state exactly. */
+export function matchesPolicyState(model: Model, value: string | null): boolean {
+  return value === null || model.policy?.state === value
+}
+
 export function useModelsCatalog() {
   const models = ref<Array<Model>>([])
   const loading = shallowRef(true)
@@ -38,6 +55,12 @@ export function useModelsCatalog() {
   const featureFilters = ref<Array<string>>([])
   const typeFilter = shallowRef<string | null>(null)
   const billingRange = ref<[number, number]>([0, 0])
+  const premiumFilter = shallowRef<boolean | null>(null)
+  const restrictedToFilter = ref<Array<string>>([])
+  const policyStateFilter = shallowRef<string | null>(null)
+  const hasTelemetryFilter = shallowRef<boolean | null>(null)
+  /** Membership check for the has-telemetry filter — the page injects it from the joined telemetry index. */
+  const telemetryHasId = ref<(id: string) => boolean>(() => false)
   const rawApiResponse = ref<unknown>(null)
 
   onMounted(async () => {
@@ -77,6 +100,12 @@ export function useModelsCatalog() {
     [...new Set(models.value.map((m) => m.capabilities?.type).filter((v): v is string => typeof v === "string" && v.length > 0))].sort(),
   )
 
+  const restrictedToOptions = computed(() => [...new Set(models.value.flatMap((m) => m.billing?.restricted_to ?? []))].sort())
+
+  const policyStateOptions = computed(() =>
+    [...new Set(models.value.map((m) => m.policy?.state).filter((v): v is string => typeof v === "string" && v.length > 0))].sort(),
+  )
+
   const billingBounds = computed(() => {
     const values = models.value.map((m) => m.billing?.multiplier).filter((v): v is number => typeof v === "number")
     if (values.length === 0) return { min: 0, max: 0 }
@@ -112,6 +141,10 @@ export function useModelsCatalog() {
       })
     }
     if (typeFilter.value) result = result.filter((m) => m.capabilities?.type === typeFilter.value)
+    if (premiumFilter.value !== null) result = result.filter((m) => matchesPremium(m, premiumFilter.value))
+    if (restrictedToFilter.value.length > 0) result = result.filter((m) => matchesRestrictedTo(m, restrictedToFilter.value))
+    if (policyStateFilter.value) result = result.filter((m) => matchesPolicyState(m, policyStateFilter.value))
+    if (hasTelemetryFilter.value !== null) result = result.filter((m) => telemetryHasId.value(m.id) === hasTelemetryFilter.value)
     const [billingMin, billingMax] = billingRange.value
     result = result.filter((m) => {
       const multiplier = typeof m.billing?.multiplier === "number" ? m.billing.multiplier : 0
@@ -151,10 +184,17 @@ export function useModelsCatalog() {
     featureOptions,
     filteredModels,
     fmtNum,
+    hasTelemetryFilter,
     loading,
     models,
+    policyStateFilter,
+    policyStateOptions,
+    premiumFilter,
     rawApiResponse,
+    restrictedToFilter,
+    restrictedToOptions,
     searchQuery,
+    telemetryHasId,
     typeFilter,
     typeOptions,
     vendorColor,
