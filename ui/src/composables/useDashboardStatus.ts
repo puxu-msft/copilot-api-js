@@ -16,61 +16,24 @@ import {
   type RateLimiterChangeInfo,
 } from "@/api/ws"
 import { usePolling } from "@/composables/usePolling"
+import {
+  //
+  parseRequestTelemetry,
+  type RequestTelemetryBucket,
+  type RequestTelemetryModelBucket,
+  type RequestTelemetryModelStats,
+  type RequestTelemetrySnapshot,
+} from "@/composables/telemetry-parse"
 import { formatNumber } from "@/utils/formatters"
+
+// Re-export the telemetry types (now owned by telemetry-parse.ts) so existing
+// consumers importing them from "./useDashboardStatus" keep working.
+export type { RequestTelemetryBucket, RequestTelemetryModelBucket, RequestTelemetryModelStats, RequestTelemetrySnapshot }
 
 export interface QuotaItem {
   label: string
   used: number
   total: number
-}
-
-export interface RequestTelemetryBucket {
-  timestamp: number
-  count: number
-}
-
-export interface RequestTelemetryModelBucket {
-  timestamp: number
-  requestCount: number
-  successCount: number
-  failureCount: number
-  totalDurationMs: number
-  averageDurationMs: number
-  usage: {
-    inputTokens: number
-    outputTokens: number
-    totalTokens: number
-    cacheReadInputTokens: number
-    cacheCreationInputTokens: number
-    reasoningTokens: number
-  }
-}
-
-export interface RequestTelemetryModelStats {
-  model: string
-  requestCount: number
-  successCount: number
-  failureCount: number
-  totalDurationMs: number
-  averageDurationMs: number
-  usage: {
-    inputTokens: number
-    outputTokens: number
-    totalTokens: number
-    cacheReadInputTokens: number
-    cacheCreationInputTokens: number
-    reasoningTokens: number
-  }
-}
-
-export interface RequestTelemetrySnapshot {
-  acceptedSinceStart: number
-  bucketSizeMinutes: number
-  windowDays: number
-  totalLast7d: number
-  buckets: Array<RequestTelemetryBucket>
-  modelsSinceStart: Array<RequestTelemetryModelStats>
-  modelsLast7d: Array<RequestTelemetryModelStats & { buckets: Array<RequestTelemetryModelBucket> }>
 }
 
 export interface RateLimiterSnapshot {
@@ -206,78 +169,7 @@ export function useDashboardStatus() {
   const auth = computed(() => (status.value?.auth as Record<string, unknown> | null) ?? null)
   const quota = computed(() => (status.value?.quota as Record<string, unknown> | null) ?? null)
   const memory = computed(() => (status.value?.memory as Record<string, unknown> | null) ?? null)
-  const requestTelemetry = computed<RequestTelemetrySnapshot | null>(() => {
-    const source = (status.value?.requestTelemetry as Record<string, unknown> | null) ?? null
-    if (!source) return null
-
-    const rawBuckets = Array.isArray(source.buckets) ? source.buckets : []
-    const buckets = rawBuckets
-      .filter((bucket): bucket is Record<string, unknown> => Boolean(bucket) && typeof bucket === "object")
-      .map((bucket) => ({
-        timestamp: typeof bucket.timestamp === "number" ? bucket.timestamp : 0,
-        count: typeof bucket.count === "number" ? bucket.count : 0,
-      }))
-    const parseUsage = (rawValue: unknown) => {
-      const usage = (rawValue && typeof rawValue === "object" ? rawValue : {}) as Record<string, unknown>
-      return {
-        inputTokens: typeof usage.inputTokens === "number" ? usage.inputTokens : 0,
-        outputTokens: typeof usage.outputTokens === "number" ? usage.outputTokens : 0,
-        totalTokens: typeof usage.totalTokens === "number" ? usage.totalTokens : 0,
-        cacheReadInputTokens: typeof usage.cacheReadInputTokens === "number" ? usage.cacheReadInputTokens : 0,
-        cacheCreationInputTokens: typeof usage.cacheCreationInputTokens === "number" ? usage.cacheCreationInputTokens : 0,
-        reasoningTokens: typeof usage.reasoningTokens === "number" ? usage.reasoningTokens : 0,
-      }
-    }
-    const parseModelStats = (entry: Record<string, unknown>) => {
-      return {
-        model: typeof entry.model === "string" ? entry.model : "unknown",
-        requestCount: typeof entry.requestCount === "number" ? entry.requestCount : 0,
-        successCount: typeof entry.successCount === "number" ? entry.successCount : 0,
-        failureCount: typeof entry.failureCount === "number" ? entry.failureCount : 0,
-        totalDurationMs: typeof entry.totalDurationMs === "number" ? entry.totalDurationMs : 0,
-        averageDurationMs: typeof entry.averageDurationMs === "number" ? entry.averageDurationMs : 0,
-        usage: parseUsage(entry.usage),
-      }
-    }
-    const parseModels = (rawValue: unknown) =>
-      (Array.isArray(rawValue) ? rawValue : [])
-        .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
-        .map((entry) => parseModelStats(entry))
-    const parseModelSeries = (rawValue: unknown) =>
-      (Array.isArray(rawValue) ? rawValue : [])
-        .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
-        .map((entry) => {
-          const stats = parseModelStats(entry)
-          const buckets = (Array.isArray(entry.buckets) ? entry.buckets : [])
-            .filter((bucket): bucket is Record<string, unknown> => Boolean(bucket) && typeof bucket === "object")
-            .map((bucket) => ({
-              timestamp: typeof bucket.timestamp === "number" ? bucket.timestamp : 0,
-              requestCount: typeof bucket.requestCount === "number" ? bucket.requestCount : 0,
-              successCount: typeof bucket.successCount === "number" ? bucket.successCount : 0,
-              failureCount: typeof bucket.failureCount === "number" ? bucket.failureCount : 0,
-              totalDurationMs: typeof bucket.totalDurationMs === "number" ? bucket.totalDurationMs : 0,
-              averageDurationMs: typeof bucket.averageDurationMs === "number" ? bucket.averageDurationMs : 0,
-              usage: parseUsage(bucket.usage),
-            }))
-
-          return {
-            ...stats,
-            buckets,
-          }
-        })
-    const modelsSinceStart = parseModels(source.modelsSinceStart)
-    const modelsLast7d = parseModelSeries(source.modelsLast7d)
-
-    return {
-      acceptedSinceStart: typeof source.acceptedSinceStart === "number" ? source.acceptedSinceStart : 0,
-      bucketSizeMinutes: typeof source.bucketSizeMinutes === "number" ? source.bucketSizeMinutes : 5,
-      windowDays: typeof source.windowDays === "number" ? source.windowDays : 7,
-      totalLast7d: typeof source.totalLast7d === "number" ? source.totalLast7d : 0,
-      buckets,
-      modelsSinceStart,
-      modelsLast7d,
-    }
-  })
+  const requestTelemetry = computed<RequestTelemetrySnapshot | null>(() => parseRequestTelemetry(status.value?.requestTelemetry))
   const quotaPlan = computed<string | null>(() => {
     const plan = quota.value?.plan
     return typeof plan === "string" ? plan : null
