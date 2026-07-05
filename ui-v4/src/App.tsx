@@ -14,6 +14,7 @@ import { SessionsPage } from "@/components/sessions/SessionsPage"
 import { AppShell } from "@/components/shell/AppShell"
 import { NotBuiltYet } from "@/components/shell/NotBuiltYet"
 import { RouteError } from "@/components/shell/RouteError"
+import { JsonToolsPage } from "@/components/tools/JsonToolsPage"
 
 export const router = createHashRouter([
   {
@@ -35,6 +36,7 @@ export const router = createHashRouter([
       { path: "overview", element: <OverviewPage /> },
       { path: "models", element: <ModelsPage /> },
       { path: "config", element: <ConfigPage /> },
+      { path: "tools/json", element: <JsonToolsPage /> },
       { path: "sessions", element: <SessionsPage /> },
       { path: "sessions/:id", element: <SessionDetailPage /> },
       { path: "*", element: <NotBuiltYet /> },
