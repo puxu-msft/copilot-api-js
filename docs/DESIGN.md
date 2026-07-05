@@ -378,6 +378,8 @@ ui/
 | [history.md](history.md) | History 系统、存储、WebSocket |
 | [refusal-recovery.md](refusal-recovery.md) | thinking-only refusal 拦截与合成 text 注入 |
 | [streaming.md](streaming.md) | 流式处理、WebSocket Transport、重复性检测 |
+| [ws-openai-responses.md](ws-openai-responses.md) | OpenAI Responses WebSocket（客户端↔代理 + 上游 `ws:/responses` 连接池/复用/半开熔断/回退） |
+| [ws-webui.md](ws-webui.md) | WebUI `/ws` topic 广播（history/requests/status、背压保护、bus→WsSink 溯源、前端重连） |
 | [shutdown.md](shutdown.md) | 优雅关闭、请求生命周期、Stale Reaper |
 
 > Bun 上游传输三陷阱（300s/keepalive/undici shim）已迁为 skill `bun-upstream-transport`；测试隔离速查见 skill `test-isolation`；端点/schema 查阅入口见 skill `api-endpoints`、`history-sqlite-schema`。
