@@ -111,3 +111,19 @@ v4 请求详情页目前只有 [ConvoSegment](../../src/components/detail/segmen
 - 故本文档前述「BlockChrome / per-block 覆盖全部内容块」段落描述的是中间态；**当前活状态**：JSON 入口只在 message 层，内容块层无 `{ }`。
 
 （下一步：tool_use ↔ tool_result 双向跳转，另见后续设计。）
+
+## 增补（tool_use ↔ tool_result 双向跳转，2026-07-05 同日，用户反馈三）
+
+请求会话里 `tool_use` 与其 `tool_result`（按 `id` ↔ `tool_use_id` 配对）互相一键跳转：
+- **`lib/content/tool-pairing.ts`**：`buildToolPairing(messages, anchorPrefix)` 纯函数，遍历规范化块建 `Map<toolId, { useAnchor?, resultAnchor? }>`。孤儿/缺对端 → 该侧 anchor 为 undefined（对应侧不显按钮）；重复 id → last-writer-wins（已测锁定）。
+- **`ToolPairingContext`**：`ConvoSegment` 构建 pairing + 提供 `{ pairing, scrollTo }`（复用 `useAnchorScroll` 的 `scrollTo`），只在 Rendered 分支。`ResponseSegment`/`StagesSegment` 无 provider → `useToolPairing()` 返回 null → 块优雅无按钮。
+- **`ToolUseBlock`** 显 `↓ result` 跳到结果、**`ToolResultBlock`** 显 `↑ call` 跳到调用，共享 **`ToolJumpButton`**；仅当对端 anchor 存在才渲染。
+
+### 锚点单一真值源（评审整改）
+
+对抗 subagent review 指出：锚点串 `${prefix}-msg-i-blk-j` 原本在 3 处手写（`ContentRenderer` 产生、`toc.ts` + `tool-pairing.ts` 各自消费），是"三文件靠约定一致"的隐性契约，任一处改方案即静默跳错块。整改：
+- 新 **`lib/content/anchors.ts`**：`blockAnchorId` / `messageAnchorId` 单一真值源，上述 4 处（含 `MessageBlock` 的 message 锚点）全部改用，重复消除、契约变编译期可查。
+- 新 **`tests/anchor-contract.vitest.test.tsx`**：渲染真实 `ConversationView` + 跑 `buildToolPairing`，断言算出的锚点经 `querySelector` 命中正确 `tool_use`/`tool_result` 节点 —— 结构漂移（wrapper 移位/索引变）即红，而非静默跳空。
+- `useAnchorScroll`：目标 el 不在 DOM 时不再置 `activeAnchor`（避免向 TOC 高亮谎报无效跳转）。
+
+**当前活状态**：详情页详情视图内 —— message 层有 JSON modal 入口；tool_use/tool_result 互有跳转；内容块层无 `{ }`；text 块有 `text` 标签壳。
