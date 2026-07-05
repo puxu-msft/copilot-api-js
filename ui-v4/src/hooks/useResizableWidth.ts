@@ -24,17 +24,17 @@ export function clampWidth(value: number, min: number = TOC_WIDTH_MIN, max: numb
 }
 
 /** Read the persisted width from localStorage, guarding SSR / invalid values → default. */
-function readPersistedWidth(storageKey: string): number {
-  if (typeof globalThis.window === "undefined" || typeof globalThis.localStorage === "undefined") return TOC_WIDTH_DEFAULT
+function readPersistedWidth(storageKey: string, min: number, max: number, dflt: number): number {
+  if (typeof globalThis.window === "undefined" || typeof globalThis.localStorage === "undefined") return dflt
   try {
     const raw = globalThis.localStorage.getItem(storageKey)
-    if (raw === null) return TOC_WIDTH_DEFAULT
+    if (raw === null) return dflt
     const parsed = Number.parseInt(raw, 10)
-    if (!Number.isFinite(parsed)) return TOC_WIDTH_DEFAULT
-    return clampWidth(parsed)
+    if (!Number.isFinite(parsed)) return dflt
+    return clampWidth(parsed, min, max)
   } catch {
     // localStorage can throw (private mode / disabled) — fall back to default.
-    return TOC_WIDTH_DEFAULT
+    return dflt
   }
 }
 
@@ -64,11 +64,29 @@ interface UseResizableWidth {
   handleProps: HandleProps
 }
 
+/** Per-instance sizing/behavior; each field falls back to the shared TOC_WIDTH_* defaults. */
+export interface ResizableWidthOptions {
+  /** Inclusive lower bound (px). Default {@link TOC_WIDTH_MIN}. */
+  min?: number
+  /** Inclusive upper bound (px). Default {@link TOC_WIDTH_MAX}. */
+  max?: number
+  /** Fallback width when nothing valid is persisted (px). Default {@link TOC_WIDTH_DEFAULT}. */
+  default?: number
+  /**
+   * Invert the drag axis. Default `false` (handle on the panel's RIGHT edge:
+   * dragging right grows). Set `true` for a right-docked panel whose handle sits
+   * on its LEFT edge — then dragging LEFT (cursor-X decreasing) grows the width.
+   */
+  invert?: boolean
+}
+
 /**
  * User-resizable width with localStorage persistence, driven by pointer drag.
  *
- * On mount the persisted width (key {@link TOC_WIDTH_STORAGE_KEY}) is restored,
- * guarding SSR / invalid stored values → {@link TOC_WIDTH_DEFAULT}.
+ * On mount the persisted width (`storageKey`) is restored, guarding SSR / invalid
+ * stored values → the configured `default`. Bounds/axis are configurable via
+ * {@link ResizableWidthOptions} (defaulting to the shared TOC_WIDTH_* constants,
+ * so the zero-option call is byte-for-byte the original TOC behavior).
  *
  * **Deferred-apply (preview-line) resize — performance-critical.** With a large,
  * syntax-highlighted content pane next to the sidebar, resizing the flex layout
@@ -86,8 +104,10 @@ interface UseResizableWidth {
  * cursor flicker can't eat events; both are restored on end. Listeners + body
  * overrides are torn down on drag-end **and** on unmount (no leaks).
  */
-export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY): UseResizableWidth {
-  const [width, setWidth] = useState<number>(() => readPersistedWidth(storageKey))
+export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY, options: ResizableWidthOptions = {}): UseResizableWidth {
+  const { min = TOC_WIDTH_MIN, max = TOC_WIDTH_MAX, default: dflt = TOC_WIDTH_DEFAULT, invert = false } = options
+
+  const [width, setWidth] = useState<number>(() => readPersistedWidth(storageKey, min, max, dflt))
 
   // Latest committed width, mirrored into a ref so a fresh pointerdown reads the
   // current value without re-subscribing per render.
@@ -118,7 +138,10 @@ export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY): U
       setDragEdgeX(startX)
 
       const onMove = (moveEvent: PointerEvent) => {
-        pending = clampWidth(startWidth + (moveEvent.clientX - startX))
+        // invert=true → handle on the panel's LEFT edge: dragging left (cursor-X
+        // decreasing) must GROW the width, so flip the delta sign.
+        const delta = invert ? startX - moveEvent.clientX : moveEvent.clientX - startX
+        pending = clampWidth(startWidth + delta, min, max)
         // Move the (composited) preview line only — the sidebar width is untouched,
         // so the heavy content column never reflows during the drag.
         setDragEdgeX(moveEvent.clientX)
@@ -152,7 +175,7 @@ export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY): U
         body.style.cursor = prevCursor
       }
     },
-    [storageKey],
+    [storageKey, min, max, invert],
   )
 
   // Unmount: tear down any in-flight drag (listeners + body-style overrides).
