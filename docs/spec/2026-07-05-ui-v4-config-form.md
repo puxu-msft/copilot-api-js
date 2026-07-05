@@ -3,7 +3,7 @@
 > 日期：2026-07-05
 > 范围：`ui-v4/src/components/config/`（前端）+ `src/lib/config/`（后端字段描述符，见 §3）
 > 类型：新功能（退役旧 `ui/` 的对等 gating，见 [TODO.md](../../ui-v4/docs/TODO.md)）
-> 状态：**规格待审**（本文是 WHAT/WHY；HOW 见后续 plan）
+> 状态：**规格已定稿**（决策已签 2026-07-05，见 §12）；HOW 见 [plan](../plan/2026-07-05-ui-v4-config-form.md)
 > 设计依据：[DESIGN.md §7 Config](../../ui-v4/docs/DESIGN.md)、config 调研（后端 SSOT = `src/lib/config/schema.ts`）
 > **审查追溯**：经架构 subagent 对抗审查（2026-07-05）修订——补 `history.limit` 遗漏、anthropic 嵌套/record 的 PUT 整体替换语义、enum 无导出常量的前置事实、help 来源、字段联动、raw 双向同步一致性陷阱；均已并入 §3/§5/§6/§8/§12。
 
@@ -197,16 +197,12 @@ DESIGN §7 原文「默认 raw + 可切结构化」。**本 spec 修正**：结�
 
 ---
 
-## 12. 待确认（用户拍板 —— 定了才能 plan）
+## 12. 决策（已签 2026-07-05）
 
-**A. 字段元数据 + enum/help 源（中枢）**：确认「后端字段描述符 registry + re-export + drift-guard」为架构。其下两个子决策：
-   - **A1 enum 取值**：(a) 前置把 schema.ts 的 ~10 组 enum 提取为导出 `const`，描述符与 Zod 共用（推荐，真 SSOT）；(b) 描述符重复声明 + drift-guard 扩到 enum-set 比对。
-   - **A2 help 文案源**：schema.ts 有 ~30+ 字段的 JSDoc + config.yaml 有双语注释，但 **JSDoc 不可运行时反射**（Zod 用 `.describe()` 才行）。选：(a) 把关键 JSDoc 迁为 Zod `.describe()`（可提取，长远正确）；(b) 描述符 help 引 config.yaml 注释；(c) 手写并纳入某 drift 检查。**否则「手写 80 条 help」是隐藏漂移债**（与反漂移初衷矛盾）。
-**B. 字段覆盖范围**：全 ~80 字段（推荐，against-yagni）vs 先高频子集。
-**C. raw 视图定位 + save 语义（数据一致性真分叉，见 §6）**：(a) raw **只读展示 + 复制**（推荐，无语义冲突）；(b) raw 可编辑但走同一 sparse-dirty 引擎；(c) 后端加「返回 YAML 原文」GET 变体供 raw 全文编辑。
-**D. deprecated 字段**（`history.limit`）：进描述符标 deprecated + 隐藏/只读（推荐，drift-guard 需要）vs drift-guard 显式豁免 deprecated 集（需机器可读 deprecated 标注）。
-
-> A/C/D 不定则无法 plan（决定后端前置改造与 raw 数据流）；B 影响工作量分期。
+**A. 元数据架构 → 全 SSOT**：后端描述符 registry + drift-guard；**A1** = 提取 schema enum 为导出常量（描述符+Zod 共用）；**A2** = 关键 JSDoc 迁 Zod `.describe()`（help 可运行时提取）。
+**B. 字段覆盖 → 全 ~80 字段**（against-yagni + richest-data-flow）。
+**C. raw 视图 → 只读展示 + 复制**（纯排障窗，编辑一律走结构化；无 sparse/全量语义冲突）。
+**D. deprecated 字段（`history.limit`）→ 进描述符标 deprecated + 隐藏/只读**（drift-guard 天然通过）。
 
 ---
 
