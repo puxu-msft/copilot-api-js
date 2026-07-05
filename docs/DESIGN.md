@@ -92,6 +92,14 @@ v4 driver（七阶段编排）正逐步取代各格式巨型 handler。下表定
 
 module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为空**（见 `rewrite-registry.ts` 注释）——各格式改写经 `deps` 注入，**别去 registry 找改写**。
 
+### 类型架构（single-source-of-truth）
+
+类型定义只在**产生/拥有方**定义一次，消费端只 re-export：后端拥有的类型在后端定义、前端经 `~backend/*` re-export（前端不重新声明）。原则：
+- 类型应**覆盖已知的数据变体**；内联类型多处引用时提取为命名导出。
+- 运行时数据可保持 `any`，同时**额外导出具体联合类型**供消费端按需使用（richest-data-flow：不为 DRY 收窄数据源）。
+- 有示范价值的"死代码"（准确描述已知变体、或为未来消费者提供模板）可保留；纯无用/过时/误导的死代码删除。
+- 前端从 `~backend/*` 引入的模块**必须是纯的**（不拖入 `~/lib/state`/`consola`/node 内建等后端运行时）——需要后端纯函数时抽到无依赖模块、后端 re-export；校验用 `bun run build:ui`（见 skill `debugging-frontend-tests`）。
+
 ### 核心模块
 
 `src/lib/` 按格式域 + 横切关注组织。下面是**目录级关系图**：每节点给「职责 · 跨目录数据流/consumed-by · provenance/反直觉契约」，**不列叶子文件**——叶子清单交 `git ls-files src/lib` / codemap 派生（手列叶子=高 churn 必漂成死条目）。大域（anthropic/history/openai）下沉到子目录级。维护约定见末尾「图维度规则」。
@@ -272,6 +280,8 @@ ui/
 - 数组与标量 — user 整体替换
 
 代码里残留的硬编码（`CONFIG_MANAGED_DEFAULTS` / `DEFAULT_MODEL_OVERRIDES`）仅作为 bundled config 无法读取时的安全兜底。
+
+**新增 config 键的收尾清单（无守卫测试强制，靠纪律）**：新增任何 config 键（尤其 `anthropic.*`）必须同时出现在 `schema.ts` + `config.ts`(apply) + `state.ts`（3 处）+ **bundled `config.yaml`**（含双语注释：三档/取值/默认/docs 链接）+ 下节「运行时选项」表。bundled `config.yaml`（包根、随 npm 发布）是**默认 SSOT + 完整自文档化清单**——键只活在 `CONFIG_MANAGED_DEFAULTS` 兜底里 = 用户翻 config.yaml 发现不了该功能。两个要主动否决的错误先验：「兜底够用」（只看功能性、漏可发现性 + 一致性）、「peer 在改 config.yaml 故避让」（`concurrent-sessions-line-coexistence` 禁止的退让——并发只决定用哪种行级隔离技法、绝不决定改不改）。`config.example.yaml` 是精简样例（只列常用），opt-in 默认关键不加。
 
 ### Hot-reload 语义（统一约定）
 
