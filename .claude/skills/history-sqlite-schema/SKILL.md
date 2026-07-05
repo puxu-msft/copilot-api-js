@@ -1,6 +1,6 @@
 ---
 name: history-sqlite-schema
-description: 当需要了解 copilot-api-js 的 History SQLite 数据库结构时使用——表/列/索引、entries_v2 head + entry_stages 拆表、content-addressed search_index(msg_blob/req_msg/req_aux)、history_meta 迁移账本、zstd blob 压缩、reaper 分桶、Umzug 迁移、后台 backfill（含破坏性变换幂等）。也用于直接查库、写迁移/backfill、调试存储或解析 blob_gz。
+description: 当需要了解 copilot-api-js 的 History SQLite 数据库结构时使用——表/列/索引、entries_v2 head + entry_stages 拆表、content-addressed search_index(msg_blob/req_msg/req_aux)、history_meta 迁移账本、zstd blob 压缩、reaper 分桶、Umzug 迁移。也用于直接查库、写迁移、调试存储或解析 blob_gz。后台 backfill 的写法见 skill history-backfill。
 ---
 
 # History SQLite Schema
@@ -45,13 +45,5 @@ reaper 按 status 分桶（success/failure 各上限），active+pinned 行豁�
 
 001+ 前向 DDL 进 `migrations/`，须幂等（`PRAGMA table_info` 探测）；openDatabase 的 inline reconcile 是 000 地板不进账本。bun:sqlite `db.transaction` 回调必须同步（跨 await 不回滚）。
 
-## 后台 backfill
-
-活范例：`search-index-backfill.ts`（建索引）、`usage-normalize-backfill.ts`（usage 净值化）。生命周期见 `state.ts`（`startHistoryBackfills` 串联 usage→search、`stopHistoryBackgroundWork` 在 `closeDatabase` 前停）。通用骨架：`history_meta(xxx_version)` 完成守卫 + `(started_at,id)` compound keyset 续跑 + 协作 `stopXxx()` flag（不订阅 abort signal）+ 每批 `await sleep(0)` 非阻塞 + 双重 never-throw。
-
-**破坏性变换**（如 `input -= cache_read` 净值化）额外三铁律：
-
-- **幂等靠 per-row 标记列，不靠"结果是否已终态"自检。** `usage_normalized`（`migrateEntriesColumns` ALTER、仿 `pinned`）：新行 `buildHeadRow` 恒置 1（含所有 `ON CONFLICT SET`），scan `WHERE usage_normalized=0`，per-entry tx 内改完置 1。`net===raw?skip` 分不清"无缓存本就相等"与"已减"，会重复减腐蚀（600→200）。标记是唯一防线——测试须证明清标记再跑会二次减。
-- **排除姊妹路径已变换的子集。** 同 endpoint 两条腿语义可不一致：Gemini 流式经 codec `convert-response.ts` 早已净化、非流式才存总量——按 endpoint 一刀切减会双减流式行。用独立结构信号（流式 ⟺ 有 `sseEvents`）区分，且信号存储位置随历史漂移须查全：`sse_events` stage（driver-era）+ `inbound_response` stage payload（pre-driver）+ legacy head blob 的 `sseEvents`/`inboundResponse.sseEvents`（见 `isGeminiAlreadyNet`）。偏向"跳过"是安全方向。
-- **双写两处同改防 list/detail 分叉。** usage 存列（list/agg 读）+ blob `outboundResponse.usage`（detail 读，finalized 落 `outbound_response` stage、legacy 落 head blob）；两腿各自独立读+独立减（勿共享对象双减）。测试用真实 `insertCompletedEntry` 造 stage-split + 断言 `getEntryById().outboundResponse.usage` 与列同时为净值。
+写/改后台 backfill（建索引、重算派生列、破坏性变换已存字段）见 skill `history-backfill`。
 
