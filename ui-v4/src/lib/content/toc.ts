@@ -3,11 +3,13 @@ import type {
   ContentBlock,
   MessageContent,
 } from "@/lib/content/types"
+import type { SystemBlock } from "@/types"
 
 import {
   //
   blockAnchorId,
   messageAnchorId,
+  systemBlockAnchorId,
 } from "@/lib/content/anchors"
 import {
   //
@@ -133,4 +135,20 @@ export function buildMessageTocNodes(messages: Array<MessageContent>, anchorPref
     }
     return children.length > 0 ? { ...node, children } : node
   })
+}
+
+/**
+ * Build a flat TOC for a system payload's blocks — one node per block, no nesting
+ * (system has no message layer). Anchor scheme is {@link systemBlockAnchorId}
+ * (`${anchorPrefix}-blk-${i}`), matching the ids `SystemMessage` attaches to each
+ * rendered block. Labels lead with `text[i]` to mirror the block labels shown in
+ * the content pane. Callers gate on `blocks.length > 1` (single-block/string
+ * systems need no navigation).
+ */
+export function buildSystemTocNodes(blocks: Array<SystemBlock>, anchorPrefix: string): Array<TocNode> {
+  return blocks.map((block, i) => ({
+    label: `text[${i}]: ${truncateShort(collapseWhitespace(block.text))}`,
+    anchorId: systemBlockAnchorId(anchorPrefix, i),
+    kind: "system",
+  }))
 }

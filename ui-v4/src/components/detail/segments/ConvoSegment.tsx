@@ -61,10 +61,15 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
           </button>
         </div>
         {view === "raw" ?
-          <CodeBlock
-            code={JSON.stringify(messages, null, 2)}
-            lang="json"
-          />
+          <>
+            <div className="mono mb-1.5 text-[11px] text-[var(--color-muted)]">
+              仅消息数组。完整请求 body（system · tools · 参数）见 Stages → Inbound → Raw。
+            </div>
+            <CodeBlock
+              code={JSON.stringify(messages, null, 2)}
+              lang="json"
+            />
+          </>
         : <ToolPairingProvider value={{ pairing, scrollTo }}>
             <ConversationView
               messages={messages}

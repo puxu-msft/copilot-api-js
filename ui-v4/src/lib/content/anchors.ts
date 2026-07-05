@@ -15,3 +15,12 @@ export function messageAnchorId(anchorPrefix: string, messageIndex: number): str
 export function blockAnchorId(anchorPrefix: string, messageIndex: number, blockIndex: number): string {
   return `${messageAnchorId(anchorPrefix, messageIndex)}-blk-${blockIndex}`
 }
+
+/**
+ * System payloads have no message layer, so their blocks anchor directly:
+ *   - block i: `${anchorPrefix}-blk-${i}`
+ * Shared by `buildSystemTocNodes` (TOC) and `SystemMessage` (renderer).
+ */
+export function systemBlockAnchorId(anchorPrefix: string, blockIndex: number): string {
+  return `${anchorPrefix}-blk-${blockIndex}`
+}

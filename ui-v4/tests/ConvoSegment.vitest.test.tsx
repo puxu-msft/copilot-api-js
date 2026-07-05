@@ -100,6 +100,9 @@ describe("ConvoSegment", () => {
     expect(text).not.toContain("max_tokens")
     expect(text).not.toContain("claude-opus-4.8")
 
+    // A hint points to where the full request body lives (M2).
+    expect(screen.getByText(/完整请求 body.*见 Stages/)).toBeDefined()
+
     // The rendered conversation + TOC nav are hidden in raw mode.
     expect(screen.queryByText(/user: first hello/)).toBeNull()
     expect(document.querySelector("nav")).toBeNull()
