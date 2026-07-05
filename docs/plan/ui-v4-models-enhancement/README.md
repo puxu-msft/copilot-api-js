@@ -56,7 +56,7 @@ useModelsCatalog ────┘
 
 ## 每 phase 收尾
 
-跑 `bun run typecheck:ui`（+ Phase 2 后端 typecheck）+ 对应 `bun run test:ui:bun`/`test:ui:vitest` 全绿 → 一 task 一 commit → phase 末派 subagent audit（显式裁判轴：长远正确 + 完整 + richest-data-flow，非 ROI/YAGNI）。全计划收尾走 `session-closeout` 五步。
+跑 `bun run typecheck:ui`（+ Phase 2 后端 typecheck）+ **`bun run build:ui`**（真实 rollup bundle——typecheck+stub 测试会假绿放过"前端拖入后端运行时 import"，只有 build 暴露，见记忆 [[feedback-verify-ui-with-build-not-just-typecheck]]）+ 对应 `bun run test:ui:bun`/`test:ui:vitest` 全绿 → 一 task 一 commit → phase 末派 subagent audit（显式裁判轴：长远正确 + 完整 + richest-data-flow，非 ROI/YAGNI）。全计划收尾走 `session-closeout` 五步。
 
 ## Kick-off prompts
 
