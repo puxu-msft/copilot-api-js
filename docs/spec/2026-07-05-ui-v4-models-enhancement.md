@@ -22,7 +22,7 @@
 
 ### 非目标
 
-- **不改后端**：models route 忠实透传（现状即完整内部 payload），遥测复用现有 `/api/status`、`/api/stats` 端点。
+- **后端仅一处小改**：models route 现状即忠实透传（完整内部 payload），遥测复用现有 `/api/status`、`/api/stats` 端点。唯一后端改动是移除 `stripInternalFields` 对 `request_headers` 的剥离（§13，按 ADR `internal-tool-security-posture`）。
 - **不引 WebSocket**：Models 目录是准静态数据 + 遥测快照轮询足够。
 - **首版遥测不接 `/api/stats` 直方图**：仅用 `/api/status` 的聚合数值（p50/p90/p99 直方图作为后续增强，见 §10）。
 - **不新增 Pinia store**：抽屉/选中态不跨路由，页面作用域 composable 足够（见 §5）。
@@ -63,7 +63,7 @@
 | **Billing + Policy** | billing：`multiplier` · `is_premium` · `restricted_to`（plan chips）。policy：`state` · `terms` |
 | **Endpoints** | `supported_endpoints`（含 `getEffectiveEndpoints` 前端推断；推断项打 `(inferred)` 标记区分上游明确声明 vs 推断） |
 | **Telemetry** | 见 §4 |
-| **Raw JSON** | 内嵌 `JsonViewerSurface`（展示前端实收的完整 model 对象）。**注：`request_headers` 不在此**——`/api/models` 经 `stripInternalFields`（`src/routes/models/internal.ts:15`）有意剥离该字段（该端点也服务公开 OpenAI-compat 消费者，模型专属上游头属敏感配置），前端拿不到。是否为运维 UI 单独暴露见 §13 决策 |
+| **Raw JSON** | 内嵌 `JsonViewerSurface`（展示前端实收的完整 model 对象，**含 `request_headers`**——见 §13：按 ADR `internal-tool-security-posture` 移除 `stripInternalFields` 的剥离，`/api/models` 完整透传） |
 
 > 注：分区上方列为 6 tab 划分下的归并结果（§6）。Endpoints 与 Telemetry 可各自独立成 tab，也可折叠——见 §6 决策。
 
@@ -249,13 +249,13 @@ utils:
 `api.fetchModels()` → `/api/models`（`src/routes/models/internal.ts:72-81`）。该路由对每个 model 调 `stripInternalFields`（`:15-18`）：
 
 - **`...rest` 展开**——除被剥字段外，所有 `Model` 字段（含 `policy`/`billing.restricted_to`/`version`/`capabilities.family`/`tokenizer`/`model_picker_*`/完整 `supports` 开放 map/`limits.vision`）**及未 typed 的上游多余键**都完整透传。`getModels`（`client.ts`）本身也是 `response.json() as ModelsResponse` 纯透传、不重构字段。→ **数据完整性设计（§3）成立，后端暴露充分。**
-- **唯一被剥离字段：`request_headers`**（`Omit<Model, "request_headers">`）。前端无法获取。
+- **原剥离字段 `request_headers`**（`Omit<Model, "request_headers">`）——现按 ADR 移除剥离（见下）。
 
-### 决策：`request_headers` 是否为运维 UI 暴露？
+### 决策：暴露 `request_headers`（已定，按 ADR）
 
-`request_headers` 是 CAPI 下发的**模型专属请求头**（转发上游用，`client.ts:118`）。`stripInternalFields` 有意剥离——因 `/api/models` 同时服务公开 OpenAI-compat 消费者，暴露会泄漏内部路由配置。
+`request_headers` 是 CAPI 下发的**模型专属请求头**（转发上游用，`client.ts:118`）。`stripInternalFields` 原为"不暴露给外部消费者"而剥离它。
 
-- **方案 A（默认，本 spec 采纳）**：接受不展示，Raw JSON 不含此字段。维持现有安全边界，不改后端（符合非目标）。
-- **方案 B**：为运维 UI 单开一个不剥离的端点（如 `/history/api/models/:id` 或给 `/api/models` 加 operator-only query flag），抽屉 Raw JSON 从该端点取。**需改后端**（突破本 spec"不改后端"非目标）。
+按 ADR [internal-tool-security-posture](../decisions/2026-07-05-internal-tool-security-posture.md)：**本项目是内部个人工具、无需防范的外部消费者，该剥离是不适合本项目定位的多余安全处理**。故：
 
-> 待用户定夺。默认走 A。若选 B，追加 Phase 0（后端端点）。
+- **移除 `stripInternalFields` 对 `request_headers` 的剥离**（`src/routes/models/internal.ts:15-18`）——`/api/models`（list + single）完整透传，Models 页 Raw JSON tab 展示该字段（richest-data-flow）。
+- 这是本 spec 唯一的后端改动（一处小改），列入 **Phase 2**（随 Raw JSON tab 落地），不新开 Phase 0。`stripInternalFields` 若剥离后无其他字段可剥，整个 helper 一并删除（避免留空壳）。
