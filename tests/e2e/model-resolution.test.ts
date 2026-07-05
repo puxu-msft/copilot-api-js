@@ -11,15 +11,18 @@ import {
   test,
   expect,
   beforeAll,
+  afterAll,
 } from "bun:test"
 
 import { getModels } from "~/lib/models/client"
 import { resolveModelName } from "~/lib/models/resolver"
 import {
   //
+  restoreStateForTests,
   setModelOverrides,
   setModels,
   setStateForTests,
+  snapshotStateForTests,
   state,
 } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
@@ -33,7 +36,15 @@ import {
 const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 
 describeWithToken("Model Name Resolution", () => {
+  // Restore the shared `state` singleton after the block (bun single-process suite
+  // leaks githubToken/accountType/modelOverrides into later files otherwise).
+  let stateSnapshot: ReturnType<typeof snapshotStateForTests>
+  afterAll(() => {
+    if (stateSnapshot) restoreStateForTests(stateSnapshot)
+  })
+
   beforeAll(async () => {
+    stateSnapshot = snapshotStateForTests()
     const githubToken = getGitHubToken()
     if (!githubToken) {
       throw new Error("GITHUB_TOKEN required but not found")

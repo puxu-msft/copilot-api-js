@@ -13,6 +13,7 @@ import {
   test,
   expect,
   beforeAll,
+  afterAll,
 } from "bun:test"
 
 import type {
@@ -32,8 +33,10 @@ import { getModels } from "~/lib/models/client"
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import {
   //
+  restoreStateForTests,
   setModels,
   setStateForTests,
+  snapshotStateForTests,
   state,
 } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
@@ -63,6 +66,14 @@ function assertAnthropicResponse(response: AnthropicResponse | AsyncIterable<unk
 const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 
 describeWithToken("GitHub Copilot API Integration", () => {
+  // Restore global state after the whole block: this beforeAll mutates the shared
+  // `state` singleton (stripServerTools etc.) and bun runs the suite in one process,
+  // so without this the mutation leaks into later files (test-pollution). Snapshot is
+  // captured at the top of beforeAll (before any mutation), restored in afterAll.
+  let stateSnapshot: ReturnType<typeof snapshotStateForTests>
+  afterAll(() => {
+    if (stateSnapshot) restoreStateForTests(stateSnapshot)
+  })
   // Cached after beforeAll; picked dynamically so the test doesn't lock onto
   // a model ID that the account's GHC catalog or upstream rolls off later.
   // Convention: prefer a recent gpt-5.x SKU that advertises /chat/completions
@@ -82,6 +93,7 @@ describeWithToken("GitHub Copilot API Integration", () => {
   }
 
   beforeAll(async () => {
+    stateSnapshot = snapshotStateForTests()
     const githubToken = getGitHubToken()
     if (!githubToken) {
       // This shouldn't happen since describeWithToken should skip

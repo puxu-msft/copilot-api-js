@@ -7,6 +7,7 @@
 
 import {
   //
+  afterAll,
   beforeAll,
   describe,
   expect,
@@ -24,8 +25,10 @@ import {
 } from "~/lib/models/endpoint"
 import {
   //
+  restoreStateForTests,
   setModels,
   setStateForTests,
+  snapshotStateForTests,
 } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
 
@@ -41,8 +44,15 @@ const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 describeWithToken("Model endpoint completeness", () => {
   let allModels: Array<Model>
   let chatModels: Array<Model>
+  // Restore the shared `state` singleton after the block (bun's single-process suite
+  // leaks githubToken/accountType into later files otherwise).
+  let stateSnapshot: ReturnType<typeof snapshotStateForTests>
+  afterAll(() => {
+    if (stateSnapshot) restoreStateForTests(stateSnapshot)
+  })
 
   beforeAll(async () => {
+    stateSnapshot = snapshotStateForTests()
     const githubToken = getGitHubToken()
     if (!githubToken) throw new Error("GITHUB_TOKEN required")
 

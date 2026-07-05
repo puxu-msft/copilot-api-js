@@ -13,6 +13,7 @@ import {
   test,
   expect,
   beforeAll,
+  afterAll,
 } from "bun:test"
 
 import type {
@@ -38,9 +39,11 @@ import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import { createEmbeddings } from "~/lib/openai/embeddings"
 import {
   //
+  restoreStateForTests,
   setModelOverrides,
   setModels,
   setStateForTests,
+  snapshotStateForTests,
   state,
 } from "~/lib/state"
 import { getCopilotToken } from "~/lib/token/copilot-client"
@@ -66,8 +69,16 @@ const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 describeWithToken("Extended Copilot API Integration", () => {
   let claudeModel: string
   let gptModel: string
+  // Restore the shared `state` singleton after the block (this beforeAll mutates it;
+  // bun's single-process suite would otherwise leak stripServerTools etc. into later
+  // files). Snapshot before mutation, restore in afterAll.
+  let stateSnapshot: ReturnType<typeof snapshotStateForTests>
+  afterAll(() => {
+    if (stateSnapshot) restoreStateForTests(stateSnapshot)
+  })
 
   beforeAll(async () => {
+    stateSnapshot = snapshotStateForTests()
     const githubToken = getGitHubToken()
     if (!githubToken) throw new Error("GITHUB_TOKEN required")
 
