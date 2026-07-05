@@ -110,4 +110,4 @@
 
 ## 收尾（全 phase 后）
 
-整体 review subagent（spec 合规 + 质量 + 安全）跨全 5 phase;确认 commit invariants 链成立（每中间 commit 系统可用）;doc-sync 完成（[[feedback-completion-updates-docs]]:DESIGN/history/memory 回填、旧状态词清零、`grep` 扫描验证）。
+整体 review subagent（spec 合规 + 质量 + 安全）跨全 5 phase;确认 commit invariants 链成立（每中间 commit 系统可用）;doc-sync 完成（`completion-includes-doc-sync`:DESIGN/history/memory 回填、旧状态词清零、`grep` 扫描验证）。

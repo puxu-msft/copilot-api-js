@@ -1,6 +1,6 @@
 # Spec：Anthropic endpoint 经路由后缀翻译到 OpenAI 协议腿（openai-anthropic codec）
 
-状态：设计已批准，待 RFC 对抗 review + 分 phase 计划｜触发：用户配置 `model_overrides` 把 Anthropic 入站模型导向 OpenAI 协议腿（`opus: claude-opus-4.8@cc` / `claude-opus-4.8: gpt-5.5`）时当前一律 400 reject｜关联：`docs/DESIGN.md`「活的架构现状」、`src/lib/codec/openai-gemini/codec.ts`（精确镜像先例）、[[feedback-self-consistent-needs-independent-oracle]]、[[reference-anthropic-sdk-drops-eventless-sse-frames]]
+状态：设计已批准，待 RFC 对抗 review + 分 phase 计划｜触发：用户配置 `model_overrides` 把 Anthropic 入站模型导向 OpenAI 协议腿（`opus: claude-opus-4.8@cc` / `claude-opus-4.8: gpt-5.5`）时当前一律 400 reject｜关联：`docs/DESIGN.md`「活的架构现状」、`src/lib/codec/openai-gemini/codec.ts`（精确镜像先例）、[[feedback-pass-null-clean-not-self-validating]]、[[reference-anthropic-sdk-drops-eventless-sse-frames]]
 
 ## 1. 背景与动机
 
@@ -263,7 +263,7 @@ CC `choices[0].message` → Anthropic `content[]`：
 - **请求翻译单测**：Anthropic→CC 各 block 类型映射（text/tool_use/tool_result/image/system/tool_choice/thinking 降级/server-tool 剥离）。
 - **响应翻译**：
   - 非流式 CC→Anthropic（含 tool_calls、finish_reason 映射、usage）。
-  - 流式状态机 golden + **独立 Anthropic SDK oracle**（用真实 SDK 解析合成帧、验证可幸存——自洽 golden 抓不到 event-less 帧丢弃，须独立 oracle，见 [[feedback-self-consistent-needs-independent-oracle]]、[[reference-anthropic-sdk-drops-eventless-sse-frames]]）。
+  - 流式状态机 golden + **独立 Anthropic SDK oracle**（用真实 SDK 解析合成帧、验证可幸存——自洽 golden 抓不到 event-less 帧丢弃，须独立 oracle，见 [[feedback-pass-null-clean-not-self-validating]]、[[reference-anthropic-sdk-drops-eventless-sse-frames]]）。
 - **往返**：Anthropic 请求 → CC wire → mock CC 上游响应 → CC → Anthropic 客户端帧，端到端形状正确。
 - **路由分层**：`resolveModelTarget` 后缀解析单测（cc/responses/无后缀/`@xxx` 不识别）+ route 四分支（direct / 显式 cc / 显式 responses / 无后缀自动 / reject 各场景，对照 §2.2 表）。
 - **降级矩阵**逐项。

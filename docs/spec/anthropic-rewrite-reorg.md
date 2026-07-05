@@ -95,7 +95,7 @@
 
 回归 oracle（[[feedback-byte-equivalence-is-proxy-calibrate-by-consumer]]）按 phase 各异：
 
-- **Phase 1（请求侧）正确 oracle** = `tests/anthropic/request-rewrites.it.test.ts`（byte-lock `runAnthropicRequestRewrites` vs 手写组合）+ `tests/pipeline/request-rewrite-registry.it.test.ts`。**注**：原 RFC 误引 `response-rewrite-golden.http.test.ts` 作 Phase-1 oracle 是**类别错误**——那是**响应侧** golden，Phase 1 不碰响应侧。请求 oracle 是 self-consistent（import 同一子函数），只能锁编排顺序、不锁算法——对"算法核零改"的纯 rename **恰好够用**，但不可当 wire oracle 过度声称（[[feedback-self-consistent-needs-independent-oracle]]）。
+- **Phase 1（请求侧）正确 oracle** = `tests/anthropic/request-rewrites.it.test.ts`（byte-lock `runAnthropicRequestRewrites` vs 手写组合）+ `tests/pipeline/request-rewrite-registry.it.test.ts`。**注**：原 RFC 误引 `response-rewrite-golden.http.test.ts` 作 Phase-1 oracle 是**类别错误**——那是**响应侧** golden，Phase 1 不碰响应侧。请求 oracle 是 self-consistent（import 同一子函数），只能锁编排顺序、不锁算法——对"算法核零改"的纯 rename **恰好够用**，但不可当 wire oracle 过度声称（[[feedback-pass-null-clean-not-self-validating]]）。
 - **Phase 4（config）oracle** = 每键 compat 往返测试 + hot-reload 完整性守卫。
 - 改前先在旧代码上跑通 oracle（[[methodology-golden-fixture-pre-capture]]）。全 Anthropic 套件（messages.http / thinking-signature / tool-name-sanitize / recover-tool-call / dedup / system-messages / server-tool-rewriting）作宽 oracle 兜底。
 

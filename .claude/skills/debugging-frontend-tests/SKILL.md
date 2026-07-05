@@ -26,3 +26,9 @@ ui-v4 前端测试跑在 jsdom + @testing-library/react 下。jsdom 不是真浏
 ## 否定断言不自证正向能力
 
 `queryByText(/keys/)` 为 null 证「非 tree 视图」——但否定断言不自证正向能力（空≠功能对），须补正向断言（见 skill `empirical-verification`、[[feedback-pass-null-clean-not-self-validating]]）。
+
+## 交付前跑 build:ui（typecheck + stub 会假绿）
+
+交付 UI 改动前**必须跑 `bun run build:ui`**（真实 vite/rollup bundle），不能只靠 `typecheck:ui` + vitest stub 测试——三者的模块解析语义不同，后者会假绿。**踩坑实录**：Models 页从 `~backend/lib/models/resolver` 引入 `normalizeModelId`，但 `resolver.ts` 内部 `import { state } from "~/lib/state"`（后端运行时）。结果 `typecheck:ui` 用 tsconfig path 把 `~/lib/state` 当**类型**解析 → 过（假绿）；vitest 用 stub、不走真实模块图 → 过（假绿）；只有 `build:ui` 的 rollup 解析**运行时 import** → `Rollup failed to resolve import "~/lib/state"` → **整个 `/models` 模块图加载失败、页面毫无变化**。宣告"全绿"却没跑 build，用户开页面毫无变化才暴露（是「多维度完备性自审」漏了 bundle 维度，见 skill `empirical-verification`）。
+
+**How**：前端从 `~backend/*` 引入的每个模块**必须是纯的**（SDK-free、不 import `~/lib/state`/`consola`/node 内建/任何后端运行时）。`capabilities.ts`（纯派生）、`client.ts`（纯类型）可跨界；`resolver.ts`（import state）不可。需要后端某个纯函数时，把它抽到**无依赖模块**（如 `normalize-id.ts`）、后端 re-export 保持消费者不变，前端从纯模块引入（single-source-of-truth，不在前端重实现）。UI 交付验收命令是 `bun run build:ui`，与 typecheck/test 并列必跑（no-auto-server 不阻碍 build——build 不启服务器）：build 绿 ≠ 页面对，但 build 红 = 页面必死。能启 dev server 时亲手开页面核对可见变化，这才是终极验证。
