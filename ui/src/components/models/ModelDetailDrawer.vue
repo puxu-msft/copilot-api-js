@@ -2,6 +2,7 @@
 import type { DerivedCapabilities } from "~backend/lib/models/capabilities"
 import type { Model } from "~backend/lib/models/client"
 
+import { onKeyStroke } from "@vueuse/core"
 import {
   //
   computed,
@@ -9,6 +10,8 @@ import {
 } from "vue"
 
 import type { JoinedModelTelemetry } from "@/composables/model-telemetry-join"
+
+import { isTyping } from "@/utils/keyboard"
 
 import BillingPolicyTab from "./detail/tabs/BillingPolicyTab.vue"
 import CapabilitiesTab from "./detail/tabs/CapabilitiesTab.vue"
@@ -25,6 +28,11 @@ const open = computed({
   set: (value) => emit("update:modelValue", value),
 })
 const tab = ref("overview")
+
+// Esc closes the drawer (Vuetify's temporary drawer also closes on scrim click).
+onKeyStroke("Escape", () => {
+  if (open.value && !isTyping()) open.value = false
+})
 </script>
 
 <template>

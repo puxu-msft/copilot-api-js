@@ -28,6 +28,7 @@ import {
   formatDuration,
   formatNumber,
 } from "@/utils/formatters"
+import { isTyping } from "@/utils/keyboard"
 
 const route = useRoute()
 const router = useRouter()
@@ -162,13 +163,7 @@ async function goAdjacent(dir: "next" | "prev"): Promise<void> {
   }
 }
 
-/** Ignore keyboard shortcuts while typing in an input/textarea. */
-function isTyping(): boolean {
-  const el = document.activeElement
-  if (!el) return false
-  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || (el as HTMLElement).isContentEditable
-}
-
+/** Keyboard nav — ignored while typing in an input/textarea (isTyping). */
 onKeyStroke("j", () => {
   if (!isTyping()) void goAdjacent("next")
 })

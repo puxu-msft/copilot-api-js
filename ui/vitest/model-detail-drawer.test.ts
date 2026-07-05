@@ -54,4 +54,16 @@ describe("ModelDetailDrawer", () => {
     await w.find('button[aria-label="Close"]').trigger("click")
     expect(w.emitted("update:modelValue")?.some((e) => e[0] === false)).toBe(true)
   })
+
+  test("Escape closes the drawer when open", async () => {
+    const w = mountWithVuetifyStubs(ModelDetailDrawer, {
+      props: { modelValue: true, model, caps: deriveCapabilities(model), telemetry: null },
+      global: { stubs: { JsonViewerSurface: true } },
+      attachTo: document.body,
+    })
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
+    await w.vm.$nextTick()
+    expect(w.emitted("update:modelValue")?.some((e) => e[0] === false)).toBe(true)
+    w.unmount()
+  })
 })
