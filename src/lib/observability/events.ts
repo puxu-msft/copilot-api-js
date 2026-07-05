@@ -59,6 +59,12 @@ export type { RequestActivitySnapshot } from "~/lib/context/activity-summary"
  * — TypeScript's type-only import does NOT create a runtime dependency, so
  * the apparent `context → observability → context` cycle is type-erased
  * at compile time and doesn't exist at runtime.
+ *
+ * Prefer this over an `unknown` + `as RequestContext` cast — that cast
+ * abandons type safety to dodge a runtime cycle that does not exist. To
+ * confirm no real cycle after a type-only import: `bun run typecheck` (types
+ * OK) + `bun test` (runtime OK), and `grep -n "^import " <both files>` to
+ * check the suspect direction is `import type` only.
  */
 export type RequestContextLive = RequestContext
 

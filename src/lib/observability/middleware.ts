@@ -35,6 +35,12 @@
  *   `server.onError` consumes the throw upstream of us, so the catch
  *   never fires. The post-next status-driven path covers the failure
  *   case correctly because `onError` always sets status >= 400.
+ *
+ *   The catch DOES still matter at entry points that bypass Hono's
+ *   routing/onError entirely — raw WebSocket upgrades (`responses/ws.ts`),
+ *   stdio / non-HTTP entries, or a stack with a different error handler.
+ *   That is why `ctx.failIfNotFinalized()` stays on the RequestContext API
+ *   as a defensive primitive for those callers.
  */
 
 import type {
