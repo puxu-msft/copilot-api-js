@@ -1,6 +1,6 @@
 # 对抗式审查结论：auto-truncate messages[0] 非法修复计划
 
-> **类型**：对抗性审查报告（文件名错配）—— 本文实际审查的是 **auto-truncate messages[0] 非法修复** 方案，与同 codename 的 [anthropic-token-count-official-overhead.md](anthropic-token-count-official-overhead.md)（token 计数，未实施）**无关**。非独立 plan。
+> **类型**：对抗性审查报告（文件名错配）—— 本文实际审查的是 **auto-truncate messages[0] 非法修复** 方案，与同 codename 的 [anthropic-token-count-official-overhead.md](../archive/plan/anthropic-token-count-official-overhead.md)（token 计数，未实施）**无关**。非独立 plan。
 
 只读核验，不改任何文件。结论汇总在末尾。
 
