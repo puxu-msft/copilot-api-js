@@ -10,7 +10,6 @@
 - [完成时同步文档](feedback-completion-updates-docs.md) — doc-sync 是"完成"一部分:删过时 pending 记忆+回填已落地机制进活文档;须跨文档 grep 扫描验证(旧状态词清零+新端点逐个核对),否则漏
 - [边界提炼经验+维护库](feedback-distill-lessons-at-boundaries.md) — phase/会话/交接边界主动提炼可复用教训+维护记忆库(陈旧修/近义互链/冗余删);判某记忆是否覆盖须读正文非索引钩子
 - [主线实现、subagent 核验](feedback-main-thread-impl-subagent-verify.md) — 实现在主线(紧控制、连续上下文);subagent 作密集独立核验层非外包实现
-- [依赖选型 bun-first](feedback-bun-first-dependency-selection.md) — 外部库须 Bun 原生可跑(拒 node-gyp);决策固化为 ADR docs/decisions/2026-07-05-dependency-selection-bun-first.md
 - [实验放仓库 exp/ 不放 /tmp](feedback-experiments-in-repo-exp-dir.md) — 探测/实验代码+报告+ss 输出放 exp/<name>/ 不放 /tmp(别名不解析易丢);派探针 subagent 也告知
 - [subagent 给全量工具](feedback-subagents-full-tool-access.md) — 派 subagent 一律全量工具(别用受限 ecc:architect);要完整工具用 claude/general-purpose;prompt 写"只读"作约束但工具不设限
 - [逐字节等价是代理按消费者校准](feedback-byte-equivalence-is-proxy-calibrate-by-consumer.md) — 逐字节非目的;真 invariant=对在意消费者无可观测行为变化;三层:转发 SSE→外部SDK/上游 wire→GHC oracle/history→自家UI;请求优先 oracle

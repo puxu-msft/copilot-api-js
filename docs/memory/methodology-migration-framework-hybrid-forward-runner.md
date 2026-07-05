@@ -20,6 +20,6 @@ metadata:
 
 **5b. partial-DDL wedge(对抗 review 抓到、两 runtime 实测确认的真坑)。** **Umzug 不把 `up` 包事务**(grep umzug.js 零 BEGIN/COMMIT)且**仅在 `up` resolve 后才记账**;而 SQLite 未显式开事务时**每条 DDL 自动 commit**。故多语句迁移中途抛→前缀语句已 commit 但迁移**未记账**→下次重启从头重跑撞「table already exists」**永久卡死每一次启动**。"硬阻断 rethrow"只挡住"在半迁移 schema 上服务",**挡不住**这个 wedge。修复在框架层而非靠作者纪律:`sqlMigration(name, body)` 把 body 包进 driver `transaction()`(SQLite 支持事务化 DDL,**bun native `.transaction` 与 node:sqlite 手搓 BEGIN/COMMIT/ROLLBACK 两 runtime 实测 rollback 一致**)使多语句 all-or-nothing、失败可重试。非事务型(non-transactional PRAGMA / 长数据 backfill)迁移则须逐语句 re-entrant(`IF NOT EXISTS`/`table_info` 探测)。教训:"idempotent up"不够,须"**partial-application 后可重入**";给安全构造 primitive(sqlMigration)+ 配 rollback 回归测试,比文档叮嘱作者手包事务可靠。
 
-**6. 选型(battle-tested-over-hand-rolled):** driver-无关纯 JS 的 Umzug 胜 drizzle-kit——后者稳定版无 node:sqlite driver(逼整个 drizzle-orm 降 beta)、autogenerate 丢部分索引 `WHERE`(本项目 reaper 依赖 `idx_..._active WHERE status IN(...)`)、裂双账本。Umzug 给的正是缺的那半"有序 run-once + 账本",无 autogenerate 错配。详见 [[feedback-bun-first-dependency-selection]]。
+**6. 选型(battle-tested-over-hand-rolled):** driver-无关纯 JS 的 Umzug 胜 drizzle-kit——后者稳定版无 node:sqlite driver(逼整个 drizzle-orm 降 beta)、autogenerate 丢部分索引 `WHERE`(本项目 reaper 依赖 `idx_..._active WHERE status IN(...)`)、裂双账本。Umzug 给的正是缺的那半"有序 run-once + 账本",无 autogenerate 错配。详见 ADR docs/decisions/2026-07-05-dependency-selection-bun-first.md。
 
 落地权威态见 docs/DESIGN.md `src/lib/history/` 行 + docs/spec/migration-framework-umzug.md(LANDED)。扩展 [[methodology-sync-to-async-persistence-refactor-invariants]](本次没改既有同步路径故避开了那批不变量)。
