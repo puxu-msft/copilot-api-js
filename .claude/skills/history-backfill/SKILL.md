@@ -49,7 +49,7 @@ description: 当在 copilot-api-js 写或改 History 层的后台 backfill 时�
 
 ## 测试纪律
 
-- 用**真实写路径** `insertCompletedEntry`（→ stage-split 布局）造夹具，别手造 blob（自洽夹具测不到真实布局，见 [[feedback-self-consistent-needs-independent-oracle]]）。
+- 用**真实写路径** `insertCompletedEntry`（→ stage-split 布局）造夹具，别手造 blob（自洽夹具测不到真实布局，见 [[feedback-pass-null-clean-not-self-validating]]）。
 - 断言列**与** `getEntryById().outboundResponse.usage`（detail 路径）**同时**为终态值（防分叉）。
 - 独立 oracle：期望值手算（如净值 = total − cached，对齐 GHC `translator.py`），别用被测代码回推。
 - 覆盖矩阵：各布局（top-level stage / inbound_response stage / legacy 两种）× 已变换/未变换 × 坏 blob 跳过不标记 × 清标记二次跑腐蚀 × 协作停续跑 × ties。

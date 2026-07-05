@@ -170,7 +170,7 @@ side 表持 `attempt_index ∈ [0, finalIdx)` **only**；final 槽**独占** hea
 
 ## commit invariants（每个中间 commit 不半坏，[[methodology-commit-invariants]]）
 
-见上 C1–C4，每个终态系统可用。每 commit 跑全 `tests/history/**` 绿 + 等价性 golden。**golden 预捕获**（review F17 + [[methodology-golden-fixture-pre-capture]]）：在 C1 之前、于**旧代码路径**上捕获每种 entry 形态经 `assembleFullEntry` 的逐字段期望对象、持久化到磁盘，使等价 oracle 独立于 v3 新码（自洽不算数，[[feedback-self-consistent-needs-independent-oracle]]）。
+见上 C1–C4，每个终态系统可用。每 commit 跑全 `tests/history/**` 绿 + 等价性 golden。**golden 预捕获**（review F17 + [[methodology-golden-fixture-pre-capture]]）：在 C1 之前、于**旧代码路径**上捕获每种 entry 形态经 `assembleFullEntry` 的逐字段期望对象、持久化到磁盘，使等价 oracle 独立于 v3 新码（自洽不算数，[[feedback-pass-null-clean-not-self-validating]]）。
 
 ## 测试计划
 

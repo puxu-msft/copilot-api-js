@@ -19,7 +19,7 @@ description: 当 copilot-api-js 会话/阶段收尾时使用（交付/报告/Exi
 - `grep -rln '<新端点/新字段/新机制关键词>' docs/ README.md` —— 逐个核对该提的都提了。
 - broken-link / L1 守卫测试绿。
 
-只改最显眼处必漏其余（DESIGN 可能多行、README 多表、模块文档、RFC 汇总行、记忆正文）。旧 slug 名 `completion-includes-doc-sync`（历史文档仍用此名引用本步）。战例见 [[feedback-completion-updates-docs]]（2026-06-24 漏 5 处）。
+只改最显眼处必漏其余（DESIGN 可能多行、README 多表、模块文档、RFC 汇总行、记忆正文）。旧 slug 名 `completion-includes-doc-sync`（历史文档仍用此名引用本步）。战例：2026-06-24 曾漏 5 处未 doc-sync（原 memory `feedback-completion-updates-docs` 已并入本步 + user-rule 70）。
 
 ## 3. 归档 plan —— 迁 docs/plan + 头部实施状态注解
 
@@ -33,11 +33,11 @@ description: 当 copilot-api-js 会话/阶段收尾时使用（交付/报告/Exi
 
 ## 4. 提炼教训 + 维护记忆库
 
-边界（phase/会话/交接）主动 distill 可复用经验（按 CLAUDE.md `knowledge-routing` 判归属），顺手体检既有库：陈旧→修、近义→互链、冗余→删。**判断某记忆是否已覆盖时 deep-read 正文、别只看索引钩子**（钩子会掩盖「写窄/写偏」）。记忆正文/description/索引钩子一律中文（保留 slug、`file:line`、wiki 链接、技术标识符）。详见 CLAUDE.md 风格偏好 `memory` 行、记忆 [[feedback-distill-lessons-at-boundaries]]。
+边界（phase/会话/交接）主动 distill 可复用经验（按 CLAUDE.md `knowledge-routing` 判归属），顺手体检既有库：陈旧→修、近义→互链、冗余→删。**判断某记忆是否已覆盖时 deep-read 正文、别只看索引钩子**（钩子会掩盖「写窄/写偏」）。记忆正文/description/索引钩子一律中文（保留 slug、`file:line`、wiki 链接、技术标识符）。详见 CLAUDE.md 风格偏好 `memory` 行、user-rule 70（原 memory `feedback-distill-lessons-at-boundaries` 已并入此步 + user-rule 70）。
 
 ## 5. 细粒度提交
 
-阶段完成即主动 commit（贯穿全程、不问“要我提交吗”），收尾把 2–4 产生的文档/plan/记忆改动一并提交。**严格细粒度暂存、绝不整仓暂存、提交前 stat 复核只含本次改动**——具体命令黑白名单（`git add -p`/pathspec vs 禁 `git add -A`/`-am`）与并发会话行级共存技法见 CLAUDE.md `fine-grained-staging-per-phase-commit`/`concurrent-sessions-line-coexistence`、user-level skill `git-preference:avoiding-shared-worktree-conflicts`（单一源，勿在此复述以免漂移）。conventional commits、不加 Claude 署名。战例 [[feedback-act-comprehensively-commit-on-done]]。
+阶段完成即主动 commit（贯穿全程、不问“要我提交吗”），收尾把 2–4 产生的文档/plan/记忆改动一并提交。**严格细粒度暂存、绝不整仓暂存、提交前 stat 复核只含本次改动**——具体命令黑白名单（`git add -p`/pathspec vs 禁 `git add -A`/`-am`）与并发会话行级共存技法见 CLAUDE.md `fine-grained-staging-per-phase-commit`/`concurrent-sessions-line-coexistence`、user-level skill `git-preference:avoiding-shared-worktree-conflicts`（单一源，勿在此复述以免漂移）。conventional commits、不加 Claude 署名。战例：完成即提交、不问“要我提交吗”（原 memory `feedback-act-comprehensively-commit-on-done` 已并入本步 + user-rule 60）。
 
 ## 判定纪律（贯穿全步）
 

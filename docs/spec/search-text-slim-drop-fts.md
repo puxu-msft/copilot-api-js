@@ -111,7 +111,7 @@ DROP TABLE IF EXISTS entries_fts;
 
 - **改写/改名**：`preview-backfill.it.test.ts` → `summary-backfill.it.test.ts`（retarget `startSummaryBackfill`、gate 改 history_meta、FTS-JOIN 断言换 `queryEntries({search})` LIKE 断言、加"user_version=1 库上仍跑+瘦身"测）；`search-fts.unit.test.ts`（删 query-plan-uses-FTS + FTS COUNT/'rebuild'/'delete' 断言；MATCH→LIKE 子串搜；加 `%`/`_` ESCAPE 转义断言）；`search-backfill.it.test.ts`（FTS rebuild → 合并 backfill 幂等 + drop FTS 幂等）。
 - **新增**：瘦 `extractSearchText` 单测（含/不含哪些字段；system 8KB / 首条 1KB / 末条 2KB 截断边界；`content:null`/空 messages/数组 system 的 null 安全，review L4）；backfilled row 的 search_text === 同 entry live-written（review HIGH-2，镜像 preview-backfill.it.test.ts:142）；needle `"50%"` 在 persisted（SQL ESCAPE）与 in-flight（JS includes）返回**同**行（review M2 一致性）；drop FTS 后 LIKE 全行可命中；DROP-FTS 触发器先/表后不炸后续写（review CRITICAL-1）；非阻塞（异步分批不卡 openDatabase）。
-- **golden 预捕获**（瘦身前于旧码捕获，[[methodology-golden-fixture-pre-capture]] + [[feedback-self-consistent-needs-independent-oracle]]）：捕获"哪些 needle 当前命中哪些 entry"，含**非 ASCII**（重音拉丁 mid-word，review M3 界定回归）；瘦身后断言高价值 needle（tool/model/failureReason/system 头/首末 user）仍命中、中段 body needle 按设计不再命中、join-boundary needle 行为锁定（review M3）。
+- **golden 预捕获**（瘦身前于旧码捕获，[[methodology-golden-fixture-pre-capture]] + [[feedback-pass-null-clean-not-self-validating]]）：捕获"哪些 needle 当前命中哪些 entry"，含**非 ASCII**（重音拉丁 mid-word，review M3 界定回归）；瘦身后断言高价值 needle（tool/model/failureReason/system 头/首末 user）仍命中、中段 body needle 按设计不再命中、join-boundary needle 行为锁定（review M3）。
 
 ## 对 v3 的简化（红利）
 

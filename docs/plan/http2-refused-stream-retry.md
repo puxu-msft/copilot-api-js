@@ -66,7 +66,7 @@ REFUSED 概念上属 `network_error` 桶(瞬时连接级、重试一次),且是*
 ## 收尾(采纳审查 MEDIUM-2:落点纠偏)
 
 - **DESIGN.md**:落 `error/` 模块图**反直觉契约段**(classify 的 http2 协议可安全重试族)或 h2 transport 行,**不**落"流式截断检测"行(REFUSED 是 pre-response 分类缺陷、非流截断)。可补 [docs/spec/upstream-http2-transport.md](docs/spec/upstream-http2-transport.md)。
-- **memory**:登记两条 —— ① REFUSED_STREAM 协议保证可安全重试(含非幂等 POST)、分类缺陷源自 undici→http2 迁移;② 实测:Bun node:http2 pre-response 如实抛 REFUSED(mid-stream caveat 不适用于 pre-response)。互链 [[reference-bun-http-connect-broken-and-http2-handshake-hang]]、[[feedback-self-consistent-needs-independent-oracle]]。
+- **memory**:登记两条 —— ① REFUSED_STREAM 协议保证可安全重试(含非幂等 POST)、分类缺陷源自 undici→http2 迁移;② 实测:Bun node:http2 pre-response 如实抛 REFUSED(mid-stream caveat 不适用于 pre-response)。互链 [[reference-bun-http-connect-broken-and-http2-handshake-hang]]、[[feedback-pass-null-clean-not-self-validating]]。
 
 ## 提交(细粒度,一阶段一 commit)
 
