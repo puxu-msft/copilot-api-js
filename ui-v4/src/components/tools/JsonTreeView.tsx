@@ -1,3 +1,4 @@
+import { Collapsible } from "radix-ui"
 import {
   //
   useState,
@@ -83,19 +84,34 @@ function TreeNode({ name, value, depth }: NodeProps) {
   const entries = entriesOf(value)
   const empty = entries.length === 0
 
-  return (
-    <div>
-      <div
-        className={empty ? "" : "cursor-pointer select-none hover:bg-[#1c1a15]"}
-        style={{ paddingLeft: depth * INDENT_PX }}
-        onClick={empty ? undefined : () => setOpen((o) => !o)}
-      >
-        {!empty && <span className="mr-1 inline-block w-3 text-[var(--color-muted)]">{open ? "▾" : "▸"}</span>}
+  // Empty container: nothing to disclose → a plain summary line (no toggle).
+  if (empty) {
+    return (
+      <div style={{ paddingLeft: depth * INDENT_PX }}>
         {label}
         <span className="text-[var(--color-muted)]">{containerSummary(value)}</span>
       </div>
-      {open
-        && entries.map(([key, child]) => (
+    )
+  }
+
+  // Collapsible disclosure (Radix): the trigger is a real <button> → keyboard-
+  // focusable + Enter/Space toggle + aria-expanded, which the old <div onClick>
+  // lacked. Content mounts only when open (same as the previous `open && …`).
+  return (
+    <Collapsible.Root
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <Collapsible.Trigger
+        className="flex w-full cursor-pointer select-none items-center text-left outline-none hover:bg-[#1c1a15]"
+        style={{ paddingLeft: depth * INDENT_PX }}
+      >
+        <span className="mr-1 inline-block w-3 shrink-0 text-[var(--color-muted)]">{open ? "▾" : "▸"}</span>
+        {label}
+        <span className="text-[var(--color-muted)]">{containerSummary(value)}</span>
+      </Collapsible.Trigger>
+      <Collapsible.Content>
+        {entries.map(([key, child]) => (
           <TreeNode
             key={key}
             name={key}
@@ -103,7 +119,8 @@ function TreeNode({ name, value, depth }: NodeProps) {
             depth={depth + 1}
           />
         ))}
-    </div>
+      </Collapsible.Content>
+    </Collapsible.Root>
   )
 }
 
