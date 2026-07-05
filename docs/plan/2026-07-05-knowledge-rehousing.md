@@ -1,7 +1,11 @@
 # 知识重新归位工程 — 计划 + 实施状态 + 交接
 
-> **实施状态（2026-07-05）**：Phase 0/A/B1/B2 **已完成并提交**。**Phase C 记忆文件处置已完成**（25 活记忆 = 16 stub 指 skill + 5 精炼 + pass-null 合并 verification 簇 + broken-reference/route-variant + v4/ghc project stub；删 15；归档 2；**反链零悬挂**已验证）。**Phase C 仅剩 `docs/memory/MEMORY.md` 重写为引用地图**（当前 MEMORY.md 仍是旧索引、指向已删/已变记忆，必须重写）。Phase D（CLAUDE.md 重构）/E（核验+合并）待续。
-> **工作位置**：worktree `.worktrees/knowledge-rehousing`，分支 `chore/knowledge-rehousing`。提交至 `2cc1940`。
+> **实施状态（2026-07-05）：全部完成（Phase 0/A/B1/B2/C/D/E）。**
+> - **Phase C**（记忆库降引用层）✅：25 活记忆全部处置（16 stub 指 skill/ADR + 精炼保留 + pass-null 合并 verification 簇 + v4/ghc project stub），删 15，归档 2，反链零悬挂；`docs/memory/MEMORY.md` 重写为「话题→归属」引用地图（25 文件全索引、链接全解析）。
+> - **Phase D**（CLAUDE.md 重构）✅：照 `CLAUDE.ref.2.md` 风格六节重构，删 user-level 逐字重复、内联战例下沉链接、保留项目增量（13.8KB→12KB，增量密度高未强压 5-6KB 以免损失 always-on 项目指令）。
+> - **Phase E**（核验 + 合并）✅：3 个 subagent 逐句 diff 核「skill 迁入 ⊇ 原记忆正文」——12 条零遗漏，2 条实质补回（large-refactor §6 第二种 index 污染形态 + setup-claude-code CLI config-respect 意图归位 deferred-backlog）；doc-sync 跨文档 grep 修 15 deleted slug 的悬挂 `[[]]` 反链（self-consistent→pass-null 机械 repoint 8 处 + homeless slug 去链 5 处），全仓 `[[]]` 零悬挂（正样本自证）。
+> - 提交至 `chore/knowledge-rehousing` 分支，待 `git merge --no-ff` 回 master。
+> **工作位置**：worktree `.worktrees/knowledge-rehousing`，分支 `chore/knowledge-rehousing`。
 
 ## Context（为什么做）
 
