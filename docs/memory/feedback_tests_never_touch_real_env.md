@@ -15,7 +15,7 @@ metadata:
 - 一个会对 `$HOME`/配置路径做真实文件 I/O 的测试,必须通过**依赖注入**来隔离——给函数一个 `options.home`(或 paths)参数,并传入一个 `mkdtemp` 临时目录。绝不依赖 `process.env.HOME` mutation(Bun 的 `os.homedir()` 在运行时忽略它),也绝不把 `mock.module("node:os")` 当作接缝。
 - 在"修复"/移除任何 `mock.module` 之前,先问它是否提供了**安全隔离**(fs/网络封闭),而不只是文件间隔离——若是,则替代方案必须保留那层封闭。
 - **在执行任何可能触及真实用户状态的操作前,先证明隔离**:确认该代码路径只能命中临时/沙箱位置。拿不准时,先取得用户确认(他们说过:未确认不动手)。
-- 对于 CLI 本身,要尊重已有配置:检测已存在的自定义配置,展示直观的 `+/~/-` diff,在破坏性覆盖前确认,并区分"essential"(默认写入)与"extension"(仅 opt-in)设置。与 [[feedback_complete_root_cause_fix]] 和 [[feedback_optimize_long_term_maintainability]] 相关。
+- 对于 CLI 本身,要尊重已有配置:检测已存在的自定义配置,展示直观的 `+/~/-` diff,在破坏性覆盖前确认,并区分"essential"(默认写入)与"extension"(仅 opt-in)设置。与 CLAUDE.md `architecture-health-first` 和 CLAUDE.md `architecture-health-first` 相关。
 
 **第二次实例(2026-06-22):测试静默擦掉真实 negotiation 缓存。** 用户报告"重启后仍重学 beta",我先**纯靠读代码给了错误的"已确认无问题"**(load/persist/key 逻辑都对)——被实测推翻(`feedback-pass-null-clean-not-self-validating` / `empirical-verification`:否定性/通过性"确认"必须实测,绝不靠 paper-analysis 下结论)。真因:13 个 mark/reset feature-negotiation 缓存的测试里 9 个没沙箱 `PATHS.NEGOTIATION_STATES`,而 `resetAnthropicFeatureNegotiationForTesting()` 会把(清空后的)map 持久化到磁盘——于是任何一次 `bun test`(我本会话跑了多次)都把空快照写盖真实 `~/.local/share/copilot-api/negotiation-states.json`,擦掉所有学到的 beta/partner-feature/effort,用户每次重启都重学。诊断靠 history API 探针 + 运行日志(load 从不打印 "Loaded N" = 启动即空)+ 直接跑一个未沙箱测试看真实文件 mtime 变化坐实。
 

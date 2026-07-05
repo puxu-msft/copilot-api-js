@@ -11,4 +11,4 @@ metadata:
 
 **Why:** 我犯的错:合并完记忆后既不提交,又把"清理未索引文件""补两条轻度漏""neighbors 取舍"全列成问题等用户逐一拍板——这正是被动逐字执行(说一句做一句)。用户要的是 agent 在范围内全面推进,而非每步索权。
 
-**How to apply:** 完成阶段 → 立即 commit。面对"还有一堆相关收尾"时:能自己判断、且非破坏性/非真 either-or 的 → 直接做(见 [[feedback-dont-stop-when-direction-clear]] 的判据);只有真正需要用户上下文的(不可逆、真抉择、信息不足)才留给用户,且按 [[feedback-give-user-decision-data-not-pitch]] 给数据而非裸问。呼应 [[feedback_no_unilateral_action]](范围歧义才先问)、[[feedback_never_stop_for_turn_length]]。
+**How to apply:** 完成阶段 → 立即 commit。面对"还有一堆相关收尾"时:能自己判断、且非破坏性/非真 either-or 的 → 直接做(见 [[feedback-dont-stop-when-direction-clear]] 的判据);只有真正需要用户上下文的(不可逆、真抉择、信息不足)才留给用户,且按 CLAUDE.md `scope-ambiguity-then-ask` 给数据而非裸问。呼应 CLAUDE.md `scope-ambiguity-then-ask`(范围歧义才先问)、CLAUDE.md `no-premature-stop`。

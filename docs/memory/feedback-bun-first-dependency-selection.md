@@ -10,4 +10,4 @@ metadata:
 
 → [docs/decisions/2026-07-05-dependency-selection-bun-first.md](../decisions/2026-07-05-dependency-selection-bun-first.md)（权威源：背景/裁判准则/node-gyp 拒绝/审计手法/备选方案/后果）。
 
-Related: [[feedback-architecture-health-is-user-need]]、[[feedback_complete_root_cause_fix]]。
+Related: CLAUDE.md `architecture-health-first`、CLAUDE.md `architecture-health-first`。

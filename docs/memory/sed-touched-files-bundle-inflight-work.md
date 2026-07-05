@@ -15,4 +15,4 @@ metadata:
 - 对每个被 sed 碰的源文件，可先 `git diff <file> | grep -cE '^[+-]'` 量级核验，再决定 add 还是 reset。
 - 别用 `git add -A`/`.`（必然裹入）；显式 pathspec 也不够——还要 per-file 复核 cached 行数。
 
-是 CLAUDE.md `fine-grained-staging-per-phase-commit`（"不裹入工作区里既有的无关改动"）的具体失败模式 + tripwire。配 [[large-refactor-toolkit-sed-grep-status]] 的 sed 循环、[[feedback_never_git_checkout_user_files]]（unstage 用 reset 不用 checkout）。
+是 CLAUDE.md `fine-grained-staging-per-phase-commit`（"不裹入工作区里既有的无关改动"）的具体失败模式 + tripwire。配 skill `large-refactor-methodology` 的 sed 循环、CLAUDE.md `no-destructive-workspace-loss`（unstage 用 reset 不用 checkout）。

@@ -15,4 +15,4 @@ L2 buffered-retry（`protect_streaming_generation`）会让 **S5 响应处理（
 2. handler 在 **committed settle 点**一次性 flush（`flushToolInputRepairObservability`：遥测 + feature + 日志 + 派生 fail-gate）。flush **不清** outcomes（complete-分支随后还要读派生 `unrepairableToolInput` 做 fail 判定，ctx 本就 per-request 用完即弃）。
 3. 派生量（如 `unrepairableToolInput`）从 committed 累积现算，不再独立 set-once。
 
-判据：信号产生在"会逐 attempt 重跑的处理层"、消费在"committed 之后"→ 必须 per-attempt 累积 + commit-flush。注意 spec 把"挂 ctx 非 acc 故 buffered-retry 不丢"当目标本身是不完整的——**不丢 ≠ 不清**，discarded 尝试的信号必须清。关联 [[methodology-sync-to-async-persistence-refactor-invariants]] 的"过渡态/中间态隔离"思路；发现手法见 [[feedback_reviewer_verify_critically]]（subagent audit 实测复现裁决）。
+判据：信号产生在"会逐 attempt 重跑的处理层"、消费在"committed 之后"→ 必须 per-attempt 累积 + commit-flush。注意 spec 把"挂 ctx 非 acc 故 buffered-retry 不丢"当目标本身是不完整的——**不丢 ≠ 不清**，discarded 尝试的信号必须清。关联 [[methodology-sync-to-async-persistence-refactor-invariants]] 的"过渡态/中间态隔离"思路；发现手法见 skill `empirical-verification`（subagent audit 实测复现裁决）。

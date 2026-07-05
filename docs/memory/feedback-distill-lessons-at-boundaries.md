@@ -13,4 +13,4 @@ metadata:
 
 **Why:** 经验不在边界提炼就蒸发;库不主动维护就腐烂成互相矛盾的旧快照。提炼 + 维护是记忆系统的周期性"垃圾回收",不是一次性。
 
-**How to apply:** 边界时跑一遍:有无新教训 → 沉淀;碰到的相关旧记忆 → 实读正文比对,该修/该链/该删就做。本轮"从别处带来的 memory 合并审查"本身就是一次 distill。与 [[feedback_reviewer_verify_critically]](核验)、[[feedback-completion-updates-docs]](doc-sync)同属收尾纪律。
+**How to apply:** 边界时跑一遍:有无新教训 → 沉淀;碰到的相关旧记忆 → 实读正文比对,该修/该链/该删就做。本轮"从别处带来的 memory 合并审查"本身就是一次 distill。与 skill `empirical-verification`(核验)、[[feedback-completion-updates-docs]](doc-sync)同属收尾纪律。

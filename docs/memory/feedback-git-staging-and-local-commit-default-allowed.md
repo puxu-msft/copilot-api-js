@@ -13,4 +13,4 @@ metadata:
 
 **Why：** 用户原话"以前因管理混乱所以禁止"——旧保守规则是过去信任错位的 workaround，非真实风险。no-destructive-workspace-loss 既已硬锁真正破坏性操作，把 `git add` 当仪式性批准纯属摩擦。
 
-Linked: [[feedback_never_git_checkout_user_files]]（破坏性下限不变）、[[feedback_no_unilateral_action]]（范围歧义仍问）。
+Linked: CLAUDE.md `no-destructive-workspace-loss`（破坏性下限不变）、CLAUDE.md `scope-ambiguity-then-ask`（范围歧义仍问）。
