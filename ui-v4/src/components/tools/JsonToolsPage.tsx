@@ -67,8 +67,16 @@ export function JsonToolsPage() {
     <div className="mono flex h-full flex-col gap-2 p-2 text-[13px]">
       {/* ── Tool 1: unescape ─────────────────────────────────────────── */}
       <section className={SECTION}>
+        <div className={LABEL}>unescape JSON in string</div>
+        <textarea
+          className={TEXTAREA}
+          value={escInput}
+          onChange={(e) => setEscInput(e.target.value)}
+          spellCheck={false}
+          placeholder={String.raw`从请求里拷出的转义 JSON，如 {\"name\":\"foo\"}`}
+        />
         <div className="flex items-center gap-2">
-          <div className={LABEL}>unescape JSON in string</div>
+          <div className={LABEL}>输出（单层解码）</div>
           <button
             type="button"
             className={`${BTN} ml-auto`}
@@ -83,14 +91,6 @@ export function JsonToolsPage() {
             → 传入 Tree
           </button>
         </div>
-        <textarea
-          className={TEXTAREA}
-          value={escInput}
-          onChange={(e) => setEscInput(e.target.value)}
-          spellCheck={false}
-          placeholder={String.raw`从请求里拷出的转义 JSON，如 {\"name\":\"foo\"}`}
-        />
-        <div className={LABEL}>输出（单层解码）</div>
         {escHasInput && !escResult.ok ?
           <div className="border border-[var(--color-border)] bg-[#0f0f12] p-2 text-[12px] text-[var(--color-fail)]">{escResult.error}</div>
         : <textarea
@@ -104,21 +104,7 @@ export function JsonToolsPage() {
 
       {/* ── Tool 2: JSON tree ────────────────────────────────────────── */}
       <section className={SECTION}>
-        <div className="flex items-center gap-2">
-          <div className={LABEL}>JSON tree</div>
-          <div className="ml-auto flex gap-1">
-            {(["tree", "source"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                className={`${BTN} ${treeMode === m ? "bg-[#3a2f1a]" : ""}`}
-                onClick={() => setTreeMode(m)}
-              >
-                {m === "tree" ? "树" : "原文"}
-              </button>
-            ))}
-          </div>
-        </div>
+        <div className={LABEL}>JSON tree</div>
         <textarea
           className={TEXTAREA}
           value={treeInput}
@@ -126,8 +112,23 @@ export function JsonToolsPage() {
           spellCheck={false}
           placeholder={'粘贴 JSON，如 {"a":[1,2],"b":null}'}
         />
-        <div className={LABEL}>{treeMode === "tree" ? "树视图" : "格式化原文"}</div>
-        <div className="min-h-0 flex-1 overflow-auto border border-[var(--color-border)] bg-[#0f0f12] p-1">{renderTreePanel()}</div>
+        <div className="flex border-b border-[var(--color-border)]">
+          {(["tree", "source"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`-mb-px border-b-2 px-3 py-1 text-[11px] ${
+                treeMode === m ?
+                  "border-[var(--color-primary)] text-[var(--color-primary)]"
+                : "border-transparent text-[var(--color-muted)] hover:text-[var(--color-text)]"
+              }`}
+              onClick={() => setTreeMode(m)}
+            >
+              {m === "tree" ? "树" : "原文"}
+            </button>
+          ))}
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto border border-[var(--color-border)] border-t-0 bg-[#0f0f12] p-1">{renderTreePanel()}</div>
       </section>
     </div>
   )
