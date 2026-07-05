@@ -27,7 +27,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -96,7 +97,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -166,7 +168,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -238,7 +241,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -310,7 +314,8 @@
               "image/png",
               "image/webp",
               "image/heic",
-              "image/heif"
+              "image/heif",
+              "application/pdf"
             ]
           }
         },
@@ -376,7 +381,8 @@
               "image/png",
               "image/webp",
               "image/heic",
-              "image/heif"
+              "image/heif",
+              "application/pdf"
             ]
           }
         },
@@ -444,7 +450,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -508,7 +515,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -576,7 +584,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -643,7 +652,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -690,6 +700,11 @@
         "is_premium": true,
         "multiplier": 1,
         "restricted_to": [
+          "free",
+          "edu",
+          "pro",
+          "pro_plus",
+          "max",
           "business",
           "enterprise"
         ]
@@ -716,7 +731,7 @@
         "tokenizer": "o200k_base",
         "type": "chat"
       },
-      "id": "mai-code-1-flash-internal",
+      "id": "mai-code-1-flash-picker",
       "is_chat_default": false,
       "is_chat_fallback": false,
       "model_picker_category": "versatile",
@@ -731,8 +746,8 @@
       "supported_endpoints": [
         "/responses"
       ],
-      "vendor": "Azure OpenAI",
-      "version": "mai-code-1-flash-internal",
+      "vendor": "Microsoft",
+      "version": "mai-code-1-flash-picker",
       "warning_message": "Your billing plan has changed to usage-based billing and model multipliers no longer apply. Please update your client to the latest version to see the new billing information."
     },
     {
@@ -788,7 +803,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -1003,7 +1019,8 @@
             "supported_media_types": [
               "image/jpeg",
               "image/png",
-              "image/webp"
+              "image/webp",
+              "application/pdf"
             ]
           }
         },
@@ -1062,7 +1079,8 @@
             "supported_media_types": [
               "image/jpeg",
               "image/png",
-              "image/webp"
+              "image/webp",
+              "application/pdf"
             ]
           }
         },
@@ -1116,7 +1134,8 @@
             "supported_media_types": [
               "image/jpeg",
               "image/png",
-              "image/webp"
+              "image/webp",
+              "application/pdf"
             ]
           }
         },
@@ -1180,7 +1199,8 @@
               "image/png",
               "image/webp",
               "image/heic",
-              "image/heif"
+              "image/heif",
+              "application/pdf"
             ]
           }
         },
@@ -1245,7 +1265,8 @@
               "image/png",
               "image/webp",
               "image/heic",
-              "image/heif"
+              "image/heif",
+              "application/pdf"
             ]
           }
         },
@@ -1295,7 +1316,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -1494,7 +1516,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
@@ -1569,7 +1592,8 @@
               "image/jpeg",
               "image/png",
               "image/webp",
-              "image/gif"
+              "image/gif",
+              "application/pdf"
             ]
           }
         },
