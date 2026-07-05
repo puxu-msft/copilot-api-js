@@ -69,6 +69,37 @@ const CHECKPOINT_EVERY_BATCHES = 20
 /** Endpoints whose historical `input_tokens` includes the cached subset (needs subtraction). */
 const OVERLAP_ENDPOINTS = new Set(["openai-chat-completions", "openai-responses", "gemini-generate-content"])
 
+/**
+ * Gemini is the one overlap endpoint with a SPLIT convention in history: the
+ * STREAMING path records usage via the CC→Gemini codec, which nets
+ * `promptTokenCount = max(0, prompt - cached)` (convert-response.ts, since
+ * 2026-06-05) — those rows are ALREADY net and must NOT be subtracted again. The
+ * NON-streaming path stored the raw total. Presence of `sseEvents` ⟺ the
+ * streaming path ran (`setForwardedResponse({ sseEvents })`), so it is the
+ * reliable discriminator. Checked at the STAGE level (no decompression) for
+ * stage-split rows, and via the head blob for legacy single-blob rows (the
+ * 2026-06-05..06-11 window wrote net Gemini rows before the stage split landed).
+ * OpenAI/Responses are uniformly total across both legs → always subtracted.
+ */
+function isGeminiAlreadyNet(db: Database, id: string): boolean {
+  if (db.prepare("SELECT 1 AS one FROM entry_stages WHERE entry_id = ? AND stage = 'sse_events' LIMIT 1").get(id)) return true
+  // Any stage row at all → this is a stage-split row; the absence of an sse_events
+  // stage above means it is the non-streaming (total) leg → subtract.
+  if (db.prepare("SELECT 1 AS one FROM entry_stages WHERE entry_id = ? LIMIT 1").get(id)) return false
+  // Legacy single-blob row: sseEvents (if any) lives inside the head blob.
+  try {
+    const head = db.prepare("SELECT blob_gz FROM entries_v2 WHERE id = ?").get(id) as { blob_gz: Uint8Array } | undefined
+    if (!head) return false
+    const full = decompress(head.blob_gz) as { sseEvents?: unknown } | null
+    return Boolean(full?.sseEvents)
+  } catch {
+    // Undecodable → treat as "not provably net": the caller still net-izes, but a
+    // legacy Gemini row's head-blob usage decode would fail there too → skipped
+    // without marking (stays old). Never corrupts a decodable streaming row.
+    return false
+  }
+}
+
 /** Cooperative stop flag (set by stopUsageNormalizeBackfill, checked each batch). */
 let stopRequested = false
 /** Single-flight guard so two concurrent starts don't double-scan. */
@@ -185,6 +216,14 @@ function processBatch(db: Database, scanRows: Array<ScanRow>, counts: BackfillCo
     try {
       if (!scan.endpoint || !OVERLAP_ENDPOINTS.has(scan.endpoint)) {
         // Anthropic (or unknown) rows are already net — just mark, no data change.
+        markStmt.run(scan.id)
+        counts.markedOnly += 1
+        continue
+      }
+
+      // Gemini STREAMING rows are already net (codec-nudged promptTokenCount) — mark
+      // only, NEVER re-subtract. Non-streaming Gemini + all OpenAI/Responses = total.
+      if (scan.endpoint === "gemini-generate-content" && isGeminiAlreadyNet(db, scan.id)) {
         markStmt.run(scan.id)
         counts.markedOnly += 1
         continue

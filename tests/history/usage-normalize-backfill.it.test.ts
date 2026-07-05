@@ -133,6 +133,58 @@ async function seedAnthropicNet(id: string, startedAt: number, net: number, cach
   getDatabase().prepare("UPDATE entries_v2 SET usage_normalized = 0 WHERE id = ?").run(id)
 }
 
+/**
+ * Insert a Gemini STREAMING row: it carries sseEvents (→ an sse_events stage) and
+ * its usage is ALREADY net (the CC→Gemini codec nets promptTokenCount). The
+ * backfill MUST NOT subtract again. `cached` sits in cache_read disjointly.
+ */
+async function seedGeminiStreamingNet(id: string, startedAt: number, net: number, cached: number): Promise<void> {
+  const entry = {
+    id,
+    endpoint: "gemini-generate-content",
+    startedAt,
+    state: "pending",
+    active: true,
+    lastUpdatedAt: startedAt,
+    inboundRequest: { model: "gemini-2.5-pro", messages: [{ role: "user", content: "hi" }], stream: true },
+  } as unknown as HistoryEntry
+  insertEntry(entry)
+  updateEntry(id, {
+    state: "completed",
+    active: false,
+    endedAt: startedAt,
+    sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
+    outboundResponse: {
+      success: true,
+      model: "gemini-2.5-pro",
+      usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 },
+      content: null,
+    },
+  })
+  await finalizeEntry(id)
+  getDatabase().prepare("UPDATE entries_v2 SET usage_normalized = 0 WHERE id = ?").run(id)
+}
+
+/** Insert a LEGACY single-blob Gemini STREAMING row (net; sseEvents in the head blob, NO stage rows). */
+function seedLegacyGeminiStreamingNet(id: string, startedAt: number, net: number, cached: number): void {
+  const full = {
+    inboundRequest: { model: "gemini-2.5-pro", messages: [{ role: "user", content: "legacy" }], stream: true },
+    outboundResponse: {
+      success: true,
+      model: "gemini-2.5-pro",
+      usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 },
+      content: null,
+    },
+    sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
+  }
+  getDatabase()
+    .prepare(
+      "INSERT INTO entries_v2 (id, started_at, endpoint, transport, status, input_tokens, cache_read, output_tokens, usage_normalized, blob_gz) "
+        + "VALUES (?,?,?,?,?,?,?,?,0,?)",
+    )
+    .run(id, startedAt, "gemini-generate-content", "http", "completed", net, cached, 3, compress(full))
+}
+
 describe("sqlite usage-normalize backfill", () => {
   useIsolatedRuntime()
 
@@ -172,6 +224,39 @@ describe("sqlite usage-normalize backfill", () => {
     expect(col("an1").input_tokens).toBe(700)
     expect(blobInput("an1")).toBe(700)
     expect(col("an1").usage_normalized).toBe(1)
+  })
+
+  test("Gemini STREAMING row is already net (sse_events present): NOT re-subtracted", async () => {
+    // Regression guard: the CC→Gemini codec nets promptTokenCount, so a streaming
+    // Gemini row is stored net. A blind subtract would corrupt it (600 → 200).
+    await seedGeminiStreamingNet("gs1", 1000, 600, 400)
+    expect(col("gs1").input_tokens).toBe(600)
+
+    await runUsageNormalizeBackfill(getDatabase())
+
+    expect(col("gs1").input_tokens).toBe(600) // untouched — NOT 200
+    expect(blobInput("gs1")).toBe(600)
+    expect(col("gs1").cache_read).toBe(400)
+    expect(col("gs1").usage_normalized).toBe(1)
+  })
+
+  test("legacy single-blob Gemini STREAMING row (sseEvents in head blob): NOT re-subtracted", async () => {
+    seedLegacyGeminiStreamingNet("gls1", 1000, 600, 400)
+
+    await runUsageNormalizeBackfill(getDatabase())
+
+    expect(col("gls1").input_tokens).toBe(600) // untouched — NOT 200
+    expect(blobInput("gls1")).toBe(600)
+    expect(col("gls1").usage_normalized).toBe(1)
+  })
+
+  test("Gemini NON-streaming row (no sse_events) stores the total: IS net-ized", async () => {
+    await seedOverlapFinalized("gn1", 1000, 1000, 400, "gemini-generate-content") // no sseEvents → non-streaming
+    await runUsageNormalizeBackfill(getDatabase())
+
+    expect(col("gn1").input_tokens).toBe(600) // 1000 - 400
+    expect(blobInput("gn1")).toBe(600)
+    expect(col("gn1").usage_normalized).toBe(1)
   })
 
   test("re-run is a guarded no-op (marker + version both prevent a second subtraction)", async () => {
