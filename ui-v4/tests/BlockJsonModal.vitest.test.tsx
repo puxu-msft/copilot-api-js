@@ -31,14 +31,19 @@ describe("BlockJsonModal", () => {
     expect(screen.getByText("tool_use JSON")).toBeDefined()
   })
 
-  it("defaults to the Source view (no tree summary until toggled)", () => {
+  it("defaults to the Source view showing the JSON (and no tree summary)", () => {
     render(
       <BlockJsonModal
         value={BLOCK}
         onClose={() => {}}
       />,
     )
-    // JsonTreeView's container summary ("{…} N keys") is tree-only; absent in Source view.
+    // Positive: the Source code view renders the block's JSON text. The modal is portaled to
+    // document.body, and CodeBlock's textContent concatenates its token spans (robust to
+    // shiki's async highlight re-render).
+    expect(document.body.textContent).toContain('"tool_use"')
+    expect(document.body.textContent).toContain('"a.ts"')
+    // Negative: JsonTreeView's container summary ("{…} N keys") is tree-only; absent in Source view.
     expect(screen.queryByText(/keys/)).toBeNull()
   })
 

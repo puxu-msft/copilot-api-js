@@ -1,4 +1,9 @@
-import { useState } from "react"
+import {
+  //
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 
 import { CodeBlock } from "@/components/detail/CodeBlock"
 import { Modal } from "@/components/shared/Modal"
@@ -28,19 +33,29 @@ interface BlockJsonModalProps {
 }
 
 /**
- * Modal that shows one content block's complete raw JSON, with a Source (shiki-highlighted)
- * / Tree (collapsible) toggle and a Copy button. Pure presentation — the caller owns the
- * block object; this only stringifies / walks it.
+ * Modal that shows one content block's JSON, with a Source (shiki-highlighted) / Tree
+ * (collapsible) toggle and a Copy button. Pure presentation — the caller owns the block
+ * object; this only stringifies / walks it. The value is the block *as rendered* (post
+ * `normalizeToContentBlocks`): for Anthropic-format content that is the verbatim wire
+ * object; for OpenAI-format content it is the canonicalized block. The true unmodified
+ * request wire bytes remain available via ConvoSegment's "Raw body" toggle.
  */
 export function BlockJsonModal({ value, onClose }: BlockJsonModalProps) {
   const [view, setView] = useState<JsonView>("source")
   const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const json = JSON.stringify(value, null, 2)
+
+  // Clear a pending "Copied" reset on unmount so it never fires setState after the modal closes.
+  useEffect(() => () => clearTimeout(copiedTimer.current), [])
 
   const onCopy = async () => {
     const ok = await copyText(json)
     setCopied(ok)
-    if (ok) setTimeout(() => setCopied(false), 1500)
+    if (ok) {
+      clearTimeout(copiedTimer.current)
+      copiedTimer.current = setTimeout(() => setCopied(false), 1500)
+    }
   }
 
   return (

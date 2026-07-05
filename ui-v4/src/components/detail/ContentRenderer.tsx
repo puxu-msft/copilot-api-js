@@ -41,6 +41,13 @@ interface ContentRendererProps {
   messageIndex?: number
 }
 
+/** Stable React key: prefer a natural block id (tool_use etc.), fall back to position. Avoids
+ *  binding BlockChrome's local modal state to the wrong block if a block list is ever reordered. */
+function blockKey(block: ContentBlock, i: number): string {
+  const id = (block as { id?: unknown }).id
+  return typeof id === "string" ? id : `blk-${i}`
+}
+
 /** 纯分发器 —— 按 block.type 选组件(spec §9,8 类 + generic),每块包 ErrorBoundary。锚定时(anchorPrefix+messageIndex)才额外包 id 锚点。BlockChrome 统一给每块加 raw-JSON 查看入口(hover `{ }` → modal)。 */
 export function ContentRenderer({ blocks, anchorPrefix, messageIndex }: ContentRendererProps) {
   const anchored = anchorPrefix !== undefined && messageIndex !== undefined
@@ -48,7 +55,7 @@ export function ContentRenderer({ blocks, anchorPrefix, messageIndex }: ContentR
     <div className="flex flex-col gap-1">
       {blocks.map((block, i) => (
         <BlockChrome
-          key={i}
+          key={blockKey(block, i)}
           block={block}
           id={anchored ? `${anchorPrefix}-msg-${messageIndex}-blk-${i}` : undefined}
         >

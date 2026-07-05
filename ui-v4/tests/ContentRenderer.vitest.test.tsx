@@ -42,6 +42,8 @@ describe("ContentRenderer", () => {
     render(<ContentRenderer blocks={[{ type: "tool_use", id: "x", name: "Read", input: {} }]} />)
     fireEvent.click(screen.getByLabelText("View block JSON"))
     expect(screen.getByText("tool_use JSON")).toBeDefined()
+    // The portaled modal body actually shows the block JSON (not just the title).
+    expect(document.body.textContent).toContain('"Read"')
   })
   it("unknown type falls into GenericBlock", () => {
     render(<ContentRenderer blocks={[{ type: "weird_thing" } as never]} />)
