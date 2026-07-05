@@ -16,6 +16,7 @@ import {
   _setRequestTelemetryFilePathForTests,
   getDimensionBreakdown,
   getRequestTelemetrySnapshot,
+  getThinkingBlockTotals,
   initRequestTelemetry,
   persistRequestTelemetry,
   recordAcceptedRequest,
@@ -440,6 +441,29 @@ describe("dimension/measure framework", () => {
     expect(model.sonnet.thinkingBlocksNonEmpty).toBe(0)
     expect(model.sonnet.thinkingBlocksEmptySigned).toBe(0)
     expect(model.sonnet.thinkingBlocksEmptyUnsigned).toBe(0)
+  })
+
+  test("getThinkingBlockTotals sums the three feature measures across the agentKind dimension (main + subagent = global)", () => {
+    const now = Date.now()
+    // main request: 2 nonEmpty, 1 emptySigned, 0 emptyUnsigned
+    recordSettledRequest(
+      { agentKind: "main", model: "opus" },
+      { startedAt: now, endedAt: now + 1, success: true, thinkingBlocks: { nonEmpty: 2, emptySigned: 1, emptyUnsigned: 0 } },
+    )
+    // subagent request: 1 nonEmpty, 0 emptySigned, 3 emptyUnsigned
+    recordSettledRequest(
+      { agentKind: "subagent", model: "opus" },
+      { startedAt: now, endedAt: now + 1, success: true, thinkingBlocks: { nonEmpty: 1, emptySigned: 0, emptyUnsigned: 3 } },
+    )
+    // a request with no thinking blocks contributes nothing
+    recordSettledRequest({ agentKind: "main", model: "sonnet" }, { startedAt: now, endedAt: now + 1, success: true })
+
+    // Σ over agentKind keys (main + subagent) === exact global per-block total.
+    expect(getThinkingBlockTotals()).toEqual({ nonEmpty: 3, emptySigned: 1, emptyUnsigned: 3 })
+  })
+
+  test("getThinkingBlockTotals returns zeros before any request settles", () => {
+    expect(getThinkingBlockTotals()).toEqual({ nonEmpty: 0, emptySigned: 0, emptyUnsigned: 0 })
   })
 
   test("capped dimension bounds its key count and merges overflow into 'other'", async () => {

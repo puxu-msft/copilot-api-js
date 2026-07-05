@@ -18,7 +18,11 @@ import { getRequestContextManager } from "~/lib/context/manager"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
 import { listInFlightEntries } from "~/lib/history/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
-import { getRequestTelemetrySnapshot } from "~/lib/request-telemetry"
+import {
+  //
+  getRequestTelemetrySnapshot,
+  getThinkingBlockTotals,
+} from "~/lib/request-telemetry"
 import {
   //
   getIsShuttingDown,
@@ -62,6 +66,7 @@ const ServerStatusSchema = z
     upstream_ws: z.record(z.string(), z.unknown()),
     protect_streaming: z.record(z.string(), z.unknown()),
     tool_input_repair: z.record(z.string(), z.unknown()),
+    thinking_blocks: z.record(z.string(), z.unknown()),
   })
   .openapi("ServerStatus")
 
@@ -234,6 +239,11 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
         enabled: [...state.toolRepairMalformedInput],
         ...getToolInputRepairStats(),
       },
+
+      // Thinking-block emptiness totals since restart — a PROJECTION of the telemetry
+      // measures (summed across the agentKind dimension), NOT a separate counter like
+      // protect_streaming / tool_input_repair. { nonEmpty, emptySigned, emptyUnsigned }.
+      thinking_blocks: getThinkingBlockTotals(),
     },
     200,
   )

@@ -774,6 +774,35 @@ export function getRequestTelemetrySnapshot(now = Date.now()): RequestTelemetryS
   }
 }
 
+/**
+ * The dimension used as the global-sum anchor for feature-measure totals (see
+ * {@link getThinkingBlockTotals}). MUST stay a never-null, single-key-per-request, never-capped
+ * dimension so Σ over its keys equals the exact global request contribution.
+ */
+const GLOBAL_SUM_DIMENSION = "agentKind"
+
+/**
+ * Global thinking-block emptiness totals since process start — the `/api/status` health-poll
+ * projection (single-source: the SAME telemetry measures `/metrics` and `/api/stats` read, NOT a
+ * separate counter). Sums the three feature measures across every key of the `agentKind` dimension,
+ * a SAFE global anchor because agentKind's extractor never returns null, is single-key-per-request
+ * (`main` / `subagent`), and is never cardinality-capped to `"other"` — so Σ over its keys === the
+ * exact global per-block total (no double-count, no omission). A capped / multi-key / nullable
+ * dimension (model / tool / client) would mis-count; do NOT swap the anchor without preserving these
+ * three properties. Zeros before any request settles (process-lifetime `dimSinceStart`, resets on restart).
+ */
+export function getThinkingBlockTotals(): ThinkingBlockCounts {
+  const totals: ThinkingBlockCounts = { nonEmpty: 0, emptySigned: 0, emptyUnsigned: 0 }
+  const dim = dimSinceStart.get(GLOBAL_SUM_DIMENSION)
+  if (!dim) return totals
+  for (const acc of dim.values()) {
+    totals.nonEmpty += acc.counters.thinkingBlocksNonEmpty
+    totals.emptySigned += acc.counters.thinkingBlocksEmptySigned
+    totals.emptyUnsigned += acc.counters.thinkingBlocksEmptyUnsigned
+  }
+  return totals
+}
+
 /** Default top-N for a dimension breakdown (the rest folds into `"other"`). */
 const DEFAULT_BREAKDOWN_LIMIT = 20
 
