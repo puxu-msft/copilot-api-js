@@ -36,7 +36,7 @@
 - [全面行动、完成即提交](feedback-act-comprehensively-commit-on-done.md) — 每完成一个阶段就主动提交(别问"要我提交吗");在已确认范围内全面思考行动——别逐句字面执行、别把显然正确的后续甩成一堆问题。只有真正不可逆/either-or/上下文不足的才交给用户
 - [主线实现、subagent 核验](feedback-main-thread-impl-subagent-verify.md) — 实现在主线做(紧控制、连续上下文);subagent 用作密集的独立核验层,而非外包实现。refine 旧的 executor→reviewer subagent 模型
 - [记忆用中文写](feedback-memories-in-chinese.md) — 本项目记忆一律中文:正文+description+索引钩子;保留 slug(kebab-ASCII)、code/file:line/wiki 链接/技术标识符、Why/How 英文结构标签
-- [依赖选型 bun-first](feedback-bun-first-dependency-selection.md) — 外部库选型必须能在 Bun 下原生工作;开发/运行命令 bun-only OK、Node 仅兼容目标(实测弱于 Bun);拒 node-gyp 原生绑定(better-sqlite3 已排除→bun:sqlite/node:sqlite);node-only 库(undici/@hono/node-*)仅作不进 bun 热路径的兼容依赖;审计=find binding.gyp 应空
+- [依赖选型 bun-first](feedback-bun-first-dependency-selection.md) — 外部库选型必须能在 Bun 下原生工作;开发/运行命令 bun-only OK、Node 仅兼容目标(实测弱于 Bun);拒 node-gyp 原生绑定(better-sqlite3 已排除→bun:sqlite/node:sqlite);node-only 库(undici/@hono/node-*)仅作不进 bun 热路径的兼容依赖;审计=find binding.gyp 应空。**已固化为 ADR docs/decisions/2026-07-05-dependency-selection-bun-first.md(权威源,任何重述指回它)**
 - [undici Response≠globalThis.Response](reference-undici-response-not-globalthis-response.md) — REFERENCE:Node 下 undici.Response 非 globalThis.Response 实例(Bun 下恰好相等会掩盖);别用 instanceof Response 跨 undici/lib.dom 判别(C2 bug:成功搜索误判失败);改 instanceof Error+as Response,成员访问兼容只 instanceof 坑
 - [实验放仓库 exp/ 不放 /tmp](feedback-experiments-in-repo-exp-dir.md) — 探测/实验的代码+报告+ss 输出放 exp/<exp-name>/,不放 /tmp;/tmp 别名不解析、易丢、清不掉;派探针 subagent 也告知放这里
 - [zstd字典无效用合并帧](reference-zstd-dict-ineffective-use-combined-frame.md) — 大 near-dup blob 的 dedup:zstd dictionary 选项无增益(node:zlib+Bun 实测),真有效是拼一个 buffer 同帧压(3224→231KB);落地为 JSON 数组单次压(非二进制framing/非剪JSON,逐字round-trip);node:zlib zstd 跨 Bun/Node 可用、L3 比 gzip 砍半;magic 1f8b/28b52ffd 判别新旧

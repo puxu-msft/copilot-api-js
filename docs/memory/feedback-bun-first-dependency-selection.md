@@ -8,6 +8,8 @@ metadata:
 
 用户陈述的约束（2026-06-17）：**"开发命令可以只是 bun 的，native 只是兼容目标，所有选择的外部库也要满足 bun first"**。
 
+> **已固化为 ADR**：[docs/decisions/2026-07-05-dependency-selection-bun-first.md](../decisions/2026-07-05-dependency-selection-bun-first.md)——这是真正的用户决策，决策背景/理由/备选方案以该 ADR 为权威源。本条保留原始出处（引语+日期）与审计手法。
+
 **Why:** 项目是双运行时抽象（`typeof globalThis.Bun !== "undefined"` 分流：`Bun.serve`/`@hono/node-server`、`hono/bun`/`@hono/node-ws`、`bun:sqlite`/`node:sqlite`、Bun 内建 fetch 超时/undici）。但优先级不对称——**Bun 是一等公民、默认运行时、被 `bun test` 实测覆盖；Node 是有意维护的兼容目标，但实测保障弱于 Bun**（Node 专属分支如 driver.ts 的 `nodeFactory()` 在 bun test 下走不到）。因此选型的底线是"在 Bun 下能不能原生跑"，而不是"在 Node 下能不能跑"。
 
 **How to apply:**

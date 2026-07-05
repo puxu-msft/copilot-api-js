@@ -25,4 +25,4 @@ CLAUDE.md 放原则；本文件放可查阅的事实性约定。
 
 Bun 一等公民，Node 仅兼容目标。外部库须 Bun 原生可跑，拒 node-gyp 绑定。命令走 `bun run`（非 `npm run`）。
 
-详见 DESIGN.md「运行时兼容」「测试组织」与 spec/test-env-isolation.md。
+**决策背景与备选方案见 [decisions/2026-07-05-dependency-selection-bun-first.md](decisions/2026-07-05-dependency-selection-bun-first.md)（权威 ADR，真正的用户决策）**；实现分流见 DESIGN.md「运行时兼容」「测试组织」与 spec/test-env-isolation.md。
