@@ -19,11 +19,12 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 | `references web_search but not server tool` 400 | 历史残留 server_tool_use | `tool_rewrite_history_server:downgrade` + 开 web_search |
 | `Invalid encrypted_content in search_result block` 400 | web_search 双跳合成的 `web_search_tool_result` 结果项 `encrypted_content=""`（`synthesize.ts`，后端产不出真加密内容）回流历史，上游校验真实非空 string（空/null/占位全 400，error-shaped 反而 200） | **always-on 兜底自动降级**（`sanitize/empty-encrypted-search-result.ts`，无需配置）；开 `tool_rewrite_history_server:downgrade` 更宽清理。exp/encrypted-content-400 |
 | 双空块被拒 | shim 把 sig 嵌 start 无 signature_delta（web_search 双跳绕 shim 曾酿此） | `thinking_signature_compat` |
-| CC 客户端 `Stream idle timeout - no chunks received`（流式;长 opus pre-content thinking 静默 ~280-300s 断,即使代理 ping 保活也没用） | CC 2.1.201 watchdog **两层**:①byte-idle ~60s(任意字节重置,ping 可压)②no-real-content ~300s(**只有真实 `content_block_delta` 重置,`event:ping`/SSE comment 都不算 chunk**);长 pre-content thinking 静默撞第二层 | `stream_keepalive_mode:content_delta`(默认)——keepalive 发匹配 open block 的空 delta(thinking→thinking_delta / text→text_delta / tool_use→input_json_delta)而非 ping。exp/cc-idle-280s |
+
 
 ## 实测关键事实
 
 - thinking signature **自包含**（加密 thinking 内容本身、非上下文/位置）：跨对话/非首块/重写后均 200；唯一约束=原样不改、连续序列不重排。
 - tool_use.id 上游不校验格式（`toolu_recovered_0` 也 200），只引用一致性要紧；仍合成 `toolu_`+24base62 防客户端 SDK。
-- CC 2.1.201 流式超时**两层**（实测 exp/cc-idle-280s,真实 `claude` CLI + mock）:60s byte-idle(ping 逐字节重置)+ **300s no-real-content**(只有真实 `content_block_delta` 重置、`event:ping`/comment 不算 chunk;空 content_delta 也算,拼接进真实 tool/thinking 流无害——SDK oracle 验)。修复=`stream_keepalive_mode:content_delta` 破第二层;但**所有 keepalive(含 ping)在 forwarded 轨打 `SseEventRecord.synthetic:"keepalive"` 标记**,否则空 delta 伪装成真实内容、把上游沉默掩盖成正常 streaming(上游轨 `sseEvents` 绝不含 keepalive,始终忠实)。见 [[feedback-synthetic-data-must-be-distinguishable-from-real]]。
 - 上游兼容矩阵/特性协商属 docs（anthropic-compat.md / refusal-recovery.md），本 skill 只管调试。
+
+> Claude Code **客户端**的连接/流式行为（CC 请求超时两层、keepalive 空 content-delta、合成帧 event: 行 + synthetic 标记、SDK 对 200+SSE-error 零重试）是**下游客户端**域，不在本 skill——见 skill `claude-code-connection`。上游**传输**（fetch/http2/proxy/keepalive）见 skill `bun-upstream-transport`。

@@ -26,6 +26,15 @@ https 上游绕过 undici，故代理也不能靠 undici ProxyAgent——在 `tr
 
 须最终走 node:net/tls 真 socket 调 setKeepAlive。裸 `undici`→shim 丢 dispatcher；got/axios/node:https→Bun shim 旁路 socket 注入、keepAlive 只动 L7 池；`Bun.connect` setKeepAlive delay 坏。**唯一解 = `undici/index.js` 子路径**绕 shim。https GHC h2 chunked 在 undici-on-Bun 永久挂 → 走 `node:http2`。
 
+## http2 流错误分类（REFUSED 可安全重试）
+
+从 undici 迁到 `node:http2` 后，h2 流错误的分类需同步——否则 REFUSED 消息穿到 `bad_request` 无 retry strategy 认领、FAIL 返 500（生产每天约 10 次，已修 2026-07）。
+
+- **`REFUSED_STREAM`（0x7）是 HTTP/2 里唯一协议保证可安全重试的错误**：RFC 9113 §8.7「Any request that was sent on the reset stream can be safely retried … even those with non-idempotent methods」——重试 POST 无重复执行/计费风险，与普通 5xx、mid-stream `NGHTTP2_CANCEL`/`INTERNAL_ERROR`（可能已部分处理）有本质区别。触发方（GHC 边缘/LB 周期性 GOAWAY drain 连接、在飞流被拒）是**正常连接生命周期非上游 bug**，任何池化 h2 客户端都会遇到，协议设计的应对就是换新连接重试。
+- **必须按 message 子串分类，不能按 `error.code`**：REFUSED/CANCEL/INTERNAL 的 code **都是** `ERR_HTTP2_STREAM_ERROR`，具体码只在 message（`NGHTTP2_REFUSED_STREAM` vs `NGHTTP2_CANCEL` vs `NGHTTP2_INTERNAL_ERROR`）。修复：`isRetryableHttp2StreamError`（按子串 `NGHTTP2_REFUSED_STREAM`、递归 cause）→ 分类 `network_error` → 复用 `network-retry`（全 4 格式链 index 0、1 次重试、`getSession` 自动落新会话）。`classify.ts` 是单一源，同修 v4 driver + legacy web_search。**故意只 scope REFUSED**，不碰 CANCEL/INTERNAL（守卫测试锁边界）；`ERR_HTTP2_GOAWAY_SESSION` 属同族但**未复现/未观测，出现即扩** `HTTP2_RETRYABLE_MESSAGE_TOKENS`。
+- **REFUSED 走 pre-response 路径**（`http2-client.ts:397` 的 `req.once("error")`），**不同于** body-stream handler——故 `http2-client.ts:359-365` 的「Bun 把干净 RST 当 clean end」caveat 只针对 mid-stream body 流、**不适用于** pre-response REFUSED。
+- **测夹具坑：Bun 服务端 `stream.close(code)` 不发忠实 RST 帧**（Bun **客户端**看到 clean end/rstCode=0）。故测 REFUSED 重试，服务端夹具**必须用 Node** `http2.createServer` + `stream.close(NGHTTP2_REFUSED_STREAM)`，客户端才收真帧；`bun test` 内（Bun http2 server）的 transport 级 REFUSED oracle **不可行**——改由探针脚本（`exp/http2-refused-retry/`）+ classify 单元测试（用实证消息串）+ E2E（合成同串、已被探针实证非自造）覆盖。两 runtime 收真 RST 抛逐字一致 `err.message === "Stream closed with error code NGHTTP2_REFUSED_STREAM"`（Node-server ← Bun-client 忠实镜像生产 Bun-client ← GHC）。
+
 ## 验证（实测裁决，非推断）
 
 - dispatcher 是否消费：子类 Agent override dispatch（`upstream-fetch.unit.test.ts`）。
