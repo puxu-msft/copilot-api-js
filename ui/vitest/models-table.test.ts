@@ -58,11 +58,13 @@ describe("ModelsTable", () => {
     expect(rowIds[0]).toContain("big")
   })
 
-  test("row click expands to a detail row", async () => {
+  test("row click emits select with the model id (drawer replaces in-row expand)", async () => {
     const w = mountTable([model("a", {})])
     expect(w.find("tr.model-expand-row").exists()).toBe(false)
     await w.find("tr.model-row").trigger("click")
-    expect(w.find("tr.model-expand-row").exists()).toBe(true)
+    // No in-row expansion anymore — selection is delegated to the page's drawer.
+    expect(w.find("tr.model-expand-row").exists()).toBe(false)
+    expect(w.emitted("select")?.[0]).toEqual(["a"])
   })
 
   test("reasoning effort levels surface (array support not dropped)", () => {

@@ -8,14 +8,15 @@ import {
   ref,
 } from "vue"
 
-import JsonViewerSurface from "@/components/ui/JsonViewerSurface.vue"
-
 const props = defineProps<{
   models: Array<Model>
   caps: (m: Model) => DerivedCapabilities
   vendorColor: (v: string | undefined) => string
   fmtNum: (n: number | undefined) => string
+  selectedId?: string | null
 }>()
+
+const emit = defineEmits<{ select: [string] }>()
 
 type SortKey = "id" | "vendor" | "context" | "output" | "billing"
 const sortKey = ref<SortKey>("id")
@@ -63,11 +64,6 @@ function toggleSort(key: SortKey): void {
     // Numeric columns default to descending (largest first) — more useful.
     sortDesc.value = key === "context" || key === "output" || key === "billing"
   }
-}
-
-const expanded = ref<string | null>(null)
-function toggleExpand(id: string): void {
-  expanded.value = expanded.value === id ? null : id
 }
 
 // Capability matrix columns (icon per derived boolean) + thinking/effort detail.
@@ -164,14 +160,11 @@ function thinkingDetail(c: DerivedCapabilities): string {
         >
           <tr
             class="model-row"
-            @click="toggleExpand(m.id)"
+            :class="{ selected: m.id === selectedId }"
+            @click="emit('select', m.id)"
           >
             <td class="td-id font-mono">
-              <v-icon
-                :icon="expanded === m.id ? 'mdi-chevron-down' : 'mdi-chevron-right'"
-                size="x-small"
-                class="mr-1"
-              />{{ m.id
+              {{ m.id
               }}<v-chip
                 v-if="m.is_chat_default"
                 size="x-small"
@@ -221,18 +214,6 @@ function thinkingDetail(c: DerivedCapabilities): string {
               >
             </td>
             <td class="td-num font-mono">{{ m.billing?.multiplier ?? "-" }}</td>
-          </tr>
-          <tr
-            v-if="expanded === m.id"
-            class="model-expand-row"
-          >
-            <td :colspan="6 + capCols.length">
-              <JsonViewerSurface
-                :data="m"
-                :show-toolbar="false"
-                class="model-raw"
-              />
-            </td>
           </tr>
         </template>
       </tbody>
@@ -295,6 +276,10 @@ function thinkingDetail(c: DerivedCapabilities): string {
   cursor: pointer;
 }
 
+.model-row.selected {
+  background: rgb(var(--v-theme-surface-variant));
+}
+
 .td-id {
   font-weight: 600;
 }
@@ -310,15 +295,5 @@ function thinkingDetail(c: DerivedCapabilities): string {
 
 .cap-no {
   color: rgb(var(--v-theme-surface-variant));
-}
-
-.model-expand-row td {
-  padding: 0;
-  background: rgb(var(--v-theme-background));
-}
-
-.model-raw {
-  max-height: 360px;
-  overflow: auto;
 }
 </style>

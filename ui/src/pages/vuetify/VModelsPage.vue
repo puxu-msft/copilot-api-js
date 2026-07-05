@@ -2,15 +2,20 @@
 import {
   //
   computed,
+  onMounted,
   ref,
 } from "vue"
 
+import { api } from "@/api/http"
+import ModelDetailDrawer from "@/components/models/ModelDetailDrawer.vue"
 import ModelsFilterBar from "@/components/models/ModelsFilterBar.vue"
 import ModelsTable from "@/components/models/ModelsTable.vue"
 import ModelsToolbar from "@/components/models/ModelsToolbar.vue"
 import JsonViewerSurface from "@/components/ui/JsonViewerSurface.vue"
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard"
+import { useModelDetail } from "@/composables/useModelDetail"
 import { useModelsCatalog } from "@/composables/useModelsCatalog"
+import { parseRequestTelemetry, type RequestTelemetrySnapshot } from "@/composables/telemetry-parse"
 
 const {
   billingBounds,
@@ -35,6 +40,29 @@ const {
 } = useModelsCatalog()
 const isRawJsonOpen = ref(false)
 const { copy } = useCopyToClipboard()
+
+// Telemetry snapshot: one-shot load on mount (re-fetches on revisit via remount).
+const telemetrySnapshot = ref<RequestTelemetrySnapshot | null>(null)
+onMounted(async () => {
+  try {
+    const status = await api.fetchStatus()
+    telemetrySnapshot.value = parseRequestTelemetry(status.requestTelemetry)
+  } catch {
+    // Telemetry is best-effort enrichment; the catalog stands without it.
+    telemetrySnapshot.value = null
+  }
+})
+
+const detail = useModelDetail(models, telemetrySnapshot)
+const selectedModel = computed(() => models.value.find((m) => m.id === detail.selectedId.value) ?? null)
+const selectedCaps = computed(() => (selectedModel.value ? caps(selectedModel.value) : null))
+const selectedTelemetry = computed(() => (detail.selectedId.value ? detail.telemetryFor(detail.selectedId.value) : null))
+const drawerOpen = computed({
+  get: () => detail.isOpen.value,
+  set: (value) => {
+    if (!value) detail.close()
+  },
+})
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -125,10 +153,19 @@ function copyModelsJson(): void {
             :caps="caps"
             :vendor-color="vendorColor"
             :fmt-num="fmtNum"
+            :selected-id="detail.selectedId.value"
+            @select="detail.open"
           />
         </section>
       </section>
     </div>
+
+    <ModelDetailDrawer
+      v-model="drawerOpen"
+      :model="selectedModel"
+      :caps="selectedCaps"
+      :telemetry="selectedTelemetry"
+    />
 
     <v-dialog
       v-model="isRawJsonOpen"
