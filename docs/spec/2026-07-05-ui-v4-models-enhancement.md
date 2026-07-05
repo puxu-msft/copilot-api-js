@@ -23,7 +23,7 @@
 ### 非目标
 
 - **后端仅一处小改**：models route 现状即忠实透传（完整内部 payload），遥测复用现有 `/api/status`、`/api/stats` 端点。唯一后端改动是移除 `stripInternalFields` 对 `request_headers` 的剥离（§13，按 ADR `internal-tool-security-posture`）。
-- **不引 WebSocket**：Models 目录是准静态数据 + 遥测快照轮询足够。
+- **不引 WebSocket、不轮询**：Models 目录是准静态数据；遥测**在页面挂载/重访时一次性加载**即可（hash 路由懒加载，导航到 `/models` 会重新挂载 → 天然"重访即刷新"），无需定时轮询。
 - **首版遥测不接 `/api/stats` 直方图**：仅用 `/api/status` 的聚合数值（p50/p90/p99 直方图作为后续增强，见 §10）。
 - **不新增 Pinia store**：抽屉/选中态不跨路由，页面作用域 composable 足够（见 §5）。
 
@@ -78,7 +78,7 @@
 **方案**：把 `useDashboardStatus.ts:209-280` 的 parse 逻辑**抽成独立纯函数** `parseRequestTelemetry(raw: unknown): RequestTelemetrySnapshot | null`（连同内部 `parseUsage`/`parseModelStats`/`parseModels`/`parseModelSeries`），放共享位置（如 `ui/src/composables/telemetry-parse.ts`）。
 
 - `useDashboardStatus` 改为调用该纯函数（行为逐字节等价，回归靠现有 Dashboard 测试兜底）。
-- Models 页新建遥测源：`usePolling(() => api.fetchStatus(), 15000)`（15s 快照轮询，模型目录准静态、无需更密）+ `parseRequestTelemetry(data.value?.requestTelemetry)` → 拿到 snapshot，**零 WS**。
+- Models 页新建遥测源：在 `onMounted` **一次性** `api.fetchStatus()` + `parseRequestTelemetry(data.requestTelemetry)` → 拿到 snapshot（与 `useModelsCatalog` 的 models fetch 同一挂载生命周期，可并列或合并到同一 composable）。**重访即刷新**（页面重新挂载重新 fetch），**不定时轮询、零 WS**。
 
 ### 4.2 join key 归一化（已核验的失配 → 显式处理）
 
@@ -173,7 +173,7 @@ utils:
 | 列配置持久化 | `useLocalStorage`(VueUse) | 范例 `useAppTheme.ts:17` |
 | Esc/键盘 | `onKeyStroke` + `isTyping()` | 范例 `VDetailPage.vue:172-181` |
 | 剪贴板 | `useCopyToClipboard` | `useCopyToClipboard.ts` |
-| 遥测轮询 | `usePolling<T>` | `usePolling.ts` |
+| 遥测加载 | `onMounted` 一次性 `api.fetchStatus()`（同 models fetch 模式，无需 `usePolling`） | 范例 `useModelsCatalog.ts:43` |
 | CSV 下载 | Blob + anchor（参照 `downloadEntryAsZst`） | `utils/export-entry.ts` |
 | caps 派生 | `deriveCapabilities` / 页面 `caps()` | `capabilities.ts:52` / `useModelsCatalog.ts:56` |
 | 端点推断 | `getEffectiveEndpoints` | `utils/model-endpoints.ts` |
