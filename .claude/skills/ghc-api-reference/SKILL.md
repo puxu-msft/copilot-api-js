@@ -32,9 +32,10 @@ GitHub Copilot Chat 扩展的源码是 **GHC API 行为的定义者**——它�
   - `endpoint/common/modelAliasRegistry.ts` 在最新源**已删除**，alias 逻辑并入 `chatModelCapabilities.ts` / `endpointProvider.ts`。
   - `anthropic.ts:modelSupportsMemory` 签名从 `(modelId: string)` 变为 `(model: LanguageModelChat | IChatEndpoint | string)`。
   - `messagesApi.ts` / `responsesApi.ts` 的关键导出（`createMessagesRequestBody`、`AnthropicMessagesProcessor`、`createResponsesRequestBody`、`OpenAIResponsesProcessor`）在最新源仍稳定一致。
-- **本项目反而领先归档点**（本项目已支持、归档点还没有的）：
-  - `modelSupportsContextEditing` / `modelSupportsToolSearch` 已纳入 `claude-opus-4-7`、adaptive-thinking 已纳入 `opus-4-8`——归档点的 `TOOL_SEARCH_SUPPORTED_MODELS` 只到 `opus-4.6`。
-  - 因此「本项目比归档副本多了某模型」往往是**正确的领先**，不是 bug；要确认请查最新源，别拿冻结副本当裁判。
+- **本项目与最新源对齐进展**（2026-07 三特性对齐后）：
+  - tool-search 已从"手动 allowlist + config 门控"改为最新源的 **default-allow**（Claude ≥4.5 放行、拒 Haiku + pre-4.5）+ per-model `tool_search_overrides` + 全局 `tool_search` 开关（Phase 1）。归档点的 `TOOL_SEARCH_SUPPORTED_MODELS` / `isAnthropicToolSearchEnabled` 均已在最新源删除。
+  - `extended-cache-ttl-2025-04-11`（Phase 2）与 memory tool `memory_20250818`（Phase 3，默认关）已镜像；所有能力匹配器已加 GHC 的 `matches(id) || matches(family)` fallback（Phase 0）。
+  - 因此「本项目比冻结副本多某能力/模型」往往是**正确的领先**，不是 bug；要确认请查最新源，别拿冻结副本当裁判。
 
 > 结论：核对**新模型 / 新 beta**一律以最新源为准；查**稳定的协议形状/历史逻辑**用本地冻结副本即可（快、离线）。
 
@@ -79,30 +80,33 @@ gh search code --repo microsoft/vscode "isAnthropicToolSearchEnabled" --json pat
 | 条件（上游函数） | beta 字符串 |
 |---|---|
 | `!supportsAdaptiveThinking`（即模型非 adaptive thinking） | `interleaved-thinking-2025-05-14` |
+| `supportsToolSearch`（属性，metadata `tool_search` ?? `modelSupportsToolSearch`；config 门控已删） | `advanced-tool-use-2025-11-20` |
 | `isAnthropicContextEditingEnabled(endpoint, config, exp)` | `context-management-2025-06-27` |
-| `isAnthropicToolSearchEnabled(endpoint, config)` | `advanced-tool-use-2025-11-20` |
+| `isExtendedCacheTtlEnabled(...)`（模型 + location===Agent + 非 subagent + config；最新源新增） | `extended-cache-ttl-2025-04-11` |
 
-另条件性附加 `X-Model-Provider-Preference` header。`supportsAdaptiveThinking` 来自 `modelMetadata.capabilities.supports.adaptive_thinking`。
+另条件性附加 `X-Model-Provider-Preference` header。`supportsAdaptiveThinking` 来自 `modelMetadata.capabilities.supports.adaptive_thinking`。最新源已把组装重构进 `getAnthropicBetaHeader`（`chatEndpoint.ts`），且 tool-search 的 config 门控（旧 `isAnthropicToolSearchEnabled` + `AnthropicToolSearchEnabled`）已删除、改纯能力驱动 default-allow。
 
-→ 本项目对应 `features.ts:buildAnthropicBetaHeaders`，三个 beta 字符串已对齐。本项目额外做了**client-beta 合并**（`mergeAnthropicBeta`，对应上游 PR #4945），并发 `X-Initiator: agent|user` + `anthropic-version: 2023-06-01`（在 `request-preparation.ts`）。
+→ 本项目对应 `features.ts:buildAnthropicBetaHeaders`，四个 beta 字符串已对齐（含 `extended-cache-ttl-2025-04-11`，Phase 2）。本项目额外做了**client-beta 合并**（`mergeAnthropicBeta`，对应上游 PR #4945），并发 `X-Initiator: agent|user` + `anthropic-version: 2023-06-01`（在 `request-preparation.ts`）。
 
-### 模型能力判断（`anthropic.ts`，全部 `string` 入参先 `.toLowerCase().replace(/\./g,'-')` 归一）
+### 模型能力判断（`anthropic.ts` / `chatModelCapabilities.ts`，全部 `string` 入参先 `.toLowerCase().replace(/\./g,'-')` 归一；最新源全部 `matches(id) || matches(family)`）
 
 | 上游函数 | 命中模型前缀（归一化后） | 本项目对应 |
 |---|---|---|
-| `modelSupportsContextEditing` | haiku-4-5 / sonnet-4(-5/-6) / opus-4(/-1/-5/-6)；**含 `1m` 的变体返回 false** | `modelSupportsContextEditing`（本项目已加 opus-4-7） |
+| `modelSupportsContextEditing` | haiku-4-5 / sonnet-4(-5/-6) / opus-4(/-1/-5/-6)；**含 `1m` 的变体返回 false** | `modelSupportsContextEditing`（含 opus-4-7；已加 family fallback） |
 | `modelSupportsInterleavedThinking` | sonnet-4(-5) / haiku-4-5 / opus-4-5 | `modelSupportsInterleavedThinking` |
-| `modelSupportsMemory` | haiku-4-5 / sonnet-4(-5/-6) / opus-4(/-1/-5/-6) | **本项目未镜像**（暂不支持 memory tool） |
-| `isAnthropicToolSearchEnabled` | 模型 ∈ `TOOL_SEARCH_SUPPORTED_MODELS` **且** config `AnthropicToolSearchEnabled` | `modelSupportsToolSearch` + 配置门控（本项目已加 opus-4-7） |
+| `modelSupportsMemory` | fable-5 / haiku-4-5 / sonnet-4(-5/-6) / opus-4(/-1/-5/-6/-7/-8) | **已镜像**（`features.ts:modelSupportsMemory` + config `memory_tool` 开关默认关，Phase 3） |
+| `modelSupportsExtendedCacheTtl` | fable-5 / opus-4-5..8 / sonnet-4-5/6 / haiku-4-5（比 memory 窄） | **已镜像**（`modelSupportsExtendedCacheTtl` + config `extended_cache_ttl`，Phase 2） |
+| `modelSupportsToolSearch`（default-allow：Claude ≥4.5 放行，拒 Haiku + pre-4.5；OpenAI gpt-5.4/5.5 另支） | 见左（config 门控已删） | `modelSupportsToolSearch` = metadata ?? `tool_search_overrides` ?? `toolSearchDefaultAllow`（Phase 1，仅镜像 Claude 分支）+ 全局 `tool_search` 开关 |
 | `isAnthropicContextEditingEnabled` | `modelSupportsContextEditing` **且** config mode ≠ `'off'` | `isContextEditingEnabled` |
-| `isAnthropicMemoryToolEnabled` | `modelSupportsMemory` **且** config `MemoryToolEnabled` | 未镜像 |
+| `isExtendedCacheTtlEnabled` | `modelSupportsExtendedCacheTtl` + location===Agent + 非 subagent + config | 本项目：模型 + `extendedCacheTtlEnabled` + `isAgentCall`（近似 Agent 门；无 ChatLocation） |
 | `isAnthropicCustomToolSearchEnabled` | tool search 已启用 **且** `AnthropicToolSearchMode === 'client'`（embeddings 客户端搜索） | 未镜像（本项目走 server tool search） |
 
-**命名陷阱**：上游**没有** `modelSupportsToolSearch` 函数（那是本项目的命名）；上游是 `isAnthropicToolSearchEnabled` + 常量 `TOOL_SEARCH_SUPPORTED_MODELS`。grep 上游用上游名。
+**命名陷阱**：上游最新源**已有** `modelSupportsToolSearch`（迁到 `chatModelCapabilities.ts`，default-allow denylist）；旧归档点是 `isAnthropicToolSearchEnabled` + 常量 `TOOL_SEARCH_SUPPORTED_MODELS`（已删）。grep 最新源用新名。
 
 关键常量（`anthropic.ts`）：
-- `TOOL_SEARCH_SUPPORTED_MODELS = ['claude-sonnet-4.5','claude-sonnet-4.6','claude-opus-4.5','claude-opus-4.6']`（归档点；最新源可能已扩，**用前先 sparse 核对**）
+- ~~`TOOL_SEARCH_SUPPORTED_MODELS`~~ 已删除——tool-search 改为 default-allow（`chatModelCapabilities.ts:modelSupportsToolSearch`：deny 非 claude/haiku/pre-4.5，其余 allow）。
 - `TOOL_SEARCH_TOOL_NAME = 'tool_search_tool_regex'`、`TOOL_SEARCH_TOOL_TYPE = 'tool_search_tool_regex_20251119'`、`CUSTOM_TOOL_SEARCH_NAME = 'tool_search'`
+- memory 原生 tool：`{name:'memory', type:'memory_20250818'}`，仅 BYOK 路径注入、共用 `context-management-2025-06-27` beta（CAPI 路径不注入——本项目经 CAPI，故 `memory_tool` 默认关、CAPI 接受性未实测）。
 
 ### context_management 构建（`anthropic.ts:buildContextManagement` / `getContextManagementFromConfig`）
 
@@ -147,12 +151,13 @@ BYOK converters（`extension/byok/common/{gemini,anthropic}*Converter.ts`）本�
 
 | 上游（`src/`，新仓库加前缀 `extensions/copilot/`） | 本项目 | 状态 |
 |---|---|---|
-| `chatEndpoint.ts:getExtraHeaders` | `features.ts:buildAnthropicBetaHeaders`(+`mergeAnthropicBeta`) | 三 beta 已对齐，需核对新增 |
+| `chatEndpoint.ts:getExtraHeaders`/`getAnthropicBetaHeader` | `features.ts:buildAnthropicBetaHeaders`(+`mergeAnthropicBeta`) | 四 beta 已对齐（含 extended-cache-ttl） |
 | `anthropic.ts:modelSupportsInterleavedThinking` | `features.ts:modelSupportsInterleavedThinking` | 对齐 |
-| `anthropic.ts:modelSupportsContextEditing` | `features.ts:modelSupportsContextEditing` | 本项目领先（含 opus-4-7） |
-| `anthropic.ts:isAnthropicToolSearchEnabled`+`TOOL_SEARCH_SUPPORTED_MODELS` | `features.ts:modelSupportsToolSearch`+配置门控 | 命名不同；本项目领先（含 opus-4-7） |
+| `anthropic.ts:modelSupportsContextEditing` | `features.ts:modelSupportsContextEditing` | 本项目领先（含 opus-4-7）+ family fallback |
+| `chatModelCapabilities.ts:modelSupportsToolSearch`（default-allow） | `features.ts:modelSupportsToolSearch`(=metadata ?? `tool_search_overrides` ?? `toolSearchDefaultAllow`)+全局 `tool_search` 开关 | 已对齐 default-allow（Phase 1，仅镜像 Claude 分支） |
+| `anthropic.ts:modelSupportsExtendedCacheTtl`/`isExtendedCacheTtlEnabled` | `features.ts:modelSupportsExtendedCacheTtl` + `request-preparation.ts` cache 管线 | 已镜像（Phase 2，Agent 门用 isAgentCall 近似） |
 | `anthropic.ts:isAnthropicContextEditingEnabled` | `features.ts:isContextEditingEnabled` | 对齐 |
-| `anthropic.ts:modelSupportsMemory`/`isAnthropicMemoryToolEnabled` | 未镜像 | 新增 memory 时参考此处 |
+| `anthropic.ts:modelSupportsMemory` + BYOK `anthropicProvider.ts` memory 改写 | `features.ts:modelSupportsMemory` + `request-preparation.ts:rewriteMemoryTool` + config `memory_tool` | 已镜像（Phase 3，默认关，CAPI 接受性未实测） |
 | `anthropic.ts:buildContextManagement`/`getContextManagementFromConfig` | `features.ts:buildContextManagement` | 默认值本项目改为可配 state |
 | `messagesApi.ts:createMessagesRequestBody`/`AnthropicMessagesProcessor` | `anthropic/client.ts` | 已覆盖 |
 | `responsesApi.ts:createResponsesRequestBody`/`OpenAIResponsesProcessor` | `openai/responses-client.ts` | 已覆盖 |
