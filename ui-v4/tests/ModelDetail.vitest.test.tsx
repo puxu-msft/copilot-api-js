@@ -222,4 +222,57 @@ describe("ModelDetail", () => {
     fireEvent.keyDown(globalThis.window, { key: "Escape" })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
+
+  it("does NOT close on Escape while a text control is focused (isTyping guard)", () => {
+    const onClose = vi.fn()
+    render(
+      <ModelDetail
+        model={VISION_MODEL}
+        telemetry={null}
+        onClose={onClose}
+      />,
+    )
+    const input = document.createElement("input")
+    document.body.append(input)
+    input.focus()
+    fireEvent.keyDown(globalThis.window, { key: "Escape" })
+    expect(onClose).not.toHaveBeenCalled()
+    input.remove()
+    // With focus back outside a text control, Escape closes again.
+    fireEvent.keyDown(globalThis.window, { key: "Escape" })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("moves focus into the panel on open", () => {
+    render(
+      <ModelDetail
+        model={VISION_MODEL}
+        telemetry={null}
+        onClose={() => {}}
+      />,
+    )
+    expect(document.activeElement).toBe(screen.getByRole("region", { name: /Model detail/i }))
+  })
+
+  it("uses the WAI-ARIA tabs pattern: roving tabindex + arrow-key navigation", () => {
+    render(
+      <ModelDetail
+        model={VISION_MODEL}
+        telemetry={null}
+        onClose={() => {}}
+      />,
+    )
+    const overview = screen.getByRole("tab", { name: "Overview" })
+    const capabilities = screen.getByRole("tab", { name: "Capabilities" })
+    // Only the active tab is Tab-focusable (roving tabindex).
+    expect(overview.getAttribute("tabindex")).toBe("0")
+    expect(capabilities.getAttribute("tabindex")).toBe("-1")
+    // ArrowDown on the tablist activates + focuses the next tab.
+    fireEvent.keyDown(screen.getByRole("tablist"), { key: "ArrowDown" })
+    expect(capabilities.getAttribute("aria-selected")).toBe("true")
+    expect(capabilities.getAttribute("tabindex")).toBe("0")
+    expect(document.activeElement).toBe(capabilities)
+    // The panel is associated back to the active tab.
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(capabilities.getAttribute("id"))
+  })
 })

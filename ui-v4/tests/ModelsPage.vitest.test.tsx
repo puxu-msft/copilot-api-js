@@ -46,10 +46,24 @@ vi.mock("@/hooks/useModelTelemetry", () => ({
           averageDurationMs: 0,
           usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 },
         },
+        {
+          // A pure-alias failing request with no catalog match → surfaces in "Unmatched telemetry".
+          model: "ghost-alias",
+          requestCount: 3,
+          successCount: 0,
+          failureCount: 3,
+          totalDurationMs: 0,
+          averageDurationMs: 0,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 },
+        },
       ],
     },
   }),
 }))
+
+vi.mock("@/lib/export-entry", () => ({ triggerDownload: vi.fn() }))
+
+const { triggerDownload } = await import("@/lib/export-entry")
 
 const { ModelsPage } = await import("@/components/models/ModelsPage")
 
@@ -106,5 +120,21 @@ describe("ModelsPage", () => {
     expect(screen.getByRole("tab", { name: "Raw JSON" })).toBeDefined()
     fireEvent.click(screen.getByRole("button", { name: /Close model detail/i }))
     expect(screen.queryByRole("region", { name: /Model detail/i })).toBeNull()
+  })
+
+  it("exports the current view as a text/csv download", () => {
+    vi.mocked(triggerDownload).mockClear()
+    renderPage()
+    fireEvent.click(screen.getByText("Export CSV"))
+    expect(triggerDownload).toHaveBeenCalledTimes(1)
+    const [blob, filename] = vi.mocked(triggerDownload).mock.calls[0]
+    expect(filename).toBe("models.csv")
+    expect(blob.type).toContain("text/csv")
+  })
+
+  it("surfaces unmatched telemetry (no catalog model) rather than dropping it", () => {
+    renderPage()
+    expect(screen.getByText(/Unmatched telemetry/i)).toBeDefined()
+    expect(screen.getByText("ghost-alias")).toBeDefined()
   })
 })
