@@ -158,11 +158,11 @@ DESIGN §7 原文「默认 raw + 可切结构化」。**本 spec 修正**：结�
 
 - **sparse dirty tracking**：只把**改动过**的字段纳入 PUT body（sparse override），未动字段不发。稳定 JSON stringify 比对判 dirty（对标旧 Vue useConfigEditor）。
 - **null=删键**：字段被清空/重置为「用未设」→ 发 `null`（后端删该键，回落 bundled 默认）。UI 区分「显式设值」vs「未设（用默认）」。
-- **整体替换字段（后端 setScalar/replaceCollection 语义，前端必须整份发、不可 sparse 子键）**：核验 `mergeConfigIntoDocument`（route.ts:257-321）——后端对下列字段是**整体 setIn/替换**，不 per-key 合并。前端若只发改动的子键会**丢失同级兄弟键**（真 bug 隐患）：
-  - 顶层 collections：`model_overrides` · `system_prompt_overrides` · `disabled_models`；anthropic collections：`system_rewrite_reminders` · `tool_non_deferred`。
-  - **anthropic 嵌套对象**：`extended_cache_ttl`（含 enabled/tools_system_ttl/messages_ttl）· `model_capabilities`（含 5 个 string-list + tool_search_overrides）——改任一子字段须**整份重发该对象**。
-  - **anthropic record 字段**：`effort_overrides` · `beta_strip_headers` · `partner_strip_features` · `retry_reject_body_fields` · `tool_decode_input_fields`——整份替换。
-  - 前端对这些字段的 dirty 粒度 = **整对象**（改子键 → 标整对象 dirty → 发完整当前值）。控件（nested/record-*）内部维护完整对象态。
+- **merge 行为三分（后端 route.ts:257-290 核验，前端按描述符 `mergeMode` 区分）**：
+  - **per-key**：顶层 section（`history`/`timeouts`/`rate_limiter`/`shutdown`/`openai_responses`/`auto_truncate`）+ anthropic 顶层——`setNestedScalarContainer` 逐子键 merge。前端**只发 sparse 子键、绝不整份发**（否则丢隐藏键如 deprecated `history.limit`）。
+  - **whole**：anthropic 子对象（`extended_cache_ttl`/`model_capabilities`）+ record 字段（`effort_overrides`/`beta_strip_headers`/`partner_strip_features`/`retry_reject_body_fields`/`tool_decode_input_fields`）——value 被 `setIn` 整体写。改子键 → 整份重发。
+  - **collection**：`model_overrides`/`system_prompt_overrides`/`anthropic.system_rewrite_reminders`/`anthropic.tool_non_deferred`——`replaceCollection` 整体替换。
+  - `mergeMode` 是描述符字段（从 route.ts 机械派生 + drift-guard 守），前端 `computeSparsePatch` 据此决定 sparse 子键 vs 整份 value。**control 类型 ≠ mergeMode**（不可从 control 反推）。
 - **requires-restart 提示**：改了 startup 字段（proxy/ghc_api_base_url/rate_limiter/model_refresh_interval）→ 保存后 toast「部分改动需重启生效」。
 - **保存**：PUT sparse body → 成功 invalidate 重拉；`resetConfigCache` 热重载后端已做。
 
@@ -191,8 +191,8 @@ DESIGN §7 原文「默认 raw + 可切结构化」。**本 spec 修正**：结�
 
 ## 11. 测试
 
-- **纯逻辑（bun）**：dirty diff（sparse override 计算）、null-delete 归一、collections 整体替换、raw↔结构化双向同步、服务端 error `field`→控件路径映射。
-- **组件（vitest + userEvent）**：各控件类型渲染 + 编辑触发 onChange；分区 Accordion；secret 遮蔽；requires-restart toast；服务端 400 回填字段高亮；raw↔结构化切换。
+- **纯逻辑（bun）**：dirty diff（sparse override，**按 mergeMode 两级粒度**）、null-delete 归一、per-key vs whole vs collection 三种 merge 行为、服务端 error `field`→控件路径映射、字段联动（禁用 + enum 钳制）。
+- **组件（vitest + userEvent）**：各控件类型渲染 + 编辑触发 onChange；分区 Accordion；secret 遮蔽 + 未键入不发；requires-restart toast；服务端 400 回填字段高亮；raw 只读切换 + secret mask。
 - **后端（bun）**：descriptor drift-guard（≡ schema）；descriptor 每条 control 合法。
 
 ---
@@ -211,6 +211,6 @@ DESIGN §7 原文「默认 raw + 可切结构化」。**本 spec 修正**：结�
 1. **P0 描述符地基**：（视 §12-A）schema.ts enum 提取为导出常量 + 关键 JSDoc→`.describe()` → 后端 `field-descriptors.ts`（全字段，含 deprecated）+ drift-guard 测试（schema 遍历器）+ 前端 re-export + 纯逻辑（dirty/null/整体替换/error-map）bun 测。**无 UI**。
 2. **P1 控件库**：Radix-based 控件集（text/number/toggle/enum/secret 等）+ 通用 schema-driven 渲染器 + 分区 Accordion。golden 控件测试。
 3. **P2 编辑语义 + 校验**：sparse PUT / null-delete / collections / requires-restart / 服务端 400 回填 / 客户端镜像校验。
-4. **P3 raw 共存 + 收尾**：raw↔结构化双向同步 + secret 遮蔽打磨 + a11y + 回填 DESIGN §7 / TODO.md（Config 对等达成）。
+4. **P3 raw 只读 + 收尾**：raw 只读展示 + 复制（secret mask）+ secret 遮蔽打磨 + a11y + 回填 DESIGN §7 / TODO.md（Config 对等达成）。
 
 每 phase：`typecheck:ui-v4` + `build:ui-v4`（真 rollup，验 `~backend` 纯模块）+ `test:ui-v4` + eslint 全绿 → 细粒度提交 → subagent audit。不自启 dev server。
