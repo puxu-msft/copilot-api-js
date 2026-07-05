@@ -93,6 +93,14 @@ v4 请求详情页目前只有 [ConvoSegment](../../src/components/detail/segmen
 
 ## 非目标（本次不做）
 
-- System 消息块、message 整体的 JSON 图标（用户选了「仅所有内容块」）。如需，未来在 `SystemMessage` / `MessageBlock` 各自接入同一 `BlockJsonModal`，原语已可复用。
+- System 消息块的 JSON 图标（`SystemMessage` 是另一条渲染路径）。如需，未来接入同一 `JsonModalButton` 即可，原语已可复用。
 - 段的 Code/Raw view 内不再叠加 per-block 图标（那些视图本身就是整块 JSON，见架构「覆盖边界」）。
 - body scroll-lock、focus-trap 等 modal 高级可达性增强 —— 内部工具当前不需要，原语留有扩展位（focus-in/restore 已做）。
+
+## 后续增补（message 整体层，2026-07-05 同日）
+
+用户反馈「看不到包含 `role: user` 的那一层」——per-block 只到内容块，看不到外层 message 对象。遂把「按钮 + 开关状态 + modal」抽成可复用 **`src/components/detail/JsonModalButton.tsx`**（`{ value, label, className }`，自持 open 状态、渲染 `BlockJsonModal`）：
+- `BlockChrome` 改为复用 `JsonModalButton`（label `"View block JSON"`，只保留 group-relative 定位）。
+- **`MessageBlock` role 行内**新增 `JsonModalButton`（label `"View message JSON"`，`ml-auto`，hover 浮现），`value={message}` → 看整条 `{ role, content }` 对象；外层 div 加 `group` 触发浮现。请求侧（ConversationView）与响应侧（ResponseSegment）的每条 message 都得此入口。
+- `BlockJsonModal` 标题取值 `blockType` 扩展：无 `type` 时回退 `role`（user message → 标题 `"user JSON"`）。
+- 测试：`JsonModalButton.vitest`（按钮/开 modal/role 标题）、`MessageBlock.vitest`（message 层入口 + 仍渲染块级入口）。

@@ -18,11 +18,13 @@ function toggleClass(active: boolean): string {
   return `${TOGGLE_BASE} ${active ? "text-[var(--color-primary)]" : "text-[var(--color-muted)]"}`
 }
 
-/** Best-effort `type` off an arbitrary JSON value, for the modal title. */
+/** Best-effort label off an arbitrary JSON value for the modal title: `type` (content block)
+ *  or `role` (a whole message object), falling back to a generic `"block"`. */
 function blockType(value: unknown): string {
   if (typeof value === "object" && value !== null) {
-    const t = (value as { type?: unknown }).type
-    if (typeof t === "string") return t
+    const v = value as { type?: unknown; role?: unknown }
+    if (typeof v.type === "string") return v.type
+    if (typeof v.role === "string") return v.role
   }
   return "block"
 }
