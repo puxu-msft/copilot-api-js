@@ -2,6 +2,7 @@ import type { Model } from "~backend/lib/models/client"
 
 import {
   //
+  act,
   fireEvent,
   render,
   screen,
@@ -312,5 +313,28 @@ describe("ModelDetail", () => {
     // Vertical tablist does NOT own Left/Right — active tab unchanged.
     await user.keyboard("{ArrowRight}{ArrowLeft}")
     expect(rawJson.getAttribute("aria-selected")).toBe("true")
+  })
+
+  it("splitter ArrowLeft grows the right-docked panel (invert keyboard resize)", () => {
+    render(
+      <ModelDetail
+        model={VISION_MODEL}
+        telemetry={null}
+        onClose={() => {}}
+      />,
+    )
+    const sep = screen.getByRole("separator", { name: /Resize model detail/i })
+    expect(sep.getAttribute("tabindex")).toBe("0")
+    const before = Number(sep.getAttribute("aria-valuenow"))
+    // invert=true (handle on the panel's LEFT edge) → ArrowLeft GROWS the width.
+    act(() => {
+      fireEvent.keyDown(sep, { key: "ArrowLeft" })
+    })
+    expect(Number(sep.getAttribute("aria-valuenow"))).toBe(before + 16)
+    // ArrowRight shrinks back.
+    act(() => {
+      fireEvent.keyDown(sep, { key: "ArrowRight" })
+    })
+    expect(Number(sep.getAttribute("aria-valuenow"))).toBe(before)
   })
 })
