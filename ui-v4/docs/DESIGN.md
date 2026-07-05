@@ -35,6 +35,8 @@
 
 > **JSON 查看器修订**：早先选 `@uiw/react-json-view`，但请求内搜索（§6）要在折叠/未渲染 JSON 子树里计数+高亮+跳转定位，该库**无法被外部搜索驱动**展开/定位。故 JSON 段改用**可控渲染器**（CodeMirror 6 JSON + 可控 search/fold，或自建虚拟化树），全段走统一数据模型搜索。`@uiw/react-json-view` 不采用。
 
+> **UI 组件层现状勘误 + 迁移决策（2026-07-05）**：上表的 "shadcn/ui" 在实现中**未落地**——所有交互原语（Modal/Tabs/Menu/resize）都手写、零 Radix 依赖，导致 a11y 反复手补踩坑（P4 详情面板实证）。已决**采用 `radix-ui` 统一包（headless）增量迁移手写原语、保留 Terminal Amber 视觉**（"shadcn/ui" 精化为 "Radix Primitives"，弃其成品样式）。→ ADR [decisions/2026-07-05-adopt-radix-primitives.md](decisions/2026-07-05-adopt-radix-primitives.md) + plan [plans/2026-07-05-radix-migration.md](plans/2026-07-05-radix-migration.md)。
+
 ### Workspace / 构建集成
 
 - ui-v4 = 新 bun workspace 成员（根 `workspaces:["ui","ui-v4"]`，单一根 `bun.lock`）。
