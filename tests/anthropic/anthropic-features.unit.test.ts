@@ -122,57 +122,92 @@ describe("modelSupportsContextEditing", () => {
   })
 })
 
-describe("modelSupportsToolSearch", () => {
-  test("should support claude-opus-4.6", () => {
+describe("modelSupportsToolSearch (default-allow for Claude ≥4.5 + per-model overrides)", () => {
+  const snapshot = snapshotStateForTests()
+  afterEach(() => restoreStateForTests(snapshot))
+
+  test("current-gen Claude ≥4.5 is allowed (opus 4.5/4.6/4.7/4.8, sonnet 4.5/4.6)", () => {
+    expect(modelSupportsToolSearch("claude-opus-4.5")).toBe(true)
     expect(modelSupportsToolSearch("claude-opus-4.6")).toBe(true)
-  })
-
-  test("should support claude-opus-4-6 (hyphenated)", () => {
     expect(modelSupportsToolSearch("claude-opus-4-6")).toBe(true)
-  })
-
-  test("should support claude-opus-4.7 and claude-opus-4.8 (GHC allows opus ≥ 4.5)", () => {
     expect(modelSupportsToolSearch("claude-opus-4.7")).toBe(true)
     expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(true)
-    expect(modelSupportsToolSearch("claude-opus-4-8")).toBe(true)
-  })
-
-  test("should support claude-opus-4.5", () => {
-    expect(modelSupportsToolSearch("claude-opus-4.5")).toBe(true)
-  })
-
-  test("should support claude-sonnet-4.5", () => {
     expect(modelSupportsToolSearch("claude-sonnet-4.5")).toBe(true)
-  })
-
-  test("should support claude-sonnet-4.6", () => {
     expect(modelSupportsToolSearch("claude-sonnet-4.6")).toBe(true)
   })
 
-  test("should NOT support claude-opus-4 (base)", () => {
+  test("new/future Claude models are picked up automatically (default-allow, no code change)", () => {
+    expect(modelSupportsToolSearch("claude-sonnet-5")).toBe(true)
+    expect(modelSupportsToolSearch("claude-opus-5")).toBe(true)
+    expect(modelSupportsToolSearch("claude-opus-4-9")).toBe(true)
+  })
+
+  test("GHC parity boundary: claude-opus-40 is allowed (not === opus-4, not -4-1/-4-2)", () => {
+    expect(modelSupportsToolSearch("claude-opus-40")).toBe(true)
+  })
+
+  test("pre-4.5 Claude generations are denied", () => {
     expect(modelSupportsToolSearch("claude-opus-4")).toBe(false)
-  })
-
-  test("should NOT support claude-opus-4.1 / claude-opus-41", () => {
     expect(modelSupportsToolSearch("claude-opus-4.1")).toBe(false)
-    expect(modelSupportsToolSearch("claude-opus-41")).toBe(false)
-  })
-
-  test("should NOT support unsupported claude-sonnet models", () => {
     expect(modelSupportsToolSearch("claude-sonnet-4")).toBe(false)
+    // Datestamped 4.0 base normalizes to `...-4-2...` → denied.
+    expect(modelSupportsToolSearch("claude-sonnet-4-20250514")).toBe(false)
+    expect(modelSupportsToolSearch("claude-3-5-sonnet")).toBe(false)
   })
 
-  test("should NOT support claude-haiku models", () => {
+  test("dotless claude-opus-41 is allowed (GHC parity: normalizes to `claude-opus-41`, not the `-4-1` prefix)", () => {
+    // Unrealistic spelling, but documents the exact GHC boundary: only the dotted `claude-opus-4.1`
+    // (→ `claude-opus-4-1`) hits the pre-4.5 denylist; the dotless form does not.
+    expect(modelSupportsToolSearch("claude-opus-41")).toBe(true)
+  })
+
+  test("Haiku is denied explicitly (no tool-search support)", () => {
     expect(modelSupportsToolSearch("claude-haiku-4.5")).toBe(false)
+    expect(modelSupportsToolSearch("claude-haiku-5")).toBe(false)
   })
 
-  test("should NOT support non-Claude models", () => {
+  test("non-Claude models are denied", () => {
     expect(modelSupportsToolSearch("gpt-4")).toBe(false)
     expect(modelSupportsToolSearch("gemini-2.5-pro")).toBe(false)
+  })
+
+  test("per-model override force-DISABLES a default-allowed model", () => {
+    setStateForTests({ toolSearchOverrides: { "claude-opus-4-8": false } })
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(false)
+    // A different allowed model is unaffected by the specific override.
+    expect(modelSupportsToolSearch("claude-sonnet-4.6")).toBe(true)
+  })
+
+  test("per-model override force-ENABLES a denied model (e.g. Haiku)", () => {
+    setStateForTests({ toolSearchOverrides: { "claude-haiku-4-5": true } })
+    expect(modelSupportsToolSearch("claude-haiku-4.5")).toBe(true)
+  })
+
+  test("most-specific override key wins over a broader one", () => {
+    setStateForTests({ toolSearchOverrides: { "claude-opus-4": false, "claude-opus-4-8": true } })
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(true) // longer key wins
+    expect(modelSupportsToolSearch("claude-opus-4.6")).toBe(false) // only the broad key matches
+  })
+
+  test('the "*" wildcard override disables everything', () => {
+    setStateForTests({ toolSearchOverrides: { "*": false } })
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(false)
+    expect(modelSupportsToolSearch("claude-sonnet-4.6")).toBe(false)
+  })
+
+  test("declared metadata tool_search:false short-circuits an override", () => {
+    const withSupports = (supports: Record<string, unknown>) =>
+      ({ id: "m", capabilities: { supports } }) as unknown as Parameters<typeof modelSupportsToolSearch>[1]
+    setStateForTests({ toolSearchOverrides: { "*": true } })
+    // Metadata is the highest layer → false beats the force-on override.
+    expect(modelSupportsToolSearch("claude-opus-4.8", withSupports({ tool_search: false }))).toBe(false)
   })
 })
 
 describe("buildAnthropicBetaHeaders", () => {
+  const snapshot = snapshotStateForTests()
+  afterEach(() => restoreStateForTests(snapshot))
+
   test("omits context-management beta when explicitly disabled", () => {
     const headers = buildAnthropicBetaHeaders("claude-opus-4.6", undefined, {
       disableContextManagement: true,
@@ -180,6 +215,15 @@ describe("buildAnthropicBetaHeaders", () => {
 
     expect(headers["anthropic-beta"]).toContain("advanced-tool-use-2025-11-20")
     expect(headers["anthropic-beta"]).not.toContain("context-management-2025-06-27")
+  })
+
+  test("the toolSearchEnabled master switch gates the advanced-tool-use beta", () => {
+    // A default-allowed model still gets the beta with the switch on…
+    setStateForTests({ toolSearchEnabled: true })
+    expect(buildAnthropicBetaHeaders("claude-opus-4.6")["anthropic-beta"] ?? "").toContain("advanced-tool-use-2025-11-20")
+    // …and NOT when the master switch is off (header stays consistent with the tool pipeline).
+    setStateForTests({ toolSearchEnabled: false })
+    expect(buildAnthropicBetaHeaders("claude-opus-4.6")["anthropic-beta"] ?? "").not.toContain("advanced-tool-use-2025-11-20")
   })
 })
 
@@ -236,8 +280,8 @@ describe("model-capability allowlists are config-driven (state-sourced)", () => 
   })
 
   test("empty list disables a capability entirely", () => {
-    setStateForTests({ toolSearchModels: [] })
-    expect(modelSupportsToolSearch("claude-opus-4.6")).toBe(false)
+    setStateForTests({ interleavedThinkingModels: [] })
+    expect(modelSupportsInterleavedThinking("claude-sonnet-4")).toBe(false)
   })
 
   test("interleaved list is config-driven too", () => {

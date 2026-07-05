@@ -217,6 +217,17 @@ describe("validateConfig — deprecated keys", () => {
     expect(result.history?.limit).toBe(100)
     expect(warnedMessages().some((m) => m.includes("history.min_entries"))).toBe(true)
   })
+
+  test("anthropic.model_capabilities.tool_search (removed list) → warn + drop, siblings preserved", () => {
+    const result = validateConfig({
+      anthropic: { model_capabilities: { tool_search: ["claude-opus-4.9"], context_editing: ["claude-opus-4.6"] } },
+    })
+    const mc = result.anthropic?.model_capabilities as Record<string, unknown> | undefined
+    expect(mc?.tool_search).toBeUndefined()
+    // A sibling capability list under the same section survives the removal.
+    expect(mc?.context_editing).toEqual(["claude-opus-4.6"])
+    expect(warnedMessages().some((m) => m.includes("anthropic.model_capabilities.tool_search"))).toBe(true)
+  })
 })
 
 describe("validateConfig — warn-once semantics", () => {

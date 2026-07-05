@@ -510,9 +510,12 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.model_capabilities) {
       const mc = a.model_capabilities
       if (mc.context_editing !== undefined) setAnthropicBehavior({ contextEditingModels: mc.context_editing })
-      if (mc.tool_search !== undefined) setAnthropicBehavior({ toolSearchModels: mc.tool_search })
       if (mc.interleaved_thinking !== undefined) setAnthropicBehavior({ interleavedThinkingModels: mc.interleaved_thinking })
       if (mc.adaptive_thinking !== undefined) setAnthropicBehavior({ adaptiveThinkingModels: mc.adaptive_thinking })
+      if (mc.tool_search_overrides !== undefined)
+        setAnthropicBehavior({
+          toolSearchOverrides: normalizeModelKeyedRecord(mc.tool_search_overrides, "anthropic.model_capabilities.tool_search_overrides"),
+        })
     }
     if (a.tool_inject_claude_code !== undefined) {
       setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.tool_inject_claude_code })

@@ -187,6 +187,13 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
     message: 'anthropic.refusal_recover_text is removed; use refusal_sse_rewrite ("refusal" | "end_turn" | "error")',
   }),
   removeKey("history.min_entries", "history.min_entries is removed (was tied to the deleted in-memory history store); ignoring"),
+  // Tool-search moved from a manual allowlist to a default-allow matcher (Claude ≥4.5; Haiku + pre-4.5
+  // denied), so the old `model_capabilities.tool_search` list is gone. Per-model exceptions now live in
+  // `model_capabilities.tool_search_overrides` ({ <model-substring>: true|false }).
+  removeKey(
+    "anthropic.model_capabilities.tool_search",
+    "anthropic.model_capabilities.tool_search is removed — tool-search is now default-allow for Claude ≥4.5 (Haiku + pre-4.5 denied); use model_capabilities.tool_search_overrides { <model-substring>: true|false } to force-enable/disable specific models",
+  ),
 
   // ── Naming-cleanup batch ──────────────────────────────────────────────────
   // section rename + inner ws/websocket unification

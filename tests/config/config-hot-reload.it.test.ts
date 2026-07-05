@@ -382,11 +382,12 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.contextEditingModels,
   },
   {
-    configKey: "anthropic.model_capabilities.tool_search",
-    stateKey: "toolSearchModels",
-    sampleYamlValue: `\n  - claude-opus-4.9`,
-    expectedStateValue: ["claude-opus-4.9"],
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.toolSearchModels,
+    configKey: "anthropic.model_capabilities.tool_search_overrides",
+    stateKey: "toolSearchOverrides",
+    sampleYamlValue: `\n  claude-opus-4.9: true\n  "*": false`,
+    // Keys are normalized (dots→dashes) by normalizeModelKeyedRecord; "*" is preserved verbatim.
+    expectedStateValue: { "claude-opus-4-9": true, "*": false },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.toolSearchOverrides,
   },
   {
     configKey: "anthropic.model_capabilities.interleaved_thinking",

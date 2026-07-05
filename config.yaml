@@ -239,14 +239,6 @@ anthropic:
       - claude-sonnet-4
       - claude-opus-4
       - claude-opus-41
-    # Native server-side tool_search support. / 原生服务端 tool_search 支持。
-    tool_search:
-      - claude-sonnet-4-5
-      - claude-sonnet-4-6
-      - claude-opus-4-5
-      - claude-opus-4-6
-      - claude-opus-4-7
-      - claude-opus-4-8
     # interleaved-thinking-2025-05-14 beta (non-adaptive thinking models). / interleaved-thinking-2025-05-14 beta（非 adaptive thinking 模型）。
     interleaved_thinking:
       - claude-sonnet-4
@@ -257,6 +249,17 @@ anthropic:
       - claude-opus-4-6
       - claude-opus-4-7
       - claude-opus-4-8
+    # Native server-side tool_search is DEFAULT-ALLOW for Claude ≥4.5 (Haiku + pre-4.5 denied), mirroring
+    # GHC — new Claude models are picked up automatically, no list to maintain. This map holds per-model
+    # OVERRIDES only: keys are model-name substrings ("*" = wildcard), value true=force-on / false=force-off.
+    # Precedence: declared /models metadata > this override map (most-specific key wins) > default-allow.
+    # Gated overall by the `tool_search` master switch below. Default: none (default-allow decides).
+    # 原生服务端 tool_search 对 Claude ≥4.5 默认放行（拒 Haiku 与 pre-4.5），镜像 GHC——新模型自动点亮、无名单维护。
+    # 此表只放 per-model 覆盖：键是模型名子串（"*"=通配），值 true=强制开 / false=强制关。
+    # 优先级：/models 元数据 > 本覆盖表（最具体键胜）> default-allow。总闸是下方 `tool_search` 开关。默认：空（由 default-allow 决定）。
+    # tool_search_overrides:
+    #   claude-opus-4-8: true
+    #   "*": false
 
   # Client→upstream request-header forwarding MODE (Anthropic path). Selects which list below is active. Both modes apply the same security floor first: the proxy's own core keys (Authorization / editor-version / x-request-id / openai-intent / x-github-api-version / anthropic-version / anthropic-beta / …) always win, and a sensitive denylist (cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded chain / hop-by-hop + x-github-* / openai-* namespaces) is ALWAYS removed — the whitelist cannot re-admit a credential. Request-side mirror of strict_response_headers.
   #   false (default) = BLACKLIST mode: forward client headers EXCEPT request_header_blacklist globs.
@@ -349,7 +352,11 @@ anthropic:
   # "input"：按 (name, input) 去重；"result"：还要求结果一致
   tool_dedup_calls: false
 
-  # Inject Copilot tool_search helper when the model supports it. / 模型支持时注入 Copilot tool_search 工具。
+  # Master switch for tool-search (both the advanced-tool-use beta header AND the Copilot tool_search
+  # helper injection). When true, tool-search is enabled for every model the capability resolver allows
+  # (default-allow Claude ≥4.5, refined by model_capabilities.tool_search_overrides above). false = off
+  # for all models. / tool-search 总闸（同时管 advanced-tool-use beta 头与 Copilot tool_search 工具注入）。
+  # 为 true 时对能力解析放行的每个模型启用（default-allow Claude ≥4.5，由上方 tool_search_overrides 细调）；false = 全部关闭。
   tool_search: true
 
   # Additional tool names that should never be deferred when tool_search is enabled.

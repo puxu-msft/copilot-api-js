@@ -279,7 +279,7 @@ export function preprocessTools(payload: MessagesPayload): MessagesPayload {
   let processed: MessagesPayload
   if (tools && tools.length > 0) {
     processed = { ...payload, tools: processToolPipeline(tools, model, messages, resolvedModel) }
-  } else if (modelSupportsToolSearch(model, resolvedModel)) {
+  } else if (state.toolSearchEnabled && modelSupportsToolSearch(model, resolvedModel)) {
     // No tools in request — but if tool search is enabled and history has tool_use
     // references, we need stubs to satisfy API validation
     const historyToolNames = collectHistoryToolNames(messages)

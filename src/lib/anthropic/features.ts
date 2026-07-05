@@ -20,6 +20,8 @@ import {
 import { normalizeForMatching } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
 
+import { findMostSpecific } from "./per-model-config"
+
 // ============================================================================
 // API routing
 // ============================================================================
@@ -126,13 +128,54 @@ export function isContextEditingEnabled(modelId: string, resolvedModel?: Model):
 }
 
 /**
- * Tool search is supported by:
- * - Claude Sonnet 4.5/4.6
- * - Claude Opus 4.5/4.6/4.7/4.8
+ * Built-in default-allow tool-search matcher, mirroring GHC's `modelSupportsToolSearch`
+ * (chatModelCapabilities.ts): every current-generation Claude (4.5 and newer) supports tool search,
+ * so new/future Claude models are picked up automatically; Haiku (no support) and the pre-4.5
+ * generations are denied explicitly. GHC's OpenAI gpt-5.4/5.5 branch is intentionally NOT mirrored —
+ * this module only runs on the Anthropic path.
+ *
+ * Uses raw `startsWith` on the normalized name (matching GHC), so the pre-4.5 datestamped bases
+ * (`claude-sonnet-4-20250514` → normalizes to `…-4-2…`) are correctly denied, while `claude-opus-40`
+ * is ALLOWED (GHC parity: not `=== claude-opus-4`, not a `-4-1`/`-4-2` prefix). Checks id AND family.
+ */
+export function toolSearchDefaultAllow(modelId: string, family?: string): boolean {
+  const check = (raw: string): boolean => {
+    const n = normalizeForMatching(raw)
+    if (!n.startsWith("claude")) return false
+    // Haiku has no tool-search support — deny explicitly.
+    if (n.startsWith("claude-haiku")) return false
+    // Pre-4.5 Claude generations are unsupported; everything newer is allowed automatically. The
+    // `-4-2` prefixes also catch the datestamped 4.0 bases (e.g. `claude-sonnet-4-20250514`).
+    const isPre45 =
+      n.startsWith("claude-1")
+      || n.startsWith("claude-2")
+      || n.startsWith("claude-3")
+      || n.startsWith("claude-instant")
+      || n === "claude-sonnet-4"
+      || n.startsWith("claude-sonnet-4-2")
+      || n === "claude-opus-4"
+      || n.startsWith("claude-opus-4-1")
+      || n.startsWith("claude-opus-4-2")
+    return !isPre45
+  }
+  return check(modelId) || (family !== undefined && check(family))
+}
+
+/**
+ * Tool search is default-allow for Claude ≥4.5 (Haiku + pre-4.5 denied); see {@link toolSearchDefaultAllow}.
+ *
+ * Precedence (each layer is authoritative when it resolves): declared metadata `supports.tool_search`,
+ * then the config-driven per-model `tool_search_overrides` force-on/off map (most-specific / `"*"`
+ * wildcard), then the built-in default-allow matcher. A `false` at any layer force-disables. This is a
+ * PURE capability predicate — the `toolSearchEnabled` master switch gates CONSUMPTION at the call sites
+ * (beta header + tool-pipeline injection), not the predicate, so metadata-consistency holds.
  */
 export function modelSupportsToolSearch(modelId: string, resolvedModel?: Model): boolean {
-  // Metadata-first (GHC-faithful): `supports.tool_search ?? modelSupportsToolSearch(this)` upstream.
-  return metadataCapability(resolvedModel, "tool_search") ?? matchModelCapability(modelId, state.toolSearchModels, resolvedModel?.capabilities?.family)
+  return (
+    metadataCapability(resolvedModel, "tool_search")
+    ?? findMostSpecific(modelId, state.toolSearchOverrides)
+    ?? toolSearchDefaultAllow(modelId, resolvedModel?.capabilities?.family)
+  )
 }
 
 // ============================================================================
@@ -211,7 +254,9 @@ export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model
     betaFeatures.push("context-management-2025-06-27")
   }
 
-  if (modelSupportsToolSearch(modelId, resolvedModel)) {
+  // The `toolSearchEnabled` master switch is the single gate for tool-search (beta header AND the
+  // tool-pipeline injection in message-tools.ts), keeping the header consistent with the pipeline.
+  if (state.toolSearchEnabled && modelSupportsToolSearch(modelId, resolvedModel)) {
     betaFeatures.push("advanced-tool-use-2025-11-20")
   }
 

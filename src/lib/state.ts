@@ -157,9 +157,18 @@ export interface State {
    * defaults mirror GHC's capability checks; editing config adds/removes models without code changes.
    */
   readonly contextEditingModels: ReadonlyArray<string>
-  readonly toolSearchModels: ReadonlyArray<string>
   readonly interleavedThinkingModels: ReadonlyArray<string>
   readonly adaptiveThinkingModels: ReadonlyArray<string>
+
+  /**
+   * Per-model tool-search OVERRIDE table (`anthropic.model_capabilities.tool_search_overrides`).
+   * Keys are model-name substrings (`"*"` = wildcard); values force-enable (`true`) or force-disable
+   * (`false`) tool-search capability for matching models. Checked AFTER declared metadata but BEFORE
+   * the built-in default-allow matcher (Claude ≥4.5, see `features.ts:toolSearchDefaultAllow`), so
+   * operators can pin an individual model without maintaining a whole allowlist. Empty by default —
+   * the default-allow matcher decides. Gated overall by the `toolSearchEnabled` master switch.
+   */
+  readonly toolSearchOverrides: Record<string, boolean>
 
   /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
   readonly stripServerTools: boolean
@@ -737,6 +746,7 @@ function cloneState(source: MutableState): MutableState {
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
     modelOverrides: { ...source.modelOverrides },
+    toolSearchOverrides: { ...source.toolSearchOverrides },
     effortsOverrides: { ...source.effortsOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
@@ -771,6 +781,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("modelOverrides" in patch) {
     cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
+  }
+  if ("toolSearchOverrides" in patch) {
+    cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
   }
   if ("models" in patch) {
     cloned.models = cloneModels(patch.models)
@@ -939,7 +952,7 @@ export function setAnthropicBehavior(
       | "toolRepairMalformedInput"
       | "refusalSseRewrite"
       | "contextEditingModels"
-      | "toolSearchModels"
+      | "toolSearchOverrides"
       | "interleavedThinkingModels"
       | "adaptiveThinkingModels"
       | "anthropicApiKey"
@@ -1153,14 +1166,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
-  toolSearchModels: [
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-  ] as ReadonlyArray<string>,
+  // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
+  // only holds per-model force-on/off overrides. Empty by default.
+  toolSearchOverrides: {} as Record<string, boolean>,
   interleavedThinkingModels: ["claude-sonnet-4", "claude-haiku-4-5", "claude-opus-4-5"] as ReadonlyArray<string>,
   adaptiveThinkingModels: ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"] as ReadonlyArray<string>,
   responseHeaderTimeout: 300,
@@ -1238,7 +1246,7 @@ export function resetConfigManagedState(): void {
     toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
     refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
-    toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
+    toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
     adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
     anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
@@ -1308,7 +1316,7 @@ const mutableState: MutableState = {
   toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
-  toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
+  toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
   interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
   adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,

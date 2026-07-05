@@ -447,17 +447,22 @@ export const AnthropicConfigSchema = z
      */
     protect_streaming_escalate_context: nullableBoolean(),
     /**
-     * Config-driven model-capability allowlists. Each is a list of model-name "family" prefixes
+     * Config-driven model-capability allowlists. Each list is a set of model-name "family" prefixes
      * (normalized: lowercase, dots→dashes); a model has the capability when its normalized id equals
      * an entry or starts with `entry + "-"`. Bundled defaults mirror GHC's capability checks — edit
      * to add/remove models (e.g. a new Claude release) WITHOUT a code change. See features.ts.
+     *
+     * `tool_search_overrides` is NOT a list: tool-search is default-allow for Claude ≥4.5 (Haiku +
+     * pre-4.5 denied), so it needs no allowlist. The overrides map holds per-model force-on/off
+     * decisions only (keys = model-name substrings, `"*"` = wildcard; value true=force-on/false=off),
+     * checked after declared metadata but before the built-in default-allow matcher.
      */
     model_capabilities: z
       .object({
         context_editing: nullableNonemptyStringArray(),
-        tool_search: nullableNonemptyStringArray(),
         interleaved_thinking: nullableNonemptyStringArray(),
         adaptive_thinking: nullableNonemptyStringArray(),
+        tool_search_overrides: z.record(z.string(), z.boolean()).optional(),
       })
       .strict()
       .optional(),
