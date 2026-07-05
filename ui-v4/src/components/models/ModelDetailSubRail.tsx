@@ -32,14 +32,14 @@ export function ModelDetailSubRail({ active, onSelect }: ModelDetailSubRailProps
     const last = MODEL_DETAIL_TABS.length - 1
     const idx = MODEL_DETAIL_TABS.indexOf(active)
     let next: number
+    // Vertical tablist (WAI-ARIA APG): Up/Down + Home/End own navigation.
+    // Left/Right are NOT owned by a vertical tablist — leave them un-prevented.
     switch (e.key) {
-      case "ArrowDown":
-      case "ArrowRight": {
+      case "ArrowDown": {
         next = idx >= last ? 0 : idx + 1
         break
       }
-      case "ArrowUp":
-      case "ArrowLeft": {
+      case "ArrowUp": {
         next = idx <= 0 ? last : idx - 1
         break
       }

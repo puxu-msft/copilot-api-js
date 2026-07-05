@@ -264,15 +264,41 @@ describe("ModelDetail", () => {
     )
     const overview = screen.getByRole("tab", { name: "Overview" })
     const capabilities = screen.getByRole("tab", { name: "Capabilities" })
+    const rawJson = screen.getByRole("tab", { name: "Raw JSON" })
+    const tablist = screen.getByRole("tablist")
     // Only the active tab is Tab-focusable (roving tabindex).
     expect(overview.getAttribute("tabindex")).toBe("0")
     expect(capabilities.getAttribute("tabindex")).toBe("-1")
     // ArrowDown on the tablist activates + focuses the next tab.
-    fireEvent.keyDown(screen.getByRole("tablist"), { key: "ArrowDown" })
+    fireEvent.keyDown(tablist, { key: "ArrowDown" })
     expect(capabilities.getAttribute("aria-selected")).toBe("true")
     expect(capabilities.getAttribute("tabindex")).toBe("0")
     expect(document.activeElement).toBe(capabilities)
     // The panel is associated back to the active tab.
     expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(capabilities.getAttribute("id"))
+    // ArrowUp from the first tab wraps to the last; Home/End jump to ends.
+    fireEvent.keyDown(tablist, { key: "ArrowUp" }) // Capabilities → Overview
+    fireEvent.keyDown(tablist, { key: "ArrowUp" }) // Overview → wrap to Raw JSON
+    expect(rawJson.getAttribute("aria-selected")).toBe("true")
+    fireEvent.keyDown(tablist, { key: "Home" })
+    expect(overview.getAttribute("aria-selected")).toBe("true")
+    fireEvent.keyDown(tablist, { key: "End" })
+    expect(rawJson.getAttribute("aria-selected")).toBe("true")
+  })
+
+  it("does NOT hijack Left/Right on the vertical tablist (APG orientation)", () => {
+    render(
+      <ModelDetail
+        model={VISION_MODEL}
+        telemetry={null}
+        onClose={() => {}}
+      />,
+    )
+    const overview = screen.getByRole("tab", { name: "Overview" })
+    expect(overview.getAttribute("aria-selected")).toBe("true")
+    fireEvent.keyDown(screen.getByRole("tablist"), { key: "ArrowRight" })
+    fireEvent.keyDown(screen.getByRole("tablist"), { key: "ArrowLeft" })
+    // Horizontal arrows are not owned by a vertical tablist — active tab unchanged.
+    expect(overview.getAttribute("aria-selected")).toBe("true")
   })
 })

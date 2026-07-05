@@ -7,6 +7,7 @@ import {
 import { MemoryRouter } from "react-router-dom"
 import {
   //
+  beforeEach,
   describe,
   expect,
   it,
@@ -77,6 +78,12 @@ function renderPage() {
 }
 
 describe("ModelsPage", () => {
+  // Column visibility persists to localStorage; clear it so one test's toggles
+  // don't leak into the next (jsdom localStorage is shared across a file's tests).
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
   it("renders rows, count, and raw toggle", () => {
     renderPage()
     expect(screen.getByText("claude-opus-4.8")).toBeDefined()
@@ -120,6 +127,24 @@ describe("ModelsPage", () => {
     expect(screen.getByRole("tab", { name: "Raw JSON" })).toBeDefined()
     fireEvent.click(screen.getByRole("button", { name: /Close model detail/i }))
     expect(screen.queryByRole("region", { name: /Model detail/i })).toBeNull()
+  })
+
+  it("makes each row's id a keyboard-reachable button that opens the panel", () => {
+    renderPage()
+    // The id is a real <button> (native keyboard operability), not a bare cell.
+    const trigger = screen.getByRole("button", { name: /Open details for claude-opus-4\.8/i })
+    expect(trigger).toBeDefined()
+    fireEvent.click(trigger)
+    expect(screen.getByRole("region", { name: /Model detail: claude-opus-4\.8/i })).toBeDefined()
+  })
+
+  it("sortable headers are keyboard-operable and expose aria-sort", () => {
+    renderPage()
+    const vendorHeader = screen.getByRole("columnheader", { name: /Vendor/i })
+    expect(vendorHeader.getAttribute("aria-sort")).toBe("none")
+    // The header's control is a real button (WCAG 2.1.1), and clicking it sorts.
+    fireEvent.click(screen.getByRole("button", { name: /Vendor/i }))
+    expect(vendorHeader.getAttribute("aria-sort")).toBe("ascending")
   })
 
   it("exports the current view as a text/csv download", () => {

@@ -27,11 +27,36 @@ export function UnmatchedTelemetry({ rows }: { rows: Array<UnmatchedTelemetryRow
       <table className="w-full text-[12px]">
         <thead>
           <tr className="text-[11px] uppercase tracking-wider text-[var(--color-muted)]">
-            <th className="px-2 py-1 text-left">Telemetry key</th>
-            <th className="px-2 py-1 text-right">Req 7d</th>
-            <th className="px-2 py-1 text-right">Fail 7d</th>
-            <th className="px-2 py-1 text-right">Req total</th>
-            <th className="px-2 py-1 text-right">Fail total</th>
+            <th
+              scope="col"
+              className="px-2 py-1 text-left"
+            >
+              Telemetry key
+            </th>
+            <th
+              scope="col"
+              className="px-2 py-1 text-right"
+            >
+              Req 7d
+            </th>
+            <th
+              scope="col"
+              className="px-2 py-1 text-right"
+            >
+              Fail 7d
+            </th>
+            <th
+              scope="col"
+              className="px-2 py-1 text-right"
+            >
+              Req total
+            </th>
+            <th
+              scope="col"
+              className="px-2 py-1 text-right"
+            >
+              Fail total
+            </th>
           </tr>
         </thead>
         <tbody>

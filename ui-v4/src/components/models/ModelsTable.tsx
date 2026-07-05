@@ -48,13 +48,26 @@ export function ModelsTable({ models, columns, telemetryFor, maxRequests7d, sort
     if (sortKey !== key) return ""
     return sortDesc ? " ▼" : " ▲"
   }
+  const ariaSort = (key: ModelSortKey): "none" | "ascending" | "descending" => {
+    if (sortKey !== key) return "none"
+    return sortDesc ? "descending" : "ascending"
+  }
+  // Sortable header: keyboard-operable <button> inside the columnheader (WCAG 2.1.1),
+  // with aria-sort conveying the current sort state (WCAG 1.3.1).
   const sortable = (key: ModelSortKey, label: string, extra = "") => (
     <th
-      className={`${HEAD} cursor-pointer select-none hover:text-[var(--color-primary)] ${extra}`}
-      onClick={() => onSort(key)}
+      scope="col"
+      aria-sort={ariaSort(key)}
+      className={`${HEAD} ${extra}`}
     >
-      {label}
-      {caret(key)}
+      <button
+        type="button"
+        onClick={() => onSort(key)}
+        className="mono cursor-pointer select-none border-0 bg-transparent p-0 uppercase tracking-wider text-inherit hover:text-[var(--color-primary)]"
+      >
+        {label}
+        {caret(key)}
+      </button>
     </th>
   )
 
@@ -67,12 +80,18 @@ export function ModelsTable({ models, columns, telemetryFor, maxRequests7d, sort
           {columns.context ? sortable("context", "Ctx", "text-right") : null}
           {columns.output ? sortable("output", "Out", "text-right") : null}
           {columns.effort ?
-            <th className={`${HEAD} text-right`}>Effort</th>
+            <th
+              scope="col"
+              className={`${HEAD} text-right`}
+            >
+              Effort
+            </th>
           : null}
           {CAP_COLS.map((c) =>
             columns[c.key] ?
               <th
                 key={c.key}
+                scope="col"
                 className={`${HEAD} text-center`}
               >
                 {c.label}
@@ -106,7 +125,6 @@ export function ModelsTable({ models, columns, telemetryFor, maxRequests7d, sort
                       onSelect(m.id)
                     }}
                     aria-label={`Open details for ${m.id}`}
-                    aria-expanded={selected}
                     className="text-left text-[var(--color-primary)] hover:underline"
                   >
                     {m.id}
