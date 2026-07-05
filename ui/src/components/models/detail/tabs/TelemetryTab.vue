@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import type { DerivedCapabilities } from "~backend/lib/models/capabilities"
 import type { Model } from "~backend/lib/models/client"
-import type { JoinedModelTelemetry } from "@/composables/model-telemetry-join"
-import type { RequestTelemetryModelStats } from "@/composables/telemetry-parse"
 
 import { computed } from "vue"
 
-import { formatDuration, formatNumber } from "@/utils/formatters"
+import type { JoinedModelTelemetry } from "@/composables/model-telemetry-join"
+import type { RequestTelemetryModelStats } from "@/composables/telemetry-parse"
+
+import {
+  //
+  formatDuration,
+  formatNumber,
+} from "@/utils/formatters"
 
 import DetailKeyValueList from "../DetailKeyValueList.vue"
 import DetailSection from "../DetailSection.vue"

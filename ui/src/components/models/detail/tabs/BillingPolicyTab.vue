@@ -10,8 +10,8 @@ import DetailSection from "../DetailSection.vue"
 const props = defineProps<{ model: Model; caps: DerivedCapabilities }>()
 
 const billingRows = computed<Array<[string, string | null]>>(() => [
-  ["Multiplier", props.model.billing?.multiplier != null ? String(props.model.billing.multiplier) : null],
-  ["Premium", props.model.billing?.is_premium != null ? String(props.model.billing.is_premium) : null],
+  ["Multiplier", props.model.billing?.multiplier !== undefined ? String(props.model.billing.multiplier) : null],
+  ["Premium", props.model.billing?.is_premium !== undefined ? String(props.model.billing.is_premium) : null],
 ])
 
 const restrictedTo = computed(() => props.model.billing?.restricted_to ?? [])

@@ -1,10 +1,22 @@
 import type { Model } from "~backend/lib/models/client"
 
-import { computed, ref, type ComputedRef, type Ref } from "vue"
 import { normalizeModelId } from "~backend/lib/models/resolver"
+import {
+  //
+  computed,
+  ref,
+  type ComputedRef,
+  type Ref,
+} from "vue"
 
-import { buildModelTelemetryIndex, type JoinedModelTelemetry, type ModelTelemetryIndex } from "./model-telemetry-join"
 import type { RequestTelemetrySnapshot } from "./telemetry-parse"
+
+import {
+  //
+  buildModelTelemetryIndex,
+  type JoinedModelTelemetry,
+  type ModelTelemetryIndex,
+} from "./model-telemetry-join"
 
 export interface UseModelDetailReturn {
   /** Currently-selected model id, or null when the drawer is closed. Stores the

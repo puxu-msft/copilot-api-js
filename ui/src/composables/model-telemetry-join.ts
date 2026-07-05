@@ -13,7 +13,11 @@ import type { Model } from "~backend/lib/models/client"
 
 import { normalizeModelId } from "~backend/lib/models/resolver"
 
-import type { RequestTelemetryModelStats, RequestTelemetrySnapshot } from "./telemetry-parse"
+import type {
+  //
+  RequestTelemetryModelStats,
+  RequestTelemetrySnapshot,
+} from "./telemetry-parse"
 
 export interface JoinedModelTelemetry {
   last7d: RequestTelemetryModelStats | null
@@ -87,8 +91,8 @@ export function buildModelTelemetryIndex(snapshot: RequestTelemetrySnapshot | nu
     if (catalogKeys.has(key)) {
       byId.set(key, { last7d: l, sinceStart: s })
     } else {
-      // (l ?? s) is non-null: key came from one of the two maps.
-      unmatched.push({ model: (l ?? s)!.model, normalizedKey: key, last7d: l, sinceStart: s })
+      // key came from one of the two maps, so at least one of l/s is non-null.
+      unmatched.push({ model: l?.model ?? s?.model ?? key, normalizedKey: key, last7d: l, sinceStart: s })
     }
   }
   // Stable ordering for deterministic rendering/tests.

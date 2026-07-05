@@ -52,7 +52,8 @@ const isInferred = computed(() => !props.model.supported_endpoints)
           size="x-small"
           variant="tonal"
         >
-          {{ ep }}<span
+          {{ ep
+          }}<span
             v-if="isInferred"
             class="inferred"
           >

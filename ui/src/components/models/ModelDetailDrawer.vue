@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import type { DerivedCapabilities } from "~backend/lib/models/capabilities"
 import type { Model } from "~backend/lib/models/client"
-import type { JoinedModelTelemetry } from "@/composables/model-telemetry-join"
 
-import { computed, ref } from "vue"
+import {
+  //
+  computed,
+  ref,
+} from "vue"
+
+import type { JoinedModelTelemetry } from "@/composables/model-telemetry-join"
 
 import BillingPolicyTab from "./detail/tabs/BillingPolicyTab.vue"
 import CapabilitiesTab from "./detail/tabs/CapabilitiesTab.vue"
