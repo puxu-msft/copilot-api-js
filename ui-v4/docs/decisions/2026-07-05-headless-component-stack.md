@@ -25,7 +25,7 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 |---|---|---|
 | 交互原语 | **Radix Primitives** | 已迁（Radix ADR） |
 | **数据表格** | **TanStack Table (v8)** | **PoC 实证**（见下）；落地替 Models 表格 + Requests/筛选地基 |
-| 虚拟滚动 | **TanStack Virtual** | 按需（DESIGN §1 现列非目标；长 History 列表触发时引） |
+| 虚拟滚动 | ~~**TanStack Virtual**~~ → **react-virtuoso** | **本行被 [2026-07-06-requests-list-libraries.md](2026-07-06-requests-list-libraries.md) supersede**：长 History 列表的 tail-infinite-locate 三合一改用 react-virtuoso（高阶行为白送）。TanStack Virtual 仅在别处「只读等高无 tail/locate」表触发时再评估。 |
 | 表单 | **react-hook-form + zod resolver** | 随 Config 表单落地 |
 | 命令面板/搜索 | **cmdk** | 随全局搜索落地 |
 
@@ -85,6 +85,6 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 - **react-hook-form + zod**：随 [Config 结构化表单](../../../docs/plan/2026-07-05-ui-v4-config-form.md) 落地。
 - **cmdk**：随全局搜索（TODO.md 退役 gating）落地。
 - **TanStack Virtual**：长列表性能触发时引（现非目标）。
-- **date-picker**（若 Requests 加时间范围筛选）：待定——Radix 无，届时评估 react-aria `useDatePicker` / react-day-picker（又一处 react-aria 白送而四库栈缺的领域）。
+- **date-picker**（若 Requests 加时间范围筛选）：~~待定~~ **已定 react-day-picker**（见 [2026-07-06-requests-list-libraries.md](2026-07-06-requests-list-libraries.md) 决策二）。
 
 每次落地：门禁全绿（含 `build:ui-v4` 验 bundle **前后对照进提交信息** + `~backend` 纯）→ 细粒度提交 → subagent audit。
