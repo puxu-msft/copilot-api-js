@@ -361,6 +361,30 @@ describe("DELETE /api/entries", () => {
     const listBody = await json<{ total: number }>(listRes)
     expect(listBody.total).toBe(0)
   })
+
+  test("with an endpoint filter deletes only matching rows and returns the count", async () => {
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "anthropic" }])
+    const openai = await createEntry("openai-chat-completions", "gpt-4o", [{ role: "user", content: "openai" }])
+
+    const res = await del("/api/entries?endpoint=anthropic-messages")
+    expect(res.status).toBe(200)
+    expect(await json<{ success: boolean; deleted: number }>(res)).toEqual({ success: true, deleted: 1 })
+
+    // Only the non-matching entry survives.
+    const list = await json<{ entries: Array<{ id: string }> }>(await get("/api/entries?terminalOnly=true"))
+    expect(list.entries.map((e) => e.id)).toEqual([openai.id])
+  })
+
+  test("with no filters clears all (clear-all path, message not count)", async () => {
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "x1" }])
+
+    const res = await del("/api/entries")
+    expect(res.status).toBe(200)
+    const body = await json<{ success: boolean; message: string; deleted?: number }>(res)
+    expect(body.success).toBe(true)
+    expect(body.message).toBe("History cleared")
+    expect(body.deleted).toBeUndefined()
+  })
 })
 
 // ─── handleGetStats ───

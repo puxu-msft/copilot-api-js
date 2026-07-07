@@ -3,6 +3,7 @@ import type { Context } from "hono"
 import {
   //
   clearHistory,
+  deleteEntries,
   deleteSession,
   exportHistory,
   getEntry,
@@ -153,13 +154,43 @@ export function handleUnpinEntry(c: Context) {
   return setEntryPinState(c, false)
 }
 
+/**
+ * DELETE /history/api/entries — parameterized clear.
+ *
+ * With NO filters it is the historical clear-all (`clearHistory`, wipes the whole
+ * store) → `{ success, message }`. With any filter present it is a scoped delete
+ * (`deleteEntries`, mirrors the list query's WHERE via read.ts `applyWhere`, never
+ * touches in-flight head rows) → `{ success, deleted: N }` so the caller learns
+ * exactly how many terminal rows were removed. `cursor`/`limit`/`direction`/
+ * `terminalOnly` are pagination-only and intentionally NOT treated as filters.
+ */
 export function handleDeleteEntries(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
 
-  clearHistory()
-  return c.json({ success: true, message: "History cleared" })
+  const query = c.req.query()
+  const filters: QueryOptions = {
+    model: query.model || undefined,
+    endpoint: query.endpoint as EndpointType | undefined,
+    success: query.success ? query.success === "true" : undefined,
+    state: (query.state as QueryOptions["state"]) || undefined,
+    from: query.from ? Number.parseInt(query.from, 10) : undefined,
+    to: query.to ? Number.parseInt(query.to, 10) : undefined,
+    search: query.search || undefined,
+    sessionId: query.sessionId || undefined,
+    agentId: query.agentId || undefined,
+    mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
+    pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
+  }
+  const hasFilter = Object.values(filters).some((v) => v !== undefined)
+  if (!hasFilter) {
+    clearHistory()
+    return c.json({ success: true, message: "History cleared" })
+  }
+
+  const deleted = deleteEntries(filters)
+  return c.json({ success: true, deleted })
 }
 
 export function handleGetStats(c: Context) {

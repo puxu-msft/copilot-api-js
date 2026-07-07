@@ -7,6 +7,7 @@
 // Store (persistence and query)
 export {
   clearHistory,
+  deleteEntries,
   deleteSession,
   drainPendingFinalizations,
   exportHistory,
