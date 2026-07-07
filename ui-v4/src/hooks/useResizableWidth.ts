@@ -195,7 +195,8 @@ export function useResizableWidth(storageKey: string = TOC_WIDTH_STORAGE_KEY, op
         body.style.cursor = prevCursor
       }
     },
-    [storageKey, min, max, invert, commitWidth],
+    // storageKey is not read directly here — persistence goes through commitWidth.
+    [min, max, invert, commitWidth],
   )
 
   // Keyboard resize (WAI-ARIA Window Splitter). The separator is vertical and

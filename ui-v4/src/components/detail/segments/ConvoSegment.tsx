@@ -27,7 +27,9 @@ function viewClass(active: boolean): string {
 
 export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
   const [view, setView] = useState<ConvoView>("rendered")
-  const messages = entry.inboundRequest.messages ?? []
+  // `?? []` yields a fresh array each render; memoize so the derived-TOC useMemos
+  // below (deps [messages]) don't recompute every render.
+  const messages = useMemo(() => entry.inboundRequest.messages ?? [], [entry.inboundRequest.messages])
   const { scrollTo, activeAnchor } = useAnchorScroll()
   const nodes = useMemo(() => buildMessageTocNodes(messages, ANCHOR_PREFIX), [messages])
   const pairing = useMemo(() => buildToolPairing(messages, ANCHOR_PREFIX), [messages])

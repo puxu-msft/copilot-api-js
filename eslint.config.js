@@ -1,5 +1,7 @@
 import config from "@echristian/eslint-config"
 import { defineConfigWithVueTs } from "@vue/eslint-config-typescript"
+import jsxA11y from "eslint-plugin-jsx-a11y"
+import reactHooks from "eslint-plugin-react-hooks"
 import pluginVue from "eslint-plugin-vue"
 import tseslint from "typescript-eslint"
 import vueParser from "vue-eslint-parser"
@@ -124,6 +126,23 @@ export default defineConfigWithVueTs(
       "unicorn/no-array-callback-reference": "off",
       "no-nested-ternary": "off",
       "no-useless-assignment": "off",
+    },
+  },
+
+  // ── React hooks + a11y lints, scoped to the ui-v4 React frontend ──
+  //
+  // The base preset ships eslint-plugin-react-hooks + eslint-plugin-jsx-a11y but
+  // leaves them off. Wire their recommended rules for ui-v4 ONLY (glob-limited so
+  // the legacy Vue `ui/` and the backend aren't dragged in — enabling repo-wide
+  // would surface a batch of pre-existing warnings needing separate cleanup).
+  // rules-of-hooks/exhaustive-deps catch dependency-array + conditional-hook bugs;
+  // jsx-a11y recommended catches accessibility regressions.
+  {
+    files: ["ui-v4/**/*.{ts,tsx}"],
+    plugins: { "react-hooks": reactHooks, "jsx-a11y": jsxA11y },
+    rules: {
+      ...reactHooks.configs.recommended.rules,
+      ...jsxA11y.flatConfigs.recommended.rules,
     },
   },
 
