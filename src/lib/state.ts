@@ -358,9 +358,12 @@ export interface State {
 
   /**
    * Sliding TTL (hours) of an L3 quarantine entry (config
-   * `anthropic.poisoned_thinking_ttl_hours`, default `72`). Read once when the
-   * quarantine store singleton is first built; a conversation quiet longer than
-   * this since its last poison hit drops out of the quarantine.
+   * `anthropic.poisoned_thinking_ttl_hours`, default `72`). Read LIVE on every
+   * quarantine check: the store holds a `() => poisonedThinkingTtlHours * 3600_000`
+   * thunk evaluated per `isPoisoned` call (NOT captured when the quarantine store
+   * singleton is first built), so a hot-reloaded value takes effect immediately
+   * without a restart. A conversation quiet longer than this since its last
+   * poison hit drops out of the quarantine.
    */
   readonly poisonedThinkingTtlHours: number
 
