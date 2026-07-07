@@ -27,7 +27,7 @@ ui-v4 **确有的真增强**（不因下列缺口抹杀）：Live 泳道（WS）
 
 > **现状勘误（2026-07，plans [plans/requests-list-enhancement/](plans/requests-list-enhancement/) Phase 0–4）**：下列缺口已全部闭合——URL-as-SSOT 七维筛选层 + 活动 chips + Clear all（🔴）、URL↔筛选深链同步（🔴）、错误态 UI + paused 行内更新（🟡）、空态文案 + 键盘导航 + 清空历史入口（🟢）均落地；「双向游标退化」为**有意不补**（tail + 缓冲横幅提供另一条回最新路径，见 DESIGN §4.2 + spec）。Activity 至此**对等达成且超越** `ui/`，退役阻断已解除。以下逐条保留原缺口记录 + 达成标注。
 
-ui-v4 的 Live 泳道/tail/缓冲/富行是真增强，但整个**筛选系统**未迁移。
+（原缺口记录）ui-v4 的 Live 泳道/tail/缓冲/富行是真增强，但当时整个**筛选系统**未迁移——**现已全部闭合**（见上方勘误 + 下方逐条 ✅ 标注）。
 
 ### 🔴 阻断级（✅ 已达成）
 
