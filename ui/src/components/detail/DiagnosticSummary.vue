@@ -5,6 +5,12 @@ import type { HistoryEntry } from "@/types"
 
 import {
   //
+  resolveAttemptCount,
+  resolveCurrentStrategy,
+  resolveUpstreamResponse,
+} from "@/composables/entry-legs"
+import {
+  //
   formatDuration,
   formatNumber,
 } from "@/utils/formatters"
@@ -12,13 +18,17 @@ import { statusMeta } from "@/utils/status-meta"
 
 const props = defineProps<{ entry: HistoryEntry }>()
 
-const usage = computed(() => props.entry.outboundResponse?.usage)
+// New legs ?? legacy top-level (P4c: drop the legacy arms in entry-legs).
+const resp = computed(() => resolveUpstreamResponse(props.entry))
+const usage = computed(() => resp.value?.usage)
+const attempts = computed(() => resolveAttemptCount(props.entry))
+const strategy = computed(() => resolveCurrentStrategy(props.entry))
 // Terminal reason: surface aborted/interrupted/failed cause at a glance.
 const reason = computed(() => {
   const e = props.entry
   if (e.state === "aborted") return "client disconnected"
   if (e.state === "interrupted") return e.process?.pid ? `process ${e.process.pid} died` : "process died"
-  return e.outboundResponse?.error ?? e.outboundResponse?.stop_reason ?? undefined
+  return resp.value?.error ?? resp.value?.stop_reason ?? undefined
 })
 </script>
 
@@ -61,12 +71,12 @@ const reason = computed(() => {
         <span class="diag-value font-mono">{{ formatDuration(entry.durationMs) }}</span>
       </div>
       <div
-        v-if="entry.attemptCount && entry.attemptCount > 1"
+        v-if="attempts && attempts > 1"
         class="diag-metric"
       >
         <span class="diag-label">attempts</span>
         <span class="diag-value font-mono"
-          >{{ entry.attemptCount }}<template v-if="entry.currentStrategy"> · {{ entry.currentStrategy }}</template></span
+          >{{ attempts }}<template v-if="strategy"> · {{ strategy }}</template></span
         >
       </div>
       <div

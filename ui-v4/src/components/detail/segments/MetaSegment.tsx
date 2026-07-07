@@ -1,3 +1,11 @@
+import {
+  //
+  resolveAttemptCount,
+  resolveCurrentStrategy,
+  resolveResponseUsage,
+  resolveStopReason,
+} from "~backend/lib/history/entry-view"
+
 import type { HistoryEntry } from "@/types"
 
 import { formatUsageTokens } from "@/lib/format"
@@ -13,12 +21,13 @@ function Row({ label, value }: { label: string; value?: string | number }) {
 }
 
 export function MetaSegment({ entry }: { entry: HistoryEntry }) {
-  const usage = entry.outboundResponse?.usage
+  // New legs (`_index.derived` / final attempt `upstreamResponse`) ?? legacy top-level (P4c: drop the legacy arm).
+  const usage = resolveResponseUsage(entry)
   return (
     <div className="mono flex flex-col gap-2 text-[13px] text-[#aaa]">
       <Row
         label="strategy"
-        value={entry.currentStrategy}
+        value={resolveCurrentStrategy(entry)}
       />
       <Row
         label="transport"
@@ -26,7 +35,7 @@ export function MetaSegment({ entry }: { entry: HistoryEntry }) {
       />
       <Row
         label="attempts"
-        value={entry.attemptCount}
+        value={resolveAttemptCount(entry)}
       />
       <Row
         label="queue wait"
@@ -34,7 +43,7 @@ export function MetaSegment({ entry }: { entry: HistoryEntry }) {
       />
       <Row
         label="stop reason"
-        value={entry.outboundResponse?.stop_reason}
+        value={resolveStopReason(entry)}
       />
       {usage ?
         <Row

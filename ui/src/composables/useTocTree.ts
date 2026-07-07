@@ -12,6 +12,12 @@ import type {
   MessageContent,
 } from "@/types"
 
+import {
+  //
+  resolveUpstreamResponse,
+  resolveUpstreamSse,
+} from "./entry-legs"
+
 export interface TocNode {
   id: string
   label: string
@@ -116,13 +122,14 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     })
 
     // ── response ──
-    const hasResponse = entry.value.outboundResponse?.content || entry.value.outboundResponse?.error
+    const resp = resolveUpstreamResponse(entry.value)
+    const hasResponse = resp?.content || resp?.error
     if (hasResponse) {
       const responseChildren: Array<TocNode> = []
-      if (entry.value.outboundResponse?.error) {
+      if (resp.error) {
         responseChildren.push({ id: "response", label: "error", icon: "mdi-alert-circle" })
       }
-      if (entry.value.outboundResponse?.content) {
+      if (resp.content) {
         responseChildren.push({ id: "response.content", label: "content", icon: "mdi-robot" })
       }
       nodes.push({
@@ -134,10 +141,11 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     }
 
     // ── sseEvents ──
-    if (entry.value.sseEvents?.length) {
+    const upstreamSse = resolveUpstreamSse(entry.value)
+    if (upstreamSse?.length) {
       nodes.push({
         id: "section-sse-events",
-        label: `sseEvents (${entry.value.sseEvents.length})`,
+        label: `sseEvents (${upstreamSse.length})`,
         icon: "mdi-broadcast",
       })
     }

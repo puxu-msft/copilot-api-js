@@ -1,7 +1,16 @@
 <script setup lang="ts">
+import { computed } from "vue"
+
 import type { HistoryEntry } from "@/types"
 
 import BaseBadge from "@/components/ui/BaseBadge.vue"
+import {
+  //
+  resolveAttemptCount,
+  resolveCurrentStrategy,
+  resolveResponseModel,
+  resolveUpstreamResponse,
+} from "@/composables/entry-legs"
 import {
   //
   formatDate,
@@ -10,9 +19,16 @@ import {
 } from "@/utils/formatters"
 import { statusMeta } from "@/utils/status-meta"
 
-defineProps<{
+const props = defineProps<{
   entry: HistoryEntry
 }>()
+
+// New legs ?? legacy top-level (P4c: drop the legacy arms inside entry-legs).
+const resp = computed(() => resolveUpstreamResponse(props.entry))
+const model = computed(() => resolveResponseModel(props.entry) || props.entry.model?.requested || props.entry.inboundRequest.model)
+const stream = computed(() => props.entry.clientRequest?.stream ?? props.entry.inboundRequest.stream)
+const attempts = computed(() => resolveAttemptCount(props.entry))
+const strategy = computed(() => resolveCurrentStrategy(props.entry))
 </script>
 
 <template>
@@ -63,7 +79,7 @@ defineProps<{
     </div>
     <div class="meta-row">
       <span class="meta-label">Model</span>
-      <span class="meta-value">{{ entry.outboundResponse?.model || entry.inboundRequest.model || "-" }}</span>
+      <span class="meta-value">{{ model || "-" }}</span>
     </div>
     <div class="meta-row">
       <span class="meta-label">Endpoint</span>
@@ -81,23 +97,23 @@ defineProps<{
       </span>
     </div>
     <div
-      v-if="entry.outboundResponse?.status"
+      v-if="resp?.status"
       class="meta-row"
     >
       <span class="meta-label">HTTP Status</span>
       <span
         class="meta-value"
         :class="{
-          'text-error': entry.outboundResponse.status >= 400,
-          'text-success': entry.outboundResponse.status < 300,
+          'text-error': resp.status >= 400,
+          'text-success': resp.status < 300,
         }"
       >
-        {{ entry.outboundResponse.status }}
+        {{ resp.status }}
       </span>
     </div>
     <div class="meta-row">
       <span class="meta-label">Stream</span>
-      <span class="meta-value">{{ entry.inboundRequest.stream === true ? "Yes" : "No" }}</span>
+      <span class="meta-value">{{ stream === true ? "Yes" : "No" }}</span>
     </div>
     <div
       v-if="entry.transport"
@@ -107,18 +123,18 @@ defineProps<{
       <span class="meta-value">{{ entry.transport }}</span>
     </div>
     <div
-      v-if="entry.attemptCount !== undefined"
+      v-if="attempts !== undefined"
       class="meta-row"
     >
       <span class="meta-label">Attempts</span>
-      <span class="meta-value mono">{{ entry.attemptCount }}</span>
+      <span class="meta-value mono">{{ attempts }}</span>
     </div>
     <div
-      v-if="entry.currentStrategy"
+      v-if="strategy"
       class="meta-row"
     >
       <span class="meta-label">Strategy</span>
-      <span class="meta-value">{{ entry.currentStrategy }}</span>
+      <span class="meta-value">{{ strategy }}</span>
     </div>
     <div
       v-if="entry.queueWaitMs !== undefined"
@@ -149,11 +165,11 @@ defineProps<{
       <span class="meta-value">{{ formatDuration(entry.durationMs) }}</span>
     </div>
     <div
-      v-if="entry.outboundResponse?.stop_reason"
+      v-if="resp?.stop_reason"
       class="meta-row"
     >
       <span class="meta-label">Stop Reason</span>
-      <span class="meta-value">{{ entry.outboundResponse.stop_reason }}</span>
+      <span class="meta-value">{{ resp.stop_reason }}</span>
     </div>
     <div
       v-if="entry.lastUpdatedAt"
@@ -165,50 +181,50 @@ defineProps<{
 
     <!-- Token Usage -->
     <div
-      v-if="entry.outboundResponse?.usage"
+      v-if="resp?.usage"
       class="meta-section"
     >
       <div class="meta-section-title">Token Usage</div>
       <div class="meta-row">
         <span class="meta-label">Input</span>
-        <span class="meta-value mono">{{ formatNumber(entry.outboundResponse.usage.input_tokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(resp.usage.input_tokens) }}</span>
       </div>
       <div class="meta-row">
         <span class="meta-label">Output</span>
-        <span class="meta-value mono">{{ formatNumber(entry.outboundResponse.usage.output_tokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(resp.usage.output_tokens) }}</span>
       </div>
       <div
-        v-if="entry.outboundResponse?.usage?.cache_read_input_tokens"
+        v-if="resp?.usage?.cache_read_input_tokens"
         class="meta-row"
       >
         <span class="meta-label">Cache Read</span>
-        <span class="meta-value mono">{{ formatNumber(entry.outboundResponse.usage.cache_read_input_tokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(resp.usage.cache_read_input_tokens) }}</span>
       </div>
       <div
-        v-if="entry.outboundResponse?.usage?.cache_creation_input_tokens"
+        v-if="resp?.usage?.cache_creation_input_tokens"
         class="meta-row"
       >
         <span class="meta-label">Cache Create</span>
-        <span class="meta-value mono">{{ formatNumber(entry.outboundResponse.usage.cache_creation_input_tokens) }}</span>
+        <span class="meta-value mono">{{ formatNumber(resp.usage.cache_creation_input_tokens) }}</span>
       </div>
     </div>
 
     <!-- Error -->
     <div
-      v-if="entry.outboundResponse?.error"
+      v-if="resp?.error"
       class="meta-row meta-error"
     >
       <span class="meta-label">Error</span>
-      <span class="meta-value error-text">{{ entry.outboundResponse.error }}</span>
+      <span class="meta-value error-text">{{ resp.error }}</span>
     </div>
 
     <!-- Raw Body (shown when error + rawBody exists) -->
     <div
-      v-if="entry.outboundResponse?.error && entry.outboundResponse?.rawBody"
+      v-if="resp?.error && resp?.rawBody"
       class="meta-section"
     >
       <div class="meta-section-title">Raw Response Body</div>
-      <pre class="raw-body">{{ entry.outboundResponse.rawBody }}</pre>
+      <pre class="raw-body">{{ resp.rawBody }}</pre>
     </div>
 
     <div

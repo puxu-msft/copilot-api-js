@@ -17,6 +17,11 @@ import DiagnosticSummary from "@/components/detail/DiagnosticSummary.vue"
 import StageTabs from "@/components/detail/StageTabs.vue"
 import TocTree from "@/components/detail/TocTree.vue"
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import {
+  //
+  resolveResponseModel,
+  resolveUpstreamResponse,
+} from "@/composables/entry-legs"
 import { useDetailStages } from "@/composables/useDetailStages"
 import { useDetailViewState } from "@/composables/useDetailViewState"
 import { useHistoryStore } from "@/composables/useHistoryStore"
@@ -45,7 +50,8 @@ const loadError = shallowRef<string | null>(null)
 
 const title = computed(() => {
   if (!entry.value) return "Loading..."
-  return entry.value.outboundResponse?.model || entry.value.inboundRequest.model || "Request"
+  // New legs (`upstreamResponse.model` / `model.requested`) ?? legacy top-level (P4c: drop legacy arms in entry-legs).
+  return resolveResponseModel(entry.value) || entry.value.model?.requested || entry.value.inboundRequest.model || "Request"
 })
 
 const subtitle = computed(() => {
@@ -53,7 +59,7 @@ const subtitle = computed(() => {
   const parts: Array<string> = []
   if (entry.value.startedAt) parts.push(formatDate(entry.value.startedAt))
   if (entry.value.durationMs) parts.push(formatDuration(entry.value.durationMs))
-  const usage = entry.value.outboundResponse?.usage
+  const usage = resolveUpstreamResponse(entry.value)?.usage
   if (usage) {
     parts.push(`${formatNumber(usage.input_tokens)} in / ${formatNumber(usage.output_tokens)} out`)
   }

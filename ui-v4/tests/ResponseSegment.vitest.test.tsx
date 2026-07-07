@@ -54,6 +54,45 @@ const empty = {
   inboundRequest: { messages: [] },
 } as unknown as HistoryEntry
 
+// NEW-LEG-ONLY entry (RFC 2026-07-07 data-model restructure): the response lives on the per-attempt
+// `upstreamResponse` (final attempt) + `clientResponse` legs, with NO legacy `outboundResponse` /
+// `inboundResponse` / top-level `sseEvents`. Proves ResponseSegment reads the new legs (a legacy-only
+// reader would fall through to 无响应数据). `body` (not `content`), `stopReason` (not `stop_reason`).
+const newLegOnly = {
+  id: "r4",
+  startedAt: 0,
+  endpoint: "anthropic-messages",
+  state: "completed",
+  inboundRequest: { messages: [] },
+  model: { requested: "claude-req", resolved: "claude-opus-4.8" },
+  attempts: [
+    {
+      index: 0,
+      durationMs: 10,
+      upstreamRequest: { body: {} },
+      upstreamResponse: {
+        success: true,
+        status: 200,
+        model: "claude-opus-4.8",
+        body: { role: "assistant", content: "new-leg upstream answer" },
+      },
+    },
+  ],
+  clientResponse: {
+    sseEvents: [
+      { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
+      { offsetMs: 2, type: "content_block_start", raw: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` },
+      {
+        offsetMs: 4,
+        type: "content_block_delta",
+        raw: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"new-leg forwarded answer"}}`,
+      },
+      { offsetMs: 6, type: "content_block_stop", raw: `{"type":"content_block_stop","index":0}` },
+      { offsetMs: 8, type: "message_stop", raw: `{"type":"message_stop"}` },
+    ],
+  },
+} as unknown as HistoryEntry
+
 // A failed streaming request (e.g. AskUserQuestion unrepairable tool input): the UPSTREAM leg
 // succeeded (200 stream), the proxy rejected the result → failureReason carries the verdict, the
 // forwarded track carries the synthesized error frame the client received.
@@ -124,6 +163,18 @@ describe("ResponseSegment", () => {
   it("renders the 无响应数据 fallback when there is no response data", () => {
     render(<ResponseSegment entry={empty} />)
     expect(screen.getByText(/无响应数据/)).toBeDefined()
+  })
+
+  it("reads the NEW per-attempt upstreamResponse + clientResponse legs when the legacy top-level legs are absent", () => {
+    render(<ResponseSegment entry={newLegOnly} />)
+    // Upstream leg body comes from attempts[final].upstreamResponse.body (not legacy outboundResponse.content).
+    expect(screen.getByText(/new-leg upstream answer/)).toBeDefined()
+    // Status line derives from the new leg's status/model/success.
+    expect(screen.getByText(/status 200/)).toBeDefined()
+    expect(screen.getByText(/claude-opus-4\.8 · ok/)).toBeDefined()
+    // Forwarded content reconstructed from clientResponse.sseEvents (not legacy inboundResponse.sseEvents).
+    expect(screen.getByText(/Forwarded \(proxy → client\)/)).toBeDefined()
+    expect(screen.getByText(/new-leg forwarded answer/)).toBeDefined()
   })
 
   it("surfaces the failure verdict in an Outcome banner, the reconstructed tool call, and the client-received error frame", () => {

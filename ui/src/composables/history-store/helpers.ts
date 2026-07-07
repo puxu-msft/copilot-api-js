@@ -6,6 +6,8 @@ import type {
   MessageContent,
 } from "@/types"
 
+import { resolveUpstreamResponse } from "@/composables/entry-legs"
+
 export function getPreviewText(entry: HistoryEntry): string {
   const messages = entry.inboundRequest.messages ?? []
   if (messages.length === 0) return ""
@@ -58,8 +60,10 @@ export function getStatusClass(entry: HistoryEntry | EntrySummary): "success" | 
     if (entry.responseSuccess) return "success"
     return "error"
   }
-  if (!entry.outboundResponse) return "pending"
-  if (entry.outboundResponse.success) return "success"
+  // New final-attempt `upstreamResponse` ?? legacy `outboundResponse` (P4c: drop legacy arm).
+  const resp = resolveUpstreamResponse(entry)
+  if (!resp) return "pending"
+  if (resp.success) return "success"
   return "error"
 }
 

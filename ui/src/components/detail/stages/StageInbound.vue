@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { computed } from "vue"
+
 import type {
   //
   HistoryEntry,
   MessageContent,
 } from "@/types"
+
+import { resolveHeaders } from "@/composables/entry-legs"
 
 import DetailRequestSection from "../DetailRequestSection.vue"
 import HeadersComparisonSection from "../HeadersComparisonSection.vue"
@@ -11,7 +15,7 @@ import HeadersComparisonSection from "../HeadersComparisonSection.vue"
 // Inbound = client→proxy original request. Always shows the ORIGINAL messages
 // (view mode forced "original"); rewritten messages expose a "↔ effective" jump
 // + "diff" action (via MessageBlock → useMessageActions). HTTP headers first.
-defineProps<{
+const props = defineProps<{
   entry: HistoryEntry
   requestBadge: string
   rewrittenRequest?: unknown
@@ -24,13 +28,16 @@ defineProps<{
   isMessageRewritten: (index: number) => boolean
   getRewrittenMessage: (index: number) => MessageContent | null
 }>()
+
+// New `clientRequest.headers` ?? legacy `httpHeaders.inboundRequest` (P4c: drop legacy arm in entry-legs).
+const inboundHeaders = computed(() => resolveHeaders(props.entry).inboundRequest)
 </script>
 
 <template>
   <div class="stage-inbound">
     <HeadersComparisonSection
-      v-if="entry.httpHeaders?.inboundRequest"
-      :inbound-request="entry.httpHeaders.inboundRequest"
+      v-if="inboundHeaders"
+      :inbound-request="inboundHeaders"
     />
     <DetailRequestSection
       :entry="entry"

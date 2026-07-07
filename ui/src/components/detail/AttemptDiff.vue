@@ -5,14 +5,25 @@ import {
   ref,
 } from "vue"
 
-import type { HistoryEntry } from "@/types"
+import type {
+  //
+  HistoryEntry,
+  MessageContent,
+} from "@/types"
 
 import MessageDiffView from "@/components/detail/MessageDiffView.vue"
 
 const props = defineProps<{ attempts: NonNullable<HistoryEntry["attempts"]> }>()
 
+type Attempt = NonNullable<HistoryEntry["attempts"]>[number]
+
+/** Wire-request messages for an attempt: new `upstreamRequest.messages` ?? legacy `wireRequest.messages` (P4c: drop legacy arm). */
+function attemptMessages(a: Attempt): Array<MessageContent> | undefined {
+  return a.upstreamRequest?.messages ?? a.wireRequest?.messages
+}
+
 // Only attempts that actually captured a wire request body can be diffed.
-const withMessages = computed(() => props.attempts.filter((a) => a.wireRequest?.messages && a.wireRequest.messages.length > 0))
+const withMessages = computed(() => props.attempts.filter((a) => (attemptMessages(a)?.length ?? 0) > 0))
 
 // Consecutive transitions: #1→#2, #2→#3, … (what each retry changed in the sent payload).
 const pairs = computed(() => {
@@ -50,8 +61,8 @@ function selectPair(i: number): void {
       </v-chip>
     </div>
     <MessageDiffView
-      :left="activePair.from.wireRequest!.messages!"
-      :right="activePair.to.wireRequest!.messages!"
+      :left="attemptMessages(activePair.from)!"
+      :right="attemptMessages(activePair.to)!"
     />
   </div>
   <div

@@ -1,3 +1,8 @@
+import {
+  //
+  finalUpstreamResponse,
+  resolveResponseError,
+} from "~backend/lib/history/entry-view"
 import { useState } from "react"
 
 import type {
@@ -90,20 +95,25 @@ function isMessageShaped(content: unknown): content is Parameters<typeof Message
   return typeof content === "object" && content !== null && typeof (content as { role?: unknown }).role === "string"
 }
 
+/** Content shape shared by the legacy `outboundResponse.content` and the new `upstreamResponse.body`. */
+type UpstreamContent = NonNullable<HistoryEntry["outboundResponse"]>["content"] | undefined
+
 /** Upstream (upstream → proxy) leg body — rendered (MessageBlock) or code (message object as JSON). */
-function UpstreamBody({ resp, code }: { resp: NonNullable<HistoryEntry["outboundResponse"]>; code: boolean }) {
+function UpstreamBody({ content, rawBody, error, code }: { content: UpstreamContent; rawBody?: string; error?: string; code: boolean }) {
+  const fallback = rawBody ?? error ?? "(no content)"
   if (code) {
-    const body = resp.content === null ? (resp.rawBody ?? resp.error ?? "(no content)") : JSON.stringify(resp.content, null, 2)
+    const body = content === null || content === undefined ? fallback : JSON.stringify(content, null, 2)
     return <RawPre>{body}</RawPre>
   }
-  if (resp.content) return <MessageBlock message={resp.content} />
-  return <RawPre>{resp.rawBody ?? resp.error ?? "(no content)"}</RawPre>
+  if (content) return <MessageBlock message={content} />
+  return <RawPre>{fallback}</RawPre>
 }
 
 /** Forwarded (proxy → client) leg body — rendered (reconstructed content) or code (message object as JSON). */
 function ForwardedBody({ entry, code }: { entry: HistoryEntry; code: boolean }) {
-  const frames = entry.inboundResponse?.sseEvents ?? []
-  const content = entry.inboundResponse?.content
+  // New leg `clientResponse` ?? legacy `inboundResponse` (P4c: drop the legacy arm).
+  const frames = entry.clientResponse?.sseEvents ?? entry.inboundResponse?.sseEvents ?? []
+  const content = entry.clientResponse?.body ?? entry.inboundResponse?.content
   if (content !== undefined) {
     if (code) return <RawPre>{JSON.stringify(content, null, 2)}</RawPre>
     if (isMessageShaped(content)) return <MessageBlock message={content} />
@@ -158,12 +168,21 @@ function ViewToggle({ code, onChange }: { code: boolean; onChange: (code: boolea
  */
 export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
   const [code, setCode] = useState(false)
-  const hasUpstream = Boolean(entry.outboundResponse)
-  const forwardedFrames = entry.inboundResponse?.sseEvents ?? []
-  const hasForwarded = entry.inboundResponse?.content !== undefined || forwardedFrames.length > 0
+  // New per-attempt `upstreamResponse` (final attempt) ?? legacy top-level `outboundResponse` (P4c: drop the legacy arm).
+  const upstream = finalUpstreamResponse(entry)
+  const upstreamModel = upstream?.model ?? entry.outboundResponse?.model
+  const upstreamStatus = upstream?.status ?? entry.outboundResponse?.status
+  const upstreamSuccess = upstream?.success ?? entry.outboundResponse?.success
+  const upstreamContent = upstream?.body ?? entry.outboundResponse?.content
+  const upstreamRawBody = upstream?.rawBody ?? entry.outboundResponse?.rawBody
+  // Response-side error home: final attempt's `error` ?? legacy `outboundResponse.error`.
+  const upstreamError = resolveResponseError(entry)
+  const hasUpstream = Boolean(upstream ?? entry.outboundResponse)
+  const forwardedFrames = entry.clientResponse?.sseEvents ?? entry.inboundResponse?.sseEvents ?? []
+  const hasForwarded = (entry.clientResponse?.body ?? entry.inboundResponse?.content) !== undefined || forwardedFrames.length > 0
 
   const signal = statusSignal(entry.state ?? "")
-  const verdict = entry.failureReason ?? entry.outboundResponse?.error
+  const verdict = entry.failureReason ?? upstreamError
   // Show the outcome banner for non-success terminal states carrying a verdict — surfaces the
   // proxy failure reason that would otherwise be buried in / absent from the leg sections.
   const showOutcome = signal === "fail" && verdict !== undefined
@@ -196,13 +215,15 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
           </pre>
         </LegShell>
       : null}
-      {entry.outboundResponse ?
+      {hasUpstream ?
         <LegShell label="Upstream (upstream → proxy)">
           <div className="mono mb-1 text-[13px] text-[#888]">
-            status {entry.outboundResponse.status ?? "—"} · {entry.outboundResponse.model} · {entry.outboundResponse.success ? "ok" : "fail"}
+            status {upstreamStatus ?? "—"} · {upstreamModel} · {upstreamSuccess ? "ok" : "fail"}
           </div>
           <UpstreamBody
-            resp={entry.outboundResponse}
+            content={upstreamContent}
+            rawBody={upstreamRawBody}
+            error={upstreamError}
             code={code}
           />
         </LegShell>

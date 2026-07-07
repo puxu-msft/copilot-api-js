@@ -2,8 +2,9 @@
  * Join `/api/status` model-dimension telemetry onto the model catalog.
  *
  * The telemetry `model` key is split (see spec §4.2): the success leg keys on
- * the upstream canonical name (`outboundResponse.model`, normalized), while the
- * failure leg keys on the verbatim client alias (`inboundRequest.model`). To
+ * the upstream canonical name (`model.resolved` / `attempts[final].upstreamResponse.model`,
+ * normalized), while the failure leg keys on the verbatim client alias
+ * (`model.requested`). To
  * reunite them we normalize BOTH sides with `normalizeModelId` and aggregate
  * rows that collapse to the same key. Telemetry that matches no catalog id is
  * surfaced in `unmatched` rather than silently dropped (richest-data-flow).

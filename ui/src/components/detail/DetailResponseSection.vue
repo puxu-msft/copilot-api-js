@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed } from "vue"
+
 import type {
   //
   HistoryEntry,
@@ -7,30 +9,34 @@ import type {
 
 import MessageBlock from "@/components/message/MessageBlock.vue"
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import { resolveUpstreamResponse } from "@/composables/entry-legs"
 
 import SectionBlock from "./SectionBlock.vue"
 
-defineProps<{
+const props = defineProps<{
   entry: HistoryEntry
   responseMessage: MessageContent | null
 }>()
+
+// New final-attempt `upstreamResponse` ?? legacy `outboundResponse` (P4c: drop legacy arm in entry-legs).
+const resp = computed(() => resolveUpstreamResponse(props.entry))
 </script>
 
 <template>
   <SectionBlock
-    v-if="responseMessage || entry.outboundResponse?.error"
+    v-if="responseMessage || resp?.error"
     title="Response"
     anchor="response"
     :badge="responseMessage ? '1 message' : ''"
-    :raw-data="entry.outboundResponse"
+    :raw-data="resp"
     raw-title="Response"
   >
     <div
-      v-if="entry.outboundResponse?.error"
+      v-if="resp?.error"
       class="response-error"
     >
       <span class="error-label">Error</span>
-      <span class="error-text">{{ entry.outboundResponse.error }}</span>
+      <span class="error-text">{{ resp.error }}</span>
     </div>
 
     <ErrorBoundary label="Response message">

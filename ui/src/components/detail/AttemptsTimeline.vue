@@ -17,8 +17,10 @@ interface AttemptInfo {
     compactedTokens: number
   }
   effectiveMessageCount?: number
-  /** Per-attempt upstream-original SSE frames (L2 buffered retry / D1) — present on FAILED attempts. */
+  /** @deprecated 迁移中，见 RFC §4；P4c 删除。→ `upstreamResponse.sseEvents`. */
   sseEvents?: ReadonlyArray<unknown>
+  /** New per-attempt upstream response leg (RFC §3) — carries the upstream-original SSE frames. */
+  upstreamResponse?: { sseEvents?: ReadonlyArray<unknown> }
 }
 
 defineProps<{
@@ -28,6 +30,11 @@ defineProps<{
 function nodeColor(attempt: AttemptInfo): string {
   if (attempt.error) return "var(--error)"
   return "var(--success)"
+}
+
+/** Upstream-original SSE frames captured before this attempt's cutoff: new `upstreamResponse.sseEvents` ?? legacy per-attempt `sseEvents`. */
+function attemptFrames(attempt: AttemptInfo): ReadonlyArray<unknown> | undefined {
+  return attempt.upstreamResponse?.sseEvents ?? attempt.sseEvents
 }
 </script>
 
@@ -74,10 +81,10 @@ function nodeColor(attempt: AttemptInfo): string {
             {{ attempt.effectiveMessageCount }} messages
           </div>
           <div
-            v-if="attempt.error && attempt.sseEvents?.length"
+            v-if="attempt.error && attemptFrames(attempt)?.length"
             class="node-meta"
           >
-            {{ attempt.sseEvents.length }} upstream frames before cutoff
+            {{ attemptFrames(attempt)?.length }} upstream frames before cutoff
           </div>
         </div>
       </div>

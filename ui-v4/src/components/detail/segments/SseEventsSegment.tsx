@@ -1,3 +1,5 @@
+import { finalUpstreamResponse } from "~backend/lib/history/entry-view"
+
 import type {
   //
   HistoryEntry,
@@ -41,8 +43,10 @@ function FrameList({ label, frames, startedAt }: { label: string; frames: Array<
  * tab stays the rendered/semantic answer while this tab carries the wire frames.
  */
 export function SseEventsSegment({ entry }: { entry: HistoryEntry }) {
-  const upstreamFrames = entry.sseEvents ?? []
-  const forwardedFrames = entry.inboundResponse?.sseEvents ?? []
+  // Upstream frames: new final-attempt `upstreamResponse.sseEvents` ?? legacy top-level `sseEvents`.
+  // Forwarded frames: new `clientResponse.sseEvents` ?? legacy `inboundResponse.sseEvents` (P4c: drop legacy arms).
+  const upstreamFrames = finalUpstreamResponse(entry)?.sseEvents ?? entry.sseEvents ?? []
+  const forwardedFrames = entry.clientResponse?.sseEvents ?? entry.inboundResponse?.sseEvents ?? []
 
   if (upstreamFrames.length === 0 && forwardedFrames.length === 0)
     return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无 SSE 帧（非流式响应）</div>
