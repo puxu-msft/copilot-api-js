@@ -274,6 +274,26 @@ export const AnthropicConfigSchema = z
       .optional()
       .transform((v) => v ?? undefined),
     /**
+     * Models whose upstream STRICT backend rejects inline `role:"system"` messages
+     * (observed SYMPTOM — Vertex is this account's known cause but NOT asserted).
+     * A substring set matched against the resolved OUTBOUND model name (normalized).
+     * A matched model uses `system_reject_mode`; unmatched models fall back to the
+     * global `system_messages_sanitize`. Also grows at runtime (reactive learning).
+     * Default `[claude-sonnet-4.6, claude-haiku-4.5]` (empirically confirmed).
+     */
+    system_reject_models: nullableNonemptyStringArray(),
+    /**
+     * Effective sanitize mode for models in `system_reject_models` (∪ the learned
+     * reject set). Reuses the SystemMessagesSanitizeMode enum. Default `as_user`
+     * (keeps position — most prompt-cache-friendly).
+     */
+    system_reject_mode: z
+      .union([z.literal(false), z.literal("drop_invalid"), z.literal("merge"), z.literal("as_user"), z.literal("as_assistant"), z.null()], {
+        error: "Must be one of: false, drop_invalid, merge, as_user, as_assistant",
+      })
+      .optional()
+      .transform((v) => v ?? undefined),
+    /**
      * Client compatibility shim for the streaming thinking frame some Copilot
      * upstreams emit — `content_block_start {type:"thinking", thinking:"",
      * signature:S}` with NO trailing `signature_delta`. The upstream is the

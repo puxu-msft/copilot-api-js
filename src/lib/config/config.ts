@@ -534,6 +534,8 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.system_messages_sanitize !== undefined) {
       setAnthropicBehavior({ systemMessagesSanitize: a.system_messages_sanitize })
     }
+    if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
+    if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })
     if (a.tool_rewrite_history_server !== undefined) {
       setAnthropicBehavior({ rewriteHistoryServerTools: a.tool_rewrite_history_server })
     }
