@@ -8,8 +8,19 @@
 - **若做**：先用探针 / history `sseEvents` 实测 CAPI 是否接受（见 skill `empirical-verification`）；被拒时 `unsupported-beta-retry` 只自愈 beta、body 里的 tool 类型无自愈（属未来工作）。保持关直到实测接受。
 - **权威现状**：skill `ghc-api-reference` + `docs/plan/ghc-feature-alignment-tool-search-cache-ttl-memory.md`。
 
-## context-edits 回执 telemetry（7d 分布）
+## stripToolFields 预剥的深层可观测性（history/telemetry 维度）
 
+- **现状**：`stripToolFields`（`message-tools.ts`）剥除未知 custom-tool 字段（如 `eager_input_streaming`）时仅发结构化 `consola.warn`（命名剥除字段 + 受影响 tool 数），与 sibling `stripServerTools` 同档。反应式腿经 `RetryAction.meta.strippedToolFields` 已可达；但**内置默认 / config / cache 的 proactive 预剥是常态路径**（首请求就零 round-trip），它不经重试、不进 history `sseEvents` / request-telemetry 维度。
+- **暂缓原因**：`buildWirePayload`（B1/B2 ctx 初始化，非 prepare step）当前无事件发射通道，sibling `stripServerTools` 亦仅 warn；就地新建 telemetry 通道属跨切面改动，超出与 sibling 对齐的范围。对抗审查 M2 提出、判为「决定数据模型的后续项」。
+- **若做**：给 prepare 阶段（或 `stripToolFields` 返回值）接一个能到达 history/request-telemetry 的结构化回执（剥除字段集 + 受影响 tool 数 + 来源 builtin/config/cache/hint），前端可选呈现（richest-data-flow）；同时可顺带给 `stripServerTools` 补同款可观测性。遥测架构见 skill `telemetry-architecture`。
+
+## web_search hop 缺 tool-field 反应式学习（遗留管线边界）
+
+- **现状**：`tool-field-rejection-retry` 只注册在 v4 codec 管线（`codec/anthropic/strategies.ts`）;web_search 双跳仍走**遗留** `runAnthropicPipeline`（`web-search-direct.ts` / `web-search/orchestrator.ts`），其策略表**不含**任何 reactive-rejection 策略（server-tool / structured-outputs 亦缺），遗留 adapter opts 也无 `excludeToolFields`。
+- **当前行为（已核实无害）**：`stripToolFields` 的**预剥三源**（内置默认 + 端点级学习缓存 + config）经 `prepareAnthropicRequest` 对**两条路径都生效**——`eager_input_streaming` 及主路径已学到的字段在 hop 上照剥，端点级缓存跨路径共享。唯一残余缺口：**全新未知字段首次且仅出现在 web_search hop** 时，该路径裸 400 且不写缓存（几乎不可能——hop 携带与原请求相同 tools，新字段必先经 v4 主路径学到;且 `webSearchEnabled` 默认 OFF）。
+- **暂缓原因**：与遗留 hop 简化管线边界一致（本就省略全部 v4 反应式策略）；补齐需给遗留 pipeline 加策略 + adapter opts 透传 `excludeToolFields`，属遗留管线退役范畴。发现方：交付审计 subagent（2026-07-07）。
+
+## context-edits 回执 telemetry（7d 分布）
 - **现状**：`applied_edits` 诊断回执已落地（commit f55fd93，`src/lib/anthropic/applied-context-edits.ts`，流式经 accumulator `message_delta` / 非流式经 handler 顶层，两路发 `recordFeature("context-edits-applied", {count, clearedInputTokens, types})`），进 observability feature 维度计数。
 - **暂缓**（用户 2026-06-29"暂时不做"）：接进 `request-telemetry` 做 7d 持久分布（现只 feature 维度计数，无 cleared token 量直方图）；实证开启 `protectStreamingEscalateContext` / `contextEditingMode` 后真有非空 `applied_edits`（当前样本 req_1782713407242_1 全空回执）。
 - **原因**：命中率 / 价值未知，先收集 feature 计数再决定是否加 telemetry 维度（YAGNI）。遥测架构见 skill `telemetry-architecture`。

@@ -11,7 +11,7 @@ Anthropic 直连为 **bypass-direct** codec（translate/render = identity），�
 
 ## 兼容协商
 
-`src/lib/anthropic/feature-negotiation.ts`：per-(endpoint,model) 永久缓存上游学到的特性/beta/effort/deferred-tool 拒绝，配合 config 孪生（`partner_strip_features`、`beta_strip_headers`）首发即剥。
+`src/lib/anthropic/feature-negotiation.ts`：per-(endpoint,model) 永久缓存上游学到的特性/beta/effort/deferred-tool 拒绝，配合 config 孪生（`partner_strip_features`、`beta_strip_headers`）首发即剥。另有**端点级（模型无关）**的 `toolFields` 账本：学习上游拒绝的未知 custom-tool 顶层字段（`tools.N.<variant>.<field>: Extra inputs are not permitted`，如新版 CC 挂的 `eager_input_streaming`），config 孪生 `tool_strip_fields`（加）/ `tool_keep_fields`（减，可逆），内置默认剥 `eager_input_streaming` 使首发零 400。
 
 ## 功能矩阵（配置）
 

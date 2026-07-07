@@ -8,7 +8,7 @@ v4 管线由 per-request driver 编排七阶段（S1–S7）。重试是错误�
 
 ## 重试策略
 
-S4 内首个匹配的 `RetryStrategy` 改写 env 重试。10 个策略在 `src/lib/request/strategies/`：network、server-error（5xx 瞬时网关错误 ≤2 次退避）、token-refresh、auto-truncate、effort-learning、legacy-thinking、unsupported-beta、deferred-tool、server-tool-rejection、structured-outputs-rejection。各格式经 `codec/*/strategies.ts` 组装，旧 strategy 经 `pipeline/legacy-strategy-adapter.ts` 适配进 driver。
+S4 内首个匹配的 `RetryStrategy` 改写 env 重试。策略在 `src/lib/request/strategies/`：network、server-error（5xx 瞬时网关错误 ≤2 次退避）、token-refresh、auto-truncate、effort-learning、legacy-thinking、unsupported-beta、deferred-tool、tool-field-rejection（学习上游拒绝的未知 custom-tool 顶层字段如 `eager_input_streaming`，排在 body-field 前）、server-tool-rejection、structured-outputs-rejection。各格式经 `codec/*/strategies.ts` 组装（Anthropic 全表 14 条），旧 strategy 经 `pipeline/legacy-strategy-adapter.ts` 适配进 driver。
 
 ## 错误分类与限速
 

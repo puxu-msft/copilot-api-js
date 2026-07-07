@@ -19,6 +19,7 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 | `references web_search but not server tool` 400 | 历史残留 server_tool_use | `tool_rewrite_history_server:downgrade` + 开 web_search |
 | `Invalid encrypted_content in search_result block` 400 | web_search 双跳合成的 `web_search_tool_result` 结果项 `encrypted_content=""`（`synthesize.ts`，后端产不出真加密内容）回流历史，上游校验真实非空 string（空/null/占位全 400，error-shaped 反而 200） | **always-on 兜底自动降级**（`sanitize/empty-encrypted-search-result.ts`，无需配置）；开 `tool_rewrite_history_server:downgrade` 更宽清理。exp/encrypted-content-400 |
 | 双空块被拒 | shim 把 sig 嵌 start 无 signature_delta（web_search 双跳绕 shim 曾酿此） | `thinking_signature_compat` |
+| `tools.N.custom.<field>: Extra inputs are not permitted` 400 | 新版 CC 给每 tool 挂未知字段（首例 `eager_input_streaming`，官方 Anthropic 认、GHC 版本较旧拒）；`.custom.` 是 pydantic 判别标签、wire 上是 tool 顶层扁平键 | **always-on 内置默认预剥** `eager_input_streaming`（`message-tools.ts` `stripToolFields`，首发零 400）+ 反应式 `tool-field-rejection-retry` 学习任意未来未知字段（端点级账本、matchAll 多字段、LEGIT_TOOL_KEYS deny 守卫放行变体误路由）；config `tool_strip_fields`（加）/ `tool_keep_fields`（减可逆）。注：body-field 正则曾会抢先误认领此 tools 路径（已收紧 `(?<![.\w])`）|
 
 ## 实测关键事实
 
