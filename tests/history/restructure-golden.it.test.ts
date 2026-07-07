@@ -148,6 +148,16 @@ export function serializeToRawRows(entry: HistoryEntry): { row: EntryRow; stageR
  * heavy bodies it carries, and top-level leg presence. Captures "stage 种类 +
  * attempt 索引 + 顶层 leg 存在性" — value-agnostic so a rename/re-projection is a
  * reviewable structural diff, not a churn of body contents.
+ *
+ * P4c-2 GROWTH (intentional): `assembleFullEntry` now runs the read-time
+ * legacy→new leg adapter, so a LEGACY fixture (only old stages) reassembles with
+ * the NEW legs populated. The snapshot therefore ALSO observes new-leg presence
+ * per attempt (`hasEffectiveSource`/`hasUpstreamRequest`/`hasUpstreamResponse` +
+ * the unified upstream frame count) and entry-level
+ * (`clientRequest`/`clientResponse`/`model`/`indexDerived`). This proves the
+ * adapter fills the new legs from the OLD stages that are STILL read (the legacy
+ * `hasEffectiveRequest`/… flags stay `true`). Field-level VALUE equivalence
+ * (new leg == old leg) is locked by `tests/history/p4c2-read-adapter.it.test.ts`.
  */
 export function assembledStructureSnapshot(row: EntryRow, stageRows: Array<StageRow>): Record<string, unknown> {
   const assembled = assembleFullEntry(row, stageRows)
@@ -157,6 +167,11 @@ export function assembledStructureSnapshot(row: EntryRow, stageRows: Array<Stage
     hasWireRequest: a.wireRequest !== undefined,
     hasResponse: a.response !== undefined,
     hasSseEvents: a.sseEvents !== undefined,
+    // P4c-2: the adapter-filled new per-attempt legs.
+    hasEffectiveSource: a.effectiveSource !== undefined,
+    hasUpstreamRequest: a.upstreamRequest !== undefined,
+    hasUpstreamResponse: a.upstreamResponse !== undefined,
+    upstreamSseCount: a.upstreamResponse?.sseEvents?.length ?? 0,
   }))
   return {
     stageRowKinds: stageRows.map((sr) => `${sr.stage}@${sr.attempt_index}`).sort(),
@@ -168,6 +183,13 @@ export function assembledStructureSnapshot(row: EntryRow, stageRows: Array<Stage
       inboundResponse: assembled.inboundResponse !== undefined,
       sseEvents: assembled.sseEvents !== undefined,
       sseEventCount: assembled.sseEvents?.length ?? 0,
+    },
+    // P4c-2: the adapter-filled entry-level new legs (present on a legacy row too).
+    newLegs: {
+      clientRequest: assembled.clientRequest !== undefined,
+      clientResponse: assembled.clientResponse !== undefined,
+      model: assembled.model !== undefined,
+      indexDerived: assembled._index?.derived !== undefined,
     },
     attempts,
   }
@@ -457,12 +479,22 @@ describe("history restructure golden (pre-capture on current code)", () => {
         "attempts": [
           {
             "hasEffectiveRequest": true,
+            "hasEffectiveSource": true,
             "hasResponse": true,
             "hasSseEvents": false,
+            "hasUpstreamRequest": true,
+            "hasUpstreamResponse": true,
             "hasWireRequest": true,
             "index": 0,
+            "upstreamSseCount": 2,
           },
         ],
+        "newLegs": {
+          "clientRequest": true,
+          "clientResponse": true,
+          "indexDerived": true,
+          "model": true,
+        },
         "stageRowKinds": [
           "inbound_response@-1",
           "outbound_response@0",
@@ -523,12 +555,22 @@ describe("history restructure golden (pre-capture on current code)", () => {
         "attempts": [
           {
             "hasEffectiveRequest": true,
+            "hasEffectiveSource": true,
             "hasResponse": true,
             "hasSseEvents": false,
+            "hasUpstreamRequest": true,
+            "hasUpstreamResponse": true,
             "hasWireRequest": true,
             "index": 0,
+            "upstreamSseCount": 0,
           },
         ],
+        "newLegs": {
+          "clientRequest": true,
+          "clientResponse": false,
+          "indexDerived": true,
+          "model": true,
+        },
         "stageRowKinds": [
           "outbound_response@0",
           "request_group@-1",
@@ -587,12 +629,22 @@ describe("history restructure golden (pre-capture on current code)", () => {
         "attempts": [
           {
             "hasEffectiveRequest": true,
+            "hasEffectiveSource": true,
             "hasResponse": true,
             "hasSseEvents": false,
+            "hasUpstreamRequest": true,
+            "hasUpstreamResponse": true,
             "hasWireRequest": true,
             "index": 0,
+            "upstreamSseCount": 0,
           },
         ],
+        "newLegs": {
+          "clientRequest": true,
+          "clientResponse": false,
+          "indexDerived": true,
+          "model": true,
+        },
         "stageRowKinds": [
           "outbound_response@0",
           "request_group@-1",
@@ -651,12 +703,22 @@ describe("history restructure golden (pre-capture on current code)", () => {
         "attempts": [
           {
             "hasEffectiveRequest": true,
+            "hasEffectiveSource": true,
             "hasResponse": true,
             "hasSseEvents": false,
+            "hasUpstreamRequest": true,
+            "hasUpstreamResponse": true,
             "hasWireRequest": true,
             "index": 0,
+            "upstreamSseCount": 1,
           },
         ],
+        "newLegs": {
+          "clientRequest": true,
+          "clientResponse": false,
+          "indexDerived": true,
+          "model": true,
+        },
         "stageRowKinds": [
           "outbound_response@0",
           "request_group@-1",
@@ -716,19 +778,33 @@ describe("history restructure golden (pre-capture on current code)", () => {
         "attempts": [
           {
             "hasEffectiveRequest": true,
+            "hasEffectiveSource": true,
             "hasResponse": true,
             "hasSseEvents": true,
+            "hasUpstreamRequest": true,
+            "hasUpstreamResponse": true,
             "hasWireRequest": true,
             "index": 0,
+            "upstreamSseCount": 1,
           },
           {
             "hasEffectiveRequest": true,
+            "hasEffectiveSource": true,
             "hasResponse": true,
             "hasSseEvents": false,
+            "hasUpstreamRequest": true,
+            "hasUpstreamResponse": true,
             "hasWireRequest": true,
             "index": 1,
+            "upstreamSseCount": 2,
           },
         ],
+        "newLegs": {
+          "clientRequest": true,
+          "clientResponse": false,
+          "indexDerived": true,
+          "model": true,
+        },
         "stageRowKinds": [
           "outbound_response@0",
           "outbound_response@1",
@@ -796,12 +872,22 @@ describe("history restructure golden (pre-capture on current code)", () => {
         "attempts": [
           {
             "hasEffectiveRequest": true,
+            "hasEffectiveSource": true,
             "hasResponse": true,
             "hasSseEvents": false,
+            "hasUpstreamRequest": true,
+            "hasUpstreamResponse": true,
             "hasWireRequest": true,
             "index": 0,
+            "upstreamSseCount": 0,
           },
         ],
+        "newLegs": {
+          "clientRequest": true,
+          "clientResponse": false,
+          "indexDerived": true,
+          "model": true,
+        },
         "stageRowKinds": [
           "outbound_response@0",
           "request_group@-1",

@@ -45,7 +45,11 @@ import {
   classifyError,
   HTTPError,
 } from "~/lib/error"
-import { compress } from "~/lib/history/sqlite/compression"
+import {
+  //
+  compress,
+  decompress,
+} from "~/lib/history/sqlite/compression"
 import {
   //
   closeDatabase,
@@ -242,25 +246,31 @@ describe("P2 new leg stages — round-trip", () => {
     expect(back.clientResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start"])
   })
 
-  test("new stages are emitted ALONGSIDE the legacy ones (既有不丢)", () => {
+  test("new stages are emitted ALONGSIDE the legacy ones (既有不丢); request legs fold into request_group", () => {
     const entry = dualEntry()
     const { stageRows } = serializeToRawRows(entry)
     const kinds = stageRows.map((sr) => `${sr.stage}@${sr.attempt_index}`).sort()
-    // Legacy stages still present (subset check — nothing dropped).
+    // Legacy stages still present (subset check — nothing dropped). The legacy
+    // request bodies (inbound/effective/outbound_request) live INSIDE request_group.
     for (const legacy of ["request_group@-1", "sse_events@-1", "outbound_response@0", "outbound_response@1"]) {
       expect(kinds).toContain(legacy)
     }
-    // New stages present.
-    for (const fresh of [
-      "client_response@-1",
-      "effective_source@0",
-      "effective_source@1",
-      "upstream_request@0",
-      "upstream_request@1",
-      "upstream_response@0",
-      "upstream_response@1",
-    ]) {
+    // New RESPONSE-side + client stages stay standalone rows.
+    for (const fresh of ["client_response@-1", "upstream_response@0", "upstream_response@1"]) {
       expect(kinds).toContain(fresh)
+    }
+    // New REQUEST-side legs (effective_source/upstream_request) are now folded into
+    // the request_group dedup frame (P4c-2) — NOT standalone rows.
+    for (const folded of ["effective_source@0", "effective_source@1", "upstream_request@0", "upstream_request@1"]) {
+      expect(kinds).not.toContain(folded)
+    }
+    // Prove they live inside the request_group frame instead.
+    const groupRow = stageRows.find((sr) => sr.stage === "request_group")
+    expect(groupRow).toBeDefined()
+    const members = decompress(groupRow!.blob_gz) as Array<{ stage: string; attemptIndex: number }>
+    const memberKinds = members.map((m) => `${m.stage}@${m.attemptIndex}`)
+    for (const folded of ["effective_source@0", "effective_source@1", "upstream_request@0", "upstream_request@1"]) {
+      expect(memberKinds).toContain(folded)
     }
   })
 
