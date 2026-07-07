@@ -66,8 +66,9 @@ model_overrides:
   claude-opus-4.7: claude-opus-4.8
 
   # Use latest sonnet / 使用最新 sonnet
-  sonnet: claude-sonnet-4.6
-  claude-sonnet-4.5: claude-sonnet-4.6
+  sonnet: claude-sonnet-5
+  claude-sonnet-4.5: claude-sonnet-5
+  claude-sonnet-4.6: claude-sonnet-5
 
   # Redirect all sonnet requests to best opus / 把所有 sonnet 请求重定向到最好的 opus
   # sonnet: claude-opus-4.6
@@ -295,7 +296,7 @@ anthropic:
   # 客户端→上游请求头转发模式（Anthropic 路径）。决定下面哪个名单生效。两模式都先过同一安全地板：代理自有 core 键永远优先、敏感黑名单（cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded 链 / hop-by-hop + x-github-* / openai- 命名空间）永远剥除——whitelist 不能重新放行凭据。是 strict_response_headers 的请求侧镜像。
   #   false（默认）= BLACKLIST 模式：转发客户端头，但剥除 request_header_blacklist glob 命中者。
   #   true        = WHITELIST 模式：只转发 request_header_whitelist glob 命中的客户端头（外加重建的 core）。
-  strict_request_headers: false
+  strict_request_headers: true
 
   # BLACKLIST-mode glob list (header name; * / ?): client headers stripped from the forwarded set (active when strict_request_headers is false). Acts on the security-floor subset ONLY (never the proxy's own core/anthropic-beta headers), so "*" just empties it (= core-only) and is harmless. Default strips the HTTP-header form of x-anthropic-billing-header. NOTE: that header is now DEFENSIVE — current Claude Code carries attribution in the request body (system[0]), handled by strip_attribution_header below; this HTTP-header entry only catches older clients / the header form.
   # retain-on-absence: the default applies on first load / PUT /api/config reset only; deleting this key KEEPS the running value; [] clears it. To restore the default, reset (PUT /api/config) rather than deleting the key.
