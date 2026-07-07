@@ -31,6 +31,7 @@ import {
 import type { ObservabilityEvent } from "~/lib/observability"
 
 import { createRequestContext } from "~/lib/context/request"
+import { HTTPError } from "~/lib/error"
 import { createBus } from "~/lib/observability"
 
 /**
@@ -155,6 +156,26 @@ describe("RequestContext.recordAttemptFailure", () => {
       expect(events[0].attempt.attemptIndex).toBe(0)
       expect(events[0].attempt.strategy).toBe("auto-truncate")
       expect(events[0].attempt.error).toEqual({ status: 413, message: "Payload too large", type: "payload_too_large" })
+    }
+  })
+
+  test("carries the upstream error rawBody from the attempt's HTTPError raw", () => {
+    const { ctx, events } = setup()
+    const body = '{"error":{"message":"upstream boom","type":"server_error"}}'
+    ctx.beginAttempt({ strategy: "server-error-retry" })
+    ctx.setAttemptError({
+      status: 500,
+      message: "HTTP 500",
+      type: "server_error",
+      raw: new HTTPError("HTTP 500", 500, body),
+    })
+
+    ctx.recordAttemptFailure({ willRetry: true })
+
+    const failed = events.find((e) => e.kind === "request.attempt_failed")
+    expect(failed).toBeDefined()
+    if (failed?.kind === "request.attempt_failed") {
+      expect(failed.attempt.error?.rawBody).toBe(body)
     }
   })
 

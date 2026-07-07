@@ -747,7 +747,14 @@ export function createRequestContext(opts: {
         ...(a?.wireRequest !== null && a?.wireRequest !== undefined && { wireRequest: a.wireRequest }),
         ...(a?.effectiveRequest !== null && a?.effectiveRequest !== undefined && { effectiveRequest: a.effectiveRequest }),
         ...(a?.response !== null && a?.response !== undefined && { partialResponse: a.response }),
-        ...(a?.error && { error: { status: a.error.status, message: a.error.message, type: a.error.type } }),
+        ...(a?.error && {
+          error: {
+            status: a.error.status,
+            message: a.error.message,
+            type: a.error.type,
+            ...(a.error.raw instanceof HTTPError && { rawBody: a.error.raw.responseText }),
+          },
+        }),
       }
       publisher?.publish({
         kind: "request.attempt_failed",
