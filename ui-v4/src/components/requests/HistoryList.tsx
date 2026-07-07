@@ -1,35 +1,108 @@
 import {
   //
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+  type OnChangeFn,
+  type Row,
+  type VisibilityState,
+} from "@tanstack/react-table"
+import {
+  //
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
+  useState,
 } from "react"
 import {
   //
   useNavigate,
   useSearchParams,
 } from "react-router-dom"
+import {
+  //
+  TableVirtuoso,
+  type TableComponents,
+  type VirtuosoHandle,
+} from "react-virtuoso"
 
 import type { RequestFilters } from "@/lib/request-filters"
+import type { EntrySummary } from "@/types"
 
-import { RequestRow } from "@/components/requests/RequestRow"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
+import {
+  //
+  DEFAULT_COLUMN_VISIBILITY,
+  REQUEST_COLUMNS,
+} from "@/lib/request-columns"
 import { useListStore } from "@/stores/list-store"
 
-/** 定位命中后的瞬态高亮类(与 useAnchorScroll 共用,见 styles/theme.css)。 */
-const FLASH_CLASS = "toc-flash"
-const FLASH_MS = 1200
-/** load-until-found 翻页上限:防止 `at` 指向不存在/已淘汰 id 时无限拉取。 */
+/** load-until-found 翻页上限:防止 `at` 指向不存在/已淘汰 id 时无限拉取(Task 3.3 会加归属判定)。 */
 const LOCATE_PAGE_CAP = 20
+/**
+ * 首屏强制渲染的行数上限。jsdom(测试)无 layout,react-virtuoso 靠它决定首屏渲染多少行
+ * (见 exp/requests-virtuoso-poc/CONCLUSION.md);生产环境首帧即可见前 N 行,随后交给虚拟化测量。
+ */
+const INITIAL_ITEM_COUNT = 20
 
-/** 在滚动容器内按 data-entry-id 查找行;防御性转义 `"`/`\`(entry id 理论可含任意字符)。 */
-function findRow(container: HTMLElement | null, id: string): HTMLElement | null {
-  if (!container) return null
-  const safe = id.replaceAll(/["\\]/g, String.raw`\$&`)
-  return container.querySelector<HTMLElement>(`[data-entry-id="${safe}"]`)
+/** TableVirtuoso 的行数据 = TanStack 行对象(`row.original` 即 EntrySummary)。 */
+type HistoryRowModel = Row<EntrySummary>
+
+/** 传给 Virtuoso 各子组件的上下文:定位真值(`at`)+ 行点击回调。用 context 而非闭包,组件得以稳定不重挂。 */
+interface RowContext {
+  at: string | null
+  onSelect: (id: string) => void
 }
 
-/** History —— 游标分页 + 缓冲横幅 + tail 暂停 + URL(`?at=`)定位/高亮(spec §4.2)。 */
-export function HistoryList({ filters }: { filters: RequestFilters }) {
+const ROW_CLASS = "mono cursor-pointer border-b border-[#222] text-left text-[13px]"
+
+function selectionClass(selected: boolean): string {
+  return selected ? "border-l-2 border-l-[var(--color-primary)] bg-[#3a2f1a] text-[#f0d8a8]" : "text-[#aaa]"
+}
+
+// ── Virtuoso 子组件(模块级、稳定引用,避免 inline 定义导致每帧重挂)。动态数据经 `context` 注入。 ──
+
+/** `<table>` 外壳:必须透传 Virtuoso 注入的 `style`(布局);table-fixed + 列宽(th/td meta.width)决定列宽。 */
+const TableShell: NonNullable<TableComponents<HistoryRowModel, RowContext>["Table"]> = ({ style, ...props }) => (
+  <table
+    {...props}
+    className="mono w-full table-fixed border-collapse"
+    style={style}
+  />
+)
+
+/** 每行 `<tr>`:`item` 即 TanStack 行,`context.at` 决定选中高亮,点击走 `context.onSelect`(单元格 td 由 itemContent 注入 children)。 */
+const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableRow"]> = ({ item, context, ...props }) => {
+  const selected = item.original.id === context.at
+  return (
+    <tr
+      {...props}
+      data-entry-id={item.original.id}
+      onClick={() => context.onSelect(item.original.id)}
+      className={`${ROW_CLASS} ${selectionClass(selected)}`}
+    />
+  )
+}
+
+const TABLE_COMPONENTS: TableComponents<HistoryRowModel, RowContext> = {
+  Table: TableShell,
+  TableRow,
+}
+
+interface HistoryListProps {
+  filters: RequestFilters
+  /** 列可见性(受控);缺省则组件自持内部 state(全显)。Task 3.4 由 RequestsListPage 提升 + localStorage 持久化。 */
+  columnVisibility?: VisibilityState
+  onColumnVisibilityChange?: OnChangeFn<VisibilityState>
+}
+
+/**
+ * History —— TanStack Table 列模型 + react-virtuoso 虚拟渲染(spec §4.2)。
+ * 保留 tail 跟随 / 缓冲横幅 / `?at=` 定位 / goLive;渲染层换为 `TableVirtuoso`,
+ * `endReached` 触底加载旧页取代旧 onScroll 阈值翻页,离顶(`atTopStateChange`)暂停 tail。
+ */
+export function HistoryList({ filters, columnVisibility: controlledVisibility, onColumnVisibilityChange }: HistoryListProps) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const at = searchParams.get("at")
@@ -38,11 +111,24 @@ export function HistoryList({ filters }: { filters: RequestFilters }) {
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
 
-  const scrollRef = useRef<HTMLDivElement>(null)
+  // 列可见性:受控优先,否则内部 state。留好 Task 3.4 的受控接口(菜单 + localStorage 持久化)。
+  const [internalVisibility, setInternalVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY)
+  const columnVisibility = controlledVisibility ?? internalVisibility
+  const setColumnVisibility = onColumnVisibilityChange ?? setInternalVisibility
+
+  const table = useReactTable({
+    data: entries,
+    columns: REQUEST_COLUMNS,
+    state: { columnVisibility },
+    onColumnVisibilityChange: setColumnVisibility,
+    getCoreRowModel: getCoreRowModel(),
+  })
+  const rows = table.getRowModel().rows
+
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
   // 每个 `at` 的定位进度:done 命中后不再重滚(WS invalidate 会换 entries 引用,否则抖动);
   // pages 记 load-until-found 已翻页数(上限保护)。at 变化时重置。
   const locateRef = useRef<{ at: string | null; pages: number; done: boolean }>({ at: null, pages: 0, done: false })
-  const flashTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // URL 带 `?at=` → 该条目为定位真值:落地时暂停 tail(避免新条目把定位行挤走)。
   // 只在 `at` 变化时触发(edge-triggered,deps 不含 tailOn):否则 resume 把 tailOn 转 true
@@ -51,8 +137,9 @@ export function HistoryList({ filters }: { filters: RequestFilters }) {
     if (at) dispatch({ kind: "locate" })
   }, [at, dispatch])
 
-  // 定位:滚动到 `at` 行 + 瞬态高亮;不在当前分页窗口则逐页 load-until-found(有上限)。
-  // 依赖 entries:每次 fetchNextPage 揭示新页 → 重跑本 effect → 再尝试命中。
+  // 定位:`at` 在已加载集内 → scrollToIndex 居中;不在则逐页 load-until-found(上限保护)。
+  // 依赖 entries:每次 fetchNextPage 揭示新页 → 重跑 → 再尝试命中。
+  // TODO(Task 3.3):补 at×筛选归属判定(matchesGating)+ flash 高亮;本 task 先做最简 index 定位。
   useEffect(() => {
     if (!at) {
       locateRef.current = { at: null, pages: 0, done: false }
@@ -61,12 +148,9 @@ export function HistoryList({ filters }: { filters: RequestFilters }) {
     if (locateRef.current.at !== at) locateRef.current = { at, pages: 0, done: false }
     if (locateRef.current.done) return
 
-    const el = findRow(scrollRef.current, at)
-    if (el) {
-      el.scrollIntoView({ block: "center" })
-      el.classList.add(FLASH_CLASS)
-      if (flashTimerRef.current !== undefined) clearTimeout(flashTimerRef.current)
-      flashTimerRef.current = setTimeout(() => el.classList.remove(FLASH_CLASS), FLASH_MS)
+    const index = entries.findIndex((e) => e.id === at)
+    if (index !== -1) {
+      virtuosoRef.current?.scrollToIndex({ index, align: "center" })
       locateRef.current.done = true
       return
     }
@@ -77,21 +161,15 @@ export function HistoryList({ filters }: { filters: RequestFilters }) {
     }
   }, [at, entries, hasNextPage, fetchNextPage])
 
-  // 卸载清理闪烁计时器。
-  useEffect(
-    () => () => {
-      if (flashTimerRef.current !== undefined) clearTimeout(flashTimerRef.current)
+  const selectRow = useCallback(
+    (rowId: string) => {
+      dispatch({ kind: "locate" }) // 暂停 tail;选中真值由目标 URL(/requests/:id)承载
+      void navigate(`/requests/${rowId}`)
     },
-    [],
+    [dispatch, navigate],
   )
+  const rowContext = useMemo<RowContext>(() => ({ at, onSelect: selectRow }), [at, selectRow])
 
-  function onScroll(e: React.UIEvent<HTMLDivElement>) {
-    if (e.currentTarget.scrollTop > 4 && tailOn) dispatch({ kind: "scroll-up" })
-  }
-  function selectRow(rowId: string) {
-    dispatch({ kind: "locate" }) // 暂停 tail;选中真值由目标 URL(/requests/:id)承载
-    void navigate(`/requests/${rowId}`)
-  }
   // 显式跟随实时流:恢复 tail 并清掉 URL 的定位参数(URL-as-truth:tailing 态不该声明 locate)。
   function goLive(ev: "resume" | "flush") {
     dispatch({ kind: ev })
@@ -122,31 +200,53 @@ export function HistoryList({ filters }: { filters: RequestFilters }) {
           ↓ {bufferedIds.length} 条新请求 —— 点此合入
         </button>
       )}
-      <div
-        ref={scrollRef}
-        className="min-h-0 flex-1 overflow-y-auto"
-        onScroll={onScroll}
-      >
+      <div className="min-h-0 flex-1">
         {isLoading ?
           <div className="mono p-2 text-[#888]">loading…</div>
-        : entries.map((e) => (
-            <RequestRow
-              key={e.id}
-              entry={e}
-              selected={e.id === at}
-              onClick={() => selectRow(e.id)}
-            />
-          ))
+        : <TableVirtuoso<HistoryRowModel, RowContext>
+            ref={virtuosoRef}
+            style={{ height: "100%" }}
+            data={rows}
+            context={rowContext}
+            // jsdom 无 layout,靠 initialItemCount 强制首屏渲染前 N 行(见 CONCLUSION.md)。
+            initialItemCount={Math.min(rows.length, INITIAL_ITEM_COUNT)}
+            components={TABLE_COMPONENTS}
+            endReached={() => {
+              if (hasNextPage) void fetchNextPage()
+            }}
+            // 离顶(用户上滚)→ 暂停 tail,避免新条目把当前浏览位置挤走(取代旧 onScroll 阈值判断)。
+            atTopStateChange={(atTop) => {
+              if (!atTop && tailOn) dispatch({ kind: "scroll-up" })
+            }}
+            fixedHeaderContent={() =>
+              table.getHeaderGroups().map((hg) => (
+                <tr
+                  key={hg.id}
+                  className="mono border-b border-[#222] bg-[#111] text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
+                >
+                  {hg.headers.map((header) => (
+                    <th
+                      key={header.id}
+                      className={`${header.column.columnDef.meta?.width ?? ""} px-2 py-1 text-left font-normal`}
+                    >
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                    </th>
+                  ))}
+                </tr>
+              ))
+            }
+            itemContent={(_index, row) =>
+              row.getVisibleCells().map((cell) => (
+                <td
+                  key={cell.id}
+                  className={`${cell.column.columnDef.meta?.width ?? ""} overflow-hidden px-2 py-1 align-middle`}
+                >
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </td>
+              ))
+            }
+          />
         }
-        {hasNextPage && (
-          <button
-            type="button"
-            className="mono w-full py-2 text-[13px] text-[var(--color-primary)]"
-            onClick={() => void fetchNextPage()}
-          >
-            加载更多
-          </button>
-        )}
       </div>
     </div>
   )

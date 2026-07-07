@@ -1,3 +1,5 @@
+import type { VisibilityState } from "@tanstack/react-table"
+
 import {
   //
   QueryClient,
@@ -8,7 +10,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
 } from "@testing-library/react"
 import {
   //
@@ -27,6 +28,7 @@ import {
 
 import type { EntrySummary } from "@/types"
 
+import { DEFAULT_COLUMN_VISIBILITY } from "@/lib/request-columns"
 import { EMPTY_FILTERS } from "@/lib/request-filters"
 import {
   //
@@ -94,19 +96,62 @@ describe("HistoryList", () => {
     expect(screen.getByText(/live/)).toBeDefined()
   })
 
-  it("locates the ?at row: scrolls it into view, flashes it, highlights it, pauses tail", async () => {
-    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView")
+  it("locates the ?at row: highlights it (selection truth = URL) and pauses tail", () => {
+    // 定位滚动本 task 走 virtuosoRef.scrollToIndex(imperative,不经 scrollIntoView);flash 高亮
+    // 归 Task 3.3。这里断言选中真值(URL `at`)落在 e2 行 + tail 暂停这两个非滚动路径。
     mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
     const { container } = renderList(["/requests?at=e2"])
 
     const row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
     expect(row).not.toBeNull()
-    await waitFor(() => expect(scrollSpy).toHaveBeenCalled())
-    expect(row?.classList.contains("toc-flash")).toBe(true)
     // 高亮真值 = URL:选中样式落在 e2 行(border-l 选中态)。
     expect(row?.className).toContain("border-l-2")
     // tail 暂停,避免新条目挤走定位行。
     expect(useListStore.getState().tailOn).toBe(false)
+  })
+
+  it("renders each loaded entry as a row (TableVirtuoso + TanStack column model)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a"), entry("b"), entry("c")], total: 3 }
+    const { container } = renderList()
+    // 三条 entry → 三行(data-entry-id 承载行 id)。
+    const rows = container.querySelectorAll("[data-entry-id]")
+    expect(rows.length).toBe(3)
+    expect(container.querySelector('[data-entry-id="a"]')).not.toBeNull()
+    expect(container.querySelector('[data-entry-id="c"]')).not.toBeNull()
+  })
+
+  it("respects columnVisibility: a hidden column's header and cells do not render", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const hidden: VisibilityState = { ...DEFAULT_COLUMN_VISIBILITY, model: false }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList
+            filters={EMPTY_FILTERS}
+            columnVisibility={hidden}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    // 未隐藏列表头仍在;model 列表头被隐藏。
+    expect(screen.getByText("Status")).toBeDefined()
+    expect(screen.queryByText("Model")).toBeNull()
+  })
+
+  it("clicking a row navigates to /requests/:id", () => {
+    mockHistory = { ...mockHistory, entries: [entry("clickme")], total: 1 }
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const row = container.querySelector<HTMLElement>('[data-entry-id="clickme"]')
+    expect(row).not.toBeNull()
+    fireEvent.click(row as HTMLElement)
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/clickme")
   })
 
   it("load-until-found: fetches next page when ?at is not in the loaded window and there is more", () => {

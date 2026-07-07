@@ -14,21 +14,21 @@ import {
 } from "@/lib/activity-row"
 import {
   //
-  formatBytes,
   formatDuration,
   formatElapsed,
   formatTime,
   statusSignal,
-  type Signal,
 } from "@/lib/format"
-
-const SIGNAL_COLOR: Record<Signal, string> = {
-  ok: "var(--color-ok)",
-  fail: "var(--color-fail)",
-  warn: "var(--color-warn)",
-  live: "var(--color-ok)",
-  muted: "var(--color-muted)",
-}
+// 信号色 + cell 文本拼装 helper 的 SSOT 在 request-columns.ts(TanStack 列模型同源)；
+// 本文件的 HistoryRow(AgentLane 泳道复用)/LiveRow 从此处 import,不再各自持副本(Task 3.2 去重)。
+import {
+  //
+  bytesCellText,
+  bytesCellTitle,
+  SIGNAL_COLOR,
+  tokensCellText,
+  tokensCellTitle,
+} from "@/lib/request-columns"
 
 interface LiveRowInfo {
   state: string
@@ -69,47 +69,6 @@ function LiveRow({ live, selected, onClick }: { live: LiveRowInfo; selected?: bo
       <span className="ml-auto text-[#888]">{live.durationMs === undefined ? "" : formatDuration(live.durationMs)}</span>
     </button>
   )
-}
-
-/**
- * Tokens 单元格文本:`↑<in>(+<cacheRead>c) ↓<out>`,把 cache-read 命中量并入
- * 上行(input)方向显示,无 cache read(`tokenCacheRead`→"-")时省略 `+Nc` 后缀。
- * 例:`↑1.5K+340c ↓250` / `↑1.5K ↓250` / `↑- ↓-`(无 usage)。
- */
-function tokensCellText(input: string, output: string, cacheRead: string): string {
-  const cached = cacheRead === "-" ? "" : `+${cacheRead}c`
-  return `↑${input}${cached} ↓${output}`
-}
-
-/**
- * Bytes 单元格文本:`↑<req> ↓<resp>` 数据大小(区别于 token 计数的 ↑in↓out)。
- * 按侧分别拼接:仅一侧有值(如失败行有请求字节、无响应字节)只渲染该侧,
- * 不留悬空箭头;二者皆缺(老行无 request/response_bytes 列)→ ""。
- */
-function bytesCellText(requestBytes: number | undefined, responseBytes: number | undefined): string {
-  const up = requestBytes === undefined ? "" : `↑${formatBytes(requestBytes)}`
-  const down = responseBytes === undefined ? "" : `↓${formatBytes(responseBytes)}`
-  return [up, down].filter(Boolean).join(" ")
-}
-
-/**
- * Human-readable hover title for the tokens cell. Uses raw `entry.usage` counts
- * when present (`input 1500 · cached 340 · output 250`), else falls back to the
- * already-formatted compact cell text so a truncated string still shows in full.
- */
-function tokensCellTitle(entry: EntrySummary, fallback: string): string {
-  if (!entry.usage) return fallback
-  const parts = [`input ${entry.usage.input_tokens}`]
-  if (entry.usage.cache_read_input_tokens) parts.push(`cached ${entry.usage.cache_read_input_tokens}`)
-  parts.push(`output ${entry.usage.output_tokens}`)
-  return parts.join(" · ")
-}
-
-/** Human-readable hover title for the bytes cell (`request 1.5KB · response 2.4MB`). */
-function bytesCellTitle(requestBytes: number | undefined, responseBytes: number | undefined): string {
-  const up = requestBytes === undefined ? "" : `request ${formatBytes(requestBytes)}`
-  const down = responseBytes === undefined ? "" : `response ${formatBytes(responseBytes)}`
-  return [up, down].filter(Boolean).join(" · ")
 }
 
 /** History 富行 —— 状态·时间·+耗时·模型·(Nx)·端点·字节·token·×N·预览/失败摘要(spec §4.2)。 */

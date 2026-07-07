@@ -50,8 +50,12 @@ declare module "@tanstack/react-table" {
   }
 }
 
-/** 工业信号色 → CSS 变量(平移自 RequestRow.tsx，Task 3.2 合并后可去重)。 */
-const SIGNAL_COLOR: Record<Signal, string> = {
+/**
+ * 工业信号色 → CSS 变量。本文件是该表 + 下面 cell 文本拼装 helper 的单一真值源;
+ * RequestRow.tsx 的 HistoryRow(仍服务 AgentLane 泳道)/LiveRow 从此处 import 复用
+ * (Task 3.2 去重:原先两文件各持一份副本,现收敛到这里)。
+ */
+export const SIGNAL_COLOR: Record<Signal, string> = {
   ok: "var(--color-ok)",
   fail: "var(--color-fail)",
   warn: "var(--color-warn)",
@@ -59,13 +63,13 @@ const SIGNAL_COLOR: Record<Signal, string> = {
   muted: "var(--color-muted)",
 }
 
-// ── cell 文本拼装(平移自 RequestRow.tsx；Task 3.2 会把 RequestRow 改为复用本文件) ──
+// ── cell 文本拼装(SSOT;RequestRow.tsx 的 HistoryRow/LiveRow 复用本组 helper) ──
 
 /**
  * Tokens 单元格文本:`↑<in>(+<cacheRead>c) ↓<out>`，把 cache-read 命中量并入
  * 上行(input)方向显示，无 cache read(`tokenCacheRead`→"-")时省略 `+Nc` 后缀。
  */
-function tokensCellText(input: string, output: string, cacheRead: string): string {
+export function tokensCellText(input: string, output: string, cacheRead: string): string {
   const cached = cacheRead === "-" ? "" : `+${cacheRead}c`
   return `↑${input}${cached} ↓${output}`
 }
@@ -74,14 +78,14 @@ function tokensCellText(input: string, output: string, cacheRead: string): strin
  * Bytes 单元格文本:`↑<req> ↓<resp>` 数据大小；仅一侧有值只渲染该侧(不留悬空箭头)，
  * 二者皆缺(老行无 request/response_bytes 列)→ ""。
  */
-function bytesCellText(requestBytes: number | undefined, responseBytes: number | undefined): string {
+export function bytesCellText(requestBytes: number | undefined, responseBytes: number | undefined): string {
   const up = requestBytes === undefined ? "" : `↑${formatBytes(requestBytes)}`
   const down = responseBytes === undefined ? "" : `↓${formatBytes(responseBytes)}`
   return [up, down].filter(Boolean).join(" ")
 }
 
 /** Tokens 单元格的 hover title:有 usage 用原始计数，否则回退到紧凑单元格文本。 */
-function tokensCellTitle(entry: EntrySummary, fallback: string): string {
+export function tokensCellTitle(entry: EntrySummary, fallback: string): string {
   if (!entry.usage) return fallback
   const parts = [`input ${entry.usage.input_tokens}`]
   if (entry.usage.cache_read_input_tokens) parts.push(`cached ${entry.usage.cache_read_input_tokens}`)
@@ -90,7 +94,7 @@ function tokensCellTitle(entry: EntrySummary, fallback: string): string {
 }
 
 /** Bytes 单元格的 hover title(`request 1.5KB · response 2.4MB`)。 */
-function bytesCellTitle(requestBytes: number | undefined, responseBytes: number | undefined): string {
+export function bytesCellTitle(requestBytes: number | undefined, responseBytes: number | undefined): string {
   const up = requestBytes === undefined ? "" : `request ${formatBytes(requestBytes)}`
   const down = responseBytes === undefined ? "" : `response ${formatBytes(responseBytes)}`
   return [up, down].filter(Boolean).join(" · ")
