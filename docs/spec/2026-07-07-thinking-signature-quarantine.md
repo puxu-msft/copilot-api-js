@@ -1,6 +1,6 @@
 # Spec: Thinking Signature 隔离（quarantine）机制
 
-- 状态：draft（待用户 review → 转实施计划）
+- 状态：**BLOCKED — 两份对抗 subagent 评审收敛出 3 条承重问题，方案 A 在真实语料上不成立，待用户定方向**。评审报告：[#01 架构](2026-07-07-thinking-signature-quarantine-review-2026-07-07-01.md) / [#02 红队](2026-07-07-thinking-signature-quarantine-review-2026-07-07-02.md)。承重问题：① 接入点接到退役管线（活路径是 v4 codec/anthropic/strategies.ts）；② 索引首选路径无折叠逻辑可参考、真实样本上不映射、fallback 候选为空 → 退化 strip-all 或误学；③ 「200 才落库」是混淆实验（相关非因果）+ 根因未证（可能是我方 sanitize 改了 latest-assistant thinking，非 signature 内在中毒）。下文正文为初版设计，尚未按评审修订。
 - 日期：2026-07-07
 - 归属：`docs/spec/`；ADR 若需另立于 `docs/decisions/`；实施计划落 `docs/plan/`。
 - 相关 skill：`ghc-anthropic-upstream`（本症状调试）、`empirical-verification`、`persistence-async-invariants`、`telemetry-architecture`、`history-sqlite-schema`。
