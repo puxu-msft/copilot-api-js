@@ -1,7 +1,17 @@
 import type { Model } from "~backend/lib/models/client"
-import type { RequestTelemetryModelStats, RequestTelemetrySnapshot } from "@/composables/telemetry-parse"
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type {
+  //
+  RequestTelemetryModelStats,
+  RequestTelemetrySnapshot,
+} from "@/composables/telemetry-parse"
 
 import { buildModelTelemetryIndex } from "@/composables/model-telemetry-join"
 
@@ -12,11 +22,29 @@ function stats(model: string, over: Partial<RequestTelemetryModelStats> = {}): R
 }
 
 function model(id: string): Model {
-  return { id, name: id, vendor: "Anthropic", object: "model", preview: false, model_picker_enabled: true, is_chat_default: false, is_chat_fallback: false, version: "1" } as Model
+  return {
+    id,
+    name: id,
+    vendor: "Anthropic",
+    object: "model",
+    preview: false,
+    model_picker_enabled: true,
+    is_chat_default: false,
+    is_chat_fallback: false,
+    version: "1",
+  } as Model
 }
 
 function snap(last7d: Array<RequestTelemetryModelStats>, sinceStart: Array<RequestTelemetryModelStats> = []): RequestTelemetrySnapshot {
-  return { acceptedSinceStart: 0, bucketSizeMinutes: 5, windowDays: 7, totalLast7d: 0, buckets: [], modelsSinceStart: sinceStart, modelsLast7d: last7d.map((s) => ({ ...s, buckets: [] })) }
+  return {
+    acceptedSinceStart: 0,
+    bucketSizeMinutes: 5,
+    windowDays: 7,
+    totalLast7d: 0,
+    buckets: [],
+    modelsSinceStart: sinceStart,
+    modelsLast7d: last7d.map((s) => ({ ...s, buckets: [] })),
+  }
 }
 
 describe("buildModelTelemetryIndex", () => {
@@ -76,10 +104,9 @@ describe("buildModelTelemetryIndex", () => {
   })
 
   test("joins sinceStart + last7d windows independently onto the same model", () => {
-    const idx = buildModelTelemetryIndex(
-      snap([stats("claude-opus-4.8", { requestCount: 7 })], [stats("claude-opus-4.8", { requestCount: 99 })]),
-      [model("claude-opus-4.8")],
-    )
+    const idx = buildModelTelemetryIndex(snap([stats("claude-opus-4.8", { requestCount: 7 })], [stats("claude-opus-4.8", { requestCount: 99 })]), [
+      model("claude-opus-4.8"),
+    ])
     const joined = idx.byId.get("claude-opus-4.8")
     expect(joined?.last7d?.requestCount).toBe(7)
     expect(joined?.sinceStart?.requestCount).toBe(99)
@@ -88,8 +115,12 @@ describe("buildModelTelemetryIndex", () => {
   test("aggregates usage token dimensions across merged legs", () => {
     const idx = buildModelTelemetryIndex(
       snap([
-        stats("claude-opus-4.8", { usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, cacheReadInputTokens: 1, cacheCreationInputTokens: 2, reasoningTokens: 3 } }),
-        stats("claude-opus-4.8", { usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25, cacheReadInputTokens: 1, cacheCreationInputTokens: 0, reasoningTokens: 7 } }),
+        stats("claude-opus-4.8", {
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, cacheReadInputTokens: 1, cacheCreationInputTokens: 2, reasoningTokens: 3 },
+        }),
+        stats("claude-opus-4.8", {
+          usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25, cacheReadInputTokens: 1, cacheCreationInputTokens: 0, reasoningTokens: 7 },
+        }),
       ]),
       [model("claude-opus-4.8")],
     )

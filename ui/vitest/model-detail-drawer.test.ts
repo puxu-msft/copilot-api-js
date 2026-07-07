@@ -61,7 +61,7 @@ describe("ModelDetailDrawer", () => {
       global: { stubs: { JsonViewerSurface: true } },
       attachTo: document.body,
     })
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
+    globalThis.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
     await w.vm.$nextTick()
     expect(w.emitted("update:modelValue")?.some((e) => e[0] === false)).toBe(true)
     w.unmount()

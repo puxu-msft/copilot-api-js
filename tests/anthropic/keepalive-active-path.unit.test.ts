@@ -32,8 +32,32 @@ function stubStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Arr
 }
 
 // Real upstream frame builders (bypass-direct: the client frame carries the full Anthropic JSON).
-const messageStart = (): ClientFrame => ({ event: "message_start", data: JSON.stringify({ type: "message_start", message: { id: "m", type: "message", role: "assistant", model: "claude-opus-4-8", content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } } }) })
-const blockStart = (index: number, cbType: string): ClientFrame => ({ event: "content_block_start", data: JSON.stringify({ type: "content_block_start", index, content_block: cbType === "tool_use" ? { type: "tool_use", id: "toolu_1", name: "Bash", input: {} } : { type: cbType, ...(cbType === "thinking" ? { thinking: "", signature: "" } : { text: "" }) } }) })
+const messageStart = (): ClientFrame => ({
+  event: "message_start",
+  data: JSON.stringify({
+    type: "message_start",
+    message: {
+      id: "m",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-4-8",
+      content: [],
+      stop_reason: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  }),
+})
+const blockStart = (index: number, cbType: string): ClientFrame => ({
+  event: "content_block_start",
+  data: JSON.stringify({
+    type: "content_block_start",
+    index,
+    content_block:
+      cbType === "tool_use" ?
+        { type: "tool_use", id: "toolu_1", name: "Bash", input: {} }
+      : { type: cbType, ...(cbType === "thinking" ? { thinking: "", signature: "" } : { text: "" }) },
+  }),
+})
 const blockStop = (index: number): ClientFrame => ({ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index }) })
 const lastData = (written: Array<{ data: string }>) => JSON.parse(written.at(-1)?.data ?? "null") as unknown
 

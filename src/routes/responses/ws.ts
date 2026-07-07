@@ -333,7 +333,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[WS] Client disconnected mid-stream — recording aborted")
-    env.ctx.abort(acc.model || resolvedModel, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }) })
+    env.ctx.abort(acc.model || resolvedModel, {
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+    })
     return
   }
 
@@ -346,7 +348,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     consola.error(`[WS] Responses API error: ${message}`)
     sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), { events: forwardedSseEvents, streamStartMs })
     recordForwarded()
-    env.ctx.fail(acc.model || resolvedModel, error, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }) })
+    env.ctx.fail(acc.model || resolvedModel, error, {
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+    })
     return
   }
 

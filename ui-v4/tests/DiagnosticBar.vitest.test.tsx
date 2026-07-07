@@ -43,7 +43,13 @@ describe("DiagnosticBar", () => {
       outboundResponse: {
         success: true,
         model: "claude",
-        usage: { input_tokens: 600, output_tokens: 250, cache_read_input_tokens: 400, cache_creation_input_tokens: 100, output_tokens_details: { reasoning_tokens: 80 } },
+        usage: {
+          input_tokens: 600,
+          output_tokens: 250,
+          cache_read_input_tokens: 400,
+          cache_creation_input_tokens: 100,
+          output_tokens_details: { reasoning_tokens: 80 },
+        },
       },
     } as HistoryEntry
     render(<DiagnosticBar entry={entry} />)

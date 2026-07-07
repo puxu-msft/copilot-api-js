@@ -65,7 +65,11 @@ import {
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
-import { buildOpenAIResponseData, usageFromTotalInput } from "~/lib/request"
+import {
+  //
+  buildOpenAIResponseData,
+  usageFromTotalInput,
+} from "~/lib/request"
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
@@ -368,7 +372,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // forwarded so far, then settle as aborted (mirrors settleStreamingFailure's abort branch).
     recordForwarded()
     consola.debug("[ChatCompletions:v4] Client disconnected mid-stream — recording aborted")
-    env.ctx.abort(acc.model || model, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }) })
+    env.ctx.abort(acc.model || model, {
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }),
+    })
     return
   }
 
@@ -381,7 +387,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error("[ChatCompletions:v4] Stream error:", error)
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
-    env.ctx.fail(acc.model || model, error, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }) })
+    env.ctx.fail(acc.model || model, error, {
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }),
+    })
     return
   }
 

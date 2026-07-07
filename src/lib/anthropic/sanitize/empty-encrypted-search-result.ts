@@ -76,7 +76,11 @@ function blockHasEmptyEncryptedSearchResult(block: { type: string; content?: unk
   if (!isServerToolResultType(block.type)) return false
   if (!Array.isArray(block.content)) return false
   return block.content.some(
-    (item) => typeof item === "object" && item !== null && (item as { type?: unknown }).type === "web_search_result" && isEmptyEncrypted(item as { encrypted_content?: unknown }),
+    (item) =>
+      typeof item === "object"
+      && item !== null
+      && (item as { type?: unknown }).type === "web_search_result"
+      && isEmptyEncrypted(item as { encrypted_content?: unknown }),
   )
 }
 

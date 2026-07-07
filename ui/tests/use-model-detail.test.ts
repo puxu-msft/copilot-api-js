@@ -1,12 +1,29 @@
 import type { Model } from "~backend/lib/models/client"
-import type { RequestTelemetrySnapshot } from "@/composables/telemetry-parse"
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 import { ref } from "vue"
+
+import type { RequestTelemetrySnapshot } from "@/composables/telemetry-parse"
 
 import { useModelDetail } from "@/composables/useModelDetail"
 
-const m = (id: string): Model => ({ id, name: id, vendor: "Anthropic", object: "model", preview: false, model_picker_enabled: true, is_chat_default: false, is_chat_fallback: false, version: "1" } as Model)
+const m = (id: string): Model =>
+  ({
+    id,
+    name: id,
+    vendor: "Anthropic",
+    object: "model",
+    preview: false,
+    model_picker_enabled: true,
+    is_chat_default: false,
+    is_chat_fallback: false,
+    version: "1",
+  }) as Model
 
 const usage = () => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 })
 const snap = (last7d: Array<{ model: string; requestCount: number }>): RequestTelemetrySnapshot => ({
@@ -16,7 +33,16 @@ const snap = (last7d: Array<{ model: string; requestCount: number }>): RequestTe
   totalLast7d: 0,
   buckets: [],
   modelsSinceStart: [],
-  modelsLast7d: last7d.map((r) => ({ model: r.model, requestCount: r.requestCount, successCount: 0, failureCount: 0, totalDurationMs: 0, averageDurationMs: 0, usage: usage(), buckets: [] })),
+  modelsLast7d: last7d.map((r) => ({
+    model: r.model,
+    requestCount: r.requestCount,
+    successCount: 0,
+    failureCount: 0,
+    totalDurationMs: 0,
+    averageDurationMs: 0,
+    usage: usage(),
+    buckets: [],
+  })),
 })
 
 describe("useModelDetail", () => {

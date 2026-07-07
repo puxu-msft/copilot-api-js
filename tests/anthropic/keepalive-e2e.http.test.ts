@@ -16,23 +16,39 @@ import {
   test,
 } from "bun:test"
 
-import { setModels, setStateForTests } from "~/lib/state"
+import {
+  //
+  setModels,
+  setStateForTests,
+} from "~/lib/state"
 
-import { anthropicSseFrame, messageStartFrame } from "../helpers/anthropic-frames"
+import {
+  //
+  anthropicSseFrame,
+  messageStartFrame,
+} from "../helpers/anthropic-frames"
 import { mockModel } from "../helpers/factories"
 import { FakeClock } from "../helpers/fake-clock"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
-import { dataFramesOfType, frameTypesInOrder } from "../helpers/sse"
+import {
+  //
+  dataFramesOfType,
+  frameTypesInOrder,
+} from "../helpers/sse"
 
 const MODEL = "claude-opus-4.8"
 const enc = new TextEncoder()
 
-const thinkingStart = () => anthropicSseFrame("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } })
-const thinkingDelta = (t: string) => anthropicSseFrame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: t } })
-const signatureDelta = (s: string) => anthropicSseFrame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: s } })
+const thinkingStart = () =>
+  anthropicSseFrame("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } })
+const thinkingDelta = (t: string) =>
+  anthropicSseFrame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: t } })
+const signatureDelta = (s: string) =>
+  anthropicSseFrame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: s } })
 const blockStop = (i: number) => anthropicSseFrame("content_block_stop", { type: "content_block_stop", index: i })
-const messageDelta = () => anthropicSseFrame("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } })
+const messageDelta = () =>
+  anthropicSseFrame("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } })
 const messageStop = () => anthropicSseFrame("message_stop", { type: "message_stop" })
 
 async function drain(n = 30): Promise<void> {
@@ -45,9 +61,16 @@ describe("keepalive e2e — mid-stream thinking stall injects content_delta (act
   let ctrl: ReadableStreamDefaultController<Uint8Array> | undefined
 
   const fetchMock = mock((input: string | URL | Request) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+    const url =
+      typeof input === "string" ? input
+      : input instanceof URL ? input.href
+      : input.url
     if (!url.endsWith("/v1/messages")) throw new Error(`unexpected upstream URL: ${url}`)
-    const body = new ReadableStream<Uint8Array>({ start(c) { ctrl = c } })
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        ctrl = c
+      },
+    })
     return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }))
   })
 
@@ -107,7 +130,9 @@ describe("keepalive e2e — mid-stream thinking stall injects content_delta (act
     // The keepalive injected during the thinking stall must be a content_block_delta, NOT a ping.
     expect(types).not.toContain("ping")
     const deltas = dataFramesOfType(text, "content_block_delta")
-    const emptyThinking = deltas.find((d) => (d.delta as { type?: string; thinking?: string })?.type === "thinking_delta" && (d.delta as { thinking?: string }).thinking === "")
+    const emptyThinking = deltas.find(
+      (d) => (d.delta as { type?: string; thinking?: string })?.type === "thinking_delta" && (d.delta as { thinking?: string }).thinking === "",
+    )
     expect(emptyThinking).toBeDefined() // ← the LIVE handler path injected an empty thinking_delta keepalive
     // And the real content survived intact around it.
     expect(types).toContain("message_stop")

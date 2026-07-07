@@ -76,7 +76,15 @@ describe("detail tabs", () => {
   test("TelemetryTab shows all six token dimensions when telemetry present", () => {
     const m = model()
     const telemetry = {
-      last7d: { model: "m", requestCount: 10, successCount: 8, failureCount: 2, totalDurationMs: 5000, averageDurationMs: 500, usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, cacheReadInputTokens: 4, cacheCreationInputTokens: 5, reasoningTokens: 6 } },
+      last7d: {
+        model: "m",
+        requestCount: 10,
+        successCount: 8,
+        failureCount: 2,
+        totalDurationMs: 5000,
+        averageDurationMs: 500,
+        usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, cacheReadInputTokens: 4, cacheCreationInputTokens: 5, reasoningTokens: 6 },
+      },
       sinceStart: null,
     }
     const w = mountWithVuetifyStubs(TelemetryTab, { props: { model: m, caps: deriveCapabilities(m), telemetry } })

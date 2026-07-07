@@ -306,7 +306,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
-    env.ctx.abort(acc.model || model, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }) })
+    env.ctx.abort(acc.model || model, {
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+    })
     return
   }
 
@@ -318,7 +320,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error("[Responses:v4] Stream error:", error)
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
-    env.ctx.fail(acc.model || model, error, { usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }) })
+    env.ctx.fail(acc.model || model, error, {
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+    })
     return
   }
 

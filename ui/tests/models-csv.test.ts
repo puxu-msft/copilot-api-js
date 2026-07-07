@@ -27,7 +27,15 @@ const m = (over: Record<string, unknown> = {}): Model =>
   }) as Model
 
 const telemetry = (requestCount: number, failureCount: number) => ({
-  last7d: { model: "x", requestCount, successCount: requestCount - failureCount, failureCount, totalDurationMs: 0, averageDurationMs: 0, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 } },
+  last7d: {
+    model: "x",
+    requestCount,
+    successCount: requestCount - failureCount,
+    failureCount,
+    totalDurationMs: 0,
+    averageDurationMs: 0,
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 },
+  },
   sinceStart: null,
 })
 
@@ -58,7 +66,7 @@ describe("modelsToCsv", () => {
     const csv = modelsToCsv([m()], deriveCapabilities, () => null)
     const cells = csv.split("\n")[1].split(",")
     // last two columns (requests_7d, failures_7d) are empty
-    expect(cells[cells.length - 1]).toBe("")
-    expect(cells[cells.length - 2]).toBe("")
+    expect(cells.at(-1)).toBe("")
+    expect(cells.at(-2)).toBe("")
   })
 })
