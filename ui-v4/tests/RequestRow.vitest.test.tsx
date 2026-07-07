@@ -13,6 +13,7 @@ import {
 import type { EntrySummary } from "@/types"
 
 import { RequestRow } from "@/components/requests/RequestRow"
+import { COLUMN_WIDTHS } from "@/lib/request-columns"
 
 const base = (over: Partial<EntrySummary>): EntrySummary => ({
   id: "x",
@@ -130,6 +131,19 @@ describe("RequestRow", () => {
     expect(screen.getByText("3.4s")).toBeDefined()
     expect(screen.queryByText(/↑/)).toBeNull()
     expect(screen.queryByText(/↓/)).toBeNull()
+  })
+
+  it("live row columns use the COLUMN_WIDTHS SSOT (status/model/dur align to the History table)", () => {
+    const { container } = render(<RequestRow live={{ state: "streaming", model: "live-model", durationMs: 3400 }} />)
+    const status = screen.getByText(/streaming/)
+    const model = screen.getByText("live-model")
+    const dur = screen.getByText("3.4s")
+    // 三个共有列的宽度取自 COLUMN_WIDTHS(改宽度只改一处 → Live 与 History 表对齐)。
+    expect(status.className).toContain(COLUMN_WIDTHS.status)
+    expect(model.className).toContain(COLUMN_WIDTHS.model)
+    expect(dur.className).toContain(COLUMN_WIDTHS.dur)
+    // 断言用的是 SSOT 常量,不是行内硬编码字面量(container 存在性守卫,防误删渲染)。
+    expect(container.querySelector("button")).not.toBeNull()
   })
 
   it("groups cached input tokens into the up-token cell and shows bytes before tokens", () => {

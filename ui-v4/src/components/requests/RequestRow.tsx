@@ -19,12 +19,14 @@ import {
   formatTime,
   statusSignal,
 } from "@/lib/format"
-// 信号色 + cell 文本拼装 helper 的 SSOT 在 request-columns.ts(TanStack 列模型同源)；
+// 信号色 + cell 文本拼装 helper + 列宽 SSOT 在 request-columns.ts(TanStack 列模型同源)；
 // 本文件的 HistoryRow(AgentLane 泳道复用)/LiveRow 从此处 import,不再各自持副本(Task 3.2 去重)。
+// LiveRow 的共有列宽(status/model/dur)取 COLUMN_WIDTHS(Task 3.4),与 History 表列对齐、改宽度只改一处。
 import {
   //
   bytesCellText,
   bytesCellTitle,
+  COLUMN_WIDTHS,
   SIGNAL_COLOR,
   tokensCellText,
   tokensCellTitle,
@@ -59,14 +61,21 @@ function LiveRow({ live, selected, onClick }: { live: LiveRowInfo; selected?: bo
       onClick={onClick}
       className={`${ROW_CLASS} ${selectionClass(selected)}`}
     >
-      <span style={{ color: SIGNAL_COLOR[statusSignal(live.state)] }}>◐ {live.state}</span>
       <span
-        className="text-[#cdb]"
+        className={`${COLUMN_WIDTHS.status} shrink-0 overflow-hidden text-ellipsis whitespace-nowrap`}
+        style={{ color: SIGNAL_COLOR[statusSignal(live.state)] }}
+      >
+        ◐ {live.state}
+      </span>
+      <span
+        className={`${COLUMN_WIDTHS.model} shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#cdb]`}
         title={live.model ?? undefined}
       >
         {live.model ?? "—"}
       </span>
-      <span className="ml-auto text-[#888]">{live.durationMs === undefined ? "" : formatDuration(live.durationMs)}</span>
+      <span className={`${COLUMN_WIDTHS.dur} ml-auto shrink-0 text-right text-[#888]`}>
+        {live.durationMs === undefined ? "" : formatDuration(live.durationMs)}
+      </span>
     </button>
   )
 }

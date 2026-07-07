@@ -16,8 +16,10 @@ import {
 import {
   //
   render,
+  screen,
   waitFor,
 } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { MemoryRouter } from "react-router-dom"
 import {
   //
@@ -38,6 +40,44 @@ vi.mock("@/lib/ws-client", () => ({
   },
 }))
 
+// fake TableVirtuoso:jsdom 无 layout,真实 Virtuoso 不确定渲染表头/行;换成忠实复现 HistoryList
+// 用到的契约(Table/TableRow 子组件 + fixedHeaderContent 表头 + itemContent 单元格 + context)
+// 的确定性 fake,使列可见性经 columnVisibility → HistoryList 表头的显隐在 jsdom 里可断言。
+vi.mock("react-virtuoso", async () => {
+  const {
+    //
+    forwardRef,
+    useImperativeHandle,
+  } = await import("react")
+  const FakeTableVirtuoso = forwardRef(function FakeTableVirtuoso(props: Record<string, unknown>, ref: unknown) {
+    const data = props.data as Array<{ id: string }>
+    const context = props.context
+    const components = props.components as { Table: React.ComponentType<Record<string, unknown>>; TableRow: React.ComponentType<Record<string, unknown>> }
+    const fixedHeaderContent = props.fixedHeaderContent as () => React.ReactNode
+    const itemContent = props.itemContent as (index: number, row: unknown) => React.ReactNode
+    useImperativeHandle(ref as React.Ref<unknown>, () => ({ scrollToIndex: vi.fn() }))
+    const Table = components.Table
+    const Row = components.TableRow
+    return (
+      <Table style={{}}>
+        <thead>{fixedHeaderContent()}</thead>
+        <tbody>
+          {data.map((row, i) => (
+            <Row
+              key={row.id}
+              item={row}
+              context={context}
+            >
+              {itemContent(i, row)}
+            </Row>
+          ))}
+        </tbody>
+      </Table>
+    )
+  })
+  return { TableVirtuoso: FakeTableVirtuoso }
+})
+
 // import AFTER the mocks
 const { RequestsListPage } = await import("@/components/requests/RequestsListPage")
 const { useListStore, initialListState } = await import("@/stores/list-store")
@@ -53,11 +93,14 @@ function renderPage(initialEntries: Array<string> = ["/requests"]) {
   )
 }
 
+const COLUMN_STORAGE_KEY = "ui-v4:requests:columns"
+
 describe("RequestsListPage wiring", () => {
   beforeEach(() => {
     apiGet.mockClear()
     useListStore.setState({ ...initialListState })
     useLiveStore.setState({ byId: {} })
+    localStorage.clear()
   })
 
   it("flows URL filters into the useHistoryInfinite queryFn (entries request carries endpoint=)", async () => {
@@ -73,5 +116,47 @@ describe("RequestsListPage wiring", () => {
     await waitFor(() => expect(apiGet).toHaveBeenCalled())
     const anyEndpoint = apiGet.mock.calls.some((c) => c[0].includes("endpoint="))
     expect(anyEndpoint).toBe(false)
+  })
+})
+
+describe("RequestsListPage column visibility (menu + persistence)", () => {
+  beforeEach(() => {
+    apiGet.mockClear()
+    useListStore.setState({ ...initialListState })
+    useLiveStore.setState({ byId: {} })
+    localStorage.clear()
+  })
+
+  /** History 表头(fixedHeaderContent)在 fake virtuoso 的 <thead> 里;菜单项在 Radix Portal(body),故 thead 文本只含表头列。 */
+  function headText(container: HTMLElement): string {
+    return container.querySelector("thead")?.textContent ?? ""
+  }
+
+  it("toggling a column in the menu hides it in HistoryList and persists to localStorage", async () => {
+    const user = userEvent.setup()
+    const { container } = renderPage(["/requests"])
+    // 初始:Model 列表头可见(等 useHistoryInfinite 首屏加载 settle → thead 渲染)。
+    await waitFor(() => expect(headText(container)).toContain("Model"))
+
+    await user.click(screen.getByRole("button", { name: "Columns" }))
+    await user.click(screen.getByRole("menuitemcheckbox", { name: /Model/i }))
+
+    // 表头 Model 列消失(菜单里的 Model 项在 Portal,不在 thead)。
+    await waitFor(() => expect(headText(container)).not.toContain("Model"))
+    // 持久化到 localStorage(mergeColumnVisibility 读回对账)。
+    const stored = JSON.parse(localStorage.getItem(COLUMN_STORAGE_KEY) ?? "null") as Record<string, boolean> | null
+    expect(stored?.model).toBe(false)
+  })
+
+  it("restores column visibility from localStorage on remount", async () => {
+    localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify({ model: false }))
+    const user = userEvent.setup()
+    const { container } = renderPage(["/requests"])
+    // 新实例读 localStorage → Model 列表头开箱即隐(等 thead settle,但 Model 始终不出现)。
+    await waitFor(() => expect(container.querySelector("thead")?.textContent).toContain("Status"))
+    expect(headText(container)).not.toContain("Model")
+    // 菜单也反映持久化态。
+    await user.click(screen.getByRole("button", { name: "Columns" }))
+    expect(screen.getByRole("menuitemcheckbox", { name: /Model/i }).getAttribute("aria-checked")).toBe("false")
   })
 })
