@@ -315,13 +315,20 @@ Run: `bun test tests/config/anthropic-destack-config.test.ts` — FAIL（键未�
     thinking_destack_strategy: nullableEnum(["passthrough", "insert_text", "move_blocks"] as const),
 ```
 
-- [ ] **Step 4: 加 state 字段 + 默认 + apply**
+- [ ] **Step 4: 加 state 字段 + 默认 + apply（复审 H1：apply 在 config.ts，别漏）**
 
 `src/lib/state.ts`：
 1. `MutableState` 接口（`thinkingBlockSanitizeCheck` 附近，:321）加：`readonly thinkingDestackStrategy: ThinkingDestackStrategy`（import type from `~/lib/anthropic/sanitize/destack-adjacent-thinking`）。
-2. `CONFIG_MANAGED_DEFAULTS`（:1221 附近）加：`thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,`。
-3. config→state 应用处（`thinkingBlockMessagePolicy` 的应用点，grep `thinkingBlockMessagePolicy` 在 state.ts 的赋值处）镜像加：`thinkingDestackStrategy: anthropic?.thinking_destack_strategy ?? CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,`。
-4. 若有 `CONFIG_MANAGED_KEYS`/reset 列表（:995/:1005 的 union）加 `"thinkingDestackStrategy"`。
+2. 初始 state 字面量（:1482 附近）加 `thinkingDestackStrategy: "move_blocks",`（**缺则 typecheck 报 MutableState 必填字段**）；reset 块（:1346 附近）同加。
+3. `setAnthropicBehavior` 的 `Pick<...>` 联合（:985-1014）加 `"thinkingDestackStrategy"`。
+
+`src/lib/config/config.ts`（**真正的 config→state 桥，计划原文漏了此文件**）：在 anthropic 键应用区（grep `thinking_block_message_policy`，约 :525）镜像加：
+
+```ts
+  if (a.thinking_destack_strategy !== undefined) setAnthropicBehavior({ thinkingDestackStrategy: a.thinking_destack_strategy })
+```
+
+（`?? default` 模式仓库不存在——用 `if (a.<key> !== undefined) setAnthropicBehavior({...})`。默认值来自初始 state 字面量，非此处。）
 
 - [ ] **Step 5: bundled config.yaml 文档 + 验证 + 提交**
 
@@ -330,7 +337,7 @@ Run: `bun test tests/config/anthropic-destack-config.test.ts` — FAIL（键未�
 ```bash
 bun test tests/config/anthropic-destack-config.test.ts
 bun run typecheck
-git add -- src/lib/config/schema.ts src/lib/state.ts <bundled config.yaml 路径> tests/config/anthropic-destack-config.test.ts
+git add -- src/lib/config/schema.ts src/lib/config/config.ts src/lib/state.ts <bundled config.yaml 路径> tests/config/anthropic-destack-config.test.ts
 git commit -m "feat(config): anthropic.thinking_destack_strategy (default move_blocks)"
 ```
 
@@ -382,7 +389,7 @@ Run: `bun test tests/anthropic/destack-terminal-order.test.ts` — FAIL（de-sta
 
 - [ ] **Step 3: 终末接线**
 
-`src/lib/anthropic/sanitize/index.ts` 把 `return finalizeAnthropicSanitization(...)`（:133）改为：
+`src/lib/anthropic/sanitize/index.ts` 把 `return finalizeAnthropicSanitization(...)`（:133）改为（**注意 finalize 返回 `{ payload:{...,messages}, blocksRemoved, stats }`——消息在 `.payload.messages`，无顶层 `.messages`**，复审 C1）：
 
 ```ts
   const finalized = finalizeAnthropicSanitization(
@@ -393,15 +400,19 @@ Run: `bun test tests/anthropic/destack-terminal-order.test.ts` — FAIL（de-sta
   // filterEmptyAnthropicTextBlocks, so separators can't be deleted by later passes and
   // adjacency newly created by orphan deletion is caught. Runs on finalized messages; its
   // insert/reorder counters are separate from finalize's subtractive residual model.
-  const destacked = destackAdjacentThinking(finalized.messages, state.thinkingDestackStrategy)
-  return { ...finalized, messages: destacked.messages, stats: { ...finalized.stats, destack: destacked.stats } }
+  const destacked = destackAdjacentThinking(finalized.payload.messages, state.thinkingDestackStrategy)
+  return {
+    ...finalized,
+    payload: { ...finalized.payload, messages: destacked.messages },
+    stats: { ...finalized.stats, destack: destacked.stats },
+  }
 ```
 
 `src/lib/anthropic/sanitize/result.ts` 的 `SanitizationStats` 类型加：`destack?: { destackedMessages: number; insertedMarkers: number; reorderedBlocks: number }`。
 
-- [ ] **Step 4: messageMapping 标合成块**
+- [ ] **Step 4: de-stack telemetry 送达 history（复审 M3）**
 
-`src/lib/codec/anthropic/request-rewrite-adapter.ts:75` 的 `buildMessageMapping`：合成分隔符（`text === SYNTHETIC_THINKING_SEPARATOR`）无 baseline 源，映射时跳过/标 `synthetic: true`，不错配到真实 baseline 块。读该函数现有逻辑，对匹配 sentinel 的 text 块打标或排除出 baseline 对齐。
+`toSanitizationInfo`（[result.ts:87-97](../../src/lib/anthropic/sanitize/result.ts#L87)）只拷固定子集、丢 `destack` 字段，且 pipelineInfo 门禁 `totalBlocksRemoved>0 || … || hasPreprocessing`（request-rewrite-adapter.ts:74）对**纯插入型**（0 删除）de-stack 不触发。故：当 `destack.destackedMessages>0 || destack.insertedMarkers>0` 时扩展 `toSanitizationInfo` 拷 `destack` + 放宽该门禁（或走独立 feature record）。**M2 note**：`buildMessageMapping`（`message-mapping.ts:55`，非 request-rewrite-adapter）是**消息级**匹配（role+首块），de-stack 从不改消息首块（合成标记只插两 thinking 之间）→ **不扰动它**，故**无需**改 messageMapping（复审确认原「标合成块」为伪需求，record-not-adopted）。
 
 - [ ] **Step 5: 跑既有 sanitize byte-lock 套件 + 新测试 + 提交**
 
@@ -409,8 +420,8 @@ Run: `bun test tests/anthropic/destack-terminal-order.test.ts` — FAIL（de-sta
 bun test tests/anthropic/destack-terminal-order.test.ts
 bun test tests/pipeline/payload-rewrite-registry.it.test.ts   # byte-lock：无相邻 thinking 的 fixture 须全绿（de-stack no-op）
 bun run typecheck
-git add -- src/lib/anthropic/sanitize/index.ts src/lib/anthropic/sanitize/result.ts src/lib/codec/anthropic/request-rewrite-adapter.ts tests/anthropic/destack-terminal-order.test.ts
-git commit -m "feat(anthropic): wire de-stack as terminal sanitize pass, mapping-aware"
+git add -- src/lib/anthropic/sanitize/index.ts src/lib/anthropic/sanitize/result.ts tests/anthropic/destack-terminal-order.test.ts
+git commit -m "feat(anthropic): wire de-stack as terminal sanitize pass + telemetry"
 ```
 
 ### Task 4: 更新 thinking-protection docstring + 组合测试
@@ -585,7 +596,9 @@ describe("isThinkingModifiedRejection", () => {
 // src/lib/codec/anthropic/poisoned-thinking-retry.ts
 import type { ApiError } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
-import type { EnvRetryStrategy, RequestEnvelope, RetryAction } from "~/lib/pipeline/types"
+// review C2: RetryStrategy (NOT EnvRetryStrategy) is exported by types; RequestEnvelope lives in envelope.
+import type { RetryStrategy as EnvRetryStrategy, RetryAction } from "~/lib/pipeline/types"
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { MessagesPayload } from "~/types/api/anthropic"
 import { state } from "~/lib/state"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
@@ -629,25 +642,26 @@ export function createPoisonedThinkingRetryStrategy(): EnvRetryStrategy {
       const payload = env.body as MessagesPayload
       const { messages, strippedCount } = stripAllThinking(payload.messages)
       if (strippedCount === 0) return Promise.resolve({ kind: "abort", error })
-      const nextEnv: RequestEnvelope = { ...env, body: { ...payload, messages } }
+      // review M1: use env.with() (the only immutable-update method), NOT a bare {...env} spread.
+      const nextEnv = env.with({ body: { ...payload, messages } })
       return Promise.resolve({ kind: "retry", env: nextEnv, learning: true, meta: { strippedThinkingOnReject: strippedCount } })
     },
   }
 }
 ```
 
-（注：`RetryAction`/`RequestEnvelope`/`EnvRetryStrategy` 的确切成员以 `src/lib/pipeline/types.ts` 为准——实现前读它，对齐 `kind`/`env`/`body`/`learning`/`meta` 字段名。）
+（注：`RetryAction`/`RequestEnvelope`/`RetryStrategy` 的确切成员以 `src/lib/pipeline/{types,envelope}.ts` 为准；`env.with({...})` 是唯一不可变更新法（envelope.ts:108），`env.body` 是 payload。）
 
-- [ ] **Step 4: 加 L2 config**
+- [ ] **Step 4: 加 L2 config（复审 H1 同 Task2 模式）**
 
-`schema.ts`：`strip_thinking_on_reject: nullableBoolean(),`。`state.ts`：`readonly stripThinkingOnReject: boolean` + 默认 `true` + apply（`anthropic?.strip_thinking_on_reject ?? true`）。
+`schema.ts`：`strip_thinking_on_reject: nullableBoolean(),`。`state.ts`：`readonly stripThinkingOnReject: boolean` + 初始字面量(:1482)/reset(:1346) 各加 `stripThinkingOnReject: true,` + `setAnthropicBehavior` Pick 联合加键。**`config.ts`**（别漏）：`if (a.strip_thinking_on_reject !== undefined) setAnthropicBehavior({ stripThinkingOnReject: a.strip_thinking_on_reject })`。
 
 - [ ] **Step 5: 跑测试 + typecheck + 提交**
 
 ```bash
 bun test tests/anthropic/poisoned-thinking-retry.test.ts
 bun run typecheck
-git add -- src/lib/codec/anthropic/poisoned-thinking-retry.ts src/lib/config/schema.ts src/lib/state.ts tests/anthropic/poisoned-thinking-retry.test.ts
+git add -- src/lib/codec/anthropic/poisoned-thinking-retry.ts src/lib/config/schema.ts src/lib/config/config.ts src/lib/state.ts tests/anthropic/poisoned-thinking-retry.test.ts
 git commit -m "feat(anthropic): reactive strip-all retry for thinking-modified 400 (L2)"
 ```
 
@@ -685,9 +699,21 @@ test("命中真实 400 → 返回 strip-all 后的 retry env", async () => {
     createPoisonedThinkingRetryStrategy(),   // 原生 env-strategy，勿 adapt()
 ```
 
-- [ ] **Step 4: 辅接 legacy（web_search 双跳）**
+- [ ] **Step 4: 辅接 legacy（web_search 双跳，复审 M5）**
 
-`src/lib/anthropic/pipeline.ts` 的 legacy `buildAnthropicStrategies`（:170）——web_search 走 legacy `executeRequestPipeline`。此路径策略是 legacy `RetryStrategy` 形态；strip-all 不需 ctx，故可加一个 legacy 孪生（复用 `isThinkingModifiedRejection` + `stripAllThinking`，legacy 签名 `handle(error, payload, ctx)`）。若 legacy 与 env 形态差异大，最小化：抽 `remediateStripAll(payload)` 共享，两处各包一层。
+`src/lib/anthropic/pipeline.ts` 的 legacy `buildAnthropicStrategies`（:170）——web_search 走 legacy `executeRequestPipeline`，策略是 **legacy `RetryStrategy<TPayload>` 形态**：`handle(error, payload, ctx)` 返回 `{ action: "retry", payload, meta }` / `{ action: "abort", error }`（**非** env 形态）。加一个 legacy 孪生（复用 `isThinkingModifiedRejection` + `stripAllThinking`）：
+
+```ts
+// legacy twin (web_search path); no env.ctx here → NO L3 commit (spec「无 session→降级」一致)
+canHandle: (error) => state.stripThinkingOnReject && error.type === "bad_request" && error.status === 400 && (() => { const m = extractLegacyMessage(error); return m ? isThinkingModifiedRejection(m) : false })(),
+handle: (error, payload) => {
+  const { messages, strippedCount } = stripAllThinking(payload.messages)
+  if (strippedCount === 0) return Promise.resolve({ action: "abort", error })
+  return Promise.resolve({ action: "retry", payload: { ...payload, messages }, meta: { strippedThinkingOnReject: strippedCount } })
+},
+```
+
+抽 `remediateStripAll(payload)` 与 matcher 到共享处，v4 原生策略与 legacy 孪生各包一层。
 
 - [ ] **Step 5: 跑测试 + typecheck + 提交**
 
@@ -732,7 +758,7 @@ test("无 sessionId → null（不可 durable 隔离）", () => {
   expect(toQuarantineKey(undefined, "agent-9")).toBeNull()
 })
 test("keyString 稳定唯一", () => {
-  expect(keyString({ sessionId: "s", agentId: "" })).toBe("s ")
+  expect(keyString({ sessionId: "s", agentId: "" })).toBe("s ")
 })
 ```
 
@@ -746,7 +772,7 @@ export function toQuarantineKey(sessionId: string | undefined, agentId: string |
   if (!sessionId) return null
   return { sessionId, agentId: agentId ?? "" }
 }
-export function keyString(k: QuarantineKey): string { return `${k.sessionId} ${k.agentId}` }
+export function keyString(k: QuarantineKey): string { return `${k.sessionId} ${k.agentId}` }
 ```
 
 ```bash
@@ -803,10 +829,10 @@ test("跨实例持久（重开同 db 水合）", () => {
   expect(s2.isPoisoned(key, 6000)).toBe(true)
 })
 
-test("never-throw：坏路径不抛（只 warn）", () => {
-  const s = new ThinkingQuarantineStore("/nonexistent-dir/ /q.db", 1000)
+test("never-throw：坏路径不抛（只 warn），degraded 下内存仍服务", () => {
+  const s = new ThinkingQuarantineStore("/proc/nonexistent/q.db", 1000)
   expect(() => s.record(key, "e")).not.toThrow()
-  expect(s.isPoisoned(key)).toBe(false) // 内存缓存仍可（degraded）
+  expect(s.isPoisoned(key)).toBe(true) // record 在 db try 前无条件 cache.set → degraded 下内存仍服务（复审 M4）
 })
 ```
 
@@ -819,26 +845,28 @@ test("never-throw：坏路径不抛（只 warn）", () => {
 import consola from "consola"
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
-import { createDatabase } from "~/lib/history/sqlite/driver" // runtime-agnostic factory, NO singleton
+import { createDatabase, type SqliteDatabase } from "~/lib/history/sqlite/driver" // runtime-agnostic factory, NO singleton
 import { keyString, type QuarantineKey } from "./session-key"
 
 /** Durable (session,agent) poison quarantine with sliding TTL. never-throw; reads served from in-memory cache. */
 export class ThinkingQuarantineStore {
-  private db: ReturnType<typeof createDatabase> | null = null
+  private db: SqliteDatabase | null = null
   private cache = new Map<string, number>() // keyString -> lastSeenAt(ms)
   constructor(private readonly dbPath: string, private readonly ttlMs: number) {
     try {
       mkdirSync(dirname(dbPath), { recursive: true })
-      this.db = createDatabase(dbPath)
+      this.db = createDatabase(dbPath) // review C5: SqliteDatabase = exec/prepare/close/transaction only
       this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
       this.db.exec(`CREATE TABLE IF NOT EXISTS poisoned_conversations (
         session_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '',
         first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
         hit_count INTEGER NOT NULL DEFAULT 1, last_error_sample TEXT,
         PRIMARY KEY (session_id, agent_id))`)
-      for (const row of this.db.query<{ k: string; last: number }, []>(
-        "SELECT (session_id || char(0) || agent_id) AS k, last_seen_at AS last FROM poisoned_conversations",
-      ).all()) this.cache.set(row.k, row.last)
+      // review C6: hydrate with the SAME key encoding as keyString (space-joined), NOT char(0).
+      const rows = this.db.prepare("SELECT session_id, agent_id, last_seen_at FROM poisoned_conversations").all() as Array<{
+        session_id: string; agent_id: string; last_seen_at: number
+      }>
+      for (const r of rows) this.cache.set(keyString({ sessionId: r.session_id, agentId: r.agent_id }), r.last_seen_at)
     } catch (e) {
       consola.warn("[ThinkingQuarantine] init failed, degrading to in-memory:", e instanceof Error ? e.message : e)
       this.db = null
@@ -849,25 +877,24 @@ export class ThinkingQuarantineStore {
     return last !== undefined && now - last <= this.ttlMs
   }
   record(k: QuarantineKey, errorSample: string, now = Date.now()): void {
-    this.cache.set(keyString(k), now)
+    this.cache.set(keyString(k), now) // set BEFORE db try → degraded mode still serves this key
     try {
-      this.db?.run(
+      this.db?.prepare(
         `INSERT INTO poisoned_conversations (session_id, agent_id, first_seen_at, last_seen_at, hit_count, last_error_sample)
          VALUES (?, ?, ?, ?, 1, ?)
          ON CONFLICT(session_id, agent_id) DO UPDATE SET last_seen_at=excluded.last_seen_at, hit_count=hit_count+1, last_error_sample=excluded.last_error_sample`,
-        [k.sessionId, k.agentId, now, now, errorSample.slice(0, 500)],
-      )
+      ).run(k.sessionId, k.agentId, now, now, errorSample.slice(0, 500))
     } catch (e) { consola.warn("[ThinkingQuarantine] record failed:", e instanceof Error ? e.message : e) }
   }
   touch(k: QuarantineKey, now = Date.now()): void {
     if (!this.cache.has(keyString(k))) return
     this.cache.set(keyString(k), now)
-    try { this.db?.run("UPDATE poisoned_conversations SET last_seen_at=? WHERE session_id=? AND agent_id=?", [now, k.sessionId, k.agentId]) } catch (e) { consola.warn("[ThinkingQuarantine] touch failed:", e instanceof Error ? e.message : e) }
+    try { this.db?.prepare("UPDATE poisoned_conversations SET last_seen_at=? WHERE session_id=? AND agent_id=?").run(now, k.sessionId, k.agentId) } catch (e) { consola.warn("[ThinkingQuarantine] touch failed:", e instanceof Error ? e.message : e) }
   }
 }
 ```
 
-（注：`createDatabase` 的确切 API（`.exec`/`.run`/`.query().all()`）以 `src/lib/history/sqlite/driver.ts` 为准——实现前读它对齐方法名/泛型。`config/paths.ts` 加 `THINKING_QUARANTINE_DB: path.join(APP_DIR, "thinking-quarantine.db")`。）
+（注：`SqliteDatabase`=`exec/prepare/close/transaction`、`SqliteStatement`(经 `prepare`)=`all/get/run`——见 `src/lib/history/sqlite/driver.ts:28-41`。`config/paths.ts` 加 `THINKING_QUARANTINE_DB: path.join(APP_DIR, "thinking-quarantine.db")`。）
 
 - [ ] **Step 4: 跑测试 + 提交**
 
@@ -883,7 +910,7 @@ git commit -m "feat(anthropic): durable (session,agent) TTL quarantine store (si
 **Files:**
 - Modify: `src/lib/codec/anthropic/poisoned-thinking-retry.ts`（加 `onResolved`）
 - Create/Modify: store 单例装配（`src/lib/anthropic/thinking-quarantine/index.ts` 惰性单例，DI 友好）
-- Modify: `src/lib/config/schema.ts` + `src/lib/state.ts`（`poisoned_thinking_quarantine` + `poisoned_thinking_ttl_hours`）
+- Modify: `src/lib/config/schema.ts` + `src/lib/config/config.ts` + `src/lib/state.ts`（`poisoned_thinking_quarantine` + `poisoned_thinking_ttl_hours`）
 - Test: `tests/anthropic/quarantine-onresolved.test.ts`
 
 - [ ] **Step 1: 写测试**：strip-all 重试成功 → onResolved 从 env.ctx 读 (session,agent) 落库；无 session → 不落。
@@ -913,7 +940,7 @@ git commit -m "feat(anthropic): durable (session,agent) TTL quarantine store (si
     },
 ```
 
-config：`poisoned_thinking_quarantine: nullableBoolean()` + `poisoned_thinking_ttl_hours: z.number().positive().nullable().optional()`（schema）；state `poisonedThinkingQuarantine: boolean`(默认 true) + `poisonedThinkingTtlHours: number`(默认 72)。惰性单例 `getQuarantineStore()` 用 `PATHS.THINKING_QUARANTINE_DB` + `state.poisonedThinkingTtlHours*3600_000`。
+config（复审 H1：apply 在 config.ts，别漏）：`schema.ts` 加 `poisoned_thinking_quarantine: nullableBoolean()` + `poisoned_thinking_ttl_hours: nullableNumber()`（新增 `nullableNumber` helper 仿 `nullableBoolean`，schema.ts:66）。`state.ts`：`poisonedThinkingQuarantine: boolean`(初始字面量 :1482 + reset :1346 加 `true`) + `poisonedThinkingTtlHours: number`(加 `72`) + `setAnthropicBehavior` Pick 联合加两键。`config.ts`：`if (a.poisoned_thinking_quarantine !== undefined) setAnthropicBehavior({ poisonedThinkingQuarantine: a.poisoned_thinking_quarantine })` + `if (a.poisoned_thinking_ttl_hours !== undefined) setAnthropicBehavior({ poisonedThinkingTtlHours: a.poisoned_thinking_ttl_hours })`。惰性单例 `getQuarantineStore()` 用 `PATHS.THINKING_QUARANTINE_DB` + `state.poisonedThinkingTtlHours*3600_000`。
 
 - [ ] **Step 4: 跑测试 + 提交**
 
@@ -943,32 +970,41 @@ git commit -m "feat(anthropic): quarantine poisoned conversation on strip-all su
 
 ```ts
 // src/lib/anthropic/thinking-quarantine/proactive-filter.ts
-import type { RequestRewrite } from "~/lib/pipeline/types" // 以实际类型为准
+// review C3: RequestRewrite/RewriteResult live in rewrite-registry (NOT types); require name+order+appliesTo+apply.
+import type { RequestRewrite, RewriteResult } from "~/lib/pipeline/rewrite-registry"
+import type { MessagesPayload } from "~/types/api/anthropic"
 import { state } from "~/lib/state"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 import { toQuarantineKey } from "./session-key"
 import { getQuarantineStore } from "./index"
 
-/** env-aware: if (session,agent) is a known-poisoned conversation within TTL, strip-all thinking proactively + slide TTL. */
+/**
+ * env-aware: if (session,agent) is a known-poisoned conversation within TTL, strip-all thinking + slide TTL.
+ * order < ORDER_SANITIZE(300) so it runs BEFORE L1 de-stack (review C4 / spec §3.4): strip → no thinking → L1 no-op.
+ */
 export function createQuarantineProactiveFilter(): RequestRewrite {
   return {
     name: "thinking-quarantine-proactive",
-    apply(env) {
-      if (!state.poisonedThinkingQuarantine) return env
+    order: 250, // review C4: execution order is by .order (sorted), NOT array position; must be < 300
+    appliesTo: (env) => env.clientFormat === "anthropic", // 以 RequestEnvelope 实际字段为准（grep clientFormat/format）
+    apply(env): RewriteResult {
+      if (!state.poisonedThinkingQuarantine) return { env, changed: false }
       const key = toQuarantineKey(env.ctx.sessionId, env.ctx.agentId)
-      if (!key) return env
+      if (!key) return { env, changed: false }
       const store = getQuarantineStore()
-      if (!store.isPoisoned(key)) return env
-      const payload = env.body as { messages: Array<unknown> }
-      const { messages } = stripAllThinking(payload.messages as never)
+      if (!store.isPoisoned(key)) return { env, changed: false }
+      const payload = env.body as MessagesPayload
+      const { messages, strippedCount } = stripAllThinking(payload.messages)
       store.touch(key) // slide TTL on hit (review H3)
-      return { ...env, body: { ...payload, messages } }
+      if (strippedCount === 0) return { env, changed: false }
+      // review M1: env.with() is the only immutable-update method.
+      return { env: env.with({ body: { ...payload, messages } }), changed: true }
     },
   }
 }
 ```
 
-装配：在 codec `getRequestRewrites()` 返回数组里把 quarantine filter 放在 **sanitize rewrite（含 L1 de-stack）之前**（L3 strip-all 命中后 L1 自然 no-op；spec §3.4 order）。web_search handler 直调 `sanitizeAnthropicMessages` 前先跑同款检查（`orchestrator`/`web-search-handler` 侧，ctx 从 `createWebSearchContext` 取）。
+装配（复审 C4）：把 quarantine filter 加进 codec 的 `requestRewrites` 数组（grep `createAnthropicSanitizeRewrite` 的装配点，约 `codec.ts:155`）；**执行序由 `.order` 排序决定**（`order:250 < ORDER_SANITIZE:300` → 先于 L1；数组位置无关）。web_search handler 直调 `sanitizeAnthropicMessages` 前先跑同款检查（`web-search-handler.ts`/`orchestrator`，ctx 从 `createWebSearchContext` 取）。
 
 - [ ] **Step 4: 跑测试 + 提交**
 
