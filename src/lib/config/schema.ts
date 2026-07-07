@@ -152,7 +152,7 @@ export const RateLimiterConfigSchema = z
 
 export const AnthropicConfigSchema = z
   .object({
-    tool_strip_server: nullableBoolean(),
+    server_tool_strip: nullableBoolean(),
     /**
      * Upstream→client response-header forwarding MODE (Anthropic path). `false`
      * (default) = BLACKLIST: forward everything except `response_header_blacklist`.
@@ -323,7 +323,7 @@ export const AnthropicConfigSchema = z
      *                the assistant turn so the tool_result lands in a user message.
      *   false:       passthrough (default).
      */
-    tool_rewrite_history_server: z
+    server_tool_rewrite: z
       .union([z.literal(false), z.literal("downgrade"), z.null()], {
         error: "Must be one of: false, downgrade",
       })
@@ -347,7 +347,7 @@ export const AnthropicConfigSchema = z
     tool_search: nullableBoolean(),
     // Anthropic memory tool (native memory_20250818 server tool). Default off — rewrites a client tool
     // named `memory` to the server-tool descriptor + forces the context-management beta. See features.ts.
-    memory_tool: nullableBoolean(),
+    server_tool_memory: nullableBoolean(),
     cache_control: nullableEnum(["disabled", "passthrough", "sanitize", "proxied"] as const),
     // Extended prompt-cache TTL (extended-cache-ttl-2025-04-11). Upgrades the cache_control breakpoints
     // the proxy WRITES (cache_control: proxied/sanitize) from the default 5m to 1h. `enabled` is the
@@ -736,7 +736,7 @@ export const ConfigSchema = z
      */
     sanitize_tool_names: nullableBoolean(),
     history: nullableSection(HistoryConfigSchema),
-    web_search: nullableSection(WebSearchConfigSchema),
+    server_tool_web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),

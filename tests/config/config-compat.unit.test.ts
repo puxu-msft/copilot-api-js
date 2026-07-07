@@ -109,9 +109,14 @@ describe("config compat — legacy key migration (file load)", () => {
   // migration exists — only this round-trip does).
   const CONCERN_PREFIX_RENAMES: ReadonlyArray<{ old: string; new: string; value: unknown }> = [
     { old: "coerce_adaptive_thinking", new: "thinking_coerce_adaptive", value: "best_effort" },
-    { old: "strip_server_tools", new: "tool_strip_server", value: true },
+    // server-tool sub-concern regrouping — both the ancient legacy names AND the
+    // interim tool_* names map directly to the final server_tool_* names.
+    { old: "strip_server_tools", new: "server_tool_strip", value: true },
+    { old: "tool_strip_server", new: "server_tool_strip", value: true },
+    { old: "rewrite_history_server_tools", new: "server_tool_rewrite", value: "downgrade" },
+    { old: "tool_rewrite_history_server", new: "server_tool_rewrite", value: "downgrade" },
+    { old: "memory_tool", new: "server_tool_memory", value: true },
     { old: "inject_claude_code_tools", new: "tool_inject_claude_code", value: false },
-    { old: "rewrite_history_server_tools", new: "tool_rewrite_history_server", value: "downgrade" },
     { old: "dedup_tool_calls", new: "tool_dedup_calls", value: "result" },
     { old: "strip_read_tool_result_tags", new: "tool_strip_read_result_tags", value: true },
     { old: "non_deferred_tools", new: "tool_search_non_deferred", value: ["Foo"] },
@@ -136,6 +141,13 @@ describe("config compat — legacy key migration (file load)", () => {
       expect(anthropic?.[oldKey]).toBeUndefined()
     })
   }
+
+  test("web_search → server_tool_web_search (top-level section rename)", () => {
+    const result = validateConfig({ web_search: { enabled: true, backend: "searxng" } })
+    const cfg = result as Record<string, unknown>
+    expect(cfg.server_tool_web_search).toEqual({ enabled: true, backend: "searxng" })
+    expect(cfg.web_search).toBeUndefined()
+  })
 
   test("user-set NEW key wins over migrated legacy key (missing-only merge)", () => {
     const result = validateConfig({ fetch_timeout: 200, timeouts: { response_header: 999 } })
