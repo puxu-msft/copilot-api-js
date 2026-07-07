@@ -86,7 +86,7 @@ describe("buildAnthropicStrategies", () => {
   const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })
   const baseline = { model: "claude-sonnet-4", messages: [], max_tokens: 100 } as unknown as MessagesPayload
 
-  test("yields the 12 strategies in order (8 legacy + v4-only server-error-retry + server-tool-rejection + structured-outputs-rejection + system-reject-retry, RFC §12.9)", () => {
+  test("yields the 13 strategies in order (8 legacy + v4-only server-error-retry + server-tool-rejection + structured-outputs-rejection + system-reject-retry + web-search-not-found-retry, RFC §12.9)", () => {
     const strategies = buildAnthropicStrategies({
       originalPayload: baseline,
       resanitize: stubResanitize,
@@ -105,6 +105,7 @@ describe("buildAnthropicStrategies", () => {
       "server-tool-rejection-retry",
       "structured-outputs-rejection-retry",
       "system-reject-retry",
+      "web-search-not-found-retry",
       "deferred-tool-retry",
       "auto-truncate",
     ])
