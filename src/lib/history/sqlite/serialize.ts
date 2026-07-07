@@ -194,34 +194,59 @@ function payloadBytes(payload: unknown): number | null {
 }
 
 /**
- * DERIVE the request wire byte size (↑) from the best available stored payload:
- * the outbound (final-attempt wire) body the proxy actually sent upstream, then
- * the effective body, then the inbound messages as a last resort. This is an
- * approximation of the on-the-wire size (it re-serializes the parsed payload
- * rather than echoing the exact upstream bytes), which is acceptable for the
+ * DERIVE the request wire byte size (↑) from the best available stored payload.
+ * P2.6 re-point (RFC §6 W1): read the FINAL attempt's new-model legs first —
+ * `attempts[final].upstreamRequest.body` (the wire body the proxy actually sent
+ * upstream) then its `effectiveSource.body` — falling back to the DEPRECATED
+ * top-level `outboundRequest.payload` / `effectiveRequest.payload`, then the
+ * inbound messages as a last resort. The coexistence fallback keeps a legacy-only
+ * entry (no per-attempt upstream legs, e.g. the P0 golden fixture) byte-identical;
+ * P4 drops the top-level middle fallbacks once the deprecated legs are removed.
+ * This is an approximation of the on-the-wire size (it re-serializes the parsed
+ * payload rather than echoing the exact upstream bytes), acceptable for the
  * list-display purpose. Returns null when no payload is available.
  */
 function deriveRequestBytes(entry: HistoryEntry): number | null {
-  return payloadBytes(entry.outboundRequest?.payload) ?? payloadBytes(entry.effectiveRequest?.payload) ?? payloadBytes(entry.inboundRequest.messages)
+  const finalAttempt = entry.attempts?.at(-1)
+  return (
+    payloadBytes(finalAttempt?.upstreamRequest?.body) ??
+    payloadBytes(finalAttempt?.effectiveSource?.body) ??
+    // ↓ DEPRECATED top-level fallbacks (P4 removes) — kept so a legacy-only entry
+    //   without per-attempt upstream legs stays byte-identical.
+    payloadBytes(entry.outboundRequest?.payload) ??
+    payloadBytes(entry.effectiveRequest?.payload) ??
+    payloadBytes(entry.inboundRequest.messages)
+  )
 }
 
 /**
  * DERIVE the response byte size (↓). Streaming: sum of the upstream SSE frames'
  * `raw` bytes. Non-streaming: the raw upstream body if captured, else the
- * serialized response content. Returns null when nothing is available. Like
+ * serialized response content. P2.6 re-point (RFC §6 W1): read the FINAL attempt's
+ * new-model `upstreamResponse` leg first — its `sseEvents` / `rawBody` / `body` —
+ * falling back to the DEPRECATED top-level `sseEvents` / `outboundResponse` so a
+ * legacy-only entry (no per-attempt upstream leg) stays byte-identical; P4 drops
+ * the top-level middle fallbacks. Returns null when nothing is available. Like
  * deriveRequestBytes this is an approximation of the wire size, acceptable for
  * the list display.
  */
 function deriveResponseBytes(entry: HistoryEntry): number | null {
-  if (entry.sseEvents && entry.sseEvents.length > 0) {
+  const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+  // Streaming: prefer the FINAL attempt's upstream frames; fall back to the
+  // DEPRECATED top-level `sseEvents` (legacy-only entry) — P4 removes the fallback.
+  const sseEvents = finalUpstream?.sseEvents ?? entry.sseEvents
+  if (sseEvents && sseEvents.length > 0) {
     let total = 0
-    for (const ev of entry.sseEvents) total += Buffer.byteLength(ev.raw)
+    for (const ev of sseEvents) total += Buffer.byteLength(ev.raw)
     return total
   }
-  const resp = entry.outboundResponse
-  if (!resp) return null
-  if (resp.rawBody !== undefined) return Buffer.byteLength(resp.rawBody)
-  return payloadBytes(resp.content)
+  // Non-streaming: raw upstream body then serialized content, from the FINAL
+  // attempt's upstreamResponse with the DEPRECATED top-level outboundResponse as
+  // the coexistence fallback (P4 removes).
+  const rawBody = finalUpstream?.rawBody ?? entry.outboundResponse?.rawBody
+  if (rawBody !== undefined) return Buffer.byteLength(rawBody)
+  const body = finalUpstream?.body ?? entry.outboundResponse?.content
+  return payloadBytes(body)
 }
 
 /**
@@ -243,7 +268,12 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
  * compressing inline. See docs/spec/history-finalize-async-offload.md.
  */
 export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undefined, headBlob: Uint8Array): EntryRow {
-  const usage = entry.outboundResponse?.usage
+  // P2.6 re-point (RFC §6 W1): the indexed columns derive from the FINAL attempt's
+  // new-model `upstreamResponse` leg, falling back to the DEPRECATED top-level
+  // `outboundResponse` (P4 removes) so a legacy-only entry (e.g. the P0 golden
+  // fixture, which has no per-attempt upstream leg) stays column-identical.
+  const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+  const usage = finalUpstream?.usage ?? entry.outboundResponse?.usage
   const row: EntryRow = {
     id: entry.id,
     session_id: entry.sessionId ?? null,
@@ -251,7 +281,7 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     started_at: entry.startedAt,
     ended_at: entry.endedAt ?? null,
     duration_ms: entry.durationMs ?? null,
-    model: entry.outboundResponse?.model ?? entry.inboundRequest.model ?? null,
+    model: finalUpstream?.model ?? entry.outboundResponse?.model ?? entry.inboundRequest.model ?? null,
     endpoint: entry.endpoint,
     transport: entry.transport ?? null,
     status: statusOverride ?? entry.state ?? "unknown",
@@ -264,10 +294,13 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     // net-of-cache convention, so mark this row already-normalized (the backfill
     // scans WHERE usage_normalized=0 and skips these). INSERT_ENTRY_SQL writes it.
     usage_normalized: 1,
-    stop_reason: entry.outboundResponse?.stop_reason ?? null,
-    // Backfill from the top-level failureReason projection so an entry whose
-    // outboundResponse leg is absent (orphan / interrupted) still surfaces its
-    // failure reason in the list view (RFC pre-response-abort Q3).
+    stop_reason: finalUpstream?.stopReason ?? entry.outboundResponse?.stop_reason ?? null,
+    // error_message: the new-model `upstreamResponse` leg carries NO error field
+    // (it uses `success` + the durable top-level `failureReason` projection). So the
+    // P4-durable source here is `failureReason`; `outboundResponse.error` is the
+    // DEPRECATED middle fallback (P4 removes). For a failed entry both are equal
+    // (failureReason is projected from the same response error), so the ordering is
+    // column-stable now and resolves to `failureReason` after P4 drops the leg.
     error_message: entry.outboundResponse?.error ?? entry.failureReason ?? null,
     message_count: entry.inboundRequest.messages?.length ?? null,
     preview_text: extractPreviewText(entry),
