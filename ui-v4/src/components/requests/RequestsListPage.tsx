@@ -25,7 +25,10 @@ export function RequestsListPage() {
         setFilters={setFilters}
       />
       <LiveLane />
-      <HistoryList filters={filters} />
+      <HistoryList
+        filters={filters}
+        onClearFilters={clearAll}
+      />
     </div>
   )
 }
