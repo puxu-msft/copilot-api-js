@@ -60,6 +60,13 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 
 > **落地态修订（Plan 08，用户定 2026-06-24）**：本节原设计的"主从一体（列表与详情同屏、不再是两个路由）"**已反转为两路由全屏分离**——`/requests` = 列表全屏、`/requests/:id` = 详情全屏（返回钮），点行/深链导航；`RequestsWorkbench` 已退役。深链（§4.1）、列表稳定性三件套（§4.2）、详情 C 布局分段（§4.3）均保留，只是列表与详情各占一整屏而非同屏。另：Convo/Stages 段加了左侧 TOC 树导航（消息→块 / leg→消息→块，点击滚动跳转 + 高亮）。详见 [演进史 evolution.md](evolution.md) 与 [plans/2026-06-24-08-detail-page-split-toc-tree.md](plans/2026-06-24-08-detail-page-split-toc-tree.md)。下文为原始设计稿，保留作设计意图参考。
 
+> **落地态增强（Requests 列表筛选层 + 虚拟化 + scoped delete，2026-07，plans [plans/requests-list-enhancement/](plans/requests-list-enhancement/)）**：Requests 列表页补齐并超越 `ui/` Activity 的筛选能力，全部落地为**活路径**——
+> - **URL-as-SSOT 七维筛选层**：search / model / endpoint / state / pid / sessionId + 时间范围（from/to），全部序列化进 query（`lib/request-filters.ts` = 纯 codec `toQueryString`/`parseFilters` + `matchesGating` + `hasAnyFilter` + chips；`hooks/useRequestFilters.ts` 直接读写 URL、无本地镜像 state）——刷新 / 复制链接 / 前进后退都还原筛选，是列表筛选的唯一真值源。筛选进 `useHistoryInfinite` 的 queryKey → server-side refetch（search 维走后端 FTS）；活动筛选 chips + 单个清除 + Clear all。
+> - **列表引擎换 TableVirtuoso + TanStack Table**：`components/requests/HistoryList.tsx` 用 `useReactTable` 列模型（`lib/request-columns.ts` = 列宽 / 可见性 / cell 的 SSOT）+ `react-virtuoso` 的 `TableVirtuoso` 虚拟渲染;`endReached` 触底加载旧页、`atTopStateChange` 离顶暂停 tail;列显隐齿轮菜单 + localStorage 持久化;键盘 ↑/↓/Enter/Esc roving 焦点导航（DOM 焦点跟随游标）。§4.2 的 tail / 缓冲横幅 / `?at=` 定位三件套保留不变。
+> - **时间范围筛选**：`components/requests/DateRangePopover.tsx` 用 `react-day-picker`。
+> - **后端 scoped delete**（Phase 0）：`DELETE /history/api/entries` 无 query = clear-all（清空整库）、带 query = scoped delete（`deleteEntries`，WHERE 经 `read.ts applyWhere` 与列表查询**严格同源**、绝不误删在飞 head 行），返回 `{ deleted: N }`;前端「清空历史」入口按筛选有无分流 + 确认 Modal。
+> - **paused 行内更新**（Phase 1 Task 1.3 门控顺序）：WS `entry_updated` 命中已加载行时**原地更新该行**（优先于终态 / buffer 门控，顺序互斥），paused 浏览下进行中请求的状态变化如实反映、且不误入缓冲横幅——端到端渲染层已锁（`tests/useHistoryInfinite.vitest.test.tsx`）。
+
 主从一体（DevTools/Network 范式）：左侧实时列表 + 右侧就地详情，**列表与详情不再是两个路由**。
 
 ### 4.1 深链
