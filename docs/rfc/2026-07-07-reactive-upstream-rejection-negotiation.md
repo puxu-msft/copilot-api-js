@@ -1,6 +1,6 @@
 # RFC: 反应式 per-model 上游拒绝协商 —— 完整性 pass
 
-- 状态：DRAFT v3（R1+R2 对抗 review 已并入并逐条独立核验；O1–O5 已定，O6 推荐 (c) 待确认。R2 的 §3.2 FAIL 修正：payload.model 在 sanitize 已是解析名、无需改签名。待 O6 确认 + §3.2 定向 R3 后转 plan）
+- 状态：DRAFT v4（R1+R2 全并入并独立核验；O1–O6 全部已定。待 §3.2 定向 R3 达零 FAIL/WARN 后转 writing-plans）
 - 日期：2026-07-07
 - 关联：ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)、ADR [internal-tool-security-posture](../decisions/2026-07-05-internal-tool-security-posture.md)、skill `telemetry-architecture`、skill `history-sqlite-schema`
 - 触发实例：Claude Code 后台 `haiku` 请求（映射到 Vertex-routed `claude-sonnet-4.6`/`claude-haiku-4.5`）携带 inline `role:"system"` 消息 → 上游 400 → 无任何反应式恢复。
@@ -80,7 +80,7 @@
 - **持久化槽（WARN 修复，与 B 的 O5 对称）**：反应式学入的「拒绝 inline-system」事实须存 negotiation 缓存的 `systemRejectModels: Set<model>`（config 声明 ∪ 运行时学入，snapshot/load 同 sibling 的 `Set<string>` 映射如 partnerFeatures）。否则反应式只自愈当前请求、后续同模型仍 400——与框架 learn-persist-then-proactively-skip 模式不一致。
 - **接线（proactive 侧）—— 阶段与前提修正（FAIL 修复）**：inline-system 清洗在 **S3 sanitize rewrite**（`sanitizeAnthropicMessages(payload)`，[payload-rewrites.ts:118](../../src/lib/anthropic/payload-rewrites.ts#L118) order 300 → [request-rewrite-adapter.ts:52](../../src/lib/codec/anthropic/request-rewrite-adapter.ts#L52) → [sanitize/index.ts:95](../../src/lib/anthropic/sanitize/index.ts#L95)）；**非** [handler-v4.ts:201](../../src/routes/messages/handler-v4.ts#L201)（那是 `preprocessAnthropicMessages` dedup+strip-read-tags）。关键：`payload.model` 在此**已是解析后 outbound 名**（[handler-v4.ts:193](../../src/routes/messages/handler-v4.ts#L193) `wireBody={...payload, model:resolvedName}`）。故有效模式**在 `sanitizeAnthropicMessages` 内部从 `payload.model` 直接算**——**无需改签名 / 无需 thread 全调用方**（推翻 v2 的 plumbing 主张）。web-search sanitize 路径（orchestrator/web-search-direct）经同一 `sanitizeAnthropicMessages` 透明覆盖。
 - **count-tokens（独立调用点）**：[count-tokens.ts:50](../../src/routes/messages/count-tokens.ts#L50) **直接**调 `sanitizeInlineSystemMessages`（不经 `sanitizeAnthropicMessages`），须用其已解析的 `anthropicPayload.model` 同样算有效模式——否则 count-tokens 与请求路径分叉、对 reject 集模型 400。
-- **反应式侧 —— 机制（O6，含新选项 c）**：pipeline 每 attempt 只重跑 `prepareAnthropicRequest`（[pipeline.ts:272](../../src/lib/request/pipeline.ts#L272)），**S3 sanitize 不重跑**。反应式 A：检测 `Unexpected role "system"` 400 → 学入 `systemRejectModels`（持久）→ 修复当前 in-flight 请求。修复机制三候选（O6）：**(a)** strategy 在 `handle` 直接 role-rewrite `effectivePayload.messages`；**(b)** inline-system 下移进 `prepareAnthropicRequest`（每 attempt 跑，但 **strand `inlineSystemConverted` 遥测**——现由 [sanitize/index.ts:138](../../src/lib/anthropic/sanitize/index.ts#L138) 经 pipelineInfo 捕获，迁走须重新接线）；**(c)** strategy 学入后调 `getResanitize()`（[codec.ts:122](../../src/lib/codec/anthropic/codec.ts#L122)，siblings auto-truncate/legacy-thinking 已用此重跑 sanitize 链）——学入后重跑 S3，有效模式已含新学模型 → 自动 role-rewrite。**(c) 最一致**（复用既有 hook、不 strand 遥测、proactive/reactive 同一份 sanitize 逻辑）。学入日志如实写「推断（Vertex 已知成因）」。
+- **反应式侧 —— 机制（O6 已定 = (c)）**：pipeline 每 attempt 只重跑 `prepareAnthropicRequest`（[pipeline.ts:272](../../src/lib/request/pipeline.ts#L272)），**S3 sanitize 不重跑**。反应式 A 流程：检测 `Unexpected role "system"` 400 → 学入 `systemRejectModels`（持久）→ 调 `getResanitize()`（[codec.ts:122](../../src/lib/codec/anthropic/codec.ts#L122)，siblings auto-truncate/legacy-thinking 已用此重跑 S3 sanitize 链）→ 有效模式已含新学模型 → 自动 role-rewrite → 重试。选 (c) 因它复用既有 hook、**不 strand `inlineSystemConverted` 遥测**（[sanitize/index.ts:138](../../src/lib/anthropic/sanitize/index.ts#L138) 经 pipelineInfo 捕获、原地保留）、proactive/reactive 同一份 sanitize 逻辑。（未采：(a) strategy 内直接 rewrite `effectivePayload.messages`——重复 sanitize 逻辑；(b) inline-system 下移进 prepare——strand 遥测 + 改动面大。）学入日志如实写「推断（Vertex 已知成因）」。
 
 ### 3.3 B：effort 零支持剥离（存储表达须重做）
 
@@ -158,7 +158,7 @@ DAG：P1 是其余前置（抽出的 primitive 被 P2/P3 复用）。P3 内部�
 - **O3（F 范围）→ 已定：本轮做**（前置：先捕获真实上游 token-limit body 做 golden，再加正则）。
 - **O4（D/E 广度）→ 已定：补当前已知** feature/tool（非完全数据驱动表）。
 - **O5（B 存储表达）→ 已定：(a) 独立 `effortUnsupported: Set<model>`**（见 §3.3；碰撞按构造消失、supportedEfforts 逻辑不动）。
-- **O6（A 反应式机制）→ 待最终确认**：R2 新揭示**选项 (c) learn-then-`getResanitize()`**（[codec.ts:122](../../src/lib/codec/anthropic/codec.ts#L122)，siblings 已用）——最一致、不 strand `inlineSystemConverted` 遥测、proactive/reactive 同一份 sanitize 逻辑。用户初选 (b)，但 (b) 会 strand 该遥测且改动面更大；**RFC 推荐改选 (c)**，待用户确认。
+- **O6（A 反应式机制）→ 已定：(c) learn-then-`getResanitize()`**（[codec.ts:122](../../src/lib/codec/anthropic/codec.ts#L122)，siblings 已用）——最一致、不 strand `inlineSystemConverted` 遥测、proactive/reactive 同一份 sanitize 逻辑。（未采 (a) strategy 内 rewrite / (b) 下移进 prepare——见 §3.2。）
 
 ---
 
