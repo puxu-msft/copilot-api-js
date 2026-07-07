@@ -15,6 +15,7 @@ import type {
 
 import { state } from "~/lib/state"
 
+import { resolveServerToolHistoryMode } from "../server-tool-history-mode"
 import { resolveSystemSanitizeMode } from "../system-reject-mode"
 import {
   //
@@ -102,7 +103,7 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // tool_use + tool_result. MUST run BEFORE processToolBlocks so the tool
   // reference validation sees the already-downgraded (plain) blocks. No-op when
   // disabled. See rewrite-server-tool-history.ts for the self-poisoning loop.
-  messages = rewriteServerToolHistory(messages, state.rewriteHistoryServerTools).messages
+  messages = rewriteServerToolHistory(messages, resolveServerToolHistoryMode(payload.model)).messages
 
   // Fallback (always-on): downgrade any synthesized web_search turn whose result
   // `encrypted_content` is empty/missing — upstream rejects it with "Invalid
