@@ -1,5 +1,7 @@
 # v4 — 模型请求管线重构（Pipeline Re-architecture）
 
+> ⚠️ **命名消歧**：这里的 **v4 是「后端模型请求管线」的重构代号**（driver / codec / envelope 七阶段），**与前端 `ui-v4/` 无关**——后者是历史查看器的 React 重写，只是巧合共用了 "v4" 这个词。前端架构见 [ui-v4/docs/ARCHITECTURE.md](../../ui-v4/docs/ARCHITECTURE.md)。本目录只讲后端管线。
+>
 > ✅ **已收官（2026-06）**：P0-P3 + Stage A（registry 激活）+ Stage B（driver-owned-writeout，全 5 格式 owns-sink）全部完成，v4 是唯一上游路径。**当前架构现状以 [docs/DESIGN.md](../DESIGN.md) + [05-progress.md](./05-progress.md) 为准**；本目录其余文件（00-04 / 03-spec / prompts）是**设计期产物**，描述"重构前/目标态"，file:line 已漂移，作历史设计记录读。
 
 把"模型请求后端"从**每格式一套巨型 handler**重组为**一条统一的、数据流驱动的、可观测的分层管线**。
