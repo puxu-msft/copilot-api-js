@@ -112,7 +112,7 @@ export interface AttemptSnapshot {
   effectiveRequest?: unknown
   /** Bytes/events received before failure (for streaming attempts). */
   partialResponse?: unknown
-  error?: { status: number; message: string; type: string }
+  error?: { status: number; message: string; type: string; rawBody?: string }
 }
 
 /** Feature kinds — replaces the legacy `tags: string[]` escape hatch. */

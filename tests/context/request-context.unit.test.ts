@@ -366,6 +366,32 @@ describe("createRequestContext - toHistoryEntry", () => {
     expect(entry.outboundResponse!.success).toBe(true)
   })
 
+  test("synthesizes a failed non-final attempt's response carrying the upstream error rawBody (gap H)", () => {
+    const B0 = '{"error":{"message":"attempt-0 upstream 500","type":"server_error"}}'
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "opus", messages: [{ role: "user", content: "hi" }], stream: false, payload: { model: "opus" } })
+
+    // Attempt 0 fails with an upstream HTTP 500 carrying body B0 (no attempt.response set).
+    ctx.beginAttempt({})
+    ctx.setAttemptError({ type: "server_error", status: 500, message: "HTTP 500", raw: new HTTPError("HTTP 500", 500, B0) })
+
+    // Attempt 1 succeeds; the request completes.
+    ctx.beginAttempt({ strategy: "server-error-retry" })
+    ctx.complete({ success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, content: "ok" })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.state).toBe("completed")
+    // Terminal outboundResponse is the SUCCESSFUL leg, not the failure.
+    expect(entry.outboundResponse!.success).toBe(true)
+    // The failed attempt[0] carries a synthesized response whose responseText is the error body,
+    // so the downstream serialize path (responseDataToHistory → rawBody) persists it (gap H evidence).
+    expect(entry.attempts![0].response?.responseText).toBe(B0)
+    expect(entry.attempts![0].response?.success).toBe(false)
+    expect(entry.attempts![0].response?.status).toBe(500)
+    // The attempt error summary string is still present.
+    expect(entry.attempts![0].error).toBe("HTTP 500")
+  })
+
   test("serializes lifecycle activity fields", () => {
     const { ctx } = makeContext()
     ctx.setOriginalRequest({
