@@ -1,6 +1,6 @@
 # RFC: 反应式 per-model 上游拒绝协商 —— 完整性 pass
 
-- 状态：DRAFT v5（R1+R2+R3 三轮对抗 review 全并入并逐条独立核验；O1–O6 全定。R3 §3.2 的 1 FAIL/3 WARN/3 NIT 已按证据修正——喂 pre-S3 baseline、auto-truncate 唯一先例、count-tokens 无条件清洗、driver.ts 引用、systemRejectModels 1 级集、匹配语义、遥测回传。R3 判「修完即 clear」。plan-ready，待转 writing-plans）
+- 状态：DRAFT v5（R1+R2+R3 三轮对抗 review 全并入并逐条独立核验；O1–O6 全定。R3 §3.2 的 1 FAIL/3 WARN/3 NIT 已按证据修正——喂 pre-S3 baseline、auto-truncate 唯一先例、count-tokens 无条件清洗、driver.ts 引用、systemRejectModels 1 级集、匹配语义、遥测回传。R3 判「修完即 clear」。**已转 writing-plans —— 实施计划见 [docs/plan/reactive-upstream-rejection/](../plan/reactive-upstream-rejection/)（plan.md + prompts/ P1–P4 + 对抗审查报告）。** 注：本 RFC 正文若干 file:line 证据以 `src/lib/request/driver.ts` 指代 driver，实际路径是 `src/lib/pipeline/driver.ts`——plan 的 anchor 表已更正，执行以 plan 为准。）
 - 日期：2026-07-07
 - 关联：ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)、ADR [internal-tool-security-posture](../decisions/2026-07-05-internal-tool-security-posture.md)、skill `telemetry-architecture`、skill `history-sqlite-schema`
 - 触发实例：Claude Code 后台 `haiku` 请求（映射到 Vertex-routed `claude-sonnet-4.6`/`claude-haiku-4.5`）携带 inline `role:"system"` 消息 → 上游 400 → 无任何反应式恢复。
