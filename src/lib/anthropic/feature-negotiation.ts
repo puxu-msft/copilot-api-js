@@ -28,6 +28,13 @@
  *                    `constraints/vertexai.allowedPartnerModelFeatures violated
  *                    ... disallowed feature X` 400. Currently only
  *                    `structured_outputs` (→ strip `output_config.format`).
+ *   - systemRejectModels — models whose upstream rejects inline `role:"system"`,
+ *                    learned from an `Unexpected role "system"` 400. An observed
+ *                    symptom, not a Vertex assertion. Stored as a flat model-key set.
+ *   - effortUnsupported — models that support NO reasoning effort at all, learned
+ *                    from a `does not support reasoning effort` 400 (no supported-
+ *                    values list). Independent membership set, mutually exclusive
+ *                    with `efforts`.
  *
  * Persisted to `PATHS.NEGOTIATION_STATES`.
  */

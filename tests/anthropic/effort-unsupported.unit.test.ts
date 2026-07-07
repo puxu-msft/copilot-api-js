@@ -37,6 +37,8 @@ import {
   prepareAnthropicRequest,
   type PrepareStep,
 } from "~/lib/anthropic/request-preparation"
+import { HTTPError } from "~/lib/error"
+import { createEffortLearningRetryStrategy } from "~/lib/request/strategies/effort-learning-retry"
 
 // Real upstream body (RFC §3.3 empirical req_1783390118141_26): zero-support wording, no supported list.
 const ZERO_SUPPORT_BODY = JSON.stringify({
@@ -159,5 +161,17 @@ describe("reactive closed loop — learn zero-support then re-prepare strips", (
       const after = prepareAnthropicRequest(effortPayload(), undefined, clampOnly)
       expect(after.wire.output_config).toBeUndefined()
     }
+  })
+})
+
+// Composition seam: feature B routes through the UNCHANGED effort-learning retry
+// strategy, whose canHandle gates on the body containing `invalid_reasoning_effort`.
+// A positive sample proves the seam is real (empirical-verification: canHandle
+// actually fires on the zero-support body), not merely assumed.
+describe("effort-learning strategy composition seam", () => {
+  test("effort-learning strategy canHandle fires on the zero-support body (composition seam)", () => {
+    const strategy = createEffortLearningRetryStrategy({ learn: () => true })
+    const err = { type: "bad_request" as const, status: 400, message: "HTTP 400", raw: new HTTPError("boom", 400, ZERO_SUPPORT_BODY, "claude-haiku-4.5") }
+    expect(strategy.canHandle(err)).toBe(true)
   })
 })

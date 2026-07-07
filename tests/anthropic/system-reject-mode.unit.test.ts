@@ -21,9 +21,13 @@ import {
   setAnthropicBehavior,
 } from "~/lib/state"
 
+import { autoRestoreState } from "../helpers/state-fixture"
+
 afterEach(() => clearAnthropicFeatureNegotiationForTests())
 
 describe("resolveSystemSanitizeMode", () => {
+  autoRestoreState()
+
   test("config reject set matches by normalized substring → uses systemRejectMode", () => {
     setAnthropicBehavior({ systemRejectModels: ["claude-haiku-4.5"], systemRejectMode: "as_user", systemMessagesSanitize: false })
     // real resolved name is date-suffixed; substring of normalized key must still match
