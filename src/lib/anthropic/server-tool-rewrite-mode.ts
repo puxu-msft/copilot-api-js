@@ -1,6 +1,6 @@
 /**
- * Resolve the effective server-tool-history rewrite mode for a given resolved
- * OUTBOUND model name. A model in the learned server-tool-history-downgrade set
+ * Resolve the effective server-tool rewrite mode for a given resolved
+ * OUTBOUND model name. A model in the learned server-tool-downgrade set
  * (or when the global `server_tool_rewrite` config is already
  * `"downgrade"`) downgrades prior-turn native server-tool blocks; every other
  * model falls back to the global `rewriteServerTools` (default `false`).
@@ -18,7 +18,7 @@ import type { RewriteServerToolMode } from "./sanitize/rewrite-server-tool-block
 
 import { isServerToolDowngradeLearned } from "./feature-negotiation"
 
-/** Whether server-tool history should be downgraded for this model (learned OR global config already downgrade). */
+/** Whether prior-turn server-tool blocks should be downgraded for this model (learned OR global config already downgrade). */
 export function resolveServerToolMode(model: string): RewriteServerToolMode {
   if (isServerToolDowngradeLearned(model)) return "downgrade"
   return state.rewriteServerTools

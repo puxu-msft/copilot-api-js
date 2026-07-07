@@ -98,7 +98,7 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   messages = inlineSystem.messages
   const inlineBlocksRemoved = beforeInlineBlocks - countAnthropicContentBlocks(messages)
 
-  // Downgrade native server-tool blocks left in history by the web_search
+  // Downgrade native server-tool blocks left in prior turns by the web_search
   // double-hop (server_tool_use{web_search} + *_tool_result) into plain
   // tool_use + tool_result. MUST run BEFORE processToolBlocks so the tool
   // reference validation sees the already-downgraded (plain) blocks. No-op when
@@ -110,7 +110,7 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // encrypted_content in search_result block" and there is no valid value we can
   // supply (empirically, even a non-empty placeholder is rejected). Runs AFTER
   // the config-driven downgrade (which, when enabled, already removed all
-  // server-tool history so this is a no-op) and narrowly targets only the
+  // prior-turn server-tool blocks so this is a no-op) and narrowly targets only the
   // proven-broken shape. See empty-encrypted-search-result.ts.
   messages = downgradeEmptyEncryptedSearchResults(messages).messages
 

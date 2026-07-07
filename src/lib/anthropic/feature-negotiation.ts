@@ -35,10 +35,10 @@
  *                    from a `does not support reasoning effort` 400 (no supported-
  *                    values list). Independent membership set, mutually exclusive
  *                    with `efforts`.
- *   - serverToolHistoryDowngrade — models whose upstream rejects prior-turn
- *                    server-tool history, learned from a `Tool '…' not found in
+ *   - serverToolDowngrade — models whose upstream rejects prior-turn
+ *                    server-tool blocks, learned from a `Tool '…' not found in
  *                    provided tools` 400. A flat model-key set; consumers downgrade
- *                    server-tool history for these models.
+ *                    prior-turn server-tool blocks for these models.
  *   - toolFields   — custom-tool top-level field names (e.g. `eager_input_streaming`)
  *                    the upstream rejects as `tools.N.<variant>.<field>: Extra inputs
  *                    are not permitted`. Keyed model-AGNOSTICALLY (endpoint only) —
@@ -89,9 +89,9 @@ const unsupportedPartnerFeatures = new Map<string, Set<string>>()
 /** Models whose upstream rejects inline role:"system", LEARNED reactively (config
  *  twin = state.systemRejectModels; effective set = config ∪ this learned set). */
 const learnedSystemRejectModels = new Set<string>()
-/** Models whose upstream rejects prior-turn server-tool history, LEARNED reactively
+/** Models whose upstream rejects prior-turn server-tool blocks, LEARNED reactively
  *  from a `Tool '…' not found in provided tools` 400. 1-level membership set. */
-const serverToolHistoryDowngradeModels = new Set<string>()
+const serverToolDowngradeModels = new Set<string>()
 /**
  * toolFields[endpointKey] = Set<custom-tool top-level field name> the upstream
  * rejects as "Extra inputs are not permitted" (e.g. `eager_input_streaming`).
@@ -308,25 +308,25 @@ export function isSystemRejectModelLearned(modelId: string): boolean {
 }
 
 // ============================================================================
-// Learned server-tool history downgrade set
+// Learned server-tool downgrade set
 // ============================================================================
 
 /**
- * Mark a model whose upstream rejects prior-turn server-tool history (learned
+ * Mark a model whose upstream rejects prior-turn server-tool blocks (learned
  * reactively from a `Tool '…' not found in provided tools` 400). A 1-level
  * membership set — the fact is a per-model boolean, no sub-dimension. Consumers
- * downgrade server-tool history for these models on subsequent requests.
+ * downgrade prior-turn server-tool blocks for these models on subsequent requests.
  */
 export function markServerToolDowngrade(modelId: string): void {
-  if (!serverToolHistoryDowngradeModels.has(modelKey(modelId))) {
-    serverToolHistoryDowngradeModels.add(modelKey(modelId))
+  if (!serverToolDowngradeModels.has(modelKey(modelId))) {
+    serverToolDowngradeModels.add(modelKey(modelId))
     schedulePersist()
   }
 }
 
-/** Whether server-tool history downgrade was learned for the given model. */
+/** Whether server-tool downgrade was learned for the given model. */
 export function isServerToolDowngradeLearned(modelId: string): boolean {
-  return serverToolHistoryDowngradeModels.has(modelKey(modelId))
+  return serverToolDowngradeModels.has(modelKey(modelId))
 }
 
 // ============================================================================
@@ -370,7 +370,14 @@ interface NegotiationStateFile {
   serverTools: Record<string, Array<string>>
   partnerFeatures: Record<string, Array<string>>
   systemRejectModels: Array<string>
-  serverToolHistoryDowngrade: Array<string>
+  serverToolDowngrade: Array<string>
+  /**
+   * Legacy key (pre-`server_tool_` rename) — read-only for startup auto-migration.
+   * Old on-disk snapshots stored the same set under `serverToolHistoryDowngrade`;
+   * load falls back to it when the new key is absent, and the next persist rewrites
+   * under `serverToolDowngrade` (the legacy key then drops naturally). Never written.
+   */
+  serverToolHistoryDowngrade?: Array<string>
   toolFields: Record<string, Array<string>>
 }
 
@@ -420,7 +427,7 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     serverTools: snapshotSetMap(unsupportedServerTools),
     partnerFeatures: snapshotSetMap(unsupportedPartnerFeatures),
     systemRejectModels: [...learnedSystemRejectModels],
-    serverToolHistoryDowngrade: [...serverToolHistoryDowngradeModels],
+    serverToolDowngrade: [...serverToolDowngradeModels],
     toolFields: snapshotSetMap(unsupportedToolFields),
   }
   try {
@@ -482,7 +489,7 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       + loadSetMap(unsupportedServerTools, data.serverTools)
       + loadSetMap(unsupportedPartnerFeatures, data.partnerFeatures)
       + loadStringSet(learnedSystemRejectModels, data.systemRejectModels)
-      + loadStringSet(serverToolHistoryDowngradeModels, data.serverToolHistoryDowngrade)
+      + loadStringSet(serverToolDowngradeModels, data.serverToolDowngrade ?? data.serverToolHistoryDowngrade)
       + loadSetMap(unsupportedToolFields, data.toolFields)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
@@ -507,7 +514,7 @@ function clearNegotiationMaps(): void {
   unsupportedServerTools.clear()
   unsupportedPartnerFeatures.clear()
   learnedSystemRejectModels.clear()
-  serverToolHistoryDowngradeModels.clear()
+  serverToolDowngradeModels.clear()
   unsupportedToolFields.clear()
 }
 

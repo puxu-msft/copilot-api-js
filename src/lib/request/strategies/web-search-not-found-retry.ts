@@ -5,10 +5,10 @@
  * upstream model was NOT provisioned with the native web_search tool (STRICT path
  * — Vertex / partner — validates the whole transcript), it 400s with
  * `Tool 'web_search' not found in provided tools`. This strategy reacts to that
- * 400: learn the model into the negotiation `serverToolHistoryDowngrade` set
+ * 400: learn the model into the negotiation `serverToolDowngrade` set
  * (persisted), then re-run the S3 sanitize chain on the PRE-S3 baseline
  * (`context.originalPayload`) — `resolveServerToolMode` now downgrades the
- * server-tool history for the just-learned model, so sanitize rewrites the
+ * prior-turn server-tool blocks for the just-learned model, so sanitize rewrites the
  * `server_tool_use{web_search}` turns and the retry ships a clean payload.
  *
  * Re-sanitize arm of the reactive-rejection primitive — structurally identical to
@@ -64,12 +64,12 @@ export function createWebSearchNotFoundRetryStrategy<TPayload extends MessagesPa
     mark: (model) => {
       mark(model)
       consola.info(
-        `[WebSearchNotFound] Inferred web_search not in provided tools for ${model} (Vertex is this account's known cause but not asserted); triggering server-tool-history downgrade + re-sanitizing + retrying.`,
+        `[WebSearchNotFound] Inferred web_search not in provided tools for ${model} (Vertex is this account's known cause but not asserted); triggering server-tool downgrade + re-sanitizing + retrying.`,
       )
     },
     remediate: ({ context }) => {
       // Re-run the S3 chain on the PRE-S3 baseline — resolveServerToolMode
-      // now downgrades server-tool history for the just-learned model. NEVER feed
+      // now downgrades prior-turn server-tool blocks for the just-learned model. NEVER feed
       // currentPayload (already-S3 → double-apply). Mirrors system-reject-retry.
       const result = deps.resanitize(context.originalPayload)
       return { action: "retry", payload: result.payload as TPayload, meta: { sanitization: result.stats } }
