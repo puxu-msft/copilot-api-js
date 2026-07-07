@@ -110,11 +110,11 @@
 **Interfaces:**
 - 列可见性 state（`useState` + localStorage `COLUMN_STORAGE_KEY`，`mergeColumnVisibility` 读回）提到 `RequestsListPage`，`columnMenuSlot={<RequestsColumnMenu .../>}` 传给 filter bar，`columnVisibility`+`onColumnVisibilityChange` 传给 `HistoryList`。
 
-- [ ] **Step 1: 失败测试** — 菜单切一列 → HistoryList 该列消失 + localStorage 写入；刷新（重挂）→ 持久化恢复；Live 行列宽 = `COLUMN_WIDTHS`（快照/样式断言）。
-- [ ] **Step 2: 确认失败** → FAIL。
-- [ ] **Step 3: 实现** — `RequestsColumnMenu` 复用 DropdownMenu 范式；Page 持有 columnVisibility；Live 行改用 `COLUMN_WIDTHS` 常量。
-- [ ] **Step 4: 确认通过** → PASS。
-- [ ] **Step 5: 门禁 + 提交** — typecheck + eslint + build；msg `feat(ui-v4): column visibility menu + Live-lane width alignment`。
+- [x] **Step 1: 失败测试** — 菜单切一列 → HistoryList 该列消失 + localStorage 写入；刷新（重挂）→ 持久化恢复；Live 行列宽 = `COLUMN_WIDTHS`（快照/样式断言）。
+- [x] **Step 2: 确认失败** → FAIL（3 新用例红：menu 缺失 / persist 缺失 / 宽度未套用）。
+- [x] **Step 3: 实现** — `RequestsColumnMenu` 复用 DropdownMenu 范式；Page 持有 columnVisibility（useState + loadColumnVisibility 读 localStorage + useEffect 写回）；Live 行 status/model/dur 改用 `COLUMN_WIDTHS` 常量。
+- [x] **Step 4: 确认通过** → PASS（目标 4 文件 40 绿；全量 286 绿；typecheck/eslint/build 绿）。
+- [x] **Step 5: 门禁 + 提交** — typecheck + eslint + build；msg `feat(ui-v4): requests column-visibility menu + persistence + Live-lane width alignment`。
 
 ---
 
