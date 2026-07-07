@@ -549,9 +549,9 @@ async function postJsonRaw(extra?: Record<string, unknown>): Promise<Response> {
   })
 }
 
-/** The upstream-original accumulated assistant response (ctx.complete → entry.outboundResponse). */
+/** The upstream-original accumulated assistant response (ctx.complete → attempts[-1].upstreamResponse.body). */
 function lastOutboundContent(): unknown {
-  return getHistory({ endpoint: "anthropic-messages" }).entries[0]?.outboundResponse?.content
+  return getHistory({ endpoint: "anthropic-messages" }).entries[0]?.attempts?.at(-1)?.upstreamResponse?.body
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -693,9 +693,9 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     // outboundResponse honest (success:true, no error); the verdict lives in failureReason.
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(true)
-    expect(entry.outboundResponse?.error).toBeUndefined()
-    expect(entry.failureReason?.toLowerCase()).toContain("refusal")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.error).toBeUndefined()
+    expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("refusal")
   })
 
   test("S6 error mode: non-streaming thinking-only refusal → 500 error body + ctx.fail", async () => {
@@ -707,9 +707,9 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     // history FAILED (request state); upstream leg succeeded → outboundResponse honest, verdict in failureReason.
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(true)
-    expect(entry.outboundResponse?.error).toBeUndefined()
-    expect(entry.failureReason?.toLowerCase()).toContain("refusal")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.error).toBeUndefined()
+    expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("refusal")
   })
 
   test("S6 non-streaming: server-tool blocks filtered from response", async () => {

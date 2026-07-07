@@ -7,12 +7,12 @@ import {
 import type { HistoryEntry } from "@/types"
 
 export function HeadersSegment({ entry }: { entry: HistoryEntry }) {
-  // Per-leg headers: new legs (client/upstream request+response) ?? legacy `httpHeaders.*` (P4c: drop legacy arms).
+  // Per-leg headers: new legs (client/upstream request+response); legacy `httpHeaders.*` removed in P4c.
   const legs: Array<[label: string, headers: Record<string, string> | undefined]> = [
-    ["Client → Proxy", entry.clientRequest?.headers ?? entry.httpHeaders?.inboundRequest],
-    ["Proxy → Upstream", finalUpstreamRequest(entry)?.headers ?? entry.httpHeaders?.outboundRequest],
-    ["Upstream → Proxy", finalUpstreamResponse(entry)?.headers ?? entry.httpHeaders?.outboundResponse],
-    ["Proxy → Client", entry.clientResponse?.headers ?? entry.httpHeaders?.inboundResponse],
+    ["Client → Proxy", entry.clientRequest?.headers],
+    ["Proxy → Upstream", finalUpstreamRequest(entry)?.headers],
+    ["Upstream → Proxy", finalUpstreamResponse(entry)?.headers],
+    ["Proxy → Client", entry.clientResponse?.headers],
   ]
   if (!legs.some(([, h]) => h)) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无 headers</div>
   return (

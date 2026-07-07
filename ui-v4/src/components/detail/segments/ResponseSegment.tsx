@@ -95,8 +95,8 @@ function isMessageShaped(content: unknown): content is Parameters<typeof Message
   return typeof content === "object" && content !== null && typeof (content as { role?: unknown }).role === "string"
 }
 
-/** Content shape shared by the legacy `outboundResponse.content` and the new `upstreamResponse.body`. */
-type UpstreamContent = NonNullable<HistoryEntry["outboundResponse"]>["content"] | undefined
+/** Upstream (upstream → proxy) response body content shape (`upstreamResponse.body`). */
+type UpstreamContent = NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]>["body"] | undefined
 
 /** Upstream (upstream → proxy) leg body — rendered (MessageBlock) or code (message object as JSON). */
 function UpstreamBody({ content, rawBody, error, code }: { content: UpstreamContent; rawBody?: string; error?: string; code: boolean }) {
@@ -111,9 +111,9 @@ function UpstreamBody({ content, rawBody, error, code }: { content: UpstreamCont
 
 /** Forwarded (proxy → client) leg body — rendered (reconstructed content) or code (message object as JSON). */
 function ForwardedBody({ entry, code }: { entry: HistoryEntry; code: boolean }) {
-  // New leg `clientResponse` ?? legacy `inboundResponse` (P4c: drop the legacy arm).
-  const frames = entry.clientResponse?.sseEvents ?? entry.inboundResponse?.sseEvents ?? []
-  const content = entry.clientResponse?.body ?? entry.inboundResponse?.content
+  // New leg `clientResponse` (legacy `inboundResponse` removed in P4c).
+  const frames = entry.clientResponse?.sseEvents ?? []
+  const content = entry.clientResponse?.body
   if (content !== undefined) {
     if (code) return <RawPre>{JSON.stringify(content, null, 2)}</RawPre>
     if (isMessageShaped(content)) return <MessageBlock message={content} />
@@ -168,21 +168,21 @@ function ViewToggle({ code, onChange }: { code: boolean; onChange: (code: boolea
  */
 export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
   const [code, setCode] = useState(false)
-  // New per-attempt `upstreamResponse` (final attempt) ?? legacy top-level `outboundResponse` (P4c: drop the legacy arm).
+  // New per-attempt `upstreamResponse` (final attempt) — legacy top-level `outboundResponse` removed in P4c.
   const upstream = finalUpstreamResponse(entry)
-  const upstreamModel = upstream?.model ?? entry.outboundResponse?.model
-  const upstreamStatus = upstream?.status ?? entry.outboundResponse?.status
-  const upstreamSuccess = upstream?.success ?? entry.outboundResponse?.success
-  const upstreamContent = upstream?.body ?? entry.outboundResponse?.content
-  const upstreamRawBody = upstream?.rawBody ?? entry.outboundResponse?.rawBody
-  // Response-side error home: final attempt's `error` ?? legacy `outboundResponse.error`.
+  const upstreamModel = upstream?.model
+  const upstreamStatus = upstream?.status
+  const upstreamSuccess = upstream?.success
+  const upstreamContent = upstream?.body
+  const upstreamRawBody = upstream?.rawBody
+  // Response-side error home: final attempt's `error`.
   const upstreamError = resolveResponseError(entry)
-  const hasUpstream = Boolean(upstream ?? entry.outboundResponse)
-  const forwardedFrames = entry.clientResponse?.sseEvents ?? entry.inboundResponse?.sseEvents ?? []
-  const hasForwarded = (entry.clientResponse?.body ?? entry.inboundResponse?.content) !== undefined || forwardedFrames.length > 0
+  const hasUpstream = Boolean(upstream)
+  const forwardedFrames = entry.clientResponse?.sseEvents ?? []
+  const hasForwarded = entry.clientResponse?.body !== undefined || forwardedFrames.length > 0
 
   const signal = statusSignal(entry.state ?? "")
-  const verdict = entry.failureReason ?? upstreamError
+  const verdict = entry._index?.derived?.failureReason ?? upstreamError
   // Show the outcome banner for non-success terminal states carrying a verdict — surfaces the
   // proxy failure reason that would otherwise be buried in / absent from the leg sections.
   const showOutcome = signal === "fail" && verdict !== undefined

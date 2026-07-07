@@ -91,7 +91,7 @@ function newLegEntry(over: Partial<HistoryEntry>): HistoryEntry {
     startedAt: 1_700_000_000_000,
     state: "completed",
     active: false,
-    inboundRequest: { model: "claude-opus-4-7", messages: [msg("user", "hello world")] },
+    clientRequest: { model: "claude-opus-4-7", messages: [msg("user", "hello world")] },
     ...over,
   } as HistoryEntry
 }
@@ -109,7 +109,7 @@ function rewritesResp(entry: HistoryEntry): string {
 describe("P4a: rewrites facets read the new upstream/client legs", () => {
   test("承重 R4-FAIL-A: rewrites-req reads attempts[final].upstreamRequest.messages (no outboundRequest)", () => {
     const entry = newLegEntry({
-      inboundRequest: { model: "claude-opus-4-7", messages: [msg("user", "hello world")] },
+      clientRequest: { model: "claude-opus-4-7", messages: [msg("user", "hello world")] },
       attempts: [
         {
           index: 0,
@@ -226,18 +226,17 @@ describe("P4a: telemetry (HistoryEntryData) reads new legs", () => {
       active: false,
       lastUpdatedAt: 1,
       queueWaitMs: 0,
-      attemptCount: 1,
       durationMs: 1,
-      inboundRequest: { model: "inbound-model" },
       ...over,
     } as HistoryEntryData
   }
 
-  test("model dimension reads model.resolved → model.requested (no outboundResponse)", () => {
+  test("model dimension reads model.resolved → model.requested; no `model` key → 'unknown'", () => {
     expect(modelDim?.extract(makeData({ model: { resolved: "m-res", requested: "m-req" } }), ctxStub)).toBe("m-res")
     expect(modelDim?.extract(makeData({ model: { requested: "m-req" } }), ctxStub)).toBe("m-req")
-    // Legacy fallback still works when the new `model` key is absent.
-    expect(modelDim?.extract(makeData({ inboundRequest: { model: "inbound-only" } }), ctxStub)).toBe("inbound-only")
+    // The legacy inboundRequest fallback was removed in P4c-3: an absent `model` key
+    // resolves to "unknown" (there is no other source for the dimension key).
+    expect(modelDim?.extract(makeData({}), ctxStub)).toBe("unknown")
   })
 
   test("extractToolNames reads attempts[final].upstreamResponse.body (no outboundResponse.content)", () => {
@@ -320,7 +319,7 @@ describe("P4a: getStats / getHistory wiring reads new legs (in-flight, DB-backed
     putInFlight(
       newLegEntry({
         id: "p4a-query-1",
-        inboundRequest: { model: "inbound-req-model", messages: [msg("user", "hi")] },
+        clientRequest: { model: "inbound-req-model", messages: [msg("user", "hi")] },
         attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "resolved-query-model" } }],
       }),
     )

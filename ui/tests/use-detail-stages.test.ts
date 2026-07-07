@@ -15,7 +15,7 @@ function entry(over: Partial<HistoryEntry> = {}): HistoryEntry {
     id: "e",
     endpoint: "anthropic-messages",
     startedAt: 0,
-    inboundRequest: { model: "m", messages: [{ role: "user", content: "hi" }] },
+    clientRequest: { model: "m", messages: [{ role: "user", content: "hi" }] },
     ...over,
   } as HistoryEntry
 }
@@ -34,8 +34,12 @@ describe("useDetailStages", () => {
   })
 
   test("effective present only when effectiveRequest differs from inbound", () => {
-    const same = ref<HistoryEntry | null>(entry({ effectiveRequest: { messages: [{ role: "user", content: "hi" }] } } as Partial<HistoryEntry>))
-    const differ = ref<HistoryEntry | null>(entry({ effectiveRequest: { messages: [{ role: "user", content: "CHANGED" }] } } as Partial<HistoryEntry>))
+    const same = ref<HistoryEntry | null>(
+      entry({ attempts: [{ index: 0, durationMs: 1, effectiveSource: { messages: [{ role: "user", content: "hi" }] } }] } as Partial<HistoryEntry>),
+    )
+    const differ = ref<HistoryEntry | null>(
+      entry({ attempts: [{ index: 0, durationMs: 1, effectiveSource: { messages: [{ role: "user", content: "CHANGED" }] } }] } as Partial<HistoryEntry>),
+    )
     expect(useDetailStages(same, ref("inbound")).stages.value.map((s) => s.key)).not.toContain("effective")
     expect(useDetailStages(differ, ref("inbound")).stages.value.map((s) => s.key)).toContain("effective")
   })
@@ -43,11 +47,14 @@ describe("useDetailStages", () => {
   test("wire/upstream/attempts presence", () => {
     const e = ref<HistoryEntry | null>(
       entry({
-        outboundRequest: { payload: { x: 1 } },
-        outboundResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: { role: "assistant", content: "ok" } },
         attempts: [
           { index: 0, durationMs: 1 },
-          { index: 1, durationMs: 1 },
+          {
+            index: 1,
+            durationMs: 1,
+            upstreamRequest: { body: { x: 1 } },
+            upstreamResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: { role: "assistant", content: "ok" } },
+          },
         ],
       } as Partial<HistoryEntry>),
     )
@@ -56,7 +63,7 @@ describe("useDetailStages", () => {
   })
 
   test("activeTocIds = the active stage's tocIds, headers-before-messages for inbound", () => {
-    const e = ref<HistoryEntry | null>(entry({ httpHeaders: { inboundRequest: { a: "b" } } } as Partial<HistoryEntry>))
+    const e = ref<HistoryEntry | null>(entry({ clientRequest: { headers: { a: "b" } } } as Partial<HistoryEntry>))
     const active = ref("inbound")
     const { activeTocIds } = useDetailStages(e, active)
     expect(activeTocIds.value).toEqual(["httpHeaders", "request"]) // headers first

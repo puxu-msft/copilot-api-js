@@ -190,7 +190,7 @@ describe("reclaimStaleActiveRows — interrupted reclassification (MEDIUM-2)", (
       lastUpdatedAt: 1_000,
       transport: "http",
       process: { pid },
-      inboundRequest: { model: "m" },
+      clientRequest: { format: "anthropic-messages", model: "m" },
     } as HistoryEntry)
 
     const reclaimed = reclaimStaleActiveRows(1) // maxAge 1ms → cutoff ≈ now-1, so started_at 1000 qualifies

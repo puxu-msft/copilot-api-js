@@ -15,7 +15,7 @@ import SectionBlock from "../SectionBlock.vue"
 
 const props = defineProps<{ entry: HistoryEntry }>()
 
-// New final-attempt `upstreamRequest` ?? legacy `outboundRequest`/`httpHeaders` (P4c: drop legacy arms in entry-legs).
+// New final-attempt `upstreamRequest` (legacy `outboundRequest`/`httpHeaders` removed in P4c).
 const outboundHeaders = computed(() => resolveHeaders(props.entry).outboundRequest)
 const wirePayload = computed(() => resolveWirePayload(props.entry))
 </script>

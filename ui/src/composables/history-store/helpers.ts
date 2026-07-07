@@ -9,7 +9,7 @@ import type {
 import { resolveUpstreamResponse } from "@/composables/entry-legs"
 
 export function getPreviewText(entry: HistoryEntry): string {
-  const messages = entry.inboundRequest.messages ?? []
+  const messages = entry.clientRequest?.messages ?? []
   if (messages.length === 0) return ""
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -60,7 +60,7 @@ export function getStatusClass(entry: HistoryEntry | EntrySummary): "success" | 
     if (entry.responseSuccess) return "success"
     return "error"
   }
-  // New final-attempt `upstreamResponse` ?? legacy `outboundResponse` (P4c: drop legacy arm).
+  // New final-attempt `upstreamResponse` (legacy `outboundResponse` removed in P4c).
   const resp = resolveUpstreamResponse(entry)
   if (!resp) return "pending"
   if (resp.success) return "success"
@@ -68,7 +68,7 @@ export function getStatusClass(entry: HistoryEntry | EntrySummary): "success" | 
 }
 
 export function getMessageSummary(entry: HistoryEntry): string {
-  const messages = entry.inboundRequest.messages ?? []
+  const messages = entry.clientRequest?.messages ?? []
   const msgCount = messages.length
   const toolCount = messages.filter((m: MessageContent) => {
     if (m.tool_calls && m.tool_calls.length > 0) return true

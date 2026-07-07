@@ -48,8 +48,6 @@ import type {
   //
   HistoryEntry,
   MessageContent,
-  OutboundResponseData,
-  RequestLegData,
   SseEventRecord,
 } from "~/lib/history/types"
 
@@ -144,30 +142,20 @@ export function serializeToRawRows(entry: HistoryEntry): { row: EntryRow; stageR
 
 /**
  * Structural snapshot of `assembleFullEntry`'s output: the persisted stage kinds
- * (`stage@attempt_index`, sorted), each reconstructed attempt's index + which
- * heavy bodies it carries, and top-level leg presence. Captures "stage 种类 +
- * attempt 索引 + 顶层 leg 存在性" — value-agnostic so a rename/re-projection is a
+ * (`stage@attempt_index`, sorted), each reconstructed attempt's index + which new
+ * legs it carries, and entry-level new-leg presence. Captures "stage 种类 +
+ * attempt 索引 + leg 存在性" — value-agnostic so a rename/re-projection is a
  * reviewable structural diff, not a churn of body contents.
  *
- * P4c-2 GROWTH (intentional): `assembleFullEntry` now runs the read-time
- * legacy→new leg adapter, so a LEGACY fixture (only old stages) reassembles with
- * the NEW legs populated. The snapshot therefore ALSO observes new-leg presence
- * per attempt (`hasEffectiveSource`/`hasUpstreamRequest`/`hasUpstreamResponse` +
- * the unified upstream frame count) and entry-level
- * (`clientRequest`/`clientResponse`/`model`/`indexDerived`). This proves the
- * adapter fills the new legs from the OLD stages that are STILL read (the legacy
- * `hasEffectiveRequest`/… flags stay `true`). Field-level VALUE equivalence
- * (new leg == old leg) is locked by `tests/history/p4c2-read-adapter.it.test.ts`.
+ * P4c-3: the legacy leg FIELDS were removed, so the snapshot observes ONLY the new
+ * legs (`effectiveSource`/`upstreamRequest`/`upstreamResponse` per attempt +
+ * `clientRequest`/`clientResponse`/`model`/`indexDerived` at entry level). Field-
+ * level VALUE equivalence is locked by `tests/history/p4c2-read-adapter.it.test.ts`.
  */
 export function assembledStructureSnapshot(row: EntryRow, stageRows: Array<StageRow>): Record<string, unknown> {
   const assembled = assembleFullEntry(row, stageRows)
   const attempts = (assembled.attempts ?? []).map((a) => ({
     index: a.index,
-    hasEffectiveRequest: a.effectiveRequest !== undefined,
-    hasWireRequest: a.wireRequest !== undefined,
-    hasResponse: a.response !== undefined,
-    hasSseEvents: a.sseEvents !== undefined,
-    // P4c-2: the adapter-filled new per-attempt legs.
     hasEffectiveSource: a.effectiveSource !== undefined,
     hasUpstreamRequest: a.upstreamRequest !== undefined,
     hasUpstreamResponse: a.upstreamResponse !== undefined,
@@ -175,16 +163,6 @@ export function assembledStructureSnapshot(row: EntryRow, stageRows: Array<Stage
   }))
   return {
     stageRowKinds: stageRows.map((sr) => `${sr.stage}@${sr.attempt_index}`).sort(),
-    topLevelLegs: {
-      inboundRequest: assembled.inboundRequest !== undefined,
-      effectiveRequest: assembled.effectiveRequest !== undefined,
-      outboundRequest: assembled.outboundRequest !== undefined,
-      outboundResponse: assembled.outboundResponse !== undefined,
-      inboundResponse: assembled.inboundResponse !== undefined,
-      sseEvents: assembled.sseEvents !== undefined,
-      sseEventCount: assembled.sseEvents?.length ?? 0,
-    },
-    // P4c-2: the adapter-filled entry-level new legs (present on a legacy row too).
     newLegs: {
       clientRequest: assembled.clientRequest !== undefined,
       clientResponse: assembled.clientResponse !== undefined,
@@ -213,28 +191,31 @@ function sse(offsetMs: number, type: string, raw: string): SseEventRecord {
   return { offsetMs, type, raw }
 }
 
-function leg(messages: Array<MessageContent>, extra?: Partial<RequestLegData>): RequestLegData {
-  return {
-    model: "claude-opus-4-7",
-    format: "anthropic-messages",
-    messageCount: messages.length,
-    messages,
-    payload: { model: "claude-opus-4-7", messages },
-    ...extra,
-  }
+type Attempt = NonNullable<HistoryEntry["attempts"]>[number]
+
+/** New effective-source leg (env.body verbatim + structured projection). */
+function effSrc(messages: Array<MessageContent>): NonNullable<Attempt["effectiveSource"]> {
+  return { format: "anthropic-messages", model: "claude-opus-4-7", messageCount: messages.length, messages, body: { model: "claude-opus-4-7", messages } }
 }
 
-function okResponse(): OutboundResponseData {
+/** New upstream-request leg (wire body + messages projection, R4-FAIL-A). */
+function upReq(messages: Array<MessageContent>): NonNullable<Attempt["upstreamRequest"]> {
+  return { format: "anthropic-messages", model: "claude-opus-4-7", messages, body: { model: "claude-opus-4-7", messages } }
+}
+
+/** Successful upstream-response leg (optionally carrying the unified upstream frames). */
+function okUpResp(sseEvents?: Array<SseEventRecord>): NonNullable<Attempt["upstreamResponse"]> {
   return {
     success: true,
     model: "claude-opus-4-7",
     usage: { input_tokens: 42, output_tokens: 17, cache_read_input_tokens: 8, output_tokens_details: { reasoning_tokens: 5 } },
-    stop_reason: "end_turn",
-    content: { role: "assistant", content: "hi there" },
+    stopReason: "end_turn",
+    body: { role: "assistant", content: "hi there" },
+    ...(sseEvents && { sseEvents }),
   }
 }
 
-/** Common scaffolding; fixtures override the legs/attempts/response. */
+/** Common scaffolding; fixtures override the client/upstream legs + attempts. */
 function baseEntry(id: string, over: Partial<HistoryEntry>): HistoryEntry {
   return {
     id,
@@ -247,7 +228,8 @@ function baseEntry(id: string, over: Partial<HistoryEntry>): HistoryEntry {
     active: false,
     lastUpdatedAt: 1_700_000_001_234,
     multiplier: 3,
-    inboundRequest: { model: "claude-opus-4-7", messages: [msg("user", "hello world")], stream: true },
+    model: { requested: "claude-opus-4-7", resolved: "claude-opus-4-7", multiplier: 3 },
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: [msg("user", "hello world")], stream: true },
     ...over,
   } as HistoryEntry
 }
@@ -256,168 +238,122 @@ function baseEntry(id: string, over: Partial<HistoryEntry>): HistoryEntry {
 function fixtureSuccessStream(): HistoryEntry {
   const inbound = [msg("user", "hello world")]
   return baseEntry("f1-success-stream", {
-    effectiveRequest: leg(inbound),
-    outboundRequest: leg(inbound),
-    outboundResponse: okResponse(),
-    sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`), sse(12, "content_block_delta", `data: {"type":"content_block_delta"}`)],
-    inboundResponse: { sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)] },
+    clientResponse: { sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)] },
     attempts: [
-      { index: 0, strategy: "primary", durationMs: 1234, transport: "http", effectiveRequest: leg(inbound), wireRequest: leg(inbound), response: okResponse() },
+      {
+        index: 0,
+        strategy: "primary",
+        durationMs: 1234,
+        transport: "http",
+        effectiveSource: effSrc(inbound),
+        upstreamRequest: upReq(inbound),
+        upstreamResponse: okUpResp([sse(0, "message_start", `data: {"type":"message_start"}`), sse(12, "content_block_delta", `data: {"type":"content_block_delta"}`)]),
+      },
     ],
-    attemptCount: 1,
-    currentStrategy: "primary",
+    _index: { derived: { responseSuccess: true, currentStrategy: "primary", attemptCount: 1 } },
   })
 }
 
 // ── Fixture 2: failed HTTP (upstream 400) ───────────────────────────────────
 function fixtureFailedHttp(): HistoryEntry {
   const inbound = [msg("user", "trigger a 400")]
-  const failResp: OutboundResponseData = {
-    success: false,
-    model: "claude-opus-4-7",
-    usage: { input_tokens: 0, output_tokens: 0 },
-    error: "HTTP 400: invalid request",
-    status: 400,
-    content: null,
-  }
   return baseEntry("f2-failed-http", {
     state: "failed",
-    inboundRequest: { model: "claude-opus-4-7", messages: inbound },
-    effectiveRequest: leg(inbound),
-    outboundRequest: leg(inbound),
-    outboundResponse: failResp,
-    failureReason: "HTTP 400: invalid request",
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: inbound },
     attempts: [
       {
         index: 0,
         strategy: "primary",
         durationMs: 300,
         error: "HTTP 400: invalid request",
-        effectiveRequest: leg(inbound),
-        wireRequest: leg(inbound),
-        response: failResp,
+        effectiveSource: effSrc(inbound),
+        upstreamRequest: upReq(inbound),
+        upstreamResponse: { success: false, status: 400, model: "claude-opus-4-7", usage: { input_tokens: 0, output_tokens: 0 }, body: null },
       },
     ],
-    attemptCount: 1,
+    _index: { derived: { responseSuccess: false, currentStrategy: "primary", failureReason: "HTTP 400: invalid request", attemptCount: 1 } },
   })
 }
 
 // ── Fixture 3: network error (no HTTP status) ───────────────────────────────
 function fixtureNetworkError(): HistoryEntry {
   const inbound = [msg("user", "connection drops")]
-  const failResp: OutboundResponseData = {
-    success: false,
-    model: "claude-opus-4-7",
-    usage: { input_tokens: 0, output_tokens: 0 },
-    error: "ECONNRESET: socket hang up",
-    content: null,
-  }
   return baseEntry("f3-network-error", {
     state: "failed",
-    inboundRequest: { model: "claude-opus-4-7", messages: inbound },
-    effectiveRequest: leg(inbound),
-    outboundRequest: leg(inbound),
-    outboundResponse: failResp,
-    failureReason: "ECONNRESET: socket hang up",
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: inbound },
     attempts: [
       {
         index: 0,
         strategy: "primary",
         durationMs: 50,
         error: "ECONNRESET: socket hang up",
-        effectiveRequest: leg(inbound),
-        wireRequest: leg(inbound),
-        response: failResp,
+        effectiveSource: effSrc(inbound),
+        upstreamRequest: upReq(inbound),
+        upstreamResponse: { success: false, model: "claude-opus-4-7", usage: { input_tokens: 0, output_tokens: 0 }, body: null },
       },
     ],
-    attemptCount: 1,
+    _index: { derived: { responseSuccess: false, currentStrategy: "primary", failureReason: "ECONNRESET: socket hang up", attemptCount: 1 } },
   })
 }
 
 // ── Fixture 4: aborted (client disconnected mid-stream) ─────────────────────
 function fixtureAborted(): HistoryEntry {
   const inbound = [msg("user", "long stream then hang up")]
-  const partialResp: OutboundResponseData = {
-    success: false,
-    model: "claude-opus-4-7",
-    usage: { input_tokens: 42, output_tokens: 3 },
-    error: "client aborted mid-stream",
-    content: null,
-  }
   return baseEntry("f4-aborted", {
     state: "aborted",
-    inboundRequest: { model: "claude-opus-4-7", messages: inbound, stream: true },
-    effectiveRequest: leg(inbound),
-    outboundRequest: leg(inbound),
-    outboundResponse: partialResp,
-    failureReason: "client aborted mid-stream",
-    sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)],
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: inbound, stream: true },
     attempts: [
       {
         index: 0,
         strategy: "primary",
         durationMs: 900,
         error: "client aborted mid-stream",
-        effectiveRequest: leg(inbound),
-        wireRequest: leg(inbound),
-        response: partialResp,
-        sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)],
+        effectiveSource: effSrc(inbound),
+        upstreamRequest: upReq(inbound),
+        upstreamResponse: { success: false, model: "claude-opus-4-7", usage: { input_tokens: 42, output_tokens: 3 }, body: null, sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)] },
       },
     ],
-    attemptCount: 1,
+    _index: { derived: { responseSuccess: false, currentStrategy: "primary", failureReason: "client aborted mid-stream", attemptCount: 1 } },
   })
 }
 
 // ── Fixture 5: multi-attempt retry, eventually succeeds ─────────────────────
 function fixtureRetrySuccess(): HistoryEntry {
   const inbound = [msg("user", "retry me")]
-  const attempt0Resp: OutboundResponseData = {
-    success: false,
-    model: "claude-opus-4-7",
-    usage: { input_tokens: 0, output_tokens: 0 },
-    error: "upstream RST_STREAM",
-    content: null,
-  }
   return baseEntry("f5-retry-success", {
-    // Explicit inboundRequest matching the wire legs (inbound == outbound here),
-    // so rewrites-req is empty and fixture 6 stays the sole inbound≠outbound anchor.
-    inboundRequest: { model: "claude-opus-4-7", messages: inbound, stream: true },
-    effectiveRequest: leg(inbound),
-    outboundRequest: leg(inbound),
-    outboundResponse: okResponse(),
-    sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`), sse(20, "message_stop", `data: {"type":"message_stop"}`)],
+    // clientRequest messages match the wire legs (inbound == outbound here), so
+    // rewrites-req is empty and fixture 6 stays the sole inbound≠outbound anchor.
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: inbound, stream: true },
     attempts: [
       {
         index: 0,
         strategy: "primary",
         durationMs: 120,
         error: "upstream RST_STREAM",
-        effectiveRequest: leg(inbound),
-        wireRequest: leg(inbound),
-        response: attempt0Resp,
-        sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)],
+        effectiveSource: effSrc(inbound),
+        upstreamRequest: upReq(inbound),
+        upstreamResponse: { success: false, model: "claude-opus-4-7", usage: { input_tokens: 0, output_tokens: 0 }, body: null, sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)] },
       },
       {
         index: 1,
         strategy: "ws-fallback",
         durationMs: 1300,
         transport: "upstream-ws-fallback",
-        effectiveRequest: leg(inbound),
-        wireRequest: leg(inbound),
-        response: okResponse(),
+        effectiveSource: effSrc(inbound),
+        upstreamRequest: upReq(inbound),
+        upstreamResponse: okUpResp([sse(0, "message_start", `data: {"type":"message_start"}`), sse(20, "message_stop", `data: {"type":"message_stop"}`)]),
       },
     ],
-    attemptCount: 2,
-    currentStrategy: "ws-fallback",
+    _index: { derived: { responseSuccess: true, currentStrategy: "ws-fallback", attemptCount: 2 } },
   })
 }
 
 // ── Fixture 6: proxy actually rewrote the messages (inbound ≠ outbound) ──────
-// The client sent one user message; the proxy injected a cache_control marker /
-// rewrote the wire content before sending upstream. buildRewritesReq aligns
-// inboundRequest.messages vs outboundRequest.messages and MUST surface a
-// non-empty delta (WARN-1). This is the anchor that keeps P4's messages
-// projection from silently degenerating to an empty rewrites-req golden.
+// The client sent messages; the proxy injected a cache_control marker / rewrote
+// the wire content before sending upstream. buildRewritesReq aligns
+// clientRequest.messages vs the final attempt's upstreamRequest.messages and MUST
+// surface a non-empty delta (WARN-1). This anchor keeps the messages projection
+// from silently degenerating to an empty rewrites-req golden.
 function fixtureInboundNeqOutbound(): HistoryEntry {
   const inbound = [msg("system", "You are a helpful assistant."), msg("user", "hello world")]
   const outbound = [
@@ -425,12 +361,9 @@ function fixtureInboundNeqOutbound(): HistoryEntry {
     msg("user", "hello world [proxy-rewritten: system-reminder stripped]"),
   ]
   return baseEntry("f6-inbound-neq-outbound", {
-    inboundRequest: { model: "claude-opus-4-7", messages: inbound },
-    effectiveRequest: leg(outbound),
-    outboundRequest: leg(outbound),
-    outboundResponse: okResponse(),
-    attempts: [{ index: 0, strategy: "primary", durationMs: 800, effectiveRequest: leg(outbound), wireRequest: leg(outbound), response: okResponse() }],
-    attemptCount: 1,
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: inbound },
+    attempts: [{ index: 0, strategy: "primary", durationMs: 800, effectiveSource: effSrc(outbound), upstreamRequest: upReq(outbound), upstreamResponse: okUpResp() }],
+    _index: { derived: { responseSuccess: true, currentStrategy: "primary", attemptCount: 1 } },
   })
 }
 
@@ -478,13 +411,9 @@ describe("history restructure golden (pre-capture on current code)", () => {
       {
         "attempts": [
           {
-            "hasEffectiveRequest": true,
             "hasEffectiveSource": true,
-            "hasResponse": true,
-            "hasSseEvents": false,
             "hasUpstreamRequest": true,
             "hasUpstreamResponse": true,
-            "hasWireRequest": true,
             "index": 0,
             "upstreamSseCount": 2,
           },
@@ -496,20 +425,11 @@ describe("history restructure golden (pre-capture on current code)", () => {
           "model": true,
         },
         "stageRowKinds": [
-          "inbound_response@-1",
-          "outbound_response@0",
+          "client_request@-1",
+          "client_response@-1",
           "request_group@-1",
-          "sse_events@-1",
+          "upstream_response@0",
         ],
-        "topLevelLegs": {
-          "effectiveRequest": true,
-          "inboundRequest": true,
-          "inboundResponse": true,
-          "outboundRequest": true,
-          "outboundResponse": true,
-          "sseEventCount": 2,
-          "sseEvents": true,
-        },
       }
     `)
     expect(rewritesReqSnapshot(entry)).toMatchInlineSnapshot(`""`)
@@ -554,13 +474,9 @@ describe("history restructure golden (pre-capture on current code)", () => {
       {
         "attempts": [
           {
-            "hasEffectiveRequest": true,
             "hasEffectiveSource": true,
-            "hasResponse": true,
-            "hasSseEvents": false,
             "hasUpstreamRequest": true,
             "hasUpstreamResponse": true,
-            "hasWireRequest": true,
             "index": 0,
             "upstreamSseCount": 0,
           },
@@ -572,18 +488,10 @@ describe("history restructure golden (pre-capture on current code)", () => {
           "model": true,
         },
         "stageRowKinds": [
-          "outbound_response@0",
+          "client_request@-1",
           "request_group@-1",
+          "upstream_response@0",
         ],
-        "topLevelLegs": {
-          "effectiveRequest": true,
-          "inboundRequest": true,
-          "inboundResponse": false,
-          "outboundRequest": true,
-          "outboundResponse": true,
-          "sseEventCount": 0,
-          "sseEvents": false,
-        },
       }
     `)
     expect(rewritesReqSnapshot(entry)).toMatchInlineSnapshot(`""`)
@@ -628,13 +536,9 @@ describe("history restructure golden (pre-capture on current code)", () => {
       {
         "attempts": [
           {
-            "hasEffectiveRequest": true,
             "hasEffectiveSource": true,
-            "hasResponse": true,
-            "hasSseEvents": false,
             "hasUpstreamRequest": true,
             "hasUpstreamResponse": true,
-            "hasWireRequest": true,
             "index": 0,
             "upstreamSseCount": 0,
           },
@@ -646,18 +550,10 @@ describe("history restructure golden (pre-capture on current code)", () => {
           "model": true,
         },
         "stageRowKinds": [
-          "outbound_response@0",
+          "client_request@-1",
           "request_group@-1",
+          "upstream_response@0",
         ],
-        "topLevelLegs": {
-          "effectiveRequest": true,
-          "inboundRequest": true,
-          "inboundResponse": false,
-          "outboundRequest": true,
-          "outboundResponse": true,
-          "sseEventCount": 0,
-          "sseEvents": false,
-        },
       }
     `)
     expect(rewritesReqSnapshot(entry)).toMatchInlineSnapshot(`""`)
@@ -702,13 +598,9 @@ describe("history restructure golden (pre-capture on current code)", () => {
       {
         "attempts": [
           {
-            "hasEffectiveRequest": true,
             "hasEffectiveSource": true,
-            "hasResponse": true,
-            "hasSseEvents": false,
             "hasUpstreamRequest": true,
             "hasUpstreamResponse": true,
-            "hasWireRequest": true,
             "index": 0,
             "upstreamSseCount": 1,
           },
@@ -720,19 +612,10 @@ describe("history restructure golden (pre-capture on current code)", () => {
           "model": true,
         },
         "stageRowKinds": [
-          "outbound_response@0",
+          "client_request@-1",
           "request_group@-1",
-          "sse_events@-1",
+          "upstream_response@0",
         ],
-        "topLevelLegs": {
-          "effectiveRequest": true,
-          "inboundRequest": true,
-          "inboundResponse": false,
-          "outboundRequest": true,
-          "outboundResponse": true,
-          "sseEventCount": 1,
-          "sseEvents": true,
-        },
       }
     `)
     expect(rewritesReqSnapshot(entry)).toMatchInlineSnapshot(`""`)
@@ -777,24 +660,16 @@ describe("history restructure golden (pre-capture on current code)", () => {
       {
         "attempts": [
           {
-            "hasEffectiveRequest": true,
             "hasEffectiveSource": true,
-            "hasResponse": true,
-            "hasSseEvents": true,
             "hasUpstreamRequest": true,
             "hasUpstreamResponse": true,
-            "hasWireRequest": true,
             "index": 0,
             "upstreamSseCount": 1,
           },
           {
-            "hasEffectiveRequest": true,
             "hasEffectiveSource": true,
-            "hasResponse": true,
-            "hasSseEvents": false,
             "hasUpstreamRequest": true,
             "hasUpstreamResponse": true,
-            "hasWireRequest": true,
             "index": 1,
             "upstreamSseCount": 2,
           },
@@ -806,21 +681,11 @@ describe("history restructure golden (pre-capture on current code)", () => {
           "model": true,
         },
         "stageRowKinds": [
-          "outbound_response@0",
-          "outbound_response@1",
+          "client_request@-1",
           "request_group@-1",
-          "sse_events@-1",
-          "sse_events@0",
+          "upstream_response@0",
+          "upstream_response@1",
         ],
-        "topLevelLegs": {
-          "effectiveRequest": true,
-          "inboundRequest": true,
-          "inboundResponse": false,
-          "outboundRequest": true,
-          "outboundResponse": true,
-          "sseEventCount": 2,
-          "sseEvents": true,
-        },
       }
     `)
     expect(rewritesReqSnapshot(entry)).toMatchInlineSnapshot(`""`)
@@ -871,13 +736,9 @@ describe("history restructure golden (pre-capture on current code)", () => {
       {
         "attempts": [
           {
-            "hasEffectiveRequest": true,
             "hasEffectiveSource": true,
-            "hasResponse": true,
-            "hasSseEvents": false,
             "hasUpstreamRequest": true,
             "hasUpstreamResponse": true,
-            "hasWireRequest": true,
             "index": 0,
             "upstreamSseCount": 0,
           },
@@ -889,18 +750,10 @@ describe("history restructure golden (pre-capture on current code)", () => {
           "model": true,
         },
         "stageRowKinds": [
-          "outbound_response@0",
+          "client_request@-1",
           "request_group@-1",
+          "upstream_response@0",
         ],
-        "topLevelLegs": {
-          "effectiveRequest": true,
-          "inboundRequest": true,
-          "inboundResponse": false,
-          "outboundRequest": true,
-          "outboundResponse": true,
-          "sseEventCount": 0,
-          "sseEvents": false,
-        },
       }
     `)
     expect(rewrites).toMatchInlineSnapshot(`

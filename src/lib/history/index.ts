@@ -43,8 +43,11 @@ export {
 } from "./store"
 
 export type {
+  ClientRequestLeg,
+  ClientResponseLeg,
   ContentBlock,
   CursorResult,
+  EffectiveSourceLeg,
   EndpointType,
   EntrySummary,
   HistoryEntry,
@@ -53,7 +56,9 @@ export type {
   HistoryStats,
   ImageContentBlock,
   ImageSource,
+  IndexProjection,
   MessageContent,
+  ModelInfo,
   PipelineInfo,
   PreprocessInfo,
   QueryOptions,
@@ -78,6 +83,8 @@ export type {
   ToolResultTextBlock,
   ToolUseContentBlock,
   TruncationInfo,
+  UpstreamRequestLeg,
+  UpstreamResponseData,
   UsageData,
   WarningMessage,
   WebSearchToolResultContentBlock,

@@ -196,12 +196,12 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
 
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-retry", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
-    expect(entry?.outboundResponse?.success).toBe(true)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
     // The accumulator was reset per attempt — usage reflects ONE generation, not the sum of 3.
-    expect(entry?.outboundResponse?.usage?.input_tokens).toBe(100)
-    expect(entry?.outboundResponse?.usage?.output_tokens).toBe(20)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.usage?.input_tokens).toBe(100)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.usage?.output_tokens).toBe(20)
     // Every exchange is recorded as an attempt.
-    expect(entry?.attemptCount).toBe(3)
+    expect(entry?._index?.derived?.attemptCount).toBe(3)
     // D1: each FAILED (non-final) attempt keeps its own upstream-original frames for diagnosis;
     // the SUCCESSFUL (final) attempt's frames are the top-level mirror, not duplicated per-attempt.
     expect(entry?.attempts?.[0]?.sseEvents?.length).toBeGreaterThan(0)
@@ -236,9 +236,9 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-reset", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
     // A leak (failed-attempt frames folded into the final acc) would inflate these past one generation.
-    expect(entry?.outboundResponse?.usage?.input_tokens).toBe(100)
-    expect(entry?.outboundResponse?.usage?.output_tokens).toBe(20)
-    expect(entry?.attemptCount).toBe(4)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.usage?.input_tokens).toBe(100)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.usage?.output_tokens).toBe(20)
+    expect(entry?._index?.derived?.attemptCount).toBe(4)
   })
 
   test("retries exhausted (every attempt RSTs) → synthetic error, NO message_stop, history failed", async () => {
@@ -257,7 +257,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
 
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-exhaust", limit: 5 }).entries[0]
     expect(entry?.state).toBe("failed")
-    expect(entry?.outboundResponse?.success).toBe(false)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
   })
 
   test("buffer cap (tiny) → retreat to live, client still gets the full generation, history completed", async () => {
@@ -272,7 +272,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
 
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-cap", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
-    expect(entry?.outboundResponse?.success).toBe(true)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 
   test("escalation ON → each retry's wire forces a progressively aggressive context_management", async () => {

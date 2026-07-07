@@ -18,7 +18,7 @@ import { statusMeta } from "@/utils/status-meta"
 
 const props = defineProps<{ entry: HistoryEntry }>()
 
-// New legs ?? legacy top-level (P4c: drop the legacy arms in entry-legs).
+// New legs (legacy top-level legs removed in P4c).
 const resp = computed(() => resolveUpstreamResponse(props.entry))
 const usage = computed(() => resp.value?.usage)
 const attempts = computed(() => resolveAttemptCount(props.entry))

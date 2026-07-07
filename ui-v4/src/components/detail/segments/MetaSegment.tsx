@@ -21,7 +21,7 @@ function Row({ label, value }: { label: string; value?: string | number }) {
 }
 
 export function MetaSegment({ entry }: { entry: HistoryEntry }) {
-  // New legs (`_index.derived` / final attempt `upstreamResponse`) ?? legacy top-level (P4c: drop the legacy arm).
+  // New legs (`_index.derived` / final attempt `upstreamResponse`); legacy top-level legs removed in P4c.
   const usage = resolveResponseUsage(entry)
   return (
     <div className="mono flex flex-col gap-2 text-[13px] text-[#aaa]">

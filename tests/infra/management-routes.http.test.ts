@@ -166,19 +166,35 @@ interface StatusResponseBody {
   }
 }
 
-function createHistoryEntry(overrides?: Partial<HistoryEntry>): HistoryEntry {
+function createHistoryEntry(overrides?: {
+  id?: string
+  sessionId?: string
+  startedAt?: number
+  endpoint?: HistoryEntry["endpoint"]
+  clientRequest?: HistoryEntry["clientRequest"]
+  upstreamResponse?: NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]
+  durationMs?: number
+  state?: HistoryEntry["state"]
+}): HistoryEntry {
   const endpoint = overrides?.endpoint ?? "anthropic-messages"
+  const upstreamResponse = overrides?.upstreamResponse
   return {
     id: overrides?.id ?? generateId(),
     sessionId: overrides?.sessionId ?? getCurrentSession(endpoint, generateId()),
     startedAt: overrides?.startedAt ?? Date.now(),
     endpoint,
-    inboundRequest: overrides?.inboundRequest ?? {
+    state: overrides?.state ?? (upstreamResponse ? "completed" : undefined),
+    model: { requested: "claude-sonnet-4.6", ...(upstreamResponse?.model && { resolved: upstreamResponse.model }) },
+    clientRequest: overrides?.clientRequest ?? {
+      format: endpoint,
       model: "claude-sonnet-4.6",
       messages: [{ role: "user", content: "Hello history" }],
       stream: false,
     },
-    outboundResponse: overrides?.outboundResponse,
+    ...(upstreamResponse && {
+      attempts: [{ index: 0, durationMs: overrides?.durationMs ?? 0, upstreamResponse }],
+      _index: { derived: { responseSuccess: upstreamResponse.success, attemptCount: 1 } },
+    }),
     durationMs: overrides?.durationMs,
   }
 }
@@ -308,14 +324,14 @@ describe("management and history HTTP routes", () => {
   test("GET /history/api/stats returns history stats through the full app route", async () => {
     insertEntry(
       createHistoryEntry({
-        outboundResponse: {
+        upstreamResponse: {
           success: true,
           model: "claude-sonnet-4.6",
           usage: {
             input_tokens: 11,
             output_tokens: 7,
           },
-          content: { role: "assistant", content: "Hi" },
+          body: { role: "assistant", content: "Hi" },
         },
         durationMs: 25,
       }),
@@ -341,7 +357,7 @@ describe("management and history HTTP routes", () => {
     expect(res.status).toBe(200)
     expect(body.id).toBe(entry.id)
     expect(body.sessionId).toBe(entry.sessionId)
-    expect(body.inboundRequest.model).toBe("claude-sonnet-4.6")
+    expect(body.clientRequest?.model).toBe("claude-sonnet-4.6")
   })
 
   test("GET /api/stats returns a per-dimension breakdown for a registered dimension", async () => {

@@ -174,17 +174,19 @@
 
 ## P4 — 消费者迁移 + 删旧顶层（依赖 P2.6 + P3）
 
+> **实施状态（2026-07-07）**：P4a（后端读侧）/ P4b（前端）/ P4c-1（producer 补全）/ P4c-2（读时适配器）已落地（各阶段报告见 `/tmp/hdm-P4*`）。**P4c-3（删旧 leg 写路径 + Group-A 标量）已完成**——按 coordinator 决策 option 1（prepared-only）：删 legacy leg 字段 + `attemptCount`/`currentStrategy`/`failureReason`（Group-A，`_index.derived` 支撑），**保留** `requestBytes`/`responseBytes`/`multiplier`/`warningMessages`（Group-B，列支撑/扁平运营字段，`_index.aux`/`model.multiplier` 迁移入 backlog 独立跟进，见 `docs/todo/deferred-backlog.md`）。读适配器 `adaptLegacyLegsInPlace` 保留（改从 serialize 内部 `LegacyEntryView`/`LegacyAttemptView` scratch 读旧 stage）。golden `entryRowSnapshot`/`rewritesReqSnapshot` baked 值逐字节不变（证删旧无行为漂移），`assembledStructureSnapshot` 结构性更新。全绿：backend 3720 pass / typecheck（+:ui/:ui-v4）/ build:ui/:ui-v4 / grep 收敛。附带修复：单-blob usage-normalize backfill 净化 per-attempt `response.usage`（读适配器现经 `upstreamResponse.usage` 呈现）、Phase-5 in-flight header 镜像重指 client 腿、tombstone stage 过滤重指 `client_request`/`upstream_response`、barrel 导出新腿类型、clientResponse.headers 接线。
+
 **Files:** 见 Factory 表消费者段 + RFC §7.4 全 62 文件。**分组并行**：(a) 后端读侧（search-index / stats / queries / in-flight / telemetry），(b) 前端（ui-v4 segments / ui composables），(c) 删旧顶层字段 + 投影逻辑（最后）。
 
 **Interfaces:** Consumes 新结构全绿。Produces 零旧字段引用。
 
-- [ ] **Step 1（rewrites-req，golden 锁）**：`buildRewritesReq`（search-index-write.ts:139）改读 `attempts.at(-1)?.upstreamRequest?.messages`；`buildRewritesResp`（:174-181）改读 `attempts[final].upstreamResponse.sseEvents` / `clientResponse.sseEvents` / `attempts[final].upstreamResponse.body`。跑 P0 golden `rewritesReqSnapshot` 等价。
-- [ ] **Step 2**：迁 stats/queries/in-flight/telemetry（Factory 表锚点）→ `_index.derived` / `attempts.at(-1)` / `model.resolved`。各自单测绿。**+ 生产者侧变换（WARN-4，`toHistoryEntry` attempts 映射 :705-723 + sink）**：① `attempts[].startedAt?`/`waitMs?` 新捕获（`beginAttempt` 已存 `startTime`/`waitMs` :403-404，但当前不输出——补进 attempts 映射）；② `attempts[].{truncation,sanitization}`（:712-713）→ `effectiveSource.pipeline`；③ 顶层 `pipelineInfo.{truncation,messageMapping}`/`entry.truncation`（:673）去顶层化 → `attempts[final].effectiveSource.pipeline`，`preprocessing` → entry 级。
-- [ ] **Step 3**：迁前端（ui-v4 detail segments、ui composables）。`bun run build:ui`（`~backend/*` 纯度 + rollup 暴露真错，skill `debugging-frontend-tests`）。
-- [ ] **Step 4（删旧）**：`grep -rn "outboundRequest\|outboundResponse\|effectiveRequest\|inboundResponse\|inboundRequest\|wireRequest\|\.sseEvents" src ui ui-v4 --include=*.ts --include=*.tsx --include=*.vue | grep -v test` 应仅剩注释；**含 serialize.ts 内 `inboundRequest` 直读点重指（WARN-5）：`buildHeadRow` :223/:241、`extractStagePayloads` :489、`deserializeEntry` :296 → `clientRequest`/`model.requested`**；删 types 旧字段 + `toHistoryEntry`/sink 投影逻辑。typecheck 绿。
-- [ ] **Step 5**：全 `bun test` + golden + `build:ui` 绿；commit 分组（rewrites / backend-consumers / frontend / drop-legacy 各一）。
+- [x] **Step 1（rewrites-req，golden 锁）**：`buildRewritesReq`（search-index-write.ts:139）改读 `attempts.at(-1)?.upstreamRequest?.messages`；`buildRewritesResp`（:174-181）改读 `attempts[final].upstreamResponse.sseEvents` / `clientResponse.sseEvents` / `attempts[final].upstreamResponse.body`。跑 P0 golden `rewritesReqSnapshot` 等价。
+- [x] **Step 2**：迁 stats/queries/in-flight/telemetry（Factory 表锚点）→ `_index.derived` / `attempts.at(-1)` / `model.resolved`。各自单测绿。**+ 生产者侧变换（WARN-4，`toHistoryEntry` attempts 映射 :705-723 + sink）**：① `attempts[].startedAt?`/`waitMs?` 新捕获（`beginAttempt` 已存 `startTime`/`waitMs` :403-404，但当前不输出——补进 attempts 映射）；② `attempts[].{truncation,sanitization}`（:712-713）→ `effectiveSource.pipeline`；③ 顶层 `pipelineInfo.{truncation,messageMapping}`/`entry.truncation`（:673）去顶层化 → `attempts[final].effectiveSource.pipeline`，`preprocessing` → entry 级。
+- [x] **Step 3**：迁前端（ui-v4 detail segments、ui composables）。`bun run build:ui`（`~backend/*` 纯度 + rollup 暴露真错，skill `debugging-frontend-tests`）。
+- [x] **Step 4（删旧）**：grep 收敛——src 残留仅：live `RequestContext`/`Attempt` 字段（context/types，未删）+ live `_httpHeaders` 捕获袋映射进新腿 + 新腿（upstreamResponse/clientResponse）+ per-attempt `sseEvents`（保留）+ usage-normalize backfill 读 legacy 存储 blob（历史行）+ serialize 内部 `LegacyEntryView` 适配器 scratch；均合法。删 types 旧 leg 字段 + Group-A 标量 + `toHistoryEntry`/sink 投影逻辑。typecheck 绿。
+- [x] **Step 5**：全 `bun test`（3720 pass）+ golden + `build:ui`/`build:ui-v4` 绿。
 
-**Commit invariant:** ② golden 全绿；grep 旧字段零代码残留。
+**Commit invariant:** ② golden 全绿；grep 旧字段零代码残留（仅合法读适配器 scratch + live-context + 历史行 backfill）。
 
 ---
 

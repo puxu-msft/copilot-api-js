@@ -20,19 +20,25 @@ const withResponse = {
   startedAt: 0,
   endpoint: "anthropic-messages",
   state: "completed",
-  inboundRequest: { messages: [] },
-  outboundResponse: {
-    success: true,
-    model: "claude-opus-4.8",
-    status: 200,
-    content: { role: "assistant", content: "upstream answer" },
-  },
-  sseEvents: [
-    { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
-    { offsetMs: 12, type: "content_block_delta", raw: `{"type":"content_block_delta","text":"hi"}` },
+  clientRequest: { messages: [] },
+  attempts: [
+    {
+      index: 0,
+      durationMs: 0,
+      upstreamResponse: {
+        success: true,
+        model: "claude-opus-4.8",
+        status: 200,
+        body: { role: "assistant", content: "upstream answer" },
+        sseEvents: [
+          { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
+          { offsetMs: 12, type: "content_block_delta", raw: `{"type":"content_block_delta","text":"hi"}` },
+        ],
+      },
+    },
   ],
   // A proper forwarded Anthropic text stream → the Proxy→Client section renders the reconstructed content.
-  inboundResponse: {
+  clientResponse: {
     sseEvents: [
       { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
       { offsetMs: 2, type: "content_block_start", raw: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` },
@@ -51,19 +57,19 @@ const empty = {
   id: "r2",
   startedAt: 0,
   endpoint: "anthropic-messages",
-  inboundRequest: { messages: [] },
+  clientRequest: { messages: [] },
 } as unknown as HistoryEntry
 
-// NEW-LEG-ONLY entry (RFC 2026-07-07 data-model restructure): the response lives on the per-attempt
-// `upstreamResponse` (final attempt) + `clientResponse` legs, with NO legacy `outboundResponse` /
-// `inboundResponse` / top-level `sseEvents`. Proves ResponseSegment reads the new legs (a legacy-only
-// reader would fall through to 无响应数据). `body` (not `content`), `stopReason` (not `stop_reason`).
+// NEW-LEG entry (RFC 2026-07-07 data-model restructure): the response lives on the per-attempt
+// `upstreamResponse` (final attempt) + `clientResponse` legs (the legacy `outboundResponse` /
+// `inboundResponse` / top-level `sseEvents` legs were removed in P4c). `body` (not `content`),
+// `stopReason` (not `stop_reason`).
 const newLegOnly = {
   id: "r4",
   startedAt: 0,
   endpoint: "anthropic-messages",
   state: "completed",
-  inboundRequest: { messages: [] },
+  clientRequest: { messages: [] },
   model: { requested: "claude-req", resolved: "claude-opus-4.8" },
   attempts: [
     {
@@ -101,15 +107,21 @@ const streamingFailure = {
   startedAt: 0,
   endpoint: "anthropic-messages",
   state: "failed",
-  failureReason: "unrepairable malformed tool_use input (tool=AskUserQuestion)",
-  inboundRequest: { messages: [] },
-  outboundResponse: {
-    success: true,
-    model: "claude-opus-4.8",
-    content: { role: "assistant", content: "partial upstream answer" },
-  },
-  sseEvents: [{ offsetMs: 0, type: "message_stop", raw: `{"type":"message_stop"}` }],
-  inboundResponse: {
+  _index: { derived: { failureReason: "unrepairable malformed tool_use input (tool=AskUserQuestion)" } },
+  clientRequest: { messages: [] },
+  attempts: [
+    {
+      index: 0,
+      durationMs: 0,
+      upstreamResponse: {
+        success: true,
+        model: "claude-opus-4.8",
+        body: { role: "assistant", content: "partial upstream answer" },
+        sseEvents: [{ offsetMs: 0, type: "message_stop", raw: `{"type":"message_stop"}` }],
+      },
+    },
+  ],
+  clientResponse: {
     sseEvents: [
       {
         offsetMs: 2,
@@ -152,7 +164,7 @@ describe("ResponseSegment", () => {
     // Rendered mode: the JSON structure is not shown verbatim.
     expect(screen.queryByText(/"type": "text"/)).toBeNull()
     fireEvent.click(screen.getByText("Code"))
-    // Upstream leg → outboundResponse.content as JSON.
+    // Upstream leg → upstreamResponse.body as JSON.
     expect(screen.getByText(/"upstream answer"/)).toBeDefined()
     // Forwarded leg → the reconstructed client message object as JSON (role + text block).
     expect(screen.getAllByText(/"role": "assistant"/).length).toBeGreaterThan(0)

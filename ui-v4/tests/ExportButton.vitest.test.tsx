@@ -20,7 +20,7 @@ vi.mock("@/lib/export-entry", () => ({ downloadEntryAsZst: (entry: HistoryEntry)
 
 import { ExportButton } from "@/components/detail/ExportButton"
 
-const entry = { id: "req_1", startedAt: 0, endpoint: "anthropic-messages", inboundRequest: { model: "claude-opus-4.8" } } as HistoryEntry
+const entry = { id: "req_1", startedAt: 0, endpoint: "anthropic-messages", clientRequest: { model: "claude-opus-4.8" } } as HistoryEntry
 
 describe("ExportButton", () => {
   it("invokes the export and returns to idle on success", async () => {

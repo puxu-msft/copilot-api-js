@@ -47,10 +47,10 @@ export function SystemSegment({ entry }: { entry: HistoryEntry }) {
   const [systemMode, setSystemMode] = useState<ViewMode>("original")
   const { scrollTo, activeAnchor } = useAnchorScroll()
 
-  // Effective (post-rewrite) source: new final-attempt `effectiveSource` ?? legacy top-level `effectiveRequest`.
-  // Inbound (client) system has no structured new leg — `clientRequest.body` is the raw payload (P4c: parse it).
-  const effectiveSource = finalAttempt(entry)?.effectiveSource ?? entry.effectiveRequest
-  const inboundSystem = entry.inboundRequest.system
+  // Effective (post-rewrite) source: new final-attempt `effectiveSource` (legacy top-level `effectiveRequest` removed in P4c).
+  // Inbound (client) system comes from the `clientRequest` structured projection.
+  const effectiveSource = finalAttempt(entry)?.effectiveSource
+  const inboundSystem = entry.clientRequest?.system
   const effectiveSystem = effectiveSource?.system
   const hasEffective = effectiveSource !== undefined
   const originalPresent = inboundSystem !== undefined

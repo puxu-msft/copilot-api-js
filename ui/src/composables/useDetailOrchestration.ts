@@ -71,7 +71,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
     const resultMap: Record<string, ContentBlock> = {}
     const nameMap: Record<string, string> = {}
     if (!entry.value) return { resultMap, nameMap }
-    for (const msg of entry.value.inboundRequest.messages ?? []) {
+    for (const msg of entry.value.clientRequest?.messages ?? []) {
       // Anthropic format: content is ContentBlock[]
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
@@ -100,7 +100,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
   // Filter messages by role, with pre-computed original indices
   const filteredMessages = computed(() => {
     if (!entry.value) return []
-    const messages = entry.value.inboundRequest.messages ?? []
+    const messages = entry.value.clientRequest?.messages ?? []
     let indexed = messages.map((msg, i) => ({ msg, originalIndex: i }))
     if (detail.detailFilterRole) {
       indexed = indexed.filter(({ msg }) => msg.role === detail.detailFilterRole)
@@ -112,14 +112,14 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
   })
 
   const responseMessage = computed<MessageContent | null>(() => {
-    // New final-attempt `upstreamResponse.body` ?? legacy `outboundResponse.content` (P4c: drop legacy arm).
+    // New final-attempt `upstreamResponse.body` (legacy `outboundResponse.content` removed in P4c).
     const content = entry.value ? resolveUpstreamResponse(entry.value)?.content : null
     return content ?? null
   })
 
   const requestBadge = computed(() => {
     if (!entry.value) return ""
-    return `${(entry.value.inboundRequest.messages ?? []).length} messages`
+    return `${(entry.value.clientRequest?.messages ?? []).length} messages`
   })
 
   /** Rewritten request payload for the Raw modal */
@@ -130,7 +130,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
     const effSystem = resolveEffectiveSystem(e)
     if (!effMessages && effSystem === undefined) return undefined
     return {
-      ...e.inboundRequest,
+      ...e.clientRequest,
       ...(effMessages && { messages: effMessages }),
       ...(effSystem !== undefined && { system: effSystem }),
     }

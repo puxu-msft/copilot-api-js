@@ -1,27 +1,14 @@
 /**
  * Backend read-side projections over a `HistoryEntry` (RFC 2026-07-07
- * history-data-model-restructure, P4a consumer migration).
+ * history-data-model-restructure).
  *
- * The restructure moves the authoritative response/model signals OFF the
- * deprecated top-level legs (`outboundResponse` / `outboundRequest` /
- * `effectiveRequest` / `sseEvents`) ONTO the per-attempt `upstreamRequest` /
- * `upstreamResponse` legs and the `_index.derived` projection. During migration
- * BOTH coexist (the producer dual-writes), so every read here is
- * "new leg ?? legacy top-level" — the new leg wins for live entries (populated by
- * the P2.5/P2.6 producer alignment), and a legacy-only entry (e.g. the P0 golden
- * fixtures, or a pre-restructure persisted row) falls back byte-identically.
- *
- * Centralizing the fallback chains HERE (single shared primitive — the project's
- * "fix all comparison sites / abstract one primitive" discipline) means P4c's
- * legacy-leg removal is a ONE-FILE edit: drop the `?? entry.outboundResponse…`
- * (and legacy-top-level) arms below and every consumer is migrated at once.
- *
- * NOTE — sibling read-side consumers NOT covered here because they operate on the
- * `HistoryEntryData` (context/types) type world, not `HistoryEntry`:
- *   - `src/lib/observability/telemetry-dimensions.ts` (model dimension + content
- *     extractors)
- *   - `src/lib/observability/sinks/telemetry.ts` (settled success/usage)
- * Those inline the same "new ?? legacy" fallback with a `P4c` marker comment.
+ * The response/model signals live on the per-attempt `upstreamRequest` /
+ * `upstreamResponse` legs and the `_index.derived` projection. P4c-3 removed the
+ * legacy top-level legs (`outboundResponse` / `outboundRequest` / `effectiveRequest`
+ * / `sseEvents`) and the deprecated top-level scalars (`attemptCount` /
+ * `currentStrategy` / `failureReason`); a legacy DB row's OLD stages are mapped
+ * into these new legs at read time by the serialize.ts adapter, so every consumer
+ * reads the new legs uniformly (live rows and historical rows alike).
  */
 
 import type {
@@ -48,46 +35,45 @@ export function finalUpstreamResponse(entry: Pick<HistoryEntry, "attempts">): At
   return finalAttempt(entry)?.upstreamResponse
 }
 
-/** Resolved model name of the upstream response: new leg → legacy `outboundResponse.model`. */
-export function resolveResponseModel(entry: Pick<HistoryEntry, "attempts" | "outboundResponse">): string | undefined {
-  return finalUpstreamResponse(entry)?.model ?? entry.outboundResponse?.model
+/** Resolved model name of the upstream response (final attempt's `upstreamResponse.model`). */
+export function resolveResponseModel(entry: Pick<HistoryEntry, "attempts">): string | undefined {
+  return finalUpstreamResponse(entry)?.model
 }
 
 /**
  * Whether the upstream response succeeded: `_index.derived.responseSuccess`
- * (recompute-only projection) → final attempt's `upstreamResponse.success` →
- * legacy `outboundResponse.success`. `false` is preserved (nullish coalescing).
+ * (recompute-only projection) → final attempt's `upstreamResponse.success`.
+ * `false` is preserved (nullish coalescing).
  */
-export function resolveResponseSuccess(entry: Pick<HistoryEntry, "attempts" | "outboundResponse" | "_index">): boolean | undefined {
-  return entry._index?.derived?.responseSuccess ?? finalUpstreamResponse(entry)?.success ?? entry.outboundResponse?.success
+export function resolveResponseSuccess(entry: Pick<HistoryEntry, "attempts" | "_index">): boolean | undefined {
+  return entry._index?.derived?.responseSuccess ?? finalUpstreamResponse(entry)?.success
 }
 
-/** Upstream response usage: new leg → legacy `outboundResponse.usage`. */
-export function resolveResponseUsage(entry: Pick<HistoryEntry, "attempts" | "outboundResponse">): UsageData | undefined {
-  return finalUpstreamResponse(entry)?.usage ?? entry.outboundResponse?.usage
+/** Upstream response usage (final attempt's `upstreamResponse.usage`). */
+export function resolveResponseUsage(entry: Pick<HistoryEntry, "attempts">): UsageData | undefined {
+  return finalUpstreamResponse(entry)?.usage
 }
 
-/** Upstream response stop reason: new leg `stopReason` → legacy `outboundResponse.stop_reason`. */
-export function resolveStopReason(entry: Pick<HistoryEntry, "attempts" | "outboundResponse">): string | undefined {
-  return finalUpstreamResponse(entry)?.stopReason ?? entry.outboundResponse?.stop_reason
+/** Upstream response stop reason (final attempt's `upstreamResponse.stopReason`). */
+export function resolveStopReason(entry: Pick<HistoryEntry, "attempts">): string | undefined {
+  return finalUpstreamResponse(entry)?.stopReason
 }
 
 /**
- * Response-side error message: the final attempt's `error` (the new per-attempt
- * error home — `upstreamResponse` carries no error field) → legacy
- * `outboundResponse.error`. Callers that also want the entry-level verdict append
- * `?? entry.failureReason` at the call site (unchanged by P4c).
+ * Response-side error message: the final attempt's `error` (the per-attempt error
+ * home — `upstreamResponse` carries no error field). Callers that also want the
+ * entry-level verdict append `?? entry._index?.derived?.failureReason` at the call site.
  */
-export function resolveResponseError(entry: Pick<HistoryEntry, "attempts" | "outboundResponse">): string | undefined {
-  return finalAttempt(entry)?.error ?? entry.outboundResponse?.error
+export function resolveResponseError(entry: Pick<HistoryEntry, "attempts">): string | undefined {
+  return finalAttempt(entry)?.error
 }
 
-/** Attempt count: `_index.derived.attemptCount` → legacy top-level `attemptCount`. */
-export function resolveAttemptCount(entry: Pick<HistoryEntry, "attempts" | "_index" | "attemptCount">): number | undefined {
-  return entry._index?.derived?.attemptCount ?? entry.attemptCount
+/** Attempt count: `_index.derived.attemptCount` → live `attempts.length`. */
+export function resolveAttemptCount(entry: Pick<HistoryEntry, "attempts" | "_index">): number | undefined {
+  return entry._index?.derived?.attemptCount ?? entry.attempts?.length
 }
 
-/** Current strategy: `_index.derived.currentStrategy` → legacy top-level `currentStrategy`. */
-export function resolveCurrentStrategy(entry: Pick<HistoryEntry, "_index" | "currentStrategy">): string | undefined {
-  return entry._index?.derived?.currentStrategy ?? entry.currentStrategy
+/** Current strategy: `_index.derived.currentStrategy` → live final attempt's `strategy`. */
+export function resolveCurrentStrategy(entry: Pick<HistoryEntry, "attempts" | "_index">): string | undefined {
+  return entry._index?.derived?.currentStrategy ?? finalAttempt(entry)?.strategy
 }

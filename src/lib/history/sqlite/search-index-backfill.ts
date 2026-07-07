@@ -191,7 +191,7 @@ function processBatch(db: Database, scanRows: Array<ScanRow>, counts: BackfillCo
         continue
       }
       const entry = assembleFullEntry(head, stages.get(scan.id) ?? [])
-      const preview = extractPreviewText({ inboundRequest: entry.inboundRequest })
+      const preview = extractPreviewText(entry)
       const built = buildSearchIndexForEntry(entry)
       const tx = db.transaction(() => {
         if (preview !== (scan.preview_text ?? "")) updatePreview.run(preview, scan.id)

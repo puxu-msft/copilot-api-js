@@ -331,17 +331,17 @@ describe("Anthropic v4 driver path", () => {
     const v4 = getHistory({ endpoint: "anthropic-messages" }).entries[0]
 
     // Both tracks tagged anthropic-messages (bypass-direct = no format change).
-    expect(v4?.effectiveRequest?.format).toBe("anthropic-messages")
-    expect(v4?.effectiveRequest?.model).toBe("claude-sonnet-4.6")
-    expect(v4?.outboundRequest?.format).toBe("anthropic-messages")
-    expect(v4?.outboundRequest?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("anthropic-messages")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.model).toBe("claude-sonnet-4.6")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("anthropic-messages")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number")
     // Byte-fidelity of the effective/outbound bodies (richest-data-flow). Golden = the
     // request body verbatim: passthrough (default) forwards client cache_control as-is, and
     // this request carries none, so prepare leaves the payload shape untouched.
     const goldenBody = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
-    expect(v4?.effectiveRequest?.payload).toEqual(goldenBody)
-    expect(v4?.outboundRequest?.payload).toEqual(goldenBody)
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.body).toEqual(goldenBody)
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.body).toEqual(goldenBody)
   })
 
   test("history records raw sseEvents (upstream) + forwarded sseEvents (inboundResponse) on the v4 streaming path", async () => {
@@ -355,10 +355,10 @@ describe("Anthropic v4 driver path", () => {
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
 
     expect(entry?.state).toBe("completed")
-    expect(Array.isArray(entry?.sseEvents)).toBe(true)
-    expect(entry?.sseEvents?.length ?? 0).toBeGreaterThan(0)
-    expect(Array.isArray(entry?.inboundResponse?.sseEvents)).toBe(true)
-    expect(entry?.inboundResponse?.sseEvents?.length ?? 0).toBeGreaterThan(0)
+    expect(Array.isArray(entry?.attempts?.at(-1)?.upstreamResponse?.sseEvents)).toBe(true)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.sseEvents?.length ?? 0).toBeGreaterThan(0)
+    expect(Array.isArray(entry?.clientResponse?.sseEvents)).toBe(true)
+    expect(entry?.clientResponse?.sseEvents?.length ?? 0).toBeGreaterThan(0)
   })
 
   test("reject (non-Anthropic vendor) → 400, no upstream hit", async () => {
@@ -455,14 +455,14 @@ describe("Anthropic v4 driver path", () => {
     scenario = "errorFrame"
     clearHistory()
     await (await post(body, observableApp)).text()
-    const h2Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.inboundResponse?.sseEvents ?? []
+    const h2Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.clientResponse?.sseEvents ?? []
     // H2: the upstream error frame IS in the forwarded (client-actual) track.
     expect(h2Forwarded.some((e) => e.raw.includes("overloaded_error"))).toBe(true)
 
     scenario = "midStreamThrow"
     clearHistory()
     const h3Text = await (await post(body, observableApp)).text()
-    const h3Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.inboundResponse?.sseEvents ?? []
+    const h3Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.clientResponse?.sseEvents ?? []
     // H3: the synthesized error reaches the WIRE and is ALSO recorded in the forwarded track — the
     // client receives it, so `inboundResponse.sseEvents` must include it (richest-data-flow). Asserted
     // against the PERSISTED history entry, the oracle that exposes the writeSynthetic→recordForwarded→
@@ -482,7 +482,7 @@ describe("Anthropic v4 driver path", () => {
     await (await post(body, observableApp)).text()
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry?.state).toBe("failed")
-    const content = entry?.outboundResponse?.content as { content?: Array<Record<string, unknown>> } | null
+    const content = entry?.attempts?.at(-1)?.upstreamResponse?.body as { content?: Array<Record<string, unknown>> } | null
     // The double-empty thinking block (thinking:"" + no signature) survives into the recorded
     // upstream leg (not null) — the exact sample the metrics counts as emptyUnsigned.
     expect(content?.content?.[0]).toEqual({ type: "thinking", thinking: "" })
@@ -495,7 +495,7 @@ describe("Anthropic v4 driver path", () => {
     await (await post(body, observableApp)).text()
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry?.state).toBe("failed")
-    const content = entry?.outboundResponse?.content as { content?: Array<Record<string, unknown>> } | null
+    const content = entry?.attempts?.at(-1)?.upstreamResponse?.body as { content?: Array<Record<string, unknown>> } | null
     // The partial text forwarded before the throw is preserved (not null).
     expect(content?.content?.[0]).toEqual({ type: "text", text: "Hello from mocked stream" })
   })

@@ -57,12 +57,20 @@ import { autoRestoreState } from "../helpers/state-fixture"
 async function completeEntry(entryId: string, overrides: Partial<Parameters<typeof updateEntry>[1]> = {}): Promise<void> {
   updateEntry(entryId, {
     state: "completed",
-    outboundResponse: {
-      success: true,
-      model: "test-model",
-      usage: { input_tokens: 0, output_tokens: 0 },
-      content: null,
-    },
+    attempts: [
+      {
+        index: 0,
+        strategy: "primary",
+        durationMs: 0,
+        upstreamResponse: {
+          success: true,
+          model: "test-model",
+          usage: { input_tokens: 0, output_tokens: 0 },
+          body: null,
+        },
+      },
+    ],
+    _index: { derived: { responseSuccess: true, attemptCount: 1, currentStrategy: "primary" } },
     ...overrides,
   })
   // updateEntry no longer auto-persists on terminal state — the explicit
@@ -150,7 +158,9 @@ describe("insertEntry", () => {
       sessionId,
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "hello" }],
         stream: true,
@@ -174,14 +184,14 @@ describe("insertEntry", () => {
     const stored = getEntry(entry.id)
     expect(stored).toBeDefined()
     expect(stored!.endpoint).toBe("anthropic-messages")
-    expect(stored!.inboundRequest.model).toBe("claude-sonnet-4-20250514")
-    expect(stored!.inboundRequest.messages).toHaveLength(1)
-    expect(stored!.inboundRequest.stream).toBe(true)
-    expect(stored!.inboundRequest.system).toBe("You are helpful")
-    expect(stored!.inboundRequest.max_tokens).toBe(1024)
-    expect(stored!.inboundRequest.temperature).toBe(0.5)
-    expect(stored!.inboundRequest.tools).toHaveLength(1)
-    expect(stored!.outboundResponse).toBeUndefined()
+    expect(stored!.clientRequest?.model).toBe("claude-sonnet-4-20250514")
+    expect(stored!.clientRequest?.messages).toHaveLength(1)
+    expect(stored!.clientRequest?.stream).toBe(true)
+    expect(stored!.clientRequest?.system).toBe("You are helpful")
+    expect(stored!.clientRequest?.max_tokens).toBe(1024)
+    expect(stored!.clientRequest?.temperature).toBe(0.5)
+    expect(stored!.clientRequest?.tools).toHaveLength(1)
+    expect(stored!.attempts).toBeUndefined()
   })
 
   test("keeps an explicit sessionId on the entry", async () => {
@@ -198,7 +208,9 @@ describe("insertEntry", () => {
       id: generateId(),
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "no session" }],
         stream: true,
@@ -222,23 +234,30 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 100, output_tokens: 50 },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "Hi there" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 100, output_tokens: 50 },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "Hi there" },
+          },
+        },
+      ],
       durationMs: 500,
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.outboundResponse).toBeDefined()
-    expect(stored!.outboundResponse!.success).toBe(true)
-    expect(stored!.outboundResponse!.model).toBe("claude-sonnet-4-20250514")
-    expect(stored!.outboundResponse!.usage.input_tokens).toBe(100)
-    expect(stored!.outboundResponse!.usage.output_tokens).toBe(50)
-    expect(stored!.outboundResponse!.stop_reason).toBe("end_turn")
+    const resp = stored!.attempts?.at(-1)?.upstreamResponse
+    expect(resp).toBeDefined()
+    expect(resp!.success).toBe(true)
+    expect(resp!.model).toBe("claude-sonnet-4-20250514")
+    expect(resp!.usage!.input_tokens).toBe(100)
+    expect(resp!.usage!.output_tokens).toBe(50)
+    expect(resp!.stopReason).toBe("end_turn")
     expect(stored!.durationMs).toBe(500)
   })
 
@@ -249,23 +268,30 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: {
-          input_tokens: 100,
-          output_tokens: 50,
-          cache_read_input_tokens: 80,
-          cache_creation_input_tokens: 20,
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
+              cache_read_input_tokens: 80,
+              cache_creation_input_tokens: 20,
+            },
+            stopReason: "end_turn",
+            body: null,
+          },
         },
-        stop_reason: "end_turn",
-        content: null,
-      },
+      ],
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.outboundResponse!.usage.cache_read_input_tokens).toBe(80)
-    expect(stored!.outboundResponse!.usage.cache_creation_input_tokens).toBe(20)
+    const usage = stored!.attempts?.at(-1)?.upstreamResponse?.usage
+    expect(usage!.cache_read_input_tokens).toBe(80)
+    expect(usage!.cache_creation_input_tokens).toBe(20)
   })
 
   test("records error response", async () => {
@@ -275,30 +301,43 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: false,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        error: "Rate limited",
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "Rate limited",
+          upstreamResponse: {
+            success: false,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "Rate limited", attemptCount: 1 } },
       durationMs: 100,
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.outboundResponse!.success).toBe(false)
-    expect(stored!.outboundResponse!.error).toBe("Rate limited")
+    expect(stored!.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(stored!.attempts?.at(-1)?.error).toBe("Rate limited")
   })
 
   test("does nothing when disabled", async () => {
     initHistory(false, 100)
     updateEntry("nonexistent", {
-      outboundResponse: {
-        success: true,
-        model: "test",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "test",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
     })
     // Should not throw
   })
@@ -359,65 +398,67 @@ describe("updateEntry (rewrites)", () => {
     expect(stored!.pipelineInfo!.truncation!.removedMessageCount).toBe(3)
   })
 
-  test("stores effectiveRequest via updateEntry", async () => {
+  test("stores effectiveSource + upstreamRequest via updateEntry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
     })
 
     updateEntry(entry.id, {
-      effectiveRequest: {
-        model: "claude-sonnet-4-20250514",
-        format: "anthropic-messages",
-        messageCount: 1,
-        messages: [{ role: "user", content: "truncated" }],
-        payload: {
-          model: "claude-sonnet-4-20250514",
-          messages: [{ role: "user", content: "truncated" }],
-          max_tokens: 4096,
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          effectiveSource: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messageCount: 1,
+            messages: [{ role: "user", content: "truncated" }],
+            body: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "truncated" }],
+              max_tokens: 4096,
+            },
+          },
+          upstreamRequest: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messages: [{ role: "user", content: "truncated" }],
+            headers: { "x-request-id": "abc" },
+            body: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "truncated" }],
+              max_tokens: 4096,
+              stream: true,
+            },
+          },
         },
-      },
-      outboundRequest: {
-        model: "claude-sonnet-4-20250514",
-        format: "anthropic-messages",
-        messageCount: 1,
-        messages: [{ role: "user", content: "truncated" }],
-        payload: {
-          model: "claude-sonnet-4-20250514",
-          messages: [{ role: "user", content: "truncated" }],
-          max_tokens: 4096,
-          stream: true,
-        },
-      },
-      httpHeaders: {
-        outboundRequest: { "x-request-id": "abc" },
-      },
+      ],
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.effectiveRequest).toBeDefined()
-    expect(stored!.effectiveRequest!.model).toBe("claude-sonnet-4-20250514")
-    expect(stored!.effectiveRequest!.messageCount).toBe(1)
-    expect(stored!.effectiveRequest!.payload).toEqual({
+    const attempt = stored!.attempts?.at(-1)
+    expect(attempt?.effectiveSource).toBeDefined()
+    expect(attempt!.effectiveSource!.model).toBe("claude-sonnet-4-20250514")
+    expect(attempt!.effectiveSource!.messageCount).toBe(1)
+    expect(attempt!.effectiveSource!.body).toEqual({
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "truncated" }],
       max_tokens: 4096,
     })
-    expect(stored!.outboundRequest).toEqual({
+    expect(attempt!.upstreamRequest).toEqual({
       model: "claude-sonnet-4-20250514",
       format: "anthropic-messages",
-      messageCount: 1,
       messages: [{ role: "user", content: "truncated" }],
-      payload: {
+      headers: { "x-request-id": "abc" },
+      body: {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "truncated" }],
         max_tokens: 4096,
         stream: true,
       },
     })
-    expect(stored!.httpHeaders).toEqual({
-      outboundRequest: { "x-request-id": "abc" },
-    })
+    expect(attempt!.upstreamRequest!.headers).toEqual({ "x-request-id": "abc" })
   })
 
   test("stores attempts via updateEntry", async () => {
@@ -425,15 +466,15 @@ describe("updateEntry (rewrites)", () => {
 
     updateEntry(entry.id, {
       attempts: [
-        { index: 0, durationMs: 100, effectiveMessageCount: 10 },
-        { index: 1, strategy: "auto-truncate", durationMs: 200, effectiveMessageCount: 5 },
+        { index: 0, durationMs: 100, effectiveSource: { messageCount: 10 } },
+        { index: 1, strategy: "auto-truncate", durationMs: 200, effectiveSource: { messageCount: 5 } },
       ],
     })
 
     const stored = getEntry(entry.id)
     expect(stored!.attempts).toHaveLength(2)
     expect(stored!.attempts![1].strategy).toBe("auto-truncate")
-    expect(stored!.attempts![1].effectiveMessageCount).toBe(5)
+    expect(stored!.attempts![1].effectiveSource!.messageCount).toBe(5)
   })
 
   test("stores transport via updateEntry", async () => {
@@ -478,24 +519,30 @@ describe("updateEntry (rewrites)", () => {
     const entry = insertHistoryEntry("anthropic-messages", { model: "m", messages: undefined })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: false,
-        model: "claude-sonnet-4",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        error: "Bad request",
-        status: 400,
-        content: null,
-        rawBody: '{"error":"thinking blocks cannot be modified"}',
-      },
-      httpHeaders: {
-        outboundResponse: { "x-request-id": "xyz" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "Bad request",
+          upstreamResponse: {
+            success: false,
+            model: "claude-sonnet-4",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            status: 400,
+            body: null,
+            rawBody: '{"error":"thinking blocks cannot be modified"}',
+            headers: { "x-request-id": "xyz" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "Bad request", attemptCount: 1 } },
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.outboundResponse!.status).toBe(400)
-    expect(stored!.outboundResponse!.rawBody).toBe('{"error":"thinking blocks cannot be modified"}')
-    expect(stored!.httpHeaders!.outboundResponse).toEqual({ "x-request-id": "xyz" })
+    const resp = stored!.attempts?.at(-1)?.upstreamResponse
+    expect(resp!.status).toBe(400)
+    expect(resp!.rawBody).toBe('{"error":"thinking blocks cannot be modified"}')
+    expect(resp!.headers).toEqual({ "x-request-id": "xyz" })
   })
 })
 
@@ -547,7 +594,7 @@ describe("getHistory", () => {
 
     const result = getHistory({ model: "claude" })
     expect(result.total).toBe(1)
-    expect(result.entries[0].inboundRequest.model).toContain("claude")
+    expect(result.entries[0].clientRequest?.model).toContain("claude")
   })
 
   test("filters by endpoint", async () => {
@@ -574,7 +621,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "old" }], stream: true },
     }
     insertEntry(old)
 
@@ -583,7 +631,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "new" }], stream: true },
     }
     insertEntry(recent)
 
@@ -601,7 +650,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 20000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "old" }], stream: true },
     }
     insertEntry(old)
 
@@ -610,7 +660,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "mid" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "mid" }], stream: true },
     }
     insertEntry(mid)
 
@@ -619,7 +670,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "new" }], stream: true },
     }
     insertEntry(recent)
 
@@ -644,11 +696,20 @@ describe("updateEntry stores sseEvents", () => {
       { offsetMs: 100, type: "message_stop", raw: JSON.stringify({ type: "message_stop" }) },
     ]
 
-    updateEntry(entry.id, { sseEvents })
+    updateEntry(entry.id, {
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: { success: true, model: "test", usage: { input_tokens: 0, output_tokens: 0 }, body: null, sseEvents },
+        },
+      ],
+    })
 
     const updated = getEntry(entry.id)
-    expect(updated?.sseEvents).toEqual(sseEvents)
-    expect(updated?.sseEvents).toHaveLength(3)
+    const stored = updated?.attempts?.at(-1)?.upstreamResponse?.sseEvents
+    expect(stored).toEqual(sseEvents)
+    expect(stored).toHaveLength(3)
   })
 
   test("sseEvents can be set alongside response", async () => {
@@ -658,19 +719,25 @@ describe("updateEntry stores sseEvents", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "test",
-        usage: { input_tokens: 10, output_tokens: 5 },
-        content: null,
-      },
-      sseEvents: [{ offsetMs: 0, type: "message_start", raw: "{}" }],
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "test",
+            usage: { input_tokens: 10, output_tokens: 5 },
+            body: null,
+            sseEvents: [{ offsetMs: 0, type: "message_start", raw: "{}" }],
+          },
+        },
+      ],
       durationMs: 100,
     })
 
     const updated = getEntry(entry.id)
-    expect(updated?.outboundResponse?.success).toBe(true)
-    expect(updated?.sseEvents).toHaveLength(1)
+    expect(updated?.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(updated?.attempts?.at(-1)?.upstreamResponse?.sseEvents).toHaveLength(1)
     expect(updated?.durationMs).toBe(100)
   })
 })
@@ -687,7 +754,8 @@ describe("getSessionEntries pagination", () => {
         sessionId,
         startedAt: Date.now() + i,
         endpoint: "anthropic-messages",
-        inboundRequest: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
+        model: { requested: "test" },
+        clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
       }
       insertEntry(entry)
       await completeEntry(entry.id)
@@ -708,7 +776,8 @@ describe("getSessionEntries pagination", () => {
         sessionId,
         startedAt: Date.now() + i,
         endpoint: "anthropic-messages",
-        inboundRequest: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
+        model: { requested: "test" },
+        clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
       }
       insertEntry(entry)
       await completeEntry(entry.id)
@@ -776,12 +845,20 @@ describe("getStats", () => {
 
     updateEntry(entry.id, {
       state: "completed",
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 100, output_tokens: 50 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          strategy: "primary",
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 100, output_tokens: 50 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1, currentStrategy: "primary" } },
       durationMs: 500,
     })
     await finalizeEntry(entry.id)
@@ -810,7 +887,9 @@ describe("Max entries enforcement", () => {
         sessionId: `session-${i}`,
         startedAt: baseTime + i,
         endpoint: "anthropic-messages",
-        inboundRequest: {
+        model: { requested: "test" },
+        clientRequest: {
+          format: "anthropic-messages",
           model: "test",
           messages: [{ role: "user", content: `msg-${i}` }],
           stream: true,

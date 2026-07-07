@@ -84,11 +84,14 @@ function resolveInput(body: z.infer<typeof DryRunSchema>): DryRunResolved | { er
   if (body.entryId !== undefined) {
     const entry = getEntry(body.entryId)
     if (!entry) return { error: `History entry not found: ${body.entryId}`, status: 404 }
-    const ir = entry.inboundRequest
-    payload = { ...ir } as Record<string, unknown>
+    const cr = entry.clientRequest
+    // Prefer the raw inbound payload (new rows); legacy rows expose only the
+    // structured client-request projection (body absent → adapter-filled fields).
+    payload = (cr?.body as Record<string, unknown> | undefined) ?? ({ ...cr } as Record<string, unknown>)
     format = entry.endpoint === "anthropic-messages" ? "anthropic" : "openai"
     // The real token counts are only in the upstream error text — input_tokens is 0 for failures.
-    reported = entry.outboundResponse?.error ? parseTokenLimitError(entry.outboundResponse.error) : null
+    const upstreamError = entry.attempts?.at(-1)?.error ?? entry._index?.derived?.failureReason
+    reported = upstreamError ? parseTokenLimitError(upstreamError) : null
   } else if (body.payload !== undefined) {
     payload = body.payload
     format = body.format ?? "anthropic"

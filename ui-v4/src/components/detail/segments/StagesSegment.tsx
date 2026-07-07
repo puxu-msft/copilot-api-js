@@ -50,16 +50,15 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
   const [showDiff, setShowDiff] = useState(false)
   const [rawMode, setRawMode] = useState(false)
 
-  // Effective (post-rewrite) source + upstream wire request: new per-attempt legs (final attempt)
-  // ?? legacy top-level projections (P4c: drop the legacy arms). Inbound (client) messages have no
-  // structured new leg — `clientRequest.body` is the raw payload (P4c: parse it).
+  // Effective (post-rewrite) source + upstream wire request: new per-attempt legs (final attempt).
+  // Inbound (client) messages come from the `clientRequest` structured projection.
   const newEff = finalAttempt(entry)?.effectiveSource
   const newWire = finalUpstreamRequest(entry)
-  const effectiveLeg = newEff ?? entry.effectiveRequest
-  const wireLeg = newWire ?? entry.outboundRequest
+  const effectiveLeg = newEff
+  const wireLeg = newWire
 
-  const inboundMessages = entry.inboundRequest.messages
-  const effectiveMessages = newEff?.messages ?? entry.effectiveRequest?.messages
+  const inboundMessages = entry.clientRequest?.messages
+  const effectiveMessages = newEff?.messages
   const canDiff = inboundMessages !== undefined && effectiveMessages !== undefined
 
   const { inboundMarks, effectiveMarks } = useMemo(() => deriveRewriteMarks(inboundMessages, effectiveMessages), [inboundMessages, effectiveMessages])
@@ -70,8 +69,8 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
         key: "inbound",
         label: "Inbound (client → proxy)",
         shortLabel: "Inbound",
-        messages: entry.inboundRequest.messages ?? [],
-        rawPayload: entry.inboundRequest,
+        messages: entry.clientRequest?.messages ?? [],
+        rawPayload: entry.clientRequest,
         marks: inboundMarks,
       },
       effectiveLeg ?
@@ -80,7 +79,7 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
           label: "Effective (after rewrites)",
           shortLabel: "Effective",
           messages: effectiveMessages ?? [],
-          rawPayload: newEff?.body ?? entry.effectiveRequest?.payload ?? effectiveLeg,
+          rawPayload: newEff?.body ?? effectiveLeg,
           marks: effectiveMarks,
         }
       : null,
@@ -89,8 +88,8 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
           key: "wire",
           label: "Wire (proxy → upstream)",
           shortLabel: "Wire",
-          messages: newWire?.messages ?? entry.outboundRequest?.messages ?? [],
-          rawPayload: newWire?.body ?? entry.outboundRequest?.payload ?? wireLeg,
+          messages: newWire?.messages ?? [],
+          rawPayload: newWire?.body ?? wireLeg,
         }
       : null,
     ]

@@ -29,11 +29,17 @@ import {
 
 import type {
   //
+  EndpointType,
+  ForwardedResponse,
   HistoryEntry,
   MessageContent,
   OutboundResponseData,
   RequestLegData,
+  RequestLifecycleState,
+  RequestTransport,
+  SanitizationInfo,
   SseEventRecord,
+  TruncationInfo,
 } from "~/lib/history/types"
 
 import {
@@ -47,16 +53,121 @@ import {
   assembleFullEntry,
   type EntryRow,
   extractStagePayloads,
+  LEG_ATTEMPT_INDEX,
   partitionStagesForWrite,
   serializeHeadEntry,
   STAGE,
+  type StagePayload,
   type StageRow,
 } from "~/lib/history/sqlite/serialize"
 
-// ── Reproduce the production finalize stage-row layout (matches P0 golden helper) ──
-function serializeToRawRows(entry: HistoryEntry): { row: EntryRow; stageRows: Array<StageRow> } {
-  const { row } = serializeHeadEntry(entry)
-  const { groupRow, rest } = partitionStagesForWrite(extractStagePayloads(entry))
+/** View an assembled entry's runtime legacy leg data (read from the old stages). */
+function legacyView(entry: HistoryEntry): LegacyEntry {
+  return entry as unknown as LegacyEntry
+}
+
+// ============================================================================
+// Legacy row shape (P4c-3 removed these fields from the public HistoryEntry).
+// These fixtures build a LEGACY-shaped entry; `emitLegacyStagePayloads` writes
+// its OLD stages by hand (mirroring the pre-P4c-3 `extractStagePayloads`), so
+// `assembleFullEntry` receives exactly what a historical DB row carries.
+// ============================================================================
+
+interface LegacyAttempt {
+  index: number
+  strategy?: string
+  durationMs: number
+  transport?: RequestTransport
+  error?: string
+  effectiveRequest?: RequestLegData
+  wireRequest?: RequestLegData
+  response?: OutboundResponseData
+  sseEvents?: Array<SseEventRecord>
+  responseHeaders?: Record<string, string>
+  truncation?: TruncationInfo
+  sanitization?: SanitizationInfo
+  effectiveMessageCount?: number
+}
+
+interface LegacyInbound {
+  model?: string
+  messages?: Array<MessageContent>
+  stream?: boolean
+  tools?: Array<unknown>
+  system?: unknown
+  max_tokens?: number
+  temperature?: number
+  thinking?: unknown
+}
+
+interface LegacyEntry {
+  id: string
+  endpoint: EndpointType
+  startedAt: number
+  endedAt?: number
+  durationMs?: number
+  transport?: RequestTransport
+  state?: RequestLifecycleState
+  active?: boolean
+  lastUpdatedAt?: number
+  multiplier?: number
+  attemptCount?: number
+  currentStrategy?: string
+  failureReason?: string
+  inboundRequest: LegacyInbound
+  effectiveRequest?: RequestLegData
+  outboundRequest?: RequestLegData
+  outboundResponse?: OutboundResponseData
+  inboundResponse?: ForwardedResponse
+  sseEvents?: Array<SseEventRecord>
+  httpHeaders?: {
+    inboundRequest?: Record<string, string>
+    outboundRequest?: Record<string, string>
+    outboundResponse?: Record<string, string>
+    inboundResponse?: Record<string, string>
+    outboundResponseTrailers?: Record<string, string>
+  }
+  attempts?: Array<LegacyAttempt>
+}
+
+/**
+ * Emit the OLD stage payloads for a legacy entry — a faithful copy of the
+ * pre-P4c-3 `extractStagePayloads` (which no longer emits legacy stages). This is
+ * how a historical DB row was written, so feeding these into `assembleFullEntry`
+ * exercises the read-time adapter on genuine legacy data.
+ */
+function emitLegacyStagePayloads(entry: LegacyEntry): Array<StagePayload> {
+  const stages: Array<StagePayload> = []
+  stages.push({ stage: STAGE.inboundRequest, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.inboundRequest })
+  if (entry.inboundResponse) stages.push({ stage: STAGE.inboundResponse, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.inboundResponse })
+  if (entry.sseEvents) stages.push({ stage: STAGE.sseEvents, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.sseEvents })
+
+  const attempts = entry.attempts ?? []
+  const finalIdx = attempts.at(-1)?.index ?? 0
+  for (const a of attempts) {
+    if (a.index === finalIdx) continue
+    if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: a.index, payload: a.effectiveRequest })
+    if (a.wireRequest) stages.push({ stage: STAGE.outboundRequest, attemptIndex: a.index, payload: a.wireRequest })
+    if (a.response) stages.push({ stage: STAGE.outboundResponse, attemptIndex: a.index, payload: a.response })
+    if (a.sseEvents) stages.push({ stage: STAGE.sseEvents, attemptIndex: a.index, payload: a.sseEvents })
+  }
+  const finalAttempt = attempts.find((a) => a.index === finalIdx)
+  const finalEffective = entry.effectiveRequest ?? finalAttempt?.effectiveRequest
+  const finalWire = entry.outboundRequest ?? finalAttempt?.wireRequest
+  const finalResponse = entry.outboundResponse ?? finalAttempt?.response
+  if (finalEffective) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: finalIdx, payload: finalEffective })
+  if (finalWire) stages.push({ stage: STAGE.outboundRequest, attemptIndex: finalIdx, payload: finalWire })
+  if (finalResponse) stages.push({ stage: STAGE.outboundResponse, attemptIndex: finalIdx, payload: finalResponse })
+  return stages
+}
+
+// ── Reproduce the production finalize stage-row layout for a LEGACY row ──
+function serializeToRawRows(entry: LegacyEntry): { row: EntryRow; stageRows: Array<StageRow> } {
+  // The head row's blob carries the entry meta + attempt summary (legacy legs are
+  // stripped into stages). serializeHeadEntry reads the entry as a HistoryEntry;
+  // the legacy fields ride the blob at runtime and are restored on deserialize.
+  const { row } = serializeHeadEntry(entry as unknown as HistoryEntry)
+  const { groupRow, rest } = partitionStagesForWrite(emitLegacyStagePayloads(entry))
   const ordered = groupRow ? [groupRow, ...rest] : rest
   const stageRows: Array<StageRow> = ordered.map((sp) => ({
     entry_id: row.id,
@@ -111,7 +222,7 @@ function okResponse(): OutboundResponseData {
   }
 }
 
-function legacyBase(id: string, over: Partial<HistoryEntry>): HistoryEntry {
+function legacyBase(id: string, over: Partial<LegacyEntry>): LegacyEntry {
   return {
     id,
     endpoint: "anthropic-messages",
@@ -127,11 +238,11 @@ function legacyBase(id: string, over: Partial<HistoryEntry>): HistoryEntry {
     currentStrategy: "primary",
     inboundRequest: { model: "claude-opus-4-7", messages: [msg("user", "hello world")], stream: true, max_tokens: 1024, temperature: 0.7 },
     ...over,
-  } as HistoryEntry
+  } as LegacyEntry
 }
 
 /** Fixture 1: successful streaming — legacy shape. */
-function legacySuccessStream(): HistoryEntry {
+function legacySuccessStream(): LegacyEntry {
   const inbound = [msg("user", "hello world")]
   return legacyBase("l1-success", {
     effectiveRequest: leg(inbound),
@@ -156,7 +267,7 @@ function legacySuccessStream(): HistoryEntry {
 }
 
 /** Fixture 2: failed HTTP 400 — legacy shape. */
-function legacyFailedHttp(): HistoryEntry {
+function legacyFailedHttp(): LegacyEntry {
   const inbound = [msg("user", "trigger a 400")]
   const failResp: OutboundResponseData = {
     success: false,
@@ -189,7 +300,7 @@ function legacyFailedHttp(): HistoryEntry {
 }
 
 /** Fixture 3: multi-attempt retry success — legacy shape (attempt 0 failed w/ own frames). */
-function legacyRetrySuccess(): HistoryEntry {
+function legacyRetrySuccess(): LegacyEntry {
   const inbound = [msg("user", "retry me")]
   const attempt0Resp: OutboundResponseData = {
     success: false,
@@ -231,7 +342,7 @@ function legacyRetrySuccess(): HistoryEntry {
 }
 
 /** Fixture 4: proxy rewrote messages (inbound ≠ outbound) — legacy shape. */
-function legacyInboundNeqOutbound(): HistoryEntry {
+function legacyInboundNeqOutbound(): LegacyEntry {
   const inbound = [msg("system", "You are a helpful assistant."), msg("user", "hello world")]
   const outbound = [
     msg("system", "You are a helpful assistant.\n[proxy: cache_control injected]"),
@@ -262,7 +373,7 @@ describe("P4c-2 read adapter — legacy stages map into new legs", () => {
     const back = assembleFullEntry(row, stageRows)
     const a0 = back.attempts?.[0]
     // Independent oracle: the ASSEMBLED old leg (the exact value the adapter read).
-    const oldEff = a0?.effectiveRequest
+    const oldEff = legacyView(back).attempts?.[0]?.effectiveRequest
     expect(a0?.effectiveSource).toBeDefined()
     expect(a0?.effectiveSource?.body).toEqual(oldEff?.payload)
     expect(a0?.effectiveSource?.messages).toEqual(oldEff?.messages)
@@ -281,7 +392,7 @@ describe("P4c-2 read adapter — legacy stages map into new legs", () => {
     const back = assembleFullEntry(row, stageRows)
     const a0 = back.attempts?.[0]
     // Independent oracle: the ASSEMBLED old leg (the exact value the adapter read).
-    const oldWire = a0?.wireRequest
+    const oldWire = legacyView(back).attempts?.[0]?.wireRequest
     expect(a0?.upstreamRequest).toBeDefined()
     expect(a0?.upstreamRequest?.body).toEqual(oldWire?.payload)
     // R4-FAIL-A: the messages projection MUST survive (rewrites-req search reads it).
@@ -379,15 +490,22 @@ describe("P4c-2 read adapter — legacy stages map into new legs", () => {
     expect(failBack._index?.derived?.failureReason).toBe("HTTP 400: invalid request")
   })
 
-  test("legacy legs are PRESERVED (adapter is additive — P4c-3 removes old later)", () => {
+  test("assembleFullEntry still READS the old stages (read path retained; old data maps into new legs)", () => {
     const entry = legacySuccessStream()
     const { row, stageRows } = serializeToRawRows(entry)
     const back = assembleFullEntry(row, stageRows)
-    expect(back.attempts?.[0].effectiveRequest).toBeDefined()
-    expect(back.attempts?.[0].wireRequest).toBeDefined()
-    expect(back.attempts?.[0].response).toBeDefined()
-    expect(back.outboundResponse?.success).toBe(true)
-    expect(back.inboundRequest.messages).toEqual([msg("user", "hello world")])
+    // The new legs are populated (primary observable surface post-P4c-3).
+    expect(back.attempts?.[0].effectiveSource).toBeDefined()
+    expect(back.attempts?.[0].upstreamRequest).toBeDefined()
+    expect(back.attempts?.[0].upstreamResponse?.success).toBe(true)
+    expect(back.clientRequest?.messages).toEqual([msg("user", "hello world")])
+    // The OLD stage data is still READ (assembled at runtime through the legacy
+    // scratch) — proving the read adapter's source (old stages) remains available.
+    const legacy = legacyView(back)
+    expect(legacy.attempts?.[0].effectiveRequest).toBeDefined()
+    expect(legacy.attempts?.[0].response).toBeDefined()
+    expect(legacy.outboundResponse?.success).toBe(true)
+    expect(legacy.inboundRequest.messages).toEqual([msg("user", "hello world")])
   })
 })
 
@@ -397,20 +515,35 @@ describe("P4c-2 read adapter — legacy stages map into new legs", () => {
 // ============================================================================
 
 describe("P4c-2 adapter faithfulness — consumers read the adapted new leg", () => {
-  test("buildRewritesReq on the ASSEMBLED legacy row matches the legacy-leg reference", () => {
+  test("buildRewritesReq on the ASSEMBLED legacy row matches an independent new-shape oracle", () => {
     const entry = legacyInboundNeqOutbound()
     const { row, stageRows } = serializeToRawRows(entry)
     const back = assembleFullEntry(row, stageRows)
 
-    // buildRewritesReq now reads `finalUpstreamRequest(entry)?.messages` first — which
-    // the adapter filled from the old outbound_request. Independent oracle: the raw
-    // legacy entry (fed via the deprecated top-level fallback) produces the SAME text.
+    // buildRewritesReq reads `clientRequest.messages` (inbound) vs
+    // `finalUpstreamRequest(entry)?.messages` (outbound) — the adapter filled BOTH
+    // from the old inbound_request / outbound_request stages. Independent oracle: a
+    // fresh NEW-shape entry carrying the SAME inbound/outbound messages produces the
+    // SAME rewrites text (a producer-independent reference, not the raw legacy row).
+    const inbound = entry.inboundRequest.messages
+    const outbound = entry.outboundRequest?.messages
+    const oracleEntry = {
+      id: "oracle",
+      endpoint: "anthropic-messages",
+      startedAt: 0,
+      state: "completed",
+      active: false,
+      lastUpdatedAt: 0,
+      clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: inbound },
+      attempts: [{ index: 0, strategy: "primary", durationMs: 1, upstreamRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: outbound, body: { model: "claude-opus-4-7", messages: outbound } } }],
+    } as unknown as HistoryEntry
+
     const adapted = buildSearchIndexForEntry(back).aux.find((a) => a.source === "rewrites-req")?.text ?? ""
-    const legacyRef = buildSearchIndexForEntry(entry).aux.find((a) => a.source === "rewrites-req")?.text ?? ""
+    const oracleRef = buildSearchIndexForEntry(oracleEntry).aux.find((a) => a.source === "rewrites-req")?.text ?? ""
 
     // WARN-1 anti-vacuous-proof: the facet MUST be non-empty (inbound ≠ outbound here).
     expect(adapted.length).toBeGreaterThan(0)
-    expect(adapted).toBe(legacyRef)
+    expect(adapted).toBe(oracleRef)
     // And it MUST have come from the adapted upstreamRequest.messages, NOT the old
     // top-level: prove finalUpstreamRequest is populated on the assembled row.
     expect(back.attempts?.at(-1)?.upstreamRequest?.messages).toEqual(entry.outboundRequest?.messages)
@@ -435,7 +568,7 @@ describe("P4c-2 request_group fold-in — new request legs share the dedup frame
       state: "completed",
       active: false,
       lastUpdatedAt: 1_700_000_000_100,
-      inboundRequest: { model: "claude-opus-4-7", messages: inbound },
+      clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7", messages: inbound },
       attempts: [
         {
           index: 0,

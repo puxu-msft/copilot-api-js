@@ -422,9 +422,9 @@ describe("Responses v4 driver path", () => {
     await post(body)
     const v4 = getHistory({ endpoint: "openai-responses" }).entries[0]
 
-    expect(v4?.effectiveRequest?.format).toBe("openai-responses")
-    expect(v4?.effectiveRequest?.model).toBe("gpt-resp")
-    expect(v4?.outboundRequest?.format).toBe("openai-responses")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-responses")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.model).toBe("gpt-resp")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-responses")
     expect(typeof v4?.queueWaitMs).toBe("number")
   })
 
@@ -434,8 +434,8 @@ describe("Responses v4 driver path", () => {
     await post(body)
     const v4 = getHistory({ endpoint: "openai-responses" }).entries[0]
 
-    expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.effectiveRequest?.format).toBe("openai-responses")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-responses")
   })
 })
 

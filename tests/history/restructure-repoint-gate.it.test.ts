@@ -1,23 +1,15 @@
 /**
- * P2.6 re-point GATE (RFC §6 W1).
+ * P2.6 re-point GATE (RFC §6 W1), post-P4c-3.
  *
- * The P0 golden (restructure-golden.it.test.ts) proves the coexistence fallback
- * keeps a LEGACY-ONLY entry byte-identical — but a legacy-only entry has NO
- * per-attempt `upstreamResponse` leg, so it exercises ONLY the fallback arm and
- * can NOT prove the re-point actually reads `attempts[final]`. This file closes
- * that gap: it drives a REAL `createRequestContext` lifecycle through the bus +
- * HistorySink into the sandboxed in-memory store, reads the assembled dual-write
- * `HistoryEntry` back (both the deprecated top-level legs AND the new per-attempt
- * `upstreamRequest`/`upstreamResponse`/`effectiveSource` legs present), and asserts:
- *
- *   (a) `serializeHeadEntry` produces the CORRECT index columns + derived bytes; and
- *   (b) after DELETING the entry's deprecated top-level legs (outboundResponse /
- *       outboundRequest / effectiveRequest / sseEvents), `buildHeadRow` /
- *       deriveBytes produce the SAME columns — proving the values are read from
- *       `attempts[final]`, NOT from the top-level legs (which is what P4 removes).
- *
- * (b) is the real P2.6 gate: it fails if any column silently still depends on a
- * top-level leg. (a) guards against a vacuous (b) where both sides are wrong-equal.
+ * The re-point moved every index column + derived byte size onto the per-attempt
+ * `attempts[final].upstreamRequest`/`upstreamResponse` legs and the durable
+ * `_index.derived.failureReason` projection. P4c-3 then REMOVED the legacy top-level
+ * legs entirely, so those legs are now the SOLE source. This file drives a REAL
+ * `createRequestContext` lifecycle through the bus + HistorySink into the sandboxed
+ * in-memory store, reads the assembled `HistoryEntry` back, and asserts that
+ * `serializeHeadEntry` produces the CORRECT index columns + derived bytes — proving
+ * the values are read from `attempts[final]` / `_index.derived`, NOT from a
+ * (now-absent) top-level leg.
  */
 
 import {
@@ -68,8 +60,8 @@ function makeWiredContext() {
 }
 
 /**
- * The index columns whose derivation P2.6 re-points. Extracted so a baseline row
- * and a "top-level legs stripped" row can be diffed as a single object.
+ * The index columns whose derivation P2.6 re-points onto `attempts[final]` /
+ * `_index.derived`.
  */
 function repointedColumns(entry: HistoryEntry) {
   const { row } = serializeHeadEntry(entry)
@@ -87,16 +79,6 @@ function repointedColumns(entry: HistoryEntry) {
   }
 }
 
-/** Shallow clone with the DEPRECATED top-level legs removed (simulating P4). */
-function stripTopLevelLegs(entry: HistoryEntry): HistoryEntry {
-  const stripped = { ...entry }
-  delete stripped.outboundResponse
-  delete stripped.outboundRequest
-  delete stripped.effectiveRequest
-  delete stripped.sseEvents
-  return stripped
-}
-
 describe("P2.6 re-point gate: buildHeadRow / deriveBytes read attempts[final]", () => {
   beforeEach(async () => {
     await shutdownHistory()
@@ -111,7 +93,7 @@ describe("P2.6 re-point gate: buildHeadRow / deriveBytes read attempts[final]", 
     setHistoryConfig({ historyDbPath: "" })
   })
 
-  test("successful streaming: columns correct AND survive deletion of top-level legs", async () => {
+  test("successful streaming: columns derive from the per-attempt upstream legs", async () => {
     const messages = [{ role: "user", content: "hello world" }]
     const wirePayload = { model: "claude-opus-4-7", messages, marker: "wire" }
     const sseEvents = [
@@ -140,14 +122,12 @@ describe("P2.6 re-point gate: buildHeadRow / deriveBytes read attempts[final]", 
     expect(entry).toBeDefined()
     if (!entry) throw new Error("entry missing")
 
-    // Dual-write present: BOTH the deprecated top-level leg and the new per-attempt
-    // upstreamResponse must exist for the gate below to be meaningful.
-    expect(entry.outboundResponse).toBeDefined()
+    // The per-attempt upstream legs are the sole source (no top-level mirror).
     const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
     expect(finalUpstream).toBeDefined()
     expect(finalUpstream?.sseEvents?.length).toBe(2)
 
-    // (a) columns are CORRECT (not vacuously equal-but-wrong).
+    // Columns are CORRECT and derive from attempts[final].upstreamRequest/Response.
     const base = repointedColumns(entry)
     expect(base.model).toBe(finalUpstream?.model ?? null)
     expect(base.input_tokens).toBe(42)
@@ -156,16 +136,13 @@ describe("P2.6 re-point gate: buildHeadRow / deriveBytes read attempts[final]", 
     expect(base.reasoning_tokens).toBe(5)
     expect(base.stop_reason).toBe("end_turn")
     expect(base.error_message).toBeNull()
-    // request_bytes = wire payload; response_bytes = sum of upstream sse frame raw bytes.
+    // request_bytes = wire payload (attempts[final].upstreamRequest.body); response_bytes
+    // = sum of upstream sse frame raw bytes (attempts[final].upstreamResponse.sseEvents).
     expect(base.request_bytes).toBe(Buffer.byteLength(JSON.stringify(wirePayload)))
     expect(base.response_bytes).toBe(sseEvents.reduce((n, e) => n + Buffer.byteLength(e.raw), 0))
-
-    // (b) THE GATE: identical columns with the top-level legs deleted → the values
-    //     are read from attempts[final], not from outboundResponse/outboundRequest.
-    expect(repointedColumns(stripTopLevelLegs(entry))).toEqual(base)
   })
 
-  test("failed HTTP: error_message + columns survive deletion of top-level legs", async () => {
+  test("failed HTTP: error_message derives from _index.derived.failureReason", async () => {
     const messages = [{ role: "user", content: "trigger a 400" }]
     const errBody = `{"error":{"message":"invalid request","type":"invalid_request_error"}}`
 
@@ -185,31 +162,25 @@ describe("P2.6 re-point gate: buildHeadRow / deriveBytes read attempts[final]", 
     if (!entry) throw new Error("entry missing")
     expect(entry.state).toBe("failed")
 
-    // Dual-write present.
-    expect(entry.outboundResponse?.error).toBeDefined()
     const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
     expect(finalUpstream).toBeDefined()
 
-    // (a) columns correct: the failure message surfaces, model/usage re-point cleanly.
+    // Columns correct: the failure message surfaces via the durable failureReason
+    // projection (the upstreamResponse leg carries no error field); model/usage re-point cleanly.
     const base = repointedColumns(entry)
     expect(base.error_message).toContain("400")
-    expect(base.error_message).toBe(entry.failureReason ?? null)
+    expect(base.error_message).toBe(entry._index?.derived?.failureReason ?? null)
     expect(base.model).toBe(finalUpstream?.model ?? null)
     expect(base.input_tokens).toBe(0)
     expect(base.output_tokens).toBe(0)
     expect(base.stop_reason).toBeNull()
-
-    // (b) THE GATE. error_message is durable via the top-level `failureReason`
-    //     projection (the new upstreamResponse leg carries no error field), which is
-    //     NOT stripped — so it must remain identical after the top-level legs go.
-    expect(repointedColumns(stripTopLevelLegs(entry))).toEqual(base)
   })
 
-  test("proxy-rejected after upstream success: error is durable while outboundResponse holds NO error", async () => {
+  test("proxy-rejected after upstream success: error is durable while the upstream leg holds NO error", async () => {
     // fail({ upstreamSucceeded: true }) records the upstream leg HONESTLY
-    // (success:true, no error); the verdict lives in `failureReason` only. This is
-    // the strongest error-durability gate: outboundResponse.error is absent even
-    // BEFORE stripping, so error_message MUST come from failureReason.
+    // (success:true, no error); the verdict lives in `_index.derived.failureReason`
+    // only. This is the strongest error-durability gate: the upstream leg carries no
+    // error, so error_message MUST come from failureReason.
     const messages = [{ role: "user", content: "returns unrepairable tool_use" }]
     const { ctx, detach } = makeWiredContext()
     ctx.setOriginalRequest({ model: "claude-opus-4-7", messages, stream: true, payload: { model: "claude-opus-4-7", messages } })
@@ -225,17 +196,14 @@ describe("P2.6 re-point gate: buildHeadRow / deriveBytes read attempts[final]", 
     if (!entry) throw new Error("entry missing")
     expect(entry.state).toBe("failed")
 
-    // Upstream leg is honest: success true, NO error field.
-    expect(entry.outboundResponse?.success).toBe(true)
-    expect(entry.outboundResponse?.error).toBeUndefined()
-    expect(entry.failureReason).toContain("unrepairable")
+    // Upstream leg is honest: success true, NO error field; the verdict is on failureReason.
+    const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+    expect(finalUpstream?.success).toBe(true)
+    expect(entry._index?.derived?.failureReason).toContain("unrepairable")
 
     const base = repointedColumns(entry)
-    expect(base.error_message).toBe(entry.failureReason ?? null)
+    expect(base.error_message).toBe(entry._index?.derived?.failureReason ?? null)
     expect(base.input_tokens).toBe(30)
     expect(base.output_tokens).toBe(12)
-
-    // Gate: identical with top-level legs stripped (error survives via failureReason).
-    expect(repointedColumns(stripTopLevelLegs(entry))).toEqual(base)
   })
 })

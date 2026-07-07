@@ -17,7 +17,7 @@ import SseFrameDiff from "../SseFrameDiff.vue"
 
 const props = defineProps<{ entry: HistoryEntry }>()
 
-// New `clientResponse` / final-attempt `upstreamResponse` ?? legacy `inboundResponse`/`sseEvents` (P4c: drop legacy arms).
+// New `clientResponse` / final-attempt `upstreamResponse` (legacy `inboundResponse`/`sseEvents` removed in P4c).
 const upstreamSse = computed(() => resolveUpstreamSse(props.entry))
 const forwardedSse = computed(() => resolveForwardedSse(props.entry))
 const forwardedContent = computed(() => resolveForwardedContent(props.entry))

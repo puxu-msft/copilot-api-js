@@ -25,8 +25,8 @@ const isPresent = (v: unknown): boolean => v !== undefined && v !== null
 /** Whether the effective (sanitized/rewritten) request differs from the inbound one. */
 function effectiveDiffers(e: HistoryEntry): boolean {
   if (!hasEffectiveLeg(e)) return false
-  if (JSON.stringify(e.inboundRequest.messages ?? []) !== JSON.stringify(resolveEffectiveMessages(e) ?? [])) return true
-  return JSON.stringify(e.inboundRequest.system ?? null) !== JSON.stringify(resolveEffectiveSystem(e) ?? null)
+  if (JSON.stringify(e.clientRequest?.messages ?? []) !== JSON.stringify(resolveEffectiveMessages(e) ?? [])) return true
+  return JSON.stringify(e.clientRequest?.system ?? null) !== JSON.stringify(resolveEffectiveSystem(e) ?? null)
 }
 
 export interface DetailStage {

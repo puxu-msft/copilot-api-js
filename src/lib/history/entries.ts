@@ -86,12 +86,6 @@ export function updateEntry(
       | "active"
       | "lastUpdatedAt"
       | "queueWaitMs"
-      | "attemptCount"
-      | "currentStrategy"
-      | "failureReason"
-      | "inboundRequest"
-      | "outboundResponse"
-      | "inboundResponse"
       // New client leg (RFC §2.1) — dual-written by the history sink at terminal.
       // The per-attempt new legs (effectiveSource/upstreamRequest/upstreamResponse)
       // ride through the whole-object "attempts" field below, so they need no
@@ -106,13 +100,9 @@ export function updateEntry(
       | "preprocessing"
       | "_index"
       | "pipelineInfo"
-      | "sseEvents"
       | "durationMs"
       | "startedAt"
       | "endedAt"
-      | "effectiveRequest"
-      | "outboundRequest"
-      | "httpHeaders"
       | "attempts"
       | "transport"
       | "warningMessages"
@@ -267,15 +257,15 @@ async function doFinalizeEntry(id: string, entry: HistoryEntry): Promise<void> {
 
   // Permanent error, transient retries exhausted, or no reaper to retry:
   // preserve the FACT of the request as a degraded tombstone. Write head +
-  // ONLY the small essential stages (inbound_request + outbound_response, both
-  // held in memory) — skipping the bulk (sseEvents / per-attempt request bodies)
-  // that most likely triggered the failure — so the row stays readable
-  // (`assembleFullEntry` rebuilds inboundRequest/outboundResponse) and the
-  // request content + error survive. If even that fails, fall back to a head-only
-  // flip so status/model/error in the head columns still persist (the read path
-  // floors a missing inbound_request stage so it never crashes consumers).
+  // ONLY the small essential stages (client_request + the final upstream_response,
+  // both held in memory) — skipping the bulk (sseEvents / per-attempt request
+  // bodies) that most likely triggered the failure — so the row stays readable
+  // (`assembleFullEntry` rebuilds clientRequest + the upstream response leg) and
+  // the request content + error survive. If even that fails, fall back to a
+  // head-only flip so status/model/error in the head columns still persist (the
+  // read path floors a missing client_request leg so it never crashes consumers).
   finalizeRetries.delete(id)
-  const tombstoneStages = extractStagePayloads(entry).filter((s) => s.stage === STAGE.inboundRequest || s.stage === STAGE.outboundResponse)
+  const tombstoneStages = extractStagePayloads(entry).filter((s) => s.stage === STAGE.clientRequest || s.stage === STAGE.upstreamResponse)
   const tomb = runHistoryWrite("finalize-tombstone", () => upsertHeadRow(entry, entry.state, tombstoneStages))
   if (!tomb.ok) {
     const headOnly = runHistoryWrite("finalize-tombstone-head", () => upsertHeadRow(entry, entry.state))

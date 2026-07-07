@@ -24,7 +24,7 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     id: "req_123",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: { model: "claude-opus-4.8" },
+    clientRequest: { model: "claude-opus-4.8" },
     ...overrides,
   } as HistoryEntry
 }
@@ -65,7 +65,9 @@ describe("downloadEntryAsZst", () => {
   it("prefers the response model over the request model for the filename", async () => {
     fetchEntryExport.mockResolvedValue(new Blob(["zst"]))
 
-    await downloadEntryAsZst(makeEntry({ outboundResponse: { success: true, model: "claude-sonnet-4.6", content: null } } as Partial<HistoryEntry>))
+    await downloadEntryAsZst(
+      makeEntry({ attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "claude-sonnet-4.6", body: null } }] } as Partial<HistoryEntry>),
+    )
 
     expect(created?.download).toBe("req_123_claude-sonnet-4.6.json.zst")
   })

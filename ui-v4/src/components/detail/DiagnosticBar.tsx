@@ -25,13 +25,13 @@ const SIGNAL_COLOR: Record<Signal, string> = {
 }
 
 export function DiagnosticBar({ entry }: { entry: HistoryEntry }) {
-  // New legs (`_index.derived` / final attempt `upstreamResponse`) ?? legacy top-level (P4c: drop the legacy arm).
+  // New legs (`_index.derived` / final attempt `upstreamResponse`); legacy top-level legs removed in P4c.
   const tokens = resolveResponseUsage(entry)
   const attemptCount = resolveAttemptCount(entry)
   const signal = statusSignal(entry.state ?? "")
   // The proxy failure verdict (unrepairable tool input, refusal, truncation, upstream error …) —
   // surfaced here so it's visible on EVERY detail tab, not buried in the Response tab's leg sections.
-  const verdict = entry.failureReason ?? resolveResponseError(entry)
+  const verdict = entry._index?.derived?.failureReason ?? resolveResponseError(entry)
   return (
     <div className="mono flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] bg-[#1c1c22] px-3 py-1.5 text-[13px] text-[#cdb]">
       <span style={{ color: SIGNAL_COLOR[signal] }}>{entry.state ?? "—"}</span>

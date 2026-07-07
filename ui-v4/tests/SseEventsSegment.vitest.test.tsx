@@ -18,12 +18,21 @@ const withFrames = {
   id: "r1",
   startedAt: 0,
   endpoint: "anthropic-messages",
-  inboundRequest: { messages: [] },
-  sseEvents: [
-    { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
-    { offsetMs: 12, type: "content_block_delta", raw: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}` },
+  clientRequest: { messages: [] },
+  attempts: [
+    {
+      index: 0,
+      durationMs: 0,
+      upstreamResponse: {
+        success: true,
+        sseEvents: [
+          { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
+          { offsetMs: 12, type: "content_block_delta", raw: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}` },
+        ],
+      },
+    },
   ],
-  inboundResponse: {
+  clientResponse: {
     sseEvents: [{ offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` }],
   },
 } as unknown as HistoryEntry
@@ -32,8 +41,8 @@ const noFrames = {
   id: "r2",
   startedAt: 0,
   endpoint: "anthropic-messages",
-  inboundRequest: { messages: [] },
-  outboundResponse: { success: true, model: "m", status: 200, content: { role: "assistant", content: "x" } },
+  clientRequest: { messages: [] },
+  attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "m", status: 200, body: { role: "assistant", content: "x" } } }],
 } as unknown as HistoryEntry
 
 describe("SseEventsSegment", () => {

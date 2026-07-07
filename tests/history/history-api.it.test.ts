@@ -61,7 +61,7 @@ app.delete("/api/sessions/:id", handleDeleteSession)
 async function createEntry(
   endpoint: EndpointType,
   model: string,
-  messages: HistoryEntry["inboundRequest"]["messages"],
+  messages: NonNullable<HistoryEntry["clientRequest"]>["messages"],
   extra?: Partial<HistoryEntry>,
 ): Promise<HistoryEntry> {
   const sessionId = getCurrentSession(endpoint, generateId())
@@ -70,18 +70,24 @@ async function createEntry(
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    inboundRequest: { model, messages, stream: true },
+    model: { requested: model },
+    clientRequest: { format: endpoint, model, messages, stream: true },
     ...extra,
   }
   insertEntry(entry)
+  // Complete with the caller-supplied attempts (carrying the effectiveSource /
+  // upstreamRequest legs under test) or a default single successful attempt.
+  const attempts = entry.attempts ?? [
+    {
+      index: 0,
+      durationMs: 0,
+      upstreamResponse: { success: true, model, usage: { input_tokens: 0, output_tokens: 0 }, body: null },
+    },
+  ]
   updateEntry(entry.id, {
     state: "completed",
-    outboundResponse: {
-      success: true,
-      model,
-      usage: { input_tokens: 0, output_tokens: 0 },
-      content: null,
-    },
+    attempts,
+    _index: { derived: { responseSuccess: true, attemptCount: attempts.length } },
   })
   await finalizeEntry(entry.id)
   return entry
@@ -197,7 +203,8 @@ describe("GET /api/entries", () => {
       endpoint: "anthropic-messages",
       state: "streaming",
       active: true,
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "live" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "live" }], stream: true },
     }
     insertEntry(live)
 
@@ -218,63 +225,73 @@ describe("GET /api/entries", () => {
 describe("GET /api/entries/:id", () => {
   test("returns full entry by id", async () => {
     const entry = await createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "hello" }], {
-      effectiveRequest: {
-        model: "claude-sonnet-4-20250514",
-        format: "anthropic-messages",
-        messageCount: 1,
-        messages: [{ role: "user", content: "hello" }],
-        payload: {
-          model: "claude-sonnet-4-20250514",
-          messages: [{ role: "user", content: "hello" }],
-          max_tokens: 4096,
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          effectiveSource: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messageCount: 1,
+            messages: [{ role: "user", content: "hello" }],
+            body: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "hello" }],
+              max_tokens: 4096,
+            },
+          },
+          upstreamRequest: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messages: [{ role: "user", content: "hello" }],
+            headers: {
+              "anthropic-beta": "advanced-tool-use-2025-11-20",
+            },
+            body: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "hello" }],
+              max_tokens: 4096,
+              stream: true,
+            },
+          },
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
         },
-      },
-      outboundRequest: {
-        model: "claude-sonnet-4-20250514",
-        format: "anthropic-messages",
-        messageCount: 1,
-        messages: [{ role: "user", content: "hello" }],
-        payload: {
-          model: "claude-sonnet-4-20250514",
-          messages: [{ role: "user", content: "hello" }],
-          max_tokens: 4096,
-          stream: true,
-        },
-      },
-      httpHeaders: {
-        outboundRequest: {
-          "anthropic-beta": "advanced-tool-use-2025-11-20",
-        },
-      },
+      ],
     })
 
     const res = await get(`/api/entries/${entry.id}`)
     expect(res.status).toBe(200)
     const body = await json<HistoryEntry>(res)
     expect(body.id).toBe(entry.id)
-    expect(body.inboundRequest.model).toBe("claude-sonnet-4-20250514")
-    expect(body.inboundRequest.messages).toHaveLength(1)
-    expect(body.effectiveRequest?.payload).toEqual({
+    expect(body.clientRequest?.model).toBe("claude-sonnet-4-20250514")
+    expect(body.clientRequest?.messages).toHaveLength(1)
+    const attempt = body.attempts?.at(-1)
+    expect(attempt?.effectiveSource?.body).toEqual({
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
       max_tokens: 4096,
     })
-    expect(body.outboundRequest).toEqual({
+    expect(attempt?.upstreamRequest).toEqual({
       model: "claude-sonnet-4-20250514",
       format: "anthropic-messages",
-      messageCount: 1,
       messages: [{ role: "user", content: "hello" }],
-      payload: {
+      headers: {
+        "anthropic-beta": "advanced-tool-use-2025-11-20",
+      },
+      body: {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "hello" }],
         max_tokens: 4096,
         stream: true,
       },
     })
-    expect(body.httpHeaders).toEqual({
-      outboundRequest: {
-        "anthropic-beta": "advanced-tool-use-2025-11-20",
-      },
+    expect(attempt?.upstreamRequest?.headers).toEqual({
+      "anthropic-beta": "advanced-tool-use-2025-11-20",
     })
   })
 
@@ -331,7 +348,8 @@ describe("POST /api/entries/:id/pin and /unpin", () => {
       endpoint: "anthropic-messages",
       state: "streaming",
       active: true,
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "live" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "live" }], stream: true },
     }
     insertEntry(entry)
     persistEntryEager(entry) // writes the sqlite head row (status=streaming) while still in-flight

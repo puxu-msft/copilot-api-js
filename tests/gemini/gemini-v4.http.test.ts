@@ -311,9 +311,9 @@ describe("Gemini v4 driver path", () => {
     await post("gpt-4o:generateContent", body)
     const v4 = getHistory({ endpoint: "gemini-generate-content" }).entries[0]
 
-    expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number")
   })
 

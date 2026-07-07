@@ -23,12 +23,34 @@ import { getDatabase } from "~/lib/history/sqlite/connection"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
-async function seed(entry: HistoryEntry, patch?: Partial<HistoryEntry>): Promise<void> {
+/** New-leg extras for a seeded terminal entry (mapped onto the final attempt / client legs). */
+interface SeedExtras {
+  /** rewrites-req: the wire messages the proxy actually sent (final attempt's upstreamRequest). */
+  upstreamRequestMessages?: Array<MessageContent>
+  /** resp-headers: upstream→proxy response headers (final attempt's upstreamResponse). */
+  upstreamResponseHeaders?: Record<string, string>
+}
+
+async function seed(entry: HistoryEntry, extras?: SeedExtras): Promise<void> {
   insertEntry(entry)
+  const model = entry.clientRequest?.model ?? "m"
   updateEntry(entry.id, {
     state: "completed",
-    outboundResponse: { success: true, model: entry.inboundRequest.model ?? "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
-    ...patch,
+    attempts: [
+      {
+        index: 0,
+        durationMs: 0,
+        ...(extras?.upstreamRequestMessages && { upstreamRequest: { messages: extras.upstreamRequestMessages } }),
+        upstreamResponse: {
+          success: true,
+          model,
+          usage: { input_tokens: 1, output_tokens: 1 },
+          body: null,
+          ...(extras?.upstreamResponseHeaders && { headers: extras.upstreamResponseHeaders }),
+        },
+      },
+    ],
+    _index: { derived: { responseSuccess: true, attemptCount: 1 } },
   })
   await finalizeEntry(entry.id)
 }
@@ -39,7 +61,8 @@ function entry(id: string, messages: Array<MessageContent>, startedAt: number, e
     sessionId: "s",
     startedAt,
     endpoint: "anthropic-messages",
-    inboundRequest: { model: "claude-opus-4", messages, stream: true },
+    model: { requested: "claude-opus-4" },
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4", messages, stream: true },
     ...extra,
   }
 }
@@ -116,7 +139,7 @@ describe("dedicated search (search-query)", () => {
   test("rewrites-req facet finds removed-side changed text", async () => {
     const m1: MessageContent = { role: "user", content: "kept" }
     const m2: MessageContent = { role: "user", content: "REWRITE_FACET_NEEDLE dropped" }
-    await seed(entry("rw1", [m1, m2], 1000), { outboundRequest: { messages: [m1] } })
+    await seed(entry("rw1", [m1, m2], 1000), { upstreamRequestMessages: [m1] })
     markComplete()
 
     const result = searchHistory({ source: "rewrites-req", q: "REWRITE_FACET_NEEDLE" })
@@ -126,7 +149,7 @@ describe("dedicated search (search-query)", () => {
   })
 
   test("resp-headers facet matches stored header text", async () => {
-    await seed(entry("h1", [{ role: "user", content: "q" }], 1000), { httpHeaders: { outboundResponse: { "x-trace": "HEADER_FACET_NEEDLE" } } })
+    await seed(entry("h1", [{ role: "user", content: "q" }], 1000), { upstreamResponseHeaders: { "x-trace": "HEADER_FACET_NEEDLE" } })
     markComplete()
     const result = searchHistory({ source: "resp-headers", q: "HEADER_FACET_NEEDLE" })
     expect(result.rows).toHaveLength(1)

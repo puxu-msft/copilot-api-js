@@ -20,7 +20,7 @@ import { SystemSegment } from "@/components/detail/segments/SystemSegment"
 
 /**
  * Build an entry with fine control over both legs. `effective: undefined` omits
- * the effectiveRequest entirely (no rewrite leg); `effective: { system: undefined }`
+ * the effective-source leg entirely (no rewrite leg); `effective: { system: undefined }`
  * models a leg that EXISTS but dropped the system (a removed rewrite).
  */
 function makeEntry(opts: { inboundSystem?: unknown; effective?: { system?: unknown } }): HistoryEntry {
@@ -28,8 +28,8 @@ function makeEntry(opts: { inboundSystem?: unknown; effective?: { system?: unkno
     id: "r1",
     startedAt: 0,
     endpoint: "anthropic-messages",
-    inboundRequest: { messages: [], system: opts.inboundSystem },
-    ...(opts.effective === undefined ? {} : { effectiveRequest: { messages: [], system: opts.effective.system } }),
+    clientRequest: { messages: [], system: opts.inboundSystem },
+    ...(opts.effective === undefined ? {} : { attempts: [{ index: 0, durationMs: 0, effectiveSource: { messages: [], system: opts.effective.system } }] }),
   } as unknown as HistoryEntry
 }
 

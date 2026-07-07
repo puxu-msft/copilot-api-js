@@ -43,10 +43,10 @@ import {
 import { insertCompletedEntry } from "~/lib/history/sqlite/write"
 
 // A multi-stage entry exercising EVERY heavy finalize path the refactor touches:
-// request_group (inbound + effective + outbound bodies → one zstd frame), the
-// response stages (outboundResponse / sseEvents / inboundResponse), the search
-// index (inbound messages → msg_blob/req_msg; rewrites-req/resp + headers → req_aux),
-// and the head blob.
+// request_group (clientRequest + effectiveSource + upstreamRequest bodies → one zstd
+// frame), the response stages (upstreamResponse / clientResponse), the search index
+// (inbound messages → msg_blob/req_msg; rewrites-req/resp + headers → req_aux), and
+// the head blob.
 function richEntry(): HistoryEntry {
   const messages = [
     { role: "user", content: "first user turn with some searchable text" },
@@ -54,6 +54,15 @@ function richEntry(): HistoryEntry {
     { role: "user", content: "a follow-up question about caching" },
   ]
   const t0 = 1_700_000_000_000
+  const upstreamFrames = [
+    { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
+    { offsetMs: 10, type: "content_block_delta", raw: `{"type":"content_block_delta","delta":{"text":"final"}}` },
+    { offsetMs: 20, type: "message_stop", raw: `{"type":"message_stop"}` },
+  ]
+  const forwardedFrames = [
+    { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
+    { offsetMs: 20, type: "message_stop", raw: `{"type":"message_stop"}` },
+  ]
   return {
     id: "golden-1",
     sessionId: "sess-golden",
@@ -65,36 +74,36 @@ function richEntry(): HistoryEntry {
     active: false,
     lastUpdatedAt: t0 + 4200,
     transport: "http",
-    requestModel: "claude-opus-4",
-    responseModel: "claude-opus-4",
-    responseSuccess: true,
-    inboundRequest: { model: "claude-opus-4", messages, stream: true },
-    effectiveRequest: { model: "claude-opus-4", messageCount: 3, payload: { model: "claude-opus-4", messages, max_tokens: 4096 } },
-    outboundRequest: { model: "claude-opus-4", payload: { model: "claude-opus-4", messages, max_tokens: 4096, stream: true } },
-    outboundResponse: {
-      success: true,
+    model: { requested: "claude-opus-4", resolved: "claude-opus-4" },
+    clientRequest: {
       model: "claude-opus-4",
-      usage: { input_tokens: 120, output_tokens: 45 },
-      stop_reason: "end_turn",
-      content: { role: "assistant", content: "final answer about caching" },
+      messages,
+      stream: true,
+      headers: { "content-type": "application/json", "x-client": "golden" },
     },
-    sseEvents: [
-      { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
-      { offsetMs: 10, type: "content_block_delta", raw: `{"type":"content_block_delta","delta":{"text":"final"}}` },
-      { offsetMs: 20, type: "message_stop", raw: `{"type":"message_stop"}` },
+    clientResponse: {
+      body: "final answer about caching",
+      sseEvents: forwardedFrames,
+    },
+    attempts: [
+      {
+        index: 0,
+        durationMs: 4200,
+        effectiveSource: { model: "claude-opus-4", messageCount: 3, messages, body: { model: "claude-opus-4", messages, max_tokens: 4096 } },
+        upstreamRequest: { model: "claude-opus-4", messages, body: { model: "claude-opus-4", messages, max_tokens: 4096, stream: true } },
+        upstreamResponse: {
+          success: true,
+          model: "claude-opus-4",
+          usage: { input_tokens: 120, output_tokens: 45 },
+          stopReason: "end_turn",
+          body: { role: "assistant", content: "final answer about caching" },
+          sseEvents: upstreamFrames,
+          headers: { "content-type": "text/event-stream", "x-request-id": "abc123" },
+        },
+      },
     ],
-    inboundResponse: {
-      content: "final answer about caching",
-      sseEvents: [
-        { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
-        { offsetMs: 20, type: "message_stop", raw: `{"type":"message_stop"}` },
-      ],
-    },
-    httpHeaders: {
-      inboundRequest: { "content-type": "application/json", "x-client": "golden" },
-      outboundResponse: { "content-type": "text/event-stream", "x-request-id": "abc123" },
-    },
-  } as HistoryEntry
+    _index: { derived: { responseSuccess: true, attemptCount: 1, currentStrategy: "primary" } },
+  }
 }
 
 describe("finalize golden pre-capture (P0 — locks sync output for the async refactor)", () => {
@@ -113,16 +122,16 @@ describe("finalize golden pre-capture (P0 — locks sync output for the async re
     expect(got?.state).toBe("completed")
     expect(got?.endpoint).toBe("anthropic-messages")
     // request_group members round-trip
-    expect(got?.inboundRequest.messages).toEqual(entry.inboundRequest.messages)
-    expect(got?.effectiveRequest?.payload).toEqual(entry.effectiveRequest?.payload)
-    expect(got?.outboundRequest?.payload).toEqual(entry.outboundRequest?.payload)
+    expect(got?.clientRequest?.messages).toEqual(entry.clientRequest?.messages)
+    expect(got?.attempts?.at(-1)?.effectiveSource?.body).toEqual(entry.attempts?.at(-1)?.effectiveSource?.body)
+    expect(got?.attempts?.at(-1)?.upstreamRequest?.body).toEqual(entry.attempts?.at(-1)?.upstreamRequest?.body)
     // response stages round-trip
-    expect(got?.outboundResponse?.usage).toEqual({ input_tokens: 120, output_tokens: 45 })
-    expect(got?.outboundResponse?.content).toEqual(entry.outboundResponse?.content)
-    expect(got?.sseEvents).toEqual(entry.sseEvents)
-    expect(got?.inboundResponse?.sseEvents).toEqual(entry.inboundResponse?.sseEvents)
-    expect(got?.httpHeaders?.inboundRequest).toEqual(entry.httpHeaders?.inboundRequest)
-    expect(got?.httpHeaders?.outboundResponse).toEqual(entry.httpHeaders?.outboundResponse)
+    expect(got?.attempts?.at(-1)?.upstreamResponse?.usage).toEqual({ input_tokens: 120, output_tokens: 45 })
+    expect(got?.attempts?.at(-1)?.upstreamResponse?.body).toEqual(entry.attempts?.at(-1)?.upstreamResponse?.body)
+    expect(got?.attempts?.at(-1)?.upstreamResponse?.sseEvents).toEqual(entry.attempts?.at(-1)?.upstreamResponse?.sseEvents)
+    expect(got?.clientResponse?.sseEvents).toEqual(entry.clientResponse?.sseEvents)
+    expect(got?.clientRequest?.headers).toEqual(entry.clientRequest?.headers)
+    expect(got?.attempts?.at(-1)?.upstreamResponse?.headers).toEqual(entry.attempts?.at(-1)?.upstreamResponse?.headers)
   })
 
   test("search-index rows are byte-stable (msg_blob / req_msg / req_aux)", async () => {
@@ -133,13 +142,13 @@ describe("finalize golden pre-capture (P0 — locks sync output for the async re
     // inbound messages → req_msg (positional) + msg_blob (content-addressed)
     const reqMsgs = db.prepare("SELECT pos, hash FROM req_msg WHERE req_id = ? ORDER BY pos").all("golden-1") as Array<{ pos: number; hash: string }>
     expect(reqMsgs.map((r) => r.pos)).toEqual([0, 1, 2])
-    expect(reqMsgs[0].hash).toBe(hashMessage(entry.inboundRequest.messages![0], "anthropic"))
-    expect(reqMsgs[2].hash).toBe(hashMessage(entry.inboundRequest.messages![2], "anthropic"))
+    expect(reqMsgs[0].hash).toBe(hashMessage(entry.clientRequest!.messages![0], "anthropic"))
+    expect(reqMsgs[2].hash).toBe(hashMessage(entry.clientRequest!.messages![2], "anthropic"))
 
     const blob0 = db.prepare("SELECT text FROM msg_blob WHERE hash = ?").get(reqMsgs[0].hash) as { text: string } | null
     expect(blob0?.text).toContain("first user turn")
 
-    // aux sources present (rewrites-req/resp + headers legs are content-addressed in req_aux)
+    // aux sources present (rewrites-resp + headers legs are content-addressed in req_aux)
     const auxSources = (db.prepare("SELECT DISTINCT source FROM req_aux WHERE req_id = ? ORDER BY source").all("golden-1") as Array<{ source: string }>).map(
       (r) => r.source,
     )
@@ -150,7 +159,7 @@ describe("finalize golden pre-capture (P0 — locks sync output for the async re
     const built = buildSearchIndexForEntry(richEntry())
     // 3 inbound messages → 3 msg entries with stable positional order + hashes
     expect(built.msgs.map((m) => m.pos)).toEqual([0, 1, 2])
-    expect(built.msgs[0].hash).toBe(hashMessage(richEntry().inboundRequest.messages![0], "anthropic"))
+    expect(built.msgs[0].hash).toBe(hashMessage(richEntry().clientRequest!.messages![0], "anthropic"))
     expect(built.msgs.every((m) => typeof m.text === "string" && m.text.length > 0)).toBe(true)
     // aux facets present (headers always; rewrites best-effort)
     expect(built.aux.length).toBeGreaterThan(0)
@@ -163,7 +172,7 @@ describe("finalize golden pre-capture (P0 — locks sync output for the async re
   })
 
   test("compress / decompress round-trips losslessly (the codec the refactor offloads)", async () => {
-    const payload = { model: "claude-opus-4", messages: richEntry().inboundRequest.messages, nested: { a: [1, 2, 3], b: "x".repeat(5000) } }
+    const payload = { model: "claude-opus-4", messages: richEntry().clientRequest?.messages, nested: { a: [1, 2, 3], b: "x".repeat(5000) } }
     const blob = compress(payload)
     expect(Buffer.isBuffer(blob)).toBe(true)
     expect(decompress(blob)).toEqual(payload)

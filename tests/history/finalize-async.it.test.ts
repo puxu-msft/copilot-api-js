@@ -45,11 +45,13 @@ function seedTerminal(id: string): void {
     sessionId: "s",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: { model: "claude-opus-4", messages: [{ role: "user", content: `body ${id}` }] },
+    model: { requested: "claude-opus-4" },
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4", messages: [{ role: "user", content: `body ${id}` }] },
   } as HistoryEntry)
   updateEntry(id, {
     state: "completed",
-    outboundResponse: { success: true, model: "claude-opus-4", usage: { input_tokens: 1, output_tokens: 1 }, content: { role: "assistant", content: "ok" } },
+    attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "claude-opus-4", usage: { input_tokens: 1, output_tokens: 1 }, body: { role: "assistant", content: "ok" } } }],
+    _index: { derived: { responseSuccess: true, attemptCount: 1 } },
   })
 }
 

@@ -48,7 +48,7 @@ export function getStats(): HistoryStats {
   let failed = base.failedRequests
 
   for (const entry of inFlight) {
-    const model = resolveResponseModel(entry) ?? entry.inboundRequest.model
+    const model = resolveResponseModel(entry) ?? entry.clientRequest?.model
     if (model) modelDistribution[model] = (modelDistribution[model] ?? 0) + 1
     endpointDistribution[entry.endpoint] = (endpointDistribution[entry.endpoint] ?? 0) + 1
     const usage = resolveResponseUsage(entry)
@@ -105,9 +105,9 @@ export function exportHistory(format: "json" | "csv" = "json"): string {
       entry.sessionId ?? "",
       formatLocalTimestamp(entry.startedAt),
       entry.endpoint,
-      entry.inboundRequest.model,
-      entry.inboundRequest.messages?.length,
-      entry.inboundRequest.stream,
+      entry.clientRequest?.model,
+      entry.clientRequest?.messages?.length,
+      entry.clientRequest?.stream,
       resolveResponseSuccess(entry),
       resolveResponseModel(entry),
       usage?.input_tokens,

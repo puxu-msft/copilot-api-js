@@ -72,8 +72,6 @@ export function buildHistoryActivityPatch(
   | "active"
   | "lastUpdatedAt"
   | "queueWaitMs"
-  | "attemptCount"
-  | "currentStrategy"
   | "durationMs"
   | "transport"
   | "multiplier"
@@ -93,8 +91,6 @@ export function buildHistoryActivityPatch(
     active: snapshot.active,
     lastUpdatedAt: snapshot.lastUpdatedAt,
     queueWaitMs: snapshot.queueWaitMs,
-    attemptCount: snapshot.attemptCount,
-    currentStrategy: snapshot.currentStrategy,
     durationMs: snapshot.durationMs,
     ...(snapshot.transport ? { transport: snapshot.transport } : {}),
     ...(billing?.multiplier !== undefined ? { multiplier: billing.multiplier } : {}),

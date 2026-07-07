@@ -54,12 +54,14 @@ async function seedEntry(opts: SeedOpts): Promise<string> {
     agentId: opts.agentId,
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: { model: opts.model, messages: [{ role: "user", content: "hi" }], stream: true },
+    model: { requested: opts.model },
+    clientRequest: { format: "anthropic-messages", model: opts.model, messages: [{ role: "user", content: "hi" }], stream: true },
   }
   insertEntry(entry)
   updateEntry(id, {
     state: "completed",
-    outboundResponse: { success: true, model: opts.model, usage: { input_tokens: 10, output_tokens: 5 }, content: null },
+    attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: opts.model, usage: { input_tokens: 10, output_tokens: 5 }, body: null } }],
+    _index: { derived: { responseSuccess: true, attemptCount: 1 } },
   })
   await finalizeEntry(id)
   return id

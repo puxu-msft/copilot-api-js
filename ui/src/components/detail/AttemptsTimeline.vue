@@ -1,40 +1,40 @@
 <script setup lang="ts">
+import type {
+  //
+  HistoryEntry,
+  TruncationInfo,
+} from "@/types"
+
 import {
   //
   formatDuration,
   formatNumber,
 } from "@/utils/formatters"
 
-interface AttemptInfo {
-  index: number
-  strategy?: string
-  durationMs: number
-  error?: string
-  truncation?: {
-    wasTruncated: boolean
-    removedMessageCount: number
-    originalTokens: number
-    compactedTokens: number
-  }
-  effectiveMessageCount?: number
-  /** @deprecated 迁移中，见 RFC §4；P4c 删除。→ `upstreamResponse.sseEvents`. */
-  sseEvents?: ReadonlyArray<unknown>
-  /** New per-attempt upstream response leg (RFC §3) — carries the upstream-original SSE frames. */
-  upstreamResponse?: { sseEvents?: ReadonlyArray<unknown> }
-}
+type Attempt = NonNullable<HistoryEntry["attempts"]>[number]
 
 defineProps<{
-  attempts: Array<AttemptInfo>
+  attempts: Array<Attempt>
 }>()
 
-function nodeColor(attempt: AttemptInfo): string {
+function nodeColor(attempt: Attempt): string {
   if (attempt.error) return "var(--error)"
   return "var(--success)"
 }
 
-/** Upstream-original SSE frames captured before this attempt's cutoff: new `upstreamResponse.sseEvents` ?? legacy per-attempt `sseEvents`. */
-function attemptFrames(attempt: AttemptInfo): ReadonlyArray<unknown> | undefined {
-  return attempt.upstreamResponse?.sseEvents ?? attempt.sseEvents
+/** This attempt's truncation info: new `effectiveSource.pipeline.truncation`. */
+function attemptTruncation(attempt: Attempt): TruncationInfo | undefined {
+  return attempt.effectiveSource?.pipeline?.truncation
+}
+
+/** This attempt's effective message count: new `effectiveSource.messageCount`. */
+function attemptMessageCount(attempt: Attempt): number | undefined {
+  return attempt.effectiveSource?.messageCount
+}
+
+/** Upstream-original SSE frames captured before this attempt's cutoff: new `upstreamResponse.sseEvents`. */
+function attemptFrames(attempt: Attempt): ReadonlyArray<unknown> | undefined {
+  return attempt.upstreamResponse?.sseEvents
 }
 </script>
 
@@ -68,17 +68,17 @@ function attemptFrames(attempt: AttemptInfo): ReadonlyArray<unknown> | undefined
             {{ attempt.error }}
           </div>
           <div
-            v-if="attempt.truncation?.wasTruncated"
+            v-if="attemptTruncation(attempt)?.wasTruncated"
             class="node-truncation"
           >
-            Truncated: {{ formatNumber(attempt.truncation.originalTokens) }} -> {{ formatNumber(attempt.truncation.compactedTokens) }} tokens,
-            {{ attempt.truncation.removedMessageCount }} msg removed
+            Truncated: {{ formatNumber(attemptTruncation(attempt)!.originalTokens) }} -> {{ formatNumber(attemptTruncation(attempt)!.compactedTokens) }} tokens,
+            {{ attemptTruncation(attempt)!.removedMessageCount }} msg removed
           </div>
           <div
-            v-if="attempt.effectiveMessageCount"
+            v-if="attemptMessageCount(attempt)"
             class="node-meta"
           >
-            {{ attempt.effectiveMessageCount }} messages
+            {{ attemptMessageCount(attempt) }} messages
           </div>
           <div
             v-if="attempt.error && attemptFrames(attempt)?.length"

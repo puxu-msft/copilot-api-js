@@ -109,7 +109,7 @@ function makeFullEntry(id: string): HistoryEntry {
     sessionId: "s1",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: {
+    clientRequest: {
       model: "claude-sonnet-4.6",
       messages: [{ role: "user", content: "hello" }],
     },

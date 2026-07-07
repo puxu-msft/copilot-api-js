@@ -30,7 +30,7 @@ function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.to !== undefined && entry.startedAt > opts.to) return false
   if (opts.model) {
     const needle = opts.model.toLowerCase()
-    const req = entry.inboundRequest.model?.toLowerCase() ?? ""
+    const req = entry.clientRequest?.model?.toLowerCase() ?? ""
     const res = resolveResponseModel(entry)?.toLowerCase() ?? ""
     if (!req.includes(needle) && !res.includes(needle)) return false
   }
@@ -82,7 +82,7 @@ function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boole
  */
 function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined): boolean {
   if (!needle) return true
-  const messages = entry.inboundRequest.messages ?? []
+  const messages = entry.clientRequest?.messages ?? []
   if (messages.length === 0) return false
   const text = extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
   return text.toLowerCase().includes(needle.toLowerCase())

@@ -198,7 +198,7 @@ describe("createRequestContext - attempt lifecycle", () => {
     ctx.fail("claude-opus-4.8", new Error("upstream blew up"))
     const entry = ctx.toHistoryEntry()
     expect(entry.state).toBe("failed")
-    expect(entry.failureReason).toBe("upstream blew up")
+    expect(entry._index?.derived?.failureReason).toBe("upstream blew up")
   })
 
   test("toHistoryEntry surfaces a top-level failureReason for aborted entries", () => {
@@ -208,20 +208,21 @@ describe("createRequestContext - attempt lifecycle", () => {
     ctx.abort("claude-opus-4.8") // abort() sets _response.error = "client disconnected"
     const entry = ctx.toHistoryEntry()
     expect(entry.state).toBe("aborted")
-    expect(entry.failureReason).toBe("client disconnected")
+    expect(entry._index?.derived?.failureReason).toBe("client disconnected")
   })
 
   test("toHistoryEntry leaves failureReason absent for successful entries", () => {
     const { ctx } = makeContext()
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
-    expect(ctx.toHistoryEntry().failureReason).toBeUndefined()
+    expect(ctx.toHistoryEntry()._index?.derived?.failureReason).toBeUndefined()
   })
 
   test("setOutboundResponseTrailers records the h2 trailers leg on the entry", () => {
     const { ctx } = makeContext()
     ctx.setOutboundResponseTrailers({ "x-upstream-status": "ok", "grpc-status": "0" })
+    ctx.beginAttempt({})
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
-    expect(ctx.toHistoryEntry().httpHeaders?.outboundResponseTrailers).toEqual({ "x-upstream-status": "ok", "grpc-status": "0" })
+    expect(ctx.toHistoryEntry().attempts?.at(-1)?.upstreamResponse?.trailers).toEqual({ "x-upstream-status": "ok", "grpc-status": "0" })
   })
 
   test("setAttemptTransport updates current and effective transport", () => {
@@ -358,12 +359,12 @@ describe("createRequestContext - toHistoryEntry", () => {
     const entry = ctx.toHistoryEntry()
     expect(entry.id).toBe(ctx.id)
     expect(entry.endpoint).toBe("anthropic-messages")
-    expect(entry.inboundRequest.model).toBe("claude-sonnet-4")
+    expect(entry.clientRequest?.model).toBe("claude-sonnet-4")
     expect(entry.state).toBe("completed")
     expect(entry.active).toBe(false)
-    expect(entry.attemptCount).toBe(1)
+    expect(entry._index?.derived?.attemptCount).toBe(1)
     expect(entry.queueWaitMs).toBe(0)
-    expect(entry.outboundResponse!.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 
   test("synthesizes a failed non-final attempt's response carrying the upstream error rawBody (gap H)", () => {
@@ -381,13 +382,13 @@ describe("createRequestContext - toHistoryEntry", () => {
 
     const entry = ctx.toHistoryEntry()
     expect(entry.state).toBe("completed")
-    // Terminal outboundResponse is the SUCCESSFUL leg, not the failure.
-    expect(entry.outboundResponse!.success).toBe(true)
-    // The failed attempt[0] carries a synthesized response whose responseText is the error body,
-    // so the downstream serialize path (responseDataToHistory → rawBody) persists it (gap H evidence).
-    expect(entry.attempts![0].response?.responseText).toBe(B0)
-    expect(entry.attempts![0].response?.success).toBe(false)
-    expect(entry.attempts![0].response?.status).toBe(500)
+    // Terminal (final attempt) upstreamResponse is the SUCCESSFUL leg, not the failure.
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    // The failed attempt[0] carries a synthesized upstreamResponse whose rawBody is the error body,
+    // so the downstream serialize path persists it (gap H evidence).
+    expect(entry.attempts![0].upstreamResponse?.rawBody).toBe(B0)
+    expect(entry.attempts![0].upstreamResponse?.success).toBe(false)
+    expect(entry.attempts![0].upstreamResponse?.status).toBe(500)
     // The attempt error summary string is still present.
     expect(entry.attempts![0].error).toBe("HTTP 500")
   })
@@ -414,8 +415,8 @@ describe("createRequestContext - toHistoryEntry", () => {
     expect(entry.state).toBe("completed")
     expect(entry.active).toBe(false)
     expect(entry.queueWaitMs).toBe(250)
-    expect(entry.attemptCount).toBe(1)
-    expect(entry.currentStrategy).toBe("network-retry")
+    expect(entry._index?.derived?.attemptCount).toBe(1)
+    expect(entry._index?.derived?.currentStrategy).toBe("network-retry")
     expect(typeof entry.lastUpdatedAt).toBe("number")
     expect(entry.lastUpdatedAt).toBeGreaterThanOrEqual(entry.startedAt)
   })
@@ -433,6 +434,9 @@ describe("createRequestContext - toHistoryEntry", () => {
     }
     ctx.beginAttempt({})
     ctx.beginAttempt({ strategy: "auto-truncate", truncation })
+    // Truncation is aggregated into the attempt's effectiveSource.pipeline, which the
+    // producer only builds when the attempt has an effectiveRequest — so set one.
+    ctx.setAttemptEffectiveRequest({ model: "m", resolvedModel: undefined, messages: [], payload: {}, format: "anthropic-messages" })
     ctx.complete({
       success: true,
       model: "m",
@@ -441,7 +445,8 @@ describe("createRequestContext - toHistoryEntry", () => {
     })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.truncation).toEqual(truncation)
+    // Truncation now lives on the last attempt's effectiveSource.pipeline (RFC §4).
+    expect(entry.attempts?.at(-1)?.effectiveSource?.pipeline?.truncation).toEqual(truncation)
   })
 
   test("includes attempts summary when >1 attempt", () => {
@@ -503,9 +508,9 @@ describe("createRequestContext - toHistoryEntry", () => {
     })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.inboundRequest.max_tokens).toBe(4096)
-    expect(entry.inboundRequest.temperature).toBe(0.7)
-    expect(entry.inboundRequest.thinking).toEqual({ type: "enabled", budget_tokens: 10000 })
+    expect(entry.clientRequest?.max_tokens).toBe(4096)
+    expect(entry.clientRequest?.temperature).toBe(0.7)
+    expect(entry.clientRequest?.thinking).toEqual({ type: "enabled", budget_tokens: 10000 })
   })
 
   test("omits max_tokens/temperature/thinking when not in payload", () => {
@@ -515,9 +520,9 @@ describe("createRequestContext - toHistoryEntry", () => {
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.inboundRequest.max_tokens).toBeUndefined()
-    expect(entry.inboundRequest.temperature).toBeUndefined()
-    expect(entry.inboundRequest.thinking).toBeUndefined()
+    expect(entry.clientRequest?.max_tokens).toBeUndefined()
+    expect(entry.clientRequest?.temperature).toBeUndefined()
+    expect(entry.clientRequest?.thinking).toBeUndefined()
   })
 
   test("includes effectiveRequest from final attempt", () => {
@@ -539,12 +544,13 @@ describe("createRequestContext - toHistoryEntry", () => {
     })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.effectiveRequest).toBeDefined()
-    expect(entry.effectiveRequest!.model).toBe("claude-sonnet-4-20250514")
-    expect(entry.effectiveRequest!.format).toBe("anthropic-messages")
-    expect(entry.effectiveRequest!.messageCount).toBe(1)
-    expect(entry.effectiveRequest!.messages).toHaveLength(1)
-    expect(entry.effectiveRequest!.system).toBe("sys")
+    const effectiveSource = entry.attempts?.at(-1)?.effectiveSource
+    expect(effectiveSource).toBeDefined()
+    expect(effectiveSource!.model).toBe("claude-sonnet-4-20250514")
+    expect(effectiveSource!.format).toBe("anthropic-messages")
+    expect(effectiveSource!.messageCount).toBe(1)
+    expect(effectiveSource!.messages).toHaveLength(1)
+    expect(effectiveSource!.system).toBe("sys")
   })
 
   test("includes wireRequest from final attempt separately from effectiveRequest", () => {
@@ -580,30 +586,31 @@ describe("createRequestContext - toHistoryEntry", () => {
     })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.effectiveRequest).toBeDefined()
-    expect(entry.effectiveRequest!.payload).toEqual({
+    const finalAttempt = entry.attempts?.at(-1)
+    expect(finalAttempt?.effectiveSource).toBeDefined()
+    expect(finalAttempt?.effectiveSource!.body).toEqual({
       model: "claude-opus-4-6",
       messages: [{ role: "user", content: "logical" }],
     })
-    expect(entry.outboundRequest).toBeDefined()
-    expect(entry.outboundRequest!.payload).toEqual({
+    expect(finalAttempt?.upstreamRequest).toBeDefined()
+    expect(finalAttempt?.upstreamRequest!.body).toEqual({
       model: "claude-opus-4-6",
       messages: [{ role: "user", content: "logical" }],
       context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
     })
-    // RFC Phase 2: httpHeaders.outboundRequest is written by the driver during the
+    // RFC Phase 2: upstreamRequest.headers is written by the driver during the
     // exchange (from wire.headers), no longer migrated from wireRequest at finalize —
     // so toHistoryEntry() alone (no driver run) does not populate it here.
   })
 
-  test("effectiveRequest is undefined when no attempt set it", () => {
+  test("effectiveSource is undefined when no attempt set an effectiveRequest", () => {
     const { ctx } = makeContext()
     ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
     ctx.beginAttempt({})
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.effectiveRequest).toBeUndefined()
+    expect(entry.attempts?.at(-1)?.effectiveSource).toBeUndefined()
   })
 
   test("always includes attempts array even for single attempt", () => {
@@ -666,21 +673,26 @@ describe("createRequestContext - toHistoryEntry", () => {
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
 
     const entry = ctx.toHistoryEntry()
-    expect(entry.attempts![0].sanitization!.totalBlocksRemoved).toBe(2)
-    expect(entry.attempts![0].effectiveMessageCount).toBe(2)
+    expect(entry.attempts![0].effectiveSource?.pipeline?.sanitization?.[0]?.totalBlocksRemoved).toBe(2)
+    expect(entry.attempts![0].effectiveSource?.messageCount).toBe(2)
   })
 
-  test("includes sseEvents and httpHeaders in entry", () => {
+  test("includes sseEvents and per-attempt request/response headers in entry", () => {
     const { ctx } = makeContext()
     ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
     ctx.setSseEvents([{ offsetMs: 0, type: "message_start", raw: "{}" }])
-    ctx.setHttpHeaders({ request: { "x-req": "1" }, response: { "x-res": "2" } })
     ctx.beginAttempt({})
+    // Per-attempt legs: request headers ride the wire request (→ upstreamRequest.headers),
+    // response headers are captured per attempt (→ upstreamResponse.headers). The unified
+    // upstream frames (top-level _sseEvents) land on the final attempt's upstreamResponse.
+    ctx.setAttemptWireRequest({ model: "m", messages: [], payload: {}, headers: { "x-req": "1" }, format: "anthropic-messages" })
+    ctx.setAttemptResponseHeaders({ "x-res": "2" })
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
 
-    const entry = ctx.toHistoryEntry()
-    expect(entry.sseEvents).toHaveLength(1)
-    expect(entry.httpHeaders).toEqual({ outboundRequest: { "x-req": "1" }, outboundResponse: { "x-res": "2" } })
+    const finalAttempt = ctx.toHistoryEntry().attempts?.at(-1)
+    expect(finalAttempt?.upstreamResponse?.sseEvents).toHaveLength(1)
+    expect(finalAttempt?.upstreamRequest?.headers).toEqual({ "x-req": "1" })
+    expect(finalAttempt?.upstreamResponse?.headers).toEqual({ "x-res": "2" })
   })
 
   test("includes warningMessages in entry", () => {
@@ -834,15 +846,17 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     const entry = ctx.toHistoryEntry()
     const last = entry.attempts?.at(-1)
 
-    // Legacy per-attempt response stage carries the settled verdict (not undefined).
-    expect(last?.response).toBeDefined()
-    expect(last?.response?.success).toBe(false)
-    // getErrorMessage formats an HTTPError as "HTTP <status>: <body>".
-    expect(last?.response?.error).toBe("HTTP 400: body")
-    expect(last?.response?.status).toBe(400)
-    expect(last?.response?.responseText).toBe("body")
+    // The per-attempt upstreamResponse leg carries the settled verdict (not undefined).
+    expect(last?.upstreamResponse).toBeDefined()
+    expect(last?.upstreamResponse?.success).toBe(false)
+    // getErrorMessage formats an HTTPError as "HTTP <status>: <body>"; the formatted
+    // request-outcome error lives on the entry-level failureReason projection (the
+    // upstreamResponse leg carries no error field).
+    expect(entry._index?.derived?.failureReason).toBe("HTTP 400: body")
+    expect(last?.upstreamResponse?.status).toBe(400)
+    expect(last?.upstreamResponse?.rawBody).toBe("body")
     // Model normalized (claude-sonnet-4-5 → claude-sonnet-4.5).
-    expect(last?.response?.model).toBe("claude-sonnet-4.5")
+    expect(last?.upstreamResponse?.model).toBe("claude-sonnet-4.5")
 
     // New client/upstream leg (RFC §S1) reflects the same verdict.
     expect(last?.upstreamResponse).toBeDefined()
@@ -867,11 +881,11 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     )
 
     const last = ctx.toHistoryEntry().attempts?.at(-1)
-    expect(last?.response?.usage).toEqual({ input_tokens: 12, output_tokens: 7 })
-    expect(last?.response?.stop_reason).toBe("max_tokens")
-    expect(last?.response?.content).toBe("half a tool_use")
+    expect(last?.upstreamResponse?.usage).toEqual({ input_tokens: 12, output_tokens: 7 })
+    expect(last?.upstreamResponse?.stopReason).toBe("max_tokens")
+    expect(last?.upstreamResponse?.body).toBe("half a tool_use")
     // Distinguishes real verdict from synth (synth would be {0,0} / null / undefined).
-    expect(last?.response?.usage).not.toEqual({ input_tokens: 0, output_tokens: 0 })
+    expect(last?.upstreamResponse?.usage).not.toEqual({ input_tokens: 0, output_tokens: 0 })
   })
 
   test("fail() with upstreamSucceeded lands the HONEST success:true leg (no error)", () => {
@@ -879,11 +893,12 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     ctx.beginAttempt({})
     ctx.fail("claude-sonnet-4", new Error("proxy rejected malformed tool_use"), undefined, { upstreamSucceeded: true })
 
-    const last = ctx.toHistoryEntry().attempts?.at(-1)
-    expect(last?.response?.success).toBe(true)
-    expect(last?.response?.error).toBeUndefined()
+    const entry = ctx.toHistoryEntry()
+    const last = entry.attempts?.at(-1)
     expect(last?.upstreamResponse?.success).toBe(true)
-    // The request verdict still lives at entry level, not jammed into the leg.
+    // The request verdict still lives at entry level (the failureReason projection), not
+    // jammed into the honest success:true upstreamResponse leg (which carries no error field).
+    expect(entry._index?.derived?.failureReason).toBe("proxy rejected malformed tool_use")
     expect(ctx.state).toBe("failed")
   })
 
@@ -892,13 +907,14 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     ctx.beginAttempt({})
     ctx.abort("claude-sonnet-4-5", { usage: { input_tokens: 5, output_tokens: 3 }, stop_reason: "abort" })
 
-    const last = ctx.toHistoryEntry().attempts?.at(-1)
-    expect(last?.response).toBeDefined()
-    expect(last?.response?.success).toBe(false)
-    expect(last?.response?.error).toBe("client disconnected")
-    expect(last?.response?.model).toBe("claude-sonnet-4.5")
-    expect(last?.response?.usage).toEqual({ input_tokens: 5, output_tokens: 3 })
-    expect(last?.response?.stop_reason).toBe("abort")
+    const entry = ctx.toHistoryEntry()
+    const last = entry.attempts?.at(-1)
+    expect(last?.upstreamResponse).toBeDefined()
+    expect(last?.upstreamResponse?.success).toBe(false)
+    expect(entry._index?.derived?.failureReason).toBe("client disconnected")
+    expect(last?.upstreamResponse?.model).toBe("claude-sonnet-4.5")
+    expect(last?.upstreamResponse?.usage).toEqual({ input_tokens: 5, output_tokens: 3 })
+    expect(last?.upstreamResponse?.stopReason).toBe("abort")
     expect(last?.upstreamResponse?.success).toBe(false)
     expect(last?.upstreamResponse?.model).toBe("claude-sonnet-4.5")
   })
@@ -910,7 +926,7 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     ctx.fail("claude-sonnet-4", new HTTPError("second", 500, "body-2")) // no-op
 
     const last = ctx.toHistoryEntry().attempts?.at(-1)
-    expect(last?.response?.status).toBe(400)
-    expect(last?.response?.responseText).toBe("body-1")
+    expect(last?.upstreamResponse?.status).toBe(400)
+    expect(last?.upstreamResponse?.rawBody).toBe("body-1")
   })
 })

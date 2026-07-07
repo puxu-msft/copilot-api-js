@@ -38,6 +38,7 @@ function toStageRows(entryId: string, stages: Array<StagePayload>): Array<StageR
 
 describe("sqlite/serialize head+stage", () => {
   test("round-trips a HistoryEntry through head + stage rows", () => {
+    // New-shape fixture (P4c-3): client request leg + per-attempt upstreamResponse.
     const sample: HistoryEntry = {
       id: "abc-123",
       sessionId: "sess-1",
@@ -49,27 +50,33 @@ describe("sqlite/serialize head+stage", () => {
       active: false,
       lastUpdatedAt: 1_700_000_001_000,
       transport: "http",
-      inboundRequest: {
+      clientRequest: {
         model: "claude-opus-4-7",
         messages: [{ role: "user", content: "hi" }],
       },
-      outboundResponse: {
-        success: true,
-        model: "claude-opus-4-7",
-        usage: {
-          input_tokens: 10,
-          output_tokens: 5,
-          cache_read_input_tokens: 2,
-          cache_creation_input_tokens: 1,
-          output_tokens_details: { reasoning_tokens: 3 },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 1000,
+          upstreamResponse: {
+            success: true,
+            model: "claude-opus-4-7",
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_read_input_tokens: 2,
+              cache_creation_input_tokens: 1,
+              output_tokens_details: { reasoning_tokens: 3 },
+            },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "hello" },
+          },
         },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "hello" },
-      },
+      ],
     }
 
     const { row, stages } = serializeHeadEntry(sample)
-    // Indexed columns still populated from the entry (Bug-3 fix does not touch them).
+    // Indexed columns derive from the FINAL attempt's upstreamResponse leg.
     expect(row.id).toBe("abc-123")
     expect(row.session_id).toBe("sess-1")
     expect(row.status).toBe("completed")
@@ -79,24 +86,35 @@ describe("sqlite/serialize head+stage", () => {
     expect(row.stop_reason).toBe("end_turn")
 
     // Heavy bodies moved to stage rows, NOT the head blob.
-    const headMeta = decompress(row.blob_gz) as Record<string, unknown>
-    expect(headMeta.inboundRequest).toBeUndefined()
-    expect(headMeta.outboundResponse).toBeUndefined()
+    const headMeta = decompress(row.blob_gz) as { clientRequest?: unknown; attempts?: Array<Record<string, unknown>> }
+    expect(headMeta.clientRequest).toBeUndefined()
+    expect(headMeta.attempts?.[0].upstreamResponse).toBeUndefined()
 
     const restored = assembleFullEntry(row, toStageRows(row.id, stages))
-    expect(restored.inboundRequest.model).toBe("claude-opus-4-7")
-    expect(restored.inboundRequest.messages?.[0].role).toBe("user")
-    expect(restored.outboundResponse?.usage.input_tokens).toBe(10)
-    expect(restored.outboundResponse?.stop_reason).toBe("end_turn")
-    expect((restored.outboundResponse?.content as { content: string }).content).toBe("hello")
+    expect(restored.clientRequest?.model).toBe("claude-opus-4-7")
+    expect(restored.clientRequest?.messages?.[0].role).toBe("user")
+    const finalUpstream = restored.attempts?.at(-1)?.upstreamResponse
+    expect(finalUpstream?.usage?.input_tokens).toBe(10)
+    expect(finalUpstream?.stopReason).toBe("end_turn")
+    expect((finalUpstream?.body as { content: string }).content).toBe("hello")
   })
 
-  test("backward compat: a legacy single-blob row (no stage rows) assembles unchanged", () => {
-    // Simulate an OLD row whose blob holds the FULL entry (pre-split format).
+  test("backward compat: a legacy single-blob row (no stage rows) maps through the read adapter", () => {
+    // NOTE: this exercises the read-time legacy→new adapter (serialize.ts
+    // adaptLegacyLegsInPlace) on a legacy single-blob DB row — the same domain the
+    // coordinator's p4c2-read-adapter.it.test.ts owns as an oracle. It lives here as
+    // pre-existing coverage of assembleFullEntry's zero-stage branch; migrated to
+    // assert the adapter's NEW-leg output (the legacy leg fields were removed in P4c-3).
     const legacyFullBlob = gzipJsonLegacy({
       inboundRequest: { model: "old-model", messages: [{ role: "user", content: "legacy" }] },
-      outboundResponse: { success: true, model: "old-model", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
-      sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
+      attempts: [
+        {
+          index: 0,
+          durationMs: 5,
+          response: { success: true, model: "old-model", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
+          sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
+        },
+      ],
     })
     const row: EntryRow = {
       id: "legacy-1",
@@ -130,9 +148,10 @@ describe("sqlite/serialize head+stage", () => {
     }
 
     const restored = assembleFullEntry(row, [])
-    expect(restored.inboundRequest.model).toBe("old-model")
-    expect(restored.outboundResponse?.model).toBe("old-model")
-    expect(restored.sseEvents?.[0].type).toBe("message_start")
+    // Legacy inboundRequest → clientRequest; per-attempt response → upstreamResponse.
+    expect(restored.clientRequest?.model).toBe("old-model")
+    expect(restored.attempts?.at(-1)?.upstreamResponse?.model).toBe("old-model")
+    expect(restored.attempts?.at(-1)?.upstreamResponse?.sseEvents?.[0].type).toBe("message_start")
   })
 
   test("Bug 3: per-attempt wire/response preserved across retries", () => {
@@ -143,40 +162,41 @@ describe("sqlite/serialize head+stage", () => {
       state: "completed",
       active: false,
       lastUpdatedAt: 9,
-      inboundRequest: { model: "opus" },
+      clientRequest: { model: "opus" },
       attempts: [
         {
           index: 0,
           strategy: "auto-truncate",
           durationMs: 100,
           error: "413 too large",
-          wireRequest: { model: "opus", messageCount: 50, payload: { marker: "attempt0-wire" } },
-          response: { success: false, model: "opus", usage: { input_tokens: 0, output_tokens: 0 }, status: 413, error: "too large", content: null },
+          upstreamRequest: { model: "opus", body: { marker: "attempt0-wire" } },
+          upstreamResponse: { success: false, model: "opus", usage: { input_tokens: 0, output_tokens: 0 }, status: 413, body: null },
         },
         {
           index: 1,
           durationMs: 200,
-          wireRequest: { model: "opus", messageCount: 20, payload: { marker: "attempt1-wire" } },
-          response: { success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, content: { role: "assistant", content: "ok" } },
+          upstreamRequest: { model: "opus", body: { marker: "attempt1-wire" } },
+          upstreamResponse: { success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, body: { role: "assistant", content: "ok" } },
         },
       ],
     }
 
     const { row, stages } = serializeHeadEntry(entry)
-    // Two attempts × (wireRequest + response) = 4 per-attempt stage rows.
-    expect(stages.filter((s) => s.stage === "outbound_request")).toHaveLength(2)
-    expect(stages.filter((s) => s.stage === "outbound_response")).toHaveLength(2)
+    // Two attempts × (upstreamRequest + upstreamResponse) = per-attempt stage rows.
+    expect(stages.filter((s) => s.stage === "upstream_request")).toHaveLength(2)
+    expect(stages.filter((s) => s.stage === "upstream_response")).toHaveLength(2)
 
     const restored = assembleFullEntry(row, toStageRows(row.id, stages))
-    expect(restored.attempts?.[0].wireRequest?.payload).toEqual({ marker: "attempt0-wire" })
-    expect(restored.attempts?.[0].response?.status).toBe(413)
-    expect(restored.attempts?.[1].wireRequest?.payload).toEqual({ marker: "attempt1-wire" })
-    // Top-level mirrors the FINAL attempt.
-    expect((restored.outboundRequest?.payload as { marker: string }).marker).toBe("attempt1-wire")
-    expect(restored.outboundResponse?.success).toBe(true)
+    expect(restored.attempts?.[0].upstreamRequest?.body).toEqual({ marker: "attempt0-wire" })
+    expect(restored.attempts?.[0].upstreamResponse?.status).toBe(413)
+    expect(restored.attempts?.[1].upstreamRequest?.body).toEqual({ marker: "attempt1-wire" })
+    // The upstream track is strictly per-attempt (no top-level mirror); the FINAL
+    // attempt carries the success verdict.
+    expect((restored.attempts?.at(-1)?.upstreamRequest?.body as { marker: string }).marker).toBe("attempt1-wire")
+    expect(restored.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 
-  test("L2/D1: a FAILED buffered-retry attempt's upstream sseEvents persist at its attempt_index", () => {
+  test("L2/D1: a FAILED buffered-retry attempt's upstream frames persist on its own upstreamResponse", () => {
     const entry: HistoryEntry = {
       id: "l2-1",
       endpoint: "anthropic-messages",
@@ -184,47 +204,53 @@ describe("sqlite/serialize head+stage", () => {
       state: "completed",
       active: false,
       lastUpdatedAt: 9,
-      inboundRequest: { model: "opus" },
-      // Top-level sseEvents mirror the FINAL (successful) attempt's upstream frames.
-      sseEvents: [
-        { offsetMs: 1, type: "message_start", raw: '{"type":"message_start"}' },
-        { offsetMs: 2, type: "message_stop", raw: '{"type":"message_stop"}' },
-      ],
+      clientRequest: { model: "opus" },
       attempts: [
         {
           index: 0,
           durationMs: 50,
           error: "Stream closed with error code NGHTTP2_CANCEL",
-          // The RST'd attempt's partial upstream frames — the D1 diagnostic payload.
-          sseEvents: [
-            { offsetMs: 1, type: "message_start", raw: '{"type":"message_start"}' },
-            { offsetMs: 2, type: "content_block_delta", raw: '{"type":"content_block_delta"}' },
-          ],
+          upstreamResponse: {
+            success: false,
+            model: "opus",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            // The RST'd attempt's partial upstream frames — the D1 diagnostic payload.
+            sseEvents: [
+              { offsetMs: 1, type: "message_start", raw: '{"type":"message_start"}' },
+              { offsetMs: 2, type: "content_block_delta", raw: '{"type":"content_block_delta"}' },
+            ],
+          },
         },
         {
           index: 1,
           durationMs: 120,
-          response: { success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, content: { role: "assistant", content: "ok" } },
+          upstreamResponse: {
+            success: true,
+            model: "opus",
+            usage: { input_tokens: 5, output_tokens: 3 },
+            body: { role: "assistant", content: "ok" },
+            // The FINAL (successful) attempt's upstream frames.
+            sseEvents: [
+              { offsetMs: 1, type: "message_start", raw: '{"type":"message_start"}' },
+              { offsetMs: 2, type: "message_stop", raw: '{"type":"message_stop"}' },
+            ],
+          },
         },
       ],
     }
 
     const { row, stages } = serializeHeadEntry(entry)
-    // sse_events stage rows: the top-level (attempt_index -1) + the failed attempt 0 (index 0).
-    // The final attempt (1) does NOT get a duplicate per-attempt sse_events row.
-    const sseStages = stages.filter((s) => s.stage === "sse_events")
-    expect(sseStages.map((s) => s.attemptIndex).sort((a, b) => a - b)).toEqual([-1, 0])
-    // The per-attempt sseEvents are stripped from the head blob (persisted as stage rows).
+    // Upstream frames ride on each attempt's upstream_response stage (RFC §S1) — one per attempt.
+    expect(stages.filter((s) => s.stage === "upstream_response").map((s) => s.attemptIndex).sort((a, b) => a - b)).toEqual([0, 1])
+    // The per-attempt upstreamResponse is stripped from the head blob (persisted as stage rows).
     const headMeta = decompress(row.blob_gz) as { attempts?: Array<Record<string, unknown>> }
-    expect(headMeta.attempts?.[0].sseEvents).toBeUndefined()
+    expect(headMeta.attempts?.[0].upstreamResponse).toBeUndefined()
 
     const restored = assembleFullEntry(row, toStageRows(row.id, stages))
-    // The failed attempt's upstream frames are restored on its attempt slot…
-    expect(restored.attempts?.[0].sseEvents?.map((e) => e.type)).toEqual(["message_start", "content_block_delta"])
-    // …the successful attempt has none (its frames are the top-level mirror)…
-    expect(restored.attempts?.[1].sseEvents).toBeUndefined()
-    // …and the top-level sseEvents stay the FINAL generation's frames.
-    expect(restored.sseEvents?.map((e) => e.type)).toEqual(["message_start", "message_stop"])
+    // The failed attempt's upstream frames are restored on ITS upstreamResponse…
+    expect(restored.attempts?.[0].upstreamResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start", "content_block_delta"])
+    // …and the successful attempt keeps the FINAL generation's frames on ITS upstreamResponse.
+    expect(restored.attempts?.[1].upstreamResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start", "message_stop"])
   })
 
   test("partial/interrupted: missing stages + out-of-bound attempt_index does not throw", () => {
@@ -235,7 +261,7 @@ describe("sqlite/serialize head+stage", () => {
       state: "interrupted",
       active: false,
       lastUpdatedAt: 1,
-      inboundRequest: { model: "opus" },
+      clientRequest: { model: "opus" },
       // Head blob reflects an EARLY snapshot: only attempt 0 known.
       attempts: [{ index: 0, durationMs: 0 }],
     }
@@ -244,15 +270,15 @@ describe("sqlite/serialize head+stage", () => {
     // A stage row for attempt_index=2 exists even though head's attempts only has index 0
     // (head snapshot lagged the stage write before the crash).
     const orphanStage: Array<StageRow> = [
-      { entry_id: row.id, stage: "outbound_request", attempt_index: 2, created_at: 0, blob_gz: compress({ model: "opus", payload: { marker: "lagged" } }) },
+      { entry_id: row.id, stage: "upstream_request", attempt_index: 2, created_at: 0, blob_gz: compress({ model: "opus", body: { marker: "lagged" } }) },
     ]
 
     const restored = assembleFullEntry(row, orphanStage)
     // No throw; a slot for index 2 was created defensively.
     const slot = restored.attempts?.find((a) => a.index === 2)
-    expect(slot?.wireRequest?.payload).toEqual({ marker: "lagged" })
+    expect(slot?.upstreamRequest?.body).toEqual({ marker: "lagged" })
     // Missing legs stay undefined (not fabricated).
-    expect(restored.outboundResponse).toBeUndefined()
+    expect(slot?.upstreamResponse).toBeUndefined()
     expect(restored.state).toBe("interrupted")
   })
 
@@ -264,7 +290,7 @@ describe("sqlite/serialize head+stage", () => {
       state: "completed",
       active: false,
       lastUpdatedAt: 5,
-      inboundRequest: { model: "m" },
+      clientRequest: { model: "m" },
       pipelineInfo: { messageMapping: [0, 1] },
       warningMessages: [{ code: "W", message: "w" }],
     }
@@ -282,8 +308,11 @@ describe("sqlite/serialize head+stage", () => {
       state: "failed",
       active: false,
       lastUpdatedAt: 1,
-      inboundRequest: { model: "m" },
-      outboundResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, error: "boom", content: null },
+      clientRequest: { model: "m" },
+      // error_message derives from the durable `_index.derived.failureReason`
+      // projection (the upstreamResponse leg carries no error field).
+      _index: { derived: { responseSuccess: false, failureReason: "boom" } },
+      attempts: [{ index: 0, durationMs: 1, error: "boom", upstreamResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }],
     }
     const { row } = serializeHeadEntry(entry)
     expect(row.error_message).toBe("boom")
@@ -298,7 +327,7 @@ describe("sqlite/serialize head+stage", () => {
       state: "completed",
       active: false,
       lastUpdatedAt: 1,
-      inboundRequest: { model: "m" },
+      clientRequest: { model: "m" },
     }
     const { row } = serializeHeadEntry(entry, "pending")
     expect(row.status).toBe("pending")
@@ -306,7 +335,7 @@ describe("sqlite/serialize head+stage", () => {
   })
 
   test("B3: request_group dedup frame assembles field-identical to per-stage rows", () => {
-    // A multi-attempt entry exercises per-attempt effective/outbound packing.
+    // A multi-attempt entry exercises per-attempt effectiveSource/upstreamRequest packing.
     const entry: HistoryEntry = {
       id: "dedup-1",
       endpoint: "anthropic-messages",
@@ -314,22 +343,22 @@ describe("sqlite/serialize head+stage", () => {
       state: "completed",
       active: false,
       lastUpdatedAt: 9,
-      inboundRequest: { model: "opus", messages: [{ role: "user", content: "x".repeat(500) }] },
-      sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
+      clientRequest: { model: "opus", messages: [{ role: "user", content: "x".repeat(500) }] },
+      clientResponse: { sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }] },
       attempts: [
         {
           index: 0,
           error: "413",
           durationMs: 1,
-          wireRequest: { model: "opus", payload: { marker: "a0", body: "x".repeat(500) } },
-          response: { success: false, model: "opus", usage: { input_tokens: 0, output_tokens: 0 }, status: 413, content: null },
+          upstreamRequest: { model: "opus", body: { marker: "a0", body: "x".repeat(500) } },
+          upstreamResponse: { success: false, model: "opus", usage: { input_tokens: 0, output_tokens: 0 }, status: 413, body: null },
         },
         {
           index: 1,
           durationMs: 2,
-          effectiveRequest: { model: "opus", payload: { marker: "eff1", body: "x".repeat(500) } },
-          wireRequest: { model: "opus", payload: { marker: "a1", body: "x".repeat(500) } },
-          response: { success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, content: { role: "assistant", content: "ok" } },
+          effectiveSource: { model: "opus", body: { marker: "eff1", body: "x".repeat(500) } },
+          upstreamRequest: { model: "opus", body: { marker: "a1", body: "x".repeat(500) } },
+          upstreamResponse: { success: true, model: "opus", usage: { input_tokens: 5, output_tokens: 3 }, body: { role: "assistant", content: "ok" } },
         },
       ],
     }
@@ -351,9 +380,9 @@ describe("sqlite/serialize head+stage", () => {
     // The dedup frame is a storage encoding only — reassembly must be identical.
     expect(packed).toEqual(unpacked)
     // And the request bodies round-trip verbatim through the frame.
-    expect(packed.attempts?.[0].wireRequest?.payload).toEqual({ marker: "a0", body: "x".repeat(500) })
-    expect(packed.attempts?.[1].effectiveRequest?.payload).toEqual({ marker: "eff1", body: "x".repeat(500) })
-    expect((packed.outboundRequest?.payload as { marker: string }).marker).toBe("a1")
-    expect(packed.sseEvents?.[0].type).toBe("message_start")
+    expect(packed.attempts?.[0].upstreamRequest?.body).toEqual({ marker: "a0", body: "x".repeat(500) })
+    expect(packed.attempts?.[1].effectiveSource?.body).toEqual({ marker: "eff1", body: "x".repeat(500) })
+    expect((packed.attempts?.at(-1)?.upstreamRequest?.body as { marker: string }).marker).toBe("a1")
+    expect(packed.clientResponse?.sseEvents?.[0].type).toBe("message_start")
   })
 })

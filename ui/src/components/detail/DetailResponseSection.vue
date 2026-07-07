@@ -18,7 +18,7 @@ const props = defineProps<{
   responseMessage: MessageContent | null
 }>()
 
-// New final-attempt `upstreamResponse` ?? legacy `outboundResponse` (P4c: drop legacy arm in entry-legs).
+// New final-attempt `upstreamResponse` (legacy `outboundResponse` removed in P4c).
 const resp = computed(() => resolveUpstreamResponse(props.entry))
 </script>
 

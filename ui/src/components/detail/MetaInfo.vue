@@ -23,10 +23,10 @@ const props = defineProps<{
   entry: HistoryEntry
 }>()
 
-// New legs ?? legacy top-level (P4c: drop the legacy arms inside entry-legs).
+// New legs (legacy top-level legs removed in P4c).
 const resp = computed(() => resolveUpstreamResponse(props.entry))
-const model = computed(() => resolveResponseModel(props.entry) || props.entry.model?.requested || props.entry.inboundRequest.model)
-const stream = computed(() => props.entry.clientRequest?.stream ?? props.entry.inboundRequest.stream)
+const model = computed(() => resolveResponseModel(props.entry) || props.entry.model?.requested || props.entry.clientRequest?.model)
+const stream = computed(() => props.entry.clientRequest?.stream)
 const attempts = computed(() => resolveAttemptCount(props.entry))
 const strategy = computed(() => resolveCurrentStrategy(props.entry))
 </script>
@@ -144,18 +144,18 @@ const strategy = computed(() => resolveCurrentStrategy(props.entry))
       <span class="meta-value">{{ formatDuration(entry.queueWaitMs) }}</span>
     </div>
     <div
-      v-if="entry.inboundRequest.max_tokens"
+      v-if="entry.clientRequest?.max_tokens"
       class="meta-row"
     >
       <span class="meta-label">Max Tokens</span>
-      <span class="meta-value">{{ formatNumber(entry.inboundRequest.max_tokens) }}</span>
+      <span class="meta-value">{{ formatNumber(entry.clientRequest.max_tokens) }}</span>
     </div>
     <div
-      v-if="entry.inboundRequest.temperature !== undefined"
+      v-if="entry.clientRequest?.temperature !== undefined"
       class="meta-row"
     >
       <span class="meta-label">Temperature</span>
-      <span class="meta-value">{{ entry.inboundRequest.temperature }}</span>
+      <span class="meta-value">{{ entry.clientRequest.temperature }}</span>
     </div>
     <div
       v-if="entry.durationMs"
@@ -244,11 +244,11 @@ const strategy = computed(() => resolveCurrentStrategy(props.entry))
 
     <!-- Tools -->
     <div
-      v-if="entry.inboundRequest.tools?.length"
+      v-if="entry.clientRequest?.tools?.length"
       class="meta-row"
     >
       <span class="meta-label">Tools</span>
-      <span class="meta-value">{{ entry.inboundRequest.tools.length }} defined</span>
+      <span class="meta-value">{{ entry.clientRequest.tools.length }} defined</span>
     </div>
 
     <!-- Truncation -->

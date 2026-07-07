@@ -20,21 +20,18 @@ import {
 } from "@/composables/entry-legs"
 
 /**
- * NEW-LEG-only positive sample for the Vue read-side resolver (`entry-legs.ts` —
- * the single point every Vue detail consumer routes through). The 100+ existing
- * ui vitest/bun fixtures are all LEGACY-shaped, so they only exercise the
- * `?? legacy` fallback arm; the new-leg READ arm + the non-trivial field-name
- * bridging (`upstreamResponse.stopReason` → `stop_reason`, `.body` → `content`)
- * had ZERO coverage. build/typecheck only prove it compiles + is rollup-pure,
- * NOT that it reads the right field.
+ * NEW-LEG positive sample for the Vue read-side resolver (`entry-legs.ts` — the
+ * single point every Vue detail consumer routes through). Exercises the new-leg
+ * READ path + the non-trivial field-name bridging (`upstreamResponse.stopReason`
+ * → `stop_reason`, `.body` → `content`). build/typecheck only prove it compiles +
+ * is rollup-pure, NOT that it reads the right field.
  *
  * This entry carries ONLY the new legs (per-attempt `upstreamRequest` /
- * `upstreamResponse` / `effectiveSource`, per-entry `clientResponse`) and NO
- * legacy top-level leg (`outboundResponse` / `inboundResponse` / `effectiveRequest`
- * / `outboundRequest` / top-level `sseEvents` / `httpHeaders`). Independent oracle:
- * every asserted value is a distinct literal set ONLY on the new leg, so a
- * legacy-only reader would fall through to `undefined` — proving the resolver
- * truly reaches the new leg rather than passing vacuously.
+ * `upstreamResponse` / `effectiveSource`, per-entry `clientRequest`/`clientResponse`).
+ * The legacy top-level legs (`outboundResponse` / `inboundResponse` / `effectiveRequest`
+ * / `outboundRequest` / top-level `sseEvents` / `httpHeaders`) were removed from the
+ * type in P4c-3, so the resolvers can ONLY reach the new legs. Independent oracle:
+ * every asserted value is a distinct literal set on the new leg.
  */
 
 // --- Independent oracle literals: each set ONLY on the new leg. ---
@@ -86,19 +83,6 @@ function newLegOnlyEntry(): HistoryEntry {
 }
 
 describe("entry-legs new-leg read + field bridging (Vue single-point resolver)", () => {
-  test("fixture guard: legacy top-level legs are genuinely absent (non-vacuous oracle)", () => {
-    const e = newLegOnlyEntry()
-    // If any of these were set, the resolvers could pass via the legacy arm and the
-    // test would be vacuous. Assert they are undefined so a fall-through resolves to
-    // undefined — i.e. any populated result below MUST have come from the new leg.
-    expect(e.outboundResponse).toBeUndefined()
-    expect(e.inboundResponse).toBeUndefined()
-    expect(e.effectiveRequest).toBeUndefined()
-    expect(e.outboundRequest).toBeUndefined()
-    expect(e.sseEvents).toBeUndefined()
-    expect(e.httpHeaders).toBeUndefined()
-  })
-
   test("resolveUpstreamResponse reads new upstreamResponse leg + bridges stopReason→stop_reason, body→content", () => {
     const view = resolveUpstreamResponse(newLegOnlyEntry())
     expect(view).toBeDefined()

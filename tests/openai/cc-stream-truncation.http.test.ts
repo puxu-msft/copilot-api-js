@@ -89,7 +89,7 @@ describe("CC v4 — upstream stream truncation detection", () => {
     const entry = getHistory({ endpoint: "openai-chat-completions", limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
-    expect(String(entry.outboundResponse?.error)).toContain("truncated")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(String(entry._index?.derived?.failureReason)).toContain("truncated")
   })
 })

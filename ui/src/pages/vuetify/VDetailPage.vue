@@ -50,8 +50,8 @@ const loadError = shallowRef<string | null>(null)
 
 const title = computed(() => {
   if (!entry.value) return "Loading..."
-  // New legs (`upstreamResponse.model` / `model.requested`) ?? legacy top-level (P4c: drop legacy arms in entry-legs).
-  return resolveResponseModel(entry.value) || entry.value.model?.requested || entry.value.inboundRequest.model || "Request"
+  // New legs (`upstreamResponse.model` / `model.requested` / `clientRequest.model`).
+  return resolveResponseModel(entry.value) || entry.value.model?.requested || entry.value.clientRequest?.model || "Request"
 })
 
 const subtitle = computed(() => {

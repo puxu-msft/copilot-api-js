@@ -14,6 +14,7 @@ import type {
 
 import {
   //
+  resolveHeaders,
   resolveUpstreamResponse,
   resolveUpstreamSse,
 } from "./entry-legs"
@@ -87,10 +88,10 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     const nodes: Array<TocNode> = []
 
     // ── request ──
-    const messages = entry.value.inboundRequest.messages ?? []
+    const messages = entry.value.clientRequest?.messages ?? []
     const requestChildren: Array<TocNode> = []
 
-    if (entry.value.inboundRequest.system) {
+    if (entry.value.clientRequest?.system) {
       requestChildren.push({ id: "request", label: "system", icon: "mdi-cog" })
     }
 
@@ -153,7 +154,8 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     // ── httpHeaders ──
     // Single node (no leg children): headers render per-stage as a single leg,
     // so the outline entry just links to that stage's headers section.
-    if (entry.value.httpHeaders) {
+    const headerLegs = resolveHeaders(entry.value)
+    if (Object.values(headerLegs).some((h) => h !== undefined)) {
       nodes.push({
         id: "httpHeaders",
         label: "http headers",

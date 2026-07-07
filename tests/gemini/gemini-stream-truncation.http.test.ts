@@ -103,11 +103,11 @@ describe("Gemini v4 — upstream stream truncation detection", () => {
     const entry = getHistory({ endpoint: "gemini-generate-content", limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
-    expect(String(entry.outboundResponse?.error)).toContain("truncated")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(String(entry._index?.derived?.failureReason)).toContain("truncated")
     // The synthesized Gemini error frame the client received is recorded in the forwarded
     // (proxy→client) track — asserts the writeSynthetic→recordForwarded→fail ordering on the Gemini path.
-    expect((entry.inboundResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
+    expect((entry.clientResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
   })
 
   test("truncation with a complete buffered tool-call → the functionCall is still forwarded (no content drop)", async () => {

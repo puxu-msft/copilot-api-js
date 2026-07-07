@@ -26,7 +26,6 @@ import type {
   //
   HistoryEntryData,
   RequestContext,
-  ResponseData,
 } from "~/lib/context/types"
 import type {
   //
@@ -37,11 +36,9 @@ import type {
 import { buildHistoryActivityPatch } from "~/lib/context/activity-summary"
 import {
   //
-  legFromEffective,
   legFromEffectiveSource,
   legFromUpstreamRequest,
   legFromUpstreamResponse,
-  legFromWire,
   pipelineFromAttempt,
   synthesizeAttemptErrorResponse,
 } from "~/lib/context/request"
@@ -53,6 +50,7 @@ import {
 import {
   //
   finalizeEntry,
+  getInFlightEntry,
   insertEntry,
   isHistoryEnabled,
   persistEntryEager,
@@ -118,9 +116,10 @@ export class HistorySink {
       case "request.state_changed": {
         // Mirror the legacy consumers.ts state_changed branch — apply the
         // full activity patch (rawPath/startedAt/state/active/lastUpdatedAt/
-        // queueWaitMs/attemptCount/currentStrategy/durationMs/transport)
-        // so a head-row read during a long-running request shows up-to-date
-        // duration / attempt count, not the stale insert-time values.
+        // queueWaitMs/durationMs/transport) so a head-row read during a
+        // long-running request shows up-to-date duration, not stale insert-time
+        // values. (attemptCount/currentStrategy now live in `_index.derived`,
+        // recomputed at read time — not head-row columns.)
         const s = event.ctx.summary
         if (s) {
           updateEntry(event.ctx.id, {
@@ -130,8 +129,6 @@ export class HistorySink {
             active: s.active,
             lastUpdatedAt: s.lastUpdatedAt,
             queueWaitMs: s.queueWaitMs,
-            attemptCount: s.attemptCount,
-            currentStrategy: s.currentStrategy,
             durationMs: s.durationMs,
             ...(s.transport ? { transport: s.transport } : {}),
           })
@@ -197,19 +194,11 @@ export class HistorySink {
         // is intentionally absent from updateEntry's Pick<> allowlist).
         process: getProcessIdentity(),
         ...buildHistoryActivityPatch(ctx),
-        inboundRequest: {
-          model: orig.model,
-          messages: orig.messages as Array<MessageContent> | undefined,
-          stream: orig.stream,
-          tools: orig.tools as HistoryEntry["inboundRequest"]["tools"],
-          system: orig.system as HistoryEntry["inboundRequest"]["system"],
-        },
-        // New leg (RFC §3) dual-write on the EAGER insert too, so an in-flight /
-        // interrupted row (process dies before terminal) still carries `model` +
-        // `clientRequest`. `resolved`/`multiplier` are unknown at request entry (model
-        // not yet resolved) — the terminal `toHistoryEntry` completes them. Mirrors the
-        // subset the eager `inboundRequest` above carries (max_tokens/temperature/
-        // thinking are derivable from `body` and filled at terminal).
+        // New leg (RFC §3): `model` + `clientRequest` on the EAGER insert too, so an
+        // in-flight / interrupted row (process dies before terminal) still carries them.
+        // `resolved`/`multiplier` are unknown at request entry (model not yet resolved) —
+        // the terminal `toHistoryEntry` completes them. `max_tokens`/`temperature`/`thinking`
+        // are derivable from `body` and filled at terminal.
         ...(orig.model !== undefined && { model: { requested: orig.model } }),
         clientRequest: {
           method: ctx.method,
@@ -242,10 +231,22 @@ export class HistorySink {
       return
     }
     if (field === "httpHeaders" && ctx.httpHeaders) {
-      // RFC Phase 5: mirror the live captured header legs onto the in-flight entry so
-      // streaming requests show httpHeaders before they finalize. Reads the full
-      // headers off the ctx ref (not carried in the lightweight snapshot).
-      updateEntry(ctx.id, { httpHeaders: ctx.httpHeaders })
+      // Phase 5 in-flight visibility: mirror the live captured CLIENT-leg headers
+      // onto the in-flight entry so a streaming request shows request/response
+      // headers before it finalizes. Merged into the existing client legs (shallow
+      // in-flight merge would otherwise clobber the leg). Upstream (per-attempt)
+      // headers ride the attempt stages, not this top-level mirror.
+      const existing = getInFlightEntry(ctx.id)
+      if (existing) {
+        const patch: Partial<Pick<HistoryEntry, "clientRequest" | "clientResponse">> = {}
+        if (ctx.httpHeaders.inboundRequest) {
+          patch.clientRequest = { ...existing.clientRequest, headers: ctx.httpHeaders.inboundRequest } as HistoryEntry["clientRequest"]
+        }
+        if (ctx.httpHeaders.inboundResponse) {
+          patch.clientResponse = { ...existing.clientResponse, headers: ctx.httpHeaders.inboundResponse } as HistoryEntry["clientResponse"]
+        }
+        if (patch.clientRequest || patch.clientResponse) updateEntry(ctx.id, patch)
+      }
       return
     }
     // Other field names (e.g. future additions) are intentionally ignored —
@@ -253,12 +254,11 @@ export class HistorySink {
   }
 
   /**
-   * Write a terminal entry to SQLite. Mirrors the body of
-   * `handleHistoryEvent`'s `completed/failed/aborted` branch in
-   * `consumers.ts` 1:1.
+   * Write a terminal entry to SQLite. Projects the producer's `HistoryEntryData`
+   * into the persisted `HistoryEntry` — new client/upstream legs only (the legacy
+   * top-level legs were removed in P4c-3).
    */
   private onTerminal(entryData: HistoryEntryData): void {
-    const response = toHistoryResponse(entryData)
     updateEntry(entryData.id, {
       rawPath: entryData.rawPath,
       sessionId: entryData.sessionId,
@@ -267,54 +267,19 @@ export class HistorySink {
       active: entryData.active,
       lastUpdatedAt: entryData.lastUpdatedAt,
       queueWaitMs: entryData.queueWaitMs,
-      attemptCount: entryData.attemptCount,
-      currentStrategy: entryData.currentStrategy,
-      outboundResponse: response,
       startedAt: entryData.startedAt,
       endedAt: entryData.endedAt,
       durationMs: entryData.durationMs,
       transport: entryData.transport,
-      sseEvents: entryData.sseEvents,
-      // Top-level failure-reason projection (proxy verdict for non-success terminals). The explicit
-      // field projection must carry it through HistoryEntryData→HistoryEntry, else it never persists
-      // (the head blob is built from THIS stored entry, not the event's entryData).
-      ...(entryData.failureReason && { failureReason: entryData.failureReason }),
-      ...(entryData.inboundResponse && { inboundResponse: entryData.inboundResponse }),
       ...(entryData.warningMessages && { warningMessages: entryData.warningMessages }),
-      ...(entryData.effectiveRequest && {
-        effectiveRequest: {
-          model: entryData.effectiveRequest.model,
-          format: entryData.effectiveRequest.format,
-          messageCount: entryData.effectiveRequest.messageCount,
-          messages: entryData.effectiveRequest.messages as NonNullable<HistoryEntry["effectiveRequest"]>["messages"],
-          system: entryData.effectiveRequest.system as NonNullable<HistoryEntry["effectiveRequest"]>["system"],
-          payload: entryData.effectiveRequest.payload,
-        },
-      }),
-      ...(entryData.outboundRequest && {
-        outboundRequest: {
-          model: entryData.outboundRequest.model,
-          format: entryData.outboundRequest.format,
-          messageCount: entryData.outboundRequest.messageCount,
-          messages: entryData.outboundRequest.messages as NonNullable<HistoryEntry["outboundRequest"]>["messages"],
-          system: entryData.outboundRequest.system as NonNullable<HistoryEntry["outboundRequest"]>["system"],
-          payload: entryData.outboundRequest.payload,
-          // RFC Phase 3: ② per-attempt/outbound request headers (the explicit field
-          // projection must carry the new leg field through HistoryEntryData→HistoryEntry).
-          ...(entryData.outboundRequest.headers && { headers: entryData.outboundRequest.headers }),
-        },
-      }),
-      ...(entryData.httpHeaders && { httpHeaders: entryData.httpHeaders }),
-      // New client leg (RFC §2.1) — dual-written ALONGSIDE the legacy inboundResponse
-      // above. The producer (toHistoryEntry) built it from the forwarded response.
-      ...(entryData.clientResponse && { clientResponse: entryData.clientResponse as HistoryEntry["clientResponse"] }),
-      // New parent/leg/projection fields (RFC §3) — dual-written ALONGSIDE the legacy
-      // top-level fields. The producer (toHistoryEntry) built them; the explicit field
-      // projection must carry them through HistoryEntryData→HistoryEntry (an explicit-
-      // projection sink silently drops any field it forgets to copy). `model`/`preprocessing`/
-      // `_index` ride the head-meta blob; `clientRequest` is stage-backed (client_request).
+      // New parent/leg/projection fields (RFC §3). The producer (toHistoryEntry) built
+      // them; the explicit field projection must carry them through HistoryEntryData→
+      // HistoryEntry (an explicit-projection sink silently drops any field it forgets to
+      // copy). `model`/`preprocessing`/`_index` ride the head-meta blob; `clientRequest`/
+      // `clientResponse` are stage-backed (client_request / client_response).
       ...(entryData.model && { model: entryData.model as HistoryEntry["model"] }),
       ...(entryData.clientRequest && { clientRequest: entryData.clientRequest as HistoryEntry["clientRequest"] }),
+      ...(entryData.clientResponse && { clientResponse: entryData.clientResponse as HistoryEntry["clientResponse"] }),
       ...(entryData.preprocessing && { preprocessing: entryData.preprocessing }),
       ...(entryData._index && { _index: entryData._index as HistoryEntry["_index"] }),
       ...(entryData.attempts && { attempts: toHistoryAttempts(entryData.attempts) }),
@@ -327,7 +292,7 @@ export class HistorySink {
 }
 
 // ============================================================================
-// Helpers (kept in sync with the legacy consumers.ts — single source now)
+// Helpers
 // ============================================================================
 
 /**
@@ -336,7 +301,7 @@ export class HistorySink {
  * SHAPE as `extractStagePayloads` (both funnel through the P1 leg builders), so an
  * interrupted row (only these eager stages written) reassembles identically to a
  * finalized row — otherwise in-flight/interrupted rows diverge structurally from
- * finalized ones (FAIL-1). Exported for the P2 eager-path parity test.
+ * finalized ones (FAIL-1). Exported for the eager-path parity test.
  */
 export function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
   const a = ctx.currentAttempt
@@ -344,18 +309,14 @@ export function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
   // A failed attempt carries no captured `response`; fall back to a response
   // synthesized from its upstream HTTPError body — IDENTICAL to the finalized
   // producer (`toHistoryEntry`), so an interrupted row (only these eager stages
-  // written) reassembles with the SAME per-attempt response/upstream_response
-  // stages as a finalized row (FAIL-1). No-op when the attempt already has a
-  // response or its error carries no upstream body.
+  // written) reassembles with the SAME per-attempt upstream_response stage as a
+  // finalized row (FAIL-1). No-op when the attempt already has a response or its
+  // error carries no upstream body.
   const attemptResponse = a.response ?? synthesizeAttemptErrorResponse(a)
   const stages: Array<StagePayload> = []
-  if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: a.index, payload: legFromEffective(a.effectiveRequest) })
-  if (a.wireRequest) stages.push({ stage: STAGE.outboundRequest, attemptIndex: a.index, payload: legFromWire(a.wireRequest) })
-  if (attemptResponse) stages.push({ stage: STAGE.outboundResponse, attemptIndex: a.index, payload: responseDataToHistory(attemptResponse) })
-  // ─── New per-attempt leg stages (RFC §3) — dual-written ALONGSIDE the legacy
-  //     stages above, mirroring extractStagePayloads' new-stage shape (FAIL-1). The
-  //     upstreamResponse layers on per-attempt response headers + the attempt's own
-  //     committed frames (top-level trailers/frames resolve at finalize). ───
+  // New per-attempt leg stages (RFC §3). The upstreamResponse layers on per-attempt
+  // response headers + the attempt's own committed frames (top-level trailers/frames
+  // resolve at finalize).
   if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: legFromEffectiveSource(a.effectiveRequest, pipelineFromAttempt(a)) })
   if (a.wireRequest) stages.push({ stage: STAGE.upstreamRequest, attemptIndex: a.index, payload: legFromUpstreamRequest(a.wireRequest) })
   if (attemptResponse) {
@@ -372,30 +333,6 @@ export function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
   return stages
 }
 
-function toHistoryResponse(entryData: HistoryEntryData): HistoryEntry["outboundResponse"] | undefined {
-  if (!entryData.outboundResponse) return undefined
-  return responseDataToHistory(entryData.outboundResponse)
-}
-
-function responseDataToHistory(r: ResponseData): NonNullable<HistoryEntry["outboundResponse"]> {
-  return {
-    success: r.success,
-    model: r.model,
-    usage: {
-      input_tokens: r.usage.input_tokens,
-      output_tokens: r.usage.output_tokens,
-      cache_read_input_tokens: r.usage.cache_read_input_tokens,
-      cache_creation_input_tokens: r.usage.cache_creation_input_tokens,
-      output_tokens_details: r.usage.output_tokens_details,
-    },
-    stop_reason: r.stop_reason,
-    error: r.error,
-    status: r.status,
-    content: r.content as MessageContent | null,
-    rawBody: r.responseText,
-  }
-}
-
 function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry["attempts"] {
   return attempts?.map((a) => ({
     index: a.index,
@@ -407,18 +344,12 @@ function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry
     // through from the producer so terminal entries carry per-attempt timing.
     startedAt: a.startedAt,
     waitMs: a.waitMs,
-    truncation: a.truncation,
-    sanitization: a.sanitization,
-    effectiveMessageCount: a.effectiveMessageCount,
-    effectiveRequest: a.effectiveRequest as NonNullable<HistoryEntry["attempts"]>[number]["effectiveRequest"],
-    wireRequest: a.wireRequest as NonNullable<HistoryEntry["attempts"]>[number]["wireRequest"],
-    response: a.response ? responseDataToHistory(a.response) : undefined,
     sseEvents: a.sseEvents,
     responseHeaders: a.responseHeaders,
     // ─── New per-attempt legs (RFC §3) — copied through from the producer
     //     (toHistoryEntry already built them via the P1 leg builders). Cast bridges
     //     the producer-side `unknown`-based DTOs to the owner-side MessageContent
-    //     shapes (structurally identical). Dual-written alongside the legacy legs. ───
+    //     shapes (structurally identical). ───
     ...(a.effectiveSource && { effectiveSource: a.effectiveSource as NonNullable<HistoryEntry["attempts"]>[number]["effectiveSource"] }),
     ...(a.upstreamRequest && { upstreamRequest: a.upstreamRequest as NonNullable<HistoryEntry["attempts"]>[number]["upstreamRequest"] }),
     ...(a.upstreamResponse && { upstreamResponse: a.upstreamResponse as NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"] }),

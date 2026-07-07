@@ -17,9 +17,9 @@ const props = defineProps<{ attempts: NonNullable<HistoryEntry["attempts"]> }>()
 
 type Attempt = NonNullable<HistoryEntry["attempts"]>[number]
 
-/** Wire-request messages for an attempt: new `upstreamRequest.messages` ?? legacy `wireRequest.messages` (P4c: drop legacy arm). */
+/** Wire-request messages for an attempt: new `upstreamRequest.messages` (legacy `wireRequest.messages` removed in P4c). */
 function attemptMessages(a: Attempt): Array<MessageContent> | undefined {
-  return a.upstreamRequest?.messages ?? a.wireRequest?.messages
+  return a.upstreamRequest?.messages
 }
 
 // Only attempts that actually captured a wire request body can be diffed.

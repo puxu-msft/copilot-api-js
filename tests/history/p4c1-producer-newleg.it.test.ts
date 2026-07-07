@@ -3,19 +3,16 @@
  *
  * P4a/P4b migrated the read consumers to the new client/upstream legs
  * (`model{}` / `_index.derived` / `attempts[].upstreamResponse` / `clientResponse`),
- * but the PRODUCER (`toHistoryEntry`) did not yet POPULATE `model` / `clientRequest`
- * / `_index.derived` / `preprocessing` / `attempts[].{startedAt,waitMs,
- * effectiveSource.pipeline}` — so the resolver's `new ?? legacy` chain kept
- * falling through to the legacy leg. This file drives a REAL RequestContext through
- * `toHistoryEntry()` and asserts:
+ * and P4c-3 REMOVED the legacy legs entirely — so the PRODUCER (`toHistoryEntry`)
+ * must now POPULATE `model` / `clientRequest` / `_index.derived` / `preprocessing` /
+ * `attempts[].{startedAt,waitMs,effectiveSource.pipeline,upstreamResponse}` as the
+ * SOLE source (no legacy fallback remains). This file drives a REAL RequestContext
+ * through `toHistoryEntry()` and asserts:
  *
- *   1. Every new field is populated, and its value is SEMANTICALLY EQUIVALENT to the
- *      legacy field it mirrors (so a consumer switched to the new leg reads the same
- *      value).
- *   2. The migrated consumers (entry-view resolvers + telemetry model dimension) now
- *      read from the REAL populated new legs — proven with the "delete the legacy
- *      top-level, assert the read is still correct" technique (the read MUST have
- *      come from `_index.derived` / `upstreamResponse` / `model`, not the deleted leg).
+ *   1. Every new field is populated with the correct (concrete) value.
+ *   2. The migrated consumers (entry-view resolvers + telemetry model dimension) read
+ *      from the REAL populated new legs — the ONLY source now that the legacy legs are
+ *      gone.
  */
 
 import {
@@ -70,6 +67,26 @@ afterEach(() => {
 const INBOUND_MESSAGES = [{ role: "user", content: "hello there" }]
 const INBOUND_SYSTEM = "you are a helpful assistant"
 const INBOUND_TOOLS = [{ name: "get_weather", description: "get weather" }]
+const INBOUND_THINKING = { type: "enabled", budget_tokens: 1024 }
+
+// Pipeline records applied per attempt (hoisted so the assertions can compare the
+// producer's `effectiveSource.pipeline` against the exact input objects).
+const SANITIZATION = {
+  totalBlocksRemoved: 1,
+  orphanedToolUseCount: 0,
+  orphanedToolResultCount: 0,
+  fixedNameCount: 0,
+  emptyTextBlocksRemoved: 1,
+  emptyThinkingBlocksRemoved: 0,
+  systemReminderRemovals: 0,
+}
+const TRUNCATION = {
+  wasTruncated: true,
+  removedMessageCount: 2,
+  originalTokens: 9000,
+  compactedTokens: 4000,
+  processingTimeMs: 42,
+}
 
 /**
  * Drive a REAL RequestContext through a full successful multi-attempt flow (with a
@@ -93,28 +110,11 @@ function driveSuccess(): HistoryEntry {
       tools: INBOUND_TOOLS,
       max_tokens: 512,
       temperature: 0.7,
-      thinking: { type: "enabled", budget_tokens: 1024 },
+      thinking: INBOUND_THINKING,
     },
   })
   // One-time inbound preprocessing (non-per-attempt).
   ctx.setPipelineInfo({ preprocessing: { strippedReadTagCount: 2, dedupedToolCallCount: 1 } })
-
-  const sanitization = {
-    totalBlocksRemoved: 1,
-    orphanedToolUseCount: 0,
-    orphanedToolResultCount: 0,
-    fixedNameCount: 0,
-    emptyTextBlocksRemoved: 1,
-    emptyThinkingBlocksRemoved: 0,
-    systemReminderRemovals: 0,
-  }
-  const truncation = {
-    wasTruncated: true,
-    removedMessageCount: 2,
-    originalTokens: 9000,
-    compactedTokens: 4000,
-    processingTimeMs: 42,
-  }
 
   const effective = {
     model: RESOLVED,
@@ -133,13 +133,13 @@ function driveSuccess(): HistoryEntry {
 
   // Attempt 0 — waits on a rate limit, sanitizes, then fails (no response).
   ctx.beginAttempt({ strategy: "primary", waitMs: 250 })
-  ctx.setAttemptSanitization(sanitization)
+  ctx.setAttemptSanitization(SANITIZATION)
   ctx.setAttemptEffectiveRequest(effective)
   ctx.setAttemptWireRequest(wire)
   ctx.setAttemptError({ type: "server_error", status: 500, message: "HTTP 500", raw: new HTTPError("HTTP 500", 500, "{}") })
 
   // Attempt 1 — retries with a truncation, succeeds.
-  ctx.beginAttempt({ strategy: "server-error-retry", waitMs: 500, truncation })
+  ctx.beginAttempt({ strategy: "server-error-retry", waitMs: 500, truncation: TRUNCATION })
   ctx.setAttemptEffectiveRequest(effective)
   ctx.setAttemptWireRequest(wire)
   ctx.complete({ success: true, model: RESOLVED, usage: { input_tokens: 100, output_tokens: 50 }, content: { role: "assistant", content: "hi" } })
@@ -158,7 +158,7 @@ function driveFailure(): HistoryEntry {
 }
 
 // ============================================================================
-// 1. Producer populates every new field + semantic equivalence to legacy.
+// 1. Producer populates every new field with the correct concrete value.
 // ============================================================================
 
 describe("P4c-1 producer — model{}", () => {
@@ -168,9 +168,9 @@ describe("P4c-1 producer — model{}", () => {
     expect(entry.model?.requested).toBe(REQUESTED)
     expect(entry.model?.resolved).toBe(RESOLVED)
     expect(entry.model?.multiplier).toBe(MULTIPLIER)
-    // Semantic equivalence to the legacy fields the new leg replaces.
-    expect(entry.model?.requested).toBe(entry.inboundRequest.model)
-    expect(entry.model?.resolved).toBe(entry.outboundResponse?.model)
+    // Consistency with the new legs the `model{}` parent key hoists from.
+    expect(entry.model?.requested).toBe(entry.clientRequest?.model)
+    expect(entry.model?.resolved).toBe(entry.attempts?.at(-1)?.upstreamResponse?.model)
     // NOTE: the top-level `entry.multiplier` is injected by the SINK
     // (buildHistoryActivityPatch), not by toHistoryEntry — so it is absent when the
     // producer is tested in isolation. Both derive from the SAME state.modelIndex
@@ -179,22 +179,19 @@ describe("P4c-1 producer — model{}", () => {
 })
 
 describe("P4c-1 producer — clientRequest structured projection (R1-W7)", () => {
-  test("mirrors inboundRequest + carries body/format/method/path", () => {
+  test("mirrors the inbound request + carries body/format/method/path", () => {
     const entry = driveSuccess()
     const cr = entry.clientRequest
     expect(cr).toBeDefined()
-    // Structured projections mirror the deprecated inboundRequest byte-for-byte.
-    expect(cr?.model).toBe(entry.inboundRequest.model)
-    expect(cr?.messages).toEqual(entry.inboundRequest.messages)
-    expect(cr?.system).toEqual(entry.inboundRequest.system)
-    expect(cr?.tools).toEqual(entry.inboundRequest.tools)
-    expect(cr?.stream).toBe(entry.inboundRequest.stream)
-    expect(cr?.max_tokens).toBe(entry.inboundRequest.max_tokens)
-    expect(cr?.temperature).toBe(entry.inboundRequest.temperature)
-    expect(cr?.thinking).toEqual(entry.inboundRequest.thinking)
-    // Concrete values (proves the projection is real, not just self-consistent).
+    // Structured projections mirror the inbound request (the client alias model + raw inputs).
+    expect(cr?.model).toBe(REQUESTED)
+    expect(cr?.messages).toEqual(INBOUND_MESSAGES)
+    expect(cr?.system).toEqual(INBOUND_SYSTEM)
+    expect(cr?.tools).toEqual(INBOUND_TOOLS)
+    expect(cr?.stream).toBe(true)
     expect(cr?.max_tokens).toBe(512)
     expect(cr?.temperature).toBe(0.7)
+    expect(cr?.thinking).toEqual(INBOUND_THINKING)
     // New captures: body (SoT) + format + method + path.
     expect(cr?.format).toBe("openai-chat-completions")
     expect(cr?.method).toBe("POST")
@@ -212,21 +209,19 @@ describe("P4c-1 producer — _index.derived (recompute-only, three-point sync)",
     // Recompute invariant: equals the exact field the consumer reads.
     expect(d?.responseSuccess).toBe(entry.attempts?.at(-1)?.upstreamResponse?.success)
     expect(d?.currentStrategy).toBe("server-error-retry")
-    expect(d?.currentStrategy).toBe(entry.currentStrategy)
     expect(d?.attemptCount).toBe(2)
-    expect(d?.attemptCount).toBe(entry.attemptCount)
+    expect(d?.attemptCount).toBe(entry.attempts?.length)
     expect(d?.failureReason).toBeUndefined()
   })
 
-  test("failure: responseSuccess=false + failureReason mirrors entry.failureReason", () => {
+  test("failure: responseSuccess=false + failureReason carries the error", () => {
     const entry = driveFailure()
     const d = entry._index?.derived
     expect(d?.responseSuccess).toBe(false)
     expect(d?.responseSuccess).toBe(entry.attempts?.at(-1)?.upstreamResponse?.success)
     // getErrorMessage prefixes the HTTP status; the exact string is unimportant — the
-    // load-bearing invariant is that the recompute equals the entry-level projection.
+    // load-bearing signal is that the recompute captures the failure reason.
     expect(d?.failureReason).toContain("rate limited")
-    expect(d?.failureReason).toBe(entry.failureReason)
     expect(d?.attemptCount).toBe(1)
   })
 })
@@ -244,13 +239,14 @@ describe("P4c-1 producer — attempts[].startedAt / waitMs / effectiveSource.pip
 
   test("effectiveSource.pipeline aggregates the attempt's truncation + sanitization", () => {
     const entry = driveSuccess()
-    // Attempt 0 had a sanitization pass (no truncation).
+    // Attempt 0 had a sanitization pass (no truncation). The producer wraps the single
+    // record in a one-element array to match PipelineInfo.sanitization: Array<…>.
     const p0 = entry.attempts?.[0]?.effectiveSource?.pipeline
-    expect(p0?.sanitization).toEqual([entry.attempts![0].sanitization!])
+    expect(p0?.sanitization).toEqual([SANITIZATION])
     expect(p0?.truncation).toBeUndefined()
     // Attempt 1 had a truncation (no sanitization).
     const p1 = entry.attempts?.[1]?.effectiveSource?.pipeline
-    expect(p1?.truncation).toEqual(entry.attempts![1].truncation!)
+    expect(p1?.truncation).toEqual(TRUNCATION)
     expect(p1?.sanitization).toBeUndefined()
   })
 })
@@ -264,20 +260,14 @@ describe("P4c-1 producer — entry.preprocessing", () => {
 })
 
 // ============================================================================
-// 2. Migrated consumers read the REAL populated new legs (delete-legacy technique).
+// 2. Migrated consumers read the REAL populated new legs (sole source now).
 // ============================================================================
 
-describe("P4c-1 — migrated consumers read the populated new legs (not the legacy fallback)", () => {
-  test("entry-view resolvers read new legs after the legacy top-level is deleted", () => {
+describe("P4c-1 — migrated consumers read the populated new legs", () => {
+  test("entry-view resolvers read the new legs the producer populated", () => {
     const entry = driveSuccess()
-    // Strip the DEPRECATED legacy top-level legs the resolvers fall back to, so a
-    // correct read MUST come from `_index.derived` / `attempts[final].upstreamResponse`.
-    delete entry.outboundResponse
-    delete entry.outboundRequest
-    delete entry.effectiveRequest
-    entry.attemptCount = undefined
-    entry.currentStrategy = undefined
-
+    // The legacy top-level legs are gone (P4c-3), so a correct read MUST come from
+    // `_index.derived` / `attempts[final].upstreamResponse`.
     expect(resolveResponseSuccess(entry)).toBe(true)
     expect(resolveResponseModel(entry)).toBe(RESOLVED)
     expect(resolveResponseUsage(entry)).toEqual({ input_tokens: 100, output_tokens: 50 })
@@ -285,18 +275,16 @@ describe("P4c-1 — migrated consumers read the populated new legs (not the lega
     expect(resolveCurrentStrategy(entry)).toBe("server-error-retry")
   })
 
-  test("telemetry model dimension reads model.resolved after outboundResponse is deleted", () => {
+  test("telemetry model dimension reads model.resolved", () => {
     const entry = driveSuccess() as unknown as Parameters<(typeof TELEMETRY_DIMENSIONS)[number]["extract"]>[0]
-    delete (entry as { outboundResponse?: unknown }).outboundResponse
     const modelDim = TELEMETRY_DIMENSIONS.find((d) => d.name === "model")!
     // The ctx-snapshot arg is unused by the model dimension; pass a minimal stub.
     const value = modelDim.extract(entry, { id: "x", endpoint: "openai-chat-completions", method: "POST", path: "/", state: "completed", startTime: 0, queueWaitMs: 0 })
     expect(value).toBe(RESOLVED)
   })
 
-  test("failure entry: resolveResponseSuccess=false from _index.derived after deleting outboundResponse", () => {
+  test("failure entry: resolveResponseSuccess=false from _index.derived / upstreamResponse", () => {
     const entry = driveFailure()
-    delete entry.outboundResponse
     expect(resolveResponseSuccess(entry)).toBe(false)
   })
 })

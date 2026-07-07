@@ -74,7 +74,7 @@ function querySessionUserPreview(db: Database, sessionId: string, edge: "first" 
   } | null
   if (!row) return ""
   const entry = getEntryById(row.id)
-  const messages = entry?.inboundRequest.messages
+  const messages = entry?.clientRequest?.messages
   if (!messages || messages.length === 0) return ""
   if (edge === "first") {
     for (const msg of messages) {

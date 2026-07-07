@@ -1,17 +1,21 @@
 /**
- * P2 — serialize/assemble the NEW client/upstream leg stages (RFC §3).
+ * P2/P4c — serialize/assemble the client/upstream leg stages (RFC §3), post-P4c-3.
  *
- * Locks the additive-coexistence contract introduced in P2:
- *   - `extractStagePayloads` emits the new stages (`client_response` /
- *     `effective_source` / `upstream_request` / `upstream_response`) ALONGSIDE the
- *     legacy ones, and `assembleFullEntry` reassembles them into the new legs.
+ * Locks the new-leg stage contract:
+ *   - `extractStagePayloads` emits ONLY the new stages (`client_request` /
+ *     `client_response` / `effective_source` / `upstream_request` /
+ *     `upstream_response`) — the legacy stages were removed in P4c-3 — and
+ *     `assembleFullEntry` reassembles them into the new legs.
  *   - Upstream frames land in `attempts[i].upstreamResponse.sseEvents` (RFC §S1),
  *     `upstreamRequest.messages` survives (R4-FAIL-A), and `upstreamResponse`'s
  *     rich fields (`success`/`trailers`/`rawBody`) round-trip.
+ *   - The request-side legs (effective_source/upstream_request) fold into the
+ *     request_group dedup frame; response/client legs stay standalone.
  *   - FAIL-1: the EAGER stage path (`collectAttemptStages`, the in-flight second
  *     producer) emits the SAME new-stage shape as the finalized
  *     `extractStagePayloads`, so an interrupted row assembles like a finalized one.
- *   - Invariant ③: a legacy single-blob row (no stage rows) still assembles.
+ *   - Invariant ③: a legacy single-blob row (no stage rows) still assembles through
+ *     the read-time legacy→new adapter.
  *
  * Pure — no DB. The stage-row layout is reproduced from the production finalize
  * path (partitionStagesForWrite + zstd compress), matching the P0 golden helper.
@@ -109,8 +113,8 @@ function sse(offsetMs: number, type: string, raw: string): SseEventRecord {
 // ============================================================================
 
 describe("P2 new leg stages — round-trip", () => {
-  // An entry carrying BOTH legacy legs and the new client/upstream legs, with two
-  // attempts: attempt 0 FAILED (carries its own upstream frames) + attempt 1 SUCCESS.
+  // An entry carrying the new client/upstream legs, with two attempts: attempt 0
+  // FAILED (carries its own upstream frames) + attempt 1 SUCCESS.
   function dualEntry(): HistoryEntry {
     const inbound = [msg("user", "hello")]
     const upstreamMsgs = [msg("user", "hello [proxy-rewritten]")]
@@ -125,13 +129,8 @@ describe("P2 new leg stages — round-trip", () => {
       state: "completed",
       active: false,
       lastUpdatedAt: 1_700_000_001_000,
-      inboundRequest: { model: "claude-opus-4.7", messages: inbound, stream: true },
-      // ── legacy legs (still filled during coexistence) ──
-      effectiveRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" } },
-      outboundRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" } },
-      outboundResponse: { success: true, model: "claude-opus-4.7", usage: { input_tokens: 5, output_tokens: 2 }, content: okBody },
-      sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)],
-      // ── new client/upstream legs ──
+      clientRequest: { model: "claude-opus-4.7", messages: inbound, stream: true },
+      // Entry-level forwarded (client-visible) response leg.
       clientResponse: { body: okBody, sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)] },
       attempts: [
         {
@@ -139,12 +138,6 @@ describe("P2 new leg stages — round-trip", () => {
           strategy: "primary",
           durationMs: 100,
           error: "upstream RST_STREAM",
-          // legacy per-attempt legs (dual-written during coexistence)
-          effectiveRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" } },
-          wireRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" }, headers: { "x-req": "0" } },
-          response: { success: false, model: "claude-opus-4.7", usage: { input_tokens: 0, output_tokens: 0 }, error: "upstream RST_STREAM", content: null },
-          sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)],
-          // new per-attempt legs
           effectiveSource: {
             format: "anthropic-messages",
             model: "claude-opus-4.7",
@@ -172,11 +165,6 @@ describe("P2 new leg stages — round-trip", () => {
           index: 1,
           strategy: "ws-fallback",
           durationMs: 900,
-          // legacy per-attempt legs (dual-written during coexistence)
-          effectiveRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" } },
-          wireRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" }, headers: { "x-req": "1" } },
-          response: { success: true, model: "claude-opus-4.7", usage: { input_tokens: 5, output_tokens: 2 }, content: okBody },
-          // new per-attempt legs
           effectiveSource: {
             format: "anthropic-messages",
             model: "claude-opus-4.7",
@@ -203,9 +191,8 @@ describe("P2 new leg stages — round-trip", () => {
           },
         },
       ],
-      attemptCount: 2,
-      currentStrategy: "ws-fallback",
-    } as HistoryEntry
+      _index: { derived: { responseSuccess: true, attemptCount: 2, currentStrategy: "ws-fallback" } },
+    }
   }
 
   test("upstream frames live in attempts[i].upstreamResponse.sseEvents (per-attempt, not top-level)", () => {
@@ -246,20 +233,19 @@ describe("P2 new leg stages — round-trip", () => {
     expect(back.clientResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start"])
   })
 
-  test("new stages are emitted ALONGSIDE the legacy ones (既有不丢); request legs fold into request_group", () => {
+  test("new leg stages only (P4c-3): request legs fold into request_group; response/client legs stay standalone", () => {
     const entry = dualEntry()
     const { stageRows } = serializeToRawRows(entry)
     const kinds = stageRows.map((sr) => `${sr.stage}@${sr.attempt_index}`).sort()
-    // Legacy stages still present (subset check — nothing dropped). The legacy
-    // request bodies (inbound/effective/outbound_request) live INSIDE request_group.
-    for (const legacy of ["request_group@-1", "sse_events@-1", "outbound_response@0", "outbound_response@1"]) {
-      expect(kinds).toContain(legacy)
+    // Standalone rows: the client legs + per-attempt upstream_response stay standalone.
+    for (const standalone of ["request_group@-1", "client_request@-1", "client_response@-1", "upstream_response@0", "upstream_response@1"]) {
+      expect(kinds).toContain(standalone)
     }
-    // New RESPONSE-side + client stages stay standalone rows.
-    for (const fresh of ["client_response@-1", "upstream_response@0", "upstream_response@1"]) {
-      expect(kinds).toContain(fresh)
+    // NO legacy stages are emitted anymore (P4c-3 removed them).
+    for (const legacy of ["inbound_request@-1", "effective_request@0", "outbound_request@0", "outbound_response@0", "outbound_response@1", "sse_events@-1"]) {
+      expect(kinds).not.toContain(legacy)
     }
-    // New REQUEST-side legs (effective_source/upstream_request) are now folded into
+    // The REQUEST-side new legs (effective_source/upstream_request) are folded into
     // the request_group dedup frame (P4c-2) — NOT standalone rows.
     for (const folded of ["effective_source@0", "effective_source@1", "upstream_request@0", "upstream_request@1"]) {
       expect(kinds).not.toContain(folded)
@@ -274,15 +260,15 @@ describe("P2 new leg stages — round-trip", () => {
     }
   })
 
-  test("legacy legs still round-trip unchanged during coexistence", () => {
+  test("new legs round-trip through serialize → assemble", () => {
     const entry = dualEntry()
     const { row, stageRows } = serializeToRawRows(entry)
     const back = assembleFullEntry(row, stageRows)
-    // Legacy per-attempt response + top-level mirror still assemble.
-    expect(back.attempts?.[0].response?.success).toBe(false)
-    expect(back.outboundResponse?.success).toBe(true)
-    expect(back.sseEvents?.map((e) => e.type)).toEqual(["message_start"])
-    expect(back.inboundRequest.messages).toEqual([msg("user", "hello")])
+    // Per-attempt upstreamResponse verdicts + entry-level client legs assemble.
+    expect(back.attempts?.[0].upstreamResponse?.success).toBe(false)
+    expect(back.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(back.clientResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start"])
+    expect(back.clientRequest?.messages).toEqual([msg("user", "hello")])
   })
 })
 
@@ -290,27 +276,40 @@ describe("P2 new leg stages — round-trip", () => {
 // 2. Invariant ③ — legacy single-blob row (no stage rows) still assembles
 // ============================================================================
 
-describe("P2 invariant ③ — legacy single-blob assemble", () => {
-  test("a full-blob row with zero stage rows returns the whole entry", () => {
-    const legacy: HistoryEntry = {
+describe("P4c invariant ③ — legacy single-blob assemble via the read adapter", () => {
+  test("a full-blob row with zero stage rows maps legacy legs → new legs", () => {
+    // A legacy DB row's blob still carries the OLD legs at runtime; the read-time
+    // adapter (serialize.ts adaptLegacyLegsInPlace) maps them into the new client/
+    // upstream legs. Built as an untyped record since the legacy leg fields were
+    // removed from HistoryEntry (P4c-3). NOTE: this overlaps the coordinator's
+    // p4c2-read-adapter oracle; kept here as the zero-stage-row branch coverage for
+    // assembleFullEntry.
+    const legacyBlob = {
       id: "p2-legacy",
       endpoint: "anthropic-messages",
       startedAt: 1_700_000_000_000,
       state: "completed",
       active: false,
       inboundRequest: { model: "claude-opus-4.7", messages: [msg("user", "old row")] },
-      effectiveRequest: { model: "claude-opus-4.7", messages: [msg("user", "old row")], payload: {} },
-      outboundResponse: { success: true, model: "claude-opus-4.7", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
-    } as HistoryEntry
+      attempts: [
+        {
+          index: 0,
+          durationMs: 1,
+          effectiveRequest: { model: "claude-opus-4.7", messages: [msg("user", "old row")], payload: {} },
+          response: { success: true, model: "claude-opus-4.7", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
+        },
+      ],
+    }
     // Legacy layout: the head blob IS the full entry (old writer), NO stage rows.
     const row: EntryRow = {
-      ...serializeHeadEntry(legacy).row,
-      blob_gz: compress(legacy),
+      ...serializeHeadEntry(legacyBlob as unknown as HistoryEntry).row,
+      blob_gz: compress(legacyBlob),
     }
     const back = assembleFullEntry(row, [])
-    expect(back.inboundRequest.messages).toEqual([msg("user", "old row")])
-    expect(back.outboundResponse?.success).toBe(true)
-    // No new legs on a legacy row — they stay absent (status column is the authority).
+    // inboundRequest → clientRequest; per-attempt response → upstreamResponse.
+    expect(back.clientRequest?.messages).toEqual([msg("user", "old row")])
+    expect(back.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    // No forwarded response was recorded → no clientResponse leg.
     expect(back.clientResponse).toBeUndefined()
   })
 })

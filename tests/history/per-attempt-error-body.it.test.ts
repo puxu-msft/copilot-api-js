@@ -89,8 +89,8 @@ describe("gap H: per-attempt upstream error body persistence", () => {
     const entry = getEntryById(ctx.id)
     expect(entry).toBeDefined()
     expect(entry?.state).toBe("failed")
-    // The existing terminal path stores the upstream error body as outboundResponse.rawBody.
-    expect(entry?.outboundResponse?.rawBody).toBe(terminalBody)
+    // The existing terminal path stores the upstream error body on the final attempt's response leg.
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.rawBody).toBe(terminalBody)
   })
 
   // ── Golden: attempt[0] fails (HTTP 500 with body B0), attempt[1] succeeds, the
@@ -117,13 +117,13 @@ describe("gap H: per-attempt upstream error body persistence", () => {
     expect(entry).toBeDefined()
     expect(entry?.state).toBe("completed")
 
-    // The terminal outboundResponse is the SUCCESSFUL leg (attempt 1), not the failure.
-    expect(entry?.outboundResponse?.success).toBe(true)
+    // The terminal upstream response is the SUCCESSFUL leg (attempt 1), not the failure.
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
 
-    // The failed attempt[0] retains its own upstream error body on its response stage.
+    // The failed attempt[0] retains its own upstream error body on its response leg.
     const attempt0 = entry?.attempts?.find((a) => a.index === 0)
     expect(attempt0).toBeDefined()
     expect(attempt0?.error).toContain("500")
-    expect(attempt0?.response?.rawBody).toBe(B0)
+    expect(attempt0?.upstreamResponse?.rawBody).toBe(B0)
   })
 })

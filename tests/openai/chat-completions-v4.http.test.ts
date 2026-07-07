@@ -473,20 +473,20 @@ describe("CC v4 driver path", () => {
     await post(body)
     const v4 = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
 
-    expect(v4?.effectiveRequest).toBeDefined()
-    expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.effectiveRequest?.model).toBe("gpt-4o")
-    expect(v4?.effectiveRequest?.messageCount).toBe(1)
-    expect(v4?.outboundRequest).toBeDefined()
-    expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.model).toBe("gpt-4o")
-    expect(v4?.outboundRequest?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.effectiveSource).toBeDefined()
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.model).toBe("gpt-4o")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.upstreamRequest).toBeDefined()
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.model).toBe("gpt-4o")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number") // recorded (0, no throttle)
 
     // Two-track (NOT byte-for-byte): O10 max_completion_tokens is a wire-trim — it
     // lands on the wire track only, never on effective.
-    const v4Eff = v4?.effectiveRequest?.payload as { max_completion_tokens?: number } | undefined
-    const v4Wire = v4?.outboundRequest?.payload as { max_completion_tokens?: number } | undefined
+    const v4Eff = v4?.attempts?.at(-1)?.effectiveSource?.body as { max_completion_tokens?: number } | undefined
+    const v4Wire = v4?.attempts?.at(-1)?.upstreamRequest?.body as { max_completion_tokens?: number } | undefined
     expect(v4Eff?.max_completion_tokens).toBeUndefined() // effective = logical request, no wire-trim
     expect(v4Wire?.max_completion_tokens).toBe(4096) // wire = final bytes, O10 filled
   })
@@ -498,9 +498,9 @@ describe("CC v4 driver path", () => {
     const v4 = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
 
     // wire is the actual upstream endpoint (responses); effective stays the client CC request.
-    expect(v4?.outboundRequest?.format).toBe("openai-responses")
-    expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.messageCount).toBe(1)
-    expect(v4?.effectiveRequest?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-responses")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.messageCount).toBe(1)
   })
 })

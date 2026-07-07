@@ -18,12 +18,9 @@ import {
   test,
 } from "bun:test"
 
-import type { HistoryEntry } from "~/lib/history"
-
 import {
   //
   compress,
-  decompress,
 } from "~/lib/history/sqlite/compression"
 import { getDatabase } from "~/lib/history/sqlite/connection"
 import {
@@ -38,12 +35,6 @@ import {
   runUsageNormalizeBackfill,
   stopUsageNormalizeBackfill,
 } from "~/lib/history/sqlite/usage-normalize-backfill"
-import {
-  //
-  finalizeEntry,
-  insertEntry,
-  updateEntry,
-} from "~/lib/history/store"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
@@ -56,45 +47,60 @@ function col(id: string): { input_tokens: number | null; cache_read: number | nu
   }
 }
 
-/** Blob view (detail page reads this via assembleFullEntry). */
+/** Blob view (detail page reads this via assembleFullEntry → read adapter → upstreamResponse). */
 function blobInput(id: string): number | undefined {
-  return getEntryById(id)?.outboundResponse?.usage?.input_tokens
+  return getEntryById(id)?.attempts?.at(-1)?.upstreamResponse?.usage?.input_tokens
+}
+
+const MODEL_FOR: Record<string, string> = {
+  "openai-chat-completions": "gpt-5",
+  "gemini-generate-content": "gemini-2.5-pro",
+  "anthropic-messages": "claude",
+}
+
+/** Insert one legacy `entry_stages` row (hand-built, mirroring the pre-P4c-3 stage layout). */
+function insertStageRow(id: string, stage: string, attemptIndex: number, payload: unknown): void {
+  getDatabase()
+    .prepare("INSERT INTO entry_stages (entry_id, stage, attempt_index, created_at, blob_gz) VALUES (?,?,?,?,?)")
+    .run(id, stage, attemptIndex, 0, compress(payload))
 }
 
 /**
- * Persist a completed OpenAI entry through the REAL write path (insert → update →
- * finalize → stage-split layout: usage lives in the outbound_response stage row),
- * THEN rewrite it into the pre-migration OVERLAP form: column + stage blob both
- * carry `input_tokens = total` (incl the `cached` subset) and usage_normalized=0.
+ * Seed a LEGACY finalized row the way the pre-P4c-3 write path did: a head row +
+ * an `outbound_response` stage carrying the usage (+ optional `sse_events` /
+ * `inbound_response` streaming-marker stages). The backfill targets exactly this
+ * legacy stage layout — historical rows (usage_normalized=0) — since new rows are
+ * born net (usage_normalized=1) and skipped. `usageInput` is the stored input_tokens
+ * (overlap = total incl cached; net = excluding cached), mirrored in column + stage.
  */
-async function seedOverlapFinalized(id: string, startedAt: number, total: number, cached: number, endpoint = "openai-chat-completions"): Promise<void> {
-  const entry = {
-    id,
-    endpoint,
-    startedAt,
-    state: "pending",
-    active: true,
-    lastUpdatedAt: startedAt,
-    inboundRequest: { model: "gpt-5", messages: [{ role: "user", content: "hi" }] },
-  } as unknown as HistoryEntry
-  insertEntry(entry)
-  updateEntry(id, {
-    state: "completed",
-    active: false,
-    lastUpdatedAt: startedAt,
-    endedAt: startedAt,
-    outboundResponse: { success: true, model: "gpt-5", usage: { input_tokens: 5, output_tokens: 3 }, content: null },
-  })
-  await finalizeEntry(id)
+function seedLegacyFinalized(
+  id: string,
+  startedAt: number,
+  endpoint: string,
+  usageInput: number,
+  cached: number,
+  extraStages: Array<{ stage: string; attemptIndex: number; payload: unknown }> = [],
+): void {
+  const model = MODEL_FOR[endpoint] ?? "gpt-5"
+  const head = { endpoint, state: "completed", attempts: [{ index: 0, strategy: "primary", durationMs: 1 }] }
+  getDatabase()
+    .prepare(
+      "INSERT INTO entries_v2 (id, started_at, endpoint, transport, status, input_tokens, cache_read, output_tokens, usage_normalized, blob_gz) "
+        + "VALUES (?,?,?,?,?,?,?,?,0,?)",
+    )
+    .run(id, startedAt, endpoint, "http", "completed", usageInput, cached, 3, compress(head))
+  insertStageRow(id, "inbound_request", -1, { model, messages: [{ role: "user", content: "hi" }] })
+  insertStageRow(id, "outbound_response", 0, { success: true, model, usage: { input_tokens: usageInput, cache_read_input_tokens: cached, output_tokens: 3 }, content: null })
+  for (const s of extraStages) insertStageRow(id, s.stage, s.attemptIndex, s.payload)
+}
 
-  // Rewrite to the pre-migration overlap form (total incl cached), marker cleared.
-  const db = getDatabase()
-  db.prepare("UPDATE entries_v2 SET input_tokens = ?, cache_read = ?, usage_normalized = 0 WHERE id = ?").run(total, cached, id)
-  const stage = db.prepare("SELECT blob_gz FROM entry_stages WHERE entry_id = ? AND stage = 'outbound_response'").get(id) as { blob_gz: Uint8Array }
-  const payload = decompress(stage.blob_gz) as { usage: Record<string, number> }
-  payload.usage.input_tokens = total
-  payload.usage.cache_read_input_tokens = cached
-  db.prepare("UPDATE entry_stages SET blob_gz = ? WHERE entry_id = ? AND stage = 'outbound_response'").run(compress(payload), id)
+/**
+ * Seed a legacy OpenAI/Gemini row in the pre-migration OVERLAP form (column + stage
+ * blob both carry `input_tokens = total` incl the cached subset, usage_normalized=0).
+ * Non-streaming (no sse_events / inbound_response stage) → the backfill net-izes it.
+ */
+function seedOverlapFinalized(id: string, startedAt: number, total: number, cached: number, endpoint = "openai-chat-completions"): void {
+  seedLegacyFinalized(id, startedAt, endpoint, total, cached)
 }
 
 /** Insert a LEGACY single-blob row (head blob IS the full entry; NO stage rows). */
@@ -102,6 +108,9 @@ function seedLegacySingleBlob(id: string, startedAt: number, total: number, cach
   const full = {
     inboundRequest: { model: "gpt-5", messages: [{ role: "user", content: "legacy" }] },
     outboundResponse: { success: true, model: "gpt-5", usage: { input_tokens: total, cache_read_input_tokens: cached, output_tokens: 3 }, content: null },
+    // Real legacy single-blob rows mirror the final attempt's response; the read
+    // adapter surfaces this per-attempt copy as upstreamResponse (own usage object).
+    attempts: [{ index: 0, strategy: "primary", durationMs: 1, response: { success: true, model: "gpt-5", usage: { input_tokens: total, cache_read_input_tokens: cached, output_tokens: 3 }, content: null } }],
   }
   getDatabase()
     .prepare(
@@ -112,25 +121,8 @@ function seedLegacySingleBlob(id: string, startedAt: number, total: number, cach
 }
 
 /** Insert an anthropic-messages row already in the net convention (marker cleared). */
-async function seedAnthropicNet(id: string, startedAt: number, net: number, cached: number): Promise<void> {
-  const entry = {
-    id,
-    endpoint: "anthropic-messages",
-    startedAt,
-    state: "pending",
-    active: true,
-    lastUpdatedAt: startedAt,
-    inboundRequest: { model: "claude", messages: [{ role: "user", content: "hi" }] },
-  } as unknown as HistoryEntry
-  insertEntry(entry)
-  updateEntry(id, {
-    state: "completed",
-    active: false,
-    endedAt: startedAt,
-    outboundResponse: { success: true, model: "claude", usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 }, content: null },
-  })
-  await finalizeEntry(id)
-  getDatabase().prepare("UPDATE entries_v2 SET usage_normalized = 0 WHERE id = ?").run(id)
+function seedAnthropicNet(id: string, startedAt: number, net: number, cached: number): void {
+  seedLegacyFinalized(id, startedAt, "anthropic-messages", net, cached)
 }
 
 /**
@@ -138,31 +130,10 @@ async function seedAnthropicNet(id: string, startedAt: number, net: number, cach
  * its usage is ALREADY net (the CC→Gemini codec nets promptTokenCount). The
  * backfill MUST NOT subtract again. `cached` sits in cache_read disjointly.
  */
-async function seedGeminiStreamingNet(id: string, startedAt: number, net: number, cached: number): Promise<void> {
-  const entry = {
-    id,
-    endpoint: "gemini-generate-content",
-    startedAt,
-    state: "pending",
-    active: true,
-    lastUpdatedAt: startedAt,
-    inboundRequest: { model: "gemini-2.5-pro", messages: [{ role: "user", content: "hi" }], stream: true },
-  } as unknown as HistoryEntry
-  insertEntry(entry)
-  updateEntry(id, {
-    state: "completed",
-    active: false,
-    endedAt: startedAt,
-    sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
-    outboundResponse: {
-      success: true,
-      model: "gemini-2.5-pro",
-      usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 },
-      content: null,
-    },
-  })
-  await finalizeEntry(id)
-  getDatabase().prepare("UPDATE entries_v2 SET usage_normalized = 0 WHERE id = ?").run(id)
+function seedGeminiStreamingNet(id: string, startedAt: number, net: number, cached: number): void {
+  seedLegacyFinalized(id, startedAt, "gemini-generate-content", net, cached, [
+    { stage: "sse_events", attemptIndex: -1, payload: [{ offsetMs: 1, type: "message_start", raw: "{}" }] },
+  ])
 }
 
 /** Insert a LEGACY single-blob Gemini STREAMING row (net; sseEvents in the head blob, NO stage rows). */
@@ -175,6 +146,7 @@ function seedLegacyGeminiStreamingNet(id: string, startedAt: number, net: number
       usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 },
       content: null,
     },
+    attempts: [{ index: 0, strategy: "primary", durationMs: 1, response: { success: true, model: "gemini-2.5-pro", usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 }, content: null } }],
     sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }],
   }
   getDatabase()
@@ -191,31 +163,10 @@ function seedLegacyGeminiStreamingNet(id: string, startedAt: number, net: number
  * (an `inbound_response` stage), NOT the top-level `sse_events` stage. This is the
  * layout the first fix missed.
  */
-async function seedGeminiStreamingInboundResponse(id: string, startedAt: number, net: number, cached: number): Promise<void> {
-  const entry = {
-    id,
-    endpoint: "gemini-generate-content",
-    startedAt,
-    state: "pending",
-    active: true,
-    lastUpdatedAt: startedAt,
-    inboundRequest: { model: "gemini-2.5-pro", messages: [{ role: "user", content: "hi" }], stream: true },
-  } as unknown as HistoryEntry
-  insertEntry(entry)
-  updateEntry(id, {
-    state: "completed",
-    active: false,
-    endedAt: startedAt,
-    inboundResponse: { sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }] },
-    outboundResponse: {
-      success: true,
-      model: "gemini-2.5-pro",
-      usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 },
-      content: null,
-    },
-  } as Partial<HistoryEntry>)
-  await finalizeEntry(id)
-  getDatabase().prepare("UPDATE entries_v2 SET usage_normalized = 0 WHERE id = ?").run(id)
+function seedGeminiStreamingInboundResponse(id: string, startedAt: number, net: number, cached: number): void {
+  seedLegacyFinalized(id, startedAt, "gemini-generate-content", net, cached, [
+    { stage: "inbound_response", attemptIndex: -1, payload: { sseEvents: [{ offsetMs: 1, type: "message_start", raw: "{}" }] } },
+  ])
 }
 
 /** Legacy single-blob Gemini STREAMING row with sseEvents under `inboundResponse` (not top-level). */
@@ -229,6 +180,7 @@ function seedLegacyGeminiInboundResponse(id: string, startedAt: number, net: num
       usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 },
       content: null,
     },
+    attempts: [{ index: 0, strategy: "primary", durationMs: 1, response: { success: true, model: "gemini-2.5-pro", usage: { input_tokens: net, cache_read_input_tokens: cached, output_tokens: 3 }, content: null } }],
   }
   getDatabase()
     .prepare(

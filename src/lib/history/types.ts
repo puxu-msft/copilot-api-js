@@ -369,16 +369,11 @@ export interface HistoryEntry {
   pinned?: boolean
   lastUpdatedAt?: number
   queueWaitMs?: number
-  attemptCount?: number
-  currentStrategy?: string
   durationMs?: number
-  /**
-   * Top-level failure reason for non-success terminal states (failed / aborted /
-   * interrupted), projected from `outboundResponse.error` else the last attempt's
-   * error — so triage need not crawl the per-leg errors (RFC pre-response-abort Q3).
-   * A projection, not a new capture; absent for successful / non-terminal entries.
-   */
-  failureReason?: string
+  // NOTE (P4c-3): the deprecated top-level scalars `attemptCount` / `currentStrategy`
+  // / `failureReason` were REMOVED — they now live in `_index.derived` (recompute-only
+  // projection), read via entry-view resolvers. Legacy DB rows still carry them at
+  // runtime; the read adapter (serialize.ts) recomputes `_index.derived` from them.
   /**
    * Wire byte size of the request the proxy sent upstream (↑). DERIVED at
    * serialize time from the best available stored payload (outbound → effective
@@ -420,43 +415,6 @@ export interface HistoryEntry {
   /** Derived (recompute-only) + auxiliary index projections (RFC §3). */
   _index?: IndexProjection
 
-  /**
-   * @deprecated 迁移中，见 RFC §4；P4 删除。→ `clientRequest.{body,headers,stream}` + `model.requested`.
-   * Client → Proxy: the client's raw inbound request.
-   */
-  inboundRequest: {
-    model?: string
-    messages?: Array<MessageContent>
-    stream?: boolean
-    tools?: Array<ToolDefinition>
-    system?: string | Array<SystemBlock>
-    max_tokens?: number
-    temperature?: number
-    thinking?: unknown
-  }
-  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `attempts[final].effectiveSource`. */
-  effectiveRequest?: RequestLegData
-  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `attempts[final].upstreamRequest`. Proxy → Upstream: the final wire request sent upstream (final attempt). */
-  outboundRequest?: RequestLegData
-  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `attempts[final].upstreamResponse`. Upstream → Proxy: the upstream-original response (final attempt). */
-  outboundResponse?: OutboundResponseData
-  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `clientResponse`. Proxy → Client: response as actually forwarded to the client, post-rewrite. */
-  inboundResponse?: ForwardedResponse
-  /** HTTP headers captured at each leg of the proxy pipeline */
-  httpHeaders?: {
-    /** Client → Proxy (inbound request) */
-    inboundRequest?: Record<string, string>
-    /** Proxy → Upstream API (outbound request) */
-    outboundRequest?: Record<string, string>
-    /** Upstream API → Proxy (outbound response) */
-    outboundResponse?: Record<string, string>
-    /** Proxy → Client (inbound response) — reserved for future use */
-    inboundResponse?: Record<string, string>
-    /** Upstream API → Proxy HTTP/2 response trailers (trailing HEADERS), when present — best-effort h2 capture. */
-    outboundResponseTrailers?: Record<string, string>
-  }
-  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `attempts[final].upstreamResponse.sseEvents`. */
-  sseEvents?: Array<SseEventRecord>
   pipelineInfo?: PipelineInfo
   attempts?: Array<{
     index: number
@@ -468,38 +426,21 @@ export interface HistoryEntry {
     startedAt?: number
     /** New capture (RFC §4): rate-limit wait before this attempt; producer wires in P4. */
     waitMs?: number
-    // ─── New per-attempt legs (RFC §3) — coexist with the deprecated legs below ───
+    // ─── New per-attempt legs (RFC §3) — the legacy per-attempt legs
+    //     (effectiveRequest/wireRequest/response/truncation/sanitization/
+    //     effectiveMessageCount) were REMOVED in P4c-3; the read adapter maps a
+    //     legacy row's OLD stages into these. ───
     /** Proxy-side effective source (env.body verbatim + this attempt's pipeline). */
     effectiveSource?: EffectiveSourceLeg
     /** Proxy → Upstream wire request (with messages/model/system projection, R4-FAIL-A). */
     upstreamRequest?: UpstreamRequestLeg
     /** Upstream → Proxy response (settled attempts recompute-safe verdict). */
     upstreamResponse?: UpstreamResponseData
-    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `effectiveSource.pipeline`. */
-    truncation?: TruncationInfo
-    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `effectiveSource.pipeline`. */
-    sanitization?: SanitizationInfo
-    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `effectiveSource.messageCount`. */
-    effectiveMessageCount?: number
-    /**
-     * @deprecated 迁移中，见 RFC §4；P4 删除。→ `effectiveSource`.
-     * Full per-attempt request/response bodies (Bug 3 fix). Reconstructed from
-     * per-attempt stage rows (effective_request / outbound_request /
-     * outbound_response with attempt_index = this attempt's index). Optional:
-     * absent on legacy single-blob entries and on partially-persisted
-     * (interrupted) attempts. The top-level outboundRequest/outboundResponse/
-     * effectiveRequest mirror the FINAL attempt; these preserve every attempt.
-     */
-    effectiveRequest?: RequestLegData
-    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `upstreamRequest`. */
-    wireRequest?: RequestLegData
-    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `upstreamResponse`. */
-    response?: OutboundResponseData
     /**
      * Per-attempt upstream-original SSE frames (L2 buffered retry / D1). Present only on
      * FAILED (non-final) attempts of a buffered-retry entry — persisted at this attempt's
-     * `attempt_index` so "why did attempt N RST?" is answerable post-hoc. The successful
-     * (final) attempt's frames remain the top-level `sseEvents` (attempt_index -1).
+     * `attempt_index`. The successful (final) attempt's frames live on
+     * `upstreamResponse.sseEvents` (§S1). The read adapter reads this for legacy rows.
      */
     sseEvents?: Array<SseEventRecord>
     /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */

@@ -45,7 +45,7 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const rewrittenMessageMap = computed(() => {
     const map = new Map<number, Array<MessageContent>>()
     const e = entry.value
-    // Effective (post-rewrite) messages: new final-attempt `effectiveSource` ?? legacy `effectiveRequest`.
+    // Effective (post-rewrite) messages: new final-attempt `effectiveSource`.
     const rewrittenMessages = e ? resolveEffectiveMessages(e) : undefined
     if (!rewrittenMessages || !e?.pipelineInfo?.messageMapping) return map
     const messageMapping = e.pipelineInfo.messageMapping
@@ -62,7 +62,7 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
     const indices = new Set<number>()
     const e = entry.value
     if (!e || !resolveEffectiveMessages(e)) return indices
-    const messages = e.inboundRequest.messages ?? []
+    const messages = e.clientRequest?.messages ?? []
     for (const [idx, rewrittenBucket] of rewrittenMessageMap.value) {
       const original = messages[idx]
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: array index access
@@ -90,7 +90,7 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const isSystemRewritten = computed(() => {
     const e = entry.value
     if (!e || !resolveEffectiveSystem(e)) return false
-    const origSystem = e.inboundRequest.system
+    const origSystem = e.clientRequest?.system
     const rwSystem = resolveEffectiveSystem(e)
     if (!origSystem || !rwSystem) return Boolean(rwSystem)
     return JSON.stringify(origSystem) !== JSON.stringify(rwSystem)

@@ -23,7 +23,7 @@ const props = defineProps<{
   responseMessage: MessageContent | null
 }>()
 
-// New final-attempt `upstreamResponse` ?? legacy `outboundResponse`/`httpHeaders`/`sseEvents` (P4c: drop legacy arms).
+// New final-attempt `upstreamResponse` (legacy `outboundResponse`/`httpHeaders`/`sseEvents` removed in P4c).
 const outboundResponseHeaders = computed(() => resolveHeaders(props.entry).outboundResponse)
 const upstreamSse = computed(() => resolveUpstreamSse(props.entry))
 </script>

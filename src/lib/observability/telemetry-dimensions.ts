@@ -36,12 +36,10 @@ import { getHeaderCaseInsensitive } from "~/lib/fetch-utils"
 
 /**
  * The upstream response content envelope for tool-name / thinking-block
- * extraction. New model: the final attempt's `upstreamResponse.body`; falls back
- * to the deprecated top-level `outboundResponse.content` for legacy-only entries.
- * P4c: drop the `?? entry.outboundResponse?.content` fallback once legacy legs go.
+ * extraction: the final attempt's `upstreamResponse.body`.
  */
 function resolveUpstreamContent(entry: HistoryEntryData): unknown {
-  return entry.attempts?.at(-1)?.upstreamResponse?.body ?? entry.outboundResponse?.content
+  return entry.attempts?.at(-1)?.upstreamResponse?.body
 }
 
 /** A registered telemetry dimension: a name + an entry/ctx → key extractor. */
@@ -168,16 +166,14 @@ export function extractThinkingBlockCounts(entry: HistoryEntryData): ThinkingBlo
  * `agentKind` (`main`/`subagent`) are genuinely `bounded` and skip the cap.
  */
 export const TELEMETRY_DIMENSIONS: ReadonlyArray<StatDimension> = [
-  // New model: resolved/requested live under the `model` parent key (RFC §2.5);
-  // fall back to the deprecated `outboundResponse.model` then the raw inbound
-  // model. P4c: drop the `?? entry.outboundResponse?.model` fallback with legacy legs.
+  // Resolved/requested live under the `model` parent key (RFC §2.5).
   {
     name: "model",
     cardinality: "capped",
-    extract: (entry) => entry.model?.resolved ?? entry.model?.requested ?? entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown",
+    extract: (entry) => entry.model?.resolved ?? entry.model?.requested ?? "unknown",
   },
   { name: "endpoint", cardinality: "bounded", extract: (entry) => entry.endpoint },
-  { name: "client", cardinality: "capped", extract: (entry) => normalizeClient(entry.httpHeaders?.inboundRequest) },
+  { name: "client", cardinality: "capped", extract: (entry) => normalizeClient(entry.clientRequest?.headers) },
   { name: "agentKind", cardinality: "bounded", extract: (entry) => (entry.agentId ? "subagent" : "main") },
   { name: "tool", cardinality: "capped", extract: (entry) => extractToolNames(entry) },
 ]

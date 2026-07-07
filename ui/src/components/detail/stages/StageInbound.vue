@@ -29,7 +29,7 @@ const props = defineProps<{
   getRewrittenMessage: (index: number) => MessageContent | null
 }>()
 
-// New `clientRequest.headers` ?? legacy `httpHeaders.inboundRequest` (P4c: drop legacy arm in entry-legs).
+// New `clientRequest.headers` (legacy `httpHeaders.inboundRequest` removed in P4c).
 const inboundHeaders = computed(() => resolveHeaders(props.entry).inboundRequest)
 </script>
 
