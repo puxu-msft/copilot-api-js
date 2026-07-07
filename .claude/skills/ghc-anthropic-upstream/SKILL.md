@@ -7,7 +7,7 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 
 ## 探针手法（实证 > 推断）
 
-从常驻 `localhost:4141` 拉真实数据复现（`curl -s :4141/health` 确认在跑，**别自启/kill**）：`GET /history/api/entries?limit=N` 看列表 → `GET /history/api/entries/:id` 取全量（`inboundRequest`/`inboundResponse`/`sseEvents`/`outbound*`），内含真实有效 thinking signature。jq 拼最小请求 `--slurpfile` 防转义、`max_tokens` 调小省 token → `curl -X POST :4141/v1/messages`。**无损取字节**（勿 `tr -d '\n'` 折叠，会误判间隔）。
+从常驻 `localhost:4141` 拉真实数据复现（`curl -s :4141/health` 确认在跑，**别自启/kill**）：`GET /history/api/entries?limit=N` 看列表 → `GET /history/api/entries/:id` 取全量（`clientRequest`/`clientResponse`/`attempts[].{upstreamRequest,upstreamResponse}`/per-attempt `sseEvents`；2026-07-07 重构后旧 `inboundRequest`/`outbound*` 腿名已迁 client/upstream），内含真实有效 thinking signature。jq 拼最小请求 `--slurpfile` 防转义、`max_tokens` 调小省 token → `curl -X POST :4141/v1/messages`。**无损取字节**（勿 `tr -d '\n'` 折叠，会误判间隔）。
 
 ## 症状 → 根因 → 配置
 

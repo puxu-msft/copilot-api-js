@@ -31,10 +31,10 @@ description: 当在 copilot-api-js 扩展/重构可扩展持久遥测（request-
 
 ## 二、/api/status model 维度 key 成功/失败分裂
 
-REFERENCE（实测确证）：`/api/status` 的 `requestTelemetry` model 维度 key **随成功/失败分裂**——`extract: (entry) => entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown"`（`src/lib/observability/telemetry-dimensions.ts:110`）。
+REFERENCE（实测确证）：`/api/status` 的 `requestTelemetry` model 维度 key **随成功/失败分裂**——`extract: (entry) => entry.model?.resolved ?? entry.model?.requested ?? "unknown"`（`src/lib/observability/telemetry-dimensions.ts:173`；2026-07-07 history 数据模型重构后从旧 `entry.outboundResponse?.model ?? entry.inboundRequest.model` 迁到 `model{}` 归拢键，语义不变）。
 
-- **成功腿** key = `outboundResponse.model` = `normalizeModelId(上游返回名)`（`request.ts` settle 处归一化，对齐 `/models` id；Claude 规范名可 join）。
-- **失败腿**（上游 4xx/5xx，无 outboundResponse） key = `inboundRequest.model` = **客户端逐字别名**（`opus`、date 后缀 `claude-opus-4-8-20250514`、override 名）。
+- **成功腿** key = `model.resolved` = `normalizeModelId(上游返回名)`（`request.ts` settle 处归一化，对齐 `/models` id；Claude 规范名可 join）。
+- **失败腿**（上游 4xx/5xx，无成功 resolve） key = 回落 `model.requested` = **客户端逐字别名**（`opus`、date 后缀 `claude-opus-4-8-20250514`、override 名）。
 - `normalizeModelId`（`src/lib/models/resolver.ts`）**只归一化 Claude 版本号 pattern**（`claude-{family}-{major}-{minor}(-date)` → dot 形），非 Claude / 老式 `claude-3.x-sonnet`（数字在族名前）/ 大小写变体 **原样返回**。
 
 **后果**：同一逻辑模型的成功与失败遥测落在**不同 key**；直接按 `model.id` join `/models` 目录会**静默丢失失败腿计数 + 别名遥测**（failure 系统性偏低）。

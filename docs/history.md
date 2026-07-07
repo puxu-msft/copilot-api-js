@@ -35,21 +35,34 @@ Session header 候选（按优先级）：`x-session-id` → `x-conversation-id`
 - `startedAt: number` — 请求开始时间戳（ms），必填，用于排序和时间范围过滤
 - `endedAt?: number` — 请求结束时间戳
 - `durationMs?: number` — `endedAt - startedAt`
-- `failureReason?: string` — 非成功终态（failed/aborted/interrupted）的**顶层失败原因投影**，取自 `outboundResponse.error ?? 末尝试 error`（纯投影非新捕获，经 head blob round-trip）。`EntrySummary.responseError` 回填同源，故列表视图恒显原因；reaper/重启恢复对 SQL-only 的 interrupted 行另用 `error_message` COALESCE 兜底
+- `_index.derived.failureReason?: string` — 非成功终态（failed/aborted/interrupted）的**失败原因投影**，recompute-only（从 `attempts.at(-1).upstreamResponse.error ?? 末尝试 error` 重算；P4c-3 已删除旧的顶层 `failureReason` 标量，下沉到 `_index.derived`）。`EntrySummary.responseError` 回填同源，故列表视图恒显原因；reaper/重启恢复对 SQL-only 的 interrupted 行另用 `error_message` COALESCE 兜底
 
-**代理管线四段命名**（与 `httpHeaders` 的 inbound/outbound 术语对齐）：
+**数据模型：client/upstream 双腿 + 逐 attempt 上游轨**（2026-07-07 重构，见 [RFC](rfc/2026-07-07-history-data-model-restructure.md)）。两条**正交轴**互相独立、不再混用一套 inbound/outbound 命名：**attempt 成败**（`upstreamResponse.success`）vs **entry 客户端结局**（`state`）。
 
-- `inboundRequest` — client → proxy：客户端原始入站请求
-- `effectiveRequest?` — sanitize/truncate 后的逻辑载荷（不在物理传输轴上，保留原名）
-- `outboundRequest?` — proxy → upstream：发往上游的最终 wire 请求（含 payload）
-- `outboundResponse?` — upstream → proxy：上游原始响应
-- `inboundResponse?` — proxy → client：实际转发给客户端的响应（经 server-tool 过滤 / tool-name 还原 / tool-input decode 改写后）。`{ content?, sseEvents? }`——非流式存改写后 content，流式存转发帧序列。与 `sseEvents`（上游原始流）并存，构成"上游发了什么 vs 客户端收到什么"对照视图
+**entry 级两腿**（proxy ↔ client，per-entry）：
 
-`httpHeaders` 持四腿 HTTP header（`inboundRequest`/`outboundRequest`/`outboundResponse`/`inboundResponse`，存原始未脱敏）+ 第 5 腿 `outboundResponseTrailers?`（上游 HTTP/2 响应 trailing HEADERS，best-effort capture-when-present——`http2-client` 的 `trailers` 事件经 `setOutboundResponseTrailers` 落 ctx；明文 http 无）。
+- `clientRequest` — client → proxy：客户端原始入站请求。`body` 是入站 payload 本尊（SoT）；`{model, messages, system, max_tokens, temperature, tools, thinking}` 是 `body` 的**非权威**结构化投影（供消费端免解析读取，禁独立漂移）；另带 `method`/`path`/`format`/`headers`/`stream`
+- `clientResponse` — proxy → client：实际转发给客户端的响应，**一等公民**（非 `attempts[final]` 投影）。非报错的上游响应不一定等于客户端所见（rewrite / 截断 / abort / buffered-retry 丢弃 / reaper 取消），故独立建模。`{ status?, headers, body?, sseEvents? }`——非流式存改写后 body，流式存转发帧序列。**客户端结局看 `entry.state`，不看这条腿**
 
-`sseEvents: Array<SseEventRecord>` 记录上游原始 SSE 流，`SseEventRecord = { offsetMs, type, raw }`——`raw` 为上游 `data:` 原始字节串（含 keepalive，无 parse 往返丢失），`type` 供索引。
+**model 归拢键**：`model: { requested, resolved, multiplier? }`——`requested`=入站客户端名（pre-alias），`resolved`=路由/sanitize 解析后规范名。保住遥测「成功=规范名/失败=别名」拆分。
 
-运行时表示（`RequestContext` 的 `response`/`forwardedResponse` getter、`Attempt.wireRequest`、`HeadersCapture`）保留旧名，仅持久化 schema 采用上述命名。完整类型定义见 `src/lib/history/types.ts`。
+**per-attempt 上游轨**（proxy ↔ upstream，`attempts[]` 逐次保留——~13 重试策略各产生独立上游往返，常见长度 =1）：
+
+- `effectiveSource` — 本轮 pipeline 工作载荷：`body` = `env.body` 本尊（SoT，逐字保留、不归一 IR）；`{ format, model, messageCount, messages, system }` 是 `body` 的非权威投影；`pipeline` 载本轮 truncation/sanitization/messageMapping。**注**：`env.body` 未必等于客户端端点格式——Gemini 在 route/parse 就 Gemini→CC，故其 `effectiveSource.format='cc'`、原始 Gemini 体只在 `clientRequest.body`
+- `upstreamRequest` — proxy → upstream：发往上游的最终 wire 请求，`{ format, model, messages, system, headers, body }`（**带 messages 投影**——`rewrites-req` 搜索 facet 读这条腿的 `messages`，丢投影会静默断搜索）
+- `upstreamResponse` — upstream → proxy：**每个已 settled 的 attempt 恒载一条**（成功=真实响应；失败=合成裁决，`fail()`/`abort()` 与 `complete()` 对称写入）。`success` = 上游返回完整 2xx 且协议正常终止；`{ success, status?, headers, trailers?, body?, rawBody?, sseEvents?, usage?, stopReason?, model?, responseId?, copilotAnnotations?, toolSearchRequests? }`。成功流上游帧统一进 `upstreamResponse.sseEvents`；失败（非最终）attempt 的帧在 `attempts[].sseEvents`（L2 buffered-retry D1，仅失败 attempt 落 per-attempt 行）
+- `responseHeaders` — 逐 attempt 上游响应头（driver 每 attempt 写）
+
+**派生投影层** `_index`：
+
+- `_index.derived`（recompute-only，从 `attempts` 重算、三处同步不变量）：`{ responseSuccess, currentStrategy, failureReason, attemptCount }`——旧顶层标量 `attemptCount`/`currentStrategy`/`failureReason` 已下沉至此（P4c-3 删顶层）
+- `_index.aux`（自由投影）：`{ requestBytes, responseBytes, previewText, warningMessages }`。**注**：Group-B 标量（`requestBytes`/`responseBytes`/`multiplier`/`warningMessages`）暂仍作 `HistoryEntry` 顶层列支撑/扁平字段，迁入 `_index.aux`/`model.multiplier` 列入 [deferred-backlog](todo/deferred-backlog.md) 独立跟进
+
+**一次性预处理** `preprocessing?`：入站变换（非逐轮），从 `pipelineInfo` 提到 entry 级。
+
+**运行时 vs 持久化命名分层**：**live `RequestContext` 仍保留旧名、未重构**——`response`/`forwardedResponse` getter、`Attempt.{effectiveRequest, wireRequest, response}`、`_httpHeaders` 捕获袋的 `inboundRequest`/`outboundResponse`/`inboundResponse`/`outboundResponseTrailers`；仅 `HistoryEntry` 持久化数据模型采用上述 client/upstream 命名（sink/`toHistoryEntry` 投影时映射进新腿）。
+
+**读时适配（向后兼容旧库行）**：旧 DB 行的 legacy stage（`inbound_request`/`effective_request`/`outbound_request`/`outbound_response`/`inbound_response`）经 serialize.ts 的 `adaptLegacyLegsInPlace` 读时适配为新的 client/upstream 腿，`_index.derived` 由旧顶层标量重算——故新旧行对消费者呈现同一 shape，零数据迁移。完整类型定义见 `src/lib/history/types.ts`。
 
 ### EntrySummary
 
@@ -100,9 +113,9 @@ REST 用法见下文 `POST /history/api/entries/:id/pin|unpin`。
 
 - **进行中请求** —— 存在于内存 in-flight 映射（`src/lib/history/in-flight.ts`），通过 WebSocket 推送 `entry_added` / `entry_updated` 给前端。**in-flight 是前端实时视图的权威源**。
 - **持久化（增量）** —— 不再只在终态一次性写盘。请求生命周期的各阶段**增量**写入 SQLite：
-  - 请求进入（`originalRequest`）→ eager 写 head 行（`status=pending`）+ `inbound_request` stage（同一事务，FK 安全）
+  - 请求进入（`originalRequest`）→ eager 写 head 行（`status=pending`）+ `client_request` stage（同一事务，FK 安全）
   - 每次状态转换（`state_changed`）→ 更新 head 行 status
-  - 每次 attempt 更新 → 增量写该 attempt 已具备的 stage（`outbound_request` 在**发请求前**写，崩溃也留下"发了什么"）
+  - 每次 attempt 更新 → 增量写该 attempt 已具备的 stage（`upstream_request` 在**发请求前**写，崩溃也留下"发了什么"）
   - 终态（`completed`/`failed`/`aborted`）→ 写齐所有 stage + 终态 head，单事务（`insertCompletedEntry`）
 - 这样进程被 SIGKILL/OOM/崩溃时，未达终态的请求**仍在 SQLite 留有可发现的记录**（不再零落盘）。
 
@@ -127,10 +140,10 @@ REST 查询透明合并两源（in-flight 在前，SQLite 在后，按 `startedA
 
 **tombstone 的已知退化**（写不进全量时的可接受降级，非缺陷）：
 
-- tombstone 只写 head + `inbound_request` + `outbound_response` 两个小 stage（保住请求内容 + 失败原因），**跳过** `sse_events`/逐 attempt 请求体等大块——它们正是最可能撑爆全量写的部分，故诊断上游流细节（如逐帧 `sseEvents`）在 tombstone 行不可得。
+- tombstone 只写 head + `client_request` + `upstream_response` 两个小 stage（保住请求内容 + 失败原因），**跳过** `sse_events`/逐 attempt 请求体等大块——它们正是最可能撑爆全量写的部分，故诊断上游流细节（如逐帧 `sseEvents`）在 tombstone 行不可得。
 - tombstone 走 `upsertHeadRow`，**不重算 session 聚合**（仅 `insertCompletedEntry` 重算）。若该 tombstone 是其 session 最后一个 entry，session 的 request_count/token 统计不含它；若该 session 后续有别的 entry 正常 finalize，`recomputeSession` 会把已是 failed 终态的 tombstone 行纳入、自愈。
 - transient 重试期间崩溃：entry 仍以 eager 写的 `pending` 状态留在库里（finalize 不更新 head status），下次启动 `reclaimOrphanedActiveRows` 标为 `interrupted`——即一个实际 failed 的请求可能最终记为 `interrupted`（失败桶终态，事实不丢但状态语义降级）。
-- 读侧地板：head-only 行（连 tombstone 的 stage 都没写进）经 `deserializeEntry` 把缺失的 `inboundRequest` 兜底为 `{ model }`，保证 `getEntry`/详情/导出消费者不因 `inboundRequest` 为 undefined 崩溃。
+- 读侧地板：head-only 行（连 tombstone 的 stage 都没写进）经 `deserializeEntry` + 读适配器兜底——旧行缺失的 `inboundRequest` 经 `adaptClientRequest` 降级为最小 `clientRequest`（至少带 `format`），保证 `getEntry`/详情/导出消费者不因请求腿为 undefined 崩溃。
 - 无周期维护时（`history.reaper_interval: 0`）transient 失败立即降级 tombstone：deferred-finalize 重试只能由 reaper tick 驱动，`reaper_interval=0` 关掉整个周期 timer（连带 WAL checkpoint / incremental_vacuum），故 `finalizeEntry` 经 `isReaperRunning()` 门控直接 tombstone（不滞留泄漏）。注：**仅 `reaper_interval=0` 触发**——`success_limit`/`failure_limit=0`（无限保留）下 timer 仍跑（淘汰自 no-op），drain 不受影响。
 
 ## 表结构（Head 表 + Stage 子表）
@@ -146,16 +159,16 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 - token 计数、`duration_ms`、`pid`/`boot_time`/`git_sha`（进程身份镜像列，供 SQL 过滤）
 - `preview_text` — 列表 preview 快筛用（denormalized；`search_text` 列已于 search_index P3 DROP）
 - `prev_req_id TEXT` — best-effort 对话血缘（组内时间最近一条、无 FK、与搜索解耦、待线程化）
-- `blob_gz BLOB NOT NULL` — gzip 的 **head-meta** JSON（`process`/`pipelineInfo`/`warningMessages`/`attempts` 摘要/`httpHeaders` 等；**不含**被拆到 stage 行的重字段）
+- `blob_gz BLOB NOT NULL` — zstd 的 **head-meta** JSON（`process`/`pipelineInfo`/`_index`/`warningMessages`/`model`/`attempts` 摘要 等；各腿 `headers`/`body` 随腿进 stage 行，**不含**被拆到 stage 行的重字段）
 
 **`entry_stages`（1:N 子表）** —— 重 blob 按腿/按 attempt 分行：
 
 - 主键 `(entry_id, stage, attempt_index)`；`FOREIGN KEY(entry_id) REFERENCES entries_v2(id) ON DELETE CASCADE`
-- `stage` ∈ `inbound_request` | `effective_request` | `outbound_request` | `outbound_response` | `inbound_response` | `sse_events`
-- `attempt_index` — 腿无关阶段（inbound/forwarded/sse）为 `-1`；per-attempt 阶段为 `0..N`
+- `stage`（**新写路径**）∈ `client_request` | `client_response` | `effective_source` | `upstream_request` | `upstream_response` | `sse_events`；finalize 时把冗余请求体折进合并帧容器 `request_group`。**legacy 只读**：旧库行仍带 `inbound_request` | `effective_request` | `outbound_request` | `outbound_response` | `inbound_response`——读时经 `adaptLegacyLegsInPlace` 适配为新腿；`STAGE` 常量（`serialize.ts`）双列新旧名共存
+- `attempt_index` — 腿无关阶段（`client_request`/`client_response`/顶层 `sse_events`）为 `-1`；per-attempt 阶段（`effective_source`/`upstream_request`/`upstream_response`/失败-attempt `sse_events`）为 `0..N`
 - `blob_gz` — 该阶段的重数据（每次重试的真实 wire payload + 上游响应各占一行 → 保全重试全过程）
 
-**读取**：`assembleFullEntry(headRow, stageRows[])` 把 head-meta 与各 stage blob 层叠重组成完整 `HistoryEntry`；per-attempt 行还原 `attempts[i].wireRequest/response`，顶层 outbound/effective 镜像最终 attempt。**向后兼容**：旧的单 blob 行无 stage 行 → 整 blob 即完整 entry，零数据迁移。
+**读取**：`assembleFullEntry(headRow, stageRows[])` 把 head-meta 与各 stage blob 层叠重组成完整 `HistoryEntry`——`client_request`/`client_response` 填 entry 级 `clientRequest`/`clientResponse`，per-attempt 行填 `attempts[i].{effectiveSource, upstreamRequest, upstreamResponse}`（含 sseEvents）；legacy stage 行经 `adaptLegacyLegsInPlace` 适配为同一新腿。**向后兼容**：旧的单 blob 行无 stage 行 → 整 blob 即完整 entry、经读适配器补新腿，零数据迁移。
 
 **写入**：head 行用 `ON CONFLICT(id) DO UPDATE`（**不是** `INSERT OR REPLACE`——后者 DELETE+INSERT 会触发 CASCADE 清掉 stage 子行）。
 
@@ -226,6 +239,6 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 增量持久化 + 分阶段重构刻意留下的边界（非缺陷，记录以备后续决策）：
 
 - **流中途崩溃丢部分 SSE 帧**：`sse_events` 在流结束前快照一次（非节流增量 append），故 SIGKILL-mid-stream 会丢失断点前已流出的帧。但 head 行 `status=streaming` 仍使该请求可发现（降级而非静默丢失）。若需零丢帧，可在 `processOneStreamEvent` 加节流 append 落盘。
-- **中间失败 attempt 的上游响应体**：重试中失败的非最终 attempt 只在 `attempts[].error`（message）保留，完整 `responseText`/`status` 未逐 attempt 持久化（最终失败的响应体经 `outboundResponse.rawBody` 完整保留）。`outbound_request`（每次重试的 wire payload）已逐 attempt 保全。
+- **中间失败 attempt 的上游响应体**：**已解决**（P4c 生产者对齐）——每个已 settled 的 attempt（含重试中失败的非最终 attempt）现恒载 `upstreamResponse`（失败 attempt 经合成裁决），逐 attempt 落 `upstream_response` stage（含 `rawBody`）；`upstream_request`（每次重试的 wire payload）亦逐 attempt 保全。仅**未 settled**（in-flight/interrupted）attempt 可缺 `upstreamResponse`。
 
 > Bug 2（客户端断连记 `aborted`）已统一覆盖**所有**流式 endpoint：Anthropic Messages 经 `processAnthropicStream`，其余（Chat Completions / Responses / Responses-WS / Gemini）经通用 `guardSseIterable`——两者均 shutdown 优先、client-abort 抛 `StreamClientAbortError`，handler 据此记 `aborted` 并跳过向已关闭流写错误帧。
