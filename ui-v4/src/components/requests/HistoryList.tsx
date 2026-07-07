@@ -11,6 +11,7 @@ import {
 
 import { RequestRow } from "@/components/requests/RequestRow"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
+import { EMPTY_FILTERS } from "@/lib/request-filters"
 import { useListStore } from "@/stores/list-store"
 
 /** 定位命中后的瞬态高亮类(与 useAnchorScroll 共用,见 styles/theme.css)。 */
@@ -31,7 +32,8 @@ export function HistoryList() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const at = searchParams.get("at")
-  const { entries, total, isLoading, hasNextPage, fetchNextPage } = useHistoryInfinite()
+  // Phase 1 占位:filters 进 hook 契约已就绪,真实 filters prop 由 Phase 2 Task 2.5 接入。
+  const { entries, total, isLoading, hasNextPage, fetchNextPage } = useHistoryInfinite(EMPTY_FILTERS)
   const bufferedIds = useListStore((s) => s.bufferedIds)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
