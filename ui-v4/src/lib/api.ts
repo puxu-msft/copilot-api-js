@@ -34,9 +34,7 @@ export function createApi(fetchImpl: typeof fetch = fetch) {
       return res.blob()
     },
     put: <T>(path: string, body: unknown) => request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
-    delete: async (path: string): Promise<void> => {
-      await request<unknown>(path, { method: "DELETE" })
-    },
+    delete: <T = void>(path: string): Promise<T> => request<T>(path, { method: "DELETE" }),
   }
 }
 
