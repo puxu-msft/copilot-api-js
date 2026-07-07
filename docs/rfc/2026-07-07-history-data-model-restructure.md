@@ -24,7 +24,7 @@
 | **R4-FAIL-A** | **`upstreamRequest` 丢 messages 投影 → `rewrites-req` 搜索 facet 静默失效**（R1-W7 只修 effectiveSource 一侧、漏 wire 腿同构损失；`buildRewritesReq` 读 wire 腿 messages） | **亲手复核**（[search-index-write.ts:139](../../src/lib/history/sqlite/search-index-write.ts#L139) 读 `outboundRequest?.messages`） | §3 `upstreamRequest` 补结构化投影 + §7 登记 search-index + golden 锁 rewrites-req |
 | **R3-WARN-1/2** | **fail()/abort 只写顶层裁决、不写 final attempt（与 complete 不对称）→ C2.5 顺序倒置 + responseSuccess 派生退化** | **亲手复核**（[request.ts:515](../../src/lib/context/request.ts#L515) complete 调 setAttemptResponse；[:541-559](../../src/lib/context/request.ts#L541)/[:602-609](../../src/lib/context/request.ts#L602) fail/abort 不调） | §6 生产者对齐前置 + §3 注「settled attempt 恒载 upstreamResponse」 |
 | R4-WARN-B | `success` 无权威判据 + `status` 语义变 | 属实（[context/types.ts:69](../../src/lib/context/types.ts#L69) status「only on error」） | §3 定 success 判据 + 合法组合矩阵 + `status?` |
-| R4-WARN-C | `clientResponse.status` aspirational 却必填 | 属实（[context/types.ts:156-165](../../src/lib/context/types.ts#L156) ForwardedResponse 无 status） | §3 `status?` + 数据源 + legacy 回填 |
+| R4-WARN-C | `clientResponse.status` aspirational 却必填 | 属实（[history/types.ts:156-165](../../src/lib/history/types.ts#L156) ForwardedResponse 无 status） | §3 `status?` + 数据源 + legacy 回填 |
 | R4-WARN-D | `model.capabilities` shape 未定 | 属实（原始 blob vs 派生判定，无当前生产者） | **从核心结构撤下**（避免 aspirational 空槽），列 §5 future enrichment |
 | R4-WARN-E | `_index` 派生子集缺重算不变量 | 属实（记忆明训：新派生字段三处同步） | §3 拆 `_index.derived`（recompute-only）/`_index.aux` |
 | R3-NIT-8 | `model` 「上游实报」无忠实来源（存归一 resolved） | **亲手复核**（[request.ts:512](../../src/lib/context/request.ts#L512) `normalizeModelId`） | 去误导标签；raw upstream model 列 §5 future enrichment |
