@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query"
 import {
   //
   flexRender,
@@ -35,6 +36,7 @@ import type {
   HistoryEntry,
 } from "@/types"
 
+import { Modal } from "@/components/shared/Modal"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
 import { api } from "@/lib/api"
 import {
@@ -180,6 +182,28 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   const bufferedIds = useListStore((s) => s.bufferedIds)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
+  const queryClient = useQueryClient()
+
+  // 清空历史确认 Modal:开合 + 删除在途(防重复提交)。筛选感知——有筛选走 scoped delete、无筛选走 clear-all。
+  const [clearOpen, setClearOpen] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const confirmClear = useCallback(async () => {
+    setClearing(true)
+    try {
+      // 有筛选 → scoped delete(带 query);无筛选 → clear-all(无 query)。后端按 query 有无分流(Phase 0)。
+      const qs = toQueryString(filters)
+      const res = await api.delete<{ success: boolean; deleted?: number }>(`/history/api/entries${qs ? `?${qs}` : ""}`)
+      if (res.deleted !== undefined) console.info(`[HistoryList] 已删除 ${res.deleted} 条历史`)
+      // queryKey 形如 ["history-infinite", filterSig];前缀匹配 invalidate 命中所有 filter 变体。
+      await queryClient.invalidateQueries({ queryKey: ["history-infinite"] })
+      setClearOpen(false)
+    } catch (err) {
+      // 删除失败不吞:曝光错误(内部工具可观测性优先),保持 Modal 开着供重试。
+      console.error("[HistoryList] 清空历史失败:", err)
+    } finally {
+      setClearing(false)
+    }
+  }, [filters, queryClient])
 
   // 列可见性:受控优先,否则内部 state。留好 Task 3.4 的受控接口(菜单 + localStorage 持久化)。
   const [internalVisibility, setInternalVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY)
@@ -409,6 +433,13 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
             resume
           </button>
         )}
+        <button
+          type="button"
+          className="text-[var(--color-primary)]"
+          onClick={() => setClearOpen(true)}
+        >
+          清空
+        </button>
       </div>
       {bufferedIds.length > 0 && (
         <button
@@ -520,6 +551,33 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
           </div>
         )}
       </div>
+      {clearOpen && (
+        <Modal
+          title="清空历史"
+          onClose={() => setClearOpen(false)}
+        >
+          <div className="mono flex flex-col gap-4 text-[13px] text-[var(--color-text)]">
+            <p>{hasAnyFilter(filters) ? `删除当前筛选命中的 ${total} 条？` : `清空全部 ${total} 条？`}</p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="border border-[var(--color-border)] px-3 py-1 text-[var(--color-muted)] hover:text-[var(--color-text)]"
+                onClick={() => setClearOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={clearing}
+                className="border border-[var(--color-primary)] px-3 py-1 text-[var(--color-primary)] disabled:opacity-50"
+                onClick={() => void confirmClear()}
+              >
+                确认
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

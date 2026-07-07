@@ -39,7 +39,7 @@ import {
 } from "@/stores/list-store"
 
 // hoisted 供 vi.mock 工厂引用的 spy:虚拟列表 scrollToIndex + 单条 summary 查询。
-const { scrollToIndexMock, apiGetMock } = vi.hoisted(() => ({ scrollToIndexMock: vi.fn(), apiGetMock: vi.fn() }))
+const { scrollToIndexMock, apiGetMock, apiDeleteMock } = vi.hoisted(() => ({ scrollToIndexMock: vi.fn(), apiGetMock: vi.fn(), apiDeleteMock: vi.fn() }))
 
 // fake TableVirtuoso:确定性渲染(不依赖 jsdom layout/initialItemCount),并经 useImperativeHandle
 // 暴露 scrollToIndex spy 供定位断言。忠实复现 HistoryList 用到的契约:Table/TableRow 子组件 +
@@ -79,7 +79,7 @@ vi.mock("react-virtuoso", async () => {
   return { TableVirtuoso: FakeTableVirtuoso }
 })
 
-vi.mock("@/lib/api", () => ({ api: { get: apiGetMock } }))
+vi.mock("@/lib/api", () => ({ api: { get: apiGetMock, delete: apiDeleteMock } }))
 
 // 可变 mock:各用例设置 entries/hasNextPage/fetchNextPage;工厂在调用时读取(非 import 时)。
 let mockHistory: {
@@ -145,6 +145,8 @@ describe("HistoryList", () => {
     // 默认单条查询解析为一条匹配 anthropic-messages 的 summary(EMPTY_FILTERS 下恒属于筛选集)。
     apiGetMock.mockReset()
     apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
+    apiDeleteMock.mockReset()
+    apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
   })
   afterEach(() => vi.restoreAllMocks())
 
@@ -518,5 +520,45 @@ describe("HistoryList", () => {
     expect(row?.getAttribute("aria-current")).toBe("true")
     const other = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
     expect(other?.getAttribute("aria-current")).toBeNull()
+  })
+
+  // ── Task 4.3:筛选感知清空历史 + 确认 Modal ──
+
+  it("clear (with filters): modal shows the filtered-count prompt; 确认 issues scoped delete + invalidates", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries")
+    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 3 }
+    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
+    renderList(["/requests"], filters)
+    fireEvent.click(screen.getByText("清空"))
+    // 有筛选 → 文案含「筛选命中的 3」。
+    expect(screen.getByText(/筛选命中的 3/)).toBeDefined()
+    fireEvent.click(screen.getByText("确认"))
+    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalled())
+    const url = apiDeleteMock.mock.calls[0][0] as string
+    expect(url).toContain("/history/api/entries?")
+    expect(url).toContain("endpoint=anthropic-messages")
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["history-infinite"] }))
+    // 删除后 Modal 关闭。
+    await waitFor(() => expect(screen.queryByText("确认")).toBeNull())
+  })
+
+  it("clear (no filters): modal shows the clear-all prompt; 确认 issues an unscoped delete (no query)", async () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 5 }
+    renderList()
+    fireEvent.click(screen.getByText("清空"))
+    // 无筛选 → 文案「全部」+「5」。
+    expect(screen.getByText(/全部 5/)).toBeDefined()
+    fireEvent.click(screen.getByText("确认"))
+    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalledWith("/history/api/entries"))
+  })
+
+  it("clear: 取消 closes the modal without deleting", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 5 }
+    renderList()
+    fireEvent.click(screen.getByText("清空"))
+    expect(screen.getByText("确认")).toBeDefined()
+    fireEvent.click(screen.getByText("取消"))
+    expect(screen.queryByText("确认")).toBeNull()
+    expect(apiDeleteMock).not.toHaveBeenCalled()
   })
 })
