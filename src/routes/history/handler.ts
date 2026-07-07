@@ -20,21 +20,22 @@ import {
 } from "~/lib/history"
 import { compressAsync } from "~/lib/history/sqlite/compression"
 
-export function handleGetEntries(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-
-  const query = c.req.query()
-  const options: QueryOptions = {
-    cursor: query.cursor || undefined,
-    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
-    direction: query.direction ? (query.direction as "older" | "newer") : undefined,
+/**
+ * 从查询串解析 list / scoped-delete / search 三处共享的结构化 filter 维（11 个）：
+ * model / endpoint / success / state / from / to / search / sessionId / agentId /
+ * mainAgentOnly / pid。
+ *
+ * 抽成单一事实源，因为 list 与 scoped-delete 的 WHERE 必须严格一致：若把解析块散落各
+ * handler、将来新增一个维只更新部分 handler，scoped delete 就会无视该维、删掉比列表所示
+ * 更大的子集（数据丢失面）。分页维（cursor / limit / direction / terminalOnly）与 search
+ * 端点专有的 q / source 不在此列，由各 handler 自行叠加。
+ */
+function parseListFilters(query: Record<string, string>): QueryOptions {
+  return {
     model: query.model || undefined,
     endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,
     state: (query.state as QueryOptions["state"]) || undefined,
-    terminalOnly: query.terminalOnly === "true" ? true : undefined,
     from: query.from ? Number.parseInt(query.from, 10) : undefined,
     to: query.to ? Number.parseInt(query.to, 10) : undefined,
     search: query.search || undefined,
@@ -42,6 +43,22 @@ export function handleGetEntries(c: Context) {
     agentId: query.agentId || undefined,
     mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
     pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
+  }
+}
+
+export function handleGetEntries(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+
+  const query = c.req.query()
+  const options: QueryOptions = {
+    ...parseListFilters(query),
+    // 分页维单独解析并叠加：故意不并入共享 filter，避免空列表分页请求被误判为「有筛选」。
+    cursor: query.cursor || undefined,
+    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+    direction: query.direction ? (query.direction as "older" | "newer") : undefined,
+    terminalOnly: query.terminalOnly === "true" ? true : undefined,
   }
 
   const result = getHistorySummaries(options)
@@ -170,19 +187,7 @@ export function handleDeleteEntries(c: Context) {
   }
 
   const query = c.req.query()
-  const filters: QueryOptions = {
-    model: query.model || undefined,
-    endpoint: query.endpoint as EndpointType | undefined,
-    success: query.success ? query.success === "true" : undefined,
-    state: (query.state as QueryOptions["state"]) || undefined,
-    from: query.from ? Number.parseInt(query.from, 10) : undefined,
-    to: query.to ? Number.parseInt(query.to, 10) : undefined,
-    search: query.search || undefined,
-    sessionId: query.sessionId || undefined,
-    agentId: query.agentId || undefined,
-    mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
-    pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
-  }
+  const filters = parseListFilters(query)
   const hasFilter = Object.values(filters).some((v) => v !== undefined)
   if (!hasFilter) {
     clearHistory()
@@ -259,18 +264,10 @@ export function handleSearch(c: Context) {
     return c.json({ error: `Invalid source '${source}'. Expected one of: ${[...SEARCH_SOURCES].join(", ")}` }, 400)
   }
 
-  const filters: QueryOptions = {
-    model: query.model || undefined,
-    endpoint: query.endpoint as EndpointType | undefined,
-    success: query.success ? query.success === "true" : undefined,
-    state: (query.state as QueryOptions["state"]) || undefined,
-    from: query.from ? Number.parseInt(query.from, 10) : undefined,
-    to: query.to ? Number.parseInt(query.to, 10) : undefined,
-    sessionId: query.sessionId || undefined,
-    agentId: query.agentId || undefined,
-    mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
-    pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
-  }
+  // search 端点用 q + source 做全文检索；历史上不把结构化的 search 子串维并入 filter
+  // （structuralFilters 也不消费它），保持这一对外行为——从共享解析结果里剔除 search，
+  // 其余 10 个结构化维与 list / delete 完全一致，享受单一事实源、免于将来的解析漂移。
+  const { search: _search, ...filters } = parseListFilters(query)
 
   const result = searchHistory({
     source,
