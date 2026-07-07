@@ -2,7 +2,7 @@
 
 > **实施状态：已完成**（全 4 phase 落地，主线实现 + 每 phase subagent audit）
 > **落地**：2026-07 · commits `6865f0b`（Phase 1 起）… `33bd5b6`（doc-sync）（best-effort，rebase/squash 后可能失效）
-> **现状锚点**：[ui/CLAUDE.md `/models` 路由行](../../../ui/CLAUDE.md) · 代码 [ui/src/components/models/](../../../ui/src/components/models/) + [ui/src/composables/{useModelDetail,model-telemetry-join,telemetry-parse,useModelColumns}.ts](../../../ui/src/composables/) · spec [2026-07-05-ui-v4-models-enhancement.md](../../spec/2026-07-05-ui-v4-models-enhancement.md)
+> **现状锚点**：[ui/CLAUDE.md `/models` 路由行](../../../../ui/CLAUDE.md) · 代码 [ui/src/components/models/](../../../../ui/src/components/models/) + [ui/src/composables/{useModelDetail,model-telemetry-join,telemetry-parse,useModelColumns}.ts](../../../../ui/src/composables/) · spec [2026-07-05-ui-v4-models-enhancement.md](../../spec/2026-07-05-ui-v4-models-enhancement.md)
 > **备注**：唯一后端改动＝移除 `stripInternalFields`（按 ADR internal-tool-security-posture 暴露 `request_headers`）。测试 vitest 103 + bun-ui 270 + 后端 models 102 全绿。
 
 > **For agentic workers:** REQUIRED SUB-SKILL — 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐 task 实施。步骤用 `- [ ]` checkbox 跟踪。

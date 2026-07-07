@@ -7,10 +7,10 @@
 你在 copilot-api-js 仓库实施 **ui-v4 ConfigPage：占位 raw-JSON textarea → 结构化 schema-driven 表单**。
 
 **先读**（按序）：
-1. [docs/spec/2026-07-05-ui-v4-config-form.md](../spec/2026-07-05-ui-v4-config-form.md)（WHAT/WHY + 决策已签 §12：全 SSOT · 全 ~80 字段 · raw 只读 · deprecated 进描述符 + 字段→分区映射 §4 + 控件 §5 + 联动 §5.5 + 敏感 §7 + 整体替换语义 §8）
-2. [docs/plan/2026-07-05-ui-v4-config-form.md](2026-07-05-ui-v4-config-form.md)（commit invariants + P0-P3）
+1. [docs/spec/2026-07-05-ui-v4-config-form.md](../../spec/2026-07-05-ui-v4-config-form.md)（WHAT/WHY + 决策已签 §12：全 SSOT · 全 ~80 字段 · raw 只读 · deprecated 进描述符 + 字段→分区映射 §4 + 控件 §5 + 联动 §5.5 + 敏感 §7 + 整体替换语义 §8）
+2. [docs/plan/2026-07-05-ui-v4-config-form.md](../2026-07-05-ui-v4-config-form.md)（commit invariants + P0-P3）
 3. 后端 SSOT：`src/lib/config/schema.ts`（Zod）、PUT 合并 `src/routes/config/route.ts:257-321`（整体替换语义）、`src/lib/state.ts` `CONFIG_MANAGED_DEFAULTS`（requires-restart 反推）
-4. [ui-v4/docs/radix-styling.md](../../ui-v4/docs/radix-styling.md)（Radix 样式桥 + 测试 gotchas：userEvent 必需、role 变化、Portal DOM 时机）
+4. [ui-v4/docs/radix-styling.md](../../radix-styling.md)（Radix 样式桥 + 测试 gotchas：userEvent 必需、role 变化、Portal DOM 时机）
 
 **核心不变量（每 commit 终态成立）**：① 后端零运行时行为改动（P0 只加元数据+守卫+纯重构，config 测试全绿；回归靶 `config-schema-json-export.unit.test.ts`）② drift-guard 恒绿（描述符 path 集 ≡ schema 叶子 path 集含 deprecated history.limit；描述符 `mergeMode` 集 ≡ route.ts merge dispatch）③ `field-descriptors.ts` 纯模块（不碰 `~/lib/state`，`build:ui-v4` 真 rollup 验）④ **merge 行为三分**（route.ts:257-290 核验）：`per-key`（顶层 section + anthropic 顶层 → 只发 sparse 子键、**绝不整份**，否则丢隐藏键如 deprecated history.limit）/ `whole`（anthropic 子对象 extended_cache_ttl/model_capabilities + record 字段 → 整份重发 value）/ `collection`（model_overrides 等 replaceCollection）；靠描述符 `mergeMode` 区分,**不从 control 类型反推** ⑤ secret api_key 未键入不进 PUT body（初始态是「已设标记」非占位串）⑥ 每 phase：`bun run typecheck:ui-v4` + `bun run build:ui-v4` + `bun run test:ui-v4` + `bunx eslint ui-v4/src`（**无缓存**，0 error，见记忆 `tooling-eslint-cache-false-pass`）+ 后端 `bun test` config 相关。
 

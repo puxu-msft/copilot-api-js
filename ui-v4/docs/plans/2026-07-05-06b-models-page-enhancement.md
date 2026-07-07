@@ -8,7 +8,7 @@
 > 日期：2026-07-05
 > 目标前端：**`ui-v4/`（React 19 + react-router 7 + zustand + @tanstack/react-query + tailwind 4，跑在 5173）**
 > 状态：规划待审（用户 review 后再实现）
-> 设计依据（WHAT/WHY，框架无关，复用）：[docs/spec/2026-07-05-ui-v4-models-enhancement.md](../../../docs/spec/2026-07-05-ui-v4-models-enhancement.md)
+> 设计依据（WHAT/WHY，框架无关，复用）：[docs/spec/2026-07-05-ui-v4-models-enhancement.md](../spec/2026-07-05-ui-v4-models-enhancement.md)
 
 ## 0. 背景（为何是这份规划）
 

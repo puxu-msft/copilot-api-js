@@ -82,7 +82,7 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 
 **增量、分领域**，各随对应功能落地时贯彻 headless + Terminal Amber：
 - **数据表 = TanStack Table**（双 PoC 对照已定，见上节）→ 正式重写 `ModelsTable`（删手写 `sortModels`/`sort` state/部分 `model-columns`，ColumnMenu 驱动 `VisibilityState`）+ 作 Requests 列表/6 维筛选地基。**同一提交删两个 PoC**（`ModelsTableTanstack.poc.tsx` + `ModelsTableAria.poc.tsx` + 各测试）+ **卸 `react-aria-components`**（PoC 专用，落地不用）；PoC 悬挂期 tripwire（[tests/poc-tripwire.bun.test.ts](../../tests/poc-tripwire.bun.test.ts)）守其未接生产。
-- **react-hook-form + zod**：随 [Config 结构化表单](../../../docs/plan/2026-07-05-ui-v4-config-form.md) 落地。
+- **react-hook-form + zod**：随 [Config 结构化表单](../plans/2026-07-05-ui-v4-config-form.md) 落地。
 - **cmdk**：随全局搜索（TODO.md 退役 gating）落地。
 - **TanStack Virtual**：长列表性能触发时引（现非目标）。
 - **date-picker**（若 Requests 加时间范围筛选）：~~待定~~ **已定 react-day-picker**（见 [2026-07-06-requests-list-libraries.md](2026-07-06-requests-list-libraries.md) 决策二）。

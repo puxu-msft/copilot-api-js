@@ -41,7 +41,7 @@
 
 ## 2. Phase 1 — 控件库 + 通用渲染器
 
-- **Radix-based 控件**（`ui-v4/src/components/config/controls/`）：text/url/textarea/number(min/max/unit)/toggle(`Switch`)/enum(`Select`)/disc-enum(`Select`, `false`→"off")/string-list/key-value/record-list/record-bool/rewrite-rules/bool-or-rules/nested/secret。每控件契约 `{ descriptor, value, onChange, error?, disabled? }`。样式桥 [radix-styling.md](../../ui-v4/docs/radix-styling.md)。
+- **Radix-based 控件**（`ui-v4/src/components/config/controls/`）：text/url/textarea/number(min/max/unit)/toggle(`Switch`)/enum(`Select`)/disc-enum(`Select`, `false`→"off")/string-list/key-value/record-list/record-bool/rewrite-rules/bool-or-rules/nested/secret。每控件契约 `{ descriptor, value, onChange, error?, disabled? }`。样式桥 [radix-styling.md](../radix-styling.md)。
 - **通用渲染器** `ConfigField`（按 `descriptor.control` 分发）+ `ConfigSection`（Radix `Accordion` 分组，anthropic 子组）。左侧 section 导航。
 - **golden 控件测试**（vitest + userEvent）：每控件渲染 + 编辑触发 onChange；Switch/Select 交互；secret 遮蔽；disabled 态。
 

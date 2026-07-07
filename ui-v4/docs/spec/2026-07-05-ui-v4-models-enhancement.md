@@ -1,6 +1,6 @@
 # ui-v4 Models 页面全面增强 — 设计规格
 
-> **实现目标勘误（2026-07-05）**：本 spec 的 WHAT/WHY（数据完整性、遥测 join key 分裂、6 分区详情、过滤、CSV、未关联遥测）**框架无关、有效**。首轮实现误做进了 `ui/`（Vue，已提交保留、真实增强了旧 UI）；**真正的 ui-v4 是 React 新前端**（`ui-v4/`，跑在 5173）。React 实现规划见 [ui-v4/docs/plans/2026-07-05-06b-models-page-enhancement.md](../../ui-v4/docs/plans/2026-07-05-06b-models-page-enhancement.md)。后端改动（`request_headers` 暴露 + `normalize-id.ts` 抽取）跨前端共享、已落地。下文的 Vue 特定 HOW（§5 useModelDetail/§6 tab/§9 vitest stub/组件名）仅适用 Vue 版；React 版以上述 06b 规划为准。
+> **实现目标勘误（2026-07-05）**：本 spec 的 WHAT/WHY（数据完整性、遥测 join key 分裂、6 分区详情、过滤、CSV、未关联遥测）**框架无关、有效**。首轮实现误做进了 `ui/`（Vue，已提交保留、真实增强了旧 UI）；**真正的 ui-v4 是 React 新前端**（`ui-v4/`，跑在 5173）。React 实现规划见 [ui-v4/docs/plans/2026-07-05-06b-models-page-enhancement.md](../plans/2026-07-05-06b-models-page-enhancement.md)。后端改动（`request_headers` 暴露 + `normalize-id.ts` 抽取）跨前端共享、已落地。下文的 Vue 特定 HOW（§5 useModelDetail/§6 tab/§9 vitest stub/组件名）仅适用 Vue 版；React 版以上述 06b 规划为准。
 
 > 日期：2026-07-05
 > 范围：`ui/src/pages/vuetify/VModelsPage.vue` 及其组件/composable 子树
@@ -257,7 +257,7 @@ utils:
 
 `request_headers` 是 CAPI 下发的**模型专属请求头**（转发上游用，`client.ts:118`）。`stripInternalFields` 原为"不暴露给外部消费者"而剥离它。
 
-按 ADR [internal-tool-security-posture](../decisions/2026-07-05-internal-tool-security-posture.md)：**本项目是内部个人工具、无需防范的外部消费者，该剥离是不适合本项目定位的多余安全处理**。故：
+按 ADR [internal-tool-security-posture](../../../docs/decisions/2026-07-05-internal-tool-security-posture.md)：**本项目是内部个人工具、无需防范的外部消费者，该剥离是不适合本项目定位的多余安全处理**。故：
 
 - **移除 `stripInternalFields` 对 `request_headers` 的剥离**（`src/routes/models/internal.ts:15-18`）——`/api/models`（list + single）完整透传，Models 页 Raw JSON tab 展示该字段（richest-data-flow）。
 - 这是本 spec 唯一的后端改动（一处小改），列入 **Phase 2**（随 Raw JSON tab 落地），不新开 Phase 0。`stripInternalFields` 若剥离后无其他字段可剥，整个 helper 一并删除（避免留空壳）。

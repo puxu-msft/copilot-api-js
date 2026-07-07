@@ -2,9 +2,9 @@
 
 > 日期：2026-07-05
 > 范围：`ui-v4/src/components/config/`（前端）+ `src/lib/config/`（后端字段描述符，见 §3）
-> 类型：新功能（退役旧 `ui/` 的对等 gating，见 [TODO.md](../../ui-v4/docs/TODO.md)）
-> 状态：**规格已定稿**（决策已签 2026-07-05，见 §12）；HOW 见 [plan](../plan/2026-07-05-ui-v4-config-form.md)
-> 设计依据：[DESIGN.md §7 Config](../../ui-v4/docs/DESIGN.md)、config 调研（后端 SSOT = `src/lib/config/schema.ts`）
+> 类型：新功能（退役旧 `ui/` 的对等 gating，见 [TODO.md](../TODO.md)）
+> 状态：**规格已定稿**（决策已签 2026-07-05，见 §12）；HOW 见 [plan](../plans/2026-07-05-ui-v4-config-form.md)
+> 设计依据：[DESIGN.md §7 Config](../DESIGN.md)、config 调研（后端 SSOT = `src/lib/config/schema.ts`）
 > **审查追溯**：经架构 subagent 对抗审查（2026-07-05）修订——补 `history.limit` 遗漏、anthropic 嵌套/record 的 PUT 整体替换语义、enum 无导出常量的前置事实、help 来源、字段联动、raw 双向同步一致性陷阱；均已并入 §3/§5/§6/§8/§12。
 
 ---
@@ -99,7 +99,7 @@
 
 ## 5. 控件类型（Radix-based，Terminal Amber）
 
-复用 §3 描述符的 `control` 字段分发；控件建在 Radix headless 上（延续本项目 Radix 迁移，样式桥见 [radix-styling.md](../../ui-v4/docs/radix-styling.md)）。控件集（对标旧 Vue 的 ConfigText/Number/Toggle/Enum/StringList/KeyValueList/RewriteRules/Section，但用当前字段名 + Radix）：
+复用 §3 描述符的 `control` 字段分发；控件建在 Radix headless 上（延续本项目 Radix 迁移，样式桥见 [radix-styling.md](../radix-styling.md)）。控件集（对标旧 Vue 的 ConfigText/Number/Toggle/Enum/StringList/KeyValueList/RewriteRules/Section，但用当前字段名 + Radix）：
 
 | control | 控件 | Radix/原语 | 备注 |
 |---|---|---|---|
