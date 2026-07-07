@@ -379,4 +379,106 @@ describe("HistoryList", () => {
     expect(screen.getByText(/无匹配请求/)).toBeDefined()
     expect(screen.queryByText("清除筛选")).toBeNull()
   })
+
+  // ── Task 4.2:列表键盘导航（↑/↓/Enter/Esc）+ 行 a11y ──
+
+  it("keyboard nav: ArrowDown ×2 moves focus to index 2 and scrolls it into view", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    const scroller = screen.getByTestId("history-scroller")
+    fireEvent.keyDown(scroller, { key: "ArrowDown" })
+    fireEvent.keyDown(scroller, { key: "ArrowDown" })
+    // 焦点游标落在 index 2（第三行）：既断言 scrollToIndex 的最后一次调用（向下 → align end），也断言焦点行视觉标记。
+    expect(scrollToIndexMock).toHaveBeenLastCalledWith({ index: 2, align: "end" })
+    const focusedRow = container.querySelector<HTMLElement>('[data-focused="true"]')
+    expect(focusedRow?.getAttribute("data-entry-id")).toBe("e3")
+  })
+
+  it("keyboard nav: ArrowUp clamps at 0 (never negative)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    renderList()
+    const scroller = screen.getByTestId("history-scroller")
+    // 初始焦点 index 0，ArrowUp 应 clamp 在 0（向上 → align start）。
+    fireEvent.keyDown(scroller, { key: "ArrowUp" })
+    expect(scrollToIndexMock).toHaveBeenLastCalledWith({ index: 0, align: "start" })
+  })
+
+  it("keyboard nav: Enter on the focused index navigates to that row", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const scroller = screen.getByTestId("history-scroller")
+    fireEvent.keyDown(scroller, { key: "ArrowDown" }) // index 0 → 1
+    fireEvent.keyDown(scroller, { key: "Enter" })
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
+  })
+
+  it("keyboard nav: Escape clears the focus cursor", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    const scroller = screen.getByTestId("history-scroller")
+    fireEvent.keyDown(scroller, { key: "ArrowDown" }) // 焦点 → index 1
+    expect(container.querySelector('[data-focused="true"]')).not.toBeNull()
+    fireEvent.keyDown(scroller, { key: "Escape" })
+    expect(container.querySelector('[data-focused="true"]')).toBeNull()
+  })
+
+  it("keyboard nav: isTyping guard — ArrowDown from inside an input does not move focus", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    renderList()
+    const scroller = screen.getByTestId("history-scroller")
+    // 在滚动容器内放一个输入框并聚焦：方向键应被 isTyping 守卫拦下，不移动焦点游标。
+    const input = document.createElement("input")
+    scroller.append(input)
+    input.focus()
+    fireEvent.keyDown(input, { key: "ArrowDown" })
+    expect(scrollToIndexMock).not.toHaveBeenCalled()
+  })
+
+  it("row a11y: each row is a keyboard-activatable button (role + tabIndex) and Enter activates it", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    expect(row?.getAttribute("role")).toBe("button")
+    expect(row?.getAttribute("tabindex")).toBe("0")
+    fireEvent.keyDown(row as HTMLElement, { key: "Enter" })
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
+  })
+
+  it("row a11y: Space also activates the row", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const row = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    fireEvent.keyDown(row as HTMLElement, { key: " " })
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e1")
+  })
+
+  it("row a11y: the selected (?at) row carries aria-current", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
+    const { container } = renderList(["/requests?at=e2"])
+    const row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    expect(row?.getAttribute("aria-current")).toBe("true")
+    const other = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    expect(other?.getAttribute("aria-current")).toBeNull()
+  })
 })

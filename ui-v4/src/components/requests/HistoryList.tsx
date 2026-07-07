@@ -14,6 +14,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react"
 import {
   //
@@ -62,10 +63,12 @@ const FLASH_MS = 1200
 /** TableVirtuoso 的行数据 = TanStack 行对象(`row.original` 即 EntrySummary)。 */
 type HistoryRowModel = Row<EntrySummary>
 
-/** 传给 Virtuoso 各子组件的上下文:定位真值(`at`)+ 命中 flash(`flashId`)+ 行点击回调。用 context 而非闭包,组件得以稳定不重挂。 */
+/** 传给 Virtuoso 各子组件的上下文:定位真值(`at`)+ 命中 flash(`flashId`)+ 键盘焦点游标(`focusedId`)+ 行点击回调。用 context 而非闭包,组件得以稳定不重挂。 */
 interface RowContext {
   at: string | null
   flashId: string | null
+  /** 键盘导航焦点游标所在行的 id(区别于 `at` 选中真值);命中行加焦点视觉标记。 */
+  focusedId: string | null
   onSelect: (id: string) => void
 }
 
@@ -92,6 +95,18 @@ function selectionClass(selected: boolean): string {
   return selected ? "border-l-2 border-l-[var(--color-primary)] bg-[#3a2f1a] text-[#f0d8a8]" : "text-[#aaa]"
 }
 
+/** 键盘焦点游标的行高亮:outline 描边,视觉上区别于 `at` 选中(左边框 + 背景)与 flash(瞬态)。 */
+function focusClass(focused: boolean): string {
+  return focused ? " outline outline-1 -outline-offset-1 outline-[var(--color-primary)]" : ""
+}
+
+/** 焦点是否落在可输入元素上(避免在筛选输入框内按方向键/回车误触列表导航)。取事件 target,守卫在途输入。 */
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable
+}
+
 // ── Virtuoso 子组件(模块级、稳定引用,避免 inline 定义导致每帧重挂)。动态数据经 `context` 注入。 ──
 
 /** `<table>` 外壳:必须透传 Virtuoso 注入的 `style`(布局);table-fixed + 列宽(th/td meta.width)决定列宽。 */
@@ -103,16 +118,30 @@ const TableShell: NonNullable<TableComponents<HistoryRowModel, RowContext>["Tabl
   />
 )
 
-/** 每行 `<tr>`:`item` 即 TanStack 行,`context.at` 决定选中高亮、`context.flashId` 决定命中瞬态 flash,点击走 `context.onSelect`(单元格 td 由 itemContent 注入 children)。 */
+/** 每行 `<tr>`:`item` 即 TanStack 行,`context.at` 决定选中高亮(+aria-current)、`context.flashId` 决定命中瞬态 flash、`context.focusedId` 决定键盘焦点游标描边,点击/Enter/Space 走 `context.onSelect`(单元格 td 由 itemContent 注入 children)。行本身即可聚焦可键盘激活(role=button + tabIndex),与容器级 ↑/↓ 跨行移动并存(容器管移动、行级管激活)。 */
 const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableRow"]> = ({ item, context, ...props }) => {
-  const selected = item.original.id === context.at
-  const flashing = item.original.id === context.flashId
+  const id = item.original.id
+  const selected = id === context.at
+  const flashing = id === context.flashId
+  const focused = id === context.focusedId
   return (
     <tr
       {...props}
-      data-entry-id={item.original.id}
-      onClick={() => context.onSelect(item.original.id)}
-      className={`${ROW_CLASS} ${selectionClass(selected)}${flashing ? " toc-flash" : ""}`}
+      data-entry-id={id}
+      data-focused={focused ? "true" : undefined}
+      role="button"
+      tabIndex={0}
+      aria-current={selected ? "true" : undefined}
+      onClick={() => context.onSelect(id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          // 行级激活:阻止冒泡到容器的 onKeyDown(否则容器再按焦点游标激活一次 → 双重导航)。
+          e.preventDefault()
+          e.stopPropagation()
+          context.onSelect(id)
+        }
+      }}
+      className={`${ROW_CLASS} ${selectionClass(selected)}${flashing ? " toc-flash" : ""}${focusClass(focused)}`}
     />
   )
 }
@@ -167,6 +196,9 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   // 命中行瞬态 flash:命中 id 加到 RowContext,虚拟化下命中行渲染时带 `toc-flash` 类(行可能不在 DOM,
   // 故不用 imperative classList,交给 itemContent/TableRow 渲染)。FLASH_MS 后清空。
   const [flashId, setFlashId] = useState<string | null>(null)
+  // 键盘导航焦点游标:index 指向 rows 中的位置(初始 0,与「列表默认有个顶部游标」一致);
+  // ↑/↓ 移动、Enter 激活、Esc 清空。区别于 `at` 选中真值(由 URL 承载)。
+  const [focusedIndex, setFocusedIndex] = useState(0)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const flashRow = useCallback((id: string) => {
     if (flashTimerRef.current !== undefined) clearTimeout(flashTimerRef.current)
@@ -267,7 +299,60 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     },
     [dispatch, navigate],
   )
-  const rowContext = useMemo<RowContext>(() => ({ at, flashId, onSelect: selectRow }), [at, flashId, selectRow])
+  const rowContext = useMemo<RowContext>(() => {
+    const focused = focusedIndex >= 0 && focusedIndex < rows.length ? rows[focusedIndex] : undefined
+    return { at, flashId, focusedId: focused?.original.id ?? null, onSelect: selectRow }
+  }, [at, flashId, focusedIndex, rows, selectRow])
+
+  // 容器级键盘导航(↑/↓/Enter/Esc):↑/↓ 移动焦点游标 + scrollToIndex 带入视口,Enter 激活游标行,Esc 清游标。
+  // isTyping 守卫:焦点落在输入类元素内(如筛选栏)时不拦,避免方向键/回车误触列表导航。
+  // preventDefault 仅在真正处理方向键/激活时,不吞其他按键。
+  const onListKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (isTyping(e.target)) return
+      const len = rows.length
+      if (len === 0) return
+      switch (e.key) {
+        case "ArrowDown": {
+          e.preventDefault()
+          setFocusedIndex((i) => {
+            const next = Math.min(i + 1, len - 1)
+            // 向下移动:游标行贴底显现(align "end"),最小滚动露出目标(react-virtuoso 无 "auto",按方向取边)。
+            virtuosoRef.current?.scrollToIndex({ index: next, align: "end" })
+            return next
+          })
+          break
+        }
+        case "ArrowUp": {
+          e.preventDefault()
+          setFocusedIndex((i) => {
+            const next = Math.max(i - 1, 0)
+            // 向上移动:游标行贴顶显现(align "start")。
+            virtuosoRef.current?.scrollToIndex({ index: next, align: "start" })
+            return next
+          })
+          break
+        }
+        case "Enter": {
+          if (focusedIndex >= 0 && focusedIndex < len) {
+            e.preventDefault()
+            selectRow(rows[focusedIndex].original.id)
+          }
+          break
+        }
+        case "Escape": {
+          setFocusedIndex(-1)
+          if (e.target instanceof HTMLElement) e.target.blur()
+          break
+        }
+        default: {
+          // 其他键不处理(不 preventDefault,放行页面滚动等默认行为)。
+          break
+        }
+      }
+    },
+    [rows, focusedIndex, selectRow],
+  )
 
   // 显式跟随实时流:恢复 tail 并清掉 URL 的定位参数(URL-as-truth:tailing 态不该声明 locate)。
   function goLive(ev: "resume" | "flush") {
@@ -328,7 +413,16 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
         )}
         {!isError && isLoading && <div className="mono p-2 text-[#888]">loading…</div>}
         {!isError && !isLoading && (
-          <div className="relative h-full">
+          // 容器级方向键导航(roving arrow 表面):真正可交互的单元是内部 role=button、tabIndex=0 的行(激活层);
+          // 本 div 只是委托捕获的方向键滚动表面(移动层)——键盘用户 Tab 进某行后,↑/↓ 从聚焦行冒泡到此处理。
+          // 不给本 div 自身 tabIndex(避免多余的非交互 tab stop);onKeyDown 触发 no-static-element-interactions,
+          // 而给虚拟化 <table> 外壳强加 grid/listbox role 会扭曲语义、误导 AT,按项目约定禁用此规则而非扭曲代码。
+          // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+          <div
+            className="relative h-full"
+            data-testid="history-scroller"
+            onKeyDown={onListKeyDown}
+          >
             <TableVirtuoso<HistoryRowModel, RowContext>
               ref={virtuosoRef}
               style={{ height: "100%" }}
