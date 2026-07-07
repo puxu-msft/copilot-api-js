@@ -79,6 +79,29 @@ describe("createServerToolRejectionStrategy", () => {
     expect(strategy.canHandle(err)).toBe(false)
   })
 
+  test("canHandle ignores a server-tool rejection NOT in the table (no speculative coverage)", () => {
+    // A different server tool with an INVENTED rejection message. Only tools with
+    // an OBSERVED upstream message earn a table row — this one must fall through
+    // (return false) so it does not silently strip an unmodelled tool. Tests both
+    // the message-wrapped and raw-responseText carriers (the two wire forms).
+    const strategy = createServerToolRejectionStrategy<TestPayload>()
+    const message = "The use of the code execution tool is not supported."
+    const messageForm = {
+      type: "bad_request",
+      status: 400,
+      message: `HTTP 400: ${message}`,
+      raw: { responseText: JSON.stringify({ error: { message, code: "unsupported_value" } }) },
+    } as unknown as ApiError
+    const rawForm = {
+      type: "bad_request",
+      status: 400,
+      message: "HTTP 400: Failed to create Anthropic messages",
+      raw: new HTTPError("Failed to create Anthropic messages", 400, JSON.stringify({ error: { message, code: "unsupported_value" } })),
+    } as unknown as ApiError
+    expect(strategy.canHandle(messageForm)).toBe(false)
+    expect(strategy.canHandle(rawForm)).toBe(false)
+  })
+
   test("canHandle ignores non-400 / non-bad_request errors", () => {
     const strategy = createServerToolRejectionStrategy<TestPayload>()
     const rateLimited = { type: "rate_limited", status: 429, message: "The use of the web search tool is not supported." } as unknown as ApiError

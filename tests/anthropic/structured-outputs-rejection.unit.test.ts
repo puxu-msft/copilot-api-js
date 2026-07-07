@@ -1,5 +1,5 @@
 /**
- * structured-outputs-rejection-retry + the `strip-structured-outputs` prepare
+ * structured-outputs-rejection-retry + the `strip-partner-features` prepare
  * step (Vertex `allowedPartnerModelFeatures` org-policy 400).
  *
  * Root cause reproduced from a real history entry: Claude Code's title
@@ -174,11 +174,11 @@ describe("createStructuredOutputsRejectionStrategy", () => {
   })
 })
 
-describe("strip-structured-outputs prepare step", () => {
+describe("strip-partner-features prepare step", () => {
   // Isolate the single step via the DI seam — avoids cache-control / build-headers
   // (which read runtime state/token). buildWirePayload still deep-clones
   // output_config, so the input payload is never mutated.
-  const stripStep = ANTHROPIC_PREPARE_STEPS.find((s) => s.name === "strip-structured-outputs") as PrepareStep
+  const stripStep = ANTHROPIC_PREPARE_STEPS.find((s) => s.name === "strip-partner-features") as PrepareStep
   const stripOnly: ReadonlyArray<PrepareStep> = [stripStep]
   autoRestoreState() // the config-source test mutates state.stripPartnerFeatures
 
