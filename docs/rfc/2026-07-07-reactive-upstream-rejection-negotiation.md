@@ -1,6 +1,6 @@
 # RFC: 反应式 per-model 上游拒绝协商 —— 完整性 pass
 
-- 状态：DRAFT（待 ≥3 轮对抗 subagent review + 用户解答 open questions 后转 plan）
+- 状态：DRAFT v2（R1 对抗 review 已并入：修正 B 存储表达/parse 站点、A 接线阶段+反应式机制、映射链式表述；新增 O5/O6。待 R2 review 达零 FAIL/WARN + 用户解答 open questions 后转 plan）
 - 日期：2026-07-07
 - 关联：ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)、ADR [internal-tool-security-posture](../decisions/2026-07-05-internal-tool-security-posture.md)、skill `telemetry-architecture`、skill `history-sqlite-schema`
 - 触发实例：Claude Code 后台 `haiku` 请求（映射到 Vertex-routed `claude-sonnet-4.6`/`claude-haiku-4.5`）携带 inline `role:"system"` 消息 → 上游 400 → 无任何反应式恢复。
@@ -18,7 +18,7 @@
 | # | 缺口 | 证据 | 现状 |
 |---|---|---|---|
 | A | inline `role:"system"` 消息被上游严格后端拒绝，**无任何 strategy 匹配** | 实测 9 条终态失败；错误 `Unexpected role "system". The Messages API accepts a top-level system parameter`；唯一缓解是 proactive `sanitizeInlineSystemMessages`（[sanitize/system-messages.ts:102](../../src/lib/anthropic/sanitize/system-messages.ts#L102)），受 `system_messages_sanitize` 驱动、**默认 false/passthrough**（[schema.ts:268](../../src/lib/config/schema.ts#L268) 注释自认「default — will 400 upstream if present」） | 无反应式；默认关 |
-| B | effort **零支持**变体 `... does not support reasoning effort`（无 `supported values:[...]` 列表）→ parse 返 null → abort | 实测 req_1783390118141_26：attemptCount=1、outbound 带 `output_config:{effort:"high"}` 发给 claude-haiku-4.5 → 400。`parseInvalidEffortError` 要求同时匹配 `by model X;` + `supported values:[...]`（[request-preparation.ts:580](../../src/lib/anthropic/request-preparation.ts#L580)），且 [:588](../../src/lib/anthropic/request-preparation.ts#L588) `if (supported.length===0) return null` 显式拒学空集 | effort-learning 部分覆盖 |
+| B | effort **零支持**变体 `... does not support reasoning effort`（无 `supported values:[...]` 列表）→ parse 在 :580 返 null → learn false → abort。且 negotiation 缓存**无法表达「已知空集」**（`[]` 与「未学习」在 5 处碰撞、含 snapshot/load 两处使空集不可持久化） | 实测 req_1783390118141_26（body 含 `code:invalid_reasoning_effort`、attemptCount=1）。`parseInvalidEffortError` 双正则须匹配（[request-preparation.ts:580](../../src/lib/anthropic/request-preparation.ts#L580)）；空集碰撞详见 §3.3 | effort-learning 部分覆盖 |
 | C | `Tool 'web_search' not found in provided tools` 措辞与 deferred-tool 正则不匹配、补救也不对 | deferred-tool 正则是 `Tool reference '…' not found in available tools`（[deferred-tool-retry.ts:42](../../src/lib/request/strategies/deferred-tool-retry.ts#L42)）；唯一缓解是 proactive `tool_rewrite_history_server:"downgrade"`（[schema.ts:304](../../src/lib/config/schema.ts#L304)）**默认 false** | 无反应式；默认关 |
 
 ### 理论（审计发现、未在当前语料触发，但 parse 逻辑确凿会落空）
@@ -57,7 +57,7 @@
 
 **建模抉择（已定）：能力框架，非 vertex 硬断言。** 因为 (1) 我们能可靠观测的是**症状**（该 outbound 模型拒绝 inline system），不是**成因**（是否 Vertex）；(2) 反应式学入的信号（通用 system-role 400）**不带 vertex 标记**，硬归 Vertex 是无依据推断；(3) 实测 haiku-4.5 也拒绝，但无法证明它是字面 Vertex。故 config 键与 state 集以**观测症状**命名，注释写明「Vertex 是此账号已知成因，但不硬断言」。
 
-**判别轴（实测钉死）：解析后的 outbound 模型。** 模型映射是**单跳非链式**（实测 `haiku → claude-sonnet-4.6` 到此为止，不再走 `claude-sonnet-4.6 → claude-sonnet-5`），故真正决定路由的是 outbound 名。inbound 别名（`haiku`）判别是错的。且后台/title 请求**无专属 inbound header 标记**（实测 header 集与主请求一致），唯一信号是所选模型——正是本轴。
+**判别轴（实测钉死）：`resolveModelName` 返回的最终 outbound 名。** 判别必须 key 在**最终解析名**上——它已折叠任何 override 链。注意映射本身是**链式可递归的**（[resolver.ts:218](../../src/lib/models/resolver.ts#L218) `resolveOverrideTarget` 递归 + `seen` 环守卫），但递归在 target 是已知模型 id 时停（`state.modelIds.has(target) → return target`）——这正解释实测 `haiku → claude-sonnet-4.6` 停在 sonnet-4.6（它是已知模型 id），未续走 `claude-sonnet-4.6 → claude-sonnet-5`。故"单跳"是此配置下的巧合、非架构属性；判别取终态名即可，无需关心链的形状。inbound 别名（`haiku`）判别是错的。且后台/title 请求**无专属 inbound header 标记**（实测 header 集与主请求一致），唯一信号是所选模型——正是本轴。
 
 ---
 
@@ -70,22 +70,36 @@
 - **持久 negotiation 缓存**（negotiation-states.json，[feature-negotiation.ts](../../src/lib/anthropic/feature-negotiation.ts)），config 声明 ∪ 运行时学入。
 - **reactive strategy**（[src/lib/request/strategies/](../../src/lib/request/strategies/)），检测 → 学 → 重试。
 
-本 RFC 补全其覆盖，并抽出一个**通用「错误 body → per-model 能力标记」学习 primitive**，让 A/C/D/E 复用同一骨架（避免每类各写一遍 parse+learn+persist），差异只在：匹配正则、被剥/改的目标、补救动作。
+本 RFC 补全其覆盖，并抽出一个**通用「错误 body → per-model 能力标记」学习 primitive**，让 C/D/E 复用同一骨架（parse → learn → persist → canHandle 脚手架）。**范围界定（WARN-7）**：该 primitive 统一 learn/persist/`canHandle` 脚手架，但**补救动作分两类**——C/D/E 是**字段/工具剥离**（`PrepareHints.excludeServerToolTypes` / strip `output_config.format`），A 是**消息 role 重写**（system→user，内容变换，且须在 prepare 或 strategy `handle` 里做、不在 sanitize，见 §3.2）。故 primitive 只统一 C/D/E 的 strip 类补救 + 全体的 learn/persist；A 的 remediation arm 单列，不假装复用同一 strip 骨架。
 
 ### 3.2 A：inline role:system 自动清洗（能力框架）
 
 - **config**：新增 `anthropic.system_reject_models`（模型名子串集，match resolved outbound model），默认 `[claude-sonnet-4.6, claude-haiku-4.5]`（实测确认）。注释写明能力语义 + Vertex 已知成因。
 - **模式**：新增 `anthropic.system_reject_mode`（复用 `SystemMessagesSanitizeMode` 枚举），默认 `as_user`（保位置、对 prompt-cache 最友好）。
 - **有效模式解析**（具体胜通配）：`model ∈ reject 集 → system_reject_mode`；否则 → 全局 `system_messages_sanitize`（保留、默认 false，作用于所有模型）。
-- **反应式**：新 strategy 检测 `Unexpected role "system"` 400 → 学入持久 reject 集 → 重清洗（as_user）→ 重试。学入日志如实写「推断（Vertex 已知成因）」。
-- **接线**：把有效模式 thread 进现有 message-sanitize 阶段的 `sanitizeInlineSystemMessages`（纯函数、已显式收 mode，[system-messages.ts:102](../../src/lib/anthropic/sanitize/system-messages.ts#L102)）；resolved model 在 `prepareAnthropicRequest`（[request-preparation.ts:401](../../src/lib/anthropic/request-preparation.ts#L401)）已有。
+- **接线（proactive 侧，声明式）—— 注意阶段与 plumbing**：inline-system 清洗现在在 **message-sanitize 阶段**（[handler-v4.ts:201](../../src/routes/messages/handler-v4.ts#L201) `sanitizeAnthropicMessages(payload)` → [sanitize/index.ts:95](../../src/lib/anthropic/sanitize/index.ts#L95)），该阶段**只跑一次、且当前只吃 payload、无 resolved model**（用全局 `state.systemMessagesSanitize`）。要按模型选有效模式，须**把 resolved 名 plumb 进 sanitize**：handler 在 [handler-v4.ts:183](../../src/routes/messages/handler-v4.ts#L183) 已有 `resolvedName`，改 `sanitizeAnthropicMessages` 签名接收它、内部算有效模式。这是**新 plumbing**（改函数签名 + 全部调用方，含 count-tokens，见下），非「resolvedModel 在 prepare 已有所以 trivial」——sanitize 与 prepare 是**不同阶段**（prepare 每 attempt 跑、sanitize 请求前只跑一次）。
+- **count-tokens 同源**（WARN 修复）：[count-tokens.ts:50](../../src/routes/messages/count-tokens.ts#L50) 也调 `sanitizeInlineSystemMessages(..., state.systemMessagesSanitize)` 并转发真 `count_tokens` 上游，对 reject 集模型同样会 400。有效模式必须**同样 thread 到此**，否则 count-tokens 与请求路径分叉。
+- **反应式侧 —— 机制须显式（FAIL-3 修复）**：pipeline 每 attempt 只重跑 `adapter.execute → prepareAnthropicRequest`（[pipeline.ts:272](../../src/lib/request/pipeline.ts#L272)），**sanitize 不重跑**。故反应式 A **不能靠 sanitize 阶段重清洗**。两个候选机制（O6，见 §6）：(a) reject-strategy 在 `handle` 里**直接对 `effectivePayload.messages` 做 role-rewrite**（system→user）再重试；(b) 把 inline-system 处理**下移进 `prepareAnthropicRequest`**（每 attempt 跑、天然拿 resolved model），proactive/reactive 统一在 prepare。(b) 架构更干净但改动面更大（inline-system 从 sanitize 迁到 prepare）。学入日志如实写「推断（Vertex 已知成因）」。
 
-### 3.3 B：effort 零支持剥离
+### 3.3 B：effort 零支持剥离（存储表达须重做）
 
-- 扩 `parseInvalidEffortError`：新增识别零支持变体（`does not support reasoning effort`，无 supported 列表）→ 返回 `supported: []`（显式空集 = 已知「不支持」）。
-- 放宽 [:588](../../src/lib/anthropic/request-preparation.ts#L588) `supported.length===0 → null`：改为「空集是可学的已知能力」（需与 negotiation 缓存的空集表达一致——空集 ≠ 未知）。
-- 扩 `clampEffortLevel`（[:728](../../src/lib/anthropic/request-preparation.ts#L728)）：支持集为空 → **完全剥除 `output_config.effort`**（非钳值）。
-- effort-learning strategy 的 `handle` 无需改（learn 返 true 后重试即可，重准备读到空集 → 剥除）。
+**已捕获真实 body**（req_1783390118141_26 + 用户报错）：`{"error":{"message":"output_config.effort \"high\" was provided, but model claude-haiku-4.5 does not support reasoning effort","code":"invalid_reasoning_effort"}}`。**含 `code:"invalid_reasoning_effort"`**，故 `canHandle`（[effort-learning-retry.ts:64](../../src/lib/request/strategies/effort-learning-retry.ts#L64)）**会触发**——失败发生在 parse。
+
+**失败点是 :580 非 :588（FAIL-2 修正）**：`parseInvalidEffortError` 要求 `by model X;`（[:578](../../src/lib/anthropic/request-preparation.ts#L578)）**和** `supported values:[...]`（[:579](../../src/lib/anthropic/request-preparation.ts#L579)）**双匹配**，零支持变体两者皆无 → [:580](../../src/lib/anthropic/request-preparation.ts#L580) `return null`。`:588` 对本变体是死代码。故须**新增 parse 分支**识别零支持措辞，非放宽 :588。
+
+**核心难点：negotiation 缓存无法表达「已知空集」（FAIL-1）。** `[]` 与「未学习」在 **5 处**碰撞，「空集=可学」不是放宽一行能解决：
+
+| 站点 | 现状 | 后果 |
+|---|---|---|
+| [request-preparation.ts:648](../../src/lib/anthropic/request-preparation.ts#L648) `findSupportedEfforts` | `if (learned && learned.length>0)` | 存下的 `[]` 被跳过 → 落到 metadata/undefined |
+| [request-preparation.ts:736](../../src/lib/anthropic/request-preparation.ts#L736) `clampEffortLevel` | `if (!supported) return` | undefined → 不剥 |
+| [request-preparation.ts:739](../../src/lib/anthropic/request-preparation.ts#L739) `clampEffortLevel` | `if (supportedIndices.length===0) return` | 空集 → 不剥（第 5 处） |
+| [feature-negotiation.ts:246](../../src/lib/anthropic/feature-negotiation.ts#L246) `snapshotEffortMap` | `if (value.length>0) out[key]` | **空集永不写盘** |
+| [feature-negotiation.ts:302](../../src/lib/anthropic/feature-negotiation.ts#L302) `loadEffortMap` | `values.length===0 continue` | **即便写了也加载即丢** |
+
+后两处使「不支持 effort」这一事实**无法跨重启存活**，直接违反 negotiation 缓存的持久契约（[feature-negotiation.ts:5-7](../../src/lib/anthropic/feature-negotiation.ts#L5)「All entries are permanent」）。
+
+**修法（须整体做，见 O5 定形）**：把「已知不支持」与「未知」表达为**可区分的两态**——候选：(a) 独立 `effortUnsupported: Set<model>` 映射（与 supportedEfforts 并列、各自持久化）；(b) sentinel 记录 `{learned:true, values:[]}`；(c) 用特殊 marker 值。**全部 5 处站点 + snapshot/load 持久化**须一并改；clampEffortLevel 对「已知不支持」→ **完全剥除 `output_config.effort`**。effort-learning strategy 的 `handle` 逻辑不变（learn 返 true → 重试 → 重准备读到「已知不支持」→ 剥除），但依赖存储表达修好。
 
 ### 3.4 C：web_search-not-found 反应式化
 
@@ -94,7 +108,7 @@
 
 ### 3.5 D/E/F/G：变体缺口补全
 
-- **D**：把 structured-outputs strategy 的 `canHandle` 从「只 structured_outputs」放宽为「有已知 strip-target 的 partner feature 表」，用 per-feature strip-target 映射表驱动。
+- **D**：把 structured-outputs strategy 的 `canHandle` 从「只 structured_outputs」放宽为「有已知 strip-target 的 partner feature 表」，用 per-feature strip-target 映射表驱动。**注意每 feature 有两处 strip 站点（NIT-8）**：reactive strategy 自身的 strip（[structured-outputs-rejection-retry.ts:102](../../src/lib/request/strategies/structured-outputs-rejection-retry.ts#L102)）+ prepare 侧 per-feature step（[request-preparation.ts:698](../../src/lib/anthropic/request-preparation.ts#L698)），映射表须同时驱动两者。
 - **E**：把 server-tool-rejection 的硬编码 web_search 正则 + 前缀改为 per-tool 表（缓存结构已通用）。
 - **F**：给 `parseTokenLimitError` 加 `max_tokens`-inclusive / 其他措辞正则变体（**需先捕获真实上游 body 做 golden**，见 §7）。
 - **G**：deferred-tool 的 `parseToolReferenceFromResponse` 改用 `parsed.error?.message ?? responseText`（对齐姊妹策略），修双层包裹落空。
@@ -110,11 +124,11 @@
 
 > **总不变量**：每个 commit 结束时 typecheck 绿 + 测试套件通过 + 无「给要拒的请求白做/重复处理」的半破碎态。反应式 strategy 只在其目标 400 上触发，对其他请求零副作用。
 
-- **P1 —— 框架 + A + B（承重）**
-  - 抽通用「错误 body → per-model 能力标记」学习 primitive。
-  - A：config schema（`system_reject_models`/`system_reject_mode`）+ state 接线 + 有效模式解析 + reactive strategy + 有效模式 thread 进 sanitize。
-  - B：`parseInvalidEffortError` 零支持变体 + 空集可学 + `clampEffortLevel` 剥除。
-  - invariant：A/B 的反应式 + 声明式双路径都覆盖；默认 config 下 role:system reject 集含实测两模型。
+- **P1 —— 框架 + A + B（承重，最重）**
+  - 抽通用 learn/persist/canHandle primitive（strip 类补救；A 的 role-rewrite remediation 单列，见 §3.1）。
+  - A：config schema（`system_reject_models`/`system_reject_mode`）+ state 接线 + 有效模式解析 + `sanitizeAnthropicMessages` 签名加 resolved 名（含 count-tokens 调用方）+ 反应式机制（O6 定 a/b）。
+  - B：新 parse 分支（零支持措辞）+ 存储表达重做（O5 定形，改全部 5 站点 + snapshot/load）+ `clampEffortLevel` 对「已知不支持」剥除。
+  - invariant：A/B 的反应式 + 声明式双路径都覆盖；B 经 persist→reload golden；默认 config 下 role:system reject 集含实测两模型（O2 定）。
 - **P2 —— C（server-tool history 反应式）**
   - 依 O1 裁决：加 strategy 或翻默认。
 - **P3 —— D/E/F/G（变体缺口）**
@@ -142,13 +156,15 @@ DAG：P1 是其余前置（抽出的 primitive 被 P2/P3 复用）。P3 内部�
 - **O2（默认 reject 集）**：`system_reject_models` 默认是否内置 `[claude-sonnet-4.6, claude-haiku-4.5]`（此账号实测），还是默认空 + 靠反应式学入（更中立、首次必 400 一次再自愈）？
 - **O3（F 范围）**：token-limit 变体是否本轮做？取决于能否捕获真实上游 body（无 golden 不做，避免猜正则）。
 - **O4（D/E 广度）**：D/E 是把**当前已知**的 feature/tool 补齐，还是做成完全数据驱动的表（未知项也能声明式扩展而不改码）？
+- **O5（B 存储表达）**：「已知不支持 effort」与「未知」如何区分——独立 `effortUnsupported` 集 / sentinel `{learned:true, values:[]}` / marker 值？决定 §3.3 全部 5 站点 + 持久化的改法。
+- **O6（A 反应式机制）**：反应式 A 用 (a) strategy 在 `handle` 直接 role-rewrite `effectivePayload.messages`，还是 (b) 把 inline-system 处理下移进 `prepareAnthropicRequest`（proactive/reactive 统一、每 attempt 跑、天然拿 resolved model，但改动面更大）？
 
 ---
 
 ## 7. 验证
 
 - **A**：探针 harness 复现生产接线——对 reject 集模型发带 inline system 的请求 → 断言 outbound 无 system 角色、上游 200；对非 reject 模型 → 断言透传（除非全局开）。反应式：mock 上游首发 400（role:system）→ 断言学入 + 重试 outbound 已清洗。
-- **B**：mock 上游 `does not support reasoning effort` 400 → 断言学入空集 + 重试 outbound 无 `output_config.effort`。
+- **B**：mock 上游 `does not support reasoning effort` 400 → 断言学入「已知不支持」+ 重试 outbound 无 `output_config.effort`。**必含 persist→reload golden（WARN-6）**：学入后经 `snapshotEffortMap` 写盘 → `loadPersistedFeatureNegotiation` 重载 → 重准备仍剥除——否则 §3.3 的持久化碰撞（snapshot/load 丢空集）会在绿测套件下于首次重启回归。镜像 §7 对 H 的「不回归 tripwire」纪律。
 - **C/D/E/G**：各 mock 对应 400 → 断言学/剥/重试。
 - **F**：先在真实/捕获的上游 body 上做 golden，再加正则；无真实 body 不做（O3）。
 - **H**：golden——多 attempt 记录断言 attempt[0] 保留完整 rawBody（改动前先证终态失败 body 已存的等价 tripwire 不回归）。
